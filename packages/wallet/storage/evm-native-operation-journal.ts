@@ -613,7 +613,10 @@ export class EvmNativeOperationJournal {
   private lifecycle: 'closed' | 'open' | 'uncertain' = 'closed'
   private closing = false
   private tail: Promise<unknown> = Promise.resolve()
-  private captures = new Map<string, object>()
+  private captures = new Map<
+    string,
+    { capture: EvmNativeCapture; basis: string }
+  >()
   readonly binding: EvmNativeBinding
   private readonly maxRecords: number
   private readonly maxBytes: number
@@ -1041,9 +1044,38 @@ export class EvmNativeOperationJournal {
     if (this.closing) fail('closed')
     const row = this.get(operationId)
     if (!row.members[memberIndex]?.signed || row.cancelled) fail('conflict')
-    const token = {}
-    this.captures.set(`${operationId}:${memberIndex}`, token)
-    return { operationId, memberIndex, token }
+    const capture = Object.freeze({
+      operationId,
+      memberIndex,
+      token: Object.freeze({}),
+    })
+    this.captures.set(`${operationId}:${memberIndex}`, {
+      capture,
+      basis: this.observationBasis(row.members[memberIndex]!),
+    })
+    return capture
+  }
+  /** Compare evidence, not whole rows: exposure and sync acknowledgements may advance
+   * during RPC reads. This is an equality precondition, not historical/ABA ordering. */
+  private observationBasis(member: EvmNativeMember): string {
+    const { signed, observation, account } = member
+    return JSON.stringify([
+      signed && [signed.rawTransaction, signed.transactionHash],
+      observation.state,
+      'blockNumber' in observation && [
+        observation.transactionHash,
+        observation.blockHash,
+        observation.blockNumber,
+        observation.transactionIndex,
+        observation.feeWei,
+      ],
+      account && [
+        account.blockHash,
+        account.blockNumber,
+        account.nonce,
+        account.balanceWei,
+      ],
+    ])
   }
   async recordObservation(
     capture: EvmNativeCapture,
@@ -1072,14 +1104,20 @@ export class EvmNativeOperationJournal {
     const key = `${capture.operationId}:${capture.memberIndex}`
     let recorded = false
     await this.mutate(capture.operationId, row => {
-      if (this.captures.get(key) !== capture.token) return false
+      const expected = this.captures.get(key)
+      if (expected?.capture !== capture) return false
       const m = row.members[capture.memberIndex]
-      if (row.cancelled || !m?.signed) return false
+      if (
+        row.cancelled ||
+        !m?.signed ||
+        this.observationBasis(m) !== expected.basis
+      )
+        return false
       // `unknown` is the absence of an answer (a failed or inconsistent read), not evidence.
       // It never replaces what the chain has already been seen to say: a member recorded
       // included stays included unless fresh canonical evidence contradicts THAT inclusion.
-      // An unavailable RPC is never such evidence. The capture and exact block binding prevent
-      // a late observation from invalidating a newer inclusion.
+      // An unavailable RPC is never such evidence. The evidence precondition above and
+      // exact block binding prevent invalidating a changed current inclusion.
       if (
         frozenObservation.state === 'unknown' &&
         m.observation.state !== 'unknown' &&

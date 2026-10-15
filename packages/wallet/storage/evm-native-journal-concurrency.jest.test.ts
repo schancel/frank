@@ -8,7 +8,13 @@ import { EvmLegacyConsolidator } from '../chain/evm-legacy-consolidator'
 import { NativeEvmTransactionBuilder } from '../chain/evm-transaction-builder'
 // Independent stale wrappers share real Level bytes; Node allows only one physical opener.
 jest.mock('level', () => jest.fn(jest.requireActual('level')))
-it('an RPC observation cannot overwrite exposure committed by another wrapper', async () => {
+it.each([
+  'missing',
+  'pending',
+  'reincluded',
+  'reincluded-revert',
+  'account-only',
+] as const)('rejects stale %s evidence', async kind => {
   const root = await mkdtemp(join(tmpdir(), 'frank-observation-verify-'))
   const actual: typeof level = jest.requireActual('level')
   const handles = new Map<string, ReturnType<typeof level>>()
@@ -32,6 +38,7 @@ it('an RPC observation cannot overwrite exposure committed by another wrapper', 
   let reached!: () => void, resume!: () => void
   const reading = new Promise<void>(r => (reached = r)),
     network = new Promise<void>(r => (resume = r))
+  let observed: Promise<void> | undefined
   try {
     await a.Open()
     const row = await a.prepare({
@@ -84,13 +91,73 @@ it('an RPC observation cannot overwrite exposure committed by another wrapper', 
         throw Error('must not sign')
       },
     })
-    const observed = executor.observe(row.operationId, 0)
+    observed = executor.observe(row.operationId, 0)
     await reading
     await a.markExposed(row.operationId, 0)
     expect(a.get(row.operationId).members[0]!.exposed).toBe(true)
+    const latestSigned = a.get(row.operationId).members[0]!.signed!
+    const newest = {
+      state: 'included-success' as const,
+      transactionHash: latestSigned.transactionHash,
+      blockHash: '0x' + 'cd'.repeat(32),
+      blockNumber: 2,
+      transactionIndex: 0,
+      feeWei: '21000',
+    }
+    const newestAccount = {
+      blockHash: newest.blockHash,
+      blockNumber: 2,
+      nonce: 1,
+      balanceWei: '978000',
+    }
+    const delayed =
+      kind === 'missing' ? undefined : b.beginCapture(row.operationId, 0)
+    await a.recordObservation(
+      a.beginCapture(row.operationId, 0),
+      kind === 'account-only' ? { state: 'unknown' } : newest,
+      newestAccount,
+    )
+    if (kind !== 'account-only') await a.markSyncApplied(row.operationId, 0)
+    if (delayed) {
+      const answer =
+        kind === 'pending'
+          ? { state: 'pending' as const }
+          : {
+              ...newest,
+              state:
+                kind === 'reincluded-revert'
+                  ? ('included-revert' as const)
+                  : ('included-success' as const),
+              blockHash: '0x' + 'ab'.repeat(32),
+              blockNumber: 1,
+            }
+      const accepted = await b.recordObservation(delayed, answer, {
+        blockHash: '0x' + 'ab'.repeat(32),
+        blockNumber: 1,
+        nonce: 0,
+        balanceWei: '1000000',
+      })
+      await a.refreshPreparation('stealth-payment:observer-race')
+      expect({
+        accepted,
+        persisted: a.get(row.operationId).members[0],
+      }).toMatchObject({
+        accepted: false,
+        persisted: {
+          observation: kind === 'account-only' ? { state: 'unknown' } : newest,
+          account: newestAccount,
+          syncApplied: kind !== 'account-only',
+        },
+      })
+    }
     resume()
     await observed
     await a.refreshPreparation('stealth-payment:observer-race')
+    expect(a.get(row.operationId).members[0]).toMatchObject({
+      observation: kind === 'account-only' ? { state: 'unknown' } : newest,
+      account: newestAccount,
+      syncApplied: kind !== 'account-only',
+    })
 
     expect(a.get(row.operationId).members[0]!.exposed).toBe(true)
     await expect(a.discardUnexposed(row.operationId)).rejects.toThrow(
@@ -112,13 +179,34 @@ it('an RPC observation cannot overwrite exposure committed by another wrapper', 
       nonce: 1,
       balanceWei: '978000',
     }
-    await a.recordObservation(
-      a.beginCapture(row.operationId, 0),
-      inclusion,
-      account,
-    )
+    // A fresh capture can accept genuine canonical evidence at a lower height.
+    expect(
+      await a.recordObservation(
+        a.beginCapture(row.operationId, 0),
+        inclusion,
+        account,
+      ),
+    ).toBe(true)
     await b.refreshPreparation('stealth-payment:observer-race')
     const stale = b.beginCapture(row.operationId, 0)
+    // Equivalent evidence with a different property order remains the same basis.
+    await a.recordObservation(
+      a.beginCapture(row.operationId, 0),
+      {
+        feeWei: inclusion.feeWei,
+        transactionIndex: inclusion.transactionIndex,
+        blockNumber: inclusion.blockNumber,
+        blockHash: inclusion.blockHash,
+        transactionHash: inclusion.transactionHash,
+        state: inclusion.state,
+      },
+      {
+        balanceWei: account.balanceWei,
+        nonce: account.nonce,
+        blockNumber: account.blockNumber,
+        blockHash: account.blockHash,
+      },
+    )
     await a.markSyncApplied(row.operationId, 0)
     expect(await b.recordObservation(stale, inclusion, account)).toBe(true)
     await a.refreshPreparation('stealth-payment:observer-race')
@@ -227,6 +315,7 @@ it('an RPC observation cannot overwrite exposure committed by another wrapper', 
     })
   } finally {
     resume()
+    await observed
     await Promise.all([a.Close(), b.Close()])
     jest.mocked(level).mockImplementation(actual)
     await rm(root, { recursive: true, force: true })

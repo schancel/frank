@@ -2970,8 +2970,8 @@ describe('wallet-lifetime EVM native operations', () => {
           'pending',
         )
         expect(r.applied).not.toHaveBeenCalled()
-        // A newer capture does not cancel already admitted durability. Its own queued write
-        // wins afterwards, and the old completion must not invent a different final result.
+        // A newer capture cannot cancel already admitted durability. Its queued result
+        // captured pending evidence, so it must reject once the inclusion commits.
         const newer =
           mode === 'superseded'
             ? journal.recordObservation(
@@ -2983,11 +2983,12 @@ describe('wallet-lifetime EVM native operations', () => {
         if (close) await r.executor.stopReobservation()
         release()
         await observed.mock.results[0]!.value
-        await newer
+        if (mode === 'superseded') expect(await newer).toBe(false)
+        else await newer
         await settle()
         await settle()
         expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
-          mode === 'superseded' ? 'pending' : 'included-success',
+          'included-success',
         )
         const before = providerCalls(state)
         r.advance(600_000)

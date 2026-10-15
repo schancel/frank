@@ -444,6 +444,71 @@ describe('durable EVM native journal', () => {
       await journal.recordObservation(next, { state: 'missing' }, account),
     ).toBe(false)
   })
+  it('keeps capture identity immutable and rejects copied or mismatched captures', async () => {
+    const row = await signed()
+    const capture = journal.beginCapture(row.operationId, 0)
+    expect(Object.isFrozen(capture)).toBe(true)
+    expect(Object.isFrozen(capture.token)).toBe(true)
+    expect(
+      await journal.recordObservation(
+        { ...capture },
+        { state: 'pending' },
+        account,
+      ),
+    ).toBe(false)
+    expect(
+      await journal.recordObservation(
+        { ...capture, memberIndex: 1 },
+        { state: 'pending' },
+        account,
+      ),
+    ).toBe(false)
+    await journal.markExposed(row.operationId, 0)
+    expect(
+      await journal.recordObservation(capture, { state: 'pending' }, account),
+    ).toBe(true)
+    expect(journal.get(row.operationId).members[0]!.exposed).toBe(true)
+    // A capture cannot be refreshed to authorize a different answer after its first commit.
+    expect(
+      await journal.recordObservation(capture, { state: 'missing' }, account),
+    ).toBe(false)
+  })
+  it('keeps captures independent across members and preserves both results on restart', async () => {
+    const input = plan()
+    const otherSigner = new Wallet('0x' + '42'.repeat(32))
+    const otherAddress = otherSigner.address.toLowerCase()
+    const other = plan().members[0]!
+    other.source = { kind: 'main', address: otherAddress }
+    input.members.push(other)
+    input.intendedValueWei = '2000'
+    const row = await journal.prepare(input)
+    for (let index = 0; index < 2; index++) {
+      await journal.checkpointSigned(
+        row.operationId,
+        index,
+        await (index === 0 ? wallet : otherSigner).signTransaction(
+          Transaction.from(row.members[index]!.unsignedTransaction),
+        ),
+      )
+    }
+    const first = journal.beginCapture(row.operationId, 0)
+    await journal.recordObservation(
+      journal.beginCapture(row.operationId, 1),
+      { state: 'pending' },
+      account,
+    )
+    expect(
+      await journal.recordObservation(first, { state: 'missing' }, account),
+    ).toBe(true)
+    await reopen()
+    expect(
+      journal
+        .get(row.operationId)
+        .members.map(member => member.observation.state),
+    ).toEqual(['missing', 'pending'])
+    expect(journal.canSelect(address, 0)).toBe(false)
+    expect(journal.canSelect(otherAddress, 0)).toBe(false)
+  })
   it('invalidates only the exact captured inclusion and retains original exposure and nonce claims', async () => {
     const row = await signed()
     await journal.markExposed(row.operationId, 0)
@@ -466,6 +531,9 @@ describe('durable EVM native journal', () => {
     }
     const old = journal.beginCapture(row.operationId, 0)
     const current = journal.beginCapture(row.operationId, 0)
+    expect(
+      await journal.recordObservation(current, { state: 'unknown' }, null),
+    ).toBe(false)
     expect(
       await journal.recordObservation(old, { state: 'unknown' }, null, proof),
     ).toBe(false)

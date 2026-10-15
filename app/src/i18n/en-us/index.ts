@@ -4,6 +4,16 @@
 import { en as accountRecovery } from '../account-recovery'
 
 export default {
+  negotiationRecovery: {
+    'restoring': 'Restoring swap history',
+    'scanning': 'Checking swap history',
+    'ready': 'Swap history recovered',
+    'unsupported': 'Swap recovery unavailable on this network',
+    'incomplete': 'Swap history check incomplete',
+    'capacity': 'Swap history storage is full',
+    'storage-error': 'Swap history could not be restored',
+  },
+
   qrScanner: {
     paymentHint:
       'For payments, scan the wallet Receive QR code. A profile QR code identifies a messaging contact and is not a wallet deposit address.',

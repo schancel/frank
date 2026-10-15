@@ -12,6 +12,7 @@
  * account changes.
  */
 import { watch } from 'vue'
+import { startAppNegotiationRecovery } from './negotiation-recovery'
 import type { NativeWalletHandle, WalletHandle } from '@frank/wallet/chain'
 import {
   installCanonicalDirectory,
@@ -65,6 +66,7 @@ interface Live {
   uninstall: () => void
   polling: Stoppable
   reconcile: Stoppable
+  negotiation?: { stop(): Promise<void> }
 }
 export interface MessagingDeps {
   session: {
@@ -88,6 +90,7 @@ export interface MessagingDeps {
   install: typeof installCanonicalDirectory
   startPolling: (options: { wallet: WalletHandle }) => Stoppable
   startReconcile: (options: { wallet: WalletHandle }) => Stoppable
+  startNegotiation?: typeof startAppNegotiationRecovery
   /**
    * Picks up what the account's wallets signed earlier and did not finish (a swap interrupted
    * by a reload) once the account is open and can send its notes to itself. Costs no network
@@ -214,6 +217,7 @@ function productionDeps(): MessagingDeps {
         throw error
       }
     },
+    startNegotiation: startAppNegotiationRecovery,
     startPolling: startDirectMessagePolling,
     startReconcile: startOutgoingReconciliation,
     resumeLegacy: () =>
@@ -384,10 +388,15 @@ export async function stopMessaging(): Promise<void> {
   cancelDirectoryLookupWaiters()
   if (state.status !== 'pending') state.status = 'pending'
   if (!previous) return
+  const negotiationCleanup = previous.negotiation?.stop().catch(() => {
+    console.warn(
+      '[startMessaging] Swap recovery cleanup failed; retained evidence needs reopening',
+    )
+  })
   previous.polling.stop()
   previous.reconcile.stop()
   previous.uninstall()
-  await previous.directory.close()
+  await Promise.all([previous.directory.close(), negotiationCleanup])
 }
 
 function reasonOf(error: unknown): MessagingReason {
@@ -431,6 +440,10 @@ export async function startMessaging(): Promise<void> {
   setDirectoryLookup('pending')
   const revision = d.session.state.revision,
     account = d.session.state.account
+  const negotiationAccount =
+    d.startNegotiation && account
+      ? (JSON.parse(JSON.stringify(account)) as unknown)
+      : account
   const sameAccount = () =>
     attempt === mine &&
     d.session.state.status === 'ready' &&
@@ -515,6 +528,11 @@ export async function startMessaging(): Promise<void> {
         polling: d.startPolling({ wallet: handle }),
         reconcile: d.startReconcile({ wallet: handle }),
       }
+      live.negotiation = d.startNegotiation?.({
+        wallet,
+        revision,
+        account: negotiationAccount,
+      })
       setDirectoryLookup(address => found.lookup(address))
       failures = 0
       state.status = 'ready'

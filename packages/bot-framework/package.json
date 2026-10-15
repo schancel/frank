@@ -15,6 +15,7 @@
     "@frank/directory-admission": "*",
     "@frank/domain-roots": "*",
     "@frank/nakamoto": "*",
+    "@frank/swap-protocol": "*",
     "@frank/wallet": "*",
     "axios": "^0.24.0",
     "ethers": "^6.17.0",

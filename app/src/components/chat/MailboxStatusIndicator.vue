@@ -1,4 +1,5 @@
 <template>
+  <negotiation-recovery-indicator />
   <span v-if="message" class="mailbox-status-indicator">
     <q-btn
       flat
@@ -21,6 +22,7 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
+import NegotiationRecoveryIndicator from './NegotiationRecoveryIndicator.vue'
 
 import { useMailboxStatusStore } from '../../stores/mailbox-status'
 import { messagingState } from '../../utils/messaging-state'
@@ -35,6 +37,7 @@ const keyByState = {
 /** A compact status beside the sidebar balance. The mailbox poller retains ownership of retry. */
 export default defineComponent({
   name: 'MailboxStatusIndicator',
+  components: { NegotiationRecoveryIndicator },
   setup() {
     return { status: useMailboxStatusStore(), messaging: messagingState }
   },

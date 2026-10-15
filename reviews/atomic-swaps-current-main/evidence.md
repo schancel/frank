@@ -62,3 +62,19 @@ All following gates completed naturally with exit code 0:
 Logs: `/tmp/frank-current-main-combined-typecheck.log`, `/tmp/frank-current-main-combined-ecash.log`, `/tmp/frank-current-main-combined-session.log`, `/tmp/frank-current-main-combined-p1.log`.
 
 The retained candidate-local dependency overlays were reused. No source changed during validation. The native/threshold/contract/Nakamoto paths listed above have no differences from the previously tested `49b09a04`; unchanged base/native/cryptographic gates were not repeated. Q2 awaits I/O but does not qualify the localStorage adapter as strictly durable; Q3 adapter/lifecycle work remains separate. P1 supplies a generic carrier and transport evidence, not atomic-swap runtime activation. No push, merge, deployment or funded execution occurred.
+
+## Combined Q3a and H0 qualification
+
+Exact tested candidate: `a4183bf770af4e491309875ee46e451b57bedff5`, before this evidence-only addition. All 13 files introduced by integrated Q3a `f67de4f3ba659e2bef82d5da9827345217a9cc01` match reviewed source `836f96d8` byte for byte. All 11 files changed by integrated H0 `a4183bf7` match reviewed source `6958f1931059392f9d811aba32557f8388a226f6` byte for byte. Their source scopes are disjoint.
+
+| Command from repository root | Exact-tip result |
+| --- | --- |
+| `yarn typecheck:fast` | 23/23 configured projects pass |
+| `cd packages/wallet && ../../node_modules/.bin/jest storage/ecash-operations/native.jest.test.ts storage/level-durability.jest.test.ts --runInBand` | 2 suites, 8 tests pass using actual native Level |
+| `node packages/wallet/storage/ecash-operations/browser-test.mjs` | Actual Chrome 155.0.8059.40 passes all phases, process restart and two independent-page updates |
+| `yarn --cwd app test:custody` | Stage/activate/process-reopen pass; 364 regression assertions; zero network/log effects |
+| `yarn --cwd packages/account-vault test` | Create/process-reopen with exact root bytes pass; 269 regression assertions |
+| `yarn --cwd packages/account-vault test:node` | 5/5 tests pass |
+| `git diff --check` | Pass |
+
+Every gate exited naturally with code 0. Logs use `/tmp/frank-current-main-h0-q3a-{typecheck,native,browser,custody,vault,node}.log`. Retained candidate-local dependency overlays were reused and preserved. No source changes or unrelated crypto/native-chain reruns occurred. Adapter qualification does not install a production host/default or solve lifecycle/retention/reset policy; those successor boundaries remain separate. No push, merge, deployment or funded activity occurred.

@@ -243,6 +243,7 @@ import { renderMarkdown } from '../../utils/markdown'
 import AMessageReplies from './ForumMessageReplies.vue'
 import GameAnnouncementCard from 'components/topic/GameAnnouncementCard.vue'
 import AccountBadge from 'src/components/contacts/AccountBadge.vue'
+import { authorDisplayProfile } from 'src/utils/author-display-profile'
 import { parseGameAnnouncement } from 'src/utils/game-announcement'
 
 import { MessageWithReplies, useForumStore } from 'src/stores/forum'
@@ -440,11 +441,13 @@ export default defineComponent({
       const msg = message ?? this.message
       if (!msg) return 'Anonymous'
       if (this.isAuthorMe(msg)) {
-        const profile = this.myProfile?.profile
-        return profile?.name || profile?.username || 'You'
+        const profile = authorDisplayProfile(this.myProfile?.profile)
+        return profile.name || profile?.username || 'You'
       }
       if (msg.poster && this.haveContact(msg.poster)) {
-        const contactProfile = this.getContactProfile(msg.poster)
+        const contactProfile = authorDisplayProfile(
+          this.getContactProfile(msg.poster),
+        )
         if (contactProfile?.name) {
           return contactProfile.name
         }
@@ -471,7 +474,7 @@ export default defineComponent({
       if (
         msg.poster &&
         this.haveContact(msg.poster) &&
-        this.getContactProfile(msg.poster)?.name
+        authorDisplayProfile(this.getContactProfile(msg.poster)).name
       ) {
         return false
       }
@@ -495,10 +498,10 @@ export default defineComponent({
     authorProfile(message?: MessageWithReplies) {
       const msg = message ?? this.message
       if (this.isAuthorMe(msg)) {
-        return this.myProfile?.profile
+        return authorDisplayProfile(this.myProfile?.profile)
       }
       if (msg?.poster && this.haveContact(msg.poster)) {
-        return this.getContactProfile(msg.poster)
+        return authorDisplayProfile(this.getContactProfile(msg.poster))
       }
       return undefined
     },

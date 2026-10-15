@@ -43,7 +43,11 @@
 import { defineComponent, ref, computed, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 
-import { useTopicStore } from 'src/stores/topics'
+import {
+  topicDisplayAmount,
+  topicStoredAmount,
+  useTopicStore,
+} from 'src/stores/topics'
 
 export default defineComponent({
   props: {
@@ -71,13 +75,13 @@ export default defineComponent({
     })
 
     const updateModels = () => {
-      const threshold = topics.value[props.topic]?.threshold / 1_000_000
+      const threshold = topicDisplayAmount(topics.value[props.topic]?.threshold)
       filterModel.value =
         threshold === 0
           ? 0
           : Math.sign(threshold) * Math.log10(Math.abs(threshold))
 
-      const offering = topics.value[props.topic]?.offering / 1_000_000
+      const offering = topicDisplayAmount(topics.value[props.topic]?.offering)
       offeringModel.value =
         offering === 0
           ? 1
@@ -88,11 +92,11 @@ export default defineComponent({
     updateModels()
 
     watch(transformedFilter, newValue => {
-      topicStore.topics[props.topic].threshold = newValue * 1_000_000
+      topicStore.topics[props.topic].threshold = topicStoredAmount(newValue)
     })
 
     watch(transformedOffering, newValue => {
-      topicStore.topics[props.topic].offering = newValue * 1_000_000
+      topicStore.topics[props.topic].offering = topicStoredAmount(newValue)
     })
 
     return {

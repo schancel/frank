@@ -238,7 +238,7 @@
           />
         </q-card-section>
 
-        <q-card-section class="col-12 q-pa-none q-pt-md" v-show="this.message">
+        <q-card-section class="col-12 q-pa-none q-pt-md" v-show="message">
           <div class="text-weight-bold text-caption">Message Preview</div>
           <q-card-section class="q-pa-none q-pt-xs">
             <span class="mdstyle" v-html="markedMessage" />
@@ -378,7 +378,9 @@ export default defineComponent({
   props: {},
   data() {
     const forum = useForumStore()
-    const parentDigest = this.$route.params.parentDigest as string
+    const routeParent = this.$route.params.parentDigest
+    const parentDigest =
+      typeof routeParent === 'string' ? routeParent : undefined
     const topLevelTopic = forum.selectedTopic
     return {
       offering: activeChain.toDisplayAmount(activeChain.defaultTopicVoteValue),

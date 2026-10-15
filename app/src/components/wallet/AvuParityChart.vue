@@ -508,9 +508,12 @@ const currentNote = computed(() => {
   }
   return parts.join(' ')
 })
-const priceSource = computed(
-  () => inputs.value?.series[tokenPriceSeries.value]?.source ?? '',
-)
+const priceSource = computed(() => {
+  const series = inputs.value?.series[tokenPriceSeries.value]
+  return series && 'source' in series && typeof series.source === 'string'
+    ? series.source
+    : ''
+})
 
 // ---- Lines ------------------------------------------------------------------------------
 

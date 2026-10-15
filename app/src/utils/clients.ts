@@ -1,7 +1,7 @@
 import assert from 'assert'
 import type RelayClient from '@frank/cashweb/relay'
 import type { Wallet } from '@frank/cashweb/legacy-wallet'
-import type { WalletHandle } from '@frank/wallet/chain'
+import type { NativeWalletHandle, WalletHandle } from '@frank/wallet/chain'
 import { messagingWallet } from './monad-identity-session'
 
 let wallet: Wallet | null = null
@@ -23,7 +23,7 @@ export function useRelayClient(newRelayClient?: RelayClient) {
 }
 
 /** The live typed wallet, available once this account's directory entry is published. */
-export function useMonadWallet(_newWallet?: WalletHandle): WalletHandle {
+export function useMonadWallet(_newWallet?: WalletHandle): NativeWalletHandle {
   const wallet = messagingWallet()
   if (!wallet)
     throw new Error(

@@ -329,7 +329,7 @@
           data-testid="swap-problem"
         >
           <q-icon name="error_outline" size="16px" class="q-mr-xs" />
-          <span>{{ $t(problem.key, problem.params) }}</span>
+          <span>{{ $t(problem.key, problem.params ?? {}) }}</span>
         </div>
 
         <div

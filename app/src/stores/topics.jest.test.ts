@@ -3,9 +3,19 @@ import { flushPromises } from '@vue/test-utils'
 import { createApp } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 
-import { useTopicStore } from './topics'
+import { topicDisplayAmount, topicStoredAmount, useTopicStore } from './topics'
 import { ForumMessage } from '@frank/wallet/forum-model'
 import { WalletHandle } from '@frank/wallet/chain'
+
+describe('topic amount text', () => {
+  it('reads a stored decimal string as the display amount and writes one back', () => {
+    expect(topicDisplayAmount('1000000')).toBe(1)
+    expect(topicDisplayAmount('0')).toBe(0)
+    expect(topicDisplayAmount(undefined)).toBeNaN()
+    expect(topicStoredAmount(1)).toBe('1000000')
+    expect(topicStoredAmount(0)).toBe('0')
+  })
+})
 
 jest.mock('src/accounts/session', () => ({
   accountStatus: { revision: 1, status: 'ready' },

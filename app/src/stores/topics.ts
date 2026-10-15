@@ -31,6 +31,17 @@ const defaultTopics = DEFAULT_TOPIC_NAMES.map(topic => ({
   messages: [],
 }))
 
+/** The drawer's slider reads base units as a display number. A missing amount stays NaN,
+ * the same result as dividing an absent value. */
+export function topicDisplayAmount(stored: string | undefined): number {
+  return Number(stored) / 1_000_000
+}
+
+/** The topic record stores base units as a decimal string. */
+export function topicStoredAmount(display: number): string {
+  return String(display * 1_000_000)
+}
+
 export type TopicData = {
   threshold: string
   offering: string

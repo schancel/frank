@@ -216,6 +216,16 @@ describe('AVU dollar reference details', () => {
     )
   })
 
+  test('base and arbitrum rates are not labeled as ethereum', () => {
+    const wrapper = mountPage()
+    const label = (asset: string) =>
+      wrapper.get(`[data-test="avu-rate-row-${asset}"]`).text()
+    expect(label('ethereum')).toContain('1 ETH')
+    expect(label('ethereum')).not.toMatch(/Base|Arbitrum/)
+    expect(label('base')).toContain('1 ETH (Base)')
+    expect(label('arbitrum')).toContain('1 ETH (Arbitrum)')
+  })
+
   test('plots both inverse energy valuations on one shared USD axis and keeps coin amounts unchanged', () => {
     const times = [NOW - 3600, NOW - 60]
     receive(

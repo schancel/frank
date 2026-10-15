@@ -134,13 +134,31 @@ describe('OfferSwapDialog', () => {
     const payload = emitted![0][0] as any
     expect(payload.type).toBe('swap-offer')
     expect(payload.offeredChain).toBe('monad-testnet')
-    expect(payload.offeredAsset).toBe('MON')
+    expect(payload.offeredAsset).toBe('MONT')
     expect(payload.offeredAmount).toBe('10.5')
     expect(payload.requestedChain).toBe('solana-devnet')
-    expect(payload.requestedAsset).toBe('SOL')
+    expect(payload.requestedAsset).toBe('dSOL')
     expect(payload.requestedAmount).toBe('1.25')
     expect(payload.status).toBe('pending')
     expect(payload.recipientAddress).toBe('0xBob')
     expect(payload.swapId).toHaveLength(32)
+    const offeredLabel = (wrapper.vm as any).chainOptions.find(
+      (option: { value: string }) => option.value === 'monad-testnet',
+    )
+    expect(offeredLabel.label).toBe('Monad Testnet (MONT)')
+  })
+
+  it('uses each selected chain unit as the offer asset', async () => {
+    const wrapper = mountDialog()
+    await wrapper.setData({
+      offeredChain: 'ethereum-mainnet',
+      offeredAmount: '2',
+      requestedChain: 'solana-mainnet',
+      requestedAmount: '3',
+    })
+    ;(wrapper.vm as any).offerSwap()
+    const payload = wrapper.emitted('offer')![0][0] as any
+    expect(payload.offeredAsset).toBe('ETH')
+    expect(payload.requestedAsset).toBe('SOL')
   })
 })

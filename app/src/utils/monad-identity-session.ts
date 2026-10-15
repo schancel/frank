@@ -315,8 +315,8 @@ export async function configureMessagingForTest(
 }
 
 /** The live wallet for direct messages, only while this account's entry is published. */
-export function messagingWallet(): WalletHandle | undefined {
-  return live ? (live.wallet as unknown as WalletHandle) : undefined
+export function messagingWallet(): NativeWalletHandle | undefined {
+  return live?.wallet
 }
 
 /**

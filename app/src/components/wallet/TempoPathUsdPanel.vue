@@ -256,16 +256,27 @@ function finishBusy(): void {
   for (const wake of idleWaiters) wake()
   idleWaiters = []
 }
+function includedObservation(
+  observation: TempoPathUsdOperation['observation'],
+): observation is Extract<
+  TempoPathUsdOperation['observation'],
+  { finalized: boolean }
+> {
+  return (
+    observation.state === 'included-success' ||
+    observation.state === 'included-revert' ||
+    observation.state === 'included-mismatch'
+  )
+}
+
 const unresolved = computed(
   () =>
     uncertain.value ||
-    operations.value.some(
-      row =>
-        row.observation.state === 'included-mismatch' ||
-        !row.observation.state.startsWith('included-') ||
-        (row.observation.state.startsWith('included-') &&
-          !row.observation.finalized),
-    ),
+    operations.value.some(row => {
+      const observation = row.observation
+      if (!includedObservation(observation)) return true
+      return observation.state === 'included-mismatch' || !observation.finalized
+    }),
 )
 
 function operationStatus(row: TempoPathUsdOperation): string {

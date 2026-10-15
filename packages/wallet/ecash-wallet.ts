@@ -322,8 +322,6 @@ export class EcashWallet implements NativeWalletHandle {
       chainIdentifier: this.chainIdentifier,
       address: this.primaryAddress,
     });
-    // A corrupt financial journal is observable before wallet activation.
-    this.loadLedger();
     const obligation = this.nativeAttemptStore.get(this.nativeAttemptKey);
     if (obligation?.rawTransactions !== undefined)
       this.preparationBackend().validateLegacyTransaction(obligation);
@@ -444,7 +442,8 @@ export class EcashWallet implements NativeWalletHandle {
         }),
       params.operationStore ?? defaultEcashOperationStore
     );
-    const ledger = wallet.loadLedger();
+    // Await journal validation before publishing the wallet; absent state stays in memory.
+    const ledger = await wallet.loadLedger();
     await wallet.restoreStealthReceipts();
     if (ledger.nextChangeIndex > 0) {
       wallet.preparationBackend().restoreChangeIndex(ledger.nextChangeIndex);
@@ -521,7 +520,7 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   private async restoreStealthReceipts(): Promise<void> {
-    for (const receipt of this.loadLedger().stealthReceipts ?? []) {
+    for (const receipt of (await this.loadLedger()).stealthReceipts ?? []) {
       const imported = await this.stealthBackend().importStealthDerivation(
         receipt.derivation,
         receipt
@@ -574,8 +573,8 @@ export class EcashWallet implements NativeWalletHandle {
       this.chainIdentifier,
       prefix
     );
-    const recorded = await this.exclusive(() => {
-      const ledger = this.loadLedger();
+    const recorded = await this.exclusive(async () => {
+      const ledger = await this.loadLedger();
       const receipts = ledger.stealthReceipts ?? [];
       for (const previous of receipts) {
         const outpoints = validateEcashStealthReceipt(
@@ -607,7 +606,7 @@ export class EcashWallet implements NativeWalletHandle {
           );
         }
       }
-      this.operationStore.put(this.nativeAttemptKey, {
+      await this.operationStore.put(this.nativeAttemptKey, {
         ...ledger,
         stealthReceipts: [...receipts, receipt],
       });
@@ -648,8 +647,8 @@ export class EcashWallet implements NativeWalletHandle {
     return true;
   }
 
-  getStealthReceipts(): ReadonlyArray<EcashStealthReceipt> {
-    return this.loadLedger().stealthReceipts ?? [];
+  async getStealthReceipts(): Promise<ReadonlyArray<EcashStealthReceipt>> {
+    return (await this.loadLedger()).stealthReceipts ?? [];
   }
 
   private preparationBackend(): EcashPreparationBackend {
@@ -668,8 +667,8 @@ export class EcashWallet implements NativeWalletHandle {
     return backend as EcashPreparationBackend;
   }
 
-  private loadLedger(): EcashOperationLedger {
-    const stored = this.operationStore.get(this.nativeAttemptKey);
+  private async loadLedger(): Promise<EcashOperationLedger> {
+    const stored = await this.operationStore.get(this.nativeAttemptKey);
     if (stored === undefined)
       return {
         version: 1,
@@ -757,8 +756,8 @@ export class EcashWallet implements NativeWalletHandle {
     return claims;
   }
 
-  getEcashOperations(): ReadonlyArray<EcashNativeOperation> {
-    return this.loadLedger().operations;
+  async getEcashOperations(): Promise<ReadonlyArray<EcashNativeOperation>> {
+    return (await this.loadLedger()).operations;
   }
 
   private transaction(operation: EcashNativeOperation): ChainTransaction {
@@ -783,15 +782,15 @@ export class EcashWallet implements NativeWalletHandle {
     operationId: string,
     change: (operation: EcashNativeOperation) => EcashNativeOperation
   ): Promise<EcashNativeOperation> {
-    return this.exclusive(() => {
-      const ledger = this.loadLedger();
+    return this.exclusive(async () => {
+      const ledger = await this.loadLedger();
       const current = ledger.operations.find(
         (operation) => operation.operationId === operationId
       );
       if (current === undefined) throw new Error("Unknown eCash operation");
       const updated = change(current);
       if (updated !== current)
-        this.operationStore.put(this.nativeAttemptKey, {
+        await this.operationStore.put(this.nativeAttemptKey, {
           ...ledger,
           operations: ledger.operations.map((operation) =>
             operation.operationId === operationId ? updated : operation
@@ -828,24 +827,26 @@ export class EcashWallet implements NativeWalletHandle {
       value: value.toString(),
       ...(maxFee === undefined ? {} : { maxFee: maxFee.toString() }),
     };
-    const existing = this.loadLedger().operations.find(
-      (operation) => operation.operationId === operationId
-    );
-    if (existing !== undefined) {
-      if (!this.sameIntent(existing.intent, intent))
+    const existing = await this.exclusive(async () => {
+      const operation = (await this.loadLedger()).operations.find(
+        (item) => item.operationId === operationId
+      );
+      if (operation === undefined) return undefined;
+      if (!this.sameIntent(operation.intent, intent))
         throw new Error("eCash operation id is bound to another intent");
-      if (existing.state === "released")
+      if (operation.state === "released")
         throw new Error("Released eCash operation cannot be reused");
-      return existing;
-    }
+      return operation;
+    });
+    if (existing !== undefined) return existing;
     const backend = this.preparationBackend();
-    backend.restoreChangeIndex(this.loadLedger().nextChangeIndex);
+    backend.restoreChangeIndex((await this.loadLedger()).nextChangeIndex);
     // Indexer waits occur outside the shared atomic selection section. A stale indexer cannot
     // make already claimed inputs selectable because claims are reloaded after this await.
     await this.restoreStealthReceipts();
     await this.backend.sync();
-    return this.exclusive(() => {
-      const ledger = this.loadLedger();
+    return this.exclusive(async () => {
+      const ledger = await this.loadLedger();
       const repeated = ledger.operations.find(
         (operation) => operation.operationId === operationId
       );
@@ -878,7 +879,7 @@ export class EcashWallet implements NativeWalletHandle {
         nextChangeIndex: construction.nextChangeIndex,
       };
       backend.validateNativeOperation(operation);
-      this.operationStore.put(this.nativeAttemptKey, {
+      await this.operationStore.put(this.nativeAttemptKey, {
         ...ledger,
         nextChangeIndex: Math.max(
           ledger.nextChangeIndex,
@@ -981,7 +982,7 @@ export class EcashWallet implements NativeWalletHandle {
   async reconcileNativeOperation(
     operationId: string
   ): Promise<EcashNativeOperation> {
-    const operation = this.loadLedger().operations.find(
+    const operation = (await this.loadLedger()).operations.find(
       (item) => item.operationId === operationId
     );
     if (operation === undefined) throw new Error("Unknown eCash operation");
@@ -1006,7 +1007,7 @@ export class EcashWallet implements NativeWalletHandle {
   async getReceiveAddress(): Promise<ChainAddress> {
     await this.restoreStealthReceipts();
     await this.backend.syncAndDiscoverAddresses();
-    const ledger = this.loadLedger();
+    const ledger = await this.loadLedger();
     if (ledger.nextChangeIndex > 0)
       this.preparationBackend().restoreChangeIndex(ledger.nextChangeIndex);
     return {
@@ -1024,7 +1025,7 @@ export class EcashWallet implements NativeWalletHandle {
     const observation = this.balanceObservation;
     if (!observation) return undefined;
     const excluded = new Set(
-      this.exclusions(this.loadLedger()).map(
+      this.exclusions(await this.loadLedger()).map(
         (input) => `${input.txid}:${input.vout}`
       )
     );
@@ -1063,12 +1064,12 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   private async refreshBalance(): Promise<bigint> {
-    const floor = this.loadLedger().nextChangeIndex;
+    const floor = (await this.loadLedger()).nextChangeIndex;
     if (floor > 0) this.preparationBackend().restoreChangeIndex(floor);
     await this.restoreStealthReceipts();
     await this.backend.sync();
     return this.exclusive(async () => {
-      const ledger = this.loadLedger();
+      const ledger = await this.loadLedger();
       const excluded = this.exclusions(ledger);
       this.captureBalanceObservation();
       const observation = await this.getBalanceObservation();
@@ -1086,12 +1087,12 @@ export class EcashWallet implements NativeWalletHandle {
   }): Promise<bigint> {
     const recipient = params.recipient.raw;
     const value = params.value;
-    const floor = this.loadLedger().nextChangeIndex;
+    const floor = (await this.loadLedger()).nextChangeIndex;
     if (floor > 0) this.preparationBackend().restoreChangeIndex(floor);
     await this.restoreStealthReceipts();
     await this.backend.sync();
-    return this.exclusive(() => {
-      const ledger = this.loadLedger();
+    return this.exclusive(async () => {
+      const ledger = await this.loadLedger();
       return this.preparationBackend().buildNativeConstruction({
         recipient,
         value,
@@ -1106,7 +1107,7 @@ export class EcashWallet implements NativeWalletHandle {
   > {
     const old = this.nativeAttemptStore.get(this.nativeAttemptKey);
     if (old !== undefined) return old;
-    const operation = this.loadLedger().operations.find(
+    const operation = (await this.loadLedger()).operations.find(
       (item) => item.state === "exposed"
     );
     return operation === undefined ? undefined : this.transaction(operation);
@@ -1124,7 +1125,7 @@ export class EcashWallet implements NativeWalletHandle {
       await this.rebroadcast(old.rawTransactions);
       return old;
     }
-    const operation = this.loadLedger().operations.find(
+    const operation = (await this.loadLedger()).operations.find(
       (item) => item.state === "exposed"
     );
     if (operation === undefined)
@@ -1135,7 +1136,9 @@ export class EcashWallet implements NativeWalletHandle {
   /** Under the shared lock, transfer only confirmed spent-input evidence before retiring its
    * original journal owner. If persistence fails, the original obligation remains recoverable.
    */
-  private retireConfirmedPriorObligation(old: ChainTransaction): void {
+  private async retireConfirmedPriorObligation(
+    old: ChainTransaction
+  ): Promise<void> {
     const current = this.nativeAttemptStore.get(this.nativeAttemptKey);
     if (current === undefined || !sameChainTransaction(current, old)) return;
     const backend = this.preparationBackend();
@@ -1143,7 +1146,7 @@ export class EcashWallet implements NativeWalletHandle {
     const inputs = backend.inputReferencesFromTransactions(
       current.rawTransactions!
     );
-    const ledger = this.loadLedger();
+    const ledger = await this.loadLedger();
     const consumed = new Map(
       (ledger.consumedInputs ?? []).map((input) => [
         `${input.txid}:${input.vout}`,
@@ -1152,11 +1155,13 @@ export class EcashWallet implements NativeWalletHandle {
     );
     for (const input of inputs)
       consumed.set(`${input.txid}:${input.vout}`, input);
-    this.operationStore.put(this.nativeAttemptKey, {
+    await this.operationStore.put(this.nativeAttemptKey, {
       ...ledger,
       consumedInputs: [...consumed.values()],
     });
-    this.nativeAttemptStore.delete(this.nativeAttemptKey);
+    const retained = this.nativeAttemptStore.get(this.nativeAttemptKey);
+    if (retained !== undefined && sameChainTransaction(retained, current))
+      this.nativeAttemptStore.delete(this.nativeAttemptKey);
   }
 
   private async finishPriorObligation(): Promise<void> {
@@ -1181,7 +1186,7 @@ export class EcashWallet implements NativeWalletHandle {
     await this.finishPriorObligation().catch((error) => {
       failures.push(error);
     });
-    for (const operation of this.loadLedger().operations) {
+    for (const operation of (await this.loadLedger()).operations) {
       if (
         (operation.state === "exposed" || operation.state === "submitted") &&
         operation.exposure?.kind === "native-rpc"
@@ -1218,7 +1223,7 @@ export class EcashWallet implements NativeWalletHandle {
       await this.exclusive(() => this.retireConfirmedPriorObligation(old));
       return;
     }
-    const operation = this.loadLedger().operations.find((item) =>
+    const operation = (await this.loadLedger()).operations.find((item) =>
       sameChainTransaction(this.transaction(item), params.transaction)
     );
     if (operation === undefined)

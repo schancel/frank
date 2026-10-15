@@ -145,20 +145,20 @@ it(
   () =>
     run(`
   const tx = await payment(); const first = await make();
-  assert.equal(first.store.get(first.key), undefined);
+  assert.equal((await first.store.get(first.key)), undefined);
   const receipt = await first.wallet.recordStealthPayment(claim(tx));
   assert.equal(receipt.address, destination.address); assert.equal(receipt.publicKey, destination.publicKey);
   assert.equal(await first.wallet.getBalance(), 0n); // claims do not credit inventory
-  assert.equal(first.wallet.getStealthReceipts().length, 1);
+  assert.equal((await first.wallet.getStealthReceipts()).length, 1);
   assert.equal(first.sdk.utxos.length, 0);
-  const publicBytes = JSON.stringify(first.store.get(first.key));
+  const publicBytes = JSON.stringify((await first.store.get(first.key)));
   assert(!publicBytes.includes(Buffer.from(identitySecret).toString('hex')));
   const derived = stealthParentSecret(identitySecret, Buffer.from(destination.ephemeralPubKey, 'hex')).secret;
   assert(!publicBytes.includes(Buffer.from(derived).toString('hex'))); derived.fill(0);
   first.chronik.coins = [coin(tx)];
-  const before = JSON.stringify(first.store.get(first.key));
+  const before = JSON.stringify((await first.store.get(first.key)));
   const reopened = await make({ store: first.store, chronik: first.chronik });
-  assert.equal(JSON.stringify(first.store.get(first.key)), before); assert.equal(reopened.sent.length, 0);
+  assert.equal(JSON.stringify((await first.store.get(first.key))), before); assert.equal(reopened.sent.length, 0);
   assert.equal(await reopened.wallet.getBalance(), 7000n);
   assert.equal(await reopened.wallet.getBalance(), 7000n); assert.equal(reopened.sdk.utxos.length, 1);
   assert.equal(typeof reopened.wallet.withDerivedStealthSecret, 'undefined');
@@ -189,10 +189,10 @@ it(
   const note = { type: 'received-coin', origin: 'stealth', chainIdentifier: 'xec-mainnet', address: destination.address,
     ephemeralPubKey: destination.ephemeralPubKey, claimedAmountWei: '7000', transactions: [tx.rawTransaction], payloadDigest: 'ab'.repeat(32), timestamp: 100 };
   assert.equal(await host.wallet.recordReceivedCoin(note), true);
-  const saved = JSON.stringify(host.store.get(host.key));
+  const saved = JSON.stringify((await host.store.get(host.key)));
   assert.equal(await host.wallet.recordReceivedCoin(note), true);
   await host.wallet.recordStealthPayment(claim(tx, { payloadDigest: 'cd'.repeat(32) }));
-  assert.equal(JSON.stringify(host.store.get(host.key)), saved);
+  assert.equal(JSON.stringify((await host.store.get(host.key))), saved);
   const invalid = [
     { chainIdentifier: 'xec-testnet' }, { ephemeralPubKey: '00'.repeat(33) },
     { claimedAmount: 6999n }, { claimedAmount: 0n }, { claimedAmount: 1n << 64n },
@@ -204,9 +204,9 @@ it(
   for (const change of invalid) await assert.rejects(host.wallet.recordStealthPayment(claim(tx, change)));
   for (const change of [{ address: recipient.raw }, { transactions: undefined }, { payloadDigest: undefined }, { origin: 'stamp' }])
     await assert.rejects(host.wallet.recordReceivedCoin({ ...note, ...change }));
-  assert.equal(JSON.stringify(host.store.get(host.key)), saved);
+  assert.equal(JSON.stringify((await host.store.get(host.key))), saved);
   await host.wallet.recordStealthPayment(claim(second, { claimedAmount: 5000n, payloadDigest: 'ef'.repeat(32) }));
-  assert.equal(host.wallet.getStealthReceipts().length, 2);
+  assert.equal((await host.wallet.getStealthReceipts()).length, 2);
   host.chronik.coins = [coin(tx), coin(second, 5000n)];
   assert.equal(await host.wallet.getBalance(), 12000n); assert.equal(host.sdk.utxos.length, 2);
 `),
@@ -218,12 +218,12 @@ it(
   () =>
     run(`
   const tx = await payment(), first = await make(); await first.wallet.recordStealthPayment(claim(tx));
-  first.chronik.coins = [coin(tx)]; const saved = JSON.stringify(first.store.get(first.key));
+  first.chronik.coins = [coin(tx)]; const saved = JSON.stringify((await first.store.get(first.key)));
   for (const options of [ { missing: true }, { custody: custody({ identityPublicKey: destination.publicKey }) },
     { custody: custody({ secret: new Uint8Array(32).fill(56) }) }, { custody: custody({ expired: true }) } ]) {
     const queries = first.chronik.queries;
     await assert.rejects(make({ ...options, store: first.store, chronik: first.chronik }), /custody|identity|derivation/);
-    assert.equal(first.chronik.queries, queries); assert.equal(JSON.stringify(first.store.get(first.key)), saved);
+    assert.equal(first.chronik.queries, queries); assert.equal(JSON.stringify((await first.store.get(first.key))), saved);
   }
   const options = {}; const active = await make({ store: first.store, chronik: first.chronik, custody: custody(options) });
   options.expired = true; const queries = first.chronik.queries;
@@ -231,27 +231,33 @@ it(
   await assert.rejects(active.wallet.getReceiveAddress(), /expired/);
   assert.throws(() => active.backend.buildNativeConstruction({ recipient: recipient.raw, value: 1000n, excludedInputs: [] }), /expired/);
   assert.equal(first.chronik.queries, queries);
-  assert.equal(JSON.stringify(first.store.get(first.key)), saved);
+  assert.equal(JSON.stringify((await first.store.get(first.key))), saved);
   for (const mutate of [receipt => { receipt.claimedAmount = '7001'; }, receipt => { receipt.derivation.chainIdentifier = 'xec-testnet'; }]) {
     const corrupt = new InMemoryEcashOperationStore(), ledger = JSON.parse(saved);
-    mutate(ledger.stealthReceipts[0]); corrupt.put(first.key, ledger);
-    const original = JSON.stringify(corrupt.get(first.key));
+    mutate(ledger.stealthReceipts[0]); (await corrupt.put(first.key, ledger));
+    const original = JSON.stringify((await corrupt.get(first.key)));
     await assert.rejects(make({ store: corrupt, chronik: first.chronik }), /receipt|amount/);
-    assert.equal(first.chronik.queries, queries); assert.equal(JSON.stringify(corrupt.get(first.key)), original);
+    assert.equal(first.chronik.queries, queries); assert.equal(JSON.stringify((await corrupt.get(first.key))), original);
   }
 `),
   35_000
 );
 
 it(
-  "does not import keys before durable receipt persistence and rejects wrong indexer scripts",
+  "awaits receipt persistence before importing keys and rejects wrong indexer scripts",
   () =>
     run(`
   const tx = await payment(), host = await make(); const initialKeys = host.sdk.keypairs.size;
   const put = host.store.put.bind(host.store);
-  host.store.put = () => { throw new Error('receipt write failed'); };
-  await assert.rejects(host.wallet.recordStealthPayment(claim(tx)), /write failed/);
-  assert.equal(host.sdk.keypairs.size, initialKeys); assert.equal(host.store.get(host.key), undefined);
+  let rejectWrite, started;
+  const gate = new Promise((_, reject) => { rejectWrite = reject; });
+  const began = new Promise(resolve => { started = resolve; });
+  host.store.put = async () => { started(); await gate; };
+  const recording = assert.rejects(host.wallet.recordStealthPayment(claim(tx)), /write failed/);
+  await began; await new Promise(resolve => setImmediate(resolve));
+  assert.equal(host.sdk.keypairs.size, initialKeys); assert.equal((await host.store.get(host.key)), undefined);
+  rejectWrite(new Error('receipt write failed')); await recording;
+  assert.equal(host.sdk.keypairs.size, initialKeys); assert.equal((await host.store.get(host.key)), undefined);
   host.store.put = put; await host.wallet.recordStealthPayment(claim(tx));
   host.chronik.coins = [coin(tx)]; host.chronik.wrongScript = true;
   await assert.rejects(host.wallet.getBalance(), /wrong imported eCash script/);

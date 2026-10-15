@@ -29,13 +29,13 @@ const ledger: EcashOperationLedger = {
   ],
 };
 
-it("round-trips exact quantities and isolates returned aliases", () => {
+it("round-trips exact quantities and isolates returned aliases", async () => {
   const store = new InMemoryEcashOperationStore();
-  store.put("canonical-key", ledger);
-  const copy = store.get("canonical-key")!;
+  await store.put("canonical-key", ledger);
+  const copy = (await store.get("canonical-key"))!;
   expect(copy).toEqual(ledger);
   (copy.operations as unknown[]).length = 0;
-  expect(store.get("canonical-key")).toEqual(ledger);
+  expect(await store.get("canonical-key")).toEqual(ledger);
 });
 
 it.each([
@@ -90,7 +90,7 @@ it.each([
   expect(() => parseEcashOperationLedger(JSON.stringify(value))).toThrow();
 });
 
-it("opens absent browser state without writes and propagates persistence and corruption failures", () => {
+it("opens absent browser state without writes and propagates persistence and corruption failures", async () => {
   const beforeWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const beforeStorage = Object.getOwnPropertyDescriptor(
     globalThis,
@@ -113,22 +113,22 @@ it("opens absent browser state without writes and propagates persistence and cor
       configurable: true,
     });
     const store = new BrowserEcashOperationStore();
-    expect(store.get("bitcoin:xec-mainnet:wallet")).toBeUndefined();
+    expect(await store.get("bitcoin:xec-mainnet:wallet")).toBeUndefined();
     expect(storage.setItem).not.toHaveBeenCalled();
-    store.put("bitcoin:xec-mainnet:wallet", ledger);
+    await store.put("bitcoin:xec-mainnet:wallet", ledger);
     expect(storage.setItem.mock.calls[0][0]).toBe(
       "frank:ecash-operations:v1:bitcoin:xec-mainnet:wallet"
     );
-    expect(store.get("bitcoin:xec-mainnet:wallet")).toEqual(ledger);
-    expect(store.get("bitcoin:xec-testnet:wallet")).toBeUndefined();
+    expect(await store.get("bitcoin:xec-mainnet:wallet")).toEqual(ledger);
+    expect(await store.get("bitcoin:xec-testnet:wallet")).toBeUndefined();
     rows.set("frank:ecash-operations:v1:bitcoin:xec-mainnet:wallet", "broken");
-    expect(() => store.get("bitcoin:xec-mainnet:wallet")).toThrow();
+    await expect(store.get("bitcoin:xec-mainnet:wallet")).rejects.toThrow();
     storage.setItem.mockImplementation(() => {
       throw new Error("quota");
     });
-    expect(() => store.put("bitcoin:xec-mainnet:wallet", ledger)).toThrow(
-      "quota"
-    );
+    await expect(
+      store.put("bitcoin:xec-mainnet:wallet", ledger)
+    ).rejects.toThrow("quota");
   } finally {
     if (beforeWindow) Object.defineProperty(globalThis, "window", beforeWindow);
     else Reflect.deleteProperty(globalThis, "window");

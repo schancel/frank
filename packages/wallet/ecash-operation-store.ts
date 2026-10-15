@@ -66,9 +66,14 @@ export interface EcashOperationLedger {
 
 export interface EcashOperationStore {
   readonly coordinationScope: "single-realm" | "cross-process";
-  get(walletKey: string): EcashOperationLedger | undefined;
-  /** Must complete durably or throw. No volatile fallback is permitted. */
-  put(walletKey: string, ledger: EcashOperationLedger): void;
+  /** Return committed state, or reject while a preceding failed write remains uncertain.
+   * Volatile visibility is insufficient evidence of durability; a committed write whose
+   * acknowledgment was lost may be reread. */
+  get(walletKey: string): Promise<EcashOperationLedger | undefined>;
+  /** Must complete durably or throw. No volatile fallback is permitted. A rejection may follow
+   * a committed write: reread the original operation rather than treating failure as a released
+   * claim. Await the commit barrier before external exposure. */
+  put(walletKey: string, ledger: EcashOperationLedger): Promise<void>;
 }
 
 const hash = (value: unknown): value is string =>
@@ -221,12 +226,12 @@ export class InMemoryEcashOperationStore implements EcashOperationStore {
   readonly coordinationScope = "single-realm" as const;
   private readonly records = new Map<string, string>();
 
-  get(key: string): EcashOperationLedger | undefined {
+  async get(key: string): Promise<EcashOperationLedger | undefined> {
     const value = this.records.get(key);
     return value === undefined ? undefined : parseEcashOperationLedger(value);
   }
 
-  put(key: string, ledger: EcashOperationLedger): void {
+  async put(key: string, ledger: EcashOperationLedger): Promise<void> {
     const value = JSON.stringify(ledger);
     parseEcashOperationLedger(value);
     this.records.set(key, value);
@@ -253,14 +258,14 @@ export class BrowserEcashOperationStore implements EcashOperationStore {
     }
   }
 
-  get(key: string): EcashOperationLedger | undefined {
+  async get(key: string): Promise<EcashOperationLedger | undefined> {
     const storage = this.storage();
     if (storage === undefined) return undefined;
     const value = storage.getItem(this.prefix + key);
     return value === null ? undefined : parseEcashOperationLedger(value);
   }
 
-  put(key: string, ledger: EcashOperationLedger): void {
+  async put(key: string, ledger: EcashOperationLedger): Promise<void> {
     const storage = this.storage();
     if (storage === undefined)
       throw new Error("eCash operation persistence is unavailable");

@@ -373,6 +373,7 @@ pub(crate) mod tests {
     use bitcoinsuite_core::{ecc::Ecc, Hashed, Sha256};
     use cashweb_payload::proto::signed_payload::SignatureScheme;
     use pretty_assertions::assert_eq;
+    use rocksdb::IteratorMode;
 
     use super::*;
 
@@ -625,6 +626,287 @@ pub(crate) mod tests {
         )?;
         assert_eq!(names.claim(&record, NOW_MS, false)?, Err(Reserved));
         assert_eq!(names.get("postmaster")?, None);
+        Ok(())
+    }
+
+    // Independent fixtures pin the durable CF/key allocation and JSON field order.
+    fn raw_name(name: &str) -> Vec<u8> {
+        let mut key = vec![b'n'];
+        key.extend_from_slice(name.as_bytes());
+        key
+    }
+
+    fn raw_address(address: &[u8; 20]) -> Vec<u8> {
+        let mut key = vec![b'a'];
+        key.extend_from_slice(address);
+        key
+    }
+
+    fn frozen_record(record: &UsernameRecord, accepted_ms: u64) -> Vec<u8> {
+        format!(
+            "{{\"subject\":\"{}\",\"address\":\"{}\",\"issued_ms\":{},\"accepted_ms\":{},\"claim\":\"{}\"}}",
+            hex::encode(record.subject), hex::encode(record.address), record.issued_ms,
+            accepted_ms, hex::encode(&record.claim),
+        ).into_bytes()
+    }
+
+    fn raw_rows(db: &Db) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        db.rocksdb()
+            .iterator_cf(
+                db.rocksdb().cf_handle("directory_usernames").unwrap(),
+                IteratorMode::Start,
+            )
+            .map(|row| Ok(row.map(|(k, v)| (k.to_vec(), v.to_vec()))?))
+            .collect()
+    }
+
+    fn raw_put(db: &Db, key: Vec<u8>, value: &[u8]) -> Result<()> {
+        db.rocksdb().put_cf(
+            db.rocksdb().cf_handle("directory_usernames").unwrap(),
+            key,
+            value,
+        )?;
+        Ok(())
+    }
+
+    fn expected_rows(mut rows: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows
+    }
+
+    #[test]
+    fn raw_layout_and_reopen_preserve_complete_reserved_replacement() -> Result<()> {
+        let dir = tempdir::TempDir::new("usernames-frozen-layout")?;
+        let path = dir.path().join("db.rocksdb");
+        let alice = verified(1, "alice", NOW_MS);
+        let bob = verified(2, "bobby", NOW_MS + 1);
+        assert_eq!(
+            claim_text(NETWORK, "alice", NOW_MS),
+            format!("frank-username-claim-v1\nmonad-testnet\nalice\n{NOW_MS}")
+        );
+        let initial = expected_rows(vec![
+            (raw_name("alice"), frozen_record(&alice, NOW_MS + 5)),
+            (raw_address(&alice.address), b"alice".to_vec()),
+            (raw_name("bobby"), frozen_record(&bob, NOW_MS + 6)),
+            (raw_address(&bob.address), b"bobby".to_vec()),
+        ]);
+        {
+            let db = Db::open(&path)?;
+            let names = db.directory_usernames();
+            names.claim(&alice, NOW_MS + 5, false)?.unwrap();
+            names.claim(&bob, NOW_MS + 6, false)?.unwrap();
+            assert_eq!(raw_rows(&db)?, initial);
+        }
+        let replacement = verified(2, "alice", NOW_MS + 2);
+        let final_rows = expected_rows(vec![
+            (raw_name("alice"), frozen_record(&replacement, NOW_MS + 99)),
+            (raw_address(&bob.address), b"alice".to_vec()),
+        ]);
+        {
+            let db = Db::open(&path)?;
+            assert_eq!(raw_rows(&db)?, initial);
+            let names = db.directory_usernames();
+            assert_eq!(
+                names.claim(&replacement, NOW_MS + 99, true)?,
+                Ok(ClaimOutcome::Claimed)
+            );
+            // Both the displaced holder's reverse row and the claimant's former name disappear.
+            assert_eq!(raw_rows(&db)?, final_rows);
+        }
+        let db = Db::open(&path)?;
+        assert_eq!(raw_rows(&db)?, final_rows);
+        let names = db.directory_usernames();
+        assert_eq!(names.of_address(&alice.address)?, None);
+        assert_eq!(names.get("bobby")?, None);
+        let stored = names.of_address(&bob.address)?.unwrap();
+        assert_eq!(stored.username, "alice");
+        assert_eq!(stored.claim, replacement.claim);
+        assert_eq!(stored.accepted_ms, NOW_MS + 99);
+        Ok(())
+    }
+
+    #[test]
+    fn refused_or_corrupt_reserved_replacements_never_publish_staged_deletions() -> Result<()> {
+        let (_dir, db) = open();
+        let names = db.directory_usernames();
+        let alice = verified(1, "alice", NOW_MS + 10);
+        let bob = verified(2, "bobby", NOW_MS + 20);
+        names.claim(&alice, NOW_MS + 30, false)?.unwrap();
+        names.claim(&bob, NOW_MS + 31, false)?.unwrap();
+        let before = raw_rows(&db)?;
+        // A reserved takeover stages the displaced holder's reverse deletion before discovering
+        // the claimant's stale prior name. No part of that staged batch may become durable.
+        for issued in [NOW_MS + 19, NOW_MS + 20] {
+            assert_eq!(
+                names.claim(&verified(2, "alice", issued), NOW_MS + 40, true)?,
+                Err(Stale)
+            );
+            assert_eq!(raw_rows(&db)?, before);
+        }
+        let fresh = verified(2, "alice", NOW_MS + 21);
+        raw_put(&db, raw_address(&bob.address), &[0xff])?;
+        let corrupt_reverse = raw_rows(&db)?;
+        // Taken is decided before the claimant's malformed reverse row is read.
+        assert_eq!(names.claim(&fresh, NOW_MS + 41, false)?, Err(Taken));
+        assert!(names.claim(&fresh, NOW_MS + 41, true).is_err());
+        assert_eq!(raw_rows(&db)?, corrupt_reverse);
+        raw_put(&db, raw_address(&bob.address), b"bobby")?;
+        raw_put(&db, raw_name("bobby"), b"not JSON")?;
+        let corrupt_prior = raw_rows(&db)?;
+        assert!(names.claim(&fresh, NOW_MS + 42, true).is_err());
+        assert_eq!(raw_rows(&db)?, corrupt_prior);
+        // Operational refusal also precedes reading a corrupt record with that reserved name.
+        raw_put(&db, raw_name("postmaster"), b"not JSON")?;
+        let operational = raw_rows(&db)?;
+        assert_eq!(
+            names.claim(&verified(3, "postmaster", NOW_MS), NOW_MS, true)?,
+            Err(Reserved)
+        );
+        assert_eq!(raw_rows(&db)?, operational);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_reverse_rows_keep_existing_error_noop_and_dangling_behavior() -> Result<()> {
+        let (dir, db) = open();
+        let names = db.directory_usernames();
+        let alice = verified(1, "alice", NOW_MS);
+        let next = verified(1, "alice2", NOW_MS + 1);
+        names.claim(&alice, NOW_MS + 5, false)?.unwrap();
+        raw_put(&db, raw_address(&alice.address), &[0xff])?;
+        let corrupt = raw_rows(&db)?;
+        assert!(names.of_address(&alice.address).is_err());
+        // A same-holder no-op does not read, repair or replace the malformed reverse value.
+        assert_eq!(
+            names.claim(&alice, NOW_MS + 8, false)?,
+            Ok(ClaimOutcome::Unchanged)
+        );
+        assert!(names.claim(&next, NOW_MS + 9, false).is_err());
+        assert_eq!(raw_rows(&db)?, corrupt);
+        raw_put(&db, raw_address(&alice.address), b"missing")?;
+        assert_eq!(names.of_address(&alice.address)?, None);
+        names.claim(&next, NOW_MS + 10, false)?.unwrap();
+        // Pin the observed dangling-index limitation; this is not authority to repair it here.
+        assert_eq!(
+            raw_rows(&db)?,
+            expected_rows(vec![
+                (raw_name("alice"), frozen_record(&alice, NOW_MS + 5)),
+                (raw_name("alice2"), frozen_record(&next, NOW_MS + 10)),
+                (raw_address(&alice.address), b"alice2".to_vec()),
+            ])
+        );
+        assert_eq!(
+            names.of_address(&alice.address)?.unwrap().username,
+            "alice2"
+        );
+        assert_eq!(names.get("alice")?.unwrap().subject, alice.subject);
+        let before_reopen = raw_rows(&db)?;
+        drop(names);
+        drop(db);
+        let reopened = Db::open(dir.path().join("db.rocksdb"))?;
+        assert_eq!(raw_rows(&reopened)?, before_reopen);
+        assert_eq!(
+            reopened
+                .directory_usernames()
+                .get("alice")?
+                .unwrap()
+                .subject,
+            alice.subject
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_same_account_renames_leave_one_pair_for_the_latest_claim() -> Result<()> {
+        let (_dir, db) = open();
+        let initial = verified(1, "initial", NOW_MS);
+        db.directory_usernames()
+            .claim(&initial, NOW_MS, false)?
+            .unwrap();
+        let claims: Vec<_> = (1..=8)
+            .map(|i| verified(1, &format!("rename{i:02}"), NOW_MS + i))
+            .collect();
+        let barrier = std::sync::Barrier::new(claims.len());
+        std::thread::scope(|scope| {
+            let attempts: Vec<_> = claims
+                .iter()
+                .map(|claim| {
+                    let db = &db;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        db.directory_usernames()
+                            .claim(claim, claim.issued_ms + 100, false)
+                            .unwrap()
+                    })
+                })
+                .collect();
+            let outcomes: Vec<_> = attempts
+                .into_iter()
+                .map(|attempt| attempt.join().unwrap())
+                .collect();
+            assert_eq!(outcomes.last(), Some(&Ok(ClaimOutcome::Claimed)));
+            assert!(outcomes
+                .iter()
+                .all(|outcome| matches!(outcome, Ok(ClaimOutcome::Claimed) | Err(Stale))));
+        });
+        let latest = claims.last().unwrap();
+        assert_eq!(
+            raw_rows(&db)?,
+            expected_rows(vec![
+                (
+                    raw_name(&latest.username),
+                    frozen_record(latest, latest.issued_ms + 100)
+                ),
+                (
+                    raw_address(&latest.address),
+                    latest.username.as_bytes().to_vec()
+                ),
+            ])
+        );
+        assert_eq!(
+            db.directory_usernames()
+                .of_address(&latest.address)?
+                .unwrap()
+                .username,
+            latest.username
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_limits_and_prefix_stop_before_decoding_following_corruption() -> Result<()> {
+        let (dir, db) = open();
+        let names = db.directory_usernames();
+        for i in 0..100 {
+            names
+                .claim(
+                    &verified(i + 1, &format!("user{i:03}"), NOW_MS),
+                    NOW_MS + 1,
+                    false,
+                )?
+                .unwrap();
+        }
+        raw_put(&db, raw_name("user100"), b"not JSON")?;
+        assert_eq!(names.search("user", usize::MAX)?.len(), 100);
+        assert_eq!(names.search("user099", 10)?.len(), 1);
+        assert!(names.search("user100", 0)?.is_empty());
+        assert!(names.search("user100", 1).is_err());
+        assert!(names.get("user100").is_err());
+        // At limit zero neither JSON nor UTF-8 is decoded, although the iterator is opened.
+        raw_put(&db, b"ninvalid\xff".to_vec(), b"not JSON")?;
+        assert!(names.search("invalid", 0)?.is_empty());
+        assert!(names.search("invalid", 1).is_err());
+        let malformed =
+            br#"{"subject":"zz","address":"00","issued_ms":1,"accepted_ms":2,"claim":"00"}"#;
+        raw_put(&db, raw_name("malformed"), malformed)?;
+        assert!(names.get("malformed").is_err());
+        let before_reopen = raw_rows(&db)?;
+        drop(names);
+        drop(db);
+        let reopened = Db::open(dir.path().join("db.rocksdb"))?;
+        assert_eq!(raw_rows(&reopened)?, before_reopen);
+        assert!(reopened.directory_usernames().get("malformed").is_err());
         Ok(())
     }
 }

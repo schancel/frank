@@ -94,6 +94,7 @@ import {
   directMessageNotAttempted,
 } from './active-chain'
 import type {
+  AuthenticatedMailboxRecord,
   ChainAddress,
   DirectMessageAttemptStatus,
   DirectMessagePaymentSummary,
@@ -2326,16 +2327,27 @@ export function paymentsToSelf<T extends { address: Uint8Array; childIndex: numb
   )
 }
 
-async function fetchSince(
+async function readMailbox(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['fetchSince']>[0],
-): Promise<DirectMessageReceived[]> {
+  authenticatedOnly = false,
+) {
+  if (!Number.isSafeInteger(params.sinceMs) || params.sinceMs < 0)
+    throw new Error('Canonical mailbox read has an invalid inclusive position')
+  let earliestIncomplete = Infinity
+  const authenticated: AuthenticatedMailboxRecord[] = []
   const directory = requireDirectory(owner)
   // Before any request: with no registry nothing is read, so nothing is consumed or dropped.
   const registry = requireMessageItems(owner)
   const incomplete = (timestampMs: number) => {
+    if (authenticatedOnly) {
+      earliestIncomplete = Math.min(earliestIncomplete, timestampMs)
+      return
+    }
     if (!params.onIncompleteTimestamp)
-      throw new Error(`Canonical mailbox read is incomplete at timestamp ${timestampMs}`)
+      throw new Error(
+        `Canonical mailbox read is incomplete at timestamp ${timestampMs}`,
+      )
     params.onIncompleteTimestamp(timestampMs)
   }
   const auth = mailboxAuth(owner, directory)
@@ -2370,6 +2382,11 @@ async function fetchSince(
         ...(cursor === undefined ? {} : { cursor }),
       })
     } catch (error) {
+      if (authenticatedOnly) {
+        if (pageIndex === 0) throw error
+        truncated = error as Error
+        break
+      }
       if (
         error instanceof MonadMailboxChallengeCapacityError ||
         (error as { status?: number })?.status === 429 ||
@@ -2397,7 +2414,13 @@ async function fetchSince(
     for (const rows of [page.records, page.unreadable ?? []]) {
       let previous = greatestTimestamp
       for (const row of rows) {
-        if (!Number.isSafeInteger(row.timestampMs) || row.timestampMs < 0)
+        if (
+          !Number.isSafeInteger(row.timestampMs) ||
+          row.timestampMs < 0 ||
+          (authenticatedOnly &&
+            (row.timestampMs < params.sinceMs ||
+              row.timestampMs === Number.MAX_SAFE_INTEGER))
+        )
           throw new Error('Canonical mailbox read has an invalid timestamp')
         if (previous !== undefined && row.timestampMs < previous)
           throw new Error('Canonical mailbox timestamps are out of order')
@@ -2426,6 +2449,7 @@ async function fetchSince(
   if (truncated) {
     params.onTruncated?.(truncated)
     if (
+      !authenticatedOnly &&
       !pages.some(page =>
         [...page.records, ...(page.unreadable ?? [])].some(row =>
           eligible(row.timestampMs),
@@ -2563,6 +2587,24 @@ async function fetchSince(
       } finally {
         roles.dispose()
       }
+      if (authenticatedOnly) {
+        authenticated.push({
+          chainIdentifier: directory.network,
+          senderPublicKey: fromHex(isOutbound ? owner.subject : peer.subject),
+          recipientPublicKey: fromHex(
+            isOutbound ? peer.subject : owner.subject,
+          ),
+          direction: isOutbound ? 'outbound' : 'incoming',
+          payloadDigest: digest,
+          receivedTime: record.timestampMs,
+          items,
+          ...(conversationIdStr === undefined
+            ? {}
+            : { conversationId: conversationIdStr }),
+          ...(messageIdStr === undefined ? {} : { messageId: messageIdStr }),
+        })
+        continue
+      }
       const paidHere = isOutbound
         ? deliveryTyped.payments
         : paymentsToSelf(
@@ -2621,7 +2663,22 @@ async function fetchSince(
       )
     }
   }
-  return received
+  const completedTimestamps = pages
+    .flatMap(page =>
+      [...page.records, ...(page.unreadable ?? [])].map(row => row.timestampMs),
+    )
+    .filter(timestamp => eligible(timestamp) && timestamp < earliestIncomplete)
+  return {
+    received,
+    records: authenticated.filter(
+      record => record.receivedTime < earliestIncomplete,
+    ),
+    resumeFromInclusive:
+      completedTimestamps.length === 0
+        ? params.sinceMs
+        : Math.max(...completedTimestamps) + 1,
+    truncated: truncated !== undefined,
+  }
 }
 
 /** The canonical implementation of the app-facing direct-message operations for one wallet.
@@ -2793,7 +2850,19 @@ export function canonicalDirectMessages(
       await account(owner, row => answered.has(row.digest))
     },
     fetchSince: (params: Parameters<DirectMessageClient['fetchSince']>[0]) =>
-      fetchSince(owner, params),
+      readMailbox(owner, params).then(result => result.received),
+    scanAuthenticatedMailbox: async (
+      params: Parameters<
+        NonNullable<DirectMessageClient['scanAuthenticatedMailbox']>
+      >[0],
+    ) => {
+      const { records, resumeFromInclusive, truncated } = await readMailbox(
+        owner,
+        { wallet: params.wallet, sinceMs: params.sinceMs },
+        true,
+      )
+      return { records, resumeFromInclusive, truncated }
+    },
     subscribeMailboxStream: (params: {
       wallet: WalletHandle
       onRecord: (record: DirectMessageReceived) => void

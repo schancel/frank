@@ -1,3 +1,7 @@
+import { createNegotiationMessagePlugin } from '../../swap-protocol/src/message-plugin'
+import { buildNegotiationOffer, TESTNET_NEGOTIATION_POLICY } from '../../swap-protocol/src/negotiation'
+import { encodeSignedSwapEvent } from '../../swap-protocol/src/index'
+import { encodeItemFrames } from '../message-item-plugins/wire'
 import { DefaultStampUnavailableError } from '../oracle/stamp-policy'
 import { ChainUnreachableError } from '../evm-block-watcher'
 import { EvmStampPayer } from '../evm-stamp-payer'
@@ -26,6 +30,7 @@ import {
   channelStateDigest,
   decodeDiceGamePayload,
   encodeDiceGamePayload,
+  encodePluginMessageItem,
   fromHex,
   parseFrame,
   recipientPayloadDigest,
@@ -2456,6 +2461,450 @@ describe('two typed wallets on the open directory', () => {
       mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
     await wallet.pool.flush()
   }
+
+  describe('authenticated original-envelope scan', () => {
+    let restorePageReaders: () => void
+    beforeEach(() => {
+      restorePageReaders = productionPageReaders()
+    })
+    afterEach(() => restorePageReaders())
+    const scan = (wallet = f.bob, sinceMs = 0) =>
+      f.chain.directMessages.scanAuthenticatedMailbox!({ wallet, sinceMs })
+    async function sent() {
+      await online('alice', f.alice)
+      await online('bob', f.bob)
+      return f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        conversationId: '01010101-0101-0101-0101-010101010101',
+        items: text('original'),
+        messageId: '02020202-0202-0202-0202-020202020202',
+        stampValue: 0n,
+      })
+    }
+    it.each(['in', 'out'] as const)(
+      'retains authenticated original identities (%s) without wallet effects',
+      async (direction) => {
+        const result = await sent()
+        const wallet = direction === 'in' ? f.bob : f.alice
+        const before = wallet.pool.records()
+        const dispatch = jest.spyOn(syncDispatch, 'applyWalletSyncItem')
+        const note = jest.spyOn(wallet, 'noteReceivedCoins')
+        const requests = f.requests.length
+        try {
+          mailboxPage.mockResolvedValueOnce({
+            records: [
+              direction === 'in' ? inboxRecord(0, 7) : outboundRecord(0, 7),
+            ],
+          })
+          const read = await scan(wallet)
+          expect(read).toEqual({
+            records: [
+              expect.objectContaining({
+                chainIdentifier: 'monad-testnet',
+                senderPublicKey: new Uint8Array(
+                  f.alice.identity.compressedPubKey,
+                ),
+                recipientPublicKey: new Uint8Array(
+                  f.bob.identity.compressedPubKey,
+                ),
+                direction: direction === 'in' ? 'incoming' : 'outbound',
+                conversationId: '01010101-0101-0101-0101-010101010101',
+                messageId: '02020202-0202-0202-0202-020202020202',
+                payloadDigest: result.payloadDigest,
+                receivedTime: 7,
+                items: text('original'),
+              }),
+            ],
+            resumeFromInclusive: 8,
+            truncated: false,
+          })
+          expect(dispatch).not.toHaveBeenCalled()
+          expect(note).not.toHaveBeenCalled()
+          expect(wallet.pool.records()).toEqual(before)
+          expect(f.requests).toHaveLength(requests)
+          expect(mockWalletBroadcasts).toEqual([])
+        } finally {
+          dispatch.mockRestore()
+          note.mockRestore()
+        }
+      },
+    )
+    it('opens direct negotiation bytes in both directions but leaves nested outbox items inert', async () => {
+      await online('alice', f.alice)
+      await online('bob', f.bob)
+      installedMessageItemRegistry(f.alice)!.registerApplication(
+        createNegotiationMessagePlugin(TESTNET_NEGOTIATION_POLICY),
+      )
+      const offer = await buildNegotiationOffer(
+        {
+          swapId: new Uint8Array(32).fill(1),
+          conversationId: new Uint8Array(16).fill(2),
+          parties: [
+            f.alice.identity.compressedPubKey,
+            f.bob.identity.compressedPubKey,
+          ],
+          policy: TESTNET_NEGOTIATION_POLICY,
+        },
+        { xecPrincipal: 12345n, evmPrincipal: 10n ** 18n, expiry: 2000000000n },
+        async (digest) => f.alice.identity.signHash(Buffer.from(digest)),
+      )
+      if (!offer.ok) throw new Error(offer.error.code)
+      const event = encodeSignedSwapEvent(offer.value)
+      if (!event.ok) throw new Error(event.error.code)
+      const items = [
+        {
+          type: 'application' as const,
+          itemType: 'swap-negotiation-v1',
+          value: { eventHex: toHex(event.value) },
+        },
+      ]
+      const original = await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items,
+        stampValue: 0n,
+      })
+      mailboxPage.mockResolvedValueOnce({ records: [inboxRecord(0, 5)] })
+      const unsupported = await scan(f.bob)
+      expect(unsupported.records[0].items[0]).toMatchObject({
+        type: 'unsupported',
+        itemType: 'swap-negotiation-v1',
+      })
+      expect(unsupported.resumeFromInclusive).toBe(6)
+      installedMessageItemRegistry(f.bob)!.registerApplication(
+        createNegotiationMessagePlugin(TESTNET_NEGOTIATION_POLICY),
+      )
+      for (const [wallet, record] of [
+        [f.bob, inboxRecord(0, 5)],
+        [f.alice, outboundRecord(0, 5)],
+      ] as const) {
+        mailboxPage.mockResolvedValueOnce({ records: [record] })
+        expect((await scan(wallet)).records[0].items).toEqual(items)
+      }
+      const index = f.requests.length
+      const noteItems = [
+        {
+          type: 'outbox-message' as const,
+          payloadDigest: original.payloadDigest,
+          messageId: '03030303-0303-0303-0303-030303030303',
+          recipientAddress: f.bob.identity.address.raw,
+          sentAt: 5,
+          itemFrames: encodeItemFrames(
+            installedMessageItemRegistry(f.alice)!,
+            items,
+          ).map(toHex),
+        },
+      ]
+      const note = await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.alice.identity.address,
+        items: noteItems,
+        stampValue: 0n,
+      })
+      mailboxPage.mockResolvedValueOnce({ records: [inboxRecord(index, 9)] })
+      const scanned = await scan(f.alice)
+      expect(scanned.records[0].items).toEqual(noteItems)
+      expect(scanned.records[0].payloadDigest).toBe(note.payloadDigest)
+      expect(scanned.records[0].messageId).not.toBe(noteItems[0].messageId)
+      // The ordinary consumer still deliberately reconstructs the original presentation.
+      mailboxPage.mockResolvedValueOnce({ records: [inboxRecord(index, 9)] })
+      const ordinary = await f.chain.directMessages.fetchSince({
+        wallet: f.alice,
+        sinceMs: 0,
+      })
+      expect(ordinary[0].items).toEqual(items)
+      expect(ordinary[0].payloadDigest).toBe(original.payloadDigest)
+    })
+    it('keeps malformed known negotiation inert and preserves an absent original conversation identity', async () => {
+      await sent()
+      const aliceDirectory = await online('alice-raw', f.alice)
+      const bobDirectory = await online('bob-raw', f.bob)
+      installedMessageItemRegistry(f.bob)!.registerApplication(
+        createNegotiationMessagePlugin(TESTNET_NEGOTIATION_POLICY),
+      )
+      const senderCurrent = await aliceDirectory.selfCurrent()
+      const roles = createCanonicalMessageRoles(f.alice, senderCurrent)
+      // Deliberately build a peer's encrypted envelope below the outgoing plugin validation:
+      // valid enclosing frames, malformed feature bytes, and no optional conversation ID.
+      let sealed: ReturnType<typeof prepareDirectMessage>
+      try {
+        sealed = prepareDirectMessage({
+          network: 'monad-testnet',
+          senderCurrent,
+          recipientCurrent: await bobDirectory.selfCurrent(),
+          messageId: new Uint8Array(16).fill(9),
+          items: [
+            encodePluginMessageItem({
+              itemType: 'swap-negotiation-v1',
+              data: Uint8Array.of(0),
+            }),
+          ],
+          roles,
+        })
+      } finally {
+        roles.dispose()
+      }
+      const template = inboxRecord(0, 7)
+      const parsed = parseFrame(template.delivery)
+      if (parsed.kind !== 'parsed' || !(parsed.payload instanceof Map))
+        throw new Error('fixture')
+      const digest = recipientPayloadDigest('monad-testnet', sealed.payload)
+      const record = {
+        ...template,
+        context: sealed.context,
+        delivery: encodeFrame(
+          { typeId: 10, schemaVersion: 2, minReaderVersion: 1 },
+          new Map(parsed.payload)
+            .set(2n, sealed.payload)
+            .set(3n, digest)
+            .set(4n, []),
+        ),
+      }
+      mailboxPage.mockResolvedValueOnce({ records: [record] })
+      const read = await scan()
+      expect(read.records[0].items).toEqual([
+        expect.objectContaining({
+          type: 'unsupported',
+          reason: 'malformed',
+          itemType: 'swap-negotiation-v1',
+        }),
+      ])
+      expect(read.records[0]).not.toHaveProperty('conversationId')
+      expect(read.records[0].messageId).toBe(
+        '09090909-0909-0909-0909-090909090909',
+      )
+      expect(read.records[0].payloadDigest).toBe(toHex(digest))
+      expect(read.resumeFromInclusive).toBe(8)
+    })
+    it('does not run wallet effects for a decoded wallet-sync seam, alongside an ordinary read', async () => {
+      await sent()
+      // wallet-sync is NOT_CARRIED: inject only at the existing decoded-item seam. Encryption,
+      // authenticated opening and mailbox coverage remain real; this is not a wire fixture.
+      const registry = installedMessageItemRegistry(f.bob)!
+      const decode = registry.decodeItem.bind(registry)
+      const mixed = [
+        {
+          type: 'wallet-sync' as const,
+          direction: 'out' as const,
+          chainIdentifier: 'monad-testnet',
+          txHash: '33'.repeat(32),
+        },
+      ]
+      const decoder = jest
+        .spyOn(registry, 'decodeItem')
+        .mockImplementation((type, bytes, context) => {
+          const result = decode(type, bytes, context)
+          return type === 'text' ? { kind: 'item', item: mixed[0] } : result
+        })
+      const dispatch = jest.spyOn(syncDispatch, 'applyWalletSyncItem')
+      const before = f.bob.pool.records()
+      const requests = f.requests.length
+      try {
+        mailboxPage.mockResolvedValueOnce({ records: [inboxRecord(0, 7)] })
+        const read = await scan()
+        expect(read.records[0].items).toEqual(mixed)
+        expect(dispatch).not.toHaveBeenCalled()
+        expect(f.bob.pool.records()).toEqual(before)
+        expect(f.requests).toHaveLength(requests)
+      } finally {
+        decoder.mockRestore()
+        dispatch.mockRestore()
+      }
+      mailboxPage.mockResolvedValue({ records: [inboxRecord(0, 7)] })
+      const [scanned, ordinary] = await Promise.all([
+        scan(),
+        f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 0 }),
+      ])
+      expect(scanned.records[0].items).toEqual(ordinary[0].items)
+    })
+    it('decodes a supported encrypted stealth payment without discovering coins; ordinary fetch still discovers them', async () => {
+      await online('alice', f.alice)
+      await online('bob', f.bob)
+      const stealth = {
+        type: 'stealth' as const,
+        networkTag: 'MONT',
+        keyType: 1 as const,
+        ephemeralPubKey: '02' + '22'.repeat(32),
+        transactions: ['1234abcd'],
+        amount: 50000,
+      }
+      await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: [stealth],
+        stampValue: 0n,
+      })
+      const before = f.bob.getReceivedPayments!()
+      mailboxPage.mockResolvedValue({ records: [inboxRecord(0, 7)] })
+      expect((await scan()).records[0].items).toEqual([
+        { ...stealth, amountWei: '50000' },
+      ])
+      expect(f.bob.getReceivedPayments!()).toEqual(before)
+      await f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 0 })
+      expect(
+        f.bob.getReceivedPayments!().filter((coin) => coin.origin === 'stealth'),
+      ).toHaveLength(1)
+    })
+    it('never falls back to inbox-only coverage', async () => {
+      await sent()
+      inboxPage.mockClear()
+      mailboxPage.mockRejectedValueOnce(new Error('both-direction unavailable'))
+      await expect(scan()).rejects.toThrow('both-direction unavailable')
+      expect(inboxPage).not.toHaveBeenCalled()
+    })
+    it('uses terminal raw groups for coverage and does not advance an empty read', async () => {
+      await sent()
+      mailboxPage.mockResolvedValueOnce({
+        records: [],
+        unreadable: [{ submissionIdentity: 'bad', timestampMs: 9 }],
+      })
+      expect(await scan()).toEqual({
+        records: [],
+        resumeFromInclusive: 10,
+        truncated: false,
+      })
+      mailboxPage.mockResolvedValueOnce({ records: [] })
+      expect(await scan(f.bob, 10)).toEqual({
+        records: [],
+        resumeFromInclusive: 10,
+        truncated: false,
+      })
+    })
+    it('withholds the whole earliest incomplete group and every later record', async () => {
+      await sent()
+      const bobDirectory = await online('bob-again', f.bob)
+      const peerCurrent = bobDirectory.peerCurrent.bind(bobDirectory)
+      let calls = 0
+      installCanonicalDirectory(f.bob, {
+        ...bobDirectory,
+        fetch: f.fetch,
+        peerCurrent: async (params) =>
+          ++calls === 2 ? undefined : peerCurrent(params),
+      })
+      mailboxPage.mockResolvedValueOnce({
+        records: [
+          inboxRecord(0, 5),
+          inboxRecord(0, 7),
+          inboxRecord(0, 7),
+          inboxRecord(0, 9),
+        ],
+      })
+      const read = await scan()
+      expect(read.records.map((record) => record.receivedTime)).toEqual([5])
+      expect(read.resumeFromInclusive).toBe(6)
+    })
+    it('keeps the last cutoff group for retry and exposes an oversized group', async () => {
+      await sent()
+      for (let n = 0; n < 8; n++)
+        mailboxPage.mockResolvedValueOnce({
+          records: [inboxRecord(0, 5 + n)],
+          nextCursor: String(n),
+        })
+      const read = await scan()
+      expect(read.records.map((record) => record.receivedTime)).toEqual([
+        5, 6, 7, 8, 9, 10, 11,
+      ])
+      expect(read.resumeFromInclusive).toBe(12)
+      expect(read.truncated).toBe(true)
+      for (let n = 0; n < 8; n++)
+        mailboxPage.mockResolvedValueOnce({
+          records: [inboxRecord(0, 5)],
+          nextCursor: String(n),
+        })
+      expect(await scan()).toEqual({
+        records: [],
+        resumeFromInclusive: 0,
+        truncated: true,
+      })
+    })
+    it('reports a later page error as a cutoff without certifying the last timestamp group', async () => {
+      await sent()
+      mailboxPage.mockResolvedValueOnce({
+        records: [inboxRecord(0, 5), inboxRecord(0, 9)],
+        nextCursor: 'next',
+      })
+      mailboxPage.mockRejectedValueOnce(new Error('page unavailable'))
+      inboxPage.mockClear()
+      const read = await scan()
+      expect(read.records.map((record) => record.receivedTime)).toEqual([5])
+      expect(read.resumeFromInclusive).toBe(6)
+      expect(read.truncated).toBe(true)
+      expect(inboxPage).not.toHaveBeenCalled()
+    })
+    it('rejects unsafe positions and raw timestamp overflow', async () => {
+      await sent()
+      await expect(scan(f.bob, -1)).rejects.toThrow('invalid inclusive position')
+      mailboxPage.mockResolvedValueOnce({
+        records: [inboxRecord(0, Number.MAX_SAFE_INTEGER)],
+      })
+      await expect(scan()).rejects.toThrow('invalid timestamp')
+    })
+    it('rejects a foreign canonical chain before reading the mailbox', async () => {
+      await sent()
+      const other = createEvmChain({
+        ...f.config,
+        chainIdentifier: 'monad-mainnet',
+        networkId: 'monad-mainnet',
+        rpcChain: 'monad-mainnet',
+        networkTag: 'MON1',
+        chainId: 143,
+      })
+      mailboxPage.mockClear()
+      await expect(
+        other.directMessages.scanAuthenticatedMailbox!({
+          wallet: f.bob,
+          sinceMs: 0,
+        }),
+      ).rejects.toThrow(/network|chain affinity/)
+      expect(mailboxPage).not.toHaveBeenCalled()
+    })
+    it('rejects a directory session replaced during the read', async () => {
+      await sent()
+      const replacement = await online('replacement', f.bob)
+      mailboxPage.mockImplementationOnce(async () => {
+        installCanonicalDirectory(f.bob, { ...replacement, fetch: f.fetch })
+        return { records: [] }
+      })
+      await expect(scan()).rejects.toThrow('session changed')
+    })
+    it('keeps the captured wallet and inclusive position when the caller mutates its request during a read', async () => {
+      await sent()
+      let finish!: (value: { records: ReturnType<typeof inboxRecord>[] }) => void
+      mailboxPage.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve
+          }),
+      )
+      const params = { wallet: f.bob, sinceMs: 0 }
+      const pending = f.chain.directMessages.scanAuthenticatedMailbox!(params)
+      while (!finish) await new Promise((resolve) => setImmediate(resolve))
+      params.wallet = f.alice
+      params.sinceMs = 99
+      finish({ records: [inboxRecord(0, 7)] })
+      const result = await pending
+      expect(result.resumeFromInclusive).toBe(8)
+      expect(result.records[0].recipientPublicKey).toEqual(
+        new Uint8Array(f.bob.identity.compressedPubKey),
+      )
+    })
+    it('rejects a scan completed after account stop', async () => {
+      await sent()
+      let finish!: (value: { records: ReturnType<typeof inboxRecord>[] }) => void
+      mailboxPage.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve
+          }),
+      )
+      const pending = scan()
+      while (!finish) await new Promise((resolve) => setImmediate(resolve))
+      await f.bob.close!()
+      finish({ records: [] })
+      await expect(pending).rejects.toThrow()
+    })
+  })
 
   it.each(["in", "out"] as const)(
     "keeps inert decoded text exact through fetch and stream (%s)",

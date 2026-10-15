@@ -92,6 +92,27 @@ Exact tested candidate: `10c55621bed385a1967c82d92009c1fb30257266`, before this 
 
 All gates exited naturally with code 0. Logs: `/tmp/frank-current-main-s5a-typecheck.log`, `/tmp/frank-current-main-s5a-swap.log`, `/tmp/frank-current-main-s5a-codec.log`. Accepted H1/Q3a/H0 source was not modified; unrelated qualification gates were not repeated. Owned integration overlays remain preserved. This validation adds no source change or independent review claim of its own. S5b transport/host installation and later runtime/UI/financial execution remain separate; no push, merge, deployment or funded action occurred.
 
+## Reviewed Q3b lifecycle integration
+
+Exact tested candidate: `d11b21ba5e0eb9056ff891ff4fb60d5087345f77`, before this evidence-only addition. All 39 Q3b changed files, including source/tests and recorded evidence, match repaired source `7b2e3debf0c2d1dbd7dc5eec003d840df5e6b2a7` byte for byte. The coordinator reports independent SAFE review by `private_dice` at that exact source, separate verification of Q3b-1 by `c0_review` before correction, and its own lifecycle source/fix inspection.
+
+Confirmed Q3b-1: yielding custody formerly queued runtime release behind a blocked session refresh, allowing an existing eCash wallet to submit prepared bytes before revocation. The repair starts release synchronously, immediately observes its rejection, then awaits the same cleanup in the queued custody-close section. Domain-root and BIP39 actual-session/Chronik/SDK regressions reject submission and preparation before queue release and preserve original ledger bytes/reservations. These cases are included in the final app gate; original pre-repair results are not acceptance evidence for the repair.
+
+| Command from repository root | Exact-tip result |
+| --- | --- |
+| `yarn typecheck:fast` | 23/23 configured projects pass |
+| `node_modules/.bin/jest --config app/jest.config.js src/accounts/session.jest.test.ts src/accounts/utxo-wallets.jest.test.ts --runInBand` | 2 suites, 114 tests pass |
+| `node_modules/.bin/jest --config packages/wallet/jest.config.js ecash-wallet.jest.test.ts ecash-preparation.jest.test.ts ecash-stealth.jest.test.ts ecash-seed-boundary.jest.test.ts ecash-operation-store.jest.test.ts chain/chain-factory.jest.test.ts chain/utxo-family.jest.test.ts storage/ecash-operations/native.jest.test.ts storage/level-durability.jest.test.ts --runInBand` | 9 suites, 97 tests pass |
+| `node packages/wallet/storage/ecash-operations/browser-test.mjs` | Actual Chrome 155.0.8059.40 passes store/restart/independent-page phases and actual SDK host qualification with two wallet handles and reopened reservations |
+| `yarn --cwd app test:custody` | Stage/activate/process-reopen pass; 570 regression assertions across 28 cases; zero network/log effects |
+| `git diff --check` | Pass |
+
+All gates exited naturally with code 0. Actual Chrome lanes ran one at a time: Q3b host qualification completed before H1 custody qualification started. Logs use `/tmp/frank-current-main-q3b-{typecheck,app,wallet,browser,custody}.log`. The Node localStorage experimental warning did not change successful results. No source changed; owned overlays remain retained.
+
+Backend qualification remains scoped to the tested Darwin/Chrome runtime and installed Level stack, without arbitrary rollback/eviction or physical-WAL-corruption resistance. Lifecycle installation does not complete retention/reset protection, operation secrets, negotiation host installation, swap execution, settlement or UI; H2 remains required before production holds. No live/funded experiment, push, merge or deployment occurred.
+
+The coordinator also records that independent `negotiation_review` resolved the S5a response-builder pre-bound extra-copy concern as a minor redundant allocation, not a blocker: no production caller exists at `33b2f4ac`, the API is typed Uint8Array, oversized builder input rejects before signing, and received decoding checks bounds before copying. The SAFE S5a verdict stands; no source repair or additional repair round was required.
+
 Independent review: `c0_review` reviewed exact Q3a `836f96d8400401c00085d103a2735a7babc4840d`, and `private_dice_design_review` reviewed exact H0 `6958f1931059392f9d811aba32557f8388a226f6`, both against `3951bbf2557a31d7380a3ae6b07431f966e031b5`. Each returned SAFE TO INTEGRATE with no concrete findings after source and evidence inspection. Perspectives included correctness, security, efficiency, simplicity/shape, test quality, persistence, concurrency, authority and resource lifetime. Neither duplicated passing gates. Root also inspected the production changes and combined evidence. Reviewers used inherited strong model context; implementations used the owner-requested GPT-6.1 Sol medium lane. Already-started authorized custody transactions can commit after facade closure; callers receive a failure requiring original-intent reconciliation. Neither review qualifies reset safety, production store activation, browser eviction, physical WAL corruption or whole-store rollback. Release hold remains.
 
 ## H1 local integration

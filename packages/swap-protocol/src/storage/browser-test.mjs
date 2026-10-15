@@ -216,6 +216,19 @@ try {
     second = await page(),
     third = await page()
   await invoke(first, 'regressions')
+  await invoke(first, 'coverage')
+  await invoke(first, 'coverage-lost-ack')
+  const initializers = await Promise.all([
+    invoke(first, 'coverage-race-row'),
+    invoke(second, 'coverage-race-position'),
+  ])
+  assert.ok(initializers.every(value => value.won))
+  await invoke(first, 'coverage-race-check')
+  const coverageCas = await Promise.all([
+    invoke(first, 'coverage-cas-left'),
+    invoke(second, 'coverage-cas-right'),
+  ])
+  assert.equal(coverageCas.filter(value => value.won).length, 1)
   await invoke(first, 'corruption')
   await invoke(first, 'independent-init')
   const outcomes = await Promise.all([

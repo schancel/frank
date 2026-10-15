@@ -2,6 +2,11 @@ import level from 'level/level.js'
 import * as fs from 'node:fs/promises'
 import { join } from 'node:path'
 import {
+  COVERAGE_KEY,
+  inventory,
+  requireChain,
+  requireCoverageChange,
+  nextCoverage,
   appendRecord,
   bind,
   BINDING_KEY,
@@ -172,7 +177,7 @@ export async function createNativeNegotiationJournalStore(
         },
       )
       if (created) {
-        if (!first) throw new Error('Missing first negotiation row')
+        if (!first) throw new Error('Missing first negotiation record')
         await db.batch(
           [
             { type: 'put', key: BINDING_KEY, value: binding.metadata },
@@ -203,7 +208,53 @@ export async function createNativeNegotiationJournalStore(
       requireKey(key)
       return queue.run(async () => {
         const opened = await open()
-        return opened ? (await records(opened.db)).get(key) : undefined
+        return opened ? (await records(opened.db)).rows.get(key) : undefined
+      })
+    },
+    async listRecords() {
+      queue.assertAvailable()
+      return queue.run(async () => {
+        const opened = await open()
+        return inventory(opened ? (await records(opened.db)).rows : new Map())
+      })
+    },
+    async readCoverage(chainIdentifier) {
+      queue.assertAvailable()
+      requireChain(chainIdentifier)
+      return queue.run(async () => {
+        const opened = await open()
+        return opened
+          ? (await records(opened.db)).coverage.get(chainIdentifier)
+          : undefined
+      })
+    },
+    async compareAndSwapCoverage(chainIdentifier, expected, next) {
+      queue.assertAvailable()
+      requireCoverageChange(chainIdentifier, expected, next)
+      return queue.run(async () => {
+        let opened = await open()
+        if (!opened) {
+          if (expected !== undefined) return false
+          opened = await open({
+            key: COVERAGE_KEY,
+            raw: nextCoverage(new Map(), chainIdentifier, next),
+          })
+          if (opened?.created) return true
+        }
+        if (!opened) throw new Error('Negotiation namespace unavailable')
+        const { coverage } = await records(opened.db)
+        if (coverage.get(chainIdentifier) !== expected) return false
+        await opened.db.batch(
+          [
+            {
+              type: 'put',
+              key: COVERAGE_KEY,
+              value: nextCoverage(coverage, chainIdentifier, next),
+            },
+          ],
+          { sync: true },
+        )
+        return true
       })
     },
     async compareAndSwap(key, expectedRaw, nextRaw) {
@@ -220,7 +271,7 @@ export async function createNativeNegotiationJournalStore(
           if (opened?.created) return true
         }
         if (!opened) throw new Error('Negotiation namespace unavailable')
-        const rows = await records(opened.db)
+        const { rows } = await records(opened.db)
         if (rows.get(key) !== expectedRaw) return false
         checkCapacity(rows, key, next)
         await opened.db.batch([{ type: 'put', key, value: next }], {

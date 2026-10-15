@@ -981,7 +981,13 @@ export default defineComponent({
     >('loading')
     const addressRetry = ref(0)
     watch(
-      () => [
+      (): [
+        typeof accountStatus.status,
+        typeof accountStatus.revision,
+        typeof selectedWallet.value,
+        typeof network.value.chainIdentifier,
+        typeof addressRetry.value,
+      ] => [
         accountStatus.status,
         accountStatus.revision,
         selectedWallet.value,

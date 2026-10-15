@@ -97,7 +97,7 @@ export default defineComponent({
     }
   },
   computed: {
-    contacts(): Record<string, ContactState> {
+    contacts(): Record<string, ContactState | undefined> {
       return this.contactStore.getContacts || {}
     },
     previewText(): string {

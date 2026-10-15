@@ -145,6 +145,65 @@ describe('message items across the canonical path, two wallets', () => {
     },
   )
 
+  it('two test-owned application plugins cross authenticated canonical transport in both directions', async () => {
+    interface Label {
+      label: string
+    }
+    const read = (value: unknown): Label => {
+      if (
+        !value ||
+        typeof value !== 'object' ||
+        !('label' in value) ||
+        typeof value.label !== 'string'
+      )
+        throw new Error('Expected label')
+      return { label: value.label }
+    }
+    for (const itemType of ['test-note-a', 'test-note-b'])
+      registry.registerApplication({
+        itemType,
+        read,
+        encode: value => new TextEncoder().encode(value.label),
+        decode: bytes => ({ label: new TextDecoder().decode(bytes) }),
+        previewText: value => value.label,
+      })
+    const values: MessageItem[] = ['test-note-a', 'test-note-b'].map(
+      itemType => ({
+        type: 'application',
+        itemType,
+        value: { label: itemType },
+      }),
+    )
+    for (const [sender, recipient] of [
+      [alice, bob],
+      [bob, alice],
+    ]) {
+      f.setMailbox(recipient.mailbox)
+      const sent = await f.chain.directMessages.send({
+        wallet: sender.wallet,
+        recipient: recipient.wallet.identity.address,
+        items: values,
+        stampValue: STAMP,
+      })
+      f.setMailbox(undefined)
+      const received = await f.chain.directMessages.fetchSince({
+        wallet: recipient.wallet,
+        sinceMs: recipient.since,
+      })
+      const message = received.find(
+        row => row.payloadDigest === sent.payloadDigest,
+      )
+      expect(message?.items).toEqual(values)
+      if (!message) throw new Error('Application message did not arrive')
+      recipient.since = Math.max(recipient.since, message.receivedTime)
+      expect(message.items.map(value => registry.previewText(value))).toEqual([
+        'test-note-a',
+        'test-note-b',
+      ])
+      expect(JSON.parse(JSON.stringify(message.items))).toEqual(values)
+    }
+  })
+
   it('a bot reply of several items (a purchase: fulfilment, picture, text) arrives whole and in order', async () => {
     const items: MessageItem[] = [
       { type: 'digital-goods', action: 'fulfill', itemId: 'sticker_1' },

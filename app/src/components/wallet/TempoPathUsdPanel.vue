@@ -275,9 +275,7 @@ const unresolved = computed(
     operations.value.some(row => {
       const observation = row.observation
       if (!includedObservation(observation)) return true
-      return (
-        observation.state === 'included-mismatch' || !observation.finalized
-      )
+      return observation.state === 'included-mismatch' || !observation.finalized
     }),
 )
 

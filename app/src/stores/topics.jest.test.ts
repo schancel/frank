@@ -3,11 +3,7 @@ import { flushPromises } from '@vue/test-utils'
 import { createApp } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 
-import {
-  topicDisplayAmount,
-  topicStoredAmount,
-  useTopicStore,
-} from './topics'
+import { topicDisplayAmount, topicStoredAmount, useTopicStore } from './topics'
 import { ForumMessage } from '@frank/wallet/forum-model'
 import { WalletHandle } from '@frank/wallet/chain'
 

@@ -685,10 +685,10 @@ export default defineComponent({
           if (!disposed) sending.value = false
         }
       },
-      send: async function () {
+      send: async function (this: { confirmSend(): Promise<void> }) {
         return this.confirmSend()
       },
-      cancel: function () {
+      cancel: function (this: { cancelEdit(): void }) {
         return this.cancelEdit()
       },
     }

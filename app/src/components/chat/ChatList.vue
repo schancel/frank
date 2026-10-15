@@ -325,7 +325,10 @@ export default defineComponent({
           emit('closeDrawer')
         }
       },
-      setActiveChat(item: Conversation | string) {
+      setActiveChat(
+        this: { selectConversation(item: Conversation | string): void },
+        item: Conversation | string,
+      ) {
         return this.selectConversation(item)
       },
       formatAmount(amount?: number) {

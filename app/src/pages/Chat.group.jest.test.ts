@@ -432,3 +432,97 @@ describe('a conversation that a stranger opened, which a contact then posts into
     )
   })
 })
+
+describe('thread navigation through the authoritative conversation order', () => {
+  const NEWER = '22222222-2222-4222-8222-222222222222'
+  const OLDER = '33333333-3333-4333-8333-333333333333'
+  const DISMISSED = '44444444-4444-4444-8444-444444444444'
+  const DELETED = '55555555-5555-4555-8555-555555555555'
+  let chat: Awaited<ReturnType<typeof openConversation>>
+
+  async function openOrderedThreads() {
+    chat = await openConversation()
+    chat.chats.conversations[CONVERSATION].lastReceived = 200
+    for (const [id, lastReceived] of [
+      [OLDER, 100],
+      [NEWER, 300],
+      [DISMISSED, 250],
+      [DELETED, 225],
+    ] as const) {
+      const thread = chat.chats.createConversation({
+        participants: [mockOwn, ALICE],
+        address: ALICE,
+        conversationId: id,
+      })
+      thread.lastReceived = lastReceived
+    }
+    chat.chats.conversations[DISMISSED].screenerStatus = 'dismissed'
+    chat.chats.conversations[DELETED].deletedAt = 1
+    await flushPromises()
+    chat.push.mockClear()
+    return chat
+  }
+
+  afterEach(() => chat?.wrapper.unmount())
+
+  it('routes numeric navigation to distinct same-peer IDs without changing records', async () => {
+    const { wrapper, chats, push } = await openOrderedThreads()
+    const before = JSON.stringify(chats.conversations)
+    expect(chats.getSortedChatOrder.map(thread => thread.id)).toEqual([
+      NEWER,
+      DISMISSED,
+      CONVERSATION,
+      OLDER,
+    ])
+    wrapper.vm.navigateThread(1)
+    wrapper.vm.navigateThread(-1)
+    expect(push.mock.calls).toEqual([[`/chat/${OLDER}`], [`/chat/${NEWER}`]])
+    expect(JSON.stringify(chats.conversations)).toBe(before)
+  })
+
+  it('maps actual email child next/prev emissions onto numeric navigation', async () => {
+    const { wrapper, chats, push } = await openOrderedThreads()
+    chats.conversations[CONVERSATION].kind = 'email'
+    await flushPromises()
+    const email = wrapper.getComponent({ ref: 'emailThreadView' })
+    email.vm.$emit('navigateThread', 'next')
+    email.vm.$emit('navigateThread', 'prev')
+    expect(push.mock.calls).toEqual([[`/chat/${OLDER}`], [`/chat/${NEWER}`]])
+    email.vm.$emit('archiveThread')
+    expect(push).toHaveBeenLastCalledWith(`/chat/${OLDER}`)
+  })
+
+  it('preserves numeric keyboard and archive callers', async () => {
+    const { wrapper, push } = await openOrderedThreads()
+    wrapper.vm.handleTriageKeydown(new KeyboardEvent('keydown', { key: 'j' }))
+    wrapper.vm.handleTriageKeydown(new KeyboardEvent('keydown', { key: 'k' }))
+    wrapper.vm.archiveCurrentThread()
+    expect(push.mock.calls).toEqual([
+      [`/chat/${OLDER}`],
+      [`/chat/${NEWER}`],
+      [`/chat/${OLDER}`],
+    ])
+  })
+
+  it('does not wrap and retains first-item fallback and empty behavior', async () => {
+    const { wrapper, chats, push } = await openOrderedThreads()
+    chats.conversations[NEWER].lastReceived = 150
+    await flushPromises()
+    wrapper.vm.navigateThread(-1)
+    expect(push).not.toHaveBeenCalled()
+    chats.conversations[CONVERSATION].lastReceived = 50
+    await flushPromises()
+    wrapper.vm.navigateThread(1)
+    expect(push).not.toHaveBeenCalled()
+    chats.conversations[CONVERSATION].deletedAt = 1
+    await flushPromises()
+    wrapper.vm.navigateThread(-1)
+    expect(push).toHaveBeenLastCalledWith(`/chat/${NEWER}`)
+    push.mockClear()
+    chats.conversations[NEWER].deletedAt = 1
+    chats.conversations[OLDER].deletedAt = 1
+    await flushPromises()
+    wrapper.vm.navigateThread(1)
+    expect(push).not.toHaveBeenCalled()
+  })
+})

@@ -21,8 +21,8 @@ export const UNIT_RATE_ASSET_METRICS: Record<
   litecoin: { symbol: '1 LTC', multiplier: 1 },
   bnb: { symbol: '1 BNB', multiplier: 1 },
   polygon: { symbol: '1 POL', multiplier: 1 },
-  base: { symbol: '1 ETH', multiplier: 1 },
-  arbitrum: { symbol: '1 ETH', multiplier: 1 },
+  base: { symbol: '1 ETH (Base)', multiplier: 1 },
+  arbitrum: { symbol: '1 ETH (Arbitrum)', multiplier: 1 },
 }
 
 /**

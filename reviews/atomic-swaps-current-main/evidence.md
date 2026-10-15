@@ -122,3 +122,38 @@ H1 was independently reviewed SAFE as an inactive predecessor at `3730d3137b7110
 H1 source and evidence commits were squashed into `df71d49a`. `git diff --name-only 3730d3137b711035a3ab64822f19f07c3a57acfd df71d49a` reports only this integration evidence file. The entire executable/test tree therefore matches the reviewed and tested H1 candidate; no new source combination requires repeating its gates. Recorded evidence is 23 configured typechecks, actual Chrome process-restart retention and 570 assertions across 28 cases, including independent IDB-handle races and cleanup-guard mutation sensitivity. This is not a separate-tab race claim. H1 retains H0 read-only opening and Q3a unchanged.
 
 No production operation acquires these holds. H2 must protect reset before admission is enabled; existing payment retirement is not established by an empty new hold record. Arbitrary store rollback/deletion and terminal financial-operation reuse remain outside this bounded custody guarantee.
+
+
+## Combined S5b transport and S5c1 journal validation
+
+Exact tested candidate: `54123d97517d8437ae5f91112dc488725505c403`, before this evidence-only addition. Reviewed S5b `8d52380d9b1fffd783132e5c001a6deeefc927f5` is integrated as `963ef3fd450413e2027b8191251874107e74a9a9`; reviewed S5c1 `fe522aa45ca2e9a2e4ad78b8686813e3d21c17d0` is integrated as `54123d97`.
+
+All 12 S5b changed executable/test/manifest files match their reviewed source byte for byte: app manifest and message-items source/test; bot-framework host/types/factory test; bot manifest, message-items source/test and all-bots target; swap message-plugin source/test. Both S5c1 executable files (journal source/test) also match reviewed source exactly. The README append conflict was resolved only in documentation: the complete reviewed plugin paragraph and journal section are both preserved verbatim. No source conflict or source edit occurred during validation.
+
+The coordinator records independent **SAFE TO INTEGRATE** reviews by `negotiation_review` for exact S5b `8d52380d9` and `c0` for exact S5c1 `fe522aa4`, with no remaining findings. This combined validation checks integration/evidence; it does not claim a new independent review. Implementations used the owner-requested GPT-6.1 Sol medium lane; the parent owns contract, review and integration.
+
+All gates below exited naturally with code0:
+
+| Exact command from repository root | Result |
+| --- | --- |
+| `yarn typecheck:fast` | 23 configured projects checked, 23 passed |
+| `yarn --cwd packages/swap-protocol test --runInBand` | 6 suites, 66 tests pass |
+| `yarn --cwd packages/bot test --runInBand test/message-items` | 1 suite, 1 actual app/all-bots bidirectional encrypted composition test passes |
+| `yarn --cwd app test:unit:ci --runInBand src/utils/message-items.jest.test.ts` | 1 suite, 1 app production-composition test passes |
+| `yarn --cwd packages/bot-framework test --runInBand test/bot-host-message-items.jest.test.ts` | 1 suite, 3 factory/default/failure-cleanup-and-reopen tests pass |
+| `yarn --cwd packages/wallet test --runInBand message-item-plugins/application-item.jest.test.ts message-item-plugins/registry.jest.test.ts message-item-plugins/wire.jest.test.ts message-item-plugins/decoder-limits.jest.test.ts message-item-plugins/default-registry.jest.test.ts chain/canonical-item-roundtrip.jest.test.ts` | P1 boundary: 6 suites, 1080 tests pass; 105.582 seconds |
+| `node packages/nakamoto/scripts/check-deps.mjs --root packages/swap-protocol` | 2 justified runtime dependencies, 0 optional; production import allowlists also pass in full swap tests |
+| `git diff --check` | Pass |
+
+Scoped formatting also passes, using the exact commands:
+
+```sh
+node_modules/.bin/prettier --config app/.prettierrc.json --check packages/swap-protocol/src/message-plugin.ts packages/swap-protocol/src/message-plugin.jest.test.ts packages/bot/src/message-items.ts packages/bot/test/message-items.jest.test.ts app/src/utils/message-items.ts app/src/utils/message-items.jest.test.ts
+node_modules/.bin/prettier --check packages/bot-framework/src/types.ts packages/bot-framework/test/bot-host-message-items.jest.test.ts
+node_modules/.bin/prettier --single-quote --no-semi --trailing-comma all --check packages/swap-protocol/src/negotiation-journal.ts packages/swap-protocol/src/negotiation-journal.jest.test.ts
+node_modules/.bin/prettier --config app/.prettierrc.json --check packages/wallet/message-item-plugins/application-item.ts packages/wallet/message-item-plugins/application-item.jest.test.ts packages/wallet/message-item-plugins/registry.ts packages/wallet/message-item-plugins/wire.ts packages/wallet/message-item-plugins/default-registry.jest.test.ts packages/wallet/chain/canonical-item-roundtrip.jest.test.ts
+```
+
+Logs: `/tmp/frank-current-main-s5bc-{typecheck,swap,composition,app,framework,p1,deps,format,p1-format}.log`. Retained integration dependency overlays were reused and remain intact. Broader bot/native/cryptographic qualification was not repeated: reviewed executable equivalence and the affected encrypted composition/factory/P1 boundaries passed. The previously documented whole-file formatting drift in bot-host/all-bots remains inherited; no all-source formatting claim or unrelated cleanup is made.
+
+Inherited limits remain: S5b installs inert signed negotiation transport/factual projections in app and the concrete all-bots target, with no proposal UI, automatic writer/reply or authenticated operation admission. S5c1 provides a bounded single-negotiation engine and pure strict inspection seam, but no concrete durable CAS adapter or host journal installation. Memory CAS tests establish algorithmic behavior only. Qualified storage, atomic account-wide capacity, host authentication/lifecycle, incarnation/restoration/history/retention policy, retained secrets/artifacts, explicit financial consent and actual settlement remain successors. Neither acceptance nor a delivered preview authorizes funding or reservation release, and hostile local-store mutation/rollback or reset-resistant financial recovery is not established. Other bot targets remain unsupported. No external messages, funded calls, push, main merge or deployment occurred; release hold remains.

@@ -1,0 +1,8 @@
+PASS storage/ecash-operations/native.jest.test.ts
+PASS storage/level-durability.jest.test.ts
+
+Test Suites: 2 passed, 2 total
+Tests:       8 passed, 8 total
+Snapshots:   0 total
+Time:        0.522 s, estimated 6 s
+Ran all test suites matching /storage\/ecash-operations\/native.jest.test.ts|storage\/level-durability.jest.test.ts/i.

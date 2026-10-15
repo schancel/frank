@@ -1,0 +1,7 @@
+{"browser":"Chrome/155.0.8059.40","architecture":"self-contained browser bundle excludes native storage"}
+{"phase":"stage","checks":["absent hydration","snapshot-before-await","acknowledged original signed bytes/claims/tombstones"],"namespace":"frank-ecash-operations-v1-qualification-e9fe155b1a55c5e4a2e3973f640c7b8c54d5b977bf96987c910ca602a0ebb7d7"}
+{"phase":"reopen","checks":["Chrome process restart","fresh copy-isolated reads"]}
+{"phase":"regressions","checks":["missing Web Locks refuses factory","key/ledger affinity and non-poisoning input rejection","actual pending transaction blocks reads","close drains admitted writes","failed visible write poisons queued readers","qualified reopen after uncertain acknowledgment","strict durability required only at mutation","no write on strict refusal","close during actual first open","interrupted empty creation refuses reset","malformed/foreign/unsupported namespaces reject"]}
+{"phase":"increment","checks":["independent-context canonical wallet lock"]}
+{"phase":"increment","checks":["independent-context canonical wallet lock"]}
+{"phase":"check-increments","checks":["fresh committed state across contexts","two serialized updates"]}

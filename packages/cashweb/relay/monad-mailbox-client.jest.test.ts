@@ -20,6 +20,9 @@ jest.mock("isomorphic-ws", () => {
       close: jest.fn(),
       addEventListener: jest.fn(),
       removeEventListener: jest.fn(),
+      send: jest.fn(),
+      readyState: 1,
+      onmessage: null,
       onopen: null,
       onerror: null,
       onclose: null,
@@ -953,6 +956,7 @@ import {
 import { openNodeDirectoryStore } from "@frank/directory-admission/node";
 import type { Context, DirectoryStore } from "@frank/directory-admission";
 import {
+  CANONICAL_DM_MAX_BYTES,
   freezeCanonicalRequest,
   inspectCanonicalPair,
   type CanonicalFetch,
@@ -1671,6 +1675,244 @@ describe("canonical private mailbox", () => {
       fetchCanonicalInboxPage({ ...auth, signal: active.signal })
     ).rejects.toThrow(/aborted/);
     expect(requests).toHaveLength(1);
+  });
+  test("stream awaits async consumers and stops queued delivery after rejection", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const failure = new Error("host persistence failed");
+    const rejected = gate.then(() => {
+      throw failure;
+    });
+    void rejected.catch(() => undefined); // Baseline ignored promise must not crash the test process.
+    const onRecord = jest.fn(() => rejected),
+      onError = jest.fn();
+    const handle = await connectCanonicalMailboxStream({
+      ...auth,
+      onRecord,
+      onError,
+    });
+    const ws = mockWsInstances.at(-1)! as any;
+    const deliver = (id: number) =>
+      ws.onmessage({
+        data: JSON.stringify({
+          direction: "in",
+          delivery: "00",
+          context: "00",
+          submission_identity: String(id),
+          timestamp_ms: id,
+        }),
+      });
+    try {
+      deliver(1);
+      deliver(2);
+      const started = onRecord.mock.calls.length;
+      release();
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(started).toBe(1);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(failure);
+      expect(onRecord).toHaveBeenCalledTimes(1);
+      expect(ws.close).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      handle.close();
+    }
+  });
+  const streamMessage = (
+    ws: any,
+    id: number,
+    delivery = "00",
+    context = "00"
+  ) =>
+    ws.onmessage({
+      data: JSON.stringify({
+        direction: "in",
+        delivery,
+        context,
+        submission_identity: String(id),
+        timestamp_ms: id,
+      }),
+    });
+  const settleStream = async () => {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  };
+
+  test("stream delivers synchronous and deferred callbacks in order while answering ping", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: number[] = [];
+    const onRecord = jest.fn(async (record) => {
+      seen.push(record.timestampMs);
+      if (record.timestampMs === 1) await gate;
+    });
+    const handle = await connectCanonicalMailboxStream({ ...auth, onRecord });
+    const ws = mockWsInstances.at(-1)! as any;
+    try {
+      streamMessage(ws, 1);
+      streamMessage(ws, 2);
+      streamMessage(ws, 3);
+      ws.onmessage({ data: JSON.stringify({ type: "ping" }) });
+      expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: "pong" }));
+      expect(seen).toEqual([1]);
+      release();
+      await settleStream();
+      expect(seen).toEqual([1, 2, 3]);
+    } finally {
+      release();
+      handle.close();
+    }
+    const synchronous = jest.fn();
+    const syncHandle = await connectCanonicalMailboxStream({
+      ...auth,
+      onRecord: synchronous,
+    });
+    const syncWs = mockWsInstances.at(-1)! as any;
+    try {
+      streamMessage(syncWs, 4);
+      streamMessage(syncWs, 5);
+      await settleStream();
+      expect(synchronous.mock.calls.map(([r]) => r.timestampMs)).toEqual([
+        4, 5,
+      ]);
+    } finally {
+      syncHandle.close();
+    }
+  });
+
+  test.each(["count", "bytes"])(
+    "stream bounds active plus queued decoded %s and discards overflow",
+    async (mode) => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const onRecord = jest.fn(() => gate),
+        onError = jest.fn();
+      const handle = await connectCanonicalMailboxStream({
+        ...auth,
+        onRecord,
+        onError,
+      });
+      const ws = mockWsInstances.at(-1)! as any;
+      try {
+        if (mode === "count") {
+          for (let i = 1; i <= 32; i++) streamMessage(ws, i);
+        } else streamMessage(ws, 1, "00".repeat(CANONICAL_DM_MAX_BYTES - 1));
+        expect(onError).not.toHaveBeenCalled();
+        streamMessage(ws, 33);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(onError.mock.calls[0][0].message).toMatch(/overflow/);
+        expect(ws.close).toHaveBeenCalledTimes(1);
+        release();
+        await settleStream();
+        streamMessage(ws, 34);
+        expect(onRecord).toHaveBeenCalledTimes(1);
+      } finally {
+        release();
+        handle.close();
+      }
+    }
+  );
+
+  test.each(["close", "error", "abort"])(
+    "stream %s revokes pending callbacks even with a throwing observer",
+    async (mode) => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const abort = new AbortController(),
+        onRecord = jest.fn(() => gate),
+        onError = jest.fn(() => {
+          throw new Error("observer failed");
+        }),
+        onReady = jest.fn();
+      const handle = await connectCanonicalMailboxStream({
+        ...auth,
+        signal: abort.signal,
+        onRecord,
+        onError,
+        onReady,
+        onClose: () => {
+          throw new Error("close observer failed");
+        },
+      });
+      const ws = mockWsInstances.at(-1)! as any;
+      try {
+        streamMessage(ws, 1);
+        streamMessage(ws, 2);
+        if (mode === "close") handle.close();
+        else if (mode === "error") ws.onerror(new Error("connection failed"));
+        else abort.abort();
+        ws.onclose();
+        ws.onopen();
+        streamMessage(ws, 3);
+        release();
+        await settleStream();
+        expect(onRecord).toHaveBeenCalledTimes(1);
+        expect(onReady).not.toHaveBeenCalled();
+        expect(onError).toHaveBeenCalledTimes(mode === "error" ? 1 : 0);
+      } finally {
+        release();
+        handle.close();
+      }
+    }
+  );
+
+  test("abort during signed connection establishment creates no late WebSocket", async () => {
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+    const abort = new AbortController(),
+      before = mockWsInstances.length;
+    const opening = connectCanonicalMailboxStream({
+      ...auth,
+      signal: abort.signal,
+      onRecord: jest.fn(),
+      signDigest: async () => {
+        entered();
+        await gate;
+        return new Uint8Array(70);
+      },
+    });
+    const rejected = expect(opening).rejects.toThrow(/aborted/);
+    await started;
+    abort.abort();
+    release();
+    await rejected;
+    expect(mockWsInstances).toHaveLength(before);
+  });
+
+  test("stream consumes async error-observer rejection without resuming queued work", async () => {
+    const onError = jest.fn(async () => {
+      throw new Error("async observer failed");
+    });
+    const onRecord = jest.fn(async () => {
+      throw new Error("host failed");
+    });
+    const handle = await connectCanonicalMailboxStream({
+      ...auth,
+      onRecord,
+      onError,
+    });
+    const ws = mockWsInstances.at(-1)! as any;
+    try {
+      streamMessage(ws, 1);
+      streamMessage(ws, 2);
+      await settleStream();
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onRecord).toHaveBeenCalledTimes(1);
+    } finally {
+      handle.close();
+    }
   });
   test("connectCanonicalMailboxStream appends ngrok-skip-browser-warning on ngrok origins", async () => {
     mockWsInstances.length = 0;

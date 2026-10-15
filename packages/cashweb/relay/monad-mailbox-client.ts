@@ -1610,7 +1610,7 @@ export async function fetchCanonicalMailboxPage(
 
 export interface CanonicalMailboxStreamParams
   extends CanonicalMailboxAuthParams {
-  readonly onRecord: (record: CanonicalMailboxRecord) => void;
+  readonly onRecord: (record: CanonicalMailboxRecord) => void | Promise<void>;
   readonly onError?: (error: Error) => void;
   readonly onReady?: () => void;
   readonly onClose?: () => void;
@@ -1687,13 +1687,22 @@ export async function connectCanonicalMailboxStream(
     params.recipient
   }/ws?${query.toString()}`;
 
+  canonicalCheckAbort(params.signal);
   const ws = new WebSocket(wsUrl);
   let closed = false;
+  const pending: CanonicalMailboxRecord[] = [];
+  let bufferedCount = 0;
+  let bufferedBytes = 0;
+  let delivering = false;
+  let closeReported = false;
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
   const cleanup = () => {
     if (!closed) {
       closed = true;
+      pending.length = 0;
+      bufferedCount = bufferedBytes = 0;
+      params.signal?.removeEventListener("abort", cleanup);
       if (heartbeatTimer !== undefined) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = undefined;
@@ -1706,12 +1715,51 @@ export async function connectCanonicalMailboxStream(
     }
   };
 
+  const failDelivery = (reason: unknown) => {
+    if (closed) return;
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+    cleanup();
+    try {
+      void Promise.resolve(params.onError?.(error)).catch(() => undefined);
+    } catch {
+      /* An observer cannot revive delivery. */
+    }
+  };
+  const drain = async () => {
+    if (delivering || closed) return;
+    delivering = true;
+    try {
+      while (!closed && pending.length > 0) {
+        const record = pending.shift()!;
+        try {
+          await params.onRecord(record);
+        } catch (error) {
+          failDelivery(error);
+          return;
+        }
+        if (!closed) {
+          bufferedCount--;
+          bufferedBytes -= record.delivery.length + record.context.length;
+        }
+      }
+    } finally {
+      delivering = false;
+    }
+  };
+
   if (params.signal) {
     params.signal.addEventListener("abort", cleanup, { once: true });
+    if (params.signal.aborted) cleanup();
   }
 
   ws.onopen = () => {
-    params.onReady?.();
+    if (closed) return;
+    try {
+      params.onReady?.();
+    } catch (error) {
+      failDelivery(error);
+      return;
+    }
     if (heartbeatTimer !== undefined) {
       clearInterval(heartbeatTimer);
     }
@@ -1732,7 +1780,14 @@ export async function connectCanonicalMailboxStream(
 
   ws.onclose = () => {
     cleanup();
-    params.onClose?.();
+    if (!closeReported) {
+      closeReported = true;
+      try {
+        params.onClose?.();
+      } catch {
+        /* Closed remains terminal. */
+      }
+    }
   };
 
   ws.onerror = (event: unknown) => {
@@ -1742,10 +1797,11 @@ export async function connectCanonicalMailboxStream(
         : new Error(
             (event as { message?: string })?.message ?? "WebSocket stream error"
           );
-    params.onError?.(error);
+    failDelivery(error);
   };
 
   ws.onmessage = (event: { data: unknown }) => {
+    if (closed) return;
     try {
       const dataStr =
         typeof event.data === "string"
@@ -1764,6 +1820,17 @@ export async function connectCanonicalMailboxStream(
         return;
       }
       if (parsed.direction === "in" || parsed.direction === "out") {
+        if (
+          typeof parsed.delivery !== "string" ||
+          typeof parsed.context !== "string"
+        )
+          canonicalProtocol("Malformed stream record bytes");
+        const size = (parsed.delivery.length + parsed.context.length) / 2;
+        if (
+          bufferedCount >= 32 ||
+          size > CANONICAL_DM_MAX_BYTES - bufferedBytes
+        )
+          canonicalProtocol("Canonical mailbox stream delivery queue overflow");
         const record: CanonicalMailboxRecord = {
           direction: parsed.direction,
           delivery: hexToBytes(parsed.delivery, undefined, "delivery"),
@@ -1771,10 +1838,13 @@ export async function connectCanonicalMailboxStream(
           submissionIdentity: parsed.submission_identity,
           timestampMs: Number(parsed.timestamp_ms),
         };
-        params.onRecord(record);
+        pending.push(record);
+        bufferedCount++;
+        bufferedBytes += record.delivery.length + record.context.length;
+        void drain().catch(failDelivery);
       }
     } catch (err) {
-      params.onError?.(err instanceof Error ? err : new Error(String(err)));
+      failDelivery(err);
     }
   };
 

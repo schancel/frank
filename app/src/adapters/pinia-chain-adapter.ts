@@ -509,7 +509,10 @@ export function startDirectMessagePolling({
         if (stopped) return
         const wrapper = await toReceivedMessageWrapper(record)
         if (wrapper && !stopped) {
-          await chats.receiveMessages([wrapper])
+          await chats.receiveMessages([wrapper], recipientAddress, {
+            isCancelled: () => stopped,
+          })
+          if (stopped) return
         }
       },
       onError: err => {

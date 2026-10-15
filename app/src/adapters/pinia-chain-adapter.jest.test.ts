@@ -952,6 +952,93 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       }
     })
 
+    it('stream delivery queued behind chat mutation does not persist after wallet stop', async () => {
+      const chats = useChatStore(),
+        receiving = jest.spyOn(chats, 'receiveMessages')
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      let release!: () => void
+      mockMessageStore.saveMessage.mockImplementationOnce(
+        () =>
+          new Promise<void>(resolve => {
+            release = resolve
+          }),
+      )
+      const blocker = chats.receiveMessages(
+        [makeWrapper('stream-blocker')],
+        RECIPIENT_ADDRESS,
+      )
+      let onRecord!: (record: DirectMessageReceived) => void | Promise<void>
+      jest
+        .mocked(activeChain.directMessages.subscribeMailboxStream!)
+        .mockImplementation(params => {
+          onRecord = params.onRecord
+          return () => undefined
+        })
+      jest.spyOn(activeChain.directMessages, 'fetchSince').mockResolvedValue([])
+      const polling = startPolling(10_000)
+      const delivery = onRecord(makeRecord({ payloadDigest: 'stale-stream' }))
+      try {
+        await advanceUntil(() => receiving.mock.calls.length >= 2)
+        polling.stop()
+        release()
+        await blocker
+        await delivery
+        expect(mockMessageStore.saveMessage).not.toHaveBeenCalledWith(
+          expect.objectContaining({ index: 'stale-stream' }),
+          expect.anything(),
+        )
+        expect(chats.messages['stale-stream']).toBeUndefined()
+        await expect(receiving.mock.results[1]!.value).resolves.toMatchObject({
+          cancelled: true,
+        })
+      } finally {
+        release?.()
+        polling.stop()
+      }
+    })
+
+    it('a failed streamed persistence remains replayable through the polling receipt frontier', async () => {
+      const chats = useChatStore()
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      let onRecord!: (record: DirectMessageReceived) => void | Promise<void>
+      jest
+        .mocked(activeChain.directMessages.subscribeMailboxStream!)
+        .mockImplementation(params => {
+          onRecord = params.onRecord
+          return () => undefined
+        })
+      const record = makeRecord({
+        payloadDigest: 'stream-poll-retry',
+        receivedTime: 100,
+      })
+      const fetch = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([record])
+        .mockResolvedValue([])
+      const polling = startPolling(20)
+      try {
+        await settle()
+        const failure = new Error('disk unavailable')
+        mockMessageStore.saveMessage.mockRejectedValueOnce(failure)
+        await expect(onRecord(record)).rejects.toBe(failure)
+        expect(chats.messages['stream-poll-retry']).toBeUndefined()
+        await advanceUntil(() => fetch.mock.calls.length >= 3)
+        expect(fetch.mock.calls[1][0].sinceMs).toBe(0)
+        expect(fetch.mock.calls[2][0].sinceMs).toBe(101)
+        expect(chats.messages['stream-poll-retry']).toBeDefined()
+        expect(mockMessageStore.saveMessage).toHaveBeenCalledTimes(2)
+      } finally {
+        polling.stop()
+      }
+    })
+
     it('defaults to a 5-10s-range poll interval', () => {
       expect(DEFAULT_DIRECT_MESSAGE_POLL_INTERVAL_MS).toBeGreaterThanOrEqual(
         5000,

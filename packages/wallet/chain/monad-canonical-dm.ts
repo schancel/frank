@@ -2571,6 +2571,11 @@ async function fetchSince(
   return received
 }
 
+/** Internal forwarding lease; terminal connection events revoke new downstream delivery. */
+export interface CanonicalStreamDeliveryLease {
+  isLive: () => boolean
+}
+
 /** The canonical implementation of the app-facing direct-message operations for one wallet.
  * Nothing here queues: every send does its own work and holds no lock over a network wait. */
 export function canonicalDirectMessages(
@@ -2743,13 +2748,29 @@ export function canonicalDirectMessages(
       fetchSince(owner, params),
     subscribeMailboxStream: (params: {
       wallet: WalletHandle
-      onRecord: (record: DirectMessageReceived) => void
+      onRecord: (
+        record: DirectMessageReceived,
+        lease: CanonicalStreamDeliveryLease,
+      ) => void | Promise<void>
       onError?: (error: Error) => void
     }) => {
       const directory = requireDirectory(owner)
       const registry = requireMessageItems(owner)
       const auth = mailboxAuth(owner, directory)
       let active = true
+      let generation = 0
+      let connectionAbort: AbortController | undefined
+      const reportError = (error: unknown) => {
+        try {
+          void Promise.resolve(
+            params.onError?.(
+              error instanceof Error ? error : new Error(String(error)),
+            ),
+          ).catch(() => undefined)
+        } catch {
+          /* Error observers do not own delivery or reconnect lifetime. */
+        }
+      }
       let streamHandle: { close: () => void } | undefined
       let reconnectTimer: ReturnType<typeof setTimeout> | undefined
       let reconnectAttempts = 0
@@ -2757,11 +2778,7 @@ export function canonicalDirectMessages(
       const scheduleReconnect = () => {
         if (!active || reconnectTimer !== undefined) return
         const delay =
-          reconnectAttempts === 0
-            ? 1000
-            : reconnectAttempts === 1
-            ? 2000
-            : 5000
+          reconnectAttempts === 0 ? 1000 : reconnectAttempts === 1 ? 2000 : 5000
         reconnectAttempts += 1
         reconnectTimer = setTimeout(() => {
           reconnectTimer = undefined
@@ -2772,24 +2789,34 @@ export function canonicalDirectMessages(
       }
 
       const connect = async () => {
+        const token = ++generation
+        let deliveryLive = true
+        let errorReported = false
+        const ownsConnection = () => active && token === generation
+        const current = () => deliveryLive && ownsConnection()
+        connectionAbort?.abort()
+        streamHandle?.close()
+        streamHandle = undefined
+        const abort = new AbortController()
+        connectionAbort = abort
         try {
           const self = await directory.selfCurrent()
-          if (!active) return
-          streamHandle?.close()
-          streamHandle = undefined
-
-          streamHandle = await connectCanonicalMailboxStream({
+          if (!current()) return
+          const connected = await connectCanonicalMailboxStream({
             ...auth,
+            signal: abort.signal,
             onReady: () => {
-              reconnectAttempts = 0
+              if (current()) reconnectAttempts = 0
             },
             onClose: () => {
-              if (active) {
+              if (ownsConnection()) {
+                deliveryLive = false
                 scheduleReconnect()
               }
             },
             onRecord: async (record: CanonicalMailboxRecord) => {
-              if (!active) return
+              if (!current()) return
+              let projected: DirectMessageReceived
               try {
                 const delivery = parseFrame(record.delivery)
                 if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10)
@@ -2800,13 +2827,13 @@ export function canonicalDirectMessages(
                 const digest = toHex(deliveryTyped.payloadDigest)
                 const isOutbound = record.direction === 'out'
                 const peerSubjectKeyBytes = isOutbound
-                ? payload.recipient.keyBytes
-                : payload.sender.keyBytes
+                  ? payload.recipient.keyBytes
+                  : payload.sender.keyBytes
                 const peerSubjectHex = toHex(peerSubjectKeyBytes)
                 const peer = await directory.peerCurrent({
                   subject: peerSubjectHex,
                 })
-                if (!peer) return
+                if (!peer || !current()) return
                 const { senderEvidence, recipientEvidence } =
                   await resolveHistoricalEvidence(
                     directory,
@@ -2816,6 +2843,7 @@ export function canonicalDirectMessages(
                     owner.subject,
                     peer,
                   )
+                if (!current()) return
                 const roles = owner.roles.create(directory.network, self)
                 let items: MessageItem[]
                 let conversationIdStr: string | undefined
@@ -2879,7 +2907,9 @@ export function canonicalDirectMessages(
                     : [
                         {
                           txHash: hexlify(member.transactionId),
-                          destinationAddress: getAddress(hexlify(member.address)),
+                          destinationAddress: getAddress(
+                            hexlify(member.address),
+                          ),
                           valueWei:
                             typeof member.value === 'bigint'
                               ? member.value
@@ -2894,55 +2924,62 @@ export function canonicalDirectMessages(
                 const peerAddress: ChainAddress = {
                   raw: getAddress(computeAddress('0x' + peer.subject)),
                 }
-                params.onRecord(
-                  projectOutboxMessageRecord(
-                    {
-                      outbound: isOutbound,
-                      senderAddress: isOutbound ? own : peerAddress,
-                      senderPublicKey: isOutbound
-                        ? fromHex(owner.subject)
-                        : fromHex(peer.subject),
-                      recipientAddress: isOutbound ? peerAddress : own,
-                      recipientPublicKey: isOutbound
-                        ? fromHex(peer.subject)
-                        : fromHex(owner.subject),
-                      items,
-                      conversationId: conversationIdStr,
-                      ...(conversationNameStr === undefined
-                        ? {}
-                        : { conversationName: conversationNameStr }),
-                      messageId: messageIdStr,
-                      contentDigest,
-                      payloadDigest: digest,
-                      stampValueWei: stampPayments.reduce(
-                        (sum, p) => sum + p.valueWei,
-                        0n,
-                      ),
-                      stampPayments,
-                      paymentTransfers,
-                      receivedTime: record.timestampMs,
-                    },
-                    registry,
-                  ),
+                projected = projectOutboxMessageRecord(
+                  {
+                    outbound: isOutbound,
+                    senderAddress: isOutbound ? own : peerAddress,
+                    senderPublicKey: isOutbound
+                      ? fromHex(owner.subject)
+                      : fromHex(peer.subject),
+                    recipientAddress: isOutbound ? peerAddress : own,
+                    recipientPublicKey: isOutbound
+                      ? fromHex(peer.subject)
+                      : fromHex(owner.subject),
+                    items,
+                    conversationId: conversationIdStr,
+                    ...(conversationNameStr === undefined
+                      ? {}
+                      : { conversationName: conversationNameStr }),
+                    messageId: messageIdStr,
+                    contentDigest,
+                    payloadDigest: digest,
+                    stampValueWei: stampPayments.reduce(
+                      (sum, p) => sum + p.valueWei,
+                      0n,
+                    ),
+                    stampPayments,
+                    paymentTransfers,
+                    receivedTime: record.timestampMs,
+                  },
+                  registry,
                 )
               } catch (err) {
-                params.onError?.(
-                  err instanceof Error ? err : new Error(String(err)),
-                )
+                if (current()) reportError(err)
+                return
               }
+              // Host/coin/self-note failures belong to cashweb's ordered delivery owner.
+              if (current())
+                await params.onRecord(projected, { isLive: current })
             },
             onError: err => {
-              if (active) {
-                params.onError?.(err)
+              if (ownsConnection()) {
+                deliveryLive = false
+                if (!errorReported) {
+                  errorReported = true
+                  reportError(err)
+                }
                 scheduleReconnect()
               }
             },
           })
+          if (!current()) {
+            connected.close()
+            return
+          }
+          streamHandle = connected
         } catch (err) {
-          if (active) {
-            params.onError?.(
-              err instanceof Error ? err : new Error(String(err)),
-            )
+          if (current()) {
+            reportError(err)
             scheduleReconnect()
           }
         }
@@ -2952,6 +2989,8 @@ export function canonicalDirectMessages(
 
       return () => {
         active = false
+        ++generation
+        connectionAbort?.abort()
         if (reconnectTimer !== undefined) {
           clearTimeout(reconnectTimer)
           reconnectTimer = undefined

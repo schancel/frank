@@ -637,7 +637,7 @@ export interface DirectMessageClient {
   /** Subscribes to real-time both-direction mailbox pushes over WebSocket. */
   subscribeMailboxStream?(params: {
     wallet: WalletHandle;
-    onRecord: (record: DirectMessageReceived) => void;
+    onRecord: (record: DirectMessageReceived) => void | Promise<void>;
     onError?: (error: Error) => void;
   }): () => void;
   listRecoveredStampPayments(params: {

@@ -2060,32 +2060,35 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
       if (canonical?.subscribeMailboxStream) {
-        return canonical.subscribeMailboxStream({
+        let active = true;
+        const unsubscribe = canonical.subscribeMailboxStream({
           ...params,
           // The same boundary as a polled read. A note not applied yet is left to the poll.
-          onRecord: (record) => {
-            // A stealth payment, or a note about a received coin, is recorded in the coin list
-            // before the record is handed on.
-            void (record.items.some(
-              (item) => item.type === "stealth" || item.type === "received-coin"
+          onRecord: async (record, lease) => {
+            if (!active || !lease.isLive()) return;
+            requireOpenWallet(wallet);
+            // Coins and self-notes finish before the host can durably receive this record.
+            if (
+              record.items.some(
+                (item) =>
+                  item.type === "stealth" || item.type === "received-coin"
+              )
             )
-              ? recordReceivedCoins(wallet, [record]).then(() =>
-                  consumeSelfNotes(wallet, record)
-                )
-              : consumeSelfNotes(wallet, record)
-            ).then(
-              (taken) => {
-                if (taken.kind === "none") params.onRecord(record);
-                else if (taken.kind === "consumed" && taken.rest !== undefined)
-                  params.onRecord(taken.rest);
-              },
-              (error) =>
-                params.onError?.(
-                  error instanceof Error ? error : new Error(String(error))
-                )
-            );
+              await recordReceivedCoins(wallet, [record]);
+            if (!active || !lease.isLive()) return;
+            requireOpenWallet(wallet);
+            const taken = await consumeSelfNotes(wallet, record);
+            if (!active || !lease.isLive()) return;
+            requireOpenWallet(wallet);
+            if (taken.kind === "none") await params.onRecord(record);
+            else if (taken.kind === "consumed" && taken.rest !== undefined)
+              await params.onRecord(taken.rest);
           },
         });
+        return () => {
+          active = false;
+          unsubscribe();
+        };
       }
       return () => {};
     },

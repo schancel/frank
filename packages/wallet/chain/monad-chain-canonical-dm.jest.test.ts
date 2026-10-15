@@ -2831,6 +2831,325 @@ describe('two typed wallets on the open directory', () => {
     unsub()
   })
 
+  it.each(['close', 'error'])(
+    'connection %s during coin wait prevents new host delivery',
+    async kind => {
+      await online('alice', f.alice)
+      await online('bob', f.bob)
+      await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: [
+          {
+            type: 'stealth',
+            networkTag: 'MONT',
+            keyType: 1,
+            ephemeralPubKey: '02' + '22'.repeat(32),
+            transactions: ['1234abcd'],
+            amount: 50000,
+            memo: 'lifetime probe',
+          },
+        ],
+        stampValue: 0n,
+      })
+      const coins = jest.requireActual('../storage/evm-coin-store')
+      const original = coins.recordStoredEvmCoin
+      let entered!: () => void, release!: () => void
+      const started = new Promise<void>(r => {
+        entered = r
+      })
+      const gate = new Promise<void>(r => {
+        release = r
+      })
+      const record = jest
+        .spyOn(coins, 'recordStoredEvmCoin')
+        .mockImplementation(async (...args: Parameters<typeof original>) => {
+          entered()
+          await gate
+          return original(...args)
+        })
+      const onRecord = jest.fn(),
+        onError = jest.fn()
+      mockStreamRecordHandler = undefined
+      const unsubscribe = f.chain.directMessages.subscribeMailboxStream!({
+        wallet: f.bob,
+        onRecord,
+        onError,
+      })
+      try {
+        while (!mockStreamRecordHandler) await new Promise(r => setImmediate(r))
+        const delivering = mockStreamRecordHandler!(inboxRecord(0, 11))
+        await started
+        expect(onRecord).not.toHaveBeenCalled()
+        if (kind === 'close') mockStreamCloseHandler!()
+        else mockStreamErrorHandler!(new Error('socket error'))
+        release()
+        await delivering
+        expect(record).toHaveBeenCalled()
+        expect(onRecord).not.toHaveBeenCalled()
+      } finally {
+        release()
+        unsubscribe()
+        record.mockRestore()
+      }
+    },
+  )
+
+  it.each(['close', 'error'])(
+    'connection %s during decode prevents new host delivery',
+    async kind => {
+      const directory = await online('alice', f.alice)
+      await online('bob', f.bob)
+      await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('revoked decode'),
+        stampValue: 0n,
+      })
+      let entered!: () => void, release!: () => void
+      const started = new Promise<void>(r => {
+        entered = r
+      })
+      const gate = new Promise<void>(r => {
+        release = r
+      })
+      installCanonicalDirectory(f.alice, {
+        ...directory,
+        fetch: f.fetch,
+        peerCurrent: async wanted => {
+          entered()
+          await gate
+          return directory.peerCurrent(wanted)
+        },
+      })
+      const onRecord = jest.fn()
+      const onError = jest.fn()
+      mockStreamRecordHandler = undefined
+      const unsubscribe = f.chain.directMessages.subscribeMailboxStream!({
+        wallet: f.alice,
+        onRecord,
+        onError,
+      })
+      try {
+        while (!mockStreamRecordHandler) await new Promise(r => setImmediate(r))
+        const delivering = mockStreamRecordHandler!(outboundRecord(0, 11))
+        await started
+        expect(onRecord).not.toHaveBeenCalled()
+        if (kind === 'close') mockStreamCloseHandler!()
+        else mockStreamErrorHandler!(new Error('socket error'))
+        release()
+        await delivering
+        expect(onRecord).not.toHaveBeenCalled()
+        expect(onError).toHaveBeenCalledTimes(kind === 'error' ? 1 : 0)
+      } finally {
+        release()
+        unsubscribe()
+      }
+    },
+  )
+
+  it('awaits the opened stream consumer and propagates its failure only to the delivery owner, permitting polling replay', async () => {
+    await online('alice', f.alice)
+    await online('bob', f.bob)
+    await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('stream retry'),
+      stampValue: 0n,
+    })
+    let entered!: () => void, release!: () => void
+    const started = new Promise<void>(resolve => {
+        entered = resolve
+      }),
+      gate = new Promise<void>(resolve => {
+        release = resolve
+      })
+    const failure = new Error('host persistence failed'),
+      onError = jest.fn(),
+      onRecord = jest.fn(async () => {
+        entered()
+        await gate
+        throw failure
+      })
+    mockStreamRecordHandler = undefined
+    const unsubscribe = f.chain.directMessages.subscribeMailboxStream!({
+      wallet: f.alice,
+      onRecord,
+      onError,
+    })
+    try {
+      for (
+        const deadline = Date.now() + 2000;
+        !mockStreamRecordHandler && Date.now() < deadline;
+
+      )
+        await new Promise(resolve => setImmediate(resolve))
+      const delivering = mockStreamRecordHandler!(outboundRecord(0, 11))
+      const rejected = expect(delivering).rejects.toBe(failure)
+      await started
+      expect(onError).not.toHaveBeenCalled()
+      release()
+      await rejected
+      expect(onRecord).toHaveBeenCalledTimes(1)
+      expect(onError).not.toHaveBeenCalled()
+      mailboxPage.mockResolvedValueOnce({ records: [outboundRecord(0, 11)] })
+      const replay = await f.chain.directMessages.fetchSince({
+        wallet: f.alice,
+        sinceMs: 0,
+      })
+      expect(replay[0].items).toEqual(text('stream retry'))
+    } finally {
+      release?.()
+      unsubscribe()
+    }
+  })
+
+  it('closes a late stream handle after unsubscribe and ignores stale callbacks without replacing a newer subscription', async () => {
+    await online('alice', f.alice)
+    const connect = jest.mocked(connectCanonicalMailboxStream),
+      oldHost = jest.fn(),
+      oldError = jest.fn()
+    let oldParams:
+      | Parameters<typeof connectCanonicalMailboxStream>[0]
+      | undefined
+    let finish!: (handle: { close: () => void }) => void
+    connect.mockImplementationOnce(params => {
+      oldParams = params
+      return new Promise(resolve => {
+        finish = resolve
+      })
+    })
+    const oldUnsubscribe = f.chain.directMessages.subscribeMailboxStream!({
+      wallet: f.alice,
+      onRecord: oldHost,
+      onError: oldError,
+    })
+    for (
+      const deadline = Date.now() + 2000;
+      !oldParams && Date.now() < deadline;
+
+    )
+      await new Promise(resolve => setImmediate(resolve))
+    oldUnsubscribe()
+    expect(oldParams!.signal!.aborted).toBe(true)
+    mockStreamRecordHandler = undefined
+    const currentUnsubscribe = f.chain.directMessages.subscribeMailboxStream!({
+      wallet: f.alice,
+      onRecord: jest.fn(),
+    })
+    try {
+      for (
+        const deadline = Date.now() + 2000;
+        !mockStreamRecordHandler && Date.now() < deadline;
+
+      )
+        await new Promise(resolve => setImmediate(resolve))
+      const oldClose = jest.fn()
+      finish({ close: oldClose })
+      await new Promise(resolve => setImmediate(resolve))
+      expect(oldClose).toHaveBeenCalledTimes(1)
+      await oldParams!.onRecord({
+        direction: 'in',
+        delivery: new Uint8Array(),
+        context: new Uint8Array(),
+        timestampMs: 1,
+      })
+      oldParams!.onError?.(new Error('stale'))
+      oldParams!.onClose?.()
+      expect(oldHost).not.toHaveBeenCalled()
+      expect(oldError).not.toHaveBeenCalled()
+    } finally {
+      currentUnsubscribe()
+      oldUnsubscribe()
+    }
+  })
+
+  it.each([
+    ['received-coin', 'live'],
+    ['wallet-sync', 'live'],
+    ['received-coin', 'unsubscribe'],
+    ['wallet-sync', 'unsubscribe'],
+    ['received-coin', 'close'],
+    ['wallet-sync', 'close'],
+    ['received-coin', 'error'],
+    ['wallet-sync', 'error'],
+  ] as const)(
+    'awaits canonical %s processing before host delivery and fences lifetime=%s',
+    async (kind, lifetime) => {
+      // Public chain consumer seam: wallet-sync is not carried by the current wire.
+      const canonical = jest.requireActual('./monad-canonical-dm')
+      const dispatcher = jest.requireActual('../sync-dispatcher')
+      let forward!: (
+        record: import('./active-chain').DirectMessageReceived,
+        lease: { isLive: () => boolean },
+      ) => void | Promise<void>
+      let connectionLive = true
+      const lease = { isLive: () => connectionLive }
+      const installed = jest
+        .spyOn(canonical, 'canonicalDirectMessages')
+        .mockReturnValue({
+          subscribeMailboxStream: (params: any) => {
+            forward = params.onRecord
+            return jest.fn()
+          },
+        })
+      await f.close()
+      f = await fixture()
+      let entered!: () => void, release!: () => void
+      const started = new Promise<void>(resolve => {
+          entered = resolve
+        }),
+        gate = new Promise<void>(resolve => {
+          release = resolve
+        })
+      const applied = jest
+        .spyOn(dispatcher, 'applyWalletSyncItem')
+        .mockImplementation(async () => {
+          entered()
+          await gate
+          return false
+        })
+      const host = jest.fn(),
+        unsubscribe = f.chain.directMessages.subscribeMailboxStream!({
+          wallet: f.alice,
+          onRecord: host,
+        })
+      try {
+        const delivering = forward(
+          {
+            senderAddress: f.alice.identity.address,
+            recipientAddress: f.alice.identity.address,
+            items: [
+              { type: kind, chainIdentifier: f.alice.chainIdentifier } as never,
+              ...text('remaining'),
+            ],
+            payloadDigest: 'await-' + kind,
+            stampValueWei: 0n,
+            receivedTime: 11,
+          },
+          lease,
+        )
+        await started
+        expect(host).not.toHaveBeenCalled()
+        if (lifetime === 'unsubscribe') unsubscribe()
+        if (lifetime === 'close' || lifetime === 'error') connectionLive = false
+        release()
+        await delivering
+        expect(applied).toHaveBeenCalledTimes(1)
+        if (lifetime !== 'live') expect(host).not.toHaveBeenCalled()
+        else {
+          expect(host).toHaveBeenCalledTimes(1)
+          expect(host.mock.calls[0][0].items).toEqual(text('remaining'))
+        }
+      } finally {
+        release?.()
+        unsubscribe()
+        applied.mockRestore()
+        installed.mockRestore()
+      }
+    },
+  )
+
   it('automatically reconnects when stream closes or errors with modest backoff', async () => {
     await online('alice', f.alice)
     const connectSpy = jest.mocked(connectCanonicalMailboxStream)
@@ -2955,7 +3274,7 @@ describe('two typed wallets on the open directory', () => {
     expect(recovered).toHaveLength(1)
     expect(recovered[0].items).toEqual(text('recover original'))
     const parsed = parseFrame(original.delivery)
-    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 1) throw new Error('fixture')
+    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 10) throw new Error('fixture')
     expect(recovered[0].payloadDigest).toBe(toHex(parsed.typed.payloadDigest))
     expect(recovered[0].stampPayments?.map(payment => payment.txHash)).toEqual(
       parsed.typed.payments.map(payment => '0x' + toHex(payment.transactionId)),

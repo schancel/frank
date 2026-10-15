@@ -352,6 +352,20 @@ impl<'a> DbMonadProfiles<'a> {
         Ok(Some(serialized))
     }
 
+    /// Count current profile rows without decoding payloads or returning addresses.
+    pub fn count_records(&self) -> Result<u64> {
+        let iter = self
+            .db
+            .rocksdb()
+            .iterator_cf(self.cf_monad_profiles, IteratorMode::Start);
+        let mut count = 0u64;
+        for row in iter {
+            row?;
+            count = count.saturating_add(1);
+        }
+        Ok(count)
+    }
+
     /// Retrieve a [`cashweb_payload::proto::SignedPayload`] previously registered under
     /// `address`. Returns [`None`] if nothing is registered or if the record is a CBOR frame.
     pub fn get(&self, address: &Address) -> Result<Option<cashweb_payload::proto::SignedPayload>> {
@@ -613,9 +627,11 @@ mod tests {
         let address = Address([7u8; 20]);
 
         assert_eq!(db.monad_profiles().get(&address)?, None);
+        assert_eq!(db.monad_profiles().count_records()?, 0);
 
         let signed = sample_signed_payload(100);
         db.monad_profiles().put(&address, &signed)?;
+        assert_eq!(db.monad_profiles().count_records()?, 1);
         assert_eq!(db.monad_profiles().get(&address)?, Some(signed.clone()));
 
         // A different address is unaffected.
@@ -625,6 +641,7 @@ mod tests {
         // Overwriting replaces the stored value.
         let updated = sample_signed_payload(200);
         db.monad_profiles().put(&address, &updated)?;
+        assert_eq!(db.monad_profiles().count_records()?, 1);
         assert_eq!(db.monad_profiles().get(&address)?, Some(updated.clone()));
 
         drop(db);

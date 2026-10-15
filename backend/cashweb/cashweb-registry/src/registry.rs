@@ -226,6 +226,11 @@ impl Registry {
         &self.event_bus
     }
 
+    /// Return the current number of address-keyed public profile records, without exposing keys.
+    pub fn stored_public_profile_record_count(&self) -> Result<u64> {
+        self.db.monad_profiles().count_records()
+    }
+
     /// Open the public admission facade without exposing the registry database.
     pub fn directory_preview(
         &self,

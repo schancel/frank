@@ -1,4 +1,4 @@
-use std::{io::Read, sync::Arc, time::Duration};
+use std::{io::Read, net::SocketAddr, sync::Arc, time::Duration};
 
 use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_error::{Result, WrapErr};
@@ -480,12 +480,37 @@ async fn main() -> Result<()> {
         }
     });
     let router = server.into_router_with_services(directory.clone(), oracle);
+    let metrics_addr = match std::env::var("FRANK_METRICS_HOST") {
+        Ok(value) => Some(value.parse::<SocketAddr>().map_err(|error| {
+            bitcoinsuite_error::Report::msg(format!("Invalid FRANK_METRICS_HOST: {error}"))
+        })?),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => {
+            return Err(bitcoinsuite_error::Report::msg(format!(
+                "Unable to read FRANK_METRICS_HOST: {error}"
+            )))
+        }
+    };
+    let metrics_registry = Arc::clone(&registry);
+    let metrics_server = async move {
+        if let Some(address) = metrics_addr {
+            let metrics_router = cashweb_registry::metrics::router(metrics_registry);
+            info!("Listening on private metrics address {}", address);
+            axum::Server::bind(&address)
+                .serve(metrics_router.into_make_service())
+                .await
+        } else {
+            std::future::pending().await
+        }
+    };
+    tokio::pin!(metrics_server);
     info!("Listening on {}", conf.host);
     let server = axum::Server::bind(&conf.host)
         .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>());
     tokio::pin!(server);
     let server_result = tokio::select! {
-        result = &mut server => Some(result),
+        result = &mut server => Some((false, result)),
+        result = &mut metrics_server => Some((true, result)),
         _ = shutdown_signal() => None,
     };
     if let Some(runtime) = directory {
@@ -499,8 +524,13 @@ async fn main() -> Result<()> {
             runtime.wait_stopped().await;
         }
     }
-    if let Some(result) = server_result {
+    if let Some((is_metrics_server, result)) = server_result {
         result?;
+        if is_metrics_server {
+            return Err(bitcoinsuite_error::Report::msg(
+                "Private metrics listener stopped unexpectedly",
+            ));
+        }
     }
 
     Ok(())

@@ -17,6 +17,7 @@ pub mod events;
 pub(crate) mod forum;
 pub mod http;
 pub mod lotus_adapter;
+pub mod metrics;
 pub mod monad_adapter;
 pub(crate) mod monad_dm_payment;
 pub mod monad_dm_verify;

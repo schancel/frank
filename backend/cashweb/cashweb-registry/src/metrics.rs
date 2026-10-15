@@ -12,7 +12,7 @@ use crate::registry::Registry;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const PROFILE_COUNT_NAME: &str = "frank_registry_stored_public_profile_records";
-const TOPIC_POST_COUNT_NAME: &str = "frank_registry_stored_legacy_topic_posts";
+const FORUM_POST_COUNT_NAME: &str = "frank_forum_stored_posts";
 const REGISTRY_BYTES_NAME: &str = "frank_registry_rocksdb_estimated_live_data_bytes";
 const DIRECT_MESSAGE_BYTES_NAME: &str = "frank_direct_messages_rocksdb_estimated_live_data_bytes";
 const DIRECT_MESSAGES_TOTAL_NAME: &str = "frank_canonical_messages_stored_total";
@@ -21,8 +21,8 @@ const DIRECT_MESSAGES_TOTAL_NAME: &str = "frank_canonical_messages_stored_total"
 struct Snapshot {
     profile_count: AtomicU64,
     profile_count_available: AtomicBool,
-    topic_post_count: AtomicU64,
-    topic_post_count_available: AtomicBool,
+    forum_post_count: AtomicU64,
+    forum_post_count_available: AtomicBool,
     registry_bytes: AtomicU64,
     registry_bytes_available: AtomicBool,
     direct_message_bytes: AtomicU64,
@@ -39,14 +39,23 @@ impl Snapshot {
             &self.profile_count,
             &self.profile_count_available,
         );
-        self.update(
-            TOPIC_POST_COUNT_NAME,
-            registry
-                .stored_legacy_topic_post_count()
-                .map_err(|e| e.to_string()),
-            &self.topic_post_count,
-            &self.topic_post_count_available,
-        );
+        match registry.stored_forum_post_count() {
+            Ok(Some(count)) => self.update(
+                FORUM_POST_COUNT_NAME,
+                Ok(count),
+                &self.forum_post_count,
+                &self.forum_post_count_available,
+            ),
+            Ok(None) => self
+                .forum_post_count_available
+                .store(false, Ordering::Relaxed),
+            Err(error) => self.update(
+                FORUM_POST_COUNT_NAME,
+                Err(error.to_string()),
+                &self.forum_post_count,
+                &self.forum_post_count_available,
+            ),
+        }
         self.update(
             REGISTRY_BYTES_NAME,
             registry
@@ -96,10 +105,10 @@ impl Snapshot {
         );
         append_gauge(
             &mut output,
-            TOPIC_POST_COUNT_NAME,
-            "Current legacy protobuf topic posts in this relay's discovery index; excludes canonical Forum CBOR posts.",
-            &self.topic_post_count,
-            &self.topic_post_count_available,
+            FORUM_POST_COUNT_NAME,
+            "Current confirmed canonical Forum posts; available after the Forum owner is opened by normal traffic.",
+            &self.forum_post_count,
+            &self.forum_post_count_available,
         );
         append_gauge(
             &mut output,
@@ -174,7 +183,10 @@ pub fn router(registry: Arc<Registry>) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_gauge, Snapshot, DIRECT_MESSAGES_TOTAL_NAME, PROFILE_COUNT_NAME};
+    use super::{
+        append_gauge, Snapshot, DIRECT_MESSAGES_TOTAL_NAME, FORUM_POST_COUNT_NAME,
+        PROFILE_COUNT_NAME,
+    };
     use std::sync::atomic::{AtomicBool, AtomicU64};
 
     #[test]
@@ -225,5 +237,21 @@ mod tests {
             ]
         );
         assert!(samples.iter().all(|line| !line.contains('{')));
+    }
+
+    #[test]
+    fn canonical_forum_gauge_uses_the_current_metric_name() {
+        let value = AtomicU64::new(4);
+        let available = AtomicBool::new(true);
+        let mut output = String::new();
+        append_gauge(
+            &mut output,
+            FORUM_POST_COUNT_NAME,
+            "canonical forum posts",
+            &value,
+            &available,
+        );
+        assert!(output.contains("frank_forum_stored_posts 4\n"));
+        assert!(!output.contains("frank_registry_stored_legacy_topic_posts"));
     }
 }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::cell::Cell;
 
-use bitcoinsuite_core::{ecc::Ecc, lotus_txid, Bytes, Hashed, LotusAddress, Net, Sha256, Sha256d};
+use bitcoinsuite_core::{ecc::Ecc, lotus_txid, Bytes, Hashed, LotusAddress, Net, Sha256d};
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::{ErrorMeta, Result};
 use cashweb_payload::{
@@ -231,18 +231,6 @@ impl Registry {
         self.db.monad_profiles().count_records()
     }
 
-    /// Return the exact number of legacy protobuf Monad topic posts in the discovery index.
-    pub fn stored_legacy_topic_post_count(&self) -> Result<u64> {
-        self.db
-            .monad_topic_posts()
-            .list_topics()?
-            .into_iter()
-            .try_fold(0u64, |total, (_, stats)| {
-                total.checked_add(stats.post_count)
-            })
-            .ok_or_else(|| bitcoinsuite_error::Report::msg("topic post count overflow"))
-    }
-
     /// Estimated live key/value bytes in the registry RocksDB (not filesystem or PVC usage).
     pub fn registry_estimated_live_data_size_bytes(&self) -> Result<u64> {
         self.db.estimated_live_data_size_bytes()
@@ -297,6 +285,11 @@ impl Registry {
 
     pub(crate) fn forum(&self) -> &crate::forum::Owner {
         &self.forum
+    }
+
+    /// Return confirmed canonical Forum posts when the Forum owner is already open.
+    pub(crate) fn stored_forum_post_count(&self) -> crate::store::forum::Result<Option<u64>> {
+        self.forum.stored_post_count()
     }
 
     pub(crate) fn canonical_dm(&self) -> &crate::store::monad_dm_cbor::Owner {
@@ -908,161 +901,6 @@ impl Registry {
         limit: usize,
     ) -> Result<Vec<(Address, Vec<u8>)>> {
         self.db.monad_profiles().search_by_name_raw(prefix, limit)
-    }
-
-    /// Store a [`proto::StoredMonadTopicPost`] (ticket #30), once its initial vote's burn has
-    /// already verified (see `crate::http::monad_topics`). Mirrors [`Registry::put_monad_message`]: no
-    /// `validate_burn_txs`/`chain_adapter` call here either, since broadcasting+verifying the
-    /// initial-vote burn is `monad_topic_relay::broadcast_and_verify_topic_vote`'s job, called by
-    /// the HTTP layer directly.
-    ///
-    /// Stamps `network_tag` (ticket #39, mirroring [`Registry::put_monad_message`] exactly -- see
-    /// `crate::network_tag`'s module docs) onto `post` here and returns the tagged record actually
-    /// persisted.
-    #[cfg(test)]
-    pub(crate) fn put_monad_topic_post(
-        &self,
-        payload_hash: &[u8],
-        post: proto::StoredMonadTopicPost,
-        network_tag: &[u8],
-    ) -> Result<proto::StoredMonadTopicPost> {
-        let post = proto::StoredMonadTopicPost {
-            network_tag: network_tag.to_vec(),
-            ..post
-        };
-        self.db.monad_topic_posts().put(payload_hash, &post)?;
-        Ok(post)
-    }
-
-    /// Atomically persist a verified legacy post, its indexes, and its mandatory initial vote.
-    pub(crate) fn admit_legacy_monad_topic_post(
-        &self,
-        payload_hash: &[u8],
-        post: proto::StoredMonadTopicPost,
-        network_tag: &[u8],
-        initial_vote: &proto::StoredMonadTopicVoteEntry,
-    ) -> Result<proto::StoredMonadTopicPost> {
-        let post = proto::StoredMonadTopicPost {
-            network_tag: network_tag.to_vec(),
-            ..post
-        };
-        self.db
-            .monad_topic_posts()
-            .admit_legacy_post(payload_hash, &post, initial_vote)?;
-        Ok(post)
-    }
-
-    /// Retrieve a previously-stored [`proto::StoredMonadTopicPost`] by its `payload_hash`.
-    pub(crate) fn get_monad_topic_post(
-        &self,
-        payload_hash: &[u8],
-    ) -> Result<Option<proto::StoredMonadTopicPost>> {
-        self.db.monad_topic_posts().get(payload_hash)
-    }
-
-    /// Record a single verified vote (a post's own initial vote, or a later
-    /// [`proto::MonadTopicVote`]) against `entry.target_payload_hash` (ticket #30).
-    pub(crate) fn add_monad_topic_vote(
-        &self,
-        entry: &proto::StoredMonadTopicVoteEntry,
-    ) -> Result<()> {
-        self.db.monad_topic_votes().add_vote(entry)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn monad_topic_vote_tally(&self, payload_hash: &[u8]) -> Result<i64> {
-        self.db.monad_topic_votes().tally(payload_hash)
-    }
-
-    /// Atomically admit a CBOR post and its mandatory initial vote, selecting the immutable
-    /// author by confirmed chain order.
-    pub(crate) fn admit_cbor_topic_post(
-        &self,
-        payload_hash: &[u8],
-        post: proto::StoredMonadTopicPost,
-        initial_vote: &proto::StoredMonadTopicVoteEntry,
-    ) -> Result<crate::store::monad_topics::CborPostAdmission> {
-        self.db
-            .monad_topic_posts()
-            .admit_cbor_post(payload_hash, post, initial_vote)
-    }
-
-    /// Attach `post`'s current tallied vote weight (sum of every vote recorded against
-    /// `payload_hash`, including its own initial vote), producing a [`proto::MonadTopicPostView`].
-    /// Shared by [`Registry::get_monad_topic_post_view`] and [`Registry::list_monad_topic_posts_by_topic`]
-    /// (ticket #40) so both compute a post's tally the exact same way -- a client can't observe
-    /// drift between "look up one post by hash" and "list a topic's posts".
-    fn monad_topic_post_view(
-        &self,
-        payload_hash: &[u8],
-        post: proto::StoredMonadTopicPost,
-    ) -> Result<proto::MonadTopicPostView> {
-        let vote_weight = self.db.monad_topic_votes().tally(payload_hash)?;
-        Ok(proto::MonadTopicPostView {
-            post: Some(post),
-            vote_weight,
-        })
-    }
-
-    pub(crate) fn is_legacy_topic_post(post: &proto::StoredMonadTopicPost) -> bool {
-        if !post.cbor_post_frame.is_empty() {
-            return false;
-        }
-        let Some(inner) = post.post.as_ref() else {
-            return false;
-        };
-        Sha256::digest(inner.encrypted_payload.clone().into()).as_slice()
-            == inner.payload_hash.as_slice()
-    }
-
-    /// Fetch a stored topic post together with its current tallied vote weight (sum of every
-    /// vote recorded against its `payload_hash`, including its own initial vote). `None` if no
-    /// post is stored for `payload_hash`.
-    pub(crate) fn get_monad_topic_post_view(
-        &self,
-        payload_hash: &[u8],
-    ) -> Result<Option<proto::MonadTopicPostView>> {
-        let post = match self.get_monad_topic_post(payload_hash)? {
-            Some(post) if Self::is_legacy_topic_post(&post) => post,
-            None => return Ok(None),
-            Some(_) => return Ok(None),
-        };
-        Ok(Some(self.monad_topic_post_view(payload_hash, post)?))
-    }
-
-    /// List every stored [`proto::StoredMonadTopicPost`] under `topic` with `timestamp >= since`
-    /// (milliseconds since the Unix epoch), each with its current tallied vote weight attached, in
-    /// `timestamp` ascending order (ticket #40). See `crate::store::monad_topics`'s module docs for the
-    /// `CF_MONAD_TOPIC_POSTS_BY_TOPIC` key layout this range-scans, and [`Registry::monad_topic_post_view`] for
-    /// why the attached tally can't drift from [`Registry::get_monad_topic_post_view`]'s.
-    pub(crate) fn list_monad_topic_posts_by_topic(
-        &self,
-        topic: &str,
-        since: i64,
-    ) -> Result<Vec<proto::MonadTopicPostView>> {
-        self.db
-            .monad_topic_posts()
-            .list_by_topic(topic, since)?
-            .into_iter()
-            .filter(Self::is_legacy_topic_post)
-            .map(|post| {
-                let payload_hash = post
-                    .post
-                    .as_ref()
-                    .map(|p| p.payload_hash.clone())
-                    .unwrap_or_default();
-                self.monad_topic_post_view(&payload_hash, post)
-            })
-            .collect()
-    }
-
-    /// List every distinct topic name this relay has stored at least one post for, together with
-    /// its current post count and last-activity timestamp, ordered by last-activity descending
-    /// (ticket #72). See `crate::store::monad_topics`'s module docs for the discovery index this
-    /// delegates to, and this ticket's design-decision comment on GitHub issue #72 for why topics
-    /// stay emergent/tag-based rather than a first-class registration.
-    pub(crate) fn list_topics(&self) -> Result<Vec<(String, proto::TopicDiscoveryStats)>> {
-        self.db.monad_topic_posts().list_topics()
     }
 }
 

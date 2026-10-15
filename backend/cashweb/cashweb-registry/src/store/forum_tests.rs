@@ -132,6 +132,7 @@ fn exact_pending_survives_restart_and_publication_is_once_only() {
         original.frame()
     );
     assert!(store.post(&target).unwrap().unwrap().visible.is_none());
+    assert_eq!(store.stored_post_count().unwrap(), 0);
     let at = Timestamp {
         seconds: 200,
         nanoseconds: 3,
@@ -149,6 +150,7 @@ fn exact_pending_survives_restart_and_publication_is_once_only() {
         .unwrap();
     assert_eq!(store.pending_count, 0);
     assert_eq!(store.pending_bytes, 0);
+    assert_eq!(store.stored_post_count().unwrap(), 1);
     let post = store.post(&target).unwrap().unwrap();
     assert_eq!(post.visible, Some(at));
     assert_eq!(post.aggregate.magnitude, Magnitude::from_u64(7));
@@ -192,6 +194,7 @@ fn exact_pending_survives_restart_and_publication_is_once_only() {
         })
         .unwrap();
     assert_eq!(topics, vec![("test.topic".into(), 1, at)]);
+    assert_eq!(store.stored_post_count().unwrap(), 1);
 }
 
 #[test]

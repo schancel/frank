@@ -360,7 +360,8 @@ async fn put_forum(
     .await
 }
 
-pub async fn handle_put_monad_topic_post(
+/// Admit and publish a canonical Forum post.
+pub async fn handle_put_forum_post(
     Extension(server): Extension<RegistryServer>,
     headers: HeaderMap,
     body: Bytes,
@@ -368,7 +369,8 @@ pub async fn handle_put_monad_topic_post(
     put_forum(server, headers, body, true).await
 }
 
-pub async fn handle_put_monad_topic_vote(
+/// Admit and publish a canonical Forum vote.
+pub async fn handle_put_forum_vote(
     Extension(server): Extension<RegistryServer>,
     headers: HeaderMap,
     body: Bytes,
@@ -376,7 +378,8 @@ pub async fn handle_put_monad_topic_vote(
     put_forum(server, headers, body, false).await
 }
 
-pub async fn handle_get_monad_topic_post(
+/// Retrieve a canonical Forum post by its transaction hash.
+pub async fn handle_get_forum_post(
     Path(hash): Path<String>,
     Extension(server): Extension<RegistryServer>,
     headers: HeaderMap,
@@ -527,7 +530,8 @@ fn forum_query_component(raw: &str) -> crate::store::forum::Result<String> {
     String::from_utf8(decoded).map_err(invalid)
 }
 
-pub async fn handle_list_monad_topic_posts(
+/// List canonical Forum posts for one topic.
+pub async fn handle_list_forum_posts(
     RawQuery(raw): RawQuery,
     Extension(server): Extension<RegistryServer>,
     headers: HeaderMap,
@@ -542,7 +546,8 @@ pub async fn handle_list_monad_topic_posts(
     forum_page(&server.registry, raw.as_deref(), false)
 }
 
-pub async fn handle_list_topics(
+/// List canonical Forum topic discovery counts.
+pub async fn handle_list_forum_discovery(
     RawQuery(raw): RawQuery,
     Extension(server): Extension<RegistryServer>,
     headers: HeaderMap,
@@ -705,8 +710,8 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if method == "eth_sendRawTransaction" {
                 // Defaults to hash 0x11 (matching the receipt/tx fixtures below), but tests that
-                // need a *distinct* broadcast tx hash (e.g. to prove multiple votes tally
-                // separately rather than colliding on `DbMonadTopicVotes`' tx_hash-keyed dedup) can
+                // need a *distinct* broadcast tx hash (e.g. to prove multiple vote burns tally
+                // separately rather than colliding on their transaction identity) can
                 // `set("eth_sendRawTransaction", ...)` to override it.
                 return Ok(self
                     .responses
@@ -1182,32 +1187,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn historical_topic_rows_remain_retained_without_normal_route_reachability() {
-        if isolated("http::monad_topics::tests::historical_topic_rows_remain_retained_without_normal_route_reachability", "FRANK_FORUM_RETENTION_ROUTE_CHILD") { return; }
+    async fn retired_protobuf_topic_rows_remain_opaque_and_unserved() {
+        if isolated(
+            "http::monad_topics::tests::retired_protobuf_topic_rows_remain_opaque_and_unserved",
+            "FRANK_FORUM_RETENTION_ROUTE_CHILD",
+        ) {
+            return;
+        }
         configure_reads();
-        use crate::proto;
         use tower::ServiceExt;
         let (dir, registry) = test_registry();
+        drop(registry);
+        let db_path = dir.path().join("db.rocksdb");
+        let db = Db::open(&db_path).unwrap();
         let hash = [0xab; 32];
-        let stored = proto::StoredMonadTopicPost {
-            post: Some(proto::MonadTopicPost {
-                topic: "old.topic".into(),
-                parent_post_hash: vec![],
-                raw_burn_tx: vec![1, 2, 3],
-                encrypted_payload: vec![4, 5, 6],
-                payload_hash: hash.to_vec(),
-            }),
-            sender_address: vec![9; 20],
-            tx_hash: vec![8; 32],
-            timestamp: 500,
-            network_tag: vec![],
-            cbor_post_frame: vec![],
-            confirmed_block_number: 0,
-            confirmed_transaction_index: 0,
-        };
-        registry
-            .put_monad_topic_post(&hash, stored.clone(), &[])
+        let legacy_value = b"opaque-retired-protobuf-row";
+        db.put(db.cf("monad_topic_posts").unwrap(), hash, legacy_value)
             .unwrap();
+        let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
         let router = test_server(registry).into_router();
         for accept in ["application/cbor", "application/x-protobuf"] {
             let response = router
@@ -1266,15 +1263,14 @@ mod tests {
             }
         }
         drop(router);
-        let registry = Registry::new(
-            Db::open(dir.path().join("db.rocksdb")).unwrap(),
-            Arc::new(UnusedChainAdapter),
-            Net::Regtest,
-        );
+        let reopened = Db::open(&db_path).unwrap();
         assert_eq!(
-            registry.get_monad_topic_post(&hash).unwrap().unwrap(),
-            stored,
-            "HTTP cutover must not delete predecessor authority"
+            reopened
+                .get(reopened.cf("monad_topic_posts").unwrap(), hash)
+                .unwrap()
+                .map(|value| value.to_vec()),
+            Some(legacy_value.to_vec()),
+            "retiring protobuf support must preserve old rows without exposing them"
         );
     }
 

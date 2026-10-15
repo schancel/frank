@@ -247,6 +247,19 @@ impl Owner {
         self.with(network, policy, true, |state| state.page(query, cursor))?
             .ok_or(ForumError::Unavailable)
     }
+
+    /// Read the current durable Forum post count only when normal Forum traffic has opened its owner.
+    /// Metrics must not initialize the store or trigger its recovery/projection rebuild.
+    pub(crate) fn stored_post_count(&self) -> Result<Option<u64>> {
+        let guard = self.state.lock().map_err(|_| ForumError::Unavailable)?;
+        let Some(state) = guard.as_ref() else {
+            return Ok(None);
+        };
+        if state.unavailable {
+            return Err(ForumError::Unavailable);
+        }
+        state.store.stored_post_count().map(Some)
+    }
 }
 
 fn request(network: &str, policy: TopicBurnPolicy, frame: &[u8]) -> Result<Observation> {

@@ -17,8 +17,8 @@ use crate::{
         handle_put_monad_profile, handle_search_monad_profiles, BoundedProfileBody,
     },
     http::monad_topics::{
-        handle_forum_status, handle_get_monad_topic_post, handle_list_monad_topic_posts,
-        handle_list_topics, handle_put_monad_topic_post, handle_put_monad_topic_vote,
+        handle_forum_status, handle_get_forum_post, handle_list_forum_discovery,
+        handle_list_forum_posts, handle_put_forum_post, handle_put_forum_vote,
     },
     http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
     http::solana_proxy::SolanaProxyRuntime,
@@ -637,32 +637,32 @@ impl RegistryServer {
             // backwards-compatible `/message/monad/topics*` aliases.
             .route(
                 "/topics",
-                routing::put(handle_put_monad_topic_post).get(handle_list_monad_topic_posts),
+                routing::put(handle_put_forum_post).get(handle_list_forum_posts),
             )
-            .route("/topics/vote", routing::put(handle_put_monad_topic_vote))
-            .route("/topics/discover", routing::get(handle_list_topics))
-            .route("/topics/status", routing::post(handle_forum_status))
+            .route("/topics/vote", routing::put(handle_put_forum_vote))
             .route(
-                "/topics/:payload_hash",
-                routing::get(handle_get_monad_topic_post),
+                "/topics/discover",
+                routing::get(handle_list_forum_discovery),
             )
+            .route("/topics/status", routing::post(handle_forum_status))
+            .route("/topics/:payload_hash", routing::get(handle_get_forum_post))
             .route(
                 "/message/monad/topics",
-                routing::put(handle_put_monad_topic_post).get(handle_list_monad_topic_posts),
+                routing::put(handle_put_forum_post).get(handle_list_forum_posts),
             )
             .route(
                 "/message/monad/topics/vote",
-                routing::put(handle_put_monad_topic_vote),
+                routing::put(handle_put_forum_vote),
             )
             // `GET /message/monad/topics/discover` (ticket #72): topic-discovery listing -- see
-            // `crate::http::monad_topics::handle_list_topics`'s docs. Another static segment at
+            // `crate::http::monad_topics::handle_list_forum_discovery`'s docs. Another static segment at
             // the same path depth as "vote" above, so the same "static segments take priority
             // over the `:payload_hash` wildcard segment at this position" reasoning already
             // documented just above applies here too: this can't be shadowed by, or shadow,
             // `/message/monad/topics/:payload_hash` below.
             .route(
                 "/message/monad/topics/discover",
-                routing::get(handle_list_topics),
+                routing::get(handle_list_forum_discovery),
             )
             .route(
                 "/message/monad/topics/status",
@@ -670,7 +670,7 @@ impl RegistryServer {
             )
             .route(
                 "/message/monad/topics/:payload_hash",
-                routing::get(handle_get_monad_topic_post),
+                routing::get(handle_get_forum_post),
             )
             .route(
                 "/push/vapid-public-key",

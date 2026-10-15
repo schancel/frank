@@ -43,7 +43,7 @@
 //! [`normalized_display_name`]. A profile with no `display_name` entry, an empty/whitespace-only
 //! one, or one whose body isn't valid UTF-8, isn't indexed at all (nothing to search on; this is a
 //! best-effort optional field, not an error). Keeping the raw (unhashed) UTF-8 bytes as the key
-//! prefix -- unlike `CF_MONAD_TOPIC_POSTS_BY_TOPIC`'s hashed-topic index -- is deliberate: this
+//! prefix -- unlike the retired topic store's hashed-topic index -- is deliberate: this
 //! index's whole purpose is prefix scanning ([`DbMonadProfiles::search_by_name`]), and hashing
 //! would destroy the sort order a prefix scan depends on. Search is intentionally prefix-only (not
 //! fuzzy) for this first pass, matching ticket #48's own scoping decision.

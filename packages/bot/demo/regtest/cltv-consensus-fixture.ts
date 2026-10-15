@@ -28,6 +28,28 @@ const p2sh = (redeem: Uint8Array) => concat(bytes('a914'), hash160(redeem), byte
 const raw = (tx: Transaction) => hex(must(serializeTransaction(tx, XEC_REGTEST)))
 const txid = (tx: Transaction) => hex(must(transactionId(tx, XEC_REGTEST)).slice().reverse())
 const digest = (tx: Transaction, script: Uint8Array, value: bigint) => must(sighash(tx, 0, XEC_REGTEST, 0x41, { algorithm: 'forkid', scriptCode: script, amount: value }))
+const makeTransaction = (prevTxid: string, vout: number, outputValue: bigint, script: Uint8Array, locktime = 0, sequence = 0xffffffff): Transaction => ({
+    version: 2, inputs: [{ prevout: { txid: internalHashFromDisplay(must(displayTxidFromBytes(bytes(prevTxid)))), vout }, scriptSig: new Uint8Array(), sequence }],
+    outputs: [{ value: outputValue, scriptPubKey: script }], locktime,
+  })
+
+function redeemScript(claimPub: Uint8Array, refundPub: Uint8Array, timestamp: number): Uint8Array {
+  return concat(bytes('63'), push(claimPub), bytes('ac67'), push(encodeScriptNum(BigInt(timestamp))), bytes('b175'), push(refundPub), bytes('ac68'))
+}
+function signOrdinary(planned: Transaction, redeem: Uint8Array, inputValue: bigint, key: Uint8Array, branch: 'claim' | 'refund') {
+  const hash = digest(planned, redeem, inputValue)
+  const signer = secp256k1.getPublicKey(key, true)
+  const signature = secp256k1.sign(hash, key, { prehash: false, lowS: true })
+  assert.ok(secp256k1.verify(signature.toCompactRawBytes(), hash, signer, { prehash: false, lowS: true }))
+  const der = signature.toDERRawBytes()
+  const tx = { ...planned, inputs: [{ ...planned.inputs[0]!, scriptSig: concat(push(concat(der, bytes('41'))), bytes(branch === 'claim' ? '51' : '00'), push(redeem)) }] }
+  const serialized = raw(tx)
+  assert.equal(hex(digest(must(parseTransaction(bytes(serialized), XEC_REGTEST)), redeem, inputValue)), hex(hash))
+  return { tx, raw: serialized, digest: hex(hash), signatureDer: hex(der), signerPublicKey: hex(signer) }
+}
+/** Pure ordinary test construction shared by native clock fixtures; no keys or nodes on import. */
+export const ordinaryCltv = { hex, bytes, concat, push, p2pkh, p2sh, raw, txid, digest, transaction: makeTransaction, redeemScript, sign: signOrdinary }
+
 const PRINCIPAL = 10000n
 const FEE = 1000n
 const BUMPED_FEE = 1500n
@@ -85,7 +107,7 @@ async function exercise(fixture: ReadyTemplateFixture): Promise<CltvEvidence> {
   const initial = await tip()
   const timestamp = initial.time + 3000
   assert.ok(timestamp >= 500000000)
-  const redeem = concat(bytes('63'), push(claimPub), bytes('ac67'), push(encodeScriptNum(BigInt(timestamp))), bytes('b175'), push(refundPub), bytes('ac68'))
+  const redeem = redeemScript(claimPub, refundPub, timestamp)
   const contractScript = p2sh(redeem)
   const recipient = p2pkh(claimPub)
   const refundDestination = p2pkh(refundPub)
@@ -117,10 +139,6 @@ async function exercise(fixture: ReadyTemplateFixture): Promise<CltvEvidence> {
     for (let i = 0; (await tip()).mediantime < target; i++) { assert.ok(i < 12, 'MTP advancement bound'); await mineEmpty(1) }
     assert.equal((await tip()).mediantime, target)
   }
-  const makeTransaction = (prevTxid: string, vout: number, outputValue: bigint, script: Uint8Array, locktime = 0, sequence = 0xffffffff): Transaction => ({
-    version: 2, inputs: [{ prevout: { txid: internalHashFromDisplay(must(displayTxidFromBytes(bytes(prevTxid)))), vout }, scriptSig: new Uint8Array(), sequence }],
-    outputs: [{ value: outputValue, scriptPubKey: script }], locktime,
-  })
   const signed = (vout: number, branch: 'claim' | 'refund', overrides: { locktime?: number; sequence?: number; wrongKey?: boolean; fee?: bigint } = {}): SignedSpend => {
     const fee = overrides.fee ?? FEE
     const transaction = makeTransaction(fundingId, vout, PRINCIPAL, branch === 'claim' ? recipient : refundDestination,
@@ -129,20 +147,14 @@ async function exercise(fixture: ReadyTemplateFixture): Promise<CltvEvidence> {
     const changeValue = inputValue - PRINCIPAL - fee
     assert.ok(changeValue >= 0n)
     const planned = changeValue === 0n ? transaction : { ...transaction, outputs: [...transaction.outputs, { value: changeValue, scriptPubKey: refundDestination }] }
-    const hash = digest(planned, redeem, inputValue)
     // Every modified timing/sequence variant is signed again over its actual final fields.
     const key = overrides.wrongKey ? claimKey : branch === 'claim' ? claimKey : refundKey
-    const signer = secp256k1.getPublicKey(key, true)
-    const signature = secp256k1.sign(hash, key, { prehash: false, lowS: true })
-    assert.ok(secp256k1.verify(signature.toCompactRawBytes(), hash, signer, { prehash: false, lowS: true }))
-    const der = signature.toDERRawBytes()
-    const tx = { ...planned, inputs: [{ ...planned.inputs[0]!, scriptSig: concat(push(concat(der, bytes('41'))), bytes(branch === 'claim' ? '51' : '00'), push(redeem)) }] }
-    const serialized = raw(tx)
-    assert.equal(hex(digest(must(parseTransaction(bytes(serialized), XEC_REGTEST)), redeem, inputValue)), hex(hash))
+    const result = signOrdinary(planned, redeem, inputValue, key, branch)
+    const { tx, raw: serialized } = result
     assert.equal(inputValue - tx.outputs.reduce((sum, output) => sum + output.value, 0n), fee)
     const size = serialized.length / 2
     if (fee !== 0n) assert.ok(fee >= BigInt(size) && fee <= BigInt(FEE_ENVELOPE.maximumSats), 'declared local fee envelope')
-    return { tx, raw: serialized, txid: txid(tx), digest: hex(hash), signatureDer: hex(der), signerPublicKey: hex(signer), branch,
+    return { ...result, txid: txid(tx), branch,
       input: { txid: fundingId, vout, valueSats: Number(inputValue) }, principalSats: Number(PRINCIPAL), feeSats: Number(fee), size, locktime: tx.locktime, sequence: tx.inputs[0]!.sequence }
   }
   const publicSpend = ({ tx: _tx, ...publicFields }: SignedSpend) => publicFields

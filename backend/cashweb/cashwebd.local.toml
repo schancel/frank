@@ -52,27 +52,99 @@ checkpoint_block_hash = "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471
 upstream_ws_env = "MONAD_TESTNET_WS_RPC_URL"
 max_get_logs_range = 10
 
-# Reference configurations for Hyperliquid and Tempo RPC forwarding:
-# To enable forwarding for either network, set the corresponding upstream URL in .env and uncomment:
-#
-# [[registry.evm_rpc.chains]]
-# id = "hyperliquid-mainnet"
-# expected_chain_id = 999
-# upstream_env = "HYPERLIQUID_MAINNET_HTTP_RPC_URL"
-# checkpoint_block_number = 1
-# checkpoint_block_hash = "0xde151843548b88d06f201d86e860e45fbf07d49612f1934fba5746abd942fb01"
-# upstream_ws_env = "HYPERLIQUID_MAINNET_WS_RPC_URL"
-# max_get_logs_range = 10
-#
-# [[registry.evm_rpc.chains]]
-# id = "hyperliquid-testnet"
-# expected_chain_id = 998
-# upstream_env = "HYPERLIQUID_TESTNET_HTTP_RPC_URL"
-# checkpoint_block_number = 50000000
-# checkpoint_block_hash = "0x61826beeba5fa2a5cc2dcd04febc904aca943cb95821eab8087308cfa25b2baf"
-# upstream_ws_env = "HYPERLIQUID_TESTNET_WS_RPC_URL"
-# max_get_logs_range = 10
-#
+# Each row is served only when its upstream_env is set. An unset variable omits that
+# chain. Tempo stays commented until an operator chooses it.
+
+[[registry.evm_rpc.chains]]
+id = "hyperliquid-mainnet"
+expected_chain_id = 999
+upstream_env = "HYPERLIQUID_MAINNET_HTTP_RPC_URL"
+checkpoint_block_number = 1
+checkpoint_block_hash = "0xde151843548b88d06f201d86e860e45fbf07d49612f1934fba5746abd942fb01"
+upstream_ws_env = "HYPERLIQUID_MAINNET_WS_RPC_URL"
+max_get_logs_range = 10
+
+[[registry.evm_rpc.chains]]
+id = "hyperliquid-testnet"
+expected_chain_id = 998
+upstream_env = "HYPERLIQUID_TESTNET_HTTP_RPC_URL"
+checkpoint_block_number = 50000000
+checkpoint_block_hash = "0x61826beeba5fa2a5cc2dcd04febc904aca943cb95821eab8087308cfa25b2baf"
+upstream_ws_env = "HYPERLIQUID_TESTNET_WS_RPC_URL"
+max_get_logs_range = 10
+
+[[registry.evm_rpc.chains]]
+id = "bnb-mainnet"
+expected_chain_id = 56
+upstream_env = "BNB_MAINNET_HTTP_RPC_URL"
+checkpoint_block_number = 0
+checkpoint_block_hash = "0x0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b"
+upstream_ws_env = "BNB_MAINNET_WS_RPC_URL"
+max_get_logs_range = 10
+
+[[registry.evm_rpc.chains]]
+id = "bnb-testnet"
+expected_chain_id = 97
+upstream_env = "BNB_TESTNET_HTTP_RPC_URL"
+checkpoint_block_number = 0
+checkpoint_block_hash = "0x6d3c66c5357ec91d5c43af47e234a939b22557cbb552dc45bebbceeed90fbe34"
+upstream_ws_env = "BNB_TESTNET_WS_RPC_URL"
+max_get_logs_range = 10
+
+[[registry.evm_rpc.chains]]
+id = "polygon-mainnet"
+expected_chain_id = 137
+upstream_env = "POLYGON_MAINNET_HTTP_RPC_URL"
+checkpoint_block_number = 0
+checkpoint_block_hash = "0xa9c28ce2141b56c474f1dc504bee9b01eb1bd7d1a507580d5519d4437a97de1b"
+upstream_ws_env = "POLYGON_MAINNET_WS_RPC_URL"
+max_get_logs_range = 10
+
+[[registry.evm_rpc.chains]]
+id = "polygon-amoy"
+expected_chain_id = 80002
+upstream_env = "POLYGON_AMOY_HTTP_RPC_URL"
+checkpoint_block_number = 0
+checkpoint_block_hash = "0x7202b2b53c5a0836e773e319d18922cc756dd67432f9a1f65352b61f4406c697"
+upstream_ws_env = "POLYGON_AMOY_WS_RPC_URL"
+max_get_logs_range = 10
+
+[[registry.evm_rpc.chains]]
+id = "base-mainnet"
+expected_chain_id = 8453
+upstream_env = "BASE_MAINNET_HTTP_RPC_URL"
+checkpoint_block_number = 0
+checkpoint_block_hash = "0xf712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd"
+upstream_ws_env = "BASE_MAINNET_WS_RPC_URL"
+max_get_logs_range = 10
+
+[[registry.evm_rpc.chains]]
+id = "base-sepolia"
+expected_chain_id = 84532
+upstream_env = "BASE_SEPOLIA_HTTP_RPC_URL"
+checkpoint_block_number = 0
+checkpoint_block_hash = "0x0dcc9e089e30b90ddfc55be9a37dd15bc551aeee999d2e2b51414c54eaf934e4"
+upstream_ws_env = "BASE_SEPOLIA_WS_RPC_URL"
+max_get_logs_range = 10
+
+[[registry.evm_rpc.chains]]
+id = "arbitrum-mainnet"
+expected_chain_id = 42161
+upstream_env = "ARBITRUM_MAINNET_HTTP_RPC_URL"
+checkpoint_block_number = 0
+checkpoint_block_hash = "0x7ee576b35482195fc49205cec9af72ce14f003b9ae69f6ba0faef4514be8b442"
+upstream_ws_env = "ARBITRUM_MAINNET_WS_RPC_URL"
+max_get_logs_range = 10
+
+[[registry.evm_rpc.chains]]
+id = "arbitrum-sepolia"
+expected_chain_id = 421614
+upstream_env = "ARBITRUM_SEPOLIA_HTTP_RPC_URL"
+checkpoint_block_number = 0
+checkpoint_block_hash = "0x8647a2ae10b316ca12fbd76327fe4f64d12ef526681a68145188eb5a20728f1a"
+upstream_ws_env = "ARBITRUM_SEPOLIA_WS_RPC_URL"
+max_get_logs_range = 10
+
 # [[registry.evm_rpc.chains]]
 # id = "tempo-mainnet"
 # expected_chain_id = 4217

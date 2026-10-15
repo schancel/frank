@@ -31,6 +31,16 @@ const REAL = (env: Record<string, string> = {}, envFile: Record<string, string> 
     cwd: '/work',
   })
 
+describe('relay upstreams', () => {
+  it('gives the relay a set EVM upstream and treats it as a secret', () => {
+    const url = 'https://bnb-testnet.example.invalid/v2/dummy-key'
+    const config = REAL({ BNB_TESTNET_HTTP_RPC_URL: url })
+    expect(config.relayUpstreamEnv.BNB_TESTNET_HTTP_RPC_URL).toBe(url)
+    expect(config.secrets).toContain(url)
+    expect(REAL().relayUpstreamEnv.BNB_TESTNET_HTTP_RPC_URL).toBeUndefined()
+  })
+})
+
 describe('explicit directory integration configuration', () => {
   const p = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
   const trust = {

@@ -187,6 +187,10 @@ grep -Fq 'origin https://rpc.invalid.example' "$fixture_root/effective.err" || e
 # Enabled mode requires an explicit minimum and chain ID; local defaults are Monad testnet's.
 [[ "$(grep -Fxc 'min_value_wei = "1000000000000"' "$config_file")" -eq 1 ]] || exit 1
 [[ "$(grep -Fxc 'expected_chain_id = 10143' "$config_file")" -eq 2 ]] || exit 1
+# Retargeting Monad must leave the other EVM rows on their own chain ids.
+grep -Fxq 'id = "base-sepolia"' "$config_file"
+grep -Fxq 'expected_chain_id = 84532' "$config_file"
+grep -Fxq 'id = "bnb-testnet"' "$config_file"
 # Guard against the harness silently weakening: an enabled mailbox without its minimum/chain ID
 # is rejected by the real parser even with the RPC URL and tag supplied.
 old_style="$(sed '/^min_value_wei/d;/^expected_chain_id/d' "$script_dir/cashwebd.local.toml")"
@@ -251,6 +255,9 @@ grep -Fxq 'min_value_wei = "340282366920938463463374607431768211455"' "$config_f
 grep -Fxq 'expected_chain_id = 143' "$config_file"
 grep -Fxq 'id = "monad-mainnet"' "$config_file"
 grep -Fxq 'checkpoint_block_hash = "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9"' "$config_file"
+grep -Fxq 'id = "base-sepolia"' "$config_file"
+grep -Fxq 'expected_chain_id = 84532' "$config_file"
+! grep -Fxq 'id = "monad-testnet"' "$config_file"
 
 configured_target="fixture-host-target"
 rm -f -- "$args_file" "$config_file"

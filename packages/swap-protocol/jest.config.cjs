@@ -4,6 +4,9 @@ module.exports = {
   testMatch: ['<rootDir>/**/*.jest.(spec|test).+(ts|js)'],
   moduleFileExtensions: ['js', 'json', 'ts'],
   moduleNameMapper: {
+    '^@frank/codec$': '<rootDir>/../frank-codec/src/index.ts',
+    '^@frank/nakamoto$': '<rootDir>/../nakamoto/src/index.ts',
+    '^@frank/crypto-box$': '<rootDir>/../crypto-box/src/index.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   transform: {

@@ -116,6 +116,9 @@ fn read_and_validate_conf_with_env(
     let conf_contents = read_conf_contents(conf_path, stdin)?;
     let mut conf =
         parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.to_owned()))?;
+    conf.registry
+        .validate_cluster()
+        .wrap_err("Invalid registry.cluster configuration")?;
     // The shipped configs enable the mailbox without a URL because the endpoint is secret-bearing:
     // an explicit `rpc_url` wins, otherwise resolve from the matching `evm_rpc` chain upstream
     // (or `MONAD_TESTNET_HTTP_RPC_URL` fallback) via `RelayChainRegistry`.
@@ -235,7 +238,9 @@ async fn main() -> Result<()> {
             )
         })?;
     }
-    let db = Db::open(&conf.registry.db_path)?;
+    let db = match conf.registry.storage_driver()? {
+        cashweb_config::RelayStorageDriver::RocksDb => Db::open(&conf.registry.db_path)?,
+    };
     if check_db {
         return Ok(());
     }
@@ -564,6 +569,46 @@ mod tests {
         ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
         ("FRANK_NETWORK_TAG", "MONT"),
     ];
+
+    #[test]
+    fn unsupported_storage_cannot_pass_the_real_startup_configuration_path() {
+        for driver in ["foundationdb", "kvrocks", "resp", "rockdsb", ""] {
+            let config = format!("{LOCAL}\n[registry.cluster]\ndriver = {driver:?}\n");
+            let error = read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(&[]))
+                .unwrap_err();
+            // Validation runs before RPC environment resolution and before opening any DB.
+            assert!(format!("{error:#}").contains("only rocksdb is implemented"));
+        }
+    }
+
+    #[test]
+    fn explicit_rocks_and_core_nats_are_independent_runtime_choices() {
+        let config = format!(
+            "{LOCAL}\n[registry.cluster]\ndriver = 'rocksdb'\n\
+             [registry.cluster.nats]\nenabled = true\nurl = 'nats://localhost:4222'\n"
+        );
+        let (conf, _) =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
+        assert_eq!(
+            conf.registry.storage_driver().unwrap(),
+            cashweb_config::RelayStorageDriver::RocksDb
+        );
+        assert!(conf.registry.is_nats_enabled());
+        assert_eq!(conf.registry.nats_url(), Some("nats://localhost:4222"));
+    }
+
+    #[test]
+    fn disabled_nested_nats_table_wins_over_enabled_legacy_url_at_startup() {
+        let config = format!(
+            "{LOCAL}\n[registry.cluster]\nenabled = true\ndriver = 'rocksdb'\n\
+             nats_url = 'nats://legacy.invalid:4222'\n\
+             [registry.cluster.nats]\nenabled = false\nurl = 'invalid-but-disabled'\n"
+        );
+        let (conf, _) =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
+        assert!(!conf.registry.is_nats_enabled());
+        assert_eq!(conf.registry.nats_url(), None);
+    }
 
     #[test]
     fn shipped_configs_validate_with_the_required_environment() {

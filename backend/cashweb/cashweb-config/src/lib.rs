@@ -399,10 +399,11 @@ pub struct ClusterConf {
     /// Whether clustered mode is enabled.
     #[serde(default)]
     pub enabled: bool,
-    /// Storage driver name (e.g. "rocksdb", "kvrocks", "resp").
+    /// Relay storage driver. Only `rocksdb` is currently wired into the daemon.
+    /// Other names are rejected at startup rather than silently using local storage.
     #[serde(default = "default_cluster_driver")]
     pub driver: String,
-    /// Redis / Apache Kvrocks RESP URL (e.g. `redis://kvrocks-cluster:6666`).
+    /// Reserved Redis / Apache Kvrocks URL; rejected until a relay driver is implemented.
     #[serde(default)]
     pub kvrocks_url: Option<String>,
     /// Core NATS pub/sub URL (e.g. `nats://nats-cluster:4222`).
@@ -456,9 +457,7 @@ impl ClusterConf {
     /// Return the configured NATS URL if NATS is enabled.
     pub fn nats_url(&self) -> Option<&str> {
         if let Some(nats) = &self.nats {
-            if nats.enabled && !nats.url.is_empty() {
-                return Some(&nats.url);
-            }
+            return (nats.enabled && !nats.url.is_empty()).then_some(nats.url.as_str());
         }
         if self.enabled {
             if let Some(url) = &self.nats_url {
@@ -472,6 +471,44 @@ impl ClusterConf {
 }
 
 impl RegistryConf {
+    /// Resolve the authoritative daemon storage selection before opening any state.
+    /// A live KV adapter alone does not replace the registry and message storage owners.
+    pub fn storage_driver(&self) -> Result<RelayStorageDriver, ClusterConfigError> {
+        let Some(cluster) = &self.cluster else {
+            return Ok(RelayStorageDriver::RocksDb);
+        };
+        if cluster.driver != "rocksdb" {
+            return Err(ClusterConfigError::UnsupportedStorageDriver);
+        }
+        if cluster.kvrocks_url.is_some() {
+            return Err(ClusterConfigError::UnusedKvrocksUrl);
+        }
+        Ok(RelayStorageDriver::RocksDb)
+    }
+
+    /// Reject an enabled notification bus without a valid, explicit endpoint.
+    pub fn validate_cluster(&self) -> Result<(), ClusterConfigError> {
+        self.storage_driver()?;
+        let Some(cluster) = &self.cluster else {
+            return Ok(());
+        };
+        let enabled_url = match &cluster.nats {
+            Some(nats) if nats.enabled => Some(nats.url.as_str()),
+            Some(_) => None,
+            None if cluster.enabled => cluster.nats_url.as_deref(),
+            None => None,
+        };
+        if let Some(raw) = enabled_url {
+            let valid = url::Url::parse(raw).ok().map_or(false, |url| {
+                matches!(url.scheme(), "nats" | "tls") && url.host_str().is_some()
+            });
+            if !valid {
+                return Err(ClusterConfigError::InvalidNatsUrl);
+            }
+        }
+        Ok(())
+    }
+
     /// Whether Core NATS notification bus is enabled.
     pub fn is_nats_enabled(&self) -> bool {
         self.cluster.as_ref().map_or(false, |c| c.is_nats_enabled())
@@ -482,6 +519,36 @@ impl RegistryConf {
         self.cluster.as_ref().and_then(|c| c.nats_url())
     }
 }
+
+/// Storage choices implemented by the running relay, independent of the notification bus.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RelayStorageDriver {
+    /// Single-process registry and direct-message databases on local RocksDB.
+    RocksDb,
+}
+
+/// Invalid or unsupported runtime cluster configuration. Errors omit endpoint credentials.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClusterConfigError {
+    /// No alternative driver is wired through every durable relay storage owner yet.
+    UnsupportedStorageDriver,
+    /// A Kvrocks endpoint would otherwise be silently ignored by the RocksDB daemon.
+    UnusedKvrocksUrl,
+    /// Enabled Core NATS requires an explicit NATS/TLS endpoint with a host.
+    InvalidNatsUrl,
+}
+
+impl fmt::Display for ClusterConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::UnsupportedStorageDriver => "registry.cluster.driver is unsupported by this relay: only rocksdb is implemented; FoundationDB and Kvrocks do not replace relay storage yet",
+            Self::UnusedKvrocksUrl => "registry.cluster.kvrocks_url is unsupported: the relay uses RocksDB and would ignore this endpoint",
+            Self::InvalidNatsUrl => "enabled registry.cluster.nats requires a valid nats:// or tls:// URL with a host",
+        })
+    }
+}
+
+impl Error for ClusterConfigError {}
 
 /// Core NATS pub/sub configuration table (`[registry.cluster.nats]`).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -2596,6 +2663,75 @@ continuity_file = "/var/lib/frank/continuity"
             parsed.kvrocks_url.as_deref(),
             Some("redis://kvrocks-cluster:6666")
         );
+    }
+
+    #[test]
+    fn cluster_storage_validation_rejects_ignored_driver_and_endpoint_settings() {
+        use super::{ClusterConfigError, RelayStorageDriver};
+        let mut conf: RegistryConf = parse_conf(include_str!("../../cashwebd.local.toml"))
+            .unwrap()
+            .registry;
+        assert_eq!(conf.storage_driver(), Ok(RelayStorageDriver::RocksDb));
+        for enabled in [false, true] {
+            for driver in ["foundationdb", "kvrocks", "resp", "ROCKSDB", "", "typo"] {
+                conf.cluster = Some(ClusterConf {
+                    enabled,
+                    driver: driver.into(),
+                    ..ClusterConf::default()
+                });
+                assert_eq!(
+                    conf.validate_cluster(),
+                    Err(ClusterConfigError::UnsupportedStorageDriver)
+                );
+            }
+        }
+        conf.cluster = Some(ClusterConf {
+            kvrocks_url: Some("redis://secret:password@localhost:6666".into()),
+            ..ClusterConf::default()
+        });
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::UnusedKvrocksUrl)
+        );
+        assert!(!conf
+            .validate_cluster()
+            .unwrap_err()
+            .to_string()
+            .contains("password"));
+    }
+
+    #[test]
+    fn cluster_nats_requires_valid_explicit_enabled_endpoint() {
+        use super::ClusterConfigError;
+        let mut conf: RegistryConf = parse_conf(include_str!("../../cashwebd.local.toml"))
+            .unwrap()
+            .registry;
+        for raw in ["", "  ", "http://localhost:4222", "nats://", "not-a-url"] {
+            conf.cluster = Some(ClusterConf {
+                nats: Some(ClusterNatsConf {
+                    enabled: true,
+                    url: raw.into(),
+                }),
+                ..ClusterConf::default()
+            });
+            assert_eq!(
+                conf.validate_cluster(),
+                Err(ClusterConfigError::InvalidNatsUrl)
+            );
+        }
+        for raw in ["nats://localhost:4222", "tls://localhost:4222"] {
+            conf.cluster.as_mut().unwrap().nats.as_mut().unwrap().url = raw.into();
+            assert_eq!(conf.validate_cluster(), Ok(()));
+            assert_eq!(conf.nats_url(), Some(raw));
+        }
+        // An explicit disabled table must not resurrect the legacy URL.
+        let cluster = conf.cluster.as_mut().unwrap();
+        cluster.enabled = true;
+        cluster.nats_url = Some("nats://legacy:4222".into());
+        cluster.nats.as_mut().unwrap().enabled = false;
+        assert!(!conf.is_nats_enabled());
+        assert_eq!(conf.nats_url(), None);
+        assert_eq!(conf.validate_cluster(), Ok(()));
     }
 
     #[test]

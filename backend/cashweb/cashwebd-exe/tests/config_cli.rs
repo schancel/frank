@@ -209,3 +209,50 @@ fn check_config_cli_rejects_invalid_mailbox_configuration() {
     assert!(String::from_utf8_lossy(&output.stderr)
         .contains("Invalid registry.monad_mailbox configuration"));
 }
+
+#[test]
+fn unsupported_storage_fails_before_creating_database_or_session_state() {
+    for driver in ["foundationdb", "kvrocks", "resp", "rockdsb"] {
+        let temp = tempdir::TempDir::new("unsupported-relay-storage").unwrap();
+        let state = temp.path().join("must-not-exist");
+        let db = state.join("registry.rocksdb");
+        let config = format!(
+            "{}\n[registry.cluster]\ndriver = {driver:?}\n",
+            include_str!("../../cashwebd.local.toml")
+                .replace("data/registry.rocksdb", db.to_str().unwrap())
+                .replace(
+                    "[registry.monad_mailbox]\nenabled = true",
+                    "[registry.monad_mailbox]\nenabled = false",
+                )
+                .replace(
+                    "[registry.evm_rpc]\nenabled = true",
+                    "[registry.evm_rpc]\nenabled = false",
+                )
+        );
+        let path = temp.path().join("relay.toml");
+        std::fs::write(&path, config).unwrap();
+        // Test real startup and the DB-opening preflight, not just --check-config.
+        for args in [
+            vec!["--check-db".as_ref(), path.as_os_str()],
+            vec![path.as_os_str()],
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_cashwebd-exe"))
+                .args(args)
+                .env_remove("MONAD_TESTNET_HTTP_RPC_URL")
+                .env_remove("FRANK_NETWORK_TAG")
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "{driver} accepted unsupported driver; created_state={}",
+                state.exists()
+            );
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains("only rocksdb is implemented"),
+                "{driver}: {error}"
+            );
+            assert!(!state.exists(), "{driver} created state before rejection");
+        }
+    }
+}

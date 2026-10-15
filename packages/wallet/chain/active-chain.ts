@@ -192,6 +192,22 @@ export type DirectMessagePreparationProgress =
     }
   | { stage: "ready"; fundingTxHashes: string[] };
 
+/** Original authenticated envelope metadata, before any self-outbox presentation projection.
+ * Keys use the canonical compressed-byte representation; digests are bare lowercase hex.
+ * Optional identities are unavailable when absent from the original envelope. Items are inert
+ * decoded content: payment claims are not evidence of settlement or a new spend authority. */
+export interface AuthenticatedMailboxRecord {
+  readonly chainIdentifier: string;
+  readonly senderPublicKey: Uint8Array;
+  readonly recipientPublicKey: Uint8Array;
+  readonly direction: "incoming" | "outbound";
+  readonly payloadDigest: string;
+  readonly receivedTime: number;
+  readonly items: readonly MessageItem[];
+  readonly conversationId?: string;
+  readonly messageId?: string;
+}
+
 /** A single decrypted, received direct message. See this file's header, deviation 2, for why this
  * isn't `ReceivedMessageWrapper` (`../types/user-interface.ts`). */
 export interface DirectMessageReceived {
@@ -634,6 +650,17 @@ export interface DirectMessageClient {
       payloadDigest: string
     ) => void;
   }): Promise<DirectMessageReceived[]>;
+  /** Original authenticated envelopes only, with no wallet effects or outbox reconstruction.
+   * Absence means unsupported. Coverage includes terminal raw rows, and stops before the first
+   * incomplete timestamp group. A complete empty read cannot advance the inclusive position. */
+  scanAuthenticatedMailbox?(params: {
+    wallet: WalletHandle;
+    sinceMs: number;
+  }): Promise<{
+    records: readonly AuthenticatedMailboxRecord[];
+    resumeFromInclusive: number;
+    truncated: boolean;
+  }>;
   /** Subscribes to real-time both-direction mailbox pushes over WebSocket. */
   subscribeMailboxStream?(params: {
     wallet: WalletHandle;

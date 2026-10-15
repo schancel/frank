@@ -1951,6 +1951,27 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       return canonicalMessagingFor(wallet)?.paymentSummaryOf(params.payloadDigest);
     },
 
+    async scanAuthenticatedMailbox(params) {
+      const wallet = asMonadWallet(params.wallet, chainIdentifier);
+      if (wallet.chainIdentifier !== chainIdentifier)
+        throw new Error("Authenticated mailbox requires canonical chain affinity");
+      const sinceMs = params.sinceMs;
+      const canonical = canonicalMessagingFor(wallet);
+      if (!canonical) throw new CanonicalMessagingPendingError();
+      const directory = canonicalDirectories.get(wallet);
+      if (directory && directory.network !== chainIdentifier)
+        throw new Error("Authenticated mailbox directory has a foreign chain");
+      const result = await canonical.scanAuthenticatedMailbox({ wallet, sinceMs });
+      asMonadWallet(wallet, chainIdentifier);
+      if (
+        wallet.chainIdentifier !== chainIdentifier ||
+        canonicalMessagingFor(wallet) !== canonical ||
+        canonicalDirectories.get(wallet) !== directory
+      )
+        throw new Error("Authenticated mailbox session changed during scan");
+      return result;
+    },
+
     async fetchSince(params): Promise<DirectMessageReceived[]> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);

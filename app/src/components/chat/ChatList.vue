@@ -173,7 +173,7 @@ import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
-import type { useContactStore as UseContactStoreType } from '../../stores/contacts'
+import { useContactStore } from '../../stores/contacts'
 
 import { openChat, openPage } from '../../utils/routes'
 import { useRouter } from 'vue-router'
@@ -197,45 +197,17 @@ export default defineComponent({
     const chatStore = useChatStore()
     const { getSortedChatOrder } = storeToRefs(chatStore)
 
-    let contactStore: ReturnType<typeof UseContactStoreType> | null = null
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const contactsMod = require('../../stores/contacts') as {
-        useContactStore?: typeof UseContactStoreType
-      }
-      contactStore = contactsMod.useContactStore?.() ?? null
-    } catch {
-      contactStore = null
-    }
+    const contactStore = useContactStore()
 
     const searchQuery = ref('')
     const activeFilter = ref<'all' | 'screener'>('all')
     const searchInputRef = ref<HTMLInputElement | null>(null)
     const searchIndex = new ChatSearchIndex()
 
-    const isContactFn = (address: string): boolean => {
-      if (!contactStore) return false
-      try {
-        if (typeof contactStore.isContact === 'function') {
-          return Boolean(contactStore.isContact(address))
-        }
-        if (typeof contactStore.haveContact === 'function') {
-          return Boolean(contactStore.haveContact(address))
-        }
-      } catch {
-        // ignore
-      }
-      return false
-    }
+    const isContactFn = (address: string): boolean =>
+      contactStore.isContact(address)
 
-    const getContactFn = (address: string) => {
-      if (!contactStore) return undefined
-      try {
-        return contactStore.getContact?.(address)
-      } catch {
-        return undefined
-      }
-    }
+    const getContactFn = (address: string) => contactStore.getContact(address)
 
     const screenerSummary = computed(() => {
       const list = Array.isArray(getSortedChatOrder?.value)

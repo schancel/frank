@@ -5691,15 +5691,16 @@ export const useChatStore = defineStore('chats', {
       let chats = '{}'
       try {
         chats = await storage.get('chats')
-      } catch (err) {
-        //
+      } catch (error) {
+        if (
+          !error ||
+          typeof error !== 'object' ||
+          !('notFound' in error) ||
+          error.notFound !== true
+        )
+          throw error
       }
-      let deserializedChats: RestorableState = {}
-      try {
-        deserializedChats = JSON.parse(chats) as RestorableState
-      } catch {
-        //
-      }
+      const deserializedChats = JSON.parse(chats) as RestorableState
 
       const invalidStore =
         metadata.networkName !== displayNetwork ||

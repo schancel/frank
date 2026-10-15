@@ -118,7 +118,11 @@ describe('Pinia persistence barrier', () => {
   ])('tracks the real %s store write promise', async (_name, useStore) => {
     const writes: Deferred[] = []
     const storage = {
-      get: jest.fn().mockRejectedValue(new Error('not found')),
+      get: jest
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error('not found'), { notFound: true }),
+        ),
       put: jest.fn(() => {
         const write = deferred()
         writes.push(write)
@@ -151,7 +155,11 @@ describe('Pinia persistence barrier', () => {
   it('tracks the real profile store LevelDB write', async () => {
     const writes: Deferred[] = []
     const storage = {
-      get: jest.fn().mockRejectedValue(new Error('not found')),
+      get: jest
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error('not found'), { notFound: true }),
+        ),
       put: jest.fn(() => {
         const write = deferred()
         writes.push(write)

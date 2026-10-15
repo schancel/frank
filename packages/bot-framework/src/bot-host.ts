@@ -211,9 +211,15 @@ interface ActiveBotInstance {
 
 export class FrankBotHost {
   private readonly options: Required<
-    Omit<BotHostOptions, "maxRepliesPerPeer" | "stampValueWei">
+    Omit<
+      BotHostOptions,
+      "maxRepliesPerPeer" | "stampValueWei" | "createMessageItemRegistry"
+    >
   > &
-    Pick<BotHostOptions, "maxRepliesPerPeer" | "stampValueWei">;
+    Pick<
+      BotHostOptions,
+      "maxRepliesPerPeer" | "stampValueWei" | "createMessageItemRegistry"
+    >;
   private readonly provider: JsonRpcProvider;
   private readonly chain: ActiveChain;
   private readonly fundingWallet?: Wallet;
@@ -257,6 +263,7 @@ export class FrankBotHost {
       "https://testnet-rpc.monad.xyz";
 
     this.options = {
+      createMessageItemRegistry: options.createMessageItemRegistry,
       relayBaseUrl,
       networkTag,
       stateDir:
@@ -445,6 +452,12 @@ export class FrankBotHost {
       await directory.publishWithRetry(definition.id);
       directory.startHeartbeat(this.options.heartbeatIntervalMs);
 
+      // Resolve composition before installing either wallet-scoped hook. A failed factory
+      // follows the existing registration cleanup without leaving an installed directory.
+      const messageItems = this.options.createMessageItemRegistry
+        ? this.options.createMessageItemRegistry()
+        : createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable);
+
       // Install canonical directory so chain.directMessages routes through canonical directory
       const removeDirectory = installCanonicalDirectory(
         wallet,
@@ -453,7 +466,7 @@ export class FrankBotHost {
       // The message-item plugins this bot's wallet sends and receives with.
       const removeMessageItems = installMessageItemRegistry(
         wallet,
-        createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable)
+        messageItems
       );
       const uninstallDirectory = () => {
         removeDirectory();

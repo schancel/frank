@@ -817,3 +817,8 @@ older intent versions fail visibly and remain retained for explicit reconciliati
 **Funded deployment remains gated on independent review of this budget prerequisite.** Do not fund
 or launch on GKE/mainnet merely because local tests pass. Other wallet families explicitly reject
 the optional native reserve constraint until their owners implement it.
+
+The all-bots target explicitly installs the inert `swap-negotiation-v1` message plugin using
+`src/message-items.ts` and the `xec-testnet` / `monad-testnet` pair policy. Other targets retain
+the framework defaults. This supports signed event transport and factual previews only; it does
+not negotiate automatically, authorize execution, or fund a swap.

@@ -231,8 +231,8 @@ impl Registry {
         self.db.monad_profiles().count_records()
     }
 
-    /// Return the exact number of indexed Monad topic posts, including CBOR and legacy posts.
-    pub fn stored_topic_post_count(&self) -> Result<u64> {
+    /// Return the exact number of legacy protobuf Monad topic posts in the discovery index.
+    pub fn stored_legacy_topic_post_count(&self) -> Result<u64> {
         self.db
             .monad_topic_posts()
             .list_topics()?

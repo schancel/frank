@@ -12,7 +12,7 @@ use crate::registry::Registry;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const PROFILE_COUNT_NAME: &str = "frank_registry_stored_public_profile_records";
-const TOPIC_POST_COUNT_NAME: &str = "frank_registry_stored_topic_posts";
+const TOPIC_POST_COUNT_NAME: &str = "frank_registry_stored_legacy_topic_posts";
 const REGISTRY_BYTES_NAME: &str = "frank_registry_rocksdb_estimated_live_data_bytes";
 const DIRECT_MESSAGE_BYTES_NAME: &str = "frank_direct_messages_rocksdb_estimated_live_data_bytes";
 const DIRECT_MESSAGES_TOTAL_NAME: &str = "frank_canonical_messages_stored_total";
@@ -42,7 +42,7 @@ impl Snapshot {
         self.update(
             TOPIC_POST_COUNT_NAME,
             registry
-                .stored_topic_post_count()
+                .stored_legacy_topic_post_count()
                 .map_err(|e| e.to_string()),
             &self.topic_post_count,
             &self.topic_post_count_available,
@@ -97,7 +97,7 @@ impl Snapshot {
         append_gauge(
             &mut output,
             TOPIC_POST_COUNT_NAME,
-            "Current indexed topic posts stored by this relay, including legacy and CBOR posts.",
+            "Current legacy protobuf topic posts in this relay's discovery index; excludes canonical Forum CBOR posts.",
             &self.topic_post_count,
             &self.topic_post_count_available,
         );

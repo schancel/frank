@@ -6,12 +6,14 @@ exports a small set of relay storage metrics on the separate administrative list
 make telemetry part of request correctness. A metrics or analytics outage must not make a relay API
 unavailable.
 
-The implemented metrics are stored public profile rows, indexed topic posts, newly stored canonical
-direct messages since process start, and estimated RocksDB live key/value bytes for the registry and
-direct-message stores. The direct-message counter excludes exact retries and can be queried as a
-rate. Storage byte estimates are not filesystem or PVC usage. These aggregates have no user-derived
-labels. Signup, active-user, retention, public API request/latency, and proxy traffic metrics are not
-implemented yet; see the goals below for the broader planned scope.
+The implemented metrics are stored public profile rows, legacy protobuf topic posts in the registry
+discovery index, newly stored canonical direct messages since process start, and estimated RocksDB
+live key/value bytes for the registry and direct-message stores. Canonical Forum CBOR posts use a
+separate store and are not included in the legacy topic-post gauge. The direct-message counter
+excludes exact retries and can be queried as a rate. Storage byte estimates are not filesystem or
+PVC usage. These aggregates have no user-derived labels. Signup, active-user, retention, public API
+request/latency, and proxy traffic metrics are not implemented yet; see the goals below for the
+broader planned scope.
 
 ## Goals
 

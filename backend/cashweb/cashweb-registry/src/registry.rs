@@ -231,6 +231,33 @@ impl Registry {
         self.db.monad_profiles().count_records()
     }
 
+    /// Return the exact number of indexed Monad topic posts, including CBOR and legacy posts.
+    pub fn stored_topic_post_count(&self) -> Result<u64> {
+        self.db
+            .monad_topic_posts()
+            .list_topics()?
+            .into_iter()
+            .try_fold(0u64, |total, (_, stats)| {
+                total.checked_add(stats.post_count)
+            })
+            .ok_or_else(|| bitcoinsuite_error::Report::msg("topic post count overflow"))
+    }
+
+    /// Estimated live key/value bytes in the registry RocksDB (not filesystem or PVC usage).
+    pub fn registry_estimated_live_data_size_bytes(&self) -> Result<u64> {
+        self.db.estimated_live_data_size_bytes()
+    }
+
+    /// Estimated live key/value bytes in the separate canonical direct-message RocksDB.
+    pub fn direct_messages_estimated_live_data_size_bytes(&self) -> Result<Option<u64>> {
+        Ok(self.canonical_dm.estimated_live_data_size_bytes()?)
+    }
+
+    /// Newly stored canonical direct messages since process start; exact retries are excluded.
+    pub fn canonical_messages_stored_total(&self) -> u64 {
+        self.canonical_dm.messages_stored_total()
+    }
+
     /// Open the public admission facade without exposing the registry database.
     pub fn directory_preview(
         &self,

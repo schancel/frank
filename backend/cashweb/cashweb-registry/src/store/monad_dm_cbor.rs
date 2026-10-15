@@ -19,7 +19,10 @@
 //! store of an older one and says what to delete.
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, Weak,
+    },
 };
 
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue};
@@ -126,6 +129,8 @@ const AUTH_NONCE_SWEEP_INTERVAL_MS: i64 = 60_000;
 pub(crate) struct Owner {
     path: PathBuf,
     db: Mutex<Option<rocksdb::DB>>,
+    /// Newly stored canonical messages since this relay process started. Retries are excluded.
+    messages_stored_total: AtomicU64,
     directory: Mutex<Weak<DirectoryRuntime>>,
     broadcast: tokio::sync::broadcast::Sender<FinalizedEnvelope>,
     /// When each message's payments were last handed to the node. In memory only.
@@ -145,6 +150,7 @@ impl Owner {
         Self {
             path: registry_db.with_extension(STORE_EXTENSION),
             db: Mutex::new(None),
+            messages_stored_total: AtomicU64::new(0),
             directory: Mutex::new(Weak::new()),
             broadcast,
             payment_broadcasts: Default::default(),
@@ -283,6 +289,7 @@ impl Owner {
             })?
             .ok_or(CanonicalError::Unavailable)?;
         if stored {
+            self.messages_stored_total.fetch_add(1, Ordering::Relaxed);
             if let (Ok(sender), Ok(recipient)) =
                 (message.policy.sender(), message.policy.recipient())
             {
@@ -298,6 +305,20 @@ impl Owner {
             }
         }
         Ok(message)
+    }
+
+    /// Newly stored messages since process start; exact request retries do not increment it.
+    pub(crate) fn messages_stored_total(&self) -> u64 {
+        self.messages_stored_total.load(Ordering::Relaxed)
+    }
+
+    /// Estimated live key/value bytes for the separate message store, if it has been created.
+    pub(crate) fn estimated_live_data_size_bytes(&self) -> Result<Option<u64>> {
+        self.with(false, |db| {
+            db.property_int_value("rocksdb.estimate-live-data-size")
+                .map_err(|_| CanonicalError::Unavailable)?
+                .ok_or(CanonicalError::Unavailable)
+        })
     }
     /// Records one authenticated login challenge as used, so it cannot be replayed.
     ///

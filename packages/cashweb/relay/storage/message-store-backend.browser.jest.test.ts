@@ -18,13 +18,13 @@ describe('owned MessageStore strict browser backend', () => {
     expect(await backend.db.iterator().next()).toBeUndefined()
     const transactions = jest.spyOn(IDBDatabase.prototype, 'transaction')
     await backend.db.put('ordinary', 'value')
-    await backend.bindImmutable('binding', 'original', ['schemaVersion', '2'])
-    await backend.bindImmutable('binding', 'original', ['schemaVersion', '2'])
+    await backend.bindImmutable('binding', 'original', ['schemaVersion', '3'])
+    await backend.bindImmutable('binding', 'original', ['schemaVersion', '3'])
     await expect(
-      backend.bindImmutable('binding', 'changed', ['schemaVersion', '2']),
+      backend.bindImmutable('binding', 'changed', ['schemaVersion', '3']),
     ).rejects.toThrow('conflict')
     expect(await backend.db.get('binding')).toBe('original')
-    expect(await backend.db.get('schemaVersion')).toBe('2')
+    expect(await backend.db.get('schemaVersion')).toBe('3')
     expect(
       transactions.mock.calls
         .filter(call => call[1] === 'readwrite')
@@ -37,8 +37,8 @@ describe('owned MessageStore strict browser backend', () => {
     const a = await open(location),
       b = await open(location)
     const results = await Promise.allSettled([
-      a.bindImmutable('binding', 'A', ['schemaVersion', '2']),
-      b.bindImmutable('binding', 'B', ['schemaVersion', '2']),
+      a.bindImmutable('binding', 'A', ['schemaVersion', '3']),
+      b.bindImmutable('binding', 'B', ['schemaVersion', '3']),
     ])
     expect(
       results.filter(result => result.status === 'fulfilled'),
@@ -66,7 +66,7 @@ describe('owned MessageStore strict browser backend', () => {
         return result
       })
     await expect(
-      backend.bindImmutable('binding', 'A', ['schemaVersion', '2']),
+      backend.bindImmutable('binding', 'A', ['schemaVersion', '3']),
     ).rejects.toThrow('durability')
     transaction.mockRestore()
     expect(await backend.db.iterator().next()).toBeUndefined()

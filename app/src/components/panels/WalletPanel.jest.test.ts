@@ -265,3 +265,120 @@ test('identifies a relay without the selected network instead of implying a bala
   )
   expect(view.get('[data-test="bnb-wallet-row"]').exists()).toBe(true)
 })
+
+test('preserves every supported balance presentation without mutating observations', async () => {
+  const cases: Array<{
+    presentation: BalancePresentation
+    text: string
+    stale: boolean
+  }> = [
+    {
+      presentation: { status: 'loading' },
+      text: 'Loading balance…',
+      stale: false,
+    },
+    {
+      presentation: {
+        status: 'available',
+        observation: { balance: 123n, formattedBalance: '1.23456789 MONT' },
+      },
+      text: '1.2345 MONT',
+      stale: false,
+    },
+    {
+      presentation: {
+        status: 'available',
+        observation: {
+          balance: 123n,
+          formattedBalance: '1.23456789 MONT',
+          stale: true,
+        },
+      },
+      text: '1.2345 MONT',
+      stale: true,
+    },
+    {
+      presentation: {
+        status: 'available',
+        observation: { balance: 0n, formattedBalance: '0 MONT' },
+      },
+      text: '0 MONT',
+      stale: false,
+    },
+    {
+      presentation: { status: 'unavailable', reason: 'unsupported' },
+      text: 'Balance unavailable.',
+      stale: false,
+    },
+    {
+      presentation: { status: 'unavailable', reason: 'fetch-error' },
+      text: 'Balance unavailable.',
+      stale: false,
+    },
+    {
+      presentation: { status: 'unavailable', reason: 'relay-unavailable' },
+      text: 'Not available through this relay.',
+      stale: false,
+    },
+    {
+      presentation: {
+        status: 'unavailable',
+        reason: 'fetch-error',
+        lastKnown: { balance: 123n, formattedBalance: '1.23456789 MONT' },
+      },
+      text: '1.2345 MONT',
+      stale: true,
+    },
+    {
+      presentation: {
+        status: 'unavailable',
+        reason: 'relay-unavailable',
+        lastKnown: { balance: 0n, formattedBalance: '0 MONT' },
+      },
+      text: '0 MONT',
+      stale: true,
+    },
+    {
+      presentation: {
+        status: 'unavailable',
+        reason: 'unsupported',
+        lastKnown: { balance: 0n, formattedBalance: '0 MONT' },
+      },
+      text: '0 MONT',
+      stale: true,
+    },
+  ]
+  const view = render()
+  const originalLine = view.get('[data-test="wallet-balance"]').element
+  const names = view
+    .findAll('[data-test$="wallet-name-text"]')
+    .map(row => row.text())
+  const snapshot = (value: BalancePresentation) =>
+    JSON.stringify(value, (_key, item: unknown) =>
+      typeof item === 'bigint' ? item.toString() : item,
+    )
+  try {
+    for (const { presentation, text, stale } of cases) {
+      const before = snapshot(presentation)
+      mockPresentations.value.monad = presentation
+      await flushPromises()
+      const line = view.get('[data-test="wallet-balance"]')
+      const title = stale
+        ? `${text}. ${en.accountRecovery.balance_stale}`
+        : text
+      expect(line.element).toBe(originalLine)
+      expect(line.text()).toBe(text)
+      expect(line.attributes('title')).toBe(title)
+      expect(line.attributes('aria-label')).toBe(title)
+      expect(
+        view.find('[data-test="monad-balance-stale-indicator"]').exists(),
+      ).toBe(stale)
+      expect(
+        view.findAll('[data-test$="wallet-name-text"]').map(row => row.text()),
+      ).toEqual(names)
+      expect(snapshot(presentation)).toBe(before)
+    }
+  } finally {
+    view.unmount()
+  }
+})

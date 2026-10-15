@@ -130,10 +130,7 @@ export default defineComponent({
     const instance = getCurrentInstance()
 
     function getRouter() {
-      return (
-        (router && router.push ? router : null) ||
-        (instance?.proxy as any)?.$router
-      )
+      return router || (instance?.proxy as any)?.$router
     }
 
     function maybeCloseDrawer(target: string) {

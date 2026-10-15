@@ -1,3 +1,4 @@
+import { createNativeEcashOperationStore } from '../../../wallet/storage/ecash-operations/native';
 /**
  * Funded eCash sends end to end on the local regtest stack. Costs nothing and needs no
  * configuration.
@@ -62,6 +63,9 @@ export async function ecashWalletsPayEachOther(stack: RegtestStack): Promise<voi
   const xec = stack.chains[CHAIN] as EcashRegtest
   const open = async (checkpoint = xec.checkpoint) => {
     const network = openRelayUtxoChain({
+  operationStoreFactory: binding => createNativeEcashOperationStore({
+    ...binding, rootLocation: process.env.ECASH_OPERATION_STORE_ROOT!,
+  }),
       chainIdentifier: CHAIN,
       relayBaseUrl: stack.relayUrl,
       checkpoint,
@@ -86,7 +90,10 @@ export async function ecashWalletsPayEachOther(stack: RegtestStack): Promise<voi
 
   // A wallet is refused without this run's checkpoint block, and with another chain's.
   await assert.rejects(
-    openRelayUtxoChain({ chainIdentifier: CHAIN, relayBaseUrl: stack.relayUrl }).createWallet(randomBytes(32)),
+    openRelayUtxoChain({
+      operationStoreFactory: binding => createNativeEcashOperationStore({
+        ...binding, rootLocation: process.env.ECASH_OPERATION_STORE_ROOT!,
+      }), chainIdentifier: CHAIN, relayBaseUrl: stack.relayUrl }).createWallet(randomBytes(32)),
     /needs the checkpoint block/,
   )
   await assert.rejects(open({ height: xec.checkpoint.height, hash: 'ab'.repeat(32) }), /checkpoint mismatch/)

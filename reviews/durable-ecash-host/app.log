@@ -1,0 +1,10 @@
+(node:75315) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS src/accounts/session.jest.test.ts
+PASS src/accounts/utxo-wallets.jest.test.ts
+
+Test Suites: 2 passed, 2 total
+Tests:       112 passed, 112 total
+Snapshots:   0 total
+Time:        5.078 s, estimated 7 s
+Ran all test suites matching /src\/accounts\/session.jest.test.ts|src\/accounts\/utxo-wallets.jest.test.ts/i.

@@ -14,6 +14,8 @@ import type {
   NativeWalletHandle,
 } from "./chain-wallet";
 import { getChainRegistryEntry } from "./chains-registry";
+import type { EcashOperationStoreFactory } from "../ecash-operation-store";
+import type { EcashWallet } from "../ecash-wallet";
 import { createEcashChain } from "./ecash-chain";
 import type {
   EcashCheckpoint,
@@ -78,6 +80,7 @@ export function openRelayUtxoChain(params: {
   storeFor?: (chainIdentifier: string, firstAddress: string) => UtxoWalletStore;
   /** Where a Chronik wallet records a send before broadcasting it; browser storage when omitted. */
   nativeAttemptStore?: NativeTransactionAttemptStore;
+  operationStoreFactory?: EcashOperationStoreFactory;
 }): RelayUtxoChain {
   const { chainIdentifier } = params;
   const entry = getChainRegistryEntry(chainIdentifier);
@@ -93,6 +96,9 @@ export function openRelayUtxoChain(params: {
     ) {
       throw new Error(`No Chronik wallet is available for ${chainIdentifier}`);
     }
+    const wallets = new Set<EcashWallet>();
+    const openings = new Set<Promise<NativeWalletHandle>>();
+    let closing: Promise<void> | undefined;
     let closed = false;
     const requireOpen = () => {
       if (closed) throw new Error("UTXO wallet is closed");
@@ -108,6 +114,8 @@ export function openRelayUtxoChain(params: {
         networkId: chainIdentifier,
         checkpoint: params.checkpoint,
         nativeAttemptStore: params.nativeAttemptStore,
+        operationStoreFactory: params.operationStoreFactory!,
+        assertActive: requireOpen,
         chronik,
         walletFactory: options?.ecashWalletFactory,
         bip39WalletFactory: options?.ecashBip39WalletFactory,
@@ -122,7 +130,7 @@ export function openRelayUtxoChain(params: {
           throw new Error(
             "Stealth custody is unsupported by the Chronik adapter"
           );
-        return withMaterial(root, async (material) => {
+        const opening = withMaterial(root, async (material) => {
           requireOpen();
           const wallet = await makeChain(options).createWallet(
             material instanceof Uint8Array
@@ -133,12 +141,51 @@ export function openRelayUtxoChain(params: {
                 }
               : material
           );
-          requireOpen();
+          wallets.add(wallet);
+          try {
+            requireOpen();
+          } catch (error) {
+            try {
+              await wallet.close();
+            } catch (cleanup) {
+              throw new AggregateError(
+                [error, cleanup],
+                "Late UTXO wallet cleanup failed"
+              );
+            }
+            throw error;
+          }
           return wallet;
         });
+        openings.add(opening);
+        void opening.then(
+          () => openings.delete(opening),
+          () => openings.delete(opening)
+        );
+        return opening;
       },
-      close: async () => {
+      close: () => {
         closed = true;
+        const closedWallets = [...wallets].map((wallet) => wallet.close());
+        return (closing ??= (async () => {
+          const results = await Promise.allSettled([
+            ...closedWallets,
+            ...openings,
+          ]);
+          // Opening callers observe cancellation; cleanup failures remain observable too.
+          const cleanupFailures = results.flatMap((result, index) =>
+            result.status === "rejected" &&
+            (index < closedWallets.length ||
+              result.reason instanceof AggregateError)
+              ? [result.reason]
+              : []
+          );
+          if (cleanupFailures.length)
+            throw new AggregateError(
+              cleanupFailures,
+              "UTXO relay cleanup failed"
+            );
+        })());
       },
     };
   }

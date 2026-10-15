@@ -1,3 +1,4 @@
+import { createNativeEcashOperationStore } from './storage/ecash-operations/native';
 /**
  * The real eCash SDK wallet on eCash testnet, through a real relay's Chronik proxy.
  *
@@ -24,6 +25,9 @@ async function main() {
     : crypto.getRandomValues(new Uint8Array(32));
   const chronik = new ChronikClient([`${relay}/chain-rpc/xec-testnet/chronik`]);
   const chain = createEcashChain({
+  operationStoreFactory: binding => createNativeEcashOperationStore({
+    ...binding, rootLocation: process.env.ECASH_OPERATION_STORE_ROOT!,
+  }),
     networkId: "xec-testnet",
     chronik,
     nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),

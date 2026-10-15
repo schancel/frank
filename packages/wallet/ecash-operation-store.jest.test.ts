@@ -1,5 +1,4 @@
 import {
-  BrowserEcashOperationStore,
   InMemoryEcashOperationStore,
   parseEcashOperationLedger,
 } from "./ecash-operation-store";
@@ -88,52 +87,4 @@ it.each([
   },
 ])("rejects corrupt or overlapping financial facts (%#)", (value) => {
   expect(() => parseEcashOperationLedger(JSON.stringify(value))).toThrow();
-});
-
-it("opens absent browser state without writes and propagates persistence and corruption failures", async () => {
-  const beforeWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-  const beforeStorage = Object.getOwnPropertyDescriptor(
-    globalThis,
-    "localStorage"
-  );
-  const rows = new Map<string, string>();
-  const storage = {
-    getItem: jest.fn((key: string) => rows.get(key) ?? null),
-    setItem: jest.fn((key: string, value: string) => {
-      rows.set(key, value);
-    }),
-  };
-  try {
-    Object.defineProperty(globalThis, "window", {
-      value: {},
-      configurable: true,
-    });
-    Object.defineProperty(globalThis, "localStorage", {
-      value: storage,
-      configurable: true,
-    });
-    const store = new BrowserEcashOperationStore();
-    expect(await store.get("bitcoin:xec-mainnet:wallet")).toBeUndefined();
-    expect(storage.setItem).not.toHaveBeenCalled();
-    await store.put("bitcoin:xec-mainnet:wallet", ledger);
-    expect(storage.setItem.mock.calls[0][0]).toBe(
-      "frank:ecash-operations:v1:bitcoin:xec-mainnet:wallet"
-    );
-    expect(await store.get("bitcoin:xec-mainnet:wallet")).toEqual(ledger);
-    expect(await store.get("bitcoin:xec-testnet:wallet")).toBeUndefined();
-    rows.set("frank:ecash-operations:v1:bitcoin:xec-mainnet:wallet", "broken");
-    await expect(store.get("bitcoin:xec-mainnet:wallet")).rejects.toThrow();
-    storage.setItem.mockImplementation(() => {
-      throw new Error("quota");
-    });
-    await expect(
-      store.put("bitcoin:xec-mainnet:wallet", ledger)
-    ).rejects.toThrow("quota");
-  } finally {
-    if (beforeWindow) Object.defineProperty(globalThis, "window", beforeWindow);
-    else Reflect.deleteProperty(globalThis, "window");
-    if (beforeStorage)
-      Object.defineProperty(globalThis, "localStorage", beforeStorage);
-    else Reflect.deleteProperty(globalThis, "localStorage");
-  }
 });

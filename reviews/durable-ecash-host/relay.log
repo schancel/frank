@@ -1,0 +1,17 @@
+PASS chain/utxo-family.jest.test.ts
+  ✓ forwards custody privately, wipes the construction copy, and revokes synchronous signing before close awaits (8 ms)
+  ✓ close during asynchronous derivation prevents a new signing capability escaping
+  ✓ close during wallet construction rejects the result and wipes its material (1 ms)
+  ✓ Chronik explicitly refuses requested unsupported custody instead of ignoring it
+  ✓ Chronik privately forwards explicit domain-root and historical SDK factories without changing seed material (1 ms)
+  ✓ Electrum refuses eCash construction factories
+  ✓ Chronik close synchronously revokes lifecycle and new construction (1 ms)
+  ✓ Chronik close during construction rejects the wallet and wipes its copied material (1 ms)
+  ✓ the construction capability guard checks both adapter lifetime and the supplied session (1 ms)
+  ✓ Chronik relay close retains a late owner's cleanup failure
+
+Test Suites: 1 passed, 1 total
+Tests:       10 passed, 10 total
+Snapshots:   0 total
+Time:        0.335 s, estimated 1 s
+Ran all test suites matching /chain\/utxo-family.jest.test.ts/i.

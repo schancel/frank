@@ -33,7 +33,7 @@ async function make(options = {}) {
   const chronik = options.chronik ?? chronikFor(root.bytes, chain);
   const sent = [];
   const common = {
-    networkId: chain, chronik, operationStore: store, nativeAttemptStore: old,
+    networkId: chain, chronik, ...(options.operationStoreFactory ? { operationStoreFactory: options.operationStoreFactory } : {operationStore: store}), nativeAttemptStore: old, assertActive: options.assertActive,
     checkpointClientFactory: () => ({ block: async () => ({ blockInfo: { hash: chronik.checkpoint } }) }),
     rebroadcast: async raws => { sent.push([...raws]); if (options.transport) await options.transport(raws); },
     getTransactionStatus: options.status ?? (async () => 'unknown'),
@@ -597,3 +597,143 @@ it(
 `),
   35_000
 );
+
+
+it("acquires explicit owners only after verified identity and closes failed initialization exactly once", () => run(`
+  const state = await make(); await state.wallet.close();
+  const owned = { coordinationScope: 'single-realm', walletKey: state.key, get: state.store.get.bind(state.store), put: state.store.put.bind(state.store), close: async () => { closed++; } };
+  let closed = 0, factories = 0;
+  const factory = async () => { factories++; return owned; };
+  let live = true;
+  const checkpoint = chronikFor(root.bytes); checkpoint.checkpoint = 'ff'.repeat(32);
+  await assert.rejects(make({ chronik: checkpoint, operationStoreFactory: factory }));
+  assert.equal(factories, 0);
+  const gate = deferred(), started = deferred();
+  const opening = make({ assertActive: () => { if (!live) throw new Error('revoked'); }, operationStoreFactory: async () => { started.resolve(); await gate.promise; return owned; } });
+  await started.promise; live = false; gate.resolve();
+  await assert.rejects(opening, /revoked/); assert.equal(closed, 1);
+  live = true;
+  owned.walletKey = 'wrong'; await assert.rejects(make({ operationStoreFactory: factory }), /affinity/); assert.equal(closed, 2);
+  owned.walletKey = state.key;
+  owned.get = async () => { throw new Error('broken owner'); };
+  await assert.rejects(make({ operationStoreFactory: factory }), /broken owner/); assert.equal(closed, 3);
+  owned.get = state.store.get.bind(state.store);
+  const old = new InMemoryNativeTransactionAttemptStore(); old.put(state.key, { txHash: 'ff'.repeat(32), rawTransactions: ['broken'] });
+  await assert.rejects(make({ old, operationStoreFactory: factory })); assert.equal(closed, 4);
+`));
+
+it("rejects missing and competing storage before backend construction", () => run(`
+  let constructed = 0;
+  const common = { domainRoot: root, networkId: 'xec-mainnet', chronik: chronikFor(root.bytes), walletFactory: () => { constructed++; throw new Error('constructed'); } };
+  await assert.rejects(EcashWallet.fromDomainRoot(common), /Exactly one/);
+  await assert.rejects(EcashWallet.fromDomainRoot({ ...common, operationStore: new InMemoryEcashOperationStore(), operationStoreFactory: () => { throw new Error('factory'); } }), /Exactly one/);
+  assert.equal(constructed, 0);
+`));
+
+it("revokes delayed reads and writes before signing or publication and drains owned IO once", () => run(`
+  for (const stage of ['read', 'sync', 'write']) {
+    const store = new InMemoryEcashOperationStore(); let closed = 0;
+    const prior = await make({ store }); await prior.wallet.close();
+    const owned = { coordinationScope: 'single-realm', walletKey: prior.key, get: store.get.bind(store), put: store.put.bind(store), close: async () => { closed++; } };
+    const current = await make({ operationStoreFactory: () => owned });
+    const started = deferred(), gate = deferred();
+    const originalGet = owned.get, originalPut = owned.put;
+    if (stage === 'read') owned.get = async key => { started.resolve(); await gate.promise; return originalGet(key); };
+    if (stage === 'write') owned.put = async (...args) => { started.resolve(); await gate.promise; return originalPut(...args); };
+    if (stage === 'sync') { const batch = current.chronik.batchUtxos; current.chronik.batchUtxos = async scripts => { started.resolve(); await gate.promise; return batch(scripts); }; }
+    const preparing = current.wallet.prepareNativeOperation(params('close-' + stage));
+    const rejected = assert.rejects(preparing, /closed/);
+    await started.promise;
+    const closing = current.wallet.close(); assert.equal(current.wallet.close(), closing);
+    await assert.rejects(current.wallet.getEcashOperations(), /closed/);
+    assert.equal(closed, 0); gate.resolve(); await rejected; await closing; assert.equal(closed, 1); assert.equal(current.sent.length, 0);
+    const persisted = await store.get(prior.key);
+    if (stage !== 'write') assert.equal(persisted, undefined);
+    else assert.equal(persisted.operations[0].state, 'prepared');
+  }
+`));
+
+it("drains already-started submission accounting without another broadcast and keeps borrowed stores open", () => run(`
+  const started = deferred(), gate = deferred();
+  const current = await make({ transport: async () => { started.resolve(); await gate.promise; } });
+  const prepared = await current.wallet.prepareNativeOperation(params('started-send'));
+  const submitting = current.wallet.submitNativeOperation(prepared.operationId);
+  const rejected = assert.rejects(submitting, /closed/);
+  await started.promise; const closing = current.wallet.close(); gate.resolve(); await rejected; await closing;
+  assert.equal(current.sent.length, 1);
+  const ledger = await current.store.get(current.key);
+  assert.equal(ledger.operations[0].state, 'submitted');
+  assert.deepEqual(ledger.operations[0].transactions, prepared.transactions);
+  assert.deepEqual(ledger.operations[0].inputs, prepared.inputs);
+  await current.store.put(current.key, ledger);
+  await assert.rejects(current.wallet.retryUnresolvedNativeTransaction(), /closed/);
+  assert.equal(current.sent.length, 1);
+`));
+
+it("blocks initialization recovery publication on revoked lifetime or poisoned authority", () => run(`
+  const first = await make(); const prepared = await first.wallet.prepareNativeOperation(params('recovery'));
+  await first.wallet.recordNativeOperationExposure({ operationId: prepared.operationId, binding: binding(first.wallet, prepared) });
+  // External exposure never rebroadcasts during initialization. Use native-RPC exposure instead.
+  const ledger = await first.store.get(first.key); ledger.operations[0].exposure = { kind: 'native-rpc' }; await first.store.put(first.key, ledger);
+  await first.wallet.close();
+  const started = deferred(), gate = deferred(); let live = true;
+  const opening = make({ store: first.store, assertActive: () => { if (!live) throw new Error('revoked'); }, status: async () => { started.resolve(); await gate.promise; return 'unknown'; } });
+  await started.promise; live = false; gate.resolve(); await assert.rejects(opening, /revoked/);
+  let unhealthy = false;
+  const store = { coordinationScope: 'single-realm', get: async key => { if (unhealthy) throw new Error('poisoned'); return first.store.get(key); }, put: async () => { unhealthy = true; throw new Error('failed commit'); } };
+  await assert.rejects(make({ store, status: async () => 'confirmed' }), /poisoned/);
+`));
+
+it("fences delayed checkpoint/backend construction and onSigned callbacks before subsequent effects", () => run(`
+  for (const stage of ['checkpoint', 'backend']) {
+    let live = true, acquired = 0; const started = deferred(), gate = deferred();
+    const chronik = chronikFor(root.bytes);
+    const opening = EcashWallet.fromDomainRoot({ domainRoot: root, networkId: 'xec-mainnet', chronik,
+      assertActive: () => { if (!live) throw new Error('revoked'); },
+      checkpointClientFactory: () => ({ block: async () => { if (stage === 'checkpoint') { started.resolve(); await gate.promise; } return {blockInfo: {hash: ECASH_MAINNET_CHECKPOINT_HASH}}; } }),
+      walletFactory: async params => { if (stage === 'backend') { started.resolve(); await gate.promise; } return createEcashSeedBackend(params); },
+      operationStoreFactory: () => { acquired++; throw new Error('unexpected acquisition'); } });
+    await started.promise; live = false; gate.resolve(); await assert.rejects(opening, /revoked/); assert.equal(acquired, 0);
+  }
+  const current = await make(); const started = deferred(), gate = deferred();
+  const sending = current.wallet.sendNative({ recipient, value: 1000n, onSigned: async () => { started.resolve(); await gate.promise; } });
+  const rejected = assert.rejects(sending);
+  await started.promise; const closing = current.wallet.close(); gate.resolve(); await rejected; await closing;
+  assert.equal(current.sent.length, 0);
+  const ledger = await current.store.get(current.key); assert.equal(ledger.operations[0].state, 'exposed');
+`));
+
+it("closes late initialization owners after delayed ledger hydration and SDK discovery", () => run(`
+  const prior = await make(); await prior.wallet.close();
+  for (const stage of ['ledger', 'discovery']) {
+    let live = true, closed = 0; const gate = deferred(), started = deferred();
+    const owned = { coordinationScope: 'single-realm', walletKey: prior.key,
+      get: async key => { if (stage === 'ledger') { started.resolve(); await gate.promise; } return prior.store.get(key); },
+      put: prior.store.put.bind(prior.store), close: async () => { closed++; } };
+    const opening = make({ operationStoreFactory: () => owned,
+      assertActive: () => { if (!live) throw new Error('revoked'); },
+      walletFactory: async params => {
+        const backend = await createEcashSeedBackend(params);
+        if (stage === 'discovery') { const original = backend.syncAndDiscoverAddresses.bind(backend); backend.syncAndDiscoverAddresses = async () => { started.resolve(); await gate.promise; return original(); }; }
+        return backend;
+      } });
+    await started.promise; live = false; gate.resolve(); await assert.rejects(opening, /revoked/); assert.equal(closed, 1);
+  }
+`));
+
+it("does not hide unreadable prior-obligation storage behind a healthy operation ledger", () => run(`
+  const prior = await make(); await prior.wallet.close();
+  let reads = 0, closed = 0;
+  const old = { coordinationScope: 'single-realm', get: () => { if (++reads > 1) throw new Error('prior owner unreadable'); return undefined; }, put: () => { throw new Error('no write'); }, delete: () => { throw new Error('no delete'); } };
+  const owner = { coordinationScope: 'single-realm', walletKey: prior.key, get: prior.store.get.bind(prior.store), put: prior.store.put.bind(prior.store), close: async () => { closed++; } };
+  await assert.rejects(make({ old, operationStoreFactory: () => owner }), /prior owner unreadable/);
+  assert(reads >= 3); assert.equal(closed, 1);
+`));
+
+it("retains cleanup failure visibility and never infers ownership from a borrowed close method", () => run(`
+  const prior = await make(); await prior.wallet.close(); let closed = 0;
+  const store = { coordinationScope: 'single-realm', walletKey: prior.key, get: prior.store.get.bind(prior.store), put: prior.store.put.bind(prior.store), close: async () => { closed++; throw new Error('cleanup failed'); } };
+  const borrowed = await make({ store }); await borrowed.wallet.close(); assert.equal(closed, 0); assert.equal(await store.get(prior.key), undefined);
+  const owned = await make({ operationStoreFactory: () => store });
+  const closing = owned.wallet.close(); assert.equal(owned.wallet.close(), closing); await assert.rejects(closing, /cleanup failed/); assert.equal(closed, 1);
+`));

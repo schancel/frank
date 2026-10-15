@@ -1,0 +1,14 @@
+PASS packages/wallet/ecash-stealth.jest.test.ts
+  ✓ matches Frank's established recipient derivation, including a leading-zero ECDH coordinate (42 ms)
+  ✓ validates recipient outputs, restores custody before discovery and signs a newly claimed respend (767 ms)
+  ✓ replays complete self notes idempotently and rejects conflicting, partial and malformed claims (454 ms)
+  ✓ fails visibly on missing, mismatched and expired custody and keeps durable restoration read-only (591 ms)
+  ✓ awaits receipt persistence before importing keys and rejects wrong indexer scripts (381 ms)
+  ✓ injects published identity custody through the seed factory without changing the SDK HD root (512 ms)
+  ✓ restores and respends historical raw-seed receipts through the actual chain factory (576 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       7 passed, 7 total
+Snapshots:   0 total
+Time:        3.931 s, estimated 4 s
+Ran all test suites matching /ecash-stealth.jest.test.ts/i.

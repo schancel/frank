@@ -1,3 +1,4 @@
+import { createNativeEcashOperationStore } from './storage/ecash-operations/native';
 /** Read-only proof against a real relay's Chronik route; synthetic public phrase only.
  * Run: yarn tsx packages/wallet/ecash-bip39-restore.livecheck.ts http://127.0.0.1:<relay-port>
  * No transactions are signed, broadcast, or funded. The indexer must actually be reachable.
@@ -30,6 +31,9 @@ async function main() {
       ripemd160(sha256(getBytes(node.publicKey)))
     );
     const wallet = await EcashWallet.fromDerivationMaterial({
+  operationStoreFactory: binding => createNativeEcashOperationStore({
+    ...binding, rootLocation: process.env.ECASH_OPERATION_STORE_ROOT!,
+  }),
       material: { derivation: BIP39_DERIVATION, seed },
       chronik: new ChronikClient([
         `${base.replace(/\/$/, "")}/chain-rpc/xec-testnet/chronik`,

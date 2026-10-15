@@ -109,6 +109,7 @@ try {
   const second = await page()
   await Promise.all([invoke(first, 'increment'), invoke(second, 'increment')])
   await invoke(first, 'check-increments')
+  await invoke(first, 'host')
 } finally {
   clearTimeout(timeout)
   await stop()

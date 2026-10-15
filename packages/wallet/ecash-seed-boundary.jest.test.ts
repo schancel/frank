@@ -53,7 +53,7 @@ it("constructs and rediscovers frozen roots with ecash-wallet 6.2.1 and independ
           batchUtxos: async (scripts) => { syncs++; return scripts.map(s => ({ utxos: { outputScript: '76a914' + s.payload + '88ac', utxos: [] } })); },
         };
         const checkpoints = [];
-        const options = {
+        const options = { operationStore: new (require('./ecash-operation-store.ts').InMemoryEcashOperationStore)(),
           domainRoot: { registry: 'frank-domain-roots-v1', purpose: 'ecash-bch-wallet', bytes },
           networkId: 'ecash-mainnet', chronik,
           checkpointClientFactory: url => ({ block: async height => { checkpoints.push([url, height]); return { blockInfo: { hash: ECASH_MAINNET_CHECKPOINT_HASH } }; } }),

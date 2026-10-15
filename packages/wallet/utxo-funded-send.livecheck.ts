@@ -1,3 +1,4 @@
+import { createNativeEcashOperationStore } from './storage/ecash-operations/native';
 /**
  * The funded send check for one UTXO network, through a real relay.
  *
@@ -83,6 +84,9 @@ async function main(): Promise<number> {
     // Given only for a regtest network; the wallet refuses one for a public network.
     const [height, hash] = (process.env.FRANK_UTXO_CHECKPOINT ?? "").split(":");
     const ecash = createEcashChain({
+  operationStoreFactory: binding => createNativeEcashOperationStore({
+    ...binding, rootLocation: process.env.ECASH_OPERATION_STORE_ROOT!,
+  }),
       networkId: chainIdentifier as "xec-testnet" | "xec-regtest",
       checkpoint: hash ? { height: Number(height), hash } : undefined,
       chronik,

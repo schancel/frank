@@ -1,10 +1,12 @@
 import {
-  defaultEcashOperationStore,
+  validateEcashOperationStoreOptions,
   parseEcashOperationLedger,
 } from "./ecash-operation-store";
 import type {
   EcashNativeOperation,
   EcashOperationStore,
+  EcashOperationStoreOptions,
+  OwnedEcashOperationStore,
   EcashOperationLedger,
   EcashOperationExposureBinding,
 } from "./ecash-operation-store";
@@ -263,7 +265,7 @@ export type EcashBip39WalletFactory = (params: {
   addressPrefix: EcashAddressPrefix;
 }) => EcashWalletBackend | Promise<EcashWalletBackend>;
 
-export interface EcashWalletOptions {
+export type EcashWalletOptions = EcashOperationStoreOptions & {
   chronik: ChronikClient;
   networkId: EcashNetworkId;
   /** Required for `xec-regtest` and refused for every other network. See `ecashCheckpoint`. */
@@ -271,7 +273,8 @@ export interface EcashWalletOptions {
   /** Test seam for independently checking every URL reported by a failover client. */
   checkpointClientFactory?: (url: string) => EcashCheckpointClient;
   nativeAttemptStore?: NativeTransactionAttemptStore;
-  operationStore?: EcashOperationStore;
+  /** Relay lifetime is available before initialization begins. */
+  assertActive?: () => void;
   chainUtxoPool?: ChainUtxoPool;
   getTransactionStatus?: (
     transaction: ChainTransaction
@@ -281,7 +284,7 @@ export interface EcashWalletOptions {
    * <reason>" error means the node answered and refused them; anything else means unknown.
    */
   rebroadcast?: (rawTransactions: ReadonlyArray<string>) => Promise<void>;
-}
+};
 
 /**
  * The SDK/Chronik own derived coin inventory and construction. This facade owns durable
@@ -312,7 +315,9 @@ export class EcashWallet implements NativeWalletHandle {
     private readonly rebroadcast: (
       rawTransactions: ReadonlyArray<string>
     ) => Promise<void>,
-    private readonly operationStore: EcashOperationStore
+    private readonly operationStore: EcashOperationStore,
+    private readonly ownedStore: OwnedEcashOperationStore | undefined,
+    private readonly externalAssertActive: (() => void) | undefined
   ) {
     this.chainUtxoPool = chainUtxoPool;
     this.networkId = networkId;
@@ -397,7 +402,10 @@ export class EcashWallet implements NativeWalletHandle {
   static async fromLegacyMnemonic(
     params: EcashWalletOptions & LegacyEcashSeedOptions
   ): Promise<EcashWallet> {
+    validateEcashOperationStoreOptions(params);
+    params.assertActive?.();
     const { legacyEcashBackendFactory } = await import("./ecash-legacy-seed");
+    params.assertActive?.();
     const createBackend = legacyEcashBackendFactory(params);
     return EcashWallet.initialize(
       params,
@@ -411,6 +419,9 @@ export class EcashWallet implements NativeWalletHandle {
     createBackend: () => EcashWalletBackend | Promise<EcashWalletBackend>,
     allowStructuralTestClient: boolean
   ): Promise<EcashWallet> {
+    validateEcashOperationStoreOptions(params);
+    const check = () => params.assertActive?.();
+    check();
     await verifyEcashChronikEndpoints({
       chronik: params.chronik,
       networkId: params.networkId,
@@ -418,45 +429,132 @@ export class EcashWallet implements NativeWalletHandle {
       allowStructuralTestClient,
       checkpointClientFactory: params.checkpointClientFactory,
     });
+    check();
     const backend = await createBackend();
+    check();
     const canonicalId = canonicalEcashNetworkId(params.networkId);
-    const addressPrefix = ECASH_ADDRESS_PREFIXES[canonicalId];
     const primaryAddress = canonicalEcashAddress(
       backend.getReceiveAddress(0),
-      addressPrefix
+      ECASH_ADDRESS_PREFIXES[canonicalId]
     );
-    const wallet = new EcashWallet(
-      backend,
-      primaryAddress,
-      canonicalId,
-      // The canonical chain identifier everywhere, including the attempt record's key. It was
-      // the checkpoint hash, which no caller comparing against `xec-testnet` could match.
-      canonicalId,
-      params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore,
-      params.getTransactionStatus ?? (async () => "unknown"),
-      params.chainUtxoPool,
-      params.rebroadcast ??
-        (async (rawTransactions) => {
-          for (const raw of rawTransactions)
-            await params.chronik.broadcastTx(raw);
-        }),
-      params.operationStore ?? defaultEcashOperationStore
-    );
-    // Await journal validation before publishing the wallet; absent state stays in memory.
-    const ledger = await wallet.loadLedger();
-    await wallet.restoreStealthReceipts();
-    if (ledger.nextChangeIndex > 0) {
-      wallet.preparationBackend().restoreChangeIndex(ledger.nextChangeIndex);
+    let owned: OwnedEcashOperationStore | undefined;
+    let wallet: EcashWallet | undefined;
+    try {
+      owned = params.operationStoreFactory
+        ? await params.operationStoreFactory({
+            chainIdentifier: canonicalId,
+            walletAddress: primaryAddress,
+          })
+        : undefined;
+      check();
+      const key = nativeTransactionAttemptKey({
+        family: "bitcoin",
+        chainIdentifier: canonicalId,
+        address: primaryAddress,
+      });
+      if (owned && owned.walletKey !== key)
+        throw new Error("Acquired eCash store wallet affinity mismatch");
+      wallet = new EcashWallet(
+        backend,
+        primaryAddress,
+        canonicalId,
+        canonicalId,
+        params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore,
+        params.getTransactionStatus ?? (async () => "unknown"),
+        params.chainUtxoPool,
+        params.rebroadcast ??
+          (async (rawTransactions) => {
+            for (const raw of rawTransactions) {
+              wallet!.assertActive();
+              await params.chronik.broadcastTx(raw);
+            }
+          }),
+        params.operationStore ?? owned!,
+        owned,
+        params.assertActive
+      );
+      const ledger = await wallet.loadLedger();
+      wallet.assertActive();
+      await wallet.restoreStealthReceipts();
+      wallet.assertActive();
+      if (ledger.nextChangeIndex > 0)
+        wallet.preparationBackend().restoreChangeIndex(ledger.nextChangeIndex);
+      await backend.syncAndDiscoverAddresses();
+      wallet.assertActive();
+      wallet.captureBalanceObservation();
+      try {
+        await wallet.finishInterruptedSend();
+      } catch {
+        // Network uncertainty retains the original obligation. Publication still requires a
+        // fresh authoritative read; poisoned/unreadable storage and revocation must reject.
+        wallet.assertActive();
+        await wallet.loadLedger();
+        wallet.assertActive();
+        const prior = wallet.nativeAttemptStore.get(wallet.nativeAttemptKey);
+        if (prior?.rawTransactions !== undefined)
+          wallet.preparationBackend().validateLegacyTransaction(prior);
+      }
+      wallet.assertActive();
+      return wallet;
+    } catch (error) {
+      try {
+        if (wallet) await wallet.close();
+        else if (owned) await owned.close();
+      } catch (cleanup) {
+        throw new AggregateError(
+          [error, cleanup],
+          "eCash initialization and cleanup failed"
+        );
+      }
+      throw error;
     }
-    await backend.syncAndDiscoverAddresses();
-    wallet.captureBalanceObservation();
-    // Resume still-authorized RPC attempts independently of new sends. Prepared operations
-    // never broadcast here; parse/affinity failures above remain activation failures.
-    await wallet.finishInterruptedSend().catch(() => undefined);
-    return wallet;
+  }
+
+  private revoked = false;
+  private closing?: Promise<void>;
+  private readonly admitted = new Set<Promise<unknown>>();
+
+  private assertActive(): void {
+    if (this.revoked) throw new Error("eCash wallet is closed");
+    this.externalAssertActive?.();
+  }
+
+  private async active<T>(work: Promise<T>): Promise<T> {
+    const value = await work;
+    this.assertActive();
+    return value;
+  }
+
+  private admit<T>(work: () => Promise<T>): Promise<T> {
+    try {
+      this.assertActive();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const task = work().then((value) => {
+      this.assertActive();
+      return value;
+    });
+    this.admitted.add(task);
+    void task.then(
+      () => this.admitted.delete(task),
+      () => this.admitted.delete(task)
+    );
+    return task;
+  }
+
+  /** Revokes synchronously; already-started submission accounting drains before owned IO closes. */
+  close(): Promise<void> {
+    this.revoked = true;
+    return (this.closing ??= (async () => {
+      await Promise.allSettled([...this.admitted]);
+      await this.ownedStore?.close();
+    })());
   }
 
   getChainUtxoPool(): ChainUtxoPool | undefined {
+    this.assertActive();
+
     return this.chainUtxoPool;
   }
 
@@ -470,6 +568,8 @@ export class EcashWallet implements NativeWalletHandle {
     label?: string;
     pool?: ChainUtxoPool;
   }): ChainUtxoCoin {
+    this.assertActive();
+
     const targetPool = params.pool ?? this.chainUtxoPool;
     if (!targetPool) {
       throw new Error("No ChainUtxoPool provided or attached to EcashWallet");
@@ -487,6 +587,7 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   get identity(): NativeWalletHandle["identity"] {
+    this.assertActive();
     return {
       address: { raw: this.primaryAddress },
       displayAddress: this.primaryAddress,
@@ -520,10 +621,13 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   private async restoreStealthReceipts(): Promise<void> {
-    for (const receipt of (await this.loadLedger()).stealthReceipts ?? []) {
-      const imported = await this.stealthBackend().importStealthDerivation(
-        receipt.derivation,
-        receipt
+    for (const receipt of (await this.active(this.loadLedger()))
+      .stealthReceipts ?? []) {
+      const imported = await this.active(
+        this.stealthBackend().importStealthDerivation(
+          receipt.derivation,
+          receipt
+        )
       );
       if (
         imported.address !== receipt.address ||
@@ -543,112 +647,125 @@ export class EcashWallet implements NativeWalletHandle {
     timestamp: number;
     expectedAddress?: string;
   }): Promise<EcashStealthReceipt> {
-    const snapshot = { ...params, transactions: [...params.transactions] };
-    if (snapshot.chainIdentifier !== this.chainIdentifier)
-      throw new Error("eCash stealth payment belongs to another chain");
-    const backend = this.stealthBackend();
-    const derivation = Object.freeze({
-      chainIdentifier: this.chainIdentifier,
-      identityPublicKey: backend.getStealthIdentityPublicKey(),
-      ephemeralPubKey: snapshot.ephemeralPubKey,
-    });
-    const imported = await backend.describeStealthDerivation(derivation);
-    if (
-      snapshot.expectedAddress !== undefined &&
-      snapshot.expectedAddress !== imported.address
-    )
-      throw new Error("eCash received coin address mismatch");
-    const receipt: EcashStealthReceipt = {
-      derivation,
-      ...imported,
-      claimedAmount: snapshot.claimedAmount.toString(),
-      payloadDigest: snapshot.payloadDigest,
-      timestamp: snapshot.timestamp,
-      transactions: snapshot.transactions,
-    };
-    const prefix =
-      ECASH_ADDRESS_PREFIXES[this.chainIdentifier as CanonicalEcashNetworkId];
-    const incoming = validateEcashStealthReceipt(
-      receipt,
-      this.chainIdentifier,
-      prefix
-    );
-    const recorded = await this.exclusive(async () => {
-      const ledger = await this.loadLedger();
-      const receipts = ledger.stealthReceipts ?? [];
-      for (const previous of receipts) {
-        const outpoints = validateEcashStealthReceipt(
-          previous,
-          this.chainIdentifier,
-          prefix
-        );
-        const overlap = outpoints.some((outpoint) =>
-          incoming.includes(outpoint)
-        );
-        const sameDigest = previous.payloadDigest === receipt.payloadDigest;
-        if (sameDigest || overlap) {
-          if (
-            previous.address === receipt.address &&
-            previous.publicKey === receipt.publicKey &&
-            previous.derivation.identityPublicKey ===
-              receipt.derivation.identityPublicKey &&
-            previous.derivation.ephemeralPubKey ===
-              receipt.derivation.ephemeralPubKey &&
-            previous.claimedAmount === receipt.claimedAmount &&
-            previous.transactions.length === receipt.transactions.length &&
-            previous.transactions.every(
-              (raw, index) => raw === receipt.transactions[index]
-            )
-          )
-            return previous;
-          throw new Error(
-            "Conflicting eCash stealth receipt or duplicate outpoint"
-          );
-        }
-      }
-      await this.operationStore.put(this.nativeAttemptKey, {
-        ...ledger,
-        stealthReceipts: [...receipts, receipt],
+    return this.admit(async () => {
+      const snapshot = { ...params, transactions: [...params.transactions] };
+      if (snapshot.chainIdentifier !== this.chainIdentifier)
+        throw new Error("eCash stealth payment belongs to another chain");
+      const backend = this.stealthBackend();
+      const derivation = Object.freeze({
+        chainIdentifier: this.chainIdentifier,
+        identityPublicKey: backend.getStealthIdentityPublicKey(),
+        ephemeralPubKey: snapshot.ephemeralPubKey,
       });
-      return receipt;
+      const imported = await this.active(
+        backend.describeStealthDerivation(derivation)
+      );
+      if (
+        snapshot.expectedAddress !== undefined &&
+        snapshot.expectedAddress !== imported.address
+      )
+        throw new Error("eCash received coin address mismatch");
+      const receipt: EcashStealthReceipt = {
+        derivation,
+        ...imported,
+        claimedAmount: snapshot.claimedAmount.toString(),
+        payloadDigest: snapshot.payloadDigest,
+        timestamp: snapshot.timestamp,
+        transactions: snapshot.transactions,
+      };
+      const prefix =
+        ECASH_ADDRESS_PREFIXES[this.chainIdentifier as CanonicalEcashNetworkId];
+      const incoming = validateEcashStealthReceipt(
+        receipt,
+        this.chainIdentifier,
+        prefix
+      );
+      const recorded = await this.active(
+        this.exclusive(async () => {
+          const ledger = await this.active(this.loadLedger());
+          const receipts = ledger.stealthReceipts ?? [];
+          for (const previous of receipts) {
+            const outpoints = validateEcashStealthReceipt(
+              previous,
+              this.chainIdentifier,
+              prefix
+            );
+            const overlap = outpoints.some((outpoint) =>
+              incoming.includes(outpoint)
+            );
+            const sameDigest = previous.payloadDigest === receipt.payloadDigest;
+            if (sameDigest || overlap) {
+              if (
+                previous.address === receipt.address &&
+                previous.publicKey === receipt.publicKey &&
+                previous.derivation.identityPublicKey ===
+                  receipt.derivation.identityPublicKey &&
+                previous.derivation.ephemeralPubKey ===
+                  receipt.derivation.ephemeralPubKey &&
+                previous.claimedAmount === receipt.claimedAmount &&
+                previous.transactions.length === receipt.transactions.length &&
+                previous.transactions.every(
+                  (raw, index) => raw === receipt.transactions[index]
+                )
+              )
+                return previous;
+              throw new Error(
+                "Conflicting eCash stealth receipt or duplicate outpoint"
+              );
+            }
+          }
+          await this.active(
+            this.operationStore.put(this.nativeAttemptKey, {
+              ...ledger,
+              stealthReceipts: [...receipts, receipt],
+            })
+          );
+          return receipt;
+        })
+      );
+      const restored = await this.active(
+        backend.importStealthDerivation(recorded.derivation, recorded)
+      );
+      if (
+        restored.address !== recorded.address ||
+        restored.publicKey !== recorded.publicKey
+      )
+        throw new Error("Restored eCash stealth derivation mismatch");
+      return recorded;
     });
-    const restored = await backend.importStealthDerivation(
-      recorded.derivation,
-      recorded
-    );
-    if (
-      restored.address !== recorded.address ||
-      restored.publicKey !== recorded.publicKey
-    )
-      throw new Error("Restored eCash stealth derivation mismatch");
-    return recorded;
   }
 
   async recordReceivedCoin(note: ReceivedCoinItem): Promise<boolean> {
-    if (
-      note.type !== "received-coin" ||
-      note.origin !== "stealth" ||
-      typeof note.ephemeralPubKey !== "string" ||
-      typeof note.payloadDigest !== "string" ||
-      !Array.isArray(note.transactions) ||
-      typeof note.claimedAmountWei !== "string" ||
-      !/^[1-9][0-9]*$/.test(note.claimedAmountWei)
-    )
-      throw new Error("Invalid eCash received coin note");
-    await this.recordStealthPayment({
-      chainIdentifier: note.chainIdentifier,
-      ephemeralPubKey: note.ephemeralPubKey,
-      expectedAddress: note.address,
-      claimedAmount: BigInt(note.claimedAmountWei),
-      transactions: note.transactions,
-      payloadDigest: note.payloadDigest,
-      timestamp: note.timestamp,
+    return this.admit(async () => {
+      if (
+        note.type !== "received-coin" ||
+        note.origin !== "stealth" ||
+        typeof note.ephemeralPubKey !== "string" ||
+        typeof note.payloadDigest !== "string" ||
+        !Array.isArray(note.transactions) ||
+        typeof note.claimedAmountWei !== "string" ||
+        !/^[1-9][0-9]*$/.test(note.claimedAmountWei)
+      )
+        throw new Error("Invalid eCash received coin note");
+      await this.active(
+        this.recordStealthPayment({
+          chainIdentifier: note.chainIdentifier,
+          ephemeralPubKey: note.ephemeralPubKey,
+          expectedAddress: note.address,
+          claimedAmount: BigInt(note.claimedAmountWei),
+          transactions: note.transactions,
+          payloadDigest: note.payloadDigest,
+          timestamp: note.timestamp,
+        })
+      );
+      return true;
     });
-    return true;
   }
 
   async getStealthReceipts(): Promise<ReadonlyArray<EcashStealthReceipt>> {
-    return (await this.loadLedger()).stealthReceipts ?? [];
+    return this.admit(async () => {
+      return (await this.active(this.loadLedger())).stealthReceipts ?? [];
+    });
   }
 
   private preparationBackend(): EcashPreparationBackend {
@@ -757,7 +874,9 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   async getEcashOperations(): Promise<ReadonlyArray<EcashNativeOperation>> {
-    return (await this.loadLedger()).operations;
+    return this.admit(async () => {
+      return (await this.active(this.loadLedger())).operations;
+    });
   }
 
   private transaction(operation: EcashNativeOperation): ChainTransaction {
@@ -780,10 +899,13 @@ export class EcashWallet implements NativeWalletHandle {
 
   private async updateOperation(
     operationId: string,
-    change: (operation: EcashNativeOperation) => EcashNativeOperation
+    change: (operation: EcashNativeOperation) => EcashNativeOperation,
+    accounting = false
   ): Promise<EcashNativeOperation> {
+    if (!accounting) this.assertActive();
     return this.exclusive(async () => {
       const ledger = await this.loadLedger();
+      if (!accounting) this.assertActive();
       const current = ledger.operations.find(
         (operation) => operation.operationId === operationId
       );
@@ -806,89 +928,99 @@ export class EcashWallet implements NativeWalletHandle {
     value: bigint;
     maxFee?: bigint;
   }): Promise<EcashNativeOperation> {
-    const { operationId, value, maxFee } = params;
-    if (typeof operationId !== "string" || operationId.length === 0)
-      throw new Error("eCash operation id is required");
-    if (value <= 0n || (maxFee !== undefined && maxFee < 0n))
-      throw new RangeError(
-        "Transfer value must be greater than zero and fee ceiling nonnegative"
-      );
-    let recipient: string;
-    try {
-      recipient = canonicalEcashAddress(
-        params.recipient.raw,
-        ECASH_ADDRESS_PREFIXES[this.chainIdentifier as CanonicalEcashNetworkId]
-      );
-    } catch {
-      throw new Error("Invalid eCash recipient for the configured network");
-    }
-    const intent = {
-      recipient,
-      value: value.toString(),
-      ...(maxFee === undefined ? {} : { maxFee: maxFee.toString() }),
-    };
-    const existing = await this.exclusive(async () => {
-      const operation = (await this.loadLedger()).operations.find(
-        (item) => item.operationId === operationId
-      );
-      if (operation === undefined) return undefined;
-      if (!this.sameIntent(operation.intent, intent))
-        throw new Error("eCash operation id is bound to another intent");
-      if (operation.state === "released")
-        throw new Error("Released eCash operation cannot be reused");
-      return operation;
-    });
-    if (existing !== undefined) return existing;
-    const backend = this.preparationBackend();
-    backend.restoreChangeIndex((await this.loadLedger()).nextChangeIndex);
-    // Indexer waits occur outside the shared atomic selection section. A stale indexer cannot
-    // make already claimed inputs selectable because claims are reloaded after this await.
-    await this.restoreStealthReceipts();
-    await this.backend.sync();
-    return this.exclusive(async () => {
-      const ledger = await this.loadLedger();
-      const repeated = ledger.operations.find(
-        (operation) => operation.operationId === operationId
-      );
-      if (repeated !== undefined) {
-        if (
-          !this.sameIntent(repeated.intent, intent) ||
-          repeated.state === "released"
-        )
-          throw new Error("eCash operation id is already bound");
-        return repeated;
+    return this.admit(async () => {
+      const { operationId, value, maxFee } = params;
+      if (typeof operationId !== "string" || operationId.length === 0)
+        throw new Error("eCash operation id is required");
+      if (value <= 0n || (maxFee !== undefined && maxFee < 0n))
+        throw new RangeError(
+          "Transfer value must be greater than zero and fee ceiling nonnegative"
+        );
+      let recipient: string;
+      try {
+        recipient = canonicalEcashAddress(
+          params.recipient.raw,
+          ECASH_ADDRESS_PREFIXES[
+            this.chainIdentifier as CanonicalEcashNetworkId
+          ]
+        );
+      } catch {
+        throw new Error("Invalid eCash recipient for the configured network");
       }
-      const construction = backend.buildNativeConstruction({
+      const intent = {
         recipient,
-        value: value,
-        excludedInputs: this.exclusions(ledger),
-        changeIndexFloor: ledger.nextChangeIndex,
-      });
-      if (maxFee !== undefined && construction.fee > maxFee)
-        throw new NativeFeeExceededError(construction.fee);
-      const operation: EcashNativeOperation = {
-        operationId: operationId,
-        intent,
-        state: "prepared",
-        transactions: construction.transactions,
-        inputs: construction.selectedInputs.map((input) => ({
-          ...input,
-          satoshis: input.satoshis.toString(),
-        })),
-        fee: construction.fee.toString(),
-        nextChangeIndex: construction.nextChangeIndex,
+        value: value.toString(),
+        ...(maxFee === undefined ? {} : { maxFee: maxFee.toString() }),
       };
-      backend.validateNativeOperation(operation);
-      await this.operationStore.put(this.nativeAttemptKey, {
-        ...ledger,
-        nextChangeIndex: Math.max(
-          ledger.nextChangeIndex,
-          construction.nextChangeIndex
-        ),
-        operations: [...ledger.operations, operation],
+      const existing = await this.active(
+        this.exclusive(async () => {
+          const operation = (
+            await this.active(this.loadLedger())
+          ).operations.find((item) => item.operationId === operationId);
+          if (operation === undefined) return undefined;
+          if (!this.sameIntent(operation.intent, intent))
+            throw new Error("eCash operation id is bound to another intent");
+          if (operation.state === "released")
+            throw new Error("Released eCash operation cannot be reused");
+          return operation;
+        })
+      );
+      if (existing !== undefined) return existing;
+      const backend = this.preparationBackend();
+      backend.restoreChangeIndex(
+        (await this.active(this.loadLedger())).nextChangeIndex
+      );
+      // Indexer waits occur outside the shared atomic selection section. A stale indexer cannot
+      // make already claimed inputs selectable because claims are reloaded after this await.
+      await this.active(this.restoreStealthReceipts());
+      await this.active(this.backend.sync());
+      return this.exclusive(async () => {
+        const ledger = await this.active(this.loadLedger());
+        const repeated = ledger.operations.find(
+          (operation) => operation.operationId === operationId
+        );
+        if (repeated !== undefined) {
+          if (
+            !this.sameIntent(repeated.intent, intent) ||
+            repeated.state === "released"
+          )
+            throw new Error("eCash operation id is already bound");
+          return repeated;
+        }
+        const construction = backend.buildNativeConstruction({
+          recipient,
+          value: value,
+          excludedInputs: this.exclusions(ledger),
+          changeIndexFloor: ledger.nextChangeIndex,
+        });
+        if (maxFee !== undefined && construction.fee > maxFee)
+          throw new NativeFeeExceededError(construction.fee);
+        const operation: EcashNativeOperation = {
+          operationId: operationId,
+          intent,
+          state: "prepared",
+          transactions: construction.transactions,
+          inputs: construction.selectedInputs.map((input) => ({
+            ...input,
+            satoshis: input.satoshis.toString(),
+          })),
+          fee: construction.fee.toString(),
+          nextChangeIndex: construction.nextChangeIndex,
+        };
+        backend.validateNativeOperation(operation);
+        await this.active(
+          this.operationStore.put(this.nativeAttemptKey, {
+            ...ledger,
+            nextChangeIndex: Math.max(
+              ledger.nextChangeIndex,
+              construction.nextChangeIndex
+            ),
+            operations: [...ledger.operations, operation],
+          })
+        );
+        backend.restoreChangeIndex(construction.nextChangeIndex);
+        return operation;
       });
-      backend.restoreChangeIndex(construction.nextChangeIndex);
-      return operation;
     });
   }
 
@@ -899,52 +1031,57 @@ export class EcashWallet implements NativeWalletHandle {
     operationId: string;
     binding: EcashOperationExposureBinding;
   }): Promise<EcashNativeOperation> {
-    const binding = {
-      ...params.binding,
-      transactionHashes: [...params.binding.transactionHashes],
-    };
-    return this.updateOperation(params.operationId, (operation) => {
-      if (
-        binding.chainIdentifier !== this.chainIdentifier ||
-        binding.walletAddress !== this.primaryAddress ||
-        !/^[0-9a-f]{64}$/.test(binding.externalPayloadDigest) ||
-        binding.transactionHashes.length !== operation.transactions.length ||
-        binding.transactionHashes.some(
-          (hash, i) => hash !== operation.transactions[i].txid
-        )
-      )
-        throw new Error("eCash exposure binding does not match operation");
-      if (operation.state === "released")
-        throw new Error("Released eCash operation cannot be exposed");
-      if (operation.exposure !== undefined) {
+    return this.admit(async () => {
+      const binding = {
+        ...params.binding,
+        transactionHashes: [...params.binding.transactionHashes],
+      };
+      return this.updateOperation(params.operationId, (operation) => {
         if (
-          operation.exposure.kind !== "external-payload" ||
-          operation.exposure.binding.chainIdentifier !==
-            binding.chainIdentifier ||
-          operation.exposure.binding.walletAddress !== binding.walletAddress ||
-          operation.exposure.binding.externalPayloadDigest !==
-            binding.externalPayloadDigest ||
-          operation.exposure.binding.transactionHashes.some(
-            (hash, i) => hash !== binding.transactionHashes[i]
+          binding.chainIdentifier !== this.chainIdentifier ||
+          binding.walletAddress !== this.primaryAddress ||
+          !/^[0-9a-f]{64}$/.test(binding.externalPayloadDigest) ||
+          binding.transactionHashes.length !== operation.transactions.length ||
+          binding.transactionHashes.some(
+            (hash, i) => hash !== operation.transactions[i].txid
           )
         )
-          throw new Error("eCash exposure is already bound");
-        return operation;
-      }
-      return {
-        ...operation,
-        state: "exposed",
-        exposure: { kind: "external-payload", binding },
-      };
+          throw new Error("eCash exposure binding does not match operation");
+        if (operation.state === "released")
+          throw new Error("Released eCash operation cannot be exposed");
+        if (operation.exposure !== undefined) {
+          if (
+            operation.exposure.kind !== "external-payload" ||
+            operation.exposure.binding.chainIdentifier !==
+              binding.chainIdentifier ||
+            operation.exposure.binding.walletAddress !==
+              binding.walletAddress ||
+            operation.exposure.binding.externalPayloadDigest !==
+              binding.externalPayloadDigest ||
+            operation.exposure.binding.transactionHashes.some(
+              (hash, i) => hash !== binding.transactionHashes[i]
+            )
+          )
+            throw new Error("eCash exposure is already bound");
+          return operation;
+        }
+        return {
+          ...operation,
+          state: "exposed",
+          exposure: { kind: "external-payload", binding },
+        };
+      });
     });
   }
 
   releaseNativeOperation(operationId: string): Promise<EcashNativeOperation> {
-    return this.updateOperation(operationId, (operation) => {
-      if (operation.state === "released") return operation;
-      if (operation.state !== "prepared")
-        throw new Error("Exposed eCash input claims cannot be released");
-      return { ...operation, state: "released" };
+    return this.admit(async () => {
+      return this.updateOperation(operationId, (operation) => {
+        if (operation.state === "released") return operation;
+        if (operation.state !== "prepared")
+          throw new Error("Exposed eCash input claims cannot be released");
+        return { ...operation, state: "released" };
+      });
     });
   }
 
@@ -962,81 +1099,99 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   async submitNativeOperation(operationId: string): Promise<ChainTransaction> {
-    const operation = await this.exposeNativeRpc(operationId);
-    const transaction = this.transaction(operation);
-    if (operation.state === "confirmed") return transaction;
-    try {
-      await this.rebroadcast(transaction.rawTransactions!);
-      await this.updateOperation(operationId, (current) =>
-        current.state === "confirmed"
-          ? current
-          : { ...current, state: "submitted" }
-      );
-    } catch (reason) {
-      // Refusal or a journal failure after acceptance does not prove signed bytes cannot land.
-      throw new NativeTransactionSubmissionError({ transaction, reason });
-    }
-    return transaction;
+    return this.admit(async () => {
+      const operation = await this.active(this.exposeNativeRpc(operationId));
+      const transaction = this.transaction(operation);
+      if (operation.state === "confirmed") return transaction;
+      try {
+        this.assertActive();
+        await this.rebroadcast(transaction.rawTransactions!);
+        await this.updateOperation(
+          operationId,
+          (current) =>
+            current.state === "confirmed"
+              ? current
+              : { ...current, state: "submitted" },
+          true
+        );
+      } catch (reason) {
+        // Refusal or a journal failure after acceptance does not prove signed bytes cannot land.
+        throw new NativeTransactionSubmissionError({ transaction, reason });
+      }
+      return transaction;
+    });
   }
 
   async reconcileNativeOperation(
     operationId: string
   ): Promise<EcashNativeOperation> {
-    const operation = (await this.loadLedger()).operations.find(
-      (item) => item.operationId === operationId
-    );
-    if (operation === undefined) throw new Error("Unknown eCash operation");
-    if (
-      operation.state === "prepared" ||
-      operation.state === "released" ||
-      operation.state === "confirmed"
-    )
-      return operation;
-    const status = await this.getTransactionStatus(this.transaction(operation));
-    if (status !== "confirmed" && status !== "pending") return operation;
-    return this.updateOperation(operationId, (current) =>
-      current.state === "confirmed"
-        ? current
-        : {
-            ...current,
-            state: status === "confirmed" ? "confirmed" : "submitted",
-          }
-    );
+    return this.admit(async () => {
+      const operation = (await this.active(this.loadLedger())).operations.find(
+        (item) => item.operationId === operationId
+      );
+      if (operation === undefined) throw new Error("Unknown eCash operation");
+      if (
+        operation.state === "prepared" ||
+        operation.state === "released" ||
+        operation.state === "confirmed"
+      )
+        return operation;
+      const status = await this.active(
+        this.getTransactionStatus(this.transaction(operation))
+      );
+      if (status !== "confirmed" && status !== "pending") return operation;
+      return this.updateOperation(operationId, (current) =>
+        current.state === "confirmed"
+          ? current
+          : {
+              ...current,
+              state: status === "confirmed" ? "confirmed" : "submitted",
+            }
+      );
+    });
   }
 
   async getReceiveAddress(): Promise<ChainAddress> {
-    await this.restoreStealthReceipts();
-    await this.backend.syncAndDiscoverAddresses();
-    const ledger = await this.loadLedger();
-    if (ledger.nextChangeIndex > 0)
-      this.preparationBackend().restoreChangeIndex(ledger.nextChangeIndex);
-    return {
-      raw: canonicalEcashAddress(
-        this.backend.getReceiveAddress(this.backend.receiveIndex),
-        ECASH_ADDRESS_PREFIXES[this.chainIdentifier as CanonicalEcashNetworkId]
-      ),
-    };
+    return this.admit(async () => {
+      await this.active(this.restoreStealthReceipts());
+      await this.active(this.backend.syncAndDiscoverAddresses());
+      const ledger = await this.active(this.loadLedger());
+      if (ledger.nextChangeIndex > 0)
+        this.preparationBackend().restoreChangeIndex(ledger.nextChangeIndex);
+      return {
+        raw: canonicalEcashAddress(
+          this.backend.getReceiveAddress(this.backend.receiveIndex),
+          ECASH_ADDRESS_PREFIXES[
+            this.chainIdentifier as CanonicalEcashNetworkId
+          ]
+        ),
+      };
+    });
   }
 
   /** Last complete SDK observation, excluding the authoritative journal's current claims. */
   async getBalanceObservation(): Promise<
     { balance: bigint; observedAt: number } | undefined
   > {
-    const observation = this.balanceObservation;
-    if (!observation) return undefined;
-    const excluded = new Set(
-      this.exclusions(await this.loadLedger()).map(
-        (input) => `${input.txid}:${input.vout}`
-      )
-    );
-    return {
-      observedAt: observation.observedAt,
-      balance: observation.coins.reduce(
-        (sum, coin) =>
-          excluded.has(`${coin.txid}:${coin.vout}`) ? sum : sum + coin.satoshis,
-        0n
-      ),
-    };
+    return this.admit(async () => {
+      const observation = this.balanceObservation;
+      if (!observation) return undefined;
+      const excluded = new Set(
+        this.exclusions(await this.active(this.loadLedger())).map(
+          (input) => `${input.txid}:${input.vout}`
+        )
+      );
+      return {
+        observedAt: observation.observedAt,
+        balance: observation.coins.reduce(
+          (sum, coin) =>
+            excluded.has(`${coin.txid}:${coin.vout}`)
+              ? sum
+              : sum + coin.satoshis,
+          0n
+        ),
+      };
+    });
   }
 
   private captureBalanceObservation(): void {
@@ -1053,8 +1208,13 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   getBalance(): Promise<bigint> {
+    try {
+      this.assertActive();
+    } catch (error) {
+      return Promise.reject(error);
+    }
     if (this.balanceRefresh) return this.balanceRefresh;
-    const refresh = this.refreshBalance();
+    const refresh = this.admit(() => this.refreshBalance());
     this.balanceRefresh = refresh;
     const clear = () => {
       if (this.balanceRefresh === refresh) this.balanceRefresh = undefined;
@@ -1064,15 +1224,15 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   private async refreshBalance(): Promise<bigint> {
-    const floor = (await this.loadLedger()).nextChangeIndex;
+    const floor = (await this.active(this.loadLedger())).nextChangeIndex;
     if (floor > 0) this.preparationBackend().restoreChangeIndex(floor);
-    await this.restoreStealthReceipts();
-    await this.backend.sync();
+    await this.active(this.restoreStealthReceipts());
+    await this.active(this.backend.sync());
     return this.exclusive(async () => {
-      const ledger = await this.loadLedger();
+      const ledger = await this.active(this.loadLedger());
       const excluded = this.exclusions(ledger);
       this.captureBalanceObservation();
-      const observation = await this.getBalanceObservation();
+      const observation = await this.active(this.getBalanceObservation());
       if (observation) return observation.balance;
       return excluded.length === 0 &&
         this.backend.getAvailableBalance === undefined
@@ -1085,52 +1245,61 @@ export class EcashWallet implements NativeWalletHandle {
     recipient: ChainAddress;
     value: bigint;
   }): Promise<bigint> {
-    const recipient = params.recipient.raw;
-    const value = params.value;
-    const floor = (await this.loadLedger()).nextChangeIndex;
-    if (floor > 0) this.preparationBackend().restoreChangeIndex(floor);
-    await this.restoreStealthReceipts();
-    await this.backend.sync();
-    return this.exclusive(async () => {
-      const ledger = await this.loadLedger();
-      return this.preparationBackend().buildNativeConstruction({
-        recipient,
-        value,
-        excludedInputs: this.exclusions(ledger),
-        changeIndexFloor: ledger.nextChangeIndex,
-      }).fee;
+    return this.admit(async () => {
+      const recipient = params.recipient.raw;
+      const value = params.value;
+      const floor = (await this.active(this.loadLedger())).nextChangeIndex;
+      if (floor > 0) this.preparationBackend().restoreChangeIndex(floor);
+      await this.active(this.restoreStealthReceipts());
+      await this.active(this.backend.sync());
+      return this.exclusive(async () => {
+        const ledger = await this.active(this.loadLedger());
+        return this.preparationBackend().buildNativeConstruction({
+          recipient,
+          value,
+          excludedInputs: this.exclusions(ledger),
+          changeIndexFloor: ledger.nextChangeIndex,
+        }).fee;
+      });
     });
   }
 
   async getUnresolvedNativeTransaction(): Promise<
     ChainTransaction | undefined
   > {
-    const old = this.nativeAttemptStore.get(this.nativeAttemptKey);
-    if (old !== undefined) return old;
-    const operation = (await this.loadLedger()).operations.find(
-      (item) => item.state === "exposed"
-    );
-    return operation === undefined ? undefined : this.transaction(operation);
+    return this.admit(async () => {
+      const old = this.nativeAttemptStore.get(this.nativeAttemptKey);
+      if (old !== undefined) return old;
+      const operation = (await this.active(this.loadLedger())).operations.find(
+        (item) => item.state === "exposed"
+      );
+      return operation === undefined ? undefined : this.transaction(operation);
+    });
   }
 
   async retryUnresolvedNativeTransaction(): Promise<ChainTransaction> {
-    const old = this.nativeAttemptStore.get(this.nativeAttemptKey);
-    if (old !== undefined) {
-      if (old.rawTransactions === undefined || old.rawTransactions.length === 0)
-        throw new NativeTransactionSubmissionError({
-          transaction: old,
-          reason: new Error("Existing obligation has no signed replay bytes"),
-        });
-      this.preparationBackend().validateLegacyTransaction(old);
-      await this.rebroadcast(old.rawTransactions);
-      return old;
-    }
-    const operation = (await this.loadLedger()).operations.find(
-      (item) => item.state === "exposed"
-    );
-    if (operation === undefined)
-      throw new Error("No unresolved native transaction to retry");
-    return this.submitNativeOperation(operation.operationId);
+    return this.admit(async () => {
+      const old = this.nativeAttemptStore.get(this.nativeAttemptKey);
+      if (old !== undefined) {
+        if (
+          old.rawTransactions === undefined ||
+          old.rawTransactions.length === 0
+        )
+          throw new NativeTransactionSubmissionError({
+            transaction: old,
+            reason: new Error("Existing obligation has no signed replay bytes"),
+          });
+        this.preparationBackend().validateLegacyTransaction(old);
+        await this.active(this.rebroadcast(old.rawTransactions));
+        return old;
+      }
+      const operation = (await this.active(this.loadLedger())).operations.find(
+        (item) => item.state === "exposed"
+      );
+      if (operation === undefined)
+        throw new Error("No unresolved native transaction to retry");
+      return this.submitNativeOperation(operation.operationId);
+    });
   }
 
   /** Under the shared lock, transfer only confirmed spent-input evidence before retiring its
@@ -1146,7 +1315,7 @@ export class EcashWallet implements NativeWalletHandle {
     const inputs = backend.inputReferencesFromTransactions(
       current.rawTransactions!
     );
-    const ledger = await this.loadLedger();
+    const ledger = await this.active(this.loadLedger());
     const consumed = new Map(
       (ledger.consumedInputs ?? []).map((input) => [
         `${input.txid}:${input.vout}`,
@@ -1155,10 +1324,12 @@ export class EcashWallet implements NativeWalletHandle {
     );
     for (const input of inputs)
       consumed.set(`${input.txid}:${input.vout}`, input);
-    await this.operationStore.put(this.nativeAttemptKey, {
-      ...ledger,
-      consumedInputs: [...consumed.values()],
-    });
+    await this.active(
+      this.operationStore.put(this.nativeAttemptKey, {
+        ...ledger,
+        consumedInputs: [...consumed.values()],
+      })
+    );
     const retained = this.nativeAttemptStore.get(this.nativeAttemptKey);
     if (retained !== undefined && sameChainTransaction(retained, current))
       this.nativeAttemptStore.delete(this.nativeAttemptKey);
@@ -1167,71 +1338,89 @@ export class EcashWallet implements NativeWalletHandle {
   private async finishPriorObligation(): Promise<void> {
     const old = this.nativeAttemptStore.get(this.nativeAttemptKey);
     if (old !== undefined) {
-      const status = await this.getTransactionStatus(old);
+      const status = await this.active(this.getTransactionStatus(old));
       if (status === "confirmed")
-        await this.exclusive(() => this.retireConfirmedPriorObligation(old));
+        await this.active(
+          this.exclusive(() => this.retireConfirmedPriorObligation(old))
+        );
       else if (
         status === "unknown" &&
         old.rawTransactions !== undefined &&
         old.rawTransactions.length > 0
       ) {
         this.preparationBackend().validateLegacyTransaction(old);
-        await this.rebroadcast(old.rawTransactions);
+        await this.active(this.rebroadcast(old.rawTransactions));
       }
     }
   }
 
   async finishInterruptedSend(): Promise<void> {
-    const failures: unknown[] = [];
-    await this.finishPriorObligation().catch((error) => {
-      failures.push(error);
-    });
-    for (const operation of (await this.loadLedger()).operations) {
-      if (
-        (operation.state === "exposed" || operation.state === "submitted") &&
-        operation.exposure?.kind === "native-rpc"
-      ) {
-        try {
-          const reconciled = await this.reconcileNativeOperation(
-            operation.operationId
-          );
-          if (reconciled.state !== "confirmed")
-            await this.submitNativeOperation(operation.operationId);
-        } catch (error) {
+    return this.admit(async () => {
+      const failures: unknown[] = [];
+      await this.active(
+        this.finishPriorObligation().catch((error) => {
           failures.push(error);
+        })
+      );
+      for (const operation of (await this.active(this.loadLedger()))
+        .operations) {
+        if (
+          (operation.state === "exposed" || operation.state === "submitted") &&
+          operation.exposure?.kind === "native-rpc"
+        ) {
+          try {
+            const reconciled = await this.active(
+              this.reconcileNativeOperation(operation.operationId)
+            );
+            if (reconciled.state !== "confirmed")
+              await this.active(
+                this.submitNativeOperation(operation.operationId)
+              );
+          } catch (error) {
+            failures.push(error);
+          }
         }
       }
-    }
-    if (failures.length > 0)
-      throw new AggregateError(
-        failures,
-        "eCash recovery has unresolved operations"
-      );
+      if (failures.length > 0)
+        throw new AggregateError(
+          failures,
+          "eCash recovery has unresolved operations"
+        );
+    });
   }
 
   async resolveUnresolvedNativeTransaction(params: {
     transaction: ChainTransaction;
     outcome: "submitted" | "not-submitted";
   }): Promise<void> {
-    const status = await this.getTransactionStatus(params.transaction);
-    if (status !== "confirmed")
-      throw new Error(
-        "Exposed eCash obligations require chain confirmation; caller assertion cannot release claims"
+    return this.admit(async () => {
+      const status = await this.active(
+        this.getTransactionStatus(params.transaction)
       );
-    const old = this.nativeAttemptStore.get(this.nativeAttemptKey);
-    if (old !== undefined && sameChainTransaction(old, params.transaction)) {
-      await this.exclusive(() => this.retireConfirmedPriorObligation(old));
-      return;
-    }
-    const operation = (await this.loadLedger()).operations.find((item) =>
-      sameChainTransaction(this.transaction(item), params.transaction)
-    );
-    if (operation === undefined)
-      throw new Error("Transaction does not match an eCash operation");
-    await this.updateOperation(operation.operationId, (current) => ({
-      ...current,
-      state: "confirmed",
-    }));
+      if (status !== "confirmed")
+        throw new Error(
+          "Exposed eCash obligations require chain confirmation; caller assertion cannot release claims"
+        );
+      const old = this.nativeAttemptStore.get(this.nativeAttemptKey);
+      if (old !== undefined && sameChainTransaction(old, params.transaction)) {
+        await this.active(
+          this.exclusive(() => this.retireConfirmedPriorObligation(old))
+        );
+        return;
+      }
+      const operation = (await this.active(this.loadLedger())).operations.find(
+        (item) =>
+          sameChainTransaction(this.transaction(item), params.transaction)
+      );
+      if (operation === undefined)
+        throw new Error("Transaction does not match an eCash operation");
+      await this.active(
+        this.updateOperation(operation.operationId, (current) => ({
+          ...current,
+          state: "confirmed",
+        }))
+      );
+    });
   }
 
   async sendNative(params: {
@@ -1241,22 +1430,28 @@ export class EcashWallet implements NativeWalletHandle {
     maxFee?: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction> {
-    if (params.minimumRemainingBalance !== undefined)
-      throw new Error("Minimum native reserve is unsupported by this wallet");
-    const onSigned = params.onSigned;
-    const operation = await this.prepareNativeOperation({
-      ...params,
-      operationId: globalThis.crypto.randomUUID(),
-    });
-    const exposed = await this.exposeNativeRpc(operation.operationId);
-    const transaction = this.transaction(exposed);
-    if (onSigned !== undefined) {
-      try {
-        await onSigned(transaction);
-      } catch (reason) {
-        throw new NativeTransactionSubmissionError({ transaction, reason });
+    return this.admit(async () => {
+      if (params.minimumRemainingBalance !== undefined)
+        throw new Error("Minimum native reserve is unsupported by this wallet");
+      const onSigned = params.onSigned;
+      const operation = await this.active(
+        this.prepareNativeOperation({
+          ...params,
+          operationId: globalThis.crypto.randomUUID(),
+        })
+      );
+      const exposed = await this.active(
+        this.exposeNativeRpc(operation.operationId)
+      );
+      const transaction = this.transaction(exposed);
+      if (onSigned !== undefined) {
+        try {
+          await this.active(onSigned(transaction));
+        } catch (reason) {
+          throw new NativeTransactionSubmissionError({ transaction, reason });
+        }
       }
-    }
-    return this.submitNativeOperation(operation.operationId);
+      return this.submitNativeOperation(operation.operationId);
+    });
   }
 }

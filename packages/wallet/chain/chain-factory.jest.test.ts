@@ -1,5 +1,6 @@
-import { ASSET_DECIMALS } from '../oracle/price-oracle'
-import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
+import { InMemoryEcashOperationStore } from "../ecash-operation-store";
+import { ASSET_DECIMALS } from "../oracle/price-oracle";
+import { fixedStampDefault } from "../oracle/stamp-policy.testutil";
 import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { getBase58Decoder } from "@solana/codecs-strings";
 
@@ -43,6 +44,7 @@ describe("createChain", () => {
       family: "bitcoin",
       config: {
         networkId: "xec-mainnet",
+        operationStore: new InMemoryEcashOperationStore(),
         chronik: { block } as unknown as import("chronik-client").ChronikClient,
         walletFactory,
       },
@@ -256,7 +258,9 @@ describe("createChain", () => {
     exerciseCodecs(chain, recipient.toBase58());
     expect(chain.toDisplayAmount(1_500_000_000n)).toBe("1.5");
     expect(chain.fromDisplayAmount("1.5")).toBe(1_500_000_000n);
-    expect(chain.fromDisplayAmount("1")).toBe(10n ** BigInt(ASSET_DECIMALS.solana));
+    expect(chain.fromDisplayAmount("1")).toBe(
+      10n ** BigInt(ASSET_DECIMALS.solana)
+    );
 
     const wallet = await chain.createWallet({ mnemonic: MNEMONIC });
     await expect(chain.nativeTransfers.getBalance({ wallet })).resolves.toBe(
@@ -370,6 +374,7 @@ describe("createChain", () => {
       family: "bitcoin",
       config: {
         networkId: "xec-mainnet",
+        operationStore: new InMemoryEcashOperationStore(),
         nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
         chronik: {
           block: async () => ({ blockInfo: { hash: ECASH_CHECKPOINT } }),
@@ -388,7 +393,9 @@ describe("createChain", () => {
     ).toBeUndefined();
     expect(chain.toDisplayAmount(123n)).toBe("1.23");
     expect(chain.fromDisplayAmount("1.23")).toBe(123n);
-    expect(chain.fromDisplayAmount("1")).toBe(10n ** BigInt(ASSET_DECIMALS.ecash));
+    expect(chain.fromDisplayAmount("1")).toBe(
+      10n ** BigInt(ASSET_DECIMALS.ecash)
+    );
     expect(() => chain.fromDisplayAmount("1.234")).toThrow(
       "at most 2 decimal places"
     );
@@ -432,6 +439,7 @@ describe("createChain", () => {
       family: "bitcoin",
       config: {
         networkId: "xec-mainnet",
+        operationStore: new InMemoryEcashOperationStore(),
         chronik: {
           block: async () => ({ blockInfo: { hash: "different-genesis" } }),
           tx: async () => {
@@ -451,6 +459,7 @@ describe("createChain", () => {
       family: "bitcoin",
       config: {
         networkId: "xec-mainnet",
+        operationStore: new InMemoryEcashOperationStore(),
         chronik: {
           block: async () => ({ blockInfo: { hash: ECASH_CHECKPOINT } }),
           tx: async () => ({ block: { height: 1 } }),

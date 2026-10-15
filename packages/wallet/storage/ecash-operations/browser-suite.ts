@@ -1,3 +1,4 @@
+import { runHost } from "./browser-host";
 import { createBrowserEcashOperationStore } from "./browser";
 import { binding, fixture } from "./fixture";
 import {
@@ -69,6 +70,7 @@ async function raw(
 }
 
 export async function run(phase: string) {
+  if (phase === "host") return runHost();
   if (phase === "stage") {
     retained = owner();
     equal(await retained.get(retained.walletKey), undefined);
@@ -140,6 +142,51 @@ export async function run(phase: string) {
   }
   if (phase !== "regressions") throw new Error("Unknown qualification phase");
   const checks: string[] = [];
+  const oldKey = `frank:ecash-operations:v1:${owner().walletKey}`;
+  for (const old of ["broken", '{"version":1,"operations":[]}']) {
+    localStorage.setItem(oldKey, old);
+    let refused = false;
+    try {
+      owner("old-ledger");
+    } catch (error) {
+      refused = /Unsupported old/.test(String(error));
+    }
+    assert(
+      refused && localStorage.getItem(oldKey) === old,
+      "Old ledger changed or admitted"
+    );
+    assert(
+      !(await indexedDB.databases()).some((db) =>
+        db.name?.includes("old-ledger")
+      ),
+      "Old-ledger rejection initialized IndexedDB"
+    );
+  }
+  localStorage.removeItem(oldKey); // Only this disposable fixture's synthetic row.
+  const originalGet = Storage.prototype.getItem;
+  Storage.prototype.getItem = () => {
+    throw new Error("inspection denied");
+  };
+  try {
+    let refused = false;
+    try {
+      owner("inspection-failed");
+    } catch (error) {
+      refused = /Cannot inspect/.test(String(error));
+    }
+    assert(refused, "Failed old-ledger inspection accepted");
+  } finally {
+    Storage.prototype.getItem = originalGet;
+  }
+  assert(
+    !(await indexedDB.databases()).some((db) =>
+      db.name?.includes("inspection-failed")
+    ),
+    "Failed inspection initialized IndexedDB"
+  );
+  checks.push(
+    "old-ledger bytes preserved and failed inspection refuses storage"
+  );
   const locksDescriptor = Object.getOwnPropertyDescriptor(navigator, "locks");
   Object.defineProperty(navigator, "locks", {
     configurable: true,

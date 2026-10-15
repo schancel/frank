@@ -4,6 +4,7 @@ import type { UtxoChainConfig } from "./utxo-chain";
 const mockClose = jest.fn(async () => undefined);
 const mockCreateWallet = jest.fn(async () => ({
   chainIdentifier: "btc-testnet",
+  close: jest.fn(async () => undefined),
 }));
 let mockConfig: UtxoChainConfig;
 let mockEcashConfig: import("./ecash-chain").EcashChainConfig;
@@ -55,6 +56,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockCreateWallet.mockImplementation(async () => ({
     chainIdentifier: "btc-testnet",
+    close: jest.fn(async () => undefined),
   }));
 });
 test("forwards custody privately, wipes the construction copy, and revokes synchronous signing before close awaits", async () => {
@@ -127,9 +129,11 @@ test("close during wallet construction rejects the result and wipes its material
   const opening = relay.createWallet(new Uint8Array(32).fill(7), {
     stealthCustody: custody,
   });
-  await relay.close();
+  const closing = relay.close();
+  expect(() => relay.assertActive?.()).toThrow("closed");
   finish();
   await expect(opening).rejects.toThrow("closed");
+  await closing;
   expect(copy.every((byte) => byte === 0)).toBe(true);
 });
 test("Chronik explicitly refuses requested unsupported custody instead of ignoring it", async () => {
@@ -154,7 +158,10 @@ test("Chronik privately forwards explicit domain-root and historical SDK factori
   let copied: Uint8Array | undefined;
   mockCreateWallet.mockImplementationOnce(async (material) => {
     copied = material.bytes;
-    return { chainIdentifier: "xec-testnet" };
+    return {
+      chainIdentifier: "xec-testnet",
+      close: jest.fn(async () => undefined),
+    };
   });
   await relay.createWallet(root, {
     ecashWalletFactory: factory,
@@ -168,7 +175,10 @@ test("Chronik privately forwards explicit domain-root and historical SDK factori
   const seed = new Uint8Array(64).fill(8);
   mockCreateWallet.mockImplementationOnce(async (material) => {
     copied = material.seed;
-    return { chainIdentifier: "xec-testnet" };
+    return {
+      chainIdentifier: "xec-testnet",
+      close: jest.fn(async () => undefined),
+    };
   });
   await relay.createWallet(
     { derivation: "frank-bip39-bip32-v1", seed },
@@ -208,13 +218,19 @@ test("Chronik close during construction rejects the wallet and wipes its copied 
   mockCreateWallet.mockImplementationOnce((material) => {
     copy = material.bytes;
     return new Promise((resolve) => {
-      finish = () => resolve({ chainIdentifier: "xec-testnet" });
+      finish = () =>
+        resolve({
+          chainIdentifier: "xec-testnet",
+          close: jest.fn(async () => undefined),
+        });
     });
   });
   const opening = relay.createWallet(new Uint8Array(32).fill(7));
-  await relay.close();
+  const closing = relay.close();
+  expect(() => relay.assertActive?.()).toThrow("closed");
   finish();
   await expect(opening).rejects.toThrow("closed");
+  await closing;
   expect(copy.every((byte) => byte === 0)).toBe(true);
 });
 
@@ -243,4 +259,19 @@ test("the construction capability guard checks both adapter lifetime and the sup
     mockConfig.stealthCustody!.deriveStealthSigner(derivation)
   ).rejects.toThrow("session closed");
   await relay.close();
+});
+
+test("Chronik relay close retains a late owner's cleanup failure", async () => {
+  const relay = openRelayUtxoChain({ chainIdentifier: "xec-testnet", relayBaseUrl: "https://relay.invalid" });
+  let finish!: () => void;
+  mockCreateWallet.mockImplementationOnce(() => new Promise(resolve => {
+    finish = () => resolve({ chainIdentifier: "xec-testnet", close: async () => { throw new Error("owned cleanup failed"); } });
+  }));
+  const opening = relay.createWallet(new Uint8Array(32).fill(7));
+  const openingFailure = expect(opening).rejects.toThrow("Late UTXO wallet cleanup failed");
+  const closing = relay.close();
+  const closingFailure = expect(closing).rejects.toThrow("UTXO relay cleanup failed");
+  finish();
+  await openingFailure;
+  await closingFailure;
 });

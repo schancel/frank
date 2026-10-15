@@ -1,0 +1,35 @@
+yarn run v1.22.22
+$ node --import tsx scripts/typecheck.ts --fast
+[typecheck] Using compiler: tsgo (native Go TypeScript compiler)
+[typecheck] Checking 23 TypeScript projects...
+
+  checking packages/account-recovery/tsconfig.json              PASS  (110ms)
+  checking packages/account-vault/tsconfig.json                 PASS  (95ms)
+  checking packages/adaptor-signatures/tsconfig.json            PASS  (78ms)
+  checking packages/bot/tsconfig.json                           PASS  (423ms)
+  checking packages/bot-framework/tsconfig.json                 PASS  (317ms)
+  checking packages/cashweb/tsconfig.json                       PASS  (258ms)
+  checking packages/cli/tsconfig.json                           PASS  (316ms)
+  checking packages/codex32/tsconfig.json                       PASS  (71ms)
+  checking packages/contracts/tsconfig.json                     PASS  (100ms)
+  checking packages/crypto-box/tsconfig.json                    PASS  (69ms)
+  checking packages/directory-admission/tsconfig.json           PASS  (114ms)
+  checking packages/domain-roots/tsconfig.json                  PASS  (70ms)
+  checking packages/frank-codec/tsconfig.json                   PASS  (93ms)
+  checking packages/joint-signer/tsconfig.json                  PASS  (78ms)
+  checking packages/mail-gateway/tsconfig.json                  PASS  (318ms)
+  checking packages/nakamoto/tsconfig.json                      PASS  (93ms)
+  checking packages/price-feeds/tsconfig.json                   PASS  (179ms)
+  checking packages/role-keys/tsconfig.json                     PASS  (90ms)
+  checking packages/swap-protocol/tsconfig.json                 PASS  (72ms)
+  checking packages/threshold-ecdsa/tsconfig.json               PASS  (84ms)
+  checking packages/wallet/tsconfig.json                        PASS  (367ms)
+  checking packages/contracts/tsconfig.adaptor-tests.json       PASS  (117ms)
+  checking app/src/accounts/custody/tsconfig.json               PASS  (109ms)
+
+------------------------------------------------------------
+Total: 23 checked, 23 passed, 0 failed in 3.62s
+------------------------------------------------------------
+ALL TYPECHECKS PASSED
+
+Done in 4.41s.

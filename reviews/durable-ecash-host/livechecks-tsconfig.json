@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "ecash-wallet.livecheck.ts",
+    "ecash-bip39-restore.livecheck.ts",
+    "utxo-funded-send.livecheck.ts",
+    "../bot/demo/regtest/ecash-send.livecheck.ts",
+    "../bitcore-lib-xpi/types.d.ts",
+    "level.d.ts",
+    "ecash-wallet-sdk.d.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

@@ -1,0 +1,155 @@
+(node:83503) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+FAIL app/src/accounts/session.jest.test.ts
+  ○ skipped opens the active capability once, maps typed roots, wipes copies and revalidates acquisitions of one owned wallet
+  ○ skipped Tempo signer uses the existing EVM main path and is revoked with its session
+  ○ skipped a revoked Tempo signer leaves a durable prepared operation for the restored account to resume
+  ○ skipped a synchronous status watcher cannot reacquire before retired-wallet teardown completes
+  ○ skipped pending readable material stays pending across initialization and does not construct a wallet or activate
+  ○ skipped an attempt whose identity cannot be read is not offered for activation
+  ○ skipped locked or missing staged material is never interpreted as a fresh account
+  ○ skipped a close while wallet construction is suspended closes the stale candidate and wipes all roots
+  ○ skipped an active pointer changed during wallet construction prevents stale publication
+  ○ skipped failed activation preserves the old active account and reopens its wallet
+  ○ skipped closing during a staged write prevents its late public snapshot from publishing
+  ○ skipped custody closes even if runtime teardown fails
+  ○ skipped ordinary acquisition detects an external replacement and closes the old wallet before returning the new one
+  ○ skipped cross-context invalidation revokes immediately and fences a suspended old constructor
+  ○ skipped failed pending cleanup leaves independently authenticated active account usable and retry clears the pending error
+  ○ skipped an unchanged account keeps its published identity across wallet acquisitions, and a replacement changes it
+  ○ skipped backupCodex32 splits only the stored account root and never falls back to a derived root
+  ○ skipped getActiveDomainRoot and getChainAddress derive valid addresses for ecash and solana
+  ○ skipped shows the wallet receive address for ethereum, not stamp-pool account 0
+  ○ skipped shows the wallet receive address for tempo, not stamp-pool account 0
+  ○ skipped shows the wallet receive address for hyperliquid, not stamp-pool account 0
+  ○ skipped resolves and isolates testnet vs mainnet addresses by canonical network ID
+  ○ skipped getCurvePublicKey and getCachedCurvePublicKey derive and cache public keys for secp256k1 and ed25519
+  ○ skipped reset closes existing wallet and custody, calls deps.reset, and reinitializes session to fresh
+  ○ skipped resetAccountStorage deletes all indexedDB databases matching frank- and level-js
+  ○ skipped resetMessageAndChatStorage deletes level-js, MessageStore, vuex-store, monad-wallet-state but explicitly preserves custody and vault
+  ○ skipped yieldCustody sets status to standby, releases wallet and custody, and retry restores ready status
+  ○ skipped setStandby suppresses background revalidate and custody acquisition
+  ○ skipped BIP39 public import rejects a different identity path before any custody effects
+  ○ skipped xec-testnet rejects completion after close and preserves current errors and retry
+  ○ skipped btc-testnet rejects completion after close and preserves current errors and retry
+  ○ skipped bch-testnet rejects completion after close and preserves current errors and retry
+  ○ skipped doge-testnet rejects completion after close and preserves current errors and retry
+  ○ skipped solana-devnet rejects completion after close and preserves current errors and retry
+  ○ skipped ethereum-sepolia rejects completion after close and preserves current errors and retry
+  ○ skipped ed25519 rejects completion after close and preserves current errors and retry
+  ○ skipped domain-root acquisition rejects obsolete capabilities after close
+  ○ skipped domain-root acquisition rejects obsolete capabilities after refresh replacement
+  ○ skipped domain-root acquisition rejects obsolete capabilities after invalidation
+  ○ skipped domain-root reads preserve current errors and reject a different active account
+  ○ skipped Monad receive-address completion cannot escape after close
+  ○ skipped Monad receive-address completion cannot escape after refresh replacement
+  ○ skipped Monad receive-address completion cannot escape after invalidation
+  ○ skipped secp256k1 wallet acquisition cannot escape after close
+  ○ skipped secp256k1 wallet acquisition cannot escape after refresh replacement
+  ○ skipped secp256k1 wallet acquisition cannot escape after invalidation
+  ○ skipped initial root and secp256k1 requests survive initialization and current wallet errors propagate
+  ○ skipped Monad receive-address errors propagate and a current retry publishes its address
+  ○ skipped network binding failure preserves the active account and retry reopens it without replacement
+  ○ skipped reads the ready monad-regtest receive address locally with exact network affinity
+  ○ skipped reads the ready monad-testnet receive address locally with exact network affinity
+  ○ skipped a delayed local receive address is revoked when custody is invalidated
+  ○ skipped privately opens real EVM owners with the same Frank identity and separate canonical journals without replacing the primary
+  ○ skipped rejects a peer EVM chain-id mismatch and closes the candidate
+  ○ skipped rejects a peer EVM checkpoint mismatch and closes the candidate
+  ○ skipped rejects a peer EVM identity mismatch and closes the candidate
+  ○ skipped revokes a peer EVM owner through signal while checkpoint RPC is pending and rejects the late result
+  ○ skipped revokes a peer EVM owner through session-release while checkpoint RPC is pending and rejects the late result
+  ○ skipped uses the historical EVM seed derivation unchanged and wipes its borrowed copy
+  ○ skipped checks the explicit operator anchor for a configured regtest EVM wallet
+  refresh replacement
+    ○ skipped xec-testnet rejects A without publishing or removing pending B
+    ○ skipped btc-testnet rejects A without publishing or removing pending B
+    ○ skipped bch-testnet rejects A without publishing or removing pending B
+    ○ skipped doge-testnet rejects A without publishing or removing pending B
+    ○ skipped solana-devnet rejects A without publishing or removing pending B
+    ○ skipped ethereum-sepolia rejects A without publishing or removing pending B
+    ○ skipped ed25519 rejects A without publishing or removing pending B
+  invalidation
+    ○ skipped xec-testnet rejects A without publishing or removing pending B
+    ○ skipped btc-testnet rejects A without publishing or removing pending B
+    ○ skipped bch-testnet rejects A without publishing or removing pending B
+    ○ skipped doge-testnet rejects A without publishing or removing pending B
+    ○ skipped solana-devnet rejects A without publishing or removing pending B
+    ○ skipped ethereum-sepolia rejects A without publishing or removing pending B
+    ○ skipped ed25519 rejects A without publishing or removing pending B
+  session-owned UTXO stealth custody
+    ✕ Chronik lifecycle revokes session-ready custody and actual SDK signing (historical=false, lifecycle=queued-yield) (503 ms)
+    ✕ Chronik lifecycle revokes session-ready custody and actual SDK signing (historical=true, lifecycle=queued-yield) (237 ms)
+    ○ skipped pre-ready opening cannot publish a usable owner after initialization releases its registered relay
+    ○ skipped release synchronously closes every registered relay without another cache lookup
+    ○ skipped registers a relay before the first wallet await and closes a late opening during replacement
+    ○ skipped imports, reopens and signs an actual btc-testnet spend using the published identity
+    ○ skipped imports, reopens and signs an actual bch-testnet spend using the published identity
+    ○ skipped revokes derived signers when an account is replaced (invalidation false)
+    ○ skipped revokes derived signers when an account is replaced (invalidation true)
+    ○ skipped historical seed uses the unchanged published identity owner; wrong identity/chain/point fail closed
+    ○ skipped rejects a custody identity that differs from the published runtime identity before constructing a wallet
+    ○ skipped rejects missing runtime public-key capability before UTXO construction and wipes custody material
+    ○ skipped rejects invalid length runtime public-key capability before UTXO construction and wipes custody material
+    ○ skipped rejects invalid prefix runtime public-key capability before UTXO construction and wipes custody material
+    ○ skipped account invalidation during construction revokes the captured capability and wipes material
+    ○ skipped session private eCash factories restore and respend actual SDK stealth coins (historical=false)
+    ○ skipped session private eCash factories restore and respend actual SDK stealth coins (historical=true)
+    ○ skipped private eCash callback binds identity/chain, wipes temporary secrets and revokes on yield
+    ○ skipped private eCash callback binds identity/chain, wipes temporary secrets and revokes on invalidate
+    ○ skipped private eCash callback binds identity/chain, wipes temporary secrets and revokes on close
+    ○ skipped Chronik lifecycle revokes session-ready custody and actual SDK signing (historical=false, lifecycle=relay-close)
+    ○ skipped Chronik lifecycle revokes session-ready custody and actual SDK signing (historical=true, lifecycle=relay-close)
+  session identity public-key capability boundary
+    ○ skipped does not infer a secp256k1 key from a evm family identity
+    ○ skipped does not infer a secp256k1 key from a bitcoin family identity
+    ○ skipped does not infer a secp256k1 key from a solana family identity
+    ○ skipped rejects short public-key capability without caching it
+    ○ skipped rejects long public-key capability without caching it
+    ○ skipped rejects uncompressed prefix public-key capability without caching it
+    ○ skipped rejects array instead of bytes public-key capability without caching it
+    ○ skipped rejects string instead of bytes public-key capability without caching it
+    ○ skipped owns public-key bytes for compressed prefix 2 across cache reads
+    ○ skipped owns public-key bytes for compressed prefix 3 across cache reads
+
+  ● session-owned UTXO stealth custody › Chronik lifecycle revokes session-ready custody and actual SDK signing (historical=false, lifecycle=queued-yield)
+
+    expect(received).rejects.toThrow()
+
+    Received promise resolved instead of rejected
+    Resolved to value: {"rawTransactions": ["02000000017171717171717171717171717171717171717171717171717171717171717171000000006441f5983e505c7948669bf6c4fc7cc992c3933dc6ee6afd027e70b15814e7eefc37fed40b4449d12306e0e86f3dfe8a0d5eccc7a2685f4269424df65d2b9b7cc1d3412103e6026fdad28e757954a2383422d835f9e22ba1372fe472c0c0468d1d57ece5e1ffffffff02e8030000000000001976a9141f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f88ac4d220000000000001976a9144956ffbade57f9ab8792f94e21404641cfff349688ac00000000"], "txHash": "f9b0387df1280f3526a645a31ffa8d50611e078b7f97ab73ae459fcae014c95a"}
+
+      2039 |           try {
+      2040 |             expect(f.session.state.status).toBe('standby')
+    > 2041 |             await expect(wallet.submitNativeOperation(prepared.operationId)).rejects.toThrow('closed')
+           |                   ^
+      2042 |             expect(() => relay.assertActive?.()).toThrow('closed')
+      2043 |             await expect(wallet.prepareNativeOperation({ operationId: 'after-yield', recipient: { raw: recipient }, value: 1000n })).rejects.toThrow('closed')
+      2044 |             expect(broadcast).not.toHaveBeenCalled()
+
+      at expect (../../../node_modules/expect/build/index.js:113:15)
+      at src/accounts/session.jest.test.ts:2041:19
+
+  ● session-owned UTXO stealth custody › Chronik lifecycle revokes session-ready custody and actual SDK signing (historical=true, lifecycle=queued-yield)
+
+    expect(received).rejects.toThrow()
+
+    Received promise resolved instead of rejected
+    Resolved to value: {"rawTransactions": ["02000000017171717171717171717171717171717171717171717171717171717171717171000000006441537d79a9585e4baf6c53e0800ef66230556253f9f2feaedd82ae972ceacf674e6af121c19c041e19ed52b2c1959e8ec57786d2b74de285e573d907e0daa3055041210241447127fee367fa22ec8ce8142409b35883454b5ffccca7f24afa1af6975f9dffffffff02e8030000000000001976a9141f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f88ac4d220000000000001976a9145d9371ea4b9dca69a27ee12439b8009a40d6b45588ac00000000"], "txHash": "b4cb9383e70b7241e966876e1344f0f5bb9c9d9d58c7e98c3c6fde49eb5a0bde"}
+
+      2039 |           try {
+      2040 |             expect(f.session.state.status).toBe('standby')
+    > 2041 |             await expect(wallet.submitNativeOperation(prepared.operationId)).rejects.toThrow('closed')
+           |                   ^
+      2042 |             expect(() => relay.assertActive?.()).toThrow('closed')
+      2043 |             await expect(wallet.prepareNativeOperation({ operationId: 'after-yield', recipient: { raw: recipient }, value: 1000n })).rejects.toThrow('closed')
+      2044 |             expect(broadcast).not.toHaveBeenCalled()
+
+      at expect (../../../node_modules/expect/build/index.js:113:15)
+      at src/accounts/session.jest.test.ts:2041:19
+
+Test Suites: 1 failed, 1 total
+Tests:       2 failed, 104 skipped, 106 total
+Snapshots:   0 total
+Time:        3.259 s, estimated 5 s
+Ran all test suites matching /src\/accounts\/session.jest.test.ts/i with tests matching "Chronik lifecycle.*queued-yield".

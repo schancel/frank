@@ -264,7 +264,16 @@ export function createAccountSession(deps: {
   const secondaryEvmWallets = new Set<EvmChainWalletHandle>()
   const solanaPaymentCustody = new Set<ExperimentalCustody>()
   const revokeUtxoCustody = new Set<() => void>()
+  const utxoRelays = new Set<RelayUtxoChain>()
   const release = async () => {
+    const relayClosing = [...utxoRelays].map(relay => {
+      try {
+        return relay.close()
+      } catch (error) {
+        return Promise.reject(error)
+      }
+    })
+    utxoRelays.clear()
     for (const child of solanaPaymentCustody) child.close()
     solanaPaymentCustody.clear()
     for (const revoke of revokeUtxoCustody) revoke()
@@ -281,8 +290,11 @@ export function createAccountSession(deps: {
     curveKeyInFlight.clear()
     const previous = wallet
     wallet = undefined
-    if (previous) await previous.close()
-    await Promise.all(secondaryClosing)
+    await Promise.all([
+      ...(previous ? [previous.close()] : []),
+      ...secondaryClosing,
+      ...relayClosing,
+    ])
   }
   const check = (token: number) => {
     if (closed || token !== generation) throw new CustodyError('closed')
@@ -481,9 +493,12 @@ export function createAccountSession(deps: {
       ++generation
       state.status = 'standby'
       state.error = null
+      const releasing = release()
+      // Observe teardown failure while an earlier session operation still owns the queue.
+      void releasing.catch(() => undefined)
       await exclusive(async () => {
         try {
-          await release()
+          await releasing
         } finally {
           custody?.close()
           custody = undefined
@@ -747,190 +762,215 @@ export function createAccountSession(deps: {
         }
       }
     },
-    /** Construct a family wallet inside custody; neither root nor identity secret escapes. */
+    /** Ready-session operation: construct inside custody; initialization/replacement revokes pending relays. */
     async createUtxoWallet(relay: RelayUtxoChain): Promise<NativeWalletHandle> {
-      const checkCurrent = captureDerivation()
-      const currentWallet = await session.getWallet()
-      checkCurrent()
-      const chainIdentifier = relay.chain.chainIdentifier
-      const entry = getChainRegistryEntry(chainIdentifier)
-      if (entry?.family !== 'bitcoin' || !entry.wallet)
-        throw new Error('Unsupported UTXO chain')
-      if (!custody) throw new CustodyError('locked')
-      const capability = await custody.openActive()
-      let roots: readonly DomainRoot[] = []
-      let seed: Uint8Array | undefined
-      let identitySecret: Uint8Array | undefined
-      let live = true
-      const revoke = () => {
-        live = false
-        identitySecret?.fill(0)
-        identitySecret = undefined
-      }
-      const requireLive = () => {
+      utxoRelays.add(relay)
+      const open = async () => {
+        const checkCurrent = captureDerivation()
+        const currentWallet = await session.getWallet()
         checkCurrent()
         relay.assertActive?.()
-        if (!live || state.status !== 'ready' || wallet !== currentWallet)
-          throw new CustodyError('closed')
-      }
-      try {
-        requireLive()
-        if (capability.account.receipt.context.accountId !== walletAccount)
-          throw new CustodyError('conflict')
-        let material: Uint8Array | HistoricalBip39Seed
-        let identity: MonadIdentity | undefined
-        if (
-          capability.account.receipt.context.recoveryFormat ===
-          BIP39_RECOVERY_FORMAT
-        ) {
-          seed = capability.takeBip39Seed()
-          material = { derivation: BIP39_DERIVATION, seed }
-          identity = MonadIdentity.fromBip39Seed(seed)
-        } else {
-          roots = capability.takeRoots()
-          const familyRoot = roots.find(r => r.purpose === 'ecash-bch-wallet')
-          if (!familyRoot)
-            throw new AccountPurposeUnavailableError('ecash-bch-wallet')
-          material = familyRoot.bytes
-          const authRoot = roots.find(
-            (r): r is DomainRoot<'identity-authentication'> =>
-              r.purpose === 'identity-authentication',
-          )
-          if (!authRoot)
-            throw new AccountPurposeUnavailableError('identity-authentication')
-          identity = MonadIdentity.fromDomainRoot(authRoot)
+        const chainIdentifier = relay.chain.chainIdentifier
+        const entry = getChainRegistryEntry(chainIdentifier)
+        if (entry?.family !== 'bitcoin' || !entry.wallet)
+          throw new Error('Unsupported UTXO chain')
+        if (!custody) throw new CustodyError('locked')
+        const capability = await custody.openActive()
+        let roots: readonly DomainRoot[] = []
+        let seed: Uint8Array | undefined
+        let identitySecret: Uint8Array | undefined
+        let live = true
+        const revoke = () => {
+          live = false
+          identitySecret?.fill(0)
+          identitySecret = undefined
         }
-        let stealthCustody: UtxoStealthCustody | undefined
-        let ecashCustody: EcashStealthCustody | undefined
-        if (identity) {
-          const identityPublicKey = new Uint8Array(identity.compressedPubKey)
-          const runtimePublicKey = readIdentityPublicKey(currentWallet.identity)
-          if (
-            !runtimePublicKey ||
-            !identityPublicKey.every((byte, i) => byte === runtimePublicKey[i])
-          )
+        const requireLive = () => {
+          checkCurrent()
+          relay.assertActive?.()
+          if (!live || state.status !== 'ready' || wallet !== currentWallet)
+            throw new CustodyError('closed')
+        }
+        try {
+          requireLive()
+          if (capability.account.receipt.context.accountId !== walletAccount)
             throw new CustodyError('conflict')
-          identitySecret = identity.toNakamotoPrivateKey().bytes
-          identity = undefined
-          // Retain only the session-owned identity scalar. No derived spend secret survives a call.
-          revokeUtxoCustody.add(revoke)
-          const identityHex = toHex(identityPublicKey)
-          ecashCustody = {
-            identityPublicKey: identityHex,
-            assertActive: requireLive,
-            async withDerivedStealthSecret(derivation, importIntoBackend) {
-              requireLive()
-              if (
-                derivation.chainIdentifier !== chainIdentifier ||
-                derivation.identityPublicKey !== identityHex
+          let material: Uint8Array | HistoricalBip39Seed
+          let identity: MonadIdentity | undefined
+          if (
+            capability.account.receipt.context.recoveryFormat ===
+            BIP39_RECOVERY_FORMAT
+          ) {
+            seed = capability.takeBip39Seed()
+            material = { derivation: BIP39_DERIVATION, seed }
+            identity = MonadIdentity.fromBip39Seed(seed)
+          } else {
+            roots = capability.takeRoots()
+            const familyRoot = roots.find(r => r.purpose === 'ecash-bch-wallet')
+            if (!familyRoot)
+              throw new AccountPurposeUnavailableError('ecash-bch-wallet')
+            material = familyRoot.bytes
+            const authRoot = roots.find(
+              (r): r is DomainRoot<'identity-authentication'> =>
+                r.purpose === 'identity-authentication',
+            )
+            if (!authRoot)
+              throw new AccountPurposeUnavailableError(
+                'identity-authentication',
               )
-                throw new CustodyError('conflict')
-              const ephemeral = ecashStealthPoint(derivation.ephemeralPubKey)
-              if (!identitySecret) throw new CustodyError('closed')
-              const temporaryIdentity = new Uint8Array(identitySecret)
-              let derived: ReturnType<typeof stealthParentSecret> | undefined
-              try {
-                derived = stealthParentSecret(temporaryIdentity, ephemeral)
-                requireLive()
-                importIntoBackend(derived.secret)
-                requireLive()
-              } finally {
-                temporaryIdentity.fill(0)
-                derived?.secret.fill(0)
-                derived?.digest.fill(0)
-              }
-            },
+            identity = MonadIdentity.fromDomainRoot(authRoot)
           }
-          stealthCustody = {
-            identityPublicKey: new Uint8Array(identityPublicKey),
-            assertActive: requireLive,
-            async deriveStealthSigner(derivation) {
-              requireLive()
-              if (
-                derivation.chainIdentifier !== chainIdentifier ||
-                derivation.identityPublicKey.length !==
-                  identityPublicKey.length ||
-                !identityPublicKey.every(
-                  (byte, i) => byte === derivation.identityPublicKey[i],
-                )
+          let stealthCustody: UtxoStealthCustody | undefined
+          let ecashCustody: EcashStealthCustody | undefined
+          if (identity) {
+            const identityPublicKey = new Uint8Array(identity.compressedPubKey)
+            const runtimePublicKey = readIdentityPublicKey(
+              currentWallet.identity,
+            )
+            if (
+              !runtimePublicKey ||
+              !identityPublicKey.every(
+                (byte, i) => byte === runtimePublicKey[i],
               )
-                throw new CustodyError('conflict')
-              const ephemeralPubKey = requireCompressedStealthPoint(
-                derivation.ephemeralPubKey,
-              )
-              const withKey = <T>(use: (key: PrivateKey) => T): T => {
+            )
+              throw new CustodyError('conflict')
+            identitySecret = identity.toNakamotoPrivateKey().bytes
+            identity = undefined
+            // Retain only the session-owned identity scalar. No derived spend secret survives a call.
+            revokeUtxoCustody.add(revoke)
+            const identityHex = toHex(identityPublicKey)
+            ecashCustody = {
+              identityPublicKey: identityHex,
+              assertActive: requireLive,
+              async withDerivedStealthSecret(derivation, importIntoBackend) {
                 requireLive()
+                if (
+                  derivation.chainIdentifier !== chainIdentifier ||
+                  derivation.identityPublicKey !== identityHex
+                )
+                  throw new CustodyError('conflict')
+                const ephemeral = ecashStealthPoint(derivation.ephemeralPubKey)
                 if (!identitySecret) throw new CustodyError('closed')
                 const temporaryIdentity = new Uint8Array(identitySecret)
-                let secret: Uint8Array | undefined
+                let derived: ReturnType<typeof stealthParentSecret> | undefined
                 try {
-                  secret = stealthParentSecret(
-                    temporaryIdentity,
-                    ephemeralPubKey,
-                  ).secret
-                  const key = privateKeyFromBytes(secret, true)
-                  if (!key.ok) throw new Error('Invalid stealth signing key')
-                  try {
-                    return use(key.value)
-                  } finally {
-                    key.value.bytes.fill(0)
-                  }
+                  derived = stealthParentSecret(temporaryIdentity, ephemeral)
+                  requireLive()
+                  importIntoBackend(derived.secret)
+                  requireLive()
                 } finally {
                   temporaryIdentity.fill(0)
-                  secret?.fill(0)
+                  derived?.secret.fill(0)
+                  derived?.digest.fill(0)
                 }
-              }
-              const publicKey = withKey(key => {
-                const point = publicFromPrivate(key)
-                if (!point.ok) throw new Error('Invalid stealth public key')
-                return point.value.compressed
-              })
-              return {
-                publicKey,
-                sign(digest) {
-                  return withKey(key => {
-                    const signature = signEcdsa(key, digest)
-                    if (!signature.ok) throw new Error('Stealth signing failed')
-                    return signature.value
-                  })
-                },
-              }
-            },
+              },
+            }
+            stealthCustody = {
+              identityPublicKey: new Uint8Array(identityPublicKey),
+              assertActive: requireLive,
+              async deriveStealthSigner(derivation) {
+                requireLive()
+                if (
+                  derivation.chainIdentifier !== chainIdentifier ||
+                  derivation.identityPublicKey.length !==
+                    identityPublicKey.length ||
+                  !identityPublicKey.every(
+                    (byte, i) => byte === derivation.identityPublicKey[i],
+                  )
+                )
+                  throw new CustodyError('conflict')
+                const ephemeralPubKey = requireCompressedStealthPoint(
+                  derivation.ephemeralPubKey,
+                )
+                const withKey = <T>(use: (key: PrivateKey) => T): T => {
+                  requireLive()
+                  if (!identitySecret) throw new CustodyError('closed')
+                  const temporaryIdentity = new Uint8Array(identitySecret)
+                  let secret: Uint8Array | undefined
+                  try {
+                    secret = stealthParentSecret(
+                      temporaryIdentity,
+                      ephemeralPubKey,
+                    ).secret
+                    const key = privateKeyFromBytes(secret, true)
+                    if (!key.ok) throw new Error('Invalid stealth signing key')
+                    try {
+                      return use(key.value)
+                    } finally {
+                      key.value.bytes.fill(0)
+                    }
+                  } finally {
+                    temporaryIdentity.fill(0)
+                    secret?.fill(0)
+                  }
+                }
+                const publicKey = withKey(key => {
+                  const point = publicFromPrivate(key)
+                  if (!point.ok) throw new Error('Invalid stealth public key')
+                  return point.value.compressed
+                })
+                return {
+                  publicKey,
+                  sign(digest) {
+                    return withKey(key => {
+                      const signature = signEcdsa(key, digest)
+                      if (!signature.ok)
+                        throw new Error('Stealth signing failed')
+                      return signature.value
+                    })
+                  },
+                }
+              },
+            }
           }
+          const guardConstruction =
+            <P, R>(create: (params: P) => R | Promise<R>) =>
+            async (params: P): Promise<R> => {
+              requireLive()
+              const result = await create(params)
+              requireLive()
+              return result
+            }
+          const result = await relay.createWallet(
+            material,
+            entry.wallet.indexer === 'chronik' && ecashCustody
+              ? {
+                  ecashWalletFactory: guardConstruction(
+                    createEcashStealthSeedBackend(ecashCustody),
+                  ),
+                  ecashBip39WalletFactory: guardConstruction(
+                    createEcashStealthBip39SeedBackend(ecashCustody),
+                  ),
+                }
+              : stealthCustody
+              ? { stealthCustody }
+              : undefined,
+          )
+          requireLive()
+          return result
+        } catch (error) {
+          revoke()
+          revokeUtxoCustody.delete(revoke)
+          throw error
+        } finally {
+          roots.forEach(root => root.bytes.fill(0))
+          seed?.fill(0)
+          capability.close()
         }
-        const guardConstruction =
-          <P, R>(create: (params: P) => R | Promise<R>) =>
-          async (params: P): Promise<R> => {
-            requireLive()
-            const result = await create(params)
-            requireLive()
-            return result
-          }
-        const result = await relay.createWallet(
-          material,
-          entry.wallet.indexer === 'chronik' && ecashCustody
-            ? {
-                ecashWalletFactory: guardConstruction(
-                  createEcashStealthSeedBackend(ecashCustody),
-                ),
-                ecashBip39WalletFactory: guardConstruction(
-                  createEcashStealthBip39SeedBackend(ecashCustody),
-                ),
-              }
-            : stealthCustody
-            ? { stealthCustody }
-            : undefined,
-        )
-        requireLive()
-        return result
+      }
+      try {
+        return await open()
       } catch (error) {
-        revoke()
-        revokeUtxoCustody.delete(revoke)
+        utxoRelays.delete(relay)
+        try {
+          await relay.close()
+        } catch (cleanup) {
+          throw new AggregateError(
+            [error, cleanup],
+            'UTXO opening and cleanup failed',
+          )
+        }
         throw error
-      } finally {
-        roots.forEach(root => root.bytes.fill(0))
-        seed?.fill(0)
-        capability.close()
       }
     },
     async getActiveFamilyMaterial<P extends DomainRoot['purpose']>(
@@ -1346,9 +1386,11 @@ export function createAccountSession(deps: {
       unlisten = undefined
       ++generation
       state.status = 'locked'
+      const releasing = release()
+      void releasing.catch(() => undefined)
       await exclusive(async () => {
         try {
-          await release()
+          await releasing
         } finally {
           custody?.close()
           custody = undefined

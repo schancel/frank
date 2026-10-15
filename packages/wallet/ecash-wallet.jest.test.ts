@@ -1,3 +1,4 @@
+import { InMemoryEcashOperationStore } from "./ecash-operation-store";
 import {
   ECASH_MAINNET_CHECKPOINT_HASH,
   ECASH_TESTNET_CHECKPOINT_HEIGHT,
@@ -63,6 +64,7 @@ describe("EcashWallet", () => {
       const journalRead = jest.spyOn(nativeAttemptStore, "get");
       await expect(
         EcashWallet.fromDomainRoot({
+          operationStore: new InMemoryEcashOperationStore(),
           domainRoot: root as DomainRoot<"ecash-bch-wallet">,
           chronik,
           networkId: "ecash-mainnet",
@@ -93,6 +95,7 @@ describe("EcashWallet", () => {
     });
     let received: Uint8Array | undefined;
     const constructing = EcashWallet.fromDomainRoot({
+      operationStore: new InMemoryEcashOperationStore(),
       domainRoot: root,
       chronik,
       networkId: "ecash-mainnet",
@@ -114,6 +117,7 @@ describe("EcashWallet", () => {
   it("exposes identity and a freshly synced bigint balance", async () => {
     const backend = makeBackend();
     const wallet = await EcashWallet.fromDomainRoot({
+      operationStore: new InMemoryEcashOperationStore(),
       domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
@@ -135,6 +139,7 @@ describe("EcashWallet", () => {
   it("does not consume HD indices when the receive address is displayed repeatedly", async () => {
     const backend = makeBackend();
     const wallet = await EcashWallet.fromDomainRoot({
+      operationStore: new InMemoryEcashOperationStore(),
       domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
@@ -162,6 +167,7 @@ describe("EcashWallet", () => {
 
     await expect(
       EcashWallet.fromDomainRoot({
+        operationStore: new InMemoryEcashOperationStore(),
         domainRoot: ROOT,
         chronik,
         networkId: "xec-mainnet",
@@ -179,6 +185,7 @@ describe("EcashWallet", () => {
 
     await expect(
       EcashWallet.fromDomainRoot({
+        operationStore: new InMemoryEcashOperationStore(),
         domainRoot: ROOT,
         chronik,
         networkId: "xec-testnet",
@@ -194,6 +201,7 @@ describe("EcashWallet", () => {
     } as Awaited<ReturnType<ChronikClient["block"]>>);
 
     const wallet = await EcashWallet.fromDomainRoot({
+      operationStore: new InMemoryEcashOperationStore(),
       domainRoot: ROOT,
       chronik,
       networkId: "xec-testnet",
@@ -217,6 +225,7 @@ describe("EcashWallet", () => {
 
     await expect(
       EcashWallet.fromDomainRoot({
+        operationStore: new InMemoryEcashOperationStore(),
         domainRoot: ROOT,
         chronik,
         networkId: "ecash-mainnet",
@@ -245,6 +254,7 @@ describe("EcashWallet", () => {
 
     await expect(
       EcashWallet.fromDomainRoot({
+        operationStore: new InMemoryEcashOperationStore(),
         domainRoot: ROOT,
         chronik: legacyChronik,
         networkId: "ecash-mainnet",
@@ -257,6 +267,7 @@ describe("EcashWallet", () => {
     const factory = jest.fn(() => makeBackend());
     await expect(
       EcashWallet.fromLegacyMnemonic({
+        operationStore: new InMemoryEcashOperationStore(),
         mnemonic: MNEMONIC,
         passphrase: "secret",
         chronik: makeChronik(),
@@ -272,6 +283,7 @@ describe("EcashWallet", () => {
     const factory = jest.fn(() => makeBackend());
     const chronik = makeChronik();
     const wallet = await EcashWallet.fromLegacyMnemonic({
+      operationStore: new InMemoryEcashOperationStore(),
       mnemonic: MNEMONIC,
       chronik,
       networkId: "ecash-mainnet",
@@ -290,6 +302,7 @@ describe("EcashWallet", () => {
     const factory = jest.fn(() => makeBackend());
     await expect(
       EcashWallet.fromLegacyMnemonic({
+        operationStore: new InMemoryEcashOperationStore(),
         mnemonic: "not a valid BIP-39 mnemonic",
         chronik: makeChronik(),
         networkId: "ecash-mainnet",
@@ -311,6 +324,7 @@ describe("EcashWallet", () => {
       )
     );
     await EcashWallet.fromDomainRoot({
+      operationStore: new InMemoryEcashOperationStore(),
       domainRoot: ROOT,
       chronik,
       networkId: "xec-testnet",
@@ -318,6 +332,7 @@ describe("EcashWallet", () => {
       walletFactory: factory,
     });
     const wallet = await EcashWallet.fromDomainRoot({
+      operationStore: new InMemoryEcashOperationStore(),
       domainRoot: ROOT,
       chronik,
       networkId: "xec-testnet",
@@ -342,6 +357,7 @@ describe("EcashWallet", () => {
       given?: { height: number; hash: string }
     ) =>
       EcashWallet.fromDomainRoot({
+        operationStore: new InMemoryEcashOperationStore(),
         domainRoot: ROOT,
         chronik,
         networkId: "xec-regtest",
@@ -383,6 +399,7 @@ describe("EcashWallet", () => {
     it("does not let a public network take a checkpoint from its caller", async () => {
       await expect(
         EcashWallet.fromDomainRoot({
+          operationStore: new InMemoryEcashOperationStore(),
           domainRoot: ROOT,
           chronik: chronikWith(checkpoint.hash),
           networkId: "xec-mainnet",

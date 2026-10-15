@@ -2,9 +2,11 @@
 
 Explicit entry points are `createNativeEcashOperationStore` in `native.ts` and
 `createBrowserEcashOperationStore` in `browser.ts`. They retain the existing
-version-1 `EcashOperationLedger` owner and serialized shape. They are not installed
-in production composition; host lifecycle/default removal is the required Q3b
-successor. This addition alone does not make production swap preparation durable.
+version-1 `EcashOperationLedger` owner and serialized shape. The app installs the browser factory with namespace discriminator `local-account-v1`.
+`EcashWallet` and `EcashChainConfig` require exactly one explicitly borrowed store
+or owned factory; no implicit memory/localStorage operation owner remains. Direct
+native livecheck hosts require `ECASH_OPERATION_STORE_ROOT` to name an approved
+existing directory. Livechecks are opt-in and are not qualification commands.
 
 The host supplies an already validated canonical chain/address and an approved
 existing native root or bounded browser namespace discriminator. The existing
@@ -51,6 +53,29 @@ value after a failed acknowledgment does not establish durability. Close the
 owner and qualify a new one before reading again. Input validation before storage
 does not poison it. `close()` immediately prevents new admission, drains earlier
 work and closes the owned handle once, without deleting data.
+
+## Host lifetime and old records
+
+Wallet close synchronously revokes new operations, future signing and exposure.
+It drains admitted work before closing an explicitly acquired owner once; borrowed
+stores remain the caller's responsibility. Already-started submission may finish
+its durable accounting using original signed bytes and claims. Closure does not
+prove non-submission, release reservations or authorize replacement payments.
+Relays revoke opening and open wallets; ready sessions register relays before
+awaiting wallet construction and close them on release. Call session wallet
+creation only after the session is ready: initialization/replacement revokes a
+pending relay, and its late result cannot publish. Cache reuse checks relay
+liveness even when account and revision are unchanged.
+
+The browser factory inspects the exact old
+`frank:ecash-operations:v1:${nativeTransactionAttemptKey(binding)}` localStorage key
+before admitting new storage. Any presence or inspection failure rejects. Preserve
+the original bytes and signed obligations for explicit recovery; do not delete,
+reset or move them to bypass the guard. There is no automated migration or dual
+writer. Existing native-attempt records retain their separate recovery owner.
+Rolling source back must retain new namespaces; once new operations exist, the old
+writer cannot safely resume without recovery handling. Swap retention, secret
+storage, protocol/runtime and UI remain separate prerequisites.
 
 ## Qualification
 

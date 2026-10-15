@@ -18,12 +18,21 @@ jest.mock('./session', () => ({
 const mockCreateWallet = jest.fn()
 const mockClose = jest.fn(async () => undefined)
 const mockOpenRelayUtxoChain = jest.fn(
-  (params: { chainIdentifier: string }) => ({
-    chain: { chainIdentifier: params.chainIdentifier },
-    createWallet: (root: Uint8Array) =>
-      mockCreateWallet(params, Uint8Array.from(root)),
-    close: mockClose,
-  }),
+  (params: { chainIdentifier: string }) => {
+    let live = true
+    return {
+      chain: { chainIdentifier: params.chainIdentifier },
+      createWallet: (root: Uint8Array) =>
+        mockCreateWallet(params, Uint8Array.from(root)),
+      assertActive: () => {
+        if (!live) throw new Error('closed')
+      },
+      close: () => {
+        live = false
+        return mockClose()
+      },
+    }
+  },
 )
 jest.mock('@frank/wallet/chain', () => ({
   loadMonadChainConfigFromEnv: () => ({
@@ -63,6 +72,7 @@ it('opens one wallet per chain for the account, through the relay, through sessi
   expect(mockOpenRelayUtxoChain).toHaveBeenCalledWith({
     chainIdentifier: 'btc-testnet',
     relayBaseUrl: 'https://relay.invalid',
+    operationStoreFactory: expect.any(Function),
   })
   expect(mockSessionCreateWallet).toHaveBeenCalledTimes(2)
   expect(mockSessionCreateWallet.mock.calls[0][0]).toBe(
@@ -101,4 +111,42 @@ it('retries after a failed open instead of caching the failure', async () => {
 it('needs an open account', () => {
   mockState.status = 'locked'
   expect(() => openUtxoWallet('btc-testnet')).toThrow('No account is open')
+})
+
+it('reopens the same account/revision after the session revoked its relay, without a new scope', async () => {
+  const first = await openUtxoWallet('xec-testnet')
+  const relay = mockOpenRelayUtxoChain.mock.results.at(-1)!.value
+  await relay.close()
+  const second = await openUtxoWallet('xec-testnet')
+  expect(second).not.toBe(first)
+  expect(mockSessionCreateWallet).toHaveBeenCalledTimes(2)
+})
+
+it('rejects a late open after its owner was revoked even when account scope is unchanged', async () => {
+  let finish!: () => void
+  let began!: () => void
+  const started = new Promise<void>(resolve => {
+    began = resolve
+  })
+  mockCreateWallet.mockImplementationOnce(
+    () =>
+      new Promise(resolve => {
+        finish = () => resolve({ chainIdentifier: 'xec-testnet' })
+        began()
+      }),
+  )
+  const opening = openUtxoWallet('xec-testnet')
+  const rejected = expect(opening).rejects.toThrow('closed')
+  await started
+  await mockOpenRelayUtxoChain.mock.results.at(-1)!.value.close()
+  finish()
+  await rejected
+  await expect(openUtxoWallet('xec-testnet')).resolves.toHaveProperty('wallet')
+})
+
+it('propagates owner cleanup failures when replacing an account cache entry', async () => {
+  await openUtxoWallet('xec-testnet')
+  mockState.account = publicAccount('cleanup-replacement')
+  mockClose.mockRejectedValueOnce(new Error('cleanup failed'))
+  await expect(openUtxoWallet('xec-testnet')).rejects.toThrow('cleanup failed')
 })

@@ -18,11 +18,11 @@ import {
 import type { ChronikClient } from "chronik-client";
 import type { ChainUtxoPool } from "../chain-utxo-pool";
 import {
-  type EcashOperationStore,
-  InMemoryEcashOperationStore,
+  type EcashOperationStoreOptions,
+  validateEcashOperationStoreOptions,
 } from "../ecash-operation-store";
 
-export interface EcashChainConfig {
+export type EcashChainConfig = EcashOperationStoreOptions & {
   /** Optional chain identifier override; defaults to networkId. */
   readonly chainIdentifier?: string;
   /** eCash network identity. Additional networks require a reviewed genesis/prefix profile. */
@@ -36,9 +36,9 @@ export interface EcashChainConfig {
   /** Historical raw-seed custody uses its own construction seam, never a v1 domain root. */
   bip39WalletFactory?: EcashBip39WalletFactory;
   nativeAttemptStore?: NativeTransactionAttemptStore;
-  operationStore?: EcashOperationStore;
+  assertActive?: () => void;
   chainUtxoPool?: ChainUtxoPool;
-}
+};
 
 const ECASH_NETWORKS = {
   "xec-mainnet": { name: "eCash", unit: "XEC", network: "mainnet" },
@@ -90,7 +90,13 @@ export interface EcashChain extends Omit<NativeAssetChain, "createWallet"> {
 }
 
 export function createEcashChain(config: EcashChainConfig): EcashChain {
+  validateEcashOperationStoreOptions(config);
   const canonicalNetwork = canonicalEcashNetworkId(config.networkId);
+  if (
+    config.chainIdentifier !== undefined &&
+    config.chainIdentifier !== canonicalNetwork
+  )
+    throw new Error("eCash chainIdentifier must match canonical networkId");
   const chainIdentifier = config.chainIdentifier ?? canonicalNetwork;
   const { name, unit, network } = ECASH_NETWORKS[canonicalNetwork];
   const isTestnet = network !== "mainnet";
@@ -118,12 +124,6 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
       return parseEcashAddress(config, input);
     },
     async createWallet(domainRoot) {
-      const operationStore =
-        config.operationStore ??
-        (typeof window === "undefined" &&
-        typeof globalThis.localStorage === "undefined"
-          ? new InMemoryEcashOperationStore()
-          : undefined);
       return EcashWallet.fromDerivationMaterial({
         material: domainRoot,
         chronik: config.chronik,
@@ -132,7 +132,10 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         walletFactory: config.walletFactory,
         bip39WalletFactory: config.bip39WalletFactory,
         nativeAttemptStore: config.nativeAttemptStore,
-        operationStore,
+        ...(config.operationStoreFactory
+          ? { operationStoreFactory: config.operationStoreFactory }
+          : { operationStore: config.operationStore! }),
+        assertActive: config.assertActive,
         chainUtxoPool: config.chainUtxoPool,
         getTransactionStatus: (transaction) =>
           getEcashTransactionStatus(config, transaction),

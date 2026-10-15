@@ -238,41 +238,31 @@ export class InMemoryEcashOperationStore implements EcashOperationStore {
   }
 }
 
-interface Storage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
+/** Ownership is explicit: borrowed stores are never closed by a wallet. */
+export interface OwnedEcashOperationStore extends EcashOperationStore {
+  readonly walletKey: string;
+  close(): Promise<void>;
 }
+export type EcashOperationStoreFactory = (binding: {
+  readonly chainIdentifier: string;
+  readonly walletAddress: string;
+}) => OwnedEcashOperationStore | Promise<OwnedEcashOperationStore>;
+export type EcashOperationStoreOptions =
+  | { operationStore: EcashOperationStore; operationStoreFactory?: never }
+  | {
+      operationStore?: never;
+      operationStoreFactory: EcashOperationStoreFactory;
+    };
 
-export class BrowserEcashOperationStore implements EcashOperationStore {
-  readonly coordinationScope = "single-realm" as const;
-  private readonly prefix = "frank:ecash-operations:v1:";
-
-  private storage(): Storage | undefined {
-    if (typeof window === "undefined") return undefined;
-    try {
-      const storage = globalThis.localStorage;
-      if (storage === undefined) throw new Error("Missing localStorage");
-      return storage;
-    } catch {
-      throw new Error("eCash operation persistence is unavailable");
-    }
-  }
-
-  async get(key: string): Promise<EcashOperationLedger | undefined> {
-    const storage = this.storage();
-    if (storage === undefined) return undefined;
-    const value = storage.getItem(this.prefix + key);
-    return value === null ? undefined : parseEcashOperationLedger(value);
-  }
-
-  async put(key: string, ledger: EcashOperationLedger): Promise<void> {
-    const storage = this.storage();
-    if (storage === undefined)
-      throw new Error("eCash operation persistence is unavailable");
-    const value = JSON.stringify(ledger);
-    parseEcashOperationLedger(value);
-    storage.setItem(this.prefix + key, value);
-  }
+export function validateEcashOperationStoreOptions(options: {
+  operationStore?: EcashOperationStore;
+  operationStoreFactory?: EcashOperationStoreFactory;
+}): void {
+  if (
+    (options.operationStore !== undefined) ===
+    (options.operationStoreFactory !== undefined)
+  )
+    throw new Error(
+      "Exactly one eCash operationStore or operationStoreFactory is required"
+    );
 }
-
-export const defaultEcashOperationStore = new BrowserEcashOperationStore();

@@ -41,6 +41,19 @@ export function createBrowserEcashOperationStore(
   if (typeof input.namespace !== "string")
     throw new Error("Browser storage namespace is required");
   const namespace = namespaceFor(binding, input.namespace);
+  // Old development ledgers can contain exposed obligations. Preserve every byte; no rollover.
+  let old: string | null;
+  try {
+    old = globalThis.localStorage.getItem(
+      `frank:ecash-operations:v1:${binding.walletKey}`
+    );
+  } catch (cause) {
+    throw new Error("Cannot inspect old eCash operation ledger", { cause });
+  }
+  if (old !== null)
+    throw new Error(
+      "Unsupported old eCash operation ledger; preserve it for explicit recovery"
+    );
   if (
     typeof indexedDB === "undefined" ||
     typeof navigator === "undefined" ||

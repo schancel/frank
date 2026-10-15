@@ -11,6 +11,7 @@ import {
   type NativeWalletHandle,
   type RelayUtxoChain,
 } from '@frank/wallet/chain'
+import { createBrowserEcashOperationStore } from '@frank/wallet/storage/ecash-operations/browser'
 import { accountSession } from './session'
 
 export interface OpenUtxoWallet {
@@ -19,6 +20,7 @@ export interface OpenUtxoWallet {
 }
 
 interface Opened {
+  readonly assertActive: () => void
   readonly scope: string
   readonly opening: Promise<OpenUtxoWallet>
   readonly close: () => Promise<void>
@@ -38,25 +40,56 @@ export function openUtxoWallet(
 ): Promise<OpenUtxoWallet> {
   const scope = sessionScope()
   const existing = opened.get(chainIdentifier)
-  if (existing?.scope === scope) return existing.opening
+  if (existing?.scope === scope) {
+    try {
+      existing.assertActive()
+      return existing.opening
+    } catch {
+      opened.delete(chainIdentifier)
+    }
+  }
   // A wallet of an earlier account must not outlive it.
-  if (existing) void existing.close().catch(() => undefined)
+  const previousClosing = existing?.close()
 
   const relayChain = openRelayUtxoChain({
     chainIdentifier,
     relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
+    operationStoreFactory: binding =>
+      createBrowserEcashOperationStore({
+        ...binding,
+        namespace: 'local-account-v1',
+      }),
   })
   const opening = (async () => {
-    const wallet = await accountSession.createUtxoWallet(relayChain)
-    if (sessionScope() !== scope) throw new Error('Account changed')
-    return { chain: relayChain.chain, wallet }
+    try {
+      if (previousClosing) await previousClosing
+      relayChain.assertActive?.()
+      const wallet = await accountSession.createUtxoWallet(relayChain)
+      relayChain.assertActive?.()
+      if (sessionScope() !== scope) throw new Error('Account changed')
+      return { chain: relayChain.chain, wallet }
+    } catch (error) {
+      try {
+        await relayChain.close()
+      } catch (cleanup) {
+        throw new AggregateError(
+          [error, cleanup],
+          'UTXO cache opening and cleanup failed',
+        )
+      }
+      throw error
+    }
   })()
-  const entry: Opened = { scope, opening, close: () => relayChain.close() }
+  const entry: Opened = {
+    scope,
+    opening,
+    assertActive: () => relayChain.assertActive?.(),
+    close: () => relayChain.close(),
+  }
   opened.set(chainIdentifier, entry)
   // A failed open (relay unreachable) is retried by the next caller instead of being cached.
   opening.catch(() => {
     if (opened.get(chainIdentifier) === entry) opened.delete(chainIdentifier)
-    void relayChain.close().catch(() => undefined)
   })
   return opening
 }

@@ -2,8 +2,18 @@
 
 import { shallowMount } from '@vue/test-utils'
 import ChatMessageReply from './ChatMessageReply.vue'
+import ChatMessageText from './ChatMessageText.vue'
+import ChatMessageImage from './ChatMessageImage.vue'
+import ChatMessageStealth from './ChatMessageStealth.vue'
+import type {
+  MessageItem,
+  UnsupportedItem,
+} from '@frank/cashweb/types/messages'
 
-const mockMessageStore: Record<string, any> = {
+const mockMessageStore: Record<
+  string,
+  { outbound: boolean; senderAddress: string; items: MessageItem[] } | undefined
+> = {
   'digest-outbound': {
     outbound: true,
     senderAddress: '0xMe',
@@ -21,11 +31,12 @@ const mockMessageStore: Record<string, any> = {
   },
 }
 
-const mockContacts: Record<string, any> = {
-  '0xAlice': {
-    profile: { name: 'Alice' },
-  },
-}
+const mockContacts: Record<string, { profile: { name: string } } | undefined> =
+  {
+    '0xAlice': {
+      profile: { name: 'Alice' },
+    },
+  }
 
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({
@@ -94,5 +105,122 @@ describe('ChatMessageReply quoting a message with pictures', () => {
     const quoted = wrapper.get('.chat-message-text')
     expect(quoted.text()).toBe('see cat')
     expect(quoted.findAll('img')).toHaveLength(0)
+  })
+})
+
+describe('ChatMessageReply discriminated preview projection', () => {
+  function mountPreview(items: MessageItem[]) {
+    for (const item of items) Object.freeze(item)
+    Object.freeze(items)
+    mockMessageStore['digest-projection'] = {
+      outbound: false,
+      senderAddress: '0xAlice',
+      items,
+    }
+    return shallowMount(ChatMessageReply, {
+      props: { payloadDigest: 'digest-projection' },
+      global: { mocks: { $q: { dark: { isActive: false } } } },
+    })
+  }
+
+  it('passes text, image and stated payment fields unchanged to their actual children', async () => {
+    const wrapper = mountPreview([
+      { type: 'text', text: 'caption' },
+      { type: 'image', image: 'data:image/png;base64,AAAA' },
+      {
+        type: 'stealth',
+        amount: 7,
+        amountWei: '7000000000000000001',
+        chainId: 'MONT',
+        networkTag: 'monad-testnet',
+        ephemeralPubKey: '02' + '12'.repeat(32),
+        transactions: ['signed-transaction'],
+        memo: 'sender memo',
+      },
+    ])
+    expect(wrapper.getComponent(ChatMessageText).props()).toEqual(
+      expect.objectContaining({ text: 'caption', isReply: true }),
+    )
+    expect(wrapper.getComponent(ChatMessageImage).props()).toEqual(
+      expect.objectContaining({
+        image: 'data:image/png;base64,AAAA',
+        isReply: true,
+      }),
+    )
+    expect(wrapper.getComponent(ChatMessageStealth).props()).toEqual(
+      expect.objectContaining({
+        amount: 7,
+        amountWei: '7000000000000000001',
+        chainId: 'MONT',
+        networkTag: 'monad-testnet',
+        ephemeralPubKey: '02' + '12'.repeat(32),
+        transactions: ['signed-transaction'],
+        memo: 'sender memo',
+      }),
+    )
+    await wrapper.trigger('click')
+    expect(wrapper.emitted('replyDivClick')).toEqual([['digest-projection']])
+  })
+
+  it('keeps the last item of each preview type, including zero and absent optional fields', () => {
+    const wrapper = mountPreview([
+      { type: 'text', text: 'first' },
+      { type: 'text', text: '' },
+      { type: 'image', image: 'first-image' },
+      { type: 'image', image: '' },
+      { type: 'stealth', amount: 99, amountWei: '99', memo: 'first memo' },
+      { type: 'stealth', amount: 0 },
+    ])
+    expect(wrapper.getComponent(ChatMessageText).props('text')).toBe('')
+    expect(wrapper.getComponent(ChatMessageImage).props('image')).toBe('')
+    expect(wrapper.getComponent(ChatMessageStealth).props()).toEqual(
+      expect.objectContaining({
+        amount: 0,
+        amountWei: undefined,
+        memo: undefined,
+      }),
+    )
+  })
+
+  it('retains the image caption fallback when there is no text item', () => {
+    const wrapper = mountPreview([{ type: 'image', image: 'image-data' }])
+    expect(wrapper.getComponent(ChatMessageText).props('text')).toBe('Image')
+    expect(wrapper.getComponent(ChatMessageImage).props('image')).toBe(
+      'image-data',
+    )
+  })
+
+  const reasons: UnsupportedItem['reason'][] = ['unknown-type', 'malformed']
+  it.each(reasons)(
+    'keeps unsupported %s and non-preview items inert',
+    reason => {
+      const wrapper = mountPreview([
+        {
+          type: 'unsupported',
+          reason,
+          itemType: 'future-message',
+          frame: '00',
+        },
+        { type: 'reply', payloadDigest: 'earlier-message' },
+        { type: 'p2pkh', address: 'unused-address', amount: 1 },
+      ])
+      expect(wrapper.findComponent(ChatMessageText).exists()).toBe(false)
+      expect(wrapper.findComponent(ChatMessageImage).exists()).toBe(false)
+      expect(wrapper.findComponent(ChatMessageStealth).exists()).toBe(false)
+      expect(wrapper.text()).toBe('Alice')
+    },
+  )
+
+  it('retains the missing-message label and null reply navigation', async () => {
+    const wrapper = shallowMount(ChatMessageReply, {
+      props: { payloadDigest: 'missing-reply' },
+      global: { mocks: { $q: { dark: { isActive: false } } } },
+    })
+    expect(wrapper.text()).toBe('Message not found')
+    expect(wrapper.findComponent(ChatMessageText).exists()).toBe(false)
+    expect(wrapper.findComponent(ChatMessageImage).exists()).toBe(false)
+    expect(wrapper.findComponent(ChatMessageStealth).exists()).toBe(false)
+    await wrapper.trigger('click')
+    expect(wrapper.emitted('replyDivClick')).toEqual([[null]])
   })
 })

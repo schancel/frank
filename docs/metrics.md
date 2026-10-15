@@ -15,6 +15,11 @@ filesystem or PVC usage. These aggregates have no user-derived labels. Signup, a
 retention, public API request/latency, and proxy traffic metrics are not implemented yet; see the
 goals below for the broader planned scope.
 
+The compose board
+`docker/monitoring/grafana/provisioning/dashboards/json/frank-relay-overview.json` queries these
+series. Forum posts use `frank_forum_stored_posts`. The profile panel's delta is fixed at six
+hours, so its description says six hours rather than "the selected interval."
+
 ## Goals
 
 - Give operators low-cardinality Prometheus metrics for every public relay API.

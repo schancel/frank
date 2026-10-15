@@ -31,6 +31,8 @@ services:
       # Clustered cache & event bus configuration:
       RESP_URL: ${RESP_URL:-redis://kvrocks:6666}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
+      # Private metrics listener. Compose Prometheus scrapes it; the host does not publish it.
+      FRANK_METRICS_HOST: 0.0.0.0:9090
     volumes:
       - registry-data:/data
     depends_on:

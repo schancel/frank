@@ -244,6 +244,11 @@ export interface NativeWalletHandle {
   readonly chainUtxoPool?: import("../chain-utxo-pool").ChainUtxoPool;
   /** Address to show for a new inbound payment; may rotate independently of wallet identity. */
   getReceiveAddress(): Promise<ChainAddress>;
+  /**
+   * Receive address already derived on this device. Present when that derivation does not
+   * need an indexer. It may already have been paid; `getReceiveAddress` is the checked one.
+   */
+  localReceiveAddress?(): ChainAddress;
   getBalance(): Promise<bigint>;
   /** Display-only last complete observation, with current reservations excluded. Undefined
    * until observed; age and refresh failures must remain visible. Never authorizes spending. */

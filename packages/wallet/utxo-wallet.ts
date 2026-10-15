@@ -699,6 +699,9 @@ export class UtxoWallet implements NativeWalletHandle {
   /** Bumped whenever a recorded send is dropped, so a coin read from before it is not used. */
   private settledGeneration = 0;
   private balanceRefresh: Promise<bigint> | undefined;
+  /** Address discovery finished in this process. A failed attempt is retried, not remembered. */
+  private discovered = false;
+  private discovery: Promise<void> | undefined;
 
   private constructor(
     readonly network: UtxoNetwork,
@@ -1156,7 +1159,9 @@ export class UtxoWallet implements NativeWalletHandle {
     wallet.reload();
     // A required imported signing capability must restore before the wallet becomes active.
     await wallet.validateStealthScripts();
-    await wallet.discover();
+    // The lead address is derived locally. An indexer outage must not refuse the wallet;
+    // the next balance or receive read discovers again, and spending still waits for that.
+    await wallet.ensureDiscovered().catch(() => undefined);
     // Finish a send a restart interrupted. If the indexer cannot be reached now, the next send
     // tries again before it signs anything.
     await wallet.finishPending().catch(() => undefined);
@@ -1183,6 +1188,11 @@ export class UtxoWallet implements NativeWalletHandle {
 
   getUnresolvedNativeTransaction(): ChainTransaction | undefined {
     return this.unresolved?.transaction;
+  }
+
+  /** The receive address recorded locally. It does not ask the indexer whether it was paid. */
+  localReceiveAddress(): ChainAddress {
+    return { raw: this.addressAt(0, this.state.receiveIndex) };
   }
 
   /** The next receive address that has never been paid. */
@@ -2029,6 +2039,21 @@ export class UtxoWallet implements NativeWalletHandle {
     return lockingScript(destination);
   }
 
+  /** One discovery attempt. A failure clears itself so the next read can try again. */
+  private ensureDiscovered(): Promise<void> {
+    if (this.discovered) return Promise.resolve();
+    if (!this.discovery) {
+      this.discovery = this.discover()
+        .then(() => {
+          this.discovered = true;
+        })
+        .finally(() => {
+          if (!this.discovered) this.discovery = undefined;
+        });
+    }
+    return this.discovery;
+  }
+
   /** First use and restore: find how far each address chain has been used. */
   private async discover(): Promise<void> {
     const next = async (chain: 0 | 1, from: number) => {
@@ -2073,6 +2098,9 @@ export class UtxoWallet implements NativeWalletHandle {
     assertActive?: () => void,
     recordBalanceObservation = false
   ): Promise<void> {
+    assertActive?.();
+    // Spending and balance both come through here, so neither proceeds on an undiscovered wallet.
+    await this.ensureDiscovered();
     assertActive?.();
     for (let attempt = 0; attempt < 3; attempt++) {
       const snapshot = await this.exclusive(async () => this.store.load());

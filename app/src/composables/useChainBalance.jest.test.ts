@@ -232,6 +232,25 @@ describe('useChainBalance', () => {
     delete mockUtxoObservations['btc-testnet']
   })
 
+  it('leaves a Bitcoin-family balance pending when the indexer has not answered', async () => {
+    mockAccountStatus.revision += 1
+    mockUtxoBalances['btc-testnet'].mockRejectedValueOnce(new Error('offline'))
+    const error = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
+    try {
+      await fetchChainBalance('bitcoin', true)
+      expect(useChainBalance('bitcoin').presentation.value).toEqual({
+        status: 'pending',
+      })
+      expect(useMultichainBalance().getPresentation('bitcoin')).toEqual({
+        status: 'pending',
+      })
+    } finally {
+      error.mockRestore()
+    }
+  })
+
   it('retains the owner observation with visible failure when background refresh rejects', async () => {
     mockAccountStatus.revision += 1
     mockUtxoObservations['btc-testnet'] = {
@@ -348,11 +367,15 @@ describe('useChainBalance', () => {
       try {
         fetchBalance.mockRejectedValueOnce(new Error('offline'))
         await fetchChainBalance(chain, true)
-        expectPresentation({
-          status: 'unavailable',
-          reason: 'fetch-error',
-          lastKnown: undefined,
-        })
+        expectPresentation(
+          chain === 'ecash'
+            ? { status: 'pending' }
+            : {
+                status: 'unavailable',
+                reason: 'fetch-error',
+                lastKnown: undefined,
+              },
+        )
         if (chain === 'solana')
           expect(detail.tokens.value.filter(token => token.isNative)).toEqual(
             [],

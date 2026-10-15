@@ -7,6 +7,7 @@ afterEach(() => {
   mockChainBalance.formattedBalance.value = ''
   mockChainBalance.loaded.value = false
   mockChainBalance.hasError.value = false
+  mockChainBalance.indexerPending.value = false
 })
 import { nextTick, ref } from 'vue'
 import RenameWalletDialog from '../components/wallet/RenameWalletDialog.vue'
@@ -44,6 +45,9 @@ const mockUtxoReceiveAddress = jest.fn(
 const mockOpenUtxoWallet = jest.fn(async (chainIdentifier: string) => ({
   chain: { chainIdentifier },
   wallet: {
+    localReceiveAddress: () => ({
+      raw: UTXO_ADDRESSES[chainIdentifier],
+    }),
     getReceiveAddress: async () => ({
       raw: await mockUtxoReceiveAddress(chainIdentifier),
     }),
@@ -95,6 +99,7 @@ const mockChainBalance = {
   balance: ref(0n),
   loaded: ref(false),
   hasError: ref(false),
+  indexerPending: ref(false),
   refresh: jest.fn(),
 }
 
@@ -133,6 +138,9 @@ jest.mock('src/composables/useChainBalance', () => ({
             formattedBalance: state.formattedBalance.value,
           }
         : undefined
+      if (state.indexerPending?.value && !observation) {
+        return { status: 'pending' }
+      }
       if (state.hasError.value) {
         return {
           status: 'unavailable',
@@ -695,6 +703,38 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
+  it('shows the local lead address when the unused-address check cannot reach the indexer', async () => {
+    mockRoute.value = { path: '/wallet/ecash', query: {} }
+    mockUtxoReceiveAddress.mockRejectedValueOnce(new Error('no electrum'))
+    const wrapper = mountWallet()
+    await flush()
+    expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
+      UTXO_ADDRESSES['xec-testnet'],
+    )
+    expect(
+      wrapper.get('[data-testid="wallet-address-unavailable"]').text(),
+    ).toContain('walletPanel.receiveDiscoveryUnavailable')
+    expect(
+      wrapper.get('[data-testid="wallet-copy-address"]').attributes('disabled'),
+    ).toBeUndefined()
+    expect(errorNotify).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shows a pending balance while the indexer has not answered', async () => {
+    mockRoute.value = { query: {}, path: '/wallet/ecash' }
+    mockChainBalance.indexerPending.value = true
+    const wrapper = mountWallet()
+    await flush()
+    expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
+      'walletPanel.balancePending',
+    )
+    expect(wrapper.find('[data-testid="wallet-balance-error"]').exists()).toBe(
+      false,
+    )
+    wrapper.unmount()
+  })
+
   it('shows discovery availability without repeated derivation toasts, then retries the next unused address', async () => {
     mockRoute.value = { path: '/wallet/ecash', query: {} }
     mockOpenUtxoWallet.mockRejectedValueOnce(new Error('relay unavailable'))
@@ -907,7 +947,7 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
-  it('renders skeleton placeholder and does not render QR code while address is loading', async () => {
+  it('shows the local lead address while the unused-address check is still loading', async () => {
     let resolveAddress: (addr: string) => void = () => undefined
     const pendingAddress = new Promise<string>(resolve => {
       resolveAddress = resolve
@@ -921,12 +961,14 @@ describe('Wallet detail page (#570)', () => {
       params: { wallet: 'ecash' },
     }
     const wrapper = mountWallet()
-    await nextTick()
+    await flush()
 
     expect(wrapper.find('[data-testid="wallet-qr-skeleton"]').exists()).toBe(
-      true,
+      false,
     )
-    expect(wrapper.find('[data-testid="wallet-qr"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
+      UTXO_ADDRESSES['xec-testnet'],
+    )
 
     resolveAddress('ecash:loadedAddress')
     await flush()

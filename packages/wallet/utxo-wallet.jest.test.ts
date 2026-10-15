@@ -344,6 +344,36 @@ function fund(
 const BTC_RECIPIENT = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
 const BCH_RECIPIENT = "bchtest:qpm2qsznhks23z7629mms6s4cwef74vcwvqcw003ap";
 
+describe("local lead address", () => {
+  it("stays available when the indexer is unreachable, and nothing is spent until it answers", async () => {
+    const backend = makeIndexer(BCH);
+    const down = async () => {
+      throw new Error("no Electrum upstream available");
+    };
+    backend.indexer.hasHistory = down;
+    backend.indexer.listUnspent = down;
+    const { wallet } = await open(BCH, backend);
+    const lead = wallet.localReceiveAddress().raw;
+    expect(lead).toBe(wallet.identity.displayAddress);
+    expect(lead.startsWith("bchtest:")).toBe(true);
+    await expect(wallet.getReceiveAddress()).rejects.toThrow(
+      "no Electrum upstream available"
+    );
+    await expect(wallet.getBalance()).rejects.toThrow(
+      "no Electrum upstream available"
+    );
+    await expect(
+      wallet.sendNative({ recipient: { raw: BCH_RECIPIENT }, value: 1n })
+    ).rejects.toThrow("no Electrum upstream available");
+    expect(backend.broadcasts).toEqual([]);
+
+    backend.indexer.hasHistory = async () => false;
+    backend.indexer.listUnspent = async () => [];
+    expect((await wallet.getReceiveAddress()).raw).toBe(lead);
+    expect(await wallet.getBalance()).toBe(0n);
+  });
+});
+
 describe("display-only local balance observations", () => {
   it.each([BTC, BCH, DOGE, UTXO_NETWORKS["litecoin-testnet"]])(
     "retains the last observation across failed refresh and reopen for $chainIdentifier",

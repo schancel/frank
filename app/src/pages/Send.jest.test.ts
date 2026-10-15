@@ -36,6 +36,7 @@ const mockGetBalance = jest.fn()
 const mockGetTransactionStatus = jest.fn()
 
 jest.mock('@frank/wallet/chain', () => ({
+  onActiveChainChange: () => jest.fn(),
   ...jest.requireActual('@frank/wallet/chain/evm-native-operation-status'),
   NativeTransactionSubmissionError: jest.requireActual(
     '@frank/wallet/chain/chain-wallet',
@@ -167,6 +168,31 @@ function mountSend(messages: unknown = enUS) {
 }
 
 describe('Send.vue review boundary and signing protection (#535)', () => {
+  it('a scanner result fills only the recipient, leaving payment and wallet capture for confirmation', async () => {
+    const wrapper = mountSend()
+    await flushPromises()
+    await wrapper.find('[data-test="send-amount-input"]').setValue('2')
+    wrapper
+      .findComponent({ name: 'QrScannerDialog' })
+      .vm.$emit('scan', '0x1234567890123456789012345678901234567890')
+    await flushPromises()
+    expect(
+      (
+        wrapper.find('[data-test="send-address-input"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe('0x1234567890123456789012345678901234567890')
+    expect(
+      (
+        wrapper.find('[data-test="send-amount-input"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe('2')
+    expect(mockCaptureWallet).not.toHaveBeenCalled()
+    expect(mockSend).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="send-review-card"]').exists()).toBe(false)
+  })
+
   beforeEach(() => {
     setActivePinia(createPinia())
     jest.clearAllMocks()

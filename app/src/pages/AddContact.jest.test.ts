@@ -64,6 +64,7 @@ jest.mock('src/stores/chats', () => ({
   }),
 }))
 jest.mock('@frank/wallet/chain', () => ({
+  onActiveChainChange: () => jest.fn(),
   activeChain: {
     parseAddress: jest.fn(),
     formatAddress: jest.fn(),
@@ -284,6 +285,19 @@ describe('AddContact latest lookup', () => {
       }),
     )
     wrapper = mountPage()
+  })
+
+  it('a scanner result uses the existing preview without adding a contact or sending', async () => {
+    wrapper
+      .findComponent({ name: 'QrScannerDialog' })
+      .vm.$emit('scan', ADDRESS_A)
+    await settle()
+    expect((wrapper.find('input').element as HTMLInputElement).value).toBe(
+      ADDRESS_A,
+    )
+    expect(chain.parseAddress).toHaveBeenCalledWith(ADDRESS_A)
+    expect(mockAddContactToStore).not.toHaveBeenCalled()
+    expect(mockOpenChat).not.toHaveBeenCalled()
   })
 
   afterEach(() => {

@@ -17,7 +17,13 @@ import type { Provider } from 'ethers'
 
 import type { NestedItemBudget, ParsedFrame } from '@frank/codec'
 
-import type { Message, MessageItem } from '@frank/cashweb/types/messages'
+import { messageItemType, validateApplicationValue } from './application-item'
+
+import type {
+  ApplicationMessageItem,
+  Message,
+  MessageItem,
+} from '@frank/cashweb/types/messages'
 
 /** Everything a plugin's `hydrate()` needs beyond the raw item itself: the whole message it came
  * from (so a plugin can read `stampPayments`/`outpoints`/`stampValueWei` -- money-carrying types
@@ -249,7 +255,9 @@ export interface MessageItemPlugin<
   THydrated = TRaw,
   TState = void,
 > {
-  type: TRaw['type']
+  type: TRaw extends ApplicationMessageItem ? string : TRaw['type']
+  /** Set by the typed application bridge, retained when a registration is copied. */
+  carrier?: TRaw extends ApplicationMessageItem ? 'application' : never
   /** The one place a raw, just-deserialized item gets turned into the trusted object the
    * full-bubble renderer and any bot game logic use -- reconciling (or overriding) any
    * self-reported field against real on-chain data via `context`. May be async (e.g. looking up an
@@ -295,6 +303,15 @@ export interface MessageItemPlugin<
     hydrated: THydrated,
     context: MessageItemContext,
   ): TState
+}
+
+/** Pure, feature-owned codec and projection; no custody or provider capability. */
+export interface ApplicationItemPlugin<T> {
+  itemType: string
+  read(value: unknown): T
+  encode(value: T): Uint8Array
+  decode(bytes: Uint8Array, context: MessageItemDecodeContext): T
+  previewText(value: T): string
 }
 
 /** The one shape every plugin directory exports from its `plugin.ts`. */
@@ -395,6 +412,7 @@ export const UNSUPPORTED_MESSAGE_ITEM_PREVIEW = 'Unsupported message'
 // ---------------------------------------------------------------------------------------------
 
 export interface MessageItemRegistry {
+  registerApplication<T>(plugin: ApplicationItemPlugin<T>): void
   /** Adds one plugin. Throws {@link MessageItemPluginAlreadyRegisteredError} for a type that
    * already has one. */
   register<TRaw extends MessageItem, THydrated = TRaw, TState = void>(
@@ -433,9 +451,51 @@ export interface MessageItemRegistry {
 
 export function createMessageItemRegistry(): MessageItemRegistry {
   const plugins = new Map<string, AnyMessageItemPlugin>()
+  function pluginFor(item: MessageItem): AnyMessageItemPlugin | undefined {
+    const type = messageItemType(item)
+    if (
+      plugins.has(type) &&
+      (plugins.get(type)?.carrier === 'application') !==
+        (item.type === 'application')
+    )
+      throw new TypeError(
+        'Application carrier does not match its registered plugin',
+      )
+    return plugins.get(type)
+  }
 
   const registry: MessageItemRegistry = {
+    registerApplication<T>(plugin: ApplicationItemPlugin<T>) {
+      const type = messageItemType({
+        type: 'application',
+        itemType: plugin.itemType,
+      })
+      const read = (raw: ApplicationMessageItem) => {
+        if (messageItemType(raw) !== type)
+          throw new TypeError('Wrong application item identifier')
+        validateApplicationValue(raw.value)
+        const value = plugin.read(raw.value)
+        validateApplicationValue(value)
+        return value
+      }
+      registry.register<ApplicationMessageItem, T>({
+        type,
+        carrier: 'application',
+        hydrate: read,
+        previewText: raw => plugin.previewText(read(raw)),
+        encode: raw => plugin.encode(read(raw)),
+        decode: (bytes, context) => {
+          const value = plugin.decode(bytes, context)
+          validateApplicationValue(value)
+          const validated = plugin.read(value)
+          validateApplicationValue(validated)
+          return { type: 'application', itemType: type, value: validated }
+        },
+      })
+    },
     register(plugin) {
+      if (plugin.carrier === 'application')
+        messageItemType({ type: 'application', itemType: plugin.type })
       if (plugins.has(plugin.type)) {
         throw new MessageItemPluginAlreadyRegisteredError(plugin.type)
       }
@@ -447,7 +507,7 @@ export function createMessageItemRegistry(): MessageItemRegistry {
     hydrateItems(message, provider) {
       return Promise.all(
         message.items.map(async (item, index): Promise<HydratedMessageItem> => {
-          const plugin = plugins.get(item.type)
+          const plugin = pluginFor(item)
           if (!plugin) return { kind: 'unsupported', item }
           const hydrated = await plugin.hydrate(item, {
             message,
@@ -459,7 +519,7 @@ export function createMessageItemRegistry(): MessageItemRegistry {
       )
     },
     previewText(item) {
-      const plugin = plugins.get(item.type)
+      const plugin = pluginFor(item)
       return plugin
         ? plugin.previewText(item)
         : UNSUPPORTED_MESSAGE_ITEM_PREVIEW
@@ -467,26 +527,29 @@ export function createMessageItemRegistry(): MessageItemRegistry {
     tallyValue(items) {
       // Never NaN: a value a plugin reports that is not a finite number adds nothing.
       return items.reduce((total, item) => {
-        const value = plugins.get(item.type)?.tallyValue?.(item) ?? 0
+        const value = pluginFor(item)?.tallyValue?.(item) ?? 0
         return total + (Number.isFinite(value) ? value : 0)
       }, 0)
     },
     encodeItem(item) {
-      const plugin = plugins.get(item.type)
-      if (!plugin) throw new MessageItemUnsupportedError(item.type)
+      const plugin = pluginFor(item)
+      if (!plugin) throw new MessageItemUnsupportedError(messageItemType(item))
       let bytes: Uint8Array
       try {
         bytes = plugin.encode(item)
       } catch (error) {
         if (error instanceof MessageItemEncodeError) throw error
         throw new MessageItemEncodeError(
-          item.type,
+          messageItemType(item),
           error instanceof Error ? error.message : String(error),
         )
       }
       if (!(bytes instanceof Uint8Array))
-        throw new MessageItemEncodeError(item.type, 'the plugin wrote no bytes')
-      return { type: item.type, bytes }
+        throw new MessageItemEncodeError(
+          messageItemType(item),
+          'the plugin wrote no bytes',
+        )
+      return { type: messageItemType(item), bytes }
     },
     decodeItem(type, bytes, context) {
       const plugin = plugins.get(type)
@@ -494,6 +557,16 @@ export function createMessageItemRegistry(): MessageItemRegistry {
       let item: MessageItem
       try {
         item = plugin.decode(bytes, context) as MessageItem
+        if (
+          item === null ||
+          typeof item !== 'object' ||
+          messageItemType(item) !== type ||
+          (plugin.carrier === 'application') !== (item.type === 'application')
+        )
+          throw new MessageItemDecodeError(
+            type,
+            'the plugin returned an item of another type',
+          )
       } catch (error) {
         if (error instanceof MessageItemDecodeError) throw error
         throw new MessageItemDecodeError(
@@ -501,11 +574,6 @@ export function createMessageItemRegistry(): MessageItemRegistry {
           error instanceof Error ? error.message : String(error),
         )
       }
-      if (item === null || typeof item !== 'object' || item.type !== type)
-        throw new MessageItemDecodeError(
-          type,
-          'the plugin returned an item of another type',
-        )
       return { kind: 'item', item }
     },
   }

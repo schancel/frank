@@ -11,6 +11,7 @@
  */
 import { AsyncLocalStorage } from "async_hooks";
 import { join } from "path";
+import { createBotMessageItemRegistry } from "../src/message-items";
 import { FrankBotHost, type FrankBotDefinition } from "@frank/bot-framework";
 import {
   BlackjackDealerBot,
@@ -108,6 +109,7 @@ async function main() {
   installLogPrefix();
 
   const host = new FrankBotHost({
+    createMessageItemRegistry: createBotMessageItemRegistry,
     stateDir,
     relayBaseUrl: process.env.E2E_DEMO_RELAY_URL,
     rpcUrl: process.env.MONAD_TESTNET_HTTP_RPC_URL ?? process.env.MONAD_RPC_URL,

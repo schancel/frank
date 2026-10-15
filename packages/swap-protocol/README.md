@@ -58,8 +58,7 @@ Reduction preserves historical offer/decision evidence and reports violations se
 `usableAcceptance` is always null on a violation. `negotiationEligibility` accepts an explicit
 Unix-seconds clock, requires `now < expiry`, and does not erase old acceptance. Eligibility means
 only that further preparation may be considered: it never authorizes funding, signature release,
-reservation release, data deletion or cancellation of financial recovery. Plugin transport,
-authenticated host/runtime installation, UI, durable custody and execution remain separate work.
+reservation release, data deletion or cancellation of financial recovery. Authenticated host/runtime installation, UI, durable custody and execution remain separate work.
 
 The package's declared runtime dependency check can be run with:
 
@@ -67,5 +66,12 @@ The package's declared runtime dependency check can be run with:
 node packages/nakamoto/scripts/check-deps.mjs --root packages/swap-protocol
 ```
 
-No production writer currently emits these payloads. Once installed, a wire change requires
-coordinated feature writer/reader changes; no compatibility reader or migration is provided.
+The separate `src/message-plugin.ts` entry provides the inert `swap-negotiation-v1` application
+plugin. Supply an explicit pair policy to `createNegotiationMessagePlugin`; each descriptor owns
+its validation cache and never registers globally. It projects exact signed bytes as
+`{eventHex: string}` for ordinary JSON persistence, validates restored projections fully, and
+continues the enclosing receive budget. Its factual previews and hydration have no admission,
+signing, funding or settlement authority. App and the concrete all-bots target explicitly install
+the testnet policy. Wallet defaults and other bot targets do not install this feature. There is no
+proposal UI or automatic negotiation writer yet. A wire change requires coordinated feature
+writer/reader changes; no compatibility reader or migration is provided.

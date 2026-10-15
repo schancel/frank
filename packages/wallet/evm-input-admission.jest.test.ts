@@ -1892,7 +1892,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
         return []
       },
       registerSubAccount: () => undefined,
-    } as never)
+    } as never, 'monad-regtest')
     await expect(spend(f).applyMember(id, 0)).rejects.toThrow(
       'fixture: account view failed after the put',
     )

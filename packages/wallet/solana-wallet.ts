@@ -546,7 +546,7 @@ export class SolanaWallet
     }
     const secretHex = Buffer.from(this.signer.secretKey).toString('hex')
     return targetPool.solana.registerAccount({
-      chain: this.chainIdentifier,
+      chainIdentifier: this.chainIdentifier,
       address: this.address,
       privateKey: secretHex,
       balanceWei,
@@ -570,7 +570,7 @@ export class SolanaWallet
       throw new Error('No ChainUtxoPool provided or attached to SolanaWallet')
     }
     return targetPool.solana.registerStealthAccount({
-      chain: this.chainIdentifier,
+      chainIdentifier: this.chainIdentifier,
       address: params.address,
       privateKey: params.privateKey,
       balanceWei: params.balanceWei,

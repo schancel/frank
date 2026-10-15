@@ -749,7 +749,7 @@ describe("createEvmChain: nativeTransfers", () => {
       const pool = new ChainUtxoPool();
       const stranger = Wallet.createRandom();
       const coin = pool.registerSubAccount({
-        chain: "monad",
+        chainIdentifier: "monad-testnet",
         address: stranger.address,
         privateKey: stranger.privateKey,
         balanceWei: 10n ** 18n

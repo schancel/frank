@@ -289,6 +289,7 @@ async function openWallet(
     cacheTimeout: -1,
   })
   const client = new MonadCanonicalStampClient({
+    chainIdentifier: NETWORK,
     pool,
     changePool,
     leaseManager,

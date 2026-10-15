@@ -1,3 +1,4 @@
+import { ChainUtxoPool } from './chain-utxo-pool'
 import { deriveRoleLeaves } from '../role-keys/src'
 import { canonicalAdmissionPool } from './evm-input-admission'
 import * as canonicalMailboxModule from '@frank/cashweb/relay/monad-mailbox-client'
@@ -367,6 +368,7 @@ async function makeCanonicalConsumerFixture(
     ) => Promise<void>
     /** Start from a copy of another fixture's wallet files, as a process restarted on them. */
     restoreFrom?: string
+    attachCoinView?: boolean
   } = {},
 ) {
   const location = await mkdtemp(join(tmpdir(), 'canonical-consumer-'))
@@ -551,6 +553,12 @@ async function makeCanonicalConsumerFixture(
       keyring: material.changeKeyring,
       store: changeStore,
     })
+  const coinView = options.attachCoinView ? new ChainUtxoPool() : undefined
+  if (coinView) {
+    pool.setAccountUtxoPool(coinView, 'monad-testnet')
+    const derived = material.keyring.deriveSubAccount(0)
+    coinView.registerSubAccount({ chainIdentifier: 'monad-testnet', address: derived.address, privateKey: derived.privateKey, balanceWei: 1000000000n })
+  }
   pool.ensureSize(1)
   await pool.flush()
   let leaseManager = new SubAccountLeaseManager(pool)
@@ -652,6 +660,8 @@ async function makeCanonicalConsumerFixture(
   const httpClient = makeMockHttpClientForCanonical()
   const createClient = () =>
     new MonadCanonicalStampClient({
+      chainIdentifier: 'monad-testnet',
+      accountUtxoPool: coinView,
       pool,
       changePool,
       leaseManager,
@@ -692,6 +702,7 @@ async function makeCanonicalConsumerFixture(
       onIntentDurable,
     })
   return {
+    coinView,
     location,
     get client() {
       return client
@@ -759,6 +770,16 @@ function makeMockHttpClientForCanonical(): jest.Mocked<MonadTxSubmitter> {
 }
 
 describe('canonical durable consumer barriers', () => {
+  it('stamp preparation queries the captured canonical wallet identity', async () => {
+    const f = await makeCanonicalConsumerFixture({ attachCoinView: true })
+    const lookup = jest.spyOn(f.coinView!, 'getCoinsByAddress')
+    try {
+      await f.prepare(1, async () => undefined)
+      expect(lookup).toHaveBeenCalledWith(expect.any(String), 'monad-testnet')
+      expect(lookup.mock.calls.every(([, chainIdentifier]) => chainIdentifier === 'monad-testnet')).toBe(true)
+    } finally { await f.close() }
+  })
+
   it('native_prepare_blocks_canonical_same_pair before another durable authorization or signature', async () => {
     const f = await makeCanonicalConsumerFixture({
       beforeOwnerOpen: async (journal, material) => {

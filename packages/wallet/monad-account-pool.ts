@@ -86,7 +86,7 @@ import {
   selectStampAccounts,
   type SelectedStampAccount,
 } from "./monad-stamp-account-selection";
-import type { ChainUtxoPool } from "./chain-utxo-pool";
+import { inferChainFamily, type ChainUtxoPool } from "./chain-utxo-pool";
 
 export type {
   SubAccountPoolStore,
@@ -276,26 +276,33 @@ export class MonadSubAccountPool {
   private readonly accountGenerations = new Map<string, number>();
   private readonly accountWaiters = new Map<string, Array<() => void>>();
   private spendApplier?: SubAccountSpendApplier;
-  accountUtxoPool?: ChainUtxoPool;
+  private accountUtxoPool?: ChainUtxoPool;
 
-  setAccountUtxoPool(pool: ChainUtxoPool): void {
+  private coinViewChainIdentifier?: string
+
+  setAccountUtxoPool(pool: ChainUtxoPool, chainIdentifier: string): void {
+    inferChainFamily(chainIdentifier, 'evm')
+    if (this.coinViewChainIdentifier !== undefined && this.coinViewChainIdentifier !== chainIdentifier) {
+      throw new Error('Cannot rebind attached EVM coin view to another chain')
+    }
+    this.coinViewChainIdentifier = chainIdentifier
     this.accountUtxoPool = pool;
   }
 
   private syncUtxo(index: number, status: SubAccountStatus, balanceWei?: bigint): void {
     if (!this.accountUtxoPool) return;
     const derived = this.keyring.deriveSubAccount(index);
-    const utxos = this.accountUtxoPool.getCoinsByAddress(derived.address, "monad");
+    const utxos = this.accountUtxoPool.getCoinsByAddress(derived.address, this.coinViewChainIdentifier!);
     if (utxos.length === 0) {
       this.accountUtxoPool.registerSubAccount({
-        chain: "monad",
+        chainIdentifier: this.coinViewChainIdentifier!,
         address: derived.address,
         privateKey: derived.privateKey,
         balanceWei: balanceWei ?? 0n,
         derivationPath: this.keyring.subAccountPath(index),
         index,
       });
-      const registered = this.accountUtxoPool.getCoinsByAddress(derived.address, "monad")[0];
+      const registered = this.accountUtxoPool.getCoinsByAddress(derived.address, this.coinViewChainIdentifier!)[0];
       if (registered) {
         if (status === "spent" || status === "retired") {
           this.accountUtxoPool.markSpent(registered.id);

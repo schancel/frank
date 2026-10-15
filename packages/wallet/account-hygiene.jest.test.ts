@@ -58,6 +58,7 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
 
     it('tracks and reports dirty accounts', async () => {
       const engine = new MonadAccountHygieneEngine({
+        chainIdentifier: 'monad-testnet',
         provider: mockProvider,
         httpClient: mockHttpClient,
         changeKeyring,
@@ -80,6 +81,7 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
 
     it('sweeps leftover balance across change accounts according to geometric distribution when substantially above dust', async () => {
       const engine = new MonadAccountHygieneEngine({
+        chainIdentifier: 'monad-testnet',
         provider: mockProvider,
         httpClient: mockHttpClient,
         changeKeyring,
@@ -130,6 +132,7 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
       mockProvider.getBalance.mockResolvedValue(60_000_000_000_000n)
 
       const engine = new MonadAccountHygieneEngine({
+        chainIdentifier: 'monad-testnet',
         provider: mockProvider,
         httpClient: mockHttpClient,
         changeKeyring,
@@ -158,6 +161,7 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
       mockProvider.getBalance.mockResolvedValue(10_000_000_000_000n) // 0.00001 MON (below dust)
 
       const engine = new MonadAccountHygieneEngine({
+        chainIdentifier: 'monad-testnet',
         provider: mockProvider,
         httpClient: mockHttpClient,
         changeKeyring,
@@ -178,6 +182,7 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
       jest.useFakeTimers()
 
       const engine = new MonadAccountHygieneEngine({
+        chainIdentifier: 'monad-testnet',
         provider: mockProvider,
         httpClient: mockHttpClient,
         changeKeyring,
@@ -202,11 +207,11 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
       jest.useRealTimers()
     })
 
-    it('integrates with ChainUtxoPool to resolve signers, sweep dirty accounts, and register change', async () => {
+    it.each(['monad-testnet', 'ethereum-sepolia'])('integrates %s pool signers, dirty sweep and change', async chainIdentifier => {
       const pool = new ChainUtxoPool()
       const dirtySub = hdKeyring.deriveSubAccount(7)
       const dirtyUtxo = pool.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: chainIdentifier,
         address: dirtySub.address,
         privateKey: dirtySub.privateKey,
         balanceWei: 1_000_000n,
@@ -224,6 +229,7 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
       mockProvider.getTransactionCount.mockResolvedValue(1)
 
       const engine = new MonadAccountHygieneEngine({
+        chainIdentifier: chainIdentifier,
         provider: mockProvider,
         httpClient: mockHttpClient,
         changeKeyring,
@@ -242,7 +248,7 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
       expect(sourceUtxo?.status).toBe('spent')
 
       // Fresh change account is registered in pool with clean status and attached private key
-      const cleanChange = pool.getCleanUtxos('monad')
+      const cleanChange = pool.getCleanUtxos(chainIdentifier)
       expect(cleanChange.length).toBeGreaterThanOrEqual(1)
       expect(cleanChange[0].origin).toBe('change')
       expect(cleanChange[0].status).toBe('clean')

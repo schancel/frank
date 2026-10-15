@@ -170,6 +170,25 @@ describe("solana-chain", () => {
       );
     });
 
+    it("selects canonical wallet registrations for fee estimation and actual transfer", async () => {
+      const pool = new ChainUtxoPool()
+      config.chainUtxoPool = pool
+      connection.balance = 100_000_000n
+      const chain = createSolanaChain(config)
+      const wallet = await chain.createWallet({ mnemonic: testMnemonic }) as SolanaWallet
+      const primary = wallet.registerInUtxoPool(undefined, 100_000_000n)
+      const extra = await Keypair.generate()
+      const stealth = wallet.registerStealthInUtxoPool({ address: extra.publicKey.toBase58(), privateKey: Buffer.from(extra.secretKey).toString('hex'), balanceWei: 200_000_000n })
+      const recipient = { raw: (await Keypair.generate()).publicKey.toBase58() }
+      const estimate = await chain.nativeTransfers.estimateLegacyFee!({ wallet, recipient, value: 250_000_000n })
+      expect(estimate.inputCount).toBe(2)
+      const result = await chain.nativeTransfers.sendLegacy!({ wallet, recipient, value: 250_000_000n })
+      expect(result.totalValueSent).toBe(250_000_000n)
+      expect(primary.status).toBe('spent')
+      expect(stealth.status).toBe('spent')
+      expect(connection.sentRaw).toHaveLength(1)
+    })
+
     it("executes atomic multi-input legacy transfer when chainUtxoPool is present and multiple coins are selected", async () => {
       const pool = new ChainUtxoPool();
       const solanaKp1 = await Keypair.generate();
@@ -177,13 +196,13 @@ describe("solana-chain", () => {
 
       // Register two UTXOs in the pool
       const coin1 = pool.solana.registerDerivedAccount({
-        chain: "solana",
+        chainIdentifier: "solana-devnet",
         address: solanaKp1.publicKey.toBase58(),
         privateKey: Buffer.from(solanaKp1.secretKey).toString("hex"),
         balanceWei: 300_000_000n, // 0.3 SOL
       });
       const coin2 = pool.solana.registerDerivedAccount({
-        chain: "solana",
+        chainIdentifier: "solana-devnet",
         address: solanaKp2.publicKey.toBase58(),
         privateKey: Buffer.from(solanaKp2.secretKey).toString("hex"),
         balanceWei: 400_000_000n, // 0.4 SOL
@@ -240,7 +259,7 @@ describe("solana-chain", () => {
       const subKp = await Keypair.generate();
 
       const subCoin = pool.solana.registerDerivedAccount({
-        chain: "solana",
+        chainIdentifier: "solana-devnet",
         address: subKp.publicKey.toBase58(),
         privateKey: Buffer.from(subKp.secretKey).toString("hex"),
         balanceWei: 500_000_000n,
@@ -272,13 +291,13 @@ describe("solana-chain", () => {
       const kp2 = await Keypair.generate();
 
       pool.solana.registerDerivedAccount({
-        chain: "solana",
+        chainIdentifier: "solana-devnet",
         address: kp1.publicKey.toBase58(),
         privateKey: Buffer.from(kp1.secretKey).toString("hex"),
         balanceWei: 100_000_000n,
       });
       pool.solana.registerDerivedAccount({
-        chain: "solana",
+        chainIdentifier: "solana-devnet",
         address: kp2.publicKey.toBase58(),
         privateKey: Buffer.from(kp2.secretKey).toString("hex"),
         balanceWei: 200_000_000n,
@@ -307,13 +326,13 @@ describe("solana-chain", () => {
       const kp2 = await Keypair.generate();
 
       const coin1 = pool.solana.registerAccount({
-        chain: "solana",
+        chainIdentifier: "solana-devnet",
         address: kp1.publicKey.toBase58(),
         privateKey: Buffer.from(kp1.secretKey).toString("hex"),
         balanceWei: 300_000_000n,
       });
       const coin2 = pool.solana.registerDerivedAccount({
-        chain: "solana",
+        chainIdentifier: "solana-devnet",
         address: kp2.publicKey.toBase58(),
         privateKey: Buffer.from(kp2.secretKey).toString("hex"),
         balanceWei: 400_000_000n,
@@ -379,7 +398,7 @@ describe("solana-chain", () => {
       // Case A: 1 input with positive priority fee
       const singleKp = await Keypair.generate();
       const singleCoin = pool.solana.registerAccount({
-        chain: "solana",
+        chainIdentifier: "solana-devnet",
         address: singleKp.publicKey.toBase58(),
         privateKey: Buffer.from(singleKp.secretKey).toString("hex"),
         balanceWei: 1_000_000_000n,
@@ -426,7 +445,7 @@ describe("solana-chain", () => {
       ]);
       const coins = kps.map((kp, idx) =>
         pool.solana.registerDerivedAccount({
-          chain: "solana",
+          chainIdentifier: "solana-devnet",
           address: kp.publicKey.toBase58(),
           privateKey: Buffer.from(kp.secretKey).toString("hex"),
           balanceWei: 200_000_000n,

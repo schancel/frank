@@ -25,9 +25,10 @@ import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadAccountTxSigner, MonadTxSubmitter } from './monad-account-tx'
 import { estimateDustThresholdWei } from './monad-change-pool'
 import { computeGeometricRadixChangeSplits } from './monad-change-distribution'
-import type { ChainUtxoPool } from './chain-utxo-pool'
+import { inferChainFamily, type ChainUtxoPool } from './chain-utxo-pool'
 
 export interface MonadAccountHygieneParams {
+  readonly chainIdentifier: string
   readonly provider: Provider
   readonly httpClient: MonadTxSubmitter
   readonly changeKeyring: MonadChangeKeyring
@@ -41,6 +42,7 @@ export interface MonadAccountHygieneParams {
 }
 
 export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
+  private readonly chainIdentifier: string
   private readonly provider: Provider
   private readonly httpClient: MonadTxSubmitter
   private readonly changeKeyring: MonadChangeKeyring
@@ -65,6 +67,8 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
   private lastSweepTimestamp?: number
 
   constructor(params: MonadAccountHygieneParams) {
+    inferChainFamily(params.chainIdentifier, 'evm')
+    this.chainIdentifier = params.chainIdentifier
     this.provider = params.provider
     this.httpClient = params.httpClient
     this.changeKeyring = params.changeKeyring
@@ -76,7 +80,7 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
         ? (address: string) => {
             const utxos = params.accountUtxoPool!.getUtxosByAddress(
               address,
-              'monad',
+              this.chainIdentifier,
             )
             if (utxos.length > 0) {
               return params.accountUtxoPool!.createSigner(
@@ -179,7 +183,7 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
 
     try {
       if (this.accountUtxoPool) {
-        for (const dirtyUtxo of this.accountUtxoPool.getDirtyUtxos('monad')) {
+        for (const dirtyUtxo of this.accountUtxoPool.getDirtyUtxos(this.chainIdentifier)) {
           this.markDirty(dirtyUtxo.address, 'nonce-incremented', {
             utxoId: dirtyUtxo.id,
             origin: dirtyUtxo.origin,
@@ -275,7 +279,7 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
 
                 if (this.accountUtxoPool) {
                   this.accountUtxoPool.registerChangeAccount({
-                    chain: 'monad',
+                    chainIdentifier: this.chainIdentifier,
                     address: destinationAddress,
                     privateKey: destinationAccount.privateKey,
                     balanceWei: splitWei,
@@ -311,7 +315,7 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
               if (this.accountUtxoPool) {
                 const sourceUtxos = this.accountUtxoPool.getUtxosByAddress(
                   address,
-                  'monad',
+                  this.chainIdentifier,
                 )
                 for (const u of sourceUtxos) {
                   this.accountUtxoPool.markSpent(u.id)
@@ -342,7 +346,7 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
 
             if (this.accountUtxoPool) {
               this.accountUtxoPool.registerChangeAccount({
-                chain: 'monad',
+                chainIdentifier: this.chainIdentifier,
                 address: destinationAddress,
                 privateKey: destinationAccount.privateKey,
                 balanceWei: sweptValueWei,
@@ -351,7 +355,7 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
               })
               const sourceUtxos = this.accountUtxoPool.getUtxosByAddress(
                 address,
-                'monad',
+                this.chainIdentifier,
               )
               for (const u of sourceUtxos) {
                 this.accountUtxoPool.markSpent(u.id)

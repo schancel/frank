@@ -87,7 +87,7 @@ import {
   InMemoryChangePoolStore,
 } from './storage/change-pool-storage'
 import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
-import type { ChainUtxoPool } from './chain-utxo-pool'
+import { inferChainFamily, type ChainUtxoPool } from './chain-utxo-pool'
 
 export type {
   ChangeAccountRecord,
@@ -165,9 +165,16 @@ export class MonadChangePool {
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
     admission?: MonadWalletOperationAdmission,
   ) => Promise<T>
-  accountUtxoPool?: ChainUtxoPool
+  private accountUtxoPool?: ChainUtxoPool
 
-  setAccountUtxoPool(pool: ChainUtxoPool): void {
+  private coinViewChainIdentifier?: string
+
+  setAccountUtxoPool(pool: ChainUtxoPool, chainIdentifier: string): void {
+    inferChainFamily(chainIdentifier, 'evm')
+    if (this.coinViewChainIdentifier !== undefined && this.coinViewChainIdentifier !== chainIdentifier) {
+      throw new Error('Cannot rebind attached EVM coin view to another chain')
+    }
+    this.coinViewChainIdentifier = chainIdentifier
     this.accountUtxoPool = pool
   }
 
@@ -462,7 +469,7 @@ export class MonadChangePool {
     if (this.accountUtxoPool) {
       const derived = this.keyring.deriveChangeAccount(intent.index)
       this.accountUtxoPool.registerChangeAccount({
-        chain: 'monad',
+        chainIdentifier: this.coinViewChainIdentifier!,
         address: derived.address,
         privateKey: derived.privateKey,
         balanceWei: BigInt(record.sweptValueWei),

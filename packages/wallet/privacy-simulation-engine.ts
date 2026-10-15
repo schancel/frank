@@ -294,6 +294,7 @@ export async function runPrivacySimulation(
     address: changeKeyring.deriveChangeAccount(nextChangeIndex++).address,
   })
   const hygieneEngine = new MonadAccountHygieneEngine({
+    chainIdentifier: 'monad-testnet',
     provider,
     httpClient: ledger,
     changeKeyring,

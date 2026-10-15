@@ -575,7 +575,7 @@ export class EcashWallet implements NativeWalletHandle {
       throw new Error("No ChainUtxoPool provided or attached to EcashWallet");
     }
     return targetPool.utxo.registerOutpoint({
-      chain: this.chainIdentifier,
+      chainIdentifier: this.chainIdentifier,
       address: params.address,
       privateKey: params.privateKey,
       txid: params.txid,

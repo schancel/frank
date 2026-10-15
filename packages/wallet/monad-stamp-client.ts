@@ -1,3 +1,4 @@
+import { inferChainFamily } from './chain-utxo-pool'
 import { inspectCanonicalPreparedEnvelope } from './monad-stamp-stealth'
 /**
  * Stamp payments on EVM networks.
@@ -551,7 +552,11 @@ export class MonadCanonicalStampClient {
     CanonicalWalletEligibility,
     { link: CanonicalWorkflowLink; snapshot: string }
   >()
+  private readonly chainIdentifier: string
+
   constructor(private readonly wallet: MonadCanonicalWalletHandle) {
+    inferChainFamily(wallet.chainIdentifier, 'evm')
+    this.chainIdentifier = wallet.chainIdentifier
     assertMonadWalletBundleProvenance(wallet.walletState)
     if (wallet.walletState.canonicalUnavailable)
       throw wallet.walletState.canonicalUnavailable
@@ -1090,7 +1095,7 @@ export class MonadCanonicalStampClient {
         if (this.wallet.accountUtxoPool) {
           const utxos = this.wallet.accountUtxoPool.getCoinsByAddress(
             record.address,
-            'monad',
+            this.chainIdentifier,
           )
           if (utxos.length > 0 && utxos[0].balanceWei > 0n) {
             balance = utxos[0].balanceWei
@@ -1101,7 +1106,7 @@ export class MonadCanonicalStampClient {
           if (this.wallet.accountUtxoPool && balance > 0n) {
             const utxos = this.wallet.accountUtxoPool.getCoinsByAddress(
               record.address,
-              'monad',
+              this.chainIdentifier,
             )
             if (utxos.length > 0) {
               utxos[0].balanceWei = balance

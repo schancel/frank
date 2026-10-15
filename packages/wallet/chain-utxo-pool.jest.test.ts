@@ -19,52 +19,46 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
   const base58Decoder = getBase58Decoder()
 
   describe('Address & ID Helpers', () => {
-    it('infers chain families correctly', () => {
-      expect(inferChainFamily('monad')).toBe('evm')
+    it('resolves only exact registered chain families', () => {
       expect(inferChainFamily('monad-testnet')).toBe('evm')
-      expect(inferChainFamily('evm')).toBe('evm')
-      expect(inferChainFamily('ethereum')).toBe('evm')
-      expect(inferChainFamily('solana')).toBe('solana')
+      expect(inferChainFamily('ethereum-sepolia')).toBe('evm')
       expect(inferChainFamily('solana-devnet')).toBe('solana')
-      expect(inferChainFamily('ecash')).toBe('utxo')
       expect(inferChainFamily('xec-mainnet')).toBe('utxo')
-      expect(inferChainFamily('xec-testnet')).toBe('utxo')
-      expect(inferChainFamily('bitcoin')).toBe('utxo')
-      expect(inferChainFamily('btc')).toBe('utxo')
-      expect(inferChainFamily('lotus')).toBe('utxo')
-      expect(inferChainFamily('lotus-mainnet')).toBe('utxo')
-      expect(inferChainFamily('xpi')).toBe('utxo')
+      expect(inferChainFamily('btc-testnet')).toBe('utxo')
+      for (const alias of ['monad', 'evm', 'ecash', 'lotus', 'btc', 'solana', 'MONAD-testnet']) {
+        expect(() => inferChainFamily(alias)).toThrow('Unknown canonical chainIdentifier')
+      }
     })
 
     it('formats and normalizes addresses per family', () => {
       const evmRaw = '0x52908400098527886E0F7030069857D2E4169EE7'
-      expect(normalizeUtxoAddress(evmRaw, 'monad')).toBe(evmRaw.toLowerCase())
-      expect(formatUtxoAddress(evmRaw.toLowerCase(), 'monad')).toBe(evmRaw)
+      expect(normalizeUtxoAddress(evmRaw, 'monad-testnet')).toBe(evmRaw.toLowerCase())
+      expect(formatUtxoAddress(evmRaw.toLowerCase(), 'monad-testnet')).toBe(evmRaw)
 
       const solanaAddr = 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB'
-      expect(normalizeUtxoAddress(solanaAddr, 'solana')).toBe(solanaAddr)
-      expect(formatUtxoAddress(solanaAddr, 'solana')).toBe(solanaAddr)
+      expect(normalizeUtxoAddress(solanaAddr, 'solana-devnet')).toBe(solanaAddr)
+      expect(formatUtxoAddress(solanaAddr, 'solana-devnet')).toBe(solanaAddr)
 
       const utxoAddr = 'ecash:qz2708636sn2st080sfs53q9fa2z6q5925d40gv4e5'
-      expect(normalizeUtxoAddress(utxoAddr, 'ecash')).toBe(utxoAddr)
+      expect(normalizeUtxoAddress(utxoAddr, 'xec-mainnet')).toBe(utxoAddr)
 
-      const lotusAddr = 'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi'
-      expect(normalizeUtxoAddress(lotusAddr, 'lotus')).toBe(lotusAddr)
-      expect(formatUtxoAddress(lotusAddr, 'lotus')).toBe(lotusAddr)
+      const bitcoinAddr = 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn'
+      expect(normalizeUtxoAddress(bitcoinAddr, 'btc-testnet')).toBe(bitcoinAddr)
+      expect(formatUtxoAddress(bitcoinAddr, 'btc-testnet')).toBe(bitcoinAddr)
     })
 
     it('formats canonical UTXO id for account and native UTXO', () => {
-      const evmId = makeUtxoId('monad', '0x1111111111111111111111111111111111111111', 0, 'evm')
-      expect(evmId).toBe('monad:evm:0x1111111111111111111111111111111111111111:0')
+      const evmId = makeUtxoId('monad-testnet', '0x1111111111111111111111111111111111111111', 0, 'evm')
+      expect(evmId).toBe('monad-testnet:evm:0x1111111111111111111111111111111111111111:0')
 
-      const solanaId = makeUtxoId('solana', 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB', 0, 'solana')
-      expect(solanaId).toBe('solana:solana:GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB:0')
+      const solanaId = makeUtxoId('solana-devnet', 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB', 0, 'solana')
+      expect(solanaId).toBe('solana-devnet:solana:GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB:0')
 
-      const utxoId = makeUtxoId('ecash', 'ecash:qztest', { txid: 'abc1234', vout: 1 }, 'utxo')
-      expect(utxoId).toBe('ecash:utxo:ecash:qztest:abc1234:1')
+      const utxoId = makeUtxoId('xec-mainnet', 'ecash:qztest', { txid: 'abc1234', vout: 1 }, 'utxo')
+      expect(utxoId).toBe('xec-mainnet:utxo:ecash:qztest:abc1234:1')
 
-      const lotusId = makeUtxoId('lotus', 'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi', { txid: 'tx_lotus_1', vout: 0 }, 'utxo')
-      expect(lotusId).toBe('lotus:utxo:lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi:tx_lotus_1:0')
+      const bitcoinId = makeUtxoId('btc-testnet', 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn', { txid: 'tx_btc_1', vout: 0 }, 'utxo')
+      expect(bitcoinId).toBe('btc-testnet:utxo:mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn:tx_btc_1:0')
     })
   })
 
@@ -81,7 +75,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
     it('registers sub-accounts, change accounts, and stealth accounts with attached private keys', () => {
       const sub = pool.evm.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: wallet1.address,
         privateKey: wallet1.privateKey,
         balanceWei: 10_000_000n,
@@ -94,7 +88,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(sub.privateKey).toBe(wallet1.privateKey)
 
       const change = pool.evm.registerChangeAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: wallet2.address,
         privateKey: wallet2.privateKey,
         balanceWei: 5_000_000n,
@@ -103,7 +97,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(change.origin).toBe('change')
 
       const stealth = pool.evm.registerStealthAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: walletStealth.address,
         privateKey: walletStealth.privateKey,
         balanceWei: 20_000_000n,
@@ -112,13 +106,13 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(stealth.family).toBe('evm')
       expect(stealth.origin).toBe('stealth')
 
-      expect(pool.getCleanCoins('monad')).toHaveLength(3)
-      expect(pool.getTotalBalance('monad')).toBe(35_000_000n)
+      expect(pool.getCleanCoins('monad-testnet')).toHaveLength(3)
+      expect(pool.getTotalBalance('monad-testnet')).toBe(35_000_000n)
     })
 
     it('creates MonadAccountTxSigner directly from attached private key in O(1)', () => {
       const sub = pool.evm.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: wallet1.address,
         privateKey: wallet1.privateKey,
         balanceWei: 10_000_000n,
@@ -131,19 +125,19 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
     it('selects best-fit single coin and computes geometric radix change splits with decoy avoidance', () => {
       pool.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: wallet1.address,
         privateKey: wallet1.privateKey,
         balanceWei: 10_000n,
       })
       pool.registerChangeAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: wallet2.address,
         privateKey: wallet2.privateKey,
         balanceWei: 50_000n,
       })
       pool.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: wallet3.address,
         privateKey: wallet3.privateKey,
         balanceWei: 250_000n,
@@ -151,7 +145,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
       // Single best fit: smallest coin >= (40,000 + 5,000) = 45,000 -> wallet2 (50,000)
       const res = pool.selectCoins({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         targetAmountWei: 40_000n,
         feeReserveWei: 5_000n,
       })
@@ -163,7 +157,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       const targetAmountWei = 16_384n
       const targetOOM = orderOfMagnitude2(targetAmountWei)
       const splitRes = pool.selectCoins({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         targetAmountWei,
         feeReserveWei: 1_000n,
         decoyAvoidance: true,
@@ -179,44 +173,44 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
     // had no caller outside this suite.
     it('immediately marks a spent coin as pending and keeps it out of selection', () => {
       const utxo = pool.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: wallet1.address,
         privateKey: wallet1.privateKey,
         balanceWei: 100_000n,
       })
 
-      expect(pool.getCleanUtxos('monad')).toHaveLength(1)
+      expect(pool.getCleanUtxos('monad-testnet')).toHaveLength(1)
 
       const pending = pool.markPending(utxo.id)
       expect(pending.status).toBe('pending')
 
-      expect(pool.getCleanUtxos('monad')).toHaveLength(0)
-      expect(pool.getPendingUtxos('monad')).toHaveLength(1)
+      expect(pool.getCleanUtxos('monad-testnet')).toHaveLength(0)
+      expect(pool.getPendingUtxos('monad-testnet')).toHaveLength(1)
 
       expect(() => {
-        pool.selectCoins({ chain: 'monad', targetAmountWei: 50_000n })
+        pool.selectCoins({ chainIdentifier: 'monad-testnet', targetAmountWei: 50_000n })
       }).toThrow(/Insufficient funds/)
     })
 
     it('rolls back pending status to clean if broadcast fails', () => {
       const utxo = pool.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: wallet1.address,
         privateKey: wallet1.privateKey,
         balanceWei: 100_000n,
       })
 
       pool.markPending(utxo.id)
-      expect(pool.getCleanUtxos('monad')).toHaveLength(0)
+      expect(pool.getCleanUtxos('monad-testnet')).toHaveLength(0)
 
       pool.releasePending(utxo.id)
-      expect(pool.getCleanUtxos('monad')).toHaveLength(1)
-      expect(pool.getPendingUtxos('monad')).toHaveLength(0)
+      expect(pool.getCleanUtxos('monad-testnet')).toHaveLength(1)
+      expect(pool.getPendingUtxos('monad-testnet')).toHaveLength(0)
     })
 
     it('permanently marks a confirmed spend as spent and advances the nonce', () => {
       const utxo = pool.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: wallet1.address,
         privateKey: wallet1.privateKey,
         balanceWei: 100_000n,
@@ -229,13 +223,13 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(spent.nonce).toBe(1)
       expect(spent.balanceWei).toBe(0n)
 
-      expect(pool.getCleanUtxos('monad')).toHaveLength(0)
-      expect(pool.getPendingUtxos('monad')).toHaveLength(0)
+      expect(pool.getCleanUtxos('monad-testnet')).toHaveLength(0)
+      expect(pool.getPendingUtxos('monad-testnet')).toHaveLength(0)
     })
 
     it('identifies dirty coins with nonce > 0 and remaining balance', () => {
       const utxo = pool.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: wallet1.address,
         privateKey: wallet1.privateKey,
         balanceWei: 500_000n,
@@ -247,7 +241,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
         nonce: 1,
       })
 
-      const dirty = pool.getDirtyUtxos('monad')
+      const dirty = pool.getDirtyUtxos('monad-testnet')
       expect(dirty).toHaveLength(1)
       expect(dirty[0].address.toLowerCase()).toBe(wallet1.address.toLowerCase())
       expect(dirty[0].nonce).toBe(1)
@@ -255,7 +249,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
     it('generates a sweep plan for a dirty coin that conserves the sweepable balance', () => {
       const utxo = pool.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: wallet1.address,
         privateKey: wallet1.privateKey,
         balanceWei: 1_000_000n,
@@ -268,7 +262,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       })
 
       const plan = pool.createSweepPlan({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         dirtyUtxoId: utxo.id,
         changeAddresses: [wallet2.address, wallet3.address],
         minFeeWei: 21_000n,
@@ -286,21 +280,21 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
     it('creates multi-UTXO batch sweep plans enforcing healthy non-dust output thresholds', () => {
       const dirty1 = pool.evm.importPrivateKey({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: Wallet.createRandom().address,
         privateKey: Wallet.createRandom().privateKey,
         balanceWei: 100_000n,
         nonce: 1, // dirty
       })
       const dirty2 = pool.evm.importPrivateKey({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: Wallet.createRandom().address,
         privateKey: Wallet.createRandom().privateKey,
         balanceWei: 150_000n,
         nonce: 2, // dirty
       })
       const dirty3 = pool.evm.importPrivateKey({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: Wallet.createRandom().address,
         privateKey: Wallet.createRandom().privateKey,
         balanceWei: 250_000n,
@@ -312,7 +306,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
       // Batch sweep of 3 dirty coins: gross = 500,000, fee = 3 * 21,000 = 63,000, net = 437,000
       const plan = pool.evm.createBatchSweepPlan({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         dirtyUtxoIds: [dirty1.id, dirty2.id, dirty3.id],
         destinationAddresses: [dest1, dest2],
         minFeePerTxWei: 21_000n,
@@ -357,7 +351,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
     it('registers Solana accounts with attached 64-byte secret key or 32-byte seed', () => {
       const secretHex = Buffer.from(solanaKp1.secretKey).toString('hex')
       const coin = pool.solana.registerAccount({
-        chain: 'solana-mainnet',
+        chainIdentifier: 'solana-mainnet',
         address: solanaKp1.publicKey.toBase58(),
         privateKey: secretHex,
         balanceWei: 2_000_000_000n, // 2 SOL in lamports
@@ -377,7 +371,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
     it('resolves Ed25519 signer from attached secret key in O(1)', async () => {
       const secretHex = Buffer.from(solanaKp1.secretKey).toString('hex')
       const coin = pool.solana.registerAccount({
-        chain: 'solana-mainnet',
+        chainIdentifier: 'solana-mainnet',
         address: solanaKp1.publicKey.toBase58(),
         privateKey: secretHex,
         balanceWei: 1_000_000_000n,
@@ -390,7 +384,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
     it('resolves Ed25519 signer from 32-byte seed hex', async () => {
       const seedHex = Buffer.from(new Uint8Array(32).fill(2)).toString('hex')
       const coin = pool.solana.registerDerivedAccount({
-        chain: 'solana-mainnet',
+        chainIdentifier: 'solana-mainnet',
         address: solanaKp2.publicKey.toBase58(),
         privateKey: seedHex,
         balanceWei: 500_000_000n,
@@ -405,7 +399,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
     it('resolves Ed25519 signer from base58 secret key', async () => {
       const b58 = base58Decoder.decode(solanaKp3.secretKey)
       const coin = pool.solana.registerStealthAccount({
-        chain: 'solana-mainnet',
+        chainIdentifier: 'solana-mainnet',
         address: solanaKp3.publicKey.toBase58(),
         privateKey: b58,
         balanceWei: 300_000_000n,
@@ -418,20 +412,20 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
     it('performs Solana coin selection covering lamports target and fee reserve', () => {
       pool.solana.registerAccount({
-        chain: 'solana',
+        chainIdentifier: 'solana-devnet',
         address: solanaKp1.publicKey.toBase58(),
         privateKey: Buffer.from(solanaKp1.secretKey).toString('hex'),
         balanceWei: 100_000_000n, // 0.1 SOL
       })
       pool.solana.registerDerivedAccount({
-        chain: 'solana',
+        chainIdentifier: 'solana-devnet',
         address: solanaKp2.publicKey.toBase58(),
         privateKey: Buffer.from(solanaKp2.secretKey).toString('hex'),
         balanceWei: 500_000_000n, // 0.5 SOL
         index: 1,
       })
       pool.solana.registerDerivedAccount({
-        chain: 'solana',
+        chainIdentifier: 'solana-devnet',
         address: solanaKp3.publicKey.toBase58(),
         privateKey: Buffer.from(solanaKp3.secretKey).toString('hex'),
         balanceWei: 1_000_000_000n, // 1.0 SOL
@@ -441,7 +435,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       // Need 400,000,000 lamports + 5,000 fee = 400,005,000 lamports.
       // Smallest single coin covering is solanaKp2 (500,000,000).
       const res = pool.selectCoins({
-        chain: 'solana',
+        chainIdentifier: 'solana-devnet',
         targetAmountWei: 400_000_000n,
         feeReserveWei: 5_000n,
       })
@@ -493,13 +487,13 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       const change = await Keypair.generate()
 
       const coin1 = pool.solana.registerAccount({
-        chain: 'solana',
+        chainIdentifier: 'solana-devnet',
         address: solanaKp1.publicKey.toBase58(),
         privateKey: Buffer.from(solanaKp1.secretKey).toString('hex'),
         balanceWei: 300_000_000n, // 0.3 SOL
       })
       const coin2 = pool.solana.registerDerivedAccount({
-        chain: 'solana',
+        chainIdentifier: 'solana-devnet',
         address: solanaKp2.publicKey.toBase58(),
         privateKey: Buffer.from(solanaKp2.secretKey).toString('hex'),
         balanceWei: 400_000_000n, // 0.4 SOL
@@ -530,7 +524,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
     it('registers native UTXO outpoints with txid and vout', () => {
       const coin = pool.utxo.registerOutpoint({
-        chain: 'xec-mainnet',
+        chainIdentifier: 'xec-mainnet',
         address: 'ecash:qz2708636sn2st080sfs53q9fa2z6q5925d40gv4e5',
         privateKey: '0x' + 'aa'.repeat(32),
         txid: '1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff',
@@ -559,7 +553,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
     it('tracks spent outpoints and marks them spent across the pool', () => {
       const txid = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
       const coin1 = pool.utxo.registerOutpoint({
-        chain: 'ecash',
+        chainIdentifier: 'xec-mainnet',
         address: 'ecash:qz2708636sn2st080sfs53q9fa2z6q5925d40gv4e5',
         privateKey: '0x' + 'bb'.repeat(32),
         txid,
@@ -567,7 +561,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
         balanceWei: 100_000n,
       })
       const coin2 = pool.utxo.registerOutpoint({
-        chain: 'ecash',
+        chainIdentifier: 'xec-mainnet',
         address: 'ecash:qz2708636sn2st080sfs53q9fa2z6q5925d40gv4e5',
         privateKey: '0x' + 'bb'.repeat(32),
         txid,
@@ -575,28 +569,28 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
         balanceWei: 200_000n,
       })
 
-      expect(pool.getCleanCoins('ecash')).toHaveLength(2)
+      expect(pool.getCleanCoins('xec-mainnet')).toHaveLength(2)
 
       // Mark outpoint 0 spent
-      const spent = pool.utxo.markOutpointSpent(txid, 0, 'ecash')
+      const spent = pool.utxo.markOutpointSpent(txid, 0, 'xec-mainnet')
       expect(spent).toBeDefined()
       expect(spent?.status).toBe('spent')
       expect(spent?.balanceWei).toBe(0n)
 
       // Verify outpoint 0 is recognized as spent and removed from clean inventory
-      expect(pool.utxo.isOutpointSpent(txid, 0, 'ecash')).toBe(true)
-      expect(pool.utxo.isOutpointSpent(txid, 1, 'ecash')).toBe(false)
-      expect(pool.getCleanCoins('ecash')).toHaveLength(1)
-      expect(pool.getCleanCoins('ecash')[0].id).toBe(coin2.id)
+      expect(pool.utxo.isOutpointSpent(txid, 0, 'xec-mainnet')).toBe(true)
+      expect(pool.utxo.isOutpointSpent(txid, 1, 'xec-mainnet')).toBe(false)
+      expect(pool.getCleanCoins('xec-mainnet')).toHaveLength(1)
+      expect(pool.getCleanCoins('xec-mainnet')[0].id).toBe(coin2.id)
 
       // Track batch spent outpoints
-      pool.utxo.trackSpentOutpoints([{ txid, vout: 1 }], 'ecash')
-      expect(pool.utxo.isOutpointSpent(txid, 1, 'ecash')).toBe(true)
-      expect(pool.getCleanCoins('ecash')).toHaveLength(0)
+      pool.utxo.trackSpentOutpoints([{ txid, vout: 1 }], 'xec-mainnet')
+      expect(pool.utxo.isOutpointSpent(txid, 1, 'xec-mainnet')).toBe(true)
+      expect(pool.getCleanCoins('xec-mainnet')).toHaveLength(0)
 
       // Re-registering spent outpoint immediately marks it spent
       const reRegistered = pool.utxo.registerOutpoint({
-        chain: 'ecash',
+        chainIdentifier: 'xec-mainnet',
         address: 'ecash:qz2708636sn2st080sfs53q9fa2z6q5925d40gv4e5',
         privateKey: '0x' + 'bb'.repeat(32),
         txid,
@@ -609,7 +603,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
     it('selects UTXO outpoints greedily when no single outpoint covers target', () => {
       pool.utxo.registerOutpoint({
-        chain: 'ecash',
+        chainIdentifier: 'xec-mainnet',
         address: 'ecash:qz2708',
         privateKey: '0x' + '11'.repeat(32),
         txid: 'tx1',
@@ -617,7 +611,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
         balanceWei: 10_000n,
       })
       pool.utxo.registerOutpoint({
-        chain: 'ecash',
+        chainIdentifier: 'xec-mainnet',
         address: 'ecash:qz2708',
         privateKey: '0x' + '11'.repeat(32),
         txid: 'tx2',
@@ -625,7 +619,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
         balanceWei: 30_000n,
       })
       pool.utxo.registerOutpoint({
-        chain: 'ecash',
+        chainIdentifier: 'xec-mainnet',
         address: 'ecash:qz2708',
         privateKey: '0x' + '11'.repeat(32),
         txid: 'tx3',
@@ -636,7 +630,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       // Target: 65,000 satoshis + 500 fee = 65,500 satoshis.
       // Greedy combines 50,000 + 30,000 = 80,000 satoshis.
       const res = pool.selectCoins({
-        chain: 'ecash',
+        chainIdentifier: 'xec-mainnet',
         targetAmountWei: 65_000n,
         feeReserveWei: 500n,
       })
@@ -656,7 +650,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       // 1. Populate 1,000 EVM sub-accounts
       for (let i = 0; i < 1_000; i++) {
         benchmarkPool.registerSubAccount({
-          chain: 'monad',
+          chainIdentifier: 'monad-testnet',
           address: `0x${i.toString(16).padStart(40, '0')}`,
           privateKey: `0x${i.toString(16).padStart(64, '0')}`,
           balanceWei: BigInt(1_000 + i * 50),
@@ -667,7 +661,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       // 2. Populate 1,000 Solana accounts
       for (let i = 0; i < 1_000; i++) {
         benchmarkPool.solana.registerAccount({
-          chain: 'solana',
+          chainIdentifier: 'solana-devnet',
           address: `SolAddr${i.toString().padStart(36, '0')}`,
           privateKey: `0x${i.toString(16).padStart(64, '0')}`,
           balanceWei: BigInt(10_000 + i * 100),
@@ -678,7 +672,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       // 3. Populate 1,000 UTXO native outpoints
       for (let i = 0; i < 1_000; i++) {
         benchmarkPool.utxo.registerOutpoint({
-          chain: 'ecash',
+          chainIdentifier: 'xec-mainnet',
           address: `ecash:qp${i.toString().padStart(36, '0')}`,
           privateKey: `0x${i.toString(16).padStart(64, '0')}`,
           txid: `txid${i.toString(16).padStart(60, '0')}`,
@@ -690,15 +684,15 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
     it('contains 3,000 coins in inventory across chain families', () => {
       expect(benchmarkPool.getAllCoins()).toHaveLength(3_000)
-      expect(benchmarkPool.getCleanCoins('monad')).toHaveLength(1_000)
-      expect(benchmarkPool.getCleanCoins('solana')).toHaveLength(1_000)
-      expect(benchmarkPool.getCleanCoins('ecash')).toHaveLength(1_000)
+      expect(benchmarkPool.getCleanCoins('monad-testnet')).toHaveLength(1_000)
+      expect(benchmarkPool.getCleanCoins('solana-devnet')).toHaveLength(1_000)
+      expect(benchmarkPool.getCleanCoins('xec-mainnet')).toHaveLength(1_000)
     })
 
     it('performs EVM coin selection in sub-millisecond time with zero network calls', () => {
       const start = performance.now()
       const result = benchmarkPool.selectCoins({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         targetAmountWei: 30_000n,
         feeReserveWei: 1_000n,
       })
@@ -712,7 +706,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
     it('performs Solana coin selection in sub-millisecond time', () => {
       const start = performance.now()
       const result = benchmarkPool.selectCoins({
-        chain: 'solana',
+        chainIdentifier: 'solana-devnet',
         targetAmountWei: 50_000n,
         feeReserveWei: 5_000n,
       })
@@ -726,7 +720,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
     it('performs UTXO outpoint coin selection in sub-millisecond time', () => {
       const start = performance.now()
       const result = benchmarkPool.selectCoins({
-        chain: 'ecash',
+        chainIdentifier: 'xec-mainnet',
         targetAmountWei: 10_000n,
         feeReserveWei: 500n,
       })
@@ -754,7 +748,7 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
 
       // 1. Clean active coin with balance
       const cleanCoin = archivePool.evm.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: walletA.address,
         privateKey: walletA.privateKey,
         balanceWei: 100_000n,
@@ -762,7 +756,7 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
 
       // 2. Fully drained spent coin older than 1 hour (eligible for archive)
       const oldSpentCoin = archivePool.evm.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: walletB.address,
         privateKey: walletB.privateKey,
         balanceWei: 10_000n,
@@ -772,7 +766,7 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
 
       // 3. Fully drained spent coin recent (< 1 hour, not yet eligible by default)
       const recentSpentCoin = archivePool.evm.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: walletC.address,
         privateKey: walletC.privateKey,
         balanceWei: 20_000n,
@@ -782,15 +776,15 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
 
       // 4. Dirty spent account with positive balance remaining (not drained, should NOT archive)
       const positiveBalanceSpentCoin = archivePool.evm.importPrivateKey({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: walletD.address,
         privateKey: walletD.privateKey,
         balanceWei: 50_000n,
         nonce: 1, // status: 'spent'
       })
 
-      expect(archivePool.getAllCoins('monad')).toHaveLength(4)
-      expect(archivePool.getArchivedCoins('monad')).toHaveLength(0)
+      expect(archivePool.getAllCoins('monad-testnet')).toHaveLength(4)
+      expect(archivePool.getArchivedCoins('monad-testnet')).toHaveLength(0)
 
       // Run default archiveSpentCoins (default maxAgeMs: 1 hour)
       const archived = archivePool.archiveSpentCoins()
@@ -799,7 +793,7 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
       expect(archived[0].id).toBe(oldSpentCoin.id)
 
       // Active pool size is reduced from 4 to 3
-      const activeCoins = archivePool.getAllCoins('monad')
+      const activeCoins = archivePool.getAllCoins('monad-testnet')
       expect(activeCoins).toHaveLength(3)
       const activeIds = activeCoins.map(c => c.id)
       expect(activeIds).toContain(cleanCoin.id)
@@ -813,7 +807,7 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
       expect(archivePool.getCoin(oldSpentCoin.id, { includeArchived: true })).toBeDefined()
 
       // Querying cold archive preserves full queryability
-      const coldArchive = archivePool.getArchivedCoins('monad')
+      const coldArchive = archivePool.getArchivedCoins('monad-testnet')
       expect(coldArchive).toHaveLength(1)
       expect(coldArchive[0].id).toBe(oldSpentCoin.id)
       expect(archivePool.getArchivedCoin(oldSpentCoin.id)).toBeDefined()
@@ -822,7 +816,7 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
 
     it('supports custom maxAgeMs override such as 0 to archive all drained spent coins immediately', () => {
       const coin = archivePool.evm.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: walletA.address,
         privateKey: walletA.privateKey,
         balanceWei: 50_000n,
@@ -830,21 +824,21 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
       archivePool.markSpent(coin.id)
       // coin was just marked spent (0ms ago)
 
-      expect(archivePool.getAllCoins('monad')).toHaveLength(1)
-      expect(archivePool.getArchivedCoins('monad')).toHaveLength(0)
+      expect(archivePool.getAllCoins('monad-testnet')).toHaveLength(1)
+      expect(archivePool.getArchivedCoins('monad-testnet')).toHaveLength(0)
 
       // With maxAgeMs = 0, immediately archives
       const archived = archivePool.archiveSpentCoins({ maxAgeMs: 0 })
       expect(archived).toHaveLength(1)
       expect(archived[0].id).toBe(coin.id)
 
-      expect(archivePool.getAllCoins('monad')).toHaveLength(0)
-      expect(archivePool.getArchivedCoins('monad')).toHaveLength(1)
+      expect(archivePool.getAllCoins('monad-testnet')).toHaveLength(0)
+      expect(archivePool.getArchivedCoins('monad-testnet')).toHaveLength(1)
     })
 
     it('scopes cold storage archiving by chain parameter', () => {
       const monadCoin = archivePool.evm.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: walletA.address,
         privateKey: walletA.privateKey,
         balanceWei: 10_000n,
@@ -852,7 +846,7 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
       archivePool.markSpent(monadCoin.id)
 
       const solanaCoin = archivePool.solana.registerAccount({
-        chain: 'solana',
+        chainIdentifier: 'solana-devnet',
         address: 'SolAddr111111111111111111111111111111111111',
         privateKey: '0x' + '11'.repeat(32),
         balanceWei: 50_000n,
@@ -862,29 +856,29 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
       expect(archivePool.getAllCoins()).toHaveLength(2)
 
       // Archive only monad coins
-      const archivedMonad = archivePool.archiveSpentCoins({ chain: 'monad', maxAgeMs: 0 })
+      const archivedMonad = archivePool.archiveSpentCoins({ chainIdentifier: 'monad-testnet', maxAgeMs: 0 })
       expect(archivedMonad).toHaveLength(1)
       expect(archivedMonad[0].id).toBe(monadCoin.id)
 
       // Solana coin remains in active pool
-      expect(archivePool.getAllCoins('monad')).toHaveLength(0)
-      expect(archivePool.getAllCoins('solana')).toHaveLength(1)
+      expect(archivePool.getAllCoins('monad-testnet')).toHaveLength(0)
+      expect(archivePool.getAllCoins('solana-devnet')).toHaveLength(1)
 
-      expect(archivePool.getArchivedCoins('monad')).toHaveLength(1)
-      expect(archivePool.getArchivedCoins('solana')).toHaveLength(0)
+      expect(archivePool.getArchivedCoins('monad-testnet')).toHaveLength(1)
+      expect(archivePool.getArchivedCoins('solana-devnet')).toHaveLength(0)
       expect(archivePool.getArchivedCoins()).toHaveLength(1)
 
       // Archive solana coins
-      const archivedSolana = archivePool.archiveSpentCoins({ chain: 'solana', maxAgeMs: 0 })
+      const archivedSolana = archivePool.archiveSpentCoins({ chainIdentifier: 'solana-devnet', maxAgeMs: 0 })
       expect(archivedSolana).toHaveLength(1)
       expect(archivePool.getAllCoins()).toHaveLength(0)
       expect(archivePool.getArchivedCoins()).toHaveLength(2)
-      expect(archivePool.getArchivedCoins('solana')).toHaveLength(1)
+      expect(archivePool.getArchivedCoins('solana-devnet')).toHaveLength(1)
     })
 
     it('removes coin from cold archive if re-registered into active pool', () => {
       const coin = archivePool.evm.registerSubAccount({
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: walletA.address,
         privateKey: walletA.privateKey,
         balanceWei: 10_000n,
@@ -892,13 +886,13 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
       archivePool.markSpent(coin.id)
       archivePool.archiveSpentCoins({ maxAgeMs: 0 })
 
-      expect(archivePool.getArchivedCoins('monad')).toHaveLength(1)
+      expect(archivePool.getArchivedCoins('monad-testnet')).toHaveLength(1)
       expect(archivePool.getCoin(coin.id)).toBeUndefined()
 
       // Re-register into active pool
       archivePool.registerCoin({
         id: coin.id,
-        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
         address: walletA.address,
         privateKey: walletA.privateKey,
         balanceWei: 500_000n,
@@ -907,11 +901,11 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
 
       expect(archivePool.getCoin(coin.id)).toBeDefined()
       expect(archivePool.getCoin(coin.id)?.balanceWei).toBe(500_000n)
-      expect(archivePool.getArchivedCoins('monad')).toHaveLength(0)
+      expect(archivePool.getArchivedCoins('monad-testnet')).toHaveLength(0)
       expect(archivePool.getArchivedCoin(coin.id)).toBeUndefined()
     })
   })
-  describe('Native UTXO Mempool DAG Streaming & Ancestor Limits (Lotus & eCash, Issue #1219)', () => {
+  describe('Native UTXO Mempool DAG Streaming & Ancestor Limits (Bitcoin & eCash, Issue #1219)', () => {
     let pool: ChainUtxoPool
 
     beforeEach(() => {
@@ -923,49 +917,49 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
       pool.utxo.registerOutpointDependency({
         parentTxHash: 'txA',
         outpoint: { txid: 'txB', vout: 0 },
-        chain: 'lotus',
+        chainIdentifier: 'btc-testnet',
       })
       pool.utxo.registerOutpointDependency({
         parentTxHash: 'txB',
         outpoint: { txid: 'txC', vout: 1 },
-        chain: 'lotus',
+        chainIdentifier: 'btc-testnet',
       })
-      pool.utxo.registerDependency('txD', 'txC', 'lotus')
+      pool.utxo.registerDependency('txD', 'txC', 'btc-testnet')
 
       // Outpoint dependency lookup
-      const bDeps = pool.utxo.getOutpointDependencies('txB', 0, 'lotus')
+      const bDeps = pool.utxo.getOutpointDependencies('txB', 0, 'btc-testnet')
       expect(bDeps).toEqual(['txa'])
 
       // Ancestor sets
-      const cAncestors = pool.utxo.getMempoolAncestors('txC', 'lotus')
+      const cAncestors = pool.utxo.getMempoolAncestors('txC', 'btc-testnet')
       expect(cAncestors.size).toBe(3)
       expect(cAncestors.has('txa')).toBe(true)
       expect(cAncestors.has('txb')).toBe(true)
       expect(cAncestors.has('txc')).toBe(true)
 
-      const dAncestors = pool.utxo.getMempoolAncestors('txD', 'lotus')
+      const dAncestors = pool.utxo.getMempoolAncestors('txD', 'btc-testnet')
       expect(dAncestors.size).toBe(4)
       expect(dAncestors.has('txa')).toBe(true)
       expect(dAncestors.has('txb')).toBe(true)
       expect(dAncestors.has('txc')).toBe(true)
       expect(dAncestors.has('txd')).toBe(true)
-      expect(pool.utxo.getAncestorCount('txD', 'lotus')).toBe(4)
+      expect(pool.utxo.getAncestorCount('txD', 'btc-testnet')).toBe(4)
 
       // Mark txA as confirmed -> ancestors of txD become [txB, txC, txD]
-      pool.utxo.markTransactionConfirmed('txA', 'lotus')
-      expect(pool.utxo.isTransactionConfirmed('txA', 'lotus')).toBe(true)
+      pool.utxo.markTransactionConfirmed('txA', 'btc-testnet')
+      expect(pool.utxo.isTransactionConfirmed('txA', 'btc-testnet')).toBe(true)
 
-      const dAncestorsAfterA = pool.utxo.getMempoolAncestors('txD', 'lotus')
+      const dAncestorsAfterA = pool.utxo.getMempoolAncestors('txD', 'btc-testnet')
       expect(dAncestorsAfterA.size).toBe(3)
       expect(dAncestorsAfterA.has('txa')).toBe(false)
       expect(dAncestorsAfterA.has('txb')).toBe(true)
       expect(dAncestorsAfterA.has('txc')).toBe(true)
       expect(dAncestorsAfterA.has('txd')).toBe(true)
-      expect(pool.utxo.getAncestorCount('txD', 'lotus')).toBe(3)
+      expect(pool.utxo.getAncestorCount('txD', 'btc-testnet')).toBe(3)
 
       // Mark txB as confirmed -> only txC and txD remain unconfirmed
-      pool.utxo.markTransactionConfirmed('txB', 'lotus')
-      expect(pool.utxo.getAncestorCount('txD', 'lotus')).toBe(2)
+      pool.utxo.markTransactionConfirmed('txB', 'btc-testnet')
+      expect(pool.utxo.getAncestorCount('txD', 'btc-testnet')).toBe(2)
     })
   })
 })

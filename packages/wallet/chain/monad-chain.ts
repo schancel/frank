@@ -2539,15 +2539,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           store: changeStore,
         });
         const accountUtxoPool = new ChainUtxoPool();
-        pool.setAccountUtxoPool(accountUtxoPool);
-        changePool.setAccountUtxoPool(accountUtxoPool);
+        pool.setAccountUtxoPool(accountUtxoPool, chainIdentifier);
+        changePool.setAccountUtxoPool(accountUtxoPool, chainIdentifier);
 
         // Populate initial HD sub-accounts with attached private keys
         const initialSubSize = Math.max(config.subAccountPoolSize, 5);
         for (let i = 0; i < initialSubSize; i++) {
           const derived = keyring.deriveSubAccount(i);
           accountUtxoPool.registerSubAccount({
-            chain: "monad",
+            chainIdentifier,
             address: derived.address,
             privateKey: derived.privateKey,
             balanceWei: 0n,
@@ -2559,7 +2559,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         for (let k = 0; k < 5; k++) {
           const derived = changeKeyring.deriveChangeAccount(k);
           accountUtxoPool.registerChangeAccount({
-            chain: "monad",
+            chainIdentifier,
             address: derived.address,
             privateKey: derived.privateKey,
             balanceWei: 0n,
@@ -2619,7 +2619,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 const cached = pool.capacityCache.get(record.index);
                 const bal = cached !== undefined ? cached.capacityWei : 0n;
                 const utxo = accountUtxoPool.registerSubAccount({
-                  chain: "monad",
+                  chainIdentifier,
                   address: derived.address,
                   privateKey: derived.privateKey,
                   balanceWei: bal,
@@ -3003,7 +3003,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 ): Promise<bigint> => {
                   const coins = accountUtxoPool.getCoinsByAddress(
                     address,
-                    "monad"
+                    chainIdentifier
                   );
                   if (
                     coins.length > 0 &&

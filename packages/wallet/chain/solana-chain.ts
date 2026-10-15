@@ -148,7 +148,7 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
             | undefined;
           try {
             selection = wallet.chainUtxoPool.selectCoins({
-              chain: "solana",
+              chainIdentifier: wallet.chainIdentifier,
               targetAmountWei: value,
             });
           } catch (err) {
@@ -221,7 +221,7 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
         if (pool && params?.value) {
           try {
             const selection = pool.selectCoins({
-              chain: "solana",
+              chainIdentifier: params.wallet.chainIdentifier,
               targetAmountWei: params.value,
             });
             return {

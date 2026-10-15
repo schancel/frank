@@ -4,6 +4,7 @@ import type { MonadCanonicalRoleOwner } from './monad-wallet-material'
 
 /** Present only on the private wallet-owner facade, never inferred from a normal legacy handle. */
 export interface MonadCanonicalWalletHandle extends EvmWalletHandle {
+  readonly chainIdentifier: string
   walletState: MonadWalletPersistenceBundle
   canonicalRoles: MonadCanonicalRoleOwner
   installedNetworkTag: 'MONT' | 'MON1' | 'MONR'

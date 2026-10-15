@@ -22,6 +22,7 @@
  */
 
 import { getAddress, Provider } from 'ethers'
+import { PROTOCOL_CHAINS } from './chain/chains-registry'
 import {
   Blockhash,
   Keypair,
@@ -58,9 +59,9 @@ export interface ChainUtxoOutpoint {
 }
 
 export interface ChainUtxoCoin {
-  /** Composite key: `${chain}:${family}:${address}:${nonceOrOutpoint}` */
+  /** Composite key: `${chainIdentifier}:${family}:${address}:${nonceOrOutpoint}` */
   readonly id: string
-  readonly chain: string // 'monad' | 'solana' | 'ecash' | string
+  readonly chainIdentifier: string
   readonly family: ChainFamily
   readonly address: string
   readonly privateKey: string // attached private key for immediate signing
@@ -83,7 +84,7 @@ export interface ChainUtxoCoin {
 }
 
 export interface SelectCoinsParams {
-  readonly chain: string
+  readonly chainIdentifier: string
   readonly family?: ChainFamily
   readonly targetAmountWei: bigint
   readonly feeReserveWei?: bigint
@@ -123,7 +124,7 @@ export const MAX_UNCONFIRMED_MEMPOOL_ANCESTORS = 25
 export interface OutpointDependencyParams {
   readonly outpoint: { txid: string; vout: number }
   readonly parentTxHash: string | string[]
-  readonly chain?: string
+  readonly chainIdentifier: string
 }
 
 export interface CoinSelectionResult {
@@ -135,7 +136,7 @@ export interface CoinSelectionResult {
 }
 
 export interface RegisterSubAccountParams {
-  readonly chain: string
+  readonly chainIdentifier: string
   readonly address: string
   readonly privateKey: string
   readonly balanceWei: bigint
@@ -146,7 +147,7 @@ export interface RegisterSubAccountParams {
 }
 
 export interface RegisterChangeAccountParams {
-  readonly chain: string
+  readonly chainIdentifier: string
   readonly address: string
   readonly privateKey: string
   readonly balanceWei: bigint
@@ -157,7 +158,7 @@ export interface RegisterChangeAccountParams {
 }
 
 export interface RegisterChangeParams {
-  readonly chain: string
+  readonly chainIdentifier: string
   readonly address: string
   readonly privateKey: string
   readonly balanceWei: bigint
@@ -167,7 +168,7 @@ export interface RegisterChangeParams {
 }
 
 export interface RegisterStealthParams {
-  readonly chain: string
+  readonly chainIdentifier: string
   readonly address: string
   readonly privateKey: string
   readonly balanceWei: bigint
@@ -178,7 +179,7 @@ export interface RegisterStealthParams {
 }
 
 export interface ImportKeyParams {
-  readonly chain: string
+  readonly chainIdentifier: string
   readonly address: string
   readonly privateKey: string
   readonly balanceWei?: bigint
@@ -189,7 +190,7 @@ export interface ImportKeyParams {
 }
 
 export interface RegisterUtxoOutpointParams {
-  readonly chain: string
+  readonly chainIdentifier: string
   readonly address: string
   readonly privateKey: string
   readonly txid: string
@@ -204,101 +205,44 @@ export interface RegisterUtxoOutpointParams {
 
 export interface ArchiveSpentCoinsParams {
   readonly maxAgeMs?: number
-  readonly chain?: string
+  readonly chainIdentifier?: string
 }
 
 /**
  * Infers the ChainFamily from a chain identifier string.
  */
-export function inferChainFamily(chain: string): ChainFamily {
-  const c = chain.toLowerCase()
-  if (c.includes('solana')) return 'solana'
-  if (
-    c.includes('ecash') ||
-    c.includes('xec') ||
-    c.includes('bitcoin') ||
-    c.includes('btc') ||
-    c.includes('bch') ||
-    c.includes('doge') ||
-    c.includes('lotus') ||
-    c.includes('xpi') ||
-    c === 'utxo'
-  ) {
-    return 'utxo'
+export function inferChainFamily(chainIdentifier: string, explicitFamily?: ChainFamily): ChainFamily {
+  const facts = PROTOCOL_CHAINS[chainIdentifier]
+  if (!facts) throw new Error(`Unknown canonical chainIdentifier: ${chainIdentifier}`)
+  const family = facts.family === 'bitcoin' ? 'utxo' : facts.family
+  if (explicitFamily !== undefined && explicitFamily !== family) {
+    throw new Error(`Chain family mismatch for ${chainIdentifier}: ${explicitFamily}`)
   }
-  return 'evm'
+  return family
 }
 
-/**
- * Normalizes an address string for dictionary/set keys.
- */
-export function normalizeUtxoAddress(
-  address: string,
-  chain?: string,
-  family?: ChainFamily,
-): string {
-  const fam = family ?? (chain ? inferChainFamily(chain) : 'evm')
-  if (fam === 'evm' || address.startsWith('0x')) {
-    return address.toLowerCase().trim()
-  }
-  if (fam === 'utxo') {
-    // Lotus addresses are base58 and case-sensitive (e.g. lotus_16PS..., lotusR16PS...)
-    if (
-      address.startsWith('lotus_') ||
-      address.startsWith('lotusR') ||
-      address.startsWith('lotusT') ||
-      (chain && chain.toLowerCase().includes('lotus'))
-    ) {
-      return address.trim()
-    }
-    return address.toLowerCase().trim()
-  }
-  // Solana addresses are base58 and case-sensitive
-  return address.trim()
+export function normalizeUtxoAddress(address: string, chainIdentifier: string, family?: ChainFamily): string {
+  return inferChainFamily(chainIdentifier, family) === 'evm' ? address.toLowerCase().trim() : address.trim()
 }
 
-/**
- * Formats an address string for display and storage.
- */
-export function formatUtxoAddress(
-  address: string,
-  chain?: string,
-  family?: ChainFamily,
-): string {
-  const fam = family ?? (chain ? inferChainFamily(chain) : 'evm')
-  if (fam === 'evm' || address.startsWith('0x')) {
-    try {
-      return getAddress(address)
-    } catch {
-      return address.toLowerCase().trim()
-    }
+export function formatUtxoAddress(address: string, chainIdentifier: string, family?: ChainFamily): string {
+  const resolved = inferChainFamily(chainIdentifier, family)
+  if (resolved === 'evm') {
+    try { return getAddress(address) } catch { return address.toLowerCase().trim() }
   }
-  if (fam === 'solana') {
-    try {
-      return new PublicKey(address).toBase58()
-    } catch {
-      return address.trim()
-    }
+  if (resolved === 'solana') {
+    try { return new PublicKey(address).toBase58() } catch { return address.trim() }
   }
   return address.trim()
 }
 
-/**
- * Formats a canonical UTXO id: `${chain}:${family}:${address}:${nonceOrOutpoint}`.
- */
-export function makeUtxoId(
-  chain: string,
-  address: string,
-  nonceOrOutpoint: number | { txid: string; vout: number } = 0,
-  family?: ChainFamily,
-): string {
-  const fam = family ?? inferChainFamily(chain)
-  const normAddr = normalizeUtxoAddress(address, chain, fam)
-  const tail =
-    typeof nonceOrOutpoint === 'object' && nonceOrOutpoint !== null
-      ? `${nonceOrOutpoint.txid.toLowerCase()}:${nonceOrOutpoint.vout}`
-      : `${nonceOrOutpoint}`
-  return `${chain.toLowerCase()}:${fam}:${normAddr}:${tail}`
+export function makeUtxoId(chainIdentifier: string, address: string,
+  nonceOrOutpoint: number | { txid: string; vout: number } = 0, family?: ChainFamily): string {
+  const resolved = inferChainFamily(chainIdentifier, family)
+  const normAddr = normalizeUtxoAddress(address, chainIdentifier, resolved)
+  const tail = typeof nonceOrOutpoint === 'object'
+    ? `${nonceOrOutpoint.txid.toLowerCase()}:${nonceOrOutpoint.vout}` : `${nonceOrOutpoint}`
+  return `${chainIdentifier}:${resolved}:${normAddr}:${tail}`
 }
 
 /**
@@ -341,23 +285,28 @@ export class EvmChainFamilyAdapter {
   constructor(private readonly pool: ChainUtxoPool) {}
 
   registerSubAccount(params: RegisterSubAccountParams): ChainUtxoCoin {
-    return this.pool.registerSubAccount({ ...params, family: 'evm' })
+    inferChainFamily(params.chainIdentifier, 'evm')
+    return this.pool.registerSubAccount({ ...params, family: params.family ?? 'evm' })
   }
 
   registerChangeAccount(params: RegisterChangeAccountParams): ChainUtxoCoin {
-    return this.pool.registerChangeAccount({ ...params, family: 'evm' })
+    inferChainFamily(params.chainIdentifier, 'evm')
+    return this.pool.registerChangeAccount({ ...params, family: params.family ?? 'evm' })
   }
 
   registerChangeOutput(params: RegisterChangeParams): ChainUtxoCoin {
-    return this.pool.registerChangeOutput({ ...params, family: 'evm' })
+    inferChainFamily(params.chainIdentifier, 'evm')
+    return this.pool.registerChangeOutput({ ...params, family: params.family ?? 'evm' })
   }
 
   registerStealthAccount(params: RegisterStealthParams): ChainUtxoCoin {
-    return this.pool.registerStealthAccount({ ...params, family: 'evm' })
+    inferChainFamily(params.chainIdentifier, 'evm')
+    return this.pool.registerStealthAccount({ ...params, family: params.family ?? 'evm' })
   }
 
   importPrivateKey(params: ImportKeyParams): ChainUtxoCoin {
-    return this.pool.importPrivateKey({ ...params, family: 'evm' })
+    inferChainFamily(params.chainIdentifier, 'evm')
+    return this.pool.importPrivateKey({ ...params, family: params.family ?? 'evm' })
   }
 
   createSigner(
@@ -369,7 +318,7 @@ export class EvmChainFamilyAdapter {
   }
 
   createSweepPlan(params: {
-    chain: string
+    chainIdentifier: string
     dirtyUtxoId: string
     changeAddresses: string[]
     dustThresholdWei?: bigint
@@ -379,7 +328,7 @@ export class EvmChainFamilyAdapter {
   }
 
   createBatchSweepPlan(params: {
-    chain: string
+    chainIdentifier: string
     dirtyUtxoIds: string[]
     destinationAddresses: string[]
     dustThresholdWei?: bigint
@@ -397,7 +346,7 @@ export class SolanaChainFamilyAdapter {
   constructor(private readonly pool: ChainUtxoPool) {}
 
   registerAccount(params: {
-    chain: string
+    chainIdentifier: string
     address: string
     privateKey: string
     balanceWei: bigint
@@ -405,7 +354,7 @@ export class SolanaChainFamilyAdapter {
     label?: string
   }): ChainUtxoCoin {
     return this.pool.registerCoin({
-      chain: params.chain,
+      chainIdentifier: params.chainIdentifier,
       family: 'solana',
       address: params.address,
       privateKey: params.privateKey,
@@ -420,7 +369,7 @@ export class SolanaChainFamilyAdapter {
   }
 
   registerStealthAccount(params: {
-    chain: string
+    chainIdentifier: string
     address: string
     privateKey: string
     balanceWei: bigint
@@ -429,7 +378,7 @@ export class SolanaChainFamilyAdapter {
     label?: string
   }): ChainUtxoCoin {
     return this.pool.registerCoin({
-      chain: params.chain,
+      chainIdentifier: params.chainIdentifier,
       family: 'solana',
       address: params.address,
       privateKey: params.privateKey,
@@ -446,7 +395,7 @@ export class SolanaChainFamilyAdapter {
   }
 
   registerDerivedAccount(params: {
-    chain: string
+    chainIdentifier: string
     address: string
     privateKey: string
     balanceWei: bigint
@@ -456,7 +405,7 @@ export class SolanaChainFamilyAdapter {
     label?: string
   }): ChainUtxoCoin {
     return this.pool.registerCoin({
-      chain: params.chain,
+      chainIdentifier: params.chainIdentifier,
       family: 'solana',
       address: params.address,
       privateKey: params.privateKey,
@@ -507,6 +456,12 @@ export class SolanaChainFamilyAdapter {
       throw new Error('At least one input coin is required')
     }
 
+    for (const input of inputs) {
+      inferChainFamily(input.chainIdentifier, input.family)
+      if (input.family !== 'solana' || input.chainIdentifier !== inputs[0].chainIdentifier) {
+        throw new Error('Solana inputs must belong to one canonical chain')
+      }
+    }
     const signers: Keypair[] = []
     let totalLamports = 0n
     for (const input of inputs) {
@@ -606,7 +561,7 @@ export class UtxoChainFamilyAdapter {
   }
 
   registerUtxoItem(params: {
-    chain: string
+    chainIdentifier: string
     address: string
     privateKey: string
     txId: string
@@ -618,7 +573,7 @@ export class UtxoChainFamilyAdapter {
     requiresConfirmation?: boolean
   }): ChainUtxoCoin {
     return this.registerOutpoint({
-      chain: params.chain,
+      chainIdentifier: params.chainIdentifier,
       address: params.address,
       privateKey: params.privateKey,
       txid: params.txId,
@@ -641,15 +596,17 @@ export class UtxoChainFamilyAdapter {
       | OutpointDependencyParams
       | string,
     parentTxHash?: string | string[],
-    chain?: string,
+    chainIdentifier?: string,
   ): void {
+    inferChainFamily(typeof outpointOrParams === 'object' && 'outpoint' in outpointOrParams
+      ? outpointOrParams.chainIdentifier : chainIdentifier!, 'utxo')
     if (typeof outpointOrParams === 'string') {
       if (!parentTxHash) {
         throw new Error('parentTxHash is required when registering transaction dependency')
       }
       const parents = Array.isArray(parentTxHash) ? parentTxHash : [parentTxHash]
       for (const p of parents) {
-        this.pool.registerTxDependency(outpointOrParams, p)
+        this.pool.registerTxDependency(outpointOrParams, p, chainIdentifier!)
       }
     } else if ('outpoint' in outpointOrParams) {
       this.pool.registerOutpointDependency(outpointOrParams)
@@ -660,7 +617,7 @@ export class UtxoChainFamilyAdapter {
       this.pool.registerOutpointDependency({
         outpoint: outpointOrParams,
         parentTxHash,
-        chain,
+        chainIdentifier: this.pool.chainKey(chainIdentifier!),
       })
     }
   }
@@ -674,9 +631,9 @@ export class UtxoChainFamilyAdapter {
       | OutpointDependencyParams
       | string,
     parentTxHash?: string | string[],
-    chain?: string,
+    chainIdentifier?: string,
   ): void {
-    this.registerOutpointDependency(outpointOrParams, parentTxHash, chain)
+    this.registerOutpointDependency(outpointOrParams, parentTxHash, chainIdentifier)
   }
 
   /**
@@ -684,10 +641,10 @@ export class UtxoChainFamilyAdapter {
    */
   getOutpointDependencies(
     txidOrOutpoint: { txid: string; vout: number } | string,
-    voutOrChain?: number | string,
-    chain?: string,
+    voutOrChain: number | string,
+    chainIdentifier?: string,
   ): string[] {
-    return this.pool.getOutpointDependencies(txidOrOutpoint, voutOrChain, chain)
+    return this.pool.getOutpointDependencies(txidOrOutpoint, voutOrChain, chainIdentifier)
   }
 
   /**
@@ -695,10 +652,10 @@ export class UtxoChainFamilyAdapter {
    */
   getMempoolAncestors(
     coinOrOutpointOrTxid: ChainUtxoCoin | { txid: string; vout: number } | string,
-    chain?: string,
+    chainIdentifier?: string,
     vout?: number,
   ): Set<string> {
-    return this.pool.getMempoolAncestors(coinOrOutpointOrTxid, chain, vout)
+    return this.pool.getMempoolAncestors(coinOrOutpointOrTxid, chainIdentifier, vout)
   }
 
   /**
@@ -706,56 +663,60 @@ export class UtxoChainFamilyAdapter {
    */
   getAncestorCount(
     coinOrOutpointOrTxid: ChainUtxoCoin | { txid: string; vout: number } | string,
-    chain?: string,
+    chainIdentifier?: string,
     vout?: number,
   ): number {
-    return this.pool.getAncestorCount(coinOrOutpointOrTxid, chain, vout)
+    return this.pool.getAncestorCount(coinOrOutpointOrTxid, chainIdentifier, vout)
   }
 
   /**
    * Marks a transaction hash as confirmed on-chain, removing it from unconfirmed mempool DAG tracking.
    */
-  markTransactionConfirmed(txHash: string): void {
-    this.pool.markTransactionConfirmed(txHash)
+  markTransactionConfirmed(txHash: string, chainIdentifier: string): void {
+    this.pool.markTransactionConfirmed(txHash, chainIdentifier)
   }
 
   /**
    * Checks whether a transaction hash has been confirmed.
    */
-  isTransactionConfirmed(txHash: string): boolean {
-    return this.pool.isTransactionConfirmed(txHash)
+  isTransactionConfirmed(txHash: string, chainIdentifier: string): boolean {
+    return this.pool.isTransactionConfirmed(txHash, chainIdentifier)
   }
 
   markOutpointSpent(
     txid: string,
     vout: number,
-    chain?: string,
+    chainIdentifier: string,
   ): ChainUtxoCoin | undefined {
-    return this.pool.markOutpointSpent(txid, vout, chain)
+    return this.pool.markOutpointSpent(txid, vout, chainIdentifier)
   }
 
   trackSpentOutpoints(
     outpoints: Array<{ txid: string; vout: number }>,
-    chain?: string,
+    chainIdentifier: string,
   ): ChainUtxoCoin[] {
-    return this.pool.trackSpentOutpoints(outpoints, chain)
+    return this.pool.trackSpentOutpoints(outpoints, chainIdentifier)
   }
 
   getOutpoint(
     txid: string,
     vout: number,
-    chain?: string,
+    chainIdentifier: string,
   ): ChainUtxoCoin | undefined {
-    return this.pool.getUtxoByOutpoint(txid, vout, chain)
+    return this.pool.getUtxoByOutpoint(txid, vout, chainIdentifier)
   }
 
-  isOutpointSpent(txid: string, vout: number, chain?: string): boolean {
-    return this.pool.isOutpointSpent(txid, vout, chain)
+  isOutpointSpent(txid: string, vout: number, chainIdentifier: string): boolean {
+    return this.pool.isOutpointSpent(txid, vout, chainIdentifier)
   }
 }
 
 /**
  * Unified Chain UTXO Pool.
+ *
+ * Derived in-memory construction/selection view, rebuilt by wallet composition and direct
+ * producers. HD/change lifecycle stores, received holdings and operation journals retain
+ * durable authority; this pool has no persistence serializer or reorg recovery authority.
  *
  * Holds, indexes, selects, and tracks spendable accounts and coins across all
  * chains, families, keys, and derivation origins.
@@ -788,30 +749,33 @@ export class ChainUtxoPool {
     }
   }
 
-  chainKey(chain: string): string {
-    return chain.toLowerCase()
+  chainKey(chainIdentifier: string): string {
+    inferChainFamily(chainIdentifier)
+    return chainIdentifier
   }
 
-  outpointKey(txid: string, vout: number, chain?: string): string {
-    const base = `${txid.toLowerCase()}:${vout}`
-    return chain ? `${this.chainKey(chain)}:${base}` : base
+  private transactionKey(txHash: string, chainIdentifier: string): string {
+    return `${this.chainKey(chainIdentifier)}:${txHash.toLowerCase()}`
+  }
+
+  outpointKey(txid: string, vout: number, chainIdentifier: string): string {
+    return `${this.chainKey(chainIdentifier!)}:${txid.toLowerCase()}:${vout}`
   }
 
   /**
    * Registers an outpoint dependency in the mempool DAG.
    */
   registerOutpointDependency(params: OutpointDependencyParams): void {
-    const { outpoint, parentTxHash, chain } = params
+    const { outpoint, parentTxHash, chainIdentifier } = params
     const parents = Array.isArray(parentTxHash) ? parentTxHash : [parentTxHash]
-    const opScoped = this.outpointKey(outpoint.txid, outpoint.vout, chain)
-    const opGlobal = this.outpointKey(outpoint.txid, outpoint.vout)
+    const opScoped = this.outpointKey(outpoint.txid, outpoint.vout, chainIdentifier)
     const childTx = outpoint.txid.toLowerCase()
 
-    this.markTxUnconfirmed(childTx)
+    this.markTxUnconfirmed(childTx, chainIdentifier!)
 
     for (const p of parents) {
       const parentLower = p.toLowerCase()
-      this.markTxUnconfirmed(parentLower)
+      this.markTxUnconfirmed(parentLower, chainIdentifier!)
 
       let setScoped = this.outpointDependencies.get(opScoped)
       if (!setScoped) {
@@ -820,17 +784,10 @@ export class ChainUtxoPool {
       }
       setScoped.add(parentLower)
 
-      let setGlobal = this.outpointDependencies.get(opGlobal)
-      if (!setGlobal) {
-        setGlobal = new Set<string>()
-        this.outpointDependencies.set(opGlobal, setGlobal)
-      }
-      setGlobal.add(parentLower)
-
-      let txSet = this.txDependencies.get(childTx)
+      let txSet = this.txDependencies.get(this.transactionKey(childTx, chainIdentifier!))
       if (!txSet) {
         txSet = new Set<string>()
-        this.txDependencies.set(childTx, txSet)
+        this.txDependencies.set(this.transactionKey(childTx, chainIdentifier!), txSet)
       }
       txSet.add(parentLower)
     }
@@ -839,16 +796,16 @@ export class ChainUtxoPool {
   /**
    * Registers a direct transaction-level dependency in the mempool DAG.
    */
-  registerTxDependency(txid: string, parentTxHash: string): void {
+  registerTxDependency(txid: string, parentTxHash: string, chainIdentifier: string): void {
     const childLower = txid.toLowerCase()
     const parentLower = parentTxHash.toLowerCase()
-    this.markTxUnconfirmed(childLower)
-    this.markTxUnconfirmed(parentLower)
+    this.markTxUnconfirmed(childLower, chainIdentifier)
+    this.markTxUnconfirmed(parentLower, chainIdentifier!)
 
-    let txSet = this.txDependencies.get(childLower)
+    let txSet = this.txDependencies.get(this.transactionKey(childLower, chainIdentifier!))
     if (!txSet) {
       txSet = new Set<string>()
-      this.txDependencies.set(childLower, txSet)
+      this.txDependencies.set(this.transactionKey(childLower, chainIdentifier!), txSet)
     }
     txSet.add(parentLower)
   }
@@ -858,8 +815,8 @@ export class ChainUtxoPool {
    */
   getOutpointDependencies(
     txidOrOutpoint: { txid: string; vout: number } | string,
-    voutOrChain?: number | string,
-    chain?: string,
+    voutOrChain: number | string,
+    chainIdentifier?: string,
   ): string[] {
     let txid: string
     let vout: number
@@ -868,26 +825,21 @@ export class ChainUtxoPool {
     if (typeof txidOrOutpoint === 'object') {
       txid = txidOrOutpoint.txid
       vout = txidOrOutpoint.vout
-      c = typeof voutOrChain === 'string' ? voutOrChain : chain
+      c = typeof voutOrChain === 'string' ? voutOrChain : chainIdentifier
     } else {
       txid = txidOrOutpoint
       vout = typeof voutOrChain === 'number' ? voutOrChain : 0
-      c = chain
+      c = typeof voutOrChain === 'string' ? voutOrChain : chainIdentifier
     }
 
-    const opScoped = this.outpointKey(txid, vout, c)
-    const opGlobal = this.outpointKey(txid, vout)
+    const opScoped = this.outpointKey(txid, vout, c!)
     const deps = new Set<string>()
 
     const scoped = this.outpointDependencies.get(opScoped)
     if (scoped) {
       for (const d of scoped) deps.add(d)
     }
-    const global = this.outpointDependencies.get(opGlobal)
-    if (global) {
-      for (const d of global) deps.add(d)
-    }
-    const txDeps = this.txDependencies.get(txid.toLowerCase())
+    const txDeps = this.txDependencies.get(this.transactionKey(txid, c!))
     if (txDeps) {
       for (const d of txDeps) deps.add(d)
     }
@@ -898,16 +850,16 @@ export class ChainUtxoPool {
   /**
    * Retrieves immediate parent tx hashes registered for a transaction hash.
    */
-  getTransactionDependencies(txHash: string): string[] {
-    const deps = this.txDependencies.get(txHash.toLowerCase())
+  getTransactionDependencies(txHash: string, chainIdentifier: string): string[] {
+    const deps = this.txDependencies.get(this.transactionKey(txHash, chainIdentifier))
     return deps ? Array.from(deps) : []
   }
 
   /**
    * Marks a transaction hash as confirmed on-chain, removing it from unconfirmed mempool tracking.
    */
-  markTransactionConfirmed(txHash: string): void {
-    const lower = txHash.toLowerCase()
+  markTransactionConfirmed(txHash: string, chainIdentifier: string): void {
+    const lower = this.transactionKey(txHash, chainIdentifier)
     this.confirmedTxHashes.add(lower)
     this.unconfirmedTxHashes.delete(lower)
   }
@@ -915,15 +867,15 @@ export class ChainUtxoPool {
   /**
    * Checks whether a transaction hash has been confirmed.
    */
-  isTransactionConfirmed(txHash: string): boolean {
-    return this.confirmedTxHashes.has(txHash.toLowerCase())
+  isTransactionConfirmed(txHash: string, chainIdentifier: string): boolean {
+    return this.confirmedTxHashes.has(this.transactionKey(txHash, chainIdentifier))
   }
 
   /**
    * Marks a transaction hash as an unconfirmed mempool transaction.
    */
-  markTxUnconfirmed(txHash: string): void {
-    const lower = txHash.toLowerCase()
+  markTxUnconfirmed(txHash: string, chainIdentifier: string): void {
+    const lower = this.transactionKey(txHash, chainIdentifier)
     if (!this.confirmedTxHashes.has(lower)) {
       this.unconfirmedTxHashes.add(lower)
     }
@@ -932,8 +884,8 @@ export class ChainUtxoPool {
   /**
    * Checks whether a transaction hash is considered unconfirmed in the mempool.
    */
-  isUnconfirmedTx(txHash: string): boolean {
-    const lower = txHash.toLowerCase()
+  isUnconfirmedTx(txHash: string, chainIdentifier: string): boolean {
+    const lower = this.transactionKey(txHash, chainIdentifier)
     if (this.confirmedTxHashes.has(lower)) return false
     return this.unconfirmedTxHashes.has(lower)
   }
@@ -947,22 +899,20 @@ export class ChainUtxoPool {
    */
   getMempoolAncestors(
     target: ChainUtxoCoin | { txid: string; vout: number } | string,
-    chain?: string,
+    chainIdentifier?: string,
     vout?: number,
   ): Set<string> {
     const ancestors = new Set<string>()
-    if (!this.hasMempoolDependencies()) {
-      return ancestors
-    }
     const visited = new Set<string>()
     const queue: string[] = []
 
     let targetTxid: string | undefined
     let targetVout: number | undefined
-    let coinChain: string | undefined = chain
+    let coinChain: string | undefined = chainIdentifier
 
     if (typeof target === 'object' && 'address' in target) {
-      coinChain = target.chain
+      inferChainFamily(target.chainIdentifier, target.family)
+      coinChain = target.chainIdentifier
       if (target.outpoint) {
         targetTxid = target.outpoint.txid.toLowerCase()
         targetVout = target.outpoint.vout
@@ -973,23 +923,25 @@ export class ChainUtxoPool {
     } else if (typeof target === 'object' && 'txid' in target) {
       targetTxid = target.txid.toLowerCase()
       targetVout = target.vout
-      coinChain = chain
+      coinChain = chainIdentifier
     } else if (typeof target === 'string') {
       targetTxid = target.toLowerCase()
       targetVout = typeof vout === 'number' ? vout : undefined
-      coinChain = chain
+      coinChain = chainIdentifier
     }
 
+    this.chainKey(coinChain!)
+    if (chainIdentifier !== undefined && coinChain !== chainIdentifier) throw new Error("Chain affinity mismatch")
     if (targetTxid !== undefined) {
       if (targetVout !== undefined) {
         const outDeps = this.getOutpointDependencies(targetTxid, targetVout, coinChain)
         for (const p of outDeps) queue.push(p.toLowerCase())
       }
-      const txDeps = this.txDependencies.get(targetTxid)
+      const txDeps = this.txDependencies.get(this.transactionKey(targetTxid, coinChain!))
       if (txDeps) {
         for (const p of txDeps) queue.push(p.toLowerCase())
       }
-      if (this.unconfirmedTxHashes.has(targetTxid) && !this.confirmedTxHashes.has(targetTxid)) {
+      if (this.unconfirmedTxHashes.has(this.transactionKey(targetTxid, coinChain!)) && !this.confirmedTxHashes.has(this.transactionKey(targetTxid, coinChain!))) {
         ancestors.add(targetTxid)
       }
     }
@@ -1001,18 +953,18 @@ export class ChainUtxoPool {
       if (visited.has(currentLower)) continue
       visited.add(currentLower)
 
-      if (this.confirmedTxHashes.has(currentLower)) continue
+      if (this.confirmedTxHashes.has(this.transactionKey(currentLower, coinChain!))) continue
 
       ancestors.add(currentLower)
 
-      const parentDeps = this.txDependencies.get(currentLower)
+      const parentDeps = this.txDependencies.get(this.transactionKey(currentLower, coinChain!))
       if (parentDeps) {
         for (const p of parentDeps) {
           if (!visited.has(p)) queue.push(p)
         }
       }
 
-      const matchedCoin = this.getUtxoByOutpoint(currentLower, 0, coinChain)
+      const matchedCoin = this.getUtxoByOutpoint(currentLower, 0, coinChain!)
       if (matchedCoin?.parentTxHash && !visited.has(matchedCoin.parentTxHash.toLowerCase())) {
         queue.push(matchedCoin.parentTxHash.toLowerCase())
       }
@@ -1026,10 +978,10 @@ export class ChainUtxoPool {
    */
   getAncestorCount(
     target: ChainUtxoCoin | { txid: string; vout: number } | string,
-    chain?: string,
+    chainIdentifier?: string,
     vout?: number,
   ): number {
-    return this.getMempoolAncestors(target, chain, vout).size
+    return this.getMempoolAncestors(target, chainIdentifier, vout).size
   }
 
   /**
@@ -1037,23 +989,34 @@ export class ChainUtxoPool {
    */
   registerCoin(
     coin: Partial<ChainUtxoCoin> & {
-      chain: string
+      chainIdentifier: string
       address: string
       privateKey: string
     },
   ): ChainUtxoCoin {
-    const family = coin.family ?? inferChainFamily(coin.chain)
-    const canonicalAddress = formatUtxoAddress(coin.address, coin.chain, family)
+    const family = inferChainFamily(coin.chainIdentifier, coin.family)
+    const canonicalAddress = formatUtxoAddress(coin.address, coin.chainIdentifier, family)
     const nonceOrOutpoint = coin.outpoint ?? coin.nonce ?? 0
-    const id = coin.id ?? makeUtxoId(coin.chain, canonicalAddress, nonceOrOutpoint, family)
+    const id = coin.id ?? makeUtxoId(coin.chainIdentifier, canonicalAddress, nonceOrOutpoint, family)
+
+    if (coin.outpoint) {
+      const outpointId = this.coinsByOutpoint.get(this.outpointKey(coin.outpoint.txid, coin.outpoint.vout, coin.chainIdentifier))
+      if (outpointId !== undefined && outpointId !== id) throw new Error('Outpoint already registered under a different coin ID')
+    }
+    if (!id.startsWith(`${coin.chainIdentifier}:`)) throw new Error('Coin ID must carry canonical chain scope')
+    const previous = this.coinsById.get(id) ?? this.archivedCoinsById.get(id)
+    if (previous && (previous.chainIdentifier !== coin.chainIdentifier || previous.family !== family ||
+      normalizeUtxoAddress(previous.address, previous.chainIdentifier) !== normalizeUtxoAddress(canonicalAddress, coin.chainIdentifier) ||
+      previous.outpoint?.txid.toLowerCase() !== coin.outpoint?.txid.toLowerCase() || previous.outpoint?.vout !== coin.outpoint?.vout)) {
+      throw new Error('Coin ID already belongs to a different coin')
+    }
 
     // Check if this outpoint was already recorded as spent
     let status = coin.status ?? 'clean'
     let isSpentOutpoint = false
     if (coin.outpoint) {
-      const opScoped = this.outpointKey(coin.outpoint.txid, coin.outpoint.vout, coin.chain)
-      const opGlobal = this.outpointKey(coin.outpoint.txid, coin.outpoint.vout)
-      if (this.spentOutpointKeys.has(opScoped) || this.spentOutpointKeys.has(opGlobal)) {
+      const opScoped = this.outpointKey(coin.outpoint.txid, coin.outpoint.vout, coin.chainIdentifier)
+      if (this.spentOutpointKeys.has(opScoped)) {
         status = 'spent'
         isSpentOutpoint = true
       }
@@ -1061,7 +1024,7 @@ export class ChainUtxoPool {
 
     const record: ChainUtxoCoin = {
       id,
-      chain: coin.chain,
+      chainIdentifier: coin.chainIdentifier,
       family,
       address: canonicalAddress,
       privateKey: coin.privateKey,
@@ -1095,12 +1058,12 @@ export class ChainUtxoPool {
       this.registerOutpointDependency({
         outpoint: record.outpoint,
         parentTxHash: record.parentTxHash,
-        chain: record.chain,
+        chainIdentifier: record.chainIdentifier,
       })
     }
 
     // Index by address
-    const addrKey = normalizeUtxoAddress(canonicalAddress, coin.chain, family)
+    const addrKey = `${coin.chainIdentifier}:${normalizeUtxoAddress(canonicalAddress, coin.chainIdentifier, family)}`
     let addrSet = this.coinsByAddress.get(addrKey)
     if (!addrSet) {
       addrSet = new Set<string>()
@@ -1108,8 +1071,8 @@ export class ChainUtxoPool {
     }
     addrSet.add(id)
 
-    // Index by status & chain
-    const cKey = this.chainKey(coin.chain)
+    // Index by status & chainIdentifier
+    const cKey = this.chainKey(coin.chainIdentifier)
     if (record.status === 'clean') {
       let cleanSet = this.cleanCoinIdsByChain.get(cKey)
       if (!cleanSet) {
@@ -1128,10 +1091,8 @@ export class ChainUtxoPool {
 
     // Index outpoint if present
     if (record.outpoint) {
-      const opScoped = this.outpointKey(record.outpoint.txid, record.outpoint.vout, record.chain)
-      const opGlobal = this.outpointKey(record.outpoint.txid, record.outpoint.vout)
+      const opScoped = this.outpointKey(record.outpoint.txid, record.outpoint.vout, record.chainIdentifier)
       this.coinsByOutpoint.set(opScoped, id)
-      this.coinsByOutpoint.set(opGlobal, id)
     }
 
     return record
@@ -1145,7 +1106,7 @@ export class ChainUtxoPool {
   }
 
   private removeFromStatusIndices(record: ChainUtxoCoin): void {
-    const cKey = this.chainKey(record.chain)
+    const cKey = this.chainKey(record.chainIdentifier)
     const cleanSet = this.cleanCoinIdsByChain.get(cKey)
     if (cleanSet) {
       cleanSet.delete(record.id)
@@ -1157,7 +1118,7 @@ export class ChainUtxoPool {
   }
 
   private removeFromIndices(record: ChainUtxoCoin): void {
-    const addrKey = normalizeUtxoAddress(record.address, record.chain, record.family)
+    const addrKey = `${record.chainIdentifier}:${normalizeUtxoAddress(record.address, record.chainIdentifier, record.family)}`
     const addrSet = this.coinsByAddress.get(addrKey)
     if (addrSet) {
       addrSet.delete(record.id)
@@ -1169,10 +1130,8 @@ export class ChainUtxoPool {
     this.removeFromStatusIndices(record)
 
     if (record.outpoint) {
-      const opScoped = this.outpointKey(record.outpoint.txid, record.outpoint.vout, record.chain)
-      const opGlobal = this.outpointKey(record.outpoint.txid, record.outpoint.vout)
+      const opScoped = this.outpointKey(record.outpoint.txid, record.outpoint.vout, record.chainIdentifier)
       this.coinsByOutpoint.delete(opScoped)
-      this.coinsByOutpoint.delete(opGlobal)
     }
   }
 
@@ -1180,14 +1139,15 @@ export class ChainUtxoPool {
    * Registers a native UTXO outpoint.
    */
   registerUtxoOutpoint(params: RegisterUtxoOutpointParams): ChainUtxoCoin {
-    const family = params.family ?? 'utxo'
+    inferChainFamily(params.chainIdentifier, 'utxo')
+    const family = inferChainFamily(params.chainIdentifier, params.family)
     const outpoint = { txid: params.txid, vout: params.vout }
-    const canonicalAddress = formatUtxoAddress(params.address, params.chain, family)
-    const id = makeUtxoId(params.chain, canonicalAddress, outpoint, family)
+    const canonicalAddress = formatUtxoAddress(params.address, params.chainIdentifier, family)
+    const id = makeUtxoId(params.chainIdentifier, canonicalAddress, outpoint, family)
 
     return this.registerCoin({
       id,
-      chain: params.chain,
+      chainIdentifier: params.chainIdentifier,
       family,
       address: canonicalAddress,
       privateKey: params.privateKey,
@@ -1207,13 +1167,13 @@ export class ChainUtxoPool {
    * Registers a stealth account.
    */
   registerStealthAccount(params: RegisterStealthParams): ChainUtxoCoin {
-    const family = params.family ?? inferChainFamily(params.chain)
-    const formattedAddress = formatUtxoAddress(params.address, params.chain, family)
-    const id = makeUtxoId(params.chain, formattedAddress, 0, family)
+    const family = inferChainFamily(params.chainIdentifier, params.family)
+    const formattedAddress = formatUtxoAddress(params.address, params.chainIdentifier, family)
+    const id = makeUtxoId(params.chainIdentifier, formattedAddress, 0, family)
 
     return this.registerCoin({
       id,
-      chain: params.chain,
+      chainIdentifier: params.chainIdentifier,
       family,
       address: formattedAddress,
       privateKey: params.privateKey,
@@ -1233,13 +1193,13 @@ export class ChainUtxoPool {
    * Registers a pre-derived HD sub-account.
    */
   registerSubAccount(params: RegisterSubAccountParams): ChainUtxoCoin {
-    const family = params.family ?? inferChainFamily(params.chain)
-    const formattedAddress = formatUtxoAddress(params.address, params.chain, family)
-    const id = makeUtxoId(params.chain, formattedAddress, 0, family)
+    const family = inferChainFamily(params.chainIdentifier, params.family)
+    const formattedAddress = formatUtxoAddress(params.address, params.chainIdentifier, family)
+    const id = makeUtxoId(params.chainIdentifier, formattedAddress, 0, family)
 
     return this.registerCoin({
       id,
-      chain: params.chain,
+      chainIdentifier: params.chainIdentifier,
       family,
       address: formattedAddress,
       privateKey: params.privateKey,
@@ -1259,13 +1219,13 @@ export class ChainUtxoPool {
    * Registers an HD change account.
    */
   registerChangeAccount(params: RegisterChangeAccountParams): ChainUtxoCoin {
-    const family = params.family ?? inferChainFamily(params.chain)
-    const formattedAddress = formatUtxoAddress(params.address, params.chain, family)
-    const id = makeUtxoId(params.chain, formattedAddress, 0, family)
+    const family = inferChainFamily(params.chainIdentifier, params.family)
+    const formattedAddress = formatUtxoAddress(params.address, params.chainIdentifier, family)
+    const id = makeUtxoId(params.chainIdentifier, formattedAddress, 0, family)
 
     return this.registerCoin({
       id,
-      chain: params.chain,
+      chainIdentifier: params.chainIdentifier,
       family,
       address: formattedAddress,
       privateKey: params.privateKey,
@@ -1285,13 +1245,13 @@ export class ChainUtxoPool {
    * Registers a fresh change output resulting from a spend transaction.
    */
   registerChangeOutput(params: RegisterChangeParams): ChainUtxoCoin {
-    const family = params.family ?? inferChainFamily(params.chain)
-    const formattedAddress = formatUtxoAddress(params.address, params.chain, family)
-    const id = makeUtxoId(params.chain, formattedAddress, 0, family)
+    const family = inferChainFamily(params.chainIdentifier, params.family)
+    const formattedAddress = formatUtxoAddress(params.address, params.chainIdentifier, family)
+    const id = makeUtxoId(params.chainIdentifier, formattedAddress, 0, family)
 
     return this.registerCoin({
       id,
-      chain: params.chain,
+      chainIdentifier: params.chainIdentifier,
       family,
       address: formattedAddress,
       privateKey: params.privateKey,
@@ -1310,14 +1270,14 @@ export class ChainUtxoPool {
    * Imports an arbitrary private key into the pool.
    */
   importPrivateKey(params: ImportKeyParams): ChainUtxoCoin {
-    const family = params.family ?? inferChainFamily(params.chain)
-    const formattedAddress = formatUtxoAddress(params.address, params.chain, family)
+    const family = inferChainFamily(params.chainIdentifier, params.family)
+    const formattedAddress = formatUtxoAddress(params.address, params.chainIdentifier, family)
     const nonce = params.nonce ?? 0
-    const id = makeUtxoId(params.chain, formattedAddress, nonce, family)
+    const id = makeUtxoId(params.chainIdentifier, formattedAddress, nonce, family)
 
     return this.registerCoin({
       id,
-      chain: params.chain,
+      chainIdentifier: params.chainIdentifier,
       family,
       address: formattedAddress,
       privateKey: params.privateKey,
@@ -1350,11 +1310,11 @@ export class ChainUtxoPool {
   /**
    * Queries cold archived spent coins on demand, optionally filtered by chain.
    */
-  getArchivedCoins(chain?: string): ChainUtxoCoin[] {
+  getArchivedCoins(chainIdentifier?: string): ChainUtxoCoin[] {
     const all = Array.from(this.archivedCoinsById.values())
-    if (!chain) return all
-    const cKey = this.chainKey(chain)
-    return all.filter(u => this.chainKey(u.chain) === cKey)
+    if (chainIdentifier === undefined) return all
+    const cKey = this.chainKey(chainIdentifier)
+    return all.filter(u => this.chainKey(u.chainIdentifier) === cKey)
   }
 
   /**
@@ -1371,13 +1331,14 @@ export class ChainUtxoPool {
    * keeping the hot active memory index small.
    */
   archiveSpentCoins(params?: ArchiveSpentCoinsParams): ChainUtxoCoin[] {
+    if (params?.chainIdentifier !== undefined) this.chainKey(params.chainIdentifier)
     const maxAgeMs = params?.maxAgeMs ?? 3_600_000
     const now = Date.now()
     const archived: ChainUtxoCoin[] = []
     const coins = Array.from(this.coinsById.values())
 
     for (const coin of coins) {
-      if (params?.chain && this.chainKey(coin.chain) !== this.chainKey(params.chain)) {
+      if (params?.chainIdentifier && this.chainKey(coin.chainIdentifier) !== this.chainKey(params.chainIdentifier)) {
         continue
       }
       if (
@@ -1401,40 +1362,36 @@ export class ChainUtxoPool {
   getUtxoByOutpoint(
     txid: string,
     vout: number,
-    chain?: string,
+    chainIdentifier: string,
   ): ChainUtxoCoin | undefined {
-    const key = this.outpointKey(txid, vout, chain)
+    const key = this.outpointKey(txid, vout, chainIdentifier)
     const id = this.coinsByOutpoint.get(key)
     if (id) {
       return this.coinsById.get(id)
     }
-    // Try global outpoint key fallback
-    const globalKey = this.outpointKey(txid, vout)
-    const globalId = this.coinsByOutpoint.get(globalKey)
-    return globalId ? this.coinsById.get(globalId) : undefined
+    return undefined
   }
 
   /**
    * Checks if an outpoint is marked spent.
    */
-  isOutpointSpent(txid: string, vout: number, chain?: string): boolean {
-    const keyScoped = this.outpointKey(txid, vout, chain)
-    const keyGlobal = this.outpointKey(txid, vout)
-    return this.spentOutpointKeys.has(keyScoped) || this.spentOutpointKeys.has(keyGlobal)
+  isOutpointSpent(txid: string, vout: number, chainIdentifier: string): boolean {
+    const keyScoped = this.outpointKey(txid, vout, chainIdentifier)
+    return this.spentOutpointKeys.has(keyScoped)
   }
 
   /**
    * Retrieves all coins associated with a specific address.
    */
-  getCoinsByAddress(address: string, chain?: string): ChainUtxoCoin[] {
-    const addrKey = normalizeUtxoAddress(address, chain)
+  getCoinsByAddress(address: string, chainIdentifier: string): ChainUtxoCoin[] {
+    const addrKey = `${this.chainKey(chainIdentifier!)}:${normalizeUtxoAddress(address, chainIdentifier!)}`
     const ids = this.coinsByAddress.get(addrKey)
     if (!ids) return []
     const results: ChainUtxoCoin[] = []
     for (const id of ids) {
       const item = this.coinsById.get(id)
       if (item) {
-        if (!chain || this.chainKey(item.chain) === this.chainKey(chain)) {
+        if (!chainIdentifier || this.chainKey(item.chainIdentifier) === this.chainKey(chainIdentifier)) {
           results.push(item)
         }
       }
@@ -1445,15 +1402,15 @@ export class ChainUtxoPool {
   /**
    * Backwards-compatible alias for getCoinsByAddress.
    */
-  getUtxosByAddress(address: string, chain: string): ChainUtxoCoin[] {
-    return this.getCoinsByAddress(address, chain)
+  getUtxosByAddress(address: string, chainIdentifier: string): ChainUtxoCoin[] {
+    return this.getCoinsByAddress(address, chainIdentifier)
   }
 
   /**
    * Retrieves all clean (unspent) coins for a given chain.
    */
-  getCleanCoins(chain: string): ChainUtxoCoin[] {
-    const cKey = this.chainKey(chain)
+  getCleanCoins(chainIdentifier: string): ChainUtxoCoin[] {
+    const cKey = this.chainKey(chainIdentifier)
     const ids = this.cleanCoinIdsByChain.get(cKey)
     if (!ids) return []
     const results: ChainUtxoCoin[] = []
@@ -1469,15 +1426,15 @@ export class ChainUtxoPool {
   /**
    * Backwards-compatible alias for getCleanCoins.
    */
-  getCleanUtxos(chain: string): ChainUtxoCoin[] {
-    return this.getCleanCoins(chain)
+  getCleanUtxos(chainIdentifier: string): ChainUtxoCoin[] {
+    return this.getCleanCoins(chainIdentifier)
   }
 
   /**
    * Retrieves all pending coins for a given chain.
    */
-  getPendingCoins(chain: string): ChainUtxoCoin[] {
-    const cKey = this.chainKey(chain)
+  getPendingCoins(chainIdentifier: string): ChainUtxoCoin[] {
+    const cKey = this.chainKey(chainIdentifier)
     const ids = this.pendingCoinIdsByChain.get(cKey)
     if (!ids) return []
     const results: ChainUtxoCoin[] = []
@@ -1493,32 +1450,32 @@ export class ChainUtxoPool {
   /**
    * Backwards-compatible alias for getPendingCoins.
    */
-  getPendingUtxos(chain: string): ChainUtxoCoin[] {
-    return this.getPendingCoins(chain)
+  getPendingUtxos(chainIdentifier: string): ChainUtxoCoin[] {
+    return this.getPendingCoins(chainIdentifier)
   }
 
   /**
    * Retrieves all coins in the pool, optionally filtered by chain.
    */
-  getAllCoins(chain?: string): ChainUtxoCoin[] {
+  getAllCoins(chainIdentifier?: string): ChainUtxoCoin[] {
     const all = Array.from(this.coinsById.values())
-    if (!chain) return all
-    const cKey = this.chainKey(chain)
-    return all.filter(u => this.chainKey(u.chain) === cKey)
+    if (chainIdentifier === undefined) return all
+    const cKey = this.chainKey(chainIdentifier)
+    return all.filter(u => this.chainKey(u.chainIdentifier) === cKey)
   }
 
   /**
    * Backwards-compatible alias for getAllCoins.
    */
-  getAllUtxos(chain?: string): ChainUtxoCoin[] {
-    return this.getAllCoins(chain)
+  getAllUtxos(chainIdentifier?: string): ChainUtxoCoin[] {
+    return this.getAllCoins(chainIdentifier)
   }
 
   /**
    * Retrieves dirty accounts (nonce > 0 or status != 'clean' that still hold positive balance).
    */
-  getDirtyCoins(chain: string): ChainUtxoCoin[] {
-    const all = this.getAllCoins(chain)
+  getDirtyCoins(chainIdentifier: string): ChainUtxoCoin[] {
+    const all = this.getAllCoins(chainIdentifier)
     return all.filter(
       u =>
         u.balanceWei > 0n &&
@@ -1529,16 +1486,16 @@ export class ChainUtxoPool {
   /**
    * Backwards-compatible alias for getDirtyCoins.
    */
-  getDirtyUtxos(chain: string): ChainUtxoCoin[] {
-    return this.getDirtyCoins(chain)
+  getDirtyUtxos(chainIdentifier: string): ChainUtxoCoin[] {
+    return this.getDirtyCoins(chainIdentifier)
   }
 
   /**
    * Computes total spendable balance for a chain.
    */
-  getTotalBalance(chain: string, statusFilter: ChainUtxoStatus = 'clean'): bigint {
+  getTotalBalance(chainIdentifier: string, statusFilter: ChainUtxoStatus = 'clean'): bigint {
     let total = 0n
-    for (const coin of this.getAllCoins(chain)) {
+    for (const coin of this.getAllCoins(chainIdentifier)) {
       if (coin.status === statusFilter) {
         total += coin.balanceWei
       }
@@ -1558,7 +1515,7 @@ export class ChainUtxoPool {
       throw new Error(`Cannot mark already spent UTXO as pending: ${id}`)
     }
 
-    const cKey = this.chainKey(coin.chain)
+    const cKey = this.chainKey(coin.chainIdentifier)
     const cleanSet = this.cleanCoinIdsByChain.get(cKey)
     if (cleanSet) cleanSet.delete(id)
 
@@ -1584,7 +1541,7 @@ export class ChainUtxoPool {
       throw new Error(`UTXO not found: ${id}`)
     }
 
-    const cKey = this.chainKey(coin.chain)
+    const cKey = this.chainKey(coin.chainIdentifier)
     const cleanSet = this.cleanCoinIdsByChain.get(cKey)
     if (cleanSet) cleanSet.delete(id)
     const pendingSet = this.pendingCoinIdsByChain.get(cKey)
@@ -1600,10 +1557,8 @@ export class ChainUtxoPool {
     coin.lastUpdatedMs = Date.now()
 
     if (coin.outpoint) {
-      const opScoped = this.outpointKey(coin.outpoint.txid, coin.outpoint.vout, coin.chain)
-      const opGlobal = this.outpointKey(coin.outpoint.txid, coin.outpoint.vout)
+      const opScoped = this.outpointKey(coin.outpoint.txid, coin.outpoint.vout, coin.chainIdentifier)
       this.spentOutpointKeys.add(opScoped)
-      this.spentOutpointKeys.add(opGlobal)
     }
 
     return coin
@@ -1621,7 +1576,7 @@ export class ChainUtxoPool {
       return coin
     }
 
-    const cKey = this.chainKey(coin.chain)
+    const cKey = this.chainKey(coin.chainIdentifier)
     const pendingSet = this.pendingCoinIdsByChain.get(cKey)
     if (pendingSet) pendingSet.delete(id)
 
@@ -1644,14 +1599,12 @@ export class ChainUtxoPool {
   markOutpointSpent(
     txid: string,
     vout: number,
-    chain?: string,
+    chainIdentifier: string,
   ): ChainUtxoCoin | undefined {
-    const opScoped = this.outpointKey(txid, vout, chain)
-    const opGlobal = this.outpointKey(txid, vout)
+    const opScoped = this.outpointKey(txid, vout, chainIdentifier)
     this.spentOutpointKeys.add(opScoped)
-    this.spentOutpointKeys.add(opGlobal)
 
-    const coin = this.getUtxoByOutpoint(txid, vout, chain)
+    const coin = this.getUtxoByOutpoint(txid, vout, chainIdentifier)
     if (coin) {
       return this.markSpent(coin.id)
     }
@@ -1663,11 +1616,11 @@ export class ChainUtxoPool {
    */
   trackSpentOutpoints(
     outpoints: Array<{ txid: string; vout: number }>,
-    chain?: string,
+    chainIdentifier: string,
   ): ChainUtxoCoin[] {
     const spentCoins: ChainUtxoCoin[] = []
     for (const op of outpoints) {
-      const spent = this.markOutpointSpent(op.txid, op.vout, chain)
+      const spent = this.markOutpointSpent(op.txid, op.vout, chainIdentifier)
       if (spent) spentCoins.push(spent)
     }
     return spentCoins
@@ -1712,7 +1665,7 @@ export class ChainUtxoPool {
    */
   selectCoins(params: SelectCoinsParams): CoinSelectionResult {
     const {
-      chain,
+      chainIdentifier,
       family: explicitFamily,
       targetAmountWei,
       feeReserveWei = 0n,
@@ -1724,7 +1677,7 @@ export class ChainUtxoPool {
       allowUnconfirmedDependencies = false,
     } = params
 
-    const family = explicitFamily ?? inferChainFamily(chain)
+    const family = inferChainFamily(chainIdentifier, explicitFamily)
     const defaultFee =
       family === 'solana' ? 5_000n : family === 'utxo' ? 500n : 21_000n
     const minFeePerTxWei = params.minFeePerTxWei ?? defaultFee
@@ -1741,11 +1694,11 @@ export class ChainUtxoPool {
 
     let candidates: ChainUtxoCoin[] = []
     if (allowDirty) {
-      candidates = this.getAllCoins(chain).filter(
+      candidates = this.getAllCoins(chainIdentifier).filter(
         u => u.status !== 'pending' && u.balanceWei > 0n,
       )
     } else {
-      candidates = this.getCleanCoins(chain).filter(u => u.balanceWei > 0n)
+      candidates = this.getCleanCoins(chainIdentifier).filter(u => u.balanceWei > 0n)
     }
 
     if (!allowUnconfirmedDependencies) {
@@ -1771,7 +1724,7 @@ export class ChainUtxoPool {
 
     if (candidates.length === 0) {
       throw new Error(
-        `Insufficient funds in ChainUtxoPool for ${chain}: no spendable coins found`,
+        `Insufficient funds in ChainUtxoPool for ${chainIdentifier}: no spendable coins found`,
       )
     }
 
@@ -1783,7 +1736,7 @@ export class ChainUtxoPool {
       const validCandidates: ChainUtxoCoin[] = []
 
       for (const coin of candidates) {
-        const count = this.getAncestorCount(coin, chain)
+        const count = this.getAncestorCount(coin, chainIdentifier)
         if (count > maxAncestors) {
           exceededAncestorCount++
           if (count > maxFoundAncestors) maxFoundAncestors = count
@@ -1799,7 +1752,7 @@ export class ChainUtxoPool {
           )
         }
         throw new Error(
-          `Insufficient funds in ChainUtxoPool for ${chain}: no spendable coins found within ancestor limit`,
+          `Insufficient funds in ChainUtxoPool for ${chainIdentifier}: no spendable coins found within ancestor limit`,
         )
       }
 
@@ -1835,7 +1788,7 @@ export class ChainUtxoPool {
 
       if (totalSelectedWei < neededWei) {
         throw new Error(
-          `Insufficient funds in ChainUtxoPool for ${chain}: needed ${neededWei} wei, available ${totalSelectedWei} wei across ${candidates.length} coins`,
+          `Insufficient funds in ChainUtxoPool for ${chainIdentifier}: needed ${neededWei} wei, available ${totalSelectedWei} wei across ${candidates.length} coins`,
         )
       }
     }
@@ -1844,7 +1797,7 @@ export class ChainUtxoPool {
     if (family === 'utxo' && this.hasMempoolDependencies()) {
       const combinedAncestors = new Set<string>()
       for (const coin of selected) {
-        for (const anc of this.getMempoolAncestors(coin, chain)) {
+        for (const anc of this.getMempoolAncestors(coin, chainIdentifier)) {
           combinedAncestors.add(anc)
         }
       }
@@ -1892,6 +1845,8 @@ export class ChainUtxoPool {
     if (!coin) {
       throw new Error(`UTXO not found: ${coinOrId}`)
     }
+    inferChainFamily(coin.chainIdentifier, coin.family)
+    if (coin.family !== 'evm') throw new Error('EVM signer requires an EVM coin')
     if (!coin.privateKey) {
       throw new Error(`UTXO ${coin.id} has no privateKey attached`)
     }
@@ -1917,6 +1872,8 @@ export class ChainUtxoPool {
     if (!coin) {
       throw new Error(`UTXO not found: ${coinOrId}`)
     }
+    inferChainFamily(coin.chainIdentifier, coin.family)
+    if (coin.family !== 'solana') throw new Error('Solana signer requires a Solana coin')
     if (!coin.privateKey) {
       throw new Error(`UTXO ${coin.id} has no privateKey attached`)
     }
@@ -1927,7 +1884,7 @@ export class ChainUtxoPool {
    * Creates a sweep plan for a dirty UTXO using geometric radix distribution.
    */
   createSweepPlan(params: {
-    chain: string
+    chainIdentifier: string
     dirtyUtxoId: string
     changeAddresses: string[]
     dustThresholdWei?: bigint
@@ -1938,17 +1895,19 @@ export class ChainUtxoPool {
     changeOutputs: Array<{ address: string; amountWei: bigint }>
   } {
     const {
-      chain,
+      chainIdentifier,
       dirtyUtxoId,
       changeAddresses,
       dustThresholdWei = 1_000n,
       minFeeWei = 21_000n,
     } = params
 
+    this.chainKey(chainIdentifier)
     const utxo = this.getCoin(dirtyUtxoId)
     if (!utxo) {
       throw new Error(`Dirty UTXO not found: ${dirtyUtxoId}`)
     }
+    if (utxo.chainIdentifier !== chainIdentifier) throw new Error("Chain affinity mismatch")
     if (utxo.balanceWei <= dustThresholdWei + minFeeWei) {
       throw new Error(
         `UTXO balance (${utxo.balanceWei}) is below dust + fee threshold`,
@@ -1970,7 +1929,7 @@ export class ChainUtxoPool {
     for (let i = 0; i < splits.length; i++) {
       const addr = changeAddresses[i % changeAddresses.length]
       changeOutputs.push({
-        address: formatUtxoAddress(addr, chain, utxo.family),
+        address: formatUtxoAddress(addr, chainIdentifier, utxo.family),
         amountWei: splits[i],
       })
     }
@@ -1988,7 +1947,7 @@ export class ChainUtxoPool {
    * Enforces healthy output thresholds (each output >= 2 * minFeeWei) to prevent generating dust accounts.
    */
   createBatchSweepPlan(params: {
-    chain: string
+    chainIdentifier: string
     dirtyUtxoIds: string[]
     destinationAddresses: string[]
     dustThresholdWei?: bigint
@@ -2002,7 +1961,7 @@ export class ChainUtxoPool {
     consolidationOutputs: Array<{ address: string; amountWei: bigint }>
   } {
     const {
-      chain,
+      chainIdentifier,
       dirtyUtxoIds,
       destinationAddresses,
       dustThresholdWei = 1_000n,
@@ -2010,6 +1969,7 @@ export class ChainUtxoPool {
       maxChangeOutputs = destinationAddresses.length,
     } = params
 
+    this.chainKey(chainIdentifier)
     if (dirtyUtxoIds.length === 0) {
       throw new Error('At least one dirty UTXO id is required to batch sweep')
     }
@@ -2024,6 +1984,7 @@ export class ChainUtxoPool {
       if (!coin) {
         throw new Error(`Dirty UTXO not found: ${id}`)
       }
+      if (coin.chainIdentifier !== this.chainKey(chainIdentifier)) throw new Error("Chain affinity mismatch")
       dirtyUtxos.push(coin)
       totalGrossWei += coin.balanceWei
     }
@@ -2051,7 +2012,7 @@ export class ChainUtxoPool {
     for (let i = 0; i < splits.length; i++) {
       const addr = destinationAddresses[i % destinationAddresses.length]
       consolidationOutputs.push({
-        address: formatUtxoAddress(addr, chain, dirtyUtxos[0]?.family),
+        address: formatUtxoAddress(addr, chainIdentifier, dirtyUtxos[0]?.family),
         amountWei: splits[i],
       })
     }

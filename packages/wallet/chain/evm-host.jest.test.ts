@@ -127,3 +127,21 @@ it("refuses a peer native send before signing when its sync delivery is absent",
     await wallet.close();
   }
 });
+
+
+it.each([
+  ['monad-testnet', 10143, 'MONT'],
+  ['ethereum-sepolia', 11155111, 'SEPO'],
+] as const)('real EVM composition scopes HD and change coins to %s', async (chainIdentifier, chainId, networkTag) => {
+  const chain = createEvmChain({ ...config, chainIdentifier, rpcChain: chainIdentifier, networkId: chainIdentifier, chainId, networkTag })
+  const root = (purpose: string, value: number) => ({ registry: DERIVATION_REGISTRY_ID, purpose, bytes: new Uint8Array(32).fill(value) })
+  const wallet = await chain.createWallet({ evm: root('evm-wallet', 61), authentication: root('identity-authentication', 62), messaging: root('messaging-encryption', 63) })
+  try {
+    expect(wallet.accountUtxoPool!.getCleanCoins(chainIdentifier).length).toBeGreaterThan(0)
+    const coins = wallet.accountUtxoPool!.getAllCoins()
+    expect(coins.length).toBeGreaterThan(0)
+    expect(new Set(coins.map(coin => coin.chainIdentifier))).toEqual(new Set([chainIdentifier]))
+    expect(coins.some(coin => coin.origin === 'subaccount')).toBe(true)
+    expect(coins.some(coin => coin.origin === 'change')).toBe(true)
+  } finally { await wallet.close() }
+})

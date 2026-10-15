@@ -5,13 +5,20 @@
 //! checkpoint, so a restart reopens exactly the history it served before. The address index maps
 //! the 20-byte account address to the key that hashes to it. A third table lists addresses in
 //! the order their first entry was accepted here, for the public "new accounts" listing.
+//!
+//! This facade owns row serialization, network keys and listing policy. Its concrete RocksDB
+//! adapter owns native handles and the four named atomic mutations; all runtime access uses
+//! that boundary. The v1 sidecar path, five column families, key bytes and serde rows remain
+//! unchanged, with no wire-format change or generator. Preview evidence remains separately
+//! owned: enrollment across these stores is not one transaction, and existing process-local
+//! coordination does not establish compare-and-set or shared-replica safety.
 use bitcoinsuite_error::{Result, WrapErr};
-use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, WriteBatch, WriteOptions};
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, OnceLock};
 
-use super::db::CF;
+mod rocks;
 use crate::directory_admission::Checkpoint;
+use rocks::{FirstPublication, ForwardBody, RocksDirectorySubjects};
 
 /// Directory inside the registry path holding this store.
 pub(crate) const STORE: &str = "directory-subjects-v1.rocksdb";
@@ -63,7 +70,7 @@ fn local_by_default() -> bool {
 
 /// Owns lazy sidecar opening; typed rows borrow the same database handle and lifetime.
 pub(super) struct Owner {
-    opened: OnceLock<rocksdb::DB>,
+    opened: OnceLock<RocksDirectorySubjects>,
     opening: Mutex<()>,
 }
 
@@ -87,37 +94,15 @@ impl Owner {
                 let path = std::fs::canonicalize(registry_path)
                     .wrap_err(super::db::DbError::RocksDb)?
                     .join(STORE);
-                let _ = self.opened.set(open(&path)?);
+                let _ = self.opened.set(RocksDirectorySubjects::open(&path)?);
             }
         }
         DbDirectorySubjects::new(self.opened.get().ok_or(super::db::DbError::RocksDb)?)
     }
 }
 
-/// Open the store, creating it on first use.
-fn open(path: &std::path::Path) -> Result<rocksdb::DB> {
-    let mut options = rocksdb::Options::default();
-    options.create_if_missing(true);
-    options.create_missing_column_families(true);
-    let cfs = [
-        CF_DIRECTORY_SUBJECTS_V1,
-        CF_DIRECTORY_ADDRESSES_V1,
-        CF_DIRECTORY_FIRST_ACCEPTED_V1,
-        CF_FORWARDS_V1,
-        CF_FORWARD_BODIES_V1,
-    ]
-    .iter()
-    .map(|name| ColumnFamilyDescriptor::new(*name, rocksdb::Options::default()));
-    Ok(rocksdb::DB::open_cf_descriptors(&options, path, cfs)?)
-}
-
 pub(crate) struct DbDirectorySubjects<'a> {
-    db: &'a rocksdb::DB,
-    subjects: &'a CF,
-    addresses: &'a CF,
-    first_accepted: &'a CF,
-    forwards: &'a CF,
-    forward_bodies: &'a CF,
+    store: &'a RocksDirectorySubjects,
 }
 /// One first-accepted row: its position, the time in Unix milliseconds, the address.
 pub(crate) type FirstAcceptedRow = ([u8; FIRST_ACCEPTED_POSITION_BYTES], u64, [u8; 20]);
@@ -141,26 +126,13 @@ fn key(network: &str, tail: &[u8]) -> Vec<u8> {
 }
 
 impl<'a> DbDirectorySubjects<'a> {
-    fn new(db: &'a rocksdb::DB) -> Result<Self> {
-        let cf = |name: &str| {
-            db.cf_handle(name)
-                .ok_or_else(|| super::db::DbError::NoSuchColumnFamily(name.to_string()))
-        };
-        Ok(Self {
-            db,
-            subjects: cf(CF_DIRECTORY_SUBJECTS_V1)?,
-            addresses: cf(CF_DIRECTORY_ADDRESSES_V1)?,
-            first_accepted: cf(CF_DIRECTORY_FIRST_ACCEPTED_V1)?,
-            forwards: cf(CF_FORWARDS_V1)?,
-            forward_bodies: cf(CF_FORWARD_BODIES_V1)?,
-        })
+    fn new(store: &'a RocksDirectorySubjects) -> Result<Self> {
+        store.check_columns()?;
+        Ok(Self { store })
     }
 
     pub(crate) fn get(&self, network: &str, subject: &[u8]) -> Result<Option<SubjectRow>> {
-        match self
-            .db
-            .get_pinned_cf(self.subjects, key(network, subject))?
-        {
+        match self.store.subject(&key(network, subject))? {
             Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
             None => Ok(None),
         }
@@ -176,24 +148,23 @@ impl<'a> DbDirectorySubjects<'a> {
         first: Option<(&[u8; 20], u64)>,
         row: &SubjectRow,
     ) -> Result<()> {
-        let mut batch = WriteBatch::default();
-        batch.put_cf(
-            self.subjects,
-            key(network, subject),
-            serde_json::to_vec(row)?,
-        );
-        if let Some((address, accepted_ms)) = first {
-            batch.put_cf(self.addresses, key(network, address), subject);
-            batch.put_cf(
-                self.first_accepted,
+        let first_keys = first.map(|(address, accepted_ms)| {
+            (
+                key(network, address),
                 key(network, &position(accepted_ms, address)),
-                [],
-            );
-        }
-        let mut options = WriteOptions::default();
-        options.set_sync(true);
-        self.db.write_opt(batch, &options)?;
-        Ok(())
+            )
+        });
+        self.store.put_subject(
+            &key(network, subject),
+            &serde_json::to_vec(row)?,
+            first_keys
+                .as_ref()
+                .map(|(address_key, position_key)| FirstPublication {
+                    address_key,
+                    subject,
+                    position_key,
+                }),
+        )
     }
 
     /// Forget a subject whose first entry was never accepted. `accepted_ms` is the time its
@@ -206,19 +177,12 @@ impl<'a> DbDirectorySubjects<'a> {
         address: &[u8; 20],
         accepted_ms: Option<u64>,
     ) -> Result<()> {
-        let mut batch = WriteBatch::default();
-        batch.delete_cf(self.subjects, key(network, subject));
-        batch.delete_cf(self.addresses, key(network, address));
-        if let Some(accepted_ms) = accepted_ms {
-            batch.delete_cf(
-                self.first_accepted,
-                key(network, &position(accepted_ms, address)),
-            );
-        }
-        let mut options = WriteOptions::default();
-        options.set_sync(true);
-        self.db.write_opt(batch, &options)?;
-        Ok(())
+        let position_key = accepted_ms.map(|ms| key(network, &position(ms, address)));
+        self.store.delete_subject(
+            &key(network, subject),
+            &key(network, address),
+            position_key.as_deref(),
+        )
     }
 
     pub(crate) fn subject_for_address(
@@ -227,16 +191,15 @@ impl<'a> DbDirectorySubjects<'a> {
         address: &[u8; 20],
     ) -> Result<Option<Vec<u8>>> {
         Ok(self
-            .db
-            .get_pinned_cf(self.addresses, key(network, address))?
-            .map(|bytes| bytes.to_vec())
+            .store
+            .address(&key(network, address))?
             .filter(|bytes| bytes.len() == 33))
     }
 
     /// Number of (local, replicated) subjects across all networks. One scan at startup.
     pub(crate) fn count(&self) -> Result<(u64, u64)> {
         let mut count = (0u64, 0u64);
-        for row in self.db.iterator_cf(self.subjects, IteratorMode::Start) {
+        for row in self.store.subjects()? {
             let (_, value) = row?;
             if serde_json::from_slice::<SubjectRow>(&value)?.local {
                 count.0 += 1;
@@ -257,10 +220,7 @@ impl<'a> DbDirectorySubjects<'a> {
         let start = prefix(network);
         let from = key(network, after.unwrap_or(&[]));
         let mut out = Vec::new();
-        for row in self
-            .db
-            .iterator_cf(self.subjects, IteratorMode::From(&from, Direction::Forward))
-        {
+        for row in self.store.subjects_from(&from)? {
             let (key, value) = row?;
             if !key.starts_with(&start) || key.len() != start.len() + 33 {
                 break;
@@ -288,10 +248,7 @@ impl<'a> DbDirectorySubjects<'a> {
         let start = prefix(network);
         let from = key(network, after);
         let mut out = Vec::new();
-        for row in self.db.iterator_cf(
-            self.first_accepted,
-            IteratorMode::From(&from, Direction::Forward),
-        ) {
+        for row in self.store.first_accepted_from(&from)? {
             if out.len() >= limit {
                 break;
             }
@@ -313,17 +270,14 @@ impl<'a> DbDirectorySubjects<'a> {
     }
 
     pub(crate) fn forward(&self, identity: &[u8; 32]) -> Result<Option<ForwardRow>> {
-        match self.db.get_pinned_cf(self.forwards, identity)? {
+        match self.store.forward(identity)? {
             Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
             None => Ok(None),
         }
     }
 
     pub(crate) fn forward_body(&self, identity: &[u8; 32]) -> Result<Option<Vec<u8>>> {
-        Ok(self
-            .db
-            .get_pinned_cf(self.forward_bodies, identity)?
-            .map(|bytes| bytes.to_vec()))
+        self.store.forward_body(identity)
     }
 
     /// Durably write the forward state and, the first time, the exact request bytes.
@@ -333,32 +287,23 @@ impl<'a> DbDirectorySubjects<'a> {
         row: &ForwardRow,
         body: Option<&[u8]>,
     ) -> Result<()> {
-        let mut batch = WriteBatch::default();
-        batch.put_cf(self.forwards, identity, serde_json::to_vec(row)?);
-        if let Some(body) = body {
-            batch.put_cf(self.forward_bodies, identity, body);
-        }
-        if row.done {
-            batch.delete_cf(self.forward_bodies, identity);
-        }
-        let mut options = WriteOptions::default();
-        options.set_sync(true);
-        self.db.write_opt(batch, &options)?;
-        Ok(())
+        let body = if row.done {
+            ForwardBody::Delete
+        } else {
+            body.map_or(ForwardBody::Keep, ForwardBody::Put)
+        };
+        self.store
+            .put_forward(identity, &serde_json::to_vec(row)?, body)
     }
 
     pub(crate) fn delete_forward(&self, identity: &[u8; 32]) -> Result<()> {
-        let mut batch = WriteBatch::default();
-        batch.delete_cf(self.forwards, identity);
-        batch.delete_cf(self.forward_bodies, identity);
-        self.db.write(batch)?;
-        Ok(())
+        self.store.delete_forward(identity)
     }
 
     /// Every forward this relay remembers. Bounded by the pending and history limits.
     pub(crate) fn forwards(&self) -> Result<Vec<([u8; 32], ForwardRow)>> {
         let mut out = Vec::new();
-        for row in self.db.iterator_cf(self.forwards, IteratorMode::Start) {
+        for row in self.store.forwards()? {
             let (key, value) = row?;
             if let Ok(identity) = <[u8; 32]>::try_from(&key[..]) {
                 out.push((identity, serde_json::from_slice(&value)?));
@@ -373,6 +318,7 @@ mod tests {
     use super::super::db::Db;
     use super::*;
     use crate::directory_admission::CheckpointKind;
+    use rocksdb::IteratorMode;
 
     fn subject_row() -> SubjectRow {
         SubjectRow {
@@ -415,7 +361,7 @@ mod tests {
                             &subject_row(),
                         )
                         .unwrap();
-                        rows.db as *const rocksdb::DB as usize
+                        rows.store as *const RocksDirectorySubjects as usize
                     })
                 })
                 .collect();
@@ -453,7 +399,7 @@ mod tests {
         let db = Db::open(&path)?;
         let sidecar = path.join(STORE);
         // Obstruct the path with a file while retaining a populated sidecar elsewhere.
-        let held = open(&sidecar)?;
+        let held = RocksDirectorySubjects::open(&sidecar)?;
         DbDirectorySubjects::new(&held)?.put(
             "monad-testnet",
             &[5; 33],
@@ -507,8 +453,7 @@ mod tests {
                 &subject_row(),
             )?;
             assert_eq!(
-                rows.db
-                    .get_cf(rows.subjects, key("monad-testnet", &[5; 33]))?,
+                rows.store.subject(&key("monad-testnet", &[5; 33]))?,
                 Some(serde_json::to_vec(&subject_row())?)
             );
             assert_eq!(
@@ -586,6 +531,12 @@ mod tests {
             names,
             false,
         )?)
+    }
+
+    fn raw_writable_store(path: &std::path::Path) -> Result<rocksdb::DB> {
+        let options = rocksdb::Options::default();
+        let names = rocksdb::DB::list_cf(&options, path)?;
+        Ok(rocksdb::DB::open_cf(&options, path, names)?)
     }
 
     fn raw_rows(db: &rocksdb::DB, name: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
@@ -799,7 +750,7 @@ mod tests {
                 .put("monad-testnet", &[2; 33], None, &subject_row())?;
         }
         {
-            let raw = open(&path.join(STORE))?;
+            let raw = raw_writable_store(&path.join(STORE))?;
             raw.put_cf(
                 raw.cf_handle("directory_addresses_v1").unwrap(),
                 persisted_key("monad-testnet", &[1; 20]),
@@ -825,7 +776,7 @@ mod tests {
             assert!(rows.get("monad-testnet", &[1; 32]).is_err());
         }
         {
-            let raw = open(&path.join(STORE))?;
+            let raw = raw_writable_store(&path.join(STORE))?;
             raw.put_cf(raw.cf_handle("forwards_v1").unwrap(), [2; 32], b"not json")?;
         }
         let db = Db::open(&path)?;
@@ -833,6 +784,45 @@ mod tests {
         assert!(rows.forward(&[2; 32]).is_err());
         assert!(rows.forwards().is_err());
         Ok(())
+    }
+
+    #[test]
+    fn subjects_typed_facade_uses_concrete_owner_without_native_rocks_access() {
+        let source = include_str!("directory_subjects.rs");
+        let facade = source.split("#[cfg(test)]").next().unwrap();
+        for native in [
+            "rocksdb::",
+            "WriteBatch",
+            "WriteOptions",
+            "IteratorMode",
+            "ColumnFamilyDescriptor",
+            "cf_handle(",
+            "get_pinned_cf(",
+            "iterator_cf(",
+            "write_opt(",
+        ] {
+            assert!(
+                !facade.contains(native),
+                "native persistence escaped adapter: {native}"
+            );
+        }
+        assert!(facade.contains("opened: OnceLock<RocksDirectorySubjects>"));
+        assert!(facade.contains("store: &'a RocksDirectorySubjects"));
+        for operation in [
+            "put_subject(",
+            "delete_subject(",
+            "put_forward(",
+            "delete_forward(",
+        ] {
+            assert!(
+                facade.contains(operation),
+                "missing runtime owner operation: {operation}"
+            );
+        }
+        // General Db returns this typed facade; the extracted owner is an actual runtime path.
+        let db = include_str!("db.rs");
+        assert!(db.contains("Result<super::directory_subjects::DbDirectorySubjects<'_>>"));
+        assert!(db.contains("self.directory_subjects.rows(self.db.path())"));
     }
 
     #[test]

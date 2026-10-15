@@ -73,7 +73,7 @@
         :stamp-unavailable="stampUnavailable"
         @resetStampDefault="resetStampDefault"
         @sendReply="sendEmailReply"
-        @navigateThread="navigateThread"
+        @navigateThread="navigateEmailThread"
         @archiveThread="archiveCurrentThread"
       />
       <q-page v-else class="chat-page-background column no-wrap">
@@ -1537,32 +1537,28 @@ export default defineComponent({
       ;(this.$refs.chatInput as { focus?: () => void } | undefined)?.focus?.()
     },
     findAdjacentThreadId(direction: -1 | 1): string | null {
-      const list = (this.chatStore?.getLatestChats ?? []).filter(
-        (item: { address: string }) => {
-          const conv =
-            this.chatStore?.conversations?.[item.address] ??
-            this.chatStore?.chats?.[item.address]
-          return conv?.screenerStatus !== 'dismissed'
-        },
+      const list = this.chatStore.getSortedChatOrder.filter(
+        conversation => conversation.screenerStatus !== 'dismissed',
       )
       if (list.length === 0) return null
       const currentId = this.conversation?.id || this.address
-      const currentIdx = list.findIndex(
-        (item: { address: string }) =>
-          item.address === currentId || this.matchesConversation(item.address),
-      )
+      const currentIdx = list.findIndex(item => item.id === currentId)
       if (currentIdx === -1) {
-        return list[0]?.address ?? null
+        return list[0]?.id ?? null
       }
       const nextIdx = currentIdx + direction
       if (nextIdx < 0 || nextIdx >= list.length) return null
-      return list[nextIdx]?.address ?? null
+      return list[nextIdx]?.id ?? null
     },
     navigateThread(direction: -1 | 1) {
       const nextId = this.findAdjacentThreadId(direction)
       if (nextId) {
         void openChat(this.$router, nextId)
       }
+    },
+    navigateEmailThread(direction: 'next' | 'prev') {
+      if (direction === 'next') this.navigateThread(1)
+      else if (direction === 'prev') this.navigateThread(-1)
     },
     archiveCurrentThread() {
       if (this.isScreenerThread) {

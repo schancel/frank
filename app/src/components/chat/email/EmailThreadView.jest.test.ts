@@ -9,6 +9,7 @@ import type { EmailItem } from '@frank/cashweb/types/messages'
 import { useSettingsStore } from 'src/stores/settings'
 import { useProfileStore } from 'src/stores/my-profile'
 import { encodeEmailMessageItem } from '@frank/codec'
+import type { EmailAttachment } from '@frank/codec'
 
 const mockOwnAddress = ref<string | null>(
   '0x1111111111111111111111111111111111111111',
@@ -163,6 +164,33 @@ describe('EmailThreadView', () => {
       },
     })
   }
+
+  const attachmentSizes: [number | undefined, string][] = [
+    [undefined, '0 B'],
+    [0, '0 B'],
+    [2048, '2 KB'],
+  ]
+  it.each(attachmentSizes)(
+    'preserves received attachment size display for %p bytes',
+    (sizeBytes, expected) => {
+      const attachment: EmailAttachment = {
+        filename: 'size.txt',
+        contentType: 'text/plain',
+        ...(sizeBytes === undefined ? {} : { sizeBytes }),
+      }
+      const email: EmailItem = { ...sampleEmail2, attachments: [attachment] }
+      const message: ChatMessage = { ...messages[1], items: [email] }
+      const wrapper = mountView({
+        messages: [message],
+        conversation: { ...conversation, messages: [message] },
+      })
+      const chip = wrapper
+        .findAll('.q-chip')
+        .find(node => node.text().includes('size.txt'))
+      expect(chip?.text()).toContain(`(${expected})`)
+      wrapper.unmount()
+    },
+  )
 
   it('renders thread subject and parses emails correctly', () => {
     const wrapper = mountView()

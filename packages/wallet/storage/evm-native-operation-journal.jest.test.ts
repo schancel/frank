@@ -424,6 +424,156 @@ describe('durable EVM native journal', () => {
     ).toBe(raw)
     expect(journal.get(row.operationId).members[0]!.exposed).toBe(false)
   })
+  it.each([
+    'old-row',
+    'old-manifest',
+    'missing',
+    'negative',
+    'fractional',
+    'overflow',
+    'string',
+  ])(
+    'rejects unsupported format/counter %s without modifying retained signed/exposed bytes',
+    async problem => {
+      const row = await signed()
+      await journal.markExposed(row.operationId, 0)
+      await journal.recordObservation(
+        journal.beginCapture(row.operationId, 0),
+        { state: 'pending' },
+        account,
+      )
+      await journal.Close()
+      const db = level(join(root, 'evm-native-operations-v1'))
+      const key = `operation:${row.operationId}`
+      if (problem === 'old-manifest') {
+        const manifest = JSON.parse(String(await db.get('manifest')))
+        manifest.version = 1
+        await db.put('manifest', JSON.stringify(manifest))
+      } else {
+        const retained = JSON.parse(String(await db.get(key)))
+        if (problem === 'old-row') {
+          retained.version = 1
+          delete retained.members[0].observationGeneration
+        } else if (problem === 'missing')
+          delete retained.members[0].observationGeneration
+        else
+          retained.members[0].observationGeneration = {
+            negative: -1,
+            fractional: 0.5,
+            overflow: Number.MAX_SAFE_INTEGER + 1,
+            string: '1',
+          }[problem]
+        await db.put(key, JSON.stringify(retained))
+      }
+      const before = []
+      for await (const entry of db.iterator()) before.push(entry.map(String))
+      await db.close()
+      await expect(journal.Open()).rejects.toThrow(/invalid/)
+      expect(() => journal.list()).toThrow(/closed/)
+      const check = level(join(root, 'evm-native-operations-v1'))
+      try {
+        const after = []
+        for await (const entry of check.iterator())
+          after.push(entry.map(String))
+        expect(after).toEqual(before)
+      } finally {
+        await check.close()
+      }
+    },
+  )
+  it('reserves the largest generation and refuses overflow atomically while allowing identical evidence', async () => {
+    const row = await signed()
+    expect(row.version).toBe(2)
+    expect(row.members[0]!.observationGeneration).toBe(0)
+    await journal.markExposed(row.operationId, 0)
+    await journal.Close()
+    const db = level(join(root, 'evm-native-operations-v1'))
+    const key = `operation:${row.operationId}`
+    const retained = JSON.parse(String(await db.get(key)))
+    retained.members[0].observationGeneration = Number.MAX_SAFE_INTEGER
+    await db.put(key, JSON.stringify(retained))
+    expect(JSON.parse(String(await db.get('manifest'))).version).toBe(2)
+    await db.close()
+    await journal.Open()
+    const before = journal.get(row.operationId)
+    expect(before.reservedBytes).toBe(row.reservedBytes)
+    expect(Buffer.byteLength(JSON.stringify(before))).toBeLessThanOrEqual(
+      row.reservedBytes,
+    )
+    expect(
+      await journal.recordObservation(
+        journal.beginCapture(row.operationId, 0),
+        { state: 'unknown' },
+        null,
+      ),
+    ).toBe(true)
+    await expect(
+      journal.recordObservation(
+        journal.beginCapture(row.operationId, 0),
+        { state: 'pending' },
+        account,
+      ),
+    ).rejects.toThrow(/capacity/)
+    expect(journal.get(row.operationId)).toEqual(before)
+    await reopen()
+    expect(journal.get(row.operationId)).toEqual(before)
+  })
+  it.each(['failed', 'lost acknowledgement'])(
+    'recovers atomic evidence/generation after a %s observation write',
+    async outcome => {
+      const row = await signed()
+      await journal.markExposed(row.operationId, 0)
+      const original = durability.durablePut
+      jest
+        .spyOn(durability, 'durablePut')
+        .mockImplementationOnce(async (...args) => {
+          if (outcome === 'lost acknowledgement') await original(...args)
+          throw new Error('observation write uncertain')
+        })
+      await expect(
+        journal.recordObservation(
+          journal.beginCapture(row.operationId, 0),
+          { state: 'pending' },
+          account,
+        ),
+      ).rejects.toThrow('observation write uncertain')
+      expect(() => journal.list()).toThrow(/uncertain/)
+      await reopen()
+      expect(journal.get(row.operationId).members[0]).toMatchObject({
+        signed: row.members[0]!.signed,
+        exposed: true,
+        observationGeneration: outcome === 'failed' ? 0 : 1,
+        observation: { state: outcome === 'failed' ? 'unknown' : 'pending' },
+        account: outcome === 'failed' ? null : account,
+      })
+    },
+  )
+  it('increments for account-only changes and discard, preserving order after reopen', async () => {
+    const row = await signed()
+    await journal.recordObservation(
+      journal.beginCapture(row.operationId, 0),
+      { state: 'unknown' },
+      account,
+    )
+    expect(journal.get(row.operationId).members[0]!.observationGeneration).toBe(
+      1,
+    )
+    await journal.recordObservation(
+      journal.beginCapture(row.operationId, 0),
+      { state: 'unknown' },
+      { ...account, balanceWei: '9999' },
+    )
+    expect(journal.get(row.operationId).members[0]!.observationGeneration).toBe(
+      2,
+    )
+    await journal.discardUnexposed(row.operationId)
+    await reopen()
+    expect(journal.get(row.operationId).members[0]).toMatchObject({
+      observationGeneration: 3,
+      account: null,
+      observation: { state: 'unknown' },
+    })
+  })
   it('does not overwrite newer observations or accept captures from a closed owner', async () => {
     const row = await signed()
     const old = journal.beginCapture(row.operationId, 0)

@@ -189,6 +189,8 @@ it.each([
     ).toBe(true)
     await b.refreshPreparation('stealth-payment:observer-race')
     const stale = b.beginCapture(row.operationId, 0)
+    const stableGeneration = a.get(row.operationId).members[0]!
+      .observationGeneration
     // Equivalent evidence with a different property order remains the same basis.
     await a.recordObservation(
       a.beginCapture(row.operationId, 0),
@@ -209,12 +211,102 @@ it.each([
     )
     await a.markSyncApplied(row.operationId, 0)
     expect(await b.recordObservation(stale, inclusion, account)).toBe(true)
+    expect(b.get(row.operationId).members[0]!.observationGeneration).toBe(
+      stableGeneration,
+    )
     await a.refreshPreparation('stealth-payment:observer-race')
     expect(a.get(row.operationId).members[0]).toMatchObject({
       signed,
       exposed: true,
       syncApplied: true,
     })
+
+    // A durable A -> B -> exact A must invalidate evidence captured before B.
+    // Reopen the changing wrapper while the other wrapper keeps its capture.
+    await b.refreshPreparation('stealth-payment:observer-race')
+    const beforeAba = b.beginCapture(row.operationId, 0)
+    await a.recordObservation(
+      a.beginCapture(row.operationId, 0),
+      { state: 'pending' },
+      account,
+    )
+    await a.Close()
+    await a.Open()
+    await a.recordObservation(
+      a.beginCapture(row.operationId, 0),
+      inclusion,
+      account,
+    )
+    await a.markSyncApplied(row.operationId, 0)
+    const beforeStale = a.get(row.operationId)
+    expect(beforeStale.members[0]!.observationGeneration).toBe(
+      stableGeneration + 2,
+    )
+    expect(
+      await b.recordObservation(beforeAba, { state: 'missing' }, account),
+    ).toBe(false)
+    await a.refreshPreparation('stealth-payment:observer-race')
+    expect(a.get(row.operationId)).toEqual(beforeStale)
+
+    // The real observer must discard its answer, without refreshing its capture and
+    // reusing that answer, when another wrapper completes ABA during its RPC reads.
+    await b.refreshPreparation('stealth-payment:observer-race')
+    let observerReading!: () => void, observerResume!: () => void
+    const observerStarted = new Promise<void>(r => (observerReading = r))
+    const observerNetwork = new Promise<void>(r => (observerResume = r))
+    const delayedRead = jest
+      .spyOn(provider, 'getTransaction')
+      .mockImplementationOnce(async () => {
+        observerReading()
+        await observerNetwork
+        return null
+      })
+    const duringAba = executor.observe(row.operationId, 0)
+    try {
+      await observerStarted
+      await a.recordObservation(
+        a.beginCapture(row.operationId, 0),
+        { state: 'pending' },
+        account,
+      )
+      await a.Close()
+      await a.Open()
+      await a.recordObservation(
+        a.beginCapture(row.operationId, 0),
+        inclusion,
+        account,
+      )
+      await a.markSyncApplied(row.operationId, 0)
+      const durableAfterAba = a.get(row.operationId)
+      observerResume()
+      await duringAba
+      await a.refreshPreparation('stealth-payment:observer-race')
+      expect(a.get(row.operationId)).toEqual(durableAfterAba)
+    } finally {
+      observerResume()
+      await duringAba
+      delayedRead.mockRestore()
+    }
+
+    // Two wrappers that captured one generation can commit only one changing answer.
+    const contenderA = a.beginCapture(row.operationId, 0)
+    const contenderB = b.beginCapture(row.operationId, 0)
+    expect(
+      await Promise.all([
+        a.recordObservation(contenderA, { state: 'pending' }, account),
+        b.recordObservation(contenderB, { state: 'missing' }, account),
+      ]),
+    ).toEqual([true, false])
+    // Reusing the losing evidence cannot succeed; fresh capture requires fresh RPC at its caller.
+    expect(
+      await b.recordObservation(contenderB, { state: 'missing' }, account),
+    ).toBe(false)
+    await a.recordObservation(
+      a.beginCapture(row.operationId, 0),
+      inclusion,
+      account,
+    )
+    await b.refreshPreparation('stealth-payment:observer-race')
 
     // Reorg evidence is bound to the currently persisted inclusion, even when
     // another wrapper captured its observation before a newer inclusion committed.

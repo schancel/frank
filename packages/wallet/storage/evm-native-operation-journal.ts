@@ -81,6 +81,8 @@ export interface EvmNativeMemberPlan {
 export interface EvmNativeMember extends EvmNativeMemberPlan {
   signed: { rawTransaction: string; transactionHash: string } | null
   exposed: boolean
+  /** Durable local evidence order; unrelated acknowledgements do not advance it. */
+  observationGeneration: number
   observation: EvmNativeObservation
   account: EvmNativeAccountObservation | null
   syncApplied: boolean
@@ -143,7 +145,7 @@ function validateRecord(value: unknown, kind: unknown): EvmContractCallRecord {
   return clone(value) as EvmContractCallRecord
 }
 export interface EvmNativeOperation {
-  version: 1
+  version: 2
   operationId: string
   binding: EvmNativeBinding
   kind: EvmNativeOperationKind
@@ -158,12 +160,7 @@ export interface EvmNativeOperation {
   members: EvmNativeMember[]
   cancelled: boolean
   reservedBytes: number
-  /**
-   * A contract call's record, written with the plan and so before anything is signed. Only a
-   * contract call that was given one has the key at all: a row without a record (every native
-   * and legacy send, and every row written before records existed) is the same row it always
-   * was, so adding the field needed no new journal version and no reset.
-   */
+  /** A contract call's record, persisted with its plan before signing. */
   record?: EvmContractCallRecord
 }
 export interface EvmNativePlan {
@@ -200,6 +197,7 @@ export class EvmNativeJournalError extends Error {
     this.name = 'EvmNativeJournalError'
   }
 }
+// Retain the physical namespace so unsupported old journals fail visibly, never hide them.
 const COMPONENT = 'evm-native-operations-v1'
 const UINT_MAX = (1n << 256n) - 1n
 const MAX_MEMBERS = 64
@@ -379,6 +377,7 @@ function reservation(row: EvmNativeOperation): number {
     },
     exposed: false,
     syncApplied: false,
+    observationGeneration: Number.MAX_SAFE_INTEGER,
     observation: {
       state: 'included-success',
       transactionHash: '0x' + 'f'.repeat(64),
@@ -443,7 +442,7 @@ function validateRow(
   )
     fail()
   if (
-    row.version !== 1 ||
+    row.version !== 2 ||
     typeof row.operationId !== 'string' ||
     !/^evm-native-v1:[0-9a-f]{16}$/.test(row.operationId)
   )
@@ -473,6 +472,7 @@ function validateRow(
       'dependencies',
       'signed',
       'exposed',
+      'observationGeneration',
       'observation',
       'account',
       'syncApplied',
@@ -523,6 +523,7 @@ function validateRow(
       )
         fail('invalid', 'signature')
     } else if (member.exposed || member.syncApplied) fail()
+    integer(member.observationGeneration)
     const observation = checked('observation', () =>
       validateObservation(member.observation),
     )
@@ -615,7 +616,7 @@ export class EvmNativeOperationJournal {
   private tail: Promise<unknown> = Promise.resolve()
   private captures = new Map<
     string,
-    { capture: EvmNativeCapture; basis: string }
+    { capture: EvmNativeCapture; basis: string; generation: number }
   >()
   readonly binding: EvmNativeBinding
   private readonly maxRecords: number
@@ -691,7 +692,7 @@ export class EvmNativeOperationJournal {
     let nextSequence = 1
     if (manifest !== undefined) {
       const m = object(manifest, ['version', 'binding', 'nextSequence'])
-      if (m.version !== 1) fail()
+      if (m.version !== 2) fail()
       if (
         JSON.stringify(validateBinding(m.binding)) !==
         JSON.stringify(this.binding)
@@ -767,7 +768,7 @@ export class EvmNativeOperationJournal {
   }
   private manifest() {
     return {
-      version: 1,
+      version: 2,
       binding: this.binding,
       nextSequence: this.nextSequence,
     }
@@ -872,7 +873,7 @@ export class EvmNativeOperationJournal {
         )
           fail('capacity')
         const row: EvmNativeOperation = {
-          version: 1,
+          version: 2,
           operationId: `evm-native-v1:${this.nextSequence
             .toString(16)
             .padStart(16, '0')}`,
@@ -902,6 +903,7 @@ export class EvmNativeOperationJournal {
             ...m,
             signed: null,
             exposed: false,
+            observationGeneration: 0,
             observation: { state: 'unknown' },
             account: null,
             syncApplied: false,
@@ -960,7 +962,19 @@ export class EvmNativeOperationJournal {
         // Mutation owns only its changed fields; the current durable row owns all other facts.
         await this.reloadRows(false)
         const row = this.get(id)
+        const priorEvidence = row.members.map(m =>
+          this.observationValueBasis(m),
+        )
         if (change(row) === false) return row
+        // Every observation/account mutation commits its ordering counter in the same row.
+        // Overflow refuses the whole mutation before any bytes or cached facts change.
+        row.members.forEach((m, index) => {
+          if (this.observationValueBasis(m) !== priorEvidence[index]) {
+            if (m.observationGeneration === Number.MAX_SAFE_INTEGER)
+              fail('capacity')
+            m.observationGeneration++
+          }
+        })
         const validated = validateRow(row, this.binding)
         try {
           if (this.database)
@@ -1052,15 +1066,24 @@ export class EvmNativeOperationJournal {
     this.captures.set(`${operationId}:${memberIndex}`, {
       capture,
       basis: this.observationBasis(row.members[memberIndex]!),
+      generation: row.members[memberIndex]!.observationGeneration,
     })
     return capture
   }
-  /** Compare evidence, not whole rows: exposure and sync acknowledgements may advance
-   * during RPC reads. This is an equality precondition, not historical/ABA ordering. */
+  /** Signed affinity plus evidence equality complements the durable generation guard. */
   private observationBasis(member: EvmNativeMember): string {
-    const { signed, observation, account } = member
     return JSON.stringify([
-      signed && [signed.rawTransaction, signed.transactionHash],
+      member.signed && [
+        member.signed.rawTransaction,
+        member.signed.transactionHash,
+      ],
+      this.observationValueBasis(member),
+    ])
+  }
+  /** Stable field projection: property order and acknowledgement writes are immaterial. */
+  private observationValueBasis(member: EvmNativeMember): string {
+    const { observation, account } = member
+    return JSON.stringify([
       observation.state,
       'blockNumber' in observation && [
         observation.transactionHash,
@@ -1110,6 +1133,7 @@ export class EvmNativeOperationJournal {
       if (
         row.cancelled ||
         !m?.signed ||
+        m.observationGeneration !== expected.generation ||
         this.observationBasis(m) !== expected.basis
       )
         return false

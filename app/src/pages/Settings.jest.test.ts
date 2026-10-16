@@ -169,6 +169,8 @@ jest.mock('src/utils/apply-locale', () => ({
 }))
 
 import SettingsPage from './Settings.vue'
+import { applyLocale } from 'src/utils/apply-locale'
+import { messages } from 'src/i18n'
 
 const Blank = { render: () => null }
 
@@ -200,6 +202,7 @@ function mountSettings(
   router: Router,
   qMocks: Record<string, any> = {},
   renderNetworks = false,
+  translate: (key: string) => string = key => key,
 ) {
   return shallowMount(SettingsPage, {
     global: {
@@ -210,6 +213,7 @@ function mountSettings(
                 'q-page-container',
                 'q-page',
                 'q-card',
+                'q-card-actions',
                 'q-tab-panels',
                 'q-tab-panel',
                 'q-list',
@@ -221,6 +225,11 @@ function mountSettings(
           : {}),
         QSplitter: {
           template: '<div><slot name="before" /><slot name="after" /></div>',
+        },
+        QSelect: {
+          props: ['modelValue', 'options', 'label'],
+          emits: ['update:modelValue'],
+          template: `<label>{{ label }}<select :value="modelValue" @change="$emit('update:modelValue', $event.target.value)"><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>`,
         },
         QInput: {
           props: ['modelValue', 'error', 'errorMessage'],
@@ -237,7 +246,7 @@ function mountSettings(
         },
       },
       mocks: {
-        $t: (key: string) => key,
+        $t: translate,
         $q: { dark: { set: jest.fn() }, notify: jest.fn(), ...qMocks },
         $i18n: { locale: 'en-us' },
         $router: router,
@@ -773,3 +782,99 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
     })
   })
 })
+
+describe('Settings language preference drafts', () => {
+  beforeEach(() => {
+    mockAppearanceStore.locale = 'fr-fr'
+    jest.mocked(applyLocale).mockClear()
+  })
+
+  it('cancels an automatic draft without changing the saved language', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router, {}, true)
+    const vm = wrapper.vm as unknown as { locale: string; cancel(): void }
+    const selector = wrapper
+      .findAll('select')
+      .find(item => item.find('option[value="auto"]').exists())!
+    await selector.setValue('auto')
+    await wrapper.vm.$nextTick()
+    expect(mockAppearanceStore.locale).toBe('fr-fr')
+    expect(applyLocale).not.toHaveBeenCalled()
+    await wrapper
+      .findAll('button')
+      .find(button => button.text() === 'settings.cancelSettings')!
+      .trigger('click')
+    expect(vm.locale).toBe('fr-fr')
+    expect(mockAppearanceStore.locale).toBe('fr-fr')
+    wrapper.unmount()
+  })
+
+  it.each(['auto', 'tl-ph', 'es-es', 'vi-vn', 'zh-cn', 'zh-tw'])(
+    'Save commits preference %s and applies it through the shared locale boundary',
+    async locale => {
+      const router = await openDirectly('#/settings')
+      const wrapper = mountSettings(router, {}, true)
+      const vm = wrapper.vm as unknown as {
+        locale: string
+        save(): void
+        localeOptions: Array<{ value: string; label: string }>
+      }
+      expect(vm.localeOptions[0]).toEqual({
+        value: 'auto',
+        label: 'settings.languageAutomatic',
+      })
+      expect(vm.localeOptions.map(option => option.value)).toContain(locale)
+      const selector = wrapper
+        .findAll('select')
+        .find(item => item.find('option[value="auto"]').exists())!
+      await selector.setValue(locale)
+      await wrapper.vm.$nextTick()
+      expect(mockAppearanceStore.locale).toBe('fr-fr')
+      await wrapper
+        .findAll('button')
+        .find(button => button.text() === 'settings.saveSettings')!
+        .trigger('click')
+      expect(mockAppearanceStore.locale).toBe(locale)
+      expect(applyLocale).toHaveBeenCalledWith(
+        expect.objectContaining({ locale }),
+      )
+      wrapper.unmount()
+    },
+  )
+})
+
+it.each(['tl-ph', 'es-es', 'vi-vn', 'zh-cn', 'zh-tw'] as const)(
+  'renders the real %s Settings catalog and all language labels',
+  async locale => {
+    const router = await openDirectly('#/settings')
+    const catalog = messages[locale]
+    const translate = (key: string) => {
+      const value = key
+        .split('.')
+        .reduce<unknown>(
+          (node, part) =>
+            node && typeof node === 'object'
+              ? (node as Record<string, unknown>)[part]
+              : undefined,
+          catalog,
+        )
+      return typeof value === 'string' ? value : key
+    }
+    const wrapper = mountSettings(router, {}, true, translate)
+    const selector = wrapper
+      .findAll('select')
+      .find(item => item.find('option[value="auto"]').exists())!
+    expect(selector.text()).toContain(catalog.settings.languageAutomatic)
+    for (const label of [
+      'Tagalog',
+      'Español',
+      'Tiếng Việt',
+      '简体中文',
+      '繁體中文',
+    ]) {
+      expect(selector.text()).toContain(label)
+    }
+    expect(wrapper.text()).toContain(catalog.settings.languageSelectorCaption)
+    wrapper.unmount()
+  },
+)

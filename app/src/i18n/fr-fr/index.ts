@@ -1509,6 +1509,7 @@ export default {
     saveSettings: 'Enregistrer',
     savedNotification: 'Paramètres enregistrés',
     cancelSettings: 'Annuler',
+    languageAutomatic: 'Automatique (langue du navigateur)',
     languageSelectorCaption: 'Langue',
     networkSettings: 'Paramètres réseau et passerelle',
     emailGatewayAddress: 'Adresse de la passerelle e-mail',

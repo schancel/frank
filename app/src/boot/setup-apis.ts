@@ -4,7 +4,7 @@ import { reactive, watch } from 'vue'
 import { setStartupRestoration } from './startup-state'
 import { store as messageStore } from '../adapters/level-message-store'
 import { applyLocale } from '../utils/apply-locale'
-import { defaultLocale, messages } from '../i18n'
+import { defaultLocalePreference } from '../i18n'
 import { useWalletStore } from '../stores/wallet'
 import { useProfileStore } from '../stores/my-profile'
 import { useContactStore } from '../stores/contacts'
@@ -18,7 +18,7 @@ import { accountSession, accountStatus } from '../accounts/session'
 export default boot(async ({ app }) => {
   const status = reactive({ loaded: false, setup: false })
   app.config.globalProperties.$status = status
-  applyLocale({ $q: Quasar, locale: defaultLocale })
+  applyLocale({ $q: Quasar, locale: defaultLocalePreference })
   try {
     // Wallet inspection remains first and never hydrates secrets.
     await useWalletStore().restored
@@ -46,10 +46,22 @@ export default boot(async ({ app }) => {
       ),
     )
     if (results[2]) {
-      const locale = useAppearanceStore().locale
-      if (Object.prototype.hasOwnProperty.call(messages, locale)) {
-        applyLocale({ $q: Quasar, locale })
+      const appearance = useAppearanceStore()
+      const updateLocale = () =>
+        applyLocale({ $q: Quasar, locale: appearance.locale })
+      const stopLocaleWatch = watch(() => appearance.locale, updateLocale, {
+        immediate: true,
+      })
+      const onLanguageChange = () => {
+        if (appearance.locale === 'auto') updateLocale()
       }
+      if (typeof window !== 'undefined')
+        window.addEventListener('languagechange', onLanguageChange)
+      app.onUnmount(() => {
+        stopLocaleWatch()
+        if (typeof window !== 'undefined')
+          window.removeEventListener('languagechange', onLanguageChange)
+      })
     }
     if (results.some(success => !success)) {
       setStartupRestoration({ phase: 'failed', reason: 'state-restore-failed' })

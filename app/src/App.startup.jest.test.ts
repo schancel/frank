@@ -84,7 +84,7 @@ function mockDatabase(path: string) {
   if (!db) {
     db = memoryDatabase()
     // Existing current-format message storage. Fresh/unsupported Open behavior is a separate predecessor.
-    if (path.endsWith('/metadata')) db.data.set('schemaVersion', '2')
+    if (path.endsWith('/metadata')) db.data.set('schemaVersion', '3')
     if (path.endsWith('/messages')) db.data.set('lastServerTime', '100')
     mockDatabases.set(path, db)
   }
@@ -243,7 +243,7 @@ async function fixture(
 ) {
   await messageStorePromise
   for (const db of mockDatabases.values()) db.data.clear()
-  mockDatabase('MessageStore/metadata').data.set('schemaVersion', '2')
+  mockDatabase('MessageStore/metadata').data.set('schemaVersion', '3')
   mockDatabase('MessageStore/messages').data.set('lastServerTime', '100')
   const storage = mockDatabase('synthetic-app')
   storage.data.set('appearance', JSON.stringify({ locale, darkMode: false }))
@@ -259,7 +259,9 @@ async function fixture(
       admit ? admit(storage) : NativePromise.resolve(metadata),
     ),
   )
-  const app = createApp({}).use(pinia).use(i18n)
+  const app = createApp({ render: () => null })
+    .use(pinia)
+    .use(i18n)
   setActivePinia(pinia)
   return {
     pinia,
@@ -889,6 +891,73 @@ describe('visible read-only startup failure', () => {
       assertNoWrites(snapshot)
     },
   )
+
+  it('starts an unsaved appearance automatically without persisting a detected default', async () => {
+    const languages = jest
+      .spyOn(navigator, 'languages', 'get')
+      .mockReturnValue(['es-MX'])
+    const { app, storage } = await fixture()
+    app.mount(document.createElement('div'))
+    storage.data.delete('appearance')
+    const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+    try {
+      await setupApis({ app })
+      expect(startupRestoration.value.phase).toBe('restored')
+      expect(useAppearanceStore().locale).toBe('auto')
+      expect(i18n.global.locale).toBe('es-es')
+      expect(document.documentElement.lang).toBe('es-es')
+      expect(Quasar.lang.set).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isoName: 'es' }),
+      )
+      assertNoWrites(snapshot)
+    } finally {
+      app.unmount()
+      languages.mockRestore()
+    }
+  })
+
+  it('follows browser language changes only while automatic, without persisting derived locales', async () => {
+    const languages = jest
+      .spyOn(navigator, 'languages', 'get')
+      .mockReturnValue(['fil-PH'])
+    const { app } = await fixture('auto')
+    app.mount(document.createElement('div'))
+    const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+    try {
+      await setupApis({ app })
+      expect(useAppearanceStore().locale).toBe('auto')
+      expect(i18n.global.locale).toBe('tl-ph')
+      expect(document.documentElement.lang).toBe('tl-ph')
+      expect(Quasar.lang.set).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isoName: 'tl' }),
+      )
+      assertNoWrites(snapshot)
+      languages.mockReturnValue(['zh-Hant-CN'])
+      window.dispatchEvent(new Event('languagechange'))
+      expect(i18n.global.locale).toBe('zh-tw')
+      expect(document.documentElement.lang).toBe('zh-tw')
+      expect(useAppearanceStore().locale).toBe('auto')
+      expect(Quasar.lang.set).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isoName: 'zh-TW' }),
+      )
+      assertNoWrites(snapshot)
+      useAppearanceStore().locale = 'fr-fr'
+      await nextTick()
+      languages.mockReturnValue(['vi'])
+      window.dispatchEvent(new Event('languagechange'))
+      expect(i18n.global.locale).toBe('fr-fr')
+      useAppearanceStore().locale = 'auto'
+      await nextTick()
+      expect(i18n.global.locale).toBe('vi-vn')
+      expect(document.documentElement.lang).toBe('vi-vn')
+      expect(Quasar.lang.set).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isoName: 'vi' }),
+      )
+    } finally {
+      app.unmount()
+      languages.mockRestore()
+    }
+  })
 
   it.each(['en-us', 'fr-fr'])(
     'restores a fresh valid %s profile, starts normal services and mounts the unchanged runtime',

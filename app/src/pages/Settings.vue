@@ -637,7 +637,6 @@ export default defineComponent({
       storeTheme,
       storeUpdateInterval,
       storeLocale,
-      localeOptions,
       emailGatewayInput,
       emailGatewayError,
       notificationFeeThresholdAvu,
@@ -672,6 +671,12 @@ export default defineComponent({
     }
   },
   computed: {
+    localeOptions() {
+      return [
+        { value: 'auto', label: this.$t('settings.languageAutomatic') },
+        ...localeOptions,
+      ]
+    },
     selectedThemeDescription(): string {
       const selected = SIGNET_THEMES[this.theme]
       return selected ? selected.tagline : ''

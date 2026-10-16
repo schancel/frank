@@ -1473,6 +1473,7 @@ export default {
     saveSettings: 'Save',
     savedNotification: 'Settings saved',
     cancelSettings: 'Cancel',
+    languageAutomatic: 'Automatic (browser language)',
     languageSelectorCaption: 'Language',
     networkSettings: 'Network & Gateway Settings',
     emailGatewayAddress: 'Email Gateway Address',

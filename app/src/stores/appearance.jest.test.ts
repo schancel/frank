@@ -7,7 +7,7 @@ import {
   State,
   useAppearanceStore,
 } from './appearance'
-import { defaultLocale } from 'src/i18n'
+import { defaultLocalePreference } from 'src/i18n/locale'
 import { DEFAULT_SIGNET_THEME } from 'src/utils/theme'
 
 function fakeStorage(initial: Record<string, string> = {}): LevelDB {
@@ -29,9 +29,9 @@ beforeEach(() => {
 })
 
 describe('useAppearanceStore', () => {
-  it('defaults to the app default locale and carnelian theme', () => {
+  it('defaults to the automatic language preference and carnelian theme', () => {
     const store = useAppearanceStore()
-    expect(store.locale).toBe(defaultLocale)
+    expect(store.locale).toBe(defaultLocalePreference)
     expect(store.theme).toBe(DEFAULT_SIGNET_THEME)
   })
 })
@@ -41,27 +41,41 @@ describe('useAppearanceStore', () => {
  * exercises the exact `save`/`restore` pair `boot/pinia.ts`'s generic plugin calls, directly.
  */
 describe('saveAppearance / restoreAppearance', () => {
-  it('round-trips locale and theme (and every other field) through storage', async () => {
-    const storage = fakeStorage()
-    const state: State = {
-      darkMode: true,
-      lastDismissed: 42,
-      locale: 'fr-fr',
-      theme: 'lapis',
-    }
+  it.each([
+    'auto',
+    'en-us',
+    'fr-fr',
+    'tl-ph',
+    'es-es',
+    'vi-vn',
+    'zh-cn',
+    'zh-tw',
+  ])(
+    'round-trips saved preference %s without replacing it on read',
+    async locale => {
+      const storage = fakeStorage()
+      const state: State = {
+        darkMode: true,
+        lastDismissed: 42,
+        locale,
+        theme: 'lapis',
+      }
 
-    await saveAppearance(storage, state)
-    const restored = await restoreAppearance(storage)
+      await saveAppearance(storage, state)
+      const restored = await restoreAppearance(storage)
 
-    expect(restored).toEqual(state)
-  })
+      expect(restored).toEqual(state)
+    },
+  )
 
   it('falls back to an empty object when nothing was ever saved', async () => {
     const storage = fakeStorage()
 
+    const put = jest.spyOn(storage, 'put')
     const restored = await restoreAppearance(storage)
 
     expect(restored).toEqual({})
+    expect(put).not.toHaveBeenCalled()
   })
 
   it('a restore missing `locale` or `theme` (a pre-existing persisted blob) never overrides the store default', async () => {
@@ -74,7 +88,7 @@ describe('saveAppearance / restoreAppearance', () => {
     const restored = await restoreAppearance(storage)
     store.$patch(restored)
 
-    expect(store.locale).toBe(defaultLocale)
+    expect(store.locale).toBe(defaultLocalePreference)
     expect(store.theme).toBe('carnelian')
     expect(store.darkMode).toBe(true)
   })

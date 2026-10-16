@@ -1,3 +1,8 @@
+/**
+ * @jest-environment jsdom
+ * @jest-environment-options {"customExportConditions": ["node", "node-addons"]}
+ */
+
 import { applyLocale } from './apply-locale'
 import { i18n } from '../boot/i18n'
 import { messages, defaultLocale } from '../i18n'
@@ -17,6 +22,11 @@ describe('applyLocale', () => {
     for (const [locale, expectedIsoName] of [
       ['en-us', 'en-US'],
       ['fr-fr', 'fr'],
+      ['tl-ph', 'tl'],
+      ['es-es', 'es'],
+      ['vi-vn', 'vi'],
+      ['zh-cn', 'zh-CN'],
+      ['zh-tw', 'zh-TW'],
     ] as const) {
       let setLocaleCalledWith: string | undefined
       const effects: string[] = []
@@ -40,6 +50,7 @@ describe('applyLocale', () => {
       expect(i18n.global.t('startupFailure.title')).toBe(
         messages[locale].startupFailure.title,
       )
+      expect(document.documentElement.lang).toBe(locale)
       expect(setLocaleCalledWith).toBe(locale)
       expect(result).toBeUndefined()
       expect(setLang).toHaveBeenCalledTimes(1)
@@ -59,7 +70,7 @@ describe('applyLocale', () => {
     })
 
     expect(result).toBeUndefined()
-    expect(i18n.global.locale).toBe('xx-xx')
+    expect(i18n.global.locale).toBe(defaultLocale)
     expect(i18n.global.t('startupFailure.title')).toBe(
       messages[defaultLocale].startupFailure.title,
     )

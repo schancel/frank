@@ -9,7 +9,7 @@
  * from Options-API's `this.$i18n.locale` property (`v => (this.$i18n.locale = v)`).
  */
 import type { QVueGlobals } from 'quasar'
-import { quasarLangPackForLocale } from 'src/i18n'
+import { quasarLangPackForLocale, resolveLocale } from 'src/i18n'
 import { i18n } from 'src/boot/i18n'
 
 export interface QuasarLangTarget {
@@ -21,21 +21,24 @@ export function applyLocale(params: {
   setI18nLocale?: (locale: string) => void
   locale: string
 }): void {
+  const locale = resolveLocale(params.locale)
   try {
     if (params.setI18nLocale) {
-      params.setI18nLocale(params.locale)
+      params.setI18nLocale(locale)
     }
   } catch (error) {
     console.warn('[applyLocale] setI18nLocale callback failed:', error)
   }
 
   try {
-    i18n.global.locale = params.locale
+    i18n.global.locale = locale
   } catch (error) {
     console.warn('[applyLocale] i18n.global.locale sync failed:', error)
   }
 
+  if (typeof document !== 'undefined') document.documentElement.lang = locale
+
   if (params.$q?.lang?.set) {
-    params.$q.lang.set(quasarLangPackForLocale(params.locale))
+    params.$q.lang.set(quasarLangPackForLocale(locale))
   }
 }

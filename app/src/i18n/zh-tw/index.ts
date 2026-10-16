@@ -1611,7 +1611,8 @@ export default {
       reject: '拒絕',
     },
     title: '兌換',
-    negotiationOnly: '僅進行簽名協商。接受不會轉移資金，也不授權使用資金。',
+    negotiationOnly:
+      '僅進行簽名協商。接受不會轉移兌換本金，也不會授權動用兌換本金。',
     offerAmount: '提供 {network} 上的 {unit}',
     requestAmount: '請求 {network} 上的 {unit}',
     expiry: '到期時間（{timezone}）',
@@ -1649,7 +1650,7 @@ export default {
       sessionChanged: '帳戶、網路或已認證的對話已更改。請重新核對。',
       storage: '儲存不可用。授權未被丟棄。',
       deliveryPending: '簽名已保存，原訊息投遞尚未完成。請繼續原操作。',
-      failed: '協商未能完成。已保存的授權仍會保留。',
+      failed: '協商未能完成。若已有儲存的授權，仍會保留。',
     },
     states: {
       'restoring': '正在復原協商憑據',
@@ -1663,7 +1664,7 @@ export default {
       'conflict': '協商憑據存在衝突',
       'expired': '協商已過期',
       'offered': '已認證的提議',
-      'accept': '已認證的接受；未轉移資金',
+      'accept': '已認證的接受；未授權動用兌換本金',
       'reject': '已認證的拒絕',
     },
   },

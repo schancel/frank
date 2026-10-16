@@ -2144,7 +2144,7 @@ export default {
     },
     title: 'Hoán đổi',
     negotiationOnly:
-      'Chỉ thương lượng có chữ ký. Chấp nhận không chuyển tiền hoặc cấp quyền sử dụng tiền.',
+      'Chỉ thương lượng có chữ ký. Chấp nhận không chuyển hoặc cấp quyền sử dụng khoản tiền dùng để hoán đổi.',
     offerAmount: 'Đề nghị {unit} trên {network}',
     requestAmount: 'Yêu cầu {unit} trên {network}',
     expiry: 'Hết hạn ({timezone})',
@@ -2188,7 +2188,7 @@ export default {
       deliveryPending:
         'Đã lưu chữ ký nhưng chưa chuyển phát xong tin nhắn ban đầu. Hãy tiếp tục.',
       failed:
-        'Không thể hoàn tất thương lượng. Ủy quyền đã lưu vẫn được giữ lại.',
+        'Không thể hoàn tất thương lượng. Mọi ủy quyền đã lưu, nếu có, vẫn được giữ lại.',
     },
     states: {
       'restoring': 'Đang khôi phục bằng chứng thương lượng',
@@ -2202,7 +2202,8 @@ export default {
       'conflict': 'Bằng chứng thương lượng xung đột',
       'expired': 'Thương lượng đã hết hạn',
       'offered': 'Đề nghị đã xác thực',
-      'accept': 'Chấp nhận đã xác thực; chưa chuyển tiền',
+      'accept':
+        'Chấp nhận đã xác thực; chưa cấp quyền thực hiện việc chuyển khoản tiền hoán đổi',
       'reject': 'Từ chối đã xác thực',
     },
   },

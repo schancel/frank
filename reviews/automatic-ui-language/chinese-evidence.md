@@ -6,7 +6,7 @@ Each catalog has 1,660 string leaves, matching resolved base English plus `setti
 
 Traditional Chinese received a local Foundation `Hans-Hant` orthographic conversion followed by regional terminology and phrasing edits, including 帳戶, 訊息, 設定, 網路, 聯絡人, 儲存, 伺服器, 軟體, 硬體, 檔案, 資料夾, 剪貼簿, 分頁, 雜湊, 位元組, 身分, 使用者名稱, 收件者, 副本 and 密件副本. It is not an unedited character conversion. Simplified uses corresponding Mainland terminology. Recovery phrase is 助记词 / 助記詞; threshold recovery shards remain 分片. Literal Seed and Check line names are retained alongside localized explanations.
 
-Safety-sensitive readings checked: unknown delivery versus failed delivery; no duplicate payment on retry; ambiguous broadcast warnings; pending funds versus spendable balance; sender-claimed versus chain-verified amounts; original signed negotiation only with no funds transfer or authorization; data reset consequences; independently retained account descriptor; backup sets must not mix; threshold access; passkey failure leaves no account activated; partial native operations; swap fee-only failure versus unknown settlement. Blackjack 3:2 is explicitly a payout ratio, not a score. Product, protocol, network names and denominations remain unchanged. English-identical leaves are proper names, symbols, numeric amounts, REPLACE, formula-only labels and `{fee} {unit}`.
+Safety-sensitive readings checked: unknown delivery versus failed delivery; no duplicate payment on retry; ambiguous broadcast warnings; pending funds versus spendable balance; sender-claimed versus chain-verified amounts; original signed negotiation only with no principal funds transfer or authorization; data reset consequences; independently retained account descriptor; backup sets must not mix; threshold access; passkey failure leaves no account activated; partial native operations; swap fee-only failure versus unknown settlement. Blackjack 3:2 is explicitly a payout ratio, not a score. Product, protocol, network names and denominations remain unchanged. English-identical leaves are proper names, symbols, numeric amounts, REPLACE, formula-only labels and `{fee} {unit}`.
 
 ## Completed checks
 
@@ -82,3 +82,7 @@ JS
 ## Independent review corrections
 
 The parent independently confirmed orthographic conversion artifacts in Traditional Chinese. Corrected the 11 reply-related 回復 occurrences to 回覆, the six conjunction 併 occurrences to 並, and accountRecovery.profile_unavailable 名稱稱 to 名稱. No other regional terminology changed. Re-ran recursive key parity, brace-token parity, all 3,320 message compilations, no-fallback AST checks and whitespace checks; all pass.
+
+## Signed negotiation principal clarification
+
+Read exact English at `7a17f623` and updated exactly three signedSwap values in each catalog: negotiationOnly identifies swap principal (兑换本金 / 兌換本金), states.accept says spending principal is not authorized, and errors.failed conditionally retains any authorization already saved. These statements no longer imply that message stamps cannot move or that a saved authorization necessarily exists. Keys and placeholders are unchanged. Recursive key/token parity, all 3,320 message compilations, no-fallback AST checks and whitespace checks pass against that English namespace.

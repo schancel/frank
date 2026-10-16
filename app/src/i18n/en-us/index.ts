@@ -932,7 +932,7 @@ export default {
     actions: { offer: 'Offer', accept: 'Acceptance', reject: 'Rejection' },
     title: 'Swap',
     negotiationOnly:
-      'Signed negotiation only. Accepting does not transfer or authorize funds.',
+      'Signed negotiation only. Accepting does not transfer or authorize principal funds.',
     offerAmount: 'Offer {unit} on {network}',
     requestAmount: 'Request {unit} on {network}',
     expiry: 'Expiry ({timezone})',
@@ -975,7 +975,7 @@ export default {
       deliveryPending:
         'The signature is saved and its original message delivery is unfinished. Resume it.',
       failed:
-        'The negotiation could not finish. Its saved authorization remains retained.',
+        'The negotiation could not finish. Any saved authorization remains retained.',
     },
     states: {
       'restoring': 'Restoring negotiation evidence',
@@ -989,7 +989,8 @@ export default {
       'conflict': 'Conflicting negotiation evidence',
       'expired': 'Negotiation expired',
       'offered': 'Authenticated offer',
-      'accept': 'Authenticated acceptance; no funds transferred',
+      'accept':
+        'Authenticated acceptance; principal execution is not authorized',
       'reject': 'Authenticated rejection',
     },
   },

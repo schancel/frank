@@ -1609,7 +1609,8 @@ export default {
       reject: '拒绝',
     },
     title: '兑换',
-    negotiationOnly: '仅进行签名协商。接受不会转移资金，也不授权使用资金。',
+    negotiationOnly:
+      '仅进行签名协商。接受不会转移兑换本金，也不会授权动用兑换本金。',
     offerAmount: '提供 {network} 上的 {unit}',
     requestAmount: '请求 {network} 上的 {unit}',
     expiry: '到期时间（{timezone}）',
@@ -1647,7 +1648,7 @@ export default {
       sessionChanged: '账户、网络或已认证的对话已更改。请重新核对。',
       storage: '存储不可用。授权未被丢弃。',
       deliveryPending: '签名已保存，原消息投递尚未完成。请继续原操作。',
-      failed: '协商未能完成。已保存的授权仍会保留。',
+      failed: '协商未能完成。若已有保存的授权，仍会保留。',
     },
     states: {
       'restoring': '正在恢复协商凭据',
@@ -1661,7 +1662,7 @@ export default {
       'conflict': '协商凭据存在冲突',
       'expired': '协商已过期',
       'offered': '已认证的提议',
-      'accept': '已认证的接受；未转移资金',
+      'accept': '已认证的接受；未授权动用兑换本金',
       'reject': '已认证的拒绝',
     },
   },

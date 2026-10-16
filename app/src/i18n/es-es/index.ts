@@ -2202,7 +2202,7 @@ export default {
     },
     title: 'Intercambio',
     negotiationOnly:
-      'Solo negociación firmada. Aceptar no transfiere ni autoriza fondos.',
+      'Solo negociación firmada. Aceptar no transfiere el importe del intercambio ni autoriza su transferencia.',
     offerAmount: 'Ofrecer {unit} en {network}',
     requestAmount: 'Solicitar {unit} en {network}',
     expiry: 'Caducidad ({timezone})',
@@ -2248,7 +2248,7 @@ export default {
       deliveryPending:
         'La firma está guardada y la entrega de su mensaje original no ha finalizado. Reanúdala.',
       failed:
-        'No se pudo finalizar la negociación. Su autorización guardada se conserva.',
+        'No se pudo finalizar la negociación. Se conserva cualquier autorización que se haya guardado.',
     },
     states: {
       'restoring': 'Restaurando pruebas de negociación',
@@ -2264,7 +2264,8 @@ export default {
       'conflict': 'Pruebas de negociación contradictorias',
       'expired': 'Negociación caducada',
       'offered': 'Oferta autenticada',
-      'accept': 'Aceptación autenticada; no se han transferido fondos',
+      'accept':
+        'Aceptación autenticada; no se autoriza la transferencia del importe del intercambio',
       'reject': 'Rechazo autenticado',
     },
   },

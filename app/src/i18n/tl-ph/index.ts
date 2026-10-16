@@ -2207,7 +2207,7 @@ export default {
     },
     title: 'Swap',
     negotiationOnly:
-      'Pinirmahang negosasyon lamang. Ang pagtanggap ay hindi naglilipat o nagpapahintulot ng paggamit ng pondo.',
+      'Pinirmahang negosasyon lamang. Ang pagtanggap ay hindi naglilipat o nagbibigay ng pahintulot na gamitin ang pondong mismong ipagpapalit.',
     offerAmount: 'Mag-alok ng {unit} sa {network}',
     requestAmount: 'Humiling ng {unit} sa {network}',
     expiry: 'Pag-expire ({timezone})',
@@ -2253,7 +2253,7 @@ export default {
       deliveryPending:
         'Na-save ang pirma at hindi pa tapos ang paghahatid ng orihinal nitong mensahe. Ipagpatuloy ito.',
       failed:
-        'Hindi matapos ang negosasyon. Nananatiling nakatago ang naka-save nitong awtorisasyon.',
+        'Hindi matapos ang negosasyon. Kung may na-save na awtorisasyon, nananatili itong nakatago.',
     },
     states: {
       'restoring': 'Ibinabalik ang ebidensya ng negosasyon',
@@ -2268,7 +2268,8 @@ export default {
       'conflict': 'Magkasalungat na ebidensya ng negosasyon',
       'expired': 'Nag-expire ang negosasyon',
       'offered': 'Napatunayang alok',
-      'accept': 'Napatunayang pagtanggap; walang pondong nailipat',
+      'accept':
+        'Napatunayang pagtanggap; hindi pinahihintulutan ang paglilipat ng pondong mismong ipagpapalit',
       'reject': 'Napatunayang pagtanggi',
     },
   },

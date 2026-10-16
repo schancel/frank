@@ -2,9 +2,9 @@
 
 Scope: tier 1 translation-only catalog, executing the existing automatic UI language contract. No runtime, registry, English/French, persistence or wire-format edits. `app/src/i18n/tl-ph/index.ts` is a standalone static object with all translated recovery values inline, without English imports or spreads.
 
-Reference: base `f409b28a0af0f083d72bfb847c34cfe4865ffb0e` English catalog and its resolved account-recovery values, plus `settings.languageAutomatic` and the stable `signedSwap` namespace read from sibling signed-negotiation UI at `b06fb4248691c5d7182e74e64606731ac355a1a3`. Final integration must compare against the combined English catalog again.
+Reference: base `f409b28a0af0f083d72bfb847c34cfe4865ffb0e` English catalog and its resolved account-recovery values, plus `settings.languageAutomatic` and the stable `signedSwap` namespace initially read from sibling signed-negotiation UI at `b06fb4248691c5d7182e74e64606731ac355a1a3`, with three wording corrections from exact English revision `7a17f623`. Final integration must compare against the combined English catalog again.
 
-Catalog SHA-256: `05929bdd04c28855e3d1074c9e0a9673c7181f6cfbd26592e187a36b40be983f`.
+Catalog SHA-256: `6182a5dd147ff358bb07854ac462a7c5447e914733f84081f7af7772183502d6`.
 
 Checks passed: 1,660 expected and actual message leaves; exact recursive keys, interpolation/literal tokens, numeric literals and URLs; all messages compile with the installed `@intlify/message-compiler`; no import or spread nodes; 229 protocol/product/asset name comparisons; Prettier check; `git diff --check`. The 136 English-identical leaves contain names, asset symbols, structural templates, or established technical labels (for example Wallet, Username, Code, Recovery Phrase). Complete sentences and recovery/payment warnings are translated; identical values do not originate from runtime fallback scaffolding.
 
@@ -95,3 +95,9 @@ Observed checker result:
 ```
 
 Requested dispatch lane/model: GPT-6.1 Sol, medium. No model attestation beyond the orchestrator's actual dispatch is asserted. Candidate remains isolated for parent integration; no merge, push, deployment or cleanup performed.
+
+## Signed-swap wording correction
+
+Follow-up to catalog commit `8bfa16289215bfe32fba478f23a32cb39eb1900d`: exactly three catalog leaves changed, with no keys or placeholders changed. `signedSwap.negotiationOnly` and `signedSwap.states.accept` now refer specifically to the funds being swapped, leaving message-stamp payments distinct. `signedSwap.errors.failed` now conditionally retains a saved authorization without implying one necessarily exists.
+
+Read the English wording directly with `git show 7a17f623:app/src/i18n/en-us/index.ts`. Re-ran the checker above against that exact English namespace (temporary reference file with unchanged account-recovery dependency): 1,660 leaf keys, tokens/numbers/URLs, all message compilation, 229 name comparisons, and no imports/spreads pass with zero errors. Prettier and diff checks pass. Source diff against `8bfa1628` contains only the three named message changes. No broad typecheck or native-speaker validation claimed.

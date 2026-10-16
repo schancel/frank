@@ -1783,6 +1783,63 @@ export class MonadSubAccountPool {
     return this.store.getCheckpoints();
   }
 
+  /**
+   * Transitions a `funding` or `available` sub-account back to `status: "funding"` when a reorg
+   * disconnects one or more previously included funding attempts.
+   */
+  async reconcileDisconnectedFunding(
+    index: number,
+    updatedAttempts: readonly SubAccountFundingAttempt[]
+  ): Promise<boolean> {
+    if (!Number.isSafeInteger(index) || index < 0) {
+      throw new Error(`Invalid sub-account index: ${index}`);
+    }
+    const updated = await this.store.mutate<boolean>((snapshot) => {
+      const current = snapshot.records.find((row) => row.index === index);
+      if (
+        !current ||
+        !current.funding ||
+        (current.status !== "funding" && current.status !== "available") ||
+        current.lifecycle?.spend !== undefined
+      ) {
+        return { records: [], result: false };
+      }
+      const nextRecord: SubAccountRecord = {
+        index: current.index,
+        address: current.address,
+        status: "funding",
+        funding: {
+          version: 1,
+          attempts: updatedAttempts.map((entry) => ({
+            ...entry,
+            generation: (entry.generation ?? 1) + 1,
+          })),
+          ...(current.funding.hold !== undefined
+            ? { hold: { ...current.funding.hold } }
+            : {}),
+        },
+        ...(current.lifecycle !== undefined
+          ? { lifecycle: current.lifecycle }
+          : {}),
+      };
+      assertSubAccountLifecycleMatrix(nextRecord);
+      return {
+        records: [
+          {
+            record: nextRecord,
+            expectedRevision: current.revision ?? 0,
+          },
+        ],
+        result: true,
+      };
+    });
+    if (updated) {
+      this.capacityCache.delete(index);
+      await this.store.flush();
+    }
+    return updated;
+  }
+
   /** Bounded compaction. A mutable row is replaced only when its complete recovery checkpoint is
    * available and no live attempt/recovery object still refers to the funding index. */
   async compactTerminalAccounts(params: {

@@ -217,7 +217,7 @@ async function exchange(
 async function settle(
   wallet: EvmWalletHandle,
   operation: OutgoingTopicOperation,
-  admission?: MonadWalletOperationAdmission,
+  _admission?: MonadWalletOperationAdmission,
   handle?: AccountLeaseHandle,
 ) {
   const bound = bindForumAuthority(wallet, operation)
@@ -227,7 +227,6 @@ async function settle(
     await wallet.leaseManager.flush()
   }
   await wallet.topicOperationJournal!.delete(operation)
-  if (admission) await wallet.walletState!.compactTerminalAccounts(8, admission)
 }
 
 export async function reconcileForumOperations(
@@ -261,14 +260,6 @@ export async function reconcileForumOperations(
           },
         })
         await wallet.pool.flush()
-      }
-      if (
-        bound.record.status === 'spent' &&
-        bound.record.lifecycle?.spend &&
-        equalHex(bound.record.lifecycle.spend.txHash, operation.txHash)
-      ) {
-        await settle(wallet, operation, admitted)
-        continue
       }
       // Status is read-only. If unresolved, SAME-byte replay may broadcast; never sign again.
       try {

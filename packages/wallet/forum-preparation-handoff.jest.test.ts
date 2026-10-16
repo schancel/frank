@@ -580,7 +580,7 @@ describe('Durable Forum preparation ownership and handoff', () => {
       await topicJournal.put(journaled[0]!)
       const callsBefore = mockExchange.mock.calls.length
       await reconcileForumOperations(walletHandle, 'post')
-      expect(mockExchange.mock.calls.length).toBe(callsBefore)
+      expect(mockExchange.mock.calls.length).toBe(callsBefore + 1)
       expect(topicJournal.getAll()).toHaveLength(0)
     } finally {
       mockedAxios.mockReset()

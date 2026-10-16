@@ -659,6 +659,8 @@ export interface DirectMessageClient {
   }): Promise<{
     records: readonly AuthenticatedMailboxRecord[];
     resumeFromInclusive: number;
+    /** True for pagination cutoff/failure or any unresolved timestamp group.
+     * False certifies a complete scan, including an empty read with no cursor movement. */
     truncated: boolean;
   }>;
   /** Subscribes to real-time both-direction mailbox pushes over WebSocket. */

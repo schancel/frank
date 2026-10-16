@@ -173,7 +173,7 @@ describe("FrankBotHost Reliability Features", () => {
       const restored = new FrankBotHost(config);
       await restored.register(definition);
       try {
-        await until(() => restored.negotiationStatus(definition.id)?.state === 'incomplete');
+        await until(() => restored.negotiationStatus(definition.id)?.state === 'ready');
         expect(restored.negotiationStatus(definition.id)?.journals[0].entries).toHaveLength(1);
         expect(mockFeatureScan.mock.calls.at(-1)[0].sinceMs).toBe(20);
         expect(onMessage).toHaveBeenCalledTimes(1);

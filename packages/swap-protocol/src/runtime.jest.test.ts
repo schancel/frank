@@ -145,7 +145,7 @@ test('qualified native restart recovers response-before-offer, duplicates and de
     truncated: false,
   }))
   const second = start(options({ scan: restartScan }))
-  await until(() => second.snapshot.state === 'incomplete')
+  await until(() => second.snapshot.state === 'ready')
   expect(restartScan).toHaveBeenCalledWith(10)
   expect(second.snapshot.journals[0].reduction.usableAcceptance).not.toBeNull()
 })
@@ -212,7 +212,7 @@ test('hung scanning is revoked without waiting; late result neither admits nor c
   await new Promise((resolve) => setImmediate(resolve))
   expect(await readdir(root)).toEqual([])
   const second = start(options())
-  await until(() => second.snapshot.state === 'incomplete')
+  await until(() => second.snapshot.state === 'ready')
   expect(second.snapshot.journals).toEqual([])
 })
 test('invalid provenance and nested outbox content cannot enter; capacity never advances coverage', async () => {
@@ -301,7 +301,7 @@ test('stop drains an owned admission without admitting coverage or publishing ol
   await cleanup
   expect(publish).toHaveBeenCalledTimes(count)
   const restored = start(options())
-  await until(() => restored.snapshot.state === 'incomplete')
+  await until(() => restored.snapshot.state === 'ready')
   expect(restored.snapshot.journals[0].entries).toHaveLength(1)
   expect(restored.snapshot.coverage).toBe(0)
 })

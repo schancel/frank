@@ -34,6 +34,7 @@ let mockPrimary: {
   chainIdentifier: string
   close: () => Promise<void>
   provider: {
+    send: typeof identityFixtureSend
     getNetwork: () => Promise<{ chainId: bigint }>
     getBlock: typeof mockPrimaryBlock
   }
@@ -43,6 +44,7 @@ let mockPrimary: {
   chainIdentifier: 'monad-testnet',
   close: mockPrimaryClose,
   provider: {
+    send: identityFixtureSend,
     getNetwork: async () => ({ chainId: 10143n }),
     getBlock: mockPrimaryBlock,
   },
@@ -135,6 +137,7 @@ beforeEach(async () => {
     chainIdentifier: 'monad-testnet',
     close: mockPrimaryClose,
     provider: {
+      send: identityFixtureSend,
       getNetwork: async () => ({ chainId: 10143n }),
       getBlock: mockPrimaryBlock,
     },
@@ -478,6 +481,9 @@ async function actualEvmOwner(
     authentication: root('identity-authentication', 52),
     messaging: root('messaging-encryption', 53),
   })) as EvmChainWalletHandle
+  jest
+    .spyOn(wallet.provider, 'send')
+    .mockImplementation(identityFixtureSend.bind(wallet.provider) as never)
   jest
     .spyOn(wallet.provider, 'getNetwork')
     .mockResolvedValue({ chainId: BigInt(entry.nativeChainId!) } as never)
@@ -884,3 +890,22 @@ it('recovers an enabled secondary journal without signing another payment', asyn
   expect(reobserve).toHaveBeenCalledTimes(2)
   expect(flush).toHaveBeenCalledTimes(2)
 })
+
+// Adapt synthetic high-level fixtures into the raw JSON-RPC wire shapes under test.
+async function identityFixtureSend(
+  this: {
+    getNetwork: () => Promise<{ chainId: bigint }>
+    getBlock: (
+      height: number,
+    ) => Promise<{ number: number; hash: string | null } | null>
+  },
+  method: string,
+  params: unknown[],
+): Promise<unknown> {
+  if (method === 'eth_chainId')
+    return '0x' + (await this.getNetwork()).chainId.toString(16)
+  if (method !== 'eth_getBlockByNumber' || params[1] !== false)
+    throw new Error('unexpected identity RPC')
+  const block = await this.getBlock(Number(BigInt(String(params[0]))))
+  return block && { ...block, number: '0x' + block.number.toString(16) }
+}

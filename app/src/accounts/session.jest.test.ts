@@ -2186,6 +2186,11 @@ test('privately opens real EVM owners with the same Frank identity and separate 
         material,
       )) as EvmChainWalletHandle
       jest
+        .spyOn(candidate.provider, 'send')
+        .mockImplementation(
+          identityFixtureSend.bind(candidate.provider) as never,
+        )
+      jest
         .spyOn(candidate.provider, 'getNetwork')
         .mockResolvedValue({ chainId: BigInt(config.chainId) } as never)
       jest
@@ -2305,6 +2310,7 @@ test.each(['chain-id', 'checkpoint', 'identity'])(
                 : f.session.getCachedCurvePublicKey('secp256k1')!,
           },
           provider: {
+            send: identityFixtureSend,
             getNetwork: async () => ({
               chainId: mismatch === 'chain-id' ? 10143n : 143n,
             }),
@@ -2338,6 +2344,7 @@ test.each(['signal', 'session-release'])(
           chainIdentifier: 'monad-mainnet',
           identity: f.wallet.identity,
           provider: {
+            send: identityFixtureSend,
             getNetwork: async () => ({ chainId: 143n }),
             getBlock: async () => {
               entered.resolve()
@@ -2386,6 +2393,7 @@ test('uses the historical EVM seed derivation unchanged and wipes its borrowed c
         chainIdentifier: config.chainIdentifier,
         identity: f.wallet.identity,
         provider: {
+          send: identityFixtureSend,
           getNetwork: async () => ({ chainId: 143n }),
           getBlock: async () => peerCheckpoint(),
         },
@@ -2423,7 +2431,11 @@ test('checks the explicit operator anchor for a configured regtest EVM wallet', 
         family: 'evm',
         chainIdentifier: 'monad-regtest',
         identity: f.wallet.identity,
-        provider: { getNetwork: async () => ({ chainId: 20143n }), getBlock },
+        provider: {
+          send: identityFixtureSend,
+          getNetwork: async () => ({ chainId: 20143n }),
+          getBlock,
+        },
         close: jest.fn(async () => undefined),
       } as unknown as EvmChainWalletHandle),
   )
@@ -2500,3 +2512,22 @@ describe('session identity public-key capability boundary', () => {
     },
   )
 })
+
+// Adapt synthetic high-level fixtures into the raw JSON-RPC wire shapes under test.
+async function identityFixtureSend(
+  this: {
+    getNetwork: () => Promise<{ chainId: bigint }>
+    getBlock: (
+      height: number,
+    ) => Promise<{ number: number; hash: string | null } | null>
+  },
+  method: string,
+  params: unknown[],
+): Promise<unknown> {
+  if (method === 'eth_chainId')
+    return '0x' + (await this.getNetwork()).chainId.toString(16)
+  if (method !== 'eth_getBlockByNumber' || params[1] !== false)
+    throw new Error('unexpected identity RPC')
+  const block = await this.getBlock(Number(BigInt(String(params[0]))))
+  return block && { ...block, number: '0x' + block.number.toString(16) }
+}

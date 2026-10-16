@@ -284,3 +284,6 @@ export {
 
 export * from "./chain-adapter";
 
+
+export { validateEvmWalletConfiguration, verifyEvmWalletRpcIdentity } from "./evm-rpc-identity";
+export type { EvmIdentityRpc, OperatorCheckpoint } from "./evm-rpc-identity";

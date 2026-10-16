@@ -76,9 +76,17 @@ export interface SubAccountFundingAttempt {
   observation: SubAccountFundingObservation
 }
 
+export interface SubAccountFundingHoldRequirement {
+  funder: string
+  valueWei: string
+}
+
 export interface SubAccountFundingHold {
   operationId: string
   expectedContributors: number
+  targetWei?: string
+  chainId?: string
+  requirements?: SubAccountFundingHoldRequirement[]
 }
 
 export interface SubAccountFundingCollection {
@@ -282,14 +290,58 @@ export function validateFundingCollection(
     if (
       candidate.hold === null ||
       typeof candidate.hold !== 'object' ||
-      Object.keys(candidate.hold).sort().join(',') !==
-        'expectedContributors,operationId' ||
+      Object.keys(candidate.hold).some(
+        key =>
+          key !== 'operationId' &&
+          key !== 'expectedContributors' &&
+          key !== 'targetWei' &&
+          key !== 'chainId' &&
+          key !== 'requirements',
+      ) ||
       typeof candidate.hold.operationId !== 'string' ||
       candidate.hold.operationId.length === 0 ||
       !Number.isSafeInteger(candidate.hold.expectedContributors) ||
-      candidate.hold.expectedContributors < 2
+      candidate.hold.expectedContributors < 1 ||
+      candidate.attempts.length > candidate.hold.expectedContributors ||
+      (candidate.hold.targetWei !== undefined &&
+        (typeof candidate.hold.targetWei !== 'string' ||
+          !/^\d+$/.test(candidate.hold.targetWei) ||
+          BigInt(candidate.hold.targetWei) <= 0n)) ||
+      (candidate.hold.chainId !== undefined &&
+        (typeof candidate.hold.chainId !== 'string' ||
+          !/^\d+$/.test(candidate.hold.chainId) ||
+          BigInt(candidate.hold.chainId) <= 0n))
     ) {
       throw new Error('Invalid pool funding preparation hold')
+    }
+    if (candidate.hold.requirements !== undefined) {
+      if (
+        !Array.isArray(candidate.hold.requirements) ||
+        candidate.hold.requirements.length !==
+          candidate.hold.expectedContributors
+      ) {
+        throw new Error('Invalid pool funding preparation hold')
+      }
+      for (const req of candidate.hold.requirements) {
+        if (
+          req === null ||
+          typeof req !== 'object' ||
+          Object.keys(req).sort().join(',') !== 'funder,valueWei' ||
+          typeof req.funder !== 'string' ||
+          typeof req.valueWei !== 'string' ||
+          !/^\d+$/.test(req.valueWei) ||
+          BigInt(req.valueWei) <= 0n
+        ) {
+          throw new Error('Invalid pool funding preparation hold')
+        }
+        try {
+          if (getAddress(req.funder) !== req.funder) {
+            throw new Error('Invalid pool funding preparation hold')
+          }
+        } catch {
+          throw new Error('Invalid pool funding preparation hold')
+        }
+      }
     }
   }
   let normalizedRecipient: string
@@ -529,10 +581,24 @@ export function validatePoolEntry(
         }
       } else {
         if (
-          entry.funding.hold !== undefined ||
           entry.funding.attempts.some(a => a.observation.kind === 'unresolved')
         ) {
           throw new Error('Invalid pool funding state')
+        }
+        if (entry.funding.hold !== undefined) {
+          if (
+            (entry.status !== 'available' && entry.status !== 'in-use') ||
+            entry.lifecycle?.spend !== undefined ||
+            entry.funding.attempts.length !==
+              entry.funding.hold.expectedContributors ||
+            !entry.funding.attempts.every(
+              a =>
+                a.observation.kind === 'included' &&
+                a.observation.execution === 'success',
+            )
+          ) {
+            throw new Error('Invalid pool funding state')
+          }
         }
         if (
           (entry.status === 'available' || entry.status === 'in-use') &&

@@ -497,6 +497,10 @@ class AdmissionOwner implements EvmInputAdmission {
         ),
       )
       if (
+        (row.status !== 'funding' &&
+          row.funding?.hold !== undefined &&
+          !hasOwner &&
+          !o.leases.isLeased(row.index)) ||
         (row.status === 'in-use' &&
           !hasOwner &&
           !o.leases.isLeased(row.index)) ||
@@ -527,7 +531,11 @@ class AdmissionOwner implements EvmInputAdmission {
                   claim.provenance.kind === 'canonical-attempt') &&
                 claim.provenance.poolIndex === index,
             )
-          : undefined
+          : claims.find(
+              claim =>
+                claim.provenance.kind === 'topic' &&
+                claim.provenance.poolIndex === index,
+            )
       claims.push({
         provenance: { kind: 'live-lease', poolIndex: index },
         authorization: current?.authorization ?? `lease:${index}`,
@@ -767,7 +775,8 @@ class AdmissionOwner implements EvmInputAdmission {
           if (
             record &&
             (record.address.toLowerCase() !== source.address ||
-              record.status === 'funding')
+              record.status === 'funding' ||
+              record.funding?.hold !== undefined)
           )
             invalid()
         }

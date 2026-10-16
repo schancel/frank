@@ -126,8 +126,18 @@ export function bindForumAuthority(
       spend.valueWei !== operation.valueWei)
   )
     throw new Error('Forum operation differs from retained lease spend')
-  if (record.status !== 'in-use' && record.status !== 'spent')
+  if (
+    record.status !== 'in-use' &&
+    record.status !== 'spent' &&
+    !(record.status === 'available' && record.funding?.hold !== undefined)
+  )
     throw new Error('Forum operation lease is not recoverable')
+  if (
+    operation.preparationId !== undefined &&
+    record.funding?.hold !== undefined &&
+    record.funding.hold.operationId !== operation.preparationId
+  )
+    throw new Error('Forum operation preparation hold mismatch')
   return { request, target, transaction, record }
 }
 
@@ -227,6 +237,7 @@ export async function reconcileForumOperations(
 ): Promise<void> {
   requireForumWallet(wallet)
   return wallet.walletState!.runOperation(async admitted => {
+    await wallet.topicOperationJournal!.reload?.()
     for (const operation of wallet.topicOperationJournal!.getAll()) {
       // Historical authority is retained, including terminal rows, before decoding or effects.
       if (
@@ -235,13 +246,29 @@ export async function reconcileForumOperations(
       )
         continue
       const bound = bindForumAuthority(wallet, operation)
-      if (!bound.record.lifecycle?.spend) {
-        await wallet.pool.recordSpendTransaction(operation.leaseIndex, {
-          rawTx: operation.rawTx,
-          txHash: operation.txHash,
-          valueWei: operation.valueWei,
+      if (
+        !bound.record.lifecycle?.spend ||
+        bound.record.funding?.hold !== undefined ||
+        bound.record.status === 'available'
+      ) {
+        await wallet.pool.acknowledgePreparationHandoff({
+          index: operation.leaseIndex,
+          preparationId: operation.preparationId,
+          spend: {
+            rawTx: operation.rawTx,
+            txHash: operation.txHash,
+            valueWei: operation.valueWei,
+          },
         })
         await wallet.pool.flush()
+      }
+      if (
+        bound.record.status === 'spent' &&
+        bound.record.lifecycle?.spend &&
+        equalHex(bound.record.lifecycle.spend.txHash, operation.txHash)
+      ) {
+        await settle(wallet, operation, admitted)
+        continue
       }
       // Status is read-only. If unresolved, SAME-byte replay may broadcast; never sign again.
       try {
@@ -288,6 +315,10 @@ async function submitForumOperationAdmitted(
         )
       : await wallet.leaseManager.acquireLease()
   await wallet.leaseManager.flush()
+  const fence = wallet.pool.capturePreparationFence(
+    handle.index,
+    params.leaseHolder,
+  )
   let operation: OutgoingTopicOperation
   try {
     const signer = wallet.pool.getSigner(handle.index, {
@@ -332,6 +363,19 @@ async function submitForumOperationAdmitted(
     }
     if (signed.value !== params.value)
       throw new Error('Signer returned a different Forum burn value')
+    const currentAfterSign = wallet.pool.getRecord(handle.index)
+    if (
+      !wallet.leaseManager.isCurrentLease(handle) ||
+      !currentAfterSign ||
+      currentAfterSign.status !== 'in-use' ||
+      (currentAfterSign.revision ?? 0) !== fence.revision ||
+      (fence.preparationId !== undefined &&
+        currentAfterSign.funding?.hold?.operationId !== fence.preparationId)
+    ) {
+      throw new Error(
+        `Preparation fence invalidated during Forum signing for sub-account ${handle.index}`,
+      )
+    }
     operation = {
       version: 1,
       kind: params.kind,
@@ -343,13 +387,23 @@ async function submitForumOperationAdmitted(
       txHash: signed.txHash,
       valueWei: signed.value.toString(),
       direction: params.direction,
+      ...(fence.preparationId !== undefined
+        ? {
+            preparationId: fence.preparationId,
+            ...(fence.revision >= 1
+              ? { preparationRevision: fence.revision }
+              : {}),
+          }
+        : {}),
       ...(params.kind === 'post'
         ? { payloadHashHex: bare(params.target) }
         : { targetPayloadHashHex: bare(params.target) }),
     } as OutgoingTopicOperation
     bindForumAuthority(wallet, operation)
   } catch (error) {
-    await wallet.leaseManager.releaseLease(handle, 'unused')
+    await wallet.leaseManager.releaseLease(handle, 'unused', {
+      topicJournal: wallet.topicOperationJournal,
+    })
     await wallet.leaseManager.flush()
     throw new BurnNotSentError(
       error instanceof Error ? error.message : String(error),
@@ -358,10 +412,15 @@ async function submitForumOperationAdmitted(
   }
   // Once journaled, every failure is uncertainty. Keep exact authority and the occupied lease.
   await wallet.topicOperationJournal!.put(operation)
-  await wallet.pool.recordSpendTransaction(handle.index, {
-    rawTx: operation.rawTx,
-    txHash: operation.txHash,
-    valueWei: operation.valueWei,
+  await wallet.pool.acknowledgePreparationHandoff({
+    index: handle.index,
+    expectedRevision: fence.revision,
+    preparationId: fence.preparationId,
+    spend: {
+      rawTx: operation.rawTx,
+      txHash: operation.txHash,
+      valueWei: operation.valueWei,
+    },
   })
   await wallet.pool.flush()
   let status: MatchedForumStatus

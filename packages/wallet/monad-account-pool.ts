@@ -431,6 +431,8 @@ export class MonadSubAccountPool {
   isSpendReserved(index: number, holder?: string): boolean {
     const claimant = this.claims.get(index);
     if (claimant !== undefined && claimant !== holder) return true;
+    const holdOwner = this.store.getByIndex(index)?.funding?.hold?.operationId;
+    if (holdOwner !== undefined && holdOwner !== holder) return true;
     return this.spendReservation?.(index) ?? false;
   }
 
@@ -755,7 +757,11 @@ export class MonadSubAccountPool {
    * itself (except from `topUpPool()`, to mark a freshly-funded index `'available'`); it exists so
    * #18 has a slot to write through without needing to touch the storage layer directly. Throws if
    * `index` isn't a known sub-account. */
-  async setStatus(index: number, status: SubAccountStatus): Promise<SubAccountRecord> {
+  async setStatus(
+    index: number,
+    status: SubAccountStatus,
+    options?: { clearHold?: boolean }
+  ): Promise<SubAccountRecord> {
     const existing = this.store.getByIndex(index);
     if (existing === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`);
@@ -765,6 +771,11 @@ export class MonadSubAccountPool {
     }
     this.capacityCache.delete(index);
     const { funding: existingFunding, ...base } = existing;
+    const preserveHold =
+      options?.clearHold !== true &&
+      (status === "available" || status === "in-use") &&
+      existing.lifecycle?.spend === undefined &&
+      existingFunding?.hold !== undefined;
     const updated: SubAccountRecord =
       status === "unfunded"
         ? { ...base, status: "unfunded" }
@@ -779,6 +790,21 @@ export class MonadSubAccountPool {
                     attempts: existingFunding.attempts.map((attempt) => ({
                       ...attempt,
                     })),
+                    ...(preserveHold && existingFunding.hold !== undefined
+                      ? {
+                          hold: {
+                            ...existingFunding.hold,
+                            ...(existingFunding.hold.requirements !== undefined
+                              ? {
+                                  requirements:
+                                    existingFunding.hold.requirements.map(
+                                      (req) => ({ ...req })
+                                    ),
+                                }
+                              : {}),
+                          },
+                        }
+                      : {}),
                   },
                 }),
           };
@@ -1141,6 +1167,255 @@ export class MonadSubAccountPool {
       ...existing,
       lifecycle: { ...existing.lifecycle, spend: { ...transaction } },
     });
+  }
+
+  /**
+   * Captures the pool row's revision and preparation identity before async Forum signing yields,
+   * so handoff to `TopicOperationJournal` can verify the sub-account was not mutated or reclaimed.
+   */
+  capturePreparationFence(
+    index: number,
+    holder?: string
+  ): { index: number; revision: number; preparationId?: string } {
+    const existing = this.store.getByIndex(index);
+    if (existing === undefined) {
+      throw new Error(`No sub-account at index ${index} in the pool`);
+    }
+    if (this.isSpendReserved(index, holder)) {
+      throw new Error(
+        `Sub-account ${index} is reserved by another operation and cannot be fenced`
+      );
+    }
+    return {
+      index,
+      revision: existing.revision ?? 0,
+      ...(existing.funding?.hold?.operationId !== undefined
+        ? { preparationId: existing.funding.hold.operationId }
+        : {}),
+    };
+  }
+
+  /**
+   * Atomically records the signed Forum burn checkpoint and clears any preparation `funding.hold`
+   * once `TopicOperationJournal.put(operation)` has durably persisted the outgoing Forum operation.
+   */
+  async acknowledgePreparationHandoff(params: {
+    index: number;
+    spend: SubAccountTransactionCheckpoint;
+    expectedRevision?: number;
+    preparationId?: string;
+  }): Promise<SubAccountRecord> {
+    this.capacityCache.delete(params.index);
+    const updated = await this.store.mutate((snapshot) => {
+      const current = snapshot.records.find((row) => row.index === params.index);
+      if (current === undefined) {
+        throw new Error(`No sub-account at index ${params.index} in the pool`);
+      }
+      if (
+        params.preparationId !== undefined &&
+        current.funding?.hold !== undefined &&
+        current.funding.hold.operationId !== params.preparationId
+      ) {
+        throw new Error(
+          `Sub-account ${params.index} preparation hold mismatch: expected ${params.preparationId}, got ${current.funding.hold.operationId}`
+        );
+      }
+      const existingSpend = current.lifecycle?.spend;
+      if (existingSpend !== undefined) {
+        if (
+          existingSpend.rawTx.toLowerCase() !== params.spend.rawTx.toLowerCase() ||
+          existingSpend.txHash.toLowerCase() !== params.spend.txHash.toLowerCase() ||
+          existingSpend.valueWei !== params.spend.valueWei
+        ) {
+          throw new Error(
+            `Conflicting spend checkpoint on sub-account ${params.index}`
+          );
+        }
+        if (
+          current.funding?.hold === undefined &&
+          (current.status === "in-use" || current.status === "spent")
+        ) {
+          return { records: [], result: current };
+        }
+      } else if (
+        params.expectedRevision !== undefined &&
+        (current.revision ?? 0) !== params.expectedRevision
+      ) {
+        throw new SubAccountRevisionMismatchError(params.index);
+      }
+      if (
+        current.status !== "in-use" &&
+        current.status !== "available" &&
+        current.status !== "spent"
+      ) {
+        throw new Error(
+          `Cannot hand off Forum preparation for sub-account ${params.index} in status ${current.status}`
+        );
+      }
+      const nextStatus: SubAccountStatus =
+        current.status === "spent" ? "spent" : "in-use";
+      const nextRecord: SubAccountRecord = {
+        ...current,
+        status: nextStatus,
+        ...(current.funding === undefined
+          ? {}
+          : {
+              funding: {
+                version: current.funding.version,
+                attempts: current.funding.attempts.map((attempt) => ({
+                  ...attempt,
+                })),
+              },
+            }),
+        lifecycle: {
+          ...current.lifecycle,
+          spend: { ...params.spend },
+        },
+      };
+      assertSubAccountLifecycleMatrix(nextRecord);
+      return {
+        records: [
+          {
+            record: nextRecord,
+            expectedRevision: current.revision ?? 0,
+          },
+        ],
+        result: nextRecord,
+      };
+    });
+    this.syncUtxo(params.index, updated.status);
+    return this.store.getByIndex(params.index) ?? updated;
+  }
+
+  /** Lists all pool sub-accounts currently held by a pre-handoff preparation. */
+  listHeldPreparations(): SubAccountRecord[] {
+    return this.store
+      .getAll()
+      .filter(
+        (record) =>
+          record.funding?.hold !== undefined &&
+          record.lifecycle?.spend === undefined
+      );
+  }
+
+  /** Returns the pool sub-account held for `operationId`, if any. */
+  getHeldPreparation(operationId: string): SubAccountRecord | undefined {
+    return this.listHeldPreparations().find(
+      (record) => record.funding?.hold?.operationId === operationId
+    );
+  }
+
+  /**
+   * Explicitly cancels a held pre-handoff preparation and releases its funded sub-account back to
+   * normal pool availability (`status: "available"`, `funding.hold: undefined`), after verifying
+   * no `TopicOperationJournal` entry or spend checkpoint owns the sub-account.
+   */
+  async cancelHeldPreparation(
+    operationId: string,
+    options?: {
+      topicJournal?: {
+        reload?(): Promise<void>;
+        referencesLeaseIndex(index: number): boolean;
+      };
+      leaseManager?: { isLeased(index: number): boolean };
+      mainAccountSigner?: MonadAccountTxSigner;
+      receipt?: FundingReceiptOptions;
+    }
+  ): Promise<SubAccountRecord> {
+    await options?.topicJournal?.reload?.();
+    const initial = this.getHeldPreparation(operationId);
+    if (initial === undefined) {
+      throw new Error(`No held preparation found for operation ${operationId}`);
+    }
+    if (options?.topicJournal?.referencesLeaseIndex(initial.index)) {
+      throw new Error(
+        `Cannot cancel preparation ${operationId}: TopicOperationJournal already owns sub-account ${initial.index}`
+      );
+    }
+    if (
+      options?.leaseManager?.isLeased(initial.index) ||
+      this.claims.get(initial.index) !== undefined
+    ) {
+      throw new Error(
+        `Cannot cancel preparation ${operationId}: sub-account ${initial.index} has an active lease or claim`
+      );
+    }
+    if (
+      initial.status === "funding" &&
+      initial.funding?.attempts.some(
+        (entry) => entry.observation.kind === "unresolved"
+      )
+    ) {
+      if (!options?.mainAccountSigner) {
+        throw new Error(
+          `Cannot cancel preparation ${operationId} while funding attempts remain unresolved without mainAccountSigner`
+        );
+      }
+      await this.finishFundingAttempt(
+        initial,
+        options.mainAccountSigner,
+        options.receipt
+      );
+    }
+    await options?.topicJournal?.reload?.();
+    const updated = await this.store.mutate((snapshot) => {
+      const current = snapshot.records.find((row) => row.index === initial.index);
+      if (
+        current === undefined ||
+        current.funding?.hold?.operationId !== operationId
+      ) {
+        throw new Error(
+          `Held preparation ${operationId} on sub-account ${initial.index} changed during cancellation`
+        );
+      }
+      if (
+        current.lifecycle?.spend !== undefined ||
+        options?.topicJournal?.referencesLeaseIndex(current.index)
+      ) {
+        throw new Error(
+          `Cannot cancel preparation ${operationId}: sub-account ${current.index} already handed off to Forum spend`
+        );
+      }
+      if (
+        current.funding.attempts.some(
+          (entry) => entry.observation.kind === "unresolved"
+        )
+      ) {
+        throw new Error(
+          `Cannot cancel preparation ${operationId}: funding attempt on sub-account ${current.index} is still unresolved`
+        );
+      }
+      const allSucceeded =
+        current.funding.attempts.length > 0 &&
+        current.funding.attempts.every(
+          (entry) =>
+            entry.observation.kind === "included" &&
+            entry.observation.execution === "success"
+        );
+      const nextStatus: SubAccountStatus = allSucceeded ? "available" : "retired";
+      const nextRecord: SubAccountRecord = {
+        ...current,
+        status: nextStatus,
+        funding: {
+          version: current.funding.version,
+          attempts: current.funding.attempts.map((attempt) => ({ ...attempt })),
+        },
+      };
+      assertSubAccountLifecycleMatrix(nextRecord);
+      return {
+        records: [
+          {
+            record: nextRecord,
+            expectedRevision: current.revision ?? 0,
+          },
+        ],
+        result: nextRecord,
+      };
+    });
+    await this.store.flush();
+    this.capacityCache.delete(initial.index);
+    this.syncUtxo(initial.index, updated.status);
+    return this.store.getByIndex(initial.index) ?? updated;
   }
 
   /**
@@ -1973,6 +2248,71 @@ export class MonadSubAccountPool {
     };
   }
 
+  private async promoteCompletedHeldFunding(index: number): Promise<void> {
+    const record = this.store.getByIndex(index);
+    if (
+      record === undefined ||
+      record.status !== "funding" ||
+      record.funding?.hold === undefined ||
+      record.funding.attempts.length !==
+        record.funding.hold.expectedContributors ||
+      !record.funding.attempts.every(
+        (entry) =>
+          entry.observation.kind === "included" &&
+          entry.observation.execution === "success"
+      )
+    ) {
+      return;
+    }
+    await this.store.mutate((snapshot) => {
+      const current = snapshot.records.find((row) => row.index === index);
+      if (
+        current === undefined ||
+        current.status !== "funding" ||
+        current.funding?.hold === undefined ||
+        current.funding.attempts.length !==
+          current.funding.hold.expectedContributors ||
+        !current.funding.attempts.every(
+          (entry) =>
+            entry.observation.kind === "included" &&
+            entry.observation.execution === "success"
+        )
+      ) {
+        return { records: [], result: current };
+      }
+      const nextRecord: SubAccountRecord = {
+        ...current,
+        status: "available",
+        funding: {
+          version: 1,
+          attempts: current.funding.attempts.map((entry) => ({ ...entry })),
+          hold: {
+            ...current.funding.hold,
+            ...(current.funding.hold.requirements !== undefined
+              ? {
+                  requirements: current.funding.hold.requirements.map((req) => ({
+                    ...req,
+                  })),
+                }
+              : {}),
+          },
+        },
+      };
+      assertSubAccountLifecycleMatrix(nextRecord);
+      return {
+        records: [
+          {
+            record: nextRecord,
+            expectedRevision: current.revision ?? 0,
+          },
+        ],
+        result: nextRecord,
+      };
+    });
+    await this.store.flush();
+    this.syncUtxo(index, "available");
+  }
+
   /**
    * Finishes every durable in-flight funding attempt it can: the exact recorded transaction is
    * offered again and its receipt read, never a second one signed for the same child. Returns the
@@ -1996,6 +2336,7 @@ export class MonadSubAccountPool {
           record.funding.attempts.length > 0 &&
           unresolvedAttempts.length === 0
         ) {
+          await this.promoteCompletedHeldFunding(record.index);
           continue;
         }
         try {
@@ -2005,6 +2346,7 @@ export class MonadSubAccountPool {
             params.receipt
           );
           fundingTxHashes.push(txHash);
+          await this.promoteCompletedHeldFunding(record.index);
         } catch (err) {
           if (params.quiet !== true) {
             console.warn(
@@ -2119,6 +2461,10 @@ export class MonadSubAccountPool {
     /** The operation the burn account is for: the account is claimed for it (`claim`) when it is
      * chosen, before any funding, so nothing else takes it before the caller leases it. */
     claimFor?: string;
+    /** Explicit durable operation id for resuming or holding a Forum preparation across restarts. */
+    operationId?: string;
+    /** Retain `funding.hold` on the prepared `available` row until Forum journal handoff completes. */
+    retainPreparationHold?: boolean;
   }): Promise<BurnAccountPreparationResult> {
     const run = this.preparationQueue.then(async () => {
       try {
@@ -2150,8 +2496,11 @@ export class MonadSubAccountPool {
     onProgress?: (progress: StampInventoryPreparationProgress) => void;
     receipt?: FundingReceiptOptions;
     claimFor?: string;
+    operationId?: string;
+    retainPreparationHold?: boolean;
   }): Promise<BurnAccountPreparationResult> {
-    const holder = params.claimFor;
+    const holder = params.claimFor ?? params.operationId;
+    const explicitOperationId = params.operationId ?? params.claimFor;
     const zero = BigInt(0);
     if (params.burnValueWei <= zero) {
       throw new Error(
@@ -2166,48 +2515,132 @@ export class MonadSubAccountPool {
     params.onProgress?.({ stage: "checking" });
     const fundingTxHashes = await this.reconcileBeforePreparation(params);
 
-    const funded = await this.fundedCapacities(
-      params.provider,
-      params.gasReserveWei,
-      { holder }
-    );
+    const existingHeld =
+      explicitOperationId !== undefined
+        ? this.getHeldPreparation(explicitOperationId)
+        : undefined;
+    if (existingHeld !== undefined && existingHeld.status === "available") {
+      if (holder !== undefined) {
+        this.claim(holder, () => [existingHeld.index]);
+      }
+      if (params.retainPreparationHold !== true) {
+        await this.setStatus(existingHeld.index, "available", {
+          clearHold: true,
+        });
+        await this.store.flush();
+      }
+      const combinedHashes = [
+        ...new Set([
+          ...fundingTxHashes,
+          ...(existingHeld.funding?.attempts.map((a) => a.txHash) ?? []),
+        ]),
+      ];
+      params.onProgress?.({ stage: "ready", fundingTxHashes: combinedHashes });
+      return { index: existingHeld.index, fundingTxHashes: combinedHashes };
+    }
+
+    const funded =
+      existingHeld !== undefined
+        ? []
+        : await this.fundedCapacities(params.provider, params.gasReserveWei, {
+            holder,
+          });
     // Chosen and claimed in one synchronous step.
     let reusable: { index: number } | undefined;
     const choose = (free?: readonly SubAccountRecord[]) => {
       const offered = free && new Set(free.map((record) => record.index));
       return funded
-      .filter((account) => offered?.has(account.index) !== false)
-      .filter(
-        (account) =>
-          account.capacityWei >= params.burnValueWei &&
-          account.capacityWei <= params.burnValueWei + params.gasReserveWei
-      )
-      .sort((a, b) =>
-        a.capacityWei === b.capacityWei
-          ? a.index - b.index
-          : a.capacityWei < b.capacityWei
-          ? -1
-          : 1
-      )[0];
+        .filter((account) => offered?.has(account.index) !== false)
+        .filter(
+          (account) =>
+            account.capacityWei >= params.burnValueWei &&
+            account.capacityWei <= params.burnValueWei + params.gasReserveWei
+        )
+        .sort((a, b) =>
+          a.capacityWei === b.capacityWei
+            ? a.index - b.index
+            : a.capacityWei < b.capacityWei
+            ? -1
+            : 1
+        )[0];
     };
-    if (holder === undefined) reusable = choose();
-    else
-      this.claim(holder, (free) => {
-        reusable = choose(free);
-        return reusable === undefined ? undefined : [reusable.index];
-      });
+    if (existingHeld === undefined) {
+      if (holder === undefined) reusable = choose();
+      else
+        this.claim(holder, (free) => {
+          reusable = choose(free);
+          return reusable === undefined ? undefined : [reusable.index];
+        });
+    }
     if (reusable !== undefined) {
+      if (
+        params.retainPreparationHold === true &&
+        explicitOperationId !== undefined
+      ) {
+        const reusableRecord = this.store.getByIndex(reusable.index);
+        if (
+          reusableRecord?.funding !== undefined &&
+          reusableRecord.funding.attempts.length > 0 &&
+          reusableRecord.funding.attempts.every(
+            (a) =>
+              a.observation.kind === "included" &&
+              a.observation.execution === "success"
+          )
+        ) {
+          await this.store.mutate<SubAccountRecord | undefined>((snapshot) => {
+            const current = snapshot.records.find(
+              (row) => row.index === reusable!.index
+            );
+            if (!current || !current.funding) {
+              return { records: [], result: current };
+            }
+            const nextRecord: SubAccountRecord = {
+              ...current,
+              funding: {
+                version: 1,
+                attempts: current.funding.attempts.map((entry) => ({
+                  ...entry,
+                })),
+                hold: {
+                  operationId: explicitOperationId,
+                  expectedContributors: current.funding.attempts.length,
+                  targetWei: String(
+                    params.burnValueWei + params.gasReserveWei
+                  ),
+                  ...(this.expectedChainId !== undefined
+                    ? { chainId: String(this.expectedChainId) }
+                    : {}),
+                },
+              },
+            };
+            assertSubAccountLifecycleMatrix(nextRecord);
+            return {
+              records: [
+                {
+                  record: nextRecord,
+                  expectedRevision: current.revision ?? 0,
+                },
+              ],
+              result: nextRecord,
+            };
+          });
+          await this.store.flush();
+        }
+      }
       params.onProgress?.({ stage: "ready", fundingTxHashes });
       return { index: reusable.index, fundingTxHashes };
     }
 
-    let target = this.store
-      .getAll()
-      .find(
-        (record) =>
-          record.status === "unfunded" &&
-          !this.isSpendReserved(record.index, holder)
-      );
+    let target: SubAccountRecord | undefined = existingHeld;
+    if (target === undefined) {
+      target = this.store
+        .getAll()
+        .find(
+          (record) =>
+            record.status === "unfunded" &&
+            !this.isSpendReserved(record.index, holder)
+        );
+    }
     if (holder !== undefined && target !== undefined) {
       const index = target.index;
       this.claim(holder, () => [index]);
@@ -2225,7 +2658,15 @@ export class MonadSubAccountPool {
     }
 
     if (params.funders && params.funders.length > 1) {
-      for (const funder of params.funders) {
+      const startOffset =
+        existingHeld !== undefined &&
+        existingHeld.status === "funding" &&
+        existingHeld.funding?.hold?.operationId ===
+          (explicitOperationId ?? `burn-multi:${target.index}`) &&
+        existingHeld.funding.hold.expectedContributors === params.funders.length
+          ? existingHeld.funding.attempts.length
+          : 0;
+      for (const funder of params.funders.slice(startOffset)) {
         const available = await params.provider.getBalance(
           funder.signer.address,
           "pending"
@@ -2252,12 +2693,25 @@ export class MonadSubAccountPool {
         }
       }
 
-      const operationId = holder ?? `burn-multi:${target.index}`;
+      const operationId = explicitOperationId ?? `burn-multi:${target.index}`;
       const hold: SubAccountFundingHold = {
         operationId,
         expectedContributors: params.funders.length,
+        ...(params.retainPreparationHold === true
+          ? {
+              targetWei: String(params.burnValueWei + params.gasReserveWei),
+              ...(this.expectedChainId !== undefined
+                ? { chainId: String(this.expectedChainId) }
+                : {}),
+              requirements: params.funders.map((f) => ({
+                funder: getAddress(f.signer.address),
+                valueWei: String(f.amountWei),
+              })),
+            }
+          : {}),
       };
-      for (const [offset, funder] of params.funders.entries()) {
+      for (let offset = startOffset; offset < params.funders.length; offset++) {
+        const funder = params.funders[offset]!;
         // Capture before spacing/signing can yield. Completion must compare this exact row,
         // rather than adopting a lease or lifecycle transition that won while signing waited.
         const currentTarget = this.store.getByIndex(target.index);
@@ -2326,7 +2780,7 @@ export class MonadSubAccountPool {
         const current = snapshot.records.find((row) => row.index === target!.index);
         if (
           current === undefined ||
-          current.status !== "funding" ||
+          (current.status !== "funding" && current.status !== "available") ||
           current.funding === undefined ||
           current.funding.hold?.operationId !== operationId ||
           current.funding.hold.expectedContributors !== expectedContributors ||
@@ -2347,6 +2801,21 @@ export class MonadSubAccountPool {
           funding: {
             version: 1,
             attempts: current.funding.attempts.map((entry) => ({ ...entry })),
+            ...(params.retainPreparationHold === true &&
+            current.funding.hold !== undefined
+              ? {
+                  hold: {
+                    ...current.funding.hold,
+                    ...(current.funding.hold.requirements !== undefined
+                      ? {
+                          requirements: current.funding.hold.requirements.map(
+                            (req) => ({ ...req })
+                          ),
+                        }
+                      : {}),
+                  },
+                }
+              : {}),
           },
         };
         assertSubAccountLifecycleMatrix(completedRecord);
@@ -2399,6 +2868,24 @@ export class MonadSubAccountPool {
       );
     }
 
+    const singleHold: SubAccountFundingHold | undefined =
+      params.retainPreparationHold === true
+        ? {
+            operationId: explicitOperationId ?? `burn-single:${target.index}`,
+            expectedContributors: 1,
+            targetWei: String(params.burnValueWei + params.gasReserveWei),
+            ...(this.expectedChainId !== undefined
+              ? { chainId: String(this.expectedChainId) }
+              : {}),
+            requirements: [
+              {
+                funder: getAddress(funderSigner.address),
+                valueWei: String(params.burnValueWei + params.gasReserveWei),
+              },
+            ],
+          }
+        : undefined;
+
     const result = await this.fundAccount({
       target,
       paymentCapacityWei: params.burnValueWei,
@@ -2406,6 +2893,7 @@ export class MonadSubAccountPool {
       mainAccountSigner: funderSigner,
       overrides: params.fundingOverrides,
       receipt: params.receipt,
+      hold: singleHold,
       onSigned: (signedTx) =>
         params.onProgress?.({
           stage: "funding",
@@ -2793,6 +3281,7 @@ export class MonadSubAccountPool {
     mainAccountSigner: MonadAccountTxSigner;
     overrides?: MonadTxOverrides;
     receipt?: FundingReceiptOptions;
+    hold?: SubAccountFundingHold;
     /** Refuse, before anything is written or submitted, a transfer whose maximum fee exceeds the
      * value it moves. The signature is discarded. */
     refuseUneconomic?: boolean;
@@ -2828,6 +3317,7 @@ export class MonadSubAccountPool {
       rawTx: signedTx.rawTx,
       txHash: signedTx.txHash,
       funder: params.mainAccountSigner.address,
+      hold: params.hold,
       expectedRevision: fundingTarget.revision ?? 0,
     });
     // The exact signed transaction is durable before it can reach the RPC.
@@ -2841,6 +3331,9 @@ export class MonadSubAccountPool {
       false,
       signedTx.txHash
     );
+    if (params.hold !== undefined) {
+      await this.promoteCompletedHeldFunding(params.target.index);
+    }
     this.capacityCache.set(params.target.index, {
       capacityWei: params.paymentCapacityWei,
       checkedAtMs: Date.now(),
@@ -2961,6 +3454,7 @@ export class MonadSubAccountPool {
           record.funding.attempts.length > 0 &&
           unresolvedAttempts.length === 0
         ) {
+          await this.promoteCompletedHeldFunding(record.index);
           continue;
         }
         await this.finishFundingAttempt(
@@ -2968,12 +3462,16 @@ export class MonadSubAccountPool {
           params.mainAccountSigner,
           params.receipt
         );
+        await this.promoteCompletedHeldFunding(record.index);
       }
     }
 
     const currentlyAvailable = this.store
       .getAll()
-      .filter((record) => record.status === "available").length;
+      .filter(
+        (record) =>
+          record.status === "available" && record.funding?.hold === undefined
+      ).length;
     const deficit = bufferSize - currentlyAvailable;
     if (deficit <= 0) return [];
 

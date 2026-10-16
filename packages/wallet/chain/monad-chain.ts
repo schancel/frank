@@ -1022,18 +1022,29 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
  * pool's funding is record-before-broadcast, so retrying resumes an already-sent funding
  * transaction instead of sending another; the message says so because the caller shows it as is. */
 export class TopicBurnPreparationError extends Error {
+  readonly fundingRecorded: boolean;
+
   constructor(
     reason: string,
-    options?: { cause?: unknown; stage?: "preparing" | "signing" }
+    options?: {
+      cause?: unknown;
+      stage?: "preparing" | "signing";
+      fundingRecorded?: boolean;
+    }
   ) {
+    const fundingRecorded = options?.fundingRecorded === true;
     super(
       options?.stage === "signing"
         ? `Could not build the burn (${reason}). Nothing was sent, and the funded account is kept. ` +
             "It is safe to try again."
+        : fundingRecorded
+        ? `Could not prepare an account to burn from (${reason}). Recorded funding contributions are retained on the sub-account for reconciliation, resume, or cancellation. ` +
+          "It is safe to try again: a funding transaction that was already sent is reused, not repeated."
         : `Could not prepare an account to burn from (${reason}). Nothing was sent. ` +
-            "It is safe to try again: a funding transaction that was already sent is reused, not repeated."
+          "It is safe to try again: a funding transaction that was already sent is reused, not repeated."
     );
     this.name = "TopicBurnPreparationError";
+    this.fundingRecorded = fundingRecorded;
     if (options?.cause !== undefined) {
       (this as { cause?: unknown }).cause = options.cause;
     }
@@ -1521,6 +1532,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               gasReserveWei,
               onProgress,
               claimFor: leaseHolder,
+              retainPreparationHold: true,
             });
           },
           {
@@ -1563,6 +1575,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           gasReserveWei,
           onProgress,
           claimFor: leaseHolder,
+          retainPreparationHold: true,
         });
         if (singleChosen.source === "coin") {
           wallet.invalidateBalanceCache?.();
@@ -1637,6 +1650,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             gasReserveWei,
             onProgress,
             claimFor: leaseHolder,
+            retainPreparationHold: true,
           });
         };
 
@@ -1668,6 +1682,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             gasReserveWei,
             onProgress,
             claimFor: leaseHolder,
+            retainPreparationHold: true,
           });
         },
         {
@@ -1683,7 +1698,19 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           : err instanceof Error
           ? err.message
           : String(err);
-      throw new TopicBurnPreparationError(reason, { cause: err });
+      const fundingRecorded =
+        typeof wallet.pool?.records === "function" &&
+        wallet.pool
+          .records()
+          .some(
+            (record) =>
+              record.funding?.hold?.operationId === leaseHolder &&
+              (record.funding?.attempts.length ?? 0) > 0
+          );
+      throw new TopicBurnPreparationError(reason, {
+        cause: err,
+        fundingRecorded,
+      });
     }
   };
   // The wallet sync boundary for a note this account wrote to itself from another device: the
@@ -2789,10 +2816,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               record.status === "in-use" &&
               !pendingLeaseIndices.has(record.index)
             ) {
-              // A crash during signing can persist the lease before the exact raw set exists. No
-              // relay broadcast is possible in that window, but the account is conservatively
-              // retired rather than silently reused with an uncertain locally-signed nonce.
-              await pool.setStatus(record.index, "retired");
+              if (
+                record.funding?.hold !== undefined &&
+                record.lifecycle?.spend === undefined
+              ) {
+                // Pre-handoff Forum preparation: lease was acquired before TopicOperationJournal
+                // handoff completed. Restore to `available` while retaining `funding.hold` so
+                // the funded sub-account is neither retired nor exposed to unrelated spenders.
+                await pool.setStatus(record.index, "available", {
+                  clearHold: false,
+                });
+              } else {
+                // A crash during signing can persist the lease before the exact raw set exists. No
+                // relay broadcast is possible in that window, but the account is conservatively
+                // retired rather than silently reused with an uncertain locally-signed nonce.
+                await pool.setStatus(record.index, "retired");
+              }
             }
           }
           await pool.flush();
@@ -3614,7 +3653,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // Preserve the existing funding-source hold until P2 derives shared
             // source claims. Filtering funding children alone cannot protect
             // their main/identity sender or a retained journal source reference.
-            if (pool.records().some((record) => record.status === "funding"))
+            if (
+              pool.records().some(
+                (record) =>
+                  record.status === "funding" &&
+                  (record.funding?.hold === undefined ||
+                    record.funding.attempts.some(
+                      (attempt) => attempt.observation.kind === "unresolved"
+                    ))
+              )
+            )
               throw new Error(
                 "Native send is unavailable while pool funding remains pending"
               );
@@ -3632,6 +3680,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   (r) =>
                     r.status !== "in-use" &&
                     r.status !== "funding" &&
+                    r.funding?.hold === undefined &&
                     // An account a message or a topic burn holds is not a native source.
                     pool.claimedBy(r.index) === undefined
                 )
@@ -3659,7 +3708,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 .flatMap((coin) =>
                   coin.index !== undefined &&
                   (coin.origin === "change" || coin.origin === "subaccount") &&
-                  coin.status !== "pending"
+                  coin.status !== "pending" &&
+                  !(
+                    coin.origin === "subaccount" &&
+                    pool.getRecord(coin.index)?.funding?.hold !== undefined
+                  )
                     ? [
                         {
                           kind:
@@ -3685,6 +3738,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               if (
                 coin.balanceWei > 0n &&
                 coin.status !== "pending" &&
+                !(
+                  coin.origin === "subaccount" &&
+                  coin.index !== undefined &&
+                  pool.getRecord(coin.index)?.funding?.hold !== undefined
+                ) &&
                 !known.has(coin.address.toLowerCase())
               )
                 throw new Error(
@@ -3737,7 +3795,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               sourceHeld: (source) =>
                 source.kind === "spend"
                   ? pool.claimedBy(source.index) !== undefined ||
-                    pool.getRecord(source.index)?.status === "in-use"
+                    pool.getRecord(source.index)?.status === "in-use" ||
+                    pool.getRecord(source.index)?.funding?.hold !== undefined
                   : (() => {
                       const claimant = pool.accountClaimedBy(source.address);
                       return (
@@ -3752,7 +3811,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 const held = indices.find(
                   (index) =>
                     pool.claimedBy(index) !== undefined ||
-                    pool.getRecord(index)?.status === "in-use"
+                    pool.getRecord(index)?.status === "in-use" ||
+                    pool.getRecord(index)?.funding?.hold !== undefined
                 );
                 if (held !== undefined)
                   throw new RangeError(

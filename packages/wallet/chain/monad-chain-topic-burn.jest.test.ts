@@ -148,11 +148,17 @@ async function makeFakeChain(
       : null
   })
   p.getNetwork = async () => Network.from(CHAIN_ID)
+  p.getBlock = async () =>
+    guard(() => ({ number: 1, hash: '0x' + 'ab'.repeat(32) }))
   p.getBalance = async (address: string) =>
     guard(() => balances.get(address.toLowerCase()) ?? 0n)
-  p.getTransactionCount = async (address: string) =>
+  p.getTransactionCount = async (address: string, blockTag?: unknown) =>
     guard(() => {
-      if (signingDown && address.toLowerCase() !== mainAddress.toLowerCase()) {
+      if (
+        signingDown &&
+        typeof blockTag !== 'number' &&
+        address.toLowerCase() !== mainAddress.toLowerCase()
+      ) {
         throw new Error('RPC dropped while signing (test)')
       }
       return nonces.get(address.toLowerCase()) ?? 0
@@ -182,7 +188,7 @@ async function makeFakeChain(
     getTransactionReceipt: async txHash => ({
       txHash,
       blockNumber: 1,
-      blockHash: '0x' + '00'.repeat(32),
+      blockHash: '0x' + 'ab'.repeat(32),
       status: 'success',
       gasUsed: 21_000n,
       effectiveGasPrice: 1n,
@@ -274,7 +280,7 @@ function confirmedStatus(body: Uint8Array): Uint8Array {
       ? contentHash(operation.postFrame)
       : operation.targetHash
   return encodeForumReadFrame(
-    15,
+    46,
     new Map<number, Encodable>([
       [0, operation.network],
       [1, body],

@@ -224,13 +224,32 @@ export class SubAccountLeaseManager {
    */
   async releaseLease(
     handle: AccountLeaseHandle,
-    outcome: LeaseOutcome
+    outcome: LeaseOutcome,
+    options?: {
+      retainHold?: boolean
+      topicJournal?: {
+        reload?(): Promise<void>
+        referencesLeaseIndex(index: number): boolean
+      }
+    }
   ): Promise<SubAccountRecord> {
     const live = this.liveLeases.get(handle.index)
     if (live === undefined || live !== handle) {
       throw new InvalidLeaseHandleError(
         `No live lease for sub-account ${handle.index} on this manager (already released, or not issued by it)`
       )
+    }
+    if (outcome === 'unused') {
+      await options?.topicJournal?.reload?.()
+      const currentRecord = this.pool.getRecord(handle.index)
+      if (
+        options?.topicJournal?.referencesLeaseIndex(handle.index) ||
+        currentRecord?.lifecycle?.spend !== undefined
+      ) {
+        throw new Error(
+          `Cannot release lease for sub-account ${handle.index} as unused after Forum spend handoff`
+        )
+      }
     }
     // `'unused'`: nothing was signed or sent, so the account still holds its funds and its nonce
     // is untouched; the only outcome that returns an account to `'available'`.
@@ -240,7 +259,9 @@ export class SubAccountLeaseManager {
         : outcome === 'unused'
         ? 'available'
         : 'retired'
-    const result = await this.pool.setStatus(handle.index, nextStatus)
+    const result = await this.pool.setStatus(handle.index, nextStatus, {
+      clearHold: outcome === 'unused' && options?.retainHold !== true,
+    })
     this.liveLeases.delete(handle.index)
     return result
   }

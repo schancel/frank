@@ -15,6 +15,8 @@ interface OutgoingTopicOperationBase {
   txHash: string
   valueWei: string
   direction: 'up' | 'down'
+  preparationId?: string
+  preparationRevision?: number
 }
 
 export type OutgoingTopicOperation = OutgoingTopicOperationBase &
@@ -34,6 +36,7 @@ export interface TopicOperationJournal {
   delete(operation: OutgoingTopicOperation): Promise<void>
   getAll(): OutgoingTopicOperation[]
   referencesLeaseIndex(index: number): boolean
+  reload?(): Promise<void>
 }
 
 export function topicOperationKey(operation: OutgoingTopicOperation): string {
@@ -78,6 +81,8 @@ export function assertOutgoingTopicOperation(
           'valueWei',
           'direction',
           'payloadHashHex',
+          'preparationId',
+          'preparationRevision',
         ]
       : value.kind === 'vote'
       ? [
@@ -92,6 +97,8 @@ export function assertOutgoingTopicOperation(
           'valueWei',
           'direction',
           'targetPayloadHashHex',
+          'preparationId',
+          'preparationRevision',
         ]
       : []
   if (
@@ -113,7 +120,13 @@ export function assertOutgoingTopicOperation(
     typeof value.rawTx !== 'string' ||
     typeof value.valueWei !== 'string' ||
     !/^\d+$/.test(value.valueWei) ||
-    (value.direction !== 'up' && value.direction !== 'down')
+    (value.direction !== 'up' && value.direction !== 'down') ||
+    (value.preparationId !== undefined &&
+      (typeof value.preparationId !== 'string' ||
+        value.preparationId.length === 0)) ||
+    (value.preparationRevision !== undefined &&
+      (!Number.isSafeInteger(value.preparationRevision) ||
+        (value.preparationRevision as number) < 1))
   ) {
     throw new Error('Invalid outgoing topic operation')
   }
@@ -136,6 +149,8 @@ function assertReplacement(
 
 export class InMemoryTopicOperationJournal implements TopicOperationJournal {
   private readonly operations = new Map<string, OutgoingTopicOperation>()
+
+  async reload(): Promise<void> {}
 
   async put(operation: OutgoingTopicOperation): Promise<void> {
     assertOutgoingTopicOperation(operation)
@@ -168,6 +183,11 @@ export class LevelTopicOperationJournal implements TopicOperationJournal {
   ) {}
 
   async Open(): Promise<void> {
+    await this.reload()
+  }
+
+  async reload(): Promise<void> {
+    const refreshed = new Map<string, OutgoingTopicOperation>()
     for await (const [key, encoded] of this.database.iterator({}) as any) {
       if (!key.startsWith(TOPIC_OPERATION_KEY_PREFIX)) continue
       const operation: unknown = JSON.parse(encoded)
@@ -177,7 +197,11 @@ export class LevelTopicOperationJournal implements TopicOperationJournal {
           'Outgoing topic operation key does not match its transaction',
         )
       }
-      this.operations.set(key, cloneOperation(operation))
+      refreshed.set(key, cloneOperation(operation))
+    }
+    this.operations.clear()
+    for (const [key, operation] of refreshed) {
+      this.operations.set(key, operation)
     }
   }
 

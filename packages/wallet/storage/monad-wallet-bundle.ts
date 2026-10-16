@@ -402,6 +402,10 @@ function makeBundle(params: {
       .filter(
         record =>
           record.status === 'in-use' &&
+          !(
+            record.funding?.hold !== undefined &&
+            record.lifecycle?.spend === undefined
+          ) &&
           !referenced.has(record.index) &&
           !params.additionalLeaseReference?.(record.index),
       )
@@ -616,6 +620,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
         },
         getAll: () => memory.getAll(),
         referencesLeaseIndex: index => memory.referencesLeaseIndex(index),
+        reload: async () => memory.reload(),
       }
     } else {
       manifestClaim = claimManifest(params.location)

@@ -70,7 +70,7 @@ no installation, shared dependency mutation or live RPC was used.
   This includes the bot's real regtest/restart fixture sources; no funded native run was made.
 - New helper/test files pass Prettier, `/tmp/evm-wallet-gates-format.log`:
   `node node_modules/.bin/prettier --check packages/wallet/chain/evm-wallet-qualification.ts packages/wallet/chain/evm-identity-rpc.testutil.ts packages/wallet/chain/evm-wallet-identity-gates.jest.test.ts`.
-  Edited existing blocks were formatted without rewriting unrelated baseline formatting.
+  Existing-file formatting was restricted to touched blocks; no whole-file formatting pass is claimed.
 - `git diff --check` passed. App ESLint JSON is `/tmp/evm-wallet-gates-app-lint.json`:
   `node node_modules/.bin/eslint app/src/accounts/session.ts app/src/accounts/evm-wallets.ts app/src/accounts/session.jest.test.ts app/src/accounts/evm-wallets.jest.test.ts --format json`.
   Both production files and the EVM owner suite have zero errors. The session suite retains its
@@ -90,6 +90,20 @@ operation. A failed reopening followed by a valid reopening preserves that same 
 Primary app activation stays visibly unavailable on a refused actual factory opening. The actual
 BotHost poll calls the installed wallet method; the method's rejected qualification is observed
 and no transaction evidence read follows it.
+
+## Exact frozen-code consumer rerun
+
+After code commit `6d341132` was frozen, all three affected consumer suites were rerun together:
+
+```
+node node_modules/jest/bin/jest.js --config packages/wallet/jest.config.js --runInBand packages/wallet/chain/monad-chain-canonical-dm.jest.test.ts packages/wallet/chain/monad-domain-wallet.jest.test.ts packages/wallet/chain/evm-multisource-composition.jest.test.ts > /tmp/evm-wallet-gates-frozen-consumers.log 2>&1
+```
+
+**233/233 passed** (canonical 121, domain 98, multisource 14). No source or test edits occurred
+after the code freeze. The full self-sync rerun and targeted Sepolia proof above used the repaired
+canonical route fixture before freezing; their relevant executable sources match the frozen
+candidate. The independent reviewer additionally ran the installed gate and domain suites against
+this exact frozen code (125 passing tests).
 
 ## Broad offline sweep and baseline attribution
 
@@ -114,7 +128,7 @@ Financial `_perform` responses remain the existing synthetic chain behavior.
 
 Two remaining suites have exact pre-change factory attribution: contact-payment **10 failures**
 (repeated mailbox cursor), and topic-burn **15 failures** (unsupported Forum type 15 V6.1).
-A disposable exact `git show HEAD:packages/wallet/chain/monad-chain.ts` snapshot was mapped through
+A disposable exact `git show 4184740f:packages/wallet/chain/monad-chain.ts` snapshot was mapped through
 `^\./monad-chain$` in `/tmp/evm-wallet-gates-baseline.config.cjs`; all other candidate consumers
 and deterministic fixtures remained installed. The baseline command was:
 

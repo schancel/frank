@@ -1,0 +1,13 @@
+# Independent qualification and local integration
+
+Exact candidate `dca72064902220212c101e2e5c001259c53042ea`, base `d1a1fa94e528b5a8419c21e7563e7468886cf8a8`. Independent reviewer shared_evm_identity_review: SAFE TO INTEGRATE for the bounded shared-verifier predecessor, no findings requiring separate verification. Reviewed correctness, security, efficiency, simplicity/shape, test quality, authority, lifecycle, compatibility and configuration ownership.
+
+Independently passed 48 wallet tests, 142 app tests (one intentionally skipped live case), all 25 configured typechecks and diff whitespace. The app runner emitted an open-handle warning then exited successfully. Raw RPC reads bypass cached provider identity, input snapshots and lifecycle fences remain effective, public checkpoints retain registry authority, and all 17 EVM identity rows are covered without changing native-wallet eligibility. Session fixture changes are confined to the approved EVM region. Twenty unrelated UTXO-region session formatting errors were baseline-compared, not claimed fixed.
+
+Parent independently reproduced both named regressions against the original app verifier via a disposable Jest module mapping: genesis operator checkpoint and upstream native-ID change both incorrectly resolved. Two tests failed, exit 1. Log `/tmp/shared-evm-parent-fail-before.log`; fixture `/var/folders/j3/nh8wltcx7l58w2gw1ycc_ryr0000gn/T/frank-identity-base-gfcqn59o/`. The production candidate remained untouched. Worker fail-before execution was available only in its tool transcript; no missing evidence file was treated as proof.
+
+Worker logs: `/tmp/shared-evm-wallet-test.log`, `/tmp/shared-evm-app-test.log`, `/tmp/shared-evm-typecheck.log`. Commands use wallet Jest config and app Jest config with the co-located identity, EVM-owner, relay-route and session suites. Existing synthetic fixture getNetwork/getBlock responses are adapted to raw JSON-RPC shapes; the actual verifier is exercised.
+
+Integrated locally as `b1957674`, with complete-tree equality to the reviewed candidate. No redundant combination run is needed for identical trees. No main merge, push, deployment, live RPC, keys or funds. Requested review lane strong, inherited model; implementation dispatched GPT-6.1 Sol medium.
+
+Unfinished successor: qualify primary app/bot wallet publication and installed recovery/watch passes, explicitly carry regtest checkpoints, bind physical request lifetime and prevent stale completion. Existing factory opening mutations precede provider construction; this predecessor does not claim pre-mutation safety, full reorg recovery or qualification of every financial send.

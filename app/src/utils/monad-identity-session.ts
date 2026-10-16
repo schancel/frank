@@ -29,8 +29,6 @@ import type { DirectoryFetch } from '@frank/cashweb/relay/directory-client'
 import {
   OpenDirectoryError,
   openDirectory,
-  parseCheckpoint,
-  serializeCheckpoint,
   type OpenDirectory,
   type OpenDirectoryDeps,
 } from '@frank/cashweb/relay/open-directory'
@@ -46,7 +44,7 @@ import {
   type MessagingReason,
   type MessagingState,
 } from './messaging-state'
-import { discardUnenrolledDirectoryStore } from './directory-store-reset'
+import { browserDirectoryPersistence } from './directory-persistence'
 import {
   startDirectMessagePolling,
   startOutgoingReconciliation,
@@ -79,13 +77,7 @@ export interface MessagingDeps {
   chainId: bigint
   directory: Pick<
     OpenDirectoryDeps,
-    | 'nowNs'
-    | 'fetch'
-    | 'openStore'
-    | 'discardUnenrolled'
-    | 'discardStore'
-    | 'checkpoints'
-    | 'pins'
+    'nowNs' | 'fetch' | 'openStore' | 'checkpoints' | 'pins'
   >
   install: typeof installCanonicalDirectory
   startPolling: (options: { wallet: WalletHandle }) => Stoppable
@@ -112,8 +104,6 @@ export interface MessagingDeps {
   }) => Promise<void>
 }
 
-const CHECKPOINT_PREFIX = 'frank-directory-checkpoint:'
-const PIN_PREFIX = 'frank-directory-pin:'
 const accountIdOf = (account: unknown): string | undefined =>
   (account as { receipt?: { context?: { accountId?: string } } } | null)
     ?.receipt?.context?.accountId
@@ -148,57 +138,7 @@ function productionDeps(): MessagingDeps {
           },
         } as RequestInit)) as DirectoryFetch,
       openStore: options => openBrowserDirectoryStore(options),
-      discardUnenrolled: discardUnenrolledDirectoryStore,
-      discardStore: async name => {
-        await discardUnenrolledDirectoryStore(name)
-      },
-      checkpoints: {
-        load(key) {
-          try {
-            const saved = window.localStorage.getItem(CHECKPOINT_PREFIX + key)
-            return saved === null ? null : parseCheckpoint(saved)
-          } catch {
-            return null
-          }
-        },
-        save(key, checkpoint) {
-          try {
-            if (!checkpoint) {
-              window.localStorage.removeItem(CHECKPOINT_PREFIX + key)
-              return
-            }
-            window.localStorage.setItem(
-              CHECKPOINT_PREFIX + key,
-              serializeCheckpoint(checkpoint),
-            )
-          } catch (e) {
-            console.warn(
-              '[monad-identity-session] Failed to save checkpoint:',
-              e,
-            )
-          }
-        },
-      },
-      pins: {
-        load: key => {
-          try {
-            return window.localStorage.getItem(PIN_PREFIX + key)
-          } catch {
-            return null
-          }
-        },
-        save: (key, value) => {
-          try {
-            if (!value) {
-              window.localStorage.removeItem(PIN_PREFIX + key)
-              return
-            }
-            window.localStorage.setItem(PIN_PREFIX + key, value)
-          } catch (e) {
-            console.warn('[monad-identity-session] Failed to save pin:', e)
-          }
-        },
-      },
+      ...browserDirectoryPersistence(),
     },
     // The wallet's directory and the message-item plugins it sends and receives with.
     install: (wallet, directory) => {
@@ -496,23 +436,6 @@ export async function startMessaging(): Promise<void> {
   } catch (error) {
     console.error('[startMessaging] directory.publish failed:', error)
     failure = reasonOf(error)
-    if (failure === 'entry-refused') {
-      try {
-        const identity = (
-          wallet as unknown as { identity?: { address?: string } }
-        )?.identity
-        if (identity?.address) {
-          const network = networkOf(d.networkTag)
-          void d.directory.pins.save(`${network}:${identity.address}`, '')
-          void d.directory.pins.save(
-            `pending:${network}:${identity.address}`,
-            '',
-          )
-        }
-      } catch {
-        // ignore
-      }
-    }
   }
   if (!failure && directory && wallet && sameAccount()) {
     try {

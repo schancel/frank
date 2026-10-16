@@ -50,9 +50,11 @@ function device(
   account: ReturnType<typeof testAccount>,
   name: string,
   on: FakeRelay = relay,
+  configure?: (storage: ReturnType<typeof nodeDirectoryStorage>) => void,
 ) {
   const signed: bigint[] = []
   const storage = nodeDirectoryStorage(join(root, name))
+  configure?.(storage)
   const directory = openDirectory({
     network: NETWORK,
     relayBaseUrl: on.endpoint,
@@ -158,21 +160,21 @@ describe('own entry', () => {
     )
   })
 
-  it('adopts relay revision zero even when local device holds a conflicting pin from an earlier session', async () => {
+  it('retains an existing pin without a checkpoint instead of adopting relay history', async () => {
     const alice = testAccount(1)
     await device(alice, 'phone').directory.publish()
     const laptop = device(alice, 'laptop')
-    const conflictingPin =
-      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
-    await laptop.storage.pins.save(`${NETWORK}:${alice.address}`, conflictingPin)
-
-    const adopted = await laptop.directory.publish()
+    const conflictingPin = '01'.repeat(32)
+    await laptop.storage.pins.save(
+      `${NETWORK}:${alice.address}`,
+      conflictingPin,
+    )
+    expect(await code(laptop.directory.publish())).toBe('storage')
+    expect(await laptop.storage.pins.load(`${NETWORK}:${alice.address}`)).toBe(
+      conflictingPin,
+    )
     expect(laptop.signed).toEqual([])
     expect(puts()).toBe(1)
-    expect(relay.chain(alice.subject)).toHaveLength(1)
-    expect(toHex(adopted.current.evidence.attestation)).toBe(
-      toHex(relay.chain(alice.subject)[0]),
-    )
   })
 
   it('adopts instead of forking when another device wins the first publish', async () => {
@@ -196,19 +198,26 @@ describe('own entry', () => {
   })
 
   it('does not cache a withheld admitted peer head as absence', async () => {
-    const alice = testAccount(1), bob = testAccount(2)
+    const alice = testAccount(1),
+      bob = testAccount(2)
     await device(alice, 'alice').directory.publish()
     const reader = device(bob, 'bob').directory
     const admitted = await reader.peerCurrent({ subject: alice.subject })
     expect(admitted).toBeDefined()
     wall += 60_000
-    relay.tamper = path => path.endsWith(`/${alice.subject}/head`) ? 404 : undefined
-    expect(await code(reader.peerCurrent({ subject: alice.subject }))).toBe('unreachable')
-    expect(await code(reader.peerCurrent({ subject: alice.subject }))).toBe('unreachable')
-    relay.tamper = () => undefined
-    expect((await reader.peerCurrent({ subject: alice.subject }))?.current.evidence.hash).toEqual(
-      admitted?.current.evidence.hash,
+    relay.tamper = path =>
+      path.endsWith(`/${alice.subject}/head`) ? 404 : undefined
+    expect(await code(reader.peerCurrent({ subject: alice.subject }))).toBe(
+      'unreachable',
     )
+    expect(await code(reader.peerCurrent({ subject: alice.subject }))).toBe(
+      'unreachable',
+    )
+    relay.tamper = () => undefined
+    expect(
+      (await reader.peerCurrent({ subject: alice.subject }))?.current.evidence
+        .hash,
+    ).toEqual(admitted?.current.evidence.hash)
   })
 
   it('reports an unreachable relay and publishes on a later attempt', async () => {
@@ -367,6 +376,91 @@ describe('one signature per revision', () => {
     expect(renewals).toHaveLength(3)
     expect(new Set(renewals).size).toBe(1)
     expect(relay.chain(alice.subject)).toHaveLength(2)
+  })
+})
+
+describe('renewal fallback admission', () => {
+  it('refuses a conflicting renewal winner and retains quarantine and pending bytes across restart', async () => {
+    const alice = testAccount(1)
+    const original = chainOf(alice, 2)
+    relay.replicate(original)
+    const first = device(alice, 'alice')
+    await first.directory.publish()
+    clock = START + 340n * DAY
+    const alternate1 = alice.sign({
+      network: NETWORK,
+      revision: 1n,
+      predecessor: verifyPreviewDirectoryEvidence(original[0], NETWORK)
+        .statementHash,
+      issuedAt: stamp(START - 1800n * SECOND),
+      expiresAt: stamp(START + 365n * DAY),
+      relay: relay.binding,
+    })
+    const alternate2 = alice.sign({
+      network: NETWORK,
+      revision: 2n,
+      predecessor: verifyPreviewDirectoryEvidence(alternate1, NETWORK)
+        .statementHash,
+      issuedAt: stamp(START - 1700n * SECOND),
+      expiresAt: stamp(START + 365n * DAY),
+      relay: relay.binding,
+    })
+    let reads = 0
+    relay.tamper = path => {
+      if (path.endsWith(`/${alice.subject}/head`)) {
+        reads++
+        if (reads === 2) {
+          relay.replicate([alternate1, alternate2])
+          return original[1]
+        }
+      }
+      return undefined
+    }
+    const result = await code(first.directory.publish())
+    const pin = await first.storage.pins.load(`${NETWORK}:${alice.address}`)
+    const checkpoint = await first.storage.checkpoints.load(
+      `frank-directory:${NETWORK}:${alice.subject}:${pin}`,
+    )
+
+    expect(result).toBe('fork')
+    expect(checkpoint?.forked).toBe(true)
+    const pendingKey = `pending:${NETWORK}:${alice.address}`
+    const pending = await first.storage.pins.load(pendingKey)
+    expect(pending).toBe(
+      relay.requests.filter(r => r.method === 'PUT').slice(-1)[0]?.body,
+    )
+    await first.directory.close()
+    relay.tamper = undefined
+    const again = device(alice, 'alice')
+    expect(await code(again.directory.publish())).toBe('fork')
+    expect(
+      await again.storage.checkpoints.load(
+        `frank-directory:${NETWORK}:${alice.subject}:${pin}`,
+      ),
+    ).toEqual(checkpoint)
+    expect(await again.storage.pins.load(pendingKey)).toBe(pending)
+    expect(await again.storage.pins.load(`${NETWORK}:${alice.address}`)).toBe(
+      pin,
+    )
+    expect(again.signed).toEqual([])
+  })
+
+  it('does not reuse a Current that expired during a transient renewal failure', async () => {
+    const alice = testAccount(1)
+    const first = device(alice, 'alice')
+    await first.directory.publish()
+    clock = START + 340n * DAY
+    const save = first.storage.pins.save
+    first.storage.pins.save = async (key, value) => {
+      await save(key, value)
+      if (key.startsWith('pending:') && value) clock = START + 400n * DAY
+    }
+    relay.putFault = 'lose'
+    expect(await code(first.directory.publish())).toBe('unreachable')
+    expect(
+      await first.storage.pins.load(`pending:${NETWORK}:${alice.address}`),
+    ).toBeTruthy()
+    expect(first.signed).toEqual([0n, 1n])
   })
 })
 
@@ -702,3 +796,197 @@ describe('other accounts', () => {
     expect(await code(a.directory.lookup(carol.address))).toBe('clock')
   })
 })
+
+describe('restoration continuity', () => {
+  it('retains an own accepted high-water mark when a relay serves an older signed prefix', async () => {
+    const alice = testAccount(1)
+    const chain = chainOf(alice, 3)
+    relay.replicate(chain)
+    const first = device(alice, 'alice')
+    expect((await first.directory.publish()).current.revision).toBe(2n)
+    const pinKey = `${NETWORK}:${alice.address}`
+    const pin = await first.storage.pins.load(pinKey)
+    const name = `frank-directory:${NETWORK}:${alice.subject}:${pin}`
+    const checkpoint = await first.storage.checkpoints.load(name)
+    await first.directory.close()
+    relay.tamper = path =>
+      path.endsWith(`/${alice.subject}/head`) ? chain[0] : undefined
+    const again = device(alice, 'alice')
+    expect(await code(again.directory.publish())).toBe('rollback')
+    expect(await again.storage.pins.load(pinKey)).toBe(pin)
+    expect(await again.storage.checkpoints.load(name)).toEqual(checkpoint)
+    expect(again.signed).toEqual([])
+    relay.tamper = undefined
+    expect((await again.directory.publish()).current.revision).toBe(2n)
+  })
+
+  it('does not enroll a pinned account whose checkpoint is missing even when its database is missing', async () => {
+    const alice = testAccount(1)
+    const first = device(alice, 'alice')
+    const pinKey = `${NETWORK}:${alice.address}`
+    await first.directory.publish()
+    const pin = await first.storage.pins.load(pinKey)
+    await first.directory.close()
+    rmSync(join(root, 'alice'), { recursive: true, force: true })
+    const again = device(alice, 'alice')
+    await again.storage.pins.save(pinKey, pin!)
+    expect(await code(again.directory.publish())).toBe('storage')
+    expect(await again.storage.pins.load(pinKey)).toBe(pin)
+    expect(again.signed).toEqual([])
+  })
+})
+
+describe('interrupted continuity storage', () => {
+  it.each(['read', 'write', 'reopen'] as const)(
+    'preserves an accepted later head through checkpoint %s failure and restart',
+    async fault => {
+      const alice = testAccount(1)
+      const chain = chainOf(alice, 3)
+      relay.replicate(chain)
+      const first = device(alice, 'alice')
+      await first.directory.publish()
+      const pinKey = `${NETWORK}:${alice.address}`
+      const pin = await first.storage.pins.load(pinKey)
+      const name = `frank-directory:${NETWORK}:${alice.subject}:${pin}`
+      const checkpoint = await first.storage.checkpoints.load(name)
+      await first.directory.close()
+      const failed = device(alice, 'alice', relay, storage => {
+        if (fault === 'read')
+          storage.checkpoints.load = () => {
+            throw new Error('checkpoint read')
+          }
+        if (fault === 'write')
+          storage.checkpoints.save = () => {
+            throw new Error('checkpoint write')
+          }
+        if (fault === 'reopen')
+          storage.openStore = async () => {
+            throw new Error('database unavailable')
+          }
+      })
+      expect(await code(failed.directory.publish())).toBe('storage')
+      await failed.directory.close()
+      expect(await first.storage.checkpoints.load(name)).toEqual(checkpoint)
+      expect(await first.storage.pins.load(pinKey)).toBe(pin)
+      relay.tamper = path =>
+        path.endsWith(`/${alice.subject}/head`) ? chain[0] : undefined
+      const again = device(alice, 'alice')
+      expect(await code(again.directory.publish())).toBe('rollback')
+      expect(again.signed).toEqual([])
+    },
+  )
+
+  it('retains fork quarantine after refusal and checkpoint read failure across restart', async () => {
+    const alice = testAccount(1)
+    const original = chainOf(alice, 2)
+    relay.replicate(original)
+    const first = device(alice, 'alice')
+    await first.directory.publish()
+    const other = alice.sign({
+      network: NETWORK,
+      revision: 1n,
+      predecessor: verifyPreviewDirectoryEvidence(original[0], NETWORK)
+        .statementHash,
+      issuedAt: stamp(START - 1800n * SECOND),
+      expiresAt: stamp(START + 365n * DAY),
+      relay: relay.binding,
+    })
+    relay.tamper = path =>
+      path.endsWith(`/${alice.subject}/head`) ? other : undefined
+    expect(await code(first.directory.publish())).toBe('fork')
+    const pin = await first.storage.pins.load(`${NETWORK}:${alice.address}`)
+    const name = `frank-directory:${NETWORK}:${alice.subject}:${pin}`
+    const checkpoint = await first.storage.checkpoints.load(name)
+    expect(checkpoint?.forked).toBe(true)
+    await first.directory.close()
+    const failed = device(alice, 'alice', relay, storage => {
+      storage.checkpoints.load = () => {
+        throw new Error('checkpoint read')
+      }
+    })
+    expect(await code(failed.directory.publish())).toBe('storage')
+    await failed.directory.close()
+    relay.tamper = undefined
+    const again = device(alice, 'alice')
+    expect(await code(again.directory.publish())).toBe('fork')
+    expect(await again.storage.checkpoints.load(name)).toEqual(checkpoint)
+    expect(again.signed).toEqual([])
+  })
+
+  it.each(['before-commit', 'after-commit'] as const)(
+    'keeps the first anchor across an enrollment interruption %s',
+    async fault => {
+      const alice = testAccount(1)
+      const first = device(alice, 'alice', relay, storage => {
+        const open = storage.openStore
+        storage.openStore = async options => {
+          const store = await open(options)
+          const enroll = store.enroll.bind(store)
+          store.enroll = async (candidates, context) => {
+            if (fault === 'after-commit') await enroll(candidates, context)
+            throw new Error('lost enrollment acknowledgement')
+          }
+          return store
+        }
+      })
+      expect(await code(first.directory.publish())).toBe('storage')
+      const pinKey = `${NETWORK}:${alice.address}`
+      const pin = await first.storage.pins.load(pinKey)
+      const name = `frank-directory:${NETWORK}:${alice.subject}:${pin}`
+      expect((await first.storage.checkpoints.load(name))?.kind).toBe(
+        'ProspectiveEnrollment',
+      )
+      const pending = await first.storage.pins.load(`pending:${pinKey}`)
+      expect(pending).toBeTruthy()
+      await first.directory.close()
+      const again = device(alice, 'alice')
+      if (fault === 'after-commit')
+        expect((await again.directory.publish()).current.revision).toBe(0n)
+      else expect(await code(again.directory.publish())).toBe('storage')
+      expect(await again.storage.pins.load(pinKey)).toBe(pin)
+      expect(again.signed).toEqual([])
+      if (fault === 'before-commit')
+        expect(await again.storage.pins.load(`pending:${pinKey}`)).toBe(pending)
+    },
+  )
+
+  it('keeps pending first publication when its pin write fails and refuses a different relay anchor', async () => {
+    const alice = testAccount(1)
+    const first = device(alice, 'alice')
+    const save = first.storage.pins.save
+    first.storage.pins.save = (key, value) => {
+      if (key === `${NETWORK}:${alice.address}`)
+        throw new Error('pin unavailable')
+      return save(key, value)
+    }
+    expect(await code(first.directory.publish())).toBe('storage')
+    const pendingKey = `pending:${NETWORK}:${alice.address}`
+    const pending = await first.storage.pins.load(pendingKey)
+    expect(pending).toBeTruthy()
+    await first.directory.close()
+    const other = chainOf(alice, 1, relay, START - 1800n * SECOND)
+    relay.tamper = path =>
+      path.endsWith(`/${alice.subject}/head`) ? other[0] : undefined
+    const again = device(alice, 'alice')
+    expect(await code(again.directory.publish())).toBe('fork')
+    expect(await again.storage.pins.load(pendingKey)).toBe(pending)
+    expect(again.signed).toEqual([])
+  })
+})
+
+it.each(['pending', 'resigned'] as const)(
+  'preserves malformed %s authorization state and refuses to sign through it',
+  async keyKind => {
+    const alice = testAccount(1)
+    const first = device(alice, 'alice')
+    await first.directory.publish()
+    await first.directory.close()
+    const key = `${keyKind}:${NETWORK}:${alice.address}`
+    await first.storage.pins.save(key, 'malformed')
+    if (keyKind === 'resigned') clock += 340n * DAY
+    const again = device(alice, 'alice')
+    expect(await code(again.directory.publish())).toBe('storage')
+    expect(await again.storage.pins.load(key)).toBe('malformed')
+    expect(again.signed).toEqual([])
+  },
+)

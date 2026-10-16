@@ -4,8 +4,7 @@
  * per checkpoint (kept outside the stores). Each write replaces only its own small file, off the
  * event loop; nothing is rewritten in full when one account is admitted.
  */
-import level from 'level'
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -16,10 +15,7 @@ import {
   type OpenDirectoryDeps,
 } from './open-directory'
 
-type Storage = Pick<
-  OpenDirectoryDeps,
-  'openStore' | 'discardUnenrolled' | 'discardStore' | 'checkpoints' | 'pins'
->
+type Storage = Pick<OpenDirectoryDeps, 'openStore' | 'checkpoints' | 'pins'>
 /** `root` is created if missing. It holds only public directory evidence, no secrets. */
 export function nodeDirectoryStorage(root: string): Storage {
   mkdirSync(join(root, 'state'), { recursive: true })
@@ -52,31 +48,6 @@ export function nodeDirectoryStorage(root: string): Storage {
   return {
     openStore: ({ name, anchor, mode }) =>
       openNodeDirectoryStore({ location: location(name), anchor, mode }),
-    async discardStore(name) {
-      const path = location(name)
-      if (existsSync(path)) {
-        rmSync(path, { recursive: true, force: true })
-      }
-    },
-    async discardUnenrolled(name) {
-      const path = location(name)
-      if (!existsSync(path)) return 'absent'
-      const db = level(path, { createIfMissing: false })
-      let admitted = false
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        for await (const [key] of db.iterator({ values: false }) as any)
-          if (String(key) !== 'format') {
-            admitted = true
-            break
-          }
-      } finally {
-        await db.close()
-      }
-      if (admitted) return 'retained'
-      rmSync(path, { recursive: true, force: true })
-      return 'discarded'
-    },
     checkpoints: {
       async load(name) {
         const saved =

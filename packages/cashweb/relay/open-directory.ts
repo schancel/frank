@@ -150,16 +150,6 @@ export interface OpenDirectoryDeps {
     anchor: Anchor
     mode: OpenMode
   }): Promise<DirectoryStore>
-  /**
-   * Remove a store completely (used when an own account's store is corrupted or in an
-   * irrecoverable fork against the authoritative chain).
-   */
-  discardStore?(name: string): Promise<void>
-  /**
-   * Remove a store that exists but never admitted anything (a first attempt that failed), so it
-   * can be tried again. A store holding any admitted record must be reported `retained`.
-   */
-  discardUnenrolled(name: string): Promise<'absent' | 'discarded' | 'retained'>
   /** Whole checkpoints, kept outside the admission store. */
   checkpoints: {
     load(name: string): MaybePromise<Checkpoint | null>
@@ -212,9 +202,10 @@ export interface OpenDirectory {
   /**
    * Looks up historical directory evidence for a subject by statement hash.
    */
-  peerHistorical?(
-    peer: { subject: string; statementHash: string },
-  ): Promise<HistoricalEvidence | undefined>
+  peerHistorical?(peer: {
+    subject: string
+    statementHash: string
+  }): Promise<HistoricalEvidence | undefined>
   /**
    * Whether the configured relay says it delivers to accounts that live on other relays
    * (`forwarding: true` in `/relay/v1/info`). Absent or unreadable counts as no.
@@ -360,10 +351,10 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
           headers: options.body
             ? {
                 'Content-Type': MEDIA,
-                Accept: options.accept,
+                'Accept': options.accept,
                 'ngrok-skip-browser-warning': '1',
               }
-            : { Accept: options.accept, 'ngrok-skip-browser-warning': '1' },
+            : { 'Accept': options.accept, 'ngrok-skip-browser-warning': '1' },
           body: options.body ? Uint8Array.from(options.body) : undefined,
           redirect: 'error',
           credentials: 'omit',
@@ -516,6 +507,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     subject: string,
     address: string,
     revisionZero: string,
+    intent: 'first-contact' | 'restore',
   ): Promise<Handle> {
     const name = `frank-directory:${network}:${subject}:${revisionZero}`
     const anchor = {
@@ -523,59 +515,17 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
       subject: { keyType: 1, keyBytes: fromHex(subject) },
       revisionZero: fromHex(revisionZero),
     }
-    const safeDiscard = async () => {
-      try {
-        await deps.discardUnenrolled(name)
-      } catch {
-        // non-fatal
-      }
-    }
     try {
-      let saved: Checkpoint | null = null
-      try {
-        saved = await deps.checkpoints.load(name)
-      } catch {
-        saved = null
-      }
-      let store: DirectoryStore | undefined
-      let checkpoint = saved
-      if (checkpoint?.kind === 'CommittedPrefix') {
-        try {
-          store = await deps.openStore({
-            name,
-            anchor,
-            mode: { kind: 'reopen', checkpoint },
-          })
-        } catch {
-          // Reopening with saved checkpoint failed (cache missing, evicted, or corrupted).
-          // Discard the broken store and checkpoint, then fall through to mode: 'new'.
-          checkpoint = null
-          try {
-            await deps.checkpoints.save(name, null as any)
-          } catch {
-            // ignore
-          }
-        }
-      }
-      if (!store) {
-        // Discard any unenrolled/corrupted store before opening in 'new' mode
-        await safeDiscard()
-        try {
-          store = await deps.openStore({
-            name,
-            anchor,
-            mode: { kind: 'new' },
-          })
-        } catch {
-          // If 'new' failed because a lingering uncheckpointed database was still present, discard again and retry
-          await safeDiscard()
-          store = await deps.openStore({
-            name,
-            anchor,
-            mode: { kind: 'new' },
-          })
-        }
-      }
+      const checkpoint = await deps.checkpoints.load(name)
+      if (!checkpoint && intent !== 'first-contact')
+        throw new OpenDirectoryError('storage', address)
+      const store = await deps.openStore({
+        name,
+        anchor,
+        // A prospective checkpoint can prove an enrollment committed despite a lost reply.
+        // If it did not commit, reopen refuses without changing the retained anchor or store.
+        mode: checkpoint ? { kind: 'reopen', checkpoint } : { kind: 'new' },
+      })
       const handle: Handle = {
         subject,
         address,
@@ -588,7 +538,6 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
       subjects.set(address, subject)
       return handle
     } catch (error) {
-      console.error('[openHandle] error caught for', address, error)
       throw error instanceof OpenDirectoryError
         ? error
         : new OpenDirectoryError('storage', address)
@@ -609,22 +558,28 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     } catch {
       throw new OpenDirectoryError('storage', address)
     }
-    if (!pinned || !/^[0-9a-f]{64}$/.test(pinned)) return undefined
-    const task = openHandle(subject, address, pinned).finally(() =>
+    if (pinned === null) return undefined
+    if (!/^[0-9a-f]{64}$/.test(pinned))
+      throw new OpenDirectoryError('storage', address)
+    const task = openHandle(subject, address, pinned, 'restore').finally(() =>
       opening.delete(subject),
     )
     opening.set(subject, task)
     return task
   }
   /** The last admitted entry held by a store, read back without the network. */
-  async function retainedHead(handle: Handle): Promise<Evidence | undefined> {
+  async function retainedHead(handle: Handle): Promise<Evidence> {
     if (handle.head) return handle.head
-    const status = await handle.store.status()
-    if (!status?.head) return undefined
-    const evidence = await handle.store.historicalEvidence(status.head)
-    if (!evidence) return undefined
-    handle.head = parse(evidence.attestation, handle.address)
-    return handle.head
+    try {
+      const status = await handle.store.status()
+      if (!status?.head) throw new OpenDirectoryError('storage', handle.address)
+      const evidence = await handle.store.historicalEvidence(status.head)
+      if (!evidence) throw new OpenDirectoryError('storage', handle.address)
+      handle.head = parse(evidence.attestation, handle.address)
+      return handle.head
+    } catch (error) {
+      throw refusal(error, handle.address)
+    }
   }
 
   /**
@@ -657,7 +612,12 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         } catch {
           throw new OpenDirectoryError('storage', address)
         }
-        handle = await openHandle(head.subject, address, revisionZero)
+        handle = await openHandle(
+          head.subject,
+          address,
+          revisionZero,
+          'first-contact',
+        )
       }
       const { store } = handle
       try {
@@ -700,12 +660,8 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         if (code === 'fork') {
           // Keep the evidence of the fork across restarts.
           const fork = await store.status().catch(() => null)
-          if (fork)
-            try {
-              await deps.checkpoints.save(handle.name, fork.checkpoint)
-            } catch {
-              // The store itself keeps the fork; the checkpoint is a second copy.
-            }
+          if (!fork) throw new OpenDirectoryError('storage', address)
+          await saveCheckpoint(handle, fork.checkpoint)
         }
         if (code === 'unavailable' || code === 'continuity' || !code)
           if (!(error instanceof OpenDirectoryError)) await drop(handle)
@@ -797,8 +753,9 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         !/^([0-9a-f]{2}){16,64}$/.test(info.relayId) ||
         typeof info.endpoint !== 'string' ||
         // The relay may only describe itself: an entry is never signed for some other host.
-        (!['https:', 'http:'].includes(new URL(info.endpoint).protocol) ||
-          (new URL(info.endpoint).protocol === 'http:' && !isLoopbackHostname(new URL(info.endpoint).hostname))) ||
+        !['https:', 'http:'].includes(new URL(info.endpoint).protocol) ||
+        (new URL(info.endpoint).protocol === 'http:' &&
+          !isLoopbackHostname(new URL(info.endpoint).hostname)) ||
         !matchesRelayOrigin(info.endpoint, origin) ||
         typeof info.relayKey !== 'string' ||
         !directoryAddress(info.relayKey) ||
@@ -881,77 +838,6 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     } catch (error) {
       if (error instanceof OpenDirectoryError && error.code === 'expired')
         return undefined
-      if (
-        error instanceof OpenDirectoryError &&
-        (error.code === 'fork' ||
-          error.code === 'invalid' ||
-          error.code === 'rollback')
-      ) {
-        // Self-healing: Local device holds a stale, orphaned, or conflicting pin/store for our own
-        // account (e.g. from an earlier session, aborted publish, or testnet wipe). Discard the
-        // conflicting store/pin and adopt the server's authoritative entry signed by our own key.
-        console.warn(
-          `[open-directory] Healing conflicting local pin/store for ${selfAddress} (${error.code}) to adopt authoritative entry`,
-        )
-        const oldHandle = handles.get(selfSubject)
-        if (oldHandle) {
-          await drop(oldHandle)
-          try {
-            await deps.checkpoints.save(oldHandle.name, null as any)
-          } catch {
-            // ignore
-          }
-          try {
-            if (deps.discardStore) {
-              await deps.discardStore(oldHandle.name)
-            } else {
-              await deps.discardUnenrolled(oldHandle.name)
-            }
-          } catch {
-            // ignore
-          }
-        }
-        let stalePin: string | null = null
-        try {
-          stalePin = await deps.pins.load(`${network}:${selfAddress}`)
-        } catch {
-          // ignore
-        }
-        if (stalePin && /^[0-9a-f]{64}$/.test(stalePin)) {
-          const staleName = `frank-directory:${network}:${selfSubject}:${stalePin}`
-          try {
-            await deps.checkpoints.save(staleName, null as any)
-          } catch {
-            // ignore
-          }
-          try {
-            if (deps.discardStore) {
-              await deps.discardStore(staleName)
-            } else {
-              await deps.discardUnenrolled(staleName)
-            }
-          } catch {
-            // ignore
-          }
-        }
-        opening.delete(selfSubject)
-        handles.delete(selfSubject)
-        try {
-          await deps.pins.save(`${network}:${selfAddress}`, '')
-        } catch {
-          // ignore
-        }
-        try {
-          return await admit(bytes, selfExpected)
-        } catch (retryError) {
-          if (
-            retryError instanceof OpenDirectoryError &&
-            retryError.code === 'expired'
-          )
-            return undefined
-          throw retryError
-        }
-      }
       throw error
     }
   }
@@ -966,20 +852,17 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     try {
       saved = await deps.pins.load(pendingKey)
     } catch {
-      return undefined
+      throw new OpenDirectoryError('storage', selfAddress)
     }
-    if (!saved) return undefined
+    if (saved === null || saved === '') return undefined
     let pending: Evidence
     try {
       pending = parse(fromHex(saved), selfAddress)
     } catch {
-      await savePending(null).catch(() => undefined)
-      return undefined
+      throw new OpenDirectoryError('storage', selfAddress)
     }
-    if (pending.subject !== selfSubject) {
-      await savePending(null).catch(() => undefined)
-      return undefined
-    }
+    if (pending.subject !== selfSubject)
+      throw new OpenDirectoryError('storage', selfAddress)
     return pending
   }
   async function savePending(attestation: Uint8Array | null): Promise<void> {
@@ -991,6 +874,16 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
   }
   const supersedes = (head: Evidence, pending: Evidence): boolean =>
     same(head.hash, pending.hash) || head.revision >= pending.revision
+  // Interrupted first publication retains its chosen revision-zero chain, even before pin save.
+  async function requirePendingAnchor(
+    head: Evidence,
+    pending: Evidence,
+  ): Promise<void> {
+    if (pending.revision !== 0n || same(head.hash, pending.hash)) return
+    const chain = [...(await chainBefore(head, async () => false)), head]
+    if (!same(chain[0].hash, pending.hash))
+      throw new OpenDirectoryError('fork', selfAddress)
+  }
   type Admitted = { handle: Handle; current: Current } | undefined
   /** Send the saved statement. It stays saved unless the relay took it or moved past it. */
   async function sendPending(
@@ -999,16 +892,19 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     const bytes = pending.candidate.attestation
     const answer = await put(bytes)
     if (answer.status === 200) {
+      const admitted = await admitOwn(bytes)
       await savePending(null)
-      return { head: pending, admitted: await admitOwn(bytes) }
+      return { head: pending, admitted }
     }
     if (answer.status === 409) {
       // Another device got there first (or the relay kept ours earlier): adopt what it holds.
       const winner = await getEntry(`/${selfSubject}/head`, 'fresh-current')
       const head = winner && parse(winner, selfAddress)
       if (winner && head && supersedes(head, pending)) {
+        await requirePendingAnchor(head, pending)
+        const admitted = await admitOwn(winner)
         await savePending(null)
-        return { head, admitted: await admitOwn(winner) }
+        return { head, admitted }
       }
     }
     throw putFailure(answer.status)
@@ -1033,8 +929,9 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     const served = await getEntry(`/${selfSubject}/head`, 'fresh-current')
     const servedHead = served ? parse(served, selfAddress) : undefined
     let pending = await loadPending()
-    if (pending && servedHead && supersedes(servedHead, pending)) {
-      // The relay did keep it (the answer was lost), or the account has moved past it.
+    if (pending && served && servedHead && supersedes(servedHead, pending)) {
+      await requirePendingAnchor(servedHead, pending)
+      await admitOwn(served)
       await savePending(null)
       pending = undefined
     }
@@ -1056,6 +953,11 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         try {
           ;({ head, admitted } = await sendPending(pending))
         } catch (error) {
+          if (
+            !(error instanceof OpenDirectoryError) ||
+            error.code !== 'unreachable'
+          )
+            throw error
           // The saved statement is still not accepted. The entry the relay does hold stays
           // usable meanwhile, unless it names another relay than the configured one.
           const current =
@@ -1099,9 +1001,12 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         const signedAt = deps.nowNs()
         let last = 0n
         try {
-          last = BigInt((await deps.pins.load(resignedKey)) || '0')
+          const saved = await deps.pins.load(resignedKey)
+          if (saved !== null && !/^[0-9]+$/.test(saved))
+            throw new OpenDirectoryError('storage', selfAddress)
+          last = saved === null ? 0n : BigInt(saved)
         } catch {
-          last = 0n
+          throw new OpenDirectoryError('storage', selfAddress)
         }
         if (
           last > 0n &&
@@ -1120,7 +1025,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         try {
           await deps.pins.save(resignedKey, signedAt.toString())
         } catch {
-          // Non-fatal
+          throw new OpenDirectoryError('storage', selfAddress)
         }
         const attestation = await deps.self.signNextRevision({
           ...input,
@@ -1131,9 +1036,16 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         try {
           ;({ admitted } = await sendPending(parse(attestation, selfAddress)))
         } catch (error) {
-          // The signed renewal stays saved and is sent again next time. Until then an entry
-          // that is still current stays usable; a move that did not happen is not reported done.
+          if (
+            !(error instanceof OpenDirectoryError) ||
+            error.code !== 'unreachable'
+          )
+            throw error
+          // A transient publication failure can retain the old route only while admission
+          // still authorizes it now. Never reuse the Current captured before network waits.
           if (!admitted || relocating) throw error
+          admitted = await admitOwn(head.candidate.attestation)
+          if (!admitted) throw error
         }
       }
     }
@@ -1154,7 +1066,8 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     try {
       const normEndpoint = endpoint.replace(/\/$/, '')
       const peerOrigin = new URL(normEndpoint).origin
-      if (peerOrigin === origin || matchesRelayOrigin(endpoint, origin)) return true
+      if (peerOrigin === origin || matchesRelayOrigin(endpoint, origin))
+        return true
       if (!bindingEndpoint) {
         await relayBinding().catch(() => undefined)
       }

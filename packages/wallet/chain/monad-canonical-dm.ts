@@ -2660,7 +2660,8 @@ async function readMailbox(
       completedTimestamps.length === 0
         ? params.sinceMs
         : Math.max(...completedTimestamps) + 1,
-    truncated: truncated !== undefined,
+    // Completeness is independent of cursor movement, including an empty mailbox.
+    truncated: truncated !== undefined || earliestIncomplete !== Infinity,
   }
 }
 

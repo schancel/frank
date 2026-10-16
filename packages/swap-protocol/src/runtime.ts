@@ -50,6 +50,8 @@ export interface NegotiationEnvelope {
 export interface NegotiationScan {
   readonly records: readonly NegotiationEnvelope[]
   readonly resumeFromInclusive: number
+  /** Any incomplete scan: a page cutoff/failure or unresolved timestamp group.
+   * False includes complete empty reads with an unchanged inclusive position. */
   readonly truncated: boolean
 }
 export interface NegotiationRecoveryOptions {
@@ -239,11 +241,7 @@ export class NegotiationRecovery {
       if (!this.active) return
       await this.refresh()
       this.failures = 0
-      this.publish(
-        result.truncated || result.resumeFromInclusive === (expected ?? 0)
-          ? 'incomplete'
-          : 'ready',
-      )
+      this.publish(result.truncated ? 'incomplete' : 'ready')
     } catch (error) {
       if (!this.active) return
       this.failures++

@@ -1,3 +1,5 @@
+import { NegotiationRecovery, type NegotiationScan } from '../../swap-protocol/src/runtime'
+import { createNativeNegotiationJournalStore } from '../../swap-protocol/src/storage/negotiation-native'
 import { createNegotiationMessagePlugin } from '../../swap-protocol/src/message-plugin'
 import { buildNegotiationOffer, TESTNET_NEGOTIATION_POLICY } from '../../swap-protocol/src/negotiation'
 import { encodeSignedSwapEvent } from '../../swap-protocol/src/index'
@@ -2482,6 +2484,105 @@ describe('two typed wallets on the open directory', () => {
         stampValue: 0n,
       })
     }
+    it.each(['empty', 'idle', 'missing', 'prefix', 'paging', 'terminal'] as const)(
+      'reconciles production scanner completeness with durable readiness: %s',
+      async (kind) => {
+        // Fresh empty mailbox requires a published local directory, but no sent message.
+        if (kind === 'empty') await online('bob', f.bob)
+        else await sent()
+        const missing = kind === 'missing' || kind === 'prefix'
+        if (missing) {
+          const directory = await online('bob-recheck', f.bob)
+          const peerCurrent = directory.peerCurrent.bind(directory)
+          let calls = 0
+          installCanonicalDirectory(f.bob, {
+            ...directory,
+            fetch: f.fetch,
+            peerCurrent: async (params) =>
+              ++calls === (kind === 'prefix' ? 2 : 1)
+                ? undefined
+                : peerCurrent(params),
+          })
+        }
+        mailboxPage.mockResolvedValue({ records: [] })
+        if (kind === 'idle')
+          mailboxPage.mockResolvedValueOnce({ records: [inboxRecord(0, 5)] })
+        if (missing)
+          mailboxPage.mockResolvedValueOnce({
+            records: [
+              ...(kind === 'prefix' ? [inboxRecord(0, 5)] : []),
+              inboxRecord(0, 7), inboxRecord(0, 7), inboxRecord(0, 9),
+            ],
+          })
+        if (kind === 'paging')
+          for (let n = 0; n < 8; n++)
+            mailboxPage.mockResolvedValueOnce({
+              records: [inboxRecord(0, 7)], nextCursor: String(n),
+            })
+        if (kind === 'terminal')
+          mailboxPage.mockResolvedValueOnce({
+            records: [], unreadable: [{ submissionIdentity: 'bad', timestampMs: 9 }],
+          })
+        const location = mkdtempSync(join(tmpdir(), 'scanner-readiness-'))
+        const reads: NegotiationScan[] = []
+        const scheduled: { work: () => void; delay: number; canceled: boolean }[] = []
+        const owner = {
+          accountIncarnation: 'scanner-readiness',
+          localPublicKey: f.bob.identity.compressedPubKey,
+          messagingChainIdentifier: 'monad-testnet',
+        }
+        const runtime = new NegotiationRecovery({
+          owner,
+          policy: TESTNET_NEGOTIATION_POLICY,
+          openStore: () => createNativeNegotiationJournalStore({
+            ...owner, hostDiscriminator: 'bot', rootLocation: location,
+          }),
+          scan: async (since) => {
+            const result = await scan(f.bob, since)
+            reads.push(result)
+            return result
+          },
+          schedule: (work, delay) => {
+            const task = { work, delay, canceled: false }
+            scheduled.push(task)
+            return () => { task.canceled = true }
+          },
+          publish: () => undefined,
+        })
+        const waitForPass = async (count: number) => {
+          for (let i = 0; i < 200; i++) {
+            if (scheduled.filter(task => task.delay === 3000).length === count) return
+            await new Promise(resolve => setTimeout(resolve, 5))
+          }
+          throw new Error('Recovery pass did not finish')
+        }
+        try {
+          runtime.start()
+          await waitForPass(1)
+          const position = kind === 'idle' || kind === 'prefix' ? 6 : kind === 'terminal' ? 10 : 0
+          expect(reads[0].resumeFromInclusive).toBe(position)
+          expect(reads[0].truncated).toBe(missing || kind === 'paging')
+          expect(runtime.snapshot.state).toBe(missing || kind === 'paging' ? 'incomplete' : 'ready')
+          expect(runtime.snapshot.coverage).toBe(position)
+          if (missing) {
+            expect(reads[0].records).toHaveLength(kind === 'prefix' ? 1 : 0)
+            mailboxPage.mockResolvedValueOnce({
+              records: [inboxRecord(0, 7), inboxRecord(0, 7), inboxRecord(0, 9)],
+            })
+          }
+          scheduled.find(task => task.delay === 3000 && !task.canceled)!.work()
+          await waitForPass(2)
+          expect(runtime.snapshot.state).toBe('ready')
+          expect(runtime.snapshot.coverage).toBe(missing ? 10 : position)
+          expect(reads[1].truncated).toBe(false)
+          if (missing) expect(reads[1].records).toHaveLength(3)
+          else expect(reads[1].resumeFromInclusive).toBe(position)
+        } finally {
+          await runtime.stop()
+          rmSync(location, { recursive: true, force: true })
+        }
+      },
+    )
     it.each(['in', 'out'] as const)(
       'retains authenticated original identities (%s) without wallet effects',
       async (direction) => {

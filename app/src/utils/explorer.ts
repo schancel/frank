@@ -4,7 +4,7 @@
  * Keep this mapping explicit: inferring a network from an RPC URL can silently
  * produce links for the wrong chain when an operator changes providers.
  */
-import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 
 export const DEFAULT_NETWORK_TAG = 'MONT'
 

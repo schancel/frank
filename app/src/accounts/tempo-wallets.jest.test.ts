@@ -3,7 +3,7 @@ import {
   readTempoPathUsdBalance,
 } from './tempo-wallets'
 import { accountSession } from './session'
-import { createMonadJsonRpcProvider } from '@frank/wallet/monad-provider'
+import { createMonadJsonRpcProvider } from '@frank/wallet/evm-provider'
 import { LevelRecordStore } from '@frank/wallet/storage/evm-coin-store'
 
 jest.mock('./session', () => ({
@@ -24,8 +24,8 @@ jest.mock('@frank/wallet/chain', () => ({
     networkTag: 'MONT',
   }),
 }))
-jest.mock('@frank/wallet/monad-provider', () => ({
-  ...jest.requireActual('@frank/wallet/monad-provider'),
+jest.mock('@frank/wallet/evm-provider', () => ({
+  ...jest.requireActual('@frank/wallet/evm-provider'),
   createMonadJsonRpcProvider: jest.fn(),
 }))
 

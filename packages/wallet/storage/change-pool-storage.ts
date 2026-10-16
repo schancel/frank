@@ -12,7 +12,7 @@
  * (`SubAccountPoolStore` has no equivalent -- `MonadSubAccountPool` derives that value on the fly
  * from `Math.max` over its records, which works there because every record it stores is durable;
  * here the pointer must persist *before* a record for that index may even exist yet -- see
- * `monad-change-pool.ts`'s `peekNextChangeAddress`).
+ * `evm-change-pool.ts`'s `peekNextChangeAddress`).
  *
  * What's persisted, and what isn't: `ChangeAccountRecord` (below) plus the raw "next unused index"
  * pointer. Never a private key -- change-account keys are cheaply and deterministically re-derived
@@ -29,7 +29,7 @@ export interface ChangeAccountRecord {
   address: string
   /** Index of the burn sub-account (`m/44'/60'/0'/0/{sourceBurnIndex}`) whose leftover balance
    * funded this change output -- kept for audit/observability and as the join key a future
-   * consolidation step (see `monad-change-pool.ts`'s file header) would need. */
+   * consolidation step (see `evm-change-pool.ts`'s file header) would need. */
   sourceBurnIndex: number
   sourceBurnAddress: string
   /** Decimal-string wei amount actually transferred into this change output (post-dust-threshold,

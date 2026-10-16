@@ -14,7 +14,7 @@ import {
 import { DOMAIN_PURPOSES } from '@frank/domain-roots'
 import { BIP39_RECOVERY_FORMAT, BIP39_DERIVATION } from '@frank/account-vault'
 import { bip39Descriptor } from '../accounts/custody/bip39'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import type { AccountCustody, PublicAccount } from '../accounts/custody'
 import { createAccountSession, type RuntimeWallet } from '../accounts/session'
 

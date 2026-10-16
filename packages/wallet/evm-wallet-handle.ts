@@ -1,30 +1,32 @@
 /** Shared and concrete EVM handle contracts; leaf implementation owners remain unchanged. */
 import type { Provider, Wallet } from "ethers";
-import type { MonadSubAccountPool } from "./monad-account-pool";
-import type { SubAccountLeaseManager } from "./monad-account-lease";
-import type { MonadTxSubmitter } from "./monad-account-tx";
-import type { MonadChangePool } from "./monad-change-pool";
+import type { EvmSubAccountPool } from "./evm-account-pool";
+import type { SubAccountLeaseManager } from "./evm-account-lease";
+import type { EvmTxSubmitter } from "./evm-account-tx";
+import type { EvmChangePool } from "./evm-change-pool";
 import type { StampPaymentJournal } from "./storage/stamp-payment-journal";
 import type { StampAttemptJournal } from "./storage/stamp-attempt-journal";
 import type { TopicOperationJournal } from "./storage/topic-operation-journal";
 import type {
-  MonadWalletPersistenceBundle,
-  MonadWalletOperationAdmission,
-} from "./storage/monad-wallet-bundle";
-import type { MonadCanonicalRoleOwner } from "./monad-wallet-material";
+  EvmWalletPersistenceBundle,
+  EvmWalletOperationAdmission,
+} from "./storage/evm-wallet-bundle";
+import type { EvmCanonicalRoleOwner } from "./evm-wallet-material";
 import type { StealthItem } from "@frank/cashweb/types/messages";
-import type { MonadIdentity } from "./monad-identity";
+import type { EvmIdentity } from "./evm-identity";
 import type { AccountHygieneEngine } from "./account-hygiene";
 import type { ChainUtxoPool } from "./chain-utxo-pool";
 import type { WalletHandle, NativeWalletHandle } from "./chain/active-chain";
+import type { Timestamp, RelayBinding } from "@frank/codec";
+import type { RolePoint } from "../role-keys/src";
 
 export interface EvmWalletHandle {
   /** Master / author identity for signing messages and topic posts. */
-  identity?: MonadIdentity;
+  identity?: EvmIdentity;
   /** Explicit typed-root capability; absent until canonical composition is activated. */
-  canonicalRoles?: MonadCanonicalRoleOwner;
+  canonicalRoles?: EvmCanonicalRoleOwner;
   /** Private active delegation from the existing owner; structural values are rejected. */
-  walletOperationAdmission?: MonadWalletOperationAdmission;
+  walletOperationAdmission?: EvmWalletOperationAdmission;
   /** Autonomous account hygiene and lazy dirty sweeper (Ticket #925). Encapsulated beneath the wallet API. */
   hygieneEngine?: AccountHygieneEngine<string>;
   /** Unified in-memory UTXO and spendable account pool (Issue #1184). */
@@ -33,15 +35,15 @@ export interface EvmWalletHandle {
   /** Invalidate in-memory cached balances across primary and stealth accounts. */
   invalidateBalanceCache?(networkTag?: string): void;
   /** @deprecated Use `accountUtxoPool` instead. */
-  pool: MonadSubAccountPool;
+  pool: EvmSubAccountPool;
   leaseManager: SubAccountLeaseManager;
   provider: Provider;
-  httpClient: MonadTxSubmitter;
+  httpClient: EvmTxSubmitter;
   /** HD change branch used to recover the unused balance from confirmed, single-use payment
    * accounts. Optional for narrow tests and external callers that have not wired persistence yet;
-   * `MonadChain.createWallet` always supplies it from the same seed as `pool`.
+   * `EvmChain.createWallet` always supplies it from the same seed as `pool`.
    * @deprecated Use `accountUtxoPool` instead. */
-  changePool?: MonadChangePool;
+  changePool?: EvmChangePool;
   /** Durable public journal of recipient-owned one-time stamp outputs and their sweep state. */
   stampPaymentJournal?: StampPaymentJournal;
   /** Durable exact raw payment sets awaiting a definitive relay success. */
@@ -50,7 +52,7 @@ export interface EvmWalletHandle {
   topicOperationJournal?: TopicOperationJournal;
   /** Complete wallet-owned persistence authority. Production stamp composition supplies this so
    * pools and journals cannot be assembled from unrelated roots. */
-  walletState?: MonadWalletPersistenceBundle;
+  walletState?: EvmWalletPersistenceBundle;
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` -- each client
    * trims its own trailing slash, so this may or may not have one. */
   relayBaseUrl: string;
@@ -69,7 +71,7 @@ export interface EvmChainWalletHandle
   readonly family: "evm";
   readonly chainIdentifier: string;
   readonly networkId: string;
-  readonly identity: MonadIdentity;
+  readonly identity: EvmIdentity;
   /** Records the one-time account of a stealth payment made to this wallet as a coin in its
    * durable coin list. Recording a known one changes nothing. A mailbox read does this itself for
    * every stealth item it returns; this is for a payment learned of some other way. */
@@ -98,3 +100,62 @@ export interface EvmChainWalletHandle
   invalidateBalanceCache?(networkTag?: string): void;
   close(): Promise<void>;
 }
+
+/** Present only on the private wallet-owner facade, never inferred from a normal legacy handle. */
+export interface EvmCanonicalWalletHandle extends EvmWalletHandle {
+  readonly chainIdentifier: string;
+  walletState: EvmWalletPersistenceBundle;
+  canonicalRoles: EvmCanonicalRoleOwner;
+  installedNetworkTag: "MONT" | "MON1" | "MONR";
+  runCanonicalExclusive<T>(
+    operation: (lifetime: EvmWalletOperationAdmission) => Promise<T>
+  ): Promise<T>;
+}
+
+export type MonadCanonicalWalletHandle = EvmCanonicalWalletHandle;
+
+/**
+ * What an account signs into its own directory entry: the one relay it lives on and how long the
+ * entry is valid. The relay tuple is the one that relay publishes at `/relay/v1/info`.
+ */
+export interface PublicRevisionZeroInput {
+  readonly networkTag: "MONT" | "MON1" | "MONR";
+  readonly network: string;
+  readonly chainId: bigint;
+  readonly issuedAt: Timestamp;
+  readonly expiresAt: Timestamp;
+  readonly now: Timestamp;
+  readonly relay: RelayBinding;
+}
+
+/** A later revision of the same entry: a renewal, or a move to another relay. No key changes. */
+export interface PublicNextRevisionInput extends PublicRevisionZeroInput {
+  /** Revision being signed; the current head's revision plus one. */
+  readonly revision: bigint;
+  /** T1 of the current head statement. */
+  readonly predecessor: Uint8Array;
+}
+
+export interface PublicRevisionZeroExport {
+  readonly kind: "public-revision-zero-preparation";
+  readonly registry: RolePoint["registry"];
+  readonly networkTag: "MONT" | "MON1" | "MONR";
+  readonly network: string;
+  readonly chainId: bigint;
+  readonly authAddress: string;
+  readonly auth: RolePoint<"auth">;
+  readonly message: RolePoint<"message">;
+  readonly stamp: RolePoint<"stamp">;
+  readonly statement: Uint8Array;
+  readonly attestation: Uint8Array;
+  readonly t1: Uint8Array;
+  readonly configuration: PublicRevisionZeroInput;
+}
+
+export interface PublicNextRevisionExport
+  extends Omit<PublicRevisionZeroExport, "kind" | "configuration"> {
+  readonly kind: "public-next-revision-preparation";
+  readonly revision: bigint;
+  readonly configuration: PublicNextRevisionInput;
+}
+

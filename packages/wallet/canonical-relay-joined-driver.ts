@@ -40,24 +40,24 @@ import {
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import { openNodeDirectoryStore } from '../directory-admission/src/node'
 import type { Current } from '../directory-admission/src'
-import { SubAccountLeaseManager } from './monad-account-lease'
-import { MonadSubAccountPool } from './monad-account-pool'
-import { MonadChangePool } from './monad-change-pool'
+import { SubAccountLeaseManager } from './evm-account-lease'
+import { MonadSubAccountPool } from './evm-account-pool'
+import { MonadChangePool } from './evm-change-pool'
 import {
   MonadCanonicalStampClient,
   type CanonicalWorkflowLink,
-} from './monad-stamp-client'
+} from './evm-stamp-client'
 import {
   canonicalWalletPublicBinding,
   createMonadWalletMaterial,
   type MonadRootBundle,
-} from './monad-wallet-material'
+} from './evm-wallet-material'
 import { LevelChangePoolStore } from './storage/level-change-pool-store'
 import { LevelSubAccountPoolStore } from './storage/level-sub-account-pool-store'
 import {
   openExistingPoolMonadTopicOwner,
   type MonadWalletOperationAdmission,
-} from './storage/monad-wallet-bundle'
+} from './storage/evm-wallet-bundle'
 
 interface InstalledPrincipal {
   network: string

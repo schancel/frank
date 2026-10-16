@@ -28,12 +28,12 @@ const mockContacts = ref<Record<string, any>>({
 
 const mockSearchMonadProfiles = jest.fn()
 const mockDecodeProfileBytes = jest.fn()
-jest.mock('@frank/wallet/monad-identity', () => ({
+jest.mock('@frank/wallet/evm-identity', () => ({
   searchMonadProfiles: (...args: any[]) => mockSearchMonadProfiles(...args),
   decodeProfileBytes: (...args: any[]) => mockDecodeProfileBytes(...args),
 }))
 
-jest.mock('@frank/wallet/chain/monad-chain', () => ({
+jest.mock('@frank/wallet/chain/evm-chain', () => ({
   loadMonadChainConfigFromEnv: () => ({ relayBaseUrl: 'http://relay.test' }),
 }))
 

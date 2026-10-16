@@ -46,7 +46,7 @@ import {
   MonadStampRecoveredAttemptError,
   MonadStampRejectedError,
   MonadStampTerminalError,
-} from '@frank/wallet/monad-stamp-client'
+} from '@frank/wallet/evm-stamp-client'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import { messagingWallet } from '../utils/monad-identity-session'
 import type {

@@ -21,13 +21,13 @@ import {
 import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
 import { NativeEvmTransactionBuilder } from './evm-transaction-builder'
 import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
-import { MonadHdKeyring } from '../monad-hd-keyring'
-import { MonadSubAccountPool } from '../monad-account-pool'
-import { SubAccountLeaseManager } from '../monad-account-lease'
-import { MonadAccountTxSigner, MonadTxSubmitter } from '../monad-account-tx'
+import { MonadHdKeyring } from '../evm-hd-keyring'
+import { MonadSubAccountPool } from '../evm-account-pool'
+import { SubAccountLeaseManager } from '../evm-account-lease'
+import { MonadAccountTxSigner, MonadTxSubmitter } from '../evm-account-tx'
 import { InMemorySubAccountPoolStore } from '../storage/sub-account-pool-storage'
 import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
-import { submitForumOperation } from '../monad-forum-operation'
+import { submitForumOperation } from '../evm-forum-operation'
 import type { EvmWalletHandle } from '../evm-wallet-handle'
 
 jest.mock('axios')

@@ -3,10 +3,10 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { FrankBotHost } from "../src/bot-host";
 import { DirectoryManager } from "../src/directory-manager";
-import { installCanonicalDirectory } from "@frank/wallet/chain/monad-chain";
-import { installMessageItemRegistry } from "@frank/wallet/chain/monad-canonical-dm";
+import { installCanonicalDirectory } from "@frank/wallet/chain/evm-chain";
+import { installMessageItemRegistry } from "@frank/wallet/chain/evm-canonical-dm";
 import { createMessageItemRegistry } from "@frank/wallet/message-item-plugins/registry";
-import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
+import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
 
 jest.mock("../src/relay-profile-manager", () => ({
   RelayProfileManager: {
@@ -27,12 +27,12 @@ jest.mock("../src/directory-manager", () => ({
 const mockRemoveDirectory = jest.fn();
 const mockRemoveItems = jest.fn();
 const mockWallets: Array<{ close: jest.Mock }> = [];
-jest.mock("@frank/wallet/chain/monad-canonical-dm", () => ({
-  ...jest.requireActual("@frank/wallet/chain/monad-canonical-dm"),
+jest.mock("@frank/wallet/chain/evm-canonical-dm", () => ({
+  ...jest.requireActual("@frank/wallet/chain/evm-canonical-dm"),
   installMessageItemRegistry: jest.fn(() => mockRemoveItems),
 }));
-jest.mock("@frank/wallet/chain/monad-chain", () => ({
-  ...jest.requireActual("@frank/wallet/chain/monad-chain"),
+jest.mock("@frank/wallet/chain/evm-chain", () => ({
+  ...jest.requireActual("@frank/wallet/chain/evm-chain"),
   installCanonicalDirectory: jest.fn(() => mockRemoveDirectory),
   loadMonadChainConfigFromEnv: jest.fn(() => ({
     resolveDefaultStamp:
@@ -50,7 +50,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => ({
     topics: {},
     createWallet: jest.fn(async (roots: MonadRootBundle) => {
       const { MonadIdentity } = jest.requireActual(
-        "@frank/wallet/monad-identity"
+        "@frank/wallet/evm-identity"
       );
       const wallet = {
         identity: MonadIdentity.fromDomainRoot(roots.authentication),

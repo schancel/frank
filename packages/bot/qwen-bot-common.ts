@@ -9,18 +9,18 @@ import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
 import { readFileSync, existsSync, statSync, writeFileSync } from 'fs'
 import { JsonRpcProvider } from 'ethers'
 
-import { MonadHttpClient } from '@frank/wallet/monad-http'
+import { MonadHttpClient } from '@frank/wallet/evm-http'
 import {
   MonadAccountTxSigner,
   MonadTxSubmitter,
-} from '@frank/wallet/monad-account-tx'
+} from '@frank/wallet/evm-account-tx'
 import {
   fetchMonadProfile,
   MonadIdentity,
   MonadProfileFields,
   registerMonadIdentity,
   registerMonadIdentityCbor,
-} from '@frank/wallet/monad-identity'
+} from '@frank/wallet/evm-identity'
 import type { ProfileInfo } from '@frank/wallet/chain/active-chain'
 import { randomBytes } from 'crypto'
 import {
@@ -31,13 +31,13 @@ import {
   canonicalNetworkDescriptor,
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
-import type { MonadTxOverrides } from '@frank/wallet/monad-account-tx'
+import type { MonadTxOverrides } from '@frank/wallet/evm-account-tx'
 import {
   canonicalMonadStampClient,
   loadMonadChainConfigFromEnv,
-} from "@frank/wallet/chain/monad-chain";
+} from "@frank/wallet/chain/evm-chain";
 import type { EvmChainConfig } from "@frank/wallet/chain/evm-chain-config";
-import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
+import type { MonadRootBundle } from '@frank/wallet/evm-wallet-material'
 import { computeAddress } from 'ethers'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
@@ -56,7 +56,7 @@ import {
 import {
   createCanonicalMessageRoles,
   prepareCanonicalStampInventory,
-} from "@frank/wallet/chain/monad-chain";
+} from "@frank/wallet/chain/evm-chain";
 import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 export function requiredEnv(name: string): string {
   const value = process.env[name]
@@ -95,7 +95,7 @@ export function loadExistingIdentity(
  * address to send its first message to) instead of registering a brand-new one every run.
  *
  * Ported from the original `FrankIdentity`/`lotus-identity.ts` version (ticket #9's original,
- * still-documented run in `QWEN_BOT_README.md` used that) to `MonadIdentity`/`monad-identity.ts`
+ * still-documented run in `QWEN_BOT_README.md` used that) to `MonadIdentity`/`evm-identity.ts`
  * once the real Frank UI's own identity/messaging stack (`ActiveChain`, tickets #41-#45) landed:
  * the UI's `MonadChain.directMessages` resolves a sender/recipient's pubkey via
  * `fetchMonadProfile`/`GET /metadata/monad/:addr`-or-dispatch, which only ever finds a

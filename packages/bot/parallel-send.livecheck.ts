@@ -81,7 +81,7 @@ import {
   restoreCanonicalRequest,
   type CanonicalFetch,
 } from "@frank/cashweb/relay/canonical-dm-transport";
-import { installCanonicalDirectory } from "@frank/wallet/chain/monad-chain";
+import { installCanonicalDirectory } from "@frank/wallet/chain/evm-chain";
 import { EvmStampPayer } from "@frank/wallet/evm-stamp-payer";
 import {
   startRealStack,

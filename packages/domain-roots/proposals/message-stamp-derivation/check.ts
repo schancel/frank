@@ -370,10 +370,10 @@ function generate() {
   const frozen = [
     'packages/domain-roots/src/index.ts',
     'packages/domain-roots/vectors/domain-roots-v1.json',
-    'packages/wallet/monad-identity.ts',
-    'packages/wallet/monad-wallet-material.ts',
-    'packages/wallet/monad-hd-keyring.ts',
-    'packages/wallet/monad-change-keyring.ts',
+    'packages/wallet/evm-identity.ts',
+    'packages/wallet/evm-wallet-material.ts',
+    'packages/wallet/evm-hd-keyring.ts',
+    'packages/wallet/evm-change-keyring.ts',
     'packages/wallet/bip32-domain-root.ts',
     'docs/protocol/proposals/suite1-directory/README.md',
   ].map(path => ({ path, sha256: sha(readFileSync(resolve(ROOT, path))) }))

@@ -18,7 +18,7 @@ import { toHex } from '@frank/codec'
 import { hexlify } from 'ethers'
 
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
-import { deriveEvmStealthAddress } from '../monad-stealth'
+import { deriveEvmStealthAddress } from '../evm-stealth'
 import {
   STAMP,
   fixture,
@@ -29,12 +29,12 @@ import {
   type Fixture,
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
-import { installCanonicalDirectory } from './monad-chain'
+import { installCanonicalDirectory } from './evm-chain'
 
-jest.mock('../monad-provider', () =>
+jest.mock('../evm-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
 )
-jest.mock('../monad-http', () =>
+jest.mock('../evm-http', () =>
   require('./canonical-two-wallets.testutil').offlineHttpModule(),
 )
 jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>

@@ -1,7 +1,7 @@
 import { getAddress, getBytes, hexlify, randomBytes } from "ethers";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle, EvmWalletHandle } from "../evm-wallet-handle";
-import type { MonadWalletOperationAdmission } from "../storage/monad-wallet-bundle";
+import type { MonadWalletOperationAdmission } from "../storage/evm-wallet-bundle";
 import { EvmInputAdmissionError } from "../evm-input-admission";
 import type { DefaultStampQuote } from "../oracle/stamp-policy";
 import {
@@ -18,24 +18,24 @@ import { WalletSyncItemRejectedError } from "@frank/cashweb/sync-dispatcher";
 import { applyWalletSyncItem } from "../sync-dispatcher";
 import type { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
-import { SubAccountSpendRefusedError } from "../monad-account-pool";
-import { MonadAccountTxSigner } from "../monad-account-tx";
+import { SubAccountSpendRefusedError } from "../evm-account-pool";
+import { MonadAccountTxSigner } from "../evm-account-tx";
 import {
   MonadTopicPostClient,
   MonadTopicPostAbandonedError,
   quoteMonadTopicBurnGasReserve,
-} from "../monad-topic-post-client";
-import { MonadTopicVoteClient } from "../monad-topic-vote-client";
+} from "../evm-topic-post-client";
+import { MonadTopicVoteClient } from "../evm-topic-vote-client";
 import {
   fetchDiscoveredTopics,
   fetchMonadTopicPostView,
   fetchMonadTopicPostsSince,
-} from "../monad-topic-tally-client";
+} from "../evm-topic-tally-client";
 import {
   CanonicalMessagingPendingError,
   installedMessageItemRegistry,
   projectOutboxMessageRecord,
-} from "./monad-canonical-dm";
+} from "./evm-canonical-dm";
 import { waitForSpendSpacing } from "../evm-stamp-payer";
 import type { EvmBlockWatcher } from "../evm-block-watcher";
 import {

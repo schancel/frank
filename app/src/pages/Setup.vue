@@ -935,7 +935,7 @@ import {
   PendingProfilePreviewError,
   readPendingProfilePreview,
 } from '../accounts/pending-profile-preview'
-import type { MonadIdentity } from '@frank/wallet/monad-identity'
+import type { MonadIdentity } from '@frank/wallet/evm-identity'
 import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import {
   getDefaultRelayBaseUrl,

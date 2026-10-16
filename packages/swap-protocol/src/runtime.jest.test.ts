@@ -2,7 +2,7 @@ import { mkdtemp, rm, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { bytesToHex } from '@noble/hashes/utils.js'
-import { MonadIdentity } from '../../wallet/monad-identity'
+import { MonadIdentity } from '../../wallet/evm-identity'
 import { encodeSignedSwapEvent, type SwapResult } from './index'
 import {
   buildNegotiationOffer,

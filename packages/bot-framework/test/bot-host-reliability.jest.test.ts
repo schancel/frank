@@ -2,13 +2,13 @@ import * as negotiationStorage from '@frank/swap-protocol/src/storage/negotiatio
 import { NegotiationJournalError } from '@frank/swap-protocol/src/negotiation-journal'
 import { buildNegotiationOffer, TESTNET_NEGOTIATION_POLICY } from '@frank/swap-protocol/src/negotiation'
 import { encodeSignedSwapEvent } from '@frank/swap-protocol/src'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { canonicalPollingFixture } from "@frank/wallet/chain/canonical-polling.testutil";
 import * as canonicalMailbox from "@frank/cashweb/relay/monad-mailbox-client";
 import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
 import { Wallet, getBytes } from "ethers";
-import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
+import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { FrankBotHost } from "../src/bot-host";
 import { provisionBotProfile } from "../src/bot-profile-admission";
@@ -33,8 +33,8 @@ const mockGetReceiveAddress = jest.fn();
 let mockLocalAddress = "";
 let mockLocalSubject = "";
 const mockPeer = new Wallet("0x" + "12".repeat(32));
-jest.mock("@frank/wallet/chain/monad-chain", () => {
-  const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
+jest.mock("@frank/wallet/chain/evm-chain", () => {
+  const actual = jest.requireActual("@frank/wallet/chain/evm-chain");
   return {
     ...actual,
     createEvmChain: jest.fn((config: import("@frank/wallet/chain/evm-chain-config").EvmChainConfig) => ({
@@ -54,8 +54,8 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
         .fn()
         .mockImplementation(async (roots: MonadRootBundle) => {
           const { MonadIdentity } = jest.requireActual<
-            typeof import("@frank/wallet/monad-identity")
-          >("@frank/wallet/monad-identity");
+            typeof import("@frank/wallet/evm-identity")
+          >("@frank/wallet/evm-identity");
           const identity = MonadIdentity.fromDomainRoot(roots.authentication);
           mockLocalAddress = identity.address.raw;
           mockLocalSubject = identity.compressedPubKey.toString("hex");

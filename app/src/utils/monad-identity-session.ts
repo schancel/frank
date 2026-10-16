@@ -19,10 +19,10 @@ import {
   loadMonadChainConfigFromEnv,
   prepareMonadNextRevisionExport,
   prepareMonadRevisionZeroExport,
-} from '@frank/wallet/chain/monad-chain'
-import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
+} from '@frank/wallet/chain/evm-chain'
+import { installMessageItemRegistry } from '@frank/wallet/chain/evm-canonical-dm'
 import { messageItems } from './message-items'
-import { conversationIdSaltOf } from '@frank/wallet/chain/monad-chain'
+import { conversationIdSaltOf } from '@frank/wallet/chain/evm-chain'
 import { setConversationIdSalt } from '../stores/chats'
 import { openBrowserDirectoryStore } from '@frank/directory-admission/browser'
 import type { DirectoryFetch } from '@frank/cashweb/relay/directory-client'
@@ -50,7 +50,7 @@ import {
   startOutgoingReconciliation,
 } from '../adapters/pinia-chain-adapter'
 import { useProfileStore } from '../stores/my-profile'
-import type { MonadIdentity } from '@frank/wallet/monad-identity'
+import type { MonadIdentity } from '@frank/wallet/evm-identity'
 import { claimProfileStore, syncOwnProfileWithRelay } from './own-profile'
 import { clearOwnUsername, ownUsername, syncOwnUsername } from './own-username'
 import { errorNotify } from './notifications'

@@ -1,11 +1,11 @@
 import { getAddress, hexlify, Transaction } from 'ethers'
 import { SubAccountRevisionMismatchError } from './storage/sub-account-pool-storage'
-import type { MonadSubAccountPool } from './monad-account-pool'
-import type { MonadChangePool } from './monad-change-pool'
+import type { MonadSubAccountPool } from './evm-account-pool'
+import type { MonadChangePool } from './evm-change-pool'
 import type {
   AccountLeaseHandle,
   SubAccountLeaseManager,
-} from './monad-account-lease'
+} from './evm-account-lease'
 import { PROTOCOL_CHAINS } from './chain/chains-registry'
 import {
   EvmNativeJournalError,

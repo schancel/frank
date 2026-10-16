@@ -10,7 +10,7 @@ import { join, sep } from 'path'
 
 import { admitBotProfile } from '@frank/bot-framework/bot-profile-admission'
 import { bip32MasterFromDomainRoot } from '@frank/wallet/bip32-domain-root'
-import { MONAD_IDENTITY_DERIVATION_PATH } from '@frank/wallet/monad-identity'
+import { MONAD_IDENTITY_DERIVATION_PATH } from '@frank/wallet/evm-identity'
 
 import { BOT_PROFILES } from '../bot-directory'
 import { DemoConfig, DemoConfigError, resolveDemoConfig } from './demo-config'

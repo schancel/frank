@@ -16,7 +16,7 @@ import { FetchRequest, JsonRpcProvider } from 'ethers'
 
 import type { CheckStack } from "../../parallel-send.livecheck";
 import { openRealWallet, type RealWallet } from "../real-stack";
-import { loadMonadChainConfigFromEnv } from "@frank/wallet/chain/monad-chain";
+import { loadMonadChainConfigFromEnv } from "@frank/wallet/chain/evm-chain";
 import {
   MONAD_REGTEST_CHAIN,
   MONAD_REGTEST_CHAIN_ID,

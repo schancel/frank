@@ -28,7 +28,7 @@ import {
   fetchMonadProfile,
   isBotAccount,
   isBotProfileSignedPayload,
-} from '@frank/wallet/monad-identity'
+} from '@frank/wallet/evm-identity'
 import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 

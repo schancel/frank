@@ -12,7 +12,7 @@ import {
 } from '@frank/codec'
 import type { Encodable } from '@frank/codec'
 import { projectForumView, ForumReadPolicy } from './forum-model'
-import { MonadIdentity } from './monad-identity'
+import { MonadIdentity } from './evm-identity'
 const time = (seconds: bigint) =>
   new Map<number, Encodable>([
     [0, seconds],

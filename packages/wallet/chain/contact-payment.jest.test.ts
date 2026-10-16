@@ -38,18 +38,18 @@ import {
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
 import { withDefaultMessageItems } from './message-items.testutil'
-import { deriveEvmStealthPrivateKey } from '../monad-stealth'
+import { deriveEvmStealthPrivateKey } from '../evm-stealth'
 import {
   CONTACT_PAYMENT_NAMESPACE,
   LevelRecordStore,
   type ContactPayment,
 } from '../storage/evm-coin-store'
-import { createEvmChain, installCanonicalDirectory } from './monad-chain'
+import { createEvmChain, installCanonicalDirectory } from './evm-chain'
 
-jest.mock('../monad-provider', () =>
+jest.mock('../evm-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
 )
-jest.mock('../monad-http', () =>
+jest.mock('../evm-http', () =>
   require('./canonical-two-wallets.testutil').offlineHttpModule(),
 )
 jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>

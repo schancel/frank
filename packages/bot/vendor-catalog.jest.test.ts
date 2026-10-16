@@ -3,7 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES } from "@frank/cashweb/relay/monad-message-envelope";
-import { serializeMessageItems } from "@frank/wallet/chain/monad-chain";
+import { serializeMessageItems } from "@frank/wallet/chain/evm-chain";
 
 import {
   buildFulfillItems,

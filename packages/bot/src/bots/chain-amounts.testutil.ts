@@ -8,7 +8,7 @@ import { getChainRegistryEntry } from "@frank/wallet/chain/chains-registry";
 import {
   createEvmChain,
   loadMonadChainConfigFromEnv,
-} from "@frank/wallet/chain/monad-chain";
+} from "@frank/wallet/chain/evm-chain";
 
 export function amountsOf(chainIdentifier: string): BotAmounts {
   const entry = getChainRegistryEntry(chainIdentifier);

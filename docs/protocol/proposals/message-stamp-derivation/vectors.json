@@ -1145,20 +1145,20 @@
       "sha256": "53a0cb0f15d4db976c2989581e6e98b3a13705ec1446fcba21dd4e721d13d342"
     },
     {
-      "path": "packages/wallet/monad-identity.ts",
-      "sha256": "4aea5397b0a40c8cbc09d9f422c3f9804a8fc81194de6bfa53ed340019f59896"
+      "path": "packages/wallet/evm-identity.ts",
+      "sha256": "fe6ff133a816727411b5038de5b50c292a824f8773ffcf841a8ed6896f8ba383"
     },
     {
-      "path": "packages/wallet/monad-wallet-material.ts",
-      "sha256": "771e698fe0b44ccbafecedd5803e458b512041ca708d809a041d2f42483b8cba"
+      "path": "packages/wallet/evm-wallet-material.ts",
+      "sha256": "def642710c23b738cecbc7bd9c0d55c4a3a4e5dd90435008012cf1d18e94908b"
     },
     {
-      "path": "packages/wallet/monad-hd-keyring.ts",
-      "sha256": "313443ee1b336a60781ec6df97152e1ab342d58271401626c6bdf53090a77d53"
+      "path": "packages/wallet/evm-hd-keyring.ts",
+      "sha256": "4cdeb0a5fc84ccf3fafa550a4352a24deaa5634762dc3fa2dc26296c10f4f028"
     },
     {
-      "path": "packages/wallet/monad-change-keyring.ts",
-      "sha256": "578792c37e73335df70ed30bc555a1c2143ec85a84da3af6b129c225291e7a34"
+      "path": "packages/wallet/evm-change-keyring.ts",
+      "sha256": "ae6201954abd89dc616b7897f497ae33543b25167391fd0fb0f532763a13f187"
     },
     {
       "path": "packages/wallet/bip32-domain-root.ts",

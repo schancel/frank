@@ -12,7 +12,7 @@ import {
   SurveillanceHeuristicEvaluator,
   formatComparativeMarkdownReport,
 } from './privacy-simulation-engine'
-import { deriveEvmStealthPrivateKey } from './monad-stealth'
+import { deriveEvmStealthPrivateKey } from './evm-stealth'
 import { getBytes, SigningKey } from 'ethers'
 
 describe('Privacy Graph Analysis & Entropy Simulation (Ticket #928)', () => {

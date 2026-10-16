@@ -6,7 +6,7 @@
 import type { Provider } from 'ethers'
 import { EvmBlockWatcher } from './evm-block-watcher'
 import { EvmStampPayer, waitForSpendSpacing } from './evm-stamp-payer'
-import type { MonadSubAccountPool } from './monad-account-pool'
+import type { MonadSubAccountPool } from './evm-account-pool'
 
 /** A node at block `head` where the account's transactions were mined in `minedAt` blocks. */
 function node(state: { head: number; minedAt: number[]; inMempool?: number }) {

@@ -27,8 +27,8 @@ import {
   allocateOpeningConversationId,
   conversationIdSalt,
 } from '@frank/cashweb/relay/conversation-id'
-import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
-import { fetchMonadProfile } from '@frank/wallet/monad-identity'
+import { serializeMessageItems } from '@frank/wallet/chain/evm-chain'
+import { fetchMonadProfile } from '@frank/wallet/evm-identity'
 
 import { loadConfig, loadIdentity, resolveDataDir } from '../config'
 import { outputError, outputResult } from '../util'

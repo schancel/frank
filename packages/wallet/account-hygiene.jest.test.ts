@@ -6,17 +6,17 @@ import {
   SweepResult,
   WalletWithHygiene,
 } from './account-hygiene'
-import { MonadAccountHygieneEngine } from './monad-account-hygiene'
+import { MonadAccountHygieneEngine } from './evm-account-hygiene'
 import { SolanaAccountHygieneEngine } from './solana-account-hygiene'
 import {
   UtxoAccountHygieneEngine,
   UtxoDustDescriptor,
   UtxoWalletBackendBridge,
 } from './utxo-account-hygiene'
-import { MonadChangeKeyring } from './monad-change-keyring'
-import { MonadHdKeyring } from './monad-hd-keyring'
+import { MonadChangeKeyring } from './evm-change-keyring'
+import { MonadHdKeyring } from './evm-hd-keyring'
 import { SolanaHdKeyring, SolanaChangeKeyring } from './ed25519-hd-keyring'
-import { MonadAccountTxSigner } from './monad-account-tx'
+import { MonadAccountTxSigner } from './evm-account-tx'
 import { TransactionBundleCapability } from './transaction-bundle-wallet'
 import { ChainUtxoPool } from './chain-utxo-pool'
 

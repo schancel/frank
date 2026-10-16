@@ -50,13 +50,16 @@ describe("generic EVM configuration and handle ownership", () => {
       "createMonadChain",
     ]) {
       expect(
-        declaration("packages/wallet/chain/monad-chain.ts", name)
+        declaration("packages/wallet/chain/evm-chain.ts", name)
       ).toBeUndefined();
     }
     expect(
-      declaration("packages/wallet/monad-wallet-handle.ts", "MonadWalletHandle")
+      declaration("packages/wallet/evm-wallet-handle.ts", "MonadWalletHandle")
     ).toBeUndefined();
-    expect(existsSync(join(root, "packages/wallet/chain/evm-chain.ts"))).toBe(
+    expect(existsSync(join(root, "packages/wallet/chain/monad-chain.ts"))).toBe(
+      false
+    );
+    expect(existsSync(join(root, "packages/wallet/monad-wallet-handle.ts"))).toBe(
       false
     );
   });

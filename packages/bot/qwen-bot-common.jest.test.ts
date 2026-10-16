@@ -14,7 +14,7 @@ import { join } from 'path'
 
 import { JsonRpcProvider, Wallet } from 'ethers'
 
-import { MonadTxSubmitter } from '@frank/wallet/monad-account-tx'
+import { MonadTxSubmitter } from '@frank/wallet/evm-account-tx'
 
 // #703/#778: the canonical bot is an ordinary account on the open directory, composed only from
 // public producer/owner/directory APIs. These tests open real typed wallets through the chain
@@ -46,9 +46,9 @@ import {
   testAccount,
   type FakeRelay,
 } from '@frank/cashweb/relay/open-directory-fake-relay.testutil'
-import { createCanonicalMessageRoles } from "@frank/wallet/chain/monad-chain";
+import { createCanonicalMessageRoles } from "@frank/wallet/chain/evm-chain";
 import type { EvmChainConfig } from "@frank/wallet/chain/evm-chain-config";
-import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
+import type { MonadRootBundle } from '@frank/wallet/evm-wallet-material'
 import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
 import {
   loadQwenCanonicalRoots,

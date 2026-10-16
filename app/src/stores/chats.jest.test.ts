@@ -1,7 +1,7 @@
 /**
  * Unit tests for `stores/chats.ts`'s rewiring onto `ActiveChain` (ticket #42). Per the ticket's own
  * instructions, `activeChain` is mocked at its own boundary (`jest.spyOn` on
- * `activeChain.directMessages.send`) rather than reaching into `monad-chain.ts`/the underlying
+ * `activeChain.directMessages.send`) rather than reaching into `evm-chain.ts`/the underlying
  * Monad wallet clients -- those already have their own tests (ticket #41). `activeChain.parseAddress`
  * /`formatAddress` are exercised for real (pure, no network) to genuinely prove the store-key
  * consistency decision documented in this file's own header (ticket #42, decision 2).

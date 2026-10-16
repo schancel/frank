@@ -3,15 +3,15 @@ import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
  * Offline stand-ins and a two-wallet table for tests that play blackjack through real typed
  * wallets and the canonical direct-message path. Copied from the fixture of
- * `monad-chain-canonical-dm.jest.test.ts`: real typed custody, real Level journals, real directory
+ * `evm-chain-canonical-dm.jest.test.ts`: real typed custody, real Level journals, real directory
  * admission, real sealing/opening and real stamp funding; only the chain RPC and the relay's HTTP
  * surface are stand-ins.
  *
  * A test file mocks three modules with the factories below (Jest hoists `jest.mock`, so the calls
  * themselves must be in the test file):
  *
- *   jest.mock('<wallet>/monad-provider', () => require('<this file>').offlineProviderModule())
- *   jest.mock('<wallet>/monad-http', () => require('<this file>').offlineHttpModule())
+ *   jest.mock('<wallet>/evm-provider', () => require('<this file>').offlineProviderModule())
+ *   jest.mock('<wallet>/evm-http', () => require('<this file>').offlineHttpModule())
  *   jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>
  *     require('<this file>').offlineMailboxModule())
  */
@@ -27,14 +27,14 @@ import {
 import { openNodeDirectoryStore } from '../../directory-admission/src/node'
 import type { DirectoryStore } from '../../directory-admission/src'
 import domainVectors from '../../domain-roots/vectors/domain-roots-v1.json'
-import type { MonadRootBundle } from '../monad-wallet-material'
-import type { PublicRevisionZeroInput } from '../monad-wallet-handle'
+import type { MonadRootBundle } from '../evm-wallet-material'
+import type { PublicRevisionZeroInput } from '../evm-wallet-handle'
 import {
   createEvmChain,
   installCanonicalDirectory,
   prepareMonadRevisionZeroExport,
   type CanonicalDirectory,
-} from "./monad-chain";
+} from "./evm-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
@@ -143,12 +143,12 @@ export const offlineChain = {
 }
 
 export function offlineProviderModule() {
-  const actual = jest.requireActual('../monad-provider')
+  const actual = jest.requireActual('../evm-provider')
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const ethers = require('ethers')
   return {
     ...actual,
-    createMonadJsonRpcProvider: (options: import('../monad-provider').MonadJsonRpcProviderOptions) => {
+    createMonadJsonRpcProvider: (options: import('../evm-provider').MonadJsonRpcProviderOptions) => {
       const provider = new ethers.JsonRpcProvider(
         'http://127.0.0.1:1',
         options.chainId,
@@ -259,7 +259,7 @@ export function offlineHttpModule() {
   const ethers = require('ethers')
   const mined = new Set<string>()
   return {
-    ...jest.requireActual('../monad-http'),
+    ...jest.requireActual('../evm-http'),
     MonadHttpClient: class {
       async submitRawTransaction(raw: string) {
         chainHttpRequests.push('submitRawTransaction')

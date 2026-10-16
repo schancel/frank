@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadGatewayHostConfig } from '../src/host/gateway-config';
 
-jest.mock('@frank/wallet/chain/monad-chain', () => ({
+jest.mock('@frank/wallet/chain/evm-chain', () => ({
   loadMonadChainConfigFromEnv: () => ({
     networkId: 'monad-testnet', rpcChain: 'monad-testnet', chainId: 10143n,
     networkTag: 'MONT', relayBaseUrl: 'http://unused.invalid',

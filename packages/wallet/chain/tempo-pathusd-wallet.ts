@@ -1,7 +1,7 @@
 import { SigningKey, Wallet, getAddress } from 'ethers'
 import type { Bip32DomainRoot } from '../bip32-domain-root'
 import { bip32MasterFromDomainRoot } from '../bip32-domain-root'
-import { MONAD_IDENTITY_DERIVATION_PATH } from '../monad-identity'
+import { MONAD_IDENTITY_DERIVATION_PATH } from '../evm-identity'
 import type { TempoReceiveItem } from './tempo-pathusd-receive'
 import { TempoPathUsdReceiveScanner } from './tempo-pathusd-receive'
 import {

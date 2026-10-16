@@ -1,10 +1,10 @@
 import { ChainUtxoPool, normalizeUtxoAddress, inferChainFamily } from './chain-utxo-pool'
 
 import { PROTOCOL_CHAINS } from './chain/chains-registry'
-import { MonadHdKeyring } from './monad-hd-keyring'
-import { MonadChangeKeyring } from './monad-change-keyring'
-import { MonadSubAccountPool } from './monad-account-pool'
-import { MonadChangePool } from './monad-change-pool'
+import { MonadHdKeyring } from './evm-hd-keyring'
+import { MonadChangeKeyring } from './evm-change-keyring'
+import { MonadSubAccountPool } from './evm-account-pool'
+import { MonadChangePool } from './evm-change-pool'
 import { InMemoryChangePoolStore } from './storage/change-pool-storage'
 
 describe('canonical coin view boundaries', () => {

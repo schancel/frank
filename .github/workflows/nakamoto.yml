@@ -154,9 +154,9 @@ jobs:
           test -s /tmp/nakamoto-dist-bridge.hit
           echo "cashweb jest loaded packages/nakamoto/dist/index.js"
       # Wallet's jest config maps @frank/nakamoto to TypeScript source. This step
-      # typechecks monad-identity.ts against the built declarations and runs the
+      # typechecks evm-identity.ts against the built declarations and runs the
       # identity tests through a require() of dist. Other wallet files may already
-      # fail tsc; only monad-identity.ts diagnostics fail this step.
+      # fail tsc; only evm-identity.ts diagnostics fail this step.
       - name: wallet
         run: |
           test -s packages/nakamoto/dist/index.js
@@ -187,7 +187,7 @@ jobs:
             path.dirname(configPath),
           )
           const host = ts.createCompilerHost(parsed.options)
-          const from = path.resolve('packages/wallet/monad-identity.ts')
+          const from = path.resolve('packages/wallet/evm-identity.ts')
           const resolved = ts.resolveModuleName(
             '@frank/nakamoto',
             from,
@@ -237,14 +237,14 @@ jobs:
           WALLET_TSC_LOG="$tsc_log" node <<'NODE'
           const fs = require('fs')
           const text = fs.readFileSync(process.env.WALLET_TSC_LOG, 'utf8')
-          const lines = text.split('\n').filter(line => line.startsWith('monad-identity.ts('))
+          const lines = text.split('\n').filter(line => line.startsWith('evm-identity.ts('))
           if (lines.length) {
-            console.error('monad-identity.ts failed to typecheck against the built package')
+            console.error('evm-identity.ts failed to typecheck against the built package')
             for (const line of lines) console.error(line)
             process.exit(1)
           }
-          console.log('wallet monad-identity.ts typecheck ok')
+          console.log('wallet evm-identity.ts typecheck ok')
           NODE
-          yarn --cwd packages/wallet jest --config /tmp/wallet-jest-built.cjs --watchman=false packages/wallet/monad-identity
+          yarn --cwd packages/wallet jest --config /tmp/wallet-jest-built.cjs --watchman=false packages/wallet/evm-identity
           test -s /tmp/nakamoto-wallet-dist-bridge.hit
           echo "wallet jest loaded packages/nakamoto/dist/index.js"

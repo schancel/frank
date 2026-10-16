@@ -37,7 +37,7 @@ import {
   MIN_DIRECT_MESSAGE_POLL_INTERVAL_MS,
   startDirectMessagePolling,
 } from './pinia-chain-adapter'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import {
   MonadMailboxAuthError,
   MonadMailboxChallengeCapacityError,

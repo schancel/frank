@@ -211,7 +211,7 @@ describe('default message item registry', () => {
         ),
       ].map(match => match[1])
     expect(
-      importsOf('chain/monad-canonical-dm.ts').filter(path =>
+      importsOf('chain/evm-canonical-dm.ts').filter(path =>
         path.includes('message-item-plugins'),
       ),
     ).toEqual([
@@ -229,7 +229,7 @@ describe('default message item registry', () => {
     ])
     // The old hard-coded chain is gone: the path encodes and projects no item type itself.
     const source = readFileSync(
-      join(__dirname, '..', 'chain/monad-canonical-dm.ts'),
+      join(__dirname, '..', 'chain/evm-canonical-dm.ts'),
       'utf8',
     )
     expect(source).not.toMatch(

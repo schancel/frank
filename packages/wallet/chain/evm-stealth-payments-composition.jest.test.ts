@@ -22,12 +22,12 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import vectors from '../../domain-roots/vectors/domain-roots-v1.json'
 import type { DomainPurpose, DomainRoot } from '../../domain-roots/src'
-import { createEvmChain } from './monad-chain'
+import { createEvmChain } from './evm-chain'
 import type { EvmChainConfig } from './evm-chain-config'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import type { MonadRootBundle } from './active-chain'
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
-import { deriveEvmStealthAddress } from '../monad-stealth'
+import { deriveEvmStealthAddress } from '../evm-stealth'
 import { getEvmDexDeployment } from './dex-deployments'
 import { LevelRecordStore } from '../storage/evm-coin-store'
 import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
@@ -140,7 +140,7 @@ const config: EvmChainConfig = {
   nativeInclusionWaitMs: 0,
   walletStorageLocation: false,
 }
-/** The main account the frozen domain-root vector 0 derives (see monad-domain-wallet tests). */
+/** The main account the frozen domain-root vector 0 derives (see evm-domain-wallet tests). */
 const MAIN = '0x4669EFf913A3c595CeA5FA92a600201e8e9E75d8'
 const ROUTER = '0x1b7bFCd2870329B987191910D85c22C7287f3c22'
 const CALLDATA = '0x3593564c' + '00'.repeat(32)

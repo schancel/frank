@@ -1,6 +1,6 @@
 /** Ticket #54: isolated in its own file on purpose. `import.meta` is a *parse-time* restriction,
  * not a runtime one -- V8 refuses to compile any script/function body containing that token
- * unless it's genuinely loaded as an ES module. `monad-chain.ts` (which uses this) also runs
+ * unless it's genuinely loaded as an ES module. `evm-chain.ts` (which uses this) also runs
  * under ts-jest for its own tests, which transpiles a file then wraps the *result* in a plain
  * CommonJS function before compiling it -- a bare `import.meta.env` there fails with "Cannot use
  * 'import.meta' outside a module" at Jest's compile step, unconditionally, no runtime guard

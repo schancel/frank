@@ -14,10 +14,10 @@
 
 ## 2. Key Modules & Entry Points
 
-- **`monad-hd-keyring.ts`**: BIP-32/BIP-44 deterministic key generation and role management.
-- **`monad-stamp-client.ts`**: Automated stamp payment generation, DKSAP stealth address calculation, and payment journal management.
-- **`monad-stamp-stealth.ts`**: Single-use address derivation and Chaum-Pedersen DLEQ zero-knowledge proof generation.
-- **`monad-topic-post-client.ts`**: Public forum publishing with Monad gas and stamp burn coordination.
+- **`evm-hd-keyring.ts`**: BIP-32/BIP-44 deterministic key generation and role management.
+- **`evm-stamp-client.ts`**: Automated stamp payment generation, DKSAP stealth address calculation, and payment journal management.
+- **`evm-stamp-stealth.ts`**: Single-use address derivation and Chaum-Pedersen DLEQ zero-knowledge proof generation.
+- **`evm-topic-post-client.ts`**: Public forum publishing with Monad gas and stamp burn coordination.
 - **`chain/active-chain.ts`**: Compile-time and runtime chain-selection abstraction.
 
 ---

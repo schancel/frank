@@ -19,7 +19,7 @@
 import { existsSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 
-import { createMonadJsonRpcProvider } from '@frank/wallet/monad-provider'
+import { createMonadJsonRpcProvider } from '@frank/wallet/evm-provider'
 
 import { resolveDemoConfig } from './demo-config'
 import { DemoHandle, redact, startDemo } from './demo'

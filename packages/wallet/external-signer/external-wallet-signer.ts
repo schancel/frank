@@ -5,7 +5,7 @@ import { getAddress, hexlify } from 'ethers'
 import { PublicKey } from '@solana/web3.js'
 import { deriveDomainRoot } from '../../domain-roots/src'
 import { selfOpenKeyFromRoot } from '@frank/crypto-box'
-import type { MonadRootBundle } from '../monad-wallet-material'
+import type { MonadRootBundle } from '../evm-wallet-material'
 import {
   ColdVaultSweepConfig,
   DEFAULT_COLD_VAULT_HYSTERESIS_BPS,

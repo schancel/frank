@@ -4,7 +4,7 @@ import {
   registerMonadIdentityCbor,
   type MonadIdentity,
   type MonadProfileFields,
-} from "@frank/wallet/monad-identity";
+} from "@frank/wallet/evm-identity";
 import {
   UsernameError,
   claimUsername,

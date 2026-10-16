@@ -1,6 +1,6 @@
 /** @jest-environment node */
 import { createPinia, setActivePinia } from 'pinia'
-import * as identityApi from '@frank/wallet/monad-identity'
+import * as identityApi from '@frank/wallet/evm-identity'
 import { useProfileStore } from '../stores/my-profile'
 import { restoreOwnProfileWithRelay, syncOwnProfile } from './own-profile'
 

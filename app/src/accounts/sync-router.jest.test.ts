@@ -19,7 +19,7 @@ describe('AppMultiChainWalletResolver', () => {
   })
 
   it('resolves useMonadWallet for EVM chain when available', async () => {
-    const mockMonadWallet = { id: 'monad-wallet-handle' }
+    const mockMonadWallet = { id: 'evm-wallet-handle' }
     ;(useMonadWallet as jest.Mock).mockReturnValue(mockMonadWallet)
 
     const resolver = new AppMultiChainWalletResolver()

@@ -5,9 +5,9 @@ import { randomBytes } from 'crypto';
 import level from 'level';
 
 import { deriveDomainRoot } from '@frank/domain-roots';
-import { createEvmChain } from '@frank/wallet/chain/monad-chain';
-import { MonadIdentity } from '@frank/wallet/monad-identity';
-import { createMonadWalletMaterial } from '@frank/wallet/monad-wallet-material';
+import { createEvmChain } from '@frank/wallet/chain/evm-chain';
+import { MonadIdentity } from '@frank/wallet/evm-identity';
+import { createMonadWalletMaterial } from '@frank/wallet/evm-wallet-material';
 import { openGatewayWallet, provisionGatewayWalletAdmission } from '../src/host/gateway-wallet';
 
 it('real wallet factory refuses empty LevelDB namespaces, then reopens a provisioned bound state', async () => {

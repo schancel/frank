@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-import * as monadIdentityModule from '@frank/wallet/monad-identity'
+import * as monadIdentityModule from '@frank/wallet/evm-identity'
 
 import {
   createIdentityCommand,

@@ -14,7 +14,7 @@ import { join } from 'path'
 import * as bip39 from 'bip39'
 import { parseUnits } from 'ethers'
 
-import * as monadIdentityModule from '@frank/wallet/monad-identity'
+import * as monadIdentityModule from '@frank/wallet/evm-identity'
 import { TokenUtxoStore } from '@frank/wallet/token-utxo-store'
 import { tokenRegistry } from '@frank/wallet/token-registry'
 

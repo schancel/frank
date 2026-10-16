@@ -37,7 +37,7 @@ const mockSubmitRawTransaction = jest
 const mockToPrivateKeyHex = jest.fn(() => '0x' + '11'.repeat(32))
 const mockBuildAndSignCall = jest.fn()
 
-jest.mock('@frank/wallet/monad-account-tx', () => ({
+jest.mock('@frank/wallet/evm-account-tx', () => ({
   MonadAccountTxSigner: jest.fn().mockImplementation(() => ({
     buildAndSignCall: mockBuildAndSignCall,
   })),

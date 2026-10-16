@@ -26,9 +26,9 @@ explicit opt-ins. Multi-chain UTXO serialization and script validation use
 
 ## Public entry points
 
-- `monad-hd-keyring.ts`, `monad-identity.ts`, `monad-wallet-handle.ts`
-- `monad-stamp-client.ts`, `monad-stamp-stealth.ts`
-- `monad-topic-post-client.ts`, `monad-topic-vote-client.ts`, `monad-topic-tally-client.ts`
+- `evm-hd-keyring.ts`, `evm-identity.ts`, `evm-wallet-handle.ts`
+- `evm-stamp-client.ts`, `evm-stamp-stealth.ts`
+- `evm-topic-post-client.ts`, `evm-topic-vote-client.ts`, `evm-topic-tally-client.ts`
 - `chain/active-chain.ts`
 - `message-item-plugins/` for state channels and raffle
 

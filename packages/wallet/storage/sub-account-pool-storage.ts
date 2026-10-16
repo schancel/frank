@@ -24,12 +24,12 @@ import { Transaction, getAddress, getBytes } from 'ethers'
  *     defeated Stamp's UTXO-style unlinkability goal (`PLAN.md` constraint 3) by letting a small
  *     fixed pool of addresses accumulate a linkable history across many messages. `'spent'` is the
  *     status that closes that hole: every used sub-account, success or failure, is now permanently
- *     excluded from reuse — see `monad-account-lease.ts`'s `releaseLease`.
+ *     excluded from reuse — see `evm-account-lease.ts`'s `releaseLease`.
  *   - `'retired'`: the account's transaction failed or got stuck (never confirmed within a
  *     timeout) — permanently skipped for future selection, same as `'spent'`, but distinguished
  *     because a `'retired'` account may still hold its funded balance un-spent (sweeping/reclaiming
  *     that leftover balance is a separate, currently-unimplemented sub-problem — see
- *     `monad-account-pool.ts`'s header for why it's out of scope here).
+ *     `evm-account-pool.ts`'s header for why it's out of scope here).
  */
 export type SubAccountStatus =
   | 'unfunded'

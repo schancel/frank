@@ -2,8 +2,8 @@ import type {
   EvmFundingAccounts,
   EvmFundingObservation,
   SignedMonadTx,
-} from "./monad-account-tx";
-import type { SelectedStampAccount } from "./monad-stamp-account-selection";
+} from "./evm-account-tx";
+import type { SelectedStampAccount } from "./evm-stamp-account-selection";
 import type {
   SubAccountFundingAccounts,
   SubAccountFundingAttempt,

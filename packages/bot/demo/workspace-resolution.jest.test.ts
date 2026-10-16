@@ -11,7 +11,7 @@ describe('root demo workspace resolution', () => {
         'tsx',
         '--input-type=module',
         '--eval',
-        "await Promise.all([import('./packages/cashweb/relay/monad-message-envelope.ts'), import('./packages/wallet/monad-identity.ts')]); process.stdout.write('workspace imports ok')",
+        "await Promise.all([import('./packages/cashweb/relay/monad-message-envelope.ts'), import('./packages/wallet/evm-identity.ts')]); process.stdout.write('workspace imports ok')",
       ],
       {
         cwd: repoRoot,

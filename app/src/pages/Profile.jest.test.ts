@@ -9,7 +9,7 @@ import { accountStatus } from '../accounts/session'
 
 jest.mock('../accounts/session', () => ({ accountStatus: { revision: 1 } }))
 
-import { registerMonadIdentityCbor } from '@frank/wallet/monad-identity'
+import { registerMonadIdentityCbor } from '@frank/wallet/evm-identity'
 
 const mockSetRelayData = jest.fn()
 jest.mock('src/stores/my-profile', () => ({
@@ -29,8 +29,8 @@ jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(),
 }))
 
-jest.mock('@frank/wallet/monad-identity', () => {
-  const actual = jest.requireActual('@frank/wallet/monad-identity')
+jest.mock('@frank/wallet/evm-identity', () => {
+  const actual = jest.requireActual('@frank/wallet/evm-identity')
   return {
     ...actual,
     registerMonadIdentityCbor: jest.fn(),
@@ -815,8 +815,8 @@ describe('Profile.vue', () => {
 
 describe('profile protocol field admission', () => {
   const real = jest.requireActual<
-    typeof import('@frank/wallet/monad-identity')
-  >('@frank/wallet/monad-identity')
+    typeof import('@frank/wallet/evm-identity')
+  >('@frank/wallet/evm-identity')
   const identity = real.MonadIdentity.fromPrivateKeyHex('0x' + '02'.repeat(32))
   function editor(restoredProfile: object = {}) {
     const stored = {

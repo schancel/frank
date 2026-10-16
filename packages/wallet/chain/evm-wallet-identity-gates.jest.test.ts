@@ -1,8 +1,8 @@
 import { JsonRpcProvider } from "ethers";
-import { createEvmChain, loadMonadChainConfigFromEnv } from "./monad-chain";
+import { createEvmChain, loadMonadChainConfigFromEnv } from "./evm-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
-import * as providers from "../monad-provider";
+import * as providers from "../evm-provider";
 import { getChainRegistryEntry } from "./chains-registry";
 
 const checkpoint = getChainRegistryEntry("monad-testnet")!.identityProbes.find(

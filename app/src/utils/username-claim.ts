@@ -4,7 +4,7 @@ import {
   type UsernameSigner,
 } from '@frank/cashweb/relay/username-client'
 import { canonicalNetworkDescriptor } from '@frank/cashweb/relay/canonical-dm-transport'
-import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import { useActiveWallet } from '../composables/useActiveWallet'
 
 /** There is no unlocked account to sign a username claim with. */

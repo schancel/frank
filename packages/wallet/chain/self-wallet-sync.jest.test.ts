@@ -42,15 +42,15 @@ import {
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
 import { summarizeEvmNativeOperation } from './evm-native-operation-status'
-import { SELF_NOTE_RETRY_MS, createEvmChain, installCanonicalDirectory } from './monad-chain'
+import { SELF_NOTE_RETRY_MS, createEvmChain, installCanonicalDirectory } from './evm-chain'
 import type { EvmChainConfig } from './evm-chain-config'
 import { EvmInputAdmissionError } from '../evm-input-admission'
-import { SubAccountSpendRefusedError } from '../monad-account-pool'
+import { SubAccountSpendRefusedError } from '../evm-account-pool'
 
-jest.mock('../monad-provider', () =>
+jest.mock('../evm-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
 )
-jest.mock('../monad-http', () =>
+jest.mock('../evm-http', () =>
   require('./canonical-two-wallets.testutil').offlineHttpModule(),
 )
 jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>

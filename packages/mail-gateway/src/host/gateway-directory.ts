@@ -6,8 +6,8 @@ import {
   installCanonicalDirectory,
   prepareMonadNextRevisionExport,
   prepareMonadRevisionZeroExport,
-} from '@frank/wallet/chain/monad-chain';
-import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm';
+} from '@frank/wallet/chain/evm-chain';
+import { installMessageItemRegistry } from '@frank/wallet/chain/evm-canonical-dm';
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry';
 import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry';
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle';

@@ -15,10 +15,10 @@ import {
 import {
   MONAD_IDENTITY_DERIVATION_PATH,
   MonadIdentity,
-} from './monad-identity'
-import { MonadHdKeyring } from './monad-hd-keyring'
-import { MonadChangeKeyring } from './monad-change-keyring'
-import type { MonadWalletMaterial } from './monad-wallet-material'
+} from './evm-identity'
+import { MonadHdKeyring } from './evm-hd-keyring'
+import { MonadChangeKeyring } from './evm-change-keyring'
+import type { MonadWalletMaterial } from './evm-wallet-material'
 
 export const CANONICAL_FRANK_PATH = MONAD_IDENTITY_DERIVATION_PATH // "m/44'/60'/1'/0/0"
 export const STANDARD_EVM_PATH = "m/44'/60'/0'/0/0"

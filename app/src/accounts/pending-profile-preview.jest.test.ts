@@ -3,7 +3,7 @@ import { usernamesOfAddresses } from '@frank/cashweb/relay/username-client'
 import {
   MonadIdentity,
   buildSignedDirectoryStatement,
-} from '@frank/wallet/monad-identity'
+} from '@frank/wallet/evm-identity'
 import {
   PendingProfilePreviewError,
   readPendingProfilePreview,

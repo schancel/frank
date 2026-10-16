@@ -1,0 +1,337 @@
+/**
+ * Standalone, manually-run proof for `evm-hd-keyring.ts` / `evm-account-pool.ts` /
+ * `storage/*-sub-account-pool-*.ts`, in the same spirit as `evm-account-tx.livecheck.ts` (see
+ * that file's header for why this isn't a jest test: `jest` isn't actually an installed dependency
+ * in this app despite `jest.config.js`/`package.json` referring to it — same pre-existing gap,
+ * confirmed again for this ticket by `ls node_modules/.bin/jest` finding nothing after a clean
+ * `yarn install`). `evm-account-pool.jest.test.ts` covers the same scenarios (and more, with
+ * proper mocking) and will run unmodified once jest is installed for real.
+ *
+ * No network access: funding here is driven by a `MonadAccountTxSigner` against a
+ * stubbed `JsonRpcProvider._perform` (same technique as `evm-account-tx.jest.test.ts`), and the
+ * `level` store checks use a real temp directory on disk (that's the whole point — proving
+ * cross-"restart" persistence) but never touch the network.
+ *
+ * Usage (from `app/`):
+ *   node_modules/.bin/tsc --module commonjs --target es2019 --esModuleInterop --resolveJsonModule \
+ *     --outDir /tmp/monad-account-pool-livecheck src/cashweb/wallet/evm-http.ts \
+ *     src/cashweb/wallet/evm-account-tx.ts src/cashweb/wallet/evm-hd-keyring.ts \
+ *     src/cashweb/wallet/evm-account-pool.ts \
+ *     src/cashweb/wallet/storage/sub-account-pool-storage.ts \
+ *     src/cashweb/wallet/storage/level-sub-account-pool-store.ts \
+ *     src/cashweb/wallet/evm-account-pool.livecheck.ts
+ *   node /tmp/monad-account-pool-livecheck/monad-account-pool.livecheck.js
+ */
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+
+import { JsonRpcProvider, Wallet } from 'ethers'
+
+import { MonadHdKeyring, subAccountPath } from './evm-hd-keyring'
+import {
+  DEFAULT_TOPUP_BUFFER_SIZE,
+  MonadSubAccountPool,
+} from './evm-account-pool'
+import { MonadAccountTxSigner, MonadTxSubmitter } from './evm-account-tx'
+import { LevelSubAccountPoolStore } from './storage/level-sub-account-pool-store'
+import { InMemorySubAccountPoolStore } from './storage/sub-account-pool-storage'
+
+function assertEqual(actual: unknown, expected: unknown, label: string) {
+  const a = typeof actual === 'bigint' ? actual.toString() : actual
+  const e = typeof expected === 'bigint' ? expected.toString() : expected
+  if (a !== e) {
+    throw new Error(
+      `${label}: expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`,
+    )
+  }
+  console.log(`  OK  ${label} = ${JSON.stringify(e)}`)
+}
+
+function assertTrue(condition: boolean, label: string) {
+  if (!condition) throw new Error(`${label}: expected true`)
+  console.log(`  OK  ${label}`)
+}
+
+const CHAIN_ID = 10143
+
+function makeStubProvider(
+  perform: (req: { method: string }) => Promise<unknown>,
+) {
+  const provider = new JsonRpcProvider('http://127.0.0.1:1', CHAIN_ID, {
+    staticNetwork: true,
+    cacheTimeout: -1,
+  })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(provider as any)._perform = perform
+  return provider
+}
+
+function makeNoopHttpClient(): MonadTxSubmitter {
+  const submitted: string[] = []
+  return {
+    async submitRawTransaction(rawTxHex: string) {
+      submitted.push(rawTxHex)
+      // Echo back the hash the caller expects (see evm-account-tx.ts's submit() cross-check) —
+      // computed the same way MonadAccountTxSigner.submit expects: the caller compares to its own
+      // pre-computed hash, so simplest correct stub is to reflect it back. We don't have it here
+      // without re-parsing, so just re-derive via ethers.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { Transaction } = require('ethers')
+      return Transaction.from(rawTxHex).hash
+    },
+    async getTransactionReceipt() {
+      return undefined
+    },
+  }
+}
+
+async function checkDerivationDeterminism() {
+  console.log('\n== Derivation determinism ==')
+  const mnemonic = 'test test test test test test test test test test test junk'
+  const keyringA = MonadHdKeyring.fromMnemonic(mnemonic)
+  const keyringB = MonadHdKeyring.fromMnemonic(mnemonic)
+
+  const a0 = keyringA.deriveSubAccount(0)
+  const b0 = keyringB.deriveSubAccount(0)
+  assertEqual(a0.address, b0.address, 'same mnemonic + index 0 -> same address')
+  assertEqual(
+    a0.privateKey,
+    b0.privateKey,
+    'same mnemonic + index 0 -> same private key',
+  )
+
+  const a1 = keyringA.deriveSubAccount(1)
+  assertTrue(
+    a1.address !== a0.address,
+    'index 0 vs index 1 -> different address',
+  )
+
+  assertEqual(subAccountPath(3), "m/44'/60'/0'/0/3", 'subAccountPath(3)')
+
+  const { keyring: randomKeyring, mnemonic: generated } =
+    MonadHdKeyring.generate()
+  assertTrue(
+    generated.split(' ').length === 12,
+    'generate() -> 12-word mnemonic',
+  )
+  const g0a = randomKeyring.deriveSubAccount(0)
+  const g0b = MonadHdKeyring.fromMnemonic(generated).deriveSubAccount(0)
+  assertEqual(
+    g0a.address,
+    g0b.address,
+    'generated mnemonic round-trips through fromMnemonic',
+  )
+
+  let threw = false
+  try {
+    MonadHdKeyring.fromMnemonic('not a valid mnemonic at all')
+  } catch {
+    threw = true
+  }
+  assertTrue(threw, 'fromMnemonic rejects an invalid mnemonic')
+}
+
+async function checkPoolSizingAndSelection() {
+  console.log('\n== Pool sizing + per-stamp selection/rotation ==')
+  const mnemonic = 'test test test test test test test test test test test junk'
+  const keyring = MonadHdKeyring.fromMnemonic(mnemonic)
+  const pool = new MonadSubAccountPool({
+    keyring,
+    store: new InMemorySubAccountPoolStore(),
+  })
+
+  const records = pool.ensureSize(4)
+  assertEqual(records.length, 4, 'ensureSize(4) -> 4 records')
+  assertTrue(
+    records.every(r => r.status === 'available'),
+    'all newly-derived records start "available"',
+  )
+  assertEqual(
+    records[2].address,
+    keyring.deriveSubAccount(2).address,
+    'pool record address matches direct derivation for the same index',
+  )
+
+  // Idempotent: calling again with the same size doesn't disturb existing records' status.
+  pool.setStatus(1, 'in-use')
+  pool.setStatus(2, 'retired')
+  pool.ensureSize(4)
+  assertEqual(
+    pool.getRecord(1)?.status,
+    'in-use',
+    'ensureSize does not reset an in-use record',
+  )
+  assertEqual(
+    pool.getRecord(2)?.status,
+    'retired',
+    'ensureSize does not reset a retired record',
+  )
+
+  // Growing the pool leaves existing records alone and adds new ones.
+  pool.ensureSize(6)
+  assertEqual(pool.records().length, 6, 'ensureSize(6) grows the pool to 6')
+  assertEqual(
+    pool.getRecord(5)?.status,
+    'available',
+    'newly-added index 5 is available',
+  )
+
+  // Selection: only indices 0, 3, 4, 5 are 'available' (1 is in-use, 2 is retired). Rotation
+  // should visit exactly that set, in order, indefinitely wrapping, and never mutate status.
+  const selections: number[] = []
+  for (let i = 0; i < 8; i++) {
+    const chosen = pool.selectForStamp()
+    if (chosen === undefined) throw new Error('expected a selection')
+    selections.push(chosen.index)
+  }
+  assertEqual(
+    JSON.stringify(selections),
+    JSON.stringify([0, 3, 4, 5, 0, 3, 4, 5]),
+    'selectForStamp() round-robins over available accounts only, skipping in-use/retired',
+  )
+  assertEqual(
+    pool.getRecord(1)?.status,
+    'in-use',
+    'selectForStamp never mutates status (in-use)',
+  )
+  assertEqual(
+    pool.getRecord(2)?.status,
+    'retired',
+    'selectForStamp never mutates status (retired)',
+  )
+
+  // Exhaustion: if nothing is available, selection returns undefined rather than throwing.
+  const emptyPool = new MonadSubAccountPool({ keyring })
+  emptyPool.ensureSize(2)
+  emptyPool.setStatus(0, 'retired')
+  emptyPool.setStatus(1, 'retired')
+  assertEqual(
+    emptyPool.selectForStamp(),
+    undefined,
+    'selectForStamp() returns undefined when nothing is available',
+  )
+}
+
+async function checkTopUpPool() {
+  console.log(
+    '\n== topUpPool: indefinite growth + look-ahead funding buffer (ticket #34) ==',
+  )
+  const mnemonic = 'test test test test test test test test test test test junk'
+  const keyring = MonadHdKeyring.fromMnemonic(mnemonic)
+  const pool = new MonadSubAccountPool({ keyring })
+  pool.ensureSize(2) // simulate a fixed initial size a caller might have started with
+
+  let nonce = 0
+  const provider = makeStubProvider(async req => {
+    if (req.method === 'getTransactionCount')
+      return `0x${(nonce++).toString(16)}`
+    if (req.method === 'estimateGas') return '0x5208'
+    throw new Error(`unexpected _perform: ${req.method}`)
+  })
+  const mainAccountSigner = new MonadAccountTxSigner({
+    privateKey: Wallet.createRandom().privateKey,
+    provider,
+    httpClient: makeNoopHttpClient(),
+  })
+
+  const results = await pool.topUpPool({
+    mainAccountSigner,
+    burnValue: 1n,
+    gasReserve: 1n,
+    bufferSize: 3,
+    overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+  })
+
+  assertEqual(
+    JSON.stringify(results.map(r => r.index)),
+    JSON.stringify([2]),
+    "topUpPool derives/funds only the shortfall, starting past ensureSize's original bound",
+  )
+  assertEqual(
+    pool.getRecord(2)?.status,
+    'available',
+    'the freshly-funded index is persisted as available',
+  )
+
+  const full = await pool.topUpPool({
+    mainAccountSigner,
+    burnValue: 1n,
+    gasReserve: 1n,
+    bufferSize: 3,
+  })
+  assertEqual(
+    JSON.stringify(full),
+    JSON.stringify([]),
+    'a full buffer needs no further top-up',
+  )
+
+  const emptyPool = new MonadSubAccountPool({ keyring })
+  const defaulted = await emptyPool.topUpPool({
+    mainAccountSigner,
+    burnValue: 1n,
+    gasReserve: 1n,
+    overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+  })
+  assertEqual(
+    defaulted.length,
+    DEFAULT_TOPUP_BUFFER_SIZE,
+    'omitting bufferSize falls back to DEFAULT_TOPUP_BUFFER_SIZE',
+  )
+}
+
+async function checkLevelStorePersistsAcrossRestart() {
+  console.log(
+    '\n== LevelSubAccountPoolStore persists across a simulated restart ==',
+  )
+  const dir = mkdtempSync(join(tmpdir(), 'sub-account-pool-'))
+  try {
+    const mnemonic =
+      'test test test test test test test test test test test junk'
+    const keyring = MonadHdKeyring.fromMnemonic(mnemonic)
+
+    const storeA = new LevelSubAccountPoolStore(dir)
+    await storeA.Open()
+    const poolA = new MonadSubAccountPool({ keyring, store: storeA })
+    poolA.ensureSize(3)
+    poolA.setStatus(1, 'in-use')
+    await storeA.Close()
+
+    // Simulate an app restart: fresh store instance pointed at the same directory.
+    const storeB = new LevelSubAccountPoolStore(dir)
+    await storeB.Open()
+    const poolB = new MonadSubAccountPool({ keyring, store: storeB })
+    const recordsB = poolB.records()
+    assertEqual(
+      recordsB.length,
+      3,
+      'reopened store has all 3 previously-derived records',
+    )
+    assertEqual(
+      poolB.getRecord(1)?.status,
+      'in-use',
+      'reopened store preserves status set before "restart"',
+    )
+    assertEqual(
+      poolB.getRecord(0)?.address,
+      keyring.deriveSubAccount(0).address,
+      'reopened store address still matches deterministic re-derivation',
+    )
+    await storeB.Close()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+async function main() {
+  await checkDerivationDeterminism()
+  await checkPoolSizingAndSelection()
+  await checkTopUpPool()
+  await checkLevelStorePersistsAcrossRestart()
+  console.log('\nAll evm-account-pool livecheck assertions passed.')
+}
+
+main().catch(err => {
+  console.error('\nLIVECHECK FAILED:', err)
+  process.exit(1)
+})

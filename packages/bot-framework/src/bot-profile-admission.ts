@@ -9,8 +9,8 @@ import { join } from "path";
 import { randomBytes } from "crypto";
 
 import { deriveDomainRoot } from "@frank/domain-roots";
-import { MonadIdentity } from "@frank/wallet/monad-identity";
-import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
+import { MonadIdentity } from "@frank/wallet/evm-identity";
+import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
 import { canonicalNetworkDescriptor } from "@frank/cashweb/relay/canonical-dm-transport";
 
 import { LevelBotStateStore } from "./state-store";

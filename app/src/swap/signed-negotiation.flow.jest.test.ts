@@ -48,10 +48,10 @@ Object.defineProperty(globalThis.navigator, 'locks', {
     },
   },
 })
-jest.mock('@frank/wallet/monad-provider', () =>
+jest.mock('@frank/wallet/evm-provider', () =>
   require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineProviderModule(),
 )
-jest.mock('@frank/wallet/monad-http', () =>
+jest.mock('@frank/wallet/evm-http', () =>
   require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineHttpModule(),
 )
 jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => ({
@@ -114,10 +114,10 @@ const { activeChain, setActiveChain } = require('@frank/wallet/chain')
 const {
   installCanonicalDirectory,
   conversationIdSaltOf,
-} = require('@frank/wallet/chain/monad-chain')
+} = require('@frank/wallet/chain/evm-chain')
 const {
   installMessageItemRegistry,
-} = require('@frank/wallet/chain/monad-canonical-dm')
+} = require('@frank/wallet/chain/evm-canonical-dm')
 const {
   restoreCanonicalRequest,
 } = require('@frank/cashweb/relay/canonical-dm-transport')

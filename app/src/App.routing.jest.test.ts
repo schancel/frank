@@ -92,7 +92,7 @@ jest.mock('./stores/contacts', () => {
   }
   return { useContactStore: () => contacts }
 })
-jest.mock('@frank/wallet/monad-identity', () => ({
+jest.mock('@frank/wallet/evm-identity', () => ({
   fetchCuratedDefaultContacts: async () => [],
 }))
 jest.mock('./utils/apply-locale', () => ({ applyLocale: jest.fn() }))

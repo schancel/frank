@@ -1,5 +1,5 @@
 import { installIdentityRpcFixture } from '@frank/wallet/chain/evm-identity-rpc.testutil'
-import * as providerModule from '@frank/wallet/monad-provider'
+import * as providerModule from '@frank/wallet/evm-provider'
 import {
   createNativeOnlyEvmChain,
   activeChain,

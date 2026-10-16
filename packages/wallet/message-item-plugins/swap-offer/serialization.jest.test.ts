@@ -2,7 +2,7 @@ import type { SwapOfferItem } from '@frank/cashweb/types/messages'
 import {
   deserializeMessageItems,
   serializeMessageItems,
-} from '../../chain/monad-chain'
+} from '../../chain/evm-chain'
 import { registryWith } from '../shared/plugin-contract.testutil'
 import { initSwapOfferPlugin } from './plugin'
 

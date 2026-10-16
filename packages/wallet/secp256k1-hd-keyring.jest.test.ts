@@ -5,8 +5,8 @@ import {
   UtxoHdKeyring,
   resolveBip44Path,
 } from './secp256k1-hd-keyring'
-import { MonadHdKeyring, subAccountPath } from './monad-hd-keyring'
-import { MonadChangeKeyring, changeAccountPath } from './monad-change-keyring'
+import { MonadHdKeyring, subAccountPath } from './evm-hd-keyring'
+import { MonadChangeKeyring, changeAccountPath } from './evm-change-keyring'
 
 const TEST_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'

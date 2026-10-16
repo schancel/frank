@@ -7,7 +7,7 @@ import {
   BIP39_DERIVATION,
   openPreviewVault,
 } from '@frank/account-vault'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import {
   openAccountCustody,
   type AccountCustody,

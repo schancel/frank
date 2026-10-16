@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { LevelSubAccountPoolStore } from './level-sub-account-pool-store'
-import { MonadSubAccountPool } from '../monad-account-pool'
-import { MonadHdKeyring } from '../monad-hd-keyring'
+import { MonadSubAccountPool } from '../evm-account-pool'
+import { MonadHdKeyring } from '../evm-hd-keyring'
 
 it('a failed eligibility write rejects the mutation and fences selection and repeated flush', async () => {
   const location = mkdtempSync(join(tmpdir(), 'frank-authoritative-pool-'))
@@ -35,7 +35,7 @@ it('a failed eligibility write rejects the mutation and fences selection and rep
 })
 
 import level from 'level'
-import { SubAccountLeaseManager } from '../monad-account-lease'
+import { SubAccountLeaseManager } from '../evm-account-lease'
 import type { SubAccountRecord } from './sub-account-pool-storage'
 
 function barrier() {

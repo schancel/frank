@@ -366,7 +366,7 @@ summary is marked UNHEALTHY. If the relay dies the launcher stops everything and
 ---
 
 > **Update (2026-09-27, autonomous overnight session):** the bot and its scripts were ported off
-> `lotus-identity.ts`/`FrankIdentity` onto `monad-identity.ts`/`MonadIdentity` -- the real Frank UI's
+> `lotus-identity.ts`/`FrankIdentity` onto `evm-identity.ts`/`MonadIdentity` -- the real Frank UI's
 > `ActiveChain`/`MonadChain` stack (tickets #41-#45) only ever resolves a contact via
 > `fetchMonadProfile`, which never finds a Lotus-registered identity, so the bot was previously
 > invisible to (and couldn't message) any real wallet created through the app. The "Live proof"
@@ -645,13 +645,13 @@ yarn workspace @frank/bot test --runInBand qwen-host-safety qwen-client qwen-rep
 
 Alongside its Qwen-reply behavior, `qwen-bot.livecheck.ts` also polls the live
 `GET /metadata/monad?since=<t>` route (ticket #75, via `fetchMonadProfilesSince`,
-`@frank/wallet/monad-identity`) for newly-registered Monad profiles. For each one seen after the
+`@frank/wallet/evm-identity`) for newly-registered Monad profiles. For each one seen after the
 bot's own startup (never itself), it sends a real greeting DM (the same stamped-message path used
 for Qwen replies) and funds the new
 address with a small amount of real testnet MON, sent directly via `MonadAccountTxSigner.
 buildAndSignTransfer` on the main funded wallet -- see `qwen-bot.livecheck.ts`'s own header comment
 (point 5) for why that primitive was used instead of `fanOutFundSubAccounts`
-(`@frank/wallet/monad-account-pool.ts`), which this ticket's own text originally suggested but
+(`@frank/wallet/evm-account-pool.ts`), which this ticket's own text originally suggested but
 which is actually scoped to funding the bot's _own_ derived sub-account pool, not arbitrary
 third-party addresses.
 

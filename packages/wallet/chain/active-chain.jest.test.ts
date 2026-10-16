@@ -49,7 +49,7 @@ describe('parseAddressWithOptionalRelay', () => {
 
 describe('ActiveChain contract address helpers', () => {
   it("returns the addresses of the chain's own network, or throws when none is deployed there", async () => {
-    const { createEvmChain } = await import('./monad-chain')
+    const { createEvmChain } = await import('./evm-chain')
     const { PROTOCOL_CHAINS } = await import('./chains-registry')
     const chain = createEvmChain({
       relayBaseUrl: 'http://127.0.0.1:8098',
@@ -76,7 +76,7 @@ describe('ActiveChain contract address helpers', () => {
   })
 
   it('throws a clear error if network does not support the requested contract', async () => {
-    const { createEvmChain } = await import('./monad-chain')
+    const { createEvmChain } = await import('./evm-chain')
     expect(() =>
       createEvmChain({
         relayBaseUrl: 'http://127.0.0.1:8098',

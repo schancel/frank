@@ -40,13 +40,13 @@ import {
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
 import { withDefaultMessageItems } from './message-items.testutil'
-import { createEvmChain, installCanonicalDirectory } from './monad-chain'
-import { deriveEvmStealthPrivateKey } from '../monad-stealth'
+import { createEvmChain, installCanonicalDirectory } from './evm-chain'
+import { deriveEvmStealthPrivateKey } from '../evm-stealth'
 
 // The wallet normally reaches its node through the relay's RPC gateway. Here it is pointed
 // straight at the real node this test started: the node is real, only the route to it differs.
-jest.mock('../monad-provider', () => {
-  const actual = jest.requireActual('../monad-provider')
+jest.mock('../evm-provider', () => {
+  const actual = jest.requireActual('../evm-provider')
   return {
     ...actual,
     createMonadJsonRpcProvider: (options: { chainId: number | bigint }) =>
@@ -56,8 +56,8 @@ jest.mock('../monad-provider', () => {
       }),
   }
 })
-jest.mock('../monad-http', () => {
-  const actual = jest.requireActual('../monad-http')
+jest.mock('../evm-http', () => {
+  const actual = jest.requireActual('../evm-http')
   return {
     ...actual,
     MonadHttpClient: class extends actual.MonadHttpClient {

@@ -1,6 +1,6 @@
 import { JsonRpcProvider, Transaction, Wallet } from 'ethers'
-import { MonadAccountTxSigner, MonadTxSubmitter } from './monad-account-tx'
-import { MonadTxReceipt } from './monad-http'
+import { MonadAccountTxSigner, MonadTxSubmitter } from './evm-account-tx'
+import { MonadTxReceipt } from './evm-http'
 
 // Public offline fixture keys, never used for network activity.
 const key = '0x' + '11'.repeat(32)

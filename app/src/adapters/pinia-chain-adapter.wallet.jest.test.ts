@@ -33,14 +33,14 @@ import type { WalletHandle } from '@frank/wallet/chain'
 import {
   canonicalMonadStampClient,
   installCanonicalDirectory,
-} from '@frank/wallet/chain/monad-chain'
-import { MonadStampPendingAttemptError } from '@frank/wallet/monad-stamp-client'
+} from '@frank/wallet/chain/evm-chain'
+import { MonadStampPendingAttemptError } from '@frank/wallet/evm-stamp-client'
 
 /* eslint-disable @typescript-eslint/no-var-requires */
-jest.mock('@frank/wallet/monad-provider', () =>
+jest.mock('@frank/wallet/evm-provider', () =>
   require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineProviderModule(),
 )
-jest.mock('@frank/wallet/monad-http', () =>
+jest.mock('@frank/wallet/evm-http', () =>
   require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineHttpModule(),
 )
 jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>
@@ -219,7 +219,7 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
 
   // Removed: the pin that an unanswered relay request held the tick. The wallet no longer makes
   // a tick wait on another message's request; a tick that names a digest waits only for that
-  // message's own step (see packages/wallet/chain/monad-parallel-send.jest.test.ts).
+  // message's own step (see packages/wallet/chain/evm-parallel-send.jest.test.ts).
 
   // The wallet here is not empty: it holds one delivered payment no message accounts for, which
   // it goes on reporting. Paying for and delivering that message is the positive control: all

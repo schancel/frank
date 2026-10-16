@@ -1,5 +1,5 @@
 import type { Provider } from 'ethers'
-import type { MonadSubAccountPool } from '../monad-account-pool'
+import type { MonadSubAccountPool } from '../evm-account-pool'
 import type { SubAccountFundingAttempt } from '../storage/sub-account-pool-storage'
 import type { EvmNativeOperation } from '../storage/evm-native-operation-journal'
 

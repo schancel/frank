@@ -15,15 +15,15 @@ import type {
   PublicRevisionZeroExport,
   PublicNextRevisionInput,
   PublicNextRevisionExport,
-} from "../monad-wallet-handle";
-import type { MonadWalletMaterial } from "../monad-wallet-material";
-import type { MonadCanonicalStampClient } from "../monad-stamp-client";
-import type { CanonicalWalletBindingMismatchError } from "../storage/monad-wallet-bundle";
+} from "../evm-wallet-handle";
+import type { MonadWalletMaterial } from "../evm-wallet-material";
+import type { MonadCanonicalStampClient } from "../evm-stamp-client";
+import type { CanonicalWalletBindingMismatchError } from "../storage/evm-wallet-bundle";
 import {
   CanonicalMessagingPendingError,
   type canonicalDirectMessages,
   type CanonicalDirectory,
-} from "./monad-canonical-dm";
+} from "./evm-canonical-dm";
 import type { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
 import {
   NativeTransactionAttemptStore,
@@ -457,3 +457,10 @@ export function toChainAddress(raw: string): ChainAddress {
 export function bareHex(bytes: Uint8Array): string {
   return hexlify(bytes).slice(2);
 }
+
+export {
+  prepareMonadRevisionZeroExport as prepareEvmRevisionZeroExport,
+  prepareMonadNextRevisionExport as prepareEvmNextRevisionExport,
+  canonicalMonadStampClient as canonicalEvmStampClient,
+  asMonadWallet as asEvmWallet,
+};

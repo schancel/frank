@@ -2,7 +2,7 @@ import type { DefaultStampQuote } from "../oracle/stamp-policy";
 /**
  * The compile-time chain-selection seam (ticket #41 -- see `PLAN.md`'s M9 section, "Design: a
  * compile-time `ActiveChain` seam"). One interface, `ActiveChain`, is satisfied by exactly one real
- * implementation (`./monad-chain.ts`'s `MonadChain`), selected once at compile time via
+ * implementation (`./evm-chain.ts`'s `MonadChain`), selected once at compile time via
  * `./index.ts`'s `activeChain` constant. Every store/component that needs address formatting, a
  * unit/denomination, a wallet factory, or direct-message/topic-broadcast operations is meant to
  * import through `activeChain` in follow-on tickets (#42/#43) rather than reaching into
@@ -30,7 +30,7 @@ import type { DefaultStampQuote } from "../oracle/stamp-policy";
  *    (`../evm-wallet-handle.ts`) that adds the rest. This is safe under the compile-time seam: in a
  *    Monad-only build, `MonadChain.createWallet` is the only producer of `WalletHandle` values, so
  *    every handle reaching `MonadChain`'s other methods already carries the extra fields (see
- *    `./monad-chain.ts`'s `asMonadWallet`).
+ *    `./evm-chain.ts`'s `asMonadWallet`).
  * 2. **`DirectMessageClient.fetchSince` returns `DirectMessageReceived[]`, not
  *    `ReceivedMessageWrapper[]`** (`../types/user-interface.ts`, the issue's own sketched return
  *    type). That type is UTXO/Lotus-pubkey-shaped (`outpoints: Utxo[]`, `copartyPubKey: PublicKey`
@@ -65,8 +65,8 @@ export type {
 } from "@frank/cashweb/types/messages";
 import type { AccountType, BotRole, PaymentMember } from "@frank/codec";
 export type { AccountType, BotRole, PaymentMember } from "@frank/codec";
-import type { MonadRootBundle, HistoricalBip39Seed } from "../monad-wallet-material";
-export type { MonadRootBundle } from "../monad-wallet-material";
+import type { MonadRootBundle, HistoricalBip39Seed } from "../evm-wallet-material";
+export type { MonadRootBundle } from "../evm-wallet-material";
 import {
   ChainAddress,
   ChainFamily,
@@ -114,7 +114,7 @@ export {
 } from "./chain-wallet";
 
 /** Canonical string form of an on-chain address, for storage keys, API calls, and equality checks.
- * For `MonadChain`, this is an EIP-55 checksummed `0x...` string (`../wallet/monad-identity.ts`) --
+ * For `MonadChain`, this is an EIP-55 checksummed `0x...` string (`../wallet/evm-identity.ts`) --
  * there is deliberately no separate "API" vs. "display" encoding the way Lotus's
  * `toAPIAddress`/`toDisplayAddress` (`../../utils/address.ts`) need, since EVM has exactly one
  * canonical address representation. */
@@ -135,7 +135,7 @@ export interface HDSeed {
 /** A looked-up identity's registered profile/pubkey -- `contacts.ts` (#42) needs this to resolve a
  * coparty's encryption key; the Lotus-side equivalent is `../wallet/lotus-identity.ts`'s
  * `fetchIdentityPubKey`, which Monad had no analog of before this ticket
- * (`../wallet/monad-identity.ts`'s `fetchMonadProfile`). */
+ * (`../wallet/evm-identity.ts`'s `fetchMonadProfile`). */
 export interface ProfileInfo {
   address: ChainAddress;
   /** Raw registered public key bytes (secp256k1), if any -- needed to derive an ECDH shared key
@@ -234,7 +234,7 @@ export interface DirectMessageReceived {
   /** Bare (no `0x`) hex `payload_hash` of the stamped message this was decoded from. */
   payloadDigest: string;
   /** Wei actually paid across the message's stamp transactions (read back from the signed raw
-   * transactions, not merely echoing a configured constant -- see `./monad-chain.ts`). */
+   * transactions, not merely echoing a configured constant -- see `./evm-chain.ts`). */
   stampValueWei: bigint;
   stampPayments: StampPaymentInfo[];
   /** A canonical message: the public shared point its stamp accounts are derived from (hex). */
@@ -303,7 +303,7 @@ export type DirectMessagePaymentSummary =
   | "failed"
   | "unsent";
 /** What the sender knows about an earlier outgoing attempt; see `MonadStampAttemptStatus` in
- * `../monad-stamp-client.ts` for the legacy path's meaning. Canonical paid attempts remain `live`
+ * `../evm-stamp-client.ts` for the legacy path's meaning. Canonical paid attempts remain `live`
  * while delivery is unresolved, including after HTTP rejection or a `dead` relay answer. The
  * wallet retains and retries the original exact request; delivery and payment settlement are
  * separate facts. A stored `dead` status may describe a host-bound free receipt or a retained

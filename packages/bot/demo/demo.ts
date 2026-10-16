@@ -19,7 +19,7 @@ import { dirname, join, resolve } from 'path'
 
 import { formatEther } from 'ethers'
 
-import { fetchMonadProfilesSince } from '@frank/wallet/monad-identity'
+import { fetchMonadProfilesSince } from '@frank/wallet/evm-identity'
 
 import { ensurePrivateDir } from '../stamp-pool-seed'
 import { renderCuratedDefaultsToml } from '../print-curated-defaults'

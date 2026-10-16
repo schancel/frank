@@ -11,7 +11,7 @@ import {
   formatUtxoAddress,
   MAX_UNCONFIRMED_MEMPOOL_ANCESTORS,
 } from './chain-utxo-pool'
-import { orderOfMagnitude2 } from './monad-change-distribution'
+import { orderOfMagnitude2 } from './evm-change-distribution'
 import { SolanaWallet } from './solana-wallet'
 import { EcashWallet } from './ecash-wallet'
 

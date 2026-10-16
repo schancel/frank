@@ -9,8 +9,8 @@ import {
   EvmStampPayer,
   InsufficientStampFundsError,
 } from './evm-stamp-payer'
-import { MonadSubAccountPool } from './monad-account-pool'
-import { MonadHdKeyring } from './monad-hd-keyring'
+import { MonadSubAccountPool } from './evm-account-pool'
+import { MonadHdKeyring } from './evm-hd-keyring'
 import { InMemorySubAccountPoolStore } from './storage/sub-account-pool-storage'
 
 const GWEI = 10n ** 9n

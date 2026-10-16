@@ -352,7 +352,7 @@ import { copyToClipboard, type QFile } from 'quasar'
 import { normalizedProfileName, profileNameRule } from '../utils/profile-name'
 import { defaultAvatars } from '../utils/constants'
 import { resizeAndCompressImage, compressAvatarFile } from '../utils/avatar'
-import { validateProfileUsername } from '@frank/wallet/monad-identity'
+import { validateProfileUsername } from '@frank/wallet/evm-identity'
 import { getOwnCanonicalAddress } from '../utils/own-address'
 import { addressCopiedNotify, errorNotify } from '../utils/notifications'
 

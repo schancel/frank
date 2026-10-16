@@ -15,11 +15,11 @@ import { getBytes } from 'ethers'
 import { toHex } from '@frank/codec'
 import { parseCheckpoint } from '@frank/cashweb/relay/open-directory'
 import { openBrowserDirectoryStore } from '@frank/directory-admission/browser'
-import * as monadChain from '@frank/wallet/chain/monad-chain'
-import { createEvmChain } from '@frank/wallet/chain/monad-chain'
+import * as monadChain from '@frank/wallet/chain/evm-chain'
+import { createEvmChain } from '@frank/wallet/chain/evm-chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { activeChain } from '@frank/wallet/chain'
-import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
+import type { MonadRootBundle } from '@frank/wallet/evm-wallet-material'
 import {
   createFakeRelay,
   testAccount,
@@ -57,8 +57,8 @@ jest.mock('../adapters/pinia-chain-adapter', () => ({
   startDirectMessagePolling: jest.fn(),
   startOutgoingReconciliation: jest.fn(),
 }))
-jest.mock('@frank/wallet/chain/monad-chain', () => {
-  const actual = jest.requireActual('@frank/wallet/chain/monad-chain')
+jest.mock('@frank/wallet/chain/evm-chain', () => {
+  const actual = jest.requireActual('@frank/wallet/chain/evm-chain')
   return {
     ...actual,
     prepareMonadRevisionZeroExport: jest.fn(
@@ -140,7 +140,7 @@ function device(live: EvmChainWalletHandle) {
   const polling = { stop: jest.fn() },
     reconcile = { stop: jest.fn() }
   const actual = jest.requireActual(
-    '@frank/wallet/chain/monad-chain',
+    '@frank/wallet/chain/evm-chain',
   ) as typeof monadChain
   const deps: MessagingDeps = {
     session: { state: mockStatus, getWallet: async () => live },

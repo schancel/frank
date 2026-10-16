@@ -1,4 +1,4 @@
-import * as providers from "../monad-provider";
+import * as providers from "../evm-provider";
 import type { JsonRpcProvider } from "ethers";
 import { getChainRegistryEntry } from "./chains-registry";
 import type { OperatorCheckpoint } from "./evm-rpc-identity";

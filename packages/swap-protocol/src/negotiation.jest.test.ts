@@ -8,7 +8,7 @@ import {
   verifyAlgorithm1,
   type Encodable,
 } from '@frank/codec'
-import { MonadIdentity } from '../../wallet/monad-identity'
+import { MonadIdentity } from '../../wallet/evm-identity'
 import {
   createSignedSwapEvent,
   decodeSignedSwapEvent,

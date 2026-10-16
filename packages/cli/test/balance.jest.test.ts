@@ -4,8 +4,8 @@ import { join } from 'path'
 import * as bip39 from 'bip39'
 import { JsonRpcProvider } from 'ethers'
 
-import * as monadStampClientModule from '@frank/wallet/monad-stamp-client'
-import * as monadIdentityModule from '@frank/wallet/monad-identity'
+import * as monadStampClientModule from '@frank/wallet/evm-stamp-client'
+import * as monadIdentityModule from '@frank/wallet/evm-identity'
 import { LevelStampPaymentJournal } from '@frank/wallet/storage/stamp-payment-journal'
 
 import { balanceCommand, sweepCommand } from '../src/commands/balance'

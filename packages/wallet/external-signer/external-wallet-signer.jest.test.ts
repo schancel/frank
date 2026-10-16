@@ -4,7 +4,7 @@ import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils'
 import { Wallet } from 'ethers'
 import { PublicKey } from '@solana/web3.js'
 import { ed25519 } from '@noble/curves/ed25519'
-import { createMonadWalletMaterial } from '../monad-wallet-material'
+import { createMonadWalletMaterial } from '../evm-wallet-material'
 import { DEFAULT_MONAD_MAX_HOT_BALANCE_ATOMIC } from '../hygiene/cold-vault-sweeper'
 import {
   buildEvmExternalSignerChallenge,

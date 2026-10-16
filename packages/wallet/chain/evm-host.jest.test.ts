@@ -1,6 +1,6 @@
 import { useFactoryIdentityFixture } from "./evm-identity-rpc.testutil";
 useFactoryIdentityFixture();
-import { createEvmChain } from "./monad-chain";
+import { createEvmChain } from "./evm-chain";
 import { createNativeOnlyEvmChain, createRelayStampDefaultResolver } from "./evm-host";
 import { ASSET_DECIMALS } from "../oracle/price-oracle";
 import type { EvmChainConfig } from "./evm-chain-config";

@@ -7,7 +7,7 @@ import {
   uuidv5Bytes,
 } from '@frank/cashweb/relay/conversation-id'
 import { activeChain, type WalletHandle } from '@frank/wallet/chain'
-import { conversationIdSaltOf } from '@frank/wallet/chain/monad-chain'
+import { conversationIdSaltOf } from '@frank/wallet/chain/evm-chain'
 import {
   authorizeNegotiation,
   type LocalNegotiationIntent,

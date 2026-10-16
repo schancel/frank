@@ -30,15 +30,15 @@ import {
   poolSpendAdmission,
   type WalletOperationLifetime,
 } from '../evm-input-admission'
-import { MonadHdKeyring } from '../monad-hd-keyring'
-import { MonadChangeKeyring } from '../monad-change-keyring'
-import { MonadSubAccountPool } from '../monad-account-pool'
-import { MonadChangePool } from '../monad-change-pool'
-import { SubAccountLeaseManager } from '../monad-account-lease'
+import { MonadHdKeyring } from '../evm-hd-keyring'
+import { MonadChangeKeyring } from '../evm-change-keyring'
+import { MonadSubAccountPool } from '../evm-account-pool'
+import { MonadChangePool } from '../evm-change-pool'
+import { SubAccountLeaseManager } from '../evm-account-lease'
 import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-store'
 import { InMemoryChangePoolStore } from '../storage/change-pool-storage'
 import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
-import { validateMonadWalletState } from '../storage/monad-wallet-state-validator'
+import { validateMonadWalletState } from '../storage/evm-wallet-state-validator'
 import * as durability from '../storage/level-durability'
 import { summarizeEvmNativeOperation } from './evm-native-operation-status'
 
@@ -967,7 +967,7 @@ describe('wallet-lifetime EVM native operations', () => {
   // `composed` wires the executor the way composition does: a reader journal, the real input
   // admission over a real Level pool store, and the two local callbacks going straight to
   // `poolSpendAdmission`. Its pool rows are created by `ensureSize` and funded only in the
-  // simulated chain; the production-funded row is exercised in `monad-domain-wallet`.
+  // simulated chain; the production-funded row is exercised in `evm-domain-wallet`.
   // Unless a test says it is a pin, it fails on main 72631f36 because no pass exists there:
   // the callbacks are never called and no row is ever marked.
   // ---------------------------------------------------------------------------------------
@@ -2272,7 +2272,7 @@ describe('wallet-lifetime EVM native operations', () => {
   //
   // On main dce4bedf `reobservePending` and `stopReobservation` do not exist, so every test here
   // fails there at its first tick. What main does instead is pinned by the Stage 2 tests above
-  // and in `monad-domain-wallet`: a pending member is looked up only by a later native send.
+  // and in `evm-domain-wallet`: a pending member is looked up only by a later native send.
   // Time is the executor's injected clock; nothing here sleeps.
   // ---------------------------------------------------------------------------------------
   const SECOND = 1000

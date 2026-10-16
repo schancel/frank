@@ -5,10 +5,10 @@ import { getChainRegistryEntry } from "./chains-registry";
 import {
   DEFAULT_MONAD_CHAIN_ID,
   monadProtocolIdentity,
-} from "../monad-provider";
+} from "../evm-provider";
 import type { MessageItem } from "@frank/cashweb/types/messages";
 import type { DirectMessageFundAheadResult } from "./active-chain";
-import { BurnNotSentError } from "../monad-account-lease";
+import { BurnNotSentError } from "../evm-account-lease";
 
 // Ticket #54 (found live doing real end-to-end GUI testing against a real relay + real Alchemy
 // RPC -- the app silently fell back to `http://127.0.0.1:8545`, breaking every real chain call):
@@ -130,7 +130,7 @@ export function getDefaultRelayBaseUrl(): string {
 }
 
 /** Reads `EvmChainConfig` from the environment (see `readEnv` just above for exactly where
- * from, and why two places), with permissive fallbacks -- see `monad-chain.ts`'s header,
+ * from, and why two places), with permissive fallbacks -- see `evm-chain.ts`'s header,
  * "Configuration", for why this (unlike the wallet client modules it configures) reads env
  * directly. Malformed paired checkpoint values fail visibly; inspection stays offline. */
 export function loadMonadChainConfigFromEnv(overrides?: {
@@ -374,3 +374,5 @@ export function asNothingSent(err: unknown): never {
   }
   throw err;
 }
+
+export { loadMonadChainConfigFromEnv as loadEvmChainConfigFromEnv };

@@ -26,7 +26,7 @@ const demoEntries = new Map([
   // the public Current type. Its host test admits a fixture through a Node store.
   ['packages/bot/qwen-bot-common.ts', null],
   ['packages/bot/qwen-host-safety.jest.test.ts', '/node'],
-  ['packages/wallet/chain/monad-canonical-dm.jest.test.ts', '/node'],
+  ['packages/wallet/chain/evm-canonical-dm.jest.test.ts', '/node'],
 ])
 // A jest test may replace its own allowlisted entry with a mock; nothing else may call it in.
 function isJestMock(node, file) {

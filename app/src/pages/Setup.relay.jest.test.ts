@@ -12,7 +12,7 @@ import {
 import en from '../i18n/en-us'
 import { useProfileStore } from '../stores/my-profile'
 import * as ownProfile from '../utils/own-profile'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import { readPendingProfilePreview } from '../accounts/pending-profile-preview'
 
 jest.mock('../accounts/pending-profile-preview', () => ({

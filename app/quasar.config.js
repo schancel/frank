@@ -318,7 +318,7 @@ export default configure(ctx => {
       // `QCLI_`-prefixed env var convention (confirmed live): matching variables are candidates
       // for `import.meta.env`, then the allowlist above restricts them to known-public settings.
       // Every `process.env.MONAD_*`/`CASHWEB_*` read in this app
-      // (`@frank/wallet/chain/monad-chain.ts`, `boot/monad-direct-messages.ts`, `router/index.ts`)
+      // (`@frank/wallet/chain/evm-chain.ts`, `boot/monad-direct-messages.ts`, `router/index.ts`)
       // now checks `import.meta.env.QCLI_KEY` first. Only public client configuration belongs in
       // `QCLI_` variables: the browser uses `QCLI_MONAD_RELAY_BASE_URL` and
       // `QCLI_MONAD_RPC_CHAIN`; secret-bearing upstream RPC URLs stay in the relay process.
@@ -376,7 +376,7 @@ export default configure(ctx => {
         // pre-bundled `node_modules` dependency chunks (where `__VUE_OPTIONS_API__` above lives).
         // Fixed at the call sites instead, using Quasar's own `QCLI_`-prefixed env var convention
         // (`import.meta.env.QCLI_KEY`, confirmed live to actually work) -- see router/index.ts's
-        // and `@frank/wallet/chain/monad-chain.ts`'s own comments. No `define`/`build.env` config
+        // and `@frank/wallet/chain/evm-chain.ts`'s own comments. No `define`/`build.env` config
         // needed here for this at all.
         viteConf.resolve = viteConf.resolve || {}
         viteConf.resolve.alias = {

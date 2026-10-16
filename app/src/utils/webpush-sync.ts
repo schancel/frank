@@ -18,8 +18,8 @@ import {
   type WakeupCapability,
   type WakeupPolicyContactEntry,
 } from '@frank/cashweb/relay/notification-policy'
-import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
-import type { MonadIdentity } from '@frank/wallet/monad-identity'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
+import type { MonadIdentity } from '@frank/wallet/evm-identity'
 import { accountSession } from '../accounts/session'
 import { BLIND_WAKEUP_HANDLED_TYPE } from '../../src-pwa/custom-service-worker'
 import { messagingWallet } from './monad-identity-session'

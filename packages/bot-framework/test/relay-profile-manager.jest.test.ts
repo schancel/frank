@@ -1,7 +1,7 @@
 import { RelayProfileManager } from '../src/relay-profile-manager'
-import * as monadIdentity from '@frank/wallet/monad-identity'
+import * as monadIdentity from '@frank/wallet/evm-identity'
 
-jest.mock('@frank/wallet/monad-identity', () => ({
+jest.mock('@frank/wallet/evm-identity', () => ({
   fetchMonadProfile: jest.fn(),
   registerMonadIdentity: jest.fn(),
   registerMonadIdentityCbor: jest.fn(),

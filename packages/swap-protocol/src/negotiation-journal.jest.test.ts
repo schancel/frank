@@ -3,7 +3,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { sha256 } from '@noble/hashes/sha256.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
-import { MonadIdentity } from '../../wallet/monad-identity'
+import { MonadIdentity } from '../../wallet/evm-identity'
 import {
   encodeSignedSwapEvent,
   type SignedSwapEvent,

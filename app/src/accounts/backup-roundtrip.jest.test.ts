@@ -14,11 +14,11 @@ import {
   destroyRecoveredBackup,
   parseAccountBackupShareInput,
 } from '@frank/account-recovery'
-import { historicalBip39WalletMaterial } from '@frank/wallet/monad-wallet-material'
+import { historicalBip39WalletMaterial } from '@frank/wallet/evm-wallet-material'
 import { mnemonicToSeedSync } from 'bip39'
 import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
 import { AccountBackupUnavailableError, stageBip39Recovery } from './session'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import { CustodyError } from './custody'
 import {
   closeDevices,

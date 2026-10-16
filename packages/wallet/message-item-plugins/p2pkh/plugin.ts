@@ -16,7 +16,7 @@ export function initP2pkhPlugin(
     type: 'p2pkh',
     hydrate: raw => raw,
     // A legacy, Lotus-only send type: `deserializeMessageItems`
-    // (`packages/wallet/chain/monad-chain.ts`) already throws if one is ever encountered on Monad,
+    // (`packages/wallet/chain/evm-chain.ts`) already throws if one is ever encountered on Monad,
     // so in practice this only matters for historical Lotus-origin message content.
     previewText: () => 'Sent a payment',
     encode: p2pkhCodec.encode,

@@ -59,8 +59,8 @@ import {
 import { profilePubKeyFromBytes } from '../utils/profile-pubkey'
 import { useChatStore, walletOwnsMessage } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
-import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
-import type { MonadIdentity } from '@frank/wallet/monad-identity'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
+import type { MonadIdentity } from '@frank/wallet/evm-identity'
 import { syncOwnProfileWithRelay } from '../utils/own-profile'
 
 /** Default direct-message poll interval, in milliseconds -- within issue #42's suggested 5-10s

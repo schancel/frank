@@ -9,8 +9,8 @@ import {
   encodeBatchDistributeCall,
   registerEscrowStealthPayout,
 } from './game-escrow'
-import { MonadIdentity } from './monad-identity'
-import { stealthCoinFromItem } from './monad-stealth'
+import { MonadIdentity } from './evm-identity'
+import { stealthCoinFromItem } from './evm-stealth'
 import type { StealthItem } from '@frank/cashweb/types/messages'
 import type { EvmChainWalletHandle } from "./evm-wallet-handle";
 describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {

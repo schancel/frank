@@ -1,13 +1,13 @@
 import { JsonRpcProvider } from 'ethers'
 
-import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
-import { MonadHttpClient } from '@frank/wallet/monad-http'
+import { MonadAccountTxSigner } from '@frank/wallet/evm-account-tx'
+import { MonadHttpClient } from '@frank/wallet/evm-http'
 import {
   MonadTopicPostClient,
   quoteMonadTopicBurnGasReserve,
-} from '@frank/wallet/monad-topic-post-client'
-import { fetchMonadTopicPostsSince } from '@frank/wallet/monad-topic-tally-client'
-import { openMonadWalletBundle } from '@frank/wallet/storage/monad-wallet-bundle'
+} from '@frank/wallet/evm-topic-post-client'
+import { fetchMonadTopicPostsSince } from '@frank/wallet/evm-topic-tally-client'
+import { openMonadWalletBundle } from '@frank/wallet/storage/evm-wallet-bundle'
 import { InMemoryStampAttemptJournal } from '@frank/wallet/storage/stamp-attempt-journal'
 import { InMemoryStampPaymentJournal } from '@frank/wallet/storage/stamp-payment-journal'
 

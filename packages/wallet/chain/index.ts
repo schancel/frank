@@ -6,7 +6,7 @@
  * `LotusChain`, once one is actually built for real -- see issue #41's "Non-goals"), never a
  * runtime branch anywhere else in the app.
  */
-import { createEvmChain, loadMonadChainConfigFromEnv } from "./monad-chain";
+import { createEvmChain, loadMonadChainConfigFromEnv } from "./evm-chain";
 import { createRelayStampDefaultResolver } from "./evm-host";
 import { defaultNativeEvmTransactionBuilder as nativeStampTransfer } from "./evm-transaction-builder";
 import type { StampDefaultResolver } from "../oracle/stamp-policy";
@@ -40,7 +40,7 @@ export {
   getCustomRelayBaseUrl,
   setCustomRelayBaseUrl,
   getDefaultRelayBaseUrl,
-} from "./monad-chain";
+} from "./evm-chain";
 export type { EvmChainConfig } from "./evm-chain-config";
 export type { EvmWalletHandle, EvmChainWalletHandle } from "../evm-wallet-handle";
 export {
@@ -161,7 +161,7 @@ export {
 export {
   CanonicalRecipientNotPublishedError,
   CanonicalRelayCannotForwardError,
-} from "./monad-canonical-dm";
+} from "./evm-canonical-dm";
 export {
   DefaultNativeTransactionAttemptStore,
   InMemoryNativeTransactionAttemptStore,
@@ -223,11 +223,11 @@ export {
   evmStealthItem,
   stealthCoinFromItem,
   stealthItemTransfer,
-} from "../monad-stealth";
+} from "../evm-stealth";
 export type {
   EvmStealthDestination,
   EvmStealthDerivedAccount,
-} from "../monad-stealth";
+} from "../evm-stealth";
 
 export {
   SOLANA_MIN_STEALTH_LAMPORTS,

@@ -42,8 +42,8 @@ import { useNotificationPermissionOffer } from 'src/composables/useNotificationP
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 
-import { fetchCuratedDefaultContacts } from '@frank/wallet/monad-identity'
-import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+import { fetchCuratedDefaultContacts } from '@frank/wallet/evm-identity'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import { applyLocale } from 'src/utils/apply-locale'
 import { useRelayClientStore } from 'src/stores/relay-client'
 import { useAppearanceStore } from 'src/stores/appearance'

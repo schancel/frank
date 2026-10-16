@@ -2,10 +2,10 @@ import type { GatewayHostConfig } from '../src/host/gateway-config';
 import { startMailGateway } from '../src/host/gateway-service';
 import { openGatewayWallet } from '../src/host/gateway-wallet';
 import { openGatewayDirectory } from '../src/host/gateway-directory';
-import { registerMonadIdentityCbor } from '@frank/wallet/monad-identity';
+import { registerMonadIdentityCbor } from '@frank/wallet/evm-identity';
 import { createJournaledMailHost } from '../src/host/journaled-mail-host';
 
-jest.mock('@frank/wallet/monad-identity', () => ({ registerMonadIdentityCbor: jest.fn() }));
+jest.mock('@frank/wallet/evm-identity', () => ({ registerMonadIdentityCbor: jest.fn() }));
 jest.mock('../src/host/gateway-wallet');
 jest.mock('../src/host/gateway-directory');
 jest.mock('../src/host/journaled-mail-host');

@@ -32,12 +32,12 @@ import {
   ComputeBudgetProgram,
 } from '@solana/web3.js'
 import { getBase58Encoder } from '@solana/codecs-strings'
-import { MonadAccountTxSigner, type MonadTxSubmitter } from './monad-account-tx'
+import { MonadAccountTxSigner, type MonadTxSubmitter } from './evm-account-tx'
 import {
   computeGeometricRadixChangeSplits,
   orderOfMagnitude2,
   calculateDecoyJitterDelayMs,
-} from './monad-change-distribution'
+} from './evm-change-distribution'
 
 export { calculateDecoyJitterDelayMs }
 
@@ -131,7 +131,7 @@ export interface CoinSelectionResult {
   readonly selected: ChainUtxoCoin[]
   readonly totalSelectedWei: bigint
   readonly changeWei: bigint
-  /** Suggested geometric radix change splits conforming to monad-change-distribution */
+  /** Suggested geometric radix change splits conforming to evm-change-distribution */
   readonly suggestedChangeSplits: bigint[]
 }
 

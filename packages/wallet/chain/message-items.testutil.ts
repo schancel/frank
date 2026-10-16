@@ -5,7 +5,7 @@
  */
 import { createDefaultMessageItemRegistry } from '../message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '../message-item-plugins/registry'
-import { installMessageItemRegistry } from './monad-canonical-dm'
+import { installMessageItemRegistry } from './evm-canonical-dm'
 
 export function withDefaultMessageItems<
   C extends { createWallet(...args: never[]): Promise<object> },

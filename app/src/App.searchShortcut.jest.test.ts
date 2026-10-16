@@ -236,7 +236,7 @@ jest.mock('src/stores/tab-coordinator', () => ({
 jest.mock('src/stores/persistent-storage', () => ({
   usePersistentStorageStore: () => ({ ensureForAccount: jest.fn() }),
 }))
-jest.mock('@frank/wallet/monad-identity', () => ({
+jest.mock('@frank/wallet/evm-identity', () => ({
   fetchCuratedDefaultContacts: async () => [],
 }))
 jest.mock('src/utils/monad-identity-session', () => ({

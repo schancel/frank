@@ -14,7 +14,7 @@ import {
   canonicalDirectMessages,
   MemoryOutgoingMessageStore,
   type CanonicalMessagingOwner,
-} from './monad-canonical-dm'
+} from './evm-canonical-dm'
 
 export async function canonicalPollingFixture() {
   const v = corpus.runtime_case

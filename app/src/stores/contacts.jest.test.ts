@@ -1,7 +1,7 @@
 /**
  * Unit tests for `stores/contacts.ts`'s rewiring onto `ActiveChain` (ticket #42). Mocks
  * `activeChain.fetchProfile` (the seam #42 is scoped to use), not the underlying HTTP/Monad
- * identity module (`monad-identity.ts`'s `fetchMonadProfile`, already tested by ticket #41).
+ * identity module (`evm-identity.ts`'s `fetchMonadProfile`, already tested by ticket #41).
  * `activeChain.parseAddress`/`formatAddress` run for real (pure, no network).
  *
  * `contacts.ts` imports `chats.ts` (for `deleteContact`/`addDefaultContact`); see

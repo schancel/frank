@@ -4,12 +4,12 @@ import { join } from 'path';
 import { randomBytes } from 'crypto';
 
 import { deriveDomainRoot } from '@frank/domain-roots';
-import { MonadIdentity } from '@frank/wallet/monad-identity';
-import { createEvmChain } from '@frank/wallet/chain/monad-chain';
+import { MonadIdentity } from '@frank/wallet/evm-identity';
+import { createEvmChain } from '@frank/wallet/chain/evm-chain';
 
 import { loadGatewayWalletRoots, openGatewayWallet } from '../src/host/gateway-wallet';
 
-jest.mock('@frank/wallet/chain/monad-chain', () => ({ createEvmChain: jest.fn() }));
+jest.mock('@frank/wallet/chain/evm-chain', () => ({ createEvmChain: jest.fn() }));
 
 const mockedChain = jest.mocked(createEvmChain);
 

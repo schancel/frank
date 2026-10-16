@@ -15,13 +15,13 @@ import {
   type Encodable,
 } from '@frank/codec'
 
-import { MonadHdKeyring } from './monad-hd-keyring'
-import { MonadSubAccountPool } from './monad-account-pool'
-import { SubAccountLeaseManager } from './monad-account-lease'
+import { MonadHdKeyring } from './evm-hd-keyring'
+import { MonadSubAccountPool } from './evm-account-pool'
+import { SubAccountLeaseManager } from './evm-account-lease'
 import {
   MonadAccountTxSigner,
   MonadTxSubmitter,
-} from './monad-account-tx'
+} from './evm-account-tx'
 import {
   LevelSubAccountPoolStore,
   InMemorySubAccountPoolStore,
@@ -30,15 +30,15 @@ import {
   InMemoryTopicOperationJournal,
   LevelTopicOperationJournal,
 } from './storage/topic-operation-journal'
-import { openExistingPoolMonadTopicOwner } from './storage/monad-wallet-bundle'
-import { MonadChangeKeyring } from './monad-change-keyring'
-import { MonadChangePool } from './monad-change-pool'
+import { openExistingPoolMonadTopicOwner } from './storage/evm-wallet-bundle'
+import { MonadChangeKeyring } from './evm-change-keyring'
+import { MonadChangePool } from './evm-change-pool'
 import { InMemoryChangePoolStore } from './storage/change-pool-storage'
 import {
   reconcileForumOperations,
   submitForumOperation,
-} from './monad-forum-operation'
-import { TopicBurnPreparationError } from './chain/monad-chain'
+} from './evm-forum-operation'
+import { TopicBurnPreparationError } from './chain/evm-chain'
 import type { EvmWalletHandle } from './evm-wallet-handle'
 
 const TEST_MNEMONIC =

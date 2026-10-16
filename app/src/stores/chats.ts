@@ -93,10 +93,12 @@ import {
   sameCanonicalAddress,
 } from '../utils/own-address'
 import { shortAddress } from '../utils/short-address'
+import { captureOutgoingApplicationAuthorization } from '../utils/outgoing-application-authorization'
 import { captureOutgoingFinancialOperations } from '../stealth-payments/outgoing'
 
 export type ChatMessage = {
   sealedMessageId?: string
+  applicationAuthorization?: Message['applicationAuthorization']
   financialOperations?: OutgoingFinancialOperation[]
   outbound: boolean
   status: string
@@ -2568,6 +2570,7 @@ export const useChatStore = defineStore('chats', {
       logicalMessageId,
       revisionDigest,
       sealedMessageId,
+      applicationAuthorization,
       financialOperations,
     }: {
       address: string
@@ -2591,6 +2594,7 @@ export const useChatStore = defineStore('chats', {
       logicalMessageId?: string
       revisionDigest?: string
       sealedMessageId?: string
+      applicationAuthorization?: Message['applicationAuthorization']
       financialOperations?: OutgoingFinancialOperation[]
     }) {
       let displayAddress: string = address
@@ -2608,6 +2612,7 @@ export const useChatStore = defineStore('chats', {
       const newMsg = {
         outbound: true,
         sealedMessageId,
+        applicationAuthorization,
         financialOperations,
         status,
         items,
@@ -2945,6 +2950,111 @@ export const useChatStore = defineStore('chats', {
         await lock.release()
       }
     },
+    /** Resume an application authorization by its original sealed identity, including deleted rows.
+     * Application bytes are validated by the caller; transport owns envelope/payment recovery. */
+    async deliverPersistedApplicationMessage(input: {
+      wallet: WalletHandle
+      address: string
+      conversationId: string
+      localMessageKey: string
+      messageId: string
+      applicationAuthorization: NonNullable<Message['applicationAuthorization']>
+      stampValue: bigint
+      items: MessageItem[]
+      assertCurrent(): void
+    }): Promise<OutgoingOutcome> {
+      input.assertCurrent()
+      if (input.localMessageKey !== `pending:application:${input.messageId}`)
+        throw new Error('Application message key differs')
+      const { wallet, address, conversationId, messageId, stampValue, items } =
+        input
+      const locked = await withOutgoingLock(input.localMessageKey, async () => {
+        input.assertCurrent()
+        const owner = await store
+        input.assertCurrent()
+        // Presentation may have been re-keyed to its digest. Inspect durable rows before rebuilding.
+        let id = input.localMessageKey
+        let persisted: MessageWrapper | undefined
+        for await (const row of await owner.getIterator()) {
+          input.assertCurrent()
+          if (row.outbound && row.message.sealedMessageId === messageId) {
+            persisted = row
+            id = row.index
+            break
+          }
+        }
+        input.assertCurrent()
+        if (persisted) {
+          const m = persisted.message
+          if (
+            toChainDisplayAddress(persisted.copartyAddress) !==
+              toChainDisplayAddress(address) ||
+            !sameCanonicalAddress(
+              persisted.senderAddress,
+              wallet.identity.displayAddress,
+            ) ||
+            m.applicationAuthorization?.accountId !==
+              input.applicationAuthorization.accountId ||
+            m.applicationAuthorization?.intentKey !==
+              input.applicationAuthorization.intentKey ||
+            m.conversationId !== conversationId ||
+            m.stampValueWei !== stampValue ||
+            JSON.stringify(m.items) !== JSON.stringify(items) ||
+            !walletOwnsMessage(wallet, m)
+          )
+            throw new Error('Application presentation conflicts')
+          if (m.status === 'confirmed')
+            return { state: 'sent' as const, payloadDigest: id }
+          if (!this.messages[id])
+            this.sendMessageLocal({
+              ...m,
+              address,
+              conversationId,
+              senderAddress: wallet.identity.displayAddress,
+              index: id,
+              items,
+              outpoints: m.outpoints ?? [],
+              previousHash: null,
+              timestamp: m.serverTime,
+              delivery: m.delivery ?? {},
+            })
+        } else {
+          // Lookup is required even for a missing bubble: its original paid/free attempt survives deletion.
+          const attemptOf = activeChain.directMessages.attemptOf
+          if (!attemptOf)
+            throw new Error('Original message recovery unavailable')
+          const held = await attemptOf({ wallet, messageId })
+          input.assertCurrent()
+          this.sendMessageLocal({
+            address,
+            conversationId,
+            senderAddress: wallet.identity.displayAddress,
+            index: id,
+            items,
+            outpoints: [],
+            stampValueWei: stampValue,
+            sealedMessageId: messageId,
+            applicationAuthorization: input.applicationAuthorization,
+            status: held?.paid ? 'payment-pending' : 'pending',
+            previousHash: null,
+            timestamp: Date.now(),
+            delivery: held?.paid ? { attemptDigest: held.payloadDigest } : {},
+          })
+          await this.saveOutgoingExclusive(address, id, { strict: true })
+          input.assertCurrent()
+        }
+        return this.runOutgoingExclusive({
+          wallet,
+          address,
+          id,
+          manual: false,
+          automatic: false,
+          confirmed: false,
+        })
+      })
+      input.assertCurrent()
+      return locked?.result ?? { state: 'busy' }
+    },
     /** Retry of a failed outgoing message (`status: 'error'`): the user's Retry, or with
      * `automatic` a retry nobody clicked. See `sendMessage` for the no-double-payment rule this
      * follows. */
@@ -3200,6 +3310,7 @@ export const useChatStore = defineStore('chats', {
         delivery: message.delivery,
         revisionDigest: message.revisionDigest,
         sealedMessageId: message.sealedMessageId,
+        applicationAuthorization: message.applicationAuthorization,
         financialOperations: message.financialOperations,
       })
       recomputeChatAccounting(conversation, this.activeConversationId)
@@ -3588,10 +3699,22 @@ export const useChatStore = defineStore('chats', {
 
       // 2. Build and send a new payment set.
       if (!stillCurrent()) return { state: 'busy' }
-      // The user's own Retry of a message that failed because the fee had risen above its
-      // stamp: the failure said so, and the retry is sent at the wallet's minimum now. Never
-      // on an automatic retry.
       if (
+        id.startsWith('pending:application:') &&
+        !message.applicationAuthorization
+      )
+        throw new Error('Application delivery authorization reference missing')
+      const application = await captureOutgoingApplicationAuthorization(
+        wallet,
+        address,
+        message,
+      )
+      if (!stillCurrent()) return { state: 'busy' }
+      application?.assertCurrent()
+      // Ordinary chat's manual Retry can use the current minimum. A retained application
+      // authorization fixes its stamp for every retry, including interrupted automatic sends.
+      if (
+        !application &&
         manual &&
         !automatic &&
         message.delivery?.failureReason === 'stamp-below-fee' &&
@@ -3664,6 +3787,7 @@ export const useChatStore = defineStore('chats', {
           } catch {
             // Best-effort wakeup token exchange
           }
+          application?.assertCurrent()
           result = await messagingChain.directMessages.send({
             wallet,
             recipient,
@@ -3676,7 +3800,9 @@ export const useChatStore = defineStore('chats', {
             items: wireItems,
             ...(message.stampValueWei === undefined
               ? {}
-              : { stampValue: message.stampValueWei }),
+              : {
+                  stampValue: application?.stampValue ?? message.stampValueWei,
+                }),
             // Deleting the bubble while its send still waits cancels the send: nothing was
             // signed for it.
             signal: cancellable.signal,
@@ -4994,6 +5120,7 @@ export const useChatStore = defineStore('chats', {
               destinationAddress: wrapper.message.destinationAddress,
               delivery: existing.delivery,
               sealedMessageId: existing.sealedMessageId,
+              applicationAuthorization: existing.applicationAuthorization,
               financialOperations: existing.financialOperations,
               conversationId,
               logicalMessageId: existing.logicalMessageId,

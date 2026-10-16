@@ -908,6 +908,8 @@ export interface OutgoingFinancialOperation {
 export interface Message {
   /** Persisted before sealing; reused even for free financial message retries. */
   sealedMessageId?: string
+  /** Opaque retained application owner reference; never itself authorizes spending. */
+  applicationAuthorization?: { accountId: string; intentKey: string }
   financialOperations?: OutgoingFinancialOperation[]
   outbound: boolean
   status: string

@@ -1342,20 +1342,30 @@ describe('session-owned UTXO stealth custody', () => {
     return { relay, indexer, unspent, store, signed, custody: () => injected! }
   }
   test('pre-ready opening cannot publish a usable owner after initialization releases its registered relay', async () => {
-    const f = realIdentityFixture(), r = relayFixture('btc-testnet')
+    const f = realIdentityFixture(),
+      r = relayFixture('btc-testnet')
     let live = true
-    r.relay.assertActive = () => { if (!live) throw new Error('closed relay') }
-    r.relay.close = async () => { live = false }
+    r.relay.assertActive = () => {
+      if (!live) throw new Error('closed relay')
+    }
+    r.relay.close = async () => {
+      live = false
+    }
     const construct = jest.spyOn(r.relay, 'createWallet')
-    await expect(f.session.createUtxoWallet(r.relay)).rejects.toThrow('closed relay')
+    await expect(f.session.createUtxoWallet(r.relay)).rejects.toThrow(
+      'closed relay',
+    )
     expect(construct).not.toHaveBeenCalled()
     await f.session.close()
   })
   test('release synchronously closes every registered relay without another cache lookup', async () => {
-    const f = realIdentityFixture(), r = relayFixture('btc-testnet')
+    const f = realIdentityFixture(),
+      r = relayFixture('btc-testnet')
     await f.session.initialize()
     const closed = deferred<void>()
-    const close = jest.spyOn(r.relay, 'close').mockImplementation(() => closed.promise)
+    const close = jest
+      .spyOn(r.relay, 'close')
+      .mockImplementation(() => closed.promise)
     await f.session.createUtxoWallet(r.relay)
     const closing = f.session.close()
     expect(close).toHaveBeenCalledTimes(1)
@@ -1363,10 +1373,13 @@ describe('session-owned UTXO stealth custody', () => {
     await closing
   })
   test('registers a relay before the first wallet await and closes a late opening during replacement', async () => {
-    const f = realIdentityFixture(), r = relayFixture('btc-testnet')
+    const f = realIdentityFixture(),
+      r = relayFixture('btc-testnet')
     await f.session.initialize()
     const gate = deferred<typeof f.wallet>()
-    jest.spyOn(f.session, 'getWallet').mockImplementation(() => gate.promise as never)
+    jest
+      .spyOn(f.session, 'getWallet')
+      .mockImplementation(() => gate.promise as never)
     const close = jest.spyOn(r.relay, 'close')
     const opening = f.session.createUtxoWallet(r.relay)
     const rejected = expect(opening).rejects.toThrow()
@@ -1869,7 +1882,13 @@ describe('session-owned UTXO stealth custody', () => {
       await f.session.close()
     },
   )
-  test.each([false, true].flatMap(historical => ['relay-close', 'queued-yield'].map(lifecycle => [historical, lifecycle] as const)))(
+  test.each(
+    [false, true].flatMap(historical =>
+      ['relay-close', 'queued-yield'].map(
+        lifecycle => [historical, lifecycle] as const,
+      ),
+    ),
+  )(
     'Chronik lifecycle revokes session-ready custody and actual SDK signing (historical=%s, lifecycle=%s)',
     async (historical, lifecycle) => {
       const { openRelayUtxoChain } = jest.requireActual(
@@ -1981,15 +2000,32 @@ describe('session-owned UTXO stealth custody', () => {
               }
             })
       const f = realIdentityFixture(historical)
-      let readLedger!: () => Promise<import('@frank/wallet/ecash-operation-store').EcashOperationLedger | undefined>
+      let readLedger!: () => Promise<
+        | import('@frank/wallet/ecash-operation-store').EcashOperationLedger
+        | undefined
+      >
       const relay: RelayUtxoChain = openRelayUtxoChain({
         operationStoreFactory: binding => {
-          const { InMemoryEcashOperationStore } = jest.requireActual('@frank/wallet/ecash-operation-store')
-          const { nativeTransactionAttemptKey } = jest.requireActual('@frank/wallet/chain/chain-wallet')
+          const { InMemoryEcashOperationStore } = jest.requireActual(
+            '@frank/wallet/ecash-operation-store',
+          )
+          const { nativeTransactionAttemptKey } = jest.requireActual(
+            '@frank/wallet/chain/chain-wallet',
+          )
           const store = new InMemoryEcashOperationStore()
-          const walletKey = nativeTransactionAttemptKey({ family: 'bitcoin', chainIdentifier: binding.chainIdentifier, address: binding.walletAddress })
+          const walletKey = nativeTransactionAttemptKey({
+            family: 'bitcoin',
+            chainIdentifier: binding.chainIdentifier,
+            address: binding.walletAddress,
+          })
           readLedger = () => store.get(walletKey)
-          return { coordinationScope: 'single-realm', walletKey, get: store.get.bind(store), put: store.put.bind(store), close: async () => undefined }
+          return {
+            coordinationScope: 'single-realm',
+            walletKey,
+            get: store.get.bind(store),
+            put: store.put.bind(store),
+            close: async () => undefined,
+          }
         },
         chainIdentifier: 'xec-testnet',
         relayBaseUrl: 'http://127.0.0.1:1',
@@ -2030,21 +2066,41 @@ describe('session-owned UTXO stealth custody', () => {
             .script.bytecode.length,
         ).toBeGreaterThan(64)
         if (lifecycle === 'queued-yield') {
-          const prepared = await wallet.prepareNativeOperation({ operationId: 'queued-yield', recipient: { raw: recipient }, value: 1000n, maxFee: 1000n })
+          const prepared = await wallet.prepareNativeOperation({
+            operationId: 'queued-yield',
+            recipient: { raw: recipient },
+            value: 1000n,
+            maxFee: 1000n,
+          })
           const originalLedger = await readLedger()
-          const gate = deferred<void>(), started = deferred<void>()
+          const gate = deferred<void>(),
+            started = deferred<void>()
           const snapshot = await f.custody.snapshot()
-          f.custody.snapshot.mockImplementationOnce(async () => { started.resolve(); await gate.promise; return snapshot })
+          f.custody.snapshot.mockImplementationOnce(async () => {
+            started.resolve()
+            await gate.promise
+            return snapshot
+          })
           const retrying = f.session.retry()
           await started.promise
           signingSpy = jest.spyOn(Ecc.prototype, 'schnorrSign')
-          const broadcast = jest.spyOn(proto, 'broadcastTxs').mockImplementation(async () => ({ txids: ['91'.repeat(32)] }))
+          const broadcast = jest
+            .spyOn(proto, 'broadcastTxs')
+            .mockImplementation(async () => ({ txids: ['91'.repeat(32)] }))
           const yielding = f.session.yieldCustody()
           try {
             expect(f.session.state.status).toBe('standby')
-            await expect(wallet.submitNativeOperation(prepared.operationId)).rejects.toThrow('closed')
+            await expect(
+              wallet.submitNativeOperation(prepared.operationId),
+            ).rejects.toThrow('closed')
             expect(() => relay.assertActive?.()).toThrow('closed')
-            await expect(wallet.prepareNativeOperation({ operationId: 'after-yield', recipient: { raw: recipient }, value: 1000n })).rejects.toThrow('closed')
+            await expect(
+              wallet.prepareNativeOperation({
+                operationId: 'after-yield',
+                recipient: { raw: recipient },
+                value: 1000n,
+              }),
+            ).rejects.toThrow('closed')
             expect(broadcast).not.toHaveBeenCalled()
             expect(signingSpy).not.toHaveBeenCalled()
           } finally {
@@ -2531,3 +2587,83 @@ async function identityFixtureSend(
   const block = await this.getBlock(Number(BigInt(String(params[0]))))
   return block && { ...block, number: '0x' + block.number.toString(16) }
 }
+
+describe('ordinary identity digest capability', () => {
+  function identityFixture() {
+    const f = fixture()
+    Object.assign(f.wallet, { chainIdentifier: activeChain.chainIdentifier })
+    const fresh = () =>
+      DOMAIN_PURPOSES.map((purpose, i) => ({
+        registry: DERIVATION_REGISTRY_ID,
+        purpose,
+        bytes: new Uint8Array(32).fill(i + 1),
+      }))
+    const root = fresh().find(
+      (r): r is DomainRoot<'identity-authentication'> =>
+        r.purpose === 'identity-authentication',
+    )!
+    const identity = MonadIdentity.fromDomainRoot(root)
+    Object.assign(f.wallet.identity, {
+      compressedPubKey: identity.compressedPubKey,
+    })
+    f.capability.takeRoots.mockImplementation(fresh)
+    return { ...f, identity }
+  }
+  test('restored identity signs real DER and exposes no private material', async () => {
+    const f = identityFixture()
+    await f.session.initialize()
+    const signer = await f.session.createIdentityDigestSigner()
+    const digest = new Uint8Array(32).fill(7)
+    expect(await signer.signDigest(digest)).toEqual(
+      new Uint8Array(f.identity.signHash(Buffer.from(digest))),
+    )
+    expect(Object.keys(signer).sort()).toEqual(
+      [
+        'accountId',
+        'assertCurrent',
+        'chainIdentifier',
+        'publicKey',
+        'revision',
+        'signDigest',
+      ].sort(),
+    )
+    await f.session.close()
+    await expect(signer.signDigest(digest)).rejects.toThrow()
+  })
+  test('replacement during custody acquisition revokes the awaited signature', async () => {
+    const f = identityFixture()
+    await f.session.initialize()
+    const signer = await f.session.createIdentityDigestSigner()
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const original = f.custody.openActive.getMockImplementation()!
+    f.custody.openActive.mockImplementationOnce(async () => {
+      await gate
+      return original()
+    })
+    const signing = signer.signDigest(new Uint8Array(32).fill(9))
+    await Promise.resolve()
+    f.invalidate()
+    release()
+    await expect(signing).rejects.toThrow()
+    await f.session.close()
+  })
+  test('a published identity mismatch refuses before producing a signature', async () => {
+    const f = identityFixture()
+    await f.session.initialize()
+    const signer = await f.session.createIdentityDigestSigner()
+    f.capability.takeRoots.mockImplementation(() =>
+      DOMAIN_PURPOSES.map(purpose => ({
+        registry: DERIVATION_REGISTRY_ID,
+        purpose,
+        bytes: new Uint8Array(32).fill(31),
+      })),
+    )
+    await expect(
+      signer.signDigest(new Uint8Array(32).fill(7)),
+    ).rejects.toThrow()
+    await f.session.close()
+  })
+})

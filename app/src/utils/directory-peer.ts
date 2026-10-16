@@ -131,3 +131,21 @@ export async function fetchContactProfile(
   // The key is the directory's, whatever a display profile claims.
   return { ...(display ?? {}), address, pubKey }
 }
+
+/** Capture only authenticated directory identity; display profiles never authorize negotiations. */
+export async function captureDirectoryPeer(
+  address: string,
+): Promise<{ publicKey: Uint8Array; assertCurrent(): void }> {
+  const captured = lookup
+  if (typeof captured !== 'function')
+    throw new Error('Authenticated directory unavailable')
+  const entry = await captured(address)
+  if (lookup !== captured) throw new Error('Directory session changed')
+  const publicKey = fromHex(entry.subject)
+  return {
+    publicKey,
+    assertCurrent() {
+      if (lookup !== captured) throw new Error('Directory session changed')
+    },
+  }
+}

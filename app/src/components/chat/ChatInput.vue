@@ -115,6 +115,18 @@
               </q-item-section>
             </q-item>
 
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="swap-menu-item"
+              @click="$emit('swapClicked')"
+            >
+              <q-item-section avatar side
+                ><q-icon name="swap_horiz"
+              /></q-item-section>
+              <q-item-section>{{ $t('signedSwap.title') }}</q-item-section>
+            </q-item>
+
             <!-- Send Stealth: encrypted transfer inside direct message payload -->
             <q-item
               clickable
@@ -398,6 +410,7 @@ export default defineComponent({
     'sendFollowUp',
     'blackjackClicked',
     'sendStealthClicked',
+    'swapClicked',
   ],
   methods: {
     /** Scale the AVU quote, retaining the adapter floor for paid presets and explicit zero. */

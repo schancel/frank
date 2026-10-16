@@ -1,0 +1,137 @@
+FAIL packages/wallet/chain/evm-legacy-consolidator.jest.test.ts
+  wallet-lifetime EVM native operations
+    ✕ recovers pending work persisted by another Level-backed wrapper without reopening (73 ms)
+    ○ skipped reserves the entire independent set before signing and reopens original bytes
+    ○ skipped applies one total fee ceiling and rejects duplicate or unowned sources without claims
+    ○ skipped does not leak an earlier source when a later member conflicts atomically
+    ○ skipped coordinates same preparation across owner instances without duplicate signatures or rows
+    ○ skipped tries every independent original after an uncertain sibling and preserves individual retirement
+    ○ skipped invalidates orphaned independent inclusion after reopen and retries only that original member
+    ○ skipped does not stop siblings when the first original reverted
+    ○ skipped allows an unrelated source to sign while another operation waits for RPC
+    ○ skipped quotes gasless owned token sources truthfully without signing or reserving
+    ○ skipped atomically admits only one of concurrent overlapping complete source sets
+    ○ skipped background contract recovery probes each exposed member and leaves private siblings untouched
+    ○ skipped does not expose a direct payment before its recovery checkpoint and callback
+    ○ skipped replays direct lost-response bytes after Level reopen without a fresh payment
+    ○ skipped retains partial fan-in and finishes the exact original drain once after restart
+    ○ skipped holds provisional leader funds across foreign nonce advance with missing drain
+    ○ skipped holds provisional leader funds across foreign nonce advance with mismatched drain
+    ○ skipped permits observed residual at next nonce but never reuses the retained old pair
+    ○ skipped keeps disjoint operations while serializing conflicting selection
+    ○ skipped freezes calldata builder semantics and rejects unsupported consolidation before signing
+    ○ skipped deduplicates concurrent resume and retains reverted evidence without releasing claims
+    ○ skipped sends a TIP-20 direct payment using token fee balance with zero native balance
+    ○ skipped refuses insufficient native fee balance before signing
+    ○ skipped refuses insufficient token fee balance before signing
+    ○ skipped snapshots sendNative authorization before queue await
+    ○ skipped snapshots sendNative authorization before fee await
+    ○ skipped snapshots sendNative authorization before builder await
+    ○ skipped snapshots sendLegacy authorization before queue await
+    ○ skipped snapshots sendLegacy authorization before fee await
+    ○ skipped snapshots sendLegacy authorization before builder await
+    ○ skipped does not broadcast when the durable exposure barrier fails
+    ○ skipped refuses capacity before custody signs any member
+    ○ skipped a failed sync transport fails nothing: the member stays unmarked and a later flush sends it, without another payment
+    ○ skipped discards delayed provider responses after a newer observation completes
+    ○ skipped in-call inclusion: the pass records the row spent with the member checkpoint inside the send, with no signature and no provider call of its own
+    ○ skipped pin: the result of sendLegacy and of sendNative, and the progress events, are the same with and without the local pass
+    ○ skipped path 2a: a member pending in its own call is applied by a LATER send, whose result names only the later operation
+    ○ skipped fan-in with two pool peers and a pool leader: the pass applies all three inside the send, the leader with the drain transaction, and transport carries each complete transaction
+    ○ skipped fan-in with the peers included and the drain pending: only the included members are applied, and only they are transported
+    ○ skipped transport is gated per member: a held member is never sent or marked, the other members are, and the error names the operation that holds
+    ○ skipped a member can never be marked sync-applied without this session local record: a fresh executor transports nothing until its own pass has run
+    ○ skipped the pass cannot replace the outcome when the callbacks throw: a successful send returns its result and a failing send throws its own error
+    ○ skipped the pass cannot replace the outcome when the journal is unreadable: a successful send returns its result and a failing send throws its own error
+    ○ skipped eligibility: a member that is pending, missing, never observed, reverted, unsigned or cancelled gets no classification and no apply
+    ○ skipped native then native from one row: the first member is held while the second is pending, applies once it is included, and the second is then held-terminal without another apply
+    ○ skipped a sendNative whose signing fails is cancelled by that send: its own error is thrown, the row is retained, the account is released and sends again
+    ○ skipped a sendLegacy whose signing fails is cancelled by that send: its own error is thrown, the row is retained, the account is released and sends again
+    ○ skipped pin: a fan-in with one member signed and the next unsigned is never cancelled, by the failed send or by the open-time cancel
+    ○ skipped the open-time cancel releases every never-signed plan and nothing else, with no provider call, no signature and no local pass; a second run writes nothing
+    ○ skipped a cancel that fails changes nothing the caller sees: the send still throws its own error, the open-time cancel does not throw, and a later failed resume cancels the plan
+    ○ skipped with neither local callback configured a member has no local result: it is held, never transported and never marked
+    ○ skipped a member held behind a later member on its address costs nothing on later passes, and is applied by the first pass after that member resolves
+    ○ skipped a refusal the journal cannot explain is remembered for 16 passes and then tried once: the hold outlives its cause by at most that, and is never remembered as applied
+    ○ skipped hand-built: under an already-conflicting admission the pass does nothing and cannot replace the failing call's error; once the never-signed plan is cancelled the next pass applies the member
+    ○ skipped hand-built: a native member whose row is in-use under a live lease is not applied and costs nothing per pass; released unused, it is applied by the next native send
+    ○ skipped the open-time pass applies exactly the members already recorded as included, with no provider call, no signature and no transport; later runs write nothing, and a pending member waits for a send to observe it
+    ○ skipped the open-time pass never throws: a refused member is held under the pass's own rules, a member whose apply threw is applied by the next pass, and an unreadable journal changes nothing
+    ○ skipped the open-time pass waits its turn on the executor queue: it runs after a send already in flight, never inside it
+    ○ skipped rejects actual durable read and validation failures without probing stale pending work
+    ○ skipped excludes a formerly pending member included by another durable wrapper
+    ○ skipped claims the authoritative refresh once, rejects failures, and permits a later paced pass
+    ○ skipped revocation during refresh rejects the installed capability before probes or application
+    ○ skipped close during the authoritative refresh prevents probes and local application
+    ○ skipped nothing to look up means no request at all: an empty journal, then unsigned, cancelled, signed-but-unexposed, included and reverted members, over many ticks; one broadcast member then costs exactly one receipt request
+    ○ skipped one broadcast member, no receipt: each probe is exactly one receipt request, nothing is written and `pending` is not downgraded; the wait doubles from 15 s to 10 min, and at that ceiling the member costs 6 requests an hour
+    ○ skipped one broadcast member, request rejects: each probe is exactly one receipt request, nothing is written and `pending` is not downgraded; the wait doubles from 15 s to 10 min, and at that ceiling the member costs 6 requests an hour
+    ○ skipped one broadcast member, request throws: each probe is exactly one receipt request, nothing is written and `pending` is not downgraded; the wait doubles from 15 s to 10 min, and at that ceiling the member costs 6 requests an hour
+    ○ skipped the receipt appears: the next due probe runs the existing observation (one probe and seven reads), records the inclusion, and the local pass marks the pool row spent with the member bytes; nothing is signed, broadcast or transported, and later ticks cost nothing
+    ○ skipped a reverted receipt is recorded as the existing observation records it, the pool row is left exactly as it was, no local pass runs, and the member is never looked up again
+    ○ skipped 20 broadcast members: a pass probes at most 8, oldest first, the next pass continues after the last one probed so all 20 are reached, and concurrent callers do not add a request
+    ○ skipped a probe the node never answers: ticks while it is in flight start nothing, a native send from another account completes meanwhile, and the 15 s floor counts from the end of the pass
+    ○ skipped rejects an invalid lookup budget 0 before provider effects
+    ○ skipped rejects an invalid lookup budget -1 before provider effects
+    ○ skipped rejects an invalid lookup budget NaN before provider effects
+    ○ skipped rejects an invalid lookup budget Infinity before provider effects
+    ○ skipped rejects an invalid lookup budget 1.5 before provider effects
+    ○ skipped rejects an invalid lookup budget 2147483648 before provider effects
+    ○ skipped rejects an invalid lookup budget null before provider effects
+    ○ skipped expires a hung probe within the whole lookup budget, preserves claims, and permits other members and later valid inclusion
+    ○ skipped expires a hung transaction within the whole lookup budget, preserves claims, and permits other members and later valid inclusion
+    ○ skipped expires a hung receipt within the whole lookup budget, preserves claims, and permits other members and later valid inclusion
+    ○ skipped expires a hung account within the whole lookup budget, preserves claims, and permits other members and later valid inclusion
+    ○ skipped expires a hung balance within the whole lookup budget, preserves claims, and permits other members and later valid inclusion
+    ○ skipped expires a hung nonce within the whole lookup budget, preserves claims, and permits other members and later valid inclusion
+    ○ skipped expires a hung inclusion within the whole lookup budget, preserves claims, and permits other members and later valid inclusion
+    ○ skipped retains physical single-flight when a sibling transaction rejects while another read hangs
+    ○ skipped retains physical single-flight when a sibling receipt throws while another read hangs
+    ○ skipped retains physical single-flight when a sibling balance throws while another read hangs
+    ○ skipped shares one lookup budget across probe and observation instead of resetting it for each RPC
+    ○ skipped uses the default 30 s operational budget and cleans the timer on deadline
+    ○ skipped uses the default 30 s operational budget and cleans the timer on close
+    ○ skipped an admitted durable inclusion completing after timeout preserves capture ordering and local application (complete)
+    ○ skipped an admitted durable inclusion completing after timeout preserves capture ordering and local application (superseded)
+    ○ skipped an admitted durable inclusion completing after timeout preserves capture ordering and local application (closed)
+    ○ skipped timeout and late rejection survive Level reopen without losing the exact signed original or its reservation
+    ○ skipped stopped mid-pass, as wallet close does: the pass returns without the node answering, an answer that arrives afterwards records nothing (during the probe and during the observation), later ticks do nothing, and nothing rejects unhandled
+    ○ skipped the local pass refused, as the wallet queue refuses it while a canonical pre-sign intent holds a row: nothing is thrown, the observation stays recorded, and a later tick applies it with no request
+    ○ skipped a send that observes the same member while a re-observation is mid-observation: the later observer records, the earlier one is discarded, and the pool row is written once
+    ○ skipped while a send is on the executor queue a landed member is probed but not observed, so the send's own observations are never discarded; the next pass records it
+    ○ skipped a send records the member included and transported while the probe is unanswered: when the probe then returns a receipt the pass does not observe it, so a failing read cannot overwrite the record, clear syncApplied or touch the row
+    ○ skipped the local pass ran and left the included member unapplied (apply throws): it stays owed and a later tick applies it with no request and no restart, except a member that can never apply, which is not asked about again
+    ○ skipped the local pass ran and left the included member unapplied (apply refused): it stays owed and a later tick applies it with no request and no restart, except a member that can never apply, which is not asked about again
+    ○ skipped the local pass ran and left the included member unapplied (held-terminal): it stays owed and a later tick applies it with no request and no restart, except a member that can never apply, which is not asked about again
+    ○ skipped an unreadable journal or ended wallet lifetime rejects without requests
+    ○ skipped a transfer mined a block after its broadcast: the send watches at each look of the block watcher and resolves with the block and fee
+    ○ skipped after the send gave up watching and the wallet was reopened: one look at the operation records the mined transfer; a transfer the node does not know is "missing", never "unknown", and is offered again on the second such look
+    ○ skipped a transfer mined between two reads of one look (read unmined by its hash, mined by its receipt) is recorded mined, not "unknown"
+    ○ skipped a transfer to the address the user entered carries the node's gas estimate for that address; the transfers that fund it between the wallet's own accounts stay at exactly 21,000
+    ○ skipped a recipient that refuses the transfer (the estimate fails) is not sent to: nothing is planned or signed
+    ○ skipped the payment out of an account this operation has just funded is handed to the network only once that funding is old enough for the node to count it
+    ○ skipped the fee quoted for a transfer is what it will be charged (the node's price times the gas limit), not the fee cap
+    ○ skipped the newest block being replaced between two reads is read again, not an error; a chain that never settles still ends in the error
+
+  ● wallet-lifetime EVM native operations › recovers pending work persisted by another Level-backed wrapper without reopening
+
+    expect(received).toContain(expected) // indexOf
+
+    Expected value: "0x745ec47fa9048dceb6cb50391fb12052e23855fe8b5548e19be20433f14c6cf7"
+    Received array: []
+
+      2355 |       const before = probed(state).length
+      2356 |       await r.tick()
+    > 2357 |       expect(probed(state).slice(before)).toContain(hashOf(row))
+           |                                           ^
+      2358 |       expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+      2359 |         'included-success',
+      2360 |       )
+
+      at Object.<anonymous> (chain/evm-legacy-consolidator.jest.test.ts:2357:43)
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 111 skipped, 112 total
+Snapshots:   0 total
+Time:        0.48 s, estimated 20 s
+Ran all test suites matching /packages\/wallet\/chain\/evm-legacy-consolidator.jest.test.ts/i with tests matching "another Level-backed".

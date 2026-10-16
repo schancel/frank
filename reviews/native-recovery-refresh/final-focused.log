@@ -1,0 +1,10 @@
+PASS packages/wallet/chain/evm-legacy-consolidator.jest.test.ts (21.708 s)
+PASS packages/wallet/evm-input-admission.jest.test.ts (5.064 s)
+PASS packages/wallet/storage/evm-native-operation-journal.jest.test.ts
+PASS packages/wallet/storage/evm-native-journal-concurrency.jest.test.ts
+
+Test Suites: 4 passed, 4 total
+Tests:       237 passed, 237 total
+Snapshots:   0 total
+Time:        28.631 s
+Ran all test suites matching /packages\/wallet\/storage\/evm-native-operation-journal.jest.test.ts|packages\/wallet\/storage\/evm-native-journal-concurrency.jest.test.ts|packages\/wallet\/evm-input-admission.jest.test.ts|packages\/wallet\/chain\/evm-legacy-consolidator.jest.test.ts/i.

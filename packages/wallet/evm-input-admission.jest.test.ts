@@ -271,6 +271,39 @@ describe('derived EVM input admission', () => {
       await f.close()
     }
   })
+  it('refreshes admission projection and refuses conflicting selection, fencing expired completion', async () => {
+    const f = await fixture(location)
+    try {
+      const epoch = f.epoch()
+      const row = await f.journal.prepare(f.plan())
+      const access = nativeAdmissionJournal(f.admission, f.lifetime)
+      const rows = await access.refreshOperations()
+      expect(rows).toEqual([row])
+      await expect(
+        f.admission.prepareNative(f.lifetime, epoch, f.plan()),
+      ).rejects.toThrow()
+      await expect(access.prepare(f.plan())).rejects.toThrow()
+      expect(f.journal.list()).toEqual([row])
+      const entered = barrier(),
+        release = barrier()
+      const refresh = f.journal.refreshOperations.bind(f.journal)
+      jest
+        .spyOn(f.journal, 'refreshOperations')
+        .mockImplementationOnce(async () => {
+          entered.resolve()
+          await release.promise
+          return refresh()
+        })
+      const pending = access.refreshOperations()
+      const rejected = expect(pending).rejects.toThrow('foreign lifetime')
+      await entered.promise
+      f.active.clear()
+      release.resolve()
+      await rejected
+    } finally {
+      await f.close()
+    }
+  })
   it('nested_lifetime_token_still_serializes_mutation', async () => {
     const f = await fixture(location)
     try {

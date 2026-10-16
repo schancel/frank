@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import level from 'level'
 import {
   Interface,
   Transaction,
@@ -40,6 +41,20 @@ import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journa
 import { validateMonadWalletState } from '../storage/monad-wallet-state-validator'
 import * as durability from '../storage/level-durability'
 import { summarizeEvmNativeOperation } from './evm-native-operation-status'
+
+// Separate journal wrappers over real Level bytes; Node permits one physical opener per path.
+jest.mock('level', () => {
+  const actual = jest.requireActual('level') as typeof import('level')
+  const handles = new Map<string, ReturnType<typeof actual>>()
+  return (location: string) => {
+    let db = handles.get(location)
+    if (!db || db.isClosed()) {
+      db = actual(location)
+      handles.set(location, db)
+    }
+    return db
+  }
+})
 
 const recipient = new Wallet('0x' + '11'.repeat(32)).address.toLowerCase()
 const wallets = [1, 2, 3].map(
@@ -988,6 +1003,7 @@ describe('wallet-lifetime EVM native operations', () => {
       walletBindingId: location,
     })
     let projected = 0
+    let active = true
     const admission = createEvmInputAdmission({
       binding,
       native: journal,
@@ -1006,7 +1022,7 @@ describe('wallet-lifetime EVM native operations', () => {
         })
       },
       assertLifetime: token => {
-        if (token !== lifetime) throw new Error('foreign lifetime')
+        if (!active || token !== lifetime) throw new Error('foreign lifetime')
       },
     })
     const address = (index: number) =>
@@ -1073,6 +1089,9 @@ describe('wallet-lifetime EVM native operations', () => {
       address,
       inspect,
       projections: () => projected,
+      revoke: () => {
+        active = false
+      },
     }
   }
   const to = { raw: recipient }
@@ -2316,6 +2335,198 @@ describe('wallet-lifetime EVM native operations', () => {
     lifecycle: { spend: { rawTx: raw } },
   })
 
+  it('recovers pending work persisted by another Level-backed wrapper without reopening', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n])
+    const r = reobserver(c)
+    const other = new EvmNativeOperationJournal({ location, binding })
+    await other.Open()
+    try {
+      const writer = c.another({
+        journal: other,
+        inputAdmission: undefined,
+        runLifetime: undefined,
+      })
+      state.provider.broadcastTransaction.mockImplementationOnce(async raw =>
+        announce(state, raw),
+      )
+      await writer.sendNative({ recipient: to, value: 1000n })
+      const row = other.list()[0]!
+      expect(journal.list()).toEqual([])
+      state.mine(row.members[0]!.signed!.rawTransaction)
+      const before = probed(state).length
+      await r.tick()
+      expect(probed(state).slice(before)).toContain(hashOf(row))
+      expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+        'included-success',
+      )
+      expect(r.applied).toHaveBeenCalledTimes(1)
+    } finally {
+      await other.Close()
+    }
+  })
+
+  it('rejects actual durable read and validation failures without probing stale pending work', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n])
+    const r = reobserver(c)
+    const row = await broadcastNative(c, state)
+    const db = level(join(location, 'evm-native-operations-v1'))
+    const before = providerCalls(state)
+    jest.spyOn(db, 'iterator').mockImplementationOnce(() => {
+      throw new Error('fixture: Level read failed')
+    })
+    await expect(r.tick()).rejects.toThrow('Level read failed')
+    expect(providerCalls(state)).toBe(before)
+    expect(r.applied).not.toHaveBeenCalled()
+    const key = `operation:${row.operationId}`
+    const bytes = await db.get(key)
+    await durability.durablePut(db, key, '{}')
+    r.advance(15 * SECOND)
+    await expect(r.tick()).rejects.toThrow()
+    expect(providerCalls(state)).toBe(before)
+    expect(r.applied).not.toHaveBeenCalled()
+    await durability.durablePut(db, key, String(bytes))
+    state.mine(row.members[0]!.signed!.rawTransaction)
+    r.advance(15 * SECOND)
+    await r.tick()
+    expect(r.applied).toHaveBeenCalledTimes(1)
+  })
+
+  it('excludes a formerly pending member included by another durable wrapper', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n])
+    const row = await broadcastNative(c, state)
+    const other = new EvmNativeOperationJournal({ location, binding })
+    await other.Open()
+    try {
+      const writer = c.another({
+        journal: other,
+        inputAdmission: undefined,
+        runLifetime: undefined,
+      })
+      state.mine(row.members[0]!.signed!.rawTransaction)
+      await writer.observe(row.operationId, 0)
+      expect(
+        journal.get(row.operationId).members[0]!.observation.state,
+      ).not.toBe('included-success')
+      const r = reobserver(c)
+      const before = providerCalls(state)
+      await r.tick()
+      expect(providerCalls(state)).toBe(before)
+      expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+        'included-success',
+      )
+    } finally {
+      await other.Close()
+    }
+  })
+
+  it('claims the authoritative refresh once, rejects failures, and permits a later paced pass', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n])
+    const r = reobserver(c)
+    const row = await broadcastNative(c, state)
+    state.mine(row.members[0]!.signed!.rawTransaction)
+    const before = providerCalls(state)
+    let release!: () => void
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const refresh = journal.refreshOperations.bind(journal)
+    const spy = jest
+      .spyOn(journal, 'refreshOperations')
+      .mockImplementationOnce(async () => {
+        await held
+        throw new Error('fixture: durable read failed')
+      })
+    const first = r.tick()
+    const second = r.tick()
+    const failures = Promise.all([
+      expect(first).rejects.toThrow('durable read failed'),
+      expect(second).resolves.toBeUndefined(),
+    ])
+    await settle()
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(providerCalls(state)).toBe(before)
+    release()
+    await failures
+    expect(providerCalls(state)).toBe(before)
+    expect(r.applied).not.toHaveBeenCalled()
+    spy.mockImplementation(refresh)
+    await r.tick()
+    expect(spy).toHaveBeenCalledTimes(1)
+    r.advance(15 * SECOND)
+    await r.tick()
+    expect(spy).toHaveBeenCalledTimes(2)
+    expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+      'included-success',
+    )
+    expect(r.applied).toHaveBeenCalledTimes(1)
+  })
+
+  it('revocation during refresh rejects the installed capability before probes or application', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n])
+    const r = reobserver(c)
+    await broadcastNative(c, state)
+    let release!: () => void
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const refresh = journal.refreshOperations.bind(journal)
+    jest
+      .spyOn(journal, 'refreshOperations')
+      .mockImplementationOnce(async () => {
+        await held
+        return refresh()
+      })
+    const before = providerCalls(state)
+    const rejected = expect(r.tick()).rejects.toThrow('foreign lifetime')
+    await settle()
+    c.revoke()
+    release()
+    await rejected
+    expect(providerCalls(state)).toBe(before)
+    expect(r.applied).not.toHaveBeenCalled()
+  })
+
+  it('close during the authoritative refresh prevents probes and local application', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n])
+    const r = reobserver(c)
+    await broadcastNative(c, state)
+    let release!: () => void
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const refresh = journal.refreshOperations.bind(journal)
+    jest
+      .spyOn(journal, 'refreshOperations')
+      .mockImplementationOnce(async () => {
+        await held
+        return refresh()
+      })
+    const before = providerCalls(state)
+    const tick = r.tick()
+    await settle()
+    const closed = r.executor.stopReobservation()
+    release()
+    await Promise.all([tick, closed])
+    r.advance(15 * SECOND)
+    await r.tick()
+    expect(providerCalls(state)).toBe(before)
+    expect(r.applied).not.toHaveBeenCalled()
+  })
+
+  // A pass now starts with actual Level I/O. Wait behind its journal refresh before
+  // asserting RPC phase barriers or advancing fake network timers.
+  const settleRecovery = async () => {
+    await settle()
+    await journal.refreshOperations()
+    await settle()
+  }
+
   it('nothing to look up means no request at all: an empty journal, then unsigned, cancelled, signed-but-unexposed, included and reverted members, over many ticks; one broadcast member then costs exactly one receipt request', async () => {
     const state = chain([])
     const c = await composed(
@@ -2623,7 +2834,7 @@ describe('wallet-lifetime EVM native operations', () => {
     const hanging = r.tick().then(() => {
       returned = true
     })
-    await settle()
+    await settleRecovery()
     expect(probed(state).slice(seen)).toEqual([hashOf(first)])
     seen = probed(state).length
     // However long it hangs and however many callers arrive: no second pass.
@@ -2729,7 +2940,7 @@ describe('wallet-lifetime EVM native operations', () => {
         const tick = r.tick().then(() => {
           returned = true
         })
-        await settle()
+        await settleRecovery()
         await jest.advanceTimersByTimeAsync(99)
         expect(returned).toBe(false)
         await Promise.all(Array.from({ length: 10 }, () => r.tick()))
@@ -2752,8 +2963,8 @@ describe('wallet-lifetime EVM native operations', () => {
         ).toHaveLength(before)
         const calls = providerCalls(state)
         answer()
-        await settle()
-        await settle()
+        await settleRecovery()
+        await settleRecovery()
         expect(providerCalls(state)).toBe(calls)
         expect(record).not.toHaveBeenCalled()
         expect(journal.list()).toEqual(recorded)
@@ -2830,7 +3041,7 @@ describe('wallet-lifetime EVM native operations', () => {
       jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
       try {
         const tick = r.tick()
-        await settle()
+        await settleRecovery()
         await jest.advanceTimersByTimeAsync(100)
         await tick
         const before = providerCalls(state)
@@ -2838,8 +3049,8 @@ describe('wallet-lifetime EVM native operations', () => {
         await r.tick()
         expect(providerCalls(state)).toBe(before)
         release()
-        await settle()
-        await settle()
+        await settleRecovery()
+        await settleRecovery()
         expect(journal.list()).toEqual(recorded)
         expect(providerCalls(state)).toBe(before)
         r.advance(600_000)
@@ -2881,6 +3092,7 @@ describe('wallet-lifetime EVM native operations', () => {
       const tick = r.tick().then(() => {
         returned = true
       })
+      await settleRecovery()
       await jest.advanceTimersByTimeAsync(60)
       expect(state.provider.getTransaction).toHaveBeenCalled()
       await jest.advanceTimersByTimeAsync(39)
@@ -2918,6 +3130,7 @@ describe('wallet-lifetime EVM native operations', () => {
         const tick = r.tick().then(() => {
           returned = true
         })
+        await settleRecovery()
         await jest.advanceTimersByTimeAsync(29_999)
         expect(returned).toBe(false)
         if (end === 'close') await r.executor.stopReobservation()
@@ -2926,7 +3139,7 @@ describe('wallet-lifetime EVM native operations', () => {
         expect(jest.getTimerCount()).toBe(0)
         const recorded = journal.list()
         answer(null)
-        await settle()
+        await settleRecovery()
         expect(journal.list()).toEqual(recorded)
       } finally {
         jest.useRealTimers()
@@ -2985,8 +3198,8 @@ describe('wallet-lifetime EVM native operations', () => {
         await observed.mock.results[0]!.value
         if (mode === 'superseded') expect(await newer).toBe(false)
         else await newer
-        await settle()
-        await settle()
+        await settleRecovery()
+        await settleRecovery()
         expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
           'included-success',
         )
@@ -3029,14 +3242,14 @@ describe('wallet-lifetime EVM native operations', () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
     try {
       const tick = r.tick()
-      await settle()
+      await settleRecovery()
       await jest.advanceTimersByTimeAsync(100)
       await tick
       await r.executor.stopReobservation()
       expect(jest.getTimerCount()).toBe(0)
       await reopen()
       reject(new Error('late provider rejection'))
-      await settle()
+      await settleRecovery()
       expect(journal.list()).toEqual(recorded)
       expect(journal.canSelect(row.members[0]!.source.address, 0)).toBe(false)
       expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(1)
@@ -3082,13 +3295,13 @@ describe('wallet-lifetime EVM native operations', () => {
           )
         const record = jest.spyOn(journal, 'recordObservation')
         const tick = r.tick()
-        await settle()
+        await settleRecovery()
         const recorded = journal.list()
         await r.executor.stopReobservation()
         await tick
         answer()
-        await settle()
-        await settle()
+        await settleRecovery()
+        await settleRecovery()
         // The journal was not asked to record anything, so nothing can still be on its way.
         expect(record).not.toHaveBeenCalled()
         expect(journal.list()).toEqual(recorded)
@@ -3104,7 +3317,7 @@ describe('wallet-lifetime EVM native operations', () => {
         await stores.pop()!.Close()
         await reset()
       }
-      await settle()
+      await settleRecovery()
       expect(unhandled).toEqual([])
     } finally {
       process.off('unhandledRejection', onUnhandled)
@@ -3171,7 +3384,7 @@ describe('wallet-lifetime EVM native operations', () => {
     const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
     const record = jest.spyOn(journal, 'recordObservation')
     const tick = r.tick()
-    await settle()
+    await settleRecovery()
     // The send plans, observes the member included, and its own pass records the row.
     await r.executor.sendNative({ recipient: to, value: 1000n }, c.lifetime)
     expect(journal.list()[0]!.members[0]!.observation.state).toBe(
@@ -3264,7 +3477,7 @@ describe('wallet-lifetime EVM native operations', () => {
       return landed(hash)
     })
     const tick = r.tick()
-    await settle()
+    await settleRecovery()
     expect(probed(state).slice(-1)).toEqual([hashOf(row)])
     // Meanwhile: the transaction lands, a send from the other account observes it, that send's
     // pass marks the row spent, and the item is transported.
@@ -3374,7 +3587,7 @@ describe('wallet-lifetime EVM native operations', () => {
     },
   )
 
-  it('an unreadable journal or a wallet lifetime that has ended: no request, nothing thrown', async () => {
+  it('an unreadable journal or ended wallet lifetime rejects without requests', async () => {
     const state = chain([])
     const c = await composed(state, [100000n])
     await broadcastNative(c, state)
@@ -3383,13 +3596,13 @@ describe('wallet-lifetime EVM native operations', () => {
     jest.spyOn(journal, 'list').mockImplementationOnce(() => {
       throw new Error('fixture: journal unreadable')
     })
-    await expect(unreadable.tick()).resolves.toBeUndefined()
+    await expect(unreadable.tick()).rejects.toThrow('journal unreadable')
     const ended = reobserver(c, {
       runLifetime: async () => {
         throw new Error('Monad wallet bundle is closing or closed')
       },
     })
-    await expect(ended.tick()).resolves.toBeUndefined()
+    await expect(ended.tick()).rejects.toThrow('closing or closed')
     expect(providerCalls(state)).toBe(before)
     expect(unreadable.applied).not.toHaveBeenCalled()
     expect(ended.applied).not.toHaveBeenCalled()

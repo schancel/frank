@@ -1416,11 +1416,14 @@ export class EvmLegacyConsolidator {
   private now(): number {
     return (this.config.now ?? Date.now)()
   }
-  /** The members worth looking up now, from the journal's memory alone: at most
+  /** The members worth looking up now, from the refreshed durable snapshot: at most
    * `REOBSERVE_MAX_PROBES`, oldest first, starting after the member probed last. */
-  private reobserveDue(now: number): ReobserveCandidate[] {
+  private reobserveDue(
+    now: number,
+    rows: readonly EvmNativeOperation[],
+  ): ReobserveCandidate[] {
     const candidates: ReobserveCandidate[] = []
-    for (const row of this.config.journal.list()) {
+    for (const row of rows) {
       if (row.cancelled) continue
       row.members.forEach((member, index) => {
         const state = member.observation.state
@@ -1585,8 +1588,8 @@ export class EvmLegacyConsolidator {
    * or unexposed member, not a cancelled operation, not an included or reverted member.
    *
    * Bounds, all in process memory:
-   * - the candidates are computed from the journal's memory first, and with none this makes NO
-   *   request at all;
+   * - the candidates are computed after a validated durable refresh inside the captured lifetime;
+   *   with none this makes no network request;
    * - one `getTransactionReceipt` per member. No receipt, or a failed request: nothing is
    *   written and nothing is downgraded. Only when a receipt exists does the existing `observe`
    *   run for that member (seven reads) and record what it verifies, and not while a send or
@@ -1612,68 +1615,71 @@ export class EvmLegacyConsolidator {
    * It never signs, broadcasts, resubmits, replaces or cancels, never marks a member dropped and
    * has no settlement timeout: a member that never lands stays pending and reserved. Each
    * background evidence lookup has a finite I/O budget; an unanswered physical lookup suppresses
-   * further probes of that member until it settles. It never rejects.
+   * further probes of that member until it settles. RPC failures remain best-effort; a failed
+   * durable refresh rejects the pass without probing or applying a stale candidate set.
    */
   async reobservePending(applyRecorded?: () => Promise<void>): Promise<void> {
-    try {
-      if (this.reobserveStopped || this.reobserving) return
-      const now = this.now()
-      if (
-        this.reobservedAt !== undefined &&
-        now >= this.reobservedAt &&
-        now - this.reobservedAt < REOBSERVE_MIN_INTERVAL_MS
-      )
-        return
-      this.reobservedAt = now
-      const due = this.reobserveDue(now)
-      if (due.length) {
-        const { runLifetime } = this.config
-        this.reobserving = (async () => {
+    if (this.reobserveStopped) return
+    if (this.reobserving) return
+    const now = this.now()
+    if (
+      this.reobservedAt !== undefined &&
+      now >= this.reobservedAt &&
+      now - this.reobservedAt < REOBSERVE_MIN_INTERVAL_MS
+    )
+      return
+    this.reobservedAt = now
+    // Claim the pass before any async refresh or lifetime callback can admit another poll.
+    this.reobserving = Promise.resolve()
+      .then(async () => {
+        const refreshAndProbe = async (lifetime?: WalletOperationLifetime) => {
+          const rows = await this.journal(lifetime).refreshOperations()
+          if (this.reobserveStopped) return
+          const due = this.reobserveDue(now, rows)
           try {
-            await (runLifetime
-              ? runLifetime(lifetime => this.reobservePass(due, lifetime))
-              : this.reobservePass(due))
+            await this.reobservePass(due, lifetime)
           } catch {
-            /* A lifetime that ended or a journal that closed ends the pass. */
-          } finally {
-            this.reobservedAt = this.now()
-            this.reobserving = undefined
+            /* Unavailable RPC evidence leaves the original claims intact. */
           }
-        })()
-        await this.reobserving
-      }
-      if (
-        !this.localPassOwed ||
-        !applyRecorded ||
-        this.applyingRecorded ||
-        this.reobserveStopped
-      )
-        return
-      this.applyingRecorded = true
-      this.localPassOwed = false
-      this.localPassIncomplete = false
-      try {
-        await applyRecorded()
-        // The local pass never throws: it reports what it left. A member it held or failed on
-        // is tried again by the next evaluation (under the pass's own hold memory), not only
-        // by the next send or the next open.
-        if (this.localPassIncomplete) this.localPassOwed = true
-      } catch {
-        this.localPassOwed = true
-      } finally {
-        this.applyingRecorded = false
-      }
-    } catch {
-      /* Re-observation never fails its caller. */
-    }
+        }
+        const { runLifetime } = this.config
+        await (runLifetime ? runLifetime(refreshAndProbe) : refreshAndProbe())
+        if (
+          !this.localPassOwed ||
+          !applyRecorded ||
+          this.applyingRecorded ||
+          this.reobserveStopped
+        )
+          return
+        this.applyingRecorded = true
+        this.localPassOwed = false
+        this.localPassIncomplete = false
+        try {
+          await applyRecorded()
+          // The local pass never throws: it reports what it left. A member it held or failed on
+          // is tried again by the next evaluation (under the pass's own hold memory), not only
+          // by the next send or the next open.
+          if (this.localPassIncomplete) this.localPassOwed = true
+        } catch {
+          this.localPassOwed = true
+        } finally {
+          this.applyingRecorded = false
+        }
+      })
+      .finally(() => {
+        this.reobservedAt = this.now()
+        this.reobserving = undefined
+      })
+    return this.reobserving
   }
+
   /** Wallet close: ends re-observation for good. A pass in flight stops waiting for the node at
    * once and records nothing more; resolves when it has returned. Never rejects. */
   stopReobservation(): Promise<void> {
     this.reobserveStopped = true
     for (const stop of [...this.reobserveStops]) stop()
     this.reobserveStops.clear()
-    return this.reobserving ?? Promise.resolve()
+    return this.reobserving?.catch(() => undefined) ?? Promise.resolve()
   }
   /** Runs `body` on the executor queue, then in the same hold: if `body` threw, cancels the
    * operation it names when that operation never signed; then the local pass. Neither can change

@@ -75,6 +75,23 @@ describe('durable EVM native journal', () => {
       ),
     )
   }
+  it('returns detached refreshed snapshots through repeated close and reopen without writes', async () => {
+    const row = await signed()
+    await journal.markExposed(row.operationId, 0)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await reopen()
+      const write = jest.spyOn(durability, 'durablePut')
+      const batch = jest.spyOn(durability, 'durableBatch')
+      const rows = await journal.refreshOperations()
+      rows[0]!.members[0]!.exposed = false
+      rows.length = 0
+      expect(journal.get(row.operationId).members[0]!.exposed).toBe(true)
+      expect(await journal.refreshOperations()).toEqual(journal.list())
+      expect(write).not.toHaveBeenCalled()
+      expect(batch).not.toHaveBeenCalled()
+      jest.restoreAllMocks()
+    }
+  })
   it('answers repeated reservation queries without materializing journal snapshots', async () => {
     for (let nonce = 0; nonce < 16; nonce++) {
       const row = await journal.prepare(plan(nonce))

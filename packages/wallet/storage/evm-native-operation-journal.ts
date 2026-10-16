@@ -766,6 +766,16 @@ export class EvmNativeOperationJournal {
       }),
     )
   }
+  /** Refresh the validated durable enumeration without initializing or writing storage. */
+  refreshOperations(): Promise<EvmNativeOperation[]> {
+    return this.exclusive(() =>
+      this.coordinated(async () => {
+        await this.reloadRows(false)
+        this.assertOpen()
+        return this.list()
+      }),
+    )
+  }
   private manifest() {
     return {
       version: 2,

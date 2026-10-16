@@ -1,0 +1,39 @@
+yarn run v1.22.22
+$ node --import tsx scripts/typecheck.ts --fast
+[typecheck] Using compiler: tsgo (native Go TypeScript compiler)
+[typecheck] Emitting declarations for @frank/nakamoto...
+[typecheck] Emitting declarations for @frank/crypto-box...
+[typecheck] Checking 25 TypeScript projects...
+
+  checking packages/account-recovery/tsconfig.json              [32mPASS[0m  (115ms)
+  checking packages/account-vault/tsconfig.json                 [32mPASS[0m  (84ms)
+  checking packages/adaptor-signatures/tsconfig.json            [32mPASS[0m  (65ms)
+  checking packages/bot/tsconfig.json                           [32mPASS[0m  (418ms)
+  checking packages/bot-framework/tsconfig.json                 [32mPASS[0m  (347ms)
+  checking packages/cashweb/tsconfig.json                       [32mPASS[0m  (284ms)
+  checking packages/cli/tsconfig.json                           [32mPASS[0m  (324ms)
+  checking packages/codex32/tsconfig.json                       [32mPASS[0m  (70ms)
+  checking packages/contracts/tsconfig.json                     [32mPASS[0m  (94ms)
+  checking packages/crypto-box/tsconfig.json                    [32mPASS[0m  (98ms)
+  checking packages/directory-admission/tsconfig.json           [32mPASS[0m  (105ms)
+  checking packages/domain-roots/tsconfig.json                  [32mPASS[0m  (65ms)
+  checking packages/frank-codec/tsconfig.json                   [32mPASS[0m  (89ms)
+  checking packages/joint-signer/tsconfig.json                  [32mPASS[0m  (76ms)
+  checking packages/mail-gateway/tsconfig.json                  [32mPASS[0m  (333ms)
+  checking packages/nakamoto/tsconfig.json                      [32mPASS[0m  (100ms)
+  checking packages/price-feeds/tsconfig.json                   [32mPASS[0m  (170ms)
+  checking packages/role-keys/tsconfig.json                     [32mPASS[0m  (67ms)
+  checking packages/swap-protocol/tsconfig.json                 [32mPASS[0m  (93ms)
+  checking packages/threshold-ecdsa/tsconfig.json               [32mPASS[0m  (76ms)
+  checking packages/wallet/tsconfig.json                        [32mPASS[0m  (335ms)
+  checking packages/swap-protocol/tsconfig.storage-browser.json [32mPASS[0m  (104ms)
+  checking packages/swap-protocol/tsconfig.storage-native.json  [32mPASS[0m  (89ms)
+  checking packages/contracts/tsconfig.adaptor-tests.json       [32mPASS[0m  (99ms)
+  checking app/src/accounts/custody/tsconfig.json               [32mPASS[0m  (91ms)
+
+------------------------------------------------------------
+Total: 25 checked, 25 passed, 0 failed in 3.80s
+------------------------------------------------------------
+[32mALL TYPECHECKS PASSED[0m
+
+Done in 5.00s.

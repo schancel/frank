@@ -928,6 +928,71 @@ export default {
     tooLarge:
       'This payment is larger than a single contact payment can carry (about {max} {unit}); send it in parts.',
   },
+  signedSwap: {
+    actions: { offer: 'Offer', accept: 'Acceptance', reject: 'Rejection' },
+    title: 'Swap',
+    negotiationOnly:
+      'Signed negotiation only. Accepting does not transfer or authorize funds.',
+    offerAmount: 'Offer {unit} on {network}',
+    requestAmount: 'Request {unit} on {network}',
+    expiry: 'Expiry ({timezone})',
+    review: 'Review',
+    propose: 'Sign and propose',
+    newOffer: 'New offer',
+    accept: 'Accept',
+    reject: 'Reject',
+    confirmResponse: 'Sign {decision}',
+    stamp: 'Message stamp',
+    baseUnits: 'base units',
+    history: 'Authenticated negotiation history',
+    pending: 'Saved authorizations',
+    resume: 'Resume original authorization',
+    selectExpiry: 'Select an expiry date and time.',
+    delivery: 'Message delivery',
+    error: 'Negotiation could not finish',
+    legacy: 'Unsupported unsigned swap history',
+    phases: { claimed: 'Signature unfinished', signed: 'Signature saved' },
+    deliveryStates: {
+      'confirmed': 'Delivered',
+      'pending': 'Delivery pending',
+      'payment-pending': 'Stamp payment pending',
+      'error': 'Delivery unfinished',
+    },
+    errors: {
+      capacity:
+        'Storage capacity reached. Saved authorizations remain retained.',
+      expired:
+        'Select a future expiry for a new authorization. Signed messages retain their original expiry.',
+      conflict: 'This signing slot already names a different authorization.',
+      invalidAmount:
+        'Enter a positive exact decimal amount within native precision and protocol limits.',
+      invalidIntent:
+        'The saved authorization is invalid. It has been retained for inspection.',
+      sessionChanged:
+        'The account, network or authenticated conversation changed. Review again.',
+      storage:
+        'Storage is unavailable. The authorization has not been discarded.',
+      deliveryPending:
+        'The signature is saved and its original message delivery is unfinished. Resume it.',
+      failed:
+        'The negotiation could not finish. Its saved authorization remains retained.',
+    },
+    states: {
+      'restoring': 'Restoring negotiation evidence',
+      'scanning': 'Checking authenticated messages',
+      'ready': 'Ready',
+      'unsupported': 'Swap negotiation is unavailable on this network',
+      'incomplete': 'Authenticated evidence is incomplete',
+      'capacity': 'Negotiation storage capacity reached',
+      'storage-error': 'Negotiation storage failed',
+      'awaitingAdmission': 'Signed event is awaiting authenticated admission',
+      'conflict': 'Conflicting negotiation evidence',
+      'expired': 'Negotiation expired',
+      'offered': 'Authenticated offer',
+      'accept': 'Authenticated acceptance; no funds transferred',
+      'reject': 'Authenticated rejection',
+    },
+  },
   offerSwapDialog: {
     title: 'Offer Atomic Swap to',
     subtitle: 'Trustless cross-chain atomic exchange',

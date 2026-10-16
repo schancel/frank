@@ -68,6 +68,85 @@
         @click="respond"
       />
     </div>
+    <div
+      v-if="showExecutionPanel"
+      data-testid="swap-execution-panel"
+    >
+      <p data-testid="swap-execution-status" role="status">
+        {{ $t(`chatMessageSwap.${executionStatusKey}`) }}
+      </p>
+      <div
+        v-if="executionRecord"
+        data-testid="swap-selected-inputs"
+      >
+        <p
+          v-for="inp in executionRecord.xecInputs"
+          :key="`${inp.txid}:${inp.vout}`"
+        >
+          {{ `${inp.txid.slice(0, 12)}:${inp.vout} (${inp.valueSats})` }}
+        </p>
+        <p>
+          {{ `${executionRecord.evmInput.address} #${executionRecord.evmInput.nonce}` }}
+        </p>
+      </div>
+      <p
+        v-if="executionRecord && executionRecord.reorgWarning"
+        data-testid="swap-reorg-warning"
+        role="alert"
+      >
+        {{ $t('signedSwap.error') }}: {{ executionRecord.reorgWarning }}
+      </p>
+      <q-btn
+        v-if="canPrepareExecution"
+        data-testid="swap-prepare-btn"
+        :label="$t('signedSwap.review')"
+        :loading="execState.busy || executing"
+        :disable="execState.busy || executing"
+        @click="prepareExecution"
+      />
+      <q-btn
+        v-if="canFundExecution"
+        data-testid="swap-fund-btn"
+        :label="
+          $t('chatMessageSwap.lockDeposit', {
+            amount: amount(offer!.terms.xecPrincipal, xec.nativeDecimals!),
+            asset: xec.unit,
+          })
+        "
+        :loading="execState.busy || executing"
+        :disable="execState.busy || executing"
+        @click="fundExecution"
+      />
+      <q-btn
+        v-if="canCancelExecution"
+        data-testid="swap-cancel-btn"
+        :label="$t('chatMessageSwap.cancel')"
+        :loading="execState.busy || executing"
+        :disable="execState.busy || executing"
+        @click="cancelExecution"
+      />
+      <q-btn
+        v-if="canClaimExecution"
+        data-testid="swap-claim-btn"
+        :label="
+          $t('chatMessageSwap.claimFunds', {
+            amount: amount(offer!.terms.evmPrincipal, evm.nativeDecimals!),
+            asset: evm.unit,
+          })
+        "
+        :loading="execState.busy || executing"
+        :disable="execState.busy || executing"
+        @click="claimExecution"
+      />
+      <q-btn
+        v-if="canRefundExecution"
+        data-testid="swap-refund-btn"
+        :label="$t('chatMessageSwap.refundDeposit')"
+        :loading="execState.busy || executing"
+        :disable="execState.busy || executing"
+        @click="refundExecution"
+      />
+    </div>
   </section>
 </template>
 <script lang="ts">
@@ -86,6 +165,15 @@ import {
   negotiationUnavailable,
   negotiationErrorCode,
 } from './negotiation-commands'
+import {
+  swapExecutionState,
+  getSwapExecutionRecord,
+  prepareSwapExecution,
+  fundSwapExecution,
+  claimSwapExecution,
+  refundSwapExecution,
+  cancelSwapExecution,
+} from './swap-execution-commands'
 export default defineComponent({
   name: 'SignedNegotiationCard',
   props: {
@@ -97,13 +185,14 @@ export default defineComponent({
     outbound: { type: Boolean, required: true },
   },
   setup() {
-    return { status: negotiationCommandStatus }
+    return { status: negotiationCommandStatus, execState: swapExecutionState }
   },
   data() {
     return {
       decision: null as 'accept' | 'reject' | null,
       error: '',
       responding: false,
+      executing: false,
       now: BigInt(Math.floor(Date.now() / 1000)),
       timer: undefined as ReturnType<typeof setInterval> | undefined,
     }
@@ -165,6 +254,81 @@ export default defineComponent({
     offer() {
       return this.journal?.reduction.history.offer ?? null
     },
+    swapIdHex(): string {
+      return this.journal ? toHex(this.journal.context.swapId) : ''
+    },
+    executionRecord() {
+      if (!this.swapIdHex) return undefined
+      return getSwapExecutionRecord(this.swapIdHex)
+    },
+    showExecutionPanel(): boolean {
+      if (!this.execState.coordinator || !this.offer || !this.journal)
+        return false
+      return (
+        this.state === 'accept' ||
+        (!!this.executionRecord &&
+          this.journal.reduction.history.decision === 'accept')
+      )
+    },
+    executionStatusKey(): string {
+      const phase = this.executionRecord?.phase
+      if (!phase || phase === 'prepared' || phase === 'cancelled')
+        return 'statusUnfunded'
+      if (phase === 'funding' || phase === 'funded' || phase === 'claiming')
+        return 'statusLocked'
+      if (phase === 'complete') return 'statusWithdrawn'
+      if (phase === 'refund-pending' || phase === 'refunded')
+        return 'statusRefunded'
+      return 'statusExpired'
+    },
+    canPrepareExecution(): boolean {
+      return (
+        this.showExecutionPanel &&
+        !this.executionRecord &&
+        this.state === 'accept'
+      )
+    },
+    canFundExecution(): boolean {
+      return (
+        this.showExecutionPanel &&
+        this.executionRecord?.phase === 'prepared'
+      )
+    },
+    canCancelExecution(): boolean {
+      return (
+        this.showExecutionPanel &&
+        this.executionRecord?.phase === 'prepared' &&
+        !this.executionRecord.fundingAuthorized
+      )
+    },
+    canClaimExecution(): boolean {
+      if (!this.showExecutionPanel || !this.executionRecord) return false
+      const phase = this.executionRecord.phase
+      return (
+        phase === 'funded' ||
+        (!!this.executionRecord.adaptorSecretHex &&
+          phase !== 'complete' &&
+          phase !== 'refunded' &&
+          phase !== 'cancelled')
+      )
+    },
+    canRefundExecution(): boolean {
+      if (!this.showExecutionPanel || !this.executionRecord) return false
+      const r = this.executionRecord
+      if (
+        r.phase === 'complete' ||
+        r.phase === 'refunded' ||
+        r.phase === 'cancelled' ||
+        !r.fundingAuthorized
+      )
+        return false
+      return (
+        r.phase === 'recovery-required' ||
+        r.phase === 'refund-pending' ||
+        Number(this.now) >= r.xecRefundTimestamp ||
+        Number(this.now) >= r.evmOpeningTimestamp + r.evmChallengeDuration
+      )
+    },
     state(): string {
       if (negotiationUnavailable()) return negotiationUnavailable()
       if (!this.journal) return 'awaitingAdmission'
@@ -187,6 +351,84 @@ export default defineComponent({
   },
   methods: {
     amount: formatNegotiationAmount,
+    async prepareExecution() {
+      if (this.executing || !this.journal || !this.offer) return
+      const own = accountSession.getCachedCurvePublicKey('secp256k1')
+      if (!own) return
+      this.error = ''
+      this.executing = true
+      try {
+        const ownHex = toHex(own)
+        const p0Hex = toHex(this.journal.context.parties[0])
+        const p1Hex = toHex(this.journal.context.parties[1])
+        const role = ownHex === p0Hex ? 'initiator' : 'responder'
+        const peerPublicKey = ownHex === p0Hex ? p1Hex : p0Hex
+        await prepareSwapExecution({
+          swapId: this.swapIdHex,
+          conversationId: this.conversationId,
+          peerPublicKey,
+          role,
+          xecChainIdentifier: TESTNET_NEGOTIATION_POLICY.xecChainIdentifier,
+          evmChainIdentifier: TESTNET_NEGOTIATION_POLICY.evmChainIdentifier,
+          xecPrincipal: this.offer.terms.xecPrincipal,
+          evmPrincipal: this.offer.terms.evmPrincipal,
+          expiry: Number(this.offer.terms.expiry),
+          nowSec: Number(this.now),
+        })
+      } catch (e) {
+        this.error = negotiationErrorCode(e)
+      } finally {
+        this.executing = false
+      }
+    },
+    async fundExecution() {
+      if (this.executing || !this.swapIdHex) return
+      this.error = ''
+      this.executing = true
+      try {
+        await fundSwapExecution(this.swapIdHex)
+      } catch (e) {
+        this.error = negotiationErrorCode(e)
+      } finally {
+        this.executing = false
+      }
+    },
+    async cancelExecution() {
+      if (this.executing || !this.swapIdHex) return
+      this.error = ''
+      this.executing = true
+      try {
+        await cancelSwapExecution(this.swapIdHex)
+      } catch (e) {
+        this.error = negotiationErrorCode(e)
+      } finally {
+        this.executing = false
+      }
+    },
+    async claimExecution() {
+      if (this.executing || !this.swapIdHex) return
+      this.error = ''
+      this.executing = true
+      try {
+        await claimSwapExecution(this.swapIdHex)
+      } catch (e) {
+        this.error = negotiationErrorCode(e)
+      } finally {
+        this.executing = false
+      }
+    },
+    async refundExecution() {
+      if (this.executing || !this.swapIdHex) return
+      this.error = ''
+      this.executing = true
+      try {
+        await refundSwapExecution(this.swapIdHex, Number(this.now))
+      } catch (e) {
+        this.error = negotiationErrorCode(e)
+      } finally {
+        this.executing = false
+      }
+    },
     async respond() {
       if (
         this.responding ||

@@ -10,7 +10,8 @@
   "scripts": {
     "test": "jest",
     "typecheck": "tsc -p tsconfig.json",
-    "test:storage-browser": "node src/storage/browser-test.mjs"
+    "test:storage-browser": "node src/storage/browser-test.mjs && node src/storage/execution-browser-test.mjs",
+    "test:execution-browser": "node src/storage/execution-browser-test.mjs"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",

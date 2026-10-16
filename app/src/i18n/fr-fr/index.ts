@@ -953,7 +953,7 @@ export default {
     actions: { offer: 'Offre', accept: 'Acceptation', reject: 'Refus' },
     title: 'Échange',
     negotiationOnly:
-      'Négociation signée uniquement. Accepter ne transfère et n’autorise aucun fonds.',
+      'Négociation signée uniquement. Accepter ne transfère et n’autorise aucun fonds principal.',
     offerAmount: 'Offrir {unit} sur {network}',
     requestAmount: 'Demander {unit} sur {network}',
     expiry: 'Expiration ({timezone})',
@@ -996,7 +996,7 @@ export default {
       deliveryPending:
         'La signature est enregistrée et la livraison initiale reste inachevée. Reprenez-la.',
       failed:
-        'La négociation reste inachevée. L’autorisation enregistrée est conservée.',
+        'La négociation reste inachevée. Toute autorisation déjà enregistrée reste conservée.',
     },
     states: {
       'restoring': 'Restauration des preuves de négociation',
@@ -1011,7 +1011,8 @@ export default {
       'conflict': 'Preuves contradictoires',
       'expired': 'Négociation expirée',
       'offered': 'Offre authentifiée',
-      'accept': 'Acceptation authentifiée ; aucun fonds transféré',
+      'accept':
+        'Acceptation authentifiée ; exécution du principal non autorisée',
       'reject': 'Refus authentifié',
     },
   },

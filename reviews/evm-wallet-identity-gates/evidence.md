@@ -107,8 +107,9 @@ this exact frozen code (125 passing tests).
 
 ## Broad offline sweep and baseline attribution
 
-The broad sweep was started before several deterministic-fixture repairs and remains running
-at the time of this evidence commit. **No aggregate pass is claimed.** Its command/log:
+The broad sweep started before several deterministic-fixture repairs and has now completed
+with exit code **1**: **175 suites passed, 8 failed**; **4,432 tests passed, 166 failed, 4 todo**
+(183 suites / 4,602 tests), in 1,351.227 seconds. **No aggregate pass is claimed.** Its command/log:
 
 ```
 node node_modules/jest/bin/jest.js --config packages/wallet/jest.config.js --runInBand --testPathIgnorePatterns 'utxo-chains.live.jest.test.ts|monad-parallel-send.anvil.jest.test.ts|monad-dm-delivery.jest.test.ts' > /tmp/evm-wallet-gates-full-wallet.log 2>&1
@@ -142,10 +143,47 @@ Baseline: **25 failed, 32 passed, 4 todo**. The failing test names match the swe
 final typecheck. These failures require follow-up; this candidate does not repair the mailbox
 or Forum protocol boundary.
 
+The other two unchanged failures were isolated in `/tmp/evm-wallet-gates-unrelated-baseline.log`:
+
+```
+node node_modules/jest/bin/jest.js --config packages/wallet/jest.config.js --runInBand packages/wallet/forum-model.jest.test.ts packages/wallet/chain/native-reserve-support.jest.test.ts > /tmp/evm-wallet-gates-unrelated-baseline.log 2>&1
+```
+
+That run reproduced **4 failed / 2 passed**: three Forum-model fixture schema errors (undeclared
+payload key 7, C12) and one eCash reserve assertion (`this.admit is not a function` when invoking
+the prototype on `{}`). The tests, Forum model, eCash/UTXO/Solana wallet implementations and the
+entire codec package are byte-identical at base `4184740f` and code `6d341132`, verified with:
+
+```
+git diff 4184740f 6d341132 -- packages/frank-codec packages/wallet/forum-model.ts packages/wallet/forum-model.jest.test.ts packages/wallet/chain/native-reserve-support.jest.test.ts packages/wallet/ecash-wallet.ts packages/wallet/utxo-wallet.ts packages/wallet/solana-wallet.ts
+```
+
+The empty diff plus isolated unchanged-boundary reproduction attributes these four failures to
+the baseline. Concrete follow-up drafts are in [follow-ups.md](./follow-ups.md).
+
+The complete original-sweep failure accounting uses unique failing test names (some tests have
+additional teardown assertion blocks):
+
+| Suite | Original failing tests | Attribution and later evidence |
+| --- | ---: | --- |
+| monad-domain-wallet | 1 | Obsolete canonical field fixture; repaired, final frozen suite 98/98 passes |
+| monad-chain-canonical-dm | 121 | Missing pre-opening raw RPC fixture caused setup/teardown cascades; repaired, final frozen suite 121/121 passes |
+| evm-multisource-composition | 14 | Root-hook ordering plus explicit mock-restoration/reopen fixture gaps; repaired, final frozen suite 14/14 passes |
+| self-wallet-sync | 1 | Sepolia fixture answered Monad identity; repaired, full suite 14/14 and targeted Sepolia pass |
+| contact-payment | 10 | Exact old-factory baseline reproduces the same 10 named repeated-cursor failures |
+| monad-chain-topic-burn | 15 | Exact old-factory baseline reproduces the same 15 named unsupported Forum-type failures |
+| forum-model | 3 | Unchanged model/codec fixture; isolated schema-key failure reproduced |
+| native-reserve-support | 1 | Unchanged eCash/prototype fixture; isolated admission-context failure reproduced |
+
+Thus **137 original failures** are accounted for by repaired fixtures and passing complete-suite
+reruns, and **29** by explicit unchanged-baseline evidence. This is classification of a sweep
+that predates repairs, not a recomputed passing aggregate for the final tree. The separate
+`monad-dm-delivery` offline exclusion was exercised successfully. The two native/live exclusions
+remain intentionally unrun.
+
 ## Limits and next action
 
-The broader sweep's final aggregate is pending and will be recorded separately without code
-changes. The base predates the independently reviewed signed-negotiation UI integration; parent
+The broad sweep is terminal and its failures are classified above. The base predates the independently reviewed signed-negotiation UI integration; parent
 owns its combined actual-flow check. No main merge, push, deployment, keys, live funds/messages,
 registry change, migration or durable format change occurred.
 

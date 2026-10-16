@@ -13,7 +13,6 @@ Existing-only IndexedDB opens abort first creation/upgrades, so absence is never
 from a failed or malformed store. Reads through an initially empty facade observe later
 creation by another instance. Closing revokes pending capabilities and releases late
 connections. No record, receipt, derivation, activation or cleanup format changes.
-Retention holds and destructive-reset fencing remain separate work.
 
 ## Operation retention
 
@@ -25,14 +24,14 @@ acknowledges a strict durable commit. Keep the original intent when acknowledgme
 uncertain; an exact retry returns the original hold even after unrelated admissions.
 
 Custody stores one `retention-v1` row in the existing `state` store:
-`{ schema: 1, nextGeneration, holds }`. No account snapshot/schema or vault format changes.
-Account and complete retention records are read together in each authority transaction.
-At most 64 holds are admitted; counter exhaustion refuses further admission. Mutations
-verify actual strict transaction durability and await completion. Holds do not increment
-account revision or invalidate staged replacement preconditions. Final activation refuses
-replacement while holds exist. Cancelling another pending account is still permitted;
-cleanup transactionally reauthorizes its exact non-active, unretained discarding target
-before invoking the vault's existing fence.
+`{ schema: 1, nextGeneration, holds, resetting?: true }`. No account snapshot/schema or
+vault format changes. Account and complete retention records are read together in each
+authority transaction. At most 64 holds are admitted; counter exhaustion refuses further
+admission. Mutations verify actual strict transaction durability and await completion.
+Holds do not increment account revision or invalidate staged replacement preconditions.
+Final activation refuses replacement while holds exist. Cancelling another pending
+account is still permitted; cleanup transactionally reauthorizes its exact non-active,
+unretained discarding target before invoking the vault's existing fence.
 
 `releaseRetention(receipt)` accepts only the exact incarnation, operation and generation.
 It returns `released` or `absent`, never decrements the counter, and cannot remove a newer
@@ -41,12 +40,20 @@ operation owner, not custody evidence that funds settled. The journal owns termi
 operation-ID reuse policy; custody deliberately keeps no unbounded terminal-ID tombstones.
 Old acquisition intents reject after release, while fresh-generation reuse is permitted.
 
-H1 is not installed in production operation admission. H2 must protect destructive reset
-paths before any production operation acquires a hold. Arbitrary deletion or rollback of
-the retention row is indistinguishable from pre-H1 absence; this is outside the local
-transaction guarantee. Preserve retention records during reversal, and never restore a
-pre-H1 activation writer while holds exist. Retention data contains public immutable
-references only, never operation secrets or financial settlement state.
+`custody.reset(cleanup?)` and `resetAccountCustody({ namespace, cleanup })` enforce H2
+destructive-reset fencing. Reset atomically verifies `holds.length === 0` (`conflict`
+when any hold exists; `locked` when public state or retention is malformed), marks
+`retention-v1` with `resetting: true`, and advances `nextGeneration` once when any
+account or pending attempt is being retired. While `resetting: true`, `snapshot` and
+`retentionSnapshot` reject with `locked`, and concurrent mutations or mid-operation
+rechecks reject with `conflict`. Reset retires `pending` and `active` secrets through
+`vault.discardIntent` (preserving vault creation-slot fences), awaits `cleanup?.()`,
+and atomically clears `account` to fresh while preserving `retention-v1` with the
+advanced `nextGeneration` and `holds: []`. Arbitrary deletion or rollback of the
+retention row is indistinguishable from pre-H1 absence; never call `deleteDatabase` on
+`frank-account-custody-<namespace>` or `frank-preview-vault-<namespace>`. Retention data
+contains public immutable references only, never operation secrets or financial
+settlement state.
 
 ```ts
 import { openAccountCustody } from './accounts/custody'
@@ -135,6 +142,7 @@ The facade never overwrites the existing active vault slot to stage a replacemen
 | `cancel(attemptId)`                   | Atomically mark only its pending receipt `discarding`, then call vault `discardIntent`; this fences absent material and prevents late stage resurrection.   |
 | `reconcile(cleanupAttemptId)`         | Retry exact discard, then clear only that matching cleanup row. Lost cleanup acknowledgements retain durable evidence until resolved.                       |
 | `openActive()`                        | Authenticate exact receipt, recheck active revision/account after decryption, then return the transient capability.                                         |
+| `reset(cleanup?)`                     | Refuse active holds, fence `retention-v1` with `resetting`, discard vault material, run `cleanup`, then clear `account` while keeping `nextGeneration`.     |
 | `close()`                             | Close owned connections and erase untaken capabilities. Does not cancel durable work.                                                                       |
 
 An activation response can be lost after commit. `reconcile(attemptId)` then

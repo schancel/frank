@@ -13,6 +13,7 @@ export interface RetentionRecord {
   readonly schema: 1
   readonly nextGeneration: number
   readonly holds: readonly RetentionReceipt[]
+  readonly resetting?: true
 }
 
 function invalid(): never {
@@ -112,11 +113,19 @@ export function parseRetention(
 ): RetentionRecord {
   if (value === undefined) return { schema: 1, nextGeneration: 0, holds: [] }
   try {
-    fields(value, ['schema', 'nextGeneration', 'holds'])
+    const resetting =
+      value !== null && typeof value === 'object' && 'resetting' in value
+    fields(
+      value,
+      resetting
+        ? ['schema', 'nextGeneration', 'holds', 'resetting']
+        : ['schema', 'nextGeneration', 'holds'],
+    )
     if (
       value.schema !== 1 ||
       !Array.isArray(value.holds) ||
-      value.holds.length > 64
+      value.holds.length > 64 ||
+      (resetting && (value.resetting !== true || value.holds.length > 0))
     )
       invalid()
     const nextGeneration = generation(value.nextGeneration)
@@ -135,7 +144,9 @@ export function parseRetention(
       generations.add(hold.generation)
       return hold
     })
-    return { schema: 1, nextGeneration, holds }
+    return resetting
+      ? { schema: 1, nextGeneration, holds, resetting: true }
+      : { schema: 1, nextGeneration, holds }
   } catch {
     throw new CustodyError('locked')
   }
@@ -144,6 +155,7 @@ export function retentionSnapshot(
   account: CustodySnapshot,
   retention: RetentionRecord,
 ): RetentionSnapshot {
+  if (retention.resetting) throw new CustodyError('locked')
   return {
     active: activeIncarnation(account),
     nextGeneration: retention.nextGeneration,
@@ -155,7 +167,10 @@ export function acquireRetention(
   retention: RetentionRecord,
   intent: RetentionIntent,
 ): RetentionRecord {
-  if (!matchesIncarnation(activeIncarnation(account), intent))
+  if (
+    retention.resetting ||
+    !matchesIncarnation(activeIncarnation(account), intent)
+  )
     throw new CustodyError('conflict')
   const existing = retention.holds.find(
     hold => hold.operationId === intent.operationId,
@@ -193,6 +208,7 @@ export function releaseRetention(
   retention: RetentionRecord,
   receipt: RetentionReceipt,
 ): RetentionRecord {
+  if (retention.resetting) throw new CustodyError('conflict')
   const existing = retention.holds.find(
     hold => hold.operationId === receipt.operationId,
   )
@@ -205,5 +221,23 @@ export function releaseRetention(
   return {
     ...retention,
     holds: retention.holds.filter(hold => hold !== existing),
+  }
+}
+export function beginResetRetention(
+  account: CustodySnapshot,
+  retention: RetentionRecord,
+): RetentionRecord {
+  if (retention.holds.length > 0) throw new CustodyError('conflict')
+  if (retention.resetting) return retention
+  const advance = account.active !== null || account.pending !== null
+  if (advance && retention.nextGeneration === Number.MAX_SAFE_INTEGER)
+    throw new CustodyError('capacity')
+  return {
+    schema: 1,
+    nextGeneration: advance
+      ? retention.nextGeneration + 1
+      : retention.nextGeneration,
+    holds: [],
+    resetting: true,
   }
 }

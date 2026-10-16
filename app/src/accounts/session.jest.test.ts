@@ -140,6 +140,16 @@ function fixture(
   }
   const custody = {
     snapshot: jest.fn(async () => snapshot),
+    retentionSnapshot: jest.fn(async () => ({
+      active: snapshot.active
+        ? {
+            accountRevision: snapshot.revision,
+            accountReceipt: snapshot.active.receipt,
+          }
+        : null,
+      nextGeneration: 1,
+      holds: [],
+    })),
     reconcile: jest.fn(async () => 'ready'),
     openActive: jest.fn(async () => capability),
     openPending: jest.fn(async () =>
@@ -152,6 +162,7 @@ function fixture(
     stage: jest.fn(),
     activate: jest.fn(),
     cancel: jest.fn(),
+    reset: jest.fn(),
     close: jest.fn(),
   } as unknown as jest.Mocked<AccountCustody>
   const wallet = {
@@ -779,64 +790,177 @@ test('reset closes existing wallet and custody, calls deps.reset, and reinitiali
   expect(session.state.error).toBeNull()
 })
 
-test('resetAccountStorage deletes all indexedDB databases matching frank- and level-js', async () => {
-  const deleted: string[] = []
-  const originalIndexedDb = global.indexedDB
+test('session.reset refuses while a retention hold exists and restores ready state if reset fails mid-flight', async () => {
+  const f = fixture()
+  f.capability.takeRoots.mockImplementation(() =>
+    DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 1),
+    })),
+  )
+  const resetMock = jest.fn(async () => undefined)
+  const session = createAccountSession({
+    open: async () => f.custody,
+    createWallet: f.createWallet,
+    reset: resetMock,
+  })
+  await session.initialize()
+  expect(session.state.status).toBe('ready')
 
-  const mockIndexedDb = {
-    databases: jest.fn(async () => [
-      { name: 'frank-account-custody-local-account-v1' },
-      { name: 'frank-preview-vault-local-account-v1' },
-      { name: 'frank-monad-wallet-state-evm-0x123' },
-      { name: 'level-js-wallet-manifest' },
-      { name: 'unrelated-app-db' },
-    ]),
-    deleteDatabase: jest.fn((name: string) => {
-      deleted.push(name)
-      const req: any = {}
-      setTimeout(() => req.onsuccess?.({} as any), 0)
-      return req
-    }),
-  }
+  f.custody.retentionSnapshot.mockResolvedValueOnce({
+    active: {
+      accountRevision: 1,
+      accountReceipt: f.account.receipt,
+    },
+    nextGeneration: 2,
+    holds: [
+      {
+        accountRevision: 1,
+        accountReceipt: f.account.receipt,
+        operationId: 'swap-op-1',
+        generation: 1,
+      },
+    ],
+  })
 
-  try {
-    ;(global as any).indexedDB = mockIndexedDb
-    await resetAccountStorage('local-account-v1')
-    expect(deleted).toContain('frank-account-custody-local-account-v1')
-    expect(deleted).toContain('frank-preview-vault-local-account-v1')
-    expect(deleted).toContain('frank-monad-wallet-state-evm-0x123')
-    expect(deleted).toContain('level-js-wallet-manifest')
-    expect(deleted).not.toContain('unrelated-app-db')
-  } finally {
-    ;(global as any).indexedDB = originalIndexedDb
-  }
+  await expect(session.reset()).rejects.toMatchObject({
+    name: 'CustodyError',
+    code: 'conflict',
+  })
+  expect(resetMock).not.toHaveBeenCalled()
+  expect(f.wallet.close).not.toHaveBeenCalled()
+  expect(session.state.status).toBe('ready')
+  expect(session.state.account).toEqual(f.account)
+
+  resetMock.mockRejectedValueOnce(new CustodyError('conflict'))
+  await expect(session.reset()).rejects.toMatchObject({
+    name: 'CustodyError',
+    code: 'conflict',
+  })
+  expect(session.state.status).toBe('ready')
+  expect(session.state.account?.receipt.context.accountId).toBe('a')
 })
 
-test('resetMessageAndChatStorage deletes level-js, MessageStore, vuex-store, monad-wallet-state but explicitly preserves custody and vault', async () => {
-  const deleted: string[] = []
+test('resetAccountStorage enforces custody hold/corruption/blocked gates, retires vault secrets, deletes wallet/chat DBs, and preserves custody retention generation and vault fences', async () => {
+  const { IDBFactory } = require('fake-indexeddb') as {
+    IDBFactory: new () => IDBFactory
+  }
+  const { openAccountCustody } = await import('./custody')
+  const { openPreviewVault } = await import('@frank/account-vault')
   const originalIndexedDb = global.indexedDB
+  const baseIdb = new IDBFactory()
+  const deleted: string[] = []
+  let blockDbName: string | null = null
+  let errorDbName: string | null = null
 
-  const mockIndexedDb = {
-    databases: jest.fn(async () => [
-      { name: 'frank-account-custody-local-account-v1' },
-      { name: 'frank-preview-vault-local-account-v1' },
-      { name: 'frank-monad-wallet-state-evm-0x123' },
-      { name: 'level-js-wallet-manifest' },
-      { name: 'MessageStore' },
-      { name: 'vuex-store' },
-      { name: 'unrelated-app-db' },
-    ]),
-    deleteDatabase: jest.fn((name: string) => {
+  const createDummyDb = (name: string) =>
+    new Promise<void>((resolve, reject) => {
+      const req = baseIdb.open(name, 1)
+      req.onupgradeneeded = () => {
+        req.result.createObjectStore('items')
+      }
+      req.onsuccess = () => {
+        req.result.close()
+        resolve()
+      }
+      req.onerror = () => reject(req.error)
+    })
+
+  await createDummyDb('frank-monad-wallet-state-evm-0x123')
+  await createDummyDb('level-js-wallet-manifest')
+  await createDummyDb('MessageStore')
+  await createDummyDb('vuex-store')
+  await createDummyDb('unrelated-app-db')
+
+  const proxyIndexedDb = {
+    open: baseIdb.open.bind(baseIdb),
+    cmp: baseIdb.cmp.bind(baseIdb),
+    databases: () => baseIdb.databases(),
+    deleteDatabase: (name: string) => {
+      if (name === blockDbName) {
+        const req: any = {}
+        setTimeout(() => req.onblocked?.({} as any), 0)
+        return req
+      }
+      if (name === errorDbName) {
+        const req: any = {}
+        setTimeout(() => req.onerror?.({} as any), 0)
+        return req
+      }
       deleted.push(name)
-      const req: any = {}
-      setTimeout(() => req.onsuccess?.({} as any), 0)
-      return req
-    }),
+      return baseIdb.deleteDatabase(name)
+    },
   }
 
   try {
-    ;(global as any).indexedDB = mockIndexedDb
-    await resetMessageAndChatStorage('local-account-v1')
+    ;(global as any).indexedDB = proxyIndexedDb
+    const custody = await openAccountCustody({ namespace: 'local-account-v1' })
+    const staged = await custody.stage({
+      attemptId: 'attempt-reset-1',
+      accountId: 'account-reset-1',
+      expectedActive: { revision: 0, accountId: null },
+      displayName: '',
+      custodyEpoch: 1,
+      bip39Seed: new Uint8Array(64).fill(7),
+    })
+    const activated = await custody.activate(
+      'attempt-reset-1',
+      staged.pending!.expectedActive,
+    )
+    const hold = await custody.acquireRetention({
+      accountRevision: activated.revision,
+      accountReceipt: activated.active!.receipt,
+      operationId: 'swap-hold-1',
+      expectedGeneration: 0,
+    })
+
+    // 1. Refuses reset while a retention hold exists
+    await expect(resetAccountStorage('local-account-v1')).rejects.toMatchObject(
+      {
+        name: 'CustodyError',
+        code: 'conflict',
+      },
+    )
+    expect(deleted).toEqual([])
+
+    // Release hold so reset can proceed to cleanup
+    await expect(custody.releaseRetention(hold)).resolves.toBe('released')
+    custody.close()
+
+    // 2. Fails closed with unavailable when deleteDatabase is blocked
+    blockDbName = 'frank-monad-wallet-state-evm-0x123'
+    await expect(resetAccountStorage('local-account-v1')).rejects.toMatchObject(
+      {
+        name: 'CustodyError',
+        code: 'unavailable',
+      },
+    )
+    blockDbName = null
+
+    // While reset was interrupted mid-cleanup, snapshot fails closed (locked)
+    const midResetCustody = await openAccountCustody({
+      namespace: 'local-account-v1',
+    })
+    await expect(midResetCustody.snapshot()).rejects.toMatchObject({
+      name: 'CustodyError',
+      code: 'locked',
+    })
+    midResetCustody.close()
+
+    // 3. Fails closed with storage-failed when deleteDatabase errors
+    errorDbName = 'frank-monad-wallet-state-evm-0x123'
+    await expect(resetAccountStorage('local-account-v1')).rejects.toMatchObject(
+      {
+        name: 'CustodyError',
+        code: 'storage-failed',
+      },
+    )
+    errorDbName = null
+
+    // 4. Retry completes reset, deletes wallet/chat DBs, preserves custody & vault fences
+    deleted.length = 0
+    await resetAccountStorage('local-account-v1')
     expect(deleted).toContain('frank-monad-wallet-state-evm-0x123')
     expect(deleted).toContain('level-js-wallet-manifest')
     expect(deleted).toContain('MessageStore')
@@ -844,6 +968,122 @@ test('resetMessageAndChatStorage deletes level-js, MessageStore, vuex-store, mon
     expect(deleted).not.toContain('frank-account-custody-local-account-v1')
     expect(deleted).not.toContain('frank-preview-vault-local-account-v1')
     expect(deleted).not.toContain('unrelated-app-db')
+
+    const reopened = await openAccountCustody({ namespace: 'local-account-v1' })
+    await expect(reopened.snapshot()).resolves.toEqual({
+      schema: 1,
+      revision: 0,
+      active: null,
+      pending: null,
+    })
+    await expect(reopened.retentionSnapshot()).resolves.toEqual({
+      active: null,
+      nextGeneration: 2,
+      holds: [],
+    })
+    reopened.close()
+
+    const vault = await openPreviewVault({ namespace: 'local-account-v1' })
+    await expect(vault.reconcile(activated.active!.receipt)).resolves.toBe(
+      'removed',
+    )
+    vault.close()
+
+    // 5. Corrupt custody record fails closed with locked
+    await new Promise<void>((resolve, reject) => {
+      const req = baseIdb.open('frank-account-custody-local-account-v1', 1)
+      req.onsuccess = () => {
+        const db = req.result
+        const tx = db.transaction('state', 'readwrite')
+        tx.objectStore('state').put({ schema: 999 }, 'retention-v1')
+        tx.oncomplete = () => {
+          db.close()
+          resolve()
+        }
+        tx.onerror = () => reject(tx.error)
+      }
+      req.onerror = () => reject(req.error)
+    })
+    await expect(resetAccountStorage('local-account-v1')).rejects.toMatchObject(
+      {
+        name: 'CustodyError',
+        code: 'locked',
+      },
+    )
+  } finally {
+    ;(global as any).indexedDB = originalIndexedDb
+  }
+})
+
+test('resetMessageAndChatStorage deletes only MessageStore and vuex-store databases and never touches wallet, swap, custody, or vault databases', async () => {
+  const deleted: string[] = []
+  const originalIndexedDb = global.indexedDB
+  let mode: 'ok' | 'blocked' | 'error' = 'ok'
+
+  const mockIndexedDb = {
+    databases: jest.fn(async () => [
+      { name: 'frank-account-custody-local-account-v1' },
+      { name: 'frank-preview-vault-local-account-v1' },
+      { name: 'frank-monad-wallet-state-evm-0x123' },
+      { name: 'frank-wallet-btc-testnet' },
+      { name: 'level-js-wallet-manifest' },
+      { name: 'MessageStore' },
+      { name: 'MessageStore/messages' },
+      { name: 'level-js-MessageStore/metadata' },
+      { name: 'vuex-store' },
+      { name: 'level-js-vuex-store' },
+      { name: 'unrelated-app-db' },
+    ]),
+    deleteDatabase: jest.fn((name: string) => {
+      const req: any = {}
+      setTimeout(() => {
+        if (mode === 'blocked') {
+          req.onblocked?.({} as any)
+          return
+        }
+        if (mode === 'error') {
+          req.onerror?.({} as any)
+          return
+        }
+        deleted.push(name)
+        req.onsuccess?.({} as any)
+      }, 0)
+      return req
+    }),
+  }
+
+  try {
+    ;(global as any).indexedDB = mockIndexedDb
+    await resetMessageAndChatStorage('local-account-v1')
+    expect(deleted).toEqual([
+      'MessageStore',
+      'MessageStore/messages',
+      'level-js-MessageStore/metadata',
+      'vuex-store',
+      'level-js-vuex-store',
+    ])
+    expect(deleted).not.toContain('frank-monad-wallet-state-evm-0x123')
+    expect(deleted).not.toContain('frank-wallet-btc-testnet')
+    expect(deleted).not.toContain('level-js-wallet-manifest')
+    expect(deleted).not.toContain('frank-account-custody-local-account-v1')
+    expect(deleted).not.toContain('frank-preview-vault-local-account-v1')
+    expect(deleted).not.toContain('unrelated-app-db')
+
+    mode = 'blocked'
+    await expect(
+      resetMessageAndChatStorage('local-account-v1'),
+    ).rejects.toMatchObject({
+      name: 'CustodyError',
+      code: 'unavailable',
+    })
+
+    mode = 'error'
+    await expect(
+      resetMessageAndChatStorage('local-account-v1'),
+    ).rejects.toMatchObject({
+      name: 'CustodyError',
+      code: 'storage-failed',
+    })
   } finally {
     ;(global as any).indexedDB = originalIndexedDb
   }

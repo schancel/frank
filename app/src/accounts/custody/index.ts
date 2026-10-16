@@ -33,6 +33,7 @@ import {
   captureRetentionReceipt,
   acquireRetention,
   releaseRetention,
+  beginResetRetention,
   type RetentionRecord,
 } from './retention'
 import {
@@ -110,6 +111,25 @@ export async function openAccountCustody(options: {
   }
 }
 
+export async function resetAccountCustody(options: {
+  namespace: string
+  cleanup?: () => Promise<void>
+}): Promise<CustodySnapshot> {
+  let cleanup: (() => Promise<void>) | undefined
+  try {
+    cleanup = options.cleanup
+    if (cleanup !== undefined && typeof cleanup !== 'function') throw 0
+  } catch {
+    throw new CustodyError('invalid-input')
+  }
+  const custody = await openAccountCustody({ namespace: options?.namespace })
+  try {
+    return await custody.reset(cleanup)
+  } finally {
+    custody.close()
+  }
+}
+
 function facade(namespace: string): AccountCustody {
   let closed = false
   const connections = new Set<IDBDatabase>()
@@ -176,7 +196,16 @@ function facade(namespace: string): AccountCustody {
       if (db) connections.delete(db)
     }
   }
-  const read = async () => (await access()).account
+  const read = async () => {
+    const current = await access()
+    if (current.retention.resetting) throw new CustodyError('locked')
+    return current.account
+  }
+  const readOpen = async () => {
+    const current = await access()
+    if (current.retention.resetting) throw new CustodyError('conflict')
+    return current.account
+  }
   const update = async (
     change: (
       state: CustodySnapshot,
@@ -184,10 +213,13 @@ function facade(namespace: string): AccountCustody {
     ) => CustodySnapshot,
   ) =>
     (
-      await access(current => ({
-        ...current,
-        account: change(current.account, current.retention),
-      }))
+      await access(current => {
+        if (current.retention.resetting) throw new CustodyError('conflict')
+        return {
+          ...current,
+          account: change(current.account, current.retention),
+        }
+      })
     ).account
   const pendingFor = (
     state: CustodySnapshot,
@@ -357,7 +389,7 @@ function facade(namespace: string): AccountCustody {
           } else if (status !== 'committed') throw new CustodyError('locked')
           // The record must open, and (below) hold exactly this account's root.
           await authenticateAccount(account)
-          const latest = await read()
+          const latest = await readOpen()
           if (!same(latest.pending, pending)) throw new CustodyError('conflict')
           return latest
         })
@@ -368,10 +400,10 @@ function facade(namespace: string): AccountCustody {
     reconcile: attemptId =>
       run(async () => {
         const operation = id(attemptId),
-          state = await read()
+          state = await readOpen()
         if (state.active?.receipt.operationId === operation) {
           await authenticateAccount(state.active)
-          const latest = await read()
+          const latest = await readOpen()
           if (!same(latest.active, state.active))
             throw new CustodyError('conflict')
           return 'active'
@@ -385,7 +417,7 @@ function facade(namespace: string): AccountCustody {
         if (status !== 'absent' && status !== 'committed')
           throw new CustodyError('locked')
         if (status === 'committed') await authenticated(pending)
-        if (!same((await read()).pending, pending))
+        if (!same((await readOpen()).pending, pending))
           throw new CustodyError('conflict')
         return status === 'absent' ? 'incomplete' : 'ready'
       }),
@@ -393,11 +425,11 @@ function facade(namespace: string): AccountCustody {
       run(async () => {
         const operation = id(attemptId),
           wanted = expected(precondition)
-        const state = await read()
+        const state = await readOpen()
         if (state.active?.receipt.operationId === operation) {
           // Lost activation acknowledgement: the active pointer is the authoritative receipt.
           await authenticateAccount(state.active)
-          const latest = await read()
+          const latest = await readOpen()
           if (!same(latest.active, state.active))
             throw new CustodyError('conflict')
           return latest
@@ -458,7 +490,7 @@ function facade(namespace: string): AccountCustody {
           ? undefined
           : await (await vault()).open(state.active.receipt)
         try {
-          const latest = await read()
+          const latest = await readOpen()
           if (
             latest.revision !== state.revision ||
             !same(latest.active, state.active)
@@ -503,10 +535,10 @@ function facade(namespace: string): AccountCustody {
       let roots: readonly DomainRoot[] | undefined
       try {
         check()
-        const pending = pendingFor(await read(), id(attemptId))
+        const pending = pendingFor(await readOpen(), id(attemptId))
         if (pending.status !== 'staging') throw new CustodyError('conflict')
         roots = await (await vault()).open(pending.account.receipt)
-        if (!same((await read()).pending, pending))
+        if (!same((await readOpen()).pending, pending))
           throw new CustodyError('conflict')
         check()
         return roots
@@ -519,11 +551,11 @@ function facade(namespace: string): AccountCustody {
       let seed: Uint8Array | undefined
       try {
         check()
-        const pending = pendingFor(await read(), id(attemptId))
+        const pending = pendingFor(await readOpen(), id(attemptId))
         if (pending.status !== 'staging' || !historical(pending.account))
           throw new CustodyError('conflict')
         seed = await openBip39Seed(pending.account)
-        if (!same((await read()).pending, pending))
+        if (!same((await readOpen()).pending, pending))
           throw new CustodyError('conflict')
         check()
         return seed
@@ -541,7 +573,7 @@ function facade(namespace: string): AccountCustody {
         accountRoot = await (
           await vault()
         ).openAccountRoot(state.active.receipt)
-        const latest = await read()
+        const latest = await readOpen()
         if (
           latest.revision !== state.revision ||
           !same(latest.active, state.active)
@@ -554,6 +586,81 @@ function facade(namespace: string): AccountCustody {
         accountRoot?.fill(0)
         throw normalized(error)
       }
+    },
+    reset(cleanup) {
+      if (cleanup !== undefined && typeof cleanup !== 'function')
+        return Promise.reject(new CustodyError('invalid-input'))
+      return run(async () => {
+        const fenced = await access(current => ({
+          account: current.account,
+          retention: beginResetRetention(current.account, current.retention),
+        }))
+        for (const capability of capabilities) capability.close()
+        const assertFenced = async (): Promise<boolean> => {
+          const current = await access()
+          if (!current.retention.resetting) {
+            if (
+              current.retention.nextGeneration ===
+                fenced.retention.nextGeneration &&
+              current.retention.holds.length === 0 &&
+              current.account.active === null &&
+              current.account.pending === null
+            )
+              return false
+            throw new CustodyError('conflict')
+          }
+          if (
+            current.retention.nextGeneration !==
+              fenced.retention.nextGeneration ||
+            current.retention.holds.length > 0 ||
+            !same(current.account, fenced.account)
+          )
+            throw new CustodyError('conflict')
+          return true
+        }
+        if (fenced.account.pending && (await assertFenced())) {
+          await (
+            await vault()
+          ).discardIntent(writeIntent(fenced.account.pending.account))
+        }
+        if (fenced.account.active && (await assertFenced())) {
+          await (await vault()).discardIntent(writeIntent(fenced.account.active))
+        }
+        if (cleanup && (await assertFenced())) {
+          await cleanup()
+          check()
+        }
+        return (
+          await access(current => {
+            if (!current.retention.resetting) {
+              if (
+                current.retention.nextGeneration ===
+                  fenced.retention.nextGeneration &&
+                current.retention.holds.length === 0 &&
+                current.account.active === null &&
+                current.account.pending === null
+              )
+                return current
+              throw new CustodyError('conflict')
+            }
+            if (
+              current.retention.nextGeneration !==
+                fenced.retention.nextGeneration ||
+              current.retention.holds.length > 0 ||
+              !same(current.account, fenced.account)
+            )
+              throw new CustodyError('conflict')
+            return {
+              account: parse(undefined),
+              retention: {
+                schema: 1,
+                nextGeneration: fenced.retention.nextGeneration,
+                holds: [],
+              },
+            }
+          })
+        ).account
+      })
     },
     close() {
       closed = true

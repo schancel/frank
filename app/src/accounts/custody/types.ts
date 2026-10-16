@@ -137,6 +137,7 @@ export interface AccountCustody {
     readonly account: PublicAccount
     readonly accountRoot: Uint8Array | null
   }>
+  reset(cleanup?: () => Promise<void>): Promise<CustodySnapshot>
   close(): void
 }
 

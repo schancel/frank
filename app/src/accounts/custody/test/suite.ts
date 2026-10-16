@@ -11,6 +11,7 @@ import { aad } from '../../../../../packages/account-vault/src/encoding'
 import { DOMAIN_PURPOSES, type DomainRoot } from '@frank/domain-roots'
 import {
   openAccountCustody,
+  resetAccountCustody,
   CustodyError,
   type AccountCustody,
   type CustodySnapshot,
@@ -686,6 +687,8 @@ async function retentionRegressions() {
       },
       { ...valid, holds: new Array(1) },
       { ...valid, nextGeneration: Number.MAX_SAFE_INTEGER + 1 },
+      { ...valid, resetting: false },
+      { ...valid, resetting: true },
     ]) {
       await storage(ns, false, ['state'], tx =>
         tx.objectStore('state').put(bad, 'retention-v1'),
@@ -695,6 +698,15 @@ async function retentionRegressions() {
         () => api.activate(replacement.attemptId, replacement.expectedActive),
         'locked',
       )
+      let cleanupCalled = false
+      await rejects(
+        () =>
+          api.reset(async () => {
+            cleanupCalled = true
+          }),
+        'locked',
+      )
+      assert(!cleanupCalled, 'corrupt retention blocks reset before cleanup')
       await rejects(() => openAccountCustody({ namespace: ns }), 'locked')
     }
     await storage(ns, false, ['state'], tx =>
@@ -704,6 +716,202 @@ async function retentionRegressions() {
     await api.releaseRetention(receipt)
     erase(input)
     erase(replacement)
+  })
+  await test('holds exclude reset atomically across independent instances and preserve durable generations', async () => {
+    const ns = 'retention-reset-race',
+      { api, input, state } = await active(ns),
+      other = await open(ns)
+    const pending = fixture('reset-race-pending', current(state), 26)
+    const staged = await other.stage(pending)
+    const intent = await admit(api, 'in-flight-swap')
+    let cleanupRuns = 0
+    const race = await Promise.allSettled([
+      api.acquireRetention(intent),
+      other.reset(async () => {
+        cleanupRuns++
+      }),
+    ])
+    equal(
+      race.filter(result => result.status === 'fulfilled').length,
+      1,
+      'hold and reset cannot both win',
+    )
+    if (race[0].status === 'fulfilled') {
+      equal(cleanupRuns, 0, 'winning hold prevents reset cleanup')
+      await rejects(
+        () =>
+          other.reset(async () => {
+            cleanupRuns++
+          }),
+        'conflict',
+      )
+      equal(cleanupRuns, 0, 'retained account refuses reset before cleanup')
+      await assertActive(api, input)
+      await api.releaseRetention(race[0].value)
+      const afterReset = await other.reset(async () => {
+        cleanupRuns++
+      })
+      equal(cleanupRuns, 1, 'released hold permits reset cleanup')
+      equal(
+        afterReset,
+        { schema: 1, revision: 0, active: null, pending: null },
+        'reset clears active and pending records',
+      )
+    } else {
+      equal(cleanupRuns, 1, 'winning reset runs cleanup once')
+      await rejects(() => api.acquireRetention(intent), 'conflict')
+    }
+    const postResetRetention = await api.retentionSnapshot()
+    assert(
+      postResetRetention.active === null &&
+        postResetRetention.holds.length === 0 &&
+        postResetRetention.nextGeneration >= 1,
+      'reset preserves custody namespace and advances durable generation',
+    )
+    await rejects(() => api.acquireRetention(intent), 'conflict')
+    const vault = await openPreviewVault({ namespace: ns })
+    equal(
+      await vault.reconcile(state.active!.receipt),
+      'removed',
+      'active vault slot retired by reset',
+    )
+    equal(
+      await vault.reconcile(staged.pending!.account.receipt),
+      'removed',
+      'pending vault slot retired by reset',
+    )
+    vault.close()
+    const successor = fixture(
+      'reset-race-successor',
+      { revision: 0, accountId: null },
+      27,
+    )
+    await api.stage(successor)
+    await api.activate(successor.attemptId, successor.expectedActive)
+    await assertActive(api, successor)
+    equal(
+      (await api.retentionSnapshot()).nextGeneration,
+      postResetRetention.nextGeneration,
+      'subsequent activation preserves post-reset generation',
+    )
+    erase(input)
+    erase(pending)
+    erase(successor)
+  })
+  await test('reset fences admission across its destructive lifecycle and recovers after interrupted cleanup', async () => {
+    const ns = 'retention-reset-fence',
+      { api, input, state } = await active(ns),
+      other = await open(ns)
+    const staged = fixture('reset-fence-staged', current(state), 28)
+    await api.stage(staged)
+    const preResetIntent = await admit(api, 'pre-reset-intent')
+    const reachedCleanup = deferred(),
+      releaseCleanup = deferred()
+    let shouldFailCleanup = true
+    const failingReset = resetAccountCustody({
+      namespace: ns,
+      async cleanup() {
+        reachedCleanup.resolve()
+        await releaseCleanup.promise
+        if (shouldFailCleanup) throw new CustodyError('unavailable')
+      },
+    })
+    await reachedCleanup.promise
+    await rejects(() => other.snapshot(), 'locked')
+    await rejects(() => other.retentionSnapshot(), 'locked')
+    await rejects(() => other.openActive(), 'locked')
+    await rejects(() => other.exportAccountRoot(), 'locked')
+    await rejects(() => other.acquireRetention(preResetIntent), 'conflict')
+    const blockedStage = fixture(
+      'reset-fence-blocked',
+      { revision: 0, accountId: null },
+      29,
+    )
+    await rejects(() => other.stage(blockedStage), 'conflict')
+    await rejects(
+      () => other.activate(staged.attemptId, staged.expectedActive),
+      'conflict',
+    )
+    await rejects(() => other.cancel(staged.attemptId), 'conflict')
+    await rejects(() => other.reconcile(staged.attemptId), 'conflict')
+    await rejects(() => other.openPending(staged.attemptId), 'conflict')
+    releaseCleanup.resolve()
+    await rejects(() => failingReset, 'unavailable')
+    // Interrupted reset remains fenced until a retry completes cleanup.
+    const reopened = await open(ns)
+    await rejects(() => reopened.snapshot(), 'locked')
+    await rejects(() => reopened.acquireRetention(preResetIntent), 'conflict')
+    shouldFailCleanup = false
+    let retriedCleanup = 0
+    const completed = await resetAccountCustody({
+      namespace: ns,
+      async cleanup() {
+        retriedCleanup++
+      },
+    })
+    equal(retriedCleanup, 1, 'retry executes cleanup and completes reset')
+    equal(
+      completed,
+      { schema: 1, revision: 0, active: null, pending: null },
+      'completed reset restores fresh snapshot',
+    )
+    equal(
+      await reopened.retentionSnapshot(),
+      { active: null, nextGeneration: 1, holds: [] },
+      'interrupted reset retry does not double-increment generation',
+    )
+    erase(input)
+    erase(staged)
+    erase(blockedStage)
+  })
+  await test('reset revokes local untaken capabilities and a paused reset cannot clobber a post-reset successor', async () => {
+    const ns = 'retention-reset-late',
+      { api, input } = await active(ns),
+      other = await open(ns)
+    const capability = await api.openActive()
+    const reached = deferred(),
+      resume = deferred()
+    const slowReset = api.reset(async () => {
+      reached.resolve()
+      await resume.promise
+    })
+    await reached.promise
+    let capCode = ''
+    try {
+      capability.takeRoots()
+    } catch (error) {
+      capCode = (error as CustodyError).code
+    }
+    equal(
+      capCode,
+      'closed',
+      'reset revokes untaken capabilities on the resetting facade',
+    )
+    await other.reset()
+    const successor = fixture(
+      'reset-late-successor',
+      { revision: 0, accountId: null },
+      30,
+    )
+    await other.stage(successor)
+    await other.activate(successor.attemptId, successor.expectedActive)
+    resume.resolve()
+    await rejects(() => slowReset, 'conflict')
+    await assertActive(other, successor)
+    await rejects(
+      () => api.reset('not-a-function' as unknown as () => Promise<void>),
+      'invalid-input',
+    )
+    await rejects(
+      () =>
+        resetAccountCustody({
+          namespace: ns,
+          cleanup: 'not-a-function' as unknown as () => Promise<void>,
+        }),
+      'invalid-input',
+    )
+    erase(input)
+    erase(successor)
   })
 }
 

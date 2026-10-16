@@ -62,6 +62,7 @@ import {
 import { isAccountBackedUp, markAccountBackedUp } from './backup-status'
 import {
   openAccountCustody,
+  resetAccountCustody,
   CustodyError,
   type AccountCustody,
   type CustodySnapshot,
@@ -1461,6 +1462,13 @@ export function createAccountSession(deps: {
     async reset() {
       return exclusive(async () => {
         closed = false
+        if (
+          state.status === 'ready' &&
+          typeof custody?.retentionSnapshot === 'function'
+        ) {
+          const retention = await custody.retentionSnapshot()
+          if (retention.holds.length > 0) throw new CustodyError('conflict')
+        }
         ++generation
         state.status = 'loading'
         state.error = null
@@ -1469,16 +1477,19 @@ export function createAccountSession(deps: {
         state.pendingReady = false
         state.pendingIdentityAddress = null
         state.pendingError = null
-        await release()
-        custody?.close()
-        custody = undefined
-        if (deps.reset) {
-          await deps.reset()
-        } else {
-          await resetAccountStorage()
+        try {
+          await release()
+          custody?.close()
+          custody = undefined
+          if (deps.reset) {
+            await deps.reset()
+          } else {
+            await resetAccountStorage()
+          }
+        } finally {
+          deps.notify?.()
+          await runRefresh()
         }
-        deps.notify?.()
-        await runRefresh()
       })
     },
   }
@@ -1490,105 +1501,130 @@ import {
   listAllocatedWalletDatabases,
 } from '@frank/wallet/storage/wallet-storage-adapter'
 
+const DEFAULT_MESSAGE_AND_CHAT_DATABASES = [
+  'MessageStore',
+  'MessageStore/messages',
+  'MessageStore/metadata',
+  'level-js-MessageStore',
+  'level-js-MessageStore/messages',
+  'level-js-MessageStore/metadata',
+  'vuex-store',
+  'level-js-vuex-store',
+] as const
+
+function isMessageOrChatDatabaseName(name: string): boolean {
+  return (
+    name === 'MessageStore' ||
+    name.startsWith('MessageStore/') ||
+    name === 'level-js-MessageStore' ||
+    name.startsWith('level-js-MessageStore/') ||
+    name === 'vuex-store' ||
+    name.startsWith('vuex-store/') ||
+    name === 'level-js-vuex-store' ||
+    name.startsWith('level-js-vuex-store/')
+  )
+}
+
+function isAccountResetDatabaseName(name: string): boolean {
+  if (
+    name.startsWith('frank-account-custody-') ||
+    name.startsWith('frank-preview-vault-')
+  ) {
+    return false
+  }
+  return (
+    name.startsWith('frank-') ||
+    name.includes('monad-wallet-state') ||
+    name.includes('level-js') ||
+    isMessageOrChatDatabaseName(name)
+  )
+}
+
+function deleteIndexedDatabase(name: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let req: IDBOpenDBRequest
+    try {
+      req = indexedDB.deleteDatabase(name)
+    } catch {
+      reject(new CustodyError('storage-failed'))
+      return
+    }
+    req.onsuccess = () => resolve()
+    req.onerror = () => reject(new CustodyError('storage-failed'))
+    req.onblocked = () => reject(new CustodyError('unavailable'))
+  })
+}
+
 export async function resetAccountStorage(
   namespace = 'local-account-v1',
 ): Promise<void> {
-  const allocatedWalletDbs = await listAllocatedWalletDatabases().catch(
-    () => [],
-  )
-  await clearAllWalletDatabases().catch(() => undefined)
-  if (typeof indexedDB === 'undefined') return
-  const names = new Set<string>([
-    `frank-account-custody-${namespace}`,
-    `frank-preview-vault-${namespace}`,
-    ...allocatedWalletDbs,
-  ])
-  try {
-    if (typeof indexedDB.databases === 'function') {
-      const dbs = await indexedDB.databases()
-      for (const db of dbs) {
-        if (
-          db.name &&
-          (db.name.startsWith('frank-') ||
-            db.name.includes('monad-wallet-state') ||
-            db.name.includes('level-js'))
-        ) {
-          names.add(db.name)
-        }
-      }
-    }
-  } catch {
-    // indexedDB.databases may fail in some environments
-  }
-  for (const name of names) {
-    await new Promise<void>(resolve => {
+  if (typeof indexedDB === 'undefined') throw new CustodyError('unavailable')
+  await resetAccountCustody({
+    namespace,
+    async cleanup() {
+      let allocatedWalletDbs: string[]
       try {
-        const req = indexedDB.deleteDatabase(name)
-        req.onsuccess = () => resolve()
-        req.onerror = () => resolve()
-        req.onblocked = () => {
-          setTimeout(resolve, 300)
-        }
+        allocatedWalletDbs = await listAllocatedWalletDatabases()
       } catch {
-        resolve()
+        throw new CustodyError('storage-failed')
       }
-    })
-  }
+      const names = new Set<string>(
+        allocatedWalletDbs.filter(isAccountResetDatabaseName),
+      )
+      if (typeof indexedDB.databases === 'function') {
+        let dbs: IDBDatabaseInfo[]
+        try {
+          dbs = await indexedDB.databases()
+        } catch {
+          throw new CustodyError('storage-failed')
+        }
+        for (const db of dbs) {
+          if (db.name && isAccountResetDatabaseName(db.name)) {
+            names.add(db.name)
+          }
+        }
+      } else {
+        for (const name of DEFAULT_MESSAGE_AND_CHAT_DATABASES) {
+          names.add(name)
+        }
+        names.add('monad-wallet-state')
+      }
+      for (const name of names) {
+        await deleteIndexedDatabase(name)
+      }
+      try {
+        await clearAllWalletDatabases()
+      } catch {
+        throw new CustodyError('storage-failed')
+      }
+    },
+  })
 }
 
 export async function resetMessageAndChatStorage(
   _namespace = 'local-account-v1',
 ): Promise<void> {
-  const allocatedWalletDbs = await listAllocatedWalletDatabases().catch(
-    () => [],
-  )
-  await clearAllWalletDatabases().catch(() => undefined)
-  if (typeof indexedDB === 'undefined') return
-  const names = new Set<string>(allocatedWalletDbs)
-  try {
-    if (typeof indexedDB.databases === 'function') {
-      const dbs = await indexedDB.databases()
-      for (const db of dbs) {
-        if (
-          db.name &&
-          (db.name.includes('level-js') ||
-            db.name.includes('MessageStore') ||
-            db.name.includes('vuex-store') ||
-            db.name.includes('monad-wallet-state') ||
-            db.name.startsWith('frank-wallet-'))
-        ) {
-          names.add(db.name)
-        }
-      }
-    } else {
-      names.add('vuex-store')
-      names.add('MessageStore')
-      names.add('monad-wallet-state')
+  if (typeof indexedDB === 'undefined') throw new CustodyError('unavailable')
+  const names = new Set<string>()
+  if (typeof indexedDB.databases === 'function') {
+    let dbs: IDBDatabaseInfo[]
+    try {
+      dbs = await indexedDB.databases()
+    } catch {
+      throw new CustodyError('storage-failed')
     }
-  } catch {
-    names.add('vuex-store')
-    names.add('MessageStore')
-    names.add('monad-wallet-state')
+    for (const db of dbs) {
+      if (db.name && isMessageOrChatDatabaseName(db.name)) {
+        names.add(db.name)
+      }
+    }
+  } else {
+    for (const name of DEFAULT_MESSAGE_AND_CHAT_DATABASES) {
+      names.add(name)
+    }
   }
   for (const name of names) {
-    if (
-      name.startsWith('frank-account-custody-') ||
-      name.startsWith('frank-preview-vault-')
-    ) {
-      continue
-    }
-    await new Promise<void>(resolve => {
-      try {
-        const req = indexedDB.deleteDatabase(name)
-        req.onsuccess = () => resolve()
-        req.onerror = () => resolve()
-        req.onblocked = () => {
-          setTimeout(resolve, 300)
-        }
-      } catch {
-        resolve()
-      }
-    })
+    await deleteIndexedDatabase(name)
   }
 }
 

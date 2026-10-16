@@ -1183,7 +1183,7 @@ test.each(['main', 'identity'] as const)(
       const funding = wallet.pool
         .records()
         .find(record => record.status === 'funding')!
-      expect(Transaction.from(funding.fundingAttempt!.rawTx).from).toBe(source)
+      expect(Transaction.from(funding.funding!.attempts[0].rawTx).from).toBe(source)
       for (const lifetime of ['current', 'reopened']) {
         if (lifetime === 'reopened') {
           await wallet.close()
@@ -1762,7 +1762,13 @@ async function sendLegacyFromProductionFundedPoolRow(dir: string) {
         return tx.hash!
       },
       getTransactionReceipt: async (txHash: string) =>
-        ({ txHash, status: 'success' } as never),
+        ({
+          txHash,
+          status: 'success',
+          blockNumber: 1,
+          blockHash: '0x' + 'ab'.repeat(32),
+          gasUsed: 21000n,
+        } as never),
     },
   })
   await wallet.pool.prepareStampInventory({
@@ -1783,6 +1789,18 @@ async function sendLegacyFromProductionFundedPoolRow(dir: string) {
     index: 0,
     address: expected[0].pool,
     status: 'available',
+    funding: expect.objectContaining({
+      version: 1,
+      attempts: [
+        expect.objectContaining({
+          generation: 2,
+          observation: expect.objectContaining({
+            kind: 'included',
+            execution: 'success',
+          }),
+        }),
+      ],
+    }),
   })
   expect(wallet.pool.capacityCache.has(0)).toBe(true)
   // The pool account now out-holds main and covers the send exactly; main cannot cover it.
@@ -1835,6 +1853,18 @@ function spentByMember(
     index: 0,
     address: expected[0].pool,
     status: 'spent',
+    funding: expect.objectContaining({
+      version: 1,
+      attempts: [
+        expect.objectContaining({
+          generation: 2,
+          observation: expect.objectContaining({
+            kind: 'included',
+            execution: 'success',
+          }),
+        }),
+      ],
+    }),
     lifecycle: {
       spend: {
         rawTx: signed.rawTransaction,
@@ -2082,7 +2112,13 @@ async function composedWithProductionFundedPoolRow(dir: string) {
           return tx.hash!
         },
         getTransactionReceipt: async (txHash: string) =>
-          ({ txHash, status: 'success' } as never),
+          ({
+            txHash,
+            status: 'success',
+            blockNumber: 1,
+            blockHash: '0x' + 'ab'.repeat(32),
+            gasUsed: 21000n,
+          } as never),
       },
     })
     const snapshot = () =>
@@ -2141,12 +2177,7 @@ async function composedWithProductionFundedPoolRow(dir: string) {
   }
   const first = await open({ [main]: 1000000n })
   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
-  expect(first.wallet.pool.getRecord(0)).toEqual({
-    revision: 3,
-    index: 0,
-    address: expected[0].pool,
-    status: 'available',
-  })
+  expect(first.wallet.pool.getRecord(0)).toEqual(availableRow)
   expect(first.rpc.balances.get(poolAddress)).toBe(121000n)
   first.rpc.balances.set(main, 40000n)
   first.rpc.broadcast.mockClear()
@@ -2190,7 +2221,24 @@ async function composedWithProductionFundedPoolRow(dir: string) {
   }
   return { ...first, open, main, poolAddress, signedByPoolKey, itemFor }
 }
-const availableRow = { revision: 3, index: 0, address: expected[0].pool, status: 'available' }
+const availableRow = {
+  revision: 3,
+  index: 0,
+  address: expected[0].pool,
+  status: 'available',
+  funding: expect.objectContaining({
+    version: 1,
+    attempts: [
+      expect.objectContaining({
+        generation: 2,
+        observation: expect.objectContaining({
+          kind: 'included',
+          execution: 'success',
+        }),
+      }),
+    ],
+  }),
+}
 const settled = (promise: Promise<unknown>) =>
   promise.then(
     value => ({ value }),
@@ -2341,9 +2389,8 @@ describe('recording a native spend from the journal under the input admission (#
     expect(putMany).toHaveBeenCalledTimes(1)
     const tx = Transaction.from(rawTx)
     const row = {
+      ...availableRow,
       revision: 4,
-      index: 0,
-      address: expected[0].pool,
       status: 'spent',
       lifecycle: { spend: { rawTx, txHash: tx.hash, valueWei: '100000' } },
     }
@@ -2695,7 +2742,13 @@ async function nativeSendFromProductionFundedPoolRow(
           return tx.hash!
         },
         getTransactionReceipt: async (txHash: string) =>
-          ({ txHash, status: 'success' } as never),
+          ({
+            txHash,
+            status: 'success',
+            blockNumber: 1,
+            blockHash: '0x' + 'ab'.repeat(32),
+            gasUsed: 21000n,
+          } as never),
       },
     })
     return {
@@ -2729,12 +2782,7 @@ async function nativeSendFromProductionFundedPoolRow(
   const first = await open({ [main]: 1000000n })
   const { wallet, rpc } = first
   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
-  expect(wallet.pool.getRecord(0)).toEqual({
-    revision: 3,
-    index: 0,
-    address: expected[0].pool,
-    status: 'available',
-  })
+  expect(wallet.pool.getRecord(0)).toEqual(availableRow)
   expect(rpc.balances.get(poolAddress)).toBe(121000n)
   // Main can no longer cover the send; the pool account can, with 50000 wei left over.
   rpc.balances.set(main, 40000n)
@@ -2840,9 +2888,8 @@ describe.each(['pending', 'included'] as const)(
       expect(wallet.pool.getRecord(0)).toEqual(
         window === 'included'
           ? {
+              ...availableRow,
               revision: 4,
-              index: 0,
-              address: expected[0].pool,
               status: 'spent',
               lifecycle: {
                 spend: {
@@ -2852,7 +2899,7 @@ describe.each(['pending', 'included'] as const)(
                 },
               },
             }
-          : { revision: 3, index: 0, address: expected[0].pool, status: 'available' },
+          : availableRow,
       )
       expect(wallet.pool.capacityCache.size).toBe(0)
       expect(wallet.pool.isSpendReserved(0)).toBe(true)
@@ -3082,7 +3129,7 @@ test('conflicting recovered owners remain read-only, and reopening builds and su
     ).rejects.toThrow('still pending')
     const held = wallet.pool.records().find(row => row.status === 'funding')!
     expect(held).toBeDefined()
-    expect(Transaction.from(held.fundingAttempt!.rawTx).nonce).toBe(0)
+    expect(Transaction.from(held.funding!.attempts[0].rawTx).nonce).toBe(0)
     await wallet.close()
     wallet = undefined
     const built = jest.fn(async () => ({
@@ -3093,7 +3140,20 @@ test('conflicting recovered owners remain read-only, and reopening builds and su
     jest
       .mocked(MonadAccountTxSigner)
       .mockImplementation(
-        () => ({ buildAndSignTransfer: built, submit: submitted } as never),
+        () =>
+          ({
+            buildAndSignTransfer: built,
+            submit: submitted,
+            observeFunding: jest.fn(async () => ({
+              kind: 'pending',
+              accounts: {
+                block: { number: 1, hash: '0x' + '11'.repeat(32) },
+                senderNonce: 0n,
+                recipientNonce: 0n,
+                recipientBalance: 0n,
+              },
+            })),
+          } as never),
       )
     wallet = (await createEvmChain(cfg).createWallet(
       roots(),

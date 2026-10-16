@@ -78,7 +78,15 @@ jest.mock("../monad-http", () => {
       }
       async getTransactionReceipt(hash: string) {
         shared.chainHttpRequests.push("getTransactionReceipt");
-        return mockMined.has(hash) ? { status: "success" } : undefined;
+        return mockMined.has(hash)
+          ? {
+              txHash: hash,
+              blockNumber: 1,
+              blockHash: "0x" + "11".repeat(32),
+              gasUsed: 21_000n,
+              status: "success" as const,
+            }
+          : undefined;
       }
       destroy() {
         return undefined;
@@ -583,7 +591,7 @@ describe("funding the next message ahead (#1235 Q4)", () => {
         .mockRejectedValueOnce(new Error("fixture: stopped before the submit"));
       expect(await fundAhead()).toMatchObject({ outcome: "not-funded" });
       const [recorded] = rows("funding");
-      expect(recorded.fundingAttempt).toBeDefined();
+      expect(recorded.funding?.attempts[0]).toBeDefined();
       expect(mockFunded).toEqual([]);
 
       await reopen();
@@ -592,8 +600,8 @@ describe("funding the next message ahead (#1235 Q4)", () => {
       const result = await fundAhead();
 
       expect(result.outcome).toBe("funded");
-      expect(result.fundingTxHashes[0]).toBe(recorded.fundingAttempt!.txHash);
-      expect(submit.mock.calls[0]![0]).toBe(recorded.fundingAttempt!.rawTx);
+      expect(result.fundingTxHashes[0]).toBe(recorded.funding!.attempts[0].txHash);
+      expect(submit.mock.calls[0]![0]).toBe(recorded.funding!.attempts[0].rawTx);
       expectOnePairFundedOnce();
     });
 
@@ -613,7 +621,7 @@ describe("funding the next message ahead (#1235 Q4)", () => {
       const submit = jest.spyOn(alice.httpClient, "submitRawTransaction");
       const result = await fundAhead();
 
-      expect(result.fundingTxHashes[0]).toBe(recorded.fundingAttempt!.txHash);
+      expect(result.fundingTxHashes[0]).toBe(recorded.funding!.attempts[0].txHash);
       expect(
         submit.mock.calls.map(([raw]) =>
           Transaction.from(raw).to!.toLowerCase()
@@ -627,14 +635,14 @@ describe("funding the next message ahead (#1235 Q4)", () => {
       const flush = jest.spyOn(alice.pool, "flush");
       const store = (
         alice.pool as unknown as {
-          store: { put: (record: unknown) => void; flush: () => Promise<void> };
+          store: { mutate: (...args: unknown[]) => Promise<unknown>; flush: () => Promise<void> };
         }
       ).store;
-      const put = store.put.bind(store);
+      const mutate = store.mutate.bind(store);
       let stopped = false;
-      jest.spyOn(store, "put").mockImplementation((record) => {
+      jest.spyOn(store, "mutate").mockImplementation((...args) => {
         if (stopped) throw new Error("fixture: stopped before the write");
-        put(record);
+        return mutate(...args);
       });
       const receipt = alice.httpClient.getTransactionReceipt.bind(
         alice.httpClient
@@ -656,7 +664,7 @@ describe("funding the next message ahead (#1235 Q4)", () => {
       const submit = jest.spyOn(alice.httpClient, "submitRawTransaction");
       const result = await fundAhead();
 
-      expect(result.fundingTxHashes[0]).toBe(recorded.fundingAttempt!.txHash);
+      expect(result.fundingTxHashes[0]).toBe(recorded.funding!.attempts[0].txHash);
       expect(
         submit.mock.calls.map(([raw]) =>
           Transaction.from(raw).to!.toLowerCase()
@@ -690,7 +698,7 @@ describe("funding the next message ahead (#1235 Q4)", () => {
       const results = await Promise.all([fundAhead(), fundAhead()]);
 
       expect(results[0]!.fundingTxHashes[0]).toBe(
-        recorded.fundingAttempt!.txHash
+        recorded.funding!.attempts[0].txHash
       );
       expectOnePairFundedOnce();
     });
@@ -718,8 +726,8 @@ describe("funding the next message ahead (#1235 Q4)", () => {
       later(FUND_AHEAD_BACKOFF_MAX_MS);
       const result = await fundAhead();
       expect(result.outcome).toBe("funded");
-      expect(result.fundingTxHashes[0]).toBe(recorded.fundingAttempt!.txHash);
-      expect(submit.mock.calls[0]![0]).toBe(recorded.fundingAttempt!.rawTx);
+      expect(result.fundingTxHashes[0]).toBe(recorded.funding!.attempts[0].txHash);
+      expect(submit.mock.calls[0]![0]).toBe(recorded.funding!.attempts[0].rawTx);
       expectOnePairFundedOnce();
     });
   });
@@ -953,16 +961,28 @@ describe("funding the next message ahead (#1235 Q4)", () => {
         outcome: "not-funded",
         reason: "unresolved-funding",
       });
-      // One receipt read, the same bytes again, then the nonce and the balance. No fee quote,
-      // no estimate: on a03ea904 this call also made 7 RPC requests for a quote it never used.
+      // Anchored observation before and after offering the same bytes again, with no fee quote
+      // or gas estimate: on a03ea904 this call also made 7 RPC requests for a quote it never used.
       expect(chainHttpRequests).toEqual([
         "getTransactionReceipt",
         "submitRawTransaction",
+        "getTransactionReceipt",
       ]);
-      expect(providerRequests).toEqual(["getTransactionCount", "getBalance"]);
+      expect(providerRequests).toEqual([
+        "getBlock",
+        "getTransactionCount",
+        "getTransactionCount",
+        "getBalance",
+        "getBlock",
+        "getBlock",
+        "getTransactionCount",
+        "getTransactionCount",
+        "getBalance",
+        "getBlock",
+      ]);
       expect(accept.mock.calls.map(([raw]) => raw)).toEqual([
-        recorded.fundingAttempt!.rawTx,
-        recorded.fundingAttempt!.rawTx,
+        recorded.funding!.attempts[0].rawTx,
+        recorded.funding!.attempts[0].rawTx,
       ]);
       clear();
       await twentyTicks();

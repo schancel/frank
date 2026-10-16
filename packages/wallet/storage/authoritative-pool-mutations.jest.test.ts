@@ -148,16 +148,52 @@ it('rejects A to B to A stale full-row completion while permitting unrelated row
 })
 
 it('atomically converts a terminal row without lowering allocation or recreating its index across reopen', async () => {
-  await withOwner(async (store, location) => {
+  const { Wallet, Transaction } = await import('ethers')
+  await withOwner(async (store) => {
+    const owned = '0x' + '11'.repeat(20)
+    const wallet = new Wallet('0x' + '01'.repeat(32))
+    const rawTx = await wallet.signTransaction({
+      type: 2,
+      chainId: 10143,
+      nonce: 0,
+      to: owned,
+      value: 10n,
+      gasLimit: 21000n,
+      maxFeePerGas: 1n,
+      maxPriorityFeePerGas: 1n,
+    })
+    const block = { number: 1, hash: '0x' + '22'.repeat(32) }
+    const funding = {
+      version: 1 as const,
+      attempts: [
+        {
+          rawTx,
+          txHash: Transaction.from(rawTx).hash!,
+          valueWei: '10',
+          generation: 2,
+          observation: {
+            kind: 'included' as const,
+            execution: 'success' as const,
+            receiptBlock: block,
+            accounts: {
+              block,
+              senderNonce: '1',
+              recipientNonce: '0',
+              recipientBalance: '10',
+            },
+          },
+        },
+      ],
+    }
     const lifecycle = {
-      funding: { rawTx: 'funding', txHash: 'funding-hash', valueWei: '10' },
       spend: { rawTx: 'spend', txHash: 'spend-hash', valueWei: '1' },
       recovery: { kind: 'none' as const, valueWei: '0' as const },
     }
     await write(store, {
       index: 0,
-      address: 'owned',
+      address: owned,
       status: 'spent',
+      funding,
       lifecycle,
     })
     await store.mutate(() => ({
@@ -167,9 +203,10 @@ it('atomically converts a terminal row without lowering allocation or recreating
           checkpoint: {
             version: 1,
             index: 0,
-            address: 'owned',
+            address: owned,
             status: 'spent',
             denominationWei: '1',
+            funding,
             lifecycle,
             compactedAt: 1,
           },
@@ -180,10 +217,14 @@ it('atomically converts a terminal row without lowering allocation or recreating
     await store.Close()
     await store.Open()
     expect(store.getByIndex(0)).toBeUndefined()
-    expect(store.getCheckpoints()[0]).toMatchObject({ revision: 2, lifecycle })
+    expect(store.getCheckpoints()[0]).toMatchObject({
+      revision: 2,
+      funding,
+      lifecycle,
+    })
     expect(store.getNextIndex()).toBe(1)
     await expect(
-      write(store, { index: 0, address: 'owned', status: 'available' })
+      write(store, { index: 0, address: owned, status: 'available' })
     ).rejects.toThrow('Cannot recreate compacted')
     await write(store, { index: 1, address: 'next', status: 'unfunded' })
     expect(store.getNextIndex()).toBe(2)
@@ -282,7 +323,7 @@ it('refuses revision overflow without mutation, while exact replay at the maximu
     await db.put(
       '0',
       JSON.stringify({
-        version: 3,
+        version: 4,
         revision: Number.MAX_SAFE_INTEGER,
         value: { index: 0, address: 'owned', status: 'available' },
       })
@@ -333,11 +374,17 @@ it('an actual funding receipt wait does not block another row lease, and its sta
       maxFeePerGas: 1n,
       maxPriorityFeePerGas: 1n,
     })
-    const attempt = { rawTx, txHash: Transaction.from(rawTx).hash! }
+    const attempt = {
+      rawTx,
+      txHash: Transaction.from(rawTx).hash!,
+      valueWei: '10',
+      generation: 1,
+      observation: { kind: 'unresolved' as const, reason: 'pending' as const },
+    }
     await write(store, {
       ...pool.getRecord(0)!,
       status: 'funding',
-      fundingAttempt: attempt,
+      funding: { version: 1, attempts: [attempt] },
     })
     await pool.setStatus(1, 'available')
     const entered = barrier(),
@@ -345,11 +392,22 @@ it('an actual funding receipt wait does not block another row lease, and its sta
     const signing = jest.fn(() => {
       throw new Error('no replacement funding authorized')
     })
+    const block = { number: 1, hash: '0x' + '22'.repeat(32) }
     const signer = {
-      getStatus: async () => {
+      observeFunding: async () => {
         entered.resolve()
         await release.promise
-        return 'confirmed'
+        return {
+          kind: 'included' as const,
+          execution: 'success' as const,
+          receiptBlock: block,
+          accounts: {
+            block,
+            senderNonce: 1n,
+            recipientNonce: 0n,
+            recipientBalance: 10n,
+          },
+        }
       },
       buildAndSignTransfer: signing,
     } as any
@@ -364,23 +422,36 @@ it('an actual funding receipt wait does not block another row lease, and its sta
     const lease = await new SubAccountLeaseManager(pool).acquireForIndex(1)
     expect(lease.index).toBe(1)
     const original = pool.getRecord(0)!
-    // Both hashes identify the same signed transfer and the obligation remains nonterminal.
-    // Every accepted intervening payload write advances revision, including A to B to A.
+    // Every accepted intervening payload write advances revision and attempt generation, including A to B to A on reason.
     await write(store, {
       ...original,
       status: 'funding',
-      fundingAttempt: { ...attempt, txHash: attempt.txHash.toUpperCase() },
+      funding: {
+        version: 1,
+        attempts: [
+          {
+            ...attempt,
+            generation: 2,
+            observation: { kind: 'unresolved', reason: 'unavailable' },
+          },
+        ],
+      },
     })
+    const restoredAttempt = {
+      ...attempt,
+      generation: 3,
+      observation: { kind: 'unresolved' as const, reason: 'pending' as const },
+    }
     await write(store, {
       ...pool.getRecord(0)!,
       status: 'funding',
-      fundingAttempt: attempt,
+      funding: { version: 1, attempts: [restoredAttempt] },
     })
     release.resolve()
-    await expect(completing).rejects.toThrow('Stale pool revision')
+    await expect(completing).rejects.toThrow(/Stale/)
     expect(pool.getRecord(0)).toMatchObject({
       status: 'funding',
-      fundingAttempt: attempt,
+      funding: { version: 1, attempts: [restoredAttempt] },
       revision: original.revision! + 2,
     })
     expect(signing).not.toHaveBeenCalled()
@@ -402,7 +473,7 @@ it('initializes format, binding and high-water in one authorized batch without a
         {
           type: 'put',
           key: '__pool_format__',
-          value: 'sub-account-pool-v3-authoritative',
+          value: 'sub-account-pool-v4-funding-evidence',
         },
         { type: 'put', key: '__wallet_binding__', value: 'owned-binding' },
         { type: 'put', key: '__next_index__', value: '0' },
@@ -417,7 +488,7 @@ it('initializes format, binding and high-water in one authorized batch without a
   }
 })
 
-it('does not adopt a nonempty unbound v3 pool into a different manifest owner', async () => {
+it('does not adopt a nonempty unbound v4 pool into a different manifest owner', async () => {
   const location = mkdtempSync(join(tmpdir(), 'frank-pool-unbound-'))
   const original = new LevelSubAccountPoolStore(location)
   await original.Open()
@@ -463,7 +534,7 @@ it('a fresh revision cannot resurrect spent or retired rows through either pool 
       expect(pool.getRecord(index)).toEqual(terminal)
       await write(store, terminal)
       expect(pool.getRecord(index)?.revision).toBe(terminal.revision)
-      await pool.recordFundingTransaction(index, {
+      await pool.recordSpendTransaction(index, {
         rawTx: 'retained terminal evidence',
         txHash: 'retained-hash',
         valueWei: '1',

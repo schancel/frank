@@ -49,13 +49,13 @@ import {
 const MANIFEST_KEY = 'manifest'
 const SEED_KEY = 'seed'
 const MANIFEST_SCHEMA = 'frank-monad-wallet-state'
-const MANIFEST_VERSION = 3
+const MANIFEST_VERSION = 4
 const CURRENT_MANIFEST_INTENTS = [
-  'sub-account-pool-v3-authoritative',
+  'sub-account-pool-v4-funding-evidence',
   'change-pool-v2',
 ] as const
 const ACCEPTED_MANIFEST_INTENTS: Record<number, readonly string[]> = {
-  3: CURRENT_MANIFEST_INTENTS,
+  4: CURRENT_MANIFEST_INTENTS,
 }
 
 interface MonadWalletManifest {
@@ -429,6 +429,10 @@ function makeBundle(params: {
         changePool: params.changePool,
         subKeyring: params.subKeyring,
         changeKeyring: params.changeKeyring,
+        expectedChainId:
+          params.nativeJournal !== undefined
+            ? BigInt(params.nativeJournal.binding.nativeChainId)
+            : params.pool.getExpectedChainId(),
       }),
   })
   if (params.nativeJournal) validateEvmInputAdmission(inputAdmission)
@@ -502,6 +506,10 @@ function makeBundle(params: {
         changePool: params.changePool,
         subKeyring: params.subKeyring,
         changeKeyring: params.changeKeyring,
+        expectedChainId:
+          params.nativeJournal !== undefined
+            ? BigInt(params.nativeJournal.binding.nativeChainId)
+            : params.pool.getExpectedChainId(),
       }),
     assertNoOrphanedLeases,
     async compactTerminalAccounts(
@@ -633,6 +641,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
         testOnlyEphemeral: params.location === undefined,
       })
       await nativeJournal.Open()
+      params.pool.setExpectedChainId(BigInt(params.nativeBinding.nativeChainId))
     }
     if (
       (params.canonicalBinding !== undefined ||
@@ -743,6 +752,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
 export function createInMemoryMonadWalletBundle(params: {
   mnemonic: string
   passphrase?: string
+  expectedChainId?: bigint
 }): MonadWalletPersistenceBundle {
   const subKeyring = MonadHdKeyring.fromMnemonic(
     params.mnemonic,
@@ -756,6 +766,7 @@ export function createInMemoryMonadWalletBundle(params: {
     keyring: subKeyring,
     store: new InMemorySubAccountPoolStore(),
     requireStampReconciliationPreflight: true,
+    expectedChainId: params.expectedChainId,
   })
   const changePool = new MonadChangePool({
     keyring: changeKeyring,
@@ -778,6 +789,7 @@ export interface OpenMonadWalletBundleParams {
   seed?: { mnemonic: string; passphrase?: string }
   createSeedIfEmpty?: boolean
   mode?: 'create' | 'restore'
+  expectedChainId?: bigint
   onMigrationPhase?: (phase: string) => void | Promise<void>
 }
 
@@ -974,7 +986,7 @@ export async function openMonadWalletBundle(
       await subAccountStore.Bind()
     }
 
-    // A version-3 manifest can have committed just before interruption of empty component
+    // A version-4 manifest can have committed just before interruption of empty component
     // binding. Qualify emptiness read-only; this does not adopt old change rows or sweep intent.
     const initializeEmptyChange = await inspectEmptyUnboundChangeComponent(params.location)
     const changePoolStore = new LevelChangePoolStore(
@@ -994,6 +1006,7 @@ export async function openMonadWalletBundle(
       keyring: subKeyring,
       store: subAccountStore,
       requireStampReconciliationPreflight: true,
+      expectedChainId: params.expectedChainId,
     })
     const changePool = new MonadChangePool({
       keyring: changeKeyring,

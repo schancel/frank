@@ -12,7 +12,11 @@ import {
 import { deriveMonadStampChildPublic } from '../monad-stamp-stealth'
 import type { StampAttemptJournal } from './stamp-attempt-journal'
 import type { StampPaymentJournal } from './stamp-payment-journal'
-import { assertSubAccountLifecycleMatrix } from './sub-account-pool-storage'
+import {
+  assertSubAccountLifecycleMatrix,
+  validateFundingCollection,
+  validatePoolEntry,
+} from './sub-account-pool-storage'
 
 function assertMonadStampPaymentCount(count: number): void {
   if (!Number.isSafeInteger(count) || count < 1 || count > 64) {
@@ -142,10 +146,13 @@ export function validateMonadWalletState(params: {
   paymentJournal?: StampPaymentJournal
   subKeyring: MonadHdKeyring
   changeKeyring: MonadChangeKeyring
+  expectedChainId?: bigint
   allowMissingAttemptSpend?: boolean
   allowMissingAttemptRows?: boolean
   allowMissingChangeRecovery?: boolean
 }): void {
+  const expectedChainId =
+    params.expectedChainId ?? params.pool.getExpectedChainId?.()
   const recordSnapshot = params.pool.records()
   const checkpointSnapshot = params.pool.terminalCheckpoints()
   const changeSnapshot = params.changePool.records()
@@ -157,34 +164,19 @@ export function validateMonadWalletState(params: {
 
   for (const record of recordSnapshot) {
     assertSubAccountLifecycleMatrix(record)
+    validatePoolEntry(record)
     const expectedAddress = subAccountAddress(params.subKeyring, record.index)
     if (getAddress(record.address) !== getAddress(expectedAddress)) {
       throw new Error(
         `Sub-account address does not match keyring at index ${record.index}`,
       )
     }
-    if (record.fundingAttempt !== undefined) {
-      const transaction = parseSignedTransaction(
-        record.fundingAttempt.rawTx,
-        `sub-account ${record.index} funding attempt`,
+    if (record.funding !== undefined) {
+      validateFundingCollection(
+        record.funding,
+        expectedAddress,
+        expectedChainId,
       )
-      if (
-        normalizedHash(transaction.hash as string) !==
-          normalizedHash(record.fundingAttempt.txHash) ||
-        transaction.to === null ||
-        getAddress(transaction.to) !== getAddress(record.address)
-      ) {
-        throw new Error(
-          `Invalid sub-account ${record.index} funding attempt transaction`,
-        )
-      }
-    }
-    if (record.lifecycle?.funding !== undefined) {
-      assertTransactionCheckpoint({
-        ...record.lifecycle.funding,
-        label: `sub-account ${record.index} funding`,
-        destination: record.address,
-      })
     }
     if (record.lifecycle?.spend !== undefined) {
       assertTransactionCheckpoint({
@@ -196,11 +188,21 @@ export function validateMonadWalletState(params: {
   }
 
   for (const checkpoint of checkpointSnapshot) {
-    assertTransactionCheckpoint({
-      ...checkpoint.lifecycle.funding,
-      label: `checkpoint ${checkpoint.index} funding`,
-      destination: checkpoint.address,
-    })
+    validatePoolEntry(checkpoint)
+    const expectedAddress = subAccountAddress(
+      params.subKeyring,
+      checkpoint.index,
+    )
+    if (getAddress(checkpoint.address) !== getAddress(expectedAddress)) {
+      throw new Error(
+        `Checkpoint address does not match keyring at index ${checkpoint.index}`,
+      )
+    }
+    validateFundingCollection(
+      checkpoint.funding,
+      expectedAddress,
+      expectedChainId,
+    )
     assertTransactionCheckpoint({
       ...checkpoint.lifecycle.spend,
       label: `checkpoint ${checkpoint.index} spend`,

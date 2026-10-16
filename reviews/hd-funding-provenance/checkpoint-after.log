@@ -1,0 +1,1228 @@
+PASS packages/wallet/chain/monad-parallel-send.jest.test.ts (75.444 s)
+  ● Console
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 400,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 400,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 413,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 413,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 422,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 422,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 409,
+        relayError: 'canonical_directory_predecessor_missing'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 409,
+        relayError: 'canonical_directory_predecessor_missing'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.log
+      one send: 5090 ms; twenty together: 6622 ms; relay requests in flight at once: 20
+
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:343:13)
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:545:19) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:545:19)
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:572:19) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:572:19)
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:606:19) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:606:19)
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:644:18)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:644:18)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:662:18)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:662:18)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:745:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:745:5)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:762:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:762:5)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:766:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:766:5)
+
+    console.warn
+      [monad-canonical-dm] sent message 63da1921fcef56c20e74491c8fad294081fd472ad1703bc7e731401c8b8ca8c2 names 0x4669eff913a3c595cea5fa92a600201e8e9e75d8, which another unsettled message also pays from. Both are kept; the chain decides.
+
+      1493 |     const contested = payer.restore(holderOf(owner, row.consumerId), pending)
+      1494 |     if (contested.length > 0)
+    > 1495 |       console.warn(
+           |               ^
+      1496 |         `[monad-canonical-dm] sent message ${row.digest} names ${contested.join(
+      1497 |           ', ',
+      1498 |         )}, which another unsettled message also pays from. Both are kept; the chain decides.`,
+
+      at restoreOutgoingClaims (chain/monad-canonical-dm.ts:1495:15)
+      at chain/monad-chain.ts:6146:34
+      at Object.createWallet (chain/monad-chain.ts:6217:24)
+      at Object.createWallet (chain/message-items.testutil.ts:18:22)
+      at reopen (chain/monad-parallel-send.jest.test.ts:206:14)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:768:5)
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:780:5) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:780:5)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:784:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:784:5)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:817:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:817:5)
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:848:5) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:848:5)
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:1018:23 {
+        disposition: 'uncertain',
+        status: 400,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1018:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:1018:23 {
+        disposition: 'uncertain',
+        status: 413,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1018:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:1018:23 {
+        disposition: 'uncertain',
+        status: 422,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1018:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:1018:23 {
+        disposition: 'uncertain',
+        status: 409,
+        relayError: 'canonical_directory_predecessor_missing'
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1018:23
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: could not coalesce error
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/canonical-two-wallets.testutil.ts:183:33)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:1123:18) {
+        code: 'UNKNOWN_ERROR',
+        error: { code: -32000, message: 'Signer had insufficient balance' }
+      }
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:1123:18)
+
+    console.warn
+      [monad-canonical-dm] the node refused payment 0x0294befc4533f61c23bf7bea23f7a4ab7920125f8fc61327932631efd070a151 of a delivered message; the same payment is signed again at its nonce as 0xf40b816c3f81971b99600e024fee78e5679c43a99acc0d6c337b42a6977b817f
+
+      1065 |       row = next
+      1066 |       refusals.delete(payment.rawTx)
+    > 1067 |       console.warn(
+           |               ^
+      1068 |         `[monad-canonical-dm] the node refused payment ${Transaction.from(payment.rawTx).hash} of a delivered message; the same payment is signed again at its nonce as ${Transaction.from(again.rawTx).hash}`,
+      1069 |       )
+      1070 |       noteHandOver(await payer.submitPaymentSet([again.rawTx]))
+
+      at resignRefused (chain/monad-canonical-dm.ts:1067:15)
+      at chain/monad-canonical-dm.ts:1447:29
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: could not coalesce error
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/canonical-two-wallets.testutil.ts:183:33)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:1185:18) {
+        code: 'UNKNOWN_ERROR',
+        error: { code: -32000, message: 'Signer had insufficient balance' }
+      }
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:1185:18)
+
+    console.warn
+      [monad-canonical-dm] the node refused payment 0x544f2b2e8443eb42c0c3d24c7f01bf55b7205b1511186b0ec48a78431323cc07 of a delivered message; the same payment is signed again at its nonce as 0xbe48e328bac8dc9e9fbc21a8a40c9af0e44ba4edbebaef9d59fb41be110ca6c4
+
+      1065 |       row = next
+      1066 |       refusals.delete(payment.rawTx)
+    > 1067 |       console.warn(
+           |               ^
+      1068 |         `[monad-canonical-dm] the node refused payment ${Transaction.from(payment.rawTx).hash} of a delivered message; the same payment is signed again at its nonce as ${Transaction.from(again.rawTx).hash}`,
+      1069 |       )
+      1070 |       noteHandOver(await payer.submitPaymentSet([again.rawTx]))
+
+      at resignRefused (chain/monad-canonical-dm.ts:1067:15)
+      at chain/monad-canonical-dm.ts:1447:29
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:1249:21 {
+        disposition: 'uncertain',
+        status: 503,
+        relayError: 'canonical_mailbox_unavailable'
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1249:21
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 503,
+        relayError: 'canonical_mailbox_unavailable'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:1249:21 {
+        disposition: 'uncertain',
+        status: 500,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1249:21
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 500,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:1249:21 {
+        disposition: 'uncertain',
+        status: 200,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1249:21
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 200,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:1414:19) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:1414:19)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: crash before broadcast
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/chain/monad-parallel-send.jest.test.ts:1537:32)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:1538:20)
+
+PASS packages/wallet/monad-account-pool.jest.test.ts (17.343 s)
+  ● Console
+
+    console.warn
+      [MonadSubAccountPool] Skipping unconfirmed/timed out funding attempt for sub-account 0: Error: Funding transaction 0xcd64239c822641445ee66f0ad36ded7e93440555f06f2b350f1e7069c7488e18 is still pending (unavailable)
+          at MonadSubAccountPool.finishFundingAttempt (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/monad-account-pool.ts:2774:13)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at MonadSubAccountPool.resumeFundingAttempts (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/monad-account-pool.ts:2002:26)
+          at MonadSubAccountPool.reconcileBeforePreparation (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/monad-account-pool.ts:2035:38)
+          at MonadSubAccountPool.prepareStampInventoryExclusive (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/monad-account-pool.ts:1738:11)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/monad-account-pool.ts:1609:16
+
+      2008 |         } catch (err) {
+      2009 |           if (params.quiet !== true) {
+    > 2010 |             console.warn(
+           |                     ^
+      2011 |               `[MonadSubAccountPool] Skipping unconfirmed/timed out funding attempt for sub-account ${record.index}:`,
+      2012 |               err
+      2013 |             );
+
+      at MonadSubAccountPool.resumeFundingAttempts (monad-account-pool.ts:2010:21)
+      at MonadSubAccountPool.reconcileBeforePreparation (monad-account-pool.ts:2035:38)
+      at MonadSubAccountPool.prepareStampInventoryExclusive (monad-account-pool.ts:1738:11)
+      at monad-account-pool.ts:1609:16
+
+    console.warn
+      [MonadSubAccountPool] Skipping unconfirmed/timed out funding attempt for sub-account 0: Error: Funding transaction 0x8c5a1df86e3e8e1f60cf28e004a41b663aaf797ce6a74644669d974e48a27b48 was superceded by a later nonce and sub-account 0 was retired
+          at MonadSubAccountPool.finishFundingAttempt (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/monad-account-pool.ts:2779:13)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at MonadSubAccountPool.resumeFundingAttempts (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/monad-account-pool.ts:2002:26)
+          at MonadSubAccountPool.reconcileBeforePreparation (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/monad-account-pool.ts:2035:38)
+          at MonadSubAccountPool.prepareStampInventoryExclusive (/Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/monad-account-pool.ts:1738:11)
+          at /Users/shammah/repos/frank/.worktrees/hd-funding-provenance/packages/wallet/monad-account-pool.ts:1609:16
+
+      2008 |         } catch (err) {
+      2009 |           if (params.quiet !== true) {
+    > 2010 |             console.warn(
+           |                     ^
+      2011 |               `[MonadSubAccountPool] Skipping unconfirmed/timed out funding attempt for sub-account ${record.index}:`,
+      2012 |               err
+      2013 |             );
+
+      at MonadSubAccountPool.resumeFundingAttempts (monad-account-pool.ts:2010:21)
+      at MonadSubAccountPool.reconcileBeforePreparation (monad-account-pool.ts:2035:38)
+      at MonadSubAccountPool.prepareStampInventoryExclusive (monad-account-pool.ts:1738:11)
+      at monad-account-pool.ts:1609:16
+
+PASS packages/wallet/chain/monad-domain-wallet.jest.test.ts (22.925 s)
+PASS packages/wallet/chain/monad-fund-ahead.jest.test.ts (21.429 s)
+PASS packages/wallet/evm-input-admission.jest.test.ts (5.034 s)
+PASS packages/wallet/storage/monad-wallet-bundle.jest.test.ts
+PASS packages/wallet/storage/authoritative-pool-mutations.jest.test.ts
+PASS packages/wallet/storage/pool-review-regressions.jest.test.ts
+PASS packages/wallet/funding-observation.jest.test.ts
+
+Test Suites: 9 passed, 9 total
+Tests:       496 passed, 496 total
+Snapshots:   0 total
+Time:        143.849 s, estimated 156 s
+Ran all test suites matching /reviews\/hd-funding-provenance\/base-loss.jest.test.ts|packages\/wallet\/funding-observation.jest.test.ts|packages\/wallet\/storage\/monad-wallet-bundle.jest.test.ts|packages\/wallet\/storage\/authoritative-pool-mutations.jest.test.ts|packages\/wallet\/storage\/pool-review-regressions.jest.test.ts|packages\/wallet\/evm-input-admission.jest.test.ts|packages\/wallet\/chain\/monad-parallel-send.jest.test.ts|packages\/wallet\/chain\/monad-fund-ahead.jest.test.ts|packages\/wallet\/chain\/monad-domain-wallet.jest.test.ts|packages\/wallet\/monad-account-pool.jest.test.ts/i.
+PASS reviews/hd-funding-provenance/base-loss.jest.test.ts
+  ✓ two-funder completion retains BOTH signed artifacts and anchored observations through repeated Level reopen and terminal compaction (137 ms)
+  ✓ interruption BEFORE second signature retains first contributor and preparation hold in funding across reopen while unrelated accounts stay usable (67 ms)
+  ✓ interruption AFTER second contributor registration retains BOTH contributors across reopen (45 ms)
+  ✓ a failed Level write fences the store as uncertain, refusing selection and further reads until reopen recovers committed state (19 ms)
+  ✓ missing funding receipt plus positive balance OR unknown receipt execution keeps the obligation unresolved and non-selectable (42 ms)
+  ✓ reverted and superseded funding attempts retire the row while retaining signed artifacts and anchored evidence across reopen (54 ms)
+  ✓ installed input admission holds the partially funded target after reopen and refuses unrelated native spends on it while permitting unrelated accounts (69 ms)
+  ✓ refuses wrong hash/sender/recipient/chainId, keeps same-height replacement unresolved, enforces A->B->A generation CAS while preserving concurrent contributors, and refuses v3 stores without writes (81 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       8 passed, 8 total
+Snapshots:   0 total
+Time:        1.097 s
+Ran all test suites matching /reviews\/hd-funding-provenance\/base-loss.jest.test.ts/i.

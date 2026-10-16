@@ -462,29 +462,26 @@ class AdmissionOwner implements EvmInputAdmission {
     }
     const records = o.pool.records()
     for (const row of [...records, ...o.pool.terminalCheckpoints()]) {
-      if ('fundingAttempt' in row && row.fundingAttempt) {
-        const tx = this.tx(row.fundingAttempt.rawTx)
-        if (tx.transactionHash !== row.fundingAttempt.txHash.toLowerCase())
-          invalid()
-        add(
-          { kind: 'pool-funding', poolIndex: row.index, role: 'funding' },
-          `pool:${row.index}:funding`,
-          row.fundingAttempt.rawTx,
-          undefined,
-          [
-            { kind: 'address', address: address(row.address) },
-            { kind: 'allocation', pool: 'spend', index: row.index },
-          ],
-        )
+      if (row.funding) {
+        for (const attempt of row.funding.attempts) {
+          const tx = this.tx(attempt.rawTx)
+          if (tx.transactionHash !== attempt.txHash.toLowerCase()) invalid()
+          if (row.status === 'funding') {
+            add(
+              { kind: 'pool-funding', poolIndex: row.index, role: 'funding' },
+              `pool:${row.index}:funding`,
+              attempt.rawTx,
+              undefined,
+              [
+                { kind: 'address', address: address(row.address) },
+                { kind: 'allocation', pool: 'spend', index: row.index },
+              ],
+              attempt.observation.kind !== 'unresolved',
+            )
+          }
+        }
       }
       const lifecycle = row.lifecycle
-      if (lifecycle?.funding)
-        checkpoint(
-          row.index,
-          'funding',
-          lifecycle.funding.rawTx,
-          lifecycle.funding.txHash,
-        )
       if (lifecycle?.spend)
         checkpoint(
           row.index,

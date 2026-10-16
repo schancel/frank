@@ -1,0 +1,34 @@
+packages/wallet/monad-change-pool.ts:572:  const record = params.manager.releaseLease(params.handle, params.outcome)
+packages/wallet/monad-account-lease.ts:42: * `pool.setStatus()` — all public API `monad-account-pool.ts` already exposes for this purpose. It
+packages/wallet/monad-account-lease.ts:170:    return this.acquireForIndex(selected.index)
+packages/wallet/monad-account-lease.ts:201:    this.pool.setStatus(index, 'in-use')
+packages/wallet/monad-account-lease.ts:238:    return this.pool.setStatus(handle.index, nextStatus)
+packages/wallet/monad-account-lease.ts:256: * Wait-and-retry counterpart to `SubAccountLeaseManager.acquireLease()`: retries on
+packages/wallet/monad-account-lease.ts:262: * `SubAccountLeaseManager.acquireLease()` itself always rejects immediately; callers that would
+packages/wallet/monad-account-lease.ts:278:      return manager.acquireLease()
+packages/wallet/monad-account-lease.ts:342:        record: params.manager.releaseLease(params.handle, 'confirmed'),
+packages/wallet/monad-account-lease.ts:348:        record: params.manager.releaseLease(params.handle, 'failed'),
+packages/wallet/monad-account-lease.ts:355:        record: params.manager.releaseLease(params.handle, 'stuck'),
+packages/wallet/monad-identity.ts:54: * than reusing pool index 0 for double duty (which `MonadSubAccountPool.ensureSize()` would then
+packages/wallet/monad-stamp-client.ts:1570:          ).setStatus(
+packages/wallet/monad-forum-operation.ts:215:    if (handle) wallet.leaseManager.releaseLease(handle, 'confirmed')
+packages/wallet/monad-forum-operation.ts:216:    else wallet.pool.setStatus(operation.leaseIndex, 'spent')
+packages/wallet/monad-forum-operation.ts:220:  if (admission) await wallet.walletState!.compactTerminalAccounts(8, admission)
+packages/wallet/monad-forum-operation.ts:239:        wallet.pool.recordSpendTransaction(operation.leaseIndex, {
+packages/wallet/monad-forum-operation.ts:283:      ? wallet.leaseManager.acquireForIndex(params.leaseIndex, params.leaseHolder)
+packages/wallet/monad-forum-operation.ts:289:      : wallet.leaseManager.acquireLease()
+packages/wallet/monad-forum-operation.ts:352:    wallet.leaseManager.releaseLease(handle, 'unused')
+packages/wallet/monad-forum-operation.ts:361:  wallet.pool.recordSpendTransaction(handle.index, {
+packages/wallet/monad-account-pool.ts:25: *     `selectForStamp()` is called synchronously today, from `SubAccountLeaseManager.acquireLease()`
+packages/wallet/evm-stamp-payer.ts:1187:      pool.commitSpend(index, payment.rawTx)
+packages/wallet/evm-stamp-payer.ts:1198:        pool.setStatus(index, 'retired')
+packages/wallet/evm-stamp-payer.ts:1210:      pool.setStatus(payment.index, 'retired')
+packages/wallet/canonical-relay-joined-driver.ts:223:  pool.ensureSize(poolSize)
+packages/wallet/chain/monad-chain.ts:2759:          pool.ensureUnfundedSize(config.subAccountPoolSize);
+packages/wallet/chain/monad-chain.ts:2795:              pool.setStatus(record.index, "retired");
+packages/wallet/storage/monad-wallet-bundle.ts:519:        return params.pool.compactTerminalAccounts({
+packages/wallet/evm-input-admission.ts:824:    const handle = this.owners.leases.acquireForIndex(index)
+packages/wallet/evm-input-admission.ts:1122:      written = pool.commitSpend(index, rawTx)
+packages/wallet/evm-input-admission.ts:1293:        pool.recordSpendTransaction(index, checkpoint)
+packages/wallet/evm-input-admission.ts:1301:        leases.releaseLease(handle, outcome)
+packages/wallet/evm-input-admission.ts:1311:        pool.setStatus(index, status)

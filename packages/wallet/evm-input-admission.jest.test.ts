@@ -1551,8 +1551,19 @@ describe('pool spend admission (#1235 Stage 1)', () => {
         await f.poolStore.mutate(snapshot => { const record = {
           index: 1,
           address: f.keyring.deriveSubAccount(1).address,
-          status: 'funding',
-          fundingAttempt: { rawTx: funding.serialized, txHash: funding.hash! },
+          status: 'funding' as const,
+          funding: {
+            version: 1 as const,
+            attempts: [
+              {
+                rawTx: funding.serialized,
+                txHash: funding.hash!,
+                valueWei: '1',
+                generation: 1,
+                observation: { kind: 'unresolved' as const, reason: 'pending' as const },
+              },
+            ],
+          },
         }; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } })
       }
       await f.pool.flush()

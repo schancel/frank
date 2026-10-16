@@ -60,10 +60,12 @@
  * Likewise out of scope (ticket #34 non-goal): sweeping/reclaiming any leftover balance sitting on a
  * `'retired'` (failed/stuck) account — not attempted here.
  */
-import { Provider, Transaction, getAddress } from "ethers";
+import { Provider, Transaction, getAddress, getBytes } from "ethers";
 
 import { MonadHdKeyring } from "./monad-hd-keyring";
 import {
+  EvmFundingAccounts,
+  EvmFundingObservation,
   MonadAccountTxSigner,
   MonadTxOverrides,
   MonadTxSubmitter,
@@ -73,10 +75,17 @@ import {
   InMemorySubAccountPoolStore,
   assertSubAccountLifecycleMatrix,
   assertSubAccountStatusTransition,
+  sameFundingObservation,
+  SubAccountFundingAccounts,
   SubAccountFundingAttempt,
+  SubAccountFundingBlock,
+  SubAccountFundingCollection,
+  SubAccountFundingHold,
+  SubAccountFundingObservation,
   SubAccountPoolStore,
   SubAccountRecoveryDisposition,
   SubAccountRecord,
+  SubAccountRevisionMismatchError,
   SubAccountStatus,
   SubAccountTransactionCheckpoint,
   TerminalSubAccountCheckpoint,
@@ -89,6 +98,12 @@ import {
 import { inferChainFamily, type ChainUtxoPool } from "./chain-utxo-pool";
 
 export type {
+  SubAccountFundingAccounts,
+  SubAccountFundingAttempt,
+  SubAccountFundingBlock,
+  SubAccountFundingCollection,
+  SubAccountFundingHold,
+  SubAccountFundingObservation,
   SubAccountPoolStore,
   SubAccountRecoveryDisposition,
   SubAccountRecord,
@@ -332,22 +347,43 @@ export class MonadSubAccountPool {
   }
 
   private mainAccountAddress?: string;
+  private expectedChainId?: bigint;
 
   constructor(params: {
     keyring: MonadHdKeyring;
     store?: SubAccountPoolStore;
     requireStampReconciliationPreflight?: boolean;
     mainAccountAddress?: string;
+    expectedChainId?: bigint;
   }) {
     this.keyring = params.keyring;
     this.store = params.store ?? new InMemorySubAccountPoolStore();
     this.requireStampReconciliationPreflight =
       params.requireStampReconciliationPreflight ?? false;
     this.mainAccountAddress = params.mainAccountAddress;
+    if (params.expectedChainId !== undefined) {
+      this.setExpectedChainId(params.expectedChainId);
+    }
   }
 
   setMainAccountAddress(address: string): void {
     this.mainAccountAddress = address;
+  }
+
+  setExpectedChainId(chainId: bigint): void {
+    if (typeof chainId !== "bigint" || chainId <= 0n) {
+      throw new Error(`Expected chain ID must be a positive bigint, got ${chainId}`);
+    }
+    if (this.expectedChainId !== undefined && this.expectedChainId !== chainId) {
+      throw new Error(
+        `Cannot rebind sub-account pool expected chain ID from ${this.expectedChainId} to ${chainId}`
+      );
+    }
+    this.expectedChainId = chainId;
+  }
+
+  getExpectedChainId(): bigint | undefined {
+    return this.expectedChainId;
   }
 
   /** Bundle-owned lifecycle gate. Persistence factories attach this before exposing the pool. */
@@ -728,26 +764,367 @@ export class MonadSubAccountPool {
       throw new Error("Use a durable funding attempt to enter funding state");
     }
     this.capacityCache.delete(index);
-    const { fundingAttempt: _fundingAttempt, ...base } = existing;
-    const updated: SubAccountRecord = { ...base, status };
+    const { funding: existingFunding, ...base } = existing;
+    const updated: SubAccountRecord =
+      status === "unfunded"
+        ? { ...base, status: "unfunded" }
+        : {
+            ...base,
+            status,
+            ...(existingFunding === undefined
+              ? {}
+              : {
+                  funding: {
+                    version: existingFunding.version,
+                    attempts: existingFunding.attempts.map((attempt) => ({
+                      ...attempt,
+                    })),
+                  },
+                }),
+          };
     await this.persistRecord(updated);
     this.syncUtxo(index, status);
     return this.store.getByIndex(index)!;
   }
 
-  /** Retains confirmed funding bytes/value after the transient funding attempt is resolved. */
-  async recordFundingTransaction(
-    index: number,
-    transaction: SubAccountTransactionCheckpoint
-  ): Promise<void> {
-    const existing = this.store.getByIndex(index);
-    if (existing === undefined) {
-      throw new Error(`No sub-account at index ${index} in the pool`);
+  /**
+   * Registers a signed funding transfer on sub-account `index` before broadcast.
+   * Validates canonical signed bytes, sender, recipient, positive value, empty calldata,
+   * empty accessList, gasLimit, nonce, and expectedChainId (when configured).
+   * Exact replay of an already-registered `rawTx` is idempotent and does not increment
+   * generation or row revision. Conflicting `txHash` or `(sender, nonce)` is refused.
+   */
+  async registerFundingAttempt(params: {
+    index: number;
+    rawTx: string;
+    txHash: string;
+    funder?: string;
+    hold?: SubAccountFundingHold;
+    expectedRevision?: number;
+  }): Promise<SubAccountRecord> {
+    if (!Number.isSafeInteger(params.index) || params.index < 0) {
+      throw new Error(`Invalid sub-account index: ${params.index}`);
     }
-    await this.persistRecord({
-      ...existing,
-      lifecycle: { ...existing.lifecycle, funding: { ...transaction } },
+    if (
+      typeof params.rawTx !== "string" ||
+      params.rawTx.length > MAX_SPEND_RAW_TX_LENGTH ||
+      !/^0x[0-9a-f]+$/.test(params.rawTx)
+    ) {
+      throw new Error(
+        `Funding attempt rawTx for sub-account ${params.index} is not canonical lowercase hex`
+      );
+    }
+    if (
+      typeof params.txHash !== "string" ||
+      !/^0x[0-9a-f]{64}$/.test(params.txHash)
+    ) {
+      throw new Error(
+        `Funding attempt txHash for sub-account ${params.index} is not canonical 32-byte lowercase hex`
+      );
+    }
+    let tx: Transaction;
+    try {
+      tx = Transaction.from(params.rawTx);
+    } catch (error) {
+      throw new Error(
+        `Funding attempt rawTx for sub-account ${params.index} failed to parse: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+    let hash: string | null;
+    let from: string | null;
+    try {
+      ({ hash, from } = tx);
+    } catch (error) {
+      throw new Error(
+        `Funding attempt signature recovery failed for sub-account ${params.index}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+    if (!hash || !from) {
+      throw new Error(`Funding attempt for sub-account ${params.index} must be signed`);
+    }
+    if (tx.serialized.toLowerCase() !== params.rawTx) {
+      throw new Error(
+        `Funding attempt rawTx for sub-account ${params.index} is not canonical serialized bytes`
+      );
+    }
+    if (hash.toLowerCase() !== params.txHash) {
+      throw new Error(
+        `Funding attempt txHash mismatch for sub-account ${params.index}: expected ${hash.toLowerCase()}, got ${params.txHash}`
+      );
+    }
+    if (params.funder !== undefined) {
+      let normalizedFunder: string;
+      try {
+        normalizedFunder = getAddress(params.funder);
+      } catch {
+        throw new Error(
+          `Invalid funder address for sub-account ${params.index}: ${params.funder}`
+        );
+      }
+      if (getAddress(from) !== normalizedFunder) {
+        throw new Error(
+          `Funding attempt sender mismatch for sub-account ${params.index}: expected ${normalizedFunder}, got ${getAddress(from)}`
+        );
+      }
+    }
+    const derivedAddress = this.keyring.deriveSubAccount(params.index).address;
+    if (!tx.to || getAddress(tx.to) !== getAddress(derivedAddress)) {
+      throw new Error(
+        `Funding attempt recipient mismatch for sub-account ${params.index}: expected ${derivedAddress}, got ${tx.to ?? "null"}`
+      );
+    }
+    if (tx.value <= 0n) {
+      throw new Error(
+        `Funding attempt for sub-account ${params.index} must transfer a positive value`
+      );
+    }
+    if (getBytes(tx.data).length > 0) {
+      throw new Error(
+        `Funding attempt for sub-account ${params.index} must have empty calldata`
+      );
+    }
+    if (tx.type !== 0 && tx.type !== 1 && tx.type !== 2) {
+      throw new Error(
+        `Funding attempt for sub-account ${params.index} has unsupported transaction type ${tx.type}`
+      );
+    }
+    if (tx.accessList && tx.accessList.length > 0) {
+      throw new Error(
+        `Funding attempt for sub-account ${params.index} must have an empty accessList`
+      );
+    }
+    if (tx.gasLimit <= 0n) {
+      throw new Error(
+        `Funding attempt for sub-account ${params.index} must have a positive gasLimit`
+      );
+    }
+    if (tx.chainId <= 0n) {
+      throw new Error(
+        `Funding attempt for sub-account ${params.index} must have a positive chainId`
+      );
+    }
+    if (this.expectedChainId !== undefined && tx.chainId !== this.expectedChainId) {
+      throw new Error(
+        `Funding attempt chainId mismatch for sub-account ${params.index}: expected ${this.expectedChainId}, got ${tx.chainId}`
+      );
+    }
+    if (!Number.isSafeInteger(tx.nonce) || tx.nonce < 0) {
+      throw new Error(
+        `Funding attempt for sub-account ${params.index} has invalid nonce ${tx.nonce}`
+      );
+    }
+
+    const normalizedSender = getAddress(from).toLowerCase();
+    const valueWei = tx.value.toString();
+
+    const updated = await this.store.mutate((snapshot) => {
+      const current = snapshot.records.find((row) => row.index === params.index);
+      if (current === undefined) {
+        throw new Error(`No sub-account at index ${params.index} in the pool`);
+      }
+      if (getAddress(current.address) !== getAddress(derivedAddress)) {
+        throw new Error(`Stored address mismatch for sub-account ${params.index}`);
+      }
+      if (
+        params.expectedRevision !== undefined &&
+        (current.revision ?? 0) !== params.expectedRevision
+      ) {
+        throw new SubAccountRevisionMismatchError(params.index);
+      }
+      if (
+        current.status !== "unfunded" &&
+        current.status !== "funding" &&
+        current.status !== "available"
+      ) {
+        throw new Error(
+          `Cannot register funding attempt on sub-account ${params.index} in status ${current.status}`
+        );
+      }
+      const existingAttempts = current.funding?.attempts ?? [];
+      for (const existing of existingAttempts) {
+        if (existing.rawTx === params.rawTx) {
+          return { records: [], result: current };
+        }
+        if (existing.txHash === params.txHash) {
+          throw new Error(
+            `Conflicting funding attempt txHash ${params.txHash} on sub-account ${params.index}`
+          );
+        }
+        const existingTx = Transaction.from(existing.rawTx);
+        if (
+          existingTx.from &&
+          getAddress(existingTx.from).toLowerCase() === normalizedSender &&
+          existingTx.nonce === tx.nonce
+        ) {
+          throw new Error(
+            `Conflicting funding attempt for sender ${normalizedSender} nonce ${tx.nonce} on sub-account ${params.index}`
+          );
+        }
+      }
+      const nextAttempt: SubAccountFundingAttempt = {
+        rawTx: params.rawTx,
+        txHash: params.txHash,
+        valueWei,
+        generation: 1,
+        observation: { kind: "unresolved", reason: "pending" },
+      };
+      const nextHold = params.hold ?? current.funding?.hold;
+      const nextFunding: SubAccountFundingCollection = {
+        version: 1,
+        attempts: [...existingAttempts, nextAttempt],
+        ...(nextHold === undefined ? {} : { hold: nextHold }),
+      };
+      const nextRecord: SubAccountRecord = {
+        ...current,
+        status: "funding",
+        funding: nextFunding,
+      };
+      assertSubAccountLifecycleMatrix(nextRecord);
+      return {
+        records: [
+          {
+            record: nextRecord,
+            expectedRevision: current.revision ?? 0,
+          },
+        ],
+        result: nextRecord,
+      };
     });
+    this.capacityCache.delete(params.index);
+    this.syncUtxo(params.index, "funding");
+    return this.store.getByIndex(params.index) ?? updated;
+  }
+
+  /**
+   * Records an anchored chain observation for a registered funding attempt.
+   * Compare-and-sets against `(txHash, rawTx, expectedGeneration)` inside `this.store.mutate`,
+   * preserving concurrent later contributors and lifecycle facts on the latest row.
+   * Refuses stale completions, A->B->A generation mismatches, generation overflow, and
+   * overwriting resolved observations with conflicting evidence.
+   */
+  async recordFundingObservation(params: {
+    index: number;
+    txHash: string;
+    rawTx: string;
+    expectedGeneration: number;
+    observation: SubAccountFundingObservation | EvmFundingObservation;
+  }): Promise<SubAccountRecord> {
+    if (
+      !Number.isSafeInteger(params.expectedGeneration) ||
+      params.expectedGeneration < 1
+    ) {
+      throw new Error(`Invalid expectedGeneration: ${params.expectedGeneration}`);
+    }
+    const normalizedObservation = normalizeFundingObservation(params.observation);
+    const updated = await this.store.mutate((snapshot) => {
+      const current = snapshot.records.find((row) => row.index === params.index);
+      if (current === undefined || current.funding === undefined) {
+        throw new Error(`Sub-account ${params.index} has no funding collection`);
+      }
+      const attemptIndex = current.funding.attempts.findIndex(
+        (entry) => entry.txHash === params.txHash
+      );
+      if (attemptIndex < 0) {
+        throw new Error(
+          `Sub-account ${params.index} has no funding attempt ${params.txHash}`
+        );
+      }
+      const currentAttempt = current.funding.attempts[attemptIndex]!;
+      if (currentAttempt.rawTx !== params.rawTx) {
+        throw new Error(
+          `Funding attempt ${params.txHash} on sub-account ${params.index} rawTx mismatch`
+        );
+      }
+      if (currentAttempt.generation !== params.expectedGeneration) {
+        throw new Error(
+          `Stale funding attempt generation for ${params.txHash} on sub-account ${params.index} (Stale pool revision: expected generation ${params.expectedGeneration}, got ${currentAttempt.generation})`
+        );
+      }
+      if (sameFundingObservation(currentAttempt.observation, normalizedObservation)) {
+        return { records: [], result: current };
+      }
+      if (currentAttempt.observation.kind !== "unresolved") {
+        throw new Error(
+          `Cannot overwrite resolved funding observation (${currentAttempt.observation.kind}) for ${params.txHash} on sub-account ${params.index}`
+        );
+      }
+      if (currentAttempt.generation >= Number.MAX_SAFE_INTEGER) {
+        throw new Error(
+          `Funding attempt generation overflow for ${params.txHash} on sub-account ${params.index}`
+        );
+      }
+
+      const updatedAttempt: SubAccountFundingAttempt = {
+        ...currentAttempt,
+        generation: currentAttempt.generation + 1,
+        observation: normalizedObservation,
+      };
+      const nextAttempts = current.funding.attempts.map((entry, idx) =>
+        idx === attemptIndex ? updatedAttempt : entry
+      );
+
+      let nextStatus = current.status;
+      let nextHold = current.funding.hold;
+      if (current.status === "funding") {
+        if (
+          normalizedObservation.kind === "superseded" ||
+          (normalizedObservation.kind === "included" &&
+            normalizedObservation.execution === "failure")
+        ) {
+          nextStatus = "retired";
+          nextHold = undefined;
+        } else if (
+          normalizedObservation.kind === "included" &&
+          normalizedObservation.execution === "success"
+        ) {
+          const allResolved = nextAttempts.every(
+            (entry) => entry.observation.kind !== "unresolved"
+          );
+          const anyFailedOrSuperseded = nextAttempts.some(
+            (entry) =>
+              entry.observation.kind === "superseded" ||
+              (entry.observation.kind === "included" &&
+                entry.observation.execution === "failure")
+          );
+          if (anyFailedOrSuperseded) {
+            nextStatus = "retired";
+            nextHold = undefined;
+          } else if (nextHold === undefined && allResolved) {
+            nextStatus = "available";
+          }
+        }
+      }
+
+      const nextFunding: SubAccountFundingCollection = {
+        version: 1,
+        attempts: nextAttempts,
+        ...(nextHold === undefined ? {} : { hold: nextHold }),
+      };
+      const nextRecord: SubAccountRecord = {
+        ...current,
+        status: nextStatus,
+        funding: nextFunding,
+      };
+      assertSubAccountLifecycleMatrix(nextRecord);
+      return {
+        records: [
+          {
+            record: nextRecord,
+            expectedRevision: current.revision ?? 0,
+          },
+        ],
+        result: nextRecord,
+      };
+    });
+    if (updated.status === "retired") {
+      this.capacityCache.delete(params.index);
+    }
+    this.syncUtxo(params.index, updated.status);
+    return this.store.getByIndex(params.index) ?? updated;
   }
 
   /** Retains the exact signed spend before it can become terminal/recoverable state. */
@@ -1161,23 +1538,35 @@ export class MonadSubAccountPool {
       ) {
         continue;
       }
-      const { funding, spend, recovery } = record.lifecycle ?? {};
+      const funding = record.funding;
+      const { spend, recovery } = record.lifecycle ?? {};
       if (
         funding === undefined ||
+        funding.hold !== undefined ||
+        funding.attempts.some((entry) => entry.observation.kind === "unresolved") ||
         spend === undefined ||
         recovery === undefined
       ) {
         continue;
       }
-      await this.store.mutate(() => ({ checkpoints: [{ expectedRevision: record.revision!, checkpoint: {
-        version: 1,
-        index: record.index,
-        address: record.address,
-        status: record.status as "spent" | "retired",
-        denominationWei: spend.valueWei,
-        lifecycle: { funding, spend, recovery },
-        compactedAt: (params.now ?? Date.now)(),
-      } }], result: undefined }));
+      await this.store.mutate(() => ({
+        checkpoints: [
+          {
+            expectedRevision: record.revision!,
+            checkpoint: {
+              version: 1,
+              index: record.index,
+              address: record.address,
+              status: record.status as "spent" | "retired",
+              denominationWei: spend.valueWei,
+              funding,
+              lifecycle: { spend, recovery },
+              compactedAt: (params.now ?? Date.now)(),
+            },
+          },
+        ],
+        result: undefined,
+      }));
       this.capacityCache.delete(record.index);
       compacted++;
     }
@@ -1598,6 +1987,17 @@ export class MonadSubAccountPool {
     const fundingTxHashes: string[] = [];
     for (const record of this.store.getAll()) {
       if (record.status === "funding") {
+        const unresolvedAttempts =
+          record.funding?.attempts.filter(
+            (entry) => entry.observation.kind === "unresolved"
+          ) ?? [];
+        if (
+          record.funding !== undefined &&
+          record.funding.attempts.length > 0 &&
+          unresolvedAttempts.length === 0
+        ) {
+          continue;
+        }
         try {
           const txHash = await this.finishFundingAttempt(
             record,
@@ -1656,8 +2056,21 @@ export class MonadSubAccountPool {
           )
             return;
           if (transactionCount > 0 || balance <= params.gasReserveWei) {
-            const { fundingAttempt: _fundingAttempt, ...base } = record;
-            await this.persistRecord({ ...base, status: "retired" });
+            const { funding: existingFunding, ...base } = record;
+            await this.persistRecord({
+              ...base,
+              status: "retired",
+              ...(existingFunding === undefined
+                ? {}
+                : {
+                    funding: {
+                      version: existingFunding.version,
+                      attempts: existingFunding.attempts.map((attempt) => ({
+                        ...attempt,
+                      })),
+                    },
+                  }),
+            });
             this.capacityCache.delete(record.index);
           } else {
             this.capacityCache.set(record.index, {
@@ -1839,14 +2252,29 @@ export class MonadSubAccountPool {
         }
       }
 
+      const operationId = holder ?? `burn-multi:${target.index}`;
+      const hold: SubAccountFundingHold = {
+        operationId,
+        expectedContributors: params.funders.length,
+      };
       for (const [offset, funder] of params.funders.entries()) {
         // Capture before spacing/signing can yield. Completion must compare this exact row,
         // rather than adopting a lease or lifecycle transition that won while signing waited.
         const currentTarget = this.store.getByIndex(target.index);
         if (
           currentTarget === undefined ||
-          currentTarget.status !== (offset === 0 ? "unfunded" : "available") ||
-          this.isSpendReserved(target.index, holder)
+          currentTarget.status !== (offset === 0 ? "unfunded" : "funding") ||
+          this.isSpendReserved(target.index, holder) ||
+          (offset > 0 &&
+            (currentTarget.funding?.hold?.operationId !== operationId ||
+              currentTarget.funding?.hold?.expectedContributors !==
+                params.funders.length ||
+              currentTarget.funding.attempts.length !== offset ||
+              !currentTarget.funding.attempts.every(
+                (entry) =>
+                  entry.observation.kind === "included" &&
+                  entry.observation.execution === "success"
+              )))
         ) {
           throw new Error(`Funding target ${target.index} is no longer available to this preparation`);
         }
@@ -1859,10 +2287,13 @@ export class MonadSubAccountPool {
           funder.amountWei,
           params.fundingOverrides
         );
-        await this.persistRecord({
-          ...currentTarget,
-          status: "funding",
-          fundingAttempt: { rawTx: signedTx.rawTx, txHash: signedTx.txHash },
+        await this.registerFundingAttempt({
+          index: target.index,
+          rawTx: signedTx.rawTx,
+          txHash: signedTx.txHash,
+          funder: funder.signer.address,
+          hold,
+          expectedRevision: currentTarget.revision ?? 0,
         });
         await this.store.flush();
         params.onProgress?.({
@@ -1877,7 +2308,8 @@ export class MonadSubAccountPool {
           this.store.getByIndex(target.index) as SubAccountRecord,
           funder.signer,
           params.receipt,
-          false
+          false,
+          signedTx.txHash
         );
         fundingTxHashes.push(txHash);
         params.onProgress?.({
@@ -1888,6 +2320,47 @@ export class MonadSubAccountPool {
           txHash,
         });
       }
+
+      const expectedContributors = params.funders.length;
+      await this.store.mutate((snapshot) => {
+        const current = snapshot.records.find((row) => row.index === target!.index);
+        if (
+          current === undefined ||
+          current.status !== "funding" ||
+          current.funding === undefined ||
+          current.funding.hold?.operationId !== operationId ||
+          current.funding.hold.expectedContributors !== expectedContributors ||
+          current.funding.attempts.length !== expectedContributors ||
+          !current.funding.attempts.every(
+            (entry) =>
+              entry.observation.kind === "included" &&
+              entry.observation.execution === "success"
+          )
+        ) {
+          throw new Error(
+            `Multi-funder preparation for sub-account ${target!.index} cannot complete without all verified contributors`
+          );
+        }
+        const completedRecord: SubAccountRecord = {
+          ...current,
+          status: "available",
+          funding: {
+            version: 1,
+            attempts: current.funding.attempts.map((entry) => ({ ...entry })),
+          },
+        };
+        assertSubAccountLifecycleMatrix(completedRecord);
+        return {
+          records: [
+            {
+              record: completedRecord,
+              expectedRevision: current.revision ?? 0,
+            },
+          ],
+          result: completedRecord,
+        };
+      });
+      await this.store.flush();
 
       const totalFunded = params.burnValueWei + params.gasReserveWei;
       this.capacityCache.set(target.index, {
@@ -2157,9 +2630,13 @@ export class MonadSubAccountPool {
     attempt: SubAccountFundingAttempt
   ): Promise<void> {
     const current = this.store.getByIndex(index);
+    const currentAttempt = current?.funding?.attempts.find(
+      (entry) => entry.txHash === attempt.txHash
+    );
     if (
       current?.status !== "funding" ||
-      current.fundingAttempt?.rawTx !== attempt.rawTx
+      currentAttempt === undefined ||
+      currentAttempt.rawTx !== attempt.rawTx
     ) {
       throw new Error(
         `Sub-account ${index} no longer records funding transaction ${attempt.txHash}`
@@ -2173,23 +2650,74 @@ export class MonadSubAccountPool {
     record: SubAccountRecord,
     signer: MonadAccountTxSigner,
     options?: FundingReceiptOptions,
-    resubmit = true
+    resubmit = true,
+    targetTxHash?: string
   ): Promise<string> {
-    const attempt = record.fundingAttempt;
-    if (record.status !== "funding" || attempt === undefined) {
+    const currentRecord = this.store.getByIndex(record.index) ?? record;
+    const attempts = currentRecord.funding?.attempts ?? [];
+    const attempt =
+      targetTxHash !== undefined
+        ? attempts.find((entry) => entry.txHash === targetTxHash)
+        : attempts.find((entry) => entry.observation.kind === "unresolved") ??
+          attempts[attempts.length - 1];
+    if (currentRecord.status !== "funding" || attempt === undefined) {
       throw new Error(
         `Sub-account ${record.index} has no durable funding attempt`
       );
     }
-    let status = await signer.getStatus(attempt.txHash);
-    if (status === "pending" && resubmit) {
-      await this.persistFundingAttemptBeforeResubmit(record.index, attempt);
-      // An already-known/nonce-too-low response is compatible with a prior successful broadcast;
-      // the receipt, never the resend response, decides eligibility.
-      await signer
-        .submitRaw(attempt.rawTx, attempt.txHash)
-        .catch(() => undefined);
+
+    const parsedTx = Transaction.from(attempt.rawTx);
+    if (!parsedTx.from) {
+      throw new Error(`Funding transaction ${attempt.txHash} is unsigned`);
     }
+    const funder = parsedTx.from;
+    const chainId = this.expectedChainId ?? parsedTx.chainId;
+
+    const captureGeneration = (): number => {
+      const beforeRow = this.store.getByIndex(record.index);
+      const beforeAttempt = beforeRow?.funding?.attempts.find(
+        (entry) => entry.txHash === attempt.txHash
+      );
+      if (
+        beforeRow === undefined ||
+        beforeAttempt === undefined ||
+        beforeAttempt.rawTx !== attempt.rawTx
+      ) {
+        throw new Error(
+          `Sub-account ${record.index} no longer records funding transaction ${attempt.txHash}`
+        );
+      }
+      return beforeAttempt.generation;
+    };
+
+    const recordCapturedObservation = async (
+      capturedGeneration: number,
+      rawObserved: EvmFundingObservation
+    ): Promise<SubAccountFundingObservation> => {
+      const observation = normalizeFundingObservation(rawObserved);
+      await this.recordFundingObservation({
+        index: record.index,
+        txHash: attempt.txHash,
+        rawTx: attempt.rawTx,
+        expectedGeneration: capturedGeneration,
+        observation,
+      });
+      await this.store.flush();
+      return observation;
+    };
+
+    const observeAndRecord = async (): Promise<SubAccountFundingObservation> => {
+      const capturedGeneration = captureGeneration();
+      const rawObserved = await signer.observeFunding({
+        rawTx: attempt.rawTx,
+        txHash: attempt.txHash,
+        funder,
+        recipient: record.address,
+        chainId,
+      });
+      return recordCapturedObservation(capturedGeneration, rawObserved);
+    };
+
     // Monad confirms substantially faster than the two-second cadence inherited from the
     // original EVM bring-up. A Send commonly prepares two accounts, so that cadence added several
     // seconds of avoidable UI latency. Poll four times per second while retaining the same
@@ -2199,66 +2727,62 @@ export class MonadSubAccountPool {
     const sleep =
       options?.sleep ??
       ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+    let observed: SubAccountFundingObservation;
+    if (resubmit) {
+      const capturedGeneration = captureGeneration();
+      const rawObserved = await signer.observeFunding({
+        rawTx: attempt.rawTx,
+        txHash: attempt.txHash,
+        funder,
+        recipient: record.address,
+        chainId,
+      });
+      if (
+        rawObserved.kind === "included" ||
+        (rawObserved.kind === "unresolved" && rawObserved.reason === "unavailable")
+      ) {
+        observed = await recordCapturedObservation(capturedGeneration, rawObserved);
+      } else {
+        await this.persistFundingAttemptBeforeResubmit(record.index, attempt);
+        // An already-known/nonce-too-low response is compatible with a prior successful broadcast;
+        // the receipt, never the resend response, decides eligibility.
+        await signer
+          .submitRaw(attempt.rawTx, attempt.txHash)
+          .catch(() => undefined);
+        observed =
+          maxAttempts === 0
+            ? await observeAndRecord()
+            : { kind: "unresolved", reason: "pending" };
+      }
+    } else {
+      observed = await observeAndRecord();
+    }
+
     for (
       let attemptNumber = 0;
-      status === "pending" && attemptNumber < maxAttempts;
+      observed.kind === "unresolved" &&
+        observed.reason !== "unavailable" &&
+        attemptNumber < maxAttempts;
       attemptNumber++
     ) {
       if (attemptNumber > 0 || resubmit) await sleep(intervalMs);
-      status = await signer.getStatus(attempt.txHash);
+      observed = await observeAndRecord();
     }
-    if (status === "pending") {
-      // No receipt. A failed read proves nothing, so each one leaves the row `funding`. The nonce
-      // is read before the balance: a balance read that follows an advanced nonce cannot predate
-      // the transfer that advanced it.
-      let isSuperceded = false;
-      try {
-        const parsed = Transaction.from(attempt.rawTx);
-        if (parsed.from && typeof signer.getTransactionCount === "function") {
-          const currentNonce = await signer.getTransactionCount(parsed.from);
-          if (currentNonce > BigInt(parsed.nonce)) {
-            isSuperceded = true;
-          }
-        }
-      } catch {}
 
-      let balance: bigint | undefined;
-      try {
-        balance = await signer.getBalance(record.address);
-      } catch {}
-      const { fundingAttempt: _fundingAttempt, ...base } = record;
-      if (balance !== undefined && balance > 0n) {
-        await this.persistRecord({ ...base, status: "available" });
-        await this.store.flush();
-        return attempt.txHash;
-      }
-      if (!isSuperceded || balance === undefined) {
-        throw new Error(
-          `Funding transaction ${attempt.txHash} is still pending`
-        );
-      }
-      // The nonce and the receipt come from different backends, so the receipt may only have
-      // lagged the nonce: read it once more, and let a receipt that has arrived decide below.
-      status = await signer.getStatus(attempt.txHash);
-      if (status === "pending") {
-        await this.persistRecord({ ...base, status: "retired" });
-        this.capacityCache.delete(record.index);
-        await this.store.flush();
-        throw new Error(
-          `Funding transaction ${attempt.txHash} was superceded by a later nonce and sub-account ${record.index} was retired`
-        );
-      }
+    if (observed.kind === "unresolved") {
+      throw new Error(
+        `Funding transaction ${attempt.txHash} is still pending (${observed.reason})`
+      );
     }
-    if (status === "failed") {
-      const { fundingAttempt: _fundingAttempt, ...base } = record;
-      await this.persistRecord({ ...base, status: "retired" });
-      this.capacityCache.delete(record.index);
-      await this.store.flush();
+    if (observed.kind === "superseded") {
+      throw new Error(
+        `Funding transaction ${attempt.txHash} was superceded by a later nonce and sub-account ${record.index} was retired`
+      );
+    }
+    if (observed.execution === "failure") {
       throw new Error(`Funding transaction ${attempt.txHash} failed`);
     }
-    const { fundingAttempt: _fundingAttempt, ...base } = record;
-    await this.persistRecord({ ...base, status: "available" });
-    await this.store.flush();
     return attempt.txHash;
   }
 
@@ -2299,10 +2823,12 @@ export class MonadSubAccountPool {
         );
       }
     }
-    await this.persistRecord({
-      ...fundingTarget,
-      status: "funding",
-      fundingAttempt: { rawTx: signedTx.rawTx, txHash: signedTx.txHash },
+    await this.registerFundingAttempt({
+      index: params.target.index,
+      rawTx: signedTx.rawTx,
+      txHash: signedTx.txHash,
+      funder: params.mainAccountSigner.address,
+      expectedRevision: fundingTarget.revision ?? 0,
     });
     // The exact signed transaction is durable before it can reach the RPC.
     await this.store.flush();
@@ -2312,7 +2838,8 @@ export class MonadSubAccountPool {
       this.store.getByIndex(params.target.index) as SubAccountRecord,
       params.mainAccountSigner,
       params.receipt,
-      false
+      false,
+      signedTx.txHash
     );
     this.capacityCache.set(params.target.index, {
       capacityWei: params.paymentCapacityWei,
@@ -2425,6 +2952,17 @@ export class MonadSubAccountPool {
     }
     for (const record of this.store.getAll()) {
       if (record.status === "funding") {
+        const unresolvedAttempts =
+          record.funding?.attempts.filter(
+            (entry) => entry.observation.kind === "unresolved"
+          ) ?? [];
+        if (
+          record.funding !== undefined &&
+          record.funding.attempts.length > 0 &&
+          unresolvedAttempts.length === 0
+        ) {
+          continue;
+        }
         await this.finishFundingAttempt(
           record,
           params.mainAccountSigner,
@@ -2497,6 +3035,55 @@ export class MonadSubAccountPool {
   }
 }
 
+function normalizeFundingAccounts(
+  accounts: SubAccountFundingAccounts | EvmFundingAccounts
+): SubAccountFundingAccounts {
+  const senderNonce =
+    typeof accounts.senderNonce === "bigint"
+      ? accounts.senderNonce.toString()
+      : String(accounts.senderNonce);
+  const recipientNonce =
+    typeof accounts.recipientNonce === "bigint"
+      ? accounts.recipientNonce.toString()
+      : String(accounts.recipientNonce);
+  const recipientBalance =
+    typeof accounts.recipientBalance === "bigint"
+      ? accounts.recipientBalance.toString()
+      : String(accounts.recipientBalance);
+  return {
+    block: {
+      number: accounts.block.number,
+      hash: accounts.block.hash.toLowerCase(),
+    },
+    senderNonce,
+    recipientNonce,
+    recipientBalance,
+  };
+}
+
+function normalizeFundingObservation(
+  observation: SubAccountFundingObservation | EvmFundingObservation
+): SubAccountFundingObservation {
+  if (observation.kind === "unresolved") {
+    return { kind: "unresolved", reason: observation.reason };
+  }
+  if (observation.kind === "superseded") {
+    return {
+      kind: "superseded",
+      accounts: normalizeFundingAccounts(observation.accounts),
+    };
+  }
+  return {
+    kind: "included",
+    execution: observation.execution,
+    receiptBlock: {
+      number: observation.receiptBlock.number,
+      hash: observation.receiptBlock.hash.toLowerCase(),
+    },
+    accounts: normalizeFundingAccounts(observation.accounts),
+  };
+}
+
 /** Result of funding one sub-account through the recorded path (`fundAccount`). */
 export interface FanOutFundingResult {
   index: number;
@@ -2507,3 +3094,4 @@ export interface FanOutFundingResult {
   signedTx: SignedMonadTx;
   txHash: string;
 }
+

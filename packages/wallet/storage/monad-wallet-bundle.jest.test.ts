@@ -362,22 +362,46 @@ describe('Forum retention-only journal obligations', () => {
           to: '0x000000000000000000000000000000000000dEaD',
           nonce: 1,
         })
-        if (bundle.pool.getRecord(index)!.status === 'available') await bundle.pool.setStatus(index, 'in-use')
-        await bundle.pool.recordFundingTransaction(index, {
-          rawTx: fundingRaw,
-          txHash: Transaction.from(fundingRaw).hash!,
-          valueWei: '7',
-        })
-        await bundle.pool.recordSpendTransaction(index, {
-          rawTx: spendRaw,
-          txHash: Transaction.from(spendRaw).hash!,
-          valueWei: '7',
-        })
-        await bundle.pool.setStatus(index, 'retired')
-        await bundle.pool.recordRecoveryDisposition(index, {
-          kind: 'none',
-          valueWei: '0',
-        })
+        const block = { number: 1, hash: '0x' + '11'.repeat(32) }
+        await bundle.pool.applyPrevalidatedRecoveryRecords([
+          {
+            ...bundle.pool.getRecord(index)!,
+            status: 'retired',
+            funding: {
+              version: 1,
+              attempts: [
+                {
+                  rawTx: fundingRaw,
+                  txHash: Transaction.from(fundingRaw).hash!,
+                  valueWei: '7',
+                  generation: 2,
+                  observation: {
+                    kind: 'included',
+                    execution: 'success',
+                    receiptBlock: block,
+                    accounts: {
+                      block,
+                      senderNonce: '1',
+                      recipientNonce: '0',
+                      recipientBalance: '7',
+                    },
+                  },
+                },
+              ],
+            },
+            lifecycle: {
+              spend: {
+                rawTx: spendRaw,
+                txHash: Transaction.from(spendRaw).hash!,
+                valueWei: '7',
+              },
+              recovery: {
+                kind: 'none',
+                valueWei: '0',
+              },
+            },
+          },
+        ])
       }
       await bundle.pool.flush()
       expect(await bundle.compactTerminalAccounts(8)).toBe(1)
@@ -569,10 +593,10 @@ describe('existing-pool private topic owner', () => {
             }
       const seed = level(path)
       if (component === 'pool') {
-        await seed.put('__pool_format__', 'sub-account-pool-v3-authoritative')
+        await seed.put('__pool_format__', 'sub-account-pool-v4-funding-evidence')
         await seed.put('__next_index__', '1')
       }
-      await seed.put('0', JSON.stringify(component === 'pool' ? { version: 3, revision: 1, value: record } : record))
+      await seed.put('0', JSON.stringify(component === 'pool' ? { version: 4, revision: 1, value: record } : record))
       await seed.put('z-corrupt', 'malformed preserved row')
       await seed.close()
       const failed = make()
@@ -923,19 +947,43 @@ describe('existing-pool private topic owner', () => {
           gasLimit: 21000n,
           gasPrice: 1n,
         })
-        if (pool.getRecord(index)!.status === 'available') await pool.setStatus(index, 'in-use')
-        await pool.recordFundingTransaction(index, {
-          rawTx: fundingRaw,
-          txHash: Transaction.from(fundingRaw).hash!,
-          valueWei: '7',
-        })
-        await pool.recordSpendTransaction(index, {
-          rawTx: spendRaw,
-          txHash: Transaction.from(spendRaw).hash!,
-          valueWei: '7',
-        })
-        await pool.setStatus(index, 'retired')
-        await pool.recordRecoveryDisposition(index, { kind: 'none', valueWei: '0' })
+        const block = { number: 1, hash: '0x' + '11'.repeat(32) }
+        await pool.applyPrevalidatedRecoveryRecords([
+          {
+            ...pool.getRecord(index)!,
+            status: 'retired',
+            funding: {
+              version: 1,
+              attempts: [
+                {
+                  rawTx: fundingRaw,
+                  txHash: Transaction.from(fundingRaw).hash!,
+                  valueWei: '7',
+                  generation: 2,
+                  observation: {
+                    kind: 'included',
+                    execution: 'success',
+                    receiptBlock: block,
+                    accounts: {
+                      block,
+                      senderNonce: '1',
+                      recipientNonce: '0',
+                      recipientBalance: '7',
+                    },
+                  },
+                },
+              ],
+            },
+            lifecycle: {
+              spend: {
+                rawTx: spendRaw,
+                txHash: Transaction.from(spendRaw).hash!,
+                valueWei: '7',
+              },
+              recovery: { kind: 'none', valueWei: '0' },
+            },
+          },
+        ])
       }
       await pool.flush()
       expect(await owner.compactTerminalAccounts(8)).toBe(1)

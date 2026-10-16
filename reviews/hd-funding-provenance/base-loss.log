@@ -1,0 +1,13 @@
+PASS reviews/hd-funding-provenance/base-loss.jest.test.ts
+  ✓ actual two-funder completion loses BOTH signed artifacts through repeated Level reopen (42 ms)
+  ✓ interruption BEFORE second signature leaves a partially funded target selectable after reopen (33 ms)
+  ✓ interruption AFTER second exposure retains only second obligation and loses first contributor (19 ms)
+  ✓ a failed Level eligibility write remains selectable and its failure disappears from the next flush (11 ms)
+  ✓ a missing funding receipt plus positive balance wrongly clears the obligation and permits selection (16 ms)
+  ✓ installed input admission grants an unrelated native operation the partially funded target after reopen (24 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       6 passed, 6 total
+Snapshots:   0 total
+Time:        1.026 s
+Ran all test suites.

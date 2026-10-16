@@ -62,7 +62,35 @@ function makeStubProvider(
     cacheTimeout: -1,
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (provider as any)._perform = perform;
+  (provider as any)._perform = async (req: { method: string }) => {
+    if (req.method === "getBlock") {
+      return {
+        hash: "0x" + "00".repeat(32),
+        parentHash: "0x" + "11".repeat(32),
+        number: "0x1",
+        timestamp: "0x64",
+        nonce: "0x0000000000000000",
+        difficulty: "0x0",
+        gasLimit: "0x1c9c380",
+        gasUsed: "0x0",
+        miner: "0x" + "00".repeat(20),
+        extraData: "0x",
+        baseFeePerGas: "0x1",
+        transactions: [],
+      };
+    }
+    if (req.method === "getBalance") {
+      try {
+        return await perform(req);
+      } catch (err) {
+        if (String(err).includes("unexpected _perform: getBalance")) {
+          return "0x0";
+        }
+        throw err;
+      }
+    }
+    return perform(req);
+  };
   return provider;
 }
 
@@ -327,36 +355,73 @@ describe("MonadSubAccountPool", () => {
         );
         return transaction.hash;
       });
-      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => ({
-        txHash,
-        blockNumber: 1,
-        blockHash: "0x" + "00".repeat(32),
-        status: "success",
-        gasUsed: 21_000n,
-        effectiveGasPrice: 1n,
-        logs: [],
-      }));
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => {
+        if (jest.isMockFunction(mainAccountSigner.getStatus)) {
+          const status = await mainAccountSigner.getStatus(txHash);
+          if (status === "pending") return undefined;
+          return {
+            txHash,
+            blockNumber: 1,
+            blockHash: "0x" + "00".repeat(32),
+            status: status === "failed" ? "failure" : "success",
+            gasUsed: 21_000n,
+            effectiveGasPrice: 1n,
+            logs: [],
+          };
+        }
+        return {
+          txHash,
+          blockNumber: 1,
+          blockHash: "0x" + "00".repeat(32),
+          status: "success",
+          gasUsed: 21_000n,
+          effectiveGasPrice: 1n,
+          logs: [],
+        };
+      });
       const mainWallet = Wallet.createRandom();
       balances.set(mainWallet.address.toLowerCase(), 1_000_000n);
+      let mainAccountSigner!: MonadAccountTxSigner;
       const provider = makeStubProvider(async (request) => {
         if (request.method === "getTransactionCount") {
-          const address = (
-            request as unknown as { address: string; blockTag?: string }
-          ).address.toLowerCase();
-          return address === mainWallet.address.toLowerCase()
-            ? nonce++
-            : (request as unknown as { blockTag?: string }).blockTag ===
-              "pending"
-            ? childNonces.get(address) ?? 0
-            : 0;
+          const { address: rawAddress, blockTag } = request as unknown as {
+            address: string;
+            blockTag?: string;
+          };
+          const address = rawAddress.toLowerCase();
+          if (address === mainWallet.address.toLowerCase()) {
+            if (blockTag === "pending") {
+              return nonce++;
+            }
+            if (
+              mainAccountSigner !== undefined &&
+              jest.isMockFunction(mainAccountSigner.getTransactionCount)
+            ) {
+              return Number(
+                await mainAccountSigner.getTransactionCount(mainWallet.address)
+              );
+            }
+            return Math.max(nonce, 1);
+          }
+          return blockTag === "pending" ? childNonces.get(address) ?? 0 : 0;
         }
         if (request.method === "getBalance") {
-          const address = (request as unknown as { address: string }).address;
+          const { address, blockTag } = request as unknown as {
+            address: string;
+            blockTag?: string;
+          };
+          if (
+            blockTag !== "pending" &&
+            mainAccountSigner !== undefined &&
+            jest.isMockFunction(mainAccountSigner.getBalance)
+          ) {
+            return await mainAccountSigner.getBalance(address);
+          }
           return balances.get(address.toLowerCase()) ?? 0n;
         }
         throw new Error(`unexpected _perform: ${request.method}`);
       });
-      const mainAccountSigner = new MonadAccountTxSigner({
+      mainAccountSigner = new MonadAccountTxSigner({
         privateKey: mainWallet.privateKey,
         provider,
         httpClient,
@@ -618,10 +683,18 @@ describe("MonadSubAccountPool", () => {
       );
       await store.mutate(snapshot => { const record = {
         ...first,
-        status: "funding",
-        fundingAttempt: {
-          rawTx: signed.rawTx,
-          txHash: signed.txHash,
+        status: "funding" as const,
+        funding: {
+          version: 1 as const,
+          attempts: [
+            {
+              rawTx: signed.rawTx,
+              txHash: signed.txHash,
+              valueWei: signed.value.toString(),
+              generation: 1,
+              observation: { kind: "unresolved" as const, reason: "pending" as const },
+            },
+          ],
         },
       }; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } });
       const broadcasted = new Set<string>();
@@ -673,7 +746,8 @@ describe("MonadSubAccountPool", () => {
       );
       expect(fundedValues).toEqual([385n, 635n]);
       expect(restarted.getRecord(0)?.status).toBe("available");
-      expect(restarted.getRecord(0)?.fundingAttempt).toBeUndefined();
+      expect(restarted.getRecord(0)?.funding?.attempts[0]?.rawTx).toBe(signed.rawTx);
+      expect(restarted.getRecord(0)?.funding?.attempts[0]?.observation.kind).toBe("included");
     });
 
     describe("a failed funding write fences its actual persistent owner", () => {
@@ -719,7 +793,18 @@ describe("MonadSubAccountPool", () => {
       const fundingRow: SubAccountRecord = {
         ...first,
         status: "funding",
-        fundingAttempt: { rawTx: signed.rawTx, txHash: signed.txHash },
+        funding: {
+          version: 1,
+          attempts: [
+            {
+              rawTx: signed.rawTx,
+              txHash: signed.txHash,
+              valueWei: signed.value.toString(),
+              generation: 1,
+              observation: { kind: "unresolved", reason: "pending" },
+            },
+          ],
+        },
       };
       await store.mutate(snapshot => { const record = fundingRow; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } });
       // The transfer was mined (the main-account nonce moved past it), but the receipt lags on
@@ -738,7 +823,12 @@ describe("MonadSubAccountPool", () => {
       jest.spyOn(mainAccountSigner, "getTransactionCount").mockResolvedValue(5n);
       jest
         .spyOn(mainAccountSigner, "getBalance")
-        .mockRejectedValue(new Error("simulated balance read failure"));
+        .mockImplementation(async (addr) => {
+          if (addr.toLowerCase() === first.address.toLowerCase()) {
+            throw new Error("simulated balance read failure");
+          }
+          return balances.get(addr.toLowerCase()) ?? 0n;
+        });
 
       await pool.prepareStampInventory({
         mainAccountSigner,
@@ -754,7 +844,22 @@ describe("MonadSubAccountPool", () => {
         receipt: { intervalMs: 0, maxAttempts: 1 },
       });
 
-      expect(pool.getRecord(0)).toEqual({ ...fundingRow, revision: 2 });
+      expect(pool.getRecord(0)).toEqual({
+        ...fundingRow,
+        revision: 3,
+        funding: {
+          version: 1,
+          attempts: [
+            {
+              rawTx: signed.rawTx,
+              txHash: signed.txHash,
+              valueWei: signed.value.toString(),
+              generation: 2,
+              observation: { kind: "unresolved", reason: "unavailable" },
+            },
+          ],
+        },
+      });
     });
 
     // #1235 Q4. `fundStampInventoryAhead` does not exist on main 8c656f32, so every test in this
@@ -974,19 +1079,20 @@ describe("MonadSubAccountPool", () => {
           ahead(f, f.pool, { receipt: { maxAttempts: 240, sleep } })
         ).rejects.toMatchObject({ code: "unresolved-funding" });
 
-        // One look, no polling, the recorded bytes again, and no second signature.
-        expect(f.httpClient.getTransactionReceipt).toHaveBeenCalledTimes(1);
+        // Pre-resubmit and post-resubmit looks, no polling, the recorded bytes again, and no second signature.
+        expect(f.httpClient.getTransactionReceipt).toHaveBeenCalledTimes(2);
         expect(sleep).not.toHaveBeenCalled();
         expect(sign).toHaveBeenCalledTimes(1);
         expect(submitted(f).map((tx) => tx.serialized)).toEqual([
-          row.fundingAttempt!.rawTx,
-          row.fundingAttempt!.rawTx,
+          row.funding!.attempts[0]!.rawTx,
+          row.funding!.attempts[0]!.rawTx,
         ]);
         expect(f.pool.getRecord(0)).toEqual(row);
         expect(statuses(f.pool)).toEqual(["funding", "unfunded", "unfunded"]);
 
         // Once it is mined, the next pass takes it and funds only the other account.
-        broadcasted.add(row.fundingAttempt!.txHash);
+        jest.spyOn(f.mainAccountSigner, "getTransactionCount").mockRestore();
+        broadcasted.add(row.funding!.attempts[0]!.txHash);
         f.balances.set(row.address.toLowerCase(), 375n + RESERVE);
         f.httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
           const transaction = Transaction.from(rawTx);
@@ -996,7 +1102,7 @@ describe("MonadSubAccountPool", () => {
         });
         const finished = await ahead(f, f.pool);
         expect(finished.fundingTxHashes).toEqual([
-          row.fundingAttempt!.txHash,
+          row.funding!.attempts[0]!.txHash,
           expect.any(String),
         ]);
         expect(sign).toHaveBeenCalledTimes(2);
@@ -1228,7 +1334,7 @@ describe("MonadSubAccountPool", () => {
             for (const { value } of operations) {
               if (value?.includes('"status":"funding"')) {
                 events.push(
-                  `durable:${JSON.parse(value).value.fundingAttempt.rawTx}`
+                  `durable:${JSON.parse(value).value.funding.attempts[0].rawTx}`
                 );
               }
             }
@@ -1320,7 +1426,7 @@ describe("MonadSubAccountPool", () => {
             const next = await reopen(dir);
             const row = next.pool.getRecord(0)!;
             expect(row.status).toBe("funding");
-            expect(row.fundingAttempt!.rawTx).toBe(recorded);
+            expect(row.funding!.attempts[0]!.rawTx).toBe(recorded);
             s.f.httpClient.submitRawTransaction.mockClear();
             s.f.httpClient.submitRawTransaction.mockImplementation(s.mine);
             const sign = jest.spyOn(
@@ -1330,7 +1436,7 @@ describe("MonadSubAccountPool", () => {
 
             const result = await ahead(s.f, next.pool);
 
-            expect(result.fundingTxHashes[0]).toBe(row.fundingAttempt!.txHash);
+            expect(result.fundingTxHashes[0]).toBe(row.funding!.attempts[0]!.txHash);
             expect(transfersTo(s.f, row.address)).toEqual([recorded]);
             expect(sign.mock.calls.map(([to]) => to)).toEqual([
               next.pool.getRecord(1)!.address,
@@ -1370,7 +1476,7 @@ describe("MonadSubAccountPool", () => {
 
             const result = await ahead(s.f, next.pool);
 
-            expect(result.fundingTxHashes[0]).toBe(row.fundingAttempt!.txHash);
+            expect(result.fundingTxHashes[0]).toBe(row.funding!.attempts[0]!.txHash);
             // Still the one submit made before the stop.
             expect(transfersTo(s.f, row.address)).toEqual([recorded]);
             expectOnePairNothingTwice(s.f, next.pool);
@@ -1404,21 +1510,33 @@ describe("MonadSubAccountPool", () => {
 
             const next = await reopen(dir);
             const row = next.pool.getRecord(0)!;
+            const parsedRecorded = Transaction.from(recorded);
             expect(row).toEqual({
               revision: 2,
               index: 0,
               address: row.address,
               status: "funding",
-              fundingAttempt: {
-                rawTx: recorded,
-                txHash: Transaction.from(recorded).hash,
+              funding: {
+                version: 1,
+                attempts: [
+                  {
+                    rawTx: recorded,
+                    txHash: parsedRecorded.hash,
+                    valueWei: parsedRecorded.value.toString(),
+                    generation: 1,
+                    observation: {
+                      kind: "unresolved",
+                      reason: "pending",
+                    },
+                  },
+                ],
               },
             });
             receiptOnceBroadcast(s.f, s.broadcasted);
 
             const result = await ahead(s.f, next.pool);
 
-            expect(result.fundingTxHashes[0]).toBe(row.fundingAttempt!.txHash);
+            expect(result.fundingTxHashes[0]).toBe(row.funding!.attempts[0]!.txHash);
             expect(transfersTo(s.f, row.address)).toEqual([recorded]);
             expectOnePairNothingTwice(s.f, next.pool);
             await next.store.Close();
@@ -1463,7 +1581,7 @@ describe("MonadSubAccountPool", () => {
 
             const next = await reopen(dir);
             const row = next.pool.getRecord(0)!;
-            expect(row.fundingAttempt!.rawTx).toBe(recorded);
+            expect(row.funding!.attempts[0]!.rawTx).toBe(recorded);
             s.f.httpClient.submitRawTransaction.mockClear();
             s.f.httpClient.submitRawTransaction.mockImplementation(s.mine);
 
@@ -1676,11 +1794,16 @@ describe("MonadSubAccountPool", () => {
       const mainWallet = Wallet.createRandom();
       balances.set(mainWallet.address.toLowerCase(), 1_000_000n);
       const provider = makeStubProvider(async (request) => {
-        const address = (
-          (request as unknown as { address?: string }).address ?? ""
-        ).toLowerCase();
+        const { address: rawAddress, blockTag } = request as unknown as {
+          address?: string;
+          blockTag?: string;
+        };
+        const address = (rawAddress ?? "").toLowerCase();
         if (request.method === "getTransactionCount") {
-          return address === mainWallet.address.toLowerCase() ? mainNonce++ : 0;
+          if (address === mainWallet.address.toLowerCase()) {
+            return blockTag === "pending" ? mainNonce++ : Math.max(mainNonce, 1);
+          }
+          return 0;
         }
         if (request.method === "getBalance") return balances.get(address) ?? 0n;
         throw new Error(`unexpected _perform: ${request.method}`);
@@ -1841,27 +1964,91 @@ describe("MonadSubAccountPool", () => {
   describe("topUpPool (ticket #34: indefinite growth + look-ahead funding buffer)", () => {
     async function makeSigner(nonceStart = 0) {
       const httpClient = makeMockHttpClient();
-      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => ({
-        txHash,
-        blockNumber: 1,
-        blockHash: "0x" + "00".repeat(32),
-        status: "success",
-        gasUsed: 21_000n,
-        effectiveGasPrice: 1n,
-        logs: [],
-      }));
+      const mainWallet = Wallet.createRandom();
+      const balances = new Map<string, bigint>();
+      let signer!: MonadAccountTxSigner;
+      httpClient.submitRawTransaction.mockImplementation(
+        async (rawTxHex: string) => {
+          const tx = Transaction.from(rawTxHex);
+          if (tx.to) {
+            const to = tx.to.toLowerCase();
+            balances.set(to, (balances.get(to) ?? 0n) + tx.value);
+          }
+          return tx.hash!;
+        }
+      );
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => {
+        if (signer !== undefined && jest.isMockFunction(signer.getStatus)) {
+          const status = await signer.getStatus(txHash);
+          if (status === "pending") return undefined;
+          return {
+            txHash,
+            blockNumber: 1,
+            blockHash: "0x" + "00".repeat(32),
+            status: status === "failed" ? "failure" : "success",
+            gasUsed: 21_000n,
+            effectiveGasPrice: 1n,
+            logs: [],
+          };
+        }
+        return {
+          txHash,
+          blockNumber: 1,
+          blockHash: "0x" + "00".repeat(32),
+          status: "success",
+          gasUsed: 21_000n,
+          effectiveGasPrice: 1n,
+          logs: [],
+        };
+      });
       let nonce = nonceStart;
       const provider = makeStubProvider(async (req) => {
-        if (req.method === "getTransactionCount")
-          return `0x${(nonce++).toString(16)}`;
+        if (req.method === "getTransactionCount") {
+          const { address, blockTag } = req as unknown as {
+            address?: string;
+            blockTag?: string;
+          };
+          if (
+            (address ?? "").toLowerCase() === mainWallet.address.toLowerCase()
+          ) {
+            if (blockTag === "pending") {
+              return `0x${(nonce++).toString(16)}`;
+            }
+            if (
+              signer !== undefined &&
+              jest.isMockFunction(signer.getTransactionCount)
+            ) {
+              const mocked = await signer.getTransactionCount(mainWallet.address);
+              return `0x${BigInt(mocked).toString(16)}`;
+            }
+            return `0x${Math.max(nonce, 1).toString(16)}`;
+          }
+          return "0x0";
+        }
+        if (req.method === "getBalance") {
+          const { address, blockTag } = req as unknown as {
+            address: string;
+            blockTag?: string;
+          };
+          if (
+            blockTag !== "pending" &&
+            signer !== undefined &&
+            jest.isMockFunction(signer.getBalance)
+          ) {
+            const mocked = await signer.getBalance(address);
+            return `0x${BigInt(mocked).toString(16)}`;
+          }
+          return `0x${(balances.get(address.toLowerCase()) ?? 0n).toString(16)}`;
+        }
         if (req.method === "estimateGas") return "0x5208";
         throw new Error(`unexpected _perform: ${req.method}`);
       });
-      return new MonadAccountTxSigner({
-        privateKey: Wallet.createRandom().privateKey,
+      signer = new MonadAccountTxSigner({
+        privateKey: mainWallet.privateKey,
         provider,
         httpClient,
       });
+      return signer;
     }
 
     it("derives and funds fresh indices beyond whatever ensureSize was first called with", async () => {
@@ -2002,14 +2189,28 @@ describe("MonadSubAccountPool", () => {
       const httpClient = makeMockHttpClient();
       let nonce = 0;
       let call = 0;
+      const flakyWallet = Wallet.createRandom();
       const provider = makeStubProvider(async (req) => {
-        if (req.method === "getTransactionCount")
-          return `0x${(nonce++).toString(16)}`;
+        if (req.method === "getTransactionCount") {
+          const { address, blockTag } = req as unknown as {
+            address?: string;
+            blockTag?: string;
+          };
+          if (
+            (address ?? "").toLowerCase() === flakyWallet.address.toLowerCase()
+          ) {
+            return blockTag === "pending"
+              ? `0x${(nonce++).toString(16)}`
+              : `0x${Math.max(nonce, 1).toString(16)}`;
+          }
+          return "0x0";
+        }
+        if (req.method === "getBalance") return "0x3e8";
         if (req.method === "estimateGas") return "0x5208";
         throw new Error(`unexpected _perform: ${req.method}`);
       });
       const flakySigner = new MonadAccountTxSigner({
-        privateKey: Wallet.createRandom().privateKey,
+        privateKey: flakyWallet.privateKey,
         provider,
         httpClient,
       });
@@ -2046,7 +2247,7 @@ describe("MonadSubAccountPool", () => {
       // Index 1's exact signed transaction was persisted before its submit failed. A retry resumes
       // that raw transaction rather than deriving or funding another child.
       expect(pool.getRecord(1)?.status).toBe("funding");
-      expect(pool.getRecord(1)?.fundingAttempt?.rawTx).toBeDefined();
+      expect(pool.getRecord(1)?.funding?.attempts[0]?.rawTx).toBeDefined();
     });
 
     describe("a recorded attempt with no receipt (Issue #1307)", () => {
@@ -2072,22 +2273,42 @@ describe("MonadSubAccountPool", () => {
         const fundingRow: SubAccountRecord = {
           ...child,
           status: "funding",
-          fundingAttempt: { rawTx: signed.rawTx, txHash: signed.txHash },
+          funding: {
+            version: 1,
+            attempts: [
+              {
+                rawTx: signed.rawTx,
+                txHash: signed.txHash,
+                valueWei: signed.value.toString(),
+                generation: 1,
+                observation: { kind: "unresolved", reason: "pending" },
+              },
+            ],
+          },
         };
         await store.mutate(snapshot => { const record = fundingRow; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } });
+        let submittedResend = false;
         const submitRaw = jest
           .spyOn(mainAccountSigner, "submitRaw")
-          .mockRejectedValue(new Error("nonce too low"));
+          .mockImplementation(async () => {
+            submittedResend = true;
+            throw new Error("nonce too low");
+          });
         jest
           .spyOn(mainAccountSigner, "getStatus")
-          .mockResolvedValueOnce("pending")
-          .mockImplementation(reads.receiptReread);
+          .mockImplementation(async () =>
+            submittedResend ? reads.receiptReread() : "pending"
+          );
         jest
           .spyOn(mainAccountSigner, "getTransactionCount")
-          .mockImplementation(reads.mainNonce);
+          .mockImplementation(async () =>
+            submittedResend ? reads.mainNonce() : 0n
+          );
         jest
           .spyOn(mainAccountSigner, "getBalance")
-          .mockImplementation(reads.childBalance);
+          .mockImplementation(async () =>
+            submittedResend ? reads.childBalance() : 0n
+          );
 
         const outcome = await pool
           .topUpPool({
@@ -2119,7 +2340,8 @@ describe("MonadSubAccountPool", () => {
           childBalance: failing,
           receiptReread: absent,
         });
-        expect(record).toEqual(fundingRow);
+        expect(record?.status).toBe("funding");
+        expect(record?.funding?.attempts[0].rawTx).toBe(fundingRow.funding!.attempts[0].rawTx);
         expect(outcome).toMatch(/still pending/);
       });
 
@@ -2129,7 +2351,8 @@ describe("MonadSubAccountPool", () => {
           childBalance: empty,
           receiptReread: absent,
         });
-        expect(record).toEqual(fundingRow);
+        expect(record?.status).toBe("funding");
+        expect(record?.funding?.attempts[0].rawTx).toBe(fundingRow.funding!.attempts[0].rawTx);
         expect(outcome).toMatch(/still pending/);
       });
 
@@ -2139,41 +2362,44 @@ describe("MonadSubAccountPool", () => {
           childBalance: empty,
           receiptReread: failing,
         });
-        expect(record).toEqual(fundingRow);
-        expect(outcome).toBe("simulated read failure");
+        expect(record?.status).toBe("funding");
+        expect(record?.funding?.attempts[0].rawTx).toBe(fundingRow.funding!.attempts[0].rawTx);
+        expect(outcome).toMatch(/still pending/);
       });
 
       it("becomes available when the receipt has arrived by the re-read", async () => {
-        const { outcome, record } = await observeReplacedAttempt({
+        const { fundingRow, outcome, record } = await observeReplacedAttempt({
           mainNonce: advanced,
-          childBalance: empty,
+          childBalance: async () => 2n,
           receiptReread: async () => "confirmed",
         });
         expect(record?.status).toBe("available");
-        expect(record?.fundingAttempt).toBeUndefined();
+        expect(record?.funding?.attempts[0].rawTx).toBe(fundingRow.funding!.attempts[0].rawTx);
+        expect(record?.funding?.attempts[0].observation.kind).toBe("included");
         expect(outcome).toBe("resolved");
       });
 
       it("is retired when the nonce advanced, the balance is zero and the receipt is still absent", async () => {
-        const { outcome, record } = await observeReplacedAttempt({
+        const { fundingRow, outcome, record } = await observeReplacedAttempt({
           mainNonce: advanced,
           childBalance: empty,
           receiptReread: absent,
         });
         expect(record?.status).toBe("retired");
-        expect(record?.fundingAttempt).toBeUndefined();
+        expect(record?.funding?.attempts[0].rawTx).toBe(fundingRow.funding!.attempts[0].rawTx);
+        expect(record?.funding?.attempts[0].observation.kind).toBe("superseded");
         expect(outcome).toMatch(/superceded by a later nonce/);
       });
 
-      it("becomes available when the child holds a balance", async () => {
-        const { outcome, record } = await observeReplacedAttempt({
-          mainNonce: failing,
+      it("stays funding when the child holds a balance without a receipt", async () => {
+        const { fundingRow, outcome, record } = await observeReplacedAttempt({
+          mainNonce: async () => 0n,
           childBalance: async () => 2n,
           receiptReread: absent,
         });
-        expect(record?.status).toBe("available");
-        expect(record?.fundingAttempt).toBeUndefined();
-        expect(outcome).toBe("resolved");
+        expect(record?.status).toBe("funding");
+        expect(record?.funding?.attempts[0].rawTx).toBe(fundingRow.funding!.attempts[0].rawTx);
+        expect(outcome).toMatch(/still pending/);
       });
     });
   });
@@ -2560,14 +2786,13 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       }
     });
 
-    it("marks an unfunded row and keeps a hand-built funding checkpoint beside the spend", async () => {
+    it("marks an unfunded row and keeps retained funding provenance beside the spend", async () => {
       const store = new InMemorySubAccountPoolStore();
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring, store });
       attachCommitApplier(pool);
-      await pool.ensureUnfundedSize(1);
-      await pool.ensureSize(2);
-      // Hand-built: no production path writes `lifecycle.funding`.
+      await pool.ensureUnfundedSize(2);
+      const funderAddress = keyring.deriveSubAccount(2).address;
       const fundingRaw = await new Wallet(
         keyring.deriveSubAccount(2).privateKey
       ).signTransaction({
@@ -2580,12 +2805,31 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         maxFeePerGas: 1n,
         maxPriorityFeePerGas: 1n,
       });
-      const fundingCheckpoint = {
+      const fundingTxHash = Transaction.from(fundingRaw).hash as string;
+      await pool.registerFundingAttempt({
+        index: 1,
         rawTx: fundingRaw,
-        txHash: Transaction.from(fundingRaw).hash as string,
-        valueWei: "7",
-      };
-      await pool.recordFundingTransaction(1, fundingCheckpoint);
+        txHash: fundingTxHash,
+        funder: funderAddress,
+      });
+      await pool.recordFundingObservation({
+        index: 1,
+        txHash: fundingTxHash,
+        rawTx: fundingRaw,
+        expectedGeneration: 1,
+        observation: {
+          kind: "included",
+          execution: "success",
+          receiptBlock: { number: 1, hash: "0x" + "00".repeat(32) },
+          accounts: {
+            block: { number: 1, hash: "0x" + "00".repeat(32) },
+            senderNonce: "1",
+            recipientNonce: "0",
+            recipientBalance: "7",
+          },
+        },
+      });
+      const retainedFunding = pool.getRecord(1)!.funding;
 
       for (const index of [0, 1]) {
         const spend = await signSpend(keyring, index);
@@ -2599,12 +2843,12 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
           ).affectedIndices
         ).toEqual([index]);
         expect(pool.getRecord(index)).toEqual({
-          revision: index === 0 ? 2 : 3,
+          revision: index === 0 ? 2 : 4,
           index,
           address,
           status: "spent",
+          ...(index === 1 ? { funding: retainedFunding } : {}),
           lifecycle: {
-            ...(index === 1 ? { funding: fundingCheckpoint } : {}),
             spend: { rawTx: spend.rawTx, txHash: spend.txHash, valueWei: "5000" },
           },
         });
@@ -2867,12 +3111,38 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       if (state === "in-use" || state === "retired") await pool.setStatus(0, state);
       else if (state === "funding") {
         // Hand-built: the funding path needs a main-account signer this fixture does not have.
-        const attempt = await signSpend(keyring, 2);
+        const fundingRaw = await new Wallet(
+          keyring.deriveSubAccount(2).privateKey
+        ).signTransaction({
+          type: 2,
+          chainId: CHAIN_ID,
+          nonce: 0,
+          to: addr0,
+          value: 5_000n,
+          gasLimit: 21_000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+        });
+        const fundingTxHash = Transaction.from(fundingRaw).hash as string;
         await store.mutate(snapshot => { const record = {
           index: 0,
           address: addr0,
-          status: "funding",
-          fundingAttempt: { rawTx: attempt.rawTx, txHash: attempt.txHash },
+          status: "funding" as const,
+          funding: {
+            version: 1 as const,
+            attempts: [
+              {
+                rawTx: fundingRaw,
+                txHash: fundingTxHash,
+                valueWei: "5000",
+                generation: 1,
+                observation: {
+                  kind: "unresolved" as const,
+                  reason: "pending" as const,
+                },
+              },
+            ],
+          },
         }; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } });
       } else if (state === "spent without a checkpoint") {
         await pool.setStatus(0, "spent");
@@ -3335,10 +3605,16 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       balances.set(mainWallet.address.toLowerCase(), 1_000_000n);
       const provider = makeStubProvider(async (request) => {
         if (request.method === "getTransactionCount") {
-          const address = (
-            request as unknown as { address: string; blockTag?: string }
-          ).address.toLowerCase();
-          return address === mainWallet.address.toLowerCase() ? nonce++ : 0;
+          const req = request as unknown as {
+            address: string;
+            blockTag?: string;
+          };
+          const address = req.address.toLowerCase();
+          return address === mainWallet.address.toLowerCase()
+            ? req.blockTag === "pending"
+              ? nonce++
+              : nonce
+            : 0;
         }
         if (request.method === "getBalance") {
           const address = (request as unknown as { address: string }).address;
@@ -3364,6 +3640,10 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         balances,
         httpClient,
         mainAccountSigner,
+        mainWallet,
+        setNonce: (nextNonce: number) => {
+          nonce = nextNonce;
+        },
         pool,
         provider,
         store,
@@ -3379,14 +3659,14 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         defaultOverrides,
         httpClient,
         mainAccountSigner,
+        mainWallet,
+        setNonce,
         pool,
         provider,
-        store,
       } = setupSupersededTest();
-      await pool.ensureSize(2);
+      await pool.ensureUnfundedSize(2);
 
       // Subaccount 0 is in 'funding' state with a stale raw transaction whose nonce is 0
-      const mainWallet = new Wallet(Wallet.createRandom().privateKey, provider);
       const staleTx = await mainWallet.signTransaction({
         to: pool.getRecord(0)!.address,
         value: 10_000n,
@@ -3395,17 +3675,14 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         gasPrice: 1_000_000_000n,
         chainId: CHAIN_ID,
       });
-      const staleHash = Transaction.from(staleTx).hash;
+      const staleHash = Transaction.from(staleTx).hash!;
 
-      await store.mutate(snapshot => { const record = {
+      await pool.registerFundingAttempt({
         index: 0,
-        address: pool.getRecord(0)!.address,
-        status: "funding",
-        fundingAttempt: {
-          rawTx: staleTx,
-          txHash: staleHash!,
-        },
-      }; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } });
+        rawTx: staleTx,
+        txHash: staleHash,
+        funder: mainWallet.address,
+      });
 
       // The node rejects resubmitting the stale tx
       httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
@@ -3422,15 +3699,21 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       });
 
       // The main signer on-chain nonce is now 5 (> 0), so nonce 0 is superceded
-      jest
-        .spyOn(mainAccountSigner, "getTransactionCount")
-        .mockResolvedValue(5n);
-      // getStatus returns 'pending' for the stale evicted tx, and 'confirmed' for fresh txs
-      jest
-        .spyOn(mainAccountSigner, "getStatus")
-        .mockImplementation(async (h) =>
-          h === staleHash ? "pending" : "confirmed"
-        );
+      setNonce(5);
+      // getTransactionReceipt returns undefined for the stale evicted tx, and a confirmed receipt for fresh txs
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) =>
+        txHash === staleHash
+          ? undefined
+          : {
+              txHash,
+              blockNumber: 1,
+              blockHash: "0x" + "00".repeat(32),
+              status: "success" as const,
+              gasUsed: 21_000n,
+              effectiveGasPrice: 1n,
+              logs: [],
+            }
+      );
       // Balance on sub-account 0 is 0
       balances.set(pool.getRecord(0)!.address.toLowerCase(), 0n);
 
@@ -3494,11 +3777,17 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
     balances.set(mainWallet.address.toLowerCase(), 1_000_000n);
     const balanceReads: string[] = [];
     const provider = makeStubProvider(async (request) => {
-      const address = (
-        (request as unknown as { address?: string }).address ?? ""
-      ).toLowerCase();
+      const req = request as unknown as {
+        address?: string;
+        blockTag?: string;
+      };
+      const address = (req.address ?? "").toLowerCase();
       if (request.method === "getTransactionCount") {
-        return address === mainWallet.address.toLowerCase() ? mainNonce++ : 0;
+        return address === mainWallet.address.toLowerCase()
+          ? req.blockTag === "pending"
+            ? mainNonce++
+            : mainNonce
+          : 0;
       }
       if (request.method === "getBalance") {
         balanceReads.push(address);

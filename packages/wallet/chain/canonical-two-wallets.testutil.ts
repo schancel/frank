@@ -223,8 +223,10 @@ export function offlineProviderModule() {
         if (request.method === 'getTransactionCount') {
           if (offlineChain.nodeDown) throw new Error('node unreachable')
           const address = request.address!.toLowerCase()
-          return [...offlineChain.mined.values()].filter(a => a === address)
-            .length
+          return (
+            [...offlineChain.mined.values()].filter(a => a === address).length +
+            mockFunded.filter(tx => tx.from === address).length
+          )
         }
         if (request.method === 'estimateGas') return 50_000n
         if (request.method === 'getGasPrice') return offlineChain.gasPrice
@@ -272,7 +274,15 @@ export function offlineHttpModule() {
       }
       async getTransactionReceipt(hash: string) {
         chainHttpRequests.push('getTransactionReceipt')
-        return mined.has(hash) ? { status: 'success' } : undefined
+        return mined.has(hash)
+          ? {
+              txHash: hash,
+              blockNumber: 1,
+              blockHash: '0x' + '11'.repeat(32),
+              gasUsed: 21_000n,
+              status: 'success' as const,
+            }
+          : undefined
       }
       destroy() {
         return undefined

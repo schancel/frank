@@ -16,7 +16,7 @@ const NEXT_INDEX_KEY = '__next_index__'
 const CHECKPOINT_PREFIX = '__terminal_checkpoint__:'
 const WALLET_BINDING_KEY = '__wallet_binding__'
 const FORMAT_KEY = '__pool_format__'
-const FORMAT = 'sub-account-pool-v3-authoritative'
+const FORMAT = 'sub-account-pool-v4-funding-evidence'
 
 /** Node Level owns physical exclusion. Browser Web Locks enclose authoritative reload and
  * durable batch across contexts; an instance cache is only a committed read projection. */
@@ -89,7 +89,7 @@ export class LevelSubAccountPoolStore extends InMemorySubAccountPoolStore {
       const envelope = JSON.parse(value)
       if (
         Object.keys(envelope).sort().join(',') !== 'revision,value,version' ||
-        envelope.version !== 3 ||
+        envelope.version !== 4 ||
         !Number.isSafeInteger(envelope.revision) ||
         envelope.revision < 1 ||
         !envelope.value ||
@@ -176,7 +176,7 @@ export class LevelSubAccountPoolStore extends InMemorySubAccountPoolStore {
           type: 'put',
           key: String(index),
           value: JSON.stringify({
-            version: 3,
+            version: 4,
             revision: value.revision,
             value: poolPayload(value),
           }),
@@ -191,7 +191,7 @@ export class LevelSubAccountPoolStore extends InMemorySubAccountPoolStore {
           type: 'put',
           key: `${CHECKPOINT_PREFIX}${index}`,
           value: JSON.stringify({
-            version: 3,
+            version: 4,
             revision: value.revision,
             value: poolPayload(value),
           }),

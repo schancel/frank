@@ -2592,6 +2592,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           keyring,
           store: subAccountStore,
           mainAccountAddress: mainAccount.address,
+          expectedChainId: BigInt(config.chainId),
         });
         const changePool = new MonadChangePool({
           keyring: changeKeyring,

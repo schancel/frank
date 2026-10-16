@@ -493,7 +493,7 @@ export class MonadAccountTxSigner {
       };
       // A receipt may have appeared while nonce reads were in flight. Retry the entire
       // observation instead of interpreting that newly consumed nonce as supersession.
-      if (!receipt && await this.httpClient.getTransactionReceipt(hash) !== undefined)
+      if (!receipt && accounts.senderNonce > nonce && await this.httpClient.getTransactionReceipt(hash) !== undefined)
         return inconsistent;
       const rechecked = await provider.getBlock(anchor.number);
       const recheckedAnchor = rechecked ? fundingBlock(rechecked.number, rechecked.hash) : undefined;

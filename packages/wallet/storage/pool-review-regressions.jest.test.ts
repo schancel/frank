@@ -39,6 +39,7 @@ it.each(['spacing', 'signed'] as const)(
       release = barrier()
     try {
       const balances = new Map<string, bigint>()
+      const senderNonces = new Map<string, number>()
       const provider = new JsonRpcProvider('http://127.0.0.1:1', 10143, {
         staticNetwork: true,
         cacheTimeout: -1,
@@ -46,7 +47,23 @@ it.each(['spacing', 'signed'] as const)(
       ;(provider as any)._perform = async (request: any) => {
         if (request.method === 'getBalance')
           return balances.get(request.address.toLowerCase()) ?? 0n
-        if (request.method === 'getTransactionCount') return 0
+        if (request.method === 'getTransactionCount')
+          return senderNonces.get(request.address.toLowerCase()) ?? 0
+        if (request.method === 'getBlock')
+          return {
+            hash: '0x' + '11'.repeat(32),
+            parentHash: '0x' + '22'.repeat(32),
+            number: '0x1',
+            timestamp: '0x64',
+            nonce: '0x0000000000000000',
+            difficulty: '0x0',
+            gasLimit: '0x1c9c380',
+            gasUsed: '0x0',
+            miner: '0x' + '00'.repeat(20),
+            extraData: '0x',
+            baseFeePerGas: '0x1',
+            transactions: [],
+          }
         throw new Error(`Offline regression refused ${request.method}`)
       }
       const client = {
@@ -55,6 +72,10 @@ it.each(['spacing', 'signed'] as const)(
           balances.set(
             tx.to!.toLowerCase(),
             (balances.get(tx.to!.toLowerCase()) ?? 0n) + tx.value
+          )
+          senderNonces.set(
+            tx.from!.toLowerCase(),
+            (senderNonces.get(tx.from!.toLowerCase()) ?? 0) + 1
           )
           return tx.hash!
         }),
@@ -116,13 +137,15 @@ it.each(['spacing', 'signed'] as const)(
       })
       await entered.promise
       expect(pool.getRecord(0)).toMatchObject({
-        status: 'available',
+        status: 'funding',
         revision: 3,
       })
       const leases = new SubAccountLeaseManager(pool)
+      await expect(leases.acquireForIndex(0)).rejects.toThrow('not available')
+      await pool.setStatus(0, 'available')
       const originalLease = await leases.acquireForIndex(0)
       const held = pool.getRecord(0)!
-      expect(held).toMatchObject({ status: 'in-use', revision: 4 })
+      expect(held).toMatchObject({ status: 'in-use', revision: 5 })
       release.resolve()
       await expect(preparing).rejects.toThrow('Stale pool revision')
       expect(pool.getRecord(0)).toEqual(held)

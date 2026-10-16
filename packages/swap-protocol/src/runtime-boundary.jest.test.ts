@@ -6,6 +6,7 @@ test('headless recovery bundles for browser without wallet, host storage, UI or 
     entryPoints: [
       'packages/swap-protocol/src/runtime.ts',
       'packages/swap-protocol/src/host-identity.ts',
+      'packages/swap-protocol/src/outgoing-negotiation.ts',
     ],
     bundle: true,
     write: false,

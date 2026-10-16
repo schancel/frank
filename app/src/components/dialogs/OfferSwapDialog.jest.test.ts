@@ -1,164 +1,108 @@
 /** @jest-environment jsdom */
-
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
+import { reactive } from 'vue'
 import OfferSwapDialog from './OfferSwapDialog.vue'
-import enUS from '../../i18n/en-us'
-
-// Wallet availability is scoped to the configured canonical primary network.
-jest.mock('@frank/wallet/chain', () => ({
-  activeChain: {
-    chainIdentifier: 'monad-testnet',
-    isTestnet: true,
-    unit: 'MONT',
+const mockStatus = reactive({ busy: false, error: '', delivery: '' })
+let mockUnavailable = ''
+jest.mock('../../swap/negotiation-commands', () => ({
+  get negotiationCommandStatus() {
+    return mockStatus
+  },
+  negotiationUnavailable: () => mockUnavailable,
+  captureNegotiation: jest.fn(),
+  sendNegotiation: jest.fn(),
+  negotiationErrorCode: () => 'invalidAmount',
+}))
+jest.mock('../../utils/negotiation-recovery', () => ({
+  negotiationRecoveryStatus: { snapshot: { journals: [] } },
+}))
+jest.mock('../../accounts/session', () => ({
+  accountSession: {
+    state: {
+      status: 'ready',
+      account: { receipt: { context: { accountId: 'a' } } },
+    },
   },
 }))
-
-function translator(messages: unknown) {
-  return (key: string, params?: Record<string, unknown>) => {
-    let value: unknown = key
-      .split('.')
-      .reduce<unknown>((o, k) => (o as Record<string, unknown>)?.[k], messages)
-    if (typeof value === 'string' && params) {
-      for (const [k, v] of Object.entries(params)) {
-        value = value.replace(`{${k}}`, String(v))
-      }
-    }
-    return typeof value === 'string' ? value : key
-  }
-}
-
-describe('OfferSwapDialog', () => {
-  const mountDialog = (props = {}) => {
-    return mount(OfferSwapDialog, {
-      props: {
-        address: '0xBob',
-        contact: { name: 'Bob' },
-        ...props,
-      },
-      global: {
-        mocks: { $t: translator(enUS) },
-        directives: { 'close-popup': {} },
-        stubs: {
-          QCard: { template: '<div><slot /></div>' },
-          QCardSection: { template: '<div><slot /></div>' },
-          QCardActions: { template: '<div><slot /></div>' },
-          QSelect: {
-            props: ['modelValue', 'options'],
-            template:
-              '<select :value="modelValue"><option v-for="o in options" :key="o.value" :value="o.value">{{ o.label }}</option></select>',
-          },
-          QInput: {
-            props: ['modelValue'],
-            template:
-              '<input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
-          },
-          QBtn: {
-            props: ['disable'],
-            template: '<button :disabled="disable"><slot /></button>',
-          },
+jest.mock('../../adapters/level-message-store', () => ({
+  store: Promise.resolve({ outgoingApplicationMessages: async () => [] }),
+}))
+jest.mock('../../swap/SignedNegotiationCard.vue', () => ({ template: '<i />' }))
+const mountForm = () =>
+  mount(OfferSwapDialog, {
+    props: {
+      address: 'peer',
+      conversationId: '11111111-1111-4111-8111-111111111111',
+      swapId: new Uint8Array(32).fill(1),
+      stampValue: '0',
+      contact: { name: 'Bob' },
+    },
+    global: {
+      mocks: { $t: (key: string) => key },
+      directives: { 'close-popup': {} },
+      stubs: {
+        QCard: { template: '<div><slot /></div>' },
+        QCardSection: { template: '<div><slot /></div>' },
+        QCardActions: { template: '<div><slot /></div>' },
+        QInput: {
+          props: ['modelValue'],
+          template:
+            '<input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+        },
+        QBtn: {
+          props: ['disable', 'label'],
+          template: '<button :disabled="disable">{{ label }}</button>',
         },
       },
-    })
-  }
-
-  it('renders contact name and default chains', () => {
-    const wrapper = mountDialog()
-    expect(wrapper.text()).toContain('Bob')
-    expect((wrapper.vm as any).offeredChain).toBe('monad-testnet')
-    expect((wrapper.vm as any).requestedChain).toBe('solana-devnet')
+    },
   })
-
-  it('offers the configured primary network and supported peer networks', () => {
-    const wrapper = mountDialog()
-    const offered = (wrapper.vm as any).chainOptions.map(
-      (option: { value: string }) => option.value,
-    )
-    expect(offered.sort()).toEqual([
-      'arbitrum-mainnet',
-      'arbitrum-sepolia',
-      'base-mainnet',
-      'base-sepolia',
-      'bch-mainnet',
-      'bch-testnet',
-      'bnb-mainnet',
-      'bnb-testnet',
-      'btc-mainnet',
-      'btc-testnet',
-      'doge-mainnet',
-      'doge-testnet',
-      'ethereum-mainnet',
-      'ethereum-sepolia',
-      'hyperliquid-mainnet',
-      'hyperliquid-testnet',
-      'litecoin-mainnet',
-      'litecoin-testnet',
-      'monad-testnet',
-      'polygon-amoy',
-      'polygon-mainnet',
-      'solana-devnet',
-      'solana-mainnet',
-      'tempo-mainnet',
-      'tempo-testnet',
-      'xec-testnet',
-    ])
-  })
-
-  it('disables offer button until both amounts are valid and chains differ', async () => {
-    const wrapper = mountDialog()
-    expect((wrapper.vm as any).canOffer).toBe(false)
-
-    await wrapper.setData({ offeredAmount: '1.0' })
-    expect((wrapper.vm as any).canOffer).toBe(false)
-
-    await wrapper.setData({ requestedAmount: '5.0' })
-    expect((wrapper.vm as any).canOffer).toBe(true)
-
-    // Cannot swap same chain for same chain
-    await wrapper.setData({ requestedChain: 'monad-testnet' })
-    expect((wrapper.vm as any).canOffer).toBe(false)
-  })
-
-  it('emits offer event with complete cross-chain swap offer payload', async () => {
-    const wrapper = mountDialog()
-    await wrapper.setData({
-      offeredChain: 'monad-testnet',
-      offeredAmount: '10.5',
-      requestedChain: 'solana-devnet',
-      requestedAmount: '1.25',
-    })
-    expect((wrapper.vm as any).canOffer).toBe(true)
-    ;(wrapper.vm as any).offerSwap()
-
-    const emitted = wrapper.emitted('offer')
-    expect(emitted).toHaveLength(1)
-    const payload = emitted![0][0] as any
-    expect(payload.type).toBe('swap-offer')
-    expect(payload.offeredChain).toBe('monad-testnet')
-    expect(payload.offeredAsset).toBe('MONT')
-    expect(payload.offeredAmount).toBe('10.5')
-    expect(payload.requestedChain).toBe('solana-devnet')
-    expect(payload.requestedAsset).toBe('dSOL')
-    expect(payload.requestedAmount).toBe('1.25')
-    expect(payload.status).toBe('pending')
-    expect(payload.recipientAddress).toBe('0xBob')
-    expect(payload.swapId).toHaveLength(32)
-    const offeredLabel = (wrapper.vm as any).chainOptions.find(
-      (option: { value: string }) => option.value === 'monad-testnet',
-    )
-    expect(offeredLabel.label).toBe('Monad Testnet (MONT)')
-  })
-
-  it('uses each selected chain unit as the offer asset', async () => {
-    const wrapper = mountDialog()
-    await wrapper.setData({
-      offeredChain: 'ethereum-mainnet',
-      offeredAmount: '2',
-      requestedChain: 'solana-mainnet',
-      requestedAmount: '3',
-    })
-    ;(wrapper.vm as any).offerSwap()
-    const payload = wrapper.emitted('offer')![0][0] as any
-    expect(payload.offeredAsset).toBe('ETH')
-    expect(payload.requestedAsset).toBe('SOL')
-  })
+beforeEach(() => {
+  mockUnavailable = ''
+  mockStatus.error = ''
+  mockStatus.busy = false
+})
+test('requires selected expiry and exact positive amounts; never emits legacy unsigned payload', async () => {
+  const w = mountForm()
+  await w.find('[data-testid="swap-review"]').trigger('click')
+  expect(w.find('[role="alert"]').exists()).toBe(true)
+  await w.find('[data-testid="swap-xec-amount"]').setValue('1.234')
+  await w.find('[data-testid="swap-evm-amount"]').setValue('1')
+  await w.find('[data-testid="swap-review"]').trigger('click')
+  expect(w.find('[data-testid="swap-review-panel"]').exists()).toBe(false)
+  await w.find('[data-testid="swap-xec-amount"]').setValue('1.23')
+  await w.find('[data-testid="swap-review"]').trigger('click')
+  expect(w.find('[role="alert"]').exists()).toBe(true)
+  expect(w.emitted('offer')).toBeUndefined()
+  w.unmount()
+})
+test.each([
+  'unsupported',
+  'restoring',
+  'incomplete',
+  'capacity',
+  'storage-error',
+])('visibly disables review while %s', async state => {
+  mockUnavailable = state
+  const w = mountForm()
+  await flushPromises()
+  expect(w.text()).toContain('signedSwap.states.' + state)
+  expect(
+    w.find('[data-testid="swap-review"]').attributes('disabled'),
+  ).toBeDefined()
+  w.unmount()
+})
+test('error survives closing/reopening and a deliberate new offer requests another swap identity', async () => {
+  const w = mountForm()
+  await w.find('[data-testid="swap-review"]').trigger('click')
+  const error = mockStatus.error
+  expect(error).not.toBe('')
+  w.unmount()
+  const reopened = mountForm()
+  expect(reopened.text()).toContain(error)
+  await reopened
+    .findAll('button')
+    .find(b => b.text() === 'signedSwap.newOffer')!
+    .trigger('click')
+  expect(reopened.emitted('newOffer')).toHaveLength(1)
+  reopened.unmount()
 })

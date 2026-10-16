@@ -5,7 +5,9 @@
   },
   "include": [
     "src/storage/negotiation-browser.ts",
-    "src/storage/browser-suite.ts"
+    "src/storage/browser-suite.ts",
+    "src/storage/execution-browser.ts",
+    "src/storage/execution-browser-suite.ts"
   ],
   "exclude": ["node_modules"]
 }

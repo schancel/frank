@@ -1184,7 +1184,7 @@ export class EvmStampPayer {
     if (payment.index === undefined) return
     const index = payment.index
     try {
-      pool.commitSpend(index, payment.rawTx)
+      await pool.commitSpend(index, payment.rawTx)
     } catch (error) {
       // The chain shows this account spent, and its row cannot take the record (it disagrees
       // with something else stored about this one account). The account goes out of use,
@@ -1195,7 +1195,7 @@ export class EvmStampPayer {
       )
       const row = pool.getRecord(index)
       if (row && row.status !== 'spent' && row.status !== 'retired')
-        pool.setStatus(index, 'retired')
+        await pool.setStatus(index, 'retired')
     }
     await pool.flush()
   }
@@ -1207,7 +1207,7 @@ export class EvmStampPayer {
     if (payment.index === undefined) return
     const row = pool.getRecord(payment.index)
     if (row && row.status !== 'spent' && row.status !== 'retired')
-      pool.setStatus(payment.index, 'retired')
+      await pool.setStatus(payment.index, 'retired')
     await pool.flush()
   }
 

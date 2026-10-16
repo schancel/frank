@@ -528,7 +528,7 @@ describe("createEvmChain: createWallet", () => {
 
   it("pre-derives unfunded accounts without moving funds on wallet open", async () => {
     const wallet = (await chain.createWallet(seed)) as EvmChainWalletHandle;
-    const records = wallet.pool.ensureSize(0);
+    const records = (await wallet.pool.ensureSize(0));
     expect(records).toHaveLength(TEST_CONFIG.subAccountPoolSize);
     expect(records.every((record) => record.status === "unfunded")).toBe(true);
     expect(MonadAccountTxSigner).not.toHaveBeenCalled();
@@ -1132,7 +1132,7 @@ describe("canonical topic owner production composition", () => {
       wallet = await firstChain.createWallet(seed);
       const original = wallet.pool.records();
       for (let index = 0; index < 5; index++)
-        wallet.pool.setStatus(index, "in-use");
+        await wallet.pool.setStatus(index, "in-use");
       await wallet.pool.flush();
       const highWater = wallet.pool.nextUnusedIndex();
       const location = `${

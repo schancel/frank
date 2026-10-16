@@ -1,0 +1,190 @@
+FAIL packages/wallet/storage/pool-review-regressions.jest.test.ts
+  ✕ rejects a delayed second contributor after another lease wins during spacing, without exposing its signed transfer (47 ms)
+  ✕ rejects a delayed second contributor after another lease wins during signed, without exposing its signed transfer (13 ms)
+  ✕ refuses preexisting recovered change before same-seed custody or manifest initialization, preserving every component (28 ms)
+  ✕ refuses preexisting recovered change before different-seed custody or manifest initialization, preserving every component (23 ms)
+  ✕ refuses preexisting recovered change before generated-seed custody or manifest initialization, preserving every component (24 ms)
+
+  ● rejects a delayed second contributor after another lease wins during spacing, without exposing its signed transfer
+
+    expect(received).rejects.toThrow()
+
+    Received promise resolved instead of rejected
+    Resolved to value: {"fundingTxHashes": ["0xa7ac8c0c369b5e8fce519855fb9e2491282bd7815080883142ff48d068b5b18f", "0x95ba7638d6a1e5fdd5b724ee68a13b199f7657b343d3ea058a52c313bad345f6"], "index": 0}
+
+      71 |     expect(held).toMatchObject({ status: 'in-use', revision: 4 })
+      72 |     release.resolve()
+    > 73 |     await expect(preparing).rejects.toThrow('Stale pool revision')
+         |           ^
+      74 |     expect(pool.getRecord(0)).toEqual(held)
+      75 |     expect(leases.isCurrentLease(originalLease)).toBe(true)
+      76 |     await expect(new SubAccountLeaseManager(pool).acquireForIndex(0)).rejects.toThrow('not available')
+
+      at expect (../../../../node_modules/expect/build/index.js:113:15)
+      at storage/pool-review-regressions.jest.test.ts:73:11
+
+  ● rejects a delayed second contributor after another lease wins during signed, without exposing its signed transfer
+
+    expect(received).rejects.toThrow()
+
+    Received promise resolved instead of rejected
+    Resolved to value: {"fundingTxHashes": ["0xa7ac8c0c369b5e8fce519855fb9e2491282bd7815080883142ff48d068b5b18f", "0x95ba7638d6a1e5fdd5b724ee68a13b199f7657b343d3ea058a52c313bad345f6"], "index": 0}
+
+      71 |     expect(held).toMatchObject({ status: 'in-use', revision: 4 })
+      72 |     release.resolve()
+    > 73 |     await expect(preparing).rejects.toThrow('Stale pool revision')
+         |           ^
+      74 |     expect(pool.getRecord(0)).toEqual(held)
+      75 |     expect(leases.isCurrentLease(originalLease)).toBe(true)
+      76 |     await expect(new SubAccountLeaseManager(pool).acquireForIndex(0)).rejects.toThrow('not available')
+
+      at expect (../../../../node_modules/expect/build/index.js:113:15)
+      at storage/pool-review-regressions.jest.test.ts:73:11
+
+  ● refuses preexisting recovered change before same-seed custody or manifest initialization, preserving every component
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  -  5
+    + Received  + 13
+
+      Object {
+        "change-pool": Object {
+    -     "digest": "ecbff4fb94fef722698a87f2911a57beffb8e95a6cd43c47657187d040cde520",
+    +     "digest": "73fd8a5debd029c6caf8d14bc2d16bbf4d5f9db4656f84fe70413e1fa5457cb1",
+          "keys": Array [
+    +       "__next_index__",
+            "__recovered_change__:0",
+    +       "__wallet_binding__",
+          ],
+        },
+        "sub-account-pool": Object {
+    -     "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    -     "keys": Array [],
+    +     "digest": "19b30ac662ecf1f7bb8d1b78f7a5c581fc73e6f7538e4fc11150f2f1f5556cfd",
+    +     "keys": Array [
+    +       "__next_index__",
+    +       "__pool_format__",
+    +       "__wallet_binding__",
+    +     ],
+        },
+        "wallet-manifest": Object {
+    -     "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    -     "keys": Array [],
+    +     "digest": "e7166d6c541bdf9f03c839b502b0bf5399cbdbc628abd4196e834169234a2a87",
+    +     "keys": Array [
+    +       "manifest",
+    +     ],
+        },
+      }
+
+      108 |       { location, mode: 'restore', seed: { mnemonic: scenario === 'same-seed' ? mnemonic : otherMnemonic } }).then(async bundle => { await bundle.close(); return undefined }, failure => failure)
+      109 |     // Digests avoid printing newly generated disposable custody in the fail-before evidence.
+    > 110 |     expect(await snapshot(location)).toEqual(before)
+          |                                      ^
+      111 |     expect(error).toBeInstanceOf(Error)
+      112 |     expect(String(error)).toMatch(/change.*manifest/)
+      113 |     expect(generation).not.toHaveBeenCalled()
+
+      at storage/pool-review-regressions.jest.test.ts:110:38
+
+  ● refuses preexisting recovered change before different-seed custody or manifest initialization, preserving every component
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  -  5
+    + Received  + 13
+
+      Object {
+        "change-pool": Object {
+    -     "digest": "ecbff4fb94fef722698a87f2911a57beffb8e95a6cd43c47657187d040cde520",
+    +     "digest": "0e87cee7f6192b2e8a8bbbe89b425659eb2301c85dc2553916bc99aed95490ac",
+          "keys": Array [
+    +       "__next_index__",
+            "__recovered_change__:0",
+    +       "__wallet_binding__",
+          ],
+        },
+        "sub-account-pool": Object {
+    -     "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    -     "keys": Array [],
+    +     "digest": "133d4ea6907335fdd72d6004ffdde8cc0601823066e35bbd562f3eb61fc9334b",
+    +     "keys": Array [
+    +       "__next_index__",
+    +       "__pool_format__",
+    +       "__wallet_binding__",
+    +     ],
+        },
+        "wallet-manifest": Object {
+    -     "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    -     "keys": Array [],
+    +     "digest": "a90efc1c829f2b2404cd356633f1fbd0fca64cf003a4f8581eef8004d3af57af",
+    +     "keys": Array [
+    +       "manifest",
+    +     ],
+        },
+      }
+
+      108 |       { location, mode: 'restore', seed: { mnemonic: scenario === 'same-seed' ? mnemonic : otherMnemonic } }).then(async bundle => { await bundle.close(); return undefined }, failure => failure)
+      109 |     // Digests avoid printing newly generated disposable custody in the fail-before evidence.
+    > 110 |     expect(await snapshot(location)).toEqual(before)
+          |                                      ^
+      111 |     expect(error).toBeInstanceOf(Error)
+      112 |     expect(String(error)).toMatch(/change.*manifest/)
+      113 |     expect(generation).not.toHaveBeenCalled()
+
+      at storage/pool-review-regressions.jest.test.ts:110:38
+
+  ● refuses preexisting recovered change before generated-seed custody or manifest initialization, preserving every component
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  -  5
+    + Received  + 14
+
+      Object {
+        "change-pool": Object {
+    -     "digest": "ecbff4fb94fef722698a87f2911a57beffb8e95a6cd43c47657187d040cde520",
+    +     "digest": "5b5ad04f416c59f25e5034045d88cf7d617eebf4e5edf853d9da9bad9deec9e4",
+          "keys": Array [
+    +       "__next_index__",
+            "__recovered_change__:0",
+    +       "__wallet_binding__",
+          ],
+        },
+        "sub-account-pool": Object {
+    -     "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    -     "keys": Array [],
+    +     "digest": "d99f77e37ffdc8562f9bb9b66e218b0683543a0e964a306e29a297b529a162f3",
+    +     "keys": Array [
+    +       "__next_index__",
+    +       "__pool_format__",
+    +       "__wallet_binding__",
+    +     ],
+        },
+        "wallet-manifest": Object {
+    -     "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    -     "keys": Array [],
+    +     "digest": "0011d42ac46c9539564edd58fd0838bdfb27a0b4262dcc2401536376cda279d1",
+    +     "keys": Array [
+    +       "manifest",
+    +       "seed",
+    +     ],
+        },
+      }
+
+      108 |       { location, mode: 'restore', seed: { mnemonic: scenario === 'same-seed' ? mnemonic : otherMnemonic } }).then(async bundle => { await bundle.close(); return undefined }, failure => failure)
+      109 |     // Digests avoid printing newly generated disposable custody in the fail-before evidence.
+    > 110 |     expect(await snapshot(location)).toEqual(before)
+          |                                      ^
+      111 |     expect(error).toBeInstanceOf(Error)
+      112 |     expect(String(error)).toMatch(/change.*manifest/)
+      113 |     expect(generation).not.toHaveBeenCalled()
+
+      at storage/pool-review-regressions.jest.test.ts:110:38
+
+Test Suites: 1 failed, 1 total
+Tests:       5 failed, 5 total
+Snapshots:   0 total
+Time:        0.586 s, estimated 11 s
+Ran all test suites within paths "packages/wallet/storage/pool-review-regressions.jest.test.ts".

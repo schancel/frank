@@ -1,0 +1,9 @@
+Consolidator and stamp-client reruns after removed-writer/async-handle adaptation. Domain was separately corrected and passed in final-core.log.
+
+FAIL packages/wallet/chain/monad-domain-wallet.jest.test.ts (15.044 s)
+PASS packages/wallet/chain/evm-legacy-consolidator.jest.test.ts (22.007 s)
+PASS packages/wallet/monad-stamp-client.jest.test.ts (29.175 s)
+Test Suites: 1 failed, 2 passed, 3 total
+Tests:       33 failed, 235 passed, 268 total
+Time:        66.363 s
+Ran all test suites within paths "packages/wallet/chain/monad-domain-wallet.jest.test.ts", "packages/wallet/chain/evm-legacy-consolidator.jest.test.ts", "packages/wallet/monad-stamp-client.jest.test.ts".

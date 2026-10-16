@@ -1,0 +1,21 @@
+PASS packages/wallet/storage/authoritative-pool-mutations.jest.test.ts
+  ✓ a failed eligibility write rejects the mutation and fences selection and repeated flush (88 ms)
+  ✓ publishes success only after the real durable batch, with detached snapshots and idempotent replay (4 ms)
+  ✓ two pool wrappers and lease managers over one actual backend grant exactly one same-row owner (13 ms)
+  ✓ rejects A to B to A stale full-row completion while permitting unrelated rows (4 ms)
+  ✓ atomically converts a terminal row without lowering allocation or recreating its index across reopen (5 ms)
+  ✓ close refuses new work immediately and drains an already pending batch without losing its disk outcome (4 ms)
+  ✓ refuses old raw records without changing bytes and opens a genuinely empty store without defaults (7 ms)
+  ✓ a batch that commits then rejects stays uncertain until reopen reveals the committed disk outcome (4 ms)
+  ✓ refuses revision overflow without mutation, while exact replay at the maximum remains idempotent (11 ms)
+  ✓ exposes no unrestricted legacy pool-store mutation APIs (2 ms)
+  ✓ an actual funding receipt wait does not block another row lease, and its stale completion preserves the original obligation (28 ms)
+  ✓ initializes format, binding and high-water in one authorized batch without a partial binding checkpoint (4 ms)
+  ✓ does not adopt a nonempty unbound v3 pool into a different manifest owner (15 ms)
+  ✓ a fresh revision cannot resurrect spent or retired rows through either pool or raw store mutation (32 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       14 passed, 14 total
+Snapshots:   0 total
+Time:        0.945 s, estimated 1 s
+Ran all test suites within paths "packages/wallet/storage/authoritative-pool-mutations.jest.test.ts".

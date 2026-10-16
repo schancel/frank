@@ -25,8 +25,8 @@ const burn = '0x000000000000000000000000000000000000dEaD'
 
 async function fixture() {
   const bundle = createInMemoryMonadWalletBundle({ mnemonic })
-  bundle.pool.ensureSize(1)
-  const lease = bundle.leaseManager.acquireLease()
+  await bundle.pool.ensureSize(1)
+  const lease = (await bundle.leaseManager.acquireLease())
   const key = MonadHdKeyring.fromMnemonic(mnemonic).deriveSubAccount(
     lease.index,
   )
@@ -273,12 +273,12 @@ test.each(['chain', 'destination', 'amount', 'sender', 'calldata', 'lease'])(
 
 test('after lease flush before journal delete, missing historical evidence keeps authority', async () => {
   const f = await fixture()
-  f.bundle.pool.recordSpendTransaction(0, {
+  await f.bundle.pool.recordSpendTransaction(0, {
     rawTx: f.operation.rawTx,
     txHash: f.operation.txHash,
     valueWei: f.operation.valueWei,
   })
-  f.bundle.pool.setStatus(0, 'spent')
+  await f.bundle.pool.setStatus(0, 'spent')
   f.provider.getTransactionReceipt.mockResolvedValue(null as any)
   http.mockResolvedValue(response(f.status()) as any)
   await expect(reconcileForumOperations(f.wallet, 'post')).rejects.toThrow()
@@ -337,7 +337,7 @@ test('provider chain mismatch fails before relay transport and never settles', a
 
 test('submitForumOperation retries with bounded gas limit when signer throws CALL_EXCEPTION without gasLimit', async () => {
   const f = await fixture()
-  f.bundle.leaseManager.releaseLease(f.lease, 'unused')
+  await f.bundle.leaseManager.releaseLease(f.lease, 'unused')
   await f.bundle.topicOperationJournal.delete(f.operation)
   const callException = Object.assign(new Error('missing revert data'), {
     code: 'CALL_EXCEPTION',

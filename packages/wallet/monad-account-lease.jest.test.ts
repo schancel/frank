@@ -38,10 +38,10 @@ import { MonadTxStatus } from './monad-account-tx'
 const TEST_MNEMONIC =
   'test test test test test test test test test test test junk'
 
-function makePool(size: number): MonadSubAccountPool {
+async function makePool(size: number): Promise<MonadSubAccountPool> {
   const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
   const pool = new MonadSubAccountPool({ keyring })
-  pool.ensureSize(size)
+  await pool.ensureSize(size)
   return pool
 }
 
@@ -72,145 +72,145 @@ function makeStatusSource(
 
 describe('SubAccountLeaseManager', () => {
   describe('acquireLease / acquireForIndex', () => {
-    it('leases the next available account and flips it to in-use via pool.setStatus', () => {
-      const pool = makePool(2)
+    it('leases the next available account and flips it to in-use via pool.setStatus', async () => {
+      const pool = (await makePool(2))
       const manager = new SubAccountLeaseManager(pool)
 
-      const handle = manager.acquireLease()
+      const handle = (await manager.acquireLease())
 
       expect(handle.index).toBe(0)
       expect(pool.getRecord(0)?.status).toBe('in-use')
       expect(manager.isLeased(0)).toBe(true)
     })
 
-    it('rejects (throws) rather than silently granting when no account is available', () => {
-      const pool = makePool(1)
+    it('rejects (throws) rather than silently granting when no account is available', async () => {
+      const pool = (await makePool(1))
       const manager = new SubAccountLeaseManager(pool)
-      manager.acquireLease() // leases the only account
+      await manager.acquireLease() // leases the only account
 
-      expect(() => manager.acquireLease()).toThrow(NoAvailableSubAccountError)
+      await expect(async () => (await manager.acquireLease())).rejects.toThrow(NoAvailableSubAccountError)
     })
 
-    it('lease contention: a second acquire on an already-leased index is rejected, not granted', () => {
-      const pool = makePool(2)
+    it('lease contention: a second acquire on an already-leased index is rejected, not granted', async () => {
+      const pool = (await makePool(2))
       const manager = new SubAccountLeaseManager(pool)
-      manager.acquireForIndex(0)
+      await manager.acquireForIndex(0)
 
-      expect(() => manager.acquireForIndex(0)).toThrow(
+      await expect(async () => (await manager.acquireForIndex(0))).rejects.toThrow(
         SubAccountAlreadyLeasedError,
       )
       // Still exactly one live lease on index 0 — the rejected call didn't double-grant it.
       expect(manager.leasedIndices()).toEqual([0])
     })
 
-    it('rejects acquiring a retired account', () => {
-      const pool = makePool(1)
-      pool.setStatus(0, 'retired')
+    it('rejects acquiring a retired account', async () => {
+      const pool = (await makePool(1))
+      await pool.setStatus(0, 'retired')
       const manager = new SubAccountLeaseManager(pool)
 
-      expect(() => manager.acquireForIndex(0)).toThrow(
+      await expect(async () => (await manager.acquireForIndex(0))).rejects.toThrow(
         SubAccountAlreadyLeasedError,
       )
     })
 
-    it('throws a plain Error for an index unknown to the pool', () => {
-      const pool = makePool(1)
+    it('throws a plain Error for an index unknown to the pool', async () => {
+      const pool = (await makePool(1))
       const manager = new SubAccountLeaseManager(pool)
-      expect(() => manager.acquireForIndex(5)).toThrow(
+      await expect(async () => (await manager.acquireForIndex(5))).rejects.toThrow(
         /No sub-account at index 5/,
       )
     })
   })
 
   describe('releaseLease', () => {
-    it('confirmed happy-path: retires the account as spent, never available again (ticket #34)', () => {
-      const pool = makePool(1)
+    it('confirmed happy-path: retires the account as spent, never available again (ticket #34)', async () => {
+      const pool = (await makePool(1))
       const manager = new SubAccountLeaseManager(pool)
-      const handle = manager.acquireForIndex(0)
+      const handle = (await manager.acquireForIndex(0))
 
-      const record = manager.releaseLease(handle, 'confirmed')
+      const record = (await manager.releaseLease(handle, 'confirmed'))
 
       expect(record.status).toBe('spent')
       expect(pool.getRecord(0)?.status).toBe('spent')
       expect(manager.isLeased(0)).toBe(false)
     })
 
-    it('failed outcome: retires the account instead of returning it to available', () => {
-      const pool = makePool(1)
+    it('failed outcome: retires the account instead of returning it to available', async () => {
+      const pool = (await makePool(1))
       const manager = new SubAccountLeaseManager(pool)
-      const handle = manager.acquireForIndex(0)
+      const handle = (await manager.acquireForIndex(0))
 
-      const record = manager.releaseLease(handle, 'failed')
+      const record = (await manager.releaseLease(handle, 'failed'))
 
       expect(record.status).toBe('retired')
       expect(pool.getRecord(0)?.status).toBe('retired')
     })
 
-    it('stuck outcome: also retires the account', () => {
-      const pool = makePool(1)
+    it('stuck outcome: also retires the account', async () => {
+      const pool = (await makePool(1))
       const manager = new SubAccountLeaseManager(pool)
-      const handle = manager.acquireForIndex(0)
+      const handle = (await manager.acquireForIndex(0))
 
-      const record = manager.releaseLease(handle, 'stuck')
+      const record = (await manager.releaseLease(handle, 'stuck'))
 
       expect(record.status).toBe('retired')
     })
 
-    it('a retired account is excluded from future selection', () => {
-      const pool = makePool(2)
+    it('a retired account is excluded from future selection', async () => {
+      const pool = (await makePool(2))
       const manager = new SubAccountLeaseManager(pool)
-      const handle = manager.acquireForIndex(0)
-      manager.releaseLease(handle, 'failed')
+      const handle = (await manager.acquireForIndex(0))
+      await manager.releaseLease(handle, 'failed')
 
-      const next = manager.acquireLease()
+      const next = (await manager.acquireLease())
       expect(next.index).toBe(1) // index 0 is retired, skipped
     })
 
-    it('a spent account (successfully-confirmed release) is equally excluded from future selection (ticket #34)', () => {
-      const pool = makePool(2)
+    it('a spent account (successfully-confirmed release) is equally excluded from future selection (ticket #34)', async () => {
+      const pool = (await makePool(2))
       const manager = new SubAccountLeaseManager(pool)
-      const handle = manager.acquireForIndex(0)
-      manager.releaseLease(handle, 'confirmed')
+      const handle = (await manager.acquireForIndex(0))
+      await manager.releaseLease(handle, 'confirmed')
 
-      const next = manager.acquireLease()
+      const next = (await manager.acquireLease())
       expect(next.index).toBe(1) // index 0 is spent, skipped -- never reused
     })
 
-    it('double-release of the same handle throws InvalidLeaseHandleError', () => {
-      const pool = makePool(1)
+    it('double-release of the same handle throws InvalidLeaseHandleError', async () => {
+      const pool = (await makePool(1))
       const manager = new SubAccountLeaseManager(pool)
-      const handle = manager.acquireForIndex(0)
-      manager.releaseLease(handle, 'confirmed')
+      const handle = (await manager.acquireForIndex(0))
+      await manager.releaseLease(handle, 'confirmed')
 
-      expect(() => manager.releaseLease(handle, 'confirmed')).toThrow(
+      await expect(async () => (await manager.releaseLease(handle, 'confirmed'))).rejects.toThrow(
         InvalidLeaseHandleError,
       )
     })
 
-    it('releasing a handle never issued by this manager throws InvalidLeaseHandleError', () => {
-      const pool = makePool(1)
+    it('releasing a handle never issued by this manager throws InvalidLeaseHandleError', async () => {
+      const pool = (await makePool(1))
       const manager = new SubAccountLeaseManager(pool)
       const foreignHandle: AccountLeaseHandle = { index: 0, address: '0xabc' }
 
-      expect(() => manager.releaseLease(foreignHandle, 'confirmed')).toThrow(
+      await expect(async () => (await manager.releaseLease(foreignHandle, 'confirmed'))).rejects.toThrow(
         InvalidLeaseHandleError,
       )
     })
 
-    it('after a confirmed release, the SAME account can never be leased again (ticket #34: single-use, not cyclable)', () => {
-      const pool = makePool(2)
+    it('after a confirmed release, the SAME account can never be leased again (ticket #34: single-use, not cyclable)', async () => {
+      const pool = (await makePool(2))
       const manager = new SubAccountLeaseManager(pool)
-      const first = manager.acquireForIndex(0)
-      manager.releaseLease(first, 'confirmed')
+      const first = (await manager.acquireForIndex(0))
+      await manager.releaseLease(first, 'confirmed')
 
       // Re-acquiring the now-'spent' index is rejected, just like an already-'in-use' or
       // '-retired' one — 'spent' is equally terminal.
-      expect(() => manager.acquireForIndex(0)).toThrow(
+      await expect(async () => (await manager.acquireForIndex(0))).rejects.toThrow(
         SubAccountAlreadyLeasedError,
       )
 
       // A distinct, never-before-used account is selected/acquired instead.
-      const second = manager.acquireLease()
+      const second = (await manager.acquireLease())
       expect(second.index).toBe(1)
       expect(pool.getRecord(0)?.status).toBe('spent')
       expect(pool.getRecord(1)?.status).toBe('in-use')
@@ -220,7 +220,7 @@ describe('SubAccountLeaseManager', () => {
 
 describe('acquireLeaseWhenAvailable', () => {
   it('resolves immediately if an account is already available', async () => {
-    const pool = makePool(1)
+    const pool = (await makePool(1))
     const manager = new SubAccountLeaseManager(pool)
     const clock = makeFakeClock(10)
 
@@ -232,9 +232,9 @@ describe('acquireLeaseWhenAvailable', () => {
   })
 
   it('waits (polls) until a fresh account becomes available (e.g. a completed pool top-up), then acquires it -- never the busy/now-spent original (ticket #34)', async () => {
-    const pool = makePool(1)
+    const pool = (await makePool(1))
     const manager = new SubAccountLeaseManager(pool)
-    const busyHandle = manager.acquireForIndex(0) // the pool's only account is busy
+    const busyHandle = (await manager.acquireForIndex(0)) // the pool's only account is busy
     const clock = makeFakeClock(10)
 
     // `acquireLeaseWhenAvailable`'s retry loop resolves its own injected `sleep()` every
@@ -253,8 +253,8 @@ describe('acquireLeaseWhenAvailable', () => {
     const toppingUpSleep = async (ms: number) => {
       if (!toppedUp) {
         toppedUp = true
-        manager.releaseLease(busyHandle, 'confirmed')
-        pool.ensureSize(2)
+        await manager.releaseLease(busyHandle, 'confirmed')
+        await pool.ensureSize(2)
       }
       await clock.sleep(ms)
     }
@@ -270,9 +270,9 @@ describe('acquireLeaseWhenAvailable', () => {
   })
 
   it('gives up and throws NoAvailableSubAccountError once timeoutMs elapses', async () => {
-    const pool = makePool(1)
+    const pool = (await makePool(1))
     const manager = new SubAccountLeaseManager(pool)
-    manager.acquireForIndex(0) // never released within this test
+    await manager.acquireForIndex(0) // never released within this test
     const clock = makeFakeClock(10)
 
     await expect(
@@ -288,9 +288,9 @@ describe('acquireLeaseWhenAvailable', () => {
 
 describe('awaitLeaseSettlement', () => {
   it('confirmed happy-path: releases to spent (terminal, never reused) once getStatus reports confirmed', async () => {
-    const pool = makePool(1)
+    const pool = (await makePool(1))
     const manager = new SubAccountLeaseManager(pool)
-    const handle = manager.acquireForIndex(0)
+    const handle = (await manager.acquireForIndex(0))
     const statusSource = makeStatusSource(['pending', 'pending', 'confirmed'])
     const clock = makeFakeClock(1000)
 
@@ -312,9 +312,9 @@ describe('awaitLeaseSettlement', () => {
   })
 
   it('failed receipt: retires the account rather than returning it to available', async () => {
-    const pool = makePool(1)
+    const pool = (await makePool(1))
     const manager = new SubAccountLeaseManager(pool)
-    const handle = manager.acquireForIndex(0)
+    const handle = (await manager.acquireForIndex(0))
     const statusSource = makeStatusSource(['pending', 'failed'])
     const clock = makeFakeClock(1000)
 
@@ -333,9 +333,9 @@ describe('awaitLeaseSettlement', () => {
   })
 
   it('stuck-timeout: a tx that never confirms within timeoutMs is retired, not reused', async () => {
-    const pool = makePool(1)
+    const pool = (await makePool(1))
     const manager = new SubAccountLeaseManager(pool)
-    const handle = manager.acquireForIndex(0)
+    const handle = (await manager.acquireForIndex(0))
     const statusSource = makeStatusSource(['pending']) // always pending
     const clock = makeFakeClock(1000)
 
@@ -354,7 +354,7 @@ describe('awaitLeaseSettlement', () => {
     expect(result.record.status).toBe('retired')
     expect(pool.getRecord(0)?.status).toBe('retired')
     // Retired, so it's excluded from future selection.
-    pool.ensureSize(2)
+    await pool.ensureSize(2)
     expect(pool.selectForStamp()?.index).toBe(1)
   })
 })

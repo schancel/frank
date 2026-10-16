@@ -315,7 +315,7 @@ async function fixture(funded = true) {
   // Stand-in for confirmed funding: single-use accounts the offline RPC reports as funded.
   // Each covers its own fee reserve plus 600 wei, so a 1000 wei stamp needs both.
   if (funded) {
-    for (const record of alice.pool.ensureSize(2))
+    for (const record of (await alice.pool.ensureSize(2)))
       mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
     await alice.pool.flush()
   }
@@ -651,7 +651,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         unsignedSerialized: unsigned.unsignedSerialized,
       })
     mockMine(burn.rawTx)
-    f.alice.pool.commitSpend(prior.index, burn.rawTx)
+    await f.alice.pool.commitSpend(prior.index, burn.rawTx)
     await f.alice.pool.flush()
     expect(f.alice.pool.getRecord(prior.index)!.status).toBe('spent')
     // A separate installation restores exactly the same root, without this installation's
@@ -2463,7 +2463,7 @@ describe('two typed wallets on the open directory', () => {
     }
   }
   const fund = async (wallet: EvmChainWalletHandle) => {
-    for (const record of wallet.pool.ensureSize(2))
+    for (const record of (await wallet.pool.ensureSize(2)))
       mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
     await wallet.pool.flush()
   }
@@ -4775,6 +4775,7 @@ describe('a stamp account a native send spends from (#1235)', () => {
       expect(funding.length).toBeGreaterThan(0)
       expect(mockFunded.map(tx => tx.to)).not.toContain(r.xAddress)
       expect(f.alice.pool.getRecord(r.x.index)).toEqual({
+        revision: 3,
         index: r.x.index,
         address: r.x.address,
         status: 'available',
@@ -4809,6 +4810,7 @@ describe('a stamp account a native send spends from (#1235)', () => {
       expect(f.alice.pool.getRecord(r.x.index)).toEqual(
         window === 'included'
           ? {
+              revision: 4,
               index: r.x.index,
               address: r.x.address,
               status: 'spent',
@@ -4822,7 +4824,7 @@ describe('a stamp account a native send spends from (#1235)', () => {
                 },
               },
             }
-          : { index: r.x.index, address: r.x.address, status: 'available' },
+          : { revision: 3, index: r.x.index, address: r.x.address, status: 'available' },
       )
       expect(f.alice.pool.isSpendReserved(r.x.index)).toBe(true)
       const again = await r.message(f.alice, 'after reopen')

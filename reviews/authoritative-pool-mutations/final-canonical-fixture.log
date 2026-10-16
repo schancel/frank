@@ -1,0 +1,137 @@
+PASS packages/wallet/chain/monad-chain-canonical-dm.jest.test.ts
+  typed wallet direct messages use the canonical path (#778)
+    ○ skipped restoring the same account after a prior Forum burn pays a new DM at the next nonce
+    ○ skipped shares the host quote with new implicit sends, while free and explicit sends need no oracle
+    ○ skipped reports unavailable fees for a new implicit default before claiming or signing
+    ○ skipped reopens an existing attempt and reconciles it with the default oracle offline
+    ○ skipped stays pending and makes no request until a verified directory is installed
+    ○ skipped sends exact canonical bytes once and the recipient opens the same text
+    ○ skipped sends and receives a stealth item over canonical direct messages
+    ○ skipped sends and receives a channel-update item over canonical direct messages
+    ○ skipped rethrows 429 challenge capacity error without falling back to inbox page
+    ○ skipped does not display a tampered ciphertext or a sender with no published entry
+    ○ skipped refuses unsupported items and unpublished recipients before any payment intent
+    ○ skipped still refuses outgoing wallet-sync before preparation or submission
+    ○ skipped still refuses outgoing payment-transfer before preparation or submission
+    ○ skipped keeps one payment set across an unknown outcome and re-sends the same bytes
+    ○ skipped retains exact payments after lost responses, exhaustion, discard, partial broadcast and restart
+    ○ skipped keeps reporting a delivered attempt no message recorded across wallet reopens, and never pays for it twice
+    ○ skipped stops reporting a delivered orphan once the user has resolved it, also after reopen
+    ○ skipped stops reporting a delivered attempt once a message pointed at it, also after that message is gone and the wallet reopened
+    ○ skipped always reports an attempt with no outcome, even after a resolve request and a reopen
+    ○ skipped funds an unfunded typed wallet through the public bridge so a canonical intent can be paid
+    ○ skipped sends from an unfunded wallet (no funded accounts) with one payment from the main account, funding nothing
+    a message sent with no stamp
+      ○ skipped is sealed and delivered with an empty payment list, and alice pays, funds, reserves and records nothing
+      ○ skipped is sealed and delivered with an empty payment list, and bob pays, funds, reserves and records nothing
+      ○ skipped is not held by a pending paid message, does not clear it, and does not hold the next paid one
+      ○ skipped when the relay answers "fail" it is an error to the caller, no payment record is kept, and the named message sent again is the same bytes unless the relay ended it
+      ○ skipped when the relay answers "lost" it is an error to the caller, no payment record is kept, and the named message sent again is the same bytes unless the relay ended it
+      ○ skipped when the relay answers "retained" it is an error to the caller, no payment record is kept, and the named message sent again is the same bytes unless the relay ended it
+      ○ skipped when the relay answers "undeliverable" it is an error to the caller, no payment record is kept, and the named message sent again is the same bytes unless the relay ended it
+      ○ skipped when the relay answers "sender_unpublished" it is an error to the caller, no payment record is kept, and the named message sent again is the same bytes unless the relay ended it
+      ○ skipped an unpaid message the relay retained is repeated byte for byte, conversation ID and subject included
+      ○ skipped an unpaid named message whose answer was lost is repeated as the very same request body, byte for byte, also after a restart
+      ○ skipped an unpaid envelope kept by earlier code, without its boundary, is not used: the message is sealed again
+    labels the send refusals that attempted nothing (#1237)
+      ○ skipped reports a plain error and a value that is not an error as possibly attempted
+      ○ skipped labels a send refused because no directory is installed
+      ○ skipped labels a send refused for its content
+      ○ skipped labels a send refused at the recipient lookup, and passes on what cannot carry a label
+      ○ skipped labels a send refused because the home relay does not forward
+      ○ skipped does not label a send whose own attempt is pending, and a later send is not refused for it
+      ○ skipped does not label a send refused for lack of funds in an unfunded wallet
+      ○ skipped does not label a send refused after its payment was signed and recorded
+      ○ skipped answers only for the labelled error object itself, however often it is labelled
+      ○ skipped does not label a possibly attempted send whose cause an earlier call labelled
+      ○ skipped never labels an error object again once it has left a send that may have attempted something
+  two typed wallets on the open directory
+    ○ skipped keeps inert decoded text exact through fetch and stream (in)
+    ○ skipped keeps inert decoded text exact through fetch and stream (out)
+    ○ skipped message each other in both directions knowing only an address
+    ○ skipped projects the real opened content digest through in polling and streaming
+    ○ skipped projects the real opened content digest through out polling and streaming
+    ○ skipped projects a self note (outbox=false) without misattributing its content digest
+    ○ skipped projects a self note (outbox=true) without misattributing its content digest
+    ○ skipped omits a consumed mixed-note digest at the existing outbox projection seam
+    ○ skipped bounces sent messages back to sender mailbox and decrypts own message via salt
+    ○ skipped connection close during coin wait prevents new host delivery
+    ○ skipped connection error during coin wait prevents new host delivery
+    ○ skipped connection close during decode prevents new host delivery
+    ○ skipped connection error during decode prevents new host delivery
+    ○ skipped awaits the opened stream consumer and propagates its failure only to the delivery owner, permitting polling replay
+    ○ skipped closes a late stream handle after unsubscribe and ignores stale callbacks without replacing a newer subscription
+    ○ skipped awaits canonical received-coin processing before host delivery and fences lifetime=live
+    ○ skipped awaits canonical wallet-sync processing before host delivery and fences lifetime=live
+    ○ skipped awaits canonical received-coin processing before host delivery and fences lifetime=unsubscribe
+    ○ skipped awaits canonical wallet-sync processing before host delivery and fences lifetime=unsubscribe
+    ○ skipped awaits canonical received-coin processing before host delivery and fences lifetime=close
+    ○ skipped awaits canonical wallet-sync processing before host delivery and fences lifetime=close
+    ○ skipped awaits canonical received-coin processing before host delivery and fences lifetime=error
+    ○ skipped awaits canonical wallet-sync processing before host delivery and fences lifetime=error
+    ○ skipped automatically reconnects when stream closes or errors with modest backoff
+    ○ skipped decrypts own outbound message and recipient inbox message across directory statement rotation
+    ○ skipped retains the original message while historical evidence is missing and recovers it
+    ○ skipped retains the original message while historical evidence is unreachable and recovers it
+    ○ skipped gives a typed "not published" error for an unknown address and pays nothing
+    ○ skipped refuses a forged entry for the recipient and pays nothing
+    ○ skipped refuses a rolled back recipient entry after first contact and pays nothing
+    ○ skipped does not show a message whose sender entry is forged
+    ○ skipped keeps delivering other senders when one sender cannot be checked, and retries that one
+    ○ skipped keeps a missing current sender replayable and recovers the same receipt
+    ○ skipped delivers a message that carries no payment as a normal message with no stamp
+    ○ skipped reports a forged ciphertext as terminal so the read position passes it, and still delivers the next message
+    authenticated original-envelope scan
+      ○ skipped reconciles production scanner completeness with durable readiness: empty
+      ○ skipped reconciles production scanner completeness with durable readiness: idle
+      ○ skipped reconciles production scanner completeness with durable readiness: missing
+      ○ skipped reconciles production scanner completeness with durable readiness: prefix
+      ○ skipped reconciles production scanner completeness with durable readiness: paging
+      ○ skipped reconciles production scanner completeness with durable readiness: terminal
+      ○ skipped retains authenticated original identities (in) without wallet effects
+      ○ skipped retains authenticated original identities (out) without wallet effects
+      ○ skipped opens direct negotiation bytes in both directions but leaves nested outbox items inert
+      ○ skipped keeps malformed known negotiation inert and preserves an absent original conversation identity
+      ○ skipped does not run wallet effects for a decoded wallet-sync seam, alongside an ordinary read
+      ○ skipped decodes a supported encrypted stealth payment without discovering coins; ordinary fetch still discovers them
+      ○ skipped never falls back to inbox-only coverage
+      ○ skipped uses terminal raw groups for coverage and does not advance an empty read
+      ○ skipped withholds the whole earliest incomplete group and every later record
+      ○ skipped keeps the last cutoff group for retry and exposes an oversized group
+      ○ skipped reports a later page error as a cutoff without certifying the last timestamp group
+      ○ skipped rejects unsafe positions and raw timestamp overflow
+      ○ skipped rejects a foreign canonical chain before reading the mailbox
+      ○ skipped rejects a directory session replaced during the read
+      ○ skipped keeps the captured wallet and inclusive position when the caller mutates its request during a read
+      ○ skipped rejects a scan completed after account stop
+    bounded canonical polling coverage
+      ○ skipped rejects an incomplete timestamp tie on page limit without publishing its unreadable tail
+      ○ skipped rejects an incomplete timestamp tie on later failure without publishing its unreadable tail
+      ○ skipped delivers only the earlier complete group on page limit
+      ○ skipped delivers only the earlier complete group on later failure
+      ○ skipped uses all-unreadable raw groups to establish a complete prefix
+      ○ skipped keeps a missing directory entry incomplete only inside the proven prefix
+      ○ skipped rejects a repeated cursor without publishing completion
+      ○ skipped rejects malformed raw timestamp NaN before completion
+      ○ skipped rejects malformed raw timestamp -1 before completion
+      ○ skipped rejects malformed raw timestamp 1.5 before completion
+      ○ skipped rejects regressing page timestamps before completion
+      ○ skipped propagates quarantine callback failure in a complete prefix
+    a mailbox record the client cannot decode
+      ○ skipped with its payments and a corrupt context is skipped and reported once; the messages around it arrive and no stamp is counted from it
+      ○ skipped with bytes that are not a frame is skipped and reported once; the messages around it arrive and no stamp is counted from it
+      ○ skipped still fails the whole read when the page itself is broken, and reports nothing
+    a recipient that lives on another relay
+      ○ skipped is refused before funding or intent while the relay does not say it forwards
+      ○ skipped is sent through the own relay once that relay says it forwards
+  a stamp account a native send spends from (#1235)
+    ✓ pending: a direct message that would need the reserved account is paid from the main account instead, funding nothing (570 ms)
+    ✓ included: a direct message that would need the reserved account is paid from the main account instead, funding nothing (518 ms)
+    ✓ pending: inventory preparation leaves the reserved account alone, so admission stays ready and native and canonical sends still work, also after reopen (1077 ms)
+    ✓ included: inventory preparation leaves the reserved account alone, so admission stays ready and native and canonical sends still work, also after reopen (1224 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       117 skipped, 4 passed, 121 total
+Snapshots:   0 total
+Time:        4.185 s
+Ran all test suites within paths "packages/wallet/chain/monad-chain-canonical-dm.jest.test.ts".

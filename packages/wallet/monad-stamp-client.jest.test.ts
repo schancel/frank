@@ -559,7 +559,7 @@ async function makeCanonicalConsumerFixture(
     const derived = material.keyring.deriveSubAccount(0)
     coinView.registerSubAccount({ chainIdentifier: 'monad-testnet', address: derived.address, privateKey: derived.privateKey, balanceWei: 1000000000n })
   }
-  pool.ensureSize(1)
+  await pool.ensureSize(1)
   await pool.flush()
   let leaseManager = new SubAccountLeaseManager(pool)
   let enclosed = false
@@ -840,7 +840,7 @@ describe('canonical durable consumer barriers', () => {
         '0x' +
         Buffer.from(attempt.request.parts.transactions[0]!).toString('hex')
       const tx = Transaction.from(rawTx)
-      f.pool.recordSpendTransaction(0, {
+      await f.pool.recordSpendTransaction(0, {
         rawTx,
         txHash: tx.hash!,
         valueWei: tx.value.toString(),
@@ -999,7 +999,7 @@ describe('canonical durable consumer barriers', () => {
   )
   it('disjoint native admission progresses while the canonical durable-link callback is blocked', async () => {
     await withCanonicalConsumer(async f => {
-      f.pool.ensureSize(2)
+      await f.pool.ensureSize(2)
       await f.pool.flush()
       const entered = canonicalBarrier(),
         release = canonicalBarrier()
@@ -1061,7 +1061,7 @@ describe('canonical durable consumer barriers', () => {
           entered.resolve()
           return gate.promise.then(() => original(...args))
         })
-        const poolWrite = jest.spyOn(f.subStore, 'putMany'),
+        const poolWrite = jest.spyOn(f.subStore, 'persist' as never),
           sign = jest.spyOn(
             MonadAccountTxSigner.prototype,
             'signFrozenUnsigned',
@@ -1212,12 +1212,12 @@ describe('canonical durable consumer barriers', () => {
       await f.prepare(1, async value => {
         link = value
       })
-      const handle = acquire.mock.results[0]!.value
+      const handle = await acquire.mock.results[0]!.value
       const forged = { ...handle }
       expect(f.leaseManager.isCurrentLease(forged)).toBe(false)
-      expect(() => f.leaseManager.releaseLease(forged, 'unused')).toThrow()
-      f.pool.ensureSize(2)
-      f.pool.setStatus(1, 'available')
+      await expect(async () => (await f.leaseManager.releaseLease(forged, 'unused'))).rejects.toThrow()
+      await f.pool.ensureSize(2)
+      await f.pool.setStatus(1, 'available')
       await f.state.runLifetime(async lifetime => {
         const pool = canonicalAdmissionPool(f.state.inputAdmission, lifetime)
         await expect(pool.acquire(1, link.attemptRef)).rejects.toThrow(
@@ -1234,8 +1234,8 @@ describe('canonical durable consumer barriers', () => {
           .getIntents()[0]!
           .members.every(member => member.rawTx === null),
       ).toBe(true)
-      f.leaseManager.releaseLease(handle, 'unused')
-      const foreign = f.leaseManager.acquireForIndex(0)
+      await f.leaseManager.releaseLease(handle, 'unused')
+      const foreign = (await f.leaseManager.acquireForIndex(0))
       expect(f.leaseManager.isCurrentLease(handle)).toBe(false)
       expect(f.leaseManager.isCurrentLease(foreign)).toBe(true)
       const sign = jest.spyOn(
@@ -1410,7 +1410,7 @@ describe('canonical durable consumer barriers', () => {
         }),
       ).rejects.toThrow()
       const intent = f.canonicalJournal!.getIntents()[0]
-      const foreign = f.leaseManager.acquireForIndex(0)
+      const foreign = (await f.leaseManager.acquireForIndex(0))
       await f.pool.flush()
       const links = [
         {
@@ -1429,7 +1429,7 @@ describe('canonical durable consumer barriers', () => {
       )
       expect(sign).not.toHaveBeenCalled()
       sign.mockRestore()
-      f.leaseManager.releaseLease(foreign, 'unused')
+      await f.leaseManager.releaseLease(foreign, 'unused')
       await f.pool.flush()
       expect(saved.payload.length).toBeGreaterThan(0)
     })
@@ -1443,7 +1443,7 @@ describe('canonical durable consumer barriers', () => {
         >
       context.get(6n)!.set(2n, new Uint8Array(1))
       f.providerCalls.mockClear()
-      const write = jest.spyOn(f.subStore, 'putMany'),
+      const write = jest.spyOn(f.subStore, 'persist' as never),
         sign = jest.spyOn(MonadAccountTxSigner.prototype, 'signFrozenUnsigned'),
         callback = jest.fn(async () => undefined)
       expect(() =>
@@ -1472,7 +1472,7 @@ describe('canonical payment observation capture', () => {
     f: Awaited<ReturnType<typeof makeCanonicalConsumerFixture>>,
     count = 1,
   ) {
-    f.pool.ensureSize(count)
+    await f.pool.ensureSize(count)
     await f.pool.flush()
     if (count > 1)
       f.providerCalls.mockImplementation(async req => {
@@ -1777,7 +1777,7 @@ describe('canonical submit outside the wallet queue (#1236 Stage 1)', () => {
     links: CanonicalWorkflowLink[],
     id = 1,
   ): Promise<Promoted> {
-    f.pool.ensureSize(id)
+    await f.pool.ensureSize(id)
     await f.pool.flush()
     let link!: CanonicalWorkflowLink
     await f.prepare(id, async durable => {
@@ -2195,7 +2195,7 @@ describe('canonical submit outside the wallet queue (#1236 Stage 1)', () => {
     await withCanonicalConsumer(async f => {
       const links: CanonicalWorkflowLink[] = []
       const a = await promote(f, links, 1)
-      f.pool.ensureSize(3)
+      await f.pool.ensureSize(3)
       await f.pool.flush()
       let linkB!: CanonicalWorkflowLink
       await f.prepare(2, async durable => {
@@ -2237,7 +2237,7 @@ describe('canonical submit outside the wallet queue (#1236 Stage 1)', () => {
       const links: CanonicalWorkflowLink[] = []
       const a = await promote(f, links, 1)
       const issued = permit(f, links, a.link)
-      f.pool.ensureSize(2)
+      await f.pool.ensureSize(2)
       await f.pool.flush()
       // An intent whose link the workflow never kept: an uncorrelated record.
       await f.prepare(2, async () => undefined)

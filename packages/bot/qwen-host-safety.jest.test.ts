@@ -1326,7 +1326,7 @@ describe("with the real canonical wallet", () => {
   });
   /** Stand-in for confirmed funding: single-use accounts the offline RPC reports as funded. */
   const fund = async (wallet: EvmChainWalletHandle) => {
-    for (const record of wallet.pool.ensureSize(4))
+    for (const record of (await wallet.pool.ensureSize(4)))
       mockBalances.set(record.address.toLowerCase(), 187_500n + 600n);
     await wallet.pool.flush();
   };

@@ -387,7 +387,7 @@ describe('a payment to a contact', () => {
     // ...and a small one is paid from another account of the wallet, never from the held one
     // (nor from the account claimed for the undelivered message's stamp): unrelated spending
     // goes on while the payment's message is in flight.
-    const spare = alice.pool.ensureSize(alice.pool.records().length + 1).slice(-1)[0]
+    const spare = (await alice.pool.ensureSize(alice.pool.records().length + 1)).slice(-1)[0]
     await alice.pool.flush()
     mockBalances.set(spare.address.toLowerCase(), 1_000_000n)
     const small = await alice.sendNative({

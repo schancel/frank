@@ -1,0 +1,8 @@
+PASS packages/wallet/storage/monad-wallet-bundle.jest.test.ts
+PASS packages/wallet/storage/authoritative-pool-mutations.jest.test.ts
+
+Test Suites: 2 passed, 2 total
+Tests:       41 passed, 41 total
+Snapshots:   0 total
+Time:        1.621 s, estimated 2 s
+Ran all test suites within paths "packages/wallet/storage/monad-wallet-bundle.jest.test.ts", "packages/wallet/storage/authoritative-pool-mutations.jest.test.ts".

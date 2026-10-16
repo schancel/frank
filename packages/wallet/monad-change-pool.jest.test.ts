@@ -541,10 +541,10 @@ describe('MonadChangePool', () => {
 })
 
 describe('releaseLeaseAndSweepChange', () => {
-  function makeLeaseSetup() {
+  async function makeLeaseSetup() {
     const burnKeyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
     const burnPool = new MonadSubAccountPool({ keyring: burnKeyring })
-    burnPool.ensureSize(2)
+    await burnPool.ensureSize(2)
     const manager = new SubAccountLeaseManager(burnPool)
     const changePool = new MonadChangePool({
       keyring: MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC),
@@ -553,8 +553,8 @@ describe('releaseLeaseAndSweepChange', () => {
   }
 
   it("sweeps the burn account's leftover balance to change when the outcome is 'confirmed' (status 'spent')", async () => {
-    const { burnPool, manager, changePool } = makeLeaseSetup()
-    const handle: AccountLeaseHandle = manager.acquireLease()
+    const { burnPool, manager, changePool } = (await makeLeaseSetup())
+    const handle: AccountLeaseHandle = (await manager.acquireLease())
     const { signer, httpClient } = makeBurnAccountSigner()
     const dust = BigInt(21000) * 1n * 2n
     const provider = makeReadProvider({
@@ -582,8 +582,8 @@ describe('releaseLeaseAndSweepChange', () => {
   })
 
   it("does not attempt a sweep when the outcome is 'failed' (status 'retired')", async () => {
-    const { manager, changePool } = makeLeaseSetup()
-    const handle = manager.acquireLease()
+    const { manager, changePool } = (await makeLeaseSetup())
+    const handle = (await manager.acquireLease())
     const { signer } = makeBurnAccountSigner()
     const provider = makeReadProvider({
       balanceWei: BigInt(1_000_000),
@@ -603,8 +603,8 @@ describe('releaseLeaseAndSweepChange', () => {
   })
 
   it('skips sweeping entirely (still releases the lease) when no sweep params are given', async () => {
-    const { manager } = makeLeaseSetup()
-    const handle = manager.acquireLease()
+    const { manager } = (await makeLeaseSetup())
+    const handle = (await manager.acquireLease())
 
     const result = await releaseLeaseAndSweepChange({
       manager,
@@ -617,8 +617,8 @@ describe('releaseLeaseAndSweepChange', () => {
   })
 
   it('reports a sweep failure as { swept: false, reason: "sweep-error" } without throwing, leaving the already-successful release intact', async () => {
-    const { burnPool, manager, changePool } = makeLeaseSetup()
-    const handle = manager.acquireLease()
+    const { burnPool, manager, changePool } = (await makeLeaseSetup())
+    const handle = (await manager.acquireLease())
     const { signer, httpClient } = makeBurnAccountSigner()
     httpClient.submitRawTransaction.mockRejectedValueOnce(
       new Error('rpc exploded'),
@@ -675,9 +675,9 @@ describe('awaitLeaseSettlementAndSweepChange', () => {
   it('sweeps once the polled settlement confirms', async () => {
     const burnKeyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
     const burnPool = new MonadSubAccountPool({ keyring: burnKeyring })
-    burnPool.ensureSize(1)
+    await burnPool.ensureSize(1)
     const manager = new SubAccountLeaseManager(burnPool)
-    const handle = manager.acquireLease()
+    const handle = (await manager.acquireLease())
     const changePool = new MonadChangePool({
       keyring: MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC),
     })
@@ -713,9 +713,9 @@ describe('awaitLeaseSettlementAndSweepChange', () => {
   it("does not sweep on a 'stuck' settlement", async () => {
     const burnKeyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
     const burnPool = new MonadSubAccountPool({ keyring: burnKeyring })
-    burnPool.ensureSize(1)
+    await burnPool.ensureSize(1)
     const manager = new SubAccountLeaseManager(burnPool)
-    const handle = manager.acquireLease()
+    const handle = (await manager.acquireLease())
     const changePool = new MonadChangePool({
       keyring: MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC),
     })

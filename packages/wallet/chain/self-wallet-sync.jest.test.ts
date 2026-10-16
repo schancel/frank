@@ -255,7 +255,7 @@ describe("a wallet's sync note to itself", () => {
     const sendingChain = createEvmChain(config)
     const sender = await sendingChain.createWallet(roots(0)) as EvmChainWalletHandle
     try {
-      const [source] = sender.pool.ensureSize(1)
+      const [source] = (await sender.pool.ensureSize(1))
       await sender.pool.flush()
       mockBalances.set(source.address.toLowerCase(), 10n ** 17n)
       minesNativeTransfers(sender)
@@ -275,7 +275,7 @@ describe("a wallet's sync note to itself", () => {
       const receivingChain = createEvmChain({ ...config, emitWalletSync: async () => undefined })
       const target = await receivingChain.createWallet(roots(0)) as EvmChainWalletHandle
       try {
-        const [counterpart] = target.pool.ensureSize(1)
+        const [counterpart] = (await target.pool.ensureSize(1))
         expect(counterpart.address.toLowerCase()).toBe(source.address.toLowerCase())
         await expect(read(other, other.alice, 0, async () => {
           throw new Error('secondary owner temporarily unavailable')
@@ -583,7 +583,7 @@ describe("a wallet's sync note to itself", () => {
       // A chat message whose delivery is not known, paid from a funded single-use account. (One
       // paid from the main account holds that account until the chain shows its payment, and a
       // native send from it waits for that.)
-      const [stampAccount] = one.alice.pool.ensureSize(1)
+      const [stampAccount] = (await one.alice.pool.ensureSize(1))
       await one.alice.pool.flush()
       mockBalances.set(stampAccount.address.toLowerCase(), STAMP + 63_000n)
       one.setMailbox(bobMailbox)

@@ -140,7 +140,7 @@ async function fixture(
     keyring,
     store: poolStore,
   })
-  pool.ensureSize(3)
+  await pool.ensureSize(3)
   const change = new MonadChangePool({
     keyring: changeKeyring,
     store: new InMemoryChangePoolStore(),
@@ -579,8 +579,8 @@ describe('derived EVM input admission', () => {
   it('an independent current lease holds its own source without blocking a disjoint unsigned claim', async () => {
     const f = await fixture(location)
     try {
-      f.pool.setStatus(0, 'available')
-      f.leases.acquireForIndex(0)
+      await f.pool.setStatus(0, 'available')
+      await f.leases.acquireForIndex(0)
       const snapshot = f.admission.inspect(f.lifetime)
       expect(snapshot.status).toBe('ready')
       if (snapshot.status !== 'ready') throw new Error(snapshot.reason)
@@ -623,9 +623,9 @@ describe('derived EVM input admission', () => {
         },
         null,
       )
-      f.pool.setStatus(0, 'available')
+      await f.pool.setStatus(0, 'available')
       const priorEpoch = f.epoch()
-      const lease = f.leases.acquireForIndex(0)
+      const lease = (await f.leases.acquireForIndex(0))
       const executor = nativeExecutor(f, ['success'])
       await expect(
         executor.executor.sendNative(
@@ -640,7 +640,7 @@ describe('derived EVM input admission', () => {
         f.admission.authorizeNativeSigning(f.lifetime, row.operationId),
       ).rejects.toThrow('conflicting-authorization')
       expect(executor.sign).not.toHaveBeenCalled()
-      f.leases.releaseLease(lease, 'unused')
+      await f.leases.releaseLease(lease, 'unused')
       expect(f.admission.inspect(f.lifetime).status).toBe('ready')
       await expect(
         f.admission.prepareNative(f.lifetime, f.epoch(), f.plan(0, 0)),
@@ -678,14 +678,14 @@ describe('derived EVM input admission', () => {
       },
       null,
     )
-    f.pool.setStatus(0, 'in-use')
+    await f.pool.setStatus(0, 'in-use')
     // This is the existing owner checkpoint shape; no remote sync item supplies authority.
-    f.pool.recordSpendTransaction(0, {
+    await f.pool.recordSpendTransaction(0, {
       rawTx: raw,
       txHash: hash,
       valueWei: '32',
     })
-    f.pool.setStatus(0, 'spent')
+    await f.pool.setStatus(0, 'spent')
     await f.close()
     const reopened = await fixture(location)
     try {
@@ -956,7 +956,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     }>
   }
   const kinds = (f: Fixture) => obligations(f).map(c => c.provenance.kind)
-  const writes = () => jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+  const writes = () => jest.spyOn(LevelSubAccountPoolStore.prototype, 'persist' as never)
   const refusal = (promise: Promise<unknown>) =>
     promise.then(
       value => ({ resolved: value }),
@@ -983,6 +983,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     expect(putMany).toHaveBeenCalledTimes(1)
     const tx = Transaction.from(raw)
     expect(f.pool.getRecord(0)).toEqual({
+      revision: 2,
       index: 0,
       address: f.keyring.deriveSubAccount(0).address,
       status: 'spent',
@@ -1092,8 +1093,8 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     if (kind === 'projection already conflicting') {
       // Hand-built: row 1 is terminal with no checkpoint while an unsigned plan spends from it.
       await f.admission.prepareNative(f.lifetime, f.epoch(), f.plan(1))
-      f.pool.setStatus(1, 'in-use')
-      f.pool.setStatus(1, 'spent')
+      await f.pool.setStatus(1, 'in-use')
+      await f.pool.setStatus(1, 'spent')
       await f.pool.flush()
       expect(f.admission.inspect(f.lifetime)).toMatchObject({
         reason: 'conflicting-authorization',
@@ -1210,8 +1211,8 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     }
     expect(f.pool.getRecord(7)).toBeUndefined()
     const retired = await member(f, 2)
-    f.pool.setStatus(2, 'in-use')
-    f.pool.setStatus(2, 'retired')
+    await f.pool.setStatus(2, 'in-use')
+    await f.pool.setStatus(2, 'retired')
     putMany.mockClear()
     expect(spend(f).classifyMember(f.journal.get(retired.id), 0)).toBe(
       'held-terminal',
@@ -1532,7 +1533,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
           direction: 'up',
           payloadHashHex: 'ab'.repeat(32),
         })
-      if (owner === 'live-lease') f.leases.acquireForIndex(1)
+      if (owner === 'live-lease') await f.leases.acquireForIndex(1)
       if (owner === 'pool-funding') {
         const funding = Transaction.from({
           type: 2,
@@ -1547,12 +1548,12 @@ describe('pool spend admission (#1235 Stage 1)', () => {
         funding.signature = new SigningKey('0x' + '21'.repeat(32)).sign(
           funding.unsignedHash,
         )
-        f.poolStore.put({
+        await f.poolStore.mutate(snapshot => { const record = {
           index: 1,
           address: f.keyring.deriveSubAccount(1).address,
           status: 'funding',
           fundingAttempt: { rawTx: funding.serialized, txHash: funding.hash! },
-        })
+        }; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } })
       }
       await f.pool.flush()
       if (owner === 'live-lease' || owner === 'pool-funding') {
@@ -1741,7 +1742,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     )
   })
 
-  // Contract test 23: pins the rule that nothing is awaited between the put and the flush call.
+  // The store owns the durable barrier; an unrelated flush cannot steal or bypass it.
   it('does not resolve before its own write is durable, even when another caller flushes the pool meanwhile', async () => {
     const f = await start(location)
     const { id } = await member(f)
@@ -1761,11 +1762,13 @@ describe('pool spend admission (#1235 Stage 1)', () => {
         settled = true
       })
     await entered.promise
-    // The other caller finds nothing pending: this apply took its own write with it.
-    await f.pool.flush()
+    let flushSettled = false
+    const otherFlush = f.pool.flush().then(() => { flushSettled = true })
     await new Promise(resolve => setImmediate(resolve))
     expect(settled).toBe(false)
+    expect(flushSettled).toBe(false)
     release.resolve()
+    await otherFlush
     expect((await applying).kind).toBe('committed')
   })
 
@@ -1786,7 +1789,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     for (const [offset, order] of (['apply first', 'lease first'] as const).entries()) {
       const index = offset + 1
       const other = await member(f, index)
-      f.pool.setStatus(index, 'available')
+      await f.pool.setStatus(index, 'available')
       const apply = () => spend(f).applyMember(other.id, 0)
       const lease = () =>
         canonicalAdmissionPool(f.admission, f.lifetime).acquire(index)
@@ -1812,12 +1815,13 @@ describe('pool spend admission (#1235 Stage 1)', () => {
   // from outside the pool's own funding path. Stage 1 had no test from that status.
   it('pin: an unfunded row goes to spent with the member checkpoint in one write, and reopens as one authorization', async () => {
     const f = await start(location)
-    f.pool.ensureUnfundedSize(4)
+    await f.pool.ensureUnfundedSize(4)
     await f.pool.flush()
     const unfunded = {
       index: 3,
       address: f.keyring.deriveSubAccount(3).address,
       status: 'unfunded',
+      revision: 1,
     }
     expect(f.pool.getRecord(3)).toEqual(unfunded)
     const { id, raw } = await member(f, 3)
@@ -1830,12 +1834,13 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     expect(putMany).toHaveBeenCalledTimes(1)
     const spent = {
       ...unfunded,
+      revision: 2,
       status: 'spent',
       lifecycle: {
         spend: { rawTx: raw, txHash: Transaction.from(raw).hash, valueWei: '32' },
       },
     }
-    expect(putMany.mock.calls[0]![0]).toEqual([spent])
+    expect((putMany.mock.calls[0]![0] as Map<number, unknown>).get(3)).toEqual(spent)
     expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('applied')
     const reopened = await reopen(f)
     expect(kinds(reopened)).toEqual(['native', 'pool-retained'])
@@ -1871,8 +1876,8 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       if (kind === 'conflicting') {
         // Hand-built: row 2 goes terminal with no checkpoint while a never-signed plan spends
         // from it. Cancelling that plan (what Stage C does) ends the conflict.
-        f.pool.setStatus(2, 'in-use')
-        f.pool.setStatus(2, 'spent')
+        await f.pool.setStatus(2, 'in-use')
+        await f.pool.setStatus(2, 'spent')
         clear = async () => {
           await nativeAdmissionJournal(f.admission, f.lifetime).cancelUnsigned(
             other.id,
@@ -1916,7 +1921,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     const f = await start(location)
     const { id, raw } = await member(f)
     const other = await member(f, 1, 0, 'unsigned')
-    const put = jest.spyOn(f.poolStore, 'put')
+    const put = jest.spyOn(f.poolStore, 'persist' as never)
     // The pool updates its derived account view after the put; that view fails.
     f.pool.setAccountUtxoPool({
       getCoinsByAddress: () => {
@@ -1930,8 +1935,9 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       'fixture: account view failed after the put',
     )
     // What was put is exactly what a successful apply puts.
-    expect(put.mock.calls.map(([row]) => row)).toEqual([
+    expect(put.mock.calls.map(([rows]) => (rows as Map<number, unknown>).get(0))).toEqual([
       {
+        revision: 2,
         index: 0,
         address: f.keyring.deriveSubAccount(0).address,
         status: 'spent',
@@ -2014,7 +2020,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
   it('hand-built: a native member whose row is in-use under a live lease is not-eligible and cannot be applied; released unused, it applies', async () => {
     const f = await start(location)
     // Hand-built: the row is made `available` so a lease can be taken after the member exists.
-    f.pool.setStatus(0, 'available')
+    await f.pool.setStatus(0, 'available')
     await f.pool.flush()
     const { id, raw } = await member(f)
     const leases = canonicalAdmissionPool(f.admission, f.lifetime)

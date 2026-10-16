@@ -23,7 +23,7 @@ const mnemonic = 'test test test test test test test test test test test junk'
 const burn = '0x000000000000000000000000000000000000dEaD'
 async function fixture() {
   const bundle = createInMemoryMonadWalletBundle({ mnemonic })
-  bundle.pool.ensureSize(2)
+  await bundle.pool.ensureSize(2)
   const signed: Transaction[] = []
   const signer = jest.spyOn(bundle.pool, 'getSigner').mockImplementation(
     (index: number) =>

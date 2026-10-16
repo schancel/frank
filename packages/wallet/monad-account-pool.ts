@@ -606,26 +606,26 @@ export class MonadSubAccountPool {
    * records, and whatever status ticket #18's lease logic has since put them in, are left
    * untouched. Returns every record currently in the pool (not just the newly-added ones).
    */
-  ensureSize(size: number): SubAccountRecord[] {
+  async ensureSize(size: number): Promise<SubAccountRecord[]> {
     return this.ensureSizeWithStatus(size, "available");
   }
 
   /** Production derivation path: records new addresses without claiming they hold funds. */
-  ensureUnfundedSize(size: number): SubAccountRecord[] {
+  async ensureUnfundedSize(size: number): Promise<SubAccountRecord[]> {
     return this.ensureSizeWithStatus(size, "unfunded");
   }
 
-  private ensureSizeWithStatus(
+  private async ensureSizeWithStatus(
     size: number,
     initialStatus: "available" | "unfunded"
-  ): SubAccountRecord[] {
+  ): Promise<SubAccountRecord[]> {
     if (!Number.isInteger(size) || size < 0) {
       throw new Error(`Pool size must be a non-negative integer, got ${size}`);
     }
     for (let index = 0; index < size; index++) {
-      if (this.store.getByIndex(index) === undefined) {
+      if (this.store.getByIndex(index) === undefined && index >= this.store.getNextIndex()) {
         const derived = this.keyring.deriveSubAccount(index);
-        this.store.put({
+        await this.persistRecord({
           index: derived.index,
           address: derived.address,
           status: initialStatus,
@@ -635,14 +635,25 @@ export class MonadSubAccountPool {
     return this.store.getAll();
   }
 
+  private async persistRecords(records: readonly SubAccountRecord[]): Promise<void> {
+    await this.store.mutate(() => ({
+      records: records.map(record => ({ record, expectedRevision: record.revision ?? 0 })),
+      result: undefined,
+    }));
+  }
+
+  private async persistRecord(record: SubAccountRecord): Promise<void> {
+    await this.persistRecords([record]);
+  }
+
   /** All sub-account records currently tracked by the pool, sorted by index. */
   records(): SubAccountRecord[] {
     return this.store.getAll();
   }
 
   /** Wallet-recovery boundary: applies a fully prevalidated set in one component-store batch. */
-  applyPrevalidatedRecoveryRecords(records: readonly SubAccountRecord[]): void {
-    this.store.putMany(records);
+  async applyPrevalidatedRecoveryRecords(records: readonly SubAccountRecord[]): Promise<void> {
+    await this.persistRecords(records);
   }
 
   getRecord(index: number): SubAccountRecord | undefined {
@@ -655,7 +666,7 @@ export class MonadSubAccountPool {
     return this.store.getNextIndex();
   }
 
-  deriveNextUnfunded(): SubAccountRecord {
+  async deriveNextUnfunded(): Promise<SubAccountRecord> {
     const index = this.nextFreshIndex();
     const derived = this.keyring.deriveSubAccount(index);
     const record: SubAccountRecord = {
@@ -663,13 +674,13 @@ export class MonadSubAccountPool {
       address: derived.address,
       status: "unfunded",
     };
-    this.store.put(record);
-    return record;
+    await this.persistRecord(record);
+    return this.store.getByIndex(record.index)!;
   }
 
   /** Reconstructs a locally-missing reservation only from an exact durable attempt whose signed
    * sender has already been validated against this derived index. */
-  restoreJournaledInUse(index: number): SubAccountRecord {
+  async restoreJournaledInUse(index: number): Promise<SubAccountRecord> {
     const existing = this.store.getByIndex(index);
     if (existing !== undefined) return existing;
     const derived = this.keyring.deriveSubAccount(index);
@@ -678,8 +689,8 @@ export class MonadSubAccountPool {
       address: derived.address,
       status: "in-use",
     };
-    this.store.put(record);
-    return record;
+    await this.persistRecord(record);
+    return this.store.getByIndex(record.index)!;
   }
 
   stageJournaledInUse(index: number): SubAccountRecord {
@@ -689,7 +700,7 @@ export class MonadSubAccountPool {
     return { index, address: derived.address, status: "in-use" };
   }
 
-  restoreTerminalEvidence(record: SubAccountRecord): void {
+  async restoreTerminalEvidence(record: SubAccountRecord): Promise<void> {
     if (record.status !== "spent" && record.status !== "retired") {
       throw new Error("Recovered sender evidence must be terminal");
     }
@@ -699,7 +710,7 @@ export class MonadSubAccountPool {
     ) {
       throw new Error("Recovered sender evidence belongs to a different seed");
     }
-    this.store.put(record);
+    await this.persistRecord(record);
   }
 
   /** Directly persists a status transition for sub-account `index` — the mechanism ticket #18's
@@ -708,7 +719,7 @@ export class MonadSubAccountPool {
    * itself (except from `topUpPool()`, to mark a freshly-funded index `'available'`); it exists so
    * #18 has a slot to write through without needing to touch the storage layer directly. Throws if
    * `index` isn't a known sub-account. */
-  setStatus(index: number, status: SubAccountStatus): SubAccountRecord {
+  async setStatus(index: number, status: SubAccountStatus): Promise<SubAccountRecord> {
     const existing = this.store.getByIndex(index);
     if (existing === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`);
@@ -719,37 +730,37 @@ export class MonadSubAccountPool {
     this.capacityCache.delete(index);
     const { fundingAttempt: _fundingAttempt, ...base } = existing;
     const updated: SubAccountRecord = { ...base, status };
-    this.store.put(updated);
+    await this.persistRecord(updated);
     this.syncUtxo(index, status);
-    return updated;
+    return this.store.getByIndex(index)!;
   }
 
   /** Retains confirmed funding bytes/value after the transient funding attempt is resolved. */
-  recordFundingTransaction(
+  async recordFundingTransaction(
     index: number,
     transaction: SubAccountTransactionCheckpoint
-  ): void {
+  ): Promise<void> {
     const existing = this.store.getByIndex(index);
     if (existing === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`);
     }
-    this.store.put({
+    await this.persistRecord({
       ...existing,
       lifecycle: { ...existing.lifecycle, funding: { ...transaction } },
     });
   }
 
   /** Retains the exact signed spend before it can become terminal/recoverable state. */
-  recordSpendTransaction(
+  async recordSpendTransaction(
     index: number,
     transaction: SubAccountTransactionCheckpoint
-  ): void {
+  ): Promise<void> {
     const existing = this.store.getByIndex(index);
     if (existing === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`);
     }
     this.capacityCache.delete(index);
-    this.store.put({
+    await this.persistRecord({
       ...existing,
       lifecycle: { ...existing.lifecycle, spend: { ...transaction } },
     });
@@ -778,7 +789,7 @@ export class MonadSubAccountPool {
    * A partial spend leaves the account's remaining balance in a `spent` row. Nothing in the pool
    * accounts for that residual: it is reachable only as a native source at the next nonce.
    */
-  commitSpend(index: number, rawTx: string): SubAccountSpendOutcome {
+  async commitSpend(index: number, rawTx: string): Promise<SubAccountSpendOutcome> {
     return this.applyClassifiedSpend(index, this.classifySpend(index, rawTx));
   }
 
@@ -788,12 +799,12 @@ export class MonadSubAccountPool {
     return this.classifySpend(index, rawTx).outcome;
   }
 
-  private applyClassifiedSpend(
+  private async applyClassifiedSpend(
     index: number,
     classified: ClassifiedSubAccountSpend
-  ): SubAccountSpendOutcome {
+  ): Promise<SubAccountSpendOutcome> {
     if (classified.candidate !== undefined) {
-      this.store.put(classified.candidate);
+      await this.persistRecord(classified.candidate);
       this.capacityCache.delete(index);
     }
     if (classified.outcome !== "no-row") this.syncUtxo(index, "spent");
@@ -1102,15 +1113,15 @@ export class MonadSubAccountPool {
     };
   }
 
-  recordRecoveryDisposition(
+  async recordRecoveryDisposition(
     index: number,
     recovery: SubAccountRecoveryDisposition
-  ): void {
+  ): Promise<void> {
     const existing = this.store.getByIndex(index);
     if (existing === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`);
     }
-    this.store.put({
+    await this.persistRecord({
       ...existing,
       lifecycle: { ...existing.lifecycle, recovery: { ...recovery } },
     });
@@ -1158,15 +1169,15 @@ export class MonadSubAccountPool {
       ) {
         continue;
       }
-      this.store.replaceWithCheckpoint({
+      await this.store.mutate(() => ({ checkpoints: [{ expectedRevision: record.revision!, checkpoint: {
         version: 1,
         index: record.index,
         address: record.address,
-        status: record.status,
+        status: record.status as "spent" | "retired",
         denominationWei: spend.valueWei,
         lifecycle: { funding, spend, recovery },
         compactedAt: (params.now ?? Date.now)(),
-      });
+      } }], result: undefined }));
       this.capacityCache.delete(record.index);
       compacted++;
     }
@@ -1444,7 +1455,7 @@ export class MonadSubAccountPool {
         address: derived.address,
         status: "unfunded",
       };
-      this.store.put(record);
+      await this.persistRecord(record);
       unfunded.push(record);
     }
     if (holder !== undefined) {
@@ -1646,7 +1657,7 @@ export class MonadSubAccountPool {
             return;
           if (transactionCount > 0 || balance <= params.gasReserveWei) {
             const { fundingAttempt: _fundingAttempt, ...base } = record;
-            this.store.put({ ...base, status: "retired" });
+            await this.persistRecord({ ...base, status: "retired" });
             this.capacityCache.delete(record.index);
           } else {
             this.capacityCache.set(record.index, {
@@ -1795,7 +1806,7 @@ export class MonadSubAccountPool {
         address: this.keyring.deriveSubAccount(index).address,
         status: "unfunded",
       };
-      this.store.put(target);
+      await this.persistRecord(target);
       if (holder !== undefined) this.claim(holder, () => [index]);
       await this.store.flush();
     }
@@ -1829,6 +1840,16 @@ export class MonadSubAccountPool {
       }
 
       for (const [offset, funder] of params.funders.entries()) {
+        // Capture before spacing/signing can yield. Completion must compare this exact row,
+        // rather than adopting a lease or lifecycle transition that won while signing waited.
+        const currentTarget = this.store.getByIndex(target.index);
+        if (
+          currentTarget === undefined ||
+          currentTarget.status !== (offset === 0 ? "unfunded" : "available") ||
+          this.isSpendReserved(target.index, holder)
+        ) {
+          throw new Error(`Funding target ${target.index} is no longer available to this preparation`);
+        }
         if (offset > 0 && INTER_TX_FUNDING_DELAY_MS > 0) {
           await new Promise((resolve) => setTimeout(resolve, INTER_TX_FUNDING_DELAY_MS));
         }
@@ -1838,8 +1859,7 @@ export class MonadSubAccountPool {
           funder.amountWei,
           params.fundingOverrides
         );
-        const currentTarget = this.store.getByIndex(target.index) as SubAccountRecord;
-        this.store.put({
+        await this.persistRecord({
           ...currentTarget,
           status: "funding",
           fundingAttempt: { rawTx: signedTx.rawTx, txHash: signedTx.txHash },
@@ -2130,15 +2150,8 @@ export class MonadSubAccountPool {
     }
   }
 
-  /**
-   * Makes a `funding` row durable before its recorded bytes are offered to the network again. A
-   * row that reads `funding` is not proof of a durable record: the store updates its cache before
-   * a write reaches disk and does not remember a failed flush, so the row survives in memory when
-   * `fundAccount`'s flush threw (and nothing was submitted). Writing the row again and awaiting
-   * that flush is the proof; a rejection propagates and the caller submits nothing. The row is
-   * rewritten only while the store still records this exact attempt, so the write changes nothing
-   * when the row was durable all along.
-   */
+  /** Confirms that the authoritative committed row still owns these exact bytes before a
+   * rebroadcast. Identical replay preserves its revision; an uncertain store refuses access. */
   private async persistFundingAttemptBeforeResubmit(
     index: number,
     attempt: SubAccountFundingAttempt
@@ -2152,7 +2165,7 @@ export class MonadSubAccountPool {
         `Sub-account ${index} no longer records funding transaction ${attempt.txHash}`
       );
     }
-    this.store.put(current);
+    await this.persistRecord(current);
     await this.store.flush();
   }
 
@@ -2215,7 +2228,7 @@ export class MonadSubAccountPool {
       } catch {}
       const { fundingAttempt: _fundingAttempt, ...base } = record;
       if (balance !== undefined && balance > 0n) {
-        this.store.put({ ...base, status: "available" });
+        await this.persistRecord({ ...base, status: "available" });
         await this.store.flush();
         return attempt.txHash;
       }
@@ -2228,7 +2241,7 @@ export class MonadSubAccountPool {
       // lagged the nonce: read it once more, and let a receipt that has arrived decide below.
       status = await signer.getStatus(attempt.txHash);
       if (status === "pending") {
-        this.store.put({ ...base, status: "retired" });
+        await this.persistRecord({ ...base, status: "retired" });
         this.capacityCache.delete(record.index);
         await this.store.flush();
         throw new Error(
@@ -2238,13 +2251,13 @@ export class MonadSubAccountPool {
     }
     if (status === "failed") {
       const { fundingAttempt: _fundingAttempt, ...base } = record;
-      this.store.put({ ...base, status: "retired" });
+      await this.persistRecord({ ...base, status: "retired" });
       this.capacityCache.delete(record.index);
       await this.store.flush();
       throw new Error(`Funding transaction ${attempt.txHash} failed`);
     }
     const { fundingAttempt: _fundingAttempt, ...base } = record;
-    this.store.put({ ...base, status: "available" });
+    await this.persistRecord({ ...base, status: "available" });
     await this.store.flush();
     return attempt.txHash;
   }
@@ -2261,6 +2274,8 @@ export class MonadSubAccountPool {
     refuseUneconomic?: boolean;
     onSigned?: (signedTx: SignedMonadTx) => void;
   }): Promise<FanOutFundingResult> {
+    const fundingTarget = this.store.getByIndex(params.target.index);
+    if (!fundingTarget) throw new Error("Funding target disappeared");
     const fundedValue = params.paymentCapacityWei + params.gasReserveWei;
     // Two funding transfers in a row come from one account: the chain's spacing rule between
     // them (Monad reverts the second otherwise) is waited out before each is signed.
@@ -2284,8 +2299,8 @@ export class MonadSubAccountPool {
         );
       }
     }
-    this.store.put({
-      ...params.target,
+    await this.persistRecord({
+      ...fundingTarget,
       status: "funding",
       fundingAttempt: { rawTx: signedTx.rawTx, txHash: signedTx.txHash },
     });
@@ -2371,11 +2386,7 @@ export class MonadSubAccountPool {
    * one past the highest index currently in the store, or `0` for an empty pool. Ticket #34's
    * growth mechanism (`topUpPool`) derives from here rather than from any fixed `ensureSize()`
    * bound, so the pool can keep extending indefinitely as accounts get spent. */
-  private nextFreshIndex(): number {
-    const all = this.store.getAll();
-    if (all.length === 0) return 0;
-    return Math.max(...all.map((record) => record.index)) + 1;
-  }
+  private nextFreshIndex(): number { return this.store.getNextIndex(); }
 
   /**
    * Look-ahead funding top-up (ticket #34 acceptance criterion): tops the pool's count of
@@ -2440,7 +2451,7 @@ export class MonadSubAccountPool {
         address: derived.address,
         status: "unfunded",
       };
-      this.store.put(target);
+      await this.persistRecord(target);
       targets.push(target);
     }
     await this.store.flush();

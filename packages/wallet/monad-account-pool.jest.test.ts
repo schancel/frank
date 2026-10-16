@@ -158,10 +158,10 @@ describe("MonadHdKeyring", () => {
 
 describe("MonadSubAccountPool", () => {
   describe("ensureSize", () => {
-    it('derives and persists sub-accounts as "available" up to the requested size', () => {
+    it('derives and persists sub-accounts as "available" up to the requested size', async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      const records = pool.ensureSize(3);
+      const records = (await pool.ensureSize(3));
 
       expect(records).toHaveLength(3);
       expect(records.map((r) => r.index)).toEqual([0, 1, 2]);
@@ -169,47 +169,47 @@ describe("MonadSubAccountPool", () => {
       expect(records[1].address).toBe(keyring.deriveSubAccount(1).address);
     });
 
-    it("is idempotent: re-calling with the same size does not reset existing status", () => {
+    it("is idempotent: re-calling with the same size does not reset existing status", async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      pool.ensureSize(2);
-      pool.setStatus(0, "in-use");
-      pool.setStatus(1, "retired");
+      await pool.ensureSize(2);
+      await pool.setStatus(0, "in-use");
+      await pool.setStatus(1, "retired");
 
-      pool.ensureSize(2);
+      await pool.ensureSize(2);
 
       expect(pool.getRecord(0)?.status).toBe("in-use");
       expect(pool.getRecord(1)?.status).toBe("retired");
     });
 
-    it('growing the pool leaves existing records untouched and adds new "available" ones', () => {
+    it('growing the pool leaves existing records untouched and adds new "available" ones', async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      pool.ensureSize(2);
-      pool.setStatus(0, "in-use");
+      await pool.ensureSize(2);
+      await pool.setStatus(0, "in-use");
 
-      const records = pool.ensureSize(4);
+      const records = (await pool.ensureSize(4));
 
       expect(records).toHaveLength(4);
       expect(pool.getRecord(0)?.status).toBe("in-use");
       expect(pool.getRecord(3)?.status).toBe("available");
     });
 
-    it("rejects a negative size", () => {
+    it("rejects a negative size", async () => {
       const pool = new MonadSubAccountPool({
         keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
       });
-      expect(() => pool.ensureSize(-1)).toThrow();
+      await expect(async () => (await pool.ensureSize(-1))).rejects.toThrow();
     });
   });
 
   describe("selectForStamp (per-stamp rotation)", () => {
-    it("round-robins over available accounts, skipping in-use and retired ones", () => {
+    it("round-robins over available accounts, skipping in-use and retired ones", async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      pool.ensureSize(4);
-      pool.setStatus(1, "in-use");
-      pool.setStatus(2, "retired");
+      await pool.ensureSize(4);
+      await pool.setStatus(1, "in-use");
+      await pool.setStatus(2, "retired");
       // Available: 0, 3
 
       const selections = Array.from(
@@ -220,22 +220,22 @@ describe("MonadSubAccountPool", () => {
       expect(selections).toEqual([0, 3, 0, 3, 0]);
     });
 
-    it("never mutates the selected record’s status", () => {
+    it("never mutates the selected record’s status", async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      pool.ensureSize(2);
+      await pool.ensureSize(2);
 
       pool.selectForStamp();
 
       expect(pool.records().every((r) => r.status === "available")).toBe(true);
     });
 
-    it("returns undefined when no account is available", () => {
+    it("returns undefined when no account is available", async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      pool.ensureSize(2);
-      pool.setStatus(0, "retired");
-      pool.setStatus(1, "retired");
+      await pool.ensureSize(2);
+      await pool.setStatus(0, "retired");
+      await pool.setStatus(1, "retired");
 
       expect(pool.selectForStamp()).toBeUndefined();
     });
@@ -247,24 +247,24 @@ describe("MonadSubAccountPool", () => {
       expect(pool.selectForStamp()).toBeUndefined();
     });
 
-    it("resumes rotation after the previously-selected index rather than restarting at 0", () => {
+    it("resumes rotation after the previously-selected index rather than restarting at 0", async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      pool.ensureSize(3);
+      await pool.ensureSize(3);
 
       expect(pool.selectForStamp()?.index).toBe(0);
       expect(pool.selectForStamp()?.index).toBe(1);
       // Newly retiring index 2 after it's already been passed shouldn't affect 0/1 rotation order.
-      pool.setStatus(2, "retired");
+      await pool.setStatus(2, "retired");
       expect(pool.selectForStamp()?.index).toBe(0);
     });
   });
 
   describe("getSigner", () => {
-    it("returns a MonadAccountTxSigner for the re-derived private key at that index", () => {
+    it("returns a MonadAccountTxSigner for the re-derived private key at that index", async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      pool.ensureSize(1);
+      await pool.ensureSize(1);
 
       const provider = makeStubProvider(async () => {
         throw new Error("no chain reads expected");
@@ -279,10 +279,10 @@ describe("MonadSubAccountPool", () => {
       );
     });
 
-    it("throws for an index the pool was never sized to include", () => {
+    it("throws for an index the pool was never sized to include", async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      pool.ensureSize(1);
+      await pool.ensureSize(1);
 
       expect(() =>
         pool.getSigner(5, {
@@ -296,24 +296,24 @@ describe("MonadSubAccountPool", () => {
   });
 
   describe("setStatus", () => {
-    it("throws for an unknown index", () => {
+    it("throws for an unknown index", async () => {
       const pool = new MonadSubAccountPool({
         keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
       });
-      pool.ensureSize(1);
-      expect(() => pool.setStatus(9, "retired")).toThrow(
+      await pool.ensureSize(1);
+      await expect(async () => (await pool.setStatus(9, "retired"))).rejects.toThrow(
         /No sub-account at index 9/
       );
     });
   });
 
   describe("prepareStampInventory", () => {
-    function setupPreparation(
+    async function setupPreparation(
       store: SubAccountPoolStore = new InMemorySubAccountPoolStore()
     ) {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring, store });
-      pool.ensureUnfundedSize(3);
+      await pool.ensureUnfundedSize(3);
       const balances = new Map<string, bigint>();
       const childNonces = new Map<string, number>();
       let nonce = 0;
@@ -375,7 +375,7 @@ describe("MonadSubAccountPool", () => {
 
     it("does not move funds on derivation, then prepares unequal receipt-confirmed accounts on Send", async () => {
       const { httpClient, mainAccountSigner, pool, provider } =
-        setupPreparation();
+        (await setupPreparation());
       expect(httpClient.submitRawTransaction).not.toHaveBeenCalled();
 
       const progress: string[] = [];
@@ -413,7 +413,7 @@ describe("MonadSubAccountPool", () => {
 
     it("estimates ordinary UI funding from the main account when gasLimit is not overridden", async () => {
       const { mainAccountSigner, mainAddress, pool, provider } =
-        setupPreparation();
+        (await setupPreparation());
       const estimateGas = jest
         .spyOn(provider, "estimateGas")
         .mockResolvedValue(21_000n);
@@ -446,8 +446,8 @@ describe("MonadSubAccountPool", () => {
         mainAccountSigner,
         pool,
         provider,
-      } = setupPreparation();
-      pool.setStatus(0, "available");
+      } = (await setupPreparation());
+      await pool.setStatus(0, "available");
       balances.set(pool.getRecord(0)!.address.toLowerCase(), 1_000n);
       childNonces.set(pool.getRecord(0)!.address.toLowerCase(), 1);
 
@@ -476,7 +476,7 @@ describe("MonadSubAccountPool", () => {
 
     it("funds one real account for the one-wei fallback instead of reporting an empty pool ready", async () => {
       const { httpClient, mainAccountSigner, pool, provider } =
-        setupPreparation();
+        (await setupPreparation());
 
       const result = await pool.prepareStampInventory({
         mainAccountSigner,
@@ -504,7 +504,7 @@ describe("MonadSubAccountPool", () => {
         mainAddress,
         pool,
         provider,
-      } = setupPreparation();
+      } = (await setupPreparation());
       // Preferred set: (375 + 10) + (625 + 10) of value, plus two 21,000-gas
       // funding transfers at a 1-wei fee cap = 43,020 wei total.
       balances.set(mainAddress.toLowerCase(), 22_009n);
@@ -539,7 +539,7 @@ describe("MonadSubAccountPool", () => {
         mainAddress,
         pool,
         provider,
-      } = setupPreparation();
+      } = (await setupPreparation());
       balances.set(mainAddress.toLowerCase(), 22_010n);
 
       const result = await pool.prepareStampInventory({
@@ -566,7 +566,7 @@ describe("MonadSubAccountPool", () => {
 
     it("serializes concurrent preparations so main-account nonces remain distinct", async () => {
       const { httpClient, mainAccountSigner, pool, provider } =
-        setupPreparation();
+        (await setupPreparation());
       await Promise.all([
         pool.prepareStampInventory({
           mainAccountSigner,
@@ -604,7 +604,7 @@ describe("MonadSubAccountPool", () => {
 
     it("resubmits the exact durable funding transaction after restart and funds only the missing capacity", async () => {
       const { balances, httpClient, mainAccountSigner, pool, provider, store } =
-        setupPreparation();
+        (await setupPreparation());
       const first = pool.getRecord(0)!;
       const signed = await mainAccountSigner.buildAndSignTransfer(
         first.address,
@@ -616,14 +616,14 @@ describe("MonadSubAccountPool", () => {
           chainId: BigInt(CHAIN_ID),
         }
       );
-      store.put({
+      await store.mutate(snapshot => { const record = {
         ...first,
         status: "funding",
         fundingAttempt: {
           rawTx: signed.rawTx,
           txHash: signed.txHash,
         },
-      });
+      }; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } });
       const broadcasted = new Set<string>();
       httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
         const transaction = Transaction.from(rawTx);
@@ -676,208 +676,35 @@ describe("MonadSubAccountPool", () => {
       expect(restarted.getRecord(0)?.fundingAttempt).toBeUndefined();
     });
 
-    describe("a funding row whose durable write failed (Issue #1307)", () => {
-      const fundingOverrides = {
-        gasLimit: 21_000n,
-        maxFeePerGas: 1n,
-        maxPriorityFeePerGas: 1n,
-        chainId: BigInt(CHAIN_ID),
-      };
-
-      /** A real Level store whose disk writes can be made to fail, as a full or failing disk
-       * would. `durable` lists the funding bytes of every write that actually reached disk. */
-      async function openFailableStore(dir: string) {
+    describe("a failed funding write fences its actual persistent owner", () => {
+      it("submits nothing, refuses in-session retry, and requires reopen to inspect the actual disk state", async () => {
+        const fs = await import("fs"), os = await import("os"), path = await import("path");
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "frank-funding-fence-"));
         const store = new LevelSubAccountPoolStore(dir);
         await store.Open();
-        type Batch = (
-          operations: ReadonlyArray<{ value?: string }>,
-          options: unknown
-        ) => Promise<unknown>;
-        const db = (store as unknown as { openedDb: { batch: Batch } })
-          .openedDb;
-        const writeToDisk = db.batch.bind(db);
-        const control = { failWrites: false };
-        const events: string[] = [];
-        db.batch = async (operations, options) => {
-          if (control.failWrites) throw new Error("simulated storage failure");
-          const result = await writeToDisk(operations, options);
-          for (const { value } of operations) {
-            if (value?.includes('"status":"funding"')) {
-              events.push(`durable:${JSON.parse(value).fundingAttempt.rawTx}`);
-            }
-          }
-          return result;
-        };
-        return { control, events, store };
-      }
-
-      async function withStorageDir(run: (dir: string) => Promise<void>) {
-        const os = await import("os");
-        const path = await import("path");
-        const fs = await import("fs");
-        const dir = fs.mkdtempSync(
-          path.join(os.tmpdir(), "sub-account-pool-funding-resume-")
-        );
         try {
-          await run(dir);
-        } finally {
-          fs.rmSync(dir, { recursive: true, force: true });
-        }
-      }
-
-      /** Opens the pool on a failable store and runs one preparation whose `funding` write
-       * fails: nothing is submitted, but the row still reads `funding` in memory. */
-      async function recordFundingRowThatNeverReachedDisk(dir: string) {
-        const failable = await openFailableStore(dir);
-        const fixture = setupPreparation(failable.store);
-        await fixture.pool.flush();
-        const broadcasted = new Set<string>();
-        fixture.httpClient.getTransactionReceipt.mockImplementation(
-          async (txHash) =>
-            broadcasted.has(txHash)
-              ? {
-                  txHash,
-                  blockNumber: 1,
-                  blockHash: "0x" + "00".repeat(32),
-                  status: "success",
-                  gasUsed: 21_000n,
-                  effectiveGasPrice: 1n,
-                  logs: [],
-                }
-              : undefined
-        );
-        const prepare = (pool: MonadSubAccountPool) =>
-          pool.prepareStampInventory({
-            mainAccountSigner: fixture.mainAccountSigner,
-            provider: fixture.provider,
-            stampValueWei: 1_000n,
-            gasReserveWei: 10n,
-            fundingOverrides,
-            receipt: { intervalMs: 0, maxAttempts: 1 },
-          });
-
-        failable.control.failWrites = true;
-        await expect(prepare(fixture.pool)).rejects.toThrow(
-          "simulated storage failure"
-        );
-        expect(fixture.httpClient.submitRawTransaction).not.toHaveBeenCalled();
-        const undurable = fixture.pool.getRecord(0)!;
-        expect(undurable.status).toBe("funding");
-        const recordedRawTx = undurable.fundingAttempt!.rawTx;
-        expect(failable.events).toEqual([]);
-        return { ...failable, ...fixture, broadcasted, prepare, recordedRawTx };
-      }
-
-      it("submits nothing on resume while the row still cannot be written", async () => {
-        await withStorageDir(async (dir) => {
-          const { httpClient, pool, prepare, store } =
-            await recordFundingRowThatNeverReachedDisk(dir);
-
-          await expect(prepare(pool)).rejects.toThrow(
-            "simulated storage failure"
-          );
-
-          expect(httpClient.submitRawTransaction).not.toHaveBeenCalled();
-          expect(pool.getRecord(0)?.status).toBe("funding");
-          await store.Close();
-
-          const reopened = new LevelSubAccountPoolStore(dir);
-          await reopened.Open();
-          expect(reopened.getByIndex(0)?.status).toBe("unfunded");
-          await reopened.Close();
-        });
-      });
-
-      it("writes the row durably before resubmitting the same bytes exactly once", async () => {
-        await withStorageDir(async (dir) => {
-          const {
-            balances,
-            broadcasted,
-            control,
-            events,
-            httpClient,
-            mainAccountSigner,
-            pool,
-            prepare,
-            provider,
-            recordedRawTx,
-            store,
-          } = await recordFundingRowThatNeverReachedDisk(dir);
-          const childAddress = pool.getRecord(0)!.address;
-
-          // Storage recovers, then the process dies right after the broadcast: no write made
-          // after the resubmission reaches disk.
-          control.failWrites = false;
-          httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
-            const transaction = Transaction.from(rawTx);
-            events.push(`submit:${rawTx}`);
-            broadcasted.add(transaction.hash!);
-            balances.set(transaction.to!.toLowerCase(), transaction.value);
-            control.failWrites = true;
-            return transaction.hash!;
-          });
-          await expect(prepare(pool)).rejects.toThrow(
-            "simulated storage failure"
-          );
-
-          expect(events).toEqual([
-            `durable:${recordedRawTx}`,
-            `submit:${recordedRawTx}`,
-          ]);
-          await store.Close();
-
-          const reopened = new LevelSubAccountPoolStore(dir);
-          await reopened.Open();
-          expect(reopened.getByIndex(0)).toEqual({
-            index: 0,
-            address: childAddress,
-            status: "funding",
-            fundingAttempt: {
-              rawTx: recordedRawTx,
-              txHash: Transaction.from(recordedRawTx).hash,
-            },
-          });
-
-          // The restarted wallet finishes the recorded transfer instead of funding the child again.
-          httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
-            const transaction = Transaction.from(rawTx);
-            broadcasted.add(transaction.hash!);
-            balances.set(transaction.to!.toLowerCase(), transaction.value);
-            return transaction.hash!;
-          });
-          const restarted = new MonadSubAccountPool({
-            keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
-            store: reopened,
-          });
-          const result = await restarted.prepareStampInventory({
-            mainAccountSigner,
-            provider,
-            stampValueWei: 1_000n,
-            gasReserveWei: 10n,
-            fundingOverrides,
-            receipt: { intervalMs: 0, maxAttempts: 1 },
-          });
-
-          expect(result.fundingTxHashes[0]).toBe(
-            Transaction.from(recordedRawTx).hash
-          );
-          expect(restarted.getRecord(0)?.status).toBe("available");
-          const transfersToChild = httpClient.submitRawTransaction.mock.calls
-            .map(([rawTx]) => rawTx)
-            .filter(
-              (rawTx) =>
-                Transaction.from(rawTx).to!.toLowerCase() ===
-                childAddress.toLowerCase()
-            );
-          expect(transfersToChild).toEqual([recordedRawTx]);
-          await reopened.Close();
-        });
+          const f = await setupPreparation(store);
+          const db = (store as any).openedDb;
+          const original = db.batch.bind(db);
+          db.batch = async () => { throw new Error("simulated storage failure"); };
+          const prepare = () => f.pool.prepareStampInventory({ mainAccountSigner: f.mainAccountSigner, provider: f.provider, stampValueWei: 1_000n, gasReserveWei: 10n,
+            fundingOverrides: { gasLimit: 21_000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n, chainId: BigInt(CHAIN_ID) }, receipt: { maxAttempts: 0 } });
+          await expect(prepare()).rejects.toThrow("simulated storage failure");
+          expect(f.httpClient.submitRawTransaction).not.toHaveBeenCalled();
+          expect(() => f.pool.getRecord(0)).toThrow("uncertain");
+          await expect(prepare()).rejects.toThrow("uncertain");
+          await expect(f.pool.flush()).rejects.toThrow("uncertain");
+          expect(f.httpClient.submitRawTransaction).not.toHaveBeenCalled();
+          db.batch = original;
+          await store.Close(); await store.Open();
+          expect(store.getByIndex(0)?.status).toBe("unfunded");
+        } finally { await store.Close(); fs.rmSync(dir, { recursive: true, force: true }); }
       });
     });
 
     it("keeps a replaced funding attempt in funding when the child balance cannot be read (Issue #1307)", async () => {
       const { balances, httpClient, mainAccountSigner, pool, provider, store } =
-        setupPreparation();
+        (await setupPreparation());
       const first = pool.getRecord(0)!;
       const signed = await mainAccountSigner.buildAndSignTransfer(
         first.address,
@@ -894,7 +721,7 @@ describe("MonadSubAccountPool", () => {
         status: "funding",
         fundingAttempt: { rawTx: signed.rawTx, txHash: signed.txHash },
       };
-      store.put(fundingRow);
+      await store.mutate(snapshot => { const record = fundingRow; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } });
       // The transfer was mined (the main-account nonce moved past it), but the receipt lags on
       // the receipt backend and the balance read fails on the other one.
       httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
@@ -927,7 +754,7 @@ describe("MonadSubAccountPool", () => {
         receipt: { intervalMs: 0, maxAttempts: 1 },
       });
 
-      expect(pool.getRecord(0)).toEqual(fundingRow);
+      expect(pool.getRecord(0)).toEqual({ ...fundingRow, revision: 2 });
     });
 
     // #1235 Q4. `fundStampInventoryAhead` does not exist on main 8c656f32, so every test in this
@@ -984,7 +811,7 @@ describe("MonadSubAccountPool", () => {
         pool.records().map((record) => record.status);
 
       it("funds exactly the 3/8 + 5/8 pair one message needs; a send's own preparation then submits nothing, and a repeat funds nothing", async () => {
-        const f = setupPreparation();
+        const f = (await setupPreparation());
         const result = await ahead(f, f.pool);
 
         expect(result.fundingTxHashes).toHaveLength(2);
@@ -1012,7 +839,7 @@ describe("MonadSubAccountPool", () => {
       });
 
       it("two passes started together, and one racing a send's preparation, fund one pair at distinct nonces", async () => {
-        const f = setupPreparation();
+        const f = (await setupPreparation());
         const results = await Promise.all([
           ahead(f, f.pool),
           ahead(f, f.pool),
@@ -1034,7 +861,7 @@ describe("MonadSubAccountPool", () => {
       });
 
       it("refuses a plan over its value limit before anything is signed", async () => {
-        const f = setupPreparation();
+        const f = (await setupPreparation());
         const sign = jest.spyOn(f.mainAccountSigner, "buildAndSignTransfer");
         const before = structuredClone(f.pool.records());
 
@@ -1051,7 +878,7 @@ describe("MonadSubAccountPool", () => {
       });
 
       it("never signs more than two transfers in one pass, whatever is missing", async () => {
-        const f = setupPreparation();
+        const f = (await setupPreparation());
         const sign = jest.spyOn(f.mainAccountSigner, "buildAndSignTransfer");
         await ahead(f, f.pool, { maxValueWei: 10n ** 18n });
         expect(sign).toHaveBeenCalledTimes(2);
@@ -1060,8 +887,8 @@ describe("MonadSubAccountPool", () => {
       });
 
       it("refuses a transfer whose fee could exceed the value it moves: signed, then discarded, never written or submitted", async () => {
-        const f = setupPreparation();
-        const put = jest.spyOn(f.store, "put");
+        const f = (await setupPreparation());
+        const put = jest.spyOn(f.store, "persist" as never);
         // 375 + 10 wei moved for up to 21,000 wei of fee.
         await expect(
           ahead(f, f.pool, { gasReserveWei: 10n, maxValueWei: MAX_VALUE })
@@ -1088,12 +915,12 @@ describe("MonadSubAccountPool", () => {
       });
 
       it("never funds or counts an account another operation holds", async () => {
-        const f = setupPreparation();
+        const f = (await setupPreparation());
         // Row 0: reserved by a native send (unfunded, so it would be the first funding target).
         // Row 1: leased by a pending message and holding the whole stamp value.
         const reserved = new Set([0]);
         f.pool.attachSpendReservation((index) => reserved.has(index));
-        f.pool.setStatus(1, "in-use");
+        await f.pool.setStatus(1, "in-use");
         f.balances.set(f.pool.getRecord(1)!.address.toLowerCase(), 10n ** 9n);
         const held = structuredClone([f.pool.getRecord(0), f.pool.getRecord(1)]);
 
@@ -1120,7 +947,7 @@ describe("MonadSubAccountPool", () => {
       });
 
       it("looks once at an earlier transfer that has no receipt, offers the same bytes again, and funds nothing on top of it", async () => {
-        const f = setupPreparation();
+        const f = (await setupPreparation());
         const broadcasted = new Set<string>();
         receiptOnceBroadcast(f, broadcasted);
         // The node accepts the bytes and does not mine them.
@@ -1187,8 +1014,8 @@ describe("MonadSubAccountPool", () => {
         const ONE_ACCOUNT = S + R + FEE; // what a send's last resort costs
         const PAIR = S + 2n * R + 2n * FEE;
         /** A fixture whose chain debits the sender, so the main balance is what is left. */
-        function wallet(mainBalance: bigint) {
-          const f = setupPreparation();
+        async function wallet(mainBalance: bigint) {
+          const f = (await setupPreparation());
           const main = f.mainAddress.toLowerCase();
           f.balances.set(main, mainBalance);
           f.httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
@@ -1230,7 +1057,7 @@ describe("MonadSubAccountPool", () => {
         }
 
         it("a main account that can pay for one account but not the pair: the pass funds nothing, and the send funds its one account exactly as without a pass", async () => {
-          const w = wallet(PAIR - 1n);
+          const w = (await wallet(PAIR - 1n));
           const sign = jest.spyOn(w.mainAccountSigner, "buildAndSignTransfer");
 
           await expect(w.passAhead()).rejects.toMatchObject({
@@ -1252,7 +1079,7 @@ describe("MonadSubAccountPool", () => {
         // The same trap without any pass, and on main before this stage too: a send funds one
         // whole-stamp account, fails later for another reason, and is retried.
         it("a send retried after it funded one whole-stamp account is ready: no top-up is asked of an empty main account", async () => {
-          const w = wallet(ONE_ACCOUNT);
+          const w = (await wallet(ONE_ACCOUNT));
           const first = await w.send();
           expect(first.prepared.fundingTxHashes).toHaveLength(1);
           expect(w.balances.get(w.main)).toBe(0n);
@@ -1276,7 +1103,7 @@ describe("MonadSubAccountPool", () => {
           for (const edge of [ONE_ACCOUNT, PAIR])
             balances.push(edge - 1n, edge, edge + 1n);
           const outcome = async (balance: bigint, withPass: boolean) => {
-            const w = wallet(balance);
+            const w = (await wallet(balance));
             let funded = 0;
             if (withPass)
               funded = await w.passAhead().then(
@@ -1310,7 +1137,7 @@ describe("MonadSubAccountPool", () => {
         }, 120_000);
 
         it("an unresolved transfer is found before any fee is quoted", async () => {
-          const f = setupPreparation();
+          const f = (await setupPreparation());
           const broadcasted = new Set<string>();
           receiptOnceBroadcast(f, broadcasted);
           f.httpClient.submitRawTransaction.mockImplementation(async (rawTx) =>
@@ -1328,13 +1155,13 @@ describe("MonadSubAccountPool", () => {
 
           expect(quote).not.toHaveBeenCalled();
           // Pin: with nothing unresolved the same function is asked once.
-          const clean = setupPreparation();
+          const clean = (await setupPreparation());
           await ahead(clean, clean.pool, { gasReserveWei: quote });
           expect(quote).toHaveBeenCalledTimes(1);
         });
 
         it("waits FUND_AHEAD_RECEIPT_WAIT_MS for its own receipt, not a minute, and leaves the row funding", async () => {
-          const f = setupPreparation();
+          const f = (await setupPreparation());
           f.httpClient.submitRawTransaction.mockImplementation(async (rawTx) =>
             Transaction.from(rawTx).hash!
           );
@@ -1401,7 +1228,7 @@ describe("MonadSubAccountPool", () => {
             for (const { value } of operations) {
               if (value?.includes('"status":"funding"')) {
                 events.push(
-                  `durable:${JSON.parse(value).fundingAttempt.rawTx}`
+                  `durable:${JSON.parse(value).value.fundingAttempt.rawTx}`
                 );
               }
             }
@@ -1435,7 +1262,7 @@ describe("MonadSubAccountPool", () => {
         /** Opens the fixture on a real store with a chain that mines what it is given. */
         async function start(dir: string) {
           const opened = await openStore(dir);
-          const f = setupPreparation(opened.store);
+          const f = (await setupPreparation(opened.store));
           await f.pool.flush();
           const broadcasted = new Set<string>();
           receiptOnceBroadcast(f, broadcasted);
@@ -1571,13 +1398,14 @@ describe("MonadSubAccountPool", () => {
             );
             await expect(ahead(s.f, s.f.pool)).rejects.toThrow("simulated stop");
             const recorded = s.events[0]!.replace("durable:", "");
-            // In memory the dead process believed the account available; disk does not.
-            expect(s.f.pool.getRecord(0)!.status).toBe("available");
+            // Failed publication fences memory; only reopen can establish the disk outcome.
+            expect(() => s.f.pool.getRecord(0)).toThrow("uncertain");
             await s.store.Close();
 
             const next = await reopen(dir);
             const row = next.pool.getRecord(0)!;
             expect(row).toEqual({
+              revision: 2,
               index: 0,
               address: row.address,
               status: "funding",
@@ -1600,6 +1428,7 @@ describe("MonadSubAccountPool", () => {
         it("stopped while a second pass is waiting behind the first: the next pass finishes the first one's transfer and nothing is funded twice", async () => {
           await withDir(async (dir) => {
             const s = await start(dir);
+            const signing = jest.spyOn(s.f.mainAccountSigner, "buildAndSignTransfer");
             let entered!: () => void;
             const inSubmit = new Promise<void>((resolve) => (entered = resolve));
             let stop!: () => void;
@@ -1623,11 +1452,12 @@ describe("MonadSubAccountPool", () => {
             expect(s.events).toHaveLength(1);
             stop();
             expect(await first).toContain("simulated stop");
-            // It then runs against a dead store: it cannot make the row durable again, so it
-            // offers nothing to the network, and funds nothing on top of the unresolved row.
-            expect(await second).toContain("unresolved-funding");
-            expect(s.f.httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
+            // The second pass may rebroadcast the identical committed obligation. It signs
+            // nothing new; discovering the failed settlement write then fences the owner.
+            expect(await second).toContain("uncertain");
             const recorded = s.events[0]!.replace("durable:", "");
+            expect(s.f.httpClient.submitRawTransaction.mock.calls.map(([raw]) => raw)).toEqual([recorded, recorded]);
+            expect(signing).toHaveBeenCalledTimes(1);
             expect(s.events).toEqual([`durable:${recorded}`]);
             await s.store.Close();
 
@@ -1649,12 +1479,12 @@ describe("MonadSubAccountPool", () => {
 
     describe("hasStampInventory: what a send may skip funding for (#1235 Q4)", () => {
       const STAMP = 1_000n;
-      function inventory(balances: bigint[]) {
-        const f = setupPreparation();
-        balances.forEach((balance, index) => {
-          f.pool.setStatus(index, "available");
+      async function inventory(balances: bigint[]) {
+        const f = (await setupPreparation());
+        await Promise.all(balances.map(async (balance, index) => {
+          await f.pool.setStatus(index, "available");
           f.balances.set(f.pool.getRecord(index)!.address.toLowerCase(), balance);
-        });
+        }));
         const ready = (
           feeReserveWei: bigint,
           extra: { heldIndices?: ReadonlySet<number>; maxCacheAgeMs?: number } = {}
@@ -1669,7 +1499,7 @@ describe("MonadSubAccountPool", () => {
       }
 
       it("is true for the funded pair and answers for the reserve it is asked about", async () => {
-        const f = inventory([375n + 100n, 625n + 100n]);
+        const f = (await inventory([375n + 100n, 625n + 100n]));
         expect(await f.ready(100n)).toBe(true);
         // The same accounts at a higher fee no longer cover the stamp. On main the send's check
         // used one fixed reserve and passed them on to a payment that then could not be built.
@@ -1677,26 +1507,26 @@ describe("MonadSubAccountPool", () => {
       });
 
       it("is false for two accounts that cannot cover the value between them (main counted them as ready)", async () => {
-        const f = inventory([375n, 375n]);
+        const f = (await inventory([375n, 375n]));
         expect(await f.ready(0n)).toBe(false);
       });
 
       // Review of a03ea904, which asked for two accounts here: a wallet that held one account
       // with the whole stamp was sent to fund a top-up. Fails there (false).
       it("is true for ONE account that covers the value and its own fee, which is what the payment intent accepts", async () => {
-        const f = inventory([1_000n + 100n]);
+        const f = (await inventory([1_000n + 100n]));
         expect(await f.ready(100n)).toBe(true);
         expect(await f.ready(101n)).toBe(false);
       });
 
       it("does not count an account a message holds", async () => {
-        const f = inventory([375n, 625n, 0n]);
+        const f = (await inventory([375n, 625n, 0n]));
         expect(await f.ready(0n)).toBe(true);
         expect(await f.ready(0n, { heldIndices: new Set([1]) })).toBe(false);
       });
 
       it("reads each balance once: a later ask with no age limit makes no request", async () => {
-        const f = inventory([375n, 625n]);
+        const f = (await inventory([375n, 625n]));
         const read = jest.spyOn(f.provider, "getBalance");
         expect(await f.ready(0n, { maxCacheAgeMs: Infinity })).toBe(true);
         expect(read).toHaveBeenCalledTimes(2);
@@ -1747,12 +1577,12 @@ describe("MonadSubAccountPool", () => {
   });
 
   describe("claim: the one place an account becomes held by an operation", () => {
-    function funded(count: number, balanceWei = 1_100n) {
+    async function funded(count: number, balanceWei = 1_100n) {
       const pool = new MonadSubAccountPool({
         keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
         store: new InMemorySubAccountPoolStore(),
       });
-      for (const row of pool.ensureSize(count))
+      for (const row of (await pool.ensureSize(count)))
         pool.capacityCache.set(row.index, {
           capacityWei: balanceWei,
           checkedAtMs: Date.now(),
@@ -1761,8 +1591,8 @@ describe("MonadSubAccountPool", () => {
       return pool;
     }
 
-    it("twenty payments claiming in the same tick, from three wallets sharing the pool, take twenty different accounts; the next gets none", () => {
-      const pool = funded(20);
+    it("twenty payments claiming in the same tick, from three wallets sharing the pool, take twenty different accounts; the next gets none", async () => {
+      const pool = (await funded(20));
       const taken = Array.from({ length: 20 }, (_, n) =>
         pool.claimStampAccounts(`wallet-${n % 3}:frank-dm:${n}`, 1_000n, 100n)
       );
@@ -1782,8 +1612,8 @@ describe("MonadSubAccountPool", () => {
       expect(pool.claimsOf("wallet-0:frank-dm:20")).toEqual([]);
     });
 
-    it("a released claim is free at once; a restored claim holds and refuses a second holder", () => {
-      const pool = funded(1);
+    it("a released claim is free at once; a restored claim holds and refuses a second holder", async () => {
+      const pool = (await funded(1));
       const [first] = pool.claimStampAccounts("a:1", 1_000n, 100n)!;
       expect(pool.claimStampAccounts("a:2", 1_000n, 100n)).toBeUndefined();
       pool.releaseClaim("a:1");
@@ -1797,8 +1627,8 @@ describe("MonadSubAccountPool", () => {
       expect(pool.claimStampAccounts("a:3", 1_000n, 100n)).toHaveLength(1);
     });
 
-    it("never offers an account a native send's journal reserves, and never takes one it was not offered", () => {
-      const pool = funded(2);
+    it("never offers an account a native send's journal reserves, and never takes one it was not offered", async () => {
+      const pool = (await funded(2));
       pool.attachSpendReservation((index) => index === 0);
       expect(pool.isSpendReserved(0, "a:1")).toBe(true);
       const [only] = pool.claimStampAccounts("a:1", 1_000n, 100n)!;
@@ -1818,11 +1648,11 @@ describe("MonadSubAccountPool", () => {
       chainId: BigInt(CHAIN_ID),
     };
 
-    function setupBurn() {
+    async function setupBurn() {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const store = new InMemorySubAccountPoolStore();
       const pool = new MonadSubAccountPool({ keyring, store });
-      pool.ensureUnfundedSize(3);
+      await pool.ensureUnfundedSize(3);
       const balances = new Map<string, bigint>();
       let mainNonce = 0;
       const httpClient = makeMockHttpClient();
@@ -1881,7 +1711,7 @@ describe("MonadSubAccountPool", () => {
     }
 
     it("is claimed for its operation from before its funding: a message built meanwhile is never given it, and only its own operation leases it", async () => {
-      const { pool, provider, mainAccountSigner } = setupBurn();
+      const { pool, provider, mainAccountSigner } = (await setupBurn());
       const holder = "wallet-a:topic:1";
       const burn = await pool.prepareBurnAccount({
         mainAccountSigner,
@@ -1913,20 +1743,20 @@ describe("MonadSubAccountPool", () => {
       expect(other.index).not.toBe(burn.index);
 
       const leases = new SubAccountLeaseManager(pool);
-      expect(() => leases.acquireForIndex(burn.index)).toThrow(
+      await expect(async () => (await leases.acquireForIndex(burn.index))).rejects.toThrow(
         /held by another operation/
       );
-      expect(() =>
-        leases.acquireForIndex(burn.index, "wallet-b:topic:2")
-      ).toThrow(/held by another operation/);
-      const lease = leases.acquireForIndex(burn.index, holder);
+      await expect(async () =>
+        (await leases.acquireForIndex(burn.index, "wallet-b:topic:2"))
+      ).rejects.toThrow(/held by another operation/);
+      const lease = (await leases.acquireForIndex(burn.index, holder));
       // The lease's own row status holds the account from here; the claim has done its work.
       expect(pool.getRecord(lease.index)?.status).toBe("in-use");
       expect(pool.claimedBy(lease.index)).toBeUndefined();
     });
 
     it("a burn preparation that fails leaves nothing claimed", async () => {
-      const { balances, pool, provider, mainAccountSigner } = setupBurn();
+      const { balances, pool, provider, mainAccountSigner } = (await setupBurn());
       balances.set(mainAccountSigner.address.toLowerCase(), 0n);
       await expect(
         pool.prepareBurnAccount({
@@ -1943,7 +1773,7 @@ describe("MonadSubAccountPool", () => {
     });
 
     it("funds exactly one account with burn value + fee reserve and reports progress", async () => {
-      const { httpClient, pool, prepare } = setupBurn();
+      const { httpClient, pool, prepare } = (await setupBurn());
       const result = await prepare();
 
       expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
@@ -1955,7 +1785,7 @@ describe("MonadSubAccountPool", () => {
     });
 
     it("a second preparation for the same burn reuses the funded account instead of funding another", async () => {
-      const { httpClient, prepare } = setupBurn();
+      const { httpClient, prepare } = (await setupBurn());
       const first = await prepare();
       const second = await prepare();
 
@@ -1964,10 +1794,10 @@ describe("MonadSubAccountPool", () => {
     });
 
     it("does not burn from a larger account (direct-message inventory): it funds a right-sized one", async () => {
-      const { balances, httpClient, pool, prepare } = setupBurn();
+      const { balances, httpClient, pool, prepare } = (await setupBurn());
       // A 5/8-of-a-stamp DM account, already receipt-confirmed and available.
       const big = pool.getRecord(0)!;
-      pool.setStatus(big.index, "available");
+      await pool.setStatus(big.index, "available");
       balances.set(big.address.toLowerCase(), 10_000n);
 
       const result = await prepare(1_000n);
@@ -1978,9 +1808,9 @@ describe("MonadSubAccountPool", () => {
     });
 
     it("does not burn from an account that cannot cover the burn: it funds a new one", async () => {
-      const { balances, httpClient, pool, prepare } = setupBurn();
+      const { balances, httpClient, pool, prepare } = (await setupBurn());
       const small = pool.getRecord(0)!;
-      pool.setStatus(small.index, "available");
+      await pool.setStatus(small.index, "available");
       // 400 wei of capacity (410 balance - 10 reserve) cannot burn 1_000.
       balances.set(small.address.toLowerCase(), 410n);
 
@@ -1991,7 +1821,7 @@ describe("MonadSubAccountPool", () => {
     });
 
     it("rejects an unaffordable burn before signing or moving anything", async () => {
-      const { httpClient, pool, prepare } = setupBurn();
+      const { httpClient, pool, prepare } = (await setupBurn());
 
       await expect(prepare(5_000_000n)).rejects.toThrow(
         /Insufficient main account balance/
@@ -2001,7 +1831,7 @@ describe("MonadSubAccountPool", () => {
     });
 
     it("rejects a non-positive burn value", async () => {
-      const { prepare } = setupBurn();
+      const { prepare } = (await setupBurn());
       await expect(prepare(0n)).rejects.toThrow(
         /burnValueWei must be positive/
       );
@@ -2037,7 +1867,7 @@ describe("MonadSubAccountPool", () => {
     it("derives and funds fresh indices beyond whatever ensureSize was first called with", async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      pool.ensureSize(2); // indices 0, 1 -- the "fixed initial size" a caller might start with
+      await pool.ensureSize(2); // indices 0, 1 -- the "fixed initial size" a caller might start with
 
       const mainAccountSigner = await makeSigner();
       const results = await pool.topUpPool({
@@ -2061,7 +1891,7 @@ describe("MonadSubAccountPool", () => {
     it("does nothing (funds nothing) when the buffer is already full", async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      pool.ensureSize(5);
+      await pool.ensureSize(5);
 
       const mainAccountSigner = await makeSigner();
       const results = await pool.topUpPool({
@@ -2078,9 +1908,9 @@ describe("MonadSubAccountPool", () => {
     it('only counts currently-"available" records toward the buffer -- in-use/spent/retired ones do not count, and growth continues past them (never reuses their indices)', async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring });
-      pool.ensureSize(2);
-      pool.setStatus(0, "in-use");
-      pool.setStatus(1, "spent");
+      await pool.ensureSize(2);
+      await pool.setStatus(0, "in-use");
+      await pool.setStatus(1, "spent");
       // 0 available records currently -- both existing indices are used up.
 
       const mainAccountSigner = await makeSigner();
@@ -2232,7 +2062,7 @@ describe("MonadSubAccountPool", () => {
         const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
         const store = new InMemorySubAccountPoolStore();
         const pool = new MonadSubAccountPool({ keyring, store });
-        const [child] = pool.ensureUnfundedSize(1);
+        const [child] = (await pool.ensureUnfundedSize(1));
         const mainAccountSigner = await makeSigner();
         const signed = await mainAccountSigner.buildAndSignTransfer(
           child.address,
@@ -2244,7 +2074,7 @@ describe("MonadSubAccountPool", () => {
           status: "funding",
           fundingAttempt: { rawTx: signed.rawTx, txHash: signed.txHash },
         };
-        store.put(fundingRow);
+        await store.mutate(snapshot => { const record = fundingRow; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } });
         const submitRaw = jest
           .spyOn(mainAccountSigner, "submitRaw")
           .mockRejectedValue(new Error("nonce too low"));
@@ -2273,7 +2103,7 @@ describe("MonadSubAccountPool", () => {
           );
         // Only the recorded bytes were ever offered to the node: no second child was funded.
         expect(submitRaw.mock.calls).toEqual([[signed.rawTx, signed.txHash]]);
-        return { fundingRow, outcome, record: pool.getRecord(0) };
+        return { fundingRow: { ...fundingRow, revision: 2 }, outcome, record: pool.getRecord(0) };
       }
 
       const advanced: Read<bigint> = async () => 5n;
@@ -2350,10 +2180,12 @@ describe("MonadSubAccountPool", () => {
 });
 
 describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
-  it("InMemorySubAccountPoolStore returns records sorted by index", () => {
+  it("InMemorySubAccountPoolStore returns records sorted by index", async () => {
     const store = new InMemorySubAccountPoolStore();
-    store.put({ index: 2, address: "0xabc", status: "available" });
-    store.put({ index: 0, address: "0xdef", status: "available" });
+    await store.mutate(() => ({ records: [
+      { expectedRevision: 0, record: { index: 2, address: "0xabc", status: "available" } },
+      { expectedRevision: 0, record: { index: 0, address: "0xdef", status: "available" } },
+    ], result: undefined }));
     expect(store.getAll().map((r) => r.index)).toEqual([0, 2]);
   });
 
@@ -2370,8 +2202,8 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       const storeA = new LevelSubAccountPoolStore(dir);
       await storeA.Open();
       const poolA = new MonadSubAccountPool({ keyring, store: storeA });
-      poolA.ensureSize(2);
-      poolA.setStatus(1, "in-use");
+      await poolA.ensureSize(2);
+      await poolA.setStatus(1, "in-use");
       await storeA.Close();
 
       const storeB = new LevelSubAccountPoolStore(dir);
@@ -2393,13 +2225,12 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     const FEE_WEI = 21_000n;
     const recipient = "0x" + "12".repeat(20);
 
-    function setupSpendTest(store: SubAccountPoolStore = new InMemorySubAccountPoolStore()) {
+    async function setupSpendTest(store: SubAccountPoolStore = new InMemorySubAccountPoolStore()) {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring, store });
-      pool.ensureSize(3);
-      const putMany = jest.spyOn(store, "putMany");
-      const put = jest.spyOn(store, "put");
-      const writes = () => put.mock.calls.length + putMany.mock.calls.length;
+      await pool.ensureSize(3);
+      const putMany = jest.spyOn(store, "persist" as never);
+      const writes = () => putMany.mock.calls.length;
       return { keyring, pool, store, writes };
     }
 
@@ -2474,7 +2305,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
           .records()
           .find((record) => record.address === signer);
         if (row === undefined) return { kind: "no-pool-row" as const };
-        const outcome = pool.commitSpend(row.index, rawTx);
+        const outcome = (await pool.commitSpend(row.index, rawTx));
         const flushed = pool.flush(); // no await between the put and the flush call
         await flushed;
         return outcome === "no-row"
@@ -2509,7 +2340,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     // caller": the consolidator's item was reported exactly like an applied one. Fails on the base
     // because nothing is rejected.
     it("rejects the consolidator's item without raw bytes, naming the missing transaction, after dropping the capacity entry", async () => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const applier = attachCommitApplier(pool);
       const addr0 = keyring.deriveSubAccount(0).address;
       const before = pool.records();
@@ -2551,9 +2382,9 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       const levelStore = new LevelSubAccountPoolStore(dir);
       await levelStore.Open();
       try {
-        const { keyring, pool, writes } = setupSpendTest(levelStore);
+        const { keyring, pool, writes } = (await setupSpendTest(levelStore));
         await pool.flush();
-        const putMany = jest.spyOn(levelStore, "putMany");
+        const putMany = jest.spyOn(levelStore, "persist" as never);
         const addr0 = keyring.deriveSubAccount(0).address;
         const spend = await signSpend(keyring, 0);
         pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
@@ -2573,6 +2404,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         expect(writes()).toBe(written);
         expect(pool.records()).toEqual(before);
         expect(pool.getRecord(0)).toEqual({
+          revision: 1,
           index: 0,
           address: addr0,
           status: "available",
@@ -2588,7 +2420,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     // item never reaches the pool. On the base the first commits and resolves; the second is
     // dispatched to the pool, which commits it.
     it("at the dispatcher: the pool's refusal reaches the awaiting caller, and a chain mismatch does not mutate the pool", async () => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const addr0 = keyring.deriveSubAccount(0).address;
       const spend = await signSpend(keyring, 0);
       const wallet = { chainIdentifier: "monad-testnet", pool };
@@ -2633,10 +2465,10 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       await levelStore.Open();
       let reopened: LevelSubAccountPoolStore | undefined;
       try {
-        const { keyring, pool, writes } = setupSpendTest(levelStore);
+        const { keyring, pool, writes } = (await setupSpendTest(levelStore));
         await pool.flush();
         const applier = attachCommitApplier(pool);
-        const putMany = jest.spyOn(levelStore, "putMany");
+        const putMany = jest.spyOn(levelStore, "persist" as never);
         const addr0 = keyring.deriveSubAccount(0).address;
         const spend = await signSpend(keyring, 0);
         pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
@@ -2659,9 +2491,9 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         expect(applier).toHaveBeenCalledTimes(1);
         expect(applier).toHaveBeenCalledWith(spend.rawTx, "monad-testnet");
         expect(putMany).toHaveBeenCalledTimes(1);
-        expect(putMany).toHaveBeenCalledWith([expectedRow]);
-        expect(writes() - written).toBe(2); // the one `put` and its `putMany`
-        expect(pool.getRecord(0)).toEqual(expectedRow);
+        expect((putMany.mock.calls[0][0] as Map<number, unknown>).get(0)).toEqual({ ...expectedRow, revision: 2 });
+        expect(writes() - written).toBe(1); // one durable mutation
+        expect(pool.getRecord(0)).toEqual({ ...expectedRow, revision: 2 });
         expect(pool.capacityCache.has(0)).toBe(false);
         expect(() =>
           validateMonadWalletState(walletStateOf(pool, keyring))
@@ -2678,8 +2510,9 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         reopened = new LevelSubAccountPoolStore(dir);
         await reopened.Open();
         const poolB = new MonadSubAccountPool({ keyring, store: reopened });
-        expect(poolB.getRecord(0)).toEqual(expectedRow);
+        expect(poolB.getRecord(0)).toEqual({ ...expectedRow, revision: 2 });
         expect(poolB.getRecord(1)).toEqual({
+          revision: 1,
           index: 1,
           address: keyring.deriveSubAccount(1).address,
           status: "available",
@@ -2694,7 +2527,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     });
 
     it("hands the applier's own rejection to the caller, and takes one applier only", async () => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const addr0 = keyring.deriveSubAccount(0).address;
       const spend = await signSpend(keyring, 0);
       const failure = new Error("admission refused");
@@ -2732,8 +2565,8 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring, store });
       attachCommitApplier(pool);
-      pool.ensureUnfundedSize(1);
-      pool.ensureSize(2);
+      await pool.ensureUnfundedSize(1);
+      await pool.ensureSize(2);
       // Hand-built: no production path writes `lifecycle.funding`.
       const fundingRaw = await new Wallet(
         keyring.deriveSubAccount(2).privateKey
@@ -2752,7 +2585,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         txHash: Transaction.from(fundingRaw).hash as string,
         valueWei: "7",
       };
-      pool.recordFundingTransaction(1, fundingCheckpoint);
+      await pool.recordFundingTransaction(1, fundingCheckpoint);
 
       for (const index of [0, 1]) {
         const spend = await signSpend(keyring, index);
@@ -2766,6 +2599,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
           ).affectedIndices
         ).toEqual([index]);
         expect(pool.getRecord(index)).toEqual({
+          revision: index === 0 ? 2 : 3,
           index,
           address,
           status: "spent",
@@ -2789,7 +2623,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       ["an outgoing payment-transfer item", { type: "payment-transfer" }],
       ["an incoming payment-transfer item", { type: "payment-transfer", direction: "in" }],
     ])("is a no-op for %s, with and without an applier", async (_label, kind) => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const addr0 = keyring.deriveSubAccount(0).address;
       const spend = await signSpend(keyring, 0);
       const before = pool.records();
@@ -2821,7 +2655,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     // above; the base resolves the same way. A composed test relies on it
     // (`snapshots sendLegacy authorization before the public wallet queue`).
     it("is a no-op for an item without raw bytes that names no row of this pool", async () => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const applier = attachCommitApplier(pool);
       const outside = await signSpend(keyring, 7);
       pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
@@ -2842,7 +2676,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
 
     // Check 6: a transaction no live row signed spends no pool account. Not a rejection.
     it("is a no-op for a consistent item whose signer is not a live row of this pool", async () => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const applier = attachCommitApplier(pool);
       const outside = await signSpend(keyring, 7);
       const written = writes();
@@ -2894,7 +2728,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       ["null bytes", "missing-transaction"],
       ["no chain identifier", "inconsistent-item"],
     ])("rejects %s with a typed refusal and writes nothing", async (kind, code) => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const applier = attachCommitApplier(pool);
       const addr0 = keyring.deriveSubAccount(0).address;
       const own = await signSpend(keyring, 0);
@@ -2965,13 +2799,13 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       ["two created outputs", (item) => ({ ...item, createdOutputs: [item.createdOutputs[0], item.createdOutputs[0]] })],
       ["no created output where the field is present", (item) => ({ ...item, createdOutputs: [] })],
     ])("rejects a complete item with %s, nothing written", async (_label, mutate) => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const applier = attachCommitApplier(pool);
       const addr0 = keyring.deriveSubAccount(0).address;
       const spend = await signSpend(keyring, 0);
       const mutated = JSON.parse(
         JSON.stringify(
-          mutate({ ...consolidatorItem(addr0, spend), rawTx: spend.rawTx } as never)
+          (await mutate({ ...consolidatorItem(addr0, spend), rawTx: spend.rawTx } as never))
         ).replace("ROW1", keyring.deriveSubAccount(1).address)
       );
       const before = pool.records();
@@ -2997,13 +2831,13 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       ["no createdOutputs", (item) => ({ ...item, createdOutputs: undefined })],
       ["a checksummed input address", (item) => ({ ...item, spentInputs: [{ ...item.spentInputs[0], address: "CHECKSUM0" }] })],
     ])("accepts a complete item with %s", async (_label, mutate) => {
-      const { keyring, pool } = setupSpendTest();
+      const { keyring, pool } = (await setupSpendTest());
       const applier = attachCommitApplier(pool);
       const addr0 = keyring.deriveSubAccount(0).address;
       const spend = await signSpend(keyring, 0);
       const mutated = JSON.parse(
         JSON.stringify(
-          mutate({ ...consolidatorItem(addr0, spend), rawTx: spend.rawTx } as never)
+          (await mutate({ ...consolidatorItem(addr0, spend), rawTx: spend.rawTx } as never))
         ).replace("CHECKSUM0", addr0)
       );
 
@@ -3026,27 +2860,27 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       ["spent with another checkpoint", "held"],
       ["spent with the identical checkpoint", undefined],
     ])("leaves a row that is %s unchanged for a complete item", async (state, code) => {
-      const { keyring, pool, store, writes } = setupSpendTest();
+      const { keyring, pool, store, writes } = (await setupSpendTest());
       attachCommitApplier(pool);
       const addr0 = keyring.deriveSubAccount(0).address;
       const spend = await signSpend(keyring, 0);
-      if (state === "in-use" || state === "retired") pool.setStatus(0, state);
+      if (state === "in-use" || state === "retired") await pool.setStatus(0, state);
       else if (state === "funding") {
         // Hand-built: the funding path needs a main-account signer this fixture does not have.
         const attempt = await signSpend(keyring, 2);
-        store.put({
+        await store.mutate(snapshot => { const record = {
           index: 0,
           address: addr0,
           status: "funding",
           fundingAttempt: { rawTx: attempt.rawTx, txHash: attempt.txHash },
-        });
+        }; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } });
       } else if (state === "spent without a checkpoint") {
-        pool.setStatus(0, "spent");
+        await pool.setStatus(0, "spent");
       } else if (state === "spent with another checkpoint") {
         const earlier = await signSpend(keyring, 0, { nonce: 1, value: 1n });
-        expect(pool.commitSpend(0, earlier.rawTx)).toBe("committed");
+        expect((await pool.commitSpend(0, earlier.rawTx))).toBe("committed");
       } else {
-        expect(pool.commitSpend(0, spend.rawTx)).toBe("committed");
+        expect((await pool.commitSpend(0, spend.rawTx))).toBe("committed");
       }
       const before = pool.records();
       const written = writes();
@@ -3068,10 +2902,10 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     // Before Stage 0b the item without raw bytes was asserted to return `{ affectedIndices: [] }`;
     // it is refused now. What the test protects is unchanged: the committed row is not touched.
     it("never re-malforms a committed row when the item without raw bytes arrives afterwards", async () => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const addr0 = keyring.deriveSubAccount(0).address;
       const spend = await signSpend(keyring, 0);
-      expect(pool.commitSpend(0, spend.rawTx)).toBe("committed");
+      expect((await pool.commitSpend(0, spend.rawTx))).toBe("committed");
       const committed = pool.getRecord(0);
       const written = writes();
 
@@ -3088,7 +2922,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     });
 
     it("lets the complete transaction commit after the item without raw bytes was refused first", async () => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const addr0 = keyring.deriveSubAccount(0).address;
       const spend = await signSpend(keyring, 0);
       const written = writes();
@@ -3097,8 +2931,9 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       ).toMatchObject({ code: "missing-transaction" });
       expect(writes()).toBe(written);
 
-      expect(pool.commitSpend(0, spend.rawTx)).toBe("committed");
+      expect((await pool.commitSpend(0, spend.rawTx))).toBe("committed");
       expect(pool.getRecord(0)).toEqual({
+        revision: 2,
         index: 0,
         address: addr0,
         status: "spent",
@@ -3106,7 +2941,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
           spend: { rawTx: spend.rawTx, txHash: spend.txHash, valueWei: "5000" },
         },
       });
-      expect(pool.commitSpend(0, spend.rawTx)).toBe("already-applied");
+      expect((await pool.commitSpend(0, spend.rawTx))).toBe("already-applied");
       expect(() =>
         validateMonadWalletState(walletStateOf(pool, keyring))
       ).not.toThrow();
@@ -3115,13 +2950,13 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     // The Stage 0a review's finding. On the base `commitSpend` throws ethers' own error here
     // ("Cannot find square root"): reading the sender sat outside the try.
     it("commitSpend refuses bytes whose signature does not recover with a typed error", async () => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const broken = unrecoverable(await signSpend(keyring, 0));
       const before = pool.records();
       const written = writes();
       let thrown: unknown;
       try {
-        pool.commitSpend(0, broken.rawTx);
+        await pool.commitSpend(0, broken.rawTx);
       } catch (error) {
         thrown = error;
       }
@@ -3132,15 +2967,15 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     });
 
     it("commitSpend refuses without writing, and creates no row", async () => {
-      const { keyring, pool, store, writes } = setupSpendTest();
+      const { keyring, pool, store, writes } = (await setupSpendTest());
       const own = await signSpend(keyring, 0);
       const other = await signSpend(keyring, 1);
-      pool.setStatus(2, "in-use");
+      await pool.setStatus(2, "in-use");
       const before = pool.records();
       const written = writes();
-      const refused = (index: number, rawTx: string) => {
+      const refused = async (index: number, rawTx: string) => {
         try {
-          pool.commitSpend(index, rawTx);
+          await pool.commitSpend(index, rawTx);
         } catch (error) {
           expect(error).toBeInstanceOf(SubAccountSpendRefusedError);
           return (error as SubAccountSpendRefusedError).code;
@@ -3148,30 +2983,30 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         return "not refused";
       };
 
-      expect(refused(0, "")).toBe("invalid-transaction");
-      expect(refused(0, "0x1234")).toBe("invalid-transaction");
-      expect(refused(0, own.transaction.unsignedSerialized)).toBe(
+      expect((await refused(0, ""))).toBe("invalid-transaction");
+      expect((await refused(0, "0x1234"))).toBe("invalid-transaction");
+      expect((await refused(0, own.transaction.unsignedSerialized))).toBe(
         "invalid-transaction"
       );
-      expect(refused(0, "0x" + own.rawTx.slice(2).toUpperCase())).toBe(
+      expect((await refused(0, "0x" + own.rawTx.slice(2).toUpperCase()))).toBe(
         "invalid-transaction"
       );
-      expect(refused(-1, own.rawTx)).toBe("invalid-transaction");
-      expect(refused(0, other.rawTx)).toBe("sender-mismatch");
-      expect(refused(2, (await signSpend(keyring, 2)).rawTx)).toBe("held");
+      expect((await refused(-1, own.rawTx))).toBe("invalid-transaction");
+      expect((await refused(0, other.rawTx))).toBe("sender-mismatch");
+      expect((await refused(2, (await signSpend(keyring, 2)).rawTx))).toBe("held");
       // Index 7 is derivable but the pool has no row for it: reported, never created.
-      expect(pool.commitSpend(7, (await signSpend(keyring, 7)).rawTx)).toBe(
+      expect((await pool.commitSpend(7, (await signSpend(keyring, 7)).rawTx))).toBe(
         "no-row"
       );
       expect(pool.getRecord(7)).toBeUndefined();
       // A row whose stored address is not its derivation is refused although the bytes are valid.
-      store.put({
+      await store.mutate(snapshot => { const record = {
         index: 1,
         address: keyring.deriveSubAccount(0).address,
         status: "available",
-      });
+      }; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } });
       const afterHandBuilt = writes();
-      expect(refused(1, other.rawTx)).toBe("sender-mismatch");
+      expect((await refused(1, other.rawTx))).toBe("sender-mismatch");
       expect(writes()).toBe(afterHandBuilt);
       expect(afterHandBuilt - written).toBe(1);
       expect(pool.getRecord(0)).toEqual(before[0]);
@@ -3181,7 +3016,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     it.each([0, 1, 2])(
       "commitSpend accepts a type %i transaction the validator accepts",
       async (type) => {
-        const { keyring, pool } = setupSpendTest();
+        const { keyring, pool } = (await setupSpendTest());
         const wallet = new Wallet(keyring.deriveSubAccount(0).privateKey);
         const rawTx = await wallet.signTransaction({
           type,
@@ -3195,7 +3030,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
             : { gasPrice: 1n }),
         });
         expect(Transaction.from(rawTx).type).toBe(type);
-        expect(pool.commitSpend(0, rawTx)).toBe("committed");
+        expect((await pool.commitSpend(0, rawTx))).toBe("committed");
         expect(pool.getRecord(0)?.lifecycle?.spend?.valueWei).toBe("3");
         expect(() =>
           validateMonadWalletState(walletStateOf(pool, keyring))
@@ -3208,7 +3043,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     // a quiet no-op (check 6 returns before check 7), although the same item without bytes is
     // refused: fails there with "not refused".
     it("rejects an item that names a pool row but carries a transaction a non-pool key signed", async () => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const applier = attachCommitApplier(pool);
       const addr0 = keyring.deriveSubAccount(0).address;
       const outsider = await signSpend(keyring, 7);
@@ -3247,7 +3082,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     it.each([0, 1, 2])(
       "pin: a type %i item is accepted with a debit of value plus its maximum fee and rejected one wei above",
       async (type) => {
-        const { keyring, pool, writes } = setupSpendTest();
+        const { keyring, pool, writes } = (await setupSpendTest());
         const applier = attachCommitApplier(pool);
         const addr0 = keyring.deriveSubAccount(0).address;
         const rawTx = await new Wallet(
@@ -3294,9 +3129,9 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     // #1235 Stage 1: the read-only form the input admission asks before it writes. Fails on main
     // 72631f36: `classifySpendOutcome` does not exist (the classification is private).
     it("classifySpendOutcome answers what commitSpend would do, and writes nothing", async () => {
-      const { keyring, pool, writes } = setupSpendTest();
+      const { keyring, pool, writes } = (await setupSpendTest());
       const own = await signSpend(keyring, 0);
-      pool.setStatus(2, "in-use");
+      await pool.setStatus(2, "in-use");
       const before = pool.records();
       pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
       const written = writes();
@@ -3311,17 +3146,17 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
 
       expect(pool.classifySpendOutcome(0, own.rawTx)).toBe("committed");
       expect(pool.classifySpendOutcome(0, own.rawTx)).toBe("committed");
-      expect(refused(7, (await signSpend(keyring, 7)).rawTx)).toBe("no-row");
-      expect(refused(0, "0x1234")).toBe("invalid-transaction");
-      expect(refused(1, own.rawTx)).toBe("sender-mismatch");
-      expect(refused(2, (await signSpend(keyring, 2)).rawTx)).toBe("held");
+      expect((await refused(7, (await signSpend(keyring, 7)).rawTx))).toBe("no-row");
+      expect((await refused(0, "0x1234"))).toBe("invalid-transaction");
+      expect((await refused(1, own.rawTx))).toBe("sender-mismatch");
+      expect((await refused(2, (await signSpend(keyring, 2)).rawTx))).toBe("held");
       expect(writes()).toBe(written);
       expect(pool.records()).toEqual(before);
       expect(pool.capacityCache.has(0)).toBe(true);
 
-      expect(pool.commitSpend(0, own.rawTx)).toBe("committed");
+      expect((await pool.commitSpend(0, own.rawTx))).toBe("committed");
       expect(pool.classifySpendOutcome(0, own.rawTx)).toBe("already-applied");
-      expect(refused(0, (await signSpend(keyring, 0, { value: 6n })).rawTx)).toBe(
+      expect((await refused(0, (await signSpend(keyring, 0, { value: 6n })).rawTx))).toBe(
         "held"
       );
     });
@@ -3329,7 +3164,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     // Pin: the applier is handed the item's own chain identifier, verbatim. The pool cannot judge
     // it; the applier (the admission's chain binding) does.
     it("pin: hands the applier the item's chain identifier exactly as the item states it", async () => {
-      const { keyring, pool } = setupSpendTest();
+      const { keyring, pool } = (await setupSpendTest());
       const applier = jest.fn(async () => ({ kind: "no-pool-row" as const }));
       pool.attachSpendApplier(applier);
       const spend = await signSpend(keyring, 0);
@@ -3364,7 +3199,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     it("queries candidate sub-account balances concurrently in bounded chunks of 6 via Promise.all", async () => {
       const { balances, pool, provider } = setupCapacitiesTest();
       // Create 8 available sub-accounts
-      pool.ensureSize(8);
+      await pool.ensureSize(8);
       for (let i = 0; i < 8; i++) {
         const record = pool.getRecord(i)!;
         balances.set(record.address.toLowerCase(), 10_000n);
@@ -3399,7 +3234,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
 
     it("cached capacities avoid redundant RPC queries within the 30s TTL", async () => {
       const { balances, pool, provider } = setupCapacitiesTest();
-      pool.ensureSize(4);
+      await pool.ensureSize(4);
       for (let i = 0; i < 4; i++) {
         balances.set(pool.getRecord(i)!.address.toLowerCase(), 5_000n);
       }
@@ -3438,7 +3273,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
 
     it("invalidates or updates capacity cache on spend, lease, and balance updates", async () => {
       const { balances, pool, provider } = setupCapacitiesTest();
-      pool.ensureSize(3);
+      await pool.ensureSize(3);
       for (let i = 0; i < 3; i++) {
         balances.set(pool.getRecord(i)!.address.toLowerCase(), 10_000n);
       }
@@ -3449,18 +3284,19 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       expect(pool.capacityCache.has(2)).toBe(true);
 
       // Lease account 0 -> 'in-use' should invalidate cache entry
-      pool.setStatus(0, "in-use");
+      await pool.setStatus(0, "in-use");
       expect(pool.capacityCache.has(0)).toBe(false);
       expect(pool.capacityCache.has(1)).toBe(true);
 
       // Spend account 1 -> 'spent' should invalidate cache entry
-      pool.setStatus(1, "spent");
+      await pool.setStatus(1, "spent");
       expect(pool.capacityCache.has(1)).toBe(false);
 
       // recordSpendTransaction should invalidate cache entry
+      await pool.setStatus(2, "in-use");
       pool.updateCapacityCache(2, 5_000n);
       expect(pool.capacityCache.has(2)).toBe(true);
-      pool.recordSpendTransaction(2, {
+      await pool.recordSpendTransaction(2, {
         rawTx: "0x12",
         txHash: "0x34",
         valueWei: "5000",
@@ -3547,7 +3383,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         provider,
         store,
       } = setupSupersededTest();
-      pool.ensureSize(2);
+      await pool.ensureSize(2);
 
       // Subaccount 0 is in 'funding' state with a stale raw transaction whose nonce is 0
       const mainWallet = new Wallet(Wallet.createRandom().privateKey, provider);
@@ -3561,7 +3397,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       });
       const staleHash = Transaction.from(staleTx).hash;
 
-      store.put({
+      await store.mutate(snapshot => { const record = {
         index: 0,
         address: pool.getRecord(0)!.address,
         status: "funding",
@@ -3569,7 +3405,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
           rawTx: staleTx,
           txHash: staleHash!,
         },
-      });
+      }; return { records: [{ record, expectedRevision: snapshot.records.find(row => row.index === record.index)?.revision ?? 0 }], result: undefined } });
 
       // The node rejects resubmitting the stale tx
       httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
@@ -3635,7 +3471,7 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
   async function setup() {
     const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
     const pool = new MonadSubAccountPool({ keyring });
-    pool.ensureUnfundedSize(3);
+    await pool.ensureUnfundedSize(3);
     const balances = new Map<string, bigint>();
     let mainNonce = 0;
     const httpClient = makeMockHttpClient();
@@ -3711,8 +3547,8 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
         ],
       });
     /** Hand-built funded row: `available` with exactly one 1_000 wei burn of capacity. */
-    const handFund = (index: number) => {
-      pool.setStatus(index, "available");
+    const handFund = async (index: number) => {
+      await pool.setStatus(index, "available");
       balances.set(address(index), 1_010n);
     };
     const attach = () =>
@@ -3761,7 +3597,7 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
 
   it("with no reservation attached, a row a native member references is offered, leased, reused and funded exactly as before", async () => {
     const funded = await setup();
-    funded.handFund(0);
+    await funded.handFund(0);
     await funded.nativeSpend(0);
     expect(funded.pool.isSpendReserved(0)).toBe(false);
     expect(
@@ -3791,8 +3627,8 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
 
   it("does not offer, lease or reuse a hand-built funded row a native member references, and still uses an unreferenced one", async () => {
     const f = await setup();
-    f.handFund(0);
-    f.handFund(1);
+    await f.handFund(0);
+    await f.handFund(1);
     await f.nativeSpend(0);
     f.attach();
 
@@ -3809,10 +3645,10 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
     expect(f.fundedTargets()).toEqual([]);
 
     const leases = new SubAccountLeaseManager(f.pool);
-    expect(leases.acquireLease().index).toBe(1);
+    expect((await leases.acquireLease()).index).toBe(1);
     // Only the reserved row is left `available`: lease selection reports none, as for an empty pool.
     expect(f.pool.selectForStamp()).toBeUndefined();
-    expect(() => leases.acquireLease()).toThrow(NoAvailableSubAccountError);
+    await expect(async () => (await leases.acquireLease())).rejects.toThrow(NoAvailableSubAccountError);
     expect(f.statuses()).toEqual(["available", "in-use", "unfunded"]);
   });
 
@@ -3885,8 +3721,8 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
 
   it("when every existing row is reserved, a burn and a stamp still prepare by funding freshly derived accounts", async () => {
     const f = await setup();
-    f.handFund(0);
-    f.handFund(1);
+    await f.handFund(0);
+    await f.handFund(1);
     for (const index of [0, 1, 2]) await f.nativeSpend(index);
     f.attach();
 

@@ -56,7 +56,7 @@ describe('stamp pool seed persistence (#313)', () => {
 
   async function firstSubAccount(stateDir: string): Promise<string> {
     const { pool, close } = await openPersistentStampPool(stateDir, 'test')
-    pool.ensureSize(1)
+    await pool.ensureSize(1)
     const address = pool.records()[0].address
     await close()
     return address
@@ -79,16 +79,15 @@ describe('stamp pool seed persistence (#313)', () => {
 
   it('a restart does not reuse a sub-account that was already spent (records persist too)', async () => {
     const first = await openPersistentStampPool(dir, 'test')
-    first.pool.ensureSize(2)
+    await first.pool.ensureSize(2)
     const [a, b] = first.pool.records()
     first.pool.records() // records are the persisted view
     // Mark the first account spent the way the lease manager does.
-    const store = (first.pool as any).store
-    store.put({ ...a, status: 'spent' })
+    await first.pool.setStatus(a.index, 'spent')
     await first.close()
 
     const second = await openPersistentStampPool(dir, 'test')
-    second.pool.ensureSize(2)
+    await second.pool.ensureSize(2)
     const records = second.pool.records()
     expect(records[0]).toMatchObject({ address: a.address, status: 'spent' })
     expect(records[1].address).toBe(b.address)
@@ -231,7 +230,7 @@ describe('stamp pool seed hardening (#313 review)', () => {
   describe('records marker', () => {
     it('refuses a surviving seed whose records directory vanished after records existed', async () => {
       const first = await openPersistentStampPool(dir, 'test')
-      first.pool.ensureSize(1)
+      await first.pool.ensureSize(1)
       await first.close()
       expect(existsSync(join(dir, POOL_META_FILE))).toBe(true)
       expect(readFileSync(join(dir, POOL_META_FILE), 'utf8')).not.toMatch(/mnemonic|abandon/)

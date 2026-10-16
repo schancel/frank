@@ -681,7 +681,7 @@ async function main() {
       // Then accounts funded from outside, up to FUNDED in all.
       const direct = Math.max(0, funded - fundedAhead.length);
       const before = alice.handle.pool.records().length;
-      const added = alice.handle.pool.ensureSize(before + direct).slice(before);
+      const added = (await alice.handle.pool.ensureSize(before + direct)).slice(before);
       await alice.handle.pool.flush();
       const fundingStarted = Date.now();
       for (const row of added) await stack.fund(row.address, each);

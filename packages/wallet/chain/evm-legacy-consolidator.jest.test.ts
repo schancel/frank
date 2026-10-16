@@ -993,7 +993,7 @@ describe('wallet-lifetime EVM native operations', () => {
     await store.Open()
     stores.push(store)
     const pool = new MonadSubAccountPool({ keyring, store })
-    pool.ensureSize(balances.length)
+    await pool.ensureSize(balances.length)
     await pool.flush()
     const change = new MonadChangePool({
       keyring: changeKeyring,
@@ -1971,8 +1971,8 @@ describe('wallet-lifetime EVM native operations', () => {
     // Hand-built conflict: a never-signed plan on row 1, whose row is then terminal with no
     // checkpoint.
     const plan = await crashedPlan(c, 1)
-    c.pool.setStatus(1, 'in-use')
-    c.pool.setStatus(1, 'spent')
+    await c.pool.setStatus(1, 'in-use')
+    await c.pool.setStatus(1, 'spent')
     await c.pool.flush()
     expect(c.inspect()).toMatchObject({ reason: 'conflicting-authorization' })
     const refused = async () => {
@@ -2030,7 +2030,7 @@ describe('wallet-lifetime EVM native operations', () => {
     real = (id, i) =>
       poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
     // Hand-built: the row is made `available` so that a lease can be taken on it afterwards.
-    c.pool.setStatus(0, 'available')
+    await c.pool.setStatus(0, 'available')
     await c.pool.flush()
     await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
     const a = journal.list()[0]!
@@ -2103,7 +2103,7 @@ describe('wallet-lifetime EVM native operations', () => {
     const session = c.another()
     const provider = providerCalls(state)
     const signatures = c.sign.mock.calls.length
-    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'persist' as never)
     await expect(
       session.applyRecordedEvidence(c.lifetime),
     ).resolves.toBeUndefined()
@@ -2656,7 +2656,7 @@ describe('wallet-lifetime EVM native operations', () => {
         })
       const recorded = journal.list()
       const capture = jest.spyOn(journal, 'beginCapture')
-      const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+      const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'persist' as never)
       const before = providerCalls(state)
       const receipts = probed(state).length
       // A caller ticking every 5 s for two hours.
@@ -2703,7 +2703,7 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(providerCalls(state)).toBe(before)
     expect(c.pool.getRecord(0)!.status).not.toBe('spent')
     r.advance(1)
-    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'persist' as never)
     await r.tick()
     expect(providerCalls(state) - before).toBe(8)
     expect(journal.list()[0]!.members[0]!.observation).toMatchObject({
@@ -2743,7 +2743,7 @@ describe('wallet-lifetime EVM native operations', () => {
     const row = await broadcastLegacy(c, state, 100000n)
     const rowBefore = c.pool.getRecord(0)
     state.mine(row.members[0]!.signed!.rawTransaction, 0)
-    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'persist' as never)
     await r.tick()
     expect(journal.list()[0]!.members[0]!.observation).toMatchObject({
       state: 'included-revert',
@@ -3381,7 +3381,7 @@ describe('wallet-lifetime EVM native operations', () => {
       await held
       return transaction(hash)
     })
-    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'persist' as never)
     const record = jest.spyOn(journal, 'recordObservation')
     const tick = r.tick()
     await settleRecovery()

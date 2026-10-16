@@ -1,4 +1,5 @@
 import { getAddress, hexlify, Transaction } from 'ethers'
+import { SubAccountRevisionMismatchError } from './storage/sub-account-pool-storage'
 import type { MonadSubAccountPool } from './monad-account-pool'
 import type { MonadChangePool } from './monad-change-pool'
 import type {
@@ -738,6 +739,7 @@ class AdmissionOwner implements EvmInputAdmission {
         try {
           this.owners.native?.list()
           this.owners.canonical?.getAll()
+          this.owners.pool.records()
         } catch {
           this.uncertain = true
         }
@@ -810,10 +812,10 @@ class AdmissionOwner implements EvmInputAdmission {
       return this.owners.canonical!.prepareIntent(snapshot)
     })
   }
-  acquireCanonicalLease(
+  async acquireCanonicalLease(
     index: number,
     attemptRef?: string,
-  ): AccountLeaseHandle {
+  ): Promise<AccountLeaseHandle> {
     let authorization: string | undefined
     if (attemptRef !== undefined) {
       const intent = this.checkCanonical(attemptRef)
@@ -821,7 +823,7 @@ class AdmissionOwner implements EvmInputAdmission {
         invalid()
       authorization = `canonical:${intent.prepared.walletBindingId}:${intent.attemptRef}`
     }
-    const handle = this.owners.leases.acquireForIndex(index)
+    const handle = await this.owners.leases.acquireForIndex(index)
     if (authorization)
       this.canonicalLeases.set(index, { handle, authorization })
     else this.canonicalLeases.delete(index)
@@ -1035,13 +1037,13 @@ export function poolSpendAdmission(
   type Staged =
     | PoolSpendApplication
     | { readonly committed: number; readonly flushed: Promise<void> }
-  // Everything up to and including the flush call is one synchronous turn: nothing can change
-  // between the checks and the put, and no other caller can take this put's pending write.
-  const stage = (
+  // Admission serializes owner checks; the pool separately compares the captured row revision
+  // under its short durable boundary, before publishing any spend state.
+  const stage = async (
     rawTx: string,
     chainIdentifier: string,
     expected?: { index: number; address: string },
-  ): Staged => {
+  ): Promise<Staged> => {
     // 1. Chain binding: the canonical identifier, exactly, and the transaction's own chain ID
     // (which also refuses a legacy transaction with no chain ID).
     if (chainIdentifier !== binding.chainIdentifier) invalid()
@@ -1113,15 +1115,13 @@ export function poolSpendAdmission(
     // with a newer pending member's hold on the same address, this refuses until that member
     // resolves. So whatever passes here projects without conflict once written.
     owner.check([{ kind: 'pair', address: tx.sender, nonce: tx.nonce }], own)
-    // 5. One put, and the flush taken in the same turn. Step 3 was the writer's own decision,
-    // made in this same turn on the same state, so a throw here is not a refusal: the writer
-    // failed, and it may have failed after its put (it updates derived views after it). That
-    // put would be pending with no flush taken for it, so this session signs nothing more.
-    let written: ReturnType<MonadSubAccountPool['commitSpend']>
+    // The awaitable pool writer rejects stale snapshots and publishes only after durability.
+    // A storage or derived-view failure remains uncertain; a revision refusal writes nothing.
+    let written: Awaited<ReturnType<MonadSubAccountPool['commitSpend']>>
     try {
-      written = pool.commitSpend(index, rawTx)
+      written = await pool.commitSpend(index, rawTx)
     } catch (error) {
-      owner.faultUncertain()
+      if (!(error instanceof SubAccountRevisionMismatchError)) owner.faultUncertain()
       throw error
     }
     if (written !== 'committed') conflict()
@@ -1144,10 +1144,10 @@ export function poolSpendAdmission(
   return {
     applySpend: async (rawTx, chainIdentifier, expected) =>
       owner.mutate(lifetime, () =>
-        finish(stage(rawTx, chainIdentifier, expected)),
+        stage(rawTx, chainIdentifier, expected).then(finish),
       ),
     applyMember: async (operationId, memberIndex) =>
-      owner.mutate(lifetime, () => {
+      owner.mutate(lifetime, async () => {
         const row = journal.get(operationId)
         const member = row.members[memberIndex]
         if (!member) invalid()
@@ -1160,7 +1160,7 @@ export function poolSpendAdmission(
         if (member.source.kind !== 'spend')
           return Promise.resolve<PoolSpendApplication>({ kind: 'no-pool-row' })
         return finish(
-          stage(member.signed.rawTransaction, binding.chainIdentifier, {
+          await stage(member.signed.rawTransaction, binding.chainIdentifier, {
             index: member.source.index,
             address: member.source.address,
           }),
@@ -1281,7 +1281,7 @@ export function canonicalAdmissionPool(
   return {
     acquire: (index: number, attemptRef?: string) =>
       owner.mutate(lifetime, async () => {
-        const handle = owner.acquireCanonicalLease(index, attemptRef)
+        const handle = await owner.acquireCanonicalLease(index, attemptRef)
         await flush()
         return handle
       }),
@@ -1290,7 +1290,7 @@ export function canonicalAdmissionPool(
       checkpoint: Parameters<MonadSubAccountPool['recordSpendTransaction']>[1],
     ) =>
       owner.mutate(lifetime, async () => {
-        pool.recordSpendTransaction(index, checkpoint)
+        await pool.recordSpendTransaction(index, checkpoint)
         await flush()
       }),
     release: async (
@@ -1298,7 +1298,7 @@ export function canonicalAdmissionPool(
       outcome: Parameters<SubAccountLeaseManager['releaseLease']>[1],
     ) => {
       await owner.mutate(lifetime, async () => {
-        leases.releaseLease(handle, outcome)
+        await leases.releaseLease(handle, outcome)
         await flush()
       })
       owner.owners.assertLifetime(lifetime)
@@ -1308,7 +1308,7 @@ export function canonicalAdmissionPool(
       status: Parameters<MonadSubAccountPool['setStatus']>[1],
     ) => {
       await owner.mutate(lifetime, async () => {
-        pool.setStatus(index, status)
+        await pool.setStatus(index, status)
         await flush()
       })
       owner.owners.assertLifetime(lifetime)

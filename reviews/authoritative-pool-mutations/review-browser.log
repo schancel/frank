@@ -1,0 +1,9 @@
+{"browser":"Chrome/155.0.8059.80","architecture":"production strict Level pool with Web Locks in independent Chrome pages"}
+{"phase":"seed","revision":1}
+{"phase":"capture","revision":1}
+{"phase":"capture","revision":1}
+{"phase":"race-b","won":true,"revision":2}
+{"phase":"race-a","won":false,"revision":2}
+{"phase":"close","closed":true}
+{"phase":"close","closed":true}
+{"phase":"reopen","revision":2,"status":"retired"}

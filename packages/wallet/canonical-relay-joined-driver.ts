@@ -220,7 +220,7 @@ async function openWallet(
       keyring: material.changeKeyring,
       store: changeStore,
     })
-  pool.ensureSize(poolSize)
+  await pool.ensureSize(poolSize)
   await pool.flush()
   const leaseManager = new SubAccountLeaseManager(pool)
   let enclosed = false

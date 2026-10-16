@@ -1,0 +1,441 @@
+PASS packages/bot/qwen-host-safety.jest.test.ts (5.99 s)
+  ● Console
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x9282af5e644D3791A730838033313399A87C3Ee9
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x9282af5e644D3791A730838033313399A87C3Ee9
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xb9B40070a839b01AC37Da7AE1eF8Cc67071C9Bf4
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.warn
+      [bot-host] [qwen] Unsupported inbound identity; no handler admitted
+
+      1274 |             });
+      1275 |           } catch {
+    > 1276 |             console.warn(
+           |                     ^
+      1277 |               `[bot-host] [${id}] Unsupported inbound identity; no handler admitted`
+      1278 |             );
+      1279 |           }
+
+      at FrankBotHost.pollOnce (../bot-framework/src/bot-host.ts:1276:21)
+          at async Promise.all (index 0)
+      at poll (qwen-host-safety.jest.test.ts:200:3)
+      at qwen-host-safety.jest.test.ts:389:5
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xD48638Ad784b2C777e7B98C2cC83FBf52C119130
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.warn
+      [bot-host] [qwen] Unsupported inbound identity; no handler admitted
+
+      1274 |             });
+      1275 |           } catch {
+    > 1276 |             console.warn(
+           |                     ^
+      1277 |               `[bot-host] [${id}] Unsupported inbound identity; no handler admitted`
+      1278 |             );
+      1279 |           }
+
+      at FrankBotHost.pollOnce (../bot-framework/src/bot-host.ts:1276:21)
+          at async Promise.all (index 0)
+      at poll (qwen-host-safety.jest.test.ts:200:3)
+      at qwen-host-safety.jest.test.ts:389:5
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x841dFB78CB263D889bC91d39552Df7906ABE29E4
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.warn
+      [bot-host] [qwen] Unsupported inbound identity; no handler admitted
+
+      1274 |             });
+      1275 |           } catch {
+    > 1276 |             console.warn(
+           |                     ^
+      1277 |               `[bot-host] [${id}] Unsupported inbound identity; no handler admitted`
+      1278 |             );
+      1279 |           }
+
+      at FrankBotHost.pollOnce (../bot-framework/src/bot-host.ts:1276:21)
+          at async Promise.all (index 0)
+      at poll (qwen-host-safety.jest.test.ts:200:3)
+      at qwen-host-safety.jest.test.ts:389:5
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x63C2a7dF0388961E2dcb83bCa021066EdE42f038
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.warn
+      [bot-host] [qwen] Unsupported inbound identity; no handler admitted
+
+      1274 |             });
+      1275 |           } catch {
+    > 1276 |             console.warn(
+           |                     ^
+      1277 |               `[bot-host] [${id}] Unsupported inbound identity; no handler admitted`
+      1278 |             );
+      1279 |           }
+
+      at FrankBotHost.pollOnce (../bot-framework/src/bot-host.ts:1276:21)
+          at async Promise.all (index 0)
+      at poll (qwen-host-safety.jest.test.ts:200:3)
+      at qwen-host-safety.jest.test.ts:389:5
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xaFAcd51fF0E3c2e2b8695fE68Af035b05FA34d68
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.warn
+      [bot-host] [qwen] Unsupported inbound identity; no handler admitted
+
+      1274 |             });
+      1275 |           } catch {
+    > 1276 |             console.warn(
+           |                     ^
+      1277 |               `[bot-host] [${id}] Unsupported inbound identity; no handler admitted`
+      1278 |             );
+      1279 |           }
+
+      at FrankBotHost.pollOnce (../bot-framework/src/bot-host.ts:1276:21)
+          at async Promise.all (index 0)
+      at poll (qwen-host-safety.jest.test.ts:200:3)
+      at qwen-host-safety.jest.test.ts:389:5
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x59905F76f67c5AFEFCec0Ea498bF82B6da6bE01D
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.warn
+      [bot-host] [qwen] Unsupported inbound identity; no handler admitted
+
+      1274 |             });
+      1275 |           } catch {
+    > 1276 |             console.warn(
+           |                     ^
+      1277 |               `[bot-host] [${id}] Unsupported inbound identity; no handler admitted`
+      1278 |             );
+      1279 |           }
+
+      at FrankBotHost.pollOnce (../bot-framework/src/bot-host.ts:1276:21)
+          at async Promise.all (index 0)
+      at poll (qwen-host-safety.jest.test.ts:200:3)
+      at qwen-host-safety.jest.test.ts:389:5
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x8bb4aDeF865E810dc4DFCd6311374Ba96abed06b
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.warn
+      [bot-host] [qwen] Unsupported inbound identity; no handler admitted
+
+      1274 |             });
+      1275 |           } catch {
+    > 1276 |             console.warn(
+           |                     ^
+      1277 |               `[bot-host] [${id}] Unsupported inbound identity; no handler admitted`
+      1278 |             );
+      1279 |           }
+
+      at FrankBotHost.pollOnce (../bot-framework/src/bot-host.ts:1276:21)
+          at async Promise.all (index 0)
+      at poll (qwen-host-safety.jest.test.ts:200:3)
+      at qwen-host-safety.jest.test.ts:389:5
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x1E8E6450D6FD0B1154689cB98E0a1B1CF27f808c
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x8D607e516e8659ef463FC1A7Bd1CD85d8d46d22A
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x2a6dC017E2b73d18Ec8c28Ca6f420015a6B5d99E
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x2a6dC017E2b73d18Ec8c28Ca6f420015a6B5d99E
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x6c9A8ea13b2130675A4860De7a1bE09A743A71FE
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.warn
+      [bot-host] [qwen] Unsupported inbound identity; no handler admitted
+
+      1274 |             });
+      1275 |           } catch {
+    > 1276 |             console.warn(
+           |                     ^
+      1277 |               `[bot-host] [${id}] Unsupported inbound identity; no handler admitted`
+      1278 |             );
+      1279 |           }
+
+      at FrankBotHost.pollOnce (../bot-framework/src/bot-host.ts:1276:21)
+          at async Promise.all (index 0)
+      at poll (qwen-host-safety.jest.test.ts:200:3)
+      at Object.<anonymous> (qwen-host-safety.jest.test.ts:521:3)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x04479A2937BC5119455f95d6f7eC65410E31e793
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.error
+      [bot-host] [qwen] Handling of a message from 0x1c5a77d9fa7ef466951b2f01f724bca3a5820b63 was interrupted; a later poll finishes it: Bot invocation admission held; preserve state and reconcile the original operation
+
+      1543 |         // The row stays as it is. A later poll finds it with no task running and finishes it:
+      1544 |         // a stored reply is sent again, anything else is answered with the failure text.
+    > 1545 |         console.error(
+           |                 ^
+      1546 |           `[bot-host] [${instance.definition.id}] Handling of a message from ${row.peerAddress} was interrupted; a later poll finishes it:`,
+      1547 |           error instanceof Error ? error.message : error
+      1548 |         );
+
+      at ../bot-framework/src/bot-host.ts:1545:17
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x04479A2937BC5119455f95d6f7eC65410E31e793
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xd2de55acE3a13E8799fa5B2Fe8Df654013967566
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.error
+      [bot-host] [qwen] Handling of a message from 0x1c5a77d9fa7ef466951b2f01f724bca3a5820b63 was interrupted; a later poll finishes it: Bot invocation admission held; preserve state and reconcile the original operation
+
+      1543 |         // The row stays as it is. A later poll finds it with no task running and finishes it:
+      1544 |         // a stored reply is sent again, anything else is answered with the failure text.
+    > 1545 |         console.error(
+           |                 ^
+      1546 |           `[bot-host] [${instance.definition.id}] Handling of a message from ${row.peerAddress} was interrupted; a later poll finishes it:`,
+      1547 |           error instanceof Error ? error.message : error
+      1548 |         );
+
+      at ../bot-framework/src/bot-host.ts:1545:17
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xd2de55acE3a13E8799fa5B2Fe8Df654013967566
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xd2de55acE3a13E8799fa5B2Fe8Df654013967566
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.warn
+      [bot-host] [qwen] Inbound retention held; preserve state
+
+      1305 |           } catch {
+      1306 |             instance.operations.assertOpen(); // a failed journal write holds the whole pass
+    > 1307 |             console.warn(
+           |                     ^
+      1308 |               `[bot-host] [${id}] Inbound retention held; preserve state`
+      1309 |             );
+      1310 |             continue;
+
+      at FrankBotHost.pollOnce (../bot-framework/src/bot-host.ts:1307:21)
+          at async Promise.all (index 0)
+      at poll (qwen-host-safety.jest.test.ts:200:3)
+      at pollBoth (qwen-host-safety.jest.test.ts:592:5)
+      at Object.<anonymous> (qwen-host-safety.jest.test.ts:723:5)
+
+    console.warn
+      [bot-host] [qwen] Inbound retention held; preserve state
+
+      1305 |           } catch {
+      1306 |             instance.operations.assertOpen(); // a failed journal write holds the whole pass
+    > 1307 |             console.warn(
+           |                     ^
+      1308 |               `[bot-host] [${id}] Inbound retention held; preserve state`
+      1309 |             );
+      1310 |             continue;
+
+      at FrankBotHost.pollOnce (../bot-framework/src/bot-host.ts:1307:21)
+          at async Promise.all (index 0)
+      at poll (qwen-host-safety.jest.test.ts:200:3)
+      at pollBoth (qwen-host-safety.jest.test.ts:593:5)
+      at Object.<anonymous> (qwen-host-safety.jest.test.ts:723:5)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xf3d5567ddb516D4641918B229B130AACCfFEa4bA
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.error
+      [bot-host] [qwen] Handling of a message from 0x1c5a77d9fa7ef466951b2f01f724bca3a5820b63 was interrupted; a later poll finishes it: Bot invocation admission held; preserve state and reconcile the original operation
+
+      1543 |         // The row stays as it is. A later poll finds it with no task running and finishes it:
+      1544 |         // a stored reply is sent again, anything else is answered with the failure text.
+    > 1545 |         console.error(
+           |                 ^
+      1546 |           `[bot-host] [${instance.definition.id}] Handling of a message from ${row.peerAddress} was interrupted; a later poll finishes it:`,
+      1547 |           error instanceof Error ? error.message : error
+      1548 |         );
+
+      at ../bot-framework/src/bot-host.ts:1545:17
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xf3d5567ddb516D4641918B229B130AACCfFEa4bA
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x853f9434d85DDAc7F49C36Ef3Bf60C1f3434a3b3
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x853f9434d85DDAc7F49C36Ef3Bf60C1f3434a3b3
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x18f9Ae74E6155ae53FFE89BcF0F934a7509F21A2
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x18f9Ae74E6155ae53FFE89BcF0F934a7509F21A2
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xB5945717ff07c191BFe0dFfd287Cdc0DA3e81ecE
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xeaFE295CA200de88B4dEe9178CC3B44cA233188a
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xe65E570AA7f6994a05191Ebf3e2E228d97c61E24
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x13a4977e95C65261b8a8F62C1332f9bA2962Cd2B
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x81362e2273d41900f66F0e2beBEcaE1D176C4dD0
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x81362e2273d41900f66F0e2beBEcaE1D176C4dD0
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x81362e2273d41900f66F0e2beBEcaE1D176C4dD0
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x27864202958A8C249B6fA9a1689ACD9cCE07ED63
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x246E4e26C94A0B22Af6D0Bf974dcB81Bc2A3aAf2
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x246E4e26C94A0B22Af6D0Bf974dcB81Bc2A3aAf2
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xb37adFE4B25ce88269558e8e20dBf5eb96cA1ace
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xD31507698aA1A58fefC10928F378b19242c11EbC
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x4Effd8b88Fc5B25B17bDEbcB5dDc963f01383CFD
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x4Effd8b88Fc5B25B17bDEbcB5dDc963f01383CFD
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x7fd21073228B11edecb3200C2187ee43AEc17e9b
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x7583FCE0ff31A472034C3e4B272AF7ba3D969A2d
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x4ae9e796077C5214dEaD415D35c566aBB898EA0e
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x85f7d8dbE7B3A0BD44aBC840698577313FD32cC2
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0xfa86f9Dcbed2e63D090CfdDb2cd84a68Af1753AC
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x7972CF81De6D1aC2BC3565459aeAeDC02d34e71C
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+    console.log
+      [bot-host] Bot "qwen" is ready at address 0x7972CF81De6D1aC2BC3565459aeAeDC02d34e71C
+
+      at FrankBotHost.register (../bot-framework/src/bot-host.ts:907:15)
+
+PASS packages/bot/stamp-pool-seed.jest.test.ts
+
+Test Suites: 2 passed, 2 total
+Tests:       63 passed, 63 total
+Snapshots:   0 total
+Time:        7.798 s
+Ran all test suites within paths "packages/bot/qwen-host-safety.jest.test.ts", "packages/bot/stamp-pool-seed.jest.test.ts".

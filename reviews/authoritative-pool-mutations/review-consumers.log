@@ -1,0 +1,8 @@
+PASS packages/wallet/monad-stamp-client.jest.test.ts (53.542 s)
+PASS packages/wallet/chain/evm-legacy-consolidator.jest.test.ts (42.95 s)
+
+Test Suites: 2 passed, 2 total
+Tests:       170 passed, 170 total
+Snapshots:   0 total
+Time:        96.81 s
+Ran all test suites within paths "packages/wallet/chain/evm-legacy-consolidator.jest.test.ts", "packages/wallet/monad-stamp-client.jest.test.ts".

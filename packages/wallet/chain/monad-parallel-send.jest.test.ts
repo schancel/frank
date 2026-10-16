@@ -175,7 +175,7 @@ describe('parallel paid messages', () => {
   /** Gives the wallet `count` more funded single-use accounts, each able to pay one stamp. */
   async function fundAccounts(count: number, valueWei = STAMP + FEE_RESERVE) {
     const before = alice.pool.records().length
-    const rows = alice.pool.ensureSize(before + count).slice(before)
+    const rows = (await alice.pool.ensureSize(before + count)).slice(before)
     await alice.pool.flush()
     for (const row of rows) mockBalances.set(row.address.toLowerCase(), valueWei)
     return rows

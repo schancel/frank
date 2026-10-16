@@ -256,7 +256,7 @@ describe('settling a stamp from its actual receipt', () => {
 
 
 describe('reconstructed pool account nonces', () => {
-  function recovered() {
+  async function recovered() {
     const keyring = MonadHdKeyring.fromMnemonic(
       'test test test test test test test test test test test junk',
     )
@@ -264,7 +264,7 @@ describe('reconstructed pool account nonces', () => {
       keyring,
       store: new InMemorySubAccountPoolStore(),
     })
-    pool.ensureSize(2)
+    await pool.ensureSize(2)
     const provider = {
       getBlockNumber: jest.fn(async () => 1000),
       getTransactionCount: jest.fn(async () => 1),
@@ -289,7 +289,7 @@ describe('reconstructed pool account nonces', () => {
     return { pool, provider, watcher, stampPayer }
   }
   it('signs the remaining value at nonce one after a recovered available account previously burned at nonce zero', async () => {
-    const f = recovered()
+    const f = (await recovered())
     try {
       const claim = await f.stampPayer.claim({
         holder: 'new-message',
@@ -311,7 +311,7 @@ describe('reconstructed pool account nonces', () => {
     }
   })
   it('does not construct over a pending nonce and can use another available account', async () => {
-    const f = recovered()
+    const f = (await recovered())
     const first = f.pool.records()[0]!.address.toLowerCase()
     f.provider.getTransactionCount.mockImplementation(
       async (address?: unknown, block?: unknown) =>
@@ -332,7 +332,7 @@ describe('reconstructed pool account nonces', () => {
     }
   })
   it('preserves a restored ambiguous original claim even when the chain nonce advanced', async () => {
-    const f = recovered()
+    const f = (await recovered())
     const original = await f.pool
       .getSigner(0, {
         provider: f.provider as unknown as Provider,
@@ -369,7 +369,7 @@ describe('reconstructed pool account nonces', () => {
     }
   })
   it('reserves independent recovered accounts exclusively for concurrent construction', async () => {
-    const f = recovered()
+    const f = (await recovered())
     try {
       const claims = await Promise.all(
         ['first', 'second'].map(holder =>

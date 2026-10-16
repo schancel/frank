@@ -569,7 +569,7 @@ export async function releaseLeaseAndSweepChange(params: {
    * doesn't have a change pool wired up yet, or wants to release without sweeping this time). */
   sweep?: SweepAfterReleaseParams
 }): Promise<ReleaseLeaseAndSweepResult> {
-  const record = params.manager.releaseLease(params.handle, params.outcome)
+  const record = await params.manager.releaseLease(params.handle, params.outcome)
   await params.manager.flush()
   if (params.sweep === undefined) {
     return { record, sweep: undefined }

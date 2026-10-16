@@ -2555,8 +2555,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             ? undefined
             : new LevelSubAccountPoolStore(
                 storageLocation,
-                typedPoolBinding,
-                allowUnboundPool
+                typedPoolBinding
               );
         const changeStore =
           storageLocation === undefined
@@ -2756,7 +2755,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             store: nativeAttemptStore,
           };
 
-          pool.ensureUnfundedSize(config.subAccountPoolSize);
+          await pool.ensureUnfundedSize(config.subAccountPoolSize);
           // Classification is deliberately irrelevant here: every old obligation pins its lease.
           const pendingLeaseIndices = new Set([
             ...topicOwner
@@ -2792,7 +2791,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // A crash during signing can persist the lease before the exact raw set exists. No
               // relay broadcast is possible in that window, but the account is conservatively
               // retired rather than silently reused with an uncertain locally-signed nonce.
-              pool.setStatus(record.index, "retired");
+              await pool.setStatus(record.index, "retired");
             }
           }
           await pool.flush();

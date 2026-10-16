@@ -113,7 +113,7 @@ export interface LeaseTxStatusSource {
 }
 
 function defaultSleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /**
@@ -162,7 +162,7 @@ export class SubAccountLeaseManager {
    * `acquireForIndex`). Throws `NoAvailableSubAccountError` immediately if none is available —
    * this method never waits. Use `acquireLeaseWhenAvailable` for wait-and-retry semantics.
    */
-  acquireLease(): AccountLeaseHandle {
+  async acquireLease(): Promise<AccountLeaseHandle> {
     const selected = this.pool.selectForStamp()
     if (selected === undefined) {
       throw new NoAvailableSubAccountError('No available sub-account to lease')
@@ -173,32 +173,38 @@ export class SubAccountLeaseManager {
   /**
    * Leases a specific sub-account by index. Throws `SubAccountAlreadyLeasedError` if it isn't
    * currently `'available'` (already `'in-use'` — i.e. someone else holds an unresolved lease on
-   * it — or `'retired'`). Synchronous end-to-end (the `'available'` check and the `'in-use'`
-   * write happen with no `await` between them), so two same-tick calls targeting the same index
-   * can't both observe `'available'` and both "win" — the second always sees the first's write.
+   * it — or `'retired'`). The holder claim is taken before the first await. The store then compares its captured revision
+   * and commits `in-use` before a handle is published, so competing wrappers cannot both win.
    */
-  acquireForIndex(index: number, holder?: string): AccountLeaseHandle {
+  async acquireForIndex(
+    index: number,
+    holder?: string
+  ): Promise<AccountLeaseHandle> {
     const record = this.pool.getRecord(index)
     if (record === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`)
     }
     if (record.status !== 'available') {
       throw new SubAccountAlreadyLeasedError(
-        `Sub-account ${index} is not available for lease (status: ${record.status})`,
+        `Sub-account ${index} is not available for lease (status: ${record.status})`
       )
     }
     // A lease is taken through the pool's one claim: an account another operation holds is not
     // leased, and `holder` (the operation that prepared this account) takes its own.
     const claimant = holder ?? `lease:${index}`
-    if (this.pool.claim(claimant, free =>
-      free.some(row => row.index === index) ? [index] : undefined,
-    ) === undefined) {
+    if (
+      this.pool.claim(claimant, (free) =>
+        free.some((row) => row.index === index) ? [index] : undefined
+      ) === undefined
+    ) {
       throw new SubAccountAlreadyLeasedError(
-        `Sub-account ${index} is held by another operation (${this.pool.claimedBy(index) ?? 'a native send'})`,
+        `Sub-account ${index} is held by another operation (${
+          this.pool.claimedBy(index) ?? 'a native send'
+        })`
       )
     }
     // From here the row's `in-use` status is the claim; the memory entry has done its work.
-    this.pool.setStatus(index, 'in-use')
+    await this.pool.setStatus(index, 'in-use')
     this.pool.releaseClaim(claimant, [index])
     const handle: AccountLeaseHandle = { index, address: record.address }
     this.liveLeases.set(index, handle)
@@ -216,17 +222,16 @@ export class SubAccountLeaseManager {
    * already been released — this method is not idempotent by design, to catch double-release
    * bugs (e.g. calling it from both a success callback and a timeout path for the same tx).
    */
-  releaseLease(
+  async releaseLease(
     handle: AccountLeaseHandle,
-    outcome: LeaseOutcome,
-  ): SubAccountRecord {
+    outcome: LeaseOutcome
+  ): Promise<SubAccountRecord> {
     const live = this.liveLeases.get(handle.index)
     if (live === undefined || live !== handle) {
       throw new InvalidLeaseHandleError(
-        `No live lease for sub-account ${handle.index} on this manager (already released, or not issued by it)`,
+        `No live lease for sub-account ${handle.index} on this manager (already released, or not issued by it)`
       )
     }
-    this.liveLeases.delete(handle.index)
     // `'unused'`: nothing was signed or sent, so the account still holds its funds and its nonce
     // is untouched; the only outcome that returns an account to `'available'`.
     const nextStatus: SubAccountStatus =
@@ -235,7 +240,9 @@ export class SubAccountLeaseManager {
         : outcome === 'unused'
         ? 'available'
         : 'retired'
-    return this.pool.setStatus(handle.index, nextStatus)
+    const result = await this.pool.setStatus(handle.index, nextStatus)
+    this.liveLeases.delete(handle.index)
+    return result
   }
 }
 
@@ -265,7 +272,7 @@ export interface AcquireLeaseWhenAvailableOptions {
  */
 export async function acquireLeaseWhenAvailable(
   manager: SubAccountLeaseManager,
-  options: AcquireLeaseWhenAvailableOptions = {},
+  options: AcquireLeaseWhenAvailableOptions = {}
 ): Promise<AccountLeaseHandle> {
   const pollIntervalMs = options.pollIntervalMs ?? 250
   const timeoutMs = options.timeoutMs ?? 30_000
@@ -275,7 +282,7 @@ export async function acquireLeaseWhenAvailable(
 
   for (;;) {
     try {
-      return manager.acquireLease()
+      return await manager.acquireLease()
     } catch (err) {
       if (!(err instanceof NoAvailableSubAccountError)) throw err
       if (now() >= deadline) throw err
@@ -326,7 +333,7 @@ export interface LeaseSettlementResult {
  * the `'stuck'` case — retirement is the only recovery path this module implements.
  */
 export async function awaitLeaseSettlement(
-  params: AwaitLeaseSettlementParams,
+  params: AwaitLeaseSettlementParams
 ): Promise<LeaseSettlementResult> {
   const pollIntervalMs = params.pollIntervalMs ?? 1000
   const timeoutMs = params.timeoutMs ?? 60_000
@@ -339,20 +346,20 @@ export async function awaitLeaseSettlement(
     if (status === 'confirmed') {
       return {
         outcome: 'confirmed',
-        record: params.manager.releaseLease(params.handle, 'confirmed'),
+        record: await params.manager.releaseLease(params.handle, 'confirmed'),
       }
     }
     if (status === 'failed') {
       return {
         outcome: 'failed',
-        record: params.manager.releaseLease(params.handle, 'failed'),
+        record: await params.manager.releaseLease(params.handle, 'failed'),
       }
     }
     // status === 'pending'
     if (now() >= deadline) {
       return {
         outcome: 'stuck',
-        record: params.manager.releaseLease(params.handle, 'stuck'),
+        record: await params.manager.releaseLease(params.handle, 'stuck'),
       }
     }
     await sleep(pollIntervalMs)

@@ -49,19 +49,13 @@ import {
 const MANIFEST_KEY = 'manifest'
 const SEED_KEY = 'seed'
 const MANIFEST_SCHEMA = 'frank-monad-wallet-state'
-const MANIFEST_VERSION = 1
+const MANIFEST_VERSION = 3
 const CURRENT_MANIFEST_INTENTS = [
-  'sub-account-pool-v2',
+  'sub-account-pool-v3-authoritative',
   'change-pool-v2',
 ] as const
 const ACCEPTED_MANIFEST_INTENTS: Record<number, readonly string[]> = {
-  1: ['sub-account-pool-v2', 'change-pool-v2'],
-  2: [
-    'sub-account-pool-v2',
-    'change-pool-v3-authoritative-tx',
-    'stamp-attempt-journal-v1',
-    'stamp-payment-journal-v2-authoritative-tx',
-  ],
+  3: CURRENT_MANIFEST_INTENTS,
 }
 
 interface MonadWalletManifest {
@@ -787,6 +781,20 @@ export interface OpenMonadWalletBundleParams {
   onMigrationPhase?: (phase: string) => void | Promise<void>
 }
 
+function isEmptyUnboundChangeComponent(store: LevelChangePoolStore): boolean {
+  return store.bindingId() === undefined && store.getNextIndex() === 0 &&
+    store.getAll().length === 0 && store.getRecoveredAccounts().length === 0 &&
+    store.getPendingIntent() === undefined
+}
+
+async function inspectEmptyUnboundChangeComponent(location: string): Promise<boolean> {
+  const store = new LevelChangePoolStore(location)
+  try {
+    await store.Open()
+    return isEmptyUnboundChangeComponent(store)
+  } finally { await store.Close() }
+}
+
 export async function openMonadWalletBundle(
   params: OpenMonadWalletBundleParams,
 ): Promise<MonadWalletPersistenceBundle> {
@@ -896,6 +904,19 @@ export async function openMonadWalletBundle(
         )
       }
     } else {
+      if (entries.size !== 0) throw new Error('Missing wallet manifest; owner disposition required')
+      // Every change component is qualified before custody, manifest or HD binding writes.
+      // Restored outputs and pending sweeps are authority even when the ordinary row list is empty.
+      if (!await inspectEmptyUnboundChangeComponent(params.location))
+        throw new Error('Existing change state without wallet manifest; owner disposition required')
+      // Qualify the existing namespace before writing a new manifest or generating custody.
+      // An old/unbound funded pool cannot be silently adopted by this incompatible baseline.
+      const existingPool = new LevelSubAccountPoolStore(params.location)
+      try {
+        await existingPool.Open()
+        if (existingPool.getNextIndex() !== 0 || existingPool.bindingId() !== undefined)
+          throw new Error('Existing pool without wallet manifest; owner disposition required')
+      } finally { await existingPool.Close() }
       bindingId = newBindingId()
       let seedToUse: { mnemonic: string; passphrase?: string }
       if (params.seed !== undefined) {
@@ -943,11 +964,9 @@ export async function openMonadWalletBundle(
       await params.onMigrationPhase?.('manifest')
     }
 
-    const isMigration = manifestValue === undefined
     const subAccountStore = new LevelSubAccountPoolStore(
       params.location,
       bindingId,
-      isMigration,
     )
     openedStores.push(subAccountStore)
     await subAccountStore.Open()
@@ -955,14 +974,19 @@ export async function openMonadWalletBundle(
       await subAccountStore.Bind()
     }
 
+    // A version-3 manifest can have committed just before interruption of empty component
+    // binding. Qualify emptiness read-only; this does not adopt old change rows or sweep intent.
+    const initializeEmptyChange = await inspectEmptyUnboundChangeComponent(params.location)
     const changePoolStore = new LevelChangePoolStore(
       params.location,
       bindingId,
-      isMigration,
+      initializeEmptyChange,
     )
     openedStores.push(changePoolStore)
     await changePoolStore.Open()
     if (changePoolStore.bindingId() === undefined) {
+      if (!isEmptyUnboundChangeComponent(changePoolStore))
+        throw new Error('Refusing to bind nonempty unbound change state')
       await changePoolStore.Bind()
     }
 

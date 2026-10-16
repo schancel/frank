@@ -1,0 +1,26 @@
+FAIL packages/wallet/storage/authoritative-pool-mutations.jest.test.ts
+  ✕ a failed eligibility write rejects the mutation and fences selection and repeated flush (35 ms)
+
+  ● a failed eligibility write rejects the mutation and fences selection and repeated flush
+
+    expect(received).rejects.toThrow()
+
+    Received promise resolved instead of rejected
+    Resolved to value: {"address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", "index": 0, "status": "available"}
+
+      16 |     const db = (store as any).openedDb
+      17 |     db.batch = async () => { throw new Error('fault-injected durable failure') }
+    > 18 |     await expect(Promise.resolve().then(() => pool.setStatus(0, 'available'))).rejects.toThrow('fault-injected durable failure')
+         |           ^
+      19 |     expect(() => pool.selectForStamp()).toThrow(/uncertain/i)
+      20 |     await expect(pool.flush()).rejects.toThrow(/uncertain/i)
+      21 |     await expect(pool.flush()).rejects.toThrow(/uncertain/i)
+
+      at expect (../../../../node_modules/expect/build/index.js:113:15)
+      at Object.<anonymous> (storage/authoritative-pool-mutations.jest.test.ts:18:11)
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 1 total
+Snapshots:   0 total
+Time:        0.557 s
+Ran all test suites within paths "packages/wallet/storage/authoritative-pool-mutations.jest.test.ts".

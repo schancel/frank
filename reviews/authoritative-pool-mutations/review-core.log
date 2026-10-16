@@ -1,0 +1,59 @@
+PASS packages/wallet/chain/monad-domain-wallet.jest.test.ts (48.268 s)
+PASS packages/wallet/monad-account-pool.jest.test.ts (17.535 s)
+  ● Console
+
+    console.warn
+      [MonadSubAccountPool] Skipping unconfirmed/timed out funding attempt for sub-account 0: Error: Funding transaction 0xed0d030f06660024d23111ff25bfe73d709569064ff78072027446096626846f is still pending
+          at MonadSubAccountPool.finishFundingAttempt (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/monad-account-pool.ts:2236:15)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at MonadSubAccountPool.resumeFundingAttempts (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/monad-account-pool.ts:1602:26)
+          at MonadSubAccountPool.reconcileBeforePreparation (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/monad-account-pool.ts:1635:38)
+          at MonadSubAccountPool.prepareStampInventoryExclusive (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/monad-account-pool.ts:1349:11)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/monad-account-pool.ts:1220:16
+
+      1608 |         } catch (err) {
+      1609 |           if (params.quiet !== true) {
+    > 1610 |             console.warn(
+           |                     ^
+      1611 |               `[MonadSubAccountPool] Skipping unconfirmed/timed out funding attempt for sub-account ${record.index}:`,
+      1612 |               err
+      1613 |             );
+
+      at MonadSubAccountPool.resumeFundingAttempts (monad-account-pool.ts:1610:21)
+      at MonadSubAccountPool.reconcileBeforePreparation (monad-account-pool.ts:1635:38)
+      at MonadSubAccountPool.prepareStampInventoryExclusive (monad-account-pool.ts:1349:11)
+      at monad-account-pool.ts:1220:16
+
+    console.warn
+      [MonadSubAccountPool] Skipping unconfirmed/timed out funding attempt for sub-account 0: Error: Funding transaction 0xaa39bb9bfeacdce9feef699d3755e75aba41d77317e39e8f1bb61c2090f1941f was superceded by a later nonce and sub-account 0 was retired
+          at MonadSubAccountPool.finishFundingAttempt (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/monad-account-pool.ts:2247:15)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at MonadSubAccountPool.resumeFundingAttempts (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/monad-account-pool.ts:1602:26)
+          at MonadSubAccountPool.reconcileBeforePreparation (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/monad-account-pool.ts:1635:38)
+          at MonadSubAccountPool.prepareStampInventoryExclusive (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/monad-account-pool.ts:1349:11)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/monad-account-pool.ts:1220:16
+
+      1608 |         } catch (err) {
+      1609 |           if (params.quiet !== true) {
+    > 1610 |             console.warn(
+           |                     ^
+      1611 |               `[MonadSubAccountPool] Skipping unconfirmed/timed out funding attempt for sub-account ${record.index}:`,
+      1612 |               err
+      1613 |             );
+
+      at MonadSubAccountPool.resumeFundingAttempts (monad-account-pool.ts:1610:21)
+      at MonadSubAccountPool.reconcileBeforePreparation (monad-account-pool.ts:1635:38)
+      at MonadSubAccountPool.prepareStampInventoryExclusive (monad-account-pool.ts:1349:11)
+      at monad-account-pool.ts:1220:16
+
+PASS packages/wallet/evm-input-admission.jest.test.ts (14.634 s)
+PASS packages/wallet/storage/monad-wallet-bundle.jest.test.ts
+PASS packages/wallet/storage/pool-review-regressions.jest.test.ts
+PASS packages/wallet/storage/authoritative-pool-mutations.jest.test.ts
+PASS packages/wallet/monad-account-lease.jest.test.ts
+
+Test Suites: 7 passed, 7 total
+Tests:       399 passed, 399 total
+Snapshots:   0 total
+Time:        86.046 s
+Ran all test suites within paths "packages/wallet/chain/monad-domain-wallet.jest.test.ts", "packages/wallet/storage/authoritative-pool-mutations.jest.test.ts", "packages/wallet/storage/monad-wallet-bundle.jest.test.ts", "packages/wallet/monad-account-pool.jest.test.ts", "packages/wallet/monad-account-lease.jest.test.ts", "packages/wallet/evm-input-admission.jest.test.ts", "packages/wallet/storage/pool-review-regressions.jest.test.ts".

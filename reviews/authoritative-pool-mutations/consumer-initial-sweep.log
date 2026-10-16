@@ -1,0 +1,3435 @@
+FAIL packages/wallet/chain/monad-chain-canonical-dm.jest.test.ts (154.233 s)
+  ● Console
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain-canonical-dm.jest.test.ts:1172:21) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-chain-canonical-dm.jest.test.ts:1172:21)
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at exposedAttempt (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain-canonical-dm.jest.test.ts:1276:7)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain-canonical-dm.jest.test.ts:1357:42 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at exposedAttempt (chain/monad-chain-canonical-dm.jest.test.ts:1276:7)
+      at chain/monad-chain-canonical-dm.jest.test.ts:1357:42
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at refusal (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain-canonical-dm.jest.test.ts:2083:32)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain-canonical-dm.jest.test.ts:2243:21) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at refusal (chain/monad-chain-canonical-dm.jest.test.ts:2083:32)
+      at Object.<anonymous> (chain/monad-chain-canonical-dm.jest.test.ts:2243:21)
+
+  ● a stamp account a native send spends from (#1235) › pending: inventory preparation leaves the reserved account alone, so admission stays ready and native and canonical sends still work, also after reopen
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0xE0C56aeAE75076FAD5c6eDAde1da721a17C5EDc4",
+        "index": 1,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      4775 |       expect(funding.length).toBeGreaterThan(0)
+      4776 |       expect(mockFunded.map(tx => tx.to)).not.toContain(r.xAddress)
+    > 4777 |       expect(f.alice.pool.getRecord(r.x.index)).toEqual({
+           |                                                 ^
+      4778 |         index: r.x.index,
+      4779 |         address: r.x.address,
+      4780 |         status: 'available',
+
+      at chain/monad-chain-canonical-dm.jest.test.ts:4777:49
+
+  ● a stamp account a native send spends from (#1235) › included: inventory preparation leaves the reserved account alone, so admission stays ready and native and canonical sends still work, also after reopen
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0xE0C56aeAE75076FAD5c6eDAde1da721a17C5EDc4",
+        "index": 1,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      4775 |       expect(funding.length).toBeGreaterThan(0)
+      4776 |       expect(mockFunded.map(tx => tx.to)).not.toContain(r.xAddress)
+    > 4777 |       expect(f.alice.pool.getRecord(r.x.index)).toEqual({
+           |                                                 ^
+      4778 |         index: r.x.index,
+      4779 |         address: r.x.address,
+      4780 |         status: 'available',
+
+      at chain/monad-chain-canonical-dm.jest.test.ts:4777:49
+
+FAIL packages/wallet/chain/monad-domain-wallet.jest.test.ts (13.571 s)
+  ● a pool-sourced legacy send included in-call leaves a wallet that reopens (#1235)
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      1779 |     },
+      1780 |   })
+    > 1781 |   expect(wallet.pool.getRecord(0)).toEqual({
+           |                                    ^
+      1782 |     index: 0,
+      1783 |     address: expected[0].pool,
+      1784 |     status: 'available',
+
+      at sendLegacyFromProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:1781:36)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:1861:19)
+
+  ● a pool-sourced legacy send included in-call keeps admission ready in the same session (#1235)
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      1779 |     },
+      1780 |   })
+    > 1781 |   expect(wallet.pool.getRecord(0)).toEqual({
+           |                                    ^
+      1782 |     index: 0,
+      1783 |     address: expected[0].pool,
+      1784 |     status: 'available',
+
+      at sendLegacyFromProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:1781:36)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:1936:19)
+
+  ● a pool-sourced legacy send whose transfer is included resolves, with the row recorded spent and no note sent; resuming changes nothing and signs nothing (#1235)
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      1779 |     },
+      1780 |   })
+    > 1781 |   expect(wallet.pool.getRecord(0)).toEqual({
+           |                                    ^
+      1782 |     index: 0,
+      1783 |     address: expected[0].pool,
+      1784 |     status: 'available',
+
+      at sendLegacyFromProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:1781:36)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:1978:19)
+
+  ● recording a native spend from the journal under the input admission (#1235 Stage 1) › a member pending in its own call is recorded by a LATER native send, whose result names only the later operation
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2211:15)
+
+  ● recording a native spend from the journal under the input admission (#1235 Stage 1) › the row is recorded before the send releases the wallet queue: an operation queued behind it finds it spent
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2260:15)
+
+  ● recording a native spend from the journal under the input admission (#1235 Stage 1) › caller B: a complete item for a production-funded row with no journal member commits through the real applier, inside the wallet queue, and reopens ready
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2291:15)
+
+  ● recording a native spend from the journal under the input admission (#1235 Stage 1) › the journal governs: while its member is pending a complete item is held, also with other bytes; once included, caller A then caller B is one write and a no-op, and both orders project the same
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at chain/monad-domain-wallet.jest.test.ts:2372:17
+
+  ● recording a native spend from the journal under the input admission (#1235 Stage 1) › the journal governs: while its member is pending a complete item is held, also with other bytes; once included, caller B then caller A is one write and a no-op, and both orders project the same
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at chain/monad-domain-wallet.jest.test.ts:2372:17
+
+  ● recording a native spend from the journal under the input admission (#1235 Stage 1) › hand-built: while a retained canonical pre-sign intent holds an available row, caller B is refused by the wallet queue guard and nothing is written
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2462:15)
+
+  ● recording a native spend from the journal under the input admission (#1235 Stage 1) › close during the local pass waits for it, and nothing is written after close
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2489:15)
+
+  ● recording a native spend from the journal under the input admission (#1235 Stage 1) › when the write is lost the send keeps its own outcome, the session signs nothing more, and after a real reopen the wallet is ready with a row it can finish or already has
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at chain/monad-domain-wallet.jest.test.ts:2541:17
+
+  ● recording a native spend from the journal under the input admission (#1235 Stage 1) › when the write lands and an error is reported the send keeps its own outcome, the session signs nothing more, and after a real reopen the wallet is ready with a row it can finish or already has
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at chain/monad-domain-wallet.jest.test.ts:2541:17
+
+  ● recording a native spend from the journal under the input admission (#1235 Stage 1) › guard: a pool from openMonadWalletBundle has no applier and still refuses a complete item
+
+    Property `putMany` does not exist in the provided object
+
+      2622 |       const tx = Transaction.from(rawTx)
+      2623 |       expect(tx.from).toBe(row.address)
+    > 2624 |       const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+           |                            ^
+      2625 |       await expect(
+      2626 |         applyWalletSyncItem(
+      2627 |           { chainIdentifier: 'monad-testnet', pool: bundle.pool },
+
+      at ModuleMocker.spyOn (../../../../node_modules/jest-mock/build/index.js:731:13)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2624:28)
+
+  ● a pool account a pending native send spends from is reserved (#1235) › it is not offered as funded capacity, not leased and not reused or funded for a burn, which funds another account
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2736 |   const { wallet, rpc } = first
+      2737 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2738 |   expect(wallet.pool.getRecord(0)).toEqual({
+           |                                    ^
+      2739 |     index: 0,
+      2740 |     address: expected[0].pool,
+      2741 |     status: 'available',
+
+      at nativeSendFromProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2738:36)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2791:17)
+
+  ● a pool account a pending native send spends from is reserved (#1235) › the reservation is derived from the journal again after close and reopen
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2736 |   const { wallet, rpc } = first
+      2737 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2738 |   expect(wallet.pool.getRecord(0)).toEqual({
+           |                                    ^
+      2739 |     index: 0,
+      2740 |     address: expected[0].pool,
+      2741 |     status: 'available',
+
+      at nativeSendFromProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2738:36)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2832:17)
+
+  ● a pool account a pending native send spends from is reserved (#1235) › pins: another native send cannot plan or sign from the account while the first is unresolved
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2736 |   const { wallet, rpc } = first
+      2737 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2738 |   expect(wallet.pool.getRecord(0)).toEqual({
+           |                                    ^
+      2739 |     index: 0,
+      2740 |     address: expected[0].pool,
+      2741 |     status: 'available',
+
+      at nativeSendFromProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2738:36)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2881:19)
+
+  ● a pool account a included native send spends from is reserved (#1235) › it is not offered as funded capacity, not leased and not reused or funded for a burn, which funds another account
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2736 |   const { wallet, rpc } = first
+      2737 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2738 |   expect(wallet.pool.getRecord(0)).toEqual({
+           |                                    ^
+      2739 |     index: 0,
+      2740 |     address: expected[0].pool,
+      2741 |     status: 'available',
+
+      at nativeSendFromProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2738:36)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2791:17)
+
+  ● a pool account a included native send spends from is reserved (#1235) › the reservation is derived from the journal again after close and reopen
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2736 |   const { wallet, rpc } = first
+      2737 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2738 |   expect(wallet.pool.getRecord(0)).toEqual({
+           |                                    ^
+      2739 |     index: 0,
+      2740 |     address: expected[0].pool,
+      2741 |     status: 'available',
+
+      at nativeSendFromProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2738:36)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2832:17)
+
+  ● a pool account a included native send spends from is reserved (#1235) › a later native send still spends the residual at the next nonce, and the account stays out of other selection
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2736 |   const { wallet, rpc } = first
+      2737 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2738 |   expect(wallet.pool.getRecord(0)).toEqual({
+           |                                    ^
+      2739 |     index: 0,
+      2740 |     address: expected[0].pool,
+      2741 |     status: 'available',
+
+      at nativeSendFromProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2738:36)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:2881:19)
+
+  ● a native plan that never signed is cancelled (#1235 Stage C) › signing throws for a main-sourced sendNative: the send throws its own error, the plan is cancelled in that call and retained, and a second sendNative from main succeeds
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:3238:15)
+
+  ● a native plan that never signed is cancelled (#1235 Stage C) › signing throws for a pool-sourced send: the plan is cancelled in that call, the pool account is no longer reserved, and it is spent by the next send
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:3290:15)
+
+  ● a native plan that never signed is cancelled (#1235 Stage C) › a crash between the journal write and signing, then reopen: both plans are cancelled at open with no provider, relay or signer call, retained, and main is selectable again
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:3330:15)
+
+  ● a native plan that never signed is cancelled (#1235 Stage C) › an open-time cancel that fails does not fail the open: the wallet opens with the plan as it was, and the next open cancels it
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:3388:15)
+
+  ● a native plan that never signed is cancelled (#1235 Stage C) › pin: a fan-in with its first member signed and its drain unsigned is not cancelled, by the failing send or at open; its accounts stay claimed
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:3418:15)
+
+  ● a native plan that never signed is cancelled (#1235 Stage C) › a pool row spent by a transaction no native member owns, then a native plan from it at the next nonce: the send is refused, its plan is cancelled, and the admission is ready again; the same at open
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:3470:15)
+
+  ● a native plan that never signed is cancelled (#1235 Stage C) › pin: a member that regresses after its row was recorded keeps the row spent and the admission ready, also after a real reopen
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:3550:15)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › a pool-sourced send recorded included but never applied: reopen marks the row spent with the journal member's bytes, the whole open makes no request, signs nothing and transports nothing, a main-sourced member costs nothing, and a second reopen writes nothing
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:3767:15)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › pin: a member recorded pending is not applied at open, no lookup is made for it, and its row stays available and reserved
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at chain/monad-domain-wallet.jest.test.ts:3841:17
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › pin: a member recorded included-revert is not applied at open, no lookup is made for it, and its row stays available and reserved
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at chain/monad-domain-wallet.jest.test.ts:3841:17
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › pin: a member recorded missing is not applied at open, no lookup is made for it, and its row stays available and reserved
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at chain/monad-domain-wallet.jest.test.ts:3841:17
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › open cancels a never-signed plan first, then applies: an included member held behind that plan is recorded in the same open, before the wallet is published
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:3876:15)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › hand-built: while a retained canonical pre-sign intent holds an available row the pass is skipped entirely at open, nothing is written, and the member is applied once the intent is gone
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:3948:15)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › a member the admission refuses at open (a later pending member holds its address) does not fail the open and writes nothing; it is applied once that member resolves
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:3988:15)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › an apply that throws at open, and a pass that rejects outright, do not fail the open; the member stays unapplied and the next pass applies it
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:4049:15)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › a pool write that fails at open leaves the wallet open for inspection and unable to sign for the session; after a real reopen it is ready with the row recorded
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:4084:15)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › bounded re-observation of a broadcast member (#1235 Stage 3) › nothing pending: any number of ticks makes no request at any JSON-RPC layer and observes nothing; with unconfirmed members a tick makes exactly one request each, the receipt request, and writes nothing when it fails
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:4140:17)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › bounded re-observation of a broadcast member (#1235 Stage 3) › the receipt appears: a tick records the inclusion and marks the pool row spent with the member bytes, in the wallet queue; nothing is signed, broadcast or transported, the row leaves every selection, and the next open has nothing left to write
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:4216:17)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › bounded re-observation of a broadcast member (#1235 Stage 3) › a node that never answers the probe: a native send completes meanwhile, the wallet queues are free, the wallet closes without waiting for the node, and an answer after close records nothing and rejects nothing
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:4293:19)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › bounded re-observation of a broadcast member (#1235 Stage 3) › a lookup deadline preserves the exact operation and reservation across composed close and reopen, then applies valid inclusion once
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:4340:17)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › bounded re-observation of a broadcast member (#1235 Stage 3) › hand-built: while a retained canonical pre-sign intent holds an available row the wallet queue refuses the local pass; the tick does not throw, the observation stays recorded, and a later tick applies it without a request once the intent is gone
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:4385:17)
+
+  ● recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2) › bounded re-observation of a broadcast member (#1235 Stage 3) › a closed wallet: the method resolves, asks nothing and writes nothing
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+      Object {
+        "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724",
+        "index": 0,
+    +   "revision": 3,
+        "status": "available",
+      }
+
+      2140 |   const first = await open({ [main]: 1000000n })
+      2141 |   expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+    > 2142 |   expect(first.wallet.pool.getRecord(0)).toEqual({
+           |                                          ^
+      2143 |     index: 0,
+      2144 |     address: expected[0].pool,
+      2145 |     status: 'available',
+
+      at composedWithProductionFundedPoolRow (chain/monad-domain-wallet.jest.test.ts:2142:42)
+      at Object.<anonymous> (chain/monad-domain-wallet.jest.test.ts:4420:17)
+
+FAIL packages/wallet/chain/evm-legacy-consolidator.jest.test.ts (17.46 s)
+  ● wallet-lifetime EVM native operations › the open-time pass applies exactly the members already recorded as included, with no provider call, no signature and no transport; later runs write nothing, and a pending member waits for a send to observe it
+
+    Property `putMany` does not exist in the provided object
+
+      2104 |     const provider = providerCalls(state)
+      2105 |     const signatures = c.sign.mock.calls.length
+    > 2106 |     const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+           |                          ^
+      2107 |     await expect(
+      2108 |       session.applyRecordedEvidence(c.lifetime),
+      2109 |     ).resolves.toBeUndefined()
+
+      at ModuleMocker.spyOn (../../../../node_modules/jest-mock/build/index.js:731:13)
+      at Object.<anonymous> (chain/evm-legacy-consolidator.jest.test.ts:2106:26)
+
+  ● wallet-lifetime EVM native operations › one broadcast member, no receipt: each probe is exactly one receipt request, nothing is written and `pending` is not downgraded; the wait doubles from 15 s to 10 min, and at that ceiling the member costs 6 requests an hour
+
+    Property `putMany` does not exist in the provided object
+
+      2657 |       const recorded = journal.list()
+      2658 |       const capture = jest.spyOn(journal, 'beginCapture')
+    > 2659 |       const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+           |                            ^
+      2660 |       const before = providerCalls(state)
+      2661 |       const receipts = probed(state).length
+      2662 |       // A caller ticking every 5 s for two hours.
+
+      at ModuleMocker.spyOn (../../../../node_modules/jest-mock/build/index.js:731:13)
+      at chain/evm-legacy-consolidator.jest.test.ts:2659:28
+
+  ● wallet-lifetime EVM native operations › one broadcast member, request rejects: each probe is exactly one receipt request, nothing is written and `pending` is not downgraded; the wait doubles from 15 s to 10 min, and at that ceiling the member costs 6 requests an hour
+
+    Property `putMany` does not exist in the provided object
+
+      2657 |       const recorded = journal.list()
+      2658 |       const capture = jest.spyOn(journal, 'beginCapture')
+    > 2659 |       const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+           |                            ^
+      2660 |       const before = providerCalls(state)
+      2661 |       const receipts = probed(state).length
+      2662 |       // A caller ticking every 5 s for two hours.
+
+      at ModuleMocker.spyOn (../../../../node_modules/jest-mock/build/index.js:731:13)
+      at chain/evm-legacy-consolidator.jest.test.ts:2659:28
+
+  ● wallet-lifetime EVM native operations › one broadcast member, request throws: each probe is exactly one receipt request, nothing is written and `pending` is not downgraded; the wait doubles from 15 s to 10 min, and at that ceiling the member costs 6 requests an hour
+
+    Property `putMany` does not exist in the provided object
+
+      2657 |       const recorded = journal.list()
+      2658 |       const capture = jest.spyOn(journal, 'beginCapture')
+    > 2659 |       const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+           |                            ^
+      2660 |       const before = providerCalls(state)
+      2661 |       const receipts = probed(state).length
+      2662 |       // A caller ticking every 5 s for two hours.
+
+      at ModuleMocker.spyOn (../../../../node_modules/jest-mock/build/index.js:731:13)
+      at chain/evm-legacy-consolidator.jest.test.ts:2659:28
+
+  ● wallet-lifetime EVM native operations › the receipt appears: the next due probe runs the existing observation (one probe and seven reads), records the inclusion, and the local pass marks the pool row spent with the member bytes; nothing is signed, broadcast or transported, and later ticks cost nothing
+
+    Property `putMany` does not exist in the provided object
+
+      2704 |     expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+      2705 |     r.advance(1)
+    > 2706 |     const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+           |                          ^
+      2707 |     await r.tick()
+      2708 |     expect(providerCalls(state) - before).toBe(8)
+      2709 |     expect(journal.list()[0]!.members[0]!.observation).toMatchObject({
+
+      at ModuleMocker.spyOn (../../../../node_modules/jest-mock/build/index.js:731:13)
+      at Object.<anonymous> (chain/evm-legacy-consolidator.jest.test.ts:2706:26)
+
+  ● wallet-lifetime EVM native operations › a reverted receipt is recorded as the existing observation records it, the pool row is left exactly as it was, no local pass runs, and the member is never looked up again
+
+    Property `putMany` does not exist in the provided object
+
+      2744 |     const rowBefore = c.pool.getRecord(0)
+      2745 |     state.mine(row.members[0]!.signed!.rawTransaction, 0)
+    > 2746 |     const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+           |                          ^
+      2747 |     await r.tick()
+      2748 |     expect(journal.list()[0]!.members[0]!.observation).toMatchObject({
+      2749 |       state: 'included-revert',
+
+      at ModuleMocker.spyOn (../../../../node_modules/jest-mock/build/index.js:731:13)
+      at Object.<anonymous> (chain/evm-legacy-consolidator.jest.test.ts:2746:26)
+
+  ● wallet-lifetime EVM native operations › a send that observes the same member while a re-observation is mid-observation: the later observer records, the earlier one is discarded, and the pool row is written once
+
+    Property `putMany` does not exist in the provided object
+
+      3382 |       return transaction(hash)
+      3383 |     })
+    > 3384 |     const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+           |                          ^
+      3385 |     const record = jest.spyOn(journal, 'recordObservation')
+      3386 |     const tick = r.tick()
+      3387 |     await settleRecovery()
+
+      at ModuleMocker.spyOn (../../../../node_modules/jest-mock/build/index.js:731:13)
+      at Object.<anonymous> (chain/evm-legacy-consolidator.jest.test.ts:3384:26)
+
+FAIL packages/wallet/monad-stamp-client.jest.test.ts (35.53 s)
+  ● canonical durable consumer barriers › starts no actual pool write, signature or callback before Level intent completion: release
+
+    Property `putMany` does not exist in the provided object
+
+      1062 |           return gate.promise.then(() => original(...args))
+      1063 |         })
+    > 1064 |         const poolWrite = jest.spyOn(f.subStore, 'putMany'),
+           |                                ^
+      1065 |           sign = jest.spyOn(
+      1066 |             MonadAccountTxSigner.prototype,
+      1067 |             'signFrozenUnsigned',
+
+      at ModuleMocker.spyOn (../../../../node_modules/jest-mock/build/index.js:731:13)
+      at monad-stamp-client.jest.test.ts:1064:32
+      at withCanonicalConsumer (monad-stamp-client.jest.test.ts:358:11)
+      at monad-stamp-client.jest.test.ts:1051:7
+
+  ● canonical durable consumer barriers › starts no actual pool write, signature or callback before Level intent completion: reject
+
+    Property `putMany` does not exist in the provided object
+
+      1062 |           return gate.promise.then(() => original(...args))
+      1063 |         })
+    > 1064 |         const poolWrite = jest.spyOn(f.subStore, 'putMany'),
+           |                                ^
+      1065 |           sign = jest.spyOn(
+      1066 |             MonadAccountTxSigner.prototype,
+      1067 |             'signFrozenUnsigned',
+
+      at ModuleMocker.spyOn (../../../../node_modules/jest-mock/build/index.js:731:13)
+      at monad-stamp-client.jest.test.ts:1064:32
+      at withCanonicalConsumer (monad-stamp-client.jest.test.ts:358:11)
+      at monad-stamp-client.jest.test.ts:1051:7
+
+  ● canonical durable consumer barriers › only the issued current lease can correlate with its bound canonical intent
+
+    No live lease for sub-account undefined on this manager (already released, or not issued by it)
+
+      230 |     if (live === undefined || live !== handle) {
+      231 |       throw new InvalidLeaseHandleError(
+    > 232 |         `No live lease for sub-account ${handle.index} on this manager (already released, or not issued by it)`
+          |             ^
+      233 |       );
+      234 |     }
+      235 |     // `'unused'`: nothing was signed or sent, so the account still holds its funds and its nonce
+
+      at SubAccountLeaseManager.releaseLease (monad-account-lease.ts:232:13)
+      at monad-stamp-client.jest.test.ts:1237:28
+      at withCanonicalConsumer (monad-stamp-client.jest.test.ts:358:5)
+      at Object.<anonymous> (monad-stamp-client.jest.test.ts:1209:5)
+
+  ● canonical durable consumer barriers › rejects extra role-map context keys before provider, selection, callback or signature
+
+    Property `putMany` does not exist in the provided object
+
+      1444 |       context.get(6n)!.set(2n, new Uint8Array(1))
+      1445 |       f.providerCalls.mockClear()
+    > 1446 |       const write = jest.spyOn(f.subStore, 'putMany'),
+           |                          ^
+      1447 |         sign = jest.spyOn(MonadAccountTxSigner.prototype, 'signFrozenUnsigned'),
+      1448 |         callback = jest.fn(async () => undefined)
+      1449 |       expect(() =>
+
+      at ModuleMocker.spyOn (../../../../node_modules/jest-mock/build/index.js:731:13)
+      at monad-stamp-client.jest.test.ts:1446:26
+      at withCanonicalConsumer (monad-stamp-client.jest.test.ts:358:11)
+      at Object.<anonymous> (monad-stamp-client.jest.test.ts:1438:5)
+
+PASS packages/wallet/chain/monad-parallel-send.jest.test.ts (84.034 s)
+  ● Console
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 400,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 400,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 413,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 413,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 422,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 422,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 409,
+        relayError: 'canonical_directory_predecessor_missing'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 409,
+        relayError: 'canonical_directory_predecessor_missing'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:244:23 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:244:23
+
+    console.log
+      one send: 5099 ms; twenty together: 6531 ms; relay requests in flight at once: 20
+
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:343:13)
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:545:19) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:545:19)
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:572:19) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:572:19)
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:606:19) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:606:19)
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:644:18)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:644:18)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:662:18)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:662:18)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:745:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:745:5)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:762:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:762:5)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:766:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:766:5)
+
+    console.warn
+      [monad-canonical-dm] sent message e3ea4bc2c1822737073666e4c7b064443daef29335537339d994f2b6f667fd24 names 0x4669eff913a3c595cea5fa92a600201e8e9e75d8, which another unsettled message also pays from. Both are kept; the chain decides.
+
+      1493 |     const contested = payer.restore(holderOf(owner, row.consumerId), pending)
+      1494 |     if (contested.length > 0)
+    > 1495 |       console.warn(
+           |               ^
+      1496 |         `[monad-canonical-dm] sent message ${row.digest} names ${contested.join(
+      1497 |           ', ',
+      1498 |         )}, which another unsettled message also pays from. Both are kept; the chain decides.`,
+
+      at restoreOutgoingClaims (chain/monad-canonical-dm.ts:1495:15)
+      at chain/monad-chain.ts:6146:34
+      at Object.createWallet (chain/monad-chain.ts:6217:24)
+      at Object.createWallet (chain/message-items.testutil.ts:18:22)
+      at reopen (chain/monad-parallel-send.jest.test.ts:206:14)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:768:5)
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:780:5) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:780:5)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:784:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:784:5)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/canonical-two-wallets.testutil.ts:176:19)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:817:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:817:5)
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:848:5) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:848:5)
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:1018:23 {
+        disposition: 'uncertain',
+        status: 400,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1018:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:1018:23 {
+        disposition: 'uncertain',
+        status: 413,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1018:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:1018:23 {
+        disposition: 'uncertain',
+        status: 422,
+        relayError: 'invalid_canonical_submission'
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1018:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:1018:23 {
+        disposition: 'uncertain',
+        status: 409,
+        relayError: 'canonical_directory_predecessor_missing'
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1018:23
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: could not coalesce error
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/canonical-two-wallets.testutil.ts:183:33)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:1123:18) {
+        code: 'UNKNOWN_ERROR',
+        error: { code: -32000, message: 'Signer had insufficient balance' }
+      }
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:1123:18)
+
+    console.warn
+      [monad-canonical-dm] the node refused payment 0x48e61b2546b87624ce6a085bca39a6dfdace0e744afa7505470efe0da160f1cc of a delivered message; the same payment is signed again at its nonce as 0x099cafd150b6e1ee052e94bd13e01e365a9763e21cf0a7aaf0f51f30784ee710
+
+      1065 |       row = next
+      1066 |       refusals.delete(payment.rawTx)
+    > 1067 |       console.warn(
+           |               ^
+      1068 |         `[monad-canonical-dm] the node refused payment ${Transaction.from(payment.rawTx).hash} of a delivered message; the same payment is signed again at its nonce as ${Transaction.from(again.rawTx).hash}`,
+      1069 |       )
+      1070 |       noteHandOver(await payer.submitPaymentSet([again.rawTx]))
+
+      at resignRefused (chain/monad-canonical-dm.ts:1067:15)
+      at chain/monad-canonical-dm.ts:1447:29
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: could not coalesce error
+          at JsonRpcProvider.provider._perform (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/canonical-two-wallets.testutil.ts:183:33)
+          at JsonRpcProvider.broadcastTransaction (/Users/shammah/repos/frank/node_modules/ethers/src.ts/providers/abstract-provider.ts:1137:25)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:1185:18) {
+        code: 'UNKNOWN_ERROR',
+        error: { code: -32000, message: 'Signer had insufficient balance' }
+      }
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:1185:18)
+
+    console.warn
+      [monad-canonical-dm] the node refused payment 0x927a062dace44f566b26616cfc704f3a873fdbed2c00914773fa687e3732caeb of a delivered message; the same payment is signed again at its nonce as 0x929ce4ceda0d2aef19bfd142c59e5e7a5cf2f1b49738363c6666c00906a317c9
+
+      1065 |       row = next
+      1066 |       refusals.delete(payment.rawTx)
+    > 1067 |       console.warn(
+           |               ^
+      1068 |         `[monad-canonical-dm] the node refused payment ${Transaction.from(payment.rawTx).hash} of a delivered message; the same payment is signed again at its nonce as ${Transaction.from(again.rawTx).hash}`,
+      1069 |       )
+      1070 |       noteHandOver(await payer.submitPaymentSet([again.rawTx]))
+
+      at resignRefused (chain/monad-canonical-dm.ts:1067:15)
+      at chain/monad-canonical-dm.ts:1447:29
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:1249:21 {
+        disposition: 'uncertain',
+        status: 503,
+        relayError: 'canonical_mailbox_unavailable'
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1249:21
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 503,
+        relayError: 'canonical_mailbox_unavailable'
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:1249:21 {
+        disposition: 'uncertain',
+        status: 500,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1249:21
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 500,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:1249:21 {
+        disposition: 'uncertain',
+        status: 200,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at chain/monad-parallel-send.jest.test.ts:1249:21
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Unmatched canonical accepted status
+          at decodeCanonicalAcceptedStatus (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:911:11)
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1173:12)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: 200,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:1414:19) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:1414:19)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: crash before broadcast
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-parallel-send.jest.test.ts:1537:32)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/monad-parallel-send.jest.test.ts:1538:20)
+
+FAIL packages/wallet/chain/contact-payment.jest.test.ts (144.804 s)
+  ● Console
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:1880:18)
+          at finishContactPayment (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:4881:17)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:5070:27 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.send (chain/monad-chain.ts:1880:18)
+      at finishContactPayment (chain/monad-chain.ts:4881:17)
+      at chain/monad-chain.ts:5070:27
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:1880:18)
+          at finishContactPayment (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:4881:17)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:5070:27 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.send (chain/monad-chain.ts:1880:18)
+      at finishContactPayment (chain/monad-chain.ts:4881:17)
+      at chain/monad-chain.ts:5070:27
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/contact-payment.jest.test.ts:96:47)
+          at /Users/shammah/repos/frank/node_modules/jest-mock/build/index.js:397:39
+          at JsonRpcProvider.<anonymous> (/Users/shammah/repos/frank/node_modules/jest-mock/build/index.js:404:13)
+          at JsonRpcProvider.mockConstructor [as broadcastTransaction] (/Users/shammah/repos/frank/node_modules/jest-mock/build/index.js:148:19)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:1880:18)
+          at finishContactPayment (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:4881:17)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:5070:27
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.send (chain/monad-chain.ts:1880:18)
+      at finishContactPayment (chain/monad-chain.ts:4881:17)
+      at chain/monad-chain.ts:5070:27
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:1880:18)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/contact-payment.jest.test.ts:557:5) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.send (chain/monad-chain.ts:1880:18)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:557:5)
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:1880:18)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/contact-payment.jest.test.ts:917:7) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.send (chain/monad-chain.ts:1880:18)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:917:7)
+
+    console.warn
+      [monad-canonical-dm] resend failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1432:31 {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1432 |             const submitted = await submitStored(owner, directory, row)
+      1433 |             if (submitted.error)
+    > 1434 |               console.warn(
+           |                       ^
+      1435 |                 '[monad-canonical-dm] resend failed; the same message is sent again later:',
+      1436 |                 submitted.error,
+      1437 |               )
+
+      at chain/monad-canonical-dm.ts:1434:23
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:1880:18)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/contact-payment.jest.test.ts:943:7) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.send (chain/monad-chain.ts:1880:18)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:943:7)
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: node unreachable
+          at JsonRpcProvider.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/contact-payment.jest.test.ts:96:47)
+          at /Users/shammah/repos/frank/node_modules/jest-mock/build/index.js:397:39
+          at JsonRpcProvider.<anonymous> (/Users/shammah/repos/frank/node_modules/jest-mock/build/index.js:404:13)
+          at JsonRpcProvider.mockConstructor [as broadcastTransaction] (/Users/shammah/repos/frank/node_modules/jest-mock/build/index.js:148:19)
+          at EvmStampPayer.broadcast (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1099:34)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1171:22
+          at Array.map (<anonymous>)
+          at EvmStampPayer.submitPaymentSet (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/evm-stamp-payer.ts:1169:23)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1933:15
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:70
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:20)
+          at Object.lifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:6134:52)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1932:34)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at Object.send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:1880:18)
+          at finishContactPayment (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:4881:17)
+          at /Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-chain.ts:5070:27
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.send (chain/monad-chain.ts:1880:18)
+      at finishContactPayment (chain/monad-chain.ts:4881:17)
+      at chain/monad-chain.ts:5070:27
+
+    console.warn
+      [monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment: Error: offline
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/contact-payment.jest.test.ts:1347:41)
+          at Promise.then.completed (/Users/shammah/repos/frank/node_modules/jest-circus/build/utils.js:298:28)
+          at new Promise (<anonymous>)
+          at callAsyncCircusFn (/Users/shammah/repos/frank/node_modules/jest-circus/build/utils.js:231:10)
+          at _callCircusTest (/Users/shammah/repos/frank/node_modules/jest-circus/build/run.js:316:40)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at _runTest (/Users/shammah/repos/frank/node_modules/jest-circus/build/run.js:252:3)
+          at _runTestsForDescribeBlock (/Users/shammah/repos/frank/node_modules/jest-circus/build/run.js:126:9)
+          at _runTestsForDescribeBlock (/Users/shammah/repos/frank/node_modules/jest-circus/build/run.js:121:9)
+          at _runTestsForDescribeBlock (/Users/shammah/repos/frank/node_modules/jest-circus/build/run.js:121:9)
+          at run (/Users/shammah/repos/frank/node_modules/jest-circus/build/run.js:71:3)
+          at runAndTransformResultsToJestFormat (/Users/shammah/repos/frank/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapterInit.js:122:21)
+          at jestAdapter (/Users/shammah/repos/frank/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapter.js:79:19)
+          at runTestInternal (/Users/shammah/repos/frank/node_modules/jest-runner/build/runTest.js:367:16)
+          at runTest (/Users/shammah/repos/frank/node_modules/jest-runner/build/runTest.js:444:34)
+
+      1936 |       for (const one of handed)
+      1937 |         if (one.error !== undefined)
+    > 1938 |           console.warn(
+           |                   ^
+      1939 |             '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+      1940 |             one.error,
+      1941 |           )
+
+      at send (chain/monad-canonical-dm.ts:1938:19)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:1348:20)
+
+  ● a payment to a contact › a mailbox read that stops at the page limit says so, and the coin list does not take it for the whole mailbox
+
+    Canonical mailbox read returned a repeated cursor
+
+      2416 |     if (cursor === undefined) break
+      2417 |     if (seenCursors.has(cursor))
+    > 2418 |       throw new Error('Canonical mailbox read returned a repeated cursor')
+           |             ^
+      2419 |     seenCursors.add(cursor)
+      2420 |   }
+      2421 |   if (cursor !== undefined && !truncated)
+
+      at readMailbox (chain/monad-canonical-dm.ts:2418:13)
+      at Object.fetchSince (chain/monad-chain.ts:2072:31)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:1041:7)
+
+  ● a payment to a contact › shows the chain amount, not the larger amount the sender wrote
+
+    Canonical mailbox read returned a repeated cursor
+
+      2416 |     if (cursor === undefined) break
+      2417 |     if (seenCursors.has(cursor))
+    > 2418 |       throw new Error('Canonical mailbox read returned a repeated cursor')
+           |             ^
+      2419 |     seenCursors.add(cursor)
+      2420 |   }
+      2421 |   if (cursor !== undefined && !truncated)
+
+      at readMailbox (chain/monad-canonical-dm.ts:2418:13)
+      at Object.fetchSince (chain/monad-chain.ts:2072:31)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:1069:23)
+
+  ● a payment to a contact › a claimed payment whose transfer the chain never sees is reported as not received and never counted
+
+    Canonical mailbox read returned a repeated cursor
+
+      2416 |     if (cursor === undefined) break
+      2417 |     if (seenCursors.has(cursor))
+    > 2418 |       throw new Error('Canonical mailbox read returned a repeated cursor')
+           |             ^
+      2419 |     seenCursors.add(cursor)
+      2420 |   }
+      2421 |   if (cursor !== undefined && !truncated)
+
+      at readMailbox (chain/monad-canonical-dm.ts:2418:13)
+      at Object.fetchSince (chain/monad-chain.ts:2072:31)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:1131:5)
+
+  ● a payment to a contact › a sender cannot forge "received" with someone else's mined transaction or a zero-value transfer
+
+    Canonical mailbox read returned a repeated cursor
+
+      2416 |     if (cursor === undefined) break
+      2417 |     if (seenCursors.has(cursor))
+    > 2418 |       throw new Error('Canonical mailbox read returned a repeated cursor')
+           |             ^
+      2419 |     seenCursors.add(cursor)
+      2420 |   }
+      2421 |   if (cursor !== undefined && !truncated)
+
+      at readMailbox (chain/monad-canonical-dm.ts:2418:13)
+      at Object.fetchSince (chain/monad-chain.ts:2072:31)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:1206:5)
+
+  ● a payment to a contact › a payment whose nonce went to another transaction is failed: shown, kept, never counted
+
+    Canonical mailbox read returned a repeated cursor
+
+      2416 |     if (cursor === undefined) break
+      2417 |     if (seenCursors.has(cursor))
+    > 2418 |       throw new Error('Canonical mailbox read returned a repeated cursor')
+           |             ^
+      2419 |     seenCursors.add(cursor)
+      2420 |   }
+      2421 |   if (cursor !== undefined && !truncated)
+
+      at readMailbox (chain/monad-canonical-dm.ts:2418:13)
+      at Object.fetchSince (chain/monad-chain.ts:2072:31)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:1276:5)
+
+  ● a payment to a contact › the stamps of received messages › the relay only delivered: the wallet broadcasts the carried transactions, sees them included, and the stamp is spendable money
+
+    Canonical mailbox read returned a repeated cursor
+
+      2416 |     if (cursor === undefined) break
+      2417 |     if (seenCursors.has(cursor))
+    > 2418 |       throw new Error('Canonical mailbox read returned a repeated cursor')
+           |             ^
+      2419 |     seenCursors.add(cursor)
+      2420 |   }
+      2421 |   if (cursor !== undefined && !truncated)
+
+      at readMailbox (chain/monad-canonical-dm.ts:2418:13)
+      at Object.fetchSince (chain/monad-chain.ts:2072:31)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:1353:25)
+
+  ● a payment to a contact › the stamps of received messages › before a message is deleted its unspent stamps are swept to the seed-derived main account, each in a recorded operation
+
+    Canonical mailbox read returned a repeated cursor
+
+      2416 |     if (cursor === undefined) break
+      2417 |     if (seenCursors.has(cursor))
+    > 2418 |       throw new Error('Canonical mailbox read returned a repeated cursor')
+           |             ^
+      2419 |     seenCursors.add(cursor)
+      2420 |   }
+      2421 |   if (cursor !== undefined && !truncated)
+
+      at readMailbox (chain/monad-canonical-dm.ts:2418:13)
+      at Object.fetchSince (chain/monad-chain.ts:2072:31)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:1416:7)
+
+  ● a payment to a contact › the stamps of received messages › clearing a conversation sweeps every unspent stamp in it
+
+    Canonical mailbox read returned a repeated cursor
+
+      2416 |     if (cursor === undefined) break
+      2417 |     if (seenCursors.has(cursor))
+    > 2418 |       throw new Error('Canonical mailbox read returned a repeated cursor')
+           |             ^
+      2419 |     seenCursors.add(cursor)
+      2420 |   }
+      2421 |   if (cursor !== undefined && !truncated)
+
+      at readMailbox (chain/monad-canonical-dm.ts:2418:13)
+      at Object.fetchSince (chain/monad-chain.ts:2072:31)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:1459:7)
+
+  ● a payment to a contact › the stamps of received messages › with the node unreachable nothing is swept and the answer says the message must stay
+
+    Canonical mailbox read returned a repeated cursor
+
+      2416 |     if (cursor === undefined) break
+      2417 |     if (seenCursors.has(cursor))
+    > 2418 |       throw new Error('Canonical mailbox read returned a repeated cursor')
+           |             ^
+      2419 |     seenCursors.add(cursor)
+      2420 |   }
+      2421 |   if (cursor !== undefined && !truncated)
+
+      at readMailbox (chain/monad-canonical-dm.ts:2418:13)
+      at Object.fetchSince (chain/monad-chain.ts:2072:31)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:1485:7)
+
+  ● a payment to a contact › the stamps of received messages › a stamp worth less than its own move is left where it is and stays recorded
+
+    Canonical mailbox read returned a repeated cursor
+
+      2416 |     if (cursor === undefined) break
+      2417 |     if (seenCursors.has(cursor))
+    > 2418 |       throw new Error('Canonical mailbox read returned a repeated cursor')
+           |             ^
+      2419 |     seenCursors.add(cursor)
+      2420 |   }
+      2421 |   if (cursor !== undefined && !truncated)
+
+      at readMailbox (chain/monad-canonical-dm.ts:2418:13)
+      at Object.fetchSince (chain/monad-chain.ts:2072:31)
+      at Object.<anonymous> (chain/contact-payment.jest.test.ts:1507:7)
+
+PASS packages/wallet/chain/monad-chain.jest.test.ts
+FAIL packages/wallet/chain/monad-chain-topic-burn.jest.test.ts
+  ● topics.post on a fresh wallet (no funded sub-accounts) › funds exactly one burn account, then burns the vote weight from it
+
+    TopicPostOutcomeUnknownError: Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      2352 |             .catch((err: unknown) => {
+      2353 |               if (err instanceof MonadTopicPostAbandonedError) {
+    > 2354 |                 throw new TopicPostOutcomeUnknownError(err.message, err);
+           |                       ^
+      2355 |               }
+      2356 |               return asNothingSent(err);
+      2357 |             });
+
+      at chain/monad-chain.ts:2354:23
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+    Cause:
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      194 |       } catch (error) {
+      195 |         if (error instanceof ForumOperationPendingError)
+    > 196 |           throw new MonadTopicPostAbandonedError(error.message, payloadHashHex)
+          |                 ^
+      197 |         throw error
+      198 |       }
+      199 |     }, admission)
+
+      at monad-topic-post-client.ts:196:17
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+  ● topics.post on a fresh wallet (no funded sub-accounts) › a vote prepares its own burn account the same way
+
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      93 |       } catch (error) {
+      94 |         if (error instanceof ForumOperationPendingError)
+    > 95 |           throw new MonadTopicVoteAbandonedError(
+         |                 ^
+      96 |             error.message,
+      97 |             targetPayloadHashHex,
+      98 |           )
+
+      at monad-topic-vote-client.ts:95:17
+      at chain/monad-chain.ts:2384:11
+      at chain/monad-chain.ts:2368:9
+      at chain/monad-chain.ts:2252:16
+
+  ● topics.post on a fresh wallet (no funded sub-accounts) › succeeds and uses fallback gas limit when provider.estimateGas fails with CALL_EXCEPTION
+
+    TopicPostOutcomeUnknownError: Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      2352 |             .catch((err: unknown) => {
+      2353 |               if (err instanceof MonadTopicPostAbandonedError) {
+    > 2354 |                 throw new TopicPostOutcomeUnknownError(err.message, err);
+           |                       ^
+      2355 |               }
+      2356 |               return asNothingSent(err);
+      2357 |             });
+
+      at chain/monad-chain.ts:2354:23
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+    Cause:
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      194 |       } catch (error) {
+      195 |         if (error instanceof ForumOperationPendingError)
+    > 196 |           throw new MonadTopicPostAbandonedError(error.message, payloadHashHex)
+          |                 ^
+      197 |         throw error
+      198 |       }
+      199 |     }, admission)
+
+      at monad-topic-post-client.ts:196:17
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+  ● topics.post on a fresh wallet (no funded sub-accounts) › spends nothing and leaves the pool untouched when the RPC is down, and a retry then funds exactly once
+
+    TopicPostOutcomeUnknownError: Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      2352 |             .catch((err: unknown) => {
+      2353 |               if (err instanceof MonadTopicPostAbandonedError) {
+    > 2354 |                 throw new TopicPostOutcomeUnknownError(err.message, err);
+           |                       ^
+      2355 |               }
+      2356 |               return asNothingSent(err);
+      2357 |             });
+
+      at chain/monad-chain.ts:2354:23
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+    Cause:
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      194 |       } catch (error) {
+      195 |         if (error instanceof ForumOperationPendingError)
+    > 196 |           throw new MonadTopicPostAbandonedError(error.message, payloadHashHex)
+          |                 ^
+      197 |         throw error
+      198 |       }
+      199 |     }, admission)
+
+      at monad-topic-post-client.ts:196:17
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+  ● topics.post on a fresh wallet (no funded sub-accounts) › an uncertain relay response retains its account, then exact reconciliation permits a new funded account
+
+    FrankCodecError: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      174 |   message: string,
+      175 |   location: string,
+    > 176 | ): FrankCodecError => new FrankCodecError(category, stage, message, location)
+          |                       ^
+      177 |
+      178 | interface Envelope {
+      179 |   typeId: number
+
+      at fail (../frank-codec/src/validate.ts:176:23)
+      at keep (../frank-codec/src/validate.ts:327:11)
+      at processFrame (../frank-codec/src/validate.ts:330:12)
+      at validateRoot (../frank-codec/src/validate.ts:832:10)
+      at validateFrame (../frank-codec/src/validate.ts:804:10)
+      at checked (../frank-codec/src/forum.ts:37:31)
+      at encodeForumReadFrame (../frank-codec/src/forum.ts:230:3)
+      at confirmedStatus (chain/monad-chain-topic-burn.jest.test.ts:276:30)
+      at chain/monad-chain-topic-burn.jest.test.ts:308:13
+      at exchange (monad-forum-operation.ts:144:31)
+      at monad-forum-operation.ts:250:9
+      at reconcileTopicOperations (chain/monad-chain.ts:2287:5)
+      at chain/monad-chain.ts:2305:11
+      at chain/monad-chain.ts:2252:16
+
+  ● topics.post on a fresh wallet (no funded sub-accounts) › serializes a concurrent post, vote and post onto three distinct accounts and nonces
+
+    TopicPostOutcomeUnknownError: Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      2352 |             .catch((err: unknown) => {
+      2353 |               if (err instanceof MonadTopicPostAbandonedError) {
+    > 2354 |                 throw new TopicPostOutcomeUnknownError(err.message, err);
+           |                       ^
+      2355 |               }
+      2356 |               return asNothingSent(err);
+      2357 |             });
+
+      at chain/monad-chain.ts:2354:23
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+    Cause:
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      194 |       } catch (error) {
+      195 |         if (error instanceof ForumOperationPendingError)
+    > 196 |           throw new MonadTopicPostAbandonedError(error.message, payloadHashHex)
+          |                 ^
+      197 |         throw error
+      198 |       }
+      199 |     }, admission)
+
+      at monad-topic-post-client.ts:196:17
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+  ● topics.post on a fresh wallet (no funded sub-accounts) › serializes concurrent posts so each burn uses its own prepared account
+
+    TopicPostOutcomeUnknownError: Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      2352 |             .catch((err: unknown) => {
+      2353 |               if (err instanceof MonadTopicPostAbandonedError) {
+    > 2354 |                 throw new TopicPostOutcomeUnknownError(err.message, err);
+           |                       ^
+      2355 |               }
+      2356 |               return asNothingSent(err);
+      2357 |             });
+
+      at chain/monad-chain.ts:2354:23
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+    Cause:
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      194 |       } catch (error) {
+      195 |         if (error instanceof ForumOperationPendingError)
+    > 196 |           throw new MonadTopicPostAbandonedError(error.message, payloadHashHex)
+          |                 ^
+      197 |         throw error
+      198 |       }
+      199 |     }, admission)
+
+      at monad-topic-post-client.ts:196:17
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+  ● RPC failing between funding and signing (#273 review F1) › post: the funded account is kept, nothing is sent, and the retry funds nothing more
+
+    TopicPostOutcomeUnknownError: Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      2352 |             .catch((err: unknown) => {
+      2353 |               if (err instanceof MonadTopicPostAbandonedError) {
+    > 2354 |                 throw new TopicPostOutcomeUnknownError(err.message, err);
+           |                       ^
+      2355 |               }
+      2356 |               return asNothingSent(err);
+      2357 |             });
+
+      at chain/monad-chain.ts:2354:23
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+    Cause:
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      194 |       } catch (error) {
+      195 |         if (error instanceof ForumOperationPendingError)
+    > 196 |           throw new MonadTopicPostAbandonedError(error.message, payloadHashHex)
+          |                 ^
+      197 |         throw error
+      198 |       }
+      199 |     }, admission)
+
+      at monad-topic-post-client.ts:196:17
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+  ● RPC failing between funding and signing (#273 review F1) › vote: the funded account is kept, nothing is sent, and the retry funds nothing more
+
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      93 |       } catch (error) {
+      94 |         if (error instanceof ForumOperationPendingError)
+    > 95 |           throw new MonadTopicVoteAbandonedError(
+         |                 ^
+      96 |             error.message,
+      97 |             targetPayloadHashHex,
+      98 |           )
+
+      at monad-topic-vote-client.ts:95:17
+      at chain/monad-chain.ts:2384:11
+      at chain/monad-chain.ts:2368:9
+      at chain/monad-chain.ts:2252:16
+
+  ● a pool account a native send spends from is not burned from (#1235) › pending native send: a topic post funds and burns from another account and signs nothing from the reserved account
+
+    TopicPostOutcomeUnknownError: Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      2352 |             .catch((err: unknown) => {
+      2353 |               if (err instanceof MonadTopicPostAbandonedError) {
+    > 2354 |                 throw new TopicPostOutcomeUnknownError(err.message, err);
+           |                       ^
+      2355 |               }
+      2356 |               return asNothingSent(err);
+      2357 |             });
+
+      at chain/monad-chain.ts:2354:23
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+    Cause:
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      194 |       } catch (error) {
+      195 |         if (error instanceof ForumOperationPendingError)
+    > 196 |           throw new MonadTopicPostAbandonedError(error.message, payloadHashHex)
+          |                 ^
+      197 |         throw error
+      198 |       }
+      199 |     }, admission)
+
+      at monad-topic-post-client.ts:196:17
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+  ● a pool account a native send spends from is not burned from (#1235) › pending native send: a topic vote funds and burns from another account and signs nothing from the reserved account
+
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      93 |       } catch (error) {
+      94 |         if (error instanceof ForumOperationPendingError)
+    > 95 |           throw new MonadTopicVoteAbandonedError(
+         |                 ^
+      96 |             error.message,
+      97 |             targetPayloadHashHex,
+      98 |           )
+
+      at monad-topic-vote-client.ts:95:17
+      at chain/monad-chain.ts:2384:11
+      at chain/monad-chain.ts:2368:9
+      at chain/monad-chain.ts:2252:16
+
+  ● a pool account a native send spends from is not burned from (#1235) › included native send: a topic post funds and burns from another account and does not retire the reserved account or lock admission
+
+    TopicPostOutcomeUnknownError: Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      2352 |             .catch((err: unknown) => {
+      2353 |               if (err instanceof MonadTopicPostAbandonedError) {
+    > 2354 |                 throw new TopicPostOutcomeUnknownError(err.message, err);
+           |                       ^
+      2355 |               }
+      2356 |               return asNothingSent(err);
+      2357 |             });
+
+      at chain/monad-chain.ts:2354:23
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+    Cause:
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      194 |       } catch (error) {
+      195 |         if (error instanceof ForumOperationPendingError)
+    > 196 |           throw new MonadTopicPostAbandonedError(error.message, payloadHashHex)
+          |                 ^
+      197 |         throw error
+      198 |       }
+      199 |     }, admission)
+
+      at monad-topic-post-client.ts:196:17
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+  ● a pool account a native send spends from is not burned from (#1235) › included native send: a topic vote funds and burns from another account and does not retire the reserved account or lock admission
+
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      93 |       } catch (error) {
+      94 |         if (error instanceof ForumOperationPendingError)
+    > 95 |           throw new MonadTopicVoteAbandonedError(
+         |                 ^
+      96 |             error.message,
+      97 |             targetPayloadHashHex,
+      98 |           )
+
+      at monad-topic-vote-client.ts:95:17
+      at chain/monad-chain.ts:2384:11
+      at chain/monad-chain.ts:2368:9
+      at chain/monad-chain.ts:2252:16
+
+  ● topics.post and topics.vote with received coin when mainAccount balance is 0 › successfully prepares and burns from a received coin when mainAccount has 0 balance
+
+    TopicPostOutcomeUnknownError: Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      2352 |             .catch((err: unknown) => {
+      2353 |               if (err instanceof MonadTopicPostAbandonedError) {
+    > 2354 |                 throw new TopicPostOutcomeUnknownError(err.message, err);
+           |                       ^
+      2355 |               }
+      2356 |               return asNothingSent(err);
+      2357 |             });
+
+      at chain/monad-chain.ts:2354:23
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+    Cause:
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      194 |       } catch (error) {
+      195 |         if (error instanceof ForumOperationPendingError)
+    > 196 |           throw new MonadTopicPostAbandonedError(error.message, payloadHashHex)
+          |                 ^
+      197 |         throw error
+      198 |       }
+      199 |     }, admission)
+
+      at monad-topic-post-client.ts:196:17
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+  ● topics.post and topics.vote with received coin when mainAccount balance is 0 › aggregates multiple funding transactions when no single account covers the total required amount
+
+    TopicPostOutcomeUnknownError: Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      2352 |             .catch((err: unknown) => {
+      2353 |               if (err instanceof MonadTopicPostAbandonedError) {
+    > 2354 |                 throw new TopicPostOutcomeUnknownError(err.message, err);
+           |                       ^
+      2355 |               }
+      2356 |               return asNothingSent(err);
+      2357 |             });
+
+      at chain/monad-chain.ts:2354:23
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+    Cause:
+    Forum operation retained pending: unsupported (stage 7) at root: type 15 is not known to this reader (V6.1)
+
+      194 |       } catch (error) {
+      195 |         if (error instanceof ForumOperationPendingError)
+    > 196 |           throw new MonadTopicPostAbandonedError(error.message, payloadHashHex)
+          |                 ^
+      197 |         throw error
+      198 |       }
+      199 |     }, admission)
+
+      at monad-topic-post-client.ts:196:17
+      at chain/monad-chain.ts:2334:26
+      at chain/monad-chain.ts:2252:16
+
+PASS packages/wallet/monad-change-pool.jest.test.ts (5.286 s)
+  ● Console
+
+    console.warn
+      [monad-change-pool] sweepToChange error for burn account 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266: Error: rpc exploded
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/monad-change-pool.jest.test.ts:624:7)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at runNextTicks (node:internal/process/task_queues:69:3)
+          at processTimers (node:internal/timers:615:9)
+
+      539 |     )
+      540 |   } catch (error) {
+    > 541 |     console.warn('[monad-change-pool] sweepToChange error for burn account ' + record.address + ':', error)
+          |             ^
+      542 |     return { swept: false, reason: 'sweep-error', error }
+      543 |   }
+      544 | }
+
+      at sweepIfSpent (monad-change-pool.ts:541:13)
+      at releaseLeaseAndSweepChange (monad-change-pool.ts:577:17)
+      at Object.<anonymous> (monad-change-pool.jest.test.ts:632:20)
+
+PASS packages/wallet/chain/self-wallet-sync.jest.test.ts (119.332 s)
+  ● Console
+
+    console.warn
+      [monad-canonical-dm] submit failed; the same message is sent again later: CanonicalTransportError: Canonical submission outcome is unknown
+          at submitCanonicalRequest (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/cashweb/relay/canonical-dm-transport.ts:1185:11)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at submitStored (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:891:16)
+          at Object.runLifetime (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/storage/monad-wallet-bundle.ts:337:14)
+          at send (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/monad-canonical-dm.ts:1900:25)
+          at Object.<anonymous> (/Users/shammah/repos/frank/.worktrees/authoritative-pool-mutations/packages/wallet/chain/self-wallet-sync.jest.test.ts:591:20) {
+        disposition: 'uncertain',
+        status: undefined,
+        relayError: undefined
+      }
+
+      1921 |       if (row.outcome !== 'delivered') {
+      1922 |         if (submitted.error)
+    > 1923 |           console.warn(
+           |                   ^
+      1924 |             '[monad-canonical-dm] submit failed; the same message is sent again later:',
+      1925 |             submitted.error,
+      1926 |           )
+
+      at send (chain/monad-canonical-dm.ts:1923:19)
+      at Object.<anonymous> (chain/self-wallet-sync.jest.test.ts:591:20)
+
+PASS packages/wallet/evm-stamp-payer.jest.test.ts
+PASS packages/wallet/monad-forum-operation.jest.test.ts
+PASS packages/wallet/monad-topic-post-client.jest.test.ts
+PASS packages/wallet/monad-topic-vote-client.jest.test.ts
+PASS packages/wallet/canonical-coin-view.jest.test.ts
+
+Test Suites: 6 failed, 9 passed, 15 total
+Tests:       79 failed, 4 todo, 597 passed, 680 total
+Snapshots:   0 total
+Time:        580.455 s
+Ran all test suites within paths "packages/wallet/chain/contact-payment.jest.test.ts", "packages/wallet/chain/evm-legacy-consolidator.jest.test.ts", "packages/wallet/chain/monad-chain-canonical-dm.jest.test.ts", "packages/wallet/chain/monad-chain-topic-burn.jest.test.ts", "packages/wallet/chain/monad-chain.jest.test.ts", "packages/wallet/chain/monad-domain-wallet.jest.test.ts", "packages/wallet/chain/monad-parallel-send.jest.test.ts", "packages/wallet/chain/self-wallet-sync.jest.test.ts", "packages/wallet/evm-stamp-payer.jest.test.ts", "packages/wallet/monad-change-pool.jest.test.ts", "packages/wallet/monad-forum-operation.jest.test.ts", "packages/wallet/monad-stamp-client.jest.test.ts", "packages/wallet/monad-topic-post-client.jest.test.ts", "packages/wallet/monad-topic-vote-client.jest.test.ts", "packages/wallet/canonical-coin-view.jest.test.ts".

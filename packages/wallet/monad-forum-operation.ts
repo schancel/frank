@@ -212,8 +212,8 @@ async function settle(
 ) {
   const bound = bindForumAuthority(wallet, operation)
   if (bound.record.status === 'in-use') {
-    if (handle) wallet.leaseManager.releaseLease(handle, 'confirmed')
-    else wallet.pool.setStatus(operation.leaseIndex, 'spent')
+    if (handle) await wallet.leaseManager.releaseLease(handle, 'confirmed')
+    else await wallet.pool.setStatus(operation.leaseIndex, 'spent')
     await wallet.leaseManager.flush()
   }
   await wallet.topicOperationJournal!.delete(operation)
@@ -236,7 +236,7 @@ export async function reconcileForumOperations(
         continue
       const bound = bindForumAuthority(wallet, operation)
       if (!bound.record.lifecycle?.spend) {
-        wallet.pool.recordSpendTransaction(operation.leaseIndex, {
+        await wallet.pool.recordSpendTransaction(operation.leaseIndex, {
           rawTx: operation.rawTx,
           txHash: operation.txHash,
           valueWei: operation.valueWei,
@@ -280,13 +280,13 @@ async function submitForumOperationAdmitted(
     throw new Error('Forum provider chain mismatch')
   const handle =
     params.leaseIndex !== undefined
-      ? wallet.leaseManager.acquireForIndex(params.leaseIndex, params.leaseHolder)
+      ? await wallet.leaseManager.acquireForIndex(params.leaseIndex, params.leaseHolder)
       : params.waitForLease
       ? await acquireLeaseWhenAvailable(
           wallet.leaseManager,
           params.waitForLease,
         )
-      : wallet.leaseManager.acquireLease()
+      : await wallet.leaseManager.acquireLease()
   await wallet.leaseManager.flush()
   let operation: OutgoingTopicOperation
   try {
@@ -349,7 +349,7 @@ async function submitForumOperationAdmitted(
     } as OutgoingTopicOperation
     bindForumAuthority(wallet, operation)
   } catch (error) {
-    wallet.leaseManager.releaseLease(handle, 'unused')
+    await wallet.leaseManager.releaseLease(handle, 'unused')
     await wallet.leaseManager.flush()
     throw new BurnNotSentError(
       error instanceof Error ? error.message : String(error),
@@ -358,7 +358,7 @@ async function submitForumOperationAdmitted(
   }
   // Once journaled, every failure is uncertainty. Keep exact authority and the occupied lease.
   await wallet.topicOperationJournal!.put(operation)
-  wallet.pool.recordSpendTransaction(handle.index, {
+  await wallet.pool.recordSpendTransaction(handle.index, {
     rawTx: operation.rawTx,
     txHash: operation.txHash,
     valueWei: operation.valueWei,

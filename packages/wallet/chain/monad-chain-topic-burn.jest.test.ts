@@ -94,7 +94,7 @@ interface FakeChain {
   mainAddress: string
 }
 
-function makeFakeChain(
+async function makeFakeChain(
   mainBalance = 10n ** 18n,
   nativeWallet?: EvmChainWalletHandle,
 ): FakeChain {
@@ -196,7 +196,7 @@ function makeFakeChain(
       keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
     })
   // Exactly what a fresh production wallet has after `createWallet`: derived, never funded.
-  pool.ensureUnfundedSize(CONFIG.subAccountPoolSize)
+  await pool.ensureUnfundedSize(CONFIG.subAccountPoolSize)
   const leaseManager = new SubAccountLeaseManager(pool)
   const topicOperationJournal = new InMemoryTopicOperationJournal()
   const walletState = {
@@ -326,7 +326,7 @@ beforeEach(() => {
 describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
   it('funds exactly one burn account, then burns the vote weight from it', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = (await makeFakeChain())
     const puts = fakeRelay()
     const progress: string[] = []
 
@@ -372,7 +372,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
 
   it('a vote prepares its own burn account the same way', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = (await makeFakeChain())
     const puts = fakeRelay()
 
     await chain.topics.vote({
@@ -392,7 +392,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
 
   it('succeeds and uses fallback gas limit when provider.estimateGas fails with CALL_EXCEPTION', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = (await makeFakeChain())
     const puts = fakeRelay()
 
     ;(fake.wallet.provider as any).estimateGas = jest.fn(async () => {
@@ -427,7 +427,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
 
   it('spends nothing and leaves the pool untouched when the RPC is down, and a retry then funds exactly once', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = (await makeFakeChain())
     const puts = fakeRelay()
     const before = JSON.stringify(fake.pool.records())
 
@@ -463,7 +463,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
 
   it('an uncertain relay response retains its account, then exact reconciliation permits a new funded account', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = (await makeFakeChain())
     const puts = fakeRelay('reject-500')
 
     await expect(
@@ -503,7 +503,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
 
   it('surfaces an insufficient main balance before moving any funds', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain(WEIGHT / 2n)
+    const fake = (await makeFakeChain(WEIGHT / 2n))
     fakeRelay()
 
     await expect(
@@ -521,7 +521,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
 
   it('serializes a concurrent post, vote and post onto three distinct accounts and nonces', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = (await makeFakeChain())
     const puts = fakeRelay()
     // A scheduling gap between "account prepared" and "account leased" (the pool's own queue has
     // already released by then): only the wallet-level serialization keeps a concurrent operation
@@ -565,7 +565,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
 
   it('serializes concurrent posts so each burn uses its own prepared account', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = (await makeFakeChain())
     const puts = fakeRelay()
 
     await Promise.all(
@@ -618,7 +618,7 @@ describe('RPC failing between funding and signing (#273 review F1)', () => {
     '%s: the funded account is kept, nothing is sent, and the retry funds nothing more',
     async (_name, act) => {
       const chain = createEvmChain(CONFIG)
-      const fake = makeFakeChain()
+      const fake = (await makeFakeChain())
       const puts = fakeRelay()
 
       fake.setSigningDown(true)
@@ -1065,7 +1065,7 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
       mnemonic: TEST_MNEMONIC,
     })) as EvmChainWalletHandle
     opened.push(wallet)
-    const fake = makeFakeChain(10n ** 18n, wallet)
+    const fake = (await makeFakeChain(10n ** 18n, wallet))
     const main = (await wallet.getReceiveAddress()).raw.toLowerCase()
     fake.balances.set(main, 10n ** 18n)
     const puts = fakeRelay()
@@ -1271,7 +1271,7 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
       mnemonic: TEST_MNEMONIC,
     })) as EvmChainWalletHandle
     opened.push(wallet)
-    const fake = makeFakeChain(0n, wallet)
+    const fake = (await makeFakeChain(0n, wallet))
     const main = (await wallet.getReceiveAddress()).raw.toLowerCase()
     fake.balances.set(main, 0n)
     const puts = fakeRelay()
@@ -1339,7 +1339,7 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
       mnemonic: TEST_MNEMONIC,
     })) as EvmChainWalletHandle
     opened.push(wallet)
-    const fake = makeFakeChain(0n, wallet)
+    const fake = (await makeFakeChain(0n, wallet))
     const main = (await wallet.getReceiveAddress()).raw.toLowerCase()
     const puts = fakeRelay()
 

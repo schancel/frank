@@ -1,0 +1,12 @@
+PASS packages/wallet/storage/pool-review-regressions.jest.test.ts
+  ✓ rejects a delayed second contributor after another lease wins during spacing, without exposing its signed transfer (63 ms)
+  ✓ rejects a delayed second contributor after another lease wins during signed, without exposing its signed transfer (12 ms)
+  ✓ refuses preexisting recovered change before same-seed custody or manifest initialization, preserving every component (12 ms)
+  ✓ refuses preexisting recovered change before different-seed custody or manifest initialization, preserving every component (12 ms)
+  ✓ refuses preexisting recovered change before generated-seed custody or manifest initialization, preserving every component (13 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       5 passed, 5 total
+Snapshots:   0 total
+Time:        0.642 s, estimated 1 s
+Ran all test suites within paths "packages/wallet/storage/pool-review-regressions.jest.test.ts".

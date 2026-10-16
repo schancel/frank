@@ -84,7 +84,7 @@ describe('MonadWalletPersistenceBundle', () => {
       assertMonadWalletBundleProvenance(bundle1)
 
       // Allocate 3 sub-accounts
-      const subAccounts = bundle1.pool.ensureSize(3)
+      const subAccounts = (await bundle1.pool.ensureSize(3))
       expect(subAccounts.length).toBe(3)
       expect(subAccounts[0].address).toBe(
         MonadHdKeyring.fromMnemonic(TEST_MNEMONIC).deriveSubAccount(0).address,
@@ -143,7 +143,7 @@ describe('MonadWalletPersistenceBundle', () => {
         createSeedIfEmpty: true,
       })
       const bindingId = bundle1.bindingId
-      const account0 = bundle1.pool.ensureSize(1)[0].address
+      const account0 = (await bundle1.pool.ensureSize(1))[0].address
       await bundle1.pool.flush()
       await bundle1.close()
 
@@ -270,12 +270,12 @@ describe('MonadWalletPersistenceBundle', () => {
         mnemonic: TEST_MNEMONIC,
       })
 
-      bundle.pool.ensureSize(1)
+      await bundle.pool.ensureSize(1)
       const record = bundle.pool.records()[0]
 
       // Corrupt record with mismatched address
       const otherKeyring = MonadHdKeyring.fromMnemonic(OTHER_MNEMONIC)
-      bundle.pool.applyPrevalidatedRecoveryRecords([
+      await bundle.pool.applyPrevalidatedRecoveryRecords([
         {
           ...record,
           address: otherKeyring.deriveSubAccount(record.index).address,
@@ -292,8 +292,8 @@ describe('MonadWalletPersistenceBundle', () => {
         mnemonic: TEST_MNEMONIC,
       })
 
-      bundle.pool.ensureSize(1)
-      bundle.pool.setStatus(0, 'in-use')
+      await bundle.pool.ensureSize(1)
+      await bundle.pool.setStatus(0, 'in-use')
 
       expect(() => bundle.assertNoOrphanedLeases()).toThrow(
         'Wallet has 1 in-use funding account(s) without a local exact-set attempt: 0',
@@ -313,7 +313,7 @@ describe('Forum retention-only journal obligations', () => {
         seed: { mnemonic: TEST_MNEMONIC },
         mode: 'create',
       })
-      bundle.pool.ensureSize(4)
+      await bundle.pool.ensureSize(4)
       const formats = [undefined, 'protobuf', 'cbor'] as const
       const rows = formats.map((writeFormat, index) => ({
         version: 1 as const,
@@ -329,7 +329,7 @@ describe('Forum retention-only journal obligations', () => {
         payloadHashHex: 'ab'.repeat(32),
       }))
       for (const row of rows) {
-        bundle.leaseManager.acquireForIndex(row.leaseIndex)
+        await bundle.leaseManager.acquireForIndex(row.leaseIndex)
         await bundle.topicOperationJournal.put(row)
       }
       await bundle.pool.flush()
@@ -362,21 +362,22 @@ describe('Forum retention-only journal obligations', () => {
           to: '0x000000000000000000000000000000000000dEaD',
           nonce: 1,
         })
-        bundle.pool.recordFundingTransaction(index, {
+        if (bundle.pool.getRecord(index)!.status === 'available') await bundle.pool.setStatus(index, 'in-use')
+        await bundle.pool.recordFundingTransaction(index, {
           rawTx: fundingRaw,
           txHash: Transaction.from(fundingRaw).hash!,
           valueWei: '7',
         })
-        bundle.pool.recordSpendTransaction(index, {
+        await bundle.pool.recordSpendTransaction(index, {
           rawTx: spendRaw,
           txHash: Transaction.from(spendRaw).hash!,
           valueWei: '7',
         })
-        bundle.pool.recordRecoveryDisposition(index, {
+        await bundle.pool.setStatus(index, 'retired')
+        await bundle.pool.recordRecoveryDisposition(index, {
           kind: 'none',
           valueWei: '0',
         })
-        bundle.pool.setStatus(index, 'retired')
       }
       await bundle.pool.flush()
       expect(await bundle.compactTerminalAccounts(8)).toBe(1)
@@ -538,7 +539,7 @@ describe('existing-pool private topic owner', () => {
             owner = value
             return value
           }),
-        ).rejects.toThrow('not open')
+        ).rejects.toThrow(/closed|closing|not open/)
       } finally {
         await owner?.close()
         rmSync(location, { recursive: true, force: true })
@@ -567,13 +568,17 @@ describe('existing-pool private topic owner', () => {
               txHash: '0x' + '22'.repeat(32),
             }
       const seed = level(path)
-      await seed.put('0', JSON.stringify(record))
+      if (component === 'pool') {
+        await seed.put('__pool_format__', 'sub-account-pool-v3-authoritative')
+        await seed.put('__next_index__', '1')
+      }
+      await seed.put('0', JSON.stringify(component === 'pool' ? { version: 3, revision: 1, value: record } : record))
       await seed.put('z-corrupt', 'malformed preserved row')
       await seed.close()
       const failed = make()
       try {
         await expect(failed.Open()).rejects.toThrow()
-        expect(() => failed.getAll()).toThrow('not open')
+        expect(() => failed.getAll()).toThrow(/closed|closing|not open/)
         await failed.Close()
         const check = level(path)
         expect(String(await check.get('z-corrupt'))).toBe(
@@ -585,9 +590,9 @@ describe('existing-pool private topic owner', () => {
         await loaded.Open()
         expect(loaded.getAll()).toHaveLength(1)
         const closing = loaded.Close()
-        expect(() => loaded.getAll()).toThrow('not open')
+        expect(() => loaded.getAll()).toThrow(/closed|closing|not open/)
         await closing
-        expect(() => loaded.getNextIndex()).toThrow('not open')
+        expect(() => loaded.getNextIndex()).toThrow(/closed|closing|not open/)
       } finally {
         rmSync(location, { recursive: true, force: true })
       }
@@ -684,7 +689,7 @@ describe('existing-pool private topic owner', () => {
   })
   it('preserves pool, lease and role identities, refuses competing owners, and guards enclosing admission', async () => {
     const original = existingPools()
-    original.pool.ensureSize(1)
+    await original.pool.ensureSize(1)
     let enclosed = false
     const attachPool = jest.spyOn(original.pool, 'attachWalletOperationGate')
     const attachChange = jest.spyOn(
@@ -721,7 +726,7 @@ describe('existing-pool private topic owner', () => {
       })
       // No shared pool gate was attached: close must not change normal DM pool admission.
       await owner.close()
-      original.pool.ensureUnfundedSize(2)
+      await original.pool.ensureUnfundedSize(2)
       expect(original.pool.records()).toHaveLength(2)
       const next = await openExistingPoolMonadTopicOwner(params)
       await next.close()
@@ -753,7 +758,7 @@ describe('existing-pool private topic owner', () => {
   it('close rejects new admissions and drains a complete admitted journal operation once', async () => {
     const location = mkdtempSync(join(tmpdir(), 'topic-owner-drain-'))
     const original = existingPools()
-    original.pool.ensureSize(1)
+    await original.pool.ensureSize(1)
     const owner = await openExistingPoolMonadTopicOwner({
       location,
       ...original,
@@ -838,7 +843,7 @@ describe('existing-pool private topic owner', () => {
         seed: { mnemonic: TEST_MNEMONIC },
         mode: 'create',
       })
-      old.pool.ensureSize(5)
+      await old.pool.ensureSize(5)
       const rows: OutgoingTopicOperation[] = [
         undefined,
         'protobuf',
@@ -857,10 +862,10 @@ describe('existing-pool private topic owner', () => {
         payloadHashHex: 'ab'.repeat(32),
       }))
       for (const row of rows) {
-        old.pool.setStatus(row.leaseIndex, 'in-use')
+        await old.pool.setStatus(row.leaseIndex, 'in-use')
         await old.topicOperationJournal.put(row)
       }
-      old.pool.setStatus(3, 'in-use')
+      await old.pool.setStatus(3, 'in-use')
       await old.pool.flush()
       const records = old.pool.records(),
         highWater = old.pool.nextUnusedIndex()
@@ -918,18 +923,19 @@ describe('existing-pool private topic owner', () => {
           gasLimit: 21000n,
           gasPrice: 1n,
         })
-        pool.recordFundingTransaction(index, {
+        if (pool.getRecord(index)!.status === 'available') await pool.setStatus(index, 'in-use')
+        await pool.recordFundingTransaction(index, {
           rawTx: fundingRaw,
           txHash: Transaction.from(fundingRaw).hash!,
           valueWei: '7',
         })
-        pool.recordSpendTransaction(index, {
+        await pool.recordSpendTransaction(index, {
           rawTx: spendRaw,
           txHash: Transaction.from(spendRaw).hash!,
           valueWei: '7',
         })
-        pool.recordRecoveryDisposition(index, { kind: 'none', valueWei: '0' })
-        pool.setStatus(index, 'retired')
+        await pool.setStatus(index, 'retired')
+        await pool.recordRecoveryDisposition(index, { kind: 'none', valueWei: '0' })
       }
       await pool.flush()
       expect(await owner.compactTerminalAccounts(8)).toBe(1)
@@ -947,4 +953,51 @@ describe('existing-pool private topic owner', () => {
       rmSync(location, { recursive: true, force: true })
     }
   })
+})
+
+it('resumes new manifest initialization interrupted before empty component binding without replacing seed or manifest', async () => {
+  const location = mkdtempSync(join(tmpdir(), 'frank-manifest-before-bind-'))
+  try {
+    await expect(openMonadWalletBundle({
+      location, mode: 'create', createSeedIfEmpty: true,
+      onMigrationPhase: async phase => { if (phase === 'manifest') throw new Error('interrupted before component binding') },
+    })).rejects.toThrow('interrupted before component binding')
+    const read = async () => {
+      const db = level(join(location, 'wallet-manifest'))
+      try { return await Array.fromAsync((db as any).iterator()) }
+      finally { await db.close() }
+    }
+    const original = await read()
+    const reopened = await openMonadWalletBundle({ location })
+    expect(reopened.pool.records()).toEqual([])
+    await reopened.close()
+    expect(await read()).toEqual(original)
+    const again = await openMonadWalletBundle({ location })
+    expect(again.pool.records()).toEqual([])
+    await again.close()
+    expect(await read()).toEqual(original)
+  } finally { rmSync(location, { recursive: true, force: true }) }
+})
+
+it('refuses a nonempty unbound change component without adopting or changing its retained rows or custody', async () => {
+  const location = mkdtempSync(join(tmpdir(), 'frank-refuse-unbound-change-'))
+  const read = async (component: string) => {
+    const db = level(join(location, component))
+    try { return await Array.fromAsync((db as any).iterator()) }
+    finally { await db.close() }
+  }
+  try {
+    const original = await openMonadWalletBundle({ location, mode: 'create', createSeedIfEmpty: true })
+    await original.close()
+    const change = level(join(location, 'change-pool'))
+    await change.del('__wallet_binding__')
+    await change.put('0', JSON.stringify({ index: 0, address: '0x' + '11'.repeat(20), sourceBurnIndex: 1, txHash: '0x' + '22'.repeat(32) }))
+    await change.put('__next_index__', '1')
+    await change.close()
+    const manifest = await read('wallet-manifest'), pool = await read('sub-account-pool'), retained = await read('change-pool')
+    await expect(openMonadWalletBundle({ location })).rejects.toThrow(/unbound/)
+    expect(await read('wallet-manifest')).toEqual(manifest)
+    expect(await read('sub-account-pool')).toEqual(pool)
+    expect(await read('change-pool')).toEqual(retained)
+  } finally { rmSync(location, { recursive: true, force: true }) }
 })

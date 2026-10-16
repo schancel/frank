@@ -1,3 +1,5 @@
+import { installIdentityRpcFixture } from '@frank/wallet/chain/evm-identity-rpc.testutil'
+import * as providerModule from '@frank/wallet/monad-provider'
 import {
   createNativeOnlyEvmChain,
   activeChain,
@@ -122,7 +124,21 @@ jest.mock('@frank/wallet/chain', () => ({
     defaultTopicVoteValueWei: 1n,
   }),
 }))
+const actualProviderFactory = providerModule.createMonadJsonRpcProvider
 beforeEach(async () => {
+  jest
+    .spyOn(providerModule, 'createMonadJsonRpcProvider')
+    .mockImplementation(options => {
+      const provider = actualProviderFactory(options)
+      const id = decodeURIComponent(
+        new URL(options.rpcUrl).pathname.split('/')[2],
+      )
+      installIdentityRpcFixture(provider, id, {
+        blockNumber: 12,
+        blockHash: '0x' + 'ab'.repeat(32),
+      })
+      return provider
+    })
   await closeOpenedEvmWallets()
   jest.clearAllMocks()
   mockEnabledPeerNetworks.clear()
@@ -459,6 +475,10 @@ async function actualEvmOwner(
   const { DERIVATION_REGISTRY_ID } = jest.requireActual('@frank/domain-roots')
   const entry = getChainRegistryEntry(networkId)!
   const config: EvmChainConfig = {
+    operatorCheckpoint:
+      entry.id === 'monad-regtest'
+        ? { blockNumber: 12, blockHash: '0x' + 'ab'.repeat(32) }
+        : undefined,
     chainIdentifier: entry.id,
     networkId: entry.id,
     rpcChain: entry.id,

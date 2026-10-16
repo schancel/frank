@@ -1,3 +1,4 @@
+import { installIdentityRpcFixture } from "./evm-identity-rpc.testutil";
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import {
   FetchRequest,
@@ -129,7 +130,20 @@ const expected = [
   },
 ]
 
-afterEach(() => jest.restoreAllMocks())
+const actualProviderFactory = providerModule.createMonadJsonRpcProvider;
+beforeEach(() => {
+  jest
+    .spyOn(providerModule, "createMonadJsonRpcProvider")
+    .mockImplementation((options) => {
+      const provider = actualProviderFactory(options);
+      const id = decodeURIComponent(
+        new URL(options.rpcUrl).pathname.split("/")[2]
+      );
+      installIdentityRpcFixture(provider, id);
+      return provider;
+    });
+});
+afterEach(() => jest.restoreAllMocks());
 
 /** After a native send the wallet tells the account's other devices with a free note to itself.
  * The note is started, not waited for: call this at wallet open, and its result when a test needs
@@ -635,6 +649,64 @@ function mockNativeRpc(
     })
   return { broadcast, balances, nonces, transactions, receipts }
 }
+
+test("identity refusal preserves the original signed native attempt through polling, failed reopen and valid reopen", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "frank-identity-retained-"));
+  const chain = createEvmChain({
+    ...config,
+    walletStorageLocation: join(dir, "wallet"),
+  });
+  let wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle;
+  const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100000n });
+  rpc.broadcast.mockRejectedValueOnce(new Error("ambiguous broadcast"));
+  try {
+    await expect(
+      wallet.sendNative({ recipient: { raw: expected[1].main }, value: 1000n })
+    ).rejects.toThrow();
+    const original = wallet.getNativeOperations!();
+    expect(original[0].members[0].signed).toBeDefined();
+    const raw = jest
+      .spyOn(wallet.provider, "send")
+      .mockImplementation(async (method) =>
+        method === "eth_chainId"
+          ? "0x279f"
+          : { number: "0x0", hash: "0x" + "ff".repeat(32) }
+      );
+    const receipt = jest.mocked(wallet.provider.getTransactionReceipt);
+    receipt.mockClear();
+    const broadcasts = rpc.broadcast.mock.calls.length;
+    await expect(wallet.reobserveNativeOperations!()).rejects.toThrow(
+      /checkpoint mismatch/
+    );
+    expect(receipt).not.toHaveBeenCalled();
+    expect(rpc.broadcast).toHaveBeenCalledTimes(broadcasts);
+    expect(wallet.getNativeOperations!()).toEqual(original);
+    raw.mockRestore();
+    await wallet.close();
+    const factory = jest.mocked(providerModule.createMonadJsonRpcProvider);
+    const validFactory = factory.getMockImplementation()!;
+    factory.mockImplementation((options) => {
+      const provider = validFactory(options);
+      jest
+        .spyOn(provider, "send")
+        .mockImplementation(async (method) =>
+          method === "eth_chainId"
+            ? "0x279f"
+            : { number: "0x0", hash: "0x" + "ff".repeat(32) }
+        );
+      return provider;
+    });
+    await expect(chain.createWallet(roots())).rejects.toThrow(
+      /checkpoint mismatch/
+    );
+    factory.mockImplementation(validFactory);
+    wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle;
+    expect(wallet.getNativeOperations!()).toEqual(original);
+  } finally {
+    await wallet.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test.each(["included", "pending", "uncertain"] as const)(
   "native resume refreshes the balance after an %s outcome without replacing the payment",
@@ -1569,7 +1641,7 @@ test('a funded key-only imported account cannot become native custody authority'
   try {
     const stranger = new Wallet('0x' + '67'.repeat(32))
     const coin = wallet.accountUtxoPool!.registerSubAccount({
-      chain: 'monad',
+      chainIdentifier: "monad-testnet",
       address: stranger.address,
       privateKey: stranger.privateKey,
       balanceWei: 100000n,

@@ -14,12 +14,18 @@ import { createServer, connect, type Server, type Socket } from 'net'
 
 import { FetchRequest, JsonRpcProvider } from 'ethers'
 
-import type { CheckStack } from '../../parallel-send.livecheck'
-import { openRealWallet, type RealWallet } from '../real-stack'
-import { MONAD_REGTEST_CHAIN, MONAD_REGTEST_CHAIN_ID, MONAD_REGTEST_NETWORK_TAG, ensureSolonet } from './monad-regtest'
-import { monadOf, openMonadWallet } from './monad-wallets'
-import { freePort } from './regtest-chain'
-import { startRegtestStack } from './regtest-stack'
+import type { CheckStack } from "../../parallel-send.livecheck";
+import { openRealWallet, type RealWallet } from "../real-stack";
+import { loadMonadChainConfigFromEnv } from "@frank/wallet/chain/monad-chain";
+import {
+  MONAD_REGTEST_CHAIN,
+  MONAD_REGTEST_CHAIN_ID,
+  MONAD_REGTEST_NETWORK_TAG,
+  ensureSolonet,
+} from "./monad-regtest";
+import { monadOf, openMonadWallet } from "./monad-wallets";
+import { freePort } from "./regtest-chain";
+import { startRegtestStack } from "./regtest-stack";
 
 /** A TCP relay to `target` that can be switched off (connection refused, live ones cut) and on. */
 async function switchablePort(target: { host: string; port: number }) {
@@ -86,13 +92,20 @@ export async function startCheckStack(options: { relayUrl?: string } = {}): Prom
   if (options.relayUrl) {
     // Another process of the same run (the one that is killed): the relay is already up and the
     // wallets' state is the run's.
-    const stateDir = process.env.PSEND_STATE_DIR
-    if (!stateDir) throw new Error('PSEND_STATE_DIR is required with a relay that is already running')
+    const stateDir = process.env.PSEND_STATE_DIR;
+    if (!stateDir)
+      throw new Error(
+        "PSEND_STATE_DIR is required with a relay that is already running"
+      );
+    const operatorCheckpoint = loadMonadChainConfigFromEnv().operatorCheckpoint;
+    if (!operatorCheckpoint)
+      throw new Error("Restart process requires the original run checkpoint");
     const stop = async () => {
       for (const wallet of wallets) await wallet.close().catch(() => undefined)
       provider.destroy()
     }
     return {
+      operatorCheckpoint,
       relayUrl: options.relayUrl,
       rpcUrl,
       stateDir,
@@ -105,8 +118,12 @@ export async function startCheckStack(options: { relayUrl?: string } = {}): Prom
             relayUrl: options.relayUrl!,
             stateDir,
             stampValueWei: walletOptions?.stampValueWei,
-            network: { rpcChain: MONAD_REGTEST_CHAIN, networkTag: MONAD_REGTEST_NETWORK_TAG },
-          }),
+            network: {
+              rpcChain: MONAD_REGTEST_CHAIN,
+              networkTag: MONAD_REGTEST_NETWORK_TAG,
+              operatorCheckpoint,
+            },
+          })
         ),
       fund: async () => {
         throw new Error('this process does not fund')
@@ -159,6 +176,10 @@ export async function startCheckStack(options: { relayUrl?: string } = {}): Prom
       await gate.down()
     })())
   return {
+    operatorCheckpoint: {
+      blockNumber: monad.checkpoint.height,
+      blockHash: monad.checkpoint.hash,
+    },
     relayUrl: stack.relayUrl,
     rpcUrl,
     stateDir: stack.stateDir,

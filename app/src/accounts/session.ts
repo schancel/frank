@@ -1,3 +1,4 @@
+import type { OperatorCheckpoint } from '@frank/wallet/chain/evm-rpc-identity'
 import type { Ed25519Node } from '@frank/wallet/ed25519-hd-keyring'
 import type { ExperimentalCustody } from '@frank/wallet/solana-crypto-backend/runtime.mjs'
 import {
@@ -518,16 +519,14 @@ export function createAccountSession(deps: {
     async createEvmWallet(input: {
       readonly config: EvmChainConfig
       readonly signal?: AbortSignal
-      readonly operatorCheckpoint?: {
-        readonly blockNumber: number
-        readonly blockHash: string
-      }
+      readonly operatorCheckpoint?: OperatorCheckpoint
     }): Promise<NativeWalletHandle & { close(): Promise<void> }> {
       const signal = input.signal
       const config = { ...input.config }
-      const checkpoint = input.operatorCheckpoint && {
-        ...input.operatorCheckpoint,
-      }
+      const selectedCheckpoint =
+        input.operatorCheckpoint ?? config.operatorCheckpoint
+      const checkpoint = selectedCheckpoint && { ...selectedCheckpoint }
+      config.operatorCheckpoint = checkpoint
       const entry = validateEvmWalletConfiguration(config, checkpoint)
       const checkCurrent = captureDerivation()
       const currentWallet = await session.getWallet()

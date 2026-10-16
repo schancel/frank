@@ -1,3 +1,5 @@
+import { useFactoryIdentityFixture } from "./evm-identity-rpc.testutil";
+useFactoryIdentityFixture();
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
  * A contract call through the composed EVM wallet handle: the wallet queue, the main-account

@@ -1,3 +1,4 @@
+import type { OperatorCheckpoint } from "./evm-rpc-identity";
 import type { StampDefaultResolver } from "../oracle/stamp-policy";
 /** Generic EVM configuration; runtime/environment composition remains in monad-chain.ts. */
 import type { NativeTransactionAttemptStore } from "./chain-wallet";
@@ -5,6 +6,10 @@ import type { EvmTransactionBuilder } from "./evm-transaction-builder";
 import type { SwapRecordItem, WalletSyncItem } from "@frank/cashweb/types/messages";
 
 export interface EvmChainConfig {
+  /** Run-owned, non-genesis identity anchor required by operator-checkpoint networks. */
+  readonly operatorCheckpoint?: OperatorCheckpoint;
+  /** Positive qualification deadline of at most 30,000ms; defaults to 30 seconds. */
+  readonly identityQualificationWaitMs?: number;
   /** Stable chain/deployment identifier used for wallet affinity checks. */
   networkId: string;
   /** Shared protocol chain identifier used by the relay family route. */

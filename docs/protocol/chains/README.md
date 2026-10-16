@@ -177,3 +177,25 @@ yarn --cwd packages/bot regtest:monad-stop      # the chain keeps running until 
 
 Monad's gas and reserve-balance rules, with what was observed on this network, are in
 [monad-reserve-balance.md](monad-reserve-balance.md).
+
+### EVM wallet operator checkpoints
+
+Wallet opening and recovery observations qualify the configured RPC against the registry's
+native chain ID and checkpoint probes. Public network pins remain registry-owned. For a network
+with an `operator-block-checkpoint` probe, the host must supply `EvmChainConfig.operatorCheckpoint`
+with a positive safe-integer block number and its 32-byte hash from that specific run.
+Genesis cannot distinguish separate regtest instances and is refused.
+
+The single selected-network environment loader accepts the paired variables
+`EVM_OPERATOR_CHECKPOINT_BLOCK_NUMBER` (positive decimal integer) and
+`EVM_OPERATOR_CHECKPOINT_BLOCK_HASH` (`0x` plus 64 hexadecimal digits). Supply both or neither;
+malformed or incomplete pairs fail. Browser builds use the existing `QCLI_` prefix. Explicit
+typed loader overrides take precedence. The regtest harness forwards its already-established
+run checkpoint, including to restart subprocesses; wallet opening never chooses its own anchor.
+
+Qualification waits default to 30 seconds. `identityQualificationWaitMs` may supply a positive
+safe-integer deadline of at most 30,000ms for deterministic fixtures or host policy. Overlapping observations share
+one pending qualification; timed-out requests remain physically owned until settlement or
+provider disposal. A successful observation is not retained as a certificate for later polls.
+These gates precede handle publication and native recovery/watch observations; they do not
+make initial store opening read-only, gate every send, or implement ancestry/reorg rollback.

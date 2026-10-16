@@ -1,3 +1,5 @@
+import { useFactoryIdentityFixture } from "@frank/wallet/chain/evm-identity-rpc.testutil";
+useFactoryIdentityFixture();
 import { fixedStampDefault } from '../wallet/oracle/stamp-policy.testutil'
 import {
   chmodSync,

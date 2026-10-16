@@ -1,3 +1,5 @@
+import { useFactoryIdentityFixture } from "./evm-identity-rpc.testutil";
+useFactoryIdentityFixture();
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';

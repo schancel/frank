@@ -1,3 +1,4 @@
+import type { OperatorCheckpoint } from "@frank/wallet/chain/evm-rpc-identity";
 import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
 /**
  * The real test harness: the real relay binary against the real chain (Monad testnet), real
@@ -272,8 +273,9 @@ export async function openRealWallet(params: {
   /** The Monad network the relay runs on (default Monad testnet). The regtest stack passes
    * `monad-regtest` / `MONR`. */
   network?: {
-    rpcChain: string
-    networkTag: 'MONT' | 'MON1' | 'MONR'
+    rpcChain: string;
+    operatorCheckpoint?: OperatorCheckpoint;
+    networkTag: "MONT" | "MON1" | "MONR";
     /** Addresses of contracts deployed for this run (a regtest chain has no committed record). */
     contracts?: { stateChannel?: string; htlc?: string }
   }
@@ -299,6 +301,7 @@ export async function openRealWallet(params: {
   const startedAt = Date.now()
   const chain = createRelayPricedEvmChain({
     ...loadMonadChainConfigFromEnv({ isTestnet: true }),
+    operatorCheckpoint: network.operatorCheckpoint,
     networkId: network.rpcChain,
     rpcChain: network.rpcChain,
     chainId: identity.chainId,

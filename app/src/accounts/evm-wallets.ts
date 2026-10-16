@@ -24,10 +24,8 @@ import {
   verifyEvmWalletRpcIdentity,
 } from './evm-wallet-verification'
 
-export interface EvmOperatorCheckpoint {
-  readonly blockNumber: number
-  readonly blockHash: string
-}
+export type { OperatorCheckpoint as EvmOperatorCheckpoint } from '@frank/wallet/chain/evm-rpc-identity'
+import type { OperatorCheckpoint as EvmOperatorCheckpoint } from '@frank/wallet/chain/evm-rpc-identity'
 export interface OpenEvmWallet {
   readonly chain: NativeAssetChain
   readonly wallet: NativeWalletHandle & { close(): Promise<void> }
@@ -185,6 +183,7 @@ export function openEvmWallet(
   }
   const config: EvmChainConfig = {
     ...baseConfig,
+    operatorCheckpoint: checkpointInput,
     ...(getChainRegistryEntry(chainIdentifier)?.kind === 'monad'
       ? {}
       : { emitWalletSync }),

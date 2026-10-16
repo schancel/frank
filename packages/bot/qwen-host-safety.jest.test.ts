@@ -117,6 +117,10 @@ jest.mock("@frank/wallet/monad-provider", () => {
         10143n,
         { staticNetwork: true, cacheTimeout: -1 }
       );
+      require("@frank/wallet/chain/evm-identity-rpc.testutil").installIdentityRpcFixture(
+        provider,
+        "monad-testnet"
+      );
       provider._perform = async (request: {
         method: string;
         address?: string;
@@ -1561,6 +1565,29 @@ describe("with the real canonical wallet", () => {
   };
   const done = async (prompt: DirectMessageReceived) =>
     (await qwen().state.get("digest:" + prompt.payloadDigest)) !== undefined;
+
+  it("the actual host poll requalifies its installed wallet before native evidence reads", async () => {
+    const { botWallet, pass } = await setUp(false);
+    const raw = jest
+      .spyOn(botWallet.provider, "send")
+      .mockImplementation(async (method) =>
+        method === "eth_chainId"
+          ? "0x279f"
+          : { number: "0x0", hash: "0x" + "ff".repeat(32) }
+      );
+    const recover = jest.spyOn(botWallet, "reobserveNativeOperations");
+    const evidence = jest.spyOn(botWallet.provider, "getTransactionReceipt");
+    await pass();
+    expect(recover).toHaveBeenCalled();
+    await expect(recover.mock.results[0].value).rejects.toThrow(
+      /checkpoint mismatch/
+    );
+    expect(raw.mock.calls.map((call) => call[0])).toEqual([
+      "eth_chainId",
+      "eth_getBlockByNumber",
+    ]);
+    expect(evidence).not.toHaveBeenCalled();
+  });
 
   // On 05c93db0 the first failure left the reply linked and waiting, and any second reply
   // behind it held for good; here the one reply is finished by polls alone.

@@ -1,3 +1,5 @@
+import { useFactoryIdentityFixture } from "./evm-identity-rpc.testutil";
+const resetIdentityFixture = useFactoryIdentityFixture();
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -245,6 +247,7 @@ async function reopenWallet() {
   const old = state
   await wallet.close()
   jest.restoreAllMocks()
+  resetIdentityFixture()
   wallet = (await createEvmChain(cfg).createWallet(
     roots(),
   )) as EvmChainWalletHandle
@@ -280,6 +283,7 @@ test('public native quote gathers fragmented owned accounts, freezes on reopen, 
     txs = new Map(state.txs)
   await wallet.close()
   jest.restoreAllMocks()
+  resetIdentityFixture()
   wallet = (await createEvmChain(cfg).createWallet(
     roots(),
   )) as EvmChainWalletHandle
@@ -684,6 +688,7 @@ test('an obsolete preparation format fails reopen without deleting its records o
   await wallet.stealthPayments!.quote!(unsigned)
   await wallet.close()
   jest.restoreAllMocks()
+  resetIdentityFixture()
   const location = `${cfg.walletStorageLocation}-evm-${MAIN}`
   const store = await LevelRecordStore.open<EvmStealthPreparation>(
     location,

@@ -361,6 +361,10 @@ async function sendNativeReported(
 
 /** A stack this check can run on: the harness's, and optionally a way to cut the chain off. */
 export type CheckStack = RealStack & {
+  operatorCheckpoint?: {
+    readonly blockNumber: number;
+    readonly blockHash: string;
+  };
   /** Makes the chain's node unreachable for the relay and the wallets, and reachable again. */
   chainOutage?: { down(): Promise<void>; up(): Promise<void> };
 };
@@ -890,22 +894,27 @@ async function main() {
       const nonce0 = await mainNonce(stack, alice);
       const note = join(mkdtempSync(join(tmpdir(), "psend-")), "killed.json");
       await alice.close();
-      const child = spawn(
-        process.execPath,
-        ["--import", "tsx", __filename],
-        {
-          env: {
-            ...process.env,
-            PSEND_CHILD: "kill-after-delivered",
-            PSEND_RELAY: stack.relayUrl,
-            PSEND_STATE_DIR: stack.stateDir,
-            PSEND_TO: bob.address,
-            PSEND_NOTE: note,
-            PSEND_LABEL: senderLabel,
-          },
-          stdio: ["ignore", "inherit", "inherit"],
-        }
-      );
+      const child = spawn(process.execPath, ["--import", "tsx", __filename], {
+        env: {
+          ...process.env,
+          PSEND_CHILD: "kill-after-delivered",
+          PSEND_RELAY: stack.relayUrl,
+          PSEND_STATE_DIR: stack.stateDir,
+          ...(stack.operatorCheckpoint
+            ? {
+                EVM_OPERATOR_CHECKPOINT_BLOCK_NUMBER: String(
+                  stack.operatorCheckpoint.blockNumber
+                ),
+                EVM_OPERATOR_CHECKPOINT_BLOCK_HASH:
+                  stack.operatorCheckpoint.blockHash,
+              }
+            : {}),
+          PSEND_TO: bob.address,
+          PSEND_NOTE: note,
+          PSEND_LABEL: senderLabel,
+        },
+        stdio: ["ignore", "inherit", "inherit"],
+      });
       const exit = await new Promise<string>((resolve) =>
         child.on("exit", (code, signal) => resolve(signal ?? `code ${code}`))
       );

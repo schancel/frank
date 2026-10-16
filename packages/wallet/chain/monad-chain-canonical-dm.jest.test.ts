@@ -140,8 +140,12 @@ jest.mock('../monad-provider', () => {
         {
           staticNetwork: true,
           cacheTimeout: -1,
-        },
-      )
+        }
+      );
+      require("./evm-identity-rpc.testutil").installIdentityRpcFixture(
+        provider,
+        "monad-testnet"
+      );
       provider._perform = async (request: {
         method: string
         address?: string

@@ -1,3 +1,5 @@
+import { useFactoryIdentityFixture } from "./evm-identity-rpc.testutil";
+useFactoryIdentityFixture();
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
  * Ticket #273: a topic post or vote from an account that never sent a direct message failed with

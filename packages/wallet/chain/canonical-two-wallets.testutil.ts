@@ -1,3 +1,4 @@
+import { installIdentityRpcFixture } from "./evm-identity-rpc.testutil";
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
  * Offline stand-ins and a two-wallet table for tests that play blackjack through real typed
@@ -147,15 +148,18 @@ export function offlineProviderModule() {
   const ethers = require('ethers')
   return {
     ...actual,
-    createMonadJsonRpcProvider: () => {
+    createMonadJsonRpcProvider: (options: import('../monad-provider').MonadJsonRpcProviderOptions) => {
       const provider = new ethers.JsonRpcProvider(
         'http://127.0.0.1:1',
-        10143n,
+        options.chainId,
         {
           staticNetwork: true,
           cacheTimeout: -1,
         },
       )
+      if (!options.rpcUrl) throw new Error('Offline provider requires a canonical RPC route')
+      const id = decodeURIComponent(new URL(options.rpcUrl).pathname.split('/')[2])
+      installIdentityRpcFixture(provider, id)
       provider._perform = async (request: {
         method: string
         address?: string

@@ -34,13 +34,17 @@ export function openMonadWallet(
     contracts?: DeploymentRecord
   } = {},
 ): Promise<RealWallet> {
-  monadOf(stack)
+  const monad = monadOf(stack);
   return openRealWallet({
     label,
     relayUrl: stack.relayUrl,
     stateDir: stack.stateDir,
     stampValueWei: options.stampValueWei,
     network: {
+      operatorCheckpoint: {
+        blockNumber: monad.checkpoint.height,
+        blockHash: monad.checkpoint.hash,
+      },
       rpcChain: MONAD_REGTEST_CHAIN,
       networkTag: MONAD_REGTEST_NETWORK_TAG,
       ...(options.contracts

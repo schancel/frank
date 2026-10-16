@@ -1,3 +1,5 @@
+import { useFactoryIdentityFixture } from "./evm-identity-rpc.testutil";
+useFactoryIdentityFixture();
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
  * A contract call through the composed EVM wallet handle: the wallet queue, the main-account
@@ -848,4 +850,3 @@ test('fast-path native quoting queries mainAccount directly and avoids scanning 
     await rm(dir, { recursive: true, force: true })
   }
 })
-

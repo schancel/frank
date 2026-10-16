@@ -1,3 +1,5 @@
+import { installIdentityRpcFixture } from '@frank/wallet/chain/evm-identity-rpc.testutil'
+import * as providerModule from '@frank/wallet/monad-provider'
 // Load the pinned SDK's real embedded WASM in Jest/CommonJS. Only the unused async
 // URL loader needs import.meta removal; initSync and every cryptographic export stay real.
 jest.mock('ecash-lib/dist/ffi/ecash_lib_wasm_browser.js', () => {
@@ -2228,6 +2230,37 @@ function peerCheckpoint(network = 'monad-mainnet') {
   if (probe.kind !== 'block-hash') throw new Error('missing checkpoint')
   return { number: probe.height, hash: probe.expected }
 }
+test('primary activation runs the actual EVM factory identity check before readiness', async () => {
+  const original = providerModule.createMonadJsonRpcProvider
+  const factory = jest
+    .spyOn(providerModule, 'createMonadJsonRpcProvider')
+    .mockImplementation(options => {
+      const provider = original(options)
+      jest
+        .spyOn(provider, 'send')
+        .mockImplementation(async method =>
+          method === 'eth_chainId'
+            ? '0x279f'
+            : { number: '0x0', hash: '0x' + 'ff'.repeat(32) },
+        )
+      return provider
+    })
+  const f = fixture()
+  const chain = createEvmChain(peerEvmConfig('monad-testnet'))
+  f.createWallet.mockImplementation(
+    async material => (await chain.createWallet(material)) as RuntimeWallet,
+  )
+  try {
+    await f.session.initialize()
+    expect(f.session.state.status).toBe('unavailable')
+    expect(f.session.state.error).toBe('unavailable')
+    expect(factory.mock.results[0].value.destroyed).toBe(true)
+  } finally {
+    await f.session.close()
+    factory.mockRestore()
+  }
+})
+
 test('privately opens real EVM owners with the same Frank identity and separate canonical journals without replacing the primary', async () => {
   const borrowed: DomainRoot[] = []
   const secondary: EvmChainWalletHandle[] = []
@@ -2238,9 +2271,22 @@ test('privately opens real EVM owners with the same Frank identity and separate 
         | import('@frank/wallet/chain/active-chain').MonadRootBundle
         | import('@frank/wallet/monad-wallet-material').HistoricalBip39Seed,
     ) => {
+      const originalProvider = providerModule.createMonadJsonRpcProvider
+      const fixtureProvider = jest
+        .spyOn(providerModule, 'createMonadJsonRpcProvider')
+        .mockImplementation(options => {
+          const provider = originalProvider(options)
+          installIdentityRpcFixture(
+            provider,
+            config.networkId,
+            config.operatorCheckpoint,
+          )
+          return provider
+        })
       const candidate = (await createEvmChain(config).createWallet(
         material,
       )) as EvmChainWalletHandle
+      fixtureProvider.mockRestore()
       jest
         .spyOn(candidate.provider, 'send')
         .mockImplementation(

@@ -1,4 +1,9 @@
-import { CANONICAL_DM_MAX_TRANSACTIONS } from '@frank/cashweb/relay/canonical-dm-transport';
+import { EvmWalletQualification } from "./evm-wallet-qualification";
+import {
+  validateEvmWalletConfiguration,
+  type OperatorCheckpoint,
+} from "./evm-rpc-identity";
+import { CANONICAL_DM_MAX_TRANSACTIONS } from "@frank/cashweb/relay/canonical-dm-transport";
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy";
 import type { EvmChainConfig } from "./evm-chain-config";
@@ -389,9 +394,10 @@ export function getDefaultRelayBaseUrl(): string {
 /** Reads `EvmChainConfig` from the environment (see `readEnv` just above for exactly where
  * from, and why two places), with permissive fallbacks -- see this file's header,
  * "Configuration", for why this (unlike the wallet client modules it configures) reads env
- * directly, and why it never throws on a missing var. */
+ * directly. Malformed paired checkpoint values fail visibly; inspection stays offline. */
 export function loadMonadChainConfigFromEnv(overrides?: {
   isTestnet?: boolean;
+  operatorCheckpoint?: OperatorCheckpoint;
 }): EvmChainConfig {
   const rpcChain =
     overrides?.isTestnet !== undefined
@@ -400,6 +406,28 @@ export function loadMonadChainConfigFromEnv(overrides?: {
         : "monad-mainnet"
       : readEnv("MONAD_RPC_CHAIN") ?? "monad-testnet";
   const protocolIdentity = monadProtocolIdentity(rpcChain);
+  const checkpointHeight = readEnv("EVM_OPERATOR_CHECKPOINT_BLOCK_NUMBER");
+  const checkpointHash = readEnv("EVM_OPERATOR_CHECKPOINT_BLOCK_HASH");
+  let operatorCheckpoint = overrides?.operatorCheckpoint;
+  if (
+    operatorCheckpoint === undefined &&
+    (checkpointHeight !== undefined || checkpointHash !== undefined)
+  ) {
+    if (
+      !checkpointHeight ||
+      !/^[1-9][0-9]*$/.test(checkpointHeight) ||
+      !Number.isSafeInteger(Number(checkpointHeight)) ||
+      !checkpointHash ||
+      !/^0x[0-9a-fA-F]{64}$/.test(checkpointHash)
+    )
+      throw new Error(
+        "Invalid paired EVM operator checkpoint environment values"
+      );
+    operatorCheckpoint = {
+      blockNumber: Number(checkpointHeight),
+      blockHash: checkpointHash,
+    };
+  }
   const rawChainId = readEnv("MONAD_CHAIN_ID");
   let chainId: bigint | undefined;
   if (rawChainId) {
@@ -411,6 +439,7 @@ export function loadMonadChainConfigFromEnv(overrides?: {
   }
 
   return {
+    operatorCheckpoint,
     networkId:
       overrides?.isTestnet !== undefined
         ? rpcChain
@@ -1028,6 +1057,29 @@ function asNothingSent(err: unknown): never {
  * header, "Configuration", for why config is a param here (unlike the `MonadChain` singleton
  * below, which reads it from env). */
 export function createEvmChain(config: EvmChainConfig): ActiveChain {
+  const sourceConfig = config;
+  config = {
+    ...config,
+    chainIdentifier: config.chainIdentifier ?? config.rpcChain,
+    operatorCheckpoint: config.operatorCheckpoint && {
+      ...config.operatorCheckpoint,
+    },
+    // Host boot installs this resolver after creating the factory.
+    get resolveDefaultStamp() {
+      return sourceConfig.resolveDefaultStamp;
+    },
+  };
+  const qualificationWaitMs = config.identityQualificationWaitMs ?? 30_000;
+  if (
+    !Number.isSafeInteger(qualificationWaitMs) ||
+    qualificationWaitMs <= 0 ||
+    qualificationWaitMs > 30_000
+  )
+    throw new Error("Invalid EVM identity qualification deadline");
+  const qualifications = new WeakMap<
+    EvmChainWalletHandle,
+    EvmWalletQualification
+  >();
   const chainIdentifier = config.chainIdentifier ?? config.rpcChain;
   if (config.rpcChain !== chainIdentifier) {
     throw new Error(`EVM network mismatch: ${chainIdentifier} / ${config.rpcChain}`);
@@ -1078,7 +1130,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     config.transactionBuilder ?? defaultNativeEvmTransactionBuilder;
   const walletsByIdentity = new Map<
     string,
-    { fingerprint: string; pending: Promise<EvmChainWalletHandle> }
+    {
+      fingerprint: string;
+      pending: Promise<EvmChainWalletHandle>;
+      published: boolean;
+    }
   >();
   const mainPrivateKey = (wallet: EvmChainWalletHandle) =>
     walletMaterial.get(wallet)?.mainAccount.privateKey ??
@@ -2424,6 +2480,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     async createWallet(
       seed: HDSeed | MonadRootBundle | HistoricalBip39Seed
     ): Promise<EvmChainWalletHandle> {
+      validateEvmWalletConfiguration(config, config.operatorCheckpoint);
       const material = createMonadWalletMaterial(seed);
       if (config.requireBoundWalletState === true && material.canonicalRoles === undefined) {
         material.dispose();
@@ -2443,7 +2500,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           throw new Error(
             "Monad wallet root bundle does not match the cached identity"
           );
+        const wasPending = !existing.published;
         const wallet = await existing.pending;
+        requireOpenWallet(wallet);
+        if (!wasPending) await qualifications.get(wallet)!.qualify();
         requireOpenWallet(wallet);
         return wallet;
       }
@@ -2754,6 +2814,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             relayAuth,
           });
           destroyProvider = () => provider.destroy();
+          const qualification = new EvmWalletQualification(
+            config,
+            provider,
+            qualificationWaitMs
+          );
+          await qualification.qualify();
           const httpClient = new MonadHttpClient({
             rpcUrl,
             chainId: config.chainId,
@@ -3221,9 +3287,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // lifetime only (inside the consolidator), outside this wallet's queue; only the
             // local pass that follows a newly recorded inclusion enters the queue, where the
             // queue's own guard may refuse it. A refusal leaves the observation recorded.
-            reobserveNativeOperations() {
+            async reobserveNativeOperations() {
               const owner = nativeOperationOwners.get(wallet);
-              if (!owner || closedWallets.has(wallet)) return Promise.resolve();
+              if (!owner || closedWallets.has(wallet)) return;
+              await qualification.qualify();
+              requireOpenWallet(wallet);
               // A contract call the node was seen not to know is handed to it again (the same
               // signed bytes), so a lost broadcast cannot hold the main account for good.
               return owner
@@ -3247,6 +3315,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             async watchNativeOperation(operationId) {
               requireOpenWallet(wallet);
               const owner = nativeOperationOwner(wallet);
+              await qualification.qualify();
+              requireOpenWallet(wallet);
               const watcher = blockWatchers.get(wallet);
               // The wallet's one block watcher paces the looks; a wallet without one waits a
               // second. A watcher that was stopped means the wallet is closing.
@@ -3452,6 +3522,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             close() {
               if (closing !== undefined) return closing;
               closedWallets.add(wallet);
+              qualification.close();
               // Every wait on the chain ends now: nothing a waiter had was signed.
               blockWatchers.get(wallet)?.stop();
               closing = (async () => {
@@ -6121,6 +6192,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               })),
           ]);
           if (material.canonicalRoles !== undefined) typedWallets.add(wallet);
+          qualifications.set(wallet, qualification);
           return wallet;
         } catch (error) {
           try {
@@ -6139,9 +6211,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       walletsByIdentity.set(identityKey, {
         fingerprint: material.fingerprint,
         pending,
+        published: false,
       });
       try {
-        return await pending;
+        const wallet = await pending;
+        walletsByIdentity.get(identityKey)!.published = true;
+        return wallet;
       } catch (err) {
         material.dispose();
         walletsByIdentity.delete(identityKey);

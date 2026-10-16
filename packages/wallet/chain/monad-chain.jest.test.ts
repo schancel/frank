@@ -1,3 +1,5 @@
+import { useFactoryIdentityFixture } from "./evm-identity-rpc.testutil";
+useFactoryIdentityFixture();
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import * as legacyEnvelope from "@frank/cashweb/relay/monad-message-envelope";
 import * as syncDispatch from "@frank/cashweb/sync-dispatcher";

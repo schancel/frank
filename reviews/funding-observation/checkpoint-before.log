@@ -1,0 +1,421 @@
+FAIL packages/wallet/funding-observation.jest.test.ts
+  anchored funding observation on the actual signer
+    ✕ returns canonical included success with pinned accounts (6 ms)
+    ✕ returns canonical included failure with pinned accounts (2 ms)
+    ✕ does not infer success from a positive balance without a receipt (4 ms)
+    ✕ reports coherent nonce supersession only after a repeated absent receipt (2 ms)
+    ✕ does not supersede a receipt that appears during account reads (2 ms)
+    ✕ leaves invalid/unknown receipt evidence unresolved: { status: 'unknown' } (1 ms)
+    ✕ leaves invalid/unknown receipt evidence unresolved: {
+  txHash: '0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
+} (1 ms)
+    ✕ leaves invalid/unknown receipt evidence unresolved: { blockHash: '0x' } (1 ms)
+    ✕ leaves invalid/unknown receipt evidence unresolved: { blockNumber: -1 } (2 ms)
+    ✕ leaves invalid/unknown receipt evidence unresolved: { blockNumber: 9007199254740992 } (2 ms)
+    ✕ rejects initial mismatch canonical block evidence (2 ms)
+    ✕ rejects replacement canonical block evidence (2 ms)
+    ✕ rejects missing canonical block evidence (4 ms)
+    ✕ keeps receipt RPC failures unavailable (2 ms)
+    ✕ keeps block RPC failures unavailable (2 ms)
+    ✕ keeps accounts RPC failures unavailable (2 ms)
+    ✕ rejects invalid caller bindings before RPC: { recipient: '0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB' } (2 ms)
+    ✕ rejects invalid caller bindings before RPC: { funder: '0x1563915e194D8CfBA1943570603F7606A3115508' } (2 ms)
+    ✕ rejects invalid caller bindings before RPC: { chainId: 2n } (1 ms)
+    ✕ rejects invalid caller bindings before RPC: { chainId: 0n } (1 ms)
+    ✕ rejects invalid caller bindings before RPC: {
+  txHash: '0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
+} (2 ms)
+    ✕ rejects invalid caller bindings before RPC: { rawTx: '0x1234' } (2 ms)
+    ✕ rejects invalid signed transfer { value: 0n } (2 ms)
+    ✕ rejects invalid signed transfer { data: '0x1234' } (2 ms)
+    ✕ rejects invalid signed transfer { chainId: 0n } (1 ms)
+    ✕ rejects a valid signature from a different signer (4 ms)
+    ✕ snapshots caller bindings before awaiting receipt lookup (3 ms)
+
+  ● anchored funding observation on the actual signer › returns canonical included success with pinned accounts
+
+    TypeError: f.signer.observeFunding is not a function
+
+      41 |     const f = await fixture()
+      42 |     f.receipt.status = status
+    > 43 |     expect(await f.signer.observeFunding(f.input)).toEqual({
+         |                           ^
+      44 |       kind: 'included', execution: status, receiptBlock: { number: 10, hash: blockHash },
+      45 |       accounts: { block: { number: 10, hash: blockHash }, senderNonce: 4n,
+      46 |         recipientNonce: 0n, recipientBalance: 12n },
+
+      at funding-observation.jest.test.ts:43:27
+
+  ● anchored funding observation on the actual signer › returns canonical included failure with pinned accounts
+
+    TypeError: f.signer.observeFunding is not a function
+
+      41 |     const f = await fixture()
+      42 |     f.receipt.status = status
+    > 43 |     expect(await f.signer.observeFunding(f.input)).toEqual({
+         |                           ^
+      44 |       kind: 'included', execution: status, receiptBlock: { number: 10, hash: blockHash },
+      45 |       accounts: { block: { number: 10, hash: blockHash }, senderNonce: 4n,
+      46 |         recipientNonce: 0n, recipientBalance: 12n },
+
+      at funding-observation.jest.test.ts:43:27
+
+  ● anchored funding observation on the actual signer › does not infer success from a positive balance without a receipt
+
+    TypeError: f.signer.observeFunding is not a function
+
+      56 |     f.http.getTransactionReceipt.mockResolvedValue(undefined)
+      57 |     f.getTransactionCount.mockResolvedValue(3)
+    > 58 |     expect(await f.signer.observeFunding(f.input)).toEqual({ kind: 'unresolved', reason: 'pending' })
+         |                           ^
+      59 |     expect(f.getBlock.mock.calls).toEqual([['latest'], [10]])
+      60 |   })
+      61 |
+
+      at Object.<anonymous> (funding-observation.jest.test.ts:58:27)
+
+  ● anchored funding observation on the actual signer › reports coherent nonce supersession only after a repeated absent receipt
+
+    TypeError: f.signer.observeFunding is not a function
+
+      63 |     const f = await fixture()
+      64 |     f.http.getTransactionReceipt.mockResolvedValue(undefined)
+    > 65 |     expect(await f.signer.observeFunding(f.input)).toEqual({
+         |                           ^
+      66 |       kind: 'superseded', accounts: { block: { number: 10, hash: blockHash },
+      67 |         senderNonce: 4n, recipientNonce: 0n, recipientBalance: 12n },
+      68 |     })
+
+      at Object.<anonymous> (funding-observation.jest.test.ts:65:27)
+
+  ● anchored funding observation on the actual signer › does not supersede a receipt that appears during account reads
+
+    TypeError: f.signer.observeFunding is not a function
+
+      73 |     const f = await fixture()
+      74 |     f.http.getTransactionReceipt.mockResolvedValueOnce(undefined)
+    > 75 |     expect(await f.signer.observeFunding(f.input)).toEqual({ kind: 'unresolved', reason: 'inconsistent' })
+         |                           ^
+      76 |   })
+      77 |
+      78 |   it.each([
+
+      at Object.<anonymous> (funding-observation.jest.test.ts:75:27)
+
+  ● anchored funding observation on the actual signer › leaves invalid/unknown receipt evidence unresolved: { status: 'unknown' }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      82 |     const f = await fixture()
+      83 |     Object.assign(f.receipt, patch)
+    > 84 |     expect((await f.signer.observeFunding(f.input)).kind).toBe('unresolved')
+         |                            ^
+      85 |     expect(f.getBalance).not.toHaveBeenCalled()
+      86 |   })
+      87 |
+
+      at funding-observation.jest.test.ts:84:28
+
+  ● anchored funding observation on the actual signer › leaves invalid/unknown receipt evidence unresolved: {
+  txHash: '0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
+}
+
+    TypeError: f.signer.observeFunding is not a function
+
+      82 |     const f = await fixture()
+      83 |     Object.assign(f.receipt, patch)
+    > 84 |     expect((await f.signer.observeFunding(f.input)).kind).toBe('unresolved')
+         |                            ^
+      85 |     expect(f.getBalance).not.toHaveBeenCalled()
+      86 |   })
+      87 |
+
+      at funding-observation.jest.test.ts:84:28
+
+  ● anchored funding observation on the actual signer › leaves invalid/unknown receipt evidence unresolved: { blockHash: '0x' }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      82 |     const f = await fixture()
+      83 |     Object.assign(f.receipt, patch)
+    > 84 |     expect((await f.signer.observeFunding(f.input)).kind).toBe('unresolved')
+         |                            ^
+      85 |     expect(f.getBalance).not.toHaveBeenCalled()
+      86 |   })
+      87 |
+
+      at funding-observation.jest.test.ts:84:28
+
+  ● anchored funding observation on the actual signer › leaves invalid/unknown receipt evidence unresolved: { blockNumber: -1 }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      82 |     const f = await fixture()
+      83 |     Object.assign(f.receipt, patch)
+    > 84 |     expect((await f.signer.observeFunding(f.input)).kind).toBe('unresolved')
+         |                            ^
+      85 |     expect(f.getBalance).not.toHaveBeenCalled()
+      86 |   })
+      87 |
+
+      at funding-observation.jest.test.ts:84:28
+
+  ● anchored funding observation on the actual signer › leaves invalid/unknown receipt evidence unresolved: { blockNumber: 9007199254740992 }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      82 |     const f = await fixture()
+      83 |     Object.assign(f.receipt, patch)
+    > 84 |     expect((await f.signer.observeFunding(f.input)).kind).toBe('unresolved')
+         |                            ^
+      85 |     expect(f.getBalance).not.toHaveBeenCalled()
+      86 |   })
+      87 |
+
+      at funding-observation.jest.test.ts:84:28
+
+  ● anchored funding observation on the actual signer › rejects initial mismatch canonical block evidence
+
+    TypeError: f.signer.observeFunding is not a function
+
+      92 |       .mockResolvedValueOnce({ number: 10, hash: otherHash } as never)
+      93 |     if (mode === 'missing') f.getBlock.mockResolvedValue(null)
+    > 94 |     expect(await f.signer.observeFunding(f.input)).toEqual({ kind: 'unresolved', reason: 'inconsistent' })
+         |                           ^
+      95 |   })
+      96 |
+      97 |   it.each(['receipt', 'block', 'accounts'] as const)('keeps %s RPC failures unavailable', async stage => {
+
+      at funding-observation.jest.test.ts:94:27
+
+  ● anchored funding observation on the actual signer › rejects replacement canonical block evidence
+
+    TypeError: f.signer.observeFunding is not a function
+
+      92 |       .mockResolvedValueOnce({ number: 10, hash: otherHash } as never)
+      93 |     if (mode === 'missing') f.getBlock.mockResolvedValue(null)
+    > 94 |     expect(await f.signer.observeFunding(f.input)).toEqual({ kind: 'unresolved', reason: 'inconsistent' })
+         |                           ^
+      95 |   })
+      96 |
+      97 |   it.each(['receipt', 'block', 'accounts'] as const)('keeps %s RPC failures unavailable', async stage => {
+
+      at funding-observation.jest.test.ts:94:27
+
+  ● anchored funding observation on the actual signer › rejects missing canonical block evidence
+
+    TypeError: f.signer.observeFunding is not a function
+
+      92 |       .mockResolvedValueOnce({ number: 10, hash: otherHash } as never)
+      93 |     if (mode === 'missing') f.getBlock.mockResolvedValue(null)
+    > 94 |     expect(await f.signer.observeFunding(f.input)).toEqual({ kind: 'unresolved', reason: 'inconsistent' })
+         |                           ^
+      95 |   })
+      96 |
+      97 |   it.each(['receipt', 'block', 'accounts'] as const)('keeps %s RPC failures unavailable', async stage => {
+
+      at funding-observation.jest.test.ts:94:27
+
+  ● anchored funding observation on the actual signer › keeps receipt RPC failures unavailable
+
+    TypeError: f.signer.observeFunding is not a function
+
+      100 |     if (stage === 'block') f.getBlock.mockRejectedValue(new Error('offline'))
+      101 |     if (stage === 'accounts') f.getBalance.mockRejectedValue(new Error('offline'))
+    > 102 |     expect(await f.signer.observeFunding(f.input)).toEqual({ kind: 'unresolved', reason: 'unavailable' })
+          |                           ^
+      103 |   })
+      104 |
+      105 |   it.each([
+
+      at funding-observation.jest.test.ts:102:27
+
+  ● anchored funding observation on the actual signer › keeps block RPC failures unavailable
+
+    TypeError: f.signer.observeFunding is not a function
+
+      100 |     if (stage === 'block') f.getBlock.mockRejectedValue(new Error('offline'))
+      101 |     if (stage === 'accounts') f.getBalance.mockRejectedValue(new Error('offline'))
+    > 102 |     expect(await f.signer.observeFunding(f.input)).toEqual({ kind: 'unresolved', reason: 'unavailable' })
+          |                           ^
+      103 |   })
+      104 |
+      105 |   it.each([
+
+      at funding-observation.jest.test.ts:102:27
+
+  ● anchored funding observation on the actual signer › keeps accounts RPC failures unavailable
+
+    TypeError: f.signer.observeFunding is not a function
+
+      100 |     if (stage === 'block') f.getBlock.mockRejectedValue(new Error('offline'))
+      101 |     if (stage === 'accounts') f.getBalance.mockRejectedValue(new Error('offline'))
+    > 102 |     expect(await f.signer.observeFunding(f.input)).toEqual({ kind: 'unresolved', reason: 'unavailable' })
+          |                           ^
+      103 |   })
+      104 |
+      105 |   it.each([
+
+      at funding-observation.jest.test.ts:102:27
+
+  ● anchored funding observation on the actual signer › rejects invalid caller bindings before RPC: { recipient: '0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB' }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      109 |   ])('rejects invalid caller bindings before RPC: %o', async patch => {
+      110 |     const f = await fixture()
+    > 111 |     await expect(f.signer.observeFunding({ ...f.input, ...patch })).rejects.toThrow()
+          |                           ^
+      112 |     expect(f.http.getTransactionReceipt).not.toHaveBeenCalled()
+      113 |     expect(f.getBlock).not.toHaveBeenCalled()
+      114 |   })
+
+      at funding-observation.jest.test.ts:111:27
+
+  ● anchored funding observation on the actual signer › rejects invalid caller bindings before RPC: { funder: '0x1563915e194D8CfBA1943570603F7606A3115508' }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      109 |   ])('rejects invalid caller bindings before RPC: %o', async patch => {
+      110 |     const f = await fixture()
+    > 111 |     await expect(f.signer.observeFunding({ ...f.input, ...patch })).rejects.toThrow()
+          |                           ^
+      112 |     expect(f.http.getTransactionReceipt).not.toHaveBeenCalled()
+      113 |     expect(f.getBlock).not.toHaveBeenCalled()
+      114 |   })
+
+      at funding-observation.jest.test.ts:111:27
+
+  ● anchored funding observation on the actual signer › rejects invalid caller bindings before RPC: { chainId: 2n }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      109 |   ])('rejects invalid caller bindings before RPC: %o', async patch => {
+      110 |     const f = await fixture()
+    > 111 |     await expect(f.signer.observeFunding({ ...f.input, ...patch })).rejects.toThrow()
+          |                           ^
+      112 |     expect(f.http.getTransactionReceipt).not.toHaveBeenCalled()
+      113 |     expect(f.getBlock).not.toHaveBeenCalled()
+      114 |   })
+
+      at funding-observation.jest.test.ts:111:27
+
+  ● anchored funding observation on the actual signer › rejects invalid caller bindings before RPC: { chainId: 0n }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      109 |   ])('rejects invalid caller bindings before RPC: %o', async patch => {
+      110 |     const f = await fixture()
+    > 111 |     await expect(f.signer.observeFunding({ ...f.input, ...patch })).rejects.toThrow()
+          |                           ^
+      112 |     expect(f.http.getTransactionReceipt).not.toHaveBeenCalled()
+      113 |     expect(f.getBlock).not.toHaveBeenCalled()
+      114 |   })
+
+      at funding-observation.jest.test.ts:111:27
+
+  ● anchored funding observation on the actual signer › rejects invalid caller bindings before RPC: {
+  txHash: '0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
+}
+
+    TypeError: f.signer.observeFunding is not a function
+
+      109 |   ])('rejects invalid caller bindings before RPC: %o', async patch => {
+      110 |     const f = await fixture()
+    > 111 |     await expect(f.signer.observeFunding({ ...f.input, ...patch })).rejects.toThrow()
+          |                           ^
+      112 |     expect(f.http.getTransactionReceipt).not.toHaveBeenCalled()
+      113 |     expect(f.getBlock).not.toHaveBeenCalled()
+      114 |   })
+
+      at funding-observation.jest.test.ts:111:27
+
+  ● anchored funding observation on the actual signer › rejects invalid caller bindings before RPC: { rawTx: '0x1234' }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      109 |   ])('rejects invalid caller bindings before RPC: %o', async patch => {
+      110 |     const f = await fixture()
+    > 111 |     await expect(f.signer.observeFunding({ ...f.input, ...patch })).rejects.toThrow()
+          |                           ^
+      112 |     expect(f.http.getTransactionReceipt).not.toHaveBeenCalled()
+      113 |     expect(f.getBlock).not.toHaveBeenCalled()
+      114 |   })
+
+      at funding-observation.jest.test.ts:111:27
+
+  ● anchored funding observation on the actual signer › rejects invalid signed transfer { value: 0n }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      116 |   it.each([{ value: 0n }, { data: '0x1234' }, { chainId: 0n }])('rejects invalid signed transfer %o', async patch => {
+      117 |     const f = await fixture(patch)
+    > 118 |     await expect(f.signer.observeFunding(f.input)).rejects.toThrow()
+          |                           ^
+      119 |     expect(f.http.getTransactionReceipt).not.toHaveBeenCalled()
+      120 |   })
+      121 |
+
+      at funding-observation.jest.test.ts:118:27
+
+  ● anchored funding observation on the actual signer › rejects invalid signed transfer { data: '0x1234' }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      116 |   it.each([{ value: 0n }, { data: '0x1234' }, { chainId: 0n }])('rejects invalid signed transfer %o', async patch => {
+      117 |     const f = await fixture(patch)
+    > 118 |     await expect(f.signer.observeFunding(f.input)).rejects.toThrow()
+          |                           ^
+      119 |     expect(f.http.getTransactionReceipt).not.toHaveBeenCalled()
+      120 |   })
+      121 |
+
+      at funding-observation.jest.test.ts:118:27
+
+  ● anchored funding observation on the actual signer › rejects invalid signed transfer { chainId: 0n }
+
+    TypeError: f.signer.observeFunding is not a function
+
+      116 |   it.each([{ value: 0n }, { data: '0x1234' }, { chainId: 0n }])('rejects invalid signed transfer %o', async patch => {
+      117 |     const f = await fixture(patch)
+    > 118 |     await expect(f.signer.observeFunding(f.input)).rejects.toThrow()
+          |                           ^
+      119 |     expect(f.http.getTransactionReceipt).not.toHaveBeenCalled()
+      120 |   })
+      121 |
+
+      at funding-observation.jest.test.ts:118:27
+
+  ● anchored funding observation on the actual signer › rejects a valid signature from a different signer
+
+    TypeError: f.signer.observeFunding is not a function
+
+      126 |     f.input.rawTx = await new Wallet('0x' + '33'.repeat(32)).signTransaction(tx)
+      127 |     f.input.txHash = Transaction.from(f.input.rawTx).hash!
+    > 128 |     await expect(f.signer.observeFunding(f.input)).rejects.toThrow()
+          |                           ^
+      129 |     expect(f.http.getTransactionReceipt).not.toHaveBeenCalled()
+      130 |   })
+      131 |
+
+      at Object.<anonymous> (funding-observation.jest.test.ts:128:27)
+
+  ● anchored funding observation on the actual signer › snapshots caller bindings before awaiting receipt lookup
+
+    TypeError: f.signer.observeFunding is not a function
+
+      134 |     let release!: (receipt: MonadTxReceipt) => void
+      135 |     f.http.getTransactionReceipt.mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    > 136 |     const observed = f.signer.observeFunding(f.input)
+          |                               ^
+      137 |     Object.assign(f.input, { recipient: f.signer.address, txHash: otherHash, funder: recipient, chainId: 2n, rawTx: '0x' })
+      138 |     release(f.receipt)
+      139 |     expect((await observed).kind).toBe('included')
+
+      at Object.<anonymous> (funding-observation.jest.test.ts:136:31)
+
+Test Suites: 1 failed, 1 total
+Tests:       27 failed, 27 total
+Snapshots:   0 total
+Time:        0.806 s
+Ran all test suites matching /packages\/wallet\/funding-observation.jest.test.ts/i.

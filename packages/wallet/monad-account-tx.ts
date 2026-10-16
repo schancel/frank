@@ -31,6 +31,7 @@
  * out of scope here.
  */
 import {
+  getAddress,
   getBytes,
   isCallException,
   Provider,
@@ -98,6 +99,41 @@ export interface FrozenUnsignedMonadTx {
 }
 
 export type MonadTxStatus = "pending" | "confirmed" | "failed";
+
+/** Bind a funding proof to the exact signed transfer and its captured wallet context.
+ * Native chainId validates the signed protocol bytes; registry identity remains with composition. */
+export interface EvmFundingObservationInput {
+  readonly rawTx: string;
+  readonly txHash: string;
+  readonly recipient: string;
+  readonly funder: string;
+  readonly chainId: bigint;
+}
+
+export interface EvmFundingBlock {
+  readonly number: number;
+  readonly hash: string;
+}
+
+export interface EvmFundingAccounts {
+  readonly block: EvmFundingBlock;
+  readonly senderNonce: bigint;
+  readonly recipientNonce: bigint;
+  readonly recipientBalance: bigint;
+}
+
+/** Point-in-time canonical evidence, never finality or permission to sign/spend. */
+export type EvmFundingObservation =
+  | { readonly kind: "unresolved"; readonly reason: "pending" | "unavailable" | "unknown-execution" | "inconsistent" }
+  | { readonly kind: "included"; readonly execution: "success" | "failure";
+      readonly receiptBlock: EvmFundingBlock; readonly accounts: EvmFundingAccounts }
+  | { readonly kind: "superseded"; readonly accounts: EvmFundingAccounts };
+
+function fundingBlock(number: unknown, hash: unknown): EvmFundingBlock | undefined {
+  return typeof number === "number" && Number.isSafeInteger(number) && number >= 0 &&
+    typeof hash === "string" && /^0x[0-9a-fA-F]{64}$/.test(hash)
+    ? { number, hash: hash.toLowerCase() } : undefined;
+}
 
 /**
  * Detects whether an error thrown during transaction preparation was caused by `eth_estimateGas`
@@ -387,6 +423,93 @@ export class MonadAccountTxSigner {
       );
     }
     return broadcastHash;
+  }
+
+  /** Read-only proof for a previously signed funding transfer. Invalid caller bindings throw;
+   * unavailable or incoherent chain evidence stays unresolved. All reads use captured handles.
+   * The caller owns lifetime/revision checks before publishing these reorg-sensitive facts. */
+  async observeFunding(input: EvmFundingObservationInput): Promise<EvmFundingObservation> {
+    // Parse and snapshot before the first await; never trust separately supplied transfer fields.
+    const { rawTx, txHash, recipient, funder, chainId } = input;
+    if (typeof rawTx !== "string" || !/^0x[0-9a-fA-F]+$/.test(rawTx))
+      throw new Error("Invalid signed funding transfer or wallet binding");
+    const transaction = Transaction.from(rawTx);
+    const sender = getAddress(funder);
+    const target = getAddress(recipient);
+    if (
+      typeof chainId !== "bigint" || chainId <= 0n ||
+      typeof txHash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(txHash) ||
+      transaction.serialized.toLowerCase() !== rawTx.toLowerCase() ||
+      transaction.signature === null || transaction.hash === null ||
+      transaction.hash.toLowerCase() !== txHash.toLowerCase() ||
+      transaction.from !== sender || sender !== this.address ||
+      transaction.to !== target || transaction.chainId !== chainId ||
+      !Number.isSafeInteger(transaction.nonce) || transaction.nonce < 0 ||
+      transaction.gasLimit <= 0n ||
+      transaction.value <= 0n || transaction.data !== "0x" ||
+      ![0, 1, 2].includes(transaction.type ?? -1) ||
+      (transaction.accessList?.length ?? 0) !== 0
+    ) throw new Error("Invalid signed funding transfer or wallet binding");
+    const hash = transaction.hash;
+    const nonce = BigInt(transaction.nonce);
+    const provider = this.wallet.provider as Provider;
+    const inconsistent = { kind: "unresolved", reason: "inconsistent" } as const;
+    try {
+      const receiptResult = await this.httpClient.getTransactionReceipt(hash);
+      if (receiptResult !== undefined && (typeof receiptResult !== "object" || receiptResult === null))
+        return inconsistent;
+      const receipt = receiptResult === undefined ? undefined : { ...receiptResult };
+      let anchor: EvmFundingBlock | undefined;
+      if (receipt !== undefined) {
+        anchor = fundingBlock(receipt.blockNumber, receipt.blockHash);
+        if (typeof receipt.txHash !== "string" || receipt.txHash.toLowerCase() !== hash.toLowerCase() || !anchor)
+          return inconsistent;
+        if (receipt.status === "unknown")
+          return { kind: "unresolved", reason: "unknown-execution" };
+        if (receipt.status !== "success" && receipt.status !== "failure")
+          return inconsistent;
+        const canonical = await provider.getBlock(anchor.number);
+        const canonicalAnchor = canonical ? fundingBlock(canonical.number, canonical.hash) : undefined;
+        if (!canonicalAnchor || canonicalAnchor.number !== anchor.number ||
+          canonicalAnchor.hash !== anchor.hash) return inconsistent;
+      } else {
+        const head = await provider.getBlock("latest");
+        anchor = head ? fundingBlock(head.number, head.hash) : undefined;
+        if (!anchor) return inconsistent;
+      }
+      // One explicit height, then a canonical hash recheck, also for receipt-less observations.
+      const [senderCount, recipientCount, recipientBalance] = await Promise.all([
+        provider.getTransactionCount(sender, anchor.number),
+        provider.getTransactionCount(target, anchor.number),
+        provider.getBalance(target, anchor.number),
+      ]);
+      if (!Number.isSafeInteger(senderCount) || senderCount < 0 ||
+        !Number.isSafeInteger(recipientCount) || recipientCount < 0 ||
+        typeof recipientBalance !== "bigint" || recipientBalance < 0n)
+        return inconsistent;
+      const accounts: EvmFundingAccounts = {
+        block: anchor, senderNonce: BigInt(senderCount),
+        recipientNonce: BigInt(recipientCount), recipientBalance,
+      };
+      // A receipt may have appeared while nonce reads were in flight. Retry the entire
+      // observation instead of interpreting that newly consumed nonce as supersession.
+      if (!receipt && await this.httpClient.getTransactionReceipt(hash) !== undefined)
+        return inconsistent;
+      const rechecked = await provider.getBlock(anchor.number);
+      const recheckedAnchor = rechecked ? fundingBlock(rechecked.number, rechecked.hash) : undefined;
+      if (!recheckedAnchor || recheckedAnchor.number !== anchor.number ||
+        recheckedAnchor.hash !== anchor.hash) return inconsistent;
+      if (receipt) {
+        if (accounts.senderNonce <= nonce) return inconsistent;
+        return { kind: "included", execution: receipt.status as "success" | "failure",
+          receiptBlock: anchor, accounts };
+      }
+      return accounts.senderNonce > nonce
+        ? { kind: "superseded", accounts }
+        : { kind: "unresolved", reason: "pending" };
+    } catch {
+      return { kind: "unresolved", reason: "unavailable" };
+    }
   }
 
   /** Track a submitted transaction's status via `MonadHttpClient.getTransactionReceipt`

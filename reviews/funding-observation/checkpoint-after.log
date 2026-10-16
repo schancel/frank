@@ -1,0 +1,8 @@
+PASS packages/wallet/funding-observation.jest.test.ts
+PASS packages/wallet/monad-account-tx.jest.test.ts
+
+Test Suites: 2 passed, 2 total
+Tests:       49 passed, 49 total
+Snapshots:   0 total
+Time:        0.549 s, estimated 1 s
+Ran all test suites matching /packages\/wallet\/funding-observation.jest.test.ts|packages\/wallet\/monad-account-tx.jest.test.ts/i.

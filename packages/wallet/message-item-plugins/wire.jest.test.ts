@@ -108,6 +108,8 @@ describe('the dispatch rule', () => {
       'calendar-invite': 'generic:27',
       'calendar-rsvp': 'generic:27',
       'contact-card': 'generic:27',
+      'group-welcome': 'generic:27',
+      'group-control': 'generic:27',
       'wallet-sync': 'no',
       'payment-transfer': 'no',
       'swap-record': 'no',

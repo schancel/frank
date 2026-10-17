@@ -1,3 +1,6 @@
+import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { tweakAddPrivateKey } from '@frank/nakamoto/curve'
+import { deriveIdentityMemberEpochTweak } from '@frank/cashweb/groups/group-crypto'
 import type { Ed25519Node } from '@frank/wallet/ed25519-hd-keyring'
 import type { ExperimentalCustody } from '@frank/wallet/solana-crypto-backend/runtime.mjs'
 import {
@@ -1086,6 +1089,68 @@ export function createAccountSession(deps: {
             s: signature.s,
             yParity: signature.yParity as 0 | 1,
           }
+        },
+      }
+    },
+    /** Account-bound group authority. No account or scoped private key escapes. */
+    async getGroupSigner(
+      groupIdHex: string,
+      epoch: number,
+    ): Promise<{
+      publicKey: Uint8Array
+      signDigest(digest: Uint8Array): Promise<Uint8Array>
+    }> {
+      await session.getWallet()
+      const checkCurrent = captureDerivation()
+      const requireCurrent = () => {
+        checkCurrent()
+        if (state.status !== 'ready') throw new CustodyError('closed')
+      }
+      const withKey = async <T>(use: (key: Uint8Array) => T): Promise<T> => {
+        requireCurrent()
+        const material = await session.getActiveFamilyMaterial(
+          'identity-authentication',
+        )
+        let accountKey: PrivateKey | undefined
+        let scopedKey: PrivateKey | undefined
+        try {
+          requireCurrent()
+          const identity =
+            'seed' in material
+              ? MonadIdentity.fromBip39Seed(material.seed)
+              : MonadIdentity.fromDomainRoot(material)
+          accountKey = identity.toNakamotoPrivateKey()
+          const accountPublicKey = new Uint8Array(identity.compressedPubKey)
+          const tweak = deriveIdentityMemberEpochTweak(
+            accountPublicKey,
+            groupIdHex,
+            epoch,
+          )
+          const derived = tweakAddPrivateKey(accountKey, tweak)
+          if (!derived.ok) throw new Error('Invalid group signing key')
+          scopedKey = derived.value
+          const value = use(scopedKey.bytes)
+          requireCurrent()
+          return value
+        } finally {
+          accountKey?.bytes.fill(0)
+          scopedKey?.bytes.fill(0)
+          if ('seed' in material) material.seed.fill(0)
+          else material.bytes.fill(0)
+        }
+      }
+      const publicKey = await withKey(key => secp256k1.getPublicKey(key, true))
+      return {
+        publicKey,
+        async signDigest(digest) {
+          if (digest.length !== 32)
+            throw new Error('Expected 32-byte signing digest')
+          const ownedDigest = new Uint8Array(digest)
+          return withKey(key =>
+            secp256k1
+              .sign(ownedDigest, key, { lowS: true })
+              .toCompactRawBytes(),
+          )
         },
       }
     },

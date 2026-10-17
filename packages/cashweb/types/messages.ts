@@ -1,3 +1,4 @@
+import type { SealedGroupMessageEnvelope } from '../groups/group-crypto'
 import type {
   BlackjackHandV3Item,
   BlackjackItem,
@@ -717,7 +718,10 @@ export interface RecipientAssetPaymentTransfer
     viewTag?: number | string
   }
   derivationScheme: number
-  recipientSpendKey: { keyType: RecipientPaymentClaimKeyType; publicKey: string }
+  recipientSpendKey: {
+    keyType: RecipientPaymentClaimKeyType
+    publicKey: string
+  }
   /** SPL token-program bytes, stored once alongside the mint in asset.identifier. An absent
    * program on an unknown scheme remains incomplete metadata, never a runtime asset default. */
   tokenProgram?: string
@@ -826,6 +830,55 @@ export interface ApplicationMessageItem {
   value: unknown
 }
 
+export interface GroupEpochCertificate {
+  epoch: number
+  group_pubkey: string
+  prev_epoch_hash: string
+  write_pubkey: string
+  read_token_hash: string
+  encrypted_roster: string
+  authority_sig: string
+  epoch_hash: string
+}
+
+/**
+ * Group invitation item delivered via an end-to-end encrypted 1:1 DM (Issues #70 & #1365).
+ * Carries the group's public identity (`groupId`, `groupPubKey`), primary relay URL, and
+ * initial epoch secret $S_e$. When received from an untrusted/unjoined peer, the group
+ * conversation is quarantined in `'invited'` status until explicitly approved by the user.
+ */
+export interface GroupWelcomeItem {
+  type: 'group-welcome'
+  /** Sent only in the administrator's authenticated encrypted self-mailbox. */
+  adminSecretKeyHex?: string
+  epochFrame: GroupEpochCertificate
+  groupId: string
+  groupPubKey: string
+  groupName: string
+  homeRelay: string
+  epoch: number
+  epochSecretHex: string
+  memberIndex: number
+  inviterAddress?: string
+}
+
+/**
+ * Group epoch transition & membership control item (Issue #70).
+ */
+export interface GroupControlItem {
+  type: 'group-control'
+  epochFrame: GroupEpochCertificate
+  groupId: string
+  action: 'rotate-epoch' | 'add-member' | 'remove-member' | 'leave'
+  epoch: number
+  prevEpochHash: string
+  epochSecretHex?: string
+  targetAddress?: string
+  targetMemberIndex?: number
+  targetEpochSigningPubKeyHex?: string
+  authoritySigHex: string
+}
+
 export type MessageItem =
   | ApplicationMessageItem
   | StealthItem
@@ -856,6 +909,8 @@ export type MessageItem =
   | CalendarInviteItem
   | CalendarRsvpItem
   | ContactCardItem
+  | GroupWelcomeItem
+  | GroupControlItem
   | UnsupportedItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
@@ -906,6 +961,10 @@ export interface OutgoingFinancialOperation {
 }
 
 export interface Message {
+  /** Original authenticated thread claim when the local closed-direct projection uses another owner. */
+  requestedConversationId?: string
+  /** Local durable proof for content admitted through a shared group mailbox, never a DM writer field. */
+  groupEnvelope?: SealedGroupMessageEnvelope
   /** Persisted before sealing; reused even for free financial message retries. */
   sealedMessageId?: string
   /** Opaque retained application owner reference; never itself authorizes spending. */

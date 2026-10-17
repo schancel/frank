@@ -1,5 +1,103 @@
 <template>
   <div class="chat-container column full-height overflow-hidden">
+    <q-banner
+      v-if="
+        conversation?.kind === 'group' &&
+        conversation.membershipStatus === 'invited'
+      "
+      class="q-pa-md"
+      data-testid="group-invite-banner"
+    >
+      {{ $t('groupChat.inviteBannerTitle', { name: conversation.name }) }}
+      <div class="text-caption">
+        {{
+          $t('groupChat.inviteBannerSubtitle', {
+            epoch: conversation.groupState?.epoch ?? 0,
+            relay:
+              conversation.groupState?.homeRelay ?? conversation.groupRelayUrl,
+          })
+        }}
+      </div>
+      <template #action>
+        <q-btn
+          color="primary"
+          :label="$t('groupChat.acceptInviteBtn')"
+          data-testid="accept-group-invite"
+          @click="chatStore.approveGroupInvite(conversation.id)"
+        />
+        <q-btn
+          flat
+          :label="$t('groupChat.declineInviteBtn')"
+          data-testid="decline-group-invite"
+          @click="chatStore.declineGroupInvite(conversation.id)"
+        />
+      </template>
+    </q-banner>
+    <q-banner
+      v-if="
+        conversation?.kind === 'group' &&
+        conversation.membershipStatus === 'joined' &&
+        (conversation.groupState?.syncFailed ||
+          conversation.groupState?.pendingEpoch)
+      "
+      class="q-pa-sm"
+      data-testid="group-sync-failure"
+      role="status"
+    >
+      {{
+        conversation.groupState?.pendingEpoch
+          ? $t('groupChat.epochPending')
+          : $t('groupChat.syncFailed')
+      }}
+      <template #action
+        ><q-btn
+          flat
+          :label="$t('groupChat.retryUpdates')"
+          data-testid="retry-group-updates"
+          @click="retryGroupUpdates"
+      /></template>
+    </q-banner>
+    <q-banner
+      v-for="request in participantRequests"
+      :key="request.senderAddress"
+      data-testid="participant-request-banner"
+      class="q-pa-sm"
+    >
+      {{
+        $t('groupChat.participantRequest', {
+          address: shortAddress(request.senderAddress),
+        })
+      }}
+      <template #action>
+        <q-btn
+          flat
+          :label="$t('groupChat.viewDirect')"
+          data-testid="participant-request-view"
+          @click="viewParticipantRequest(request.senderConversationId)"
+        />
+        <q-btn
+          flat
+          :label="$t('groupChat.createGroupBtn')"
+          data-testid="participant-request-group"
+          @click="createGroupFromRequest(request.senderAddress)"
+        />
+        <q-btn
+          flat
+          :label="$t('groupChat.dismissRequest')"
+          data-testid="participant-request-dismiss"
+          @click="
+            chatStore.dismissPendingParticipantRequest(
+              conversation.id,
+              request.senderAddress,
+            )
+          "
+        />
+      </template>
+    </q-banner>
+    <new-group-dialog
+      v-model="participantGroupOpen"
+      :initial-members="participantGroupMembers"
+    />
     <!-- Tollbooth Screener Triage Banner for Inbound Paid-Stranger Requests -->
     <div
       v-if="isScreenerThread"
@@ -149,7 +247,11 @@
       </q-page>
     </q-page-container>
     <q-footer
-      v-if="!isEmailThread"
+      v-if="
+        !isEmailThread &&
+        (conversation?.kind !== 'group' ||
+          conversation.membershipStatus === 'joined')
+      "
       bordered
       :height-hint="64"
       class="chat-footer chat-input-bar"
@@ -177,7 +279,7 @@
       <!-- Others have posted into this conversation, but what is sent from here still goes to
       its one peer. Say so, so a reply is not taken for a message to everyone. -->
       <div
-        v-if="isGroup"
+        v-if="isGroup && conversation?.kind !== 'group'"
         class="q-px-md q-pt-xs text-caption chat-group-recipient"
         data-testid="chat-group-recipient"
         role="note"
@@ -190,6 +292,7 @@
       </div>
       <!-- Message box -->
       <chat-input
+        :group-mode="conversation?.kind === 'group'"
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
         @sendStealthClicked="openStealthDialog"
@@ -290,6 +393,7 @@ import {
 import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
 import ForwardMessageDialog from '../components/dialogs/ForwardMessageDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
+import NewGroupDialog from '../components/dialogs/NewGroupDialog.vue'
 import { openChat, openContactProfile } from '../utils/routes'
 import {
   attributeMessages,
@@ -358,6 +462,7 @@ const scrollDuration = 0
 
 export default defineComponent({
   components: {
+    NewGroupDialog,
     ChatMessageComponent,
     EmailThreadView,
     ChatMessageReply,
@@ -386,6 +491,8 @@ export default defineComponent({
   },
   data() {
     return {
+      participantGroupOpen: false,
+      participantGroupMembers: [] as string[],
       address: this.$route.params.address as string,
       lastHandledFocusNonce: 0,
       composeFocusTimers: [] as ReturnType<typeof setTimeout>[],
@@ -513,6 +620,15 @@ export default defineComponent({
     })
   },
   methods: {
+    shortAddress,
+    viewParticipantRequest(conversationId: string) {
+      const target = this.chatStore.conversations[conversationId]
+      if (target) openChat(this.$router, target.id)
+    },
+    createGroupFromRequest(senderAddress: string) {
+      this.participantGroupMembers = [this.conversation!.address, senderAddress]
+      this.participantGroupOpen = true
+    },
     // Opening a chat (mount or a reused route) places the caret (#411). On this
     // turn, before MainLayout's narrow-overlay restore (one tick later) treats a
     // still-unfocused page as focus lost and moves focus to the opener (#277).
@@ -881,7 +997,10 @@ export default defineComponent({
       }
       const wallet = useMonadWallet()
       const recipient = this.recipientAddress || this.address
-      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      const stampValue =
+        this.conversation?.kind === 'group'
+          ? 0n
+          : activeChain.fromDisplayAmount(this.stampAmount)
       const rawPrice = this.getAcceptancePrice(recipient)
       const acceptancePrice =
         typeof rawPrice === 'number' && Number.isFinite(rawPrice)
@@ -985,7 +1104,10 @@ export default defineComponent({
       try {
         if (this.stampUnavailable) throw new Error(this.stampUnavailable)
         const wallet = useMonadWallet()
-        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+        const stampValue =
+          this.conversation?.kind === 'group'
+            ? 0n
+            : activeChain.fromDisplayAmount(this.stampAmount)
         await this.sendDirectMessage({
           wallet,
           address: recipient,
@@ -1491,6 +1613,14 @@ export default defineComponent({
         this.$nextTick(this.buttonScrollBottom)
       }
     },
+    async retryGroupUpdates() {
+      if (!this.conversation) return
+      try {
+        await this.chatStore.syncGroupConversation(this.conversation.id)
+      } catch (error) {
+        errorNotify(error, { fallbackKey: 'groupChat.syncFailed' })
+      }
+    },
     approveScreenerThread() {
       if (!this.conversation) return
       approveScreenerConversation(
@@ -1592,6 +1722,11 @@ export default defineComponent({
         return ''
       }
     },
+    participantRequests() {
+      return this.conversation?.kind === 'direct'
+        ? Object.values(this.conversation.pendingParticipantRequests ?? {})
+        : []
+    },
     isScreenerThread(): boolean {
       if (!this.conversation) return false
       if (this.screenerReplyOnceIds.has(this.conversation.id)) return false
@@ -1615,6 +1750,7 @@ export default defineComponent({
       return !target || this.chatStore.getStampWei(target) === undefined
     },
     stampUnavailable(): string {
+      if (this.conversation?.kind === 'group') return ''
       const target = this.conversation?.id || this.recipientAddress
       const explicit = target ? this.chatStore.getStampWei(target) : undefined
       if (

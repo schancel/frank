@@ -7,6 +7,7 @@ mod directory_preview_owner;
 pub(crate) mod directory_subjects;
 pub mod directory_usernames;
 pub(crate) mod forum;
+pub mod groups;
 pub mod kv_store;
 pub mod metadata;
 pub(crate) mod monad_dm_cbor;

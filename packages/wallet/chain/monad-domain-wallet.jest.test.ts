@@ -820,7 +820,7 @@ test('a real Sepolia owner retries the original sync event without signing or br
     })
     expect(swapRecord).toBeUndefined()
     expect(messageId).toEqual(getBytes(keccak256(Buffer.from(
-      `frank-wallet-sync:ethereum-sepolia:${sent.txHash}`,
+      `wallet-sync:ethereum-sepolia:${sent.txHash}`,
     ))).slice(0, 16))
     expect(emitWalletSync.mock.calls[1]![0]).toMatchObject({
       chainIdentifier: item.chainIdentifier,

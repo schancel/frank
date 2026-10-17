@@ -15,22 +15,19 @@ import {
   durableBatch,
   durableClear,
   durablePut,
-  openDurableLevel,
 } from './level-durability'
+import {
+  createSpendPoolPartitionDb,
+  SPEND_POOL_NAMESPACE,
+} from './level-spend-pool-store'
 
 const NEXT_INDEX_KEY = '__next_index__'
 const CHECKPOINT_PREFIX = '__terminal_checkpoint__:'
 const WALLET_BINDING_KEY = '__wallet_binding__'
 
 /**
- * `level`-backed `SubAccountPoolStore`, mirroring `LevelUtxoStore` (`./level-storage.ts`): an
- * in-memory cache backed by a `level` database on disk, so the HD sub-account pool's state
- * (`index`/`address`/`status` only — never private keys, see `sub-account-pool-storage.ts`'s file
- * header) survives app restarts.
- *
- * Keys are the sub-account's BIP-44 index, stringified (`level`'s default keyEncoding is `'utf8'`,
- * so string keys sort lexicographically, not numerically — `getAll()` sorts numerically itself
- * rather than relying on key order).
+ * `level`-backed `SubAccountPoolStore`, backed by the unified `<location>/spend-pool` LevelDB
+ * database under the `sub-account:` key partition.
  */
 export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   private readonly dbLocation: string
@@ -54,7 +51,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     allowUnboundForMigration = false,
     assertMutationAllowed: () => void = () => undefined,
   ) {
-    this.dbLocation = join(location, 'sub-account-pool')
+    this.dbLocation = join(location, SPEND_POOL_NAMESPACE)
     this.cache = new Map<number, SubAccountRecord>()
     this.expectedBindingId = expectedBindingId
     this.allowUnboundForMigration = allowUnboundForMigration
@@ -73,25 +70,27 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     return this.openedDb
   }
 
-  /** Opens the underlying `level` database and populates the in-memory cache from it. Must be
-   * called (and awaited) before using the store — same lifecycle as `LevelUtxoStore.Open()`. */
+  /** Opens the underlying `spend-pool` partition and populates the in-memory cache from it. */
   async Open(): Promise<void> {
     this.assertMutationAllowed()
     this.loaded = false
-    this.openedDb = level(this.dbLocation)
-    await openDurableLevel(
-      this.openedDb!,
-      this.rootLocation,
-      'sub-account-pool',
-    )
-    await this.loadData()
+    this.openedDb = createSpendPoolPartitionDb(this.rootLocation, 'sub-account')
+    await (this.openedDb as any).open()
+    try {
+      await this.loadData()
+    } catch (error) {
+      await (this.openedDb as any).close().catch(() => undefined)
+      throw error
+    }
     this.loaded = true
   }
 
   async Close(): Promise<void> {
     this.loaded = false
     await this.flush()
-    await this.db.close()
+    if (this.openedDb) {
+      await (this.openedDb as any).close()
+    }
   }
 
   private async loadData(): Promise<void> {

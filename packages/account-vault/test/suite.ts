@@ -41,7 +41,7 @@ function equalRoots(actual: readonly DomainRoot[], expected: readonly DomainRoot
 }
 async function raw(namespace: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(`frank-preview-vault-${namespace}`)
+    const request = indexedDB.open(`account-vault-${namespace}`)
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error)
   })
@@ -573,7 +573,7 @@ export async function run(phase: string) {
   finally { IDBFactory.prototype.open = originalOpen }
   ok(probeOpens === 2, 'capability uses actual second IDB open')
   IDBFactory.prototype.open = function (...args: Parameters<IDBFactory['open']>) {
-    if (args[0] === 'frank-preview-vault-main-open-failure') throw new DOMException('fixture permission denial')
+    if (args[0] === 'account-vault-main-open-failure') throw new DOMException('fixture permission denial')
     return originalOpen.apply(this, args)
   }
   try { await fails(() => openPreviewVault({ namespace: 'main-open-failure' }), 'unavailable') }

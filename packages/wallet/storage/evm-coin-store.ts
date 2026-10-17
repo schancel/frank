@@ -27,6 +27,10 @@ import { PROTOCOL_CHAINS } from '../chain/chains-registry'
 import { runNativeTransactionExclusive } from '../chain/chain-wallet'
 import type { ReceivedCoinItem } from '@frank/cashweb/types/messages'
 import { durableDelete, durablePut, openDurableLevel } from './level-durability'
+import {
+  createSpendPoolPartitionDb,
+  SPEND_POOL_NAMESPACE,
+} from './level-spend-pool-store'
 
 export type EvmCoinOrigin = 'stealth' | 'stamp'
 export type EvmCoinState = 'pending' | 'unspent' | 'spent' | 'failed'
@@ -594,9 +598,16 @@ export class LevelRecordStore<T> implements RecordStore<T> {
     location: string,
     namespace: string,
   ): Promise<LevelRecordStore<T>> {
-    const database = level(join(location, namespace))
+    const isSpendPoolCoin = namespace === EVM_COIN_NAMESPACE
+    const database = isSpendPoolCoin
+      ? createSpendPoolPartitionDb(location, 'coin')
+      : level(join(location, namespace))
     try {
-      await openDurableLevel(database, location, namespace)
+      if (isSpendPoolCoin) {
+        await (database as any).open()
+      } else {
+        await openDurableLevel(database, location, namespace)
+      }
       const store = new LevelRecordStore<T>(
         database,
         `received-record-store:${join(location, namespace)}`,
@@ -711,7 +722,7 @@ export class LevelRecordStore<T> implements RecordStore<T> {
   }
 }
 
-export const EVM_COIN_NAMESPACE = 'received-coins'
+export const EVM_COIN_NAMESPACE = SPEND_POOL_NAMESPACE
 export const CONTACT_PAYMENT_NAMESPACE = 'contact-payments'
 
 /** First discovery keeps derivation ownership; repeated discovery cannot replace another key

@@ -160,7 +160,7 @@ async function storage(
   work: (tx: IDBTransaction) => void,
 ) {
   const name = `${
-    vault ? 'frank-preview-vault-' : 'frank-account-custody-'
+    vault ? 'account-vault-' : 'account-custody-'
   }${namespace}`
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(name)
@@ -1033,7 +1033,7 @@ async function regressions() {
     await assertActive(supported, supportedInput)
     erase(supportedInput)
     await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open('frank-account-custody-future-version', 2)
+      const request = indexedDB.open('account-custody-future-version', 2)
       request.onupgradeneeded = () => request.result.createObjectStore('future')
       request.onsuccess = () => {
         request.result.close()

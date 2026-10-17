@@ -252,7 +252,7 @@ export function createSolanaPaymentContexts(deps: {
           entry.custody = handle
           // Public namespace metadata, distinct from the WASM's public account label.
           const namespace = JSON.stringify([
-            'frank-solana-payments',
+            'solana-payments',
             entry.accountId,
             Buffer.from(published).toString('hex'),
             chainIdentifier,

@@ -44,7 +44,7 @@ export async function openPreviewVault(options: { namespace: string }): Promise<
     if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(value)) throw 0
     return value
   })
-  const name = `frank-preview-vault-${namespace}`
+  const name = `account-vault-${namespace}`
   if (!globalThis.crypto?.subtle || !globalThis.indexedDB || !globalThis.CryptoKey) throw new VaultError('unavailable')
   await capability(`${name}.capability`)
   const db = await database(name)

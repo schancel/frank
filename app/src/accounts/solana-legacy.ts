@@ -80,7 +80,7 @@ export const sendSolanaLegacySyncNote: SolanaLegacySync = async item => {
       messageId: getBytes(
         keccak256(
           toUtf8Bytes(
-            `frank-wallet-sync:${item.chainIdentifier}:${item.txHash}`,
+            `wallet-sync:${item.chainIdentifier}:${item.txHash}`,
           ),
         ),
       ).slice(0, 16),

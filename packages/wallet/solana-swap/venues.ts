@@ -7,6 +7,7 @@
 import { PublicKey } from '@solana/web3.js'
 
 import { PROTOCOL_CHAINS } from '../chain/chains-registry'
+import { resolveConfiguredInterfaceFee } from '../chain/dex-entries'
 import {
   MAX_PLATFORM_FEE_BPS,
   SOLANA_DEX_ADAPTERS,
@@ -72,9 +73,16 @@ export function listSolanaDexEntries(
   )
     ? PROTOCOL_CHAINS[chainIdentifier]
     : undefined
-  return row?.family === 'solana'
-    ? (row.dex ?? []).filter(isSolanaDexEntry).map(validateSolanaSwapVenue)
-    : []
+  if (row?.family !== 'solana') return []
+  const configuredFee = resolveConfiguredInterfaceFee('solana')
+  return (row.dex ?? [])
+    .filter(isSolanaDexEntry)
+    .map(venue =>
+      venue.interfaceFee === undefined && configuredFee !== undefined
+        ? { ...venue, interfaceFee: configuredFee }
+        : venue,
+    )
+    .map(validateSolanaSwapVenue)
 }
 
 /** The exchanges offered on a network, default first; empty when it has no swap. */

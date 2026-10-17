@@ -501,4 +501,51 @@ describe('POST /api/mail/send', () => {
       expect(headerLines(json.renderedEmail as string)).toContain('Subject: Greeting X-Extra: 1');
     });
   });
+
+  it('requires Bearer or x-api-key authentication when outboundApiToken is configured (#1346)', async () => {
+    const authedServer = new CheckoutServer({
+      port: 0,
+      ledger,
+      stampProvider: {} as GatewayStampProvider,
+      outboundDelivery: delivery,
+      outboundApiToken: 'secret-outbound-token',
+    });
+    await authedServer.start();
+    const authedPort = authedServer.getPort();
+    try {
+      const unauthedRes = await fetch(`http://127.0.0.1:${authedPort}/api/mail/send`, {
+        method: 'POST',
+        body: JSON.stringify({
+          recipientEmail: 'bob@remote.com',
+          senderFrankAddress: SENDER,
+          bodyText: 'Hello Bob.',
+        }),
+      });
+      expect(unauthedRes.status).toBe(401);
+
+      const wrongTokenRes = await fetch(`http://127.0.0.1:${authedPort}/api/mail/send`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer wrong-token' },
+        body: JSON.stringify({
+          recipientEmail: 'bob@remote.com',
+          senderFrankAddress: SENDER,
+          bodyText: 'Hello Bob.',
+        }),
+      });
+      expect(wrongTokenRes.status).toBe(401);
+
+      const okRes = await fetch(`http://127.0.0.1:${authedPort}/api/mail/send`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer secret-outbound-token' },
+        body: JSON.stringify({
+          recipientEmail: 'bob@remote.com',
+          senderFrankAddress: SENDER,
+          bodyText: 'Hello Bob.',
+        }),
+      });
+      expect(okRes.status).toBe(200);
+    } finally {
+      await authedServer.stop();
+    }
+  });
 });

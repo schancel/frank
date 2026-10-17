@@ -97,6 +97,7 @@ export interface CheckoutServerOptions {
   readonly stripeWebhookSecret?: string;
   readonly paypalWebhookId?: string;
   readonly outboundDelivery?: OutboundEmailDelivery;
+  readonly outboundApiToken?: string;
   readonly stripePaymentLinkTier1?: string;
   readonly stripePaymentLinkTier2?: string;
   readonly stripePaymentLinkTier3?: string;
@@ -112,6 +113,7 @@ export class CheckoutServer {
   private readonly stampProvider?: GatewayStampProvider;
   private readonly stripeWebhookSecret?: string;
   private readonly outboundDelivery?: OutboundEmailDelivery;
+  private readonly outboundApiToken?: string;
   private readonly stripePaymentLinkTier1?: string;
   private readonly stripePaymentLinkTier2?: string;
   private readonly stripePaymentLinkTier3?: string;
@@ -127,6 +129,7 @@ export class CheckoutServer {
     this.stampProvider = options.stampProvider;
     this.stripeWebhookSecret = options.stripeWebhookSecret;
     this.outboundDelivery = options.outboundDelivery;
+    this.outboundApiToken = options.outboundApiToken?.trim() || undefined;
     this.stripePaymentLinkTier1 = options.stripePaymentLinkTier1;
     this.stripePaymentLinkTier2 = options.stripePaymentLinkTier2;
     this.stripePaymentLinkTier3 = options.stripePaymentLinkTier3;
@@ -237,7 +240,31 @@ export class CheckoutServer {
     res.end('Not Found');
   }
 
+  private verifyOutboundAuthHeader(req: IncomingMessage): boolean {
+    if (!this.outboundApiToken) return true;
+    const authHeader = req.headers.authorization;
+    const apiKeyHeader = req.headers['x-api-key'];
+    let candidate = '';
+    if (typeof authHeader === 'string' && /^Bearer\s+/i.test(authHeader)) {
+      candidate = authHeader.replace(/^Bearer\s+/i, '').trim();
+    } else if (typeof apiKeyHeader === 'string') {
+      candidate = apiKeyHeader.trim();
+    }
+    if (!candidate) return false;
+    const expectedBuf = Buffer.from(this.outboundApiToken, 'utf8');
+    const candidateBuf = Buffer.from(candidate, 'utf8');
+    return (
+      expectedBuf.length === candidateBuf.length &&
+      crypto.timingSafeEqual(expectedBuf, candidateBuf)
+    );
+  }
+
   private handleOutboundMailSend(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.verifyOutboundAuthHeader(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized outbound mail send request' }));
+      return;
+    }
     const chunks: Buffer[] = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', async () => {

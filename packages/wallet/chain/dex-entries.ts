@@ -91,6 +91,47 @@ export function assertInterfaceFee(fee: InterfaceFee): void {
     throw new RangeError('Interface fee needs a recipient address')
 }
 
+/**
+ * Resolves a runtime/build-time configured interface fee (#1375) from environment variables
+ * (`SWAP_INTERFACE_FEE_BPS` and `EVM_SWAP_INTERFACE_FEE_RECIPIENT` / `SOLANA_SWAP_INTERFACE_FEE_RECIPIENT`).
+ * Returns `undefined` when no fee recipient or rate is configured, and throws `RangeError` if
+ * configured with an invalid basis-point rate (`1..MAX_INTERFACE_FEE_BPS`) or malformed EVM recipient.
+ */
+export function resolveConfiguredInterfaceFee(
+  family: 'evm' | 'solana',
+  env: Record<string, string | undefined> | undefined = typeof process !==
+    'undefined'
+    ? process.env
+    : undefined,
+): InterfaceFee | undefined {
+  if (!env) return undefined
+  const recipientKey =
+    family === 'evm'
+      ? 'EVM_SWAP_INTERFACE_FEE_RECIPIENT'
+      : 'SOLANA_SWAP_INTERFACE_FEE_RECIPIENT'
+  const rawRecipient = (
+    env[recipientKey] ?? env.SWAP_INTERFACE_FEE_RECIPIENT
+  )?.trim()
+  const rawBps = (
+    env[
+      family === 'evm'
+        ? 'EVM_SWAP_INTERFACE_FEE_BPS'
+        : 'SOLANA_SWAP_INTERFACE_FEE_BPS'
+    ] ?? env.SWAP_INTERFACE_FEE_BPS
+  )?.trim()
+  if (!rawRecipient || !rawBps) return undefined
+  const bps = Number(rawBps)
+  const fee: InterfaceFee = { bps, recipient: rawRecipient }
+  if (family === 'evm') {
+    assertInterfaceFee(fee)
+  } else if (!Number.isInteger(bps) || bps < 1 || bps > MAX_INTERFACE_FEE_BPS) {
+    throw new RangeError(
+      `Interface fee must be 1 to ${MAX_INTERFACE_FEE_BPS} whole basis points`,
+    )
+  }
+  return Object.freeze(fee)
+}
+
 export interface UniswapV4Deployment extends SwapVenue {
   readonly adapter: 'uniswap-v4'
   /** False when the contracts are Uniswap's but someone else deployed and maintains them. */

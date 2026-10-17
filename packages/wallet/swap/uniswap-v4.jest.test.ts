@@ -645,6 +645,26 @@ describe('interface fee', () => {
     ).toThrow(RangeError)
   })
 
+  it('resolves configured interface fee from environment variables (#1375)', () => {
+    const { resolveConfiguredInterfaceFee } = require('../chain/dex-deployments')
+    expect(resolveConfiguredInterfaceFee('evm', {})).toBeUndefined()
+    expect(
+      resolveConfiguredInterfaceFee('evm', {
+        EVM_SWAP_INTERFACE_FEE_RECIPIENT: fee.feeRecipient,
+        SWAP_INTERFACE_FEE_BPS: '25',
+      }),
+    ).toEqual({
+      bps: 25,
+      recipient: fee.feeRecipient,
+    })
+    expect(() =>
+      resolveConfiguredInterfaceFee('evm', {
+        EVM_SWAP_INTERFACE_FEE_RECIPIENT: fee.feeRecipient,
+        SWAP_INTERFACE_FEE_BPS: '250',
+      }),
+    ).toThrow(RangeError)
+  })
+
   it('encodes the fee as its own action, byte for byte as the real router executed it', () => {
     const call = encodeSwap({
       deployment: withFee,

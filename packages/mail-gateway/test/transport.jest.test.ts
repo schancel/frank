@@ -823,4 +823,57 @@ describe('MxDirectTransport delivery to a local peer', () => {
       "RCPT TO:<o'neil_j.r-x+tag=1@mail.remote.test>",
     ]);
   });
+
+  it.each([
+    ['dot exchange', [{ exchange: '.', priority: 0 }]],
+    ['empty exchange', [{ exchange: '', priority: 0 }]],
+  ])('refuses delivery before connecting when the domain publishes an RFC 7505 null MX record (%s) (#1346)', async (_label, records) => {
+    peer = await startRecordingPeer();
+    const transport = new MxDirectTransport({
+      heloDomain: 'frank.org',
+      defaultPort: peer.port,
+      resolveMxFn: async () => records,
+    });
+
+    const result = await send(transport, `${HEADERS}body\r\n`);
+
+    expect(result.outcome).toBe('refused');
+    expect(result.success).toBe(false);
+    expect(result.mxHost).toBeUndefined();
+    expect(result.error).toContain('null MX');
+    expect(peer.connections).toHaveLength(0);
+  });
+
+  it('enforces an overall session deadline even when a server trickles multiline reply bytes (#1346)', async () => {
+    let trickleTimer: NodeJS.Timeout | undefined;
+    const server = net.createServer((socket) => {
+      socket.write('220-slow.remote.test line 0\r\n');
+      let count = 1;
+      trickleTimer = setInterval(() => {
+        if (!socket.destroyed) {
+          socket.write(`220-slow.remote.test line ${count++}\r\n`);
+        }
+      }, 25);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    try {
+      const transport = new MxDirectTransport({
+        heloDomain: 'frank.org',
+        defaultPort: port,
+        timeoutMs: 80,
+        resolveMxFn: async () => [{ exchange: '127.0.0.1', priority: 10 }],
+      });
+      const result = await send(transport, `${HEADERS}body\r\n`);
+      expect(result.outcome).toBe('refused');
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Connection timed out');
+    } finally {
+      if (trickleTimer) clearInterval(trickleTimer);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });
+

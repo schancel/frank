@@ -53,6 +53,7 @@ import { useChatStore } from 'src/stores/chats'
 import { useSettingsStore } from 'src/stores/settings'
 import { usePersistentStorageStore } from 'src/stores/persistent-storage'
 import { applyTheme } from 'src/utils/theme'
+import { applyViewportScaleAndMetrics } from 'src/utils/mobile-viewport-scale'
 import { openChat } from 'src/utils/routes'
 import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 
@@ -83,7 +84,7 @@ export default defineComponent({
     const relayClient = useRelayClientStore()
     const contacts = useContactStore()
     const appearanceStore = useAppearanceStore()
-    const { darkMode, locale, theme } = storeToRefs(appearanceStore)
+    const { darkMode, locale, theme, uiScale } = storeToRefs(appearanceStore)
     const myProfile = useProfileStore()
     const settings = useSettingsStore()
     const tabCoordinator = useTabCoordinatorStore()
@@ -132,9 +133,10 @@ export default defineComponent({
     }
     const contactBookOpen = ref(false)
     watch(
-      [darkMode, theme],
-      ([isDark, currentTheme]) => {
+      [darkMode, theme, uiScale],
+      ([isDark, currentTheme, currentScale]) => {
         applyTheme(currentTheme, isDark)
+        applyViewportScaleAndMetrics(currentScale)
       },
       { immediate: true },
     )

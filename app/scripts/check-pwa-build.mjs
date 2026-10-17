@@ -20,6 +20,11 @@ const manifest = JSON.parse(
 assert.equal(manifest.name, activeBrand.productName)
 assert.equal(manifest.short_name, activeBrand.shortName)
 assert.equal(manifest.display, 'standalone')
+assert(
+  !Array.isArray(manifest.display_override) ||
+    !manifest.display_override.includes('fullscreen'),
+  'manifest.json must not include fullscreen in display_override (forces Android PWAs into fullscreen mode and breaks soft-keyboard resize)',
+)
 assert.equal(
   manifest.orientation,
   'any',
@@ -33,6 +38,10 @@ const indexHtml = readFileSync(new URL('index.html', output), 'utf8')
 assert(
   indexHtml.includes('rel="manifest"') && indexHtml.includes('manifest.json'),
   'Built index.html must link manifest.json',
+)
+assert(
+  indexHtml.includes('interactive-widget=resizes-content'),
+  'Built index.html viewport must include interactive-widget=resizes-content for Android soft-keyboard layout resize',
 )
 assert(
   !indexHtml.includes('name="theme-color"'),

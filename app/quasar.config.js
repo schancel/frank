@@ -626,6 +626,8 @@ export default configure(ctx => {
         manifest.description = activeBrand.description
         manifest.theme_color = activeBrand.themeColor
         manifest.background_color = activeBrand.backgroundColor
+        manifest.display = 'standalone'
+        manifest.display_override = ['standalone', 'minimal-ui']
       },
       extendPWAGenerateSWOptions(options) {
         return {

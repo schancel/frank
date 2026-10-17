@@ -278,6 +278,29 @@
                     {{ selectedThemeDescription }}
                   </div>
                 </div>
+                <div class="q-mb-lg" data-test="ui-scale-section">
+                  <div class="text-subtitle2 q-mb-sm">
+                    {{ $t('settings.uiScaleTitle') }}
+                  </div>
+                  <div class="row q-gutter-sm">
+                    <q-chip
+                      v-for="opt in uiScaleOptions"
+                      :key="String(opt.value)"
+                      clickable
+                      :selected="uiScale === opt.value"
+                      @click="selectUiScale(opt.value)"
+                      outline
+                      :color="uiScale === opt.value ? 'primary' : ''"
+                      class="cursor-pointer"
+                      :data-test="`ui-scale-chip-${opt.value}`"
+                    >
+                      <span>{{ $t(opt.labelKey) }}</span>
+                    </q-chip>
+                  </div>
+                  <div class="text-caption text-grey q-mt-xs">
+                    {{ $t('settings.uiScaleHint') }}
+                  </div>
+                </div>
                 <div class="row">
                   <q-select
                     v-model="locale"
@@ -448,6 +471,12 @@ import {
   SignetStone,
   applyTheme,
 } from 'src/utils/theme'
+import {
+  DEFAULT_UI_SCALE,
+  UiScaleSetting,
+  applyViewportScaleAndMetrics,
+  getSavedUiScaleSetting,
+} from 'src/utils/mobile-viewport-scale'
 
 import { computed, defineComponent, onUnmounted, ref, watch } from 'vue'
 import { QInput } from 'quasar'
@@ -462,6 +491,18 @@ import { activeChain } from '@frank/wallet/chain'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
 import { walletSupport } from 'src/utils/wallet-support'
 const msToMinutes = 60000
+
+const UI_SCALE_OPTIONS: readonly {
+  value: UiScaleSetting
+  labelKey: string
+}[] = [
+  { value: 'auto', labelKey: 'settings.uiScaleAuto' },
+  { value: 85, labelKey: 'settings.uiScale85' },
+  { value: 100, labelKey: 'settings.uiScale100' },
+  { value: 115, labelKey: 'settings.uiScale115' },
+  { value: 130, labelKey: 'settings.uiScale130' },
+  { value: 150, labelKey: 'settings.uiScale150' },
+]
 
 export default defineComponent({
   components: { PersistentStoragePanel, NotificationPermissionPanel },
@@ -479,11 +520,17 @@ export default defineComponent({
       darkMode: storeDarkMode,
       locale: storeLocale,
       theme: storeTheme,
+      uiScale: storeUiScale,
     } = storeToRefs(appearanceStore)
 
     const isSaved = ref(false)
     const theme = ref<SignetStone>(
       (storeTheme && storeTheme.value) || DEFAULT_SIGNET_THEME,
+    )
+    const uiScale = ref<UiScaleSetting>(
+      (storeUiScale && storeUiScale.value) ||
+        getSavedUiScaleSetting() ||
+        DEFAULT_UI_SCALE,
     )
     const themeOptions = Object.values(SIGNET_THEMES)
 
@@ -495,7 +542,12 @@ export default defineComponent({
           storeDarkMode && storeDarkMode.value !== undefined
             ? storeDarkMode.value
             : false
+        const revertScale =
+          (storeUiScale && storeUiScale.value) ||
+          getSavedUiScaleSetting() ||
+          DEFAULT_UI_SCALE
         applyTheme(revertTheme, revertDark)
+        applyViewportScaleAndMetrics(revertScale)
       }
     })
 
@@ -628,6 +680,8 @@ export default defineComponent({
       darkMode: ref(storeDarkMode.value),
       theme,
       themeOptions,
+      uiScale,
+      uiScaleOptions: UI_SCALE_OPTIONS,
       updateInterval: ref(storeUpdateInterval.value / msToMinutes),
       // A local draft, not bound to vue-i18n's own global locale -- ticket #156: selecting an
       // option must never affect the app until Save, the same as darkMode/updateInterval above.
@@ -635,6 +689,7 @@ export default defineComponent({
       contactRefreshInterval: ref<QInput | null>(null),
       storeDarkMode,
       storeTheme,
+      storeUiScale,
       storeUpdateInterval,
       storeLocale,
       localeOptions,
@@ -683,6 +738,9 @@ export default defineComponent({
         this.storeTheme || DEFAULT_SIGNET_THEME,
         this.storeDarkMode || false,
       )
+      applyViewportScaleAndMetrics(
+        this.storeUiScale || getSavedUiScaleSetting() || DEFAULT_UI_SCALE,
+      )
     }
   },
   methods: {
@@ -694,6 +752,11 @@ export default defineComponent({
     },
     onSelectTheme(stoneId: SignetStone) {
       this.selectTheme(stoneId)
+    },
+    selectUiScale(scaleVal: UiScaleSetting) {
+      this.uiScale = scaleVal
+      this.isSaved = false
+      applyViewportScaleAndMetrics(scaleVal)
     },
     save() {
       this.saveEmailGateway()
@@ -737,7 +800,13 @@ export default defineComponent({
       } else if (this.storeTheme !== undefined) {
         this.storeTheme = this.theme
       }
+      if (typeof this.appearanceStore?.setUiScale === 'function') {
+        this.appearanceStore.setUiScale(this.uiScale)
+      } else if (this.storeUiScale !== undefined) {
+        this.storeUiScale = this.uiScale
+      }
       applyTheme(this.theme, this.darkMode)
+      applyViewportScaleAndMetrics(this.uiScale)
       this.storeUpdateInterval = this.updateInterval * msToMinutes
       this.storeLocale = this.locale
       void applyLocale({
@@ -767,9 +836,15 @@ export default defineComponent({
       if (this.storeTheme !== undefined) {
         this.theme = this.storeTheme
       }
+      if (this.storeUiScale !== undefined) {
+        this.uiScale = this.storeUiScale
+      }
       applyTheme(
         this.storeTheme || DEFAULT_SIGNET_THEME,
         this.storeDarkMode || false,
+      )
+      applyViewportScaleAndMetrics(
+        this.storeUiScale || getSavedUiScaleSetting() || DEFAULT_UI_SCALE,
       )
       this.isSaved = true
       navigateBack(this.$router)

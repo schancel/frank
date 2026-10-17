@@ -284,18 +284,21 @@ body.body--dark {
 html,
 body,
 #q-app {
+  width: var(--frank-vw, 100%);
   height: 100%;
-  height: 100dvh;
+  height: var(--frank-vh, 100dvh);
   max-height: 100vh;
-  max-height: 100dvh;
+  max-height: var(--frank-vh, 100dvh);
   overflow: hidden;
   overscroll-behavior: none;
 }
 
 .q-layout {
+  width: var(--frank-vw, 100%) !important;
   height: 100% !important;
+  height: var(--frank-vh, 100dvh) !important;
   min-height: 0 !important;
   max-height: 100vh !important;
-  max-height: 100dvh !important;
+  max-height: var(--frank-vh, 100dvh) !important;
   overflow: hidden !important;
 }

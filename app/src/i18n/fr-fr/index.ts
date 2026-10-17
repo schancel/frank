@@ -1550,6 +1550,15 @@ export const rawFrFR = {
       'Intervalle entre mise à jour des contacts (minutes)', //? Interval between contact updates (minutes)
     darkMode: 'Mode Nuit/Sombre',
     themeTitle: 'Pierre de Signet',
+    uiScaleTitle: 'Taille d’affichage (Zoom de l’interface)',
+    uiScaleHint:
+      'Le mode Auto adapte l’interface aux écrans mobiles même si le navigateur force un affichage bureau.',
+    uiScaleAuto: 'Auto (Recommandé)',
+    uiScale85: '85 %',
+    uiScale100: '100 %',
+    uiScale115: '115 %',
+    uiScale130: '130 %',
+    uiScale150: '150 %',
     saveSettings: 'Enregistrer',
     savedNotification: 'Paramètres enregistrés',
     cancelSettings: 'Annuler',

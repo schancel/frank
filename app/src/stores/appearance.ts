@@ -3,6 +3,13 @@ import { LevelDB } from 'level'
 
 import { defaultLocale } from 'src/i18n'
 import { DEFAULT_SIGNET_THEME, SignetStone } from 'src/utils/theme'
+import {
+  DEFAULT_UI_SCALE,
+  UiScaleSetting,
+  getSavedUiScaleSetting,
+  normalizeUiScaleSetting,
+  saveUiScaleSetting,
+} from 'src/utils/mobile-viewport-scale'
 
 export interface State {
   darkMode: boolean
@@ -12,6 +19,8 @@ export interface State {
   locale: string
   /** The committed UI color theme (Signet stone). Defaults to 'carnelian'. */
   theme: SignetStone
+  /** The committed UI display scale ('auto' | 85 | 100 | 115 | 130 | 150). */
+  uiScale?: UiScaleSetting
 }
 
 /** Extracted from the `storage` option below (same behavior) so it's directly unit-testable --
@@ -31,6 +40,9 @@ export async function restoreAppearance(
     //
   }
   const deserializedProfile = JSON.parse(appearance) as State
+  if (deserializedProfile.uiScale !== undefined) {
+    saveUiScaleSetting(normalizeUiScaleSetting(deserializedProfile.uiScale))
+  }
   return deserializedProfile
 }
 
@@ -40,6 +52,7 @@ export const useAppearanceStore = defineStore('appearance', {
     lastDismissed: 0,
     locale: defaultLocale,
     theme: DEFAULT_SIGNET_THEME,
+    uiScale: getSavedUiScaleSetting() || DEFAULT_UI_SCALE,
   }),
   actions: {
     setDarkMode(darkMode: boolean) {
@@ -47,6 +60,11 @@ export const useAppearanceStore = defineStore('appearance', {
     },
     setTheme(theme: SignetStone) {
       this.theme = theme
+    },
+    setUiScale(uiScale: UiScaleSetting) {
+      const normalized = normalizeUiScaleSetting(uiScale)
+      this.uiScale = normalized
+      saveUiScaleSetting(normalized)
     },
   },
   storage: {

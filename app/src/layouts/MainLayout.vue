@@ -35,6 +35,10 @@ import type { NavigationFailure, RouteLocationNormalized } from 'vue-router'
 import { REVEAL_CHAT_DRAWER } from '../composables/useChatSearchShortcut'
 import { MY_DRAWER_OPEN_KEY } from '../composables/useMyDrawerOpen'
 import { DRAWER_BREAKPOINT, isNarrowWidth } from '../utils/layout'
+import {
+  applyViewportScaleAndMetrics,
+  getEffectiveScreenWidth,
+} from '../utils/mobile-viewport-scale'
 
 import LeftDrawer from '../components/panels/LeftDrawer.vue'
 
@@ -60,6 +64,9 @@ export default defineComponent({
   },
   emits: ['setupCompleted'],
   data() {
+    const initialRawWidth =
+      (this as unknown as { $q?: { screen?: { width?: number } } }).$q?.screen
+        ?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 1024)
     return {
       railNavigation: false,
       removeAfterEach: undefined as (() => void) | undefined,
@@ -83,7 +90,7 @@ export default defineComponent({
       desktopDrawerWidth: compactCutoff,
       isDragging: false,
       // See `drawerBreakpoint`'s own comment above for why this can't just be `true`.
-      myDrawerOpen: !isNarrowWidth(this.$q.screen.width),
+      myDrawerOpen: !isNarrowWidth(getEffectiveScreenWidth(initialRawWidth)),
       contactDrawerOpen: false as boolean,
       compact: false,
       compactWidth,
@@ -137,7 +144,7 @@ export default defineComponent({
         // blocked (failed) navigation must keep it.
         this.setupNavigationLocked = false
         if (railTab) return
-        if (isNarrowWidth(this.$q.screen.width)) {
+        if (isNarrowWidth(this.screenWidth)) {
           // Focus is restored by the myDrawerOpen watcher, shared with every other way the
           // overlay can close (Escape, backdrop, swipe, @closeDrawer).
           this.myDrawerOpen = false
@@ -154,8 +161,22 @@ export default defineComponent({
   },
   mounted() {
     if (typeof window !== 'undefined') {
+      this.syncMobileViewport()
       this.onWindowScroll()
       window.addEventListener('scroll', this.onWindowScroll, { passive: true })
+      window.addEventListener('resize', this.syncMobileViewport, {
+        passive: true,
+      })
+      window.visualViewport?.addEventListener(
+        'resize',
+        this.syncMobileViewport,
+        { passive: true },
+      )
+      window.visualViewport?.addEventListener(
+        'scroll',
+        this.syncMobileViewport,
+        { passive: true },
+      )
     }
     try {
       const saved = localStorage.getItem('frank:sidebar-width')
@@ -174,6 +195,15 @@ export default defineComponent({
     this.disposed = true
     if (typeof window !== 'undefined') {
       window.removeEventListener('scroll', this.onWindowScroll)
+      window.removeEventListener('resize', this.syncMobileViewport)
+      window.visualViewport?.removeEventListener(
+        'resize',
+        this.syncMobileViewport,
+      )
+      window.visualViewport?.removeEventListener(
+        'scroll',
+        this.syncMobileViewport,
+      )
     }
     this.setBackgroundInert(false)
     this.removeAfterEach?.()
@@ -193,7 +223,7 @@ export default defineComponent({
       }
       if (!this.drawerClosedForSetupLock) return
       this.drawerClosedForSetupLock = false
-      this.myDrawerOpen = !isNarrowWidth(this.$q.screen.width)
+      this.myDrawerOpen = !isNarrowWidth(this.screenWidth)
     },
     // While the drawer is an overlay, nothing behind it may take focus or clicks (#277): Tab must
     // stay in the drawer, and a screen reader must not read the page under the backdrop. Synchronous
@@ -213,7 +243,7 @@ export default defineComponent({
         this.myDrawerOpen = false
         return
       }
-      const narrow = isNarrowWidth(this.$q.screen.width)
+      const narrow = isNarrowWidth(this.screenWidth)
       if (open) {
         // Only the narrow overlay hands focus back; never keep a control from a desktop open.
         const active = document.activeElement
@@ -285,7 +315,7 @@ export default defineComponent({
     // (keyboard and screen-reader users lose their place). Hand it back to the control that
     // opened the drawer if it survived the navigation, else to the main content region.
     closeDrawerForNavigation() {
-      if (this.myDrawerOpen && isNarrowWidth(this.$q.screen.width)) {
+      if (this.myDrawerOpen && isNarrowWidth(this.screenWidth)) {
         this.pendingRestore = { opener: this.drawerOpener }
         this.drawerOpener = null
         this.ownedClose = true
@@ -359,6 +389,10 @@ export default defineComponent({
     onDrawerResizing(val: boolean) {
       this.isDragging = val
     },
+    syncMobileViewport() {
+      applyViewportScaleAndMetrics()
+      this.onWindowScroll()
+    },
     onWindowScroll() {
       if (
         typeof window !== 'undefined' &&
@@ -371,10 +405,10 @@ export default defineComponent({
   computed: {
     screenWidth(): number {
       const q = (this as unknown as { $q?: { screen?: { width?: number } } }).$q
-      return (
+      const raw =
         q?.screen?.width ??
         (typeof window !== 'undefined' ? window.innerWidth : 1024)
-      )
+      return getEffectiveScreenWidth(raw)
     },
     overlayOpen(): boolean {
       return this.myDrawerOpen && isNarrowWidth(this.screenWidth)
@@ -413,11 +447,12 @@ export default defineComponent({
 
 <style lang="scss">
 .q-layout {
+  width: var(--frank-vw, 100%);
   height: 100vh;
-  height: 100dvh;
+  height: var(--frank-vh, 100dvh);
   min-height: 0 !important;
   max-height: 100vh;
-  max-height: 100dvh;
+  max-height: var(--frank-vh, 100dvh);
   overflow: hidden;
 }
 
@@ -426,7 +461,7 @@ export default defineComponent({
 // the visible screen. Dynamic viewport units also follow Safari's browser chrome.
 .frank-main-drawer {
   max-height: 100vh;
-  max-height: 100dvh;
+  max-height: var(--frank-vh, 100dvh);
 
   .q-drawer__content {
     height: 100%;

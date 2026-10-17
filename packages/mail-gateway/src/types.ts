@@ -29,6 +29,7 @@ export interface GatewayConfig {
   readonly operatorAccountAddress?: string;
   readonly operatorForwardEmail?: string;
   readonly frankAppUrl?: string;
+  readonly outboundApiToken?: string;
 
   // Blob storage configuration
   readonly blobStorage?: BlobStorageConfig;

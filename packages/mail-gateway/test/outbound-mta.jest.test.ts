@@ -538,6 +538,53 @@ describe('3. Direct MX Delivery & Worker Spool Processor', () => {
     const pending = ledger.getPendingOutboundJobs(Date.now() + 100000);
     expect(pending.length).toBe(0);
   });
+
+  it('does not spool ambiguous (unanswered DATA) or local pre-connection refusals (#1346)', () => {
+    expect(
+      isTemporaryFailure({
+        success: false,
+        outcome: 'ambiguous',
+        mxHost: '127.0.0.1',
+        error: 'Connection closed before the server replied',
+      })
+    ).toBe(false);
+
+    expect(
+      isTemporaryFailure({
+        success: false,
+        outcome: 'refused',
+        error: 'Domain nullmx.example publishes a null MX record (RFC 7505) and does not accept mail',
+      })
+    ).toBe(false);
+
+    expect(
+      isTemporaryFailure({
+        success: false,
+        outcome: 'refused',
+        mxHost: '127.0.0.1',
+        error: 'connect ECONNREFUSED 127.0.0.1:25',
+      })
+    ).toBe(true);
+  });
+
+  it('purges expired held messages during processSpool (#1346)', async () => {
+    const now = Date.now();
+    await ledger.holdMessage({
+      id: 'held_expired_1',
+      senderEmail: 'alice@external.com',
+      recipientAddress: '0xbob',
+      dkimDomain: 'external.com',
+      subject: 'Expired held mail',
+      rawRfc822: new Uint8Array([1, 2, 3]),
+      createdAtMs: now - 10_000,
+      expiresAtMs: now - 1_000,
+    });
+    expect(ledger.getHeldMessage('held_expired_1')?.status).toBe('held');
+
+    await worker.processSpool(now);
+
+    expect(ledger.getHeldMessage('held_expired_1')?.status).toBe('expired');
+  });
 });
 
 describe('4. Inbound Bounce / NDR Processing & Sender Notification', () => {

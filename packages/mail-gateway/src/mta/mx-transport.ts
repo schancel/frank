@@ -125,14 +125,20 @@ export class MxDirectTransport {
     this.resolveMxFn = options.resolveMxFn ?? dns.promises.resolveMx;
   }
 
-  /** Resolves destination domain's MX hosts in priority order, with RFC 5321 A-record fallback. */
+  /**
+   * Resolves destination domain's MX hosts in priority order, with RFC 5321 A-record fallback.
+   * Returns an empty array when the domain publishes an RFC 7505 Null MX record (`0 .`).
+   */
   async resolveMxHosts(domain: string): Promise<string[]> {
     try {
       const records = await this.resolveMxFn(domain);
       if (records && records.length > 0) {
-        return records
-          .sort((a, b) => a.priority - b.priority)
-          .map((rec) => rec.exchange);
+        const sorted = [...records].sort((a, b) => a.priority - b.priority);
+        const hosts = sorted
+          .map((rec) => (typeof rec.exchange === 'string' ? rec.exchange.trim().replace(/\.+$/, '') : ''))
+          .filter((host) => host.length > 0);
+        // RFC 7505: a null MX (`0 .` or empty exchange) explicitly states the domain accepts no mail.
+        return hosts;
       }
     } catch {
       // RFC 5321 fallback: if no MX record found, fallback directly to domain A/AAAA record
@@ -173,6 +179,11 @@ export class MxDirectTransport {
 
     const toDomain = params.toAddress.slice(params.toAddress.indexOf('@') + 1);
     const mxHosts = await this.resolveMxHosts(toDomain);
+    if (mxHosts.length === 0) {
+      return refusedBeforeConnecting(
+        `Domain ${toDomain} publishes a null MX record (RFC 7505) and does not accept mail`
+      );
+    }
     let lastResult: MxDeliveryResult = {
       success: false,
       outcome: 'refused',
@@ -237,6 +248,7 @@ export class MxDirectTransport {
       const stop = (error: string, reply?: { code: number; text: string }) => {
         if (settled) return;
         settled = true;
+        clearTimeout(sessionDeadline);
         socket.destroy();
         resolve({
           success: false,
@@ -246,6 +258,11 @@ export class MxDirectTransport {
           error,
         });
       };
+
+      const sessionDeadline = setTimeout(() => {
+        stop('Connection timed out');
+      }, this.timeoutMs);
+      sessionDeadline.unref?.();
 
       const handleReply = (code: number, text: string) => {
         if (code >= 400 && code <= 599) {
@@ -295,6 +312,7 @@ export class MxDirectTransport {
             // This reply answers the end of the message data and decides the
             // result. QUIT is a courtesy; its reply is not waited for.
             settled = true;
+            clearTimeout(sessionDeadline);
             resolve({
               success: true,
               outcome: 'accepted',

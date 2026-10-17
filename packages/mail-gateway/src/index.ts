@@ -87,6 +87,7 @@ export class EmailGatewayDaemon {
       stripePaymentLinkTier2: config.stripePaymentLinkTier2,
       stripePaymentLinkTier3: config.stripePaymentLinkTier3,
       frankAppUrl: config.frankAppUrl,
+      outboundApiToken: config.outboundApiToken,
     });
     this.inboundHandler = new InboundEmailHandler({
       gatewayDomain: config.gatewayDomain,

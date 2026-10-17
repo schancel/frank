@@ -8,6 +8,7 @@
 import { PROTOCOL_CHAINS } from './chains-registry'
 import {
   assertInterfaceFee,
+  resolveConfiguredInterfaceFee,
   type EvmDexEntry,
   type UniswapV4Deployment,
 } from './dex-entries'
@@ -48,7 +49,15 @@ export function listEvmSwapVenues(
   )
     ? PROTOCOL_CHAINS[chainIdentifier]
     : undefined
-  return (entry?.dex ?? []).filter(isEvmDexEntry).filter(venue => venue.enabled)
+  const configuredFee = resolveConfiguredInterfaceFee('evm')
+  return (entry?.dex ?? [])
+    .filter(isEvmDexEntry)
+    .filter(venue => venue.enabled)
+    .map(venue =>
+      venue.interfaceFee === undefined && configuredFee !== undefined
+        ? Object.freeze({ ...venue, interfaceFee: configuredFee })
+        : venue,
+    )
 }
 
 /**

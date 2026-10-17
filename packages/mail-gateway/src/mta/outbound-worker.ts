@@ -52,15 +52,29 @@ export function calculateBackoffMs(
 
 /**
  * Determines whether an MX delivery failure is temporary (retriable) or permanent.
- * 4xx SMTP codes, socket timeouts, connection refused, or DNS network errors are temporary.
- * 5xx SMTP codes are permanent rejections.
+ * - 4xx SMTP codes, socket timeouts, connection refused, or DNS network errors are temporary.
+ * - 5xx SMTP codes are permanent rejections.
+ * - `ambiguous` outcomes (where message data was already written before connection loss) are not retried
+ *   automatically to avoid duplicate delivery (#1346).
+ * - Local pre-connection refusals (`outcome === 'refused'`, no `mxHost`, no `responseCode`, such as
+ *   invalid envelope address or RFC 7505 null MX) are permanent (#1346).
  */
 export function isTemporaryFailure(result: MxDeliveryResult): boolean {
   if (result.success) {
     return false;
   }
+  if (result.outcome === 'ambiguous') {
+    return false;
+  }
   if (result.responseCode !== undefined) {
     return result.responseCode >= 400 && result.responseCode < 500;
+  }
+  if (
+    result.outcome === 'refused' &&
+    result.mxHost === undefined &&
+    !result.error?.startsWith('All MX hosts for ')
+  ) {
+    return false;
   }
   // Socket errors, timeouts, network unreachability without response code
   return true;
@@ -154,7 +168,7 @@ export class OutboundMtaWorker {
       };
     }
 
-    // Permanent 5xx failure: do not spool
+    // Permanent failure or ambiguous delivery: do not spool
     return {
       success: false,
       rfc822MessageId: deliveryResult.rfc822MessageId,
@@ -167,9 +181,15 @@ export class OutboundMtaWorker {
 
   /**
    * Sweeps pending spool jobs ready for retry and attempts re-delivery,
-   * updating attempt counters and exponential backoff timestamps.
+   * updating attempt counters and exponential backoff timestamps. Also purges
+   * expired held messages from the credit ledger (#1346).
    */
   async processSpool(nowMs?: number): Promise<SpoolProcessingSummary> {
+    try {
+      this.ledger.purgeExpiredHeldMessages();
+    } catch {
+      // Non-fatal if ledger uses an async-only backend
+    }
     const now = nowMs ?? Date.now();
     const pendingJobs = this.ledger.getPendingOutboundJobs(now);
 
@@ -203,7 +223,7 @@ export class OutboundMtaWorker {
             failed++;
           }
         } else {
-          // Permanent failure (5xx)
+          // Permanent failure (5xx, local refusal, or ambiguous delivery)
           this.ledger.markOutboundJobFailed(
             job.id,
             mxResult.error || 'Permanent delivery failure',

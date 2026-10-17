@@ -228,3 +228,39 @@ export function derivePeerStampMetrics(
     receivedCount,
   };
 }
+
+export interface PeerStampSuggestionResult extends PeerStampMetrics {
+  /** Converged geometric stamp suggestion in base units (wei). */
+  suggestedStampWei: bigint;
+  /**
+   * True when the converged suggestion exceeds the user's previous stamp to this peer
+   * (or the default stamp if nothing was sent yet), so the UI can visibly mark an upward adjustment (#820).
+   */
+  isSuggestedIncrease: boolean;
+}
+
+/**
+ * Pure helper shared by the app and headless bot clients (#820) that derives peer metrics
+ * from conversation history and computes the converged geometric stamp suggestion.
+ */
+export function computePeerStampSuggestion(params: {
+  messages: ReadonlyArray<StampHistoryMessage>;
+  defaultStampWei: bigint;
+  minimumStampWei?: bigint;
+}): PeerStampSuggestionResult {
+  const metrics = derivePeerStampMetrics(params.messages);
+  const suggestedStampWei = computeGeometricStampSuggestion({
+    defaultStampWei: params.defaultStampWei,
+    minimumStampWei: params.minimumStampWei,
+    lastSentWei: metrics.lastSentWei,
+    lastReceivedWei: metrics.lastReceivedWei,
+    netReceivedWei: metrics.netReceivedWei,
+  });
+  const previousBaselineWei = metrics.lastSentWei ?? params.defaultStampWei;
+  return {
+    ...metrics,
+    suggestedStampWei,
+    isSuggestedIncrease: suggestedStampWei > previousBaselineWei,
+  };
+}
+

@@ -582,3 +582,63 @@ it('discloses the basis of the AVU default stamp without attaching it to an expl
   expect(wrapper.find('[data-testid="stamp-basis-note"]').exists()).toBe(false)
   wrapper.unmount()
 })
+
+describe('converged stamp suggestion and per-message override indicators (#820)', () => {
+  beforeEach(() => {
+    mockDecimals = true
+  })
+  afterEach(() => {
+    mockDecimals = false
+  })
+
+  it('shows suggested vs overridden mode, peer last paid amount, upward adjustment marker, and clears typedStamp on send', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        message: 'Hello peer',
+        minimumStampWei: 10n ** 16n,
+        defaultStampWei: 10n ** 16n,
+        suggestedStampWei: 2n * 10n ** 16n,
+        lastPeerStampWei: 4n * 10n ** 16n,
+        suggestedIncrease: true,
+        defaultStampMode: true,
+        stampAmount: '0.02',
+      },
+      global: globalOptions,
+    })
+
+    expect(wrapper.find('[data-testid="stamp-pill-increase"]').exists()).toBe(
+      true,
+    )
+    expect(
+      wrapper.get('[data-testid="stamp-suggested-increase"]').text(),
+    ).toContain(enUS.chatInput.stampSuggestedIncreaseNotice)
+    expect(wrapper.get('[data-testid="stamp-mode-status"]').text()).toBe(
+      enUS.chatInput.stampSuggestedMode,
+    )
+    expect(wrapper.get('[data-testid="stamp-last-peer-paid"]').text()).toBe(
+      'Peer last paid: 40 mMON',
+    )
+
+    // User overrides the stamp for this message
+    const vm = wrapper.vm as any
+    vm.innerStampAmount = '0.05'
+    expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['0.05'])
+    await wrapper.setProps({
+      stampAmount: '0.05',
+      defaultStampMode: false,
+    })
+    expect(wrapper.get('[data-testid="stamp-mode-status"]').text()).toBe(
+      enUS.chatInput.stampOverriddenMode,
+    )
+    expect(wrapper.find('[data-testid="stamp-pill-increase"]').exists()).toBe(
+      false,
+    )
+
+    // Sending clears typedStamp so the field reflects the reset suggestion for the next message
+    vm.sendMessage()
+    expect(wrapper.emitted('sendMessage')).toEqual([['Hello peer']])
+    expect(vm.typedStamp).toBeNull()
+    wrapper.unmount()
+  })
+})
+

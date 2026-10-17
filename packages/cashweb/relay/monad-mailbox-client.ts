@@ -86,18 +86,17 @@ import {
   MonadStampedMessage,
   MonadStampPayment,
   StoredMonadMessage,
+  type MonadStampedMessageProto,
+  type StoredMonadMessageProto,
 } from "./monad-mailbox-compat";
 export {
   StoredMonadMessages,
   MonadStampedMessage,
   MonadStampPayment,
   StoredMonadMessage,
+  type MonadStampedMessageProto,
+  type StoredMonadMessageProto,
 };
-// Type-only back-edge (erased at compile time), same as `./monad-message-feed.ts` had.
-import type {
-  MonadStampedMessageProto,
-  StoredMonadMessageProto,
-} from "@frank/wallet/monad-stamp-client";
 
 /** `MAILBOX_AUTH_DOMAIN` in `monad_message.rs`. */
 export const MAILBOX_AUTH_DOMAIN = "frank:mailbox-http-auth:v2";

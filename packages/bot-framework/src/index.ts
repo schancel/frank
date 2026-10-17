@@ -12,3 +12,17 @@ export * from "./scheduler";
 export * from "./bot-host";
 export * from "./bot-profile-admission";
 export * from "./reserved-usernames";
+export {
+  isqrt,
+  computeGeometricStampSuggestion,
+  derivePeerStampMetrics,
+  computePeerStampSuggestion,
+  getMessageStampWei,
+  getVerifiedReceivedMessageStampWei,
+  type StampSuggestionParams,
+  type PeerStampMetrics,
+  type PeerStampSuggestionResult,
+  type StampHistoryMessage,
+  type StampHistoryPaymentEntry,
+} from "@frank/wallet/stamp-suggestion";
+

@@ -200,6 +200,9 @@
         v-model:stamp-amount="stampAmount"
         :minimum-stamp-wei="minimumStampWei"
         :default-stamp-wei="defaultStampWei"
+        :suggested-stamp-wei="suggestedStampWei"
+        :last-peer-stamp-wei="lastPeerStampWei"
+        :suggested-increase="isSuggestedIncrease"
         :stamp-basis-note="defaultStampBasisNote"
         :default-stamp-mode="isDefaultStampMode"
         :stamp-unavailable="stampUnavailable"
@@ -353,6 +356,10 @@ import {
   isScreenerConversation,
   type FormattedScreenerStamp,
 } from '../utils/screener-triage'
+import {
+  computePeerStampSuggestion,
+  type PeerStampSuggestionResult,
+} from '@frank/wallet/stamp-suggestion'
 
 const scrollDuration = 0
 
@@ -872,7 +879,7 @@ export default defineComponent({
     resetStampDefault() {
       const target = this.conversation?.id || this.recipientAddress
       if (target)
-        this.chatStore.setStampWei({ address: target, stampWei: undefined })
+        this.chatStore?.setStampWei?.({ address: target, stampWei: undefined })
     },
     async sendMessage(message: string) {
       if (this.stampUnavailable) {
@@ -913,6 +920,9 @@ export default defineComponent({
       this.message = ''
       this.attachments = []
       this.replyDigest = null
+      if (!this.isDefaultStampMode) {
+        this.resetStampDefault?.()
+      }
 
       // The reply, the text, then the pictures the text refers to by position.
       const items = composeChatItems(
@@ -1759,8 +1769,31 @@ export default defineComponent({
 
       return this.messages.slice(start, end)
     },
+    peerStampSuggestion(): PeerStampSuggestionResult | undefined {
+      if (this.defaultStampWei === undefined) return undefined
+      return computePeerStampSuggestion({
+        messages: this.peerMessages ?? [],
+        defaultStampWei: this.defaultStampWei,
+        minimumStampWei: this.minimumStampWei ?? 0n,
+      })
+    },
+    suggestedStampWei(): bigint | undefined {
+      return (
+        this.peerStampSuggestion?.suggestedStampWei ?? this.defaultStampWei
+      )
+    },
+    lastPeerStampWei(): bigint | undefined {
+      return this.peerStampSuggestion?.lastReceivedWei
+    },
+    isSuggestedIncrease(): boolean {
+      return Boolean(
+        this.isDefaultStampMode &&
+          this.peerStampSuggestion?.isSuggestedIncrease,
+      )
+    },
     /** The stamp the next message carries, in the chain's display unit. It is the user's own
-     * choice for this conversation (zero is a free message), else the chain's default. */
+     * per-message override for this conversation (zero is a free message), else the converged
+     * geometric suggestion for the peer (#820). */
     stampAmount: {
       set(stampAmount: string | number | null | undefined) {
         // An empty box or half-typed text is not an amount: the last valid one stands.
@@ -1782,9 +1815,17 @@ export default defineComponent({
       },
       get(): string {
         const target = this.conversation?.id || this.recipientAddress
+        const explicit = target ? this.chatStore.getStampWei(target) : undefined
         const chosen =
-          (target ? this.chatStore.getStampWei(target) : undefined) ??
-          this.defaultStampWei
+          explicit ??
+          this.suggestedStampWei ??
+          (this.defaultStampWei !== undefined
+            ? computePeerStampSuggestion({
+                messages: this.peerMessages ?? [],
+                defaultStampWei: this.defaultStampWei,
+                minimumStampWei: this.minimumStampWei ?? 0n,
+              }).suggestedStampWei
+            : undefined)
         return chosen === undefined ? '' : activeChain.toDisplayAmount(chosen)
       },
     },

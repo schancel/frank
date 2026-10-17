@@ -291,3 +291,29 @@ export class StoredMonadMessages {
     return res
   }
 }
+
+/**
+ * `MonadStampedMessage` from `monad_message.proto`, decoded/encoded in plain-object form.
+ * Field numbers match the `.proto`: the removed singular transaction is reserved at 1,
+ * `encrypted_payload = 2`, `payload_hash = 3`, and `stamp_payments = 4`.
+ */
+export interface MonadStampedMessageProto {
+  stampPayments: Array<{ childIndex: number; rawTx: Uint8Array }>
+  encryptedPayload: Uint8Array
+  payloadHash: Uint8Array
+}
+
+/**
+ * @deprecated Legacy protobuf DM transport type. Canonical CBOR envelope is the active path.
+ * `StoredMonadMessage` from `monad_message.proto` — what both `PUT /message/monad`'s success
+ * response and `GET /message/monad/:payload_hash` return. The old sender/hash assertions are
+ * reserved at fields 2 and 3; `timestamp = 4`, `network_tag = 5`.
+ */
+export interface StoredMonadMessageProto {
+  message: MonadStampedMessageProto | undefined
+  /** Milliseconds since the Unix epoch. */
+  timestamp: number
+  /** Frank-specific network tag, e.g. `"MONT"`/`"MON1"` as raw bytes. */
+  networkTag: Uint8Array
+}
+

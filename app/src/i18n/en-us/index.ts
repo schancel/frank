@@ -192,6 +192,11 @@ export const rawEnUS = {
       'A stamp is a small payment sent with your message to the person you are writing to. It pays for their attention.',
     stampWhy:
       'Each message carries the default stamp unless you choose another amount for this chat. Enter 0 to send free messages.',
+    stampSuggestedMode: 'Suggested stamp for this conversation',
+    stampOverriddenMode: 'Overridden for this message only',
+    stampPeerLastPaid: 'Peer last paid: {amount}',
+    stampSuggestedIncreaseNotice:
+      'Higher than your previous stamp to this contact',
   },
   digitalGoods: {
     catalog: 'Catalog',

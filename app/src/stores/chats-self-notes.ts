@@ -21,28 +21,6 @@ import type {
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { safeChainDisplayAddress } from '../utils/chain-address'
 import { sameCanonicalAddress } from '../utils/own-address'
-import { isInternalMessage } from './chats-domain'
-
-/** A wallet's own records (`wallet-sync`, `payment-transfer`) are never taken from a mailbox row
- * here. The wallet's receive rule already keeps them from arriving as such; if one does, that
- * row alone is refused, uninterpreted, like any other row that cannot be filed. */
-export function carriesWalletRecord(wrapper: ReceivedMessageWrapper): boolean {
-  return !!wrapper.message.items?.some(
-    item =>
-      item && (item.type === 'wallet-sync' || item.type === 'payment-transfer'),
-  )
-}
-
-/**
- * A received row that carries nothing but records (today: a swap's note to self) is not a
- * message. It is never filed into a conversation and never saved as one, in the session or on a
- * reload: its records go to the store that owns them and the row is left in the mailbox.
- */
-export function carriesOnlyRecords(wrapper: ReceivedMessageWrapper): boolean {
-  return (
-    isInternalMessage(wrapper.message.items) && !carriesWalletRecord(wrapper)
-  )
-}
 
 /**
  * The swap records of a row the account sent to itself. A swap record in anyone else's row, or

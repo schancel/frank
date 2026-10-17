@@ -96,92 +96,176 @@ import { shortAddress } from '../utils/short-address'
 import { captureOutgoingApplicationAuthorization } from '../utils/outgoing-application-authorization'
 import { captureOutgoingFinancialOperations } from '../stealth-payments/outgoing'
 
+export type ChatMessage = {
+  sealedMessageId?: string
+  applicationAuthorization?: Message['applicationAuthorization']
+  financialOperations?: OutgoingFinancialOperation[]
+  outbound: boolean
+  status: string
+  receivedTime: number
+  serverTime: number
+  items: MessageItem[]
+  outpoints: Utxo[]
+  /** See this file's header decision note: additive Monad-side value field, alongside
+   * `outpoints` rather than replacing it (ticket #42). */
+  stampValueWei?: bigint
+  stampPayments?: Array<{
+    txHash: string
+    destinationAddress: string
+    valueWei: bigint
+  }>
+  senderAddress: string
+  destinationAddress?: string
+  payloadDigest: string
+  messageHash?: string
+  /** Outgoing messages that are not yet confirmed (#269/#270); see `Message.delivery`. */
+  delivery?: OutgoingDelivery
+  /** Ticket #69: Conversation and logical message identifiers */
+  conversationId?: string
+  logicalMessageId?: string
+  /** Authenticated original canonical content frame, when the producer supplied its digest. */
+  contentDigest?: string
+  revisionDigest?: string
+  deliveryDigest?: string
+  /** `serverTime` is this device's clock: the message was written here and its row has not
+   * been read back from the relay, which is what gives it the time every device sees. */
+  localTime?: boolean
+}
+
+/** Conversation metadata is owned by conversations[id]; messages are owned by the message store.
+ * Peer lookup, message membership/accounting and logical revision indexes are derived views.
+ * Stable 16-byte conversation IDs cross the authenticated wire unchanged. Subjects are presentation.
+ */
+export type ConversationKind = 'direct' | 'group' | 'email'
+export type ConversationRole = 'owner' | 'admin' | 'member'
+
+export interface ConversationMember {
+  address: string
+  role?: ConversationRole
+  joinedAt?: number
+  alias?: string
+  /** Hex of the key this member's first message here was verified against. It gives someone
+   * who is not a contact the same colour a contact gets from their key. */
+  pubKeyHex?: string
+}
+
+export interface ConversationEpoch {
+  epochId?: string
+  generation?: number
+  updatedAt?: number
+}
+
+export interface DeliveryRecord {
+  deliveryDigest: string
+  recipientAddress?: string
+  status: string
+  attemptDigest?: string
+  timestamp: number
+}
+
+export interface RevisionRecord {
+  revisionDigest: string
+  items: MessageItem[]
+  timestamp: number
+  deliveries: DeliveryRecord[]
+}
+
+export interface LogicalMessageRecord {
+  messageId: string
+  conversationId: string
+  senderAddress: string
+  createdAt: number
+  activeRevisionDigest: string
+  revisions: RevisionRecord[]
+}
+
+export interface Conversation {
+  id: string
+  kind: ConversationKind
+  name?: string
+  /** The subject last carried by a message in this conversation, sent by this account or by the
+   * peer. A message carries the subject only when it differs from this: the first message of a
+   * conversation that has a subject, and a message after a rename. */
+  nameOnWire?: string
+  /** Relay time of the message whose subject this conversation currently has, when a message
+   * set it. A carried subject replaces the current one only if its message is not older. */
+  nameSetAt?: number
+  topic?: string
+  emailRecipient?: string
+  participants: string[]
+  members?: Record<string, ConversationMember>
+  epoch?: ConversationEpoch
+  messages: ChatMessage[]
+  totalUnreadMessages: number
+  totalUnreadValue: number
+  totalValue: number
+  lastReceived: number
+  lastRead: number
+  /** The stamp this user chose for this conversation, in the chain's base units, as a decimal
+   * string so it is saved with the conversation. Unset: the chain's configured default. */
+  stampWei?: string
+  address: string
+  createdAt?: number
+  updatedAt?: number
+  deletedAt?: number
+  /** Messages no newer than this are gone for good: the latest time the conversation was
+   * deleted at. It outlives the conversation being opened again, so that old messages do not
+   * come back with it. */
+  clearedBefore?: number
+  /** Highest relay time removed on this device by Clear or message deletion. Kept with
+   * conversation metadata so a later conversation Delete can cover that history after reload.
+   * This is a UI deletion boundary only; coin recovery remains owned by mailbox tombstones. */
+  removedRelayTime?: number
+  /** What the account's own mailbox is known to say about this conversation: the facts this
+   * device has noted to the account's other devices, or read from a note of theirs. A fact
+   * beyond these is noted by the next pass of `noteConversationStates`. */
+  noted?: { clearedBefore?: number; readUpTo?: number }
+  /** The user set or removed the subject here (`name`, at `nameSetAt`) and the account's
+   * mailbox does not say so yet. Cleared once the note is sent, or a later subject replaces
+   * this one. */
+  subjectToNote?: boolean
+  /** The account whose user last deleted, named or created this conversation on this device
+   * (`accountTag`). Only that account notes the deletion and the subject: the store can still
+   * hold conversations of an account that was replaced here. */
+  actedBy?: string
+  verifiedGateway?: boolean
+  screenerStatus?: 'pending' | 'approved' | 'dismissed'
+}
+
 import {
-  READ_NOTE_INTERVAL_MS,
+  type ChatState,
   NULL_CONVERSATION_NAMESPACE,
-  accountTag,
+  type OutboundDeliveryMatch,
+  type OutboundDeliveryOwner,
   accountedMessageValue,
-  addParticipant,
-  allocateOpeningConversationIdFor,
-  applyCarriedSubject,
-  assertConversationPeer,
   byRelayTime,
-  canonicalConversationId,
   clearedUpTo,
   collidedMessageId,
-  conversationIdSalt,
-  conversationNoteId,
-  conversationStateToNote,
-  defaultChats,
   defaultContactObject,
-  earliestMessage,
   freeMessageId,
-  freshChatsState,
-  freshConversationId,
   getTrustedEmailGatewayAddress,
-  hasConversationIdSalt,
   inDeletedConversation,
   indexOutboundDeliveryOwners,
   isAnotherMessage,
-  isInternalMessage,
   isOwnMessage,
   isUntimedOutgoing,
   makeParticipantsKey,
-  matchesOutgoingOwner,
   messageDestinationAddress,
   messageStampPrice,
-  newConversation,
   newestRelayTime,
-  nextPendingMessageId,
   observedRelayReceiptTime,
-  openAllocatedConversation,
-  openDefaultConversation,
-  outgoingMessageId,
-  peerThread,
-  peerThreadId,
-  readNotedAt,
-  readUpTo,
   recomputeChatAccounting,
   recordLogicalMessage,
-  recordNoted,
   reopenConversation,
-  replacedConversations,
-  resolveConversation,
-  setConversationIdSalt,
-  setSubject,
   speaksForConversation,
   stripReleasedPayments,
-  subjectReplaces,
-  subjectToCarry,
   tombstoneMailbox,
   tombstoneReceiptTime,
   tombstonedTargetsFor,
-  usableSubject,
   uuidv5,
   walletOwnsMessage,
-  type ChatMessage,
-  type ChatState,
-  type ComposeFocusRequest,
-  type Conversation,
-  type ConversationEpoch,
-  type ConversationKind,
-  type ConversationMember,
-  type ConversationRole,
-  type DeliveryLease,
-  type DeliveryRecord,
-  type LogicalMessageRecord,
-  type OutboundDeliveryMatch,
-  type OutboundDeliveryOwner,
-  type OutgoingOutcome,
-  type ReceivedDeliveryResult,
-  type RestorableState,
-  type RevisionRecord,
-  type SetActiveConversationOptions,
-  type State,
 } from './chats-domain'
 import {
-  carriesOnlyRecords,
-  carriesWalletRecord,
   classifySendFailure,
   errorDetail,
   isInsufficientFundsError,
@@ -192,51 +276,64 @@ import {
   ownMessageTombstones,
   ownSwapRecords,
 } from './chats-self-notes'
-import {
-  freshChatState,
-  rehydateChat,
-  rehydrateChat,
-  rehydrateState,
-} from './chats-rehydrate'
-
 export {
-  READ_NOTE_INTERVAL_MS,
+  type ChatState,
   NULL_CONVERSATION_NAMESPACE,
   collidedMessageId,
-  freshChatState,
   getTrustedEmailGatewayAddress,
-  hasConversationIdSalt,
   indexOutboundDeliveryOwners,
   makeParticipantsKey,
-  outgoingMessageId,
-  peerThread,
-  peerThreadId,
   recordLogicalMessage,
-  rehydateChat,
-  rehydrateChat,
-  rehydrateState,
-  resolveConversation,
-  setConversationIdSalt,
   stripReleasedPayments,
   uuidv5,
   walletOwnsMessage,
-  type ChatMessage,
-  type ChatState,
-  type ComposeFocusRequest,
-  type Conversation,
-  type ConversationEpoch,
-  type ConversationKind,
-  type ConversationMember,
-  type ConversationRole,
-  type DeliveryLease,
-  type DeliveryRecord,
-  type LogicalMessageRecord,
-  type OutgoingOutcome,
-  type ReceivedDeliveryResult,
-  type RestorableState,
-  type RevisionRecord,
-  type SetActiveConversationOptions,
-  type State,
+}
+
+export interface SetActiveConversationOptions {
+  requestFocus?: boolean
+}
+
+export interface State {
+  activeConversationId: string | null
+  conversations: Record<string, Conversation>
+  messages: Record<string, ChatMessage | undefined>
+  logicalMessages: Record<string, LogicalMessageRecord | undefined>
+  lastReceived: number | null
+  composeFocusRequest: ComposeFocusRequest | null
+}
+
+/**
+ * Bugfix found while writing this ticket's (#42) first-ever `stores/*.ts` jest tests: this used to
+ * be a single module-level `const defaultChatsState: State = { chats: {}, ... }` object, spread
+ * (`{ ...defaultChatsState }`) at each of its 3 use sites below. A shallow spread only copies the
+ * *top-level* keys -- `chats`/`messages` themselves stayed the exact same shared object reference
+ * across every call, so every `useChatStore()` instance in the same JS process (e.g. two Pinia
+ * instances in the same test run, or any `$reset()` call) silently aliased the same mutable
+ * `chats`/`messages` objects instead of getting an independent empty state. Harmless in production
+ * today (exactly one `Pinia` instance is ever created per app lifetime, and nothing calls
+ * `$reset()`), but a real correctness bug the moment either assumption changes -- and it made this
+ * ticket's own tests (fresh `createPinia()` per test) silently leak state between tests. Fixed by
+ * making a fresh, independent state object each call instead of spreading a shared constant.
+ */
+function freshChatsState(): State {
+  return {
+    conversations: {},
+    messages: {},
+    logicalMessages: {},
+    lastReceived: null,
+    activeConversationId: null,
+    composeFocusRequest: null,
+  }
+}
+
+let pendingMessageSequence = 0
+
+/** Local key of an outgoing message until its payload hash is known. Persisted (#269), so it must
+ * stay unique across reloads, where the in-memory sequence restarts. */
+function nextPendingMessageId(timestamp: number): string {
+  pendingMessageSequence += 1
+  const nonce = Math.random().toString(36).slice(2, 8)
+  return `pending:${timestamp}:${pendingMessageSequence}:${nonce}`
 }
 
 /** Outgoing sends currently being worked on in this process, by local message key. */
@@ -245,9 +342,25 @@ const inflightOutgoing = new Set<string>()
  * row is being saved). Nothing else may judge them cut off. */
 const startingOutgoing = new Set<string>()
 
-// Incoming message indexes whose notification is being decided right now.
+/**
+ * The ID an outgoing message is sent under: fixed by the message's local key, which is saved
+ * with its row before the send starts and survives a reload. The wallet keeps one attempt per
+ * message ID, ever: every send and retry of one message names the same ID, so a message whose
+ * send was cut off (a reload) is found again in the wallet by it (`attemptOf`) and can never be
+ * paid for twice.
+ */
+export function outgoingMessageId(localKey: string): string {
+  return uuidv5(NULL_CONVERSATION_NAMESPACE, `frank-outgoing:${localKey}`)
+}
+
+// Incoming message indexes whose notification is being decided right now. The `index in
+// this.messages` check only sees a message once it is stored, which happens after several awaits
+// (persisting it, loading an unknown contact), so two overlapping receiveMessages calls for the
+// same message would both pass it and both notify. An index is claimed synchronously, before the
+// first await, and released once the call has stored it (or failed, so a retry can still notify).
 const notifyingIncoming = new Set<string>()
-/** Relay rows this session refused to file. */
+/** Relay rows this session refused to file. Each is quarantined and reported when refused; if
+ * the relay hands one back before the cursor has moved past it, it is not looked at again. */
 const refusedIncoming = new Set<string>()
 
 // Inbox delivery and local send completion can both confirm/re-key the same payload. Enqueue the
@@ -271,6 +384,23 @@ async function serializeDeliveryMutation<T>(
   }
 }
 
+function matchesOutgoingOwner(
+  row: MessageWrapper,
+  message: Message,
+  address: string,
+): boolean {
+  return (
+    sameCanonicalAddress(row.senderAddress, message.senderAddress) &&
+    sameCanonicalAddress(row.copartyAddress, address) &&
+    (!row.message.conversationId ||
+      !message.conversationId ||
+      row.message.conversationId === message.conversationId) &&
+    (!row.message.logicalMessageId ||
+      !message.logicalMessageId ||
+      row.message.logicalMessageId === message.logicalMessageId)
+  )
+}
+
 /** Called inside the delivery mutation boundary, immediately before changing an attributed row. */
 async function assertDurableAttemptAssociation(
   id: string,
@@ -291,9 +421,964 @@ async function assertDurableAttemptAssociation(
   }
 }
 
+/** A wallet's own records (`wallet-sync`, `payment-transfer`) are never taken from a mailbox row
+ * here. The wallet's receive rule already keeps them from arriving as such; if one does, that
+ * row alone is refused, uninterpreted, like any other row that cannot be filed. */
+function carriesWalletRecord(wrapper: ReceivedMessageWrapper): boolean {
+  return !!wrapper.message.items?.some(
+    item =>
+      item && (item.type === 'wallet-sync' || item.type === 'payment-transfer'),
+  )
+}
+
+/**
+ * A received row that carries nothing but records (today: a swap's note to self) is not a
+ * message. It is never filed into a conversation and never saved as one, in the session or on a
+ * reload: its records go to the store that owns them and the row is left in the mailbox.
+ */
+function carriesOnlyRecords(wrapper: ReceivedMessageWrapper): boolean {
+  return (
+    isInternalMessage(wrapper.message.items) && !carriesWalletRecord(wrapper)
+  )
+}
+
+/**
+ * A private mark of the active account, the same on each of its devices and unknown to anyone
+ * else: what a conversation is tagged with when the account's user acts on it. `undefined`
+ * while no account is active.
+ */
+function accountTag(): string | undefined {
+  const salt = conversationIdSalt.value
+  return salt
+    ? formatConversationId(
+        allocateOpeningConversationId(salt, 'frank:conversation-notes'),
+      )
+    : undefined
+}
+
+/** While a conversation is open, its read mark is noted at most this often. It is noted at
+ * once when the conversation is closed. */
+export const READ_NOTE_INTERVAL_MS = 10_000
+/** When this session last noted a read mark for each conversation. */
+const readNotedAt = new Map<string, number>()
+
+/**
+ * What this device still has to note to the account's other devices about a conversation: the
+ * facts it holds beyond what the account's mailbox is known to say. `undefined` when there is
+ * nothing to say, and for a conversation with no peer address (a group): only conversations
+ * with one peer are noted.
+ */
+function conversationStateToNote(
+  conversation: Conversation,
+  ownAddress: string,
+  activeConversationId: string | null,
+): ConversationStateItem | undefined {
+  if (!isChainAddress(conversation.address)) return undefined
+  const note: ConversationStateItem = {
+    type: 'conversation-state',
+    conversationId: conversation.id,
+    peer: conversation.address,
+  }
+  // A deletion and a subject are noted by the account whose user made them.
+  const ours =
+    conversation.actedBy !== undefined && conversation.actedBy === accountTag()
+  const cleared = clearedUpTo(conversation)
+  if (
+    ours &&
+    cleared !== undefined &&
+    cleared > (conversation.noted?.clearedBefore ?? -1)
+  )
+    note.clearedBefore = Math.trunc(cleared)
+  // A read mark moves with every message that arrives in an open conversation: there it is
+  // noted once per interval, and when the conversation is closed.
+  const read = readUpTo(conversation, ownAddress)
+  if (
+    read > (conversation.noted?.readUpTo ?? 0) &&
+    (conversation.id !== activeConversationId ||
+      Date.now() - (readNotedAt.get(conversation.id) ?? -Infinity) >=
+        READ_NOTE_INTERVAL_MS)
+  )
+    note.readUpTo = read
+  if (ours && conversation.subjectToNote && conversation.kind === 'direct') {
+    note.subject = usableSubject(conversation.name) ?? ''
+    note.subjectSetAt = conversation.nameSetAt ?? 0
+  }
+  return note.clearedBefore === undefined &&
+    note.readUpTo === undefined &&
+    note.subject === undefined
+    ? undefined
+    : note
+}
+
+/**
+ * How far this device has read a conversation, as every device of the account can state it: the
+ * relay time of the newest message from someone else that has been read here. (Our own messages
+ * are never unread, and one still on its way carries this device's clock, so `lastRead` itself
+ * is not a time the other devices share.) Zero when nothing of the peer's has been read.
+ *
+ * Only messages sent to `ownAddress` count: this device's store can still hold conversations of
+ * an account that was replaced here, and what was read there is not this account's to note.
+ */
+function readUpTo(conversation: Conversation, ownAddress: string): number {
+  let read = 0
+  for (const message of conversation.messages)
+    if (
+      !isOwnMessage(message) &&
+      !!message.destinationAddress &&
+      sameCanonicalAddress(message.destinationAddress, ownAddress) &&
+      message.serverTime <= conversation.lastRead &&
+      message.serverTime > read
+    )
+      read = message.serverTime
+  return read
+}
+
+/** A note's facts are now in the account's mailbox (this device sent it, or read it there). */
+function recordNoted(
+  conversation: Conversation,
+  note: ConversationStateItem,
+): void {
+  const noted = { ...conversation.noted }
+  if (note.clearedBefore !== undefined)
+    noted.clearedBefore = Math.max(
+      noted.clearedBefore ?? -1,
+      note.clearedBefore,
+    )
+  if (note.readUpTo !== undefined)
+    noted.readUpTo = Math.max(noted.readUpTo ?? 0, note.readUpTo)
+  conversation.noted = noted
+  // The mailbox says exactly what the user set here: nothing is left to note. (A subject set
+  // again while the note was on its way is still to be noted.)
+  if (
+    note.subject !== undefined &&
+    note.subjectSetAt === (conversation.nameSetAt ?? 0) &&
+    note.subject === (usableSubject(conversation.name) ?? '')
+  )
+    conversation.subjectToNote = undefined
+}
+
+/** The ID of the note stating exactly these facts: the same on every device, so two devices
+ * noting the same thing write the same message. */
+function conversationNoteId(note: ConversationStateItem): Uint8Array {
+  return uuidv5Bytes(
+    new Uint8Array(16),
+    `frank-conversation-state:${note.conversationId}:${
+      note.clearedBefore ?? ''
+    }:${note.readUpTo ?? ''}:${note.subjectSetAt ?? ''}:${note.subject ?? ''}`,
+  )
+}
+
 /** One pass of `noteConversationStates` at a time; a change made during it starts another. */
 let notingConversations: Promise<void> | undefined
 let noteConversationsAgain = false
+
+/**
+ * Cancellation identity of one delivery attempt (e.g. one direct-message poller generation).
+ * Whether to notify is decided synchronously, but the delivery mutation itself is queued behind
+ * the module-global serialized boundary -- when account replacement stops the old poller and
+ * starts a new session, a queued delivery must re-check the guard AT the boundary and again
+ * before every notification step, so an old generation never persists into the message store,
+ * mutates the shared chats state, or notifies through the current session's stores.
+ */
+export type DeliveryLease = { isCancelled: () => boolean }
+
+export type ReceivedDeliveryResult = {
+  suppressedReceipts: RelayReceiptIdentity[]
+  /** True when the lease was cancelled at or after the delivery boundary: nothing was
+   * persisted, mutated, or notified, and the caller must not treat the batch as consumed. */
+  cancelled: boolean
+}
+
+export type OutgoingOutcome =
+  /** Delivered; the local copy is now keyed by its real payload hash. */
+  | { state: 'sent'; payloadDigest: string }
+  /** Payment not yet confirmed. The same payment is re-sent automatically; nothing new is paid. */
+  | { state: 'payment-pending' }
+  /** Failed; kept in the conversation with a manual Retry and Discard. */
+  | { state: 'failed'; reason: OutgoingFailureReason }
+  /** A retry could pay a second time; the caller must ask the user, then retry with
+   * `confirmed: true`. */
+  | { state: 'needs-confirmation'; reason: OutgoingFailureReason }
+  /** This message is already being worked on, or no longer exists. */
+  | { state: 'busy' }
+
+export type RestorableState = {
+  activeConversationId?: string | null
+  conversations?: Record<string, Conversation | undefined>
+  messages?: Record<string, Message | undefined>
+  logicalMessages?: Record<string, LogicalMessageRecord | undefined>
+  lastReceived: number | null
+}
+
+/**
+ * A conversation's earliest message that the relay has timed: relay time, then payload hash.
+ * A message of ours that is still pending or failed carries this device's clock, which no other
+ * device sees, so it does not count until the relay has it. `messages` is kept in relay order,
+ * so the first timed one is the earliest; only rows of the same time are compared by hash.
+ */
+function earliestMessage(conversation: Conversation): ChatMessage | undefined {
+  let first: ChatMessage | undefined
+  for (const message of conversation.messages) {
+    if (message.outbound && message.status !== 'confirmed') continue
+    if (!first) first = message
+    else if (message.serverTime > first.serverTime) break
+    else if (byRelayTime(message, first) < 0) first = message
+  }
+  return first
+}
+
+/**
+ * The peer's thread: the one conversation Contacts opens for `peer`.
+ *
+ * It is derived from facts every device of the account sees, never from which device opened
+ * what first: of the conversations with this peer (email threads aside) that carry an opening ID (a UUIDv5, what an
+ * account allocates when it opens a chat; an explicitly created further conversation is a
+ * UUIDv4 and never becomes the peer's thread) and that the peer or this account started (their
+ * earliest message is from one of the two, not from a third party), the one whose earliest
+ * message is the earliest, by relay time and then payload hash. With no such message yet it is
+ * the conversation this account opens with the peer, the ID allocated from its private salt, if
+ * that exists. A thread opened here and still empty therefore yields to the peer's own
+ * conversation when the peer's first message arrives, on every device alike, and a reload
+ * computes the same answer from the same messages.
+ */
+export function peerThread(
+  conversations: Record<string, Conversation | undefined>,
+  peer: string,
+): Conversation | undefined {
+  let thread: Conversation | undefined
+  let threadStart: ChatMessage | undefined
+  for (const conversation of Object.values(conversations)) {
+    if (
+      !conversation ||
+      conversation.kind === 'group' ||
+      // An email thread's ID is the gateway's own; it is never anybody's opening thread,
+      // whatever its bytes happen to look like.
+      conversation.kind === 'email' ||
+      !isOpeningConversationId(conversation.id) ||
+      !sameCanonicalAddress(conversation.address, peer)
+    )
+      continue
+    const start = earliestMessage(conversation)
+    if (
+      !start ||
+      !(
+        start.outbound ||
+        sameCanonicalAddress(start.senderAddress, conversation.address)
+      )
+    )
+      continue
+    if (!threadStart || byRelayTime(start, threadStart) < 0) {
+      thread = conversation
+      threadStart = start
+    }
+  }
+  if (thread || !conversationIdSalt.value) return thread
+  const opened = conversations[allocateOpeningConversationIdFor(peer)]
+  return opened && sameCanonicalAddress(opened.address, peer)
+    ? opened
+    : undefined
+}
+
+/** The ID of the peer's thread, whether or not that conversation has been opened on this
+ * device yet: with no message exchanged, the ID this account allocates for the peer. */
+export function peerThreadId(
+  conversations: Record<string, Conversation | undefined>,
+  peer: string,
+): string {
+  return (
+    peerThread(conversations, peer)?.id ??
+    allocateOpeningConversationIdFor(peer)
+  )
+}
+
+/** Every peer's thread by peer address: a derived view, never a writer. */
+function defaultChats(
+  conversations: Record<string, Conversation>,
+): Readonly<Record<string, Conversation | undefined>> {
+  const peers = new Set(
+    Object.values(conversations)
+      .filter(c => c.kind !== 'group' && c.address)
+      .map(c => c.address),
+  )
+  return Object.fromEntries(
+    [...peers]
+      .map(peer => [peer, peerThread(conversations, peer)] as const)
+      .filter(([, thread]) => thread !== undefined),
+  )
+}
+
+/** A subject as the wire accepts it (1 to 512 characters, not only whitespace, no control
+ * characters), trimmed; `undefined` for anything else. */
+function usableSubject(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  // Direction overrides and isolates would let a subject reorder the text shown around it.
+  const subject = value.replace(/[\u202a-\u202e\u2066-\u2069]/g, '').trim()
+  if (
+    subject.length === 0 ||
+    new TextEncoder().encode(subject).length > 512 ||
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(subject)
+  )
+    return undefined
+  return subject
+}
+
+/**
+ * A subject carried by a message sets or replaces the conversation's subject when the message is
+ * from the conversation's peer or from this account itself (its own message read back from the
+ * mailbox: a rename made on another of its devices). Nobody else's message changes it. Of two
+ * renames the one with the later relay time wins, whatever order they are read in, so every
+ * device of the account ends with the same subject. An email thread's subject is the email's;
+ * a carried subject does not override it.
+ */
+function applyCarriedSubject(
+  conversation: Conversation,
+  message: {
+    outbound: boolean
+    senderAddress: string
+    serverTime: number
+    items?: MessageItem[]
+    conversationName?: string
+  },
+): void {
+  const subject = usableSubject(message.conversationName)
+  if (
+    subject === undefined ||
+    conversation.kind === 'email' ||
+    conversation.kind === 'group' ||
+    message.items?.some(item => item.type === 'email') ||
+    !(
+      message.outbound ||
+      sameCanonicalAddress(message.senderAddress, conversation.address)
+    ) ||
+    !subjectReplaces(conversation, subject, message.serverTime)
+  )
+    return
+  setSubject(conversation, subject, message.serverTime)
+  conversation.nameOnWire = subject
+}
+
+/**
+ * Whether a subject set at `setAt` replaces the conversation's current one. One rule for every
+ * way a subject arrives (carried by a message, at the message's relay time; noted by another
+ * device of this account, at the time the user set it): the later one wins, whatever order they
+ * are read in; of two set at the same time, the greater text. So every device of the account
+ * ends with the same subject, and reading the same one again changes nothing.
+ */
+function subjectReplaces(
+  conversation: Conversation,
+  subject: string | undefined,
+  setAt: number,
+): boolean {
+  const current = conversation.nameSetAt ?? 0
+  if (setAt !== current) return setAt > current
+  return (subject ?? '') >= (usableSubject(conversation.name) ?? '')
+}
+
+/** Gives the conversation a subject that {@link subjectReplaces} its current one. A subject
+ * the user set here and has not noted yet is replaced with it: there is nothing left to note. */
+function setSubject(
+  conversation: Conversation,
+  subject: string | undefined,
+  setAt: number,
+): void {
+  if (conversation.name !== subject) {
+    conversation.updatedAt = Date.now()
+    conversation.subjectToNote = undefined
+  }
+  conversation.name = subject
+  conversation.nameSetAt = setAt
+}
+
+/** The subject the next message sent in `conversation` must carry, if any: its subject when no
+ * message has carried that subject yet (a new conversation with a subject, or a rename). */
+function subjectToCarry(
+  conversation: Conversation | undefined,
+): string | undefined {
+  if (!conversation || conversation.kind === 'email') return undefined
+  const subject = usableSubject(conversation.name)
+  return subject === conversation.nameOnWire ? undefined : subject
+}
+
+function canonicalConversationId(value: string): string {
+  const hex = value.replace(/-/g, '').toLowerCase()
+  if (!/^[0-9a-f]{32}$/.test(hex))
+    throw new Error('Conversation identity must contain exactly 16 bytes')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
+    12,
+    16,
+  )}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+/** The active account's private conversation-ID salt. Installed by the host when a wallet
+ * becomes active and cleared when it goes ({@link setConversationIdSalt}); never persisted, so
+ * it is not store state. It is reactive: a peer's thread read before the salt arrived is read
+ * again when it does. */
+const conversationIdSalt = shallowRef<Uint8Array | null>(null)
+
+/** Whether the active account's conversation-ID salt is installed: a chat can be opened. */
+export function hasConversationIdSalt(): boolean {
+  return conversationIdSalt.value !== null
+}
+
+/** Installs (or, with nothing, removes) the active account's conversation-ID salt. */
+export function setConversationIdSalt(salt?: Uint8Array | null): void {
+  conversationIdSalt.value = salt ? Uint8Array.from(salt) : null
+}
+
+/** Threads dropped this session because the peer's own conversation replaced them, and what
+ * replaced each: a view, a dialog or a route still holding the old ID is led to the new one. */
+const replacedConversations = new Map<string, string>()
+
+/** The conversation `id` names, or the one that replaced it if it was dropped. */
+export function resolveConversation(
+  conversations: Record<string, Conversation | undefined>,
+  id: string,
+): Conversation | undefined {
+  if (Object.prototype.hasOwnProperty.call(conversations, id))
+    return conversations[id]
+  const replacement = replacedConversations.get(id)
+  return replacement === undefined
+    ? undefined
+    : resolveConversation(conversations, replacement)
+}
+
+/**
+ * The ID of the conversation this account opens with `peer`, and the ID a message from `peer`
+ * that carries none is filed under. From the account's private salt it is the same on every
+ * device and unknown to everyone else.
+ *
+ * It needs the salt. An account that can open a chat has one (it is installed as soon as the
+ * account's wallet is, before any chat can be opened), so a missing salt is a defect and is
+ * refused: a random ID here would differ on every device, for good.
+ */
+function allocateOpeningConversationIdFor(peer: string): string {
+  const salt = conversationIdSalt.value
+  if (!salt)
+    throw new Error(
+      'No conversation-ID salt is installed: a chat can be opened only once the account is active',
+    )
+  return formatConversationId(
+    allocateOpeningConversationId(salt, peer.toLowerCase()),
+  )
+}
+
+/** The conversation this account opens with `peer` (its salted ID), created if it is not there. */
+function openAllocatedConversation(
+  conversations: Record<string, Conversation>,
+  peer: string,
+  participants: string[],
+): Conversation {
+  const id = allocateOpeningConversationIdFor(peer)
+  const allocated = conversations[id]
+  if (allocated) {
+    assertConversationPeer(allocated, peer)
+    return allocated
+  }
+  const conversation = newConversation({ id, address: peer, participants })
+  conversations[id] = conversation
+  return conversation
+}
+
+function freshConversationId(): string {
+  const bytes = randomBytes(16)
+  bytes[6] = (bytes[6] & 15) | 64
+  bytes[8] = (bytes[8] & 63) | 128
+  return canonicalConversationId(
+    Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join(''),
+  )
+}
+
+function assertConversationPeer(
+  conversation: Conversation,
+  address: string,
+): void {
+  const explicitMember =
+    conversation.address === conversation.id &&
+    conversation.participants.some(p => sameCanonicalAddress(p, address))
+  const groupMember =
+    conversation.kind === 'group' &&
+    conversation.participants.some(p => sameCanonicalAddress(p, address))
+  if (
+    !explicitMember &&
+    !groupMember &&
+    conversation.address !== address &&
+    !sameCanonicalAddress(conversation.address, address)
+  ) {
+    throw new Error(
+      `Conversation ${conversation.id} belongs to a different recipient`,
+    )
+  }
+}
+
+/** Whoever posts into a conversation is one of its participants from then on. A message is
+ * filed under the conversation ID it carries, so this can be someone other than the peer the
+ * conversation was opened with; recording them is what lets the chat show who said what. */
+function addParticipant(
+  conversation: Conversation,
+  address: string,
+  pubKeyHex?: string,
+): void {
+  const member = safeChainDisplayAddress(address) || address
+  if (conversation.participants.some(p => sameCanonicalAddress(p, member)))
+    return
+  conversation.participants = [...conversation.participants, member].sort()
+  conversation.members = {
+    ...conversation.members,
+    [member]: {
+      address: member,
+      role: 'member',
+      joinedAt: Date.now(),
+      pubKeyHex,
+    },
+  }
+}
+
+function newConversation({
+  id,
+  participants,
+  address,
+  ...metadata
+}: Partial<Conversation> & {
+  id: string
+  participants: string[]
+  address: string
+}): Conversation {
+  const normalized = Array.from(
+    new Set(participants.map(p => safeChainDisplayAddress(p) || p)),
+  ).sort()
+  return {
+    ...defaultContactObject,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...metadata,
+    id: canonicalConversationId(id),
+    address: safeChainDisplayAddress(address) || address,
+    participants: normalized,
+    members:
+      metadata.members ??
+      Object.fromEntries(
+        normalized.map(p => [p, { address: p, role: 'member' as const }]),
+      ),
+    messages: [],
+  }
+}
+
+function openDefaultConversation(
+  conversations: Record<string, Conversation>,
+  address: string,
+  participants: string[],
+): Conversation {
+  const peer = toChainDisplayAddress(address)
+  const members = Array.from(
+    new Set(participants.map(toChainDisplayAddress)),
+  ).sort()
+  if (members.length > 2 || !members.includes(peer)) {
+    throw new Error(
+      'Default direct conversation requires the explicit recipient and at most one other participant',
+    )
+  }
+  const existing = peerThread(conversations, peer)
+  if (existing) {
+    if (
+      members.length === 2 &&
+      existing.participants.length === 2 &&
+      makeParticipantsKey(existing.participants) !==
+        makeParticipantsKey(members)
+    ) {
+      throw new Error(`Conversation ${existing.id} has different participants`)
+    }
+    if (existing.participants.length === 1 && members.length === 2) {
+      existing.participants = members
+      existing.members = Object.fromEntries(
+        members.map(member => [
+          member,
+          existing.members?.[member] ?? {
+            address: member,
+            role: 'member' as const,
+          },
+        ]),
+      )
+    }
+    reopenConversation(existing)
+    return existing
+  }
+  // No message with this peer yet: the conversation this account opens with it.
+  const opened = openAllocatedConversation(conversations, peer, participants)
+  reopenConversation(opened)
+  return opened
+}
+
+function isInternalMessage(items: unknown): boolean {
+  return (
+    Array.isArray(items) &&
+    items.length > 0 &&
+    items.every(
+      item =>
+        item !== null &&
+        typeof item === 'object' &&
+        !Array.isArray(item) &&
+        (item.type === 'swap-record' ||
+          item.type === 'wallet-sync' ||
+          item.type === 'received-coin' ||
+          item.type === 'conversation-state' ||
+          item.type === 'message-tombstone' ||
+          item.type === 'journal-checkpoint' ||
+          item.type === 'outbox-message' ||
+          item.type === 'payment-transfer'),
+    )
+  )
+}
+
+export async function rehydrateChat(
+  chatState: RestorableState,
+  metadataCompatible = true,
+): Promise<State> {
+  const localStore = await store
+  if (!metadataCompatible) {
+    console.warn(
+      '[chats] Schema version mismatch or incompatible metadata; resetting local conversation state for clean relay re-sync',
+    )
+    return {
+      ...freshChatsState(),
+      conversations: {},
+      messages: {},
+      logicalMessages: {},
+    }
+  }
+
+  const messageIterator = await localStore.getIterator()
+  const wrappers: MessageWrapper[] = []
+  for await (const wrapper of messageIterator) {
+    if (
+      !wrapper ||
+      typeof wrapper !== 'object' ||
+      Array.isArray(wrapper) ||
+      !wrapper.message ||
+      typeof wrapper.message !== 'object' ||
+      Array.isArray(wrapper.message)
+    )
+      throw new Error('Invalid stored message envelope: message body required')
+    wrappers.push(wrapper)
+  }
+
+  // Validate the complete durable collection before normalizing statuses, excluding leftovers,
+  // or publishing any owner. Old ownerless conversational rows are not a default-thread hint.
+  const validatedRows = wrappers.map(wrapper => {
+    const { index, message } = wrapper
+    if (
+      typeof index !== 'string' ||
+      !index.trim() ||
+      typeof message.outbound !== 'boolean' ||
+      typeof message.status !== 'string' ||
+      !message.status.trim() ||
+      !Number.isFinite(message.receivedTime) ||
+      !Number.isFinite(message.serverTime) ||
+      !Array.isArray(message.items) ||
+      !Array.isArray(message.outpoints) ||
+      typeof wrapper.copartyAddress !== 'string' ||
+      !wrapper.copartyAddress.trim() ||
+      (wrapper.outbound !== undefined &&
+        wrapper.outbound !== message.outbound) ||
+      typeof wrapper.senderAddress !== 'string' ||
+      !wrapper.senderAddress ||
+      typeof message.senderAddress !== 'string' ||
+      !message.senderAddress ||
+      (wrapper.senderAddress !== message.senderAddress &&
+        !sameCanonicalAddress(wrapper.senderAddress, message.senderAddress))
+    )
+      throw new Error(`Invalid stored message envelope for ${index}`)
+    const internal = isInternalMessage(message.items)
+    let conversationId: string | undefined
+    if (message.conversationId !== undefined) {
+      try {
+        if (typeof message.conversationId !== 'string')
+          throw new Error('Invalid ID')
+        conversationId = canonicalConversationId(message.conversationId)
+      } catch {
+        throw new Error(
+          `Unsupported stored conversation format for ${index}: valid conversation ID required`,
+        )
+      }
+    }
+    if (!internal && !conversationId) {
+      throw new Error(
+        `Unsupported stored conversation format for ${index}: explicit conversation ID required`,
+      )
+    }
+    return { wrapper, conversationId, internal }
+  })
+
+  const hasChatMetadata =
+    chatState !== null &&
+    typeof chatState === 'object' &&
+    !Array.isArray(chatState)
+  const canReconstruct = metadataCompatible && hasChatMetadata
+  if (!canReconstruct && validatedRows.some(row => !row.internal)) {
+    throw new Error(
+      'Unsupported stored conversation format: conversational rows require compatible chat metadata',
+    )
+  }
+
+  const conversations: Record<string, Conversation> = {}
+  const messages: Record<string, ChatMessage> = {}
+  const logicalMessages: Record<string, LogicalMessageRecord> = {}
+  // Available metadata still constrains explicit internal owners even when this context
+  // cannot reconstruct conversations. Never substitute current metadata for a mismatch.
+  for (const [id, raw] of Object.entries(
+    hasChatMetadata ? chatState.conversations ?? {} : {},
+  )) {
+    if (!raw) continue
+    const conversation = newConversation({
+      ...raw,
+      id,
+      address: raw.address,
+      participants: raw.participants,
+    })
+    conversations[conversation.id] = conversation
+  }
+
+  // Rows are read in the order they were received in: relay time, then payload hash.
+  const orderedRows = [...validatedRows].sort((a, b) =>
+    byRelayTime(
+      { ...a.wrapper.message, payloadDigest: a.wrapper.index },
+      { ...b.wrapper.message, payloadDigest: b.wrapper.index },
+    ),
+  )
+  // A conversation the saved metadata does not know is rebuilt from its rows. Our own rows say
+  // who it is with, so they are read first: whoever else wrote into it, and whenever, cannot
+  // make it theirs and then contradict our own outbox.
+  for (const { wrapper, conversationId, internal } of [
+    ...orderedRows.filter(row => row.wrapper.message.outbound),
+    ...orderedRows.filter(row => !row.wrapper.message.outbound),
+  ]) {
+    const { message, copartyAddress } = wrapper
+    const peer = safeChainDisplayAddress(copartyAddress) || copartyAddress
+    const existing = conversationId ? conversations[conversationId] : undefined
+    // Internal records never reconstruct a chat or dispatch item effects. Check any explicit
+    // owner reference below, after all conversational owners have been prepared.
+    if (internal) continue
+    // Only our own messages are bound to the conversation's peer. An inbound message is filed
+    // under the ID it carries, whoever sent it.
+    if (existing && message.outbound) assertConversationPeer(existing, peer)
+    const id = conversationId!
+    conversations[id] ??= newConversation({
+      id,
+      address: peer,
+      // Restore only persisted peer evidence; hydration must not open custody for self.
+      participants: [peer],
+      kind: message.items?.some(item => item.type === 'email')
+        ? 'email'
+        : 'direct',
+    })
+  }
+
+  // Only our own records are bound to the conversation's peer, as with conversational rows.
+  for (const { wrapper, conversationId, internal } of validatedRows) {
+    if (!internal || !conversationId || !wrapper.message.outbound) continue
+    const owner = conversations[conversationId]
+    if (owner) assertConversationPeer(owner, wrapper.copartyAddress)
+  }
+
+  // An attempt digest links an outgoing leftover to its confirmed row. Validate that
+  // association before deduplication can hide contradictory persisted ownership.
+  const confirmedOutboundRows = new Map(
+    validatedRows
+      .filter(
+        ({ wrapper, internal }) =>
+          !internal &&
+          wrapper.message.outbound &&
+          wrapper.message.status === 'confirmed',
+      )
+      .map(row => [row.wrapper.index, row]),
+  )
+  for (const { wrapper, conversationId, internal } of validatedRows) {
+    const { message, index, copartyAddress, senderAddress } = wrapper
+    const attemptDigest = message.delivery?.attemptDigest
+    if (
+      internal ||
+      !message.outbound ||
+      message.status === 'confirmed' ||
+      attemptDigest === undefined ||
+      attemptDigest === index
+    )
+      continue
+    const confirmed = confirmedOutboundRows.get(attemptDigest)
+    if (!confirmed) continue
+    const other = confirmed.wrapper
+    if (
+      (senderAddress !== other.senderAddress &&
+        !sameCanonicalAddress(senderAddress, other.senderAddress)) ||
+      (copartyAddress !== other.copartyAddress &&
+        !sameCanonicalAddress(copartyAddress, other.copartyAddress))
+    )
+      continue
+    if (
+      conversationId !== confirmed.conversationId ||
+      (message.logicalMessageId !== undefined &&
+        other.message.logicalMessageId !== undefined &&
+        message.logicalMessageId !== other.message.logicalMessageId)
+    ) {
+      throw new Error(`Conflicting stored attempt ownership for ${index}`)
+    }
+  }
+
+  // Two different stored messages that name one message ID never stop the store from loading.
+  // The routine is the one receive uses: the earlier keeps the ID, the later is read under a
+  // derived one.
+  const logicalOwners = new Map<
+    string,
+    { conversationId: string; senderAddress: string }
+  >()
+  for (const { wrapper, conversationId, internal } of orderedRows) {
+    if (internal) continue
+    const { message, index } = wrapper
+    const named = message.logicalMessageId || index
+    const logicalId = freeMessageId(named, index, id =>
+      isAnotherMessage(
+        logicalOwners.get(id),
+        conversationId!,
+        message.senderAddress,
+      ),
+    )
+    if (logicalId !== named) message.logicalMessageId = logicalId
+    if (!logicalOwners.has(logicalId))
+      logicalOwners.set(logicalId, {
+        conversationId: conversationId!,
+        senderAddress: message.senderAddress,
+      })
+  }
+
+  // An internal row may precede the conversational row that establishes its explicit owner.
+  // Check that reference against the complete prepared owner set, independent of iterator order.
+  // Only an admitted empty/internal-only collection may take a fresh-state exit.
+  // Raw internal records remain in MessageStore without conversation indexes or effects.
+  if (!canReconstruct) return freshChatsState()
+
+  let lastReceived = Math.max(
+    chatState.lastReceived ?? 0,
+    await localStore.mostRecentMessageTime(),
+  )
+  // A message that was delivered after being re-keyed from its local id to its payload hash can
+  // leave its old local record behind if the app stopped between the two writes. The confirmed
+  // record wins in the derived view; retain both durable records for recovery.
+  const confirmedDigests = new Set(
+    wrappers
+      .filter(({ message }) => message.status === 'confirmed')
+      .map(row => row.index),
+  )
+  for (const { wrapper, conversationId, internal } of orderedRows) {
+    const { index, message: newMsg, copartyAddress } = wrapper
+    if (internal) {
+      messages[index] = { payloadDigest: index, ...newMsg }
+      continue
+    }
+    const leftoverOf = newMsg.delivery?.attemptDigest
+    if (
+      newMsg.status !== 'confirmed' &&
+      leftoverOf !== undefined &&
+      index !== leftoverOf &&
+      confirmedDigests.has(leftoverOf)
+    ) {
+      // Rebuild the deduplicated view without deleting durable recovery evidence.
+      continue
+    }
+    if (newMsg.outbound && newMsg.status === 'pending') {
+      // A send that was in flight when the app stopped is no longer running. With a recorded
+      // payment attempt it is recoverable (the same bytes are re-sent). Without one this row
+      // cannot say: the wallet may have stored the complete signed message a moment before the
+      // app stopped. It stays "sending" until the wallet is asked (`resumeCutOffOutgoing`, on
+      // the first reconciliation): what the wallet stored is finished with the same bytes, and
+      // only a message it holds nothing for is shown as interrupted.
+      if (newMsg.delivery?.attemptDigest !== undefined)
+        newMsg.status = 'payment-pending'
+    }
+    const message: ChatMessage = { payloadDigest: index, ...newMsg }
+    const emailItem = message.items?.find(it => it.type === 'email') as
+      | EmailItem
+      | undefined
+    const conv = conversations[conversationId!]
+
+    message.conversationId = conv.id
+    const deleted = inDeletedConversation(conv, message)
+    if (deleted === 'gone') {
+      // Receive never saves such a row. One that is on disk all the same is not shown or
+      // counted and joins nobody; only its ID is held, so a later message naming the same ID
+      // is told apart from it.
+      recordLogicalMessage(logicalMessages, message, conv.id)
+      continue
+    }
+    if (deleted === 'reopens') reopenConversation(conv)
+    messages[index] = message
+    if (!conv.messages.some(m => m.payloadDigest === message.payloadDigest)) {
+      conv.messages.push(message)
+    }
+    if (!message.outbound) addParticipant(conv, message.senderAddress)
+    if (emailItem && speaksForConversation(conv, message)) {
+      conv.kind = 'email'
+      if (!conv.name && emailItem.subject) {
+        conv.name = emailItem.subject
+      }
+      const trustedGateway = getTrustedEmailGatewayAddress()
+      if (trustedGateway) {
+        const isGateway = message.outbound
+          ? sameCanonicalAddress(conv.address, trustedGateway) ||
+            sameCanonicalAddress(copartyAddress, trustedGateway)
+          : sameCanonicalAddress(message.senderAddress, trustedGateway)
+        conv.verifiedGateway = isGateway
+      }
+    }
+    recordLogicalMessage(logicalMessages, message, conv.id)
+
+    conv.lastReceived = Math.max(conv.lastReceived, message.serverTime)
+    const messageValue = accountedMessageValue(message)
+    if (
+      !isOwnMessage(message) &&
+      conv.id !== chatState.activeConversationId &&
+      conv.lastRead < message.serverTime
+    ) {
+      conv.totalUnreadValue += messageValue
+      conv.totalUnreadMessages += 1
+    }
+    lastReceived = Math.max(lastReceived, message.serverTime)
+    conv.totalValue += messageValue
+  }
+
+  // Resort conversations and recompute deterministic accounting from deduplicated messages
+  for (const conv of Object.values(conversations)) {
+    conv.messages.sort(byRelayTime)
+    conv.totalUnreadMessages = 0
+    conv.totalUnreadValue = 0
+    conv.totalValue = 0
+    for (const msg of conv.messages) {
+      const val = accountedMessageValue(msg)
+      conv.totalValue += val
+      const msgTime = msg.serverTime ?? msg.receivedTime ?? 0
+      conv.lastReceived = Math.max(conv.lastReceived ?? 0, msgTime)
+      if (
+        !isOwnMessage(msg) &&
+        conv.id !== chatState.activeConversationId &&
+        conv.lastRead < msgTime
+      ) {
+        conv.totalUnreadMessages += 1
+        conv.totalUnreadValue += val
+      }
+    }
+  }
+
+  return {
+    conversations,
+    messages,
+    logicalMessages,
+    activeConversationId: chatState.activeConversationId ?? null,
+    lastReceived,
+    composeFocusRequest: null,
+  }
+}
+
+export const rehydateChat = rehydrateChat
+export const rehydrateState = rehydrateChat
+export const freshChatState = freshChatsState
 
 export const useChatStore = defineStore('chats', {
   state: (): State => freshChatsState(),

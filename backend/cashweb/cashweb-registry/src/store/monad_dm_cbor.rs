@@ -26,7 +26,8 @@ use std::{
 };
 
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue};
-use rocksdb::{Direction, IteratorMode, Options, ReadOptions, WriteBatch, WriteOptions};
+mod rocks;
+use rocks::{Admission, MessageRead, RocksCanonicalMessages};
 
 use crate::{
     directory_runtime::DirectoryRuntime,
@@ -127,8 +128,7 @@ const AUTH_NONCE_SWEEP_INTERVAL_MS: i64 = 60_000;
 /// The message store of one registry. Opened on first use.
 #[derive(Debug)]
 pub(crate) struct Owner {
-    path: PathBuf,
-    db: Mutex<Option<rocksdb::DB>>,
+    storage: RocksCanonicalMessages,
     /// Newly stored canonical messages since this relay process started. Retries are excluded.
     messages_stored_total: AtomicU64,
     directory: Mutex<Weak<DirectoryRuntime>>,
@@ -148,8 +148,7 @@ impl Owner {
     pub(crate) fn new(registry_db: PathBuf) -> Self {
         let (broadcast, _) = tokio::sync::broadcast::channel(1024);
         Self {
-            path: registry_db.with_extension(STORE_EXTENSION),
-            db: Mutex::new(None),
+            storage: RocksCanonicalMessages::new(registry_db.with_extension(STORE_EXTENSION)),
             messages_stored_total: AtomicU64::new(0),
             directory: Mutex::new(Weak::new()),
             broadcast,
@@ -202,44 +201,16 @@ impl Owner {
     pub(crate) fn directory(&self) -> Option<Arc<DirectoryRuntime>> {
         self.directory.lock().ok()?.upgrade()
     }
-    fn with<T>(
-        &self,
-        create: bool,
-        action: impl FnOnce(&rocksdb::DB) -> Result<T>,
-    ) -> Result<Option<T>> {
-        let mut guard = self.db.lock().map_err(|_| CanonicalError::Unavailable)?;
-        if guard.is_none() {
-            match std::fs::symlink_metadata(&self.path) {
-                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                    return Err(CanonicalError::Unavailable)
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => {
-                    return Ok(None)
-                }
-                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    return Err(CanonicalError::Unavailable)
-                }
-                _ => {}
-            }
-            let mut options = Options::default();
-            options.create_if_missing(create);
-            let opened =
-                rocksdb::DB::open(&options, &self.path).map_err(|_| CanonicalError::Unavailable)?;
-            *guard = Some(opened);
-        }
-        if !self.path.join("CURRENT").is_file() {
-            return Err(CanonicalError::Unavailable);
-        }
-        action(guard.as_ref().ok_or(CanonicalError::Unavailable)?).map(Some)
-    }
     pub(crate) fn get(&self, payload_hash: &[u8; 32]) -> Result<Option<Claim>> {
-        self.with(false, |db| load(db, payload_hash))
+        self.storage
+            .read_messages(|db| load(db, payload_hash))
             .map(Option::flatten)
     }
     /// The stored message this request is an exact repeat of, if any. The same message under
     /// different bytes is a conflict.
     pub(crate) fn find_request(&self, request: &ExactRequest) -> Result<Option<Claim>> {
-        self.with(false, |db| find_request_locked(db, request))
+        self.storage
+            .read_messages(|db| find_request_locked(db, request))
             .map(Option::flatten)
     }
     /// Store a checked message in the recipient's inbox and the sender's own mailbox, in one
@@ -250,44 +221,45 @@ impl Owner {
     /// `now` is the caller's clock; the delivery time is decided here, under the store's
     /// lock: see [`next_delivery_time`].
     pub(crate) fn claim(&self, input: CanonicalPaymentInput, now: i64) -> Result<Claim> {
-        let (message, stored) = self
-            .with(true, |db| {
-                if let Some(existing) = find_request_locked(db, &input.request)? {
-                    return Ok((existing, false));
+        let (message, stored) = self.storage.admit_message(|admission| {
+            if let Some(existing) = find_request_locked(&admission.messages(), &input.request)? {
+                return Ok((existing, false));
+            }
+            let hash = input.policy.payload_hash;
+            // One signed payment pays for one message. Nothing on chain names the message,
+            // so this index is what stops a payment being presented again for another.
+            for payment in input.payment_hashes() {
+                if admission.payment_used(&payment_key(&payment))? {
+                    return Err(CanonicalError::Conflict);
                 }
-                let hash = input.policy.payload_hash;
-                // One signed payment pays for one message. Nothing on chain names the message,
-                // so this index is what stops a payment being presented again for another.
-                for payment in input.payment_hashes() {
-                    if db
-                        .get_pinned(payment_key(&payment))
-                        .map_err(|_| CanonicalError::Unavailable)?
-                        .is_some()
-                    {
-                        return Err(CanonicalError::Conflict);
-                    }
-                }
-                let delivered_at = next_delivery_time(db, now)?;
-                let mut batch = WriteBatch::default();
-                batch.put(LAST_DELIVERY_KEY, delivered_at.to_be_bytes());
-                for payment in input.payment_hashes() {
-                    batch.put(payment_key(&payment), hash);
-                }
-                let message = Claim {
-                    request: input.request,
-                    policy: input.policy,
-                    delivered_at,
-                };
-                batch.put(row_key(&hash), encode_row(&message)?);
-                let (sender, recipient) = (message.policy.sender()?, message.policy.recipient()?);
-                batch.put(mailbox_key(b'I', recipient, delivered_at, &hash), hash);
-                if sender != recipient {
-                    batch.put(mailbox_key(b'O', sender, delivered_at, &hash), hash);
-                }
-                write(db, batch)?;
-                Ok((message, true))
-            })?
-            .ok_or(CanonicalError::Unavailable)?;
+            }
+            let delivered_at = next_delivery_time(&admission, now)?;
+            let payment_keys = input
+                .payment_hashes()
+                .map(|payment| payment_key(&payment))
+                .collect();
+            let message = Claim {
+                request: input.request,
+                policy: input.policy,
+                delivered_at,
+            };
+            let row = encode_row(&message)?;
+            let (sender, recipient) = (message.policy.sender()?, message.policy.recipient()?);
+            let recipient_key = mailbox_key(b'I', recipient, delivered_at, &hash);
+            let sender_key =
+                (sender != recipient).then(|| mailbox_key(b'O', sender, delivered_at, &hash));
+            admission.commit_delivery(rocks::Delivery {
+                last_delivery_key: LAST_DELIVERY_KEY,
+                delivered_at: delivered_at.to_be_bytes(),
+                payment_keys,
+                hash: &hash,
+                row_key: &row_key(&hash),
+                row: &row,
+                recipient_key: &recipient_key,
+                sender_key: sender_key.as_deref(),
+            })?;
+            Ok((message, true))
+        })?;
         if stored {
             self.messages_stored_total.fetch_add(1, Ordering::Relaxed);
             if let (Ok(sender), Ok(recipient)) =
@@ -314,11 +286,7 @@ impl Owner {
 
     /// Estimated live key/value bytes for the separate message store, if it has been created.
     pub(crate) fn estimated_live_data_size_bytes(&self) -> Result<Option<u64>> {
-        self.with(false, |db| {
-            db.property_int_value("rocksdb.estimate-live-data-size")
-                .map_err(|_| CanonicalError::Unavailable)?
-                .ok_or(CanonicalError::Unavailable)
-        })
+        self.storage.estimated_live_data_size_bytes()
     }
     /// Records one authenticated login challenge as used, so it cannot be replayed.
     ///
@@ -349,25 +317,20 @@ impl Owner {
             }
             due
         };
-        self.with(true, |db| {
+        self.storage.consume_challenge(|mut challenge| {
             let mut prefix = b"N".to_vec();
             prefix.extend_from_slice(&recipient.0);
             let mut key = prefix.clone();
             key.extend_from_slice(&epoch);
             key.extend_from_slice(&nonce);
-            if expires < now
-                || db
-                    .get(&key)
-                    .map_err(|_| CanonicalError::Unavailable)?
-                    .is_some()
-            {
+            if expires < now || challenge.nonce_used(&key)? {
                 return Ok(ChallengeConsumption::Rejected);
             }
-            let mut batch = WriteBatch::default();
             let mut live = 0usize;
             let scanned: &[u8] = if sweep_all { b"N" } else { &prefix };
-            for item in db.iterator_opt(IteratorMode::Start, prefix_options(scanned)?) {
-                let (row, value) = item.map_err(|_| CanonicalError::Unavailable)?;
+            let (lower, upper) = prefix_bounds(scanned)?;
+            for item in challenge.used_challenges(lower, upper) {
+                let (row, value) = item?;
                 if row.len() != 85 {
                     return Err(CanonicalError::Unavailable);
                 }
@@ -378,7 +341,7 @@ impl Owner {
                         .map_err(|_| CanonicalError::Unavailable)?,
                 );
                 if time < now {
-                    batch.delete(row);
+                    challenge.prune_expired(&row);
                 } else if row.starts_with(&prefix) {
                     live += 1;
                 }
@@ -386,14 +349,12 @@ impl Owner {
             if live >= cap {
                 // Expired challenges found on the way are still cleared, so a full recipient
                 // drains even while it is being refused.
-                write(db, batch)?;
+                challenge.commit_pruning()?;
                 return Ok(ChallengeConsumption::AtCapacity);
             }
-            batch.put(key, expires.to_be_bytes());
-            write(db, batch)?;
+            challenge.commit_consumption(&key, expires.to_be_bytes())?;
             Ok(ChallengeConsumption::Consumed)
-        })?
-        .ok_or(CanonicalError::Unavailable)
+        })
     }
     /// Up to `limit` messages delivered to `recipient` at or after `since` and strictly after
     /// the position `after`, in delivery order. The scan starts at that position: messages
@@ -405,22 +366,23 @@ impl Owner {
         after: Option<(i64, [u8; 32])>,
         limit: usize,
     ) -> Result<Vec<Claim>> {
-        self.with(false, |db| {
-            let mut entries = Entries::new(db, b'I', recipient, since, after);
-            let mut result = Vec::new();
-            while result.len() < limit {
-                let Some((time, hash)) = entries.next()? else {
-                    break;
-                };
-                let message = load_delivered(db, &hash, time)?;
-                if message.policy.recipient() != Ok(recipient) {
-                    return Err(CanonicalError::Unavailable);
+        self.storage
+            .read_messages(|db| {
+                let mut entries = Entries::new(db, b'I', recipient, since, after);
+                let mut result = Vec::new();
+                while result.len() < limit {
+                    let Some((time, hash)) = entries.next()? else {
+                        break;
+                    };
+                    let message = load_delivered(db, &hash, time)?;
+                    if message.policy.recipient() != Ok(recipient) {
+                        return Err(CanonicalError::Unavailable);
+                    }
+                    result.push(message);
                 }
-                result.push(message);
-            }
-            Ok(result)
-        })
-        .map(|rows| rows.unwrap_or_default())
+                Ok(result)
+            })
+            .map(|rows| rows.unwrap_or_default())
     }
     /// Up to `limit` messages `address` received or sent, at or after `since` and strictly
     /// after the position `after`, in delivery order. Both scans start at that position.
@@ -431,48 +393,49 @@ impl Owner {
         after: Option<(i64, [u8; 32])>,
         limit: usize,
     ) -> Result<Vec<(Claim, MailboxDirection)>> {
-        self.with(false, |db| {
-            let mut received = Entries::new(db, b'I', address, since, after);
-            let mut sent = Entries::new(db, b'O', address, since, after);
-            let mut result = Vec::new();
-            if limit == 0 {
-                return Ok(result);
-            }
-            let (mut next_received, mut next_sent) = (received.next()?, sent.next()?);
-            while result.len() < limit {
-                let take_received = match (next_received, next_sent) {
-                    (Some(received), Some(sent)) => received <= sent,
-                    (Some(_), None) => true,
-                    (None, Some(_)) => false,
-                    (None, None) => break,
-                };
-                let (time, hash) = if take_received {
-                    let entry = next_received.expect("checked above");
-                    next_received = received.next()?;
-                    entry
-                } else {
-                    let entry = next_sent.expect("checked above");
-                    next_sent = sent.next()?;
-                    entry
-                };
-                let message = load_delivered(db, &hash, time)?;
-                let direction = if take_received {
-                    MailboxDirection::In
-                } else {
-                    MailboxDirection::Out
-                };
-                let party = match direction {
-                    MailboxDirection::In => message.policy.recipient(),
-                    MailboxDirection::Out => message.policy.sender(),
-                };
-                if party != Ok(address) {
-                    return Err(CanonicalError::Unavailable);
+        self.storage
+            .read_messages(|db| {
+                let mut received = Entries::new(db, b'I', address, since, after);
+                let mut sent = Entries::new(db, b'O', address, since, after);
+                let mut result = Vec::new();
+                if limit == 0 {
+                    return Ok(result);
                 }
-                result.push((message, direction));
-            }
-            Ok(result)
-        })
-        .map(|rows| rows.unwrap_or_default())
+                let (mut next_received, mut next_sent) = (received.next()?, sent.next()?);
+                while result.len() < limit {
+                    let take_received = match (next_received, next_sent) {
+                        (Some(received), Some(sent)) => received <= sent,
+                        (Some(_), None) => true,
+                        (None, Some(_)) => false,
+                        (None, None) => break,
+                    };
+                    let (time, hash) = if take_received {
+                        let entry = next_received.expect("checked above");
+                        next_received = received.next()?;
+                        entry
+                    } else {
+                        let entry = next_sent.expect("checked above");
+                        next_sent = sent.next()?;
+                        entry
+                    };
+                    let message = load_delivered(db, &hash, time)?;
+                    let direction = if take_received {
+                        MailboxDirection::In
+                    } else {
+                        MailboxDirection::Out
+                    };
+                    let party = match direction {
+                        MailboxDirection::In => message.policy.recipient(),
+                        MailboxDirection::Out => message.policy.sender(),
+                    };
+                    if party != Ok(address) {
+                        return Err(CanonicalError::Unavailable);
+                    }
+                    result.push((message, direction));
+                }
+                Ok(result)
+            })
+            .map(|rows| rows.unwrap_or_default())
     }
 
     /// Read a mailbox's notification policy, returning [`MailboxNotificationPolicy::default`]
@@ -481,11 +444,7 @@ impl Owner {
         &self,
         address: Address,
     ) -> Result<crate::store::notification_policy::MailboxNotificationPolicy> {
-        let Some(Some(raw)) = self.with(false, |db| {
-            db.get(policy_key(address))
-                .map_err(|_| CanonicalError::Unavailable)
-        })?
-        else {
+        let Some(raw) = self.storage.notification_policy(&policy_key(address))? else {
             return Ok(crate::store::notification_policy::MailboxNotificationPolicy::default());
         };
         serde_json::from_slice(&raw).map_err(|_| CanonicalError::Unavailable)
@@ -498,12 +457,8 @@ impl Owner {
         policy: &crate::store::notification_policy::MailboxNotificationPolicy,
     ) -> Result<()> {
         let encoded = serde_json::to_vec(policy).map_err(|_| CanonicalError::Invalid)?;
-        self.with(true, |db| {
-            let mut batch = WriteBatch::default();
-            batch.put(policy_key(address), encoded);
-            write(db, batch)
-        })?
-        .ok_or(CanonicalError::Unavailable)
+        self.storage
+            .replace_notification_policy(&policy_key(address), &encoded)
     }
 
     /// Emit a content-free blind wakeup event (`{"type":"sync"}`) for `recipient`, coalescing
@@ -580,11 +535,8 @@ impl Owner {
                 }
             }
         }
-        self.with(true, |db| {
-            if let Some(existing) = db
-                .get(VAPID_PRIVATE_KEY_STORAGE_KEY)
-                .map_err(|_| CanonicalError::Unavailable)?
-            {
+        self.storage.initialize_vapid(|initialization| {
+            if let Some(existing) = initialization.stored_key(VAPID_PRIVATE_KEY_STORAGE_KEY)? {
                 if let Ok(bytes) = <[u8; 32]>::try_from(existing.as_slice()) {
                     return Ok(
                         crate::store::notification_policy::VapidKeyPair::from_private_key_bytes(
@@ -594,12 +546,12 @@ impl Owner {
                 }
             }
             let generated = crate::store::notification_policy::VapidKeyPair::generate();
-            let mut batch = WriteBatch::default();
-            batch.put(VAPID_PRIVATE_KEY_STORAGE_KEY, generated.private_key_bytes());
-            write(db, batch)?;
+            initialization.store_generated_key(
+                VAPID_PRIVATE_KEY_STORAGE_KEY,
+                generated.private_key_bytes(),
+            )?;
             Ok(generated)
-        })?
-        .ok_or(CanonicalError::Unavailable)
+        })
     }
 
     /// Return the relay's cluster-safe VAPID P-256 keypair backed by any [`crate::store::kv_store::RelayKvStore`]
@@ -618,14 +570,14 @@ use crate::store::notification_policy::VAPID_PRIVATE_KEY_STORAGE_KEY;
 
 /// One address's `I` or `O` entries from a starting position onward, in delivery order.
 struct Entries<'a> {
-    rows: rocksdb::DBIteratorWithThreadMode<'a, rocksdb::DB>,
+    rows: rocks::Rows<'a>,
     prefix: Vec<u8>,
     since: i64,
     after: Option<(i64, [u8; 32])>,
 }
 impl<'a> Entries<'a> {
     fn new(
-        db: &'a rocksdb::DB,
+        db: &'a MessageRead<'_>,
         kind: u8,
         address: Address,
         since: i64,
@@ -639,13 +591,11 @@ impl<'a> Entries<'a> {
             Some((time, hash)) if time >= since => mailbox_key(kind, address, time.max(0), &hash),
             _ => mailbox_key(kind, address, since.max(0), &[0; 32]),
         };
-        let mut options = ReadOptions::default();
         let mut upper = prefix.clone();
         upper.push(u8::MAX);
         upper.extend_from_slice(&[u8::MAX; 8]);
-        options.set_iterate_upper_bound(upper);
         Self {
-            rows: db.iterator_opt(IteratorMode::From(&start, Direction::Forward), options),
+            rows: db.mailbox_rows(&start, upper),
             prefix,
             since,
             after,
@@ -653,7 +603,7 @@ impl<'a> Entries<'a> {
     }
     fn next(&mut self) -> Result<Option<(i64, [u8; 32])>> {
         for item in self.rows.by_ref() {
-            let (key, value) = item.map_err(|_| CanonicalError::Unavailable)?;
+            let (key, value) = item?;
             if !key.starts_with(&self.prefix) {
                 return Ok(None);
             }
@@ -674,12 +624,6 @@ impl<'a> Entries<'a> {
     }
 }
 
-fn write(db: &rocksdb::DB, batch: WriteBatch) -> Result<()> {
-    let mut options = WriteOptions::default();
-    options.set_sync(true);
-    db.write_opt(batch, &options)
-        .map_err(|_| CanonicalError::Unavailable)
-}
 fn row_key(hash: &[u8; 32]) -> Vec<u8> {
     let mut key = b"R".to_vec();
     key.extend_from_slice(hash);
@@ -707,7 +651,7 @@ fn policy_key(address: Address) -> Vec<u8> {
     key
 }
 /// Bound an iterator to the keys starting with `prefix`.
-fn prefix_options(prefix: &[u8]) -> Result<ReadOptions> {
+fn prefix_bounds(prefix: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let mut upper = prefix.to_vec();
     let last = upper
         .iter()
@@ -715,10 +659,7 @@ fn prefix_options(prefix: &[u8]) -> Result<ReadOptions> {
         .ok_or(CanonicalError::Unavailable)?;
     upper[last] += 1;
     upper.truncate(last + 1);
-    let mut options = ReadOptions::default();
-    options.set_iterate_lower_bound(prefix.to_vec());
-    options.set_iterate_upper_bound(upper);
-    Ok(options)
+    Ok((prefix.to_vec(), upper))
 }
 
 /// Where the last delivery time issued by this store is kept.
@@ -733,13 +674,10 @@ const LAST_DELIVERY_KEY: &[u8] = b"L";
 /// messages in the same millisecond, or a clock that steps back, still get increasing times.
 /// The caller writes the result under [`LAST_DELIVERY_KEY`] in the same batch as the message,
 /// so this holds across restarts.
-fn next_delivery_time(db: &rocksdb::DB, now: i64) -> Result<i64> {
-    let last = match db
-        .get_pinned(LAST_DELIVERY_KEY)
-        .map_err(|_| CanonicalError::Unavailable)?
-    {
+fn next_delivery_time(admission: &Admission<'_>, now: i64) -> Result<i64> {
+    let last = match admission.last_delivery(LAST_DELIVERY_KEY)? {
         Some(raw) => i64::from_be_bytes(
-            raw.as_ref()
+            raw.as_slice()
                 .try_into()
                 .map_err(|_| CanonicalError::Unavailable)?,
         ),
@@ -748,7 +686,7 @@ fn next_delivery_time(db: &rocksdb::DB, now: i64) -> Result<i64> {
     Ok(now.max(last.checked_add(1).ok_or(CanonicalError::Unavailable)?))
 }
 
-fn find_request_locked(db: &rocksdb::DB, request: &ExactRequest) -> Result<Option<Claim>> {
+fn find_request_locked(db: &MessageRead<'_>, request: &ExactRequest) -> Result<Option<Claim>> {
     use frank_cbor::{relay_context, validate_frame, TypedPayload, ValidationResult};
     let ValidationResult::Parsed(frame) = validate_frame(request.delivery(), &relay_context())
         .map_err(|_| CanonicalError::Invalid)?
@@ -842,11 +780,8 @@ thread_local! {
 
 /// Read one stored message. It was checked in full when it was admitted and has not changed
 /// since, so reading it only decodes it: no signature or proof is verified again.
-fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
-    let Some(raw) = db
-        .get(row_key(hash))
-        .map_err(|_| CanonicalError::Unavailable)?
-    else {
+fn load(db: &MessageRead<'_>, hash: &[u8; 32]) -> Result<Option<Claim>> {
+    let Some(raw) = db.message_row(&row_key(hash))? else {
         return Ok(None);
     };
     #[cfg(test)]
@@ -889,7 +824,7 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
 }
 
 /// The message a mailbox entry points at, which must have been delivered at the entry's time.
-fn load_delivered(db: &rocksdb::DB, hash: &[u8; 32], time: i64) -> Result<Claim> {
+fn load_delivered(db: &MessageRead<'_>, hash: &[u8; 32], time: i64) -> Result<Claim> {
     let message = load(db, hash)?.ok_or(CanonicalError::Unavailable)?;
     if message.delivered_at != time {
         return Err(CanonicalError::Unavailable);
@@ -900,21 +835,19 @@ fn load_delivered(db: &rocksdb::DB, hash: &[u8; 32], time: i64) -> Result<Claim>
 #[cfg(test)]
 mod challenge_tests {
     use super::*;
+    use rocksdb::{IteratorMode, Options};
 
     fn store() -> (tempdir::TempDir, Owner) {
         let dir = tempdir::TempDir::new("used-challenges").unwrap();
         let owner = Owner::new(dir.path().join("db.rocksdb"));
         (dir, owner)
     }
-    fn stored(owner: &Owner) -> usize {
-        owner
-            .with(false, |db| {
-                Ok(db
-                    .iterator_opt(IteratorMode::Start, prefix_options(b"N")?)
-                    .count())
-            })
-            .unwrap()
-            .unwrap()
+    fn stored(dir: &tempdir::TempDir) -> usize {
+        let path = dir.path().join("db.messages-v2");
+        let db = rocksdb::DB::open_for_read_only(&Options::default(), path, false).unwrap();
+        db.iterator(IteratorMode::Start)
+            .filter(|row| row.as_ref().unwrap().0.starts_with(b"N"))
+            .count()
     }
     const EPOCH: [u8; 32] = [7; 32];
     const TTL: i64 = 60_000;
@@ -995,7 +928,7 @@ mod challenge_tests {
             ChallengeConsumption::Consumed
         );
         // Alice's three expired rows went with that use.
-        assert_eq!(stored(&owner), 1);
+        assert_eq!(stored(&_dir), 1);
     }
 
     #[test]
@@ -1015,7 +948,7 @@ mod challenge_tests {
                 "recipient {n}"
             );
         }
-        assert_eq!(stored(&owner), 5_000);
+        assert_eq!(stored(&_dir), 5_000);
         // Once they have expired, the next sweep deletes them all, whoever asks.
         let later = now + TTL + AUTH_NONCE_SWEEP_INTERVAL_MS + 1;
         assert_eq!(
@@ -1024,7 +957,7 @@ mod challenge_tests {
                 .unwrap(),
             ChallengeConsumption::Consumed
         );
-        assert_eq!(stored(&owner), 1);
+        assert_eq!(stored(&_dir), 1);
     }
 }
 
@@ -1032,6 +965,7 @@ mod challenge_tests {
 mod persistence_tests {
     use super::*;
     use bitcoinsuite_core::ecc::Ecc;
+    use rocksdb::{IteratorMode, Options};
     use sha3::{Digest, Keccak256};
     use std::path::Path;
 
@@ -1428,6 +1362,30 @@ mod persistence_tests {
             ));
             drop(owner);
             assert_eq!(raw_rows(&path), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod storage_boundary_tests {
+    #[test]
+    fn canonical_facade_does_not_depend_on_native_storage_types() {
+        let source = include_str!("monad_dm_cbor.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod challenge_tests")
+            .next()
+            .unwrap();
+        for native in [
+            "rocksdb::",
+            "WriteBatch",
+            "ReadOptions",
+            "WriteOptions",
+            "IteratorMode",
+        ] {
+            assert!(
+                !production.contains(native),
+                "native storage type {native} escaped adapter"
+            );
         }
     }
 }

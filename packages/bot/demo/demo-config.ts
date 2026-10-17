@@ -465,6 +465,8 @@ export interface DemoConfig {
   wsRpcUrl?: string
   chronikUrl: string
   solanaRpcUrl: string
+  /** EVM upstreams named by the shipped relay config, copied through when set. */
+  relayUpstreamEnv: Record<string, string>
   networkTag: string
   minStampWei: string
   defaultStampAvu: string
@@ -607,6 +609,43 @@ function wei(name: string, raw: string | undefined, dflt: string, problems: stri
     return dflt
   }
   return raw
+}
+
+/** Environment names of the EVM upstreams in the shipped relay config. */
+export const RELAY_UPSTREAM_ENV_NAMES = [
+  'HYPERLIQUID_MAINNET_HTTP_RPC_URL',
+  'HYPERLIQUID_MAINNET_WS_RPC_URL',
+  'HYPERLIQUID_TESTNET_HTTP_RPC_URL',
+  'HYPERLIQUID_TESTNET_WS_RPC_URL',
+  'BNB_MAINNET_HTTP_RPC_URL',
+  'BNB_MAINNET_WS_RPC_URL',
+  'BNB_TESTNET_HTTP_RPC_URL',
+  'BNB_TESTNET_WS_RPC_URL',
+  'POLYGON_MAINNET_HTTP_RPC_URL',
+  'POLYGON_MAINNET_WS_RPC_URL',
+  'POLYGON_AMOY_HTTP_RPC_URL',
+  'POLYGON_AMOY_WS_RPC_URL',
+  'BASE_MAINNET_HTTP_RPC_URL',
+  'BASE_MAINNET_WS_RPC_URL',
+  'BASE_SEPOLIA_HTTP_RPC_URL',
+  'BASE_SEPOLIA_WS_RPC_URL',
+  'ARBITRUM_MAINNET_HTTP_RPC_URL',
+  'ARBITRUM_MAINNET_WS_RPC_URL',
+  'ARBITRUM_SEPOLIA_HTTP_RPC_URL',
+  'ARBITRUM_SEPOLIA_WS_RPC_URL',
+] as const
+
+/** Process environment wins over the env file. Empty values are omitted. */
+export function relayUpstreamEnv(
+  env: { [name: string]: string | undefined },
+  envFile: { [name: string]: string | undefined } = {},
+): Record<string, string> {
+  const upstream: Record<string, string> = {}
+  for (const name of RELAY_UPSTREAM_ENV_NAMES) {
+    const value = (env[name] ?? envFile[name])?.trim()
+    if (value) upstream[name] = value
+  }
+  return upstream
 }
 
 /**
@@ -788,6 +827,7 @@ export function resolveDemoConfig(params: {
   }
   const botProcess: DemoBotProcess = { script: 'targets/all-bots.ts', env: botEnv, hostStateDir }
 
+  const upstreamEnv = relayUpstreamEnv(params.env, params.envFile)
   const secrets = [
     rpcUrl,
     ...rpcUrl
@@ -797,6 +837,7 @@ export function resolveDemoConfig(params: {
     wsRpcUrl,
     merged.XEC_TESTNET_CHRONIK_URL,
     merged.SOLANA_DEVNET_HTTP_RPC_URL,
+    ...Object.values(upstreamEnv),
     qwenKey,
     ngrokAuthtoken,
   ].filter((v): v is string => !!v)
@@ -816,6 +857,7 @@ export function resolveDemoConfig(params: {
     wsRpcUrl,
     chronikUrl,
     solanaRpcUrl,
+    relayUpstreamEnv: upstreamEnv,
     networkTag,
     minStampWei,
     defaultStampAvu,

@@ -36,8 +36,9 @@ The build process will take some time to complete. If successful, you should see
 Frank chain identifier selects an EVM or Bitcoin-family handler. Bitcoin-family relays may also
 serve the Chronik HTTP/Protobuf API at `/chain-rpc/:chain/chronik/*`. Chronik is not used for EVM.
 
-The shipped relay configurations expose `monad-testnet`. Its provider URL is read only from the row's `upstream_env`
-environment variable. At startup the relay calls `eth_chainId` and serves a chain only once its
+The shipped relay configurations expose `monad-testnet` and the other EVM networks named in
+`backend/docker/cashwebd.toml`. Each provider URL is read only from that row's `upstream_env`
+environment variable. An unset or empty variable omits that chain from `GET /chains`. At startup the relay calls `eth_chainId` and serves a chain only once its
 provider reports the configured `expected_chain_id` and registry-pinned block checkpoint; every
 configured WebSocket upstream is probed independently with both identity checks. A provider that
 is down or reports another chain never stops the relay: startup waits at most 2 seconds for the

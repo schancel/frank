@@ -471,9 +471,6 @@ pub enum EvmRpcStartError {
     /// Static configuration is invalid.
     #[error("invalid EVM RPC configuration: {0}")]
     InvalidConfig(cashweb_config::EvmRpcConfigError),
-    /// The named server-only environment variable is absent.
-    #[error("missing EVM RPC upstream environment variable {0}")]
-    MissingUpstream(String),
     /// The named environment variable does not contain a hosted URL of the required transport.
     #[error("EVM RPC upstream environment variable {0} is not a valid hosted transport URL")]
     InvalidUpstream(String),
@@ -580,9 +577,9 @@ impl EvmRpcRuntime {
                 }
             }
             if upstream_urls.is_empty() {
-                return Err(EvmRpcStartError::MissingUpstream(
-                    chain.upstream_env.clone(),
-                ));
+                // A configured row with no URL is not served. The rest of the relay still starts,
+                // and setting the variable then restarting advertises the chain.
+                continue;
             }
             let upstream_ws_url = chain
                 .upstream_ws_env
@@ -3642,6 +3639,69 @@ mod tests {
         assert!(rendered.contains("reported 1, expected 10143"));
         assert!(!rendered.contains("sentinel-api-key"));
         assert!(!rendered.contains(&secret_url));
+    }
+
+    #[tokio::test]
+    async fn an_unset_upstream_is_omitted_and_a_set_one_is_kept() {
+        fn chain(
+            id: &str,
+            expected_chain_id: u64,
+            upstream_env: &str,
+            checkpoint_block_number: u64,
+            checkpoint_block_hash: &str,
+        ) -> cashweb_config::EvmRpcChainConf {
+            cashweb_config::EvmRpcChainConf {
+                id: id.to_string(),
+                expected_chain_id,
+                upstream_env: upstream_env.to_string(),
+                upstream_envs: vec![],
+                upstream_ws_env: None,
+                checkpoint_block_number: Some(checkpoint_block_number),
+                checkpoint_block_hash: Some(checkpoint_block_hash.to_string()),
+                max_get_logs_range: 10,
+            }
+        }
+        let conf = EvmRpcConf {
+            enabled: true,
+            chains: vec![
+                chain(
+                    "monad-testnet",
+                    10_143,
+                    "SET_UPSTREAM",
+                    0,
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
+                ),
+                chain(
+                    "base-sepolia",
+                    84_532,
+                    "UNSET_UPSTREAM",
+                    0,
+                    "0x0dcc9e089e30b90ddfc55be9a37dd15bc551aeee999d2e2b51414c54eaf934e4",
+                ),
+                chain(
+                    "bnb-testnet",
+                    97,
+                    "BLANK_UPSTREAM",
+                    0,
+                    "0x6d3c66c5357ec91d5c43af47e234a939b22557cbb552dc45bebbceeed90fbe34",
+                ),
+            ],
+            timeout_ms: 200,
+            ..EvmRpcConf::default()
+        };
+        let runtime =
+            EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |name| match name {
+                "SET_UPSTREAM" => Some("http://127.0.0.1:1".to_string()),
+                "BLANK_UPSTREAM" => Some("  \n".to_string()),
+                _ => None,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(runtime.has_chain("monad-testnet"));
+        assert!(!runtime.has_chain("base-sepolia"));
+        assert!(!runtime.has_chain("bnb-testnet"));
+        assert_eq!(runtime.chain_ids().len(), 1);
     }
 
     #[tokio::test]

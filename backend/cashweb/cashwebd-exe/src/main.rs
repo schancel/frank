@@ -885,7 +885,17 @@ max_get_logs_range = 10\n\n\
         let (conf, _) =
             read_and_validate_conf_with_env("-", &mut Cursor::new(two_chains), env(FULL_ENV))
                 .expect("one relay may expose multiple canonical EVM target chains");
-        assert_eq!(conf.registry.evm_rpc.chains.len(), 2);
+        let shipped_rows = LOCAL
+            .lines()
+            .filter(|line| *line == "[[registry.evm_rpc.chains]]")
+            .count();
+        assert_eq!(conf.registry.evm_rpc.chains.len(), shipped_rows + 1);
+        assert!(conf
+            .registry
+            .evm_rpc
+            .chains
+            .iter()
+            .any(|chain| chain.id == "monad-mainnet"));
 
         // Retained rows are inert when the EVM proxy is disabled. Operators may stage a future
         // chain or disable a bad upstream without unrelated network-tag validation blocking boot.

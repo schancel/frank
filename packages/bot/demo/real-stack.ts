@@ -57,7 +57,7 @@ import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plu
 import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
 
 import { chainId, rpcUrlList } from './chain-rpc'
-import { DEMO_DEFAULT_BURN_ADDRESS } from './demo-config'
+import { DEMO_DEFAULT_BURN_ADDRESS, relayUpstreamEnv } from './demo-config'
 import { readEnvFile } from './env-file'
 import { Supervisor } from './supervisor'
 
@@ -141,6 +141,7 @@ export async function startRealRelay(options: {
     cwd: REPO_ROOT,
     logPath,
     env: {
+      ...relayUpstreamEnv(env),
       MONAD_TESTNET_HTTP_RPC_URL: rpcUrl,
       ...(env.MONAD_TESTNET_WS_RPC_URL ? { MONAD_TESTNET_WS_RPC_URL: env.MONAD_TESTNET_WS_RPC_URL } : {}),
       ...(env.XEC_TESTNET_CHRONIK_URL ? { XEC_TESTNET_CHRONIK_URL: env.XEC_TESTNET_CHRONIK_URL } : {}),

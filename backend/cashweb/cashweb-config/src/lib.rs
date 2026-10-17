@@ -2490,7 +2490,28 @@ continuity_file = "/var/lib/frank/continuity"
                 "{name}"
             );
             assert!(conf.registry.evm_rpc.enabled, "{name}");
-            assert_eq!(conf.registry.evm_rpc.chains.len(), 1, "{name}");
+            assert_eq!(
+                conf.registry
+                    .evm_rpc
+                    .chains
+                    .iter()
+                    .map(|chain| chain.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![
+                    "monad-testnet",
+                    "hyperliquid-mainnet",
+                    "hyperliquid-testnet",
+                    "bnb-mainnet",
+                    "bnb-testnet",
+                    "polygon-mainnet",
+                    "polygon-amoy",
+                    "base-mainnet",
+                    "base-sepolia",
+                    "arbitrum-mainnet",
+                    "arbitrum-sepolia",
+                ],
+                "{name}"
+            );
             assert_eq!(
                 conf.registry.evm_rpc.chains[0].id, "monad-testnet",
                 "{name}"

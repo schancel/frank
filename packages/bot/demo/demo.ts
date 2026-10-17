@@ -573,6 +573,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
       cwd: REPO_ROOT,
       logPath: join(logDir, 'relay.log'),
       env: {
+        ...config.relayUpstreamEnv,
         MONAD_TESTNET_HTTP_RPC_URL: config.rpcUrl,
         ...(config.wsRpcUrl ? { MONAD_TESTNET_WS_RPC_URL: config.wsRpcUrl } : {}),
         FRANK_NETWORK_TAG: config.networkTag,

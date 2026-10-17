@@ -223,17 +223,23 @@ runtime_config="$(LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
         print "network = \"" ENVIRON["LAUNCHER_RPC_CHAIN"] "\""
         next
     }
-    /^\[\[registry\.evm_rpc\.chains\]\]$/ { in_evm_chain = 1 }
-    in_evm_chain && /^\[/ && !/^\[\[registry\.evm_rpc\.chains\]\]$/ { in_evm_chain = 0 }
+    /^\[\[registry\.evm_rpc\.chains\]\]$/ { in_evm_chain = 1; rewrite_evm = 0 }
+    in_evm_chain && /^\[/ && !/^\[\[registry\.evm_rpc\.chains\]\]$/ { in_evm_chain = 0; rewrite_evm = 0 }
     in_evm_chain && /^id[[:space:]]*=/ {
-        print "id = \"" ENVIRON["LAUNCHER_RPC_CHAIN"] "\""
+        if ($0 ~ /"monad-testnet"/ || $0 ~ /"monad-mainnet"/) {
+            rewrite_evm = 1
+            print "id = \"" ENVIRON["LAUNCHER_RPC_CHAIN"] "\""
+        } else {
+            rewrite_evm = 0
+            print
+        }
         next
     }
-    in_evm_chain && /^expected_chain_id[[:space:]]*=/ {
+    in_evm_chain && rewrite_evm && /^expected_chain_id[[:space:]]*=/ {
         print "expected_chain_id = " ENVIRON["LAUNCHER_EXPECTED_CHAIN_ID"]
         next
     }
-    in_evm_chain && /^checkpoint_block_hash[[:space:]]*=/ {
+    in_evm_chain && rewrite_evm && /^checkpoint_block_hash[[:space:]]*=/ {
         print "checkpoint_block_hash = \"" ENVIRON["LAUNCHER_EVM_CHECKPOINT_HASH"] "\""
         next
     }

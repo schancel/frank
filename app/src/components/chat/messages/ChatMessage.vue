@@ -161,6 +161,8 @@
               :delivery-status="message.status"
               :sender-address="message.senderAddress"
               :outbound="message.outbound"
+              @sendFollowUp="handleSendFollowUp"
+              @openReader="$emit('openReader', $event)"
             />
             <span v-else-if="item.type === 'swap-offer'" class="text-caption">{{
               $t('signedSwap.legacy')
@@ -327,6 +329,7 @@ export default defineComponent({
     'sendFollowUp',
     'playAgain',
     'senderClicked',
+    'openReader',
   ],
   data() {
     return {

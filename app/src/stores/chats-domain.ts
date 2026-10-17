@@ -1,5 +1,3 @@
-import { shallowRef } from 'vue'
-import { randomBytes } from '@noble/hashes/utils'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import {
   isChainAddress,
@@ -8,165 +6,31 @@ import {
 } from '../utils/chain-address'
 import { activeChain, type WalletHandle } from '@frank/wallet/chain'
 import { messageItems } from '../utils/message-items'
-import type { Utxo } from '@frank/cashweb/types/utxo'
 import type {
   Message,
-  MessageWrapper,
   MessageItem,
   OutgoingDelivery,
-  OutgoingFinancialOperation,
   OutgoingFailureReason,
-  ConversationStateItem,
 } from '@frank/cashweb/types/messages'
 import {
   joinDeliveryStatus,
   toDeliveryStatus,
 } from '@frank/wallet/journal/semilattice-state'
-import type { RelayReceiptIdentity } from '@frank/cashweb/relay/storage/storage'
 import {
-  allocateOpeningConversationId,
   formatConversationId,
-  isOpeningConversationId,
   uuidv5Bytes,
 } from '@frank/cashweb/relay/conversation-id'
 import { useSettingsStore } from './settings'
 import { sameCanonicalAddress } from '../utils/own-address'
-
-export type ChatMessage = {
-  sealedMessageId?: string
-  applicationAuthorization?: Message['applicationAuthorization']
-  financialOperations?: OutgoingFinancialOperation[]
-  outbound: boolean
-  status: string
-  receivedTime: number
-  serverTime: number
-  items: MessageItem[]
-  outpoints: Utxo[]
-  /** See this file's header decision note: additive Monad-side value field, alongside
-   * `outpoints` rather than replacing it (ticket #42). */
-  stampValueWei?: bigint
-  stampPayments?: Array<{
-    txHash: string
-    destinationAddress: string
-    valueWei: bigint
-  }>
-  senderAddress: string
-  destinationAddress?: string
-  payloadDigest: string
-  messageHash?: string
-  /** Outgoing messages that are not yet confirmed (#269/#270); see `Message.delivery`. */
-  delivery?: OutgoingDelivery
-  /** Ticket #69: Conversation and logical message identifiers */
-  conversationId?: string
-  logicalMessageId?: string
-  /** Authenticated original canonical content frame, when the producer supplied its digest. */
-  contentDigest?: string
-  revisionDigest?: string
-  deliveryDigest?: string
-  /** `serverTime` is this device's clock: the message was written here and its row has not
-   * been read back from the relay, which is what gives it the time every device sees. */
-  localTime?: boolean
-}
-
-/** Conversation metadata is owned by conversations[id]; messages are owned by the message store.
- * Peer lookup, message membership/accounting and logical revision indexes are derived views.
- * Stable 16-byte conversation IDs cross the authenticated wire unchanged. Subjects are presentation.
- */
-export type ConversationKind = 'direct' | 'group' | 'email'
-export type ConversationRole = 'owner' | 'admin' | 'member'
-
-export interface ConversationMember {
-  address: string
-  role?: ConversationRole
-  joinedAt?: number
-  alias?: string
-  /** Hex of the key this member's first message here was verified against. It gives someone
-   * who is not a contact the same colour a contact gets from their key. */
-  pubKeyHex?: string
-}
-
-export interface ConversationEpoch {
-  epochId?: string
-  generation?: number
-  updatedAt?: number
-}
-
-export interface DeliveryRecord {
-  deliveryDigest: string
-  recipientAddress?: string
-  status: string
-  attemptDigest?: string
-  timestamp: number
-}
-
-export interface RevisionRecord {
-  revisionDigest: string
-  items: MessageItem[]
-  timestamp: number
-  deliveries: DeliveryRecord[]
-}
-
-export interface LogicalMessageRecord {
-  messageId: string
-  conversationId: string
-  senderAddress: string
-  createdAt: number
-  activeRevisionDigest: string
-  revisions: RevisionRecord[]
-}
-
-export interface Conversation {
-  id: string
-  kind: ConversationKind
-  name?: string
-  /** The subject last carried by a message in this conversation, sent by this account or by the
-   * peer. A message carries the subject only when it differs from this: the first message of a
-   * conversation that has a subject, and a message after a rename. */
-  nameOnWire?: string
-  /** Relay time of the message whose subject this conversation currently has, when a message
-   * set it. A carried subject replaces the current one only if its message is not older. */
-  nameSetAt?: number
-  topic?: string
-  emailRecipient?: string
-  participants: string[]
-  members?: Record<string, ConversationMember>
-  epoch?: ConversationEpoch
-  messages: ChatMessage[]
-  totalUnreadMessages: number
-  totalUnreadValue: number
-  totalValue: number
-  lastReceived: number
-  lastRead: number
-  /** The stamp this user chose for this conversation, in the chain's base units, as a decimal
-   * string so it is saved with the conversation. Unset: the chain's configured default. */
-  stampWei?: string
-  address: string
-  createdAt?: number
-  updatedAt?: number
-  deletedAt?: number
-  /** Messages no newer than this are gone for good: the latest time the conversation was
-   * deleted at. It outlives the conversation being opened again, so that old messages do not
-   * come back with it. */
-  clearedBefore?: number
-  /** Highest relay time removed on this device by Clear or message deletion. Kept with
-   * conversation metadata so a later conversation Delete can cover that history after reload.
-   * This is a UI deletion boundary only; coin recovery remains owned by mailbox tombstones. */
-  removedRelayTime?: number
-  /** What the account's own mailbox is known to say about this conversation: the facts this
-   * device has noted to the account's other devices, or read from a note of theirs. A fact
-   * beyond these is noted by the next pass of `noteConversationStates`. */
-  noted?: { clearedBefore?: number; readUpTo?: number }
-  /** The user set or removed the subject here (`name`, at `nameSetAt`) and the account's
-   * mailbox does not say so yet. Cleared once the note is sent, or a later subject replaces
-   * this one. */
-  subjectToNote?: boolean
-  /** The account whose user last deleted, named or created this conversation on this device
-   * (`accountTag`). Only that account notes the deletion and the subject: the store can still
-   * hold conversations of an account that was replaced here. */
-  actedBy?: string
-  verifiedGateway?: boolean
-  screenerStatus?: 'pending' | 'approved' | 'dismissed'
-}
+import type {
+  ChatMessage,
+  ChatState,
+  Conversation,
+  ConversationEpoch,
+  ConversationMember,
+  DeliveryRecord,
+  LogicalMessageRecord,
+} from './chats'
 
 export type ChatState = Conversation
 
@@ -446,11 +310,38 @@ export function recordLogicalMessage(
   )
 }
 
+/**
+ * ## Decision (#42): `stampValueWei` added alongside `outpoints`, not in place of it
+ *
+ * `ChatMessage`/`Message`/`ReceivedMessage`'s `outpoints: Utxo[]` (used by `stampPrice` below, for
+ * unread-badge sort value) has no Monad equivalent -- Monad's stamp payment is represented as an aggregate scalar
+ * (`DirectMessageSendResult.stampValueWei`/`DirectMessageReceived.stampValueWei`,
+ * `@frank/wallet/chain/active-chain.ts`), never UTXOs. Chosen: add `stampValueWei?: bigint` as a new,
+ * optional field alongside `outpoints` (which stays required, defaulted to `[]` for Monad-sourced
+ * messages) rather than replacing `outpoints` outright. Why: `outpoints` is still read outside this
+ * file's scope (`components/chat/messages/ChatMessage.vue`'s own `stampPrice(this.message.outpoints)`
+ * call, for its stamp-price display) -- replacing the field would force touching that component
+ * (and the Lotus-still-wired `pinia-relay-adapter.ts`/leveldb `MessageWrapper` persistence path)
+ * as part of this ticket, well outside its stated file scope (`stores/chats.ts`/`contacts.ts`).
+ * Leaving `outpoints` alone and adding `stampValueWei` additively is strictly less invasive and
+ * keeps both chains' messages structurally valid at every existing call site; `ChatMessage.vue`'s
+ * stamp-price display simply continues to show 0 for Monad-received messages until ticket #44
+ * (PLAN.md's own scope for "remaining hardcoded XPI/Lotus-address UI spots") updates it.
+ *
+ * `messageStampPrice` below is the narrow adapter needed on this file's own two `stampPrice(...)`
+ * call sites so Monad messages sort/badge correctly using their real payment value instead of always
+ * reading as 0 (`stampPrice([])` for a message with no `outpoints`).
+ */
 export function messageStampPrice(message: {
   outpoints: Utxo[]
   stampValueWei?: bigint
 }) {
   if (message.stampValueWei !== undefined) {
+    // Wei -> plain number for sort/badge purposes only, matching Lotus's own pre-existing
+    // sort-value use of `stampPrice` (satoshis as a plain number). Default stamp values
+    // (CASHWEB_STAMP_MIN_BURN_VALUE_WEI, e.g. 1e12) are far below Number.MAX_SAFE_INTEGER
+    // (~9e15), so this is lossless in practice; a pathologically large payment would only ever
+    // affect display sort order, never a financial computation.
     return Number(message.stampValueWei)
   }
   return stampPrice(message.outpoints)
@@ -476,7 +367,14 @@ export function observedRelayReceiptTime(
 /**
  * Deleting a message leaves a TOMBSTONE: its content (text, items, attachments) is dropped from
  * this device's store and from the screen, and its payload hash stays recorded as deleted, so the
- * relay handing the row back does not bring the message back.
+ * relay handing the row back does not bring the message back. Nothing else is kept, and nothing
+ * else is needed: money a message brought is the wallet's coin from the moment the message was
+ * read (key and all, with its derivation noted to self), so a delete never asks the wallet
+ * anything, never moves money and never waits for a chain.
+ *
+ * The tombstone is kept under the mailbox the row is read from, which is always this account's
+ * own: a received message was sent to us, and the relay keeps our own sent messages in our
+ * mailbox too. Undefined when the message names neither.
  */
 export function tombstoneMailbox(message: Message): string | undefined {
   return message.outbound
@@ -486,7 +384,8 @@ export function tombstoneMailbox(message: Message): string | undefined {
 
 /**
  * The relay time a tombstone may anchor the mailbox's read position at: only a time the relay
- * itself gave.
+ * itself gave. A message we sent to someone else carries this device's own clock until its row
+ * is read back, so its tombstone has no time; the relay's row gives it one when it arrives.
  */
 export function tombstoneReceiptTime(
   message: Message | undefined,
@@ -504,7 +403,9 @@ export function tombstoneReceiptTime(
 
 /**
  * A message whose payment the wallet released keeps the bubble and loses the signed transfer:
- * the stealth items stay (amount, memo) with no transaction in them.
+ * the stealth items stay (amount, memo) with no transaction in them. Such an item cannot be
+ * encoded, so the message can never be sent again, by a retry or otherwise; the only copies of a
+ * released transfer are then ones that never existed outside this device.
  */
 export function stripReleasedPayments(message: ChatMessage): void {
   message.items = message.items.map(item =>
@@ -536,65 +437,6 @@ export interface ComposeFocusRequest {
   nonce: number
 }
 
-export interface SetActiveConversationOptions {
-  requestFocus?: boolean
-}
-
-export interface State {
-  activeConversationId: string | null
-  conversations: Record<string, Conversation>
-  messages: Record<string, ChatMessage | undefined>
-  logicalMessages: Record<string, LogicalMessageRecord | undefined>
-  lastReceived: number | null
-  composeFocusRequest: ComposeFocusRequest | null
-}
-
-export function freshChatsState(): State {
-  return {
-    conversations: {},
-    messages: {},
-    logicalMessages: {},
-    lastReceived: null,
-    activeConversationId: null,
-    composeFocusRequest: null,
-  }
-}
-
-let pendingMessageSequence = 0
-
-/** Local key of an outgoing message until its payload hash is known. Persisted (#269), so it must
- * stay unique across reloads, where the in-memory sequence restarts. */
-export function nextPendingMessageId(timestamp: number): string {
-  pendingMessageSequence += 1
-  const nonce = Math.random().toString(36).slice(2, 8)
-  return `pending:${timestamp}:${pendingMessageSequence}:${nonce}`
-}
-
-/**
- * The ID an outgoing message is sent under: fixed by the message's local key, which is saved
- * with its row before the send starts and survives a reload.
- */
-export function outgoingMessageId(localKey: string): string {
-  return uuidv5(NULL_CONVERSATION_NAMESPACE, `frank-outgoing:${localKey}`)
-}
-
-export function matchesOutgoingOwner(
-  row: MessageWrapper,
-  message: Message,
-  address: string,
-): boolean {
-  return (
-    sameCanonicalAddress(row.senderAddress, message.senderAddress) &&
-    sameCanonicalAddress(row.copartyAddress, address) &&
-    (!row.message.conversationId ||
-      !message.conversationId ||
-      row.message.conversationId === message.conversationId) &&
-    (!row.message.logicalMessageId ||
-      !message.logicalMessageId ||
-      row.message.logicalMessageId === message.logicalMessageId)
-  )
-}
-
 /** A message of ours the relay has not timed yet: its time is this device's clock, which no
  * other device sees. No deletion time is taken from it, and a deletion noted from elsewhere
  * never covers it. */
@@ -616,26 +458,6 @@ export function newestRelayTime(messages: readonly ChatMessage[]): number {
   return newest
 }
 
-/**
- * A private mark of the active account, the same on each of its devices and unknown to anyone
- * else: what a conversation is tagged with when the account's user acts on it. `undefined`
- * while no account is active.
- */
-export function accountTag(): string | undefined {
-  const salt = conversationIdSalt.value
-  return salt
-    ? formatConversationId(
-        allocateOpeningConversationId(salt, 'frank:conversation-notes'),
-      )
-    : undefined
-}
-
-/** While a conversation is open, its read mark is noted at most this often. It is noted at
- * once when the conversation is closed. */
-export const READ_NOTE_INTERVAL_MS = 10_000
-/** When this session last noted a read mark for each conversation. */
-export const readNotedAt = new Map<string, number>()
-
 /** The time up to which a conversation's messages are gone, if it was ever deleted. */
 export function clearedUpTo(conversation: Conversation): number | undefined {
   const cleared = Math.max(
@@ -645,118 +467,6 @@ export function clearedUpTo(conversation: Conversation): number | undefined {
   return Number.isFinite(cleared) ? cleared : undefined
 }
 
-/**
- * What this device still has to note to the account's other devices about a conversation: the
- * facts it holds beyond what the account's mailbox is known to say. `undefined` when there is
- * nothing to say, and for a conversation with no peer address (a group): only conversations
- * with one peer are noted.
- */
-export function conversationStateToNote(
-  conversation: Conversation,
-  ownAddress: string,
-  activeConversationId: string | null,
-): ConversationStateItem | undefined {
-  if (!isChainAddress(conversation.address)) return undefined
-  const note: ConversationStateItem = {
-    type: 'conversation-state',
-    conversationId: conversation.id,
-    peer: conversation.address,
-  }
-  // A deletion and a subject are noted by the account whose user made them.
-  const ours =
-    conversation.actedBy !== undefined && conversation.actedBy === accountTag()
-  const cleared = clearedUpTo(conversation)
-  if (
-    ours &&
-    cleared !== undefined &&
-    cleared > (conversation.noted?.clearedBefore ?? -1)
-  )
-    note.clearedBefore = Math.trunc(cleared)
-  // A read mark moves with every message that arrives in an open conversation: there it is
-  // noted once per interval, and when the conversation is closed.
-  const read = readUpTo(conversation, ownAddress)
-  if (
-    read > (conversation.noted?.readUpTo ?? 0) &&
-    (conversation.id !== activeConversationId ||
-      Date.now() - (readNotedAt.get(conversation.id) ?? -Infinity) >=
-        READ_NOTE_INTERVAL_MS)
-  )
-    note.readUpTo = read
-  if (ours && conversation.subjectToNote && conversation.kind === 'direct') {
-    note.subject = usableSubject(conversation.name) ?? ''
-    note.subjectSetAt = conversation.nameSetAt ?? 0
-  }
-  return note.clearedBefore === undefined &&
-    note.readUpTo === undefined &&
-    note.subject === undefined
-    ? undefined
-    : note
-}
-
-export function readUpTo(
-  conversation: Conversation,
-  ownAddress: string,
-): number {
-  let read = 0
-  for (const message of conversation.messages)
-    if (
-      !isOwnMessage(message) &&
-      !!message.destinationAddress &&
-      sameCanonicalAddress(message.destinationAddress, ownAddress) &&
-      message.serverTime <= conversation.lastRead &&
-      message.serverTime > read
-    )
-      read = message.serverTime
-  return read
-}
-
-/** A note's facts are now in the account's mailbox (this device sent it, or read it there). */
-export function recordNoted(
-  conversation: Conversation,
-  note: ConversationStateItem,
-): void {
-  const noted = { ...conversation.noted }
-  if (note.clearedBefore !== undefined)
-    noted.clearedBefore = Math.max(
-      noted.clearedBefore ?? -1,
-      note.clearedBefore,
-    )
-  if (note.readUpTo !== undefined)
-    noted.readUpTo = Math.max(noted.readUpTo ?? 0, note.readUpTo)
-  conversation.noted = noted
-  if (
-    note.subject !== undefined &&
-    note.subjectSetAt === (conversation.nameSetAt ?? 0) &&
-    note.subject === (usableSubject(conversation.name) ?? '')
-  )
-    conversation.subjectToNote = undefined
-}
-
-/** The ID of the note stating exactly these facts: the same on every device, so two devices
- * noting the same thing write the same message. */
-export function conversationNoteId(note: ConversationStateItem): Uint8Array {
-  return uuidv5Bytes(
-    new Uint8Array(16),
-    `frank-conversation-state:${note.conversationId}:${
-      note.clearedBefore ?? ''
-    }:${note.readUpTo ?? ''}:${note.subjectSetAt ?? ''}:${note.subject ?? ''}`,
-  )
-}
-
-export type DeliveryLease = { isCancelled: () => boolean }
-
-export type ReceivedDeliveryResult = {
-  suppressedReceipts: RelayReceiptIdentity[]
-  cancelled: boolean
-}
-
-export type OutgoingOutcome =
-  | { state: 'sent'; payloadDigest: string }
-  | { state: 'payment-pending' }
-  | { state: 'failed'; reason: OutgoingFailureReason }
-  | { state: 'needs-confirmation'; reason: OutgoingFailureReason }
-  | { state: 'busy' }
-
 export type OutboundDeliveryMatch = {
   oldIndex: string
   chatAddress: string
@@ -764,7 +474,7 @@ export type OutboundDeliveryMatch = {
   message: Message & { destinationAddress?: string; localTime?: boolean }
 }
 
-const tombstonedTargetsByConversations = new WeakMap<
+export const tombstonedTargetsByConversations = new WeakMap<
   Record<string, Conversation>,
   Set<string>
 >()
@@ -848,365 +558,5 @@ export function walletOwnsMessage(
   return sameCanonicalAddress(
     activeChain.formatAddress(wallet.identity.address),
     message.senderAddress,
-  )
-}
-
-export type RestorableState = {
-  activeConversationId?: string | null
-  conversations?: Record<string, Conversation | undefined>
-  messages?: Record<string, Message | undefined>
-  logicalMessages?: Record<string, LogicalMessageRecord | undefined>
-  lastReceived: number | null
-}
-
-export function earliestMessage(
-  conversation: Conversation,
-): ChatMessage | undefined {
-  let first: ChatMessage | undefined
-  for (const message of conversation.messages) {
-    if (message.outbound && message.status !== 'confirmed') continue
-    if (!first) first = message
-    else if (message.serverTime > first.serverTime) break
-    else if (byRelayTime(message, first) < 0) first = message
-  }
-  return first
-}
-
-export function peerThread(
-  conversations: Record<string, Conversation | undefined>,
-  peer: string,
-): Conversation | undefined {
-  let thread: Conversation | undefined
-  let threadStart: ChatMessage | undefined
-  for (const conversation of Object.values(conversations)) {
-    if (
-      !conversation ||
-      conversation.kind === 'group' ||
-      conversation.kind === 'email' ||
-      !isOpeningConversationId(conversation.id) ||
-      !sameCanonicalAddress(conversation.address, peer)
-    )
-      continue
-    const start = earliestMessage(conversation)
-    if (
-      !start ||
-      !(
-        start.outbound ||
-        sameCanonicalAddress(start.senderAddress, conversation.address)
-      )
-    )
-      continue
-    if (!threadStart || byRelayTime(start, threadStart) < 0) {
-      thread = conversation
-      threadStart = start
-    }
-  }
-  if (thread || !conversationIdSalt.value) return thread
-  const opened = conversations[allocateOpeningConversationIdFor(peer)]
-  return opened && sameCanonicalAddress(opened.address, peer)
-    ? opened
-    : undefined
-}
-
-export function peerThreadId(
-  conversations: Record<string, Conversation | undefined>,
-  peer: string,
-): string {
-  return (
-    peerThread(conversations, peer)?.id ??
-    allocateOpeningConversationIdFor(peer)
-  )
-}
-
-export function defaultChats(
-  conversations: Record<string, Conversation>,
-): Readonly<Record<string, Conversation | undefined>> {
-  const peers = new Set(
-    Object.values(conversations)
-      .filter(c => c.kind !== 'group' && c.address)
-      .map(c => c.address),
-  )
-  return Object.fromEntries(
-    [...peers]
-      .map(peer => [peer, peerThread(conversations, peer)] as const)
-      .filter(([, thread]) => thread !== undefined),
-  )
-}
-
-export function usableSubject(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const subject = value.replace(/[\u202a-\u202e\u2066-\u2069]/g, '').trim()
-  if (
-    subject.length === 0 ||
-    new TextEncoder().encode(subject).length > 512 ||
-    // eslint-disable-next-line no-control-regex
-    /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(subject)
-  )
-    return undefined
-  return subject
-}
-
-export function applyCarriedSubject(
-  conversation: Conversation,
-  message: {
-    outbound: boolean
-    senderAddress: string
-    serverTime: number
-    items?: MessageItem[]
-    conversationName?: string
-  },
-): void {
-  const subject = usableSubject(message.conversationName)
-  if (
-    subject === undefined ||
-    conversation.kind === 'email' ||
-    conversation.kind === 'group' ||
-    message.items?.some(item => item.type === 'email') ||
-    !(
-      message.outbound ||
-      sameCanonicalAddress(message.senderAddress, conversation.address)
-    ) ||
-    !subjectReplaces(conversation, subject, message.serverTime)
-  )
-    return
-  setSubject(conversation, subject, message.serverTime)
-  conversation.nameOnWire = subject
-}
-
-export function subjectReplaces(
-  conversation: Conversation,
-  subject: string | undefined,
-  setAt: number,
-): boolean {
-  const current = conversation.nameSetAt ?? 0
-  if (setAt !== current) return setAt > current
-  return (subject ?? '') >= (usableSubject(conversation.name) ?? '')
-}
-
-export function setSubject(
-  conversation: Conversation,
-  subject: string | undefined,
-  setAt: number,
-): void {
-  if (conversation.name !== subject) {
-    conversation.updatedAt = Date.now()
-    conversation.subjectToNote = undefined
-  }
-  conversation.name = subject
-  conversation.nameSetAt = setAt
-}
-
-export function subjectToCarry(
-  conversation: Conversation | undefined,
-): string | undefined {
-  if (!conversation || conversation.kind === 'email') return undefined
-  const subject = usableSubject(conversation.name)
-  return subject === conversation.nameOnWire ? undefined : subject
-}
-
-export function canonicalConversationId(value: string): string {
-  const hex = value.replace(/-/g, '').toLowerCase()
-  if (!/^[0-9a-f]{32}$/.test(hex))
-    throw new Error('Conversation identity must contain exactly 16 bytes')
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
-    12,
-    16,
-  )}-${hex.slice(16, 20)}-${hex.slice(20)}`
-}
-
-export const conversationIdSalt = shallowRef<Uint8Array | null>(null)
-
-export function hasConversationIdSalt(): boolean {
-  return conversationIdSalt.value !== null
-}
-
-export function setConversationIdSalt(salt?: Uint8Array | null): void {
-  conversationIdSalt.value = salt ? Uint8Array.from(salt) : null
-}
-
-export const replacedConversations = new Map<string, string>()
-
-export function resolveConversation(
-  conversations: Record<string, Conversation | undefined>,
-  id: string,
-): Conversation | undefined {
-  if (Object.prototype.hasOwnProperty.call(conversations, id))
-    return conversations[id]
-  const replacement = replacedConversations.get(id)
-  return replacement === undefined
-    ? undefined
-    : resolveConversation(conversations, replacement)
-}
-
-export function allocateOpeningConversationIdFor(peer: string): string {
-  const salt = conversationIdSalt.value
-  if (!salt)
-    throw new Error(
-      'No conversation-ID salt is installed: a chat can be opened only once the account is active',
-    )
-  return formatConversationId(
-    allocateOpeningConversationId(salt, peer.toLowerCase()),
-  )
-}
-
-export function openAllocatedConversation(
-  conversations: Record<string, Conversation>,
-  peer: string,
-  participants: string[],
-): Conversation {
-  const id = allocateOpeningConversationIdFor(peer)
-  const allocated = conversations[id]
-  if (allocated) {
-    assertConversationPeer(allocated, peer)
-    return allocated
-  }
-  const conversation = newConversation({ id, address: peer, participants })
-  conversations[id] = conversation
-  return conversation
-}
-
-export function freshConversationId(): string {
-  const bytes = randomBytes(16)
-  bytes[6] = (bytes[6] & 15) | 64
-  bytes[8] = (bytes[8] & 63) | 128
-  return canonicalConversationId(
-    Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join(''),
-  )
-}
-
-export function assertConversationPeer(
-  conversation: Conversation,
-  address: string,
-): void {
-  const explicitMember =
-    conversation.address === conversation.id &&
-    conversation.participants.some(p => sameCanonicalAddress(p, address))
-  const groupMember =
-    conversation.kind === 'group' &&
-    conversation.participants.some(p => sameCanonicalAddress(p, address))
-  if (
-    !explicitMember &&
-    !groupMember &&
-    conversation.address !== address &&
-    !sameCanonicalAddress(conversation.address, address)
-  ) {
-    throw new Error(
-      `Conversation ${conversation.id} belongs to a different recipient`,
-    )
-  }
-}
-
-export function addParticipant(
-  conversation: Conversation,
-  address: string,
-  pubKeyHex?: string,
-): void {
-  const member = safeChainDisplayAddress(address) || address
-  if (conversation.participants.some(p => sameCanonicalAddress(p, member)))
-    return
-  conversation.participants = [...conversation.participants, member].sort()
-  conversation.members = {
-    ...conversation.members,
-    [member]: {
-      address: member,
-      role: 'member',
-      joinedAt: Date.now(),
-      pubKeyHex,
-    },
-  }
-}
-
-export function newConversation({
-  id,
-  participants,
-  address,
-  ...metadata
-}: Partial<Conversation> & {
-  id: string
-  participants: string[]
-  address: string
-}): Conversation {
-  const normalized = Array.from(
-    new Set(participants.map(p => safeChainDisplayAddress(p) || p)),
-  ).sort()
-  return {
-    ...defaultContactObject,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    ...metadata,
-    id: canonicalConversationId(id),
-    address: safeChainDisplayAddress(address) || address,
-    participants: normalized,
-    members:
-      metadata.members ??
-      Object.fromEntries(
-        normalized.map(p => [p, { address: p, role: 'member' as const }]),
-      ),
-    messages: [],
-  }
-}
-
-export function openDefaultConversation(
-  conversations: Record<string, Conversation>,
-  address: string,
-  participants: string[],
-): Conversation {
-  const peer = toChainDisplayAddress(address)
-  const members = Array.from(
-    new Set(participants.map(toChainDisplayAddress)),
-  ).sort()
-  if (members.length > 2 || !members.includes(peer)) {
-    throw new Error(
-      'Default direct conversation requires the explicit recipient and at most one other participant',
-    )
-  }
-  const existing = peerThread(conversations, peer)
-  if (existing) {
-    if (
-      members.length === 2 &&
-      existing.participants.length === 2 &&
-      makeParticipantsKey(existing.participants) !==
-        makeParticipantsKey(members)
-    ) {
-      throw new Error(`Conversation ${existing.id} has different participants`)
-    }
-    if (existing.participants.length === 1 && members.length === 2) {
-      existing.participants = members
-      existing.members = Object.fromEntries(
-        members.map(member => [
-          member,
-          existing.members?.[member] ?? {
-            address: member,
-            role: 'member' as const,
-          },
-        ]),
-      )
-    }
-    reopenConversation(existing)
-    return existing
-  }
-  const opened = openAllocatedConversation(conversations, peer, participants)
-  reopenConversation(opened)
-  return opened
-}
-
-export function isInternalMessage(items: unknown): boolean {
-  return (
-    Array.isArray(items) &&
-    items.length > 0 &&
-    items.every(
-      item =>
-        item !== null &&
-        typeof item === 'object' &&
-        !Array.isArray(item) &&
-        (item.type === 'swap-record' ||
-          item.type === 'wallet-sync' ||
-          item.type === 'received-coin' ||
-          item.type === 'conversation-state' ||
-          item.type === 'message-tombstone' ||
-          item.type === 'journal-checkpoint' ||
-          item.type === 'outbox-message' ||
-          item.type === 'payment-transfer'),
-    )
   )
 }

@@ -29,7 +29,7 @@ import {
   LevelCanonicalStampAttemptJournal,
   type CanonicalPreparedAttempt,
 } from '../storage/stamp-attempt-journal'
-import { CanonicalWalletBindingMismatchError } from '../storage/monad-wallet-bundle'
+import { CanonicalWalletBindingMismatchError } from '../storage/evm-wallet-bundle'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import vectors from '../../domain-roots/vectors/domain-roots-v1.json'
@@ -1567,18 +1567,24 @@ test('a funded key-only imported account cannot become native custody authority'
   )) as EvmChainWalletHandle
   try {
     const stranger = new Wallet('0x' + '67'.repeat(32))
-    const coin = wallet.accountUtxoPool!.registerSubAccount({
-      chain: 'monad',
-      address: stranger.address,
-      privateKey: stranger.privateKey,
-      balanceWei: 100000n,
-    })
+    expect(() =>
+      wallet.spendPool!.resolveSource({
+        kind: 'coin',
+        address: stranger.address.toLowerCase(),
+      }),
+    ).toThrow('Native source is not a coin of this wallet')
+    expect(() =>
+      wallet.spendPool!.resolveSource({
+        kind: 'spend',
+        address: stranger.address.toLowerCase(),
+        index: 0,
+      }),
+    ).toThrow('Native custody source address mismatch')
     const rpc = mockNativeRpc(wallet, { [stranger.address]: 100000n })
     await expect(
       wallet.sendNative({ recipient: { raw: expected[1].main }, value: 1000n }),
-    ).rejects.toThrow('no recoverable custody reference')
+    ).rejects.toThrow('Insufficient')
     expect(rpc.broadcast).not.toHaveBeenCalled()
-    expect(wallet.accountUtxoPool!.getCoin(coin.id)?.balanceWei).toBe(100000n)
     expect(wallet.getNativeOperations!()).toEqual([])
   } finally {
     await wallet.close()
@@ -1634,12 +1640,12 @@ afterEach(async () => {
  * so the legacy send selects it as its single source and the mocked RPC includes it in-call. */
 async function sendLegacyFromProductionFundedPoolRow(dir: string) {
   const bundleModule = jest.requireActual(
-    '../storage/monad-wallet-bundle',
-  ) as typeof import('../storage/monad-wallet-bundle')
-  const originalOpen = bundleModule.openExistingPoolMonadTopicOwner
+    '../storage/evm-wallet-bundle',
+  ) as typeof import('../storage/evm-wallet-bundle')
+  const originalOpen = bundleModule.openExistingPoolEvmWalletBundle
   const opened: Array<Awaited<ReturnType<typeof originalOpen>>> = []
   jest
-    .spyOn(bundleModule, 'openExistingPoolMonadTopicOwner')
+    .spyOn(bundleModule, 'openExistingPoolEvmWalletBundle')
     .mockImplementation(async params => {
       const result = await originalOpen(params)
       opened.push(result)
@@ -1953,12 +1959,12 @@ test('a pool-sourced legacy send whose transfer is included resolves, with the r
  * yet. `open` reopens the same storage and carries the simulated chain across. */
 async function composedWithProductionFundedPoolRow(dir: string) {
   const bundleModule = jest.requireActual(
-    '../storage/monad-wallet-bundle',
-  ) as typeof import('../storage/monad-wallet-bundle')
-  const originalOpen = bundleModule.openExistingPoolMonadTopicOwner
+    '../storage/evm-wallet-bundle',
+  ) as typeof import('../storage/evm-wallet-bundle')
+  const originalOpen = bundleModule.openExistingPoolEvmWalletBundle
   const opened: Array<Awaited<ReturnType<typeof originalOpen>>> = []
   jest
-    .spyOn(bundleModule, 'openExistingPoolMonadTopicOwner')
+    .spyOn(bundleModule, 'openExistingPoolEvmWalletBundle')
     .mockImplementation(async params => {
       const result = await originalOpen(params)
       opened.push(result)
@@ -2519,8 +2525,8 @@ describe('recording a native spend from the journal under the input admission (#
   // applier, and must keep passing now that the composed wallet has one.
   test('guard: a pool from openMonadWalletBundle has no applier and still refuses a complete item', async () => {
     const bundleModule = jest.requireActual(
-      '../storage/monad-wallet-bundle',
-    ) as typeof import('../storage/monad-wallet-bundle')
+      '../storage/evm-wallet-bundle',
+    ) as typeof import('../storage/evm-wallet-bundle')
     const mnemonic = 'test test test test test test test test test test test junk'
     const bundle = await bundleModule.openMonadWalletBundle({
       location: join(dir, 'bot'),
@@ -2582,12 +2588,12 @@ async function nativeSendFromProductionFundedPoolRow(
   window: 'pending' | 'included',
 ) {
   const bundleModule = jest.requireActual(
-    '../storage/monad-wallet-bundle',
-  ) as typeof import('../storage/monad-wallet-bundle')
-  const originalOpen = bundleModule.openExistingPoolMonadTopicOwner
+    '../storage/evm-wallet-bundle',
+  ) as typeof import('../storage/evm-wallet-bundle')
+  const originalOpen = bundleModule.openExistingPoolEvmWalletBundle
   const opened: Array<Awaited<ReturnType<typeof originalOpen>>> = []
   jest
-    .spyOn(bundleModule, 'openExistingPoolMonadTopicOwner')
+    .spyOn(bundleModule, 'openExistingPoolEvmWalletBundle')
     .mockImplementation(async params => {
       const result = await originalOpen(params)
       opened.push(result)
@@ -2939,12 +2945,12 @@ test('close drains an admitted plan that has not reached signing yet', async () 
 
 test('conflicting recovered owners remain read-only, and reopening builds and submits nothing', async () => {
   const bundleModule = jest.requireActual(
-    '../storage/monad-wallet-bundle',
-  ) as typeof import('../storage/monad-wallet-bundle')
-  const originalOpen = bundleModule.openExistingPoolMonadTopicOwner
+    '../storage/evm-wallet-bundle',
+  ) as typeof import('../storage/evm-wallet-bundle')
+  const originalOpen = bundleModule.openExistingPoolEvmWalletBundle
   let lastBundle: Awaited<ReturnType<typeof originalOpen>> | undefined
   jest
-    .spyOn(bundleModule, 'openExistingPoolMonadTopicOwner')
+    .spyOn(bundleModule, 'openExistingPoolEvmWalletBundle')
     .mockImplementation(async params => {
       const result = await originalOpen(params)
       lastBundle = result

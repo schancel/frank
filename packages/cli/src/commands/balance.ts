@@ -3,7 +3,7 @@ import { formatEther, getAddress, getBytes, JsonRpcProvider } from 'ethers'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { sweepRecoveredMonadStampPayment } from '@frank/wallet/monad-stamp-client'
 import { deriveMonadStampChildPrivate } from '@frank/wallet/monad-stamp-stealth'
-import { openMonadWalletBundle } from '@frank/wallet/storage/monad-wallet-bundle'
+import { openMonadWalletBundle } from '@frank/wallet/storage/evm-wallet-bundle'
 import { LevelStampPaymentJournal } from '@frank/wallet/storage/stamp-payment-journal'
 
 import { loadConfig, loadIdentity, resolveDataDir } from '../config'

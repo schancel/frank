@@ -10,12 +10,13 @@ import type { TopicOperationJournal } from "./storage/topic-operation-journal";
 import type {
   MonadWalletPersistenceBundle,
   MonadWalletOperationAdmission,
-} from "./storage/monad-wallet-bundle";
+} from "./storage/evm-wallet-bundle";
 import type { MonadCanonicalRoleOwner } from "./monad-wallet-material";
 import type { StealthItem } from "@frank/cashweb/types/messages";
 import type { MonadIdentity } from "./monad-identity";
 import type { AccountHygieneEngine } from "./account-hygiene";
 import type { ChainUtxoPool } from "./chain-utxo-pool";
+import type { EvmSpendPool } from "./evm-spend-pool";
 import type { WalletHandle, NativeWalletHandle } from "./chain/active-chain";
 
 export interface EvmWalletHandle {
@@ -27,20 +28,17 @@ export interface EvmWalletHandle {
   walletOperationAdmission?: MonadWalletOperationAdmission;
   /** Autonomous account hygiene and lazy dirty sweeper (Ticket #925). Encapsulated beneath the wallet API. */
   hygieneEngine?: AccountHygieneEngine<string>;
-  /** Unified in-memory UTXO and spendable account pool (Issue #1184). */
-  accountUtxoPool?: ChainUtxoPool;
-  chainUtxoPool?: ChainUtxoPool;
+  /** Per-wallet unified spend pool over all owned account origins on this chain. */
+  spendPool?: EvmSpendPool;
   /** Invalidate in-memory cached balances across primary and stealth accounts. */
   invalidateBalanceCache?(networkTag?: string): void;
-  /** @deprecated Use `accountUtxoPool` instead. */
   pool: MonadSubAccountPool;
   leaseManager: SubAccountLeaseManager;
   provider: Provider;
   httpClient: MonadTxSubmitter;
   /** HD change branch used to recover the unused balance from confirmed, single-use payment
    * accounts. Optional for narrow tests and external callers that have not wired persistence yet;
-   * `MonadChain.createWallet` always supplies it from the same seed as `pool`.
-   * @deprecated Use `accountUtxoPool` instead. */
+   * `MonadChain.createWallet` always supplies it from the same seed as `pool`. */
   changePool?: MonadChangePool;
   /** Durable public journal of recipient-owned one-time stamp outputs and their sweep state. */
   stampPaymentJournal?: StampPaymentJournal;

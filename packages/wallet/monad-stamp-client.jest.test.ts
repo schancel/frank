@@ -293,7 +293,7 @@ import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
 import {
   openExistingPoolMonadTopicOwner,
   MonadWalletOperationAdmission,
-} from './storage/monad-wallet-bundle'
+} from './storage/evm-wallet-bundle'
 import { LevelSubAccountPoolStore } from './storage/level-sub-account-pool-store'
 import { LevelChangePoolStore } from './storage/level-change-pool-store'
 import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'

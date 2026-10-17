@@ -44,7 +44,7 @@ import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { DirectMessagePreparationProgress } from './active-chain'
 import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
-import type { MonadWalletPersistenceBundle } from '../storage/monad-wallet-bundle'
+import type { MonadWalletPersistenceBundle } from '../storage/evm-wallet-bundle'
 import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
 import {
   InMemoryNativeTransactionAttemptStore,
@@ -1045,12 +1045,12 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
    * transaction. `included`: it is mined and observed only by a fee estimate. */
   async function reserved(window: 'pending' | 'included') {
     const bundleModule = jest.requireActual(
-      '../storage/monad-wallet-bundle',
-    ) as typeof import('../storage/monad-wallet-bundle')
-    const originalOpen = bundleModule.openExistingPoolMonadTopicOwner
+      '../storage/evm-wallet-bundle',
+    ) as typeof import('../storage/evm-wallet-bundle')
+    const originalOpen = bundleModule.openExistingPoolEvmWalletBundle
     let bundle!: MonadWalletPersistenceBundle
     jest
-      .spyOn(bundleModule, 'openExistingPoolMonadTopicOwner')
+      .spyOn(bundleModule, 'openExistingPoolEvmWalletBundle')
       .mockImplementation(async params => {
         bundle = await originalOpen(params)
         return bundle

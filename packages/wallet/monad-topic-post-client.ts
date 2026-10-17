@@ -14,7 +14,7 @@ import type { MonadAccountTxSigner, MonadTxOverrides, SignedMonadTx } from './mo
 import type { AcquireLeaseWhenAvailableOptions } from './monad-account-lease'
 import type { EvmWalletHandle } from "./evm-wallet-handle";
 import type { MonadIdentity } from './monad-identity'
-import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
+import type { MonadWalletOperationAdmission } from './storage/evm-wallet-bundle'
 import {
   assertForumAmount,
   requireForumWallet,

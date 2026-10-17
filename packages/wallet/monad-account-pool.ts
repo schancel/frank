@@ -81,12 +81,11 @@ import {
   SubAccountTransactionCheckpoint,
   TerminalSubAccountCheckpoint,
 } from "./storage/sub-account-pool-storage";
-import type { MonadWalletOperationAdmission } from "./storage/monad-wallet-bundle";
+import type { MonadWalletOperationAdmission } from "./storage/evm-wallet-bundle";
 import {
   selectStampAccounts,
   type SelectedStampAccount,
 } from "./monad-stamp-account-selection";
-import type { ChainUtxoPool } from "./chain-utxo-pool";
 
 export type {
   SubAccountPoolStore,
@@ -276,54 +275,6 @@ export class MonadSubAccountPool {
   private readonly accountGenerations = new Map<string, number>();
   private readonly accountWaiters = new Map<string, Array<() => void>>();
   private spendApplier?: SubAccountSpendApplier;
-  accountUtxoPool?: ChainUtxoPool;
-
-  setAccountUtxoPool(pool: ChainUtxoPool): void {
-    this.accountUtxoPool = pool;
-  }
-
-  private syncUtxo(index: number, status: SubAccountStatus, balanceWei?: bigint): void {
-    if (!this.accountUtxoPool) return;
-    const derived = this.keyring.deriveSubAccount(index);
-    const utxos = this.accountUtxoPool.getCoinsByAddress(derived.address, "monad");
-    if (utxos.length === 0) {
-      this.accountUtxoPool.registerSubAccount({
-        chain: "monad",
-        address: derived.address,
-        privateKey: derived.privateKey,
-        balanceWei: balanceWei ?? 0n,
-        derivationPath: this.keyring.subAccountPath(index),
-        index,
-      });
-      const registered = this.accountUtxoPool.getCoinsByAddress(derived.address, "monad")[0];
-      if (registered) {
-        if (status === "spent" || status === "retired") {
-          this.accountUtxoPool.markSpent(registered.id);
-        } else if (status === "in-use" || status === "funding") {
-          this.accountUtxoPool.markPending(registered.id);
-        }
-      }
-      return;
-    }
-    const coin = utxos[0];
-    if (balanceWei !== undefined) {
-      coin.balanceWei = balanceWei;
-    }
-    if (status === "spent" || status === "retired") {
-      if (coin.status !== "spent") {
-        this.accountUtxoPool.markSpent(coin.id);
-      }
-    } else if (status === "in-use" || status === "funding") {
-      if (coin.status === "clean") {
-        this.accountUtxoPool.markPending(coin.id);
-      }
-    } else if (status === "available") {
-      if (coin.status === "pending") {
-        this.accountUtxoPool.releasePending(coin.id);
-      }
-    }
-  }
-
   private mainAccountAddress?: string;
 
   constructor(params: {
@@ -713,7 +664,6 @@ export class MonadSubAccountPool {
     const { fundingAttempt: _fundingAttempt, ...base } = existing;
     const updated: SubAccountRecord = { ...base, status };
     this.store.put(updated);
-    this.syncUtxo(index, status);
     return updated;
   }
 
@@ -789,7 +739,6 @@ export class MonadSubAccountPool {
       this.store.put(classified.candidate);
       this.capacityCache.delete(index);
     }
-    if (classified.outcome !== "no-row") this.syncUtxo(index, "spent");
     return classified.outcome;
   }
 
@@ -1352,13 +1301,6 @@ export class MonadSubAccountPool {
       params.gasReserveWei,
       { holder, fromBalance: holder !== undefined }
     );
-    for (const account of accounts) {
-      this.syncUtxo(
-        account.index,
-        "available",
-        account.capacityWei + params.gasReserveWei
-      );
-    }
     let taken = claimed();
     let selection =
       holder !== undefined
@@ -1520,11 +1462,6 @@ export class MonadSubAccountPool {
             txHash: signedTx.txHash,
           }),
       });
-      this.syncUtxo(
-        target.index,
-        "available",
-        paymentCapacityWei + params.gasReserveWei
-      );
       fundingTxHashes.push(result.txHash);
       params.onProgress?.({
         stage: "funding",
@@ -1868,7 +1805,6 @@ export class MonadSubAccountPool {
         checkedAtMs: Date.now(),
         balanceWei: totalFunded,
       });
-      this.syncUtxo(target.index, "available", totalFunded);
       params.onProgress?.({ stage: "ready", fundingTxHashes });
       return { index: target.index, fundingTxHashes };
     }
@@ -2297,7 +2233,6 @@ export class MonadSubAccountPool {
       checkedAtMs: Date.now(),
       balanceWei: fundedValue,
     });
-    this.syncUtxo(params.target.index, "available", fundedValue);
     return {
       index: params.target.index,
       address: params.target.address,

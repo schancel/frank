@@ -5,7 +5,7 @@ import type { TopicVoteDirection } from './monad-topic-post-client'
 import type { AcquireLeaseWhenAvailableOptions } from './monad-account-lease'
 import type { MonadTxOverrides } from './monad-account-tx'
 import type { EvmWalletHandle } from "./evm-wallet-handle";
-import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
+import type { MonadWalletOperationAdmission } from './storage/evm-wallet-bundle'
 import {
   assertForumAmount,
   requireForumWallet,

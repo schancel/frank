@@ -746,15 +746,7 @@ describe("createEvmChain: nativeTransfers", () => {
       const wallet = makeWallet(
         MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
       );
-      const pool = new ChainUtxoPool();
       const stranger = Wallet.createRandom();
-      const coin = pool.registerSubAccount({
-        chain: "monad",
-        address: stranger.address,
-        privateKey: stranger.privateKey,
-        balanceWei: 10n ** 18n
-      });
-      wallet.accountUtxoPool = pool;
       const getBalance = jest.fn();
       wallet.provider = {
         getBalance
@@ -770,7 +762,6 @@ describe("createEvmChain: nativeTransfers", () => {
           : chain.nativeTransfers.sendLegacy!(params)
       ).rejects.toThrow("durable native-operation owner");
       expect(getBalance).not.toHaveBeenCalled();
-      expect(pool.getCoin(coin.id)?.balanceWei).toBe(10n ** 18n);
     }
   );
 });

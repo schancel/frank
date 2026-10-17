@@ -13,7 +13,7 @@ import {
   toHex,
   verifyTopicPostAuthor,
 } from '@frank/codec'
-import { createInMemoryMonadWalletBundle } from './storage/monad-wallet-bundle'
+import { createInMemoryMonadWalletBundle } from './storage/evm-wallet-bundle'
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadIdentity } from './monad-identity'
 import type { EvmWalletHandle } from "./evm-wallet-handle";

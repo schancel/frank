@@ -7,7 +7,7 @@ import {
   quoteMonadTopicBurnGasReserve,
 } from '@frank/wallet/monad-topic-post-client'
 import { fetchMonadTopicPostsSince } from '@frank/wallet/monad-topic-tally-client'
-import { openMonadWalletBundle } from '@frank/wallet/storage/monad-wallet-bundle'
+import { openMonadWalletBundle } from '@frank/wallet/storage/evm-wallet-bundle'
 import { InMemoryStampAttemptJournal } from '@frank/wallet/storage/stamp-attempt-journal'
 import { InMemoryStampPaymentJournal } from '@frank/wallet/storage/stamp-payment-journal'
 

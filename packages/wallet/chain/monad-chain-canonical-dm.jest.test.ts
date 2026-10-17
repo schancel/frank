@@ -2755,7 +2755,11 @@ describe('two typed wallets on the open directory', () => {
         ...template,
         context: sealed.context,
         delivery: encodeFrame(
-          { typeId: 10, schemaVersion: 2, minReaderVersion: 1 },
+          {
+            typeId: parsed.typeId,
+            schemaVersion: parsed.schemaVersion,
+            minReaderVersion: parsed.minReaderVersion,
+          },
           new Map(parsed.payload)
             .set(2n, sealed.payload)
             .set(3n, digest)
@@ -4251,11 +4255,11 @@ describe('a stamp account a native send spends from (#1235)', () => {
     mockFunded.length = 0
     bundles = []
     const bundleModule = jest.requireActual(
-      '../storage/monad-wallet-bundle',
-    ) as typeof import('../storage/monad-wallet-bundle')
-    const originalOpen = bundleModule.openExistingPoolMonadTopicOwner
+      '../storage/evm-wallet-bundle',
+    ) as typeof import('../storage/evm-wallet-bundle')
+    const originalOpen = bundleModule.openExistingPoolEvmWalletBundle
     jest
-      .spyOn(bundleModule, 'openExistingPoolMonadTopicOwner')
+      .spyOn(bundleModule, 'openExistingPoolEvmWalletBundle')
       .mockImplementation(async params => {
         const bundle = await originalOpen(params)
         bundles.push(bundle as never)

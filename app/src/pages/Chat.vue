@@ -349,7 +349,7 @@ import {
   approveScreenerConversation,
   dismissScreenerConversation,
   formatScreenerStampValue,
-  getConversationStampValueWei,
+  getPendingScreenerStampValueWei,
   isScreenerConversation,
   type FormattedScreenerStamp,
 } from '../utils/screener-triage'
@@ -1603,7 +1603,7 @@ export default defineComponent({
     },
     screenerStampSummary(): FormattedScreenerStamp {
       const totalWei = this.conversation
-        ? getConversationStampValueWei(this.conversation)
+        ? getPendingScreenerStampValueWei(this.conversation)
         : 0n
       return formatScreenerStampValue(
         totalWei,

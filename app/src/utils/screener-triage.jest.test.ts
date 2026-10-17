@@ -4,6 +4,7 @@ import {
   formatScreenerStampValue,
   getConversationStampValueWei,
   getMessageStampValueWei,
+  getPendingScreenerStampValueWei,
   getScreenerSenderAddress,
   getScreenerSenderLabel,
   isScreenerConversation,
@@ -166,7 +167,7 @@ describe('screener-triage ("The Tollbooth")', () => {
       ).toBe(false)
     })
 
-    it('excludes conversations that already have outbound replies', () => {
+    it('excludes conversations that already have outbound replies with no newer inbound messages', () => {
       const repliedConv = makeConversation({
         messages: [
           makeMessage({
@@ -183,6 +184,37 @@ describe('screener-triage ("The Tollbooth")', () => {
       })
 
       expect(isScreenerConversation(repliedConv, () => false)).toBe(false)
+      expect(getPendingScreenerStampValueWei(repliedConv)).toBe(0n)
+    })
+
+    it('re-admits non-contact conversations when a new stamped inbound message arrives after an outbound reply (#1696)', () => {
+      const followUpConv = makeConversation({
+        messages: [
+          makeMessage({
+            payloadDigest: 'in-1',
+            outbound: false,
+            stampValueWei: 100_000_000n,
+          }),
+          makeMessage({
+            payloadDigest: 'out-1',
+            outbound: true,
+            stampValueWei: 0n,
+          }),
+          makeMessage({
+            payloadDigest: 'in-2',
+            outbound: false,
+            stampValueWei: 250_000_000n,
+          }),
+        ],
+      })
+
+      expect(getConversationStampValueWei(followUpConv)).toBe(350_000_000n)
+      expect(getPendingScreenerStampValueWei(followUpConv)).toBe(250_000_000n)
+      expect(isScreenerConversation(followUpConv, () => false)).toBe(true)
+
+      const summary = summarizeScreenerQueue([followUpConv], () => false, 2.0)
+      expect(summary.count).toBe(1)
+      expect(summary.totalValueWei).toBe(250_000_000n)
     })
 
     it('excludes zero-stamp, approved, dismissed, or deleted conversations', () => {

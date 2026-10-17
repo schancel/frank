@@ -1034,23 +1034,30 @@ describe('a payment to a contact', () => {
     const page = mailbox.fetchCanonicalInboxPage as jest.Mock
     const whole = page.getMockImplementation()!
     // A relay that always has another page.
-    page.mockImplementation(async () => ({ records: [], nextCursor: 'more' }))
+    let pageCursor = 0
+    page.mockImplementation(async () => ({
+      records: [],
+      nextCursor: `more-${++pageCursor}`,
+    }))
     let truncated = 0
     const before = page.mock.calls.length
-    expect(
-      await f.chain.directMessages.fetchSince({
-        wallet: bob,
-        sinceMs: 0,
-        onTruncated: () => truncated++,
-      }),
-    ).toEqual([])
-    expect(page.mock.calls.length - before).toBe(8)
-    expect(truncated).toBe(1)
-    expect(coinsOf(bob)).toEqual([])
+    try {
+      await expect(
+        f.chain.directMessages.fetchSince({
+          wallet: bob,
+          sinceMs: 0,
+          onTruncated: () => truncated++,
+        }),
+      ).rejects.toThrow('Canonical mailbox read has no complete timestamp prefix')
+      expect(page.mock.calls.length - before).toBe(8)
+      expect(truncated).toBe(1)
+      expect(coinsOf(bob)).toEqual([])
+    } finally {
+      page.mockImplementation(whole)
+    }
 
     // The relay answers in full again, and the host's cursor has moved past the message: the
     // coin list still reads the part it never finished, and finds the money.
-    page.mockImplementation(whole)
     await f.chain.directMessages.fetchSince({
       wallet: bob,
       sinceMs: bobMailbox[0].timestampMs + 1_000,

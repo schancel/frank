@@ -254,11 +254,14 @@ export default defineComponent({
         ? 'pending'
         : status
     },
-    /** What arrived, as the chain showed it, once the wallet has seen it. */
+    /** What arrived, as the chain showed it, once the wallet has seen any positive amount. */
     arrivedWei(): bigint | undefined {
-      return this.walletStatus === 'received'
-        ? this.payment?.receivedAmountWei
-        : undefined
+      if (this.outbound) return undefined
+      const received = this.payment?.receivedAmountWei
+      if (received !== undefined && received > 0n) {
+        return received
+      }
+      return this.walletStatus === 'received' ? received : undefined
     },
     /** Received: the amount the chain showed. Otherwise: what the sender stated. */
     displayAmount(): string {

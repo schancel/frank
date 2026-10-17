@@ -96,6 +96,37 @@ export interface PeerStampMetrics {
   receivedCount: number;
 }
 
+export interface StampHistoryPaymentEntry {
+  valueWei?: bigint | string | number;
+  receivedValueWei?: bigint | string | number;
+  status?: "pending" | "received" | "not-received" | "failed";
+}
+
+export interface StampHistoryMessage {
+  outbound: boolean;
+  stampValueWei?: bigint;
+  verifiedStampValueWei?: bigint | string | number;
+  stampPaymentStatus?:
+    | "none"
+    | "pending"
+    | "received"
+    | "not-received"
+    | "failed";
+  stampPayments?: ReadonlyArray<StampHistoryPaymentEntry>;
+  outpoints?: Array<{ value?: number | string | bigint }>;
+  status?: string;
+}
+
+function parseNonNegativeWei(value: bigint | string | number | undefined): bigint {
+  if (value === undefined) return 0n;
+  try {
+    const parsed = typeof value === "bigint" ? value : BigInt(value);
+    return parsed > 0n ? parsed : 0n;
+  } catch {
+    return 0n;
+  }
+}
+
 /**
  * Extracts stamp value in wei (or base unit) from a message object.
  */
@@ -119,15 +150,47 @@ export function getMessageStampWei(msg: {
 }
 
 /**
+ * Extracts only the verified on-chain received stamp value for an inbound message (#1249).
+ * Unverified, pending, failed, or shortfall promised stamp values do not count toward
+ * the upward suggestion cap (`netReceivedWei` / `lastReceivedWei`).
+ */
+export function getVerifiedReceivedMessageStampWei(
+  msg: StampHistoryMessage
+): bigint {
+  if (msg.verifiedStampValueWei !== undefined) {
+    return parseNonNegativeWei(msg.verifiedStampValueWei);
+  }
+  if (
+    Array.isArray(msg.stampPayments) &&
+    msg.stampPayments.some(
+      (p) => p?.status !== undefined || p?.receivedValueWei !== undefined
+    )
+  ) {
+    let verifiedSum = 0n;
+    for (const p of msg.stampPayments) {
+      if (!p) continue;
+      if (p.status === "received") {
+        verifiedSum += parseNonNegativeWei(p.receivedValueWei ?? p.valueWei);
+      } else if (p.status === undefined && p.receivedValueWei !== undefined) {
+        verifiedSum += parseNonNegativeWei(p.receivedValueWei);
+      }
+    }
+    return verifiedSum;
+  }
+  if (
+    msg.stampPaymentStatus !== undefined &&
+    msg.stampPaymentStatus !== "received"
+  ) {
+    return 0n;
+  }
+  return getMessageStampWei(msg);
+}
+
+/**
  * Derives stamp metrics (last sent, last received, net balance) for a conversation.
  */
 export function derivePeerStampMetrics(
-  messages: Array<{
-    outbound: boolean;
-    stampValueWei?: bigint;
-    outpoints?: Array<{ value?: number | string | bigint }>;
-    status?: string;
-  }>
+  messages: ReadonlyArray<StampHistoryMessage>
 ): PeerStampMetrics {
   let lastSentWei: bigint | undefined;
   let lastReceivedWei: bigint | undefined;
@@ -140,7 +203,9 @@ export function derivePeerStampMetrics(
     if (msg.status === "error") {
       continue;
     }
-    const stamp = getMessageStampWei(msg);
+    const stamp = msg.outbound
+      ? getMessageStampWei(msg)
+      : getVerifiedReceivedMessageStampWei(msg);
     if (stamp <= 0n) {
       continue;
     }

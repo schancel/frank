@@ -51,6 +51,10 @@ export interface EvmCoin {
   readonly claimedAmountWei: string
   /** The transfers the message carried for this coin: a signed raw transaction or a hash, hex. */
   readonly transactions: readonly string[]
+  /** Member transaction hashes confirmed included with positive value on-chain for a multi-tx set. */
+  readonly settledTransactions?: readonly string[]
+  /** Member transaction hashes confirmed failed/reverted on-chain for a multi-tx set. */
+  readonly failedTransactions?: readonly string[]
   /** The message the coin came from (its payload digest, bare lower-case hex), when known. */
   readonly payloadDigest?: string
   /** A stealth coin: the sender's ephemeral public key, bare lower-case hex. */
@@ -794,6 +798,7 @@ export interface EvmNativePaymentSet {
 function validateNativePaymentSet(
   address: string,
   payment: EvmNativePaymentSet,
+  options?: { allowClaimedMismatch?: boolean },
 ) {
   const chain = Object.prototype.hasOwnProperty.call(
     PROTOCOL_CHAINS,
@@ -832,7 +837,7 @@ function validateNativePaymentSet(
     value += tx.value
     return tx.serialized.slice(2).toLowerCase()
   })
-  if (value !== payment.amountWei)
+  if (!options?.allowClaimedMismatch && value !== payment.amountWei)
     throw new Error('Native transaction set does not match the claimed amount')
   if (!/^[0-9a-fA-F]{64}$/.test(payment.payloadDigest))
     throw new Error('Invalid native payment digest')
@@ -907,7 +912,9 @@ export async function refreshStoredEvmNativePaymentSet(
   allFailed: boolean
 }> {
   const payment = { ...input, rawTransactions: [...input.rawTransactions] }
-  const { key, raws, digest } = validateNativePaymentSet(address, payment)
+  const { key, raws, digest } = validateNativePaymentSet(address, payment, {
+    allowClaimedMismatch: true,
+  })
   if (raws.length < 2 || !Number.isFinite(atMs) || atMs < 0)
     throw new Error('Invalid native payment set observation')
   const captured = store.get(key)
@@ -922,6 +929,8 @@ export async function refreshStoredEvmNativePaymentSet(
       coin.receivedAmountWei,
       coin.checkedAtMs,
       coin.transferSeen,
+      coin.settledTransactions,
+      coin.failedTransactions,
     ])
   const basis = nativeBasis(captured)
   const observation = await read(
@@ -938,15 +947,24 @@ export async function refreshStoredEvmNativePaymentSet(
   let received = 0n,
     known = 0,
     failures = 0
+  const settledTransactions: string[] = []
+  const failedTransactions: string[] = []
   for (let i = 0; i < raws.length; i++) {
     const value = observation.receivedAmountsWei[i]
     if (value === undefined) continue
-    if (value !== 0n && value !== Transaction.from('0x' + raws[i]!).value)
+    const tx = Transaction.from('0x' + raws[i]!)
+    if (value !== 0n && value !== tx.value)
       throw new Error(
         'Native payment member evidence differs from signed value',
       )
     known++
-    if (value === 0n) failures++
+    const txHash = tx.hash!.replace(/^0x/, '').toLowerCase()
+    if (value === 0n) {
+      failures++
+      failedTransactions.push(txHash)
+    } else {
+      settledTransactions.push(txHash)
+    }
     received += value
   }
   const complete = known === raws.length,
@@ -971,6 +989,8 @@ export async function refreshStoredEvmNativePaymentSet(
         atMs,
       }),
       receivedAmountWei: received.toString(),
+      settledTransactions,
+      failedTransactions,
     }
   })
   return {
@@ -1187,6 +1207,14 @@ export interface ReceivedPayment {
   readonly receivedAmountWei?: bigint
   /** What the sender's message said. Never a balance. */
   readonly claimedAmountWei: bigint
+  /** True when some verified value arrived on-chain, but less than the intended claimed amount or with remaining unsettled member transactions. */
+  readonly partial?: boolean
+  /** Recorded transaction membership (signed raw transactions or hashes, bare lower-case hex). */
+  readonly transactions?: readonly string[]
+  /** Member transaction hashes confirmed included with positive value on-chain. */
+  readonly settledTransactions?: readonly string[]
+  /** Member transaction hashes confirmed failed/reverted on-chain. */
+  readonly failedTransactions?: readonly string[]
   readonly spendable: boolean
   readonly payloadDigest?: string
   /** A stealth payment: the ephemeral key of the item it came from, bare lower-case hex. */
@@ -1198,19 +1226,50 @@ export function receivedPaymentOf(
   coin: EvmCoin,
   nowMs: number = Date.now(),
 ): ReceivedPayment {
-  const status: ReceivedPaymentStatus =
-    coin.state === 'failed'
-      ? 'failed'
-      : // Received means an amount the chain showed arriving, and nothing less.
-      coin.state !== 'pending' &&
-        coin.receivedAmountWei !== undefined &&
-        BigInt(coin.receivedAmountWei) > 0n
-      ? 'received'
-      : coin.checkedAtMs === undefined ||
-        coin.transferSeen === true ||
-        nowMs - coin.discoveredAtMs < PAYMENT_NOT_RECEIVED_AFTER_MS
-      ? 'pending'
-      : 'not-received'
+  const receivedVal =
+    coin.receivedAmountWei !== undefined ? BigInt(coin.receivedAmountWei) : 0n
+  const claimedVal = BigInt(coin.claimedAmountWei)
+  const hasMemberTracking =
+    coin.transactions.length > 1 &&
+    (coin.settledTransactions !== undefined ||
+      coin.failedTransactions !== undefined)
+  const settledCount = coin.settledTransactions?.length ?? 0
+  const failedCount = coin.failedTransactions?.length ?? 0
+
+  let status: ReceivedPaymentStatus
+  if (hasMemberTracking) {
+    if (settledCount === coin.transactions.length && receivedVal > 0n) {
+      status = 'received'
+    } else if (failedCount > 0) {
+      status = 'failed'
+    } else if (
+      coin.checkedAtMs === undefined ||
+      coin.transferSeen === true ||
+      nowMs - coin.discoveredAtMs < PAYMENT_NOT_RECEIVED_AFTER_MS
+    ) {
+      status = 'pending'
+    } else {
+      status = 'not-received'
+    }
+  } else {
+    status =
+      coin.state === 'failed'
+        ? 'failed'
+        : // Received means an amount the chain showed arriving, and nothing less.
+        coin.state !== 'pending' &&
+          coin.receivedAmountWei !== undefined &&
+          receivedVal > 0n
+        ? 'received'
+        : coin.checkedAtMs === undefined ||
+          coin.transferSeen === true ||
+          nowMs - coin.discoveredAtMs < PAYMENT_NOT_RECEIVED_AFTER_MS
+        ? 'pending'
+        : 'not-received'
+  }
+
+  const isPartial =
+    receivedVal > 0n && (status !== 'received' || receivedVal < claimedVal)
+
   return {
     address: coin.address,
     origin: coin.origin,
@@ -1218,8 +1277,18 @@ export function receivedPaymentOf(
     amountWei: BigInt(coin.amountWei),
     ...(coin.receivedAmountWei === undefined
       ? {}
-      : { receivedAmountWei: BigInt(coin.receivedAmountWei) }),
-    claimedAmountWei: BigInt(coin.claimedAmountWei),
+      : { receivedAmountWei: receivedVal }),
+    claimedAmountWei: claimedVal,
+    ...(isPartial ? { partial: true } : {}),
+    ...(coin.transactions.length > 0
+      ? { transactions: coin.transactions }
+      : {}),
+    ...(coin.settledTransactions !== undefined
+      ? { settledTransactions: coin.settledTransactions }
+      : {}),
+    ...(coin.failedTransactions !== undefined
+      ? { failedTransactions: coin.failedTransactions }
+      : {}),
     spendable: coin.state === 'unspent',
     ...(coin.payloadDigest === undefined
       ? {}
@@ -1249,6 +1318,36 @@ export function spendableCoinTotal(coins: readonly EvmCoin[]): bigint {
   )
 }
 
+function summarizePaymentSubset(subset: readonly ReceivedPayment[]): {
+  status: 'none' | 'pending' | 'received' | 'not-received' | 'failed'
+  receivedWei: bigint
+  statedWei: bigint
+  partial: boolean
+} {
+  const status =
+    subset.length === 0
+      ? 'none'
+      : subset.some(p => p.status === 'failed')
+      ? 'failed'
+      : subset.some(p => p.status === 'not-received')
+      ? 'not-received'
+      : subset.some(p => p.status !== 'received')
+      ? 'pending'
+      : 'received'
+  const receivedWei = subset.reduce(
+    (sum, p) =>
+      p.status === 'received' || p.partial === true
+        ? sum + (p.receivedAmountWei ?? 0n)
+        : sum,
+    0n,
+  )
+  const statedWei = subset.reduce((sum, p) => sum + p.claimedAmountWei, 0n)
+  const partial =
+    (receivedWei > 0n && (status !== 'received' || receivedWei < statedWei)) ||
+    subset.some(p => p.partial === true)
+  return { status, receivedWei, statedWei, partial }
+}
+
 /** Whether the payments a message carried have landed, from the wallet's coins for it.
  * - `none`: the wallet holds no coin for the message (it carried no payment to this wallet).
  * - `pending`: at least one payment is not on the chain yet, and none has failed or is overdue.
@@ -1262,6 +1361,23 @@ export interface MessagePayment {
   readonly status: 'none' | 'pending' | 'received' | 'not-received' | 'failed'
   readonly receivedWei: bigint
   readonly statedWei: bigint
+  readonly partial: boolean
+  readonly stampStatus:
+    | 'none'
+    | 'pending'
+    | 'received'
+    | 'not-received'
+    | 'failed'
+  readonly stampReceivedWei: bigint
+  readonly stampStatedWei: bigint
+  readonly contentStatus:
+    | 'none'
+    | 'pending'
+    | 'received'
+    | 'not-received'
+    | 'failed'
+  readonly contentReceivedWei: bigint
+  readonly contentStatedWei: bigint
   readonly payments: readonly ReceivedPayment[]
 }
 
@@ -1274,24 +1390,24 @@ export function messagePaymentOf(
   const payments = coins
     .filter(coin => coin.payloadDigest === digest)
     .map(coin => receivedPaymentOf(coin, nowMs))
-  const status =
-    payments.length === 0
-      ? 'none'
-      : payments.some(p => p.status === 'failed')
-      ? 'failed'
-      : payments.some(p => p.status === 'not-received')
-      ? 'not-received'
-      : payments.some(p => p.status !== 'received')
-      ? 'pending'
-      : 'received'
+  const overall = summarizePaymentSubset(payments)
+  const stamps = summarizePaymentSubset(
+    payments.filter(p => p.origin === 'stamp'),
+  )
+  const content = summarizePaymentSubset(
+    payments.filter(p => p.origin === 'stealth'),
+  )
   return {
-    status,
-    receivedWei: payments.reduce(
-      (sum, p) =>
-        p.status === 'received' ? sum + (p.receivedAmountWei ?? 0n) : sum,
-      0n,
-    ),
-    statedWei: payments.reduce((sum, p) => sum + p.claimedAmountWei, 0n),
+    status: overall.status,
+    receivedWei: overall.receivedWei,
+    statedWei: overall.statedWei,
+    partial: overall.partial,
+    stampStatus: stamps.status,
+    stampReceivedWei: stamps.receivedWei,
+    stampStatedWei: stamps.statedWei,
+    contentStatus: content.status,
+    contentReceivedWei: content.receivedWei,
+    contentStatedWei: content.statedWei,
     payments,
   }
 }

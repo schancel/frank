@@ -8,7 +8,7 @@ import {
   topicBurnCalldata,
 } from '@frank/codec'
 import { MonadHdKeyring } from './monad-hd-keyring'
-import { createInMemoryMonadWalletBundle } from './storage/monad-wallet-bundle'
+import { createInMemoryMonadWalletBundle } from './storage/evm-wallet-bundle'
 import {
   bindForumAuthority,
   classifyForumOperation,

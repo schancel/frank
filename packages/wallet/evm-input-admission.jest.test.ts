@@ -1885,14 +1885,11 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     const other = await member(f, 1, 0, 'unsigned')
     const put = jest.spyOn(f.poolStore, 'put')
     // The pool updates its derived account view after the put; that view fails.
-    f.pool.setAccountUtxoPool({
-      getCoinsByAddress: () => {
-        if (put.mock.calls.length > 0)
-          throw new Error('fixture: account view failed after the put')
-        return []
-      },
-      registerSubAccount: () => undefined,
-    } as never)
+    jest.spyOn(f.pool.capacityCache, 'delete').mockImplementation(() => {
+      if (put.mock.calls.length > 0)
+        throw new Error('fixture: account view failed after the put')
+      return false
+    })
     await expect(spend(f).applyMember(id, 0)).rejects.toThrow(
       'fixture: account view failed after the put',
     )

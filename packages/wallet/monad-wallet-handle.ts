@@ -1,5 +1,5 @@
 import type { EvmWalletHandle } from "./evm-wallet-handle";
-import type { MonadWalletPersistenceBundle } from "./storage/monad-wallet-bundle";
+import type { MonadWalletPersistenceBundle } from "./storage/evm-wallet-bundle";
 import type { MonadCanonicalRoleOwner } from './monad-wallet-material'
 
 /** Present only on the private wallet-owner facade, never inferred from a normal legacy handle. */
@@ -9,7 +9,7 @@ export interface MonadCanonicalWalletHandle extends EvmWalletHandle {
   installedNetworkTag: 'MONT' | 'MON1' | 'MONR'
   runCanonicalExclusive<T>(
     operation: (
-      lifetime: import('./storage/monad-wallet-bundle').MonadWalletOperationAdmission,
+      lifetime: import('./storage/evm-wallet-bundle').MonadWalletOperationAdmission,
     ) => Promise<T>,
   ): Promise<T>
 }

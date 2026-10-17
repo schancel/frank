@@ -7,7 +7,10 @@ import {
   nativeMemberSuperseded,
   type EvmNativeSource,
 } from "../storage/evm-native-operation-journal";
-import type { MonadWalletOperationAdmission } from "../storage/monad-wallet-bundle";
+import type {
+  EvmWalletOperationAdmission,
+  MonadWalletOperationAdmission,
+} from "../storage/evm-wallet-bundle";
 import {
   EvmInputAdmissionError,
   nativeAdmissionJournal,
@@ -170,7 +173,15 @@ import {
   STAMP_PAIR_TRANSFERS,
   SubAccountSpendRefusedError,
 } from "../monad-account-pool";
-import { ChainUtxoPool } from "../chain-utxo-pool";
+import { EvmSpendPool } from "../evm-spend-pool";
+import {
+  EvmWallet,
+  evmWalletInternals,
+  type CanonicalInventoryFunder,
+  type FundAheadBackoff,
+  type MainAccountAdmission,
+  type ReceivedCoinOwner,
+} from "../evm-wallet";
 import {
   BurnNotSentError,
   SubAccountLeaseManager,
@@ -185,10 +196,9 @@ import { MonadAccountTxSigner } from "../monad-account-tx";
 import type { EvmWalletHandle } from "../evm-wallet-handle";
 
 import {
-  openExistingPoolMonadTopicOwner,
-  type CanonicalWalletBindingMismatchError,
-  type MonadWalletPersistenceBundle,
-} from "../storage/monad-wallet-bundle";
+  openExistingPoolEvmWalletBundle,
+  type EvmWalletPersistenceBundle,
+} from "../storage/evm-wallet-bundle";
 import {
   MonadIdentity,
   fetchMonadProfile,
@@ -458,49 +468,17 @@ export function loadMonadChainConfigFromEnv(overrides?: {
   };
 }
 
-const closedWallets = new WeakSet<EvmChainWalletHandle>();
-const typedWallets = new WeakSet<EvmChainWalletHandle>();
-const walletMaterial = new WeakMap<
-  EvmChainWalletHandle,
-  MonadWalletMaterial
->();
-const walletFundingCandidates = new WeakMap<
-  EvmChainWalletHandle,
-  () => readonly {
-    source: "main" | "identity" | "coin";
-    address: string;
-    privateKey: () => string;
-    balanceWei?: bigint;
-  }[]
->();
-// Facades may receive a handle created by another factory on the same configured network.
-// Its key ownership and send queue travel with that handle, not with the receiving facade.
-const walletSendQueues = new WeakMap<EvmChainWalletHandle, Promise<void>>();
-// The private topic owner and enclosing admission travel with the creator's wallet too.
-const privateTopicWallets = new WeakMap<
-  EvmChainWalletHandle,
-  EvmWalletHandle
->();
-const installedCanonicalWalletDescriptors = new WeakMap<
-  object,
-  { networkTag: "MONT" | "MON1" | "MONR"; network: string; chainId: bigint }
->();
 /** Public local evidence only. No Current, enrollment, provider or financial effects. */
 export function prepareMonadRevisionZeroExport(
   wallet: NativeWalletHandle,
   input: PublicRevisionZeroInput
 ): PublicRevisionZeroExport {
-  const live = wallet as EvmChainWalletHandle;
-  const material = walletMaterial.get(live);
-  if (
-    !material?.canonicalRoles ||
-    !typedWallets.has(live) ||
-    closedWallets.has(live)
-  )
+  const internals = evmWalletInternals(wallet);
+  const material = internals.material;
+  if (!material?.canonicalRoles || !internals.typed || internals.closed)
     throw new Error("Revision-zero export requires live typed wallet custody");
-  const unavailable = canonicalUnavailableWallets.get(wallet);
-  if (unavailable) throw unavailable;
-  const installed = installedCanonicalWalletDescriptors.get(wallet);
+  if (internals.canonicalUnavailable) throw internals.canonicalUnavailable;
+  const installed = internals.installedCanonicalDescriptor;
   if (
     !installed ||
     installed.networkTag !== input.networkTag ||
@@ -518,19 +496,14 @@ export function prepareMonadNextRevisionExport(
   wallet: NativeWalletHandle,
   input: PublicNextRevisionInput
 ): PublicNextRevisionExport {
-  const live = wallet as EvmChainWalletHandle;
-  const material = walletMaterial.get(live);
-  if (
-    !material?.canonicalRoles ||
-    !typedWallets.has(live) ||
-    closedWallets.has(live)
-  )
+  const internals = evmWalletInternals(wallet);
+  const material = internals.material;
+  if (!material?.canonicalRoles || !internals.typed || internals.closed)
     throw new Error(
       "Directory entry renewal requires live typed wallet custody"
     );
-  const unavailable = canonicalUnavailableWallets.get(wallet);
-  if (unavailable) throw unavailable;
-  const installed = installedCanonicalWalletDescriptors.get(wallet);
+  if (internals.canonicalUnavailable) throw internals.canonicalUnavailable;
+  const installed = internals.installedCanonicalDescriptor;
   if (
     !installed ||
     installed.networkTag !== input.networkTag ||
@@ -542,44 +515,27 @@ export function prepareMonadNextRevisionExport(
     );
   return material.canonicalRoles.prepareNextRevision(input);
 }
-const canonicalClientFactories = new WeakMap<
-  object,
-  () => MonadCanonicalStampClient
->();
-// Live handles whose storage holds a canonical journal bound to a different identity tuple.
-const canonicalUnavailableWallets = new WeakMap<
-  object,
-  CanonicalWalletBindingMismatchError
->();
 /** Opt-in bridge verifies the actual registered live typed wallet; no caller-supplied owner. */
 export function canonicalMonadStampClient(
   wallet: NativeWalletHandle
 ): MonadCanonicalStampClient {
-  const unavailable = canonicalUnavailableWallets.get(wallet);
-  if (unavailable) throw unavailable;
-  const create = canonicalClientFactories.get(wallet);
+  const internals = evmWalletInternals(wallet);
+  if (internals.canonicalUnavailable) throw internals.canonicalUnavailable;
+  const create = internals.canonicalClientFactory;
   if (!create)
     throw new Error("Canonical wallet requires live typed persistent custody");
   return create();
 }
 // Canonical direct messages (#778). The caller installs the open directory once this account's own
 // entry is published; it is never inferred from a wallet.
-const canonicalDirectories = new WeakMap<object, CanonicalDirectory>();
-const canonicalMessaging = new WeakMap<
-  object,
-  ReturnType<typeof canonicalDirectMessages>
->();
 /** Install the caller's verified public directory for one live typed wallet. Returns its removal. */
 export function installCanonicalDirectory(
   wallet: NativeWalletHandle,
   directory: CanonicalDirectory
 ): () => void {
-  const installed = installedCanonicalWalletDescriptors.get(wallet);
-  if (
-    !installed ||
-    !canonicalMessaging.has(wallet) ||
-    closedWallets.has(wallet as EvmChainWalletHandle)
-  )
+  const internals = evmWalletInternals(wallet);
+  const installed = internals.installedCanonicalDescriptor;
+  if (!installed || !internals.canonicalMessaging || internals.closed)
     throw new Error(
       "Canonical directory requires live typed persistent custody"
     );
@@ -587,35 +543,12 @@ export function installCanonicalDirectory(
     throw new Error(
       "Canonical directory differs from actual installed wallet network"
     );
-  canonicalDirectories.set(wallet, directory);
+  internals.canonicalDirectory = directory;
   return () => {
-    if (canonicalDirectories.get(wallet) === directory)
-      canonicalDirectories.delete(wallet);
+    if (internals.canonicalDirectory === directory)
+      internals.canonicalDirectory = undefined;
   };
 }
-type CanonicalInventoryFunder = (input: {
-  stampValueWei: bigint;
-  /** Unused: the fee an account keeps back does not depend on the recipient. */
-  recipientStampKey?: Uint8Array;
-  onProgress?: (progress: DirectMessagePreparationProgress) => void;
-}) => Promise<string[]>;
-const canonicalInventoryFunders = new WeakMap<
-  object,
-  CanonicalInventoryFunder
->();
-/** The existing live payer owns read-only stamp planning too; no second spend inventory. */
-const canonicalStampQuoters = new WeakMap<
-  object,
-  (input: {
-    stampValueWei: bigint;
-    excludedAddresses?: readonly string[];
-  }) => Promise<DirectMessageStampQuote>
->();
-/** Per live typed wallet: its fund-ahead pass (`DirectMessageClient.fundAhead`). */
-const stampFundersAhead = new WeakMap<
-  object,
-  () => Promise<DirectMessageFundAheadResult>
->();
 /**
  * A fund-ahead pass that could fund nothing (no money, a pair it cannot afford, an earlier
  * transfer still unresolved, a failed read) is not repeated on every host tick: the next pass
@@ -653,22 +586,15 @@ export class MainAccountBusyError extends Error {
 }
 export const FUND_AHEAD_BACKOFF_MIN_MS = 4_000;
 export const FUND_AHEAD_BACKOFF_MAX_MS = 240_000;
-interface FundAheadBackoff {
-  result: DirectMessageFundAheadResult;
-  delayMs: number;
-  startedAtMs: number;
-  /** The main-account balance the pass saw, when it read one. */
-  mainBalanceWei?: bigint;
-}
-const fundAheadBackoffs = new WeakMap<object, FundAheadBackoff>();
 /** The main account was just read: more money than the last pass saw ends its wait. */
 function noteMainBalanceForFundAhead(wallet: object, balanceWei: bigint): void {
-  const waiting = fundAheadBackoffs.get(wallet);
+  const internals = evmWalletInternals(wallet);
+  const waiting = internals.fundAheadBackoff;
   if (
     waiting?.mainBalanceWei !== undefined &&
     balanceWei > waiting.mainBalanceWei
   )
-    fundAheadBackoffs.delete(wallet);
+    internals.fundAheadBackoff = undefined;
 }
 /**
  * Funds receipt-confirmed single-use sender accounts for one canonical stamp of `stampValueWei`,
@@ -680,8 +606,9 @@ export function prepareCanonicalStampInventory(
   wallet: NativeWalletHandle,
   input: Parameters<CanonicalInventoryFunder>[0]
 ): Promise<string[]> {
-  const fund = canonicalInventoryFunders.get(wallet);
-  if (!fund || closedWallets.has(wallet as EvmChainWalletHandle))
+  const internals = evmWalletInternals(wallet);
+  const fund = internals.canonicalInventoryFunder;
+  if (!fund || internals.closed)
     throw new Error(
       "Canonical inventory requires live typed persistent custody"
     );
@@ -695,14 +622,14 @@ export function createCanonicalMessageRoles(
   wallet: NativeWalletHandle,
   current: import("../../directory-admission/src").Current
 ) {
-  const live = wallet as EvmChainWalletHandle;
-  const material = walletMaterial.get(live),
-    installed = installedCanonicalWalletDescriptors.get(wallet);
+  const internals = evmWalletInternals(wallet);
+  const material = internals.material,
+    installed = internals.installedCanonicalDescriptor;
   if (
     !material?.canonicalRoles ||
     !installed ||
-    !typedWallets.has(live) ||
-    closedWallets.has(live)
+    !internals.typed ||
+    internals.closed
   )
     throw new Error("Canonical roles require live typed wallet custody");
   return material.canonicalRoles.create(installed.network, current);
@@ -715,36 +642,24 @@ export function createCanonicalMessageRoles(
 export function conversationIdSaltOf(
   wallet: NativeWalletHandle | WalletHandle
 ): Uint8Array | undefined {
-  const live = wallet as EvmChainWalletHandle;
-  const material = walletMaterial.get(live);
-  if (
-    !material?.canonicalRoles ||
-    !typedWallets.has(live) ||
-    closedWallets.has(live)
-  )
+  const internals = evmWalletInternals(wallet);
+  const material = internals.material;
+  if (!material?.canonicalRoles || !internals.typed || internals.closed)
     return undefined;
   return material.canonicalRoles.conversationIdSalt();
 }
 /** Typed wallets use only the canonical path: pending is an error, never a legacy fallback. */
 function canonicalMessagingFor(wallet: EvmChainWalletHandle) {
   requireOpenWallet(wallet);
-  if (!typedWallets.has(wallet)) return undefined;
-  const canonical = canonicalMessaging.get(wallet);
+  const internals = evmWalletInternals(wallet);
+  if (!internals.typed) return undefined;
+  const canonical = internals.canonicalMessaging;
   if (!canonical)
     throw new CanonicalMessagingPendingError(
       "Canonical direct messages require persistent typed wallet storage on a Monad network."
     );
   return canonical;
 }
-const enclosingTopicAdmissions = new WeakSet<EvmChainWalletHandle>();
-interface MainAccountAdmission {
-  key: string;
-  store: NativeTransactionAttemptStore;
-}
-const mainAccountAdmissions = new WeakMap<
-  EvmChainWalletHandle,
-  MainAccountAdmission
->();
 /** The most pending coins one background pass asks the chain about. */
 export const PENDING_COIN_PROBES_PER_PASS = 8;
 /** How long the wallet waits before asking the chain a second time whether a received payment's
@@ -753,77 +668,21 @@ export const TRANSFER_FAILURE_RECHECK_MS = 2_000;
 /** How long `sweepReceivedCoins` waits for its sweep to be included before answering `pending`. */
 export const SWEEP_INCLUSION_WAIT_MS = 10_000;
 
-/** What the wallet's coin list and its payments to contacts offer the chain's clients. */
-interface ReceivedCoinOwner {
-  /** Records the one-time account of a received stealth item. Re-reading one is a no-op. */
-  recordStealthItem(
-    item: StealthItem,
-    origin: { payloadDigest?: string; timestampMs: number }
-  ): Promise<void>;
-  /** Records the one-time accounts of the stamp payments a received message carried. */
-  recordStampPayments(message: DirectMessageReceived): Promise<void>;
-  /** Records one stamp account whose key the caller derived (the legacy transport). */
-  recordStampCoin(coin: {
-    address: string;
-    privateKey: string;
-    childIndex: number;
-    /** The message's public shared point (hex), when the key was derived from it. */
-    stampSharedPoint?: string;
-    payloadDigest: string;
-    valueWei: bigint;
-    transaction: string;
-    timestampMs: number;
-  }): Promise<void>;
-  /** Sends the note to self of every coin that has none yet. Never rejects. */
-  noteCoins(): Promise<void>;
-  /** The bounded background pass over pending coins. No request when none is pending. */
-  checkPendingCoins(): Promise<void>;
-  /** Finishes every payment to a contact that is not delivered yet. Never rejects. */
-  resumeContactPayments(): Promise<void>;
-  retryContactPayment(messageId: string): Promise<void>;
-  /** A message carrying these stealth items has a durable attempt (`payloadDigest`), not yet
-   * handed to the relay: remembered on the prepared payments the host delivers. */
-  contactMessageAttempted(
-    ephemeralPubKeys: readonly string[],
-    payloadDigest: string
-  ): Promise<void>;
-  /** Start of a send whose message carries these stealth items. Rejects, before the send does
-   * anything, if one of them is a released payment. Otherwise the items are in flight (never
-   * released) until the returned function is called. */
-  beginContactSend(ephemeralPubKeys: readonly string[]): Promise<() => void>;
-  /** Releases the payments among these of which no byte ever left the device. True if any. */
-  releaseUnsentContactPayments(
-    ephemeralPubKeys: readonly string[]
-  ): Promise<boolean>;
-  /** The relay has stored that message: the payments it carries are broadcast. Never rejects. */
-  contactMessageDelivered(payloadDigest: string): Promise<void>;
-  /** Where the coin list's own first read of the whole mailbox stands. A coin list that did not
-   * exist when earlier messages were read (a new device, a store added later) has never seen the
-   * money those messages brought, whatever the host's cursor says: until `complete`, the mailbox
-   * is read from `sinceMs` for coins alone. */
-  mailboxScan(): { complete: boolean; sinceMs: number };
-  recordMailboxScan(progress: { complete: boolean; sinceMs: number }): Promise<void>;
-}
-const receivedCoinOwners = new WeakMap<object, ReceivedCoinOwner>();
 /** Per wallet: the accounts (lower case) a signed transfer is held on while its message is being
  * delivered. Nothing else may take such an account's next nonce: not a native send or a sweep
  * (the journal refuses those), and not a funding transfer (which reads the nonce from the node,
  * so it asks here first). */
-const heldTransferSources = new WeakMap<object, () => Set<string>>();
 const sourceIsHeld = (wallet: object, address: string): boolean =>
-  heldTransferSources.get(wallet)?.().has(address.toLowerCase()) ?? false;
+  evmWalletInternals(wallet).heldTransferSources?.().has(address.toLowerCase()) ??
+  false;
 /** Why a funding transfer was refused: its source is held by a payment to a contact. */
 export const SOURCE_HELD_FOR_CONTACT_PAYMENT =
   "These funds are held for a payment to a contact whose message is being delivered";
-const nativeOperationOwners = new WeakMap<
-  EvmChainWalletHandle,
-  EvmLegacyConsolidator
->();
 function nativeOperationOwner(
   wallet: EvmChainWalletHandle
 ): EvmLegacyConsolidator {
   requireOpenWallet(wallet);
-  const owner = nativeOperationOwners.get(wallet);
+  const owner = evmWalletInternals(wallet).nativeOperationOwner;
   if (!owner) throw new Error("Wallet has no durable native-operation owner");
   return owner;
 }
@@ -859,12 +718,13 @@ async function reconcileNativeAdmission(
 const openTypedEvmAccounts = new Set<string>();
 
 function requireOpenWallet(wallet: EvmChainWalletHandle): void {
-  if (closedWallets.has(wallet)) throw new Error("Monad wallet is closed");
+  if (evmWalletInternals(wallet).closed)
+    throw new Error("Monad wallet is closed");
 }
 
 function requireLegacyMessaging(wallet: EvmChainWalletHandle): void {
   requireOpenWallet(wallet);
-  if (typedWallets.has(wallet)) {
+  if (evmWalletInternals(wallet).typed) {
     throw new Error(
       "Typed Monad wallets do not use the legacy stamp-payment journal"
     );
@@ -1081,7 +941,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     { fingerprint: string; pending: Promise<EvmChainWalletHandle> }
   >();
   const mainPrivateKey = (wallet: EvmChainWalletHandle) =>
-    walletMaterial.get(wallet)?.mainAccount.privateKey ??
+    evmWalletInternals(wallet).material?.mainAccount.privateKey ??
     wallet.identity.toPrivateKeyHex();
   // The queue topic posts, votes and native sends still run their own multi-step sequences on
   // (each is recorded across several stores). Paid messages never enter it: a message claims its
@@ -1089,30 +949,28 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   // also what keeps these operations and messages off each other's accounts.
   const runWalletExclusive = <T>(
     wallet: EvmChainWalletHandle,
-    task: (admission?: MonadWalletOperationAdmission) => Promise<T>,
+    task: (admission?: EvmWalletOperationAdmission) => Promise<T>,
     canonical = false
   ): Promise<T> => {
     requireOpenWallet(wallet);
-    const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(
+    const internals = evmWalletInternals(wallet);
+    const run = (internals.sendQueue ?? Promise.resolve()).then(
       async () => {
-        const owner = privateTopicWallets.get(wallet)?.walletState;
+        const owner = internals.privateTopicWallet?.walletState;
         if (!owner) return task();
-        enclosingTopicAdmissions.add(wallet);
+        internals.enclosingTopicAdmission = true;
         try {
           return await (canonical
             ? owner.runCanonicalOperation(task)
             : owner.runOperation(task));
         } finally {
-          enclosingTopicAdmissions.delete(wallet);
+          internals.enclosingTopicAdmission = false;
         }
       }
     );
-    walletSendQueues.set(
-      wallet,
-      run.then(
-        () => undefined,
-        () => undefined
-      )
+    internals.sendQueue = run.then(
+      () => undefined,
+      () => undefined
     );
     return run;
   };
@@ -1132,30 +990,23 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   const mainAccountAddresses = (wallet: EvmChainWalletHandle) => [
     ...new Set(
       [
-        walletMaterial.get(wallet)?.mainAccount.address,
+        evmWalletInternals(wallet).material?.mainAccount.address,
         wallet.identity.address.raw,
       ].flatMap((address) =>
         address === undefined ? [] : [address.toLowerCase()]
       )
     ),
   ];
-  const runningMainTasks = new WeakMap<EvmChainWalletHandle, number>();
-  const blockWatchers = new WeakMap<EvmChainWalletHandle, EvmBlockWatcher>();
-  const lastOwnLookMs = new WeakMap<EvmChainWalletHandle, number>();
-  /** Address -> transfers signed from it outside the journal, not yet seen on chain. */
-  const unjournalledTransfers = new WeakMap<
-    EvmChainWalletHandle,
-    Map<string, { txHash: string; nonce: number }[]>
-  >();
   /** One look at the chain for each transaction this wallet's native holder signed from
    * `address` that is still undecided. Never rejects. */
   const lookAtOwnTransactions = async (
     wallet: EvmChainWalletHandle,
     address: string
   ): Promise<void> => {
-    if (closedWallets.has(wallet)) return;
-    await nativeOperationOwners.get(wallet)?.lookAtSource(address);
-    const transfers = unjournalledTransfers.get(wallet)?.get(address) ?? [];
+    const internals = evmWalletInternals(wallet);
+    if (internals.closed) return;
+    await internals.nativeOperationOwner?.lookAtSource(address);
+    const transfers = internals.unjournalledTransfers.get(address) ?? [];
     for (const transfer of [...transfers]) {
       try {
         const decided =
@@ -1173,9 +1024,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   const ownTransactionUndecided = (
     wallet: EvmChainWalletHandle,
     address: string
-  ): boolean =>
-    sourceIsHeld(wallet, address) || nativeOperationOwners.get(wallet)?.holdsSource(address) === true ||
-    (unjournalledTransfers.get(wallet)?.get(address)?.length ?? 0) > 0;
+  ): boolean => {
+    const internals = evmWalletInternals(wallet);
+    return (
+      sourceIsHeld(wallet, address) ||
+      internals.nativeOperationOwner?.holdsSource(address) === true ||
+      (internals.unjournalledTransfers.get(address)?.length ?? 0) > 0
+    );
+  };
   /**
    * Lets go of the main and identity accounts this wallet's native holder has, each as soon as
    * nothing it signed from that account is still undecided. With `look` the chain is asked first
@@ -1188,17 +1044,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     const pool = wallet.pool;
     if (typeof pool.accountClaimedBy !== "function") return;
     const holder = mainAccountHolder(wallet);
+    const internals = evmWalletInternals(wallet);
     // One look a second for the wallet, however many sends are waiting for the account.
     if (look) {
-      const last = lastOwnLookMs.get(wallet);
+      const last = internals.lastOwnLookMs;
       if (last !== undefined && Date.now() - last < 1_000) look = false;
-      else lastOwnLookMs.set(wallet, Date.now());
+      else internals.lastOwnLookMs = Date.now();
     }
     for (const address of mainAccountAddresses(wallet)) {
       if (pool.accountClaimedBy(address) !== holder) continue;
       if (look) await lookAtOwnTransactions(wallet, address);
       // An operation is running under this holder right now: it lets go itself when it ends.
-      if ((runningMainTasks.get(wallet) ?? 0) > 0) return;
+      if (internals.runningMainTasks > 0) return;
       if (!ownTransactionUndecided(wallet, address))
         pool.releaseAccountClaim(holder, address);
     }
@@ -1215,8 +1072,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     options: MainAccountWait = {}
   ): Promise<void> => {
     const pool = wallet.pool;
+    const internals = evmWalletInternals(wallet);
     if (typeof pool.claimAccount !== "function") {
-      runningMainTasks.set(wallet, (runningMainTasks.get(wallet) ?? 0) + 1);
+      internals.runningMainTasks += 1;
       return;
     }
     const holder = mainAccountHolder(wallet);
@@ -1246,7 +1104,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         // take the claim for a settled leftover and let it go while this operation is still
         // waiting out the spacing below. (Seen on testnet: it did, and a native send and a
         // message payment were both signed at one nonce.)
-        runningMainTasks.set(wallet, (runningMainTasks.get(wallet) ?? 0) + 1);
+        internals.runningMainTasks += 1;
         // Held now, so nothing else can sign from them: wait out the chain's spacing rule
         // after whatever last spent each (a message payment just mined, say).
         try {
@@ -1257,7 +1115,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               config.spendSpacingBlocks
             );
         } catch (error) {
-          runningMainTasks.set(wallet, runningMainTasks.get(wallet)! - 1);
+          internals.runningMainTasks -= 1;
           await releaseSettledMainAccounts(wallet, false);
           throw error;
         }
@@ -1270,8 +1128,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       if (held.length > 0) {
         const holderOfIt = pool.accountClaimedBy(held[0]!);
         if (holderOfIt !== undefined)
-          await canonicalMessaging
-            .get(wallet)
+          await internals.canonicalMessaging
             ?.settleHolder(holderOfIt)
             .catch(() => undefined);
       } else
@@ -1284,7 +1141,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         throw new MainAccountBusyError();
       // Woken when the account is released or at the wallet's next look at the chain (the one
       // block watcher every waiter shares); a wallet with none waits a second.
-      const watcher = blockWatchers.get(wallet);
+      const watcher = internals.blockWatcher;
       const abort = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
       const look = watcher
@@ -1318,9 +1175,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         const sent = await sign();
         const from = sent.from.toLowerCase();
         if (mainAccountAddresses(wallet).includes(from)) {
-          let transfers = unjournalledTransfers.get(wallet);
-          if (!transfers)
-            unjournalledTransfers.set(wallet, (transfers = new Map()));
+          const transfers = evmWalletInternals(wallet).unjournalledTransfers;
           transfers.set(from, [
             ...(transfers.get(from) ?? []),
             { txHash: sent.txHash, nonce: sent.nonce },
@@ -1335,7 +1190,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     task: () => Promise<T>,
     options: MainAccountWait = {}
   ): Promise<T> => {
-    let admission = mainAccountAdmissions.get(wallet);
+    const internals = evmWalletInternals(wallet);
+    let admission = internals.mainAccountAdmission;
     if (admission === undefined) {
       // Legacy callers may supply the wallet-client bundle directly rather than createWallet.
       admission = {
@@ -1347,7 +1203,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         store:
           config.nativeAttemptStore ?? defaultNativeTransactionAttemptStore,
       };
-      mainAccountAdmissions.set(wallet, admission);
+      internals.mainAccountAdmission = admission;
     }
     const owner = admission;
     // Always acquire in this order: wallet queue -> native coordination -> pool funding queue.
@@ -1362,7 +1218,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         try {
           return await task();
         } finally {
-          runningMainTasks.set(wallet, runningMainTasks.get(wallet)! - 1);
+          internals.runningMainTasks -= 1;
           // Whatever this operation signed from the main or identity account keeps that account
           // until the chain shows it; an account it signed nothing from is free at once.
           await releaseSettledMainAccounts(wallet, false);
@@ -1391,15 +1247,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       provider: wallet.provider,
       httpClient: wallet.httpClient,
     });
+    const internals = evmWalletInternals(wallet);
     const mainAddress =
-      walletMaterial.get(wallet)?.mainAccount.address ??
+      internals.material?.mainAccount.address ??
       wallet.identity.address.raw;
 
     try {
       onProgress?.({ stage: "checking" });
 
       const burnAddress = creatorForumPolicy(
-        privateTopicWallets.get(wallet) ?? wallet
+        internals.privateTopicWallet ?? wallet
       ).burnAddress;
       const gasReserveWei = await quoteMonadTopicBurnGasReserve({
         signer: mainAccountSigner,
@@ -1426,7 +1283,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           ? await wallet.provider.getBalance(addr, "pending").catch(() => 0n)
           : 0n;
 
-      const candidateGetter = walletFundingCandidates.get(wallet);
+      const candidateGetter = internals.fundingCandidates;
       const candidates = candidateGetter
         ? candidateGetter()
         : [
@@ -1643,8 +1500,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   // be repeated word for word is final at once. Anything else is tried again on later reads, for
   // at most `SELF_NOTE_RETRY_MS` from the first failure in this session, and is then passed too.
   // Either way the note changed nothing, and one warning says so.
-  const settledSelfNotes = new WeakMap<object, Set<string>>();
-  const waitingSelfNotes = new WeakMap<object, Map<string, number>>();
   const selfNoteRefusalIsFinal = (error: unknown): boolean => {
     // Another chain's note.
     if (error instanceof WalletSyncItemRejectedError) return true;
@@ -1697,13 +1552,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         ? projectOutboxMessageRecord(rawRest, itemRegistry)
         : rawRest;
     const digest = message.payloadDigest;
-    let settled = settledSelfNotes.get(wallet);
-    if (settled === undefined)
-      settledSelfNotes.set(wallet, (settled = new Set()));
+    const internals = evmWalletInternals(wallet);
+    const settled = internals.settledSelfNotes;
     if (settled.has(digest)) return { kind: "consumed", rest };
-    let waiting = waitingSelfNotes.get(wallet);
-    if (waiting === undefined)
-      waitingSelfNotes.set(wallet, (waiting = new Map()));
+    const waiting = internals.waitingSelfNotes;
     try {
       for (const note of notes) {
         const item = note as WalletSyncItem;
@@ -1744,7 +1596,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     wallet: EvmChainWalletHandle,
     messages: readonly DirectMessageReceived[]
   ): Promise<void> => {
-    const owner = receivedCoinOwners.get(wallet);
+    const owner = evmWalletInternals(wallet).receivedCoinOwner;
     if (owner === undefined) return;
     const own = wallet.identity.address.raw.toLowerCase();
     // A note this account wrote to itself about a coin it received: how the coin's key is
@@ -1785,7 +1637,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   const directMessages: DirectMessageClient = {
     async quoteStamp(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      const quote = canonicalStampQuoters.get(wallet);
+      const quote = evmWalletInternals(wallet).canonicalStampQuoter;
       if (!quote)
         throw new CanonicalMessagingPendingError(
           "Stamp affordability requires persistent typed wallet custody."
@@ -1805,7 +1657,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       // A message that carries a contact payment the host delivers: the payment learns the
       // message's attempt before the relay sees a byte, and is broadcast only once the relay
       // has stored the message.
-      const coinOwner = receivedCoinOwners.get(wallet);
+      const coinOwner = evmWalletInternals(wallet).receivedCoinOwner;
       const carried = params.items.flatMap((item) =>
         item.type === "stealth" && item.ephemeralPubKey
           ? [item.ephemeralPubKey.replace(/^0x/, "").toLowerCase()]
@@ -1898,7 +1750,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         );
       const statuses = await canonical.reconcileAttempts(params);
       // A message the relay turns out to have stored: the contact payments it carries go out.
-      const coinOwner = receivedCoinOwners.get(wallet);
+      const coinOwner = evmWalletInternals(wallet).receivedCoinOwner;
       for (const [digest, status] of Object.entries(statuses))
         if (status === "delivered") void coinOwner?.contactMessageDelivered(digest);
       return statuses;
@@ -1906,7 +1758,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
 
     async fundAhead(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      const fund = stampFundersAhead.get(wallet);
+      const fund = evmWalletInternals(wallet).stampFunderAhead;
       if (!fund) return { outcome: "unavailable", fundingTxHashes: [] };
       return fund();
     },
@@ -1958,7 +1810,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const sinceMs = params.sinceMs;
       const canonical = canonicalMessagingFor(wallet);
       if (!canonical) throw new CanonicalMessagingPendingError();
-      const directory = canonicalDirectories.get(wallet);
+      const directory = evmWalletInternals(wallet).canonicalDirectory;
       if (directory && directory.network !== chainIdentifier)
         throw new Error("Authenticated mailbox directory has a foreign chain");
       const result = await canonical.scanAuthenticatedMailbox({ wallet, sinceMs });
@@ -1966,7 +1818,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       if (
         wallet.chainIdentifier !== chainIdentifier ||
         canonicalMessagingFor(wallet) !== canonical ||
-        canonicalDirectories.get(wallet) !== directory
+        evmWalletInternals(wallet).canonicalDirectory !== directory
       )
         throw new Error("Authenticated mailbox session changed during scan");
       return result;
@@ -1985,7 +1837,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         // host asks from: money that arrived before this coin list existed is found here. It
         // records coins only; no message of it is handed to the host. Done once: afterwards
         // every read records what it returns.
-        const coinOwner = receivedCoinOwners.get(wallet);
+        const coinOwner = evmWalletInternals(wallet).receivedCoinOwner;
         const scan = coinOwner?.mailboxScan();
         let canonicalReceived: DirectMessageReceived[];
         if (coinOwner === undefined || scan === undefined || scan.complete) {
@@ -2056,12 +1908,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       await recordReceivedCoins(wallet, received);
       // Payments to contacts whose message is not delivered yet are finished from here: the
       // hosts' existing mailbox poll, never at wallet open.
-      void receivedCoinOwners.get(wallet)?.resumeContactPayments();
+      const coinOwner = evmWalletInternals(wallet).receivedCoinOwner;
+      void coinOwner?.resumeContactPayments();
       // Coins with no note to self yet get one: free messages, not waited for.
-      void receivedCoinOwners.get(wallet)?.noteCoins();
+      void coinOwner?.noteCoins();
       // The wallet's background pass over payments the chain has not shown yet: bounded, and
       // no request at all when nothing is pending. Not awaited: the messages do not wait for it.
-      void receivedCoinOwners.get(wallet)?.checkPendingCoins();
+      void coinOwner?.checkPendingCoins();
       return received;
     },
 
@@ -2183,9 +2036,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     task: (topicWallet: EvmWalletHandle) => Promise<T>
   ): Promise<T> =>
     runWalletExclusive(wallet, async (admission) => {
-      enclosingTopicAdmissions.add(wallet);
+      const internals = evmWalletInternals(wallet);
+      internals.enclosingTopicAdmission = true;
       try {
-        const topicWallet = privateTopicWallets.get(wallet) ?? wallet;
+        const topicWallet = internals.privateTopicWallet ?? wallet;
         if (!topicWallet.walletState)
           throw new Error(
             "Canonical topics require coherent wallet persistence"
@@ -2201,7 +2055,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               }
         );
       } finally {
-        enclosingTopicAdmissions.delete(wallet);
+        internals.enclosingTopicAdmission = false;
       }
     });
   const forumPolicy: ForumReadPolicy = {
@@ -2223,7 +2077,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   });
   const reconcileTopicOperations = async (
     wallet: EvmWalletHandle,
-    admission?: import("../storage/monad-wallet-bundle").MonadWalletOperationAdmission
+    admission?: EvmWalletOperationAdmission
   ) => {
     await new MonadTopicPostClient(wallet).resumePendingOperations(admission);
     await new MonadTopicVoteClient(wallet).resumePendingOperations(admission);
@@ -2349,7 +2203,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         topic: params.topic,
         sinceMs: params.sinceMs,
         policy: wallet
-          ? creatorForumPolicy(privateTopicWallets.get(wallet) ?? wallet)
+          ? creatorForumPolicy(evmWalletInternals(wallet).privateTopicWallet ?? wallet)
           : forumPolicy,
       });
     },
@@ -2535,37 +2389,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           keyring: changeKeyring,
           store: changeStore,
         });
-        const accountUtxoPool = new ChainUtxoPool();
-        pool.setAccountUtxoPool(accountUtxoPool);
-        changePool.setAccountUtxoPool(accountUtxoPool);
-
-        // Populate initial HD sub-accounts with attached private keys
-        const initialSubSize = Math.max(config.subAccountPoolSize, 5);
-        for (let i = 0; i < initialSubSize; i++) {
-          const derived = keyring.deriveSubAccount(i);
-          accountUtxoPool.registerSubAccount({
-            chain: "monad",
-            address: derived.address,
-            privateKey: derived.privateKey,
-            balanceWei: 0n,
-            derivationPath: keyring.subAccountPath(i),
-            index: i,
-          });
-        }
-        // Populate initial HD change accounts with attached private keys
-        for (let k = 0; k < 5; k++) {
-          const derived = changeKeyring.deriveChangeAccount(k);
-          accountUtxoPool.registerChangeAccount({
-            chain: "monad",
-            address: derived.address,
-            privateKey: derived.privateKey,
-            balanceWei: 0n,
-            derivationPath: changeKeyring.subAccountPath(k),
-            index: k,
-          });
-        }
         const leaseManager = new SubAccountLeaseManager(pool);
-        let topicOwner: MonadWalletPersistenceBundle | undefined;
+        let topicOwner: EvmWalletPersistenceBundle | undefined;
         let canonicalLinks: OutgoingMessageStore | undefined;
         let preparations: RecordStore<EvmStealthPreparation> | undefined;
         let coins: RecordStore<EvmCoin> | undefined;
@@ -2589,7 +2414,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               chainCode: hexlify(descriptor.chainCode)
             };
           };
-          topicOwner = await openExistingPoolMonadTopicOwner({
+          topicOwner = await openExistingPoolEvmWalletBundle({
             loadExistingState: async () => {
               const opened = await Promise.allSettled([
                 subAccountStore?.Open(),
@@ -2610,24 +2435,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   await subAccountStore!.Bind();
                 if (changeStore?.bindingId() === undefined)
                   await changeStore!.Bind();
-              }
-              for (const record of pool.records()) {
-                const derived = keyring.deriveSubAccount(record.index);
-                const cached = pool.capacityCache.get(record.index);
-                const bal = cached !== undefined ? cached.capacityWei : 0n;
-                const utxo = accountUtxoPool.registerSubAccount({
-                  chain: "monad",
-                  address: derived.address,
-                  privateKey: derived.privateKey,
-                  balanceWei: bal,
-                  derivationPath: keyring.subAccountPath(record.index),
-                  index: record.index,
-                });
-                if (record.status === "spent" || record.status === "retired") {
-                  accountUtxoPool.markSpent(utxo.id);
-                } else if (record.status === "in-use") {
-                  accountUtxoPool.markPending(utxo.id);
-                }
               }
             },
             nativeBinding: {
@@ -2673,7 +2480,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             assertEnclosingAdmission: () => {
               if (
                 topicOwnerWallet === undefined ||
-                !enclosingTopicAdmissions.has(topicOwnerWallet)
+                !evmWalletInternals(topicOwnerWallet).enclosingTopicAdmission
               ) {
                 throw new Error(
                   "Topic operations require enclosing wallet admission"
@@ -2926,14 +2733,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               ? []
               : all.filter((coin) => coin.state === "unspent" && !nativeSet(coin));
             for (const coin of [...probed, ...counted]) {
-              if (closedWallets.has(wallet)) return;
+              if (evmWalletInternals(wallet).closed) return;
               try {
                 if (nativeSet(coin)) { await refreshNativeSetCoin(coin, true); invalidateBalanceRead(); continue; }
                 const read =
                   coin.state === "unspent" ? undefined : await transferOf(coin);
                 const balanceWei = await provider.getBalance(coin.address);
                 const current = coinStore.get(coin.address);
-                if (current === undefined || closedWallets.has(wallet)) continue;
+                if (current === undefined || evmWalletInternals(wallet).closed) continue;
                 await applyStoredNativeCoinObservation(coinStore, coin.address, {
                   balanceWei, transfer: read?.transfer, transferValueWei: read?.valueWei, atMs: Date.now(),
                 });
@@ -2995,21 +2802,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 mainBalance = primaryBalanceCache.mainBalance;
                 identityBalance = primaryBalanceCache.identityBalance;
               } else {
-                const readAddress = async (
-                  address: string
-                ): Promise<bigint> => {
-                  const coins = accountUtxoPool.getCoinsByAddress(
-                    address,
-                    "monad"
-                  );
-                  if (
-                    coins.length > 0 &&
-                    coins[0].balanceWei > 0n &&
-                    coins[0].status === "clean"
-                  )
-                    return coins[0].balanceWei;
-                  return transactionBuilder.getBalance({ address, provider });
-                };
+                const readAddress = (address: string): Promise<bigint> =>
+                  transactionBuilder.getBalance({ address, provider });
                 [mainBalance, identityBalance] = await Promise.all([
                   readAddress(mainAccount.address),
                   identity.address.raw.toLowerCase() ===
@@ -3055,13 +2849,31 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }
           };
 
-          const wallet: EvmChainWalletHandle = {
-            family: "evm",
+          const spendPool = new EvmSpendPool({
+            identity,
+            mainAccount,
+            keyring,
+            changeKeyring,
+            pool,
+            changePool,
+            coinStore,
+            nativeJournal: () => topicOwner?.nativeJournal,
+            holdsSource: (address) =>
+              evmWalletInternals(wallet).nativeOperationOwner?.holdsSource(address) === true,
+          });
+          const resolveSource = (source: EvmNativeSource): Wallet =>
+            spendPool.resolveSource(source);
+          const coinSource = (coin: EvmCoin): EvmNativeSource =>
+            spendPool.coinSource(coin);
+          const getSources = (): Promise<EvmNativeSource[]> =>
+            spendPool.getSources();
+
+          let closing: Promise<void> | undefined;
+          const wallet: EvmChainWalletHandle = new EvmWallet({
             chainIdentifier,
             networkId: config.networkId,
             identity,
-            accountUtxoPool,
-            chainUtxoPool: accountUtxoPool,
+            spendPool,
             mainAccount,
             mainPrivateKey: mainAccount.privateKey,
             invalidateBalanceCache(networkTag?: string) {
@@ -3142,7 +2954,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               settleContactPayment(ephemeralPubKey),
             retryContactPayment: (messageId) => retryContactPayment(messageId),
             recordStealthPayment: (item, origin) =>
-              receivedCoinOwners.get(wallet)!.recordStealthItem(item, {
+              evmWalletInternals(wallet).receivedCoinOwner!.recordStealthItem(item, {
                 payloadDigest: origin?.payloadDigest,
                 timestampMs: origin?.timestampMs ?? Date.now(),
               }),
@@ -3190,7 +3002,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 );
                 // The note to this account's other devices is started, not waited for: a native
                 // send or resume never waits on the relay or on a message being sent.
-                if (!closedWallets.has(wallet)) {
+                if (!evmWalletInternals(wallet).closed) {
                   {
                     const noteOf = operationId;
                     retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
@@ -3219,8 +3031,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // local pass that follows a newly recorded inclusion enters the queue, where the
             // queue's own guard may refuse it. A refusal leaves the observation recorded.
             reobserveNativeOperations() {
-              const owner = nativeOperationOwners.get(wallet);
-              if (!owner || closedWallets.has(wallet)) return Promise.resolve();
+              const internals = evmWalletInternals(wallet);
+              const owner = internals.nativeOperationOwner;
+              if (!owner || internals.closed) return Promise.resolve();
               // A contract call the node was seen not to know is handed to it again (the same
               // signed bytes), so a lost broadcast cannot hold the main account for good.
               return owner
@@ -3244,7 +3057,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             async watchNativeOperation(operationId) {
               requireOpenWallet(wallet);
               const owner = nativeOperationOwner(wallet);
-              const watcher = blockWatchers.get(wallet);
+              const watcher = evmWalletInternals(wallet).blockWatcher;
               // The wallet's one block watcher paces the looks; a wallet without one waits a
               // second. A watcher that was stopped means the wallet is closing.
               if (watcher) await watcher.next().catch(() => undefined);
@@ -3317,7 +3130,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 )
               );
               invalidateBalanceRead();
-              if (!closedWallets.has(wallet)) {
+              if (!evmWalletInternals(wallet).closed) {
                 {
                   const noteOf = 
                   owner
@@ -3345,7 +3158,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 )
               );
               invalidateBalanceRead();
-              if (!closedWallets.has(wallet)) {
+              if (!evmWalletInternals(wallet).closed) {
                 {
                   const noteOf = 
                   owner
@@ -3395,7 +3208,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               invalidateBalanceRead();
               // The move is an ordinary legacy send to one of this wallet's own accounts: it
               // notes itself to the account's other devices exactly as `sendLegacy` does.
-              if (!closedWallets.has(wallet)) {
+              if (!evmWalletInternals(wallet).closed) {
                 const operation = owner
                   .listOperations()
                   .find(
@@ -3427,7 +3240,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 )
               );
               invalidateBalanceRead();
-              if (!closedWallets.has(wallet)) {
+              if (!evmWalletInternals(wallet).closed) {
                 {
                   const noteOf = operationId;
                   retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
@@ -3448,15 +3261,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             cborNetwork: forumPolicy.network,
             close() {
               if (closing !== undefined) return closing;
-              closedWallets.add(wallet);
+              const internals = evmWalletInternals(wallet);
+              internals.closed = true;
               // Every wait on the chain ends now: nothing a waiter had was signed.
-              blockWatchers.get(wallet)?.stop();
+              internals.blockWatcher?.stop();
               closing = (async () => {
                 // A re-observation pass in flight holds the wallet lifetime: end it first, or a
                 // node that never answers would hold the close.
-                await nativeOperationOwners.get(wallet)?.stopReobservation();
-                await walletSendQueues.get(wallet);
-                await nativeOperationOwners.get(wallet)?.drain();
+                await internals.nativeOperationOwner?.stopReobservation();
+                await internals.sendQueue;
+                await internals.nativeOperationOwner?.drain();
                 try {
                   await topicOwner!.close();
                   await canonicalLinks?.close();
@@ -3472,153 +3286,21 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   provider.destroy();
                   httpClient.destroy();
                   material.dispose();
-                  canonicalClientFactories.delete(wallet);
-                  canonicalUnavailableWallets.delete(wallet);
-                  canonicalMessaging.delete(wallet);
-                  canonicalInventoryFunders.delete(wallet);
-                  canonicalStampQuoters.delete(wallet);
-                  canonicalDirectories.delete(wallet);
-                  installedCanonicalWalletDescriptors.delete(wallet);
-                  privateTopicWallets.delete(wallet);
-                  walletMaterial.delete(wallet);
-                  nativeOperationOwners.delete(wallet);
+                  internals.canonicalClientFactory = undefined;
+                  internals.canonicalUnavailable = undefined;
+                  internals.canonicalMessaging = undefined;
+                  internals.canonicalInventoryFunder = undefined;
+                  internals.canonicalStampQuoter = undefined;
+                  internals.canonicalDirectory = undefined;
+                  internals.installedCanonicalDescriptor = undefined;
+                  internals.privateTopicWallet = undefined;
+                  internals.material = undefined;
+                  internals.nativeOperationOwner = undefined;
                 }
               })();
               return closing;
             },
-          };
-          let closing: Promise<void> | undefined;
-          const identityPublicKey = hexlify(
-            identity.compressedPubKey
-          ).toLowerCase();
-          const resolveSource = (source: EvmNativeSource): Wallet => {
-            let signer: Wallet;
-            if (source.kind === "main") signer = material.mainAccount;
-            else if (source.kind === "spend")
-              signer = new Wallet(
-                material.keyring.deriveSubAccount(source.index).privateKey
-              );
-            else if (source.kind === "change")
-              signer = new Wallet(
-                material.changeKeyring.deriveChangeAccount(
-                  source.index
-                ).privateKey
-              );
-            else if (source.kind === "coin") {
-              // A received coin: the coin list holds its key (it cannot be derived from the
-              // seed alone). The address check below is what ties the key to the source.
-              const coin = coinStore.get(source.address);
-              if (coin === undefined)
-                throw new Error("Native source is not a coin of this wallet");
-              signer = new Wallet(coin.privateKey);
-            } else {
-              if (source.identityPublicKey !== identityPublicKey)
-                throw new Error("Native source belongs to another identity");
-              signer = new Wallet(
-                source.kind === "identity"
-                  ? identity.toPrivateKeyHex()
-                  : deriveEvmStealthPrivateKey({
-                      recipientSpendSecret: identity.toPrivateKeyHex(),
-                      ephemeralPubKey: getBytes(source.ephemeralPublicKey)
-                    }).stealthPrivateKey
-              );
-            }
-            if (signer.address.toLowerCase() !== source.address)
-              throw new Error("Native custody source address mismatch");
-            return signer;
-          };
-          const coinSource = (coin: EvmCoin): EvmNativeSource =>
-            coin.origin === "stealth" && coin.ephemeralPubKey !== undefined
-              ? {
-                  kind: "identity-stealth-v1",
-                  address: coin.address,
-                  identityPublicKey,
-                  ephemeralPublicKey: `0x${coin.ephemeralPubKey}`,
-                }
-              : { kind: "coin", address: coin.address };
-          const getSources = async (): Promise<EvmNativeSource[]> => {
-            // Preserve the existing funding-source hold until P2 derives shared
-            // source claims. Filtering funding children alone cannot protect
-            // their main/identity sender or a retained journal source reference.
-            if (pool.records().some((record) => record.status === "funding"))
-              throw new Error(
-                "Native send is unavailable while pool funding remains pending"
-              );
-            // This construction pool belongs to this bound wallet; indexes are derivation hints.
-            const refs: EvmNativeSource[] = [
-              { kind: "main", address: mainAccount.address.toLowerCase() },
-              {
-                kind: "identity",
-                address: identity.address.raw.toLowerCase(),
-                identityPublicKey
-              },
-              ...pool
-                .records()
-                .filter(
-                  (r) =>
-                    r.status !== "in-use" &&
-                    r.status !== "funding" &&
-                    // An account a message or a topic burn holds is not a native source.
-                    pool.claimedBy(r.index) === undefined
-                )
-                .map((r) => ({
-                  kind: "spend" as const,
-                  address: r.address.toLowerCase(),
-                  index: r.index
-                })),
-              ...changePool
-                .records()
-                .map((r) => ({
-                  kind: "change" as const,
-                  address: r.address.toLowerCase(),
-                  index: r.index
-                })),
-              ...changePool
-                .recoveredAccounts()
-                .map((r) => ({
-                  kind: "change" as const,
-                  address: r.address.toLowerCase(),
-                  index: r.index
-                })),
-              ...accountUtxoPool
-                .getAllCoins()
-                .flatMap((coin) =>
-                  coin.index !== undefined &&
-                  (coin.origin === "change" || coin.origin === "subaccount") &&
-                  coin.status !== "pending"
-                    ? [
-                        {
-                          kind:
-                            coin.origin === "change"
-                              ? ("change" as const)
-                              : ("spend" as const),
-                          address: coin.address.toLowerCase(),
-                          index: coin.index
-                        }
-                      ]
-                    : []
-                ),
-              // Received sources include verified native funds or verified ERC20 positions.
-              // Token custody stays discoverable even with no native gas; each planner checks
-              // its own native fee requirement before it reserves or signs.
-              ...coinStore.all().filter(coin => spendableCoins([coin]).length > 0 || (coin.erc20Positions ?? []).some(position => fundedErc20Coins([coin], position.contractAddress).length > 0)).map(coinSource),
-              ...topicOwner!.nativeJournal!.sourceReferences()
-            ];
-            // Resolve public provenance before selection; attached coin secrets are not authority.
-            for (const ref of refs) resolveSource(ref);
-            const known = new Set(refs.map((r) => r.address));
-            for (const coin of accountUtxoPool.getAllCoins()) {
-              if (
-                coin.balanceWei > 0n &&
-                coin.status !== "pending" &&
-                !known.has(coin.address.toLowerCase())
-              )
-                throw new Error(
-                  "Funded native source has no recoverable custody reference"
-                );
-            }
-            return refs;
-          };
+          });
           // A pool account a non-cancelled native member spends from is reserved: read from the
           // journal on every selection, so it holds from the journal write and across restart.
           pool.attachSpendReservation((index) =>
@@ -3641,8 +3323,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               ).applySpend(rawTx, itemChainIdentifier);
             })
           );
-          nativeOperationOwners.set(
-            wallet,
+          evmWalletInternals(wallet).nativeOperationOwner =
             new EvmLegacyConsolidator({
               provider,
               journal: topicOwner.nativeJournal!,
@@ -3650,7 +3331,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               runLifetime: (operation) => topicOwner!.runLifetime(operation),
               // A transfer just broadcast is watched for its block on the wallet's one watcher.
               nextLook: () =>
-                blockWatchers.get(wallet)?.next() ??
+                evmWalletInternals(wallet).blockWatcher?.next() ??
                 new Promise((resolve) => setTimeout(resolve, 500)),
               inclusionWaitMs: config.nativeInclusionWaitMs,
               // The node admits a transaction against the balance of spacing + 1 blocks ago.
@@ -3661,54 +3342,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               transactionBuilder,
               getSources,
               sourceHeld: (source) =>
-                source.kind === "spend"
-                  ? pool.claimedBy(source.index) !== undefined ||
-                    pool.getRecord(source.index)?.status === "in-use"
-                  : (() => {
-                      const claimant = pool.accountClaimedBy(source.address);
-                      return (
-                        claimant !== undefined &&
-                        claimant !== mainAccountHolder(wallet)
-                      );
-                    })(),
-              claimSources: (sources) => {
-                const indices = sources.flatMap((source) =>
-                  source.kind === "spend" ? [source.index] : []
-                );
-                const held = indices.find(
-                  (index) =>
-                    pool.claimedBy(index) !== undefined ||
-                    pool.getRecord(index)?.status === "in-use"
-                );
-                if (held !== undefined)
-                  throw new RangeError(
-                    `Sub-account ${held} is held by another operation; plan the send again`
-                  );
-                const holder = `${identity.address.raw.toLowerCase()}:native:${hexlify(
-                  randomBytes(8)
-                )}`;
-                // A source that is not a pool row (a received coin; the main and identity
-                // accounts are already this operation's through the native holder) is taken
-                // by address in the same claim, so a stamp being paid from that coin at this
-                // moment and a sweep of it cannot both sign.
-                const addresses = sources.flatMap((source) =>
-                  source.kind === "spend" ||
-                  pool.accountClaimedBy(source.address) === mainAccountHolder(wallet)
-                    ? []
-                    : [source.address]
-                );
-                const taken = addresses.find(
-                  (address) => pool.accountClaimedBy(address) !== undefined
-                );
-                if (taken !== undefined)
-                  throw new RangeError(
-                    `${taken} is held by another operation; plan the send again`
-                  );
-                pool.restoreClaim(holder, indices);
-                for (const address of addresses)
-                  pool.restoreAccountClaim(holder, address);
-                return () => pool.releaseClaim(holder);
-              },
+                spendPool.sourceHeld(source, mainAccountHolder(wallet)),
+              claimSources: (sources) =>
+                spendPool.claimSources(sources, mainAccountHolder(wallet)),
               sign: async (source, unsignedTransaction) => {
                 return resolveSource(source).signTransaction(
                   Transaction.from(unsignedTransaction)
@@ -3763,8 +3399,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   messageId,
                 });
               },
-            })
-          );
+            });
           // Payments to contacts. One payment is: a transfer to a one-time address only the
           // contact can spend from, and a message that carries the signed transfer and the
           // ephemeral key the contact's wallet needs to find it.
@@ -3789,14 +3424,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           // So money never moves before its message is with the relay. A relay that cannot be
           // reached leaves nothing broadcast: every later mailbox read repeats 5 with the same
           // message ID and then 6, from the saved record. Nothing is ever signed again.
-          const nativeOwner = nativeOperationOwners.get(wallet)!;
+          const nativeOwner = evmWalletInternals(wallet).nativeOperationOwner!;
           const financialAbi = new Interface([
             "function transfer(address to,uint256 amount) returns (bool)",
             "function balanceOf(address owner) view returns (uint256)",
             "event Transfer(address indexed from,address indexed to,uint256 value)",
           ]);
           const assertFinancialActive = (): void => {
-            if (closedWallets.has(wallet))
+            if (evmWalletInternals(wallet).closed)
               throw new Error("Wallet financial session is closed");
           };
           const erc20Reader: EvmErc20Reader = {
@@ -4620,7 +4255,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           const holdsItsSource = (payment: ContactPayment): boolean =>
             (payment.state === "prepared" || payment.state === "failed") &&
             !transferIncluded(payment);
-          heldTransferSources.set(wallet, () => {
+          evmWalletInternals(wallet).heldTransferSources = () => {
             const held = financialPayments.heldSources();
             for (const payment of paymentStore.all()) {
               if (!holdsItsSource(payment)) continue;
@@ -4628,7 +4263,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               if (source !== undefined) held.add(source);
             }
             return held;
-          });
+          };
           /** A transfer that must not be broadcast yet: its message is not with the relay. */
           const heldForItsMessage = (operationId: string): boolean =>
             financialPayments.holdsForHost(operationId) || paymentStore
@@ -4897,7 +4532,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // from, and the key the message is sealed to. Unpublished: refused before anything.
             let spendKey: Uint8Array | undefined;
             let recipientStampKey: Uint8Array | undefined;
-            const directory = canonicalDirectories.get(wallet);
+            const directory = evmWalletInternals(wallet).canonicalDirectory;
             if (directory !== undefined) {
               const peer = await directory.peerCurrent({
                 address: params.recipient.raw,
@@ -4948,7 +4583,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // The message's stamp accounts first: any funding transfer the message needs is
               // made now, before the payment's transfer is signed, so the two are ordered and
               // the message will not need the held account again.
-              const prepare = canonicalInventoryFunders.get(wallet);
+              const prepare = evmWalletInternals(wallet).canonicalInventoryFunder;
               if (
                 prepare !== undefined &&
                 recipientStampKey !== undefined &&
@@ -5034,7 +4669,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             resumingContactPayments ??= contactExclusive(async () => {
               // Nothing to finish (every payment paid, released or ended): no request is made.
               for (const listed of paymentStore.all()) {
-                if (closedWallets.has(wallet)) return;
+                if (evmWalletInternals(wallet).closed) return;
                 let payment = listed;
                 // Released, and the app stopped before the journal cancelled its transfer:
                 // finished here (local, no request), so its source is not left held.
@@ -5256,7 +4891,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 ...waiting.filter((entry) => !noteFailures.has(entry)),
                 ...waiting.filter((entry) => noteFailures.has(entry)),
               ]) {
-                if (closedWallets.has(wallet)) return;
+                if (evmWalletInternals(wallet).closed) return;
                 const coin = coinStore.get(address);
                 if (coin === undefined || coin.notedAtMs !== undefined) continue;
                 const note = receivedCoinNoteOf(coin, chainIdentifier);
@@ -5421,7 +5056,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   // Broadcast and not in a block yet: looked at again, for a bounded time.
                   if (!waiting || Date.now() >= until) break;
                   await new Promise((resolve) => setTimeout(resolve, 1_000));
-                  if (closedWallets.has(wallet)) break;
+                  if (evmWalletInternals(wallet).closed) break;
                 }
               } catch (error) {
                 failure = error instanceof Error ? error.message : String(error);
@@ -5471,7 +5106,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }
             return answers;
           };
-          receivedCoinOwners.set(wallet, {
+          const walletInternals = evmWalletInternals(wallet);
+          walletInternals.receivedCoinOwner = {
             recordStampCoin,
             async recordStampPayments(message) {
               const roles = material.canonicalRoles;
@@ -5577,7 +5213,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               contactExclusive(async () => {
                 for (const payment of paymentStore.all()) {
                   if (
-                    closedWallets.has(wallet) ||
+                    walletInternals.closed ||
                     payment.deliveredBy !== "host" ||
                     (payment.state !== "prepared" && payment.state !== "failed") ||
                     payment.payloadDigest !== payloadDigest
@@ -5592,7 +5228,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   await broadcastContactTransfer(delivered);
                 }
               }).catch(() => undefined),
-          });
+          };
           // Wallet open, native operations. Local only: nothing in this block may make a network
           // request, ask for a signature or fail the open, and each step stands alone.
           // A plan that never signed (a crash or failure between the journal write and the first
@@ -5600,9 +5236,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           // freeze of its source address; the journal row is retained, cancelled.
           await topicOwner
             .runLifetime((lifetime) =>
-              nativeOperationOwners
-                .get(wallet)!
-                .cancelUnsignedOperations(lifetime)
+              walletInternals.nativeOperationOwner!.cancelUnsignedOperations(lifetime)
             )
             .catch(() => undefined);
           // A pool account whose native spend the journal already records as included, and whose
@@ -5629,9 +5263,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   )
               )
                 return;
-              await nativeOperationOwners
-                .get(wallet)!
-                .applyRecordedEvidence(lifetime);
+              await walletInternals.nativeOperationOwner!.applyRecordedEvidence(lifetime);
             })
             .catch(() => undefined);
           // A native send, contract call or consolidation that was handed to the network and
@@ -5641,7 +5273,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             material.mainAccount.address.toLowerCase(),
             identity.address.raw.toLowerCase(),
           ]))
-            if (sourceIsHeld(wallet, address) || nativeOperationOwners.get(wallet)!.holdsSource(address))
+            if (sourceIsHeld(wallet, address) || walletInternals.nativeOperationOwner!.holdsSource(address))
               try {
                 pool.restoreAccountClaim(mainAccountHolder(wallet), address);
               } catch (error) {
@@ -5653,27 +5285,24 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 );
               }
           topicOwnerWallet = wallet;
-          privateTopicWallets.set(wallet, {
+          walletInternals.privateTopicWallet = {
             ...wallet,
             walletState: topicOwner,
             topicOperationJournal: topicOwner.topicOperationJournal,
-          });
+          };
           if (topicOwner.canonicalUnavailable !== undefined)
-            canonicalUnavailableWallets.set(
-              wallet,
-              topicOwner.canonicalUnavailable
-            );
+            walletInternals.canonicalUnavailable = topicOwner.canonicalUnavailable;
           else if (
             material.canonicalRoles !== undefined &&
             (config.networkTag === "MONT" ||
               config.networkTag === "MON1" ||
               config.networkTag === "MONR")
           )
-            installedCanonicalWalletDescriptors.set(wallet, {
+            walletInternals.installedCanonicalDescriptor = {
               networkTag: config.networkTag,
               network: forumPolicy.network,
               chainId: BigInt(config.chainId),
-            });
+            };
           if (
             material.canonicalRoles !== undefined &&
             topicOwner.canonicalJournal !== undefined &&
@@ -5683,7 +5312,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           ) {
             const canonicalRoles = material.canonicalRoles;
             const installedNetworkTag = config.networkTag;
-            canonicalClientFactories.set(wallet, () => {
+            walletInternals.canonicalClientFactory = () => {
               requireOpenWallet(wallet);
               return new MonadCanonicalStampClient({
                 ...wallet,
@@ -5697,7 +5326,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     return task(admission);
                   }, true),
               });
-            });
+            };
             const defaultGasReserveWei =
               BigInt(21_000) * BigInt(2_000_000_000);
             // What a stamp payment keeps back in each account for its own fee: the figure the
@@ -5726,7 +5355,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }) =>
               topicOwner!.runLifetime(async () => {
                 // A send changes what there is to fund: the next fund-ahead call looks again.
-                fundAheadBackoffs.delete(wallet);
+                walletInternals.fundAheadBackoff = undefined;
                 const feeReserveWei =
                   input.feeReserveWei ?? (await stampPaymentFeeReserve());
                 let fundingPrivateKey = mainAccount.privateKey;
@@ -5807,7 +5436,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }) =>
               (await fundStampAccounts({ stampValueWei, onProgress }))
                 .fundingTxHashes;
-            canonicalInventoryFunders.set(wallet, prepareInventory);
+            walletInternals.canonicalInventoryFunder = prepareInventory;
             // A stamp is paid from coins the wallet already has. Funded sub-accounts first (a
             // payment from one links nothing), then the main account, then the identity account
             // (spending from it links the identity to that payment on chain).
@@ -5828,7 +5457,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 ? {}
                 : { intervalMs: config.paymentPollIntervalMs }),
             });
-            blockWatchers.set(wallet, blockWatcher);
+            walletInternals.blockWatcher = blockWatcher;
             const stampPayer = new EvmStampPayer({
               pool,
               provider,
@@ -5837,16 +5466,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               spendSpacingBlocks: config.spendSpacingBlocks,
               reserveBalanceWei: config.reserveBalanceWei,
               // A message took funded accounts: the next fund-ahead call looks again.
-              onPoolCoinsClaimed: () => fundAheadBackoffs.delete(wallet),
+              onPoolCoinsClaimed: () => {
+                walletInternals.fundAheadBackoff = undefined;
+              },
               // Received coins pay for stamps like any other funds, after the wallet's own
               // accounts. One that a native operation (a sweep, a send) is spending is left out.
               coins: () =>
                 spendableCoins(coinStore.all())
                   .filter(
                     (coin) =>
-                      nativeOperationOwners
-                        .get(wallet)
-                        ?.holdsSource(coin.address) !== true
+                      walletInternals.nativeOperationOwner?.holdsSource(
+                        coin.address
+                      ) !== true
                   )
                   .sort((a, b) =>
                     BigInt(a.amountWei) > BigInt(b.amountWei) ? -1 : 1
@@ -5886,7 +5517,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               ],
             });
 
-            canonicalStampQuoters.set(wallet, (input) =>
+            walletInternals.canonicalStampQuoter = (input) =>
               topicOwner!.runLifetime(async () => {
                 if (input.stampValueWei > 0n) {
                   const minimum = await stampPayer.minimumPaymentWei();
@@ -5911,8 +5542,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                       maximumNativeFeeAtomic: quote.maximumFeeWei,
                     }
                   : { ...common, status: "insufficient" };
-              })
-            );
+              });
 
             // Funding ahead (#1235): the same preparation, asked for by the host between
             // messages. Never called from here: opening a wallet makes no request.
@@ -6010,8 +5640,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 // needed ("ready"): the next ticks answer from memory until the wait ends, a
                 // message takes funded accounts, or the main account is seen to have grown.
                 if (result.outcome !== "funded") {
-                  const last = fundAheadBackoffs.get(wallet);
-                  fundAheadBackoffs.set(wallet, {
+                  const last = walletInternals.fundAheadBackoff;
+                  walletInternals.fundAheadBackoff = {
                     result,
                     delayMs:
                       last !== undefined && last.result.reason === result.reason
@@ -6019,15 +5649,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                         : FUND_AHEAD_BACKOFF_MIN_MS,
                     startedAtMs: Date.now(),
                     mainBalanceWei,
-                  });
-                } else fundAheadBackoffs.delete(wallet);
+                  };
+                } else walletInternals.fundAheadBackoff = undefined;
                 return result;
               });
             // Single flight: a call made while a pass runs gets that pass's answer. A call made
             // while the last pass's wait runs gets that pass's answer too, and nothing is asked.
             let fundingAhead: Promise<DirectMessageFundAheadResult> | undefined;
-            stampFundersAhead.set(wallet, () => {
-              const waiting = fundAheadBackoffs.get(wallet);
+            walletInternals.stampFunderAhead = () => {
+              const waiting = walletInternals.fundAheadBackoff;
               const waited = Date.now() - (waiting?.startedAtMs ?? 0);
               if (waiting && waited >= 0 && waited < waiting.delayMs)
                 return Promise.resolve(waiting.result);
@@ -6035,7 +5665,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 fundingAhead = undefined;
               });
               return fundingAhead;
-            });
+            };
             // State of the earlier send code is never silently ignored: named once, with how
             // to reset it. Nothing is migrated or deleted.
             if (storageLocation !== undefined)
@@ -6064,14 +5694,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   : Promise.resolve(),
               signDigest: (digest) =>
                 new Uint8Array(identity.signHash(Buffer.from(digest))),
-              directory: () => canonicalDirectories.get(wallet),
+              directory: () => walletInternals.canonicalDirectory,
               messageItems: () => installedMessageItemRegistry(wallet),
             };
             // Before the wallet is handed out: every stored message with a payment the chain
             // has not answered for holds its accounts again. No request is made.
             restoreOutgoingClaims(messagingOwner);
-            canonicalMessaging.set(
-              wallet,
+            walletInternals.canonicalMessaging =
               canonicalDirectMessages(messagingOwner, async (minimumStamp) => {
                 const context = { chainIdentifier: contractChainIdentifier(), minimumStamp };
                 if (minimumStamp === undefined) return { status: "unavailable" as const, chainIdentifier: context.chainIdentifier, reason: "missing-fee" as const };
@@ -6080,44 +5709,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   chainIdentifier: context.chainIdentifier,
                   reason: "missing-rate" as const,
                 };
-              })
-            );
+              });
           }
-          walletMaterial.set(wallet, material);
-          mainAccountAdmissions.set(wallet, admission);
-          walletFundingCandidates.set(wallet, () => [
-            {
-              source: "main" as const,
-              address: mainAccount.address,
-              privateKey: () => mainAccount.privateKey,
-            },
-            ...(identity.address.raw.toLowerCase() ===
-            mainAccount.address.toLowerCase()
-              ? []
-              : [
-                  {
-                    source: "identity" as const,
-                    address: identity.address.raw,
-                    privateKey: () => identity.toPrivateKeyHex(),
-                  },
-                ]),
-            ...spendableCoins(coinStore.all())
-              .filter(
-                (coin) =>
-                  nativeOperationOwners.get(wallet)?.holdsSource(coin.address) !==
-                  true
-              )
-              .sort((a, b) =>
-                BigInt(a.amountWei) > BigInt(b.amountWei) ? -1 : 1
-              )
-              .map((coin) => ({
-                source: "coin" as const,
-                address: coin.address,
-                privateKey: () => coin.privateKey,
-                balanceWei: BigInt(coin.amountWei),
-              })),
-          ]);
-          if (material.canonicalRoles !== undefined) typedWallets.add(wallet);
+          walletInternals.material = material;
+          walletInternals.mainAccountAdmission = admission;
+          walletInternals.fundingCandidates = () =>
+            spendPool.fundingCandidates();
+          if (material.canonicalRoles !== undefined)
+            walletInternals.typed = true;
           return wallet;
         } catch (error) {
           try {

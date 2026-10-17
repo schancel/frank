@@ -25,7 +25,7 @@ import {
   openExistingPoolMonadTopicOwner,
   assertMonadWalletBundleProvenance,
   MonadWalletPersistenceBundle,
-} from './monad-wallet-bundle'
+} from './evm-wallet-bundle'
 
 const TEST_MNEMONIC =
   'test test test test test test test test test test test junk'

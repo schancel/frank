@@ -11,7 +11,7 @@ import {
 } from '@frank/codec'
 import type { ForumOperationStatus, ParsedFrame } from '@frank/codec'
 import type { EvmWalletHandle } from "./evm-wallet-handle";
-import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
+import type { MonadWalletOperationAdmission } from './storage/evm-wallet-bundle'
 import type { OutgoingTopicOperation } from './storage/topic-operation-journal'
 import {
   acquireLeaseWhenAvailable,

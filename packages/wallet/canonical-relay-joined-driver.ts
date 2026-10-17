@@ -57,7 +57,7 @@ import { LevelSubAccountPoolStore } from './storage/level-sub-account-pool-store
 import {
   openExistingPoolMonadTopicOwner,
   type MonadWalletOperationAdmission,
-} from './storage/monad-wallet-bundle'
+} from './storage/evm-wallet-bundle'
 
 interface InstalledPrincipal {
   network: string

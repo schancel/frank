@@ -520,7 +520,7 @@ import {
   assertMonadWalletBundleProvenance,
   assertOrdinaryMonadPoolSelection,
   runMonadPoolFinancialOperation,
-} from './storage/monad-wallet-bundle'
+} from './storage/evm-wallet-bundle'
 
 export interface CanonicalWorkflowLink {
   readonly attemptRef: string
@@ -1085,29 +1085,7 @@ export class MonadCanonicalStampClient {
       >()
 
       for (const record of candidateRecords) {
-        // Fast in-memory balance check from accountUtxoPool, or provider query
-        let balance: bigint | undefined
-        if (this.wallet.accountUtxoPool) {
-          const utxos = this.wallet.accountUtxoPool.getCoinsByAddress(
-            record.address,
-            'monad',
-          )
-          if (utxos.length > 0 && utxos[0].balanceWei > 0n) {
-            balance = utxos[0].balanceWei
-          }
-        }
-        if (balance === undefined) {
-          balance = await this.wallet.provider.getBalance(record.address)
-          if (this.wallet.accountUtxoPool && balance > 0n) {
-            const utxos = this.wallet.accountUtxoPool.getCoinsByAddress(
-              record.address,
-              'monad',
-            )
-            if (utxos.length > 0) {
-              utxos[0].balanceWei = balance
-            }
-          }
-        }
+        const balance = await this.wallet.provider.getBalance(record.address)
         if (balance <= 0n) continue
         const signer = this.wallet.pool.getSigner(record.index, this.wallet)
         if (signer.address.toLowerCase() !== record.address.toLowerCase())

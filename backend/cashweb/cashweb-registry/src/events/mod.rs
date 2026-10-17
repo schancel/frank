@@ -155,6 +155,12 @@ pub fn parse_nats_subject(subject: &str) -> Result<String, EventBusError> {
     normalize_address_hex(stripped)
 }
 
+fn validate_group_subject(group_id: &str) -> Result<String, EventBusError> {
+    crate::store::groups::parse_group_id_hex(group_id)
+        .map_err(|_| EventBusError::InvalidSubject("invalid group identifier".into()))?;
+    Ok(group_id.to_owned())
+}
+
 /// Abstract receiver for message arrival notifications.
 #[derive(Debug)]
 pub struct EventReceiver {
@@ -251,6 +257,22 @@ pub trait RelayEventBus: Send + Sync + Debug {
         payload_hash: &[u8; 32],
     ) -> Result<(), EventBusError>;
 
+    /// Ephemeral group wakeups contain only a canonical group identifier.
+    async fn publish_group_wakeup(&self, group_id: &str) -> Result<(), EventBusError> {
+        let _ = group_id;
+        Err(EventBusError::PublishFailed(
+            "group notifications unavailable".into(),
+        ))
+    }
+
+    /// Group events have their own namespace; they never enter direct-message subscriptions.
+    async fn subscribe_group(&self, group_id: &str) -> Result<EventReceiver, EventBusError> {
+        let _ = group_id;
+        Err(EventBusError::SubscribeFailed(
+            "group notifications unavailable".into(),
+        ))
+    }
+
     /// Subscribe to message arrival notifications targeting `recipient_hex`.
     async fn subscribe(&self, recipient_hex: &str) -> Result<EventReceiver, EventBusError>;
 }
@@ -261,6 +283,7 @@ pub trait RelayEventBus: Send + Sync + Debug {
 #[derive(Debug, Clone)]
 pub struct StandaloneEventBus {
     sender: tokio::sync::broadcast::Sender<MessageArrivalNotification>,
+    groups: tokio::sync::broadcast::Sender<MessageArrivalNotification>,
 }
 
 impl StandaloneEventBus {
@@ -272,7 +295,8 @@ impl StandaloneEventBus {
     /// Create a new in-process event bus with custom buffer capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         let (sender, _) = tokio::sync::broadcast::channel(capacity);
-        Self { sender }
+        let (groups, _) = tokio::sync::broadcast::channel(capacity);
+        Self { sender, groups }
     }
 }
 
@@ -284,6 +308,21 @@ impl Default for StandaloneEventBus {
 
 #[async_trait]
 impl RelayEventBus for StandaloneEventBus {
+    async fn publish_group_wakeup(&self, group_id: &str) -> Result<(), EventBusError> {
+        let group_id = validate_group_subject(group_id)?;
+        let _ = self
+            .groups
+            .send(MessageArrivalNotification::new(group_id, [0; 32]));
+        Ok(())
+    }
+
+    async fn subscribe_group(&self, group_id: &str) -> Result<EventReceiver, EventBusError> {
+        Ok(EventReceiver::from_broadcast(
+            self.groups.subscribe(),
+            validate_group_subject(group_id)?,
+        ))
+    }
+
     async fn publish_message_arrival(
         &self,
         recipient_hex: &str,
@@ -337,6 +376,28 @@ impl CoreNatsEventBus {
 
 #[async_trait]
 impl RelayEventBus for CoreNatsEventBus {
+    async fn publish_group_wakeup(&self, group_id: &str) -> Result<(), EventBusError> {
+        let group_id = validate_group_subject(group_id)?;
+        let notification = MessageArrivalNotification::new(group_id.clone(), [0; 32]);
+        self.client
+            .publish(
+                format!("frank.relay.group.wakeup.{group_id}"),
+                notification.encode().into(),
+            )
+            .await
+            .map_err(|error| EventBusError::PublishFailed(error.to_string()))
+    }
+
+    async fn subscribe_group(&self, group_id: &str) -> Result<EventReceiver, EventBusError> {
+        let group_id = validate_group_subject(group_id)?;
+        let subscriber = self
+            .client
+            .subscribe(format!("frank.relay.group.wakeup.{group_id}"))
+            .await
+            .map_err(|error| EventBusError::SubscribeFailed(error.to_string()))?;
+        Ok(EventReceiver::from_nats(subscriber))
+    }
+
     async fn publish_message_arrival(
         &self,
         recipient_hex: &str,
@@ -371,6 +432,37 @@ impl RelayEventBus for CoreNatsEventBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn group_wakeups_are_bounded_ephemeral_and_separate_from_direct_notifications() {
+        let bus = StandaloneEventBus::with_capacity(2);
+        let group = "11".repeat(32);
+        let other = "22".repeat(32);
+        // Publication before subscription is deliberately lost; durable reads repair it.
+        bus.publish_group_wakeup(&group).await.unwrap();
+        let mut groups = bus.subscribe_group(&group).await.unwrap();
+        let mut directs = bus.subscribe(&group).await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), groups.recv())
+                .await
+                .is_err()
+        );
+        bus.publish_message_arrival(&group, &[1; 32]).await.unwrap();
+        assert_eq!(directs.recv().await.unwrap().payload_hash, [1; 32]);
+        bus.publish_group_wakeup(&other).await.unwrap();
+        bus.publish_group_wakeup(&group).await.unwrap();
+        bus.publish_group_wakeup(&group).await.unwrap();
+        let event = groups.recv().await.unwrap();
+        assert_eq!(event.recipient_hex, group);
+        assert_eq!(event.payload_hash, [0; 32]);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), directs.recv())
+                .await
+                .is_err()
+        );
+        assert!(bus.subscribe_group("*").await.is_err());
+        assert!(bus.publish_group_wakeup("11.extra").await.is_err());
+    }
 
     #[tokio::test]
     async fn test_in_process_event_publication_and_reception() {

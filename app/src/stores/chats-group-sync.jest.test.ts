@@ -494,6 +494,160 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     return { chats, group: chats.conversations[group.id] }
   }
 
+  it('live wakeups persist each authenticated receipt once and stop after leaving', async () => {
+    const alice = await makeGroup()
+    const bob = await inviteBob(alice.group, alice.client)
+    let wake!: () => Promise<void>
+    const close = jest.fn()
+    const subscribe = jest
+      .spyOn(alice.client, 'subscribeGroupMessages')
+      .mockImplementation((_id, _epoch, _token, callback) => {
+        wake = callback
+        return { close }
+      })
+    const stop = bob.chats.startGroupLiveDelivery()
+    expect(subscribe).not.toHaveBeenCalled()
+    bob.chats.approveGroupInvite(bob.group.id)
+    expect(subscribe).toHaveBeenCalledTimes(1)
+    currentOwnAddress = ALICE
+    await alice.chats.sendGroupMessage({
+      conversationId: alice.group.id,
+      items: [{ type: 'text', text: 'live receipt' }],
+      relayClient: alice.client,
+      senderAddress: ALICE,
+    })
+    currentOwnAddress = BOB
+    const messageStore = await messageStorePromise
+    messageStore.saveMessage.mockClear()
+    try {
+      await Promise.all([wake(), wake(), wake()])
+      await wake()
+      expect(bob.group.messages).toHaveLength(1)
+      expect(bob.group.groupState.lastSyncedSeq).toBe(1)
+      expect(messageStore.saveMessage).toHaveBeenCalledTimes(1)
+      bob.chats.leaveGroupConversation(bob.group.id)
+      expect(close).toHaveBeenCalledTimes(1)
+      await wake()
+      expect(messageStore.saveMessage).toHaveBeenCalledTimes(1)
+    } finally {
+      stop()
+    }
+  })
+
+  it('closes old epoch callbacks on rotation and closes all subscriptions on session cleanup', async () => {
+    const { chats, group, client } = await makeGroup()
+    const callbacks: Array<() => Promise<void>> = []
+    const closes: Array<jest.Mock> = []
+    jest
+      .spyOn(client, 'subscribeGroupMessages')
+      .mockImplementation((_id, _epoch, _token, callback) => {
+        callbacks.push(callback)
+        const close = jest.fn()
+        closes.push(close)
+        return { close }
+      })
+    const stop = chats.startGroupLiveDelivery()
+    const sync = jest.spyOn(chats, 'syncGroupConversation')
+    group.groupState.epochSecretHex = '42'.repeat(32)
+    expect(closes[0]).toHaveBeenCalledTimes(1)
+    expect(callbacks).toHaveLength(2)
+    await callbacks[0]()
+    expect(sync).not.toHaveBeenCalled()
+    stop()
+    expect(closes[1]).toHaveBeenCalledTimes(1)
+    await callbacks[1]()
+    expect(sync).not.toHaveBeenCalled()
+  })
+
+  it('cancels an in-flight durable read before persistence when stop-following wins', async () => {
+    const alice = await makeGroup()
+    const bob = await inviteBob(alice.group, alice.client)
+    bob.chats.approveGroupInvite(bob.group.id)
+    currentOwnAddress = ALICE
+    await alice.chats.sendGroupMessage({
+      conversationId: alice.group.id,
+      items: [{ type: 'text', text: 'cancelled read' }],
+      relayClient: alice.client,
+      senderAddress: ALICE,
+    })
+    currentOwnAddress = BOB
+    let wake!: () => Promise<void>
+    jest
+      .spyOn(alice.client, 'subscribeGroupMessages')
+      .mockImplementation((_id, _epoch, _token, callback) => {
+        wake = callback
+        return { close: jest.fn() }
+      })
+    let release!: () => void, entered!: () => void
+    const blocked = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const reading = new Promise<void>(resolve => {
+      entered = resolve
+    })
+    const fetch = alice.client.fetchGroupMessages.bind(alice.client)
+    jest
+      .spyOn(alice.client, 'fetchGroupMessages')
+      .mockImplementation(async (...args) => {
+        const response = await fetch(...args)
+        entered()
+        await blocked
+        return response
+      })
+    const stop = bob.chats.startGroupLiveDelivery()
+    const messageStore = await messageStorePromise
+    messageStore.saveMessage.mockClear()
+    const pending = wake()
+    await reading
+    bob.chats.leaveGroupConversation(bob.group.id)
+    release()
+    await expect(pending).rejects.toThrow(/subscription changed/)
+    expect(messageStore.saveMessage).not.toHaveBeenCalled()
+    expect(bob.group.messages).toHaveLength(0)
+    expect(bob.group.groupState.lastSyncedSeq).toBe(0)
+    stop()
+  })
+
+  it('closes subscriptions on account revision change without reopening old conversation secrets', async () => {
+    const { chats, client } = await makeGroup()
+    const close = jest.fn()
+    const subscribe = jest
+      .spyOn(client, 'subscribeGroupMessages')
+      .mockReturnValue({ close })
+    const stop = chats.startGroupLiveDelivery()
+    // Unwrap the readonly view once, retaining the underlying reactive proxy for a custody publish.
+    const session = Reflect.get(accountSession.state, '__v_raw') as {
+      revision: number
+    }
+    const revision = session.revision
+    try {
+      session.revision++
+      expect(close).toHaveBeenCalledTimes(1)
+      expect(subscribe).toHaveBeenCalledTimes(1)
+    } finally {
+      stop()
+      session.revision = revision
+    }
+  })
+
+  it('bounds browser subscriptions and releases every handle on teardown', async () => {
+    const { chats, group, client } = await makeGroup()
+    const closes: Array<jest.Mock> = []
+    jest.spyOn(client, 'subscribeGroupMessages').mockImplementation(() => {
+      const close = jest.fn()
+      closes.push(close)
+      return { close }
+    })
+    for (let index = 0; index < 40; index++) {
+      const id = `bounded-group-${index}`
+      chats.conversations[id] = { ...group, id }
+    }
+    const stop = chats.startGroupLiveDelivery()
+    expect(closes).toHaveLength(32)
+    stop()
+    expect(closes.every(close => close.mock.calls.length === 1)).toBe(true)
+  })
+
   it('persists the original prepared epoch before PUT and reconciles acceptance after restart', async () => {
     const client = createSharedMockGroupRelay()
     const chats = useChatStore()

@@ -1,4 +1,10 @@
 import { checkpoint, eventQueue } from "./lifecycle-checkpoints.testutil";
+import * as canonicalDm from '@frank/wallet/chain/monad-canonical-dm'
+import { encodeFrame, validateFrame, standaloneItemBudget, toHex, type Encodable } from '@frank/codec'
+import { encodeItemFrames, decodeItemFrames } from '@frank/wallet/message-item-plugins/wire'
+import { messageItems as appMessageItems } from '../../../app/src/utils/message-items'
+import groupWireFixtures from '@frank/group-messaging/fixtures/wire-v1.json'
+import type { GroupWelcomeItem, GroupControlItem } from '@frank/group-messaging/types'
 import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
 /**
  * Several bots on one host in one process, the way the demo runs them: one shared funding
@@ -162,6 +168,27 @@ describe("several bots on one host", () => {
       watchRegistrations: false,
       ...options,
     }));
+
+  it("register installs the group codecs used to read app canonical invitation and control frames", async () => {
+    // Call through the real installer: this captures the registry register() actually lends
+    // the bot wallet, rather than reconstructing a second registry in a test helper.
+    const installed = jest.spyOn(canonicalDm, "installMessageItemRegistry");
+    newHost();
+    await host!.register(bot("group-reader"));
+    expect(installed).toHaveBeenCalledTimes(1);
+    const registry = installed.mock.calls[0]![1];
+    const items = groupWireFixtures.map(({ item }) => item) as Array<GroupWelcomeItem | GroupControlItem>;
+    const frames = encodeItemFrames(appMessageItems, items);
+    const revision = validateFrame(encodeFrame(
+      { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
+      new Map<number, Encodable>([[0, "frank"], [1, frames]]),
+    ));
+    if (revision.kind !== "parsed" || revision.typed?.type !== 20)
+      throw new Error("expected a validated canonical content revision");
+    expect(decodeItemFrames(registry, revision.typed.items, standaloneItemBudget())).toEqual(items);
+    for (const { item, hex } of groupWireFixtures)
+      expect(toHex(registry.encodeItem(item as GroupWelcomeItem | GroupControlItem).bytes)).toBe(hex);
+  });
 
   it("gives each bot the amount formatter of the chain the host runs on", async () => {
     newHost();

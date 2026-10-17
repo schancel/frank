@@ -95,7 +95,7 @@ it('charges certificate traversal to the enclosing budget without resetting it',
   }
 })
 
-it('the app composition sends both group payloads to a headless bot and accepts its reply', () => {
+it('the app composition round-trips group payloads through the headless bot wire helper', () => {
   const items = samples.map(sample => sample.item)
   const frames = encodeItemFrames(appRegistry, items)
   // The bot's real composition and wire reader round-trip what the app writer produced.

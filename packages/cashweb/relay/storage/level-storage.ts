@@ -652,16 +652,25 @@ export class LevelMessageStore implements MessageStore {
 
   async saveMessage(
     messageWrapper: MessageWrapper,
-    { advanceCursor = true }: { advanceCursor?: boolean } = {},
+    { advanceCursor = true, isCancelled }: {
+      advanceCursor?: boolean
+      /** Checked at the serialized mutation boundary and immediately before the durable write. */
+      isCancelled?: () => boolean
+    } = {},
   ): Promise<void> {
     const index = messageWrapper.index
     const value = serializeMessageWrapper(messageWrapper)
     const serverTime = messageWrapper.message.serverTime
+    const checkActive = () => {
+      if (isCancelled?.()) throw new Error('Message persistence cancelled')
+    }
     await this.mutate(async () => {
+      checkActive()
       if (!Number.isSafeInteger(serverTime) || serverTime < 0)
         throw new Error('Invalid message server timestamp')
       if (!advanceCursor) {
         await this.initializeForWrite()
+        checkActive()
         await this.db.put(index, value, { sync: true })
         return
       }
@@ -670,6 +679,7 @@ export class LevelMessageStore implements MessageStore {
         serverTime,
       )
       await this.initializeForWrite()
+      checkActive()
       // The message and timestamp remain one atomic batch in their shared database.
       await (this.db as any).batch(
         [

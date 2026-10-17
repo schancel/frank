@@ -599,6 +599,56 @@ describe('message store schema and mutation lifecycle', () => {
     await rm(location, { recursive: true, force: true })
   })
 
+  it('rejects a stopped session queued behind another durable write', async () => {
+    await store.Open()
+    const db = rawDb(store, 'db')
+    const put = db.put.bind(db)
+    let release!: () => void, entered!: () => void
+    const blocked = new Promise<void>(resolve => { release = resolve })
+    const writing = new Promise<void>(resolve => { entered = resolve })
+    jest.spyOn(db, 'put').mockImplementation(async (key, value, options) => {
+      if (key === 'blocker') { entered(); await blocked }
+      return put(key, value, options)
+    })
+    const first = store.saveMessage(wrapper('blocker'), { advanceCursor: false })
+    await writing
+    let cancelled = false
+    const queued = store.saveMessage(wrapper('stale'), { advanceCursor: false, isCancelled: () => cancelled })
+    cancelled = true
+    release()
+    await first
+    await expect(queued).rejects.toThrow('Message persistence cancelled')
+    expect(await store.getMessage('stale')).toBeUndefined()
+    expect(await store.getMessage('blocker')).toBeDefined()
+  })
+
+  it('rechecks cancellation after first-write schema initialization', async () => {
+    await store.Open()
+    const metadata = rawDb(store, 'metadataDb')
+    const put = metadata.put.bind(metadata)
+    let release!: () => void, entered!: () => void
+    const blocked = new Promise<void>(resolve => { release = resolve })
+    const initializing = new Promise<void>(resolve => { entered = resolve })
+    jest.spyOn(metadata, 'put').mockImplementation(async (key, value, options) => {
+      entered()
+      await blocked
+      return put(key, value, options)
+    })
+    let cancelled = false
+    const saving = store.saveMessage(wrapper('stale-init'), { advanceCursor: false, isCancelled: () => cancelled })
+    await initializing
+    cancelled = true
+    release()
+    await expect(saving).rejects.toThrow('Message persistence cancelled')
+    expect(await store.getMessage('stale-init')).toBeUndefined()
+    await store.Close()
+    store = new LevelMessageStore(location)
+    await store.Open()
+    expect(await store.getMessage('stale-init')).toBeUndefined()
+    await store.saveMessage(wrapper('active'), { advanceCursor: false })
+    expect(await store.getMessage('active')).toBeDefined()
+  })
+
   it.each([
     'null',
     'false',

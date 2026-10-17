@@ -9,7 +9,12 @@ it('explicitly installs inert negotiation in the actual app composition without 
   )
   const app = createAppMessageItemRegistry()
   expect(defaults.has('swap-negotiation-v1')).toBe(false)
-  expect(app.types()).toEqual([...defaults.types(), 'swap-negotiation-v1'])
+  expect(defaults.has('newsletter-article-v1')).toBe(false)
+  expect(app.types()).toEqual([
+    ...defaults.types(),
+    'swap-negotiation-v1',
+    'newsletter-article-v1',
+  ])
   expect(messageItems.types()).toEqual(app.types())
   expect(app).not.toBe(messageItems)
   expect(

@@ -1,11 +1,11 @@
-import type { GroupControlItem } from '@frank/cashweb/types/messages'
+import type { GroupControlItem } from '../types'
 
 import {
   requirePluginCapabilities,
   type MessageItemPluginCapabilities,
   type MessageItemRegistry,
-} from '../registry'
-import { groupControlCodec } from './codec'
+} from '@frank/cashweb/message-items/registry'
+import { groupControlCodec } from './control-codec'
 
 export function initGroupControlPlugin(
   registry: MessageItemRegistry,

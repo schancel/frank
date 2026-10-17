@@ -18,7 +18,7 @@ import {
   req,
   str,
   struct,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 import { note } from '../shared/limits'
 
 type CatalogEntry = NonNullable<DigitalGoodsItem['catalog']>[number]

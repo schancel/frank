@@ -30,7 +30,7 @@ Read-only hydration validates required signed group certificates/envelopes and p
 
 Group payment/stamp delivery is explicitly unsupported and rejected at the headless send boundary. Prepaid group credits, relay migration, invite links/QR, WebSocket delivery and external cryptographic review remain outside this implemented baseline; this does not close all of #70. Local stop-following is not cryptographic revocation.
 
-Known ownership follow-up: extract `packages/wallet/message-item-plugins/group-welcome` and `group-control` plus their shared epoch certificate schema to a feature-owned headless entry, installed by host composition. These current feature implementations inside wallet violate the target package ownership invariant; the scoped custody signer does not depend on transport or these plugins.
+Group welcome/control payload types, pure CBOR codecs and the nested epoch certificate schema are owned by the headless `@frank/group-messaging` feature. App, bot, mail and CLI composition explicitly install its plugins through `groups/plugin`; importing the feature does not register it. Cashweb owns the neutral registry contract and relay epoch transport type; core codec retains framing and enclosing validation budgets. Wallet custody does not import the group feature. See [group feature ownership and checks](../../../packages/group-messaging/README.md). External cryptographic review remains required.
 
 ## Reproducible HTTP gate
 

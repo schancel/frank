@@ -16,7 +16,7 @@ import {
   timestampMs,
   token,
   transactionId,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 import { id } from '../shared/limits'
 
 const asset = struct<SwapRecordAsset>({

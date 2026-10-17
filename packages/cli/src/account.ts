@@ -10,6 +10,7 @@
  * so the account has its own address. A paid message is paid from the account's own main address,
  * which has to hold the stamp and its fee.
  */
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { createHash, randomBytes } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { join } from 'path'
@@ -28,7 +29,7 @@ import {
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { createMonadWalletMaterial } from '@frank/wallet/monad-wallet-material'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 
 import type { SignetConfig } from './config'
 
@@ -212,7 +213,10 @@ export async function openCliAccount(params: {
     installCanonicalDirectory(handle, directory.rawDirectory)
     installMessageItemRegistry(
       handle,
-      createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+      installGroupMessageItemPlugins(
+        createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+        pluginCapabilitiesNotYetAvailable,
+      ),
     )
     await RelayProfileManager.registerProfile({
       relayBaseUrl,

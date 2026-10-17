@@ -1,4 +1,8 @@
 /** @jest-environment jsdom */
+import type {
+  GroupWelcomeItem,
+  GroupControlItem,
+} from '@frank/group-messaging/types'
 import {
   GROUP_TEST_ACCOUNTS,
   groupTestSigner,
@@ -11,10 +15,6 @@ import {
   GroupRelayClient,
   type StoredGroupMessageWire,
 } from '@frank/cashweb/groups'
-import type {
-  GroupWelcomeItem,
-  GroupControlItem,
-} from '@frank/cashweb/types/messages'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({

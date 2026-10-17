@@ -1,6 +1,6 @@
 import type { ImageItem } from '@frank/cashweb/types/messages'
 
-import { cborItemCodec, longStr, req } from '../shared/cbor-fields'
+import { cborItemCodec, longStr, req } from '@frank/cashweb/message-items/cbor-fields'
 
 /** An inline image is a data URI. It can never be larger than one encrypted message holds. */
 export const MAX_IMAGE_BYTES = 524_288

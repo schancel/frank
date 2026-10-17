@@ -1,7 +1,7 @@
 import { directMessageText } from '@frank/cashweb/relay/canonical-dm'
 import type { DigitalGoodsItem } from '@frank/cashweb/types/messages'
 
-import { MessageItemDecodeError } from '../registry'
+import { MessageItemDecodeError } from '@frank/cashweb/message-items/registry'
 import {
   standaloneDecodeContext,
   describePluginContract,

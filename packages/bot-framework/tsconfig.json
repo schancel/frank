@@ -5,6 +5,7 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "paths": {
+      "@frank/group-messaging/*": ["../group-messaging/*"],
       "@frank/cashweb/*": ["../cashweb/*"],
       "@frank/codec": ["../frank-codec/src/index.ts"],
       "@frank/directory-admission": ["../directory-admission/src/index.ts"],

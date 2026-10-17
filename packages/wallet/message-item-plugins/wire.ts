@@ -48,7 +48,7 @@ import {
   MessageItemEncodeError,
   MessageItemUnsupportedError,
   type MessageItemRegistry,
-} from './registry'
+} from '@frank/cashweb/message-items/registry'
 
 /** Item types that own a frame type. Their bytes on the wire are exactly that frame. */
 export const DEDICATED_ITEM_FRAMES: ReadonlyMap<string, number> = new Map([

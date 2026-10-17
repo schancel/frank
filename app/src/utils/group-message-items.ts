@@ -12,8 +12,8 @@ import {
 import {
   createMessageItemRegistry,
   pluginCapabilitiesNotYetAvailable,
-} from '@frank/wallet/message-item-plugins/registry'
-import { installMessageItemPlugin } from '@frank/wallet/message-item-plugins/default-registry'
+} from '@frank/cashweb/message-items/registry'
+import { installMessageItemPlugin } from '@frank/cashweb/message-items/registry'
 import { initTextPlugin } from '@frank/wallet/message-item-plugins/text/plugin'
 import { initImagePlugin } from '@frank/wallet/message-item-plugins/image/plugin'
 import { initReplyPlugin } from '@frank/wallet/message-item-plugins/reply/plugin'

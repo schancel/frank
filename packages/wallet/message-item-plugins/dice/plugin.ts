@@ -4,7 +4,7 @@ import {
   requirePluginCapabilities,
   type MessageItemPluginCapabilities,
   type MessageItemRegistry,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import { diceCodec } from './codec'
 
 export function initDicePlugin(

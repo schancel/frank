@@ -1,3 +1,4 @@
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { isAbsolute } from 'node:path';
 import { openDirectory, type OpenDirectory } from '@frank/cashweb/relay/open-directory';
 import { nodeDirectoryStorage } from '@frank/cashweb/relay/open-directory-node';
@@ -9,7 +10,7 @@ import {
 } from '@frank/wallet/chain/monad-chain';
 import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm';
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry';
-import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry';
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry';
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle';
 
 export interface GatewayDirectoryOptions {
@@ -53,7 +54,10 @@ export async function openGatewayDirectory(options: GatewayDirectoryOptions): Pr
     await directory.publish();
     removeDirectory = installCanonicalDirectory(wallet, directory);
     removeItems = installMessageItemRegistry(
-      wallet, createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable)
+      wallet, installGroupMessageItemPlugins(
+        createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+        pluginCapabilitiesNotYetAvailable,
+      )
     );
   } catch (error) {
     removeItems?.();

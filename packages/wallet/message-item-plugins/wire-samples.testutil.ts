@@ -1,3 +1,4 @@
+import type {} from '@frank/group-messaging/types'
 /**
  * One realistic item per carried message item type, with the values the app and the bots produce.
  * Shared by the wire-rule test and the two-wallet round-trip test.

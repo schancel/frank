@@ -1,7 +1,7 @@
 import { encodeCanonical } from '@frank/codec'
 import type { ConversationStateItem } from '@frank/cashweb/types/messages'
 
-import { MessageItemDecodeError, MessageItemEncodeError } from '../registry'
+import { MessageItemDecodeError, MessageItemEncodeError } from '@frank/cashweb/message-items/registry'
 import {
   describePluginContract,
   registryWith,

@@ -1,3 +1,5 @@
+import groupFixtures from '@frank/group-messaging/fixtures/wire-v1.json'
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 /**
  * Every range, size and format rule of the sixteen CBOR item decoders, tested against bytes a
  * peer could send: a valid item's own bytes with exactly one field replaced by a value outside
@@ -12,10 +14,11 @@ import {
   MessageItemDecodeError,
   MessageItemEncodeError,
   pluginCapabilitiesNotYetAvailable,
-} from './registry'
+} from '@frank/cashweb/message-items/registry'
 import { standaloneDecodeContext } from './shared/plugin-contract.testutil'
 
-const registry = createDefaultMessageItemRegistry(
+const registry = installGroupMessageItemPlugins(
+  createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
   pluginCapabilitiesNotYetAvailable,
 )
 
@@ -814,14 +817,7 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       epochSecretHex: H,
       memberIndex: 1,
       inviterAddress: A,
-      rosterMembers: [
-        {
-          index: 0,
-          address: A,
-          epochSigningPubKeyHex: '02' + H,
-          role: 'admin',
-        },
-      ],
+      epochFrame: groupFixtures[0]!.item.epochFrame,
     },
     cases: [
       ...each('groupId', [0], BAD_HASHES),
@@ -834,19 +830,15 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ...each('epochSecretHex', [5], BAD_HASHES),
       ...each('memberIndex', [6], [-1, 10_001, '1']),
       ...each('inviterAddress', [7], BAD_CHAIN_ADDRESSES),
-      ['rosterMembers: empty', [8], []],
-      ...each('rosterMembers[0].index', [8, 0, 0], [-1, 10_001]),
-      ...each('rosterMembers[0].address', [8, 0, 1], BAD_CHAIN_ADDRESSES),
-      ...each('rosterMembers[0].epochSigningPubKeyHex', [8, 0, 2], [
-        '02',
-        'zz'.repeat(33),
-      ]),
-      ...each('rosterMembers[0].role', [8, 0, 3], ['owner']),
+      ...each('epochFrame.epoch', [9, 0], [-1, 1_000_000_001]),
+      ...each('epochFrame.epoch_hash', [9, 7], BAD_HASHES),
+      ...each('epochFrame.authority_sig', [9, 6], ['ab'.repeat(63), 'zz'.repeat(64)]),
     ],
   },
   {
     item: {
       type: 'group-control',
+      epochFrame: groupFixtures[1]!.item.epochFrame,
       groupId: H,
       action: 'rotate-epoch',
       epoch: 1,
@@ -867,6 +859,7 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ...each('targetMemberIndex', [6], [-1, 10_001]),
       ...each('targetEpochSigningPubKeyHex', [7], ['02', 'zz'.repeat(33)]),
       ...each('authoritySigHex', [8], ['ab'.repeat(63), 'zz'.repeat(64)]),
+      ...each('epochFrame.epoch_hash', [11, 7], BAD_HASHES),
     ],
   },
 ]

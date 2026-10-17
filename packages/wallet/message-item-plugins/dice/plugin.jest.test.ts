@@ -8,7 +8,7 @@ import {
   validateFrame,
   type Encodable,
 } from '@frank/codec'
-import { MessageItemDecodeError, MessageItemEncodeError } from '../registry'
+import { MessageItemDecodeError, MessageItemEncodeError } from '@frank/cashweb/message-items/registry'
 import {
   registryWith,
   standaloneDecodeContext,

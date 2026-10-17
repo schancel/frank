@@ -1,11 +1,11 @@
-import type { GroupWelcomeItem } from '@frank/cashweb/types/messages'
+import type { GroupWelcomeItem } from '../types'
 
 import {
   requirePluginCapabilities,
   type MessageItemPluginCapabilities,
   type MessageItemRegistry,
-} from '../registry'
-import { groupWelcomeCodec } from './codec'
+} from '@frank/cashweb/message-items/registry'
+import { groupWelcomeCodec } from './welcome-codec'
 
 export function initGroupWelcomePlugin(
   registry: MessageItemRegistry,

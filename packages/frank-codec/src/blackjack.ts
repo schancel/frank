@@ -26,10 +26,34 @@ export {
 }
 
 /** Nine closed application-facing shapes; quantities remain exact decimal strings. */
-export type BlackjackItem = { type: 'blackjack-move' } & BlackjackFields<
-  string,
-  string
->
+export type BlackjackSplitMoveFields =
+  | {
+      action: 'split'
+      splitWagerTxHash?: string
+      playerCards?: number[]
+      splitHands?: [number[], number[]]
+    }
+  | {
+      action: 'hit'
+      playerCards?: number[]
+      splitHands?: [number[], number[]]
+    }
+  | {
+      action: 'reveal'
+      dealerCards: number[]
+      serverSeed: string
+      outcome: 'player_win' | 'dealer_win' | 'push' | 'player_blackjack'
+      splitHands?: [number[], number[]]
+      splitOutcomes?: [
+        'player_win' | 'dealer_win' | 'push' | 'player_blackjack',
+        'player_win' | 'dealer_win' | 'push' | 'player_blackjack',
+      ]
+    }
+
+export type BlackjackItem = { type: 'blackjack-move' } & (
+  | BlackjackFields<string, string>
+  | ({ gameId: string } & BlackjackSplitMoveFields)
+)
 
 const bad = (message: string) =>
   new FrankCodecError('schema', '8.2', message, 'blackjack/writer')
@@ -390,12 +414,21 @@ export function projectBlackjackHandItem(parsed: ParsedFrame): {
   return { frame: new Uint8Array(parsed.frame), item }
 }
 
-/** The ten closed hand shapes with entropy from both sides (type 18, schema 3). Hashes are 64 bare
+/** The closed hand shapes with entropy from both sides (type 18, schema 3). Hashes are 64 bare
  * lowercase hex characters, quantities exact decimal strings. No shape states a card, an outcome
  * or an amount of money. */
 export type BlackjackHandV3Item = {
   type: 'blackjack-hand'
-} & BlackjackHandV3Fields<string, string>
+} & (
+  | BlackjackHandV3Fields<string, string>
+  | {
+      gameId: string
+      seq: number
+      action: 'split'
+      link: string
+      prev: string
+    }
+)
 
 /** Deterministic writer for one schema-3 hand item; the typed validator enforces the wire rules. */
 export function encodeBlackjackHandV3Item(item: BlackjackHandV3Item): Uint8Array {

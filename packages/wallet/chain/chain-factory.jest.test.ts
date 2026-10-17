@@ -514,4 +514,101 @@ describe("createChain", () => {
       family: "solana",
     });
   });
+
+  it("keeps Monad and Sepolia EVM wallet handles isolated even with identical account addresses", async () => {
+    const { mkdtemp, rm } = await import("fs/promises");
+    const { tmpdir } = await import("os");
+    const { join } = await import("path");
+    const dir = await mkdtemp(join(tmpdir(), "frank-evm-chain-isolation-"));
+    const sharedStorageBase = join(dir, "wallet");
+    const sharedAttemptStore = new InMemoryNativeTransactionAttemptStore();
+
+    const monadChain = await createChain({
+      family: "evm",
+      chainIdentifier: "monad-testnet",
+      config: {
+        networkId: "monad-testnet",
+        chainId: 10143,
+        rpcChain: "monad-testnet",
+        relayBaseUrl: "http://127.0.0.1:8098",
+        networkTag: "MONT",
+        stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
+        resolveDefaultStamp: fixedStampDefault(1n),
+        defaultTopicVoteValueWei: 1n,
+        subAccountPoolSize: 1,
+        walletStorageLocation: sharedStorageBase,
+        nativeAttemptStore: sharedAttemptStore,
+      },
+    });
+
+    const sepoliaChain = await createChain({
+      family: "evm",
+      chainIdentifier: "ethereum-sepolia",
+      config: {
+        networkId: "ethereum-sepolia",
+        chainId: 11155111,
+        rpcChain: "ethereum-sepolia",
+        relayBaseUrl: "http://127.0.0.1:8098",
+        networkTag: "SEPO",
+        stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
+        resolveDefaultStamp: fixedStampDefault(1n),
+        defaultTopicVoteValueWei: 1n,
+        subAccountPoolSize: 1,
+        walletStorageLocation: sharedStorageBase,
+        nativeAttemptStore: sharedAttemptStore,
+      },
+    });
+
+    const root = <P extends "evm-wallet" | "identity-authentication" | "messaging-encryption">(
+      purpose: P,
+      fill: number
+    ): DomainRoot<P> => ({
+      registry: "frank-domain-roots-v1",
+      purpose,
+      bytes: new Uint8Array(32).fill(fill),
+    });
+    const sharedRoots = {
+      evm: root("evm-wallet", 7),
+      authentication: root("identity-authentication", 8),
+      messaging: root("messaging-encryption", 9),
+    };
+
+    const monadWallet = await monadChain.createWallet(sharedRoots);
+    const sepoliaWallet = await sepoliaChain.createWallet(sharedRoots);
+
+    try {
+      expect(monadWallet).not.toBe(sepoliaWallet);
+      expect(monadWallet.chainIdentifier).toBe("monad-testnet");
+      expect(sepoliaWallet.chainIdentifier).toBe("ethereum-sepolia");
+      expect(monadWallet.networkId).toBe("monad-testnet");
+      expect(sepoliaWallet.networkId).toBe("ethereum-sepolia");
+
+      // Both wallets derive the exact same EVM account addresses from the shared roots
+      expect(monadWallet.identity.address.raw).toBe(
+        sepoliaWallet.identity.address.raw
+      );
+      expect(await monadWallet.getReceiveAddress()).toEqual(
+        await sepoliaWallet.getReceiveAddress()
+      );
+      expect(monadWallet.pool).not.toBe(sepoliaWallet.pool);
+      expect(monadWallet.spendPool).not.toBe(sepoliaWallet.spendPool);
+
+      // Pool state mutations on one chain do not bleed into the other chain
+      monadWallet.pool.setStatus(0, "retired");
+      expect(monadWallet.pool.getRecord(0)?.status).toBe("retired");
+      expect(sepoliaWallet.pool.getRecord(0)?.status).toBe("unfunded");
+
+      // Cross-chain wallet handle usage is rejected by each chain instance
+      await expect(
+        monadChain.nativeTransfers.getBalance({ wallet: sepoliaWallet })
+      ).rejects.toThrow("Expected Monad network monad-testnet, got ethereum-sepolia");
+      await expect(
+        sepoliaChain.nativeTransfers.getBalance({ wallet: monadWallet })
+      ).rejects.toThrow("Expected Monad network ethereum-sepolia, got monad-testnet");
+    } finally {
+      await sepoliaWallet.close();
+      await monadWallet.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

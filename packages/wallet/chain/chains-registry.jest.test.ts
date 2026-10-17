@@ -3,10 +3,16 @@ import { join } from "path";
 import { DEPLOYMENTS } from "../../contracts/deployments";
 import {
   PROTOCOL_CHAINS,
+  CHAIN_REGISTRY,
+  CLIENT_CHAIN_EXTENSIONS,
   CANONICAL_SOLANA_CONTRACTS,
+  buildChainRegistryFromProtocol,
+  validateClientChainExtensions,
   getChainRegistryEntry,
+  getChainConfig,
   getChainRegistryByKind,
   getChainRegistryByNetworkTag,
+  resolveChainByWireTag,
   getChainRegistryByCaip2,
   getChainsByCurve,
   resolveChainIdentifier,
@@ -676,6 +682,72 @@ describe("chains-registry", () => {
         "__proto__",
       ])
         expect(getChainRegistryEntry(id)).toBeUndefined();
+    });
+
+    it("reflects protocol entry modifications directly via buildChainRegistryFromProtocol across all chain families", () => {
+      const cloned = JSON.parse(JSON.stringify(protocolRegistry)) as typeof protocolRegistry;
+      const monadRow = cloned.chains.find((row) => row.id === "monad-testnet")!;
+      monadRow.caip2 = "eip155:99999";
+      monadRow.native_chain_id = "99999";
+      monadRow.identity_probes = [
+        { kind: "evm-chain-id", capability: "json-rpc", expected: "99999" },
+      ];
+
+      const solanaRow = cloned.chains.find((row) => row.id === "solana-devnet")!;
+      solanaRow.caip2 = "solana:SyntheticGenesis";
+      solanaRow.identity_probes = [
+        { kind: "genesis-hash", capability: "json-rpc", expected: "SyntheticGenesisFull" },
+      ];
+
+      const btcRow = cloned.chains.find((row) => row.id === "btc-mainnet")!;
+      btcRow.network = "testnet";
+      btcRow.caip2 = "bip122:synthetic";
+
+      const rebuilt = buildChainRegistryFromProtocol(cloned, CLIENT_CHAIN_EXTENSIONS);
+      expect(rebuilt["monad-testnet"]).toMatchObject({
+        id: "monad-testnet",
+        caip2: "eip155:99999",
+        nativeChainId: 99999,
+        name: "Monad Testnet",
+        unit: "MONT",
+      });
+      expect(rebuilt["solana-devnet"]).toMatchObject({
+        id: "solana-devnet",
+        caip2: "solana:SyntheticGenesis",
+        name: "Solana Devnet",
+        unit: "dSOL",
+      });
+      expect(rebuilt["btc-mainnet"]).toMatchObject({
+        id: "btc-mainnet",
+        network: "testnet",
+        isTestnet: true,
+        caip2: "bip122:synthetic",
+        name: "Bitcoin",
+        unit: "BTC",
+      });
+    });
+
+    it("rejects unregistered client extension keys and protocol-fact overrides", () => {
+      expect(() =>
+        buildChainRegistryFromProtocol(protocolRegistry, {
+          ...CLIENT_CHAIN_EXTENSIONS,
+          "ethereum-holesky": CLIENT_CHAIN_EXTENSIONS["ethereum-sepolia"],
+        })
+      ).toThrow(/unsupported client reference ethereum-holesky/);
+
+      expect(() =>
+        validateClientChainExtensions(protocolRegistry, {
+          "unregistered-chain": CLIENT_CHAIN_EXTENSIONS["monad-testnet"],
+        })
+      ).toThrow(/unsupported client reference unregistered-chain/);
+
+      expect(CHAIN_REGISTRY).toBe(PROTOCOL_CHAINS);
+      expect(getChainConfig("monad-testnet")).toBe(
+        getChainRegistryEntry("monad-testnet")
+      );
+      expect(resolveChainByWireTag("MONT")).toBe(
+        getChainRegistryByNetworkTag("MONT")
+      );
     });
   });
 

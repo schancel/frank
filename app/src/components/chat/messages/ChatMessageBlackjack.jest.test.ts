@@ -12,10 +12,11 @@ import {
   dealerStep,
   foldHand,
   handView,
+  isSplittablePair,
   playerStep,
   type HandEvent,
   type HandState,
-} from '@frank/wallet/message-item-plugins/blackjack/hand'
+} from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
   cardLabel,
   handValue,
@@ -144,7 +145,7 @@ function hand(
   dealerIsMe: boolean,
   seed: string,
   wager: bigint,
-  moves: ('hit' | 'stand' | 'double')[],
+  moves: ('hit' | 'stand' | 'double' | 'split')[],
   upTo?: 'reveal',
 ) {
   const dealer = dealerIsMe ? ME : PEER
@@ -196,7 +197,11 @@ function hand(
     for (const move of moves) {
       const item = playerStep(state(), move, seed)
       if (!item) throw new Error(`cannot ${move}`)
-      push(player, { ...item }, move === 'double' ? wager : 10n)
+      push(
+        player,
+        { ...item },
+        move === 'double' || move === 'split' ? wager : 10n,
+      )
       dealerActs(true)
     }
     if (upTo === 'reveal') dealerActs(false)
@@ -835,3 +840,75 @@ describe('a message of the hand that the other side does not have', () => {
     expect(button(wrapper, 'retry').exists()).toBe(false)
   })
 })
+
+describe('splitting a pair (#152)', () => {
+  const SPLIT_SEED = seedFor((_state, cards) => isSplittablePair(cards))
+
+  it('offers the split button on a dealt pair, sends the equal second wager as its stamp, and disables it when unaffordable', async () => {
+    const wrapper = await mountLast(hand(false, SPLIT_SEED, 400n, []))
+    const splitBtn = button(wrapper, 'split')
+    expect(splitBtn.exists()).toBe(true)
+    expect(splitBtn.text()).toContain('400 MON')
+    expect(splitBtn.attributes('disabled')).toBeUndefined()
+
+    mockBalance.value = RESERVE + 399n
+    await wrapper.vm.$nextTick()
+    expect(button(wrapper, 'split').attributes('disabled')).toBeDefined()
+
+    mockBalance.value = RESERVE + 100_000n
+    await wrapper.vm.$nextTick()
+    await button(wrapper, 'split').trigger('click')
+    expect(followUp(wrapper)[0]).toMatchObject({
+      items: [{ type: 'blackjack-hand', gameId: GAME, action: 'split' }],
+      stampValueWei: 400n,
+    })
+  })
+
+  it('renders both split hands with active-hand highlighting across Hand 1, Hand 2, and reveal', async () => {
+    // Right after split + dealer card: Hand 1 is active
+    const onHand1 = await mountLast(hand(false, SPLIT_SEED, 400n, ['split']))
+    const h0 = onHand1.find('[data-testid="blackjack-split-hand-0"]')
+    const h1 = onHand1.find('[data-testid="blackjack-split-hand-1"]')
+    expect(h0.exists()).toBe(true)
+    expect(h1.exists()).toBe(true)
+    expect(h0.classes()).toContain('bj-split-hand--active')
+    expect(h1.classes()).not.toContain('bj-split-hand--active')
+    expect(
+      onHand1.find('[data-testid="blackjack-split-total-0"]').exists(),
+    ).toBe(true)
+    expect(
+      onHand1.find('[data-testid="blackjack-split-total-1"]').exists(),
+    ).toBe(true)
+    expect(onHand1.find('[data-testid="blackjack-wager"]').text()).toContain(
+      '800 MON',
+    )
+    expect(button(onHand1, 'double').exists()).toBe(false)
+    expect(button(onHand1, 'split').exists()).toBe(false)
+
+    // After standing on Hand 1: Hand 2 is active
+    const onHand2 = await mountLast(
+      hand(false, SPLIT_SEED, 400n, ['split', 'stand']),
+    )
+    expect(
+      onHand2.find('[data-testid="blackjack-split-hand-0"]').classes(),
+    ).not.toContain('bj-split-hand--active')
+    expect(
+      onHand2.find('[data-testid="blackjack-split-hand-1"]').classes(),
+    ).toContain('bj-split-hand--active')
+
+    // After standing on Hand 2 and dealer reveal: both hands and outcome shown
+    const resolved = await mountLast(
+      hand(false, SPLIT_SEED, 400n, ['split', 'stand', 'stand'], 'reveal'),
+    )
+    expect(
+      resolved.find('[data-testid="blackjack-split-hand-0"]').exists(),
+    ).toBe(true)
+    expect(
+      resolved.find('[data-testid="blackjack-split-hand-1"]').exists(),
+    ).toBe(true)
+    expect(resolved.find('[data-testid="blackjack-outcome"]').exists()).toBe(
+      true,
+    )
+  })
+})
+

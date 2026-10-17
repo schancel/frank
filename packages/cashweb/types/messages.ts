@@ -106,7 +106,7 @@ export interface EmailItem {
 export interface BlackjackMoveItem {
   type: 'blackjack-move'
   gameId: string
-  action: 'bet' | 'deal' | 'hit' | 'stand' | 'double' | 'reveal' | 'welcome'
+  action: 'bet' | 'deal' | 'hit' | 'stand' | 'double' | 'split' | 'reveal' | 'welcome'
   /** `bet` only: the tx hash of the separate plain value transfer that *is* the wager. Also
    * doubles as the shuffle's client-seed entropy (see `@frank/wallet/message-item-plugins/blackjack`'s header) -- no
    * extra round trip needed to collect one. */
@@ -116,6 +116,8 @@ export interface BlackjackMoveItem {
    * and since the wager is never a self-reported field (see this type's own header), doubling it
    * needs a second independently-verified transfer, not just doubling a number client-side. */
   doubleWagerTxHash?: string
+  /** `split` only: the tx hash of a *second* plain value transfer matching the original wager. */
+  splitWagerTxHash?: string
   /** `deal` only: the bot's commitment to its shuffle seed, generated and hashed *before* this
    * specific bet was ever seen (see `@frank/wallet/message-item-plugins/blackjack/deck.ts`'s header for why that
    * ordering is the entire fairness property this scheme relies on). */
@@ -124,6 +126,8 @@ export interface BlackjackMoveItem {
    * not a diff from the previous message -- simpler to verify, and each message stays
    * self-contained). */
   playerCards?: number[]
+  /** `split`/`hit`/`reveal`: the two split hands when a pair is split. */
+  splitHands?: [number[], number[]]
   /** `deal` only: the dealer's single face-up card. */
   dealerUpCard?: number
   /** `stand`/`reveal`: the dealer's full hand once play resolves. */
@@ -135,6 +139,11 @@ export interface BlackjackMoveItem {
   serverSeed?: string
   /** `reveal` only. */
   outcome?: 'player_win' | 'dealer_win' | 'push' | 'player_blackjack'
+  /** `reveal` only when split. */
+  splitOutcomes?: [
+    'player_win' | 'dealer_win' | 'push' | 'player_blackjack',
+    'player_win' | 'dealer_win' | 'push' | 'player_blackjack',
+  ]
   /** `welcome` only (dealer to player, #395): the table's minimum wager, a decimal wei string.
    * Untrusted advertising: the client parses it strictly (`parseBlackjackWelcome`) and the
    * dealer enforces its own limits regardless. */

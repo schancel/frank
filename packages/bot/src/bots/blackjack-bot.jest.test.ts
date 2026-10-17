@@ -3,10 +3,11 @@ import {
   buildBet,
   foldHand,
   payoutWei,
+  playerMoves,
   playerStep,
   type HandEvent,
   type HandItem,
-} from "@frank/wallet/message-item-plugins/blackjack/hand";
+} from "@frank/wallet/message-item-plugins/blackjack/game";
 import { BlackjackDealerBot } from "./blackjack-bot";
 import { handValue } from "@frank/wallet/message-item-plugins/blackjack/deck";
 import { BOT, harness, PLAYER } from "./bot-harness.testutil";
@@ -406,4 +407,70 @@ describe("BlackjackDealerBot", () => {
     expect(free).toBe(20_000_000_000_000_000n); // (0.1 - 0.02 reserve) / 4
     expect(owing).toBe(5_000_000_000_000_000n); // (0.1 - 0.06 owed - 0.02) / 4
   });
+
+  test("a split on a dealt pair deals two hands, plays each sequentially, and pays the combined split outcome", async () => {
+    let splitCompleted = false;
+    for (let i = 1; i < 400 && !splitCompleted; i++) {
+      const playerSeed = i.toString(16).padStart(64, "0");
+      const h = harness();
+      const bot = new BlackjackDealerBot();
+      const t = table(h, bot);
+      await t.open();
+      await t.send(buildBet(t.state(), playerSeed)!, BET);
+      const moves = playerMoves(t.state(), playerSeed);
+      if (!moves.includes("split")) continue;
+
+      const splitMove = playerStep(t.state(), "split", playerSeed)!;
+      await t.send(splitMove, BET);
+      expect(t.state()?.split).toBe(true);
+      expect(t.state()?.splitHands?.[0]).toHaveLength(2);
+      expect(t.state()?.splitHands?.[1]).toHaveLength(2);
+      expect(t.state()?.activeSplitHand).toBe(0);
+
+      // Stand on Hand 1 -> advances to Hand 2
+      await t.send(playerStep(t.state(), "stand", playerSeed)!);
+      expect(t.state()?.activeSplitHand).toBe(1);
+      expect(t.state()?.phase).toBe("player_turn");
+
+      // Stand on Hand 2 -> dealer reveals and settles both hands
+      await t.send(playerStep(t.state(), "stand", playerSeed)!);
+      const end = t.state()!;
+      expect(end.phase).toBe("resolved");
+      expect(end.splitOutcomes).toHaveLength(2);
+      const owed = payoutWei(
+        end.outcome!,
+        BET,
+        false,
+        true,
+        end.splitOutcomes
+      );
+      expect(h.paidOut()).toBe(owed);
+      splitCompleted = true;
+    }
+    expect(splitCompleted).toBe(true);
+  });
+
+  test("a split with the wrong second wager is rejected and its payment refunded", async () => {
+    for (let i = 1; i < 400; i++) {
+      const playerSeed = i.toString(16).padStart(64, "0");
+      const h = harness();
+      const bot = new BlackjackDealerBot();
+      const t = table(h, bot);
+      await t.open();
+      await t.send(buildBet(t.state(), playerSeed)!, BET);
+      if (!playerMoves(t.state(), playerSeed).includes("split")) continue;
+
+      const splitMove = playerStep(t.state(), "split", playerSeed)!;
+      await t.send(splitMove, BET * 2n);
+      const refund = h.sent[h.sent.length - 1];
+      expect((h.item("blackjack-hand", refund) as HandItem).action).toBe(
+        "refund"
+      );
+      expect(refund.valueWei).toBe(BET * 2n);
+      expect(t.state()?.split).toBeUndefined();
+      return;
+    }
+    throw new Error("no splittable seed found");
+  });
 });
+

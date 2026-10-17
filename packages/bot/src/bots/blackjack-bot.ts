@@ -13,10 +13,6 @@ import type { MessageItem } from "@frank/cashweb/types/messages";
 import {
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
   BLACKJACK_DEFAULT_MAX_WAGER_WEI,
-} from "@frank/wallet/message-item-plugins/blackjack/game";
-import { generateAvatarPng } from "../../bot-directory";
-import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
-import {
   buildChallenge,
   buildAccept,
   dealerStep,
@@ -25,7 +21,9 @@ import {
   type HandEvent,
   type HandItem,
   type HandState,
-} from "@frank/wallet/message-item-plugins/blackjack/hand";
+} from "@frank/wallet/message-item-plugins/blackjack/game";
+import { generateAvatarPng } from "../../bot-directory";
+import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import { Outbox, refuse, tableMinimumWei, type Received } from "./money";
 
 /** Kept back from the dealer's balance when it works out the largest bet it can cover. */

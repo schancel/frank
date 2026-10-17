@@ -1,3 +1,16 @@
+import * as bip93Codex32 from './bip93-codex32.js'
+import * as gf32RecoveryShares from './gf32-recovery-shares.js'
+import {
+  bytesToGf32Symbols,
+  combineRecoveryShares,
+  createLongBchChecksum,
+  gf32SymbolsToBytes,
+  interpolateGf32Symbols,
+  splitGf32Symbols,
+  splitRecoveryShares,
+  verifyLongBchChecksum,
+  type RecoveryShareMetadata,
+} from './gf32-recovery-shares.js'
 import * as codex32 from './index.js'
 import {
   codex32SecretPayloadSymbols,
@@ -635,3 +648,75 @@ describe('application framing primitives preserve standard Codex32', () => {
     ).toBe(false)
   })
 })
+
+describe('gf32-recovery-shares and bip93-codex32 module boundaries', () => {
+  test('re-exports every primitive from index without breaking existing callers', () => {
+    expect(codex32.GF32_ALPHABET).toBe(gf32RecoveryShares.GF32_ALPHABET)
+    expect(codex32.splitGf32Symbols).toBe(splitGf32Symbols)
+    expect(codex32.interpolateGf32Symbols).toBe(interpolateGf32Symbols)
+    expect(codex32.createLongBchChecksum).toBe(createLongBchChecksum)
+    expect(codex32.verifyLongBchChecksum).toBe(verifyLongBchChecksum)
+    expect(codex32.bytesToGf32Symbols).toBe(bytesToGf32Symbols)
+    expect(codex32.gf32SymbolsToBytes).toBe(gf32SymbolsToBytes)
+    expect(codex32.createMasterPayload).toBe(
+      gf32RecoveryShares.createMasterPayload,
+    )
+    expect(codex32.validateMasterPayload).toBe(
+      gf32RecoveryShares.validateMasterPayload,
+    )
+    expect(codex32.splitRecoveryShares).toBe(splitRecoveryShares)
+    expect(codex32.combineRecoveryShares).toBe(combineRecoveryShares)
+
+    expect(codex32.encodeCodex32).toBe(bip93Codex32.encodeCodex32)
+    expect(codex32.decodeCodex32).toBe(bip93Codex32.decodeCodex32)
+    expect(codex32.validateCodex32Checksum).toBe(
+      bip93Codex32.validateCodex32Checksum,
+    )
+    expect(codex32.codex32SecretPayloadSymbols).toBe(
+      bip93Codex32.codex32SecretPayloadSymbols,
+    )
+    expect(codex32.interpolateCodex32Symbols).toBe(
+      bip93Codex32.interpolateCodex32Symbols,
+    )
+    expect(codex32.codex32SymbolsToBytes).toBe(
+      bip93Codex32.codex32SymbolsToBytes,
+    )
+    expect(codex32.splitCodex32).toBe(bip93Codex32.splitCodex32)
+    expect(codex32.recoverCodex32Exact).toBe(bip93Codex32.recoverCodex32Exact)
+    expect(codex32.recoverCodex32).toBe(bip93Codex32.recoverCodex32)
+  })
+
+  test('supports explicit splitRecoveryShares and combineRecoveryShares aliases for 67-byte threshold payloads', () => {
+    const payloadBytes = Uint8Array.from(
+      { length: 67 },
+      (_, index) => (index * 17 + 11) & 0xff,
+    )
+    const symbols = bytesToGf32Symbols(payloadBytes)
+    const indices = ['q', 'p', 'z'] as const
+    const split = splitRecoveryShares({
+      payload: symbols,
+      threshold: 2,
+      indices,
+      randomBytes: length =>
+        Uint8Array.from({ length }, (_, index) => (index * 29 + 5) & 0xff),
+    })
+    expect(split.ok).toBe(true)
+    if (!split.ok) return
+
+    const shares: RecoveryShareMetadata[] = split.value.map((row, index) => ({
+      index: indices[index]!,
+      payload: row,
+    }))
+
+    const combinedSecret = combineRecoveryShares(shares.slice(0, 2))
+    expect(combinedSecret).toEqual({ ok: true, value: symbols })
+    if (!combinedSecret.ok) return
+
+    const roundTrip = gf32SymbolsToBytes(combinedSecret.value, 67)
+    expect(roundTrip).toEqual({ ok: true, value: payloadBytes })
+
+    const derivedThird = combineRecoveryShares(shares.slice(0, 2), 'z')
+    expect(derivedThird).toEqual({ ok: true, value: shares[2]!.payload })
+  })
+})
+

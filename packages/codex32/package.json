@@ -1,14 +1,20 @@
 {
   "name": "@frank/codex32",
   "version": "0.0.1",
-  "description": "Strict browser-safe Codex32 backup and threshold-share core for Frank recovery payloads.",
+  "description": "Strict browser-safe GF(32) + long-BCH threshold recovery-share core and BIP-93 Codex32 compatibility codec.",
   "license": "MIT",
   "private": true,
   "type": "module",
   "sideEffects": false,
   "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./gf32-recovery-shares": "./src/gf32-recovery-shares.ts",
+    "./bip93-codex32": "./src/bip93-codex32.ts"
+  },
   "scripts": {
     "test": "jest",
+    "test:unit": "jest",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

@@ -1,12 +1,17 @@
 import { deriveDeck, handValue, sha256Hex } from './deck'
 import {
   applyDoubleRejection,
+  applySplitRejection,
   BLACKJACK_RULES_SUMMARY,
   BLACKJACK_WELCOME_GAME_ID,
   BLACKJACK_WELCOME_RULES_MAX,
   buildBlackjackWelcomeItem,
+  combineSplitOutcomes,
+  dealSplitCards,
+  isSplittablePair,
   parseBlackjackWelcome,
   playOutDealer,
+  playOutSplitDealer,
   blackjackPayoutWei,
   BlackjackGameState,
   formatBlackjackError,
@@ -15,6 +20,7 @@ import {
   HydratedBlackjackMove,
   reduceBlackjackState,
   resolveOutcome,
+  resolveSplitHandOutcome,
   verifyRevealedHand,
 } from './game'
 
@@ -654,3 +660,271 @@ describe('welcome item schema (#395)', () => {
     expect(reduceBlackjackState(undefined, move({ action: 'welcome' })).availableActions).toEqual([])
   })
 })
+
+describe('split hands (#152)', () => {
+  const WAGER = 10_000_000_000_000_000n
+  // Card 7 is 8♠, card 20 is 8♥ (both rank 7 = '8').
+  const PAIR_8S = [7, 20]
+
+  function dealtPair() {
+    const bet = reduceBlackjackState(
+      undefined,
+      move({
+        action: 'bet',
+        wagerTxHash: WAGER_TX_HASH,
+        verifiedWager: {
+          fromAddress: PLAYER_ADDRESS,
+          toAddress: '0xBot',
+          valueWei: WAGER,
+        },
+      }),
+    )
+    return reduceBlackjackState(
+      bet,
+      move({
+        action: 'deal',
+        serverSeedHash: sha256Hex(SERVER_SEED),
+        playerCards: PAIR_8S,
+        dealerUpCard: 5,
+      }),
+    )
+  }
+
+  it('identifies splittable pairs by rank and offers split only on a dealt pair', () => {
+    expect(isSplittablePair([7, 20])).toBe(true)
+    expect(isSplittablePair([0, 13])).toBe(true)
+    expect(isSplittablePair([9, 10])).toBe(false) // 10 and J have different ranks
+    expect(isSplittablePair([7, 20, 33])).toBe(false)
+
+    const pairState = dealtPair()
+    expect(pairState.availableActions).toEqual([
+      'hit',
+      'stand',
+      'double',
+      'split',
+    ])
+  })
+
+  it('folds optimistic split request and dealer broadcast, then plays Hand 1 and Hand 2 sequentially', () => {
+    const start = dealtPair()
+    const requested = reduceBlackjackState(
+      start,
+      move({
+        action: 'split',
+        verifiedSplitWager: {
+          fromAddress: PLAYER_ADDRESS,
+          toAddress: '0xBot',
+          valueWei: WAGER,
+        },
+      }),
+    )
+    expect(requested.split).toBe(true)
+    expect(requested.splitPending).toBe(true)
+    expect(requested.verifiedSplitWagerWei).toBe(WAGER)
+    expect(requested.availableActions).toEqual([])
+
+    // Dealer broadcasts the two split hands: [8♠, 2♠] (10) and [8♥, 3♠] (11)
+    let state = reduceBlackjackState(
+      requested,
+      move({
+        action: 'split',
+        splitHands: [
+          [7, 1],
+          [20, 2],
+        ],
+      }),
+    )
+    expect(state.split).toBe(true)
+    expect(state.splitPending).toBe(false)
+    expect(state.verifiedSplitWagerWei).toBe(WAGER)
+    expect(state.activeSplitHand).toBe(0)
+    expect(state.playerCards).toEqual([7, 1])
+    expect(state.availableActions).toEqual(['hit', 'stand'])
+
+    // No re-splitting or doubling after split
+    expect(reduceBlackjackState(state, move({ action: 'split' }))).toBe(state)
+    expect(reduceBlackjackState(state, move({ action: 'double' }))).toBe(state)
+
+    // Hit Hand 1: [8♠, 2♠, 9♠] = 19 (< 21, stays on Hand 1)
+    state = reduceBlackjackState(
+      state,
+      move({
+        action: 'hit',
+        playerCards: [7, 1, 8],
+      }),
+    )
+    expect(state.activeSplitHand).toBe(0)
+    expect(state.splitHands).toEqual([
+      [7, 1, 8],
+      [20, 2],
+    ])
+    expect(state.phase).toBe('player_turn')
+
+    // Stand on Hand 1 -> advances to Hand 2
+    state = reduceBlackjackState(state, move({ action: 'stand' }))
+    expect(state.activeSplitHand).toBe(1)
+    expect(state.playerCards).toEqual([20, 2])
+    expect(state.phase).toBe('player_turn')
+    expect(state.availableActions).toEqual(['hit', 'stand'])
+
+    // Hit Hand 2 to 21: [8♥, 3♠, 10♠] = 21 -> auto-advances to dealer_turn
+    state = reduceBlackjackState(
+      state,
+      move({
+        action: 'hit',
+        playerCards: [20, 2, 9],
+      }),
+    )
+    expect(state.splitHands).toEqual([
+      [7, 1, 8],
+      [20, 2, 9],
+    ])
+    expect(state.phase).toBe('dealer_turn')
+    expect(state.availableActions).toEqual([])
+
+    // Reveal with dealer 18 ([9♦, 9♣] = [21, 34]) -> both hands win
+    state = reduceBlackjackState(
+      state,
+      move({
+        action: 'reveal',
+        dealerCards: [21, 34],
+        serverSeed: SERVER_SEED,
+      }),
+    )
+    expect(state.phase).toBe('resolved')
+    expect(state.splitOutcomes).toEqual(['player_win', 'player_win'])
+    expect(state.outcome).toBe('player_win')
+    expect(blackjackPayoutWei(state)).toBe(WAGER * 4n)
+  })
+
+  it('unlocks optimistic split on applySplitRejection and ignores non-pending states', () => {
+    const start = dealtPair()
+    const requested = reduceBlackjackState(
+      start,
+      move({
+        action: 'split',
+        verifiedSplitWager: {
+          fromAddress: PLAYER_ADDRESS,
+          toAddress: '0xBot',
+          valueWei: WAGER,
+        },
+      }),
+    )
+    const unlocked = applySplitRejection(requested)
+    expect(unlocked.split).toBe(false)
+    expect(unlocked.splitPending).toBe(false)
+    expect(unlocked.verifiedSplitWagerWei).toBeUndefined()
+    expect(unlocked.availableActions).toEqual(['hit', 'stand'])
+
+    const broadcast = reduceBlackjackState(
+      requested,
+      move({
+        action: 'split',
+        splitHands: [
+          [7, 1],
+          [20, 2],
+        ],
+      }),
+    )
+    expect(applySplitRejection(broadcast)).toBe(broadcast)
+  })
+
+  it('computes split payouts across win/push/loss combinations and requires verifiedSplitWagerWei', () => {
+    const baseSplit = (
+      splitOutcomes: [
+        BlackjackGameState['outcome'] & string,
+        BlackjackGameState['outcome'] & string,
+      ],
+      extra: Partial<BlackjackGameState> = {},
+    ) => ({
+      phase: 'resolved' as const,
+      outcome: combineSplitOutcomes(splitOutcomes),
+      verifiedWagerWei: WAGER,
+      split: true,
+      verifiedSplitWagerWei: WAGER,
+      splitOutcomes,
+      ...extra,
+    })
+
+    expect(blackjackPayoutWei(baseSplit(['player_win', 'player_win']))).toBe(
+      WAGER * 4n,
+    )
+    expect(blackjackPayoutWei(baseSplit(['player_win', 'push']))).toBe(
+      WAGER * 3n,
+    )
+    expect(blackjackPayoutWei(baseSplit(['player_win', 'dealer_win']))).toBe(
+      WAGER * 2n,
+    )
+    expect(blackjackPayoutWei(baseSplit(['push', 'push']))).toBe(WAGER * 2n)
+    expect(blackjackPayoutWei(baseSplit(['push', 'dealer_win']))).toBe(WAGER)
+    expect(blackjackPayoutWei(baseSplit(['dealer_win', 'dealer_win']))).toBe(0n)
+    expect(
+      blackjackPayoutWei(
+        baseSplit(['player_win', 'player_win'], {
+          verifiedSplitWagerWei: undefined,
+        }),
+      ),
+    ).toBeUndefined()
+
+    // 2-card 21 on a split hand pays 1:1 (player_win), never 3:2 (player_blackjack)
+    expect(resolveSplitHandOutcome([0, 9], [7, 8])).toBe('player_win')
+  })
+
+  it('verifies a fair revealed split hand and rejects tampered split hands or outcomes', () => {
+    let pairSeed = ''
+    for (let i = 0; i < 5000; i++) {
+      const candidate = `split-seed-${i}`
+      const d = deriveDeck(candidate, WAGER_TX_HASH, 0)
+      if (isSplittablePair([d[0], d[2]])) {
+        pairSeed = candidate
+        break
+      }
+    }
+    expect(pairSeed).not.toBe('')
+
+    const deck = deriveDeck(pairSeed, WAGER_TX_HASH, 0)
+    const { splitHands: initialSplit, dealtCount } = dealSplitCards(deck)
+    // Add 1 hit on Hand 1 and 1 hit on Hand 2
+    const hand0 = [...initialSplit[0], deck[dealtCount]]
+    const hand1 = [...initialSplit[1], deck[dealtCount + 1]]
+    const played = playOutSplitDealer(deck, [hand0, hand1], dealtCount + 2)
+
+    const resolvedState: BlackjackGameState = {
+      gameId: 'g-split',
+      phase: 'resolved',
+      playerAddress: PLAYER_ADDRESS,
+      wagerTxHash: WAGER_TX_HASH,
+      serverSeed: pairSeed,
+      serverSeedHash: sha256Hex(pairSeed),
+      split: true,
+      splitHands: [hand0, hand1],
+      splitOutcomes: played.splitOutcomes,
+      playerCards: hand1,
+      dealerCards: played.dealerCards,
+      outcome: played.outcome,
+      availableActions: ['bet'],
+    }
+
+    expect(verifyRevealedHand(resolvedState)).toEqual({ valid: true })
+
+    // Tampered split hand card fails verification
+    expect(
+      verifyRevealedHand({
+        ...resolvedState,
+        splitHands: [[(hand0[0] + 1) % 52, ...hand0.slice(1)], hand1],
+      }).valid,
+    ).toBe(false)
+
+    // Tampered split outcome fails verification
+    expect(
+      verifyRevealedHand({
+        ...resolvedState,
+        splitOutcomes: [
+          played.splitOutcomes[0] === 'player_win' ? 'dealer_win' : 'player_win',
+          played.splitOutcomes[1],
+        ],
+      }).valid,
+    ).toBe(false)
+  })
+})
+

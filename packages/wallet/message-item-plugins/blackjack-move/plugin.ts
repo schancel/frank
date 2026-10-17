@@ -152,19 +152,27 @@ async function hydrateBlackjackItem(
     raw.action === 'double' && raw.doubleWagerTxHash
       ? await verifyWagerTransaction(context.provider, raw.doubleWagerTxHash)
       : undefined
+  const verifiedSplitWager =
+    raw.action === 'split' && raw.splitWagerTxHash
+      ? await verifyWagerTransaction(context.provider, raw.splitWagerTxHash)
+      : undefined
   return {
     gameId: raw.gameId,
     action: raw.action,
     wagerTxHash: raw.wagerTxHash,
     doubleWagerTxHash: raw.doubleWagerTxHash,
+    splitWagerTxHash: raw.splitWagerTxHash,
     serverSeedHash: raw.serverSeedHash,
     playerCards: raw.playerCards,
+    splitHands: raw.splitHands,
     dealerUpCard: raw.dealerUpCard,
     dealerCards: raw.dealerCards,
     serverSeed: raw.serverSeed,
     outcome: raw.outcome,
+    splitOutcomes: raw.splitOutcomes,
     verifiedWager,
     verifiedDoubleWager,
+    verifiedSplitWager,
     welcome: parseBlackjackWelcome(raw),
     senderAddress: context.message.senderAddress,
   }
@@ -192,6 +200,8 @@ export function initBlackjackMovePlugin(
           return 'Hit'
         case 'double':
           return 'Doubled down'
+        case 'split':
+          return 'Split'
         case 'stand':
           return 'Stood'
         case 'reveal':

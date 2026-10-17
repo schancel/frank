@@ -5,6 +5,8 @@ import {
   type ProtocolChainFacts,
 } from "./protocol-chain-registry";
 
+export { projectProtocolChains, type ProtocolChainFacts };
+
 import { MONAD_TESTNET_DEX, type EvmDexEntry } from "./dex-entries";
 import {
   SOLANA_DEVNET_DEX,
@@ -159,8 +161,9 @@ export type ClientChainExtension = Omit<
 >;
 
 // Keys are the explicit client-supported canonical subset, not another identity table.
-const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
-  Object.freeze({
+export const CLIENT_CHAIN_EXTENSIONS: Readonly<
+  Record<string, ClientChainExtension>
+> = Object.freeze({
     "monad-testnet": Object.freeze({
       wallet: JSON_RPC_WALLET,
       kind: "monad",
@@ -524,8 +527,29 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
     }),
   });
 
+export function buildChainRegistryFromProtocol<
+  T extends object = ClientChainExtension
+>(
+  protocolJson: unknown,
+  clientExtensions: Readonly<Record<string, T>> =
+    CLIENT_CHAIN_EXTENSIONS as unknown as Readonly<Record<string, T>>
+): Readonly<Record<string, T & ProtocolChainFacts>> {
+  return projectProtocolChains(protocolJson, clientExtensions);
+}
+
+export function validateClientChainExtensions<
+  T extends object = ClientChainExtension
+>(
+  protocolJson: unknown,
+  clientExtensions: Readonly<Record<string, T>>
+): void {
+  projectProtocolChains(protocolJson, clientExtensions);
+}
+
 export const PROTOCOL_CHAINS: Readonly<Record<string, ChainRegistryEntry>> =
-  projectProtocolChains(protocolChains, CLIENT_CHAIN_EXTENSIONS);
+  buildChainRegistryFromProtocol(protocolChains, CLIENT_CHAIN_EXTENSIONS);
+
+export const CHAIN_REGISTRY = PROTOCOL_CHAINS;
 
 export function getChainRegistryEntry(
   id: string
@@ -534,6 +558,8 @@ export function getChainRegistryEntry(
   if (id === "ecash-mainnet") return PROTOCOL_CHAINS["xec-mainnet"];
   return PROTOCOL_CHAINS[id];
 }
+
+export const getChainConfig = getChainRegistryEntry;
 
 const CONTRACT_NAMES: Readonly<Record<keyof ChainContracts, string>> = {
   htlc: "GenericHTLC",
@@ -631,6 +657,8 @@ export function getChainRegistryByNetworkTag(
     (c) => c.networkTag === networkTag
   );
 }
+
+export const resolveChainByWireTag = getChainRegistryByNetworkTag;
 
 export function getChainRegistryByCaip2(
   caip2: string

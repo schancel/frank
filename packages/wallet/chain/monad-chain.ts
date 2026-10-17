@@ -2,6 +2,8 @@ import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import { type DefaultStampQuote } from "../oracle/stamp-policy";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
+export type { EvmChainConfig } from "./evm-chain-config";
+export type { EvmChainWalletHandle, EvmWalletHandle } from "../evm-wallet-handle";
 import {
   nativeMemberSuperseded,
   type EvmNativeSource,
@@ -667,11 +669,15 @@ function asMonadWallet(
   }
   if (
     expectedNetworkId !== undefined &&
-    candidate.networkId !== undefined &&
-    candidate.networkId !== expectedNetworkId
+    ((candidate.networkId !== undefined &&
+      candidate.networkId !== expectedNetworkId) ||
+      (candidate.chainIdentifier !== undefined &&
+        candidate.chainIdentifier !== expectedNetworkId))
   ) {
     throw new Error(
-      `Expected Monad network ${expectedNetworkId}, got ${candidate.networkId}`
+      `Expected Monad network ${expectedNetworkId}, got ${
+        candidate.networkId ?? candidate.chainIdentifier
+      }`
     );
   }
   return candidate as EvmChainWalletHandle;
@@ -1731,7 +1737,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const economicOwnerKey =
         material.canonicalRoles === undefined
           ? undefined
-          : `${config.chainId}:${mainAccountKey}`;
+          : `${chainIdentifier}:${config.chainId}:${mainAccountKey}`;
       const existing = walletsByIdentity.get(identityKey);
       if (existing !== undefined) {
         material.dispose();
@@ -1760,10 +1766,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           material.canonicalRoles === undefined
             ? identityKey
             : `evm-${mainAccount.address.toLowerCase()}`;
+        const storageScope =
+          chainEntry.kind === "monad"
+            ? storageKey
+            : `${chainIdentifier}-${storageKey}`;
         const storageLocation =
           config.walletStorageLocation === false
             ? undefined
-            : `${config.walletStorageLocation}-${storageKey}`;
+            : `${config.walletStorageLocation}-${storageScope}`;
         // Typed roots own a durable public state tuple. A previously opened state path must
         // retain both spend-pool bindings: recreating either empty pool could reuse an account.
         // Only an entirely absent path is eligible for first-time binding. Existing pre-baseline

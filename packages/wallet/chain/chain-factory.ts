@@ -4,6 +4,8 @@ import { getChainRegistryEntry } from "./chains-registry";
 import { createEvmChain } from "./monad-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
 
+export type { EvmChainConfig } from "./evm-chain-config";
+
 import type { SolanaChainConfig } from "./solana-chain";
 
 export type ChainFactoryConfig =
@@ -34,7 +36,10 @@ export async function createChain(
 ): Promise<NativeAssetChain | EcashChain> {
   switch (params.family) {
     case "evm": {
-      const chainIdentifier = params.chainIdentifier ?? params.config.rpcChain;
+      const chainIdentifier =
+        params.chainIdentifier ??
+        params.config.chainIdentifier ??
+        params.config.rpcChain;
       if (
         params.config.rpcChain !== chainIdentifier ||
         (params.config.chainIdentifier !== undefined &&
@@ -55,9 +60,7 @@ export async function createChain(
       }
       return createEvmChain({
         ...params.config,
-        ...(params.chainIdentifier !== undefined
-          ? { chainIdentifier: params.chainIdentifier }
-          : {}),
+        chainIdentifier,
       });
     }
     case "solana": {

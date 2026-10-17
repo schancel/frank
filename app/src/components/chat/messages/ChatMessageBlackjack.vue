@@ -32,8 +32,60 @@
           })
         "
       />
+      <template v-if="state.split && view.splitHands">
+        <div
+          data-testid="blackjack-split-hand-0"
+          :class="{
+            'bj-split-hand--active':
+              state.phase === 'player_turn' &&
+              (state.activeSplitHand ?? 0) === 0,
+          }"
+        >
+          <blackjack-cards
+            :label="
+              state.phase === 'player_turn' &&
+              (state.activeSplitHand ?? 0) === 0
+                ? $t('blackjackP2p.rowHand1Active')
+                : $t('blackjackP2p.rowHand1')
+            "
+            :cards="view.splitHands[0]"
+            :total="splitHand0Total"
+            :sentence="
+              $t('blackjackP2p.splitHand1', {
+                cards: cardLabels(view.splitHands[0]),
+                total: splitHand0Total,
+              })
+            "
+            total-testid="blackjack-split-total-0"
+          />
+        </div>
+        <div
+          data-testid="blackjack-split-hand-1"
+          :class="{
+            'bj-split-hand--active':
+              state.phase === 'player_turn' && state.activeSplitHand === 1,
+          }"
+        >
+          <blackjack-cards
+            :label="
+              state.phase === 'player_turn' && state.activeSplitHand === 1
+                ? $t('blackjackP2p.rowHand2Active')
+                : $t('blackjackP2p.rowHand2')
+            "
+            :cards="view.splitHands[1]"
+            :total="splitHand1Total"
+            :sentence="
+              $t('blackjackP2p.splitHand2', {
+                cards: cardLabels(view.splitHands[1]),
+                total: splitHand1Total,
+              })
+            "
+            total-testid="blackjack-split-total-1"
+          />
+        </div>
+      </template>
       <blackjack-cards
-        v-if="view.playerCards.length"
+        v-else-if="view.playerCards.length"
         :label="$t('blackjackP2p.rowPlayer')"
         :cards="view.playerCards"
         :total="playerTotal"
@@ -203,7 +255,10 @@
           color="primary"
           :data-testid="`blackjack-${move}`"
           :label="moveLabel(move)"
-          :disable="busy || (move === 'double' && !canAffordDouble)"
+          :disable="
+            busy ||
+            ((move === 'double' || move === 'split') && !canAffordDouble)
+          "
           @click="onMove(move)"
         />
       </div>
@@ -301,8 +356,32 @@
           })
         "
       />
+      <template v-if="state.split && state.splitHands">
+        <blackjack-cards
+          :label="$t('blackjackP2p.rowHand1')"
+          :cards="state.splitHands[0]"
+          :total="splitHand0Total"
+          :sentence="
+            $t('blackjackP2p.splitHand1', {
+              cards: cardLabels(state.splitHands[0]),
+              total: splitHand0Total,
+            })
+          "
+        />
+        <blackjack-cards
+          :label="$t('blackjackP2p.rowHand2')"
+          :cards="state.splitHands[1]"
+          :total="splitHand1Total"
+          :sentence="
+            $t('blackjackP2p.splitHand2', {
+              cards: cardLabels(state.splitHands[1]),
+              total: splitHand1Total,
+            })
+          "
+        />
+      </template>
       <blackjack-cards
-        v-if="state.playerCards.length"
+        v-else-if="state.playerCards.length"
         :label="$t('blackjackP2p.rowPlayer')"
         :cards="state.playerCards"
         :total="playerTotal"
@@ -382,11 +461,12 @@ import {
   roleOf,
   totalStakeWei,
   type DealerStep,
+  type HandEvent,
   type HandMoneyError,
   type HandRejection,
   type HandRole,
   type HandState,
-} from '@frank/wallet/message-item-plugins/blackjack/hand'
+} from '@frank/wallet/message-item-plugins/blackjack/game'
 
 import BlackjackCards from './BlackjackCards.vue'
 import { useChatStore } from '../../../stores/chats'
@@ -400,7 +480,7 @@ import {
   saveSeed,
 } from '../../../utils/blackjack-hand'
 
-type Move = 'hit' | 'stand' | 'double'
+type Move = 'hit' | 'stand' | 'double' | 'split'
 
 /**
  * One message of a peer-to-peer blackjack hand. Every bubble says what its message was; the
@@ -409,7 +489,7 @@ type Move = 'hit' | 'stand' | 'double'
  * state machine, so it does not depend on which bubbles are on screen.
  *
  * Money is only ever the stamp of the message a button sends: the bet, the equal second bet of a
- * double, the dealer's payout and a refund.
+ * double or split, the dealer's payout and a refund.
  *
  * No message states a card. Each side keeps a seed of its own and the hand's messages open one
  * link of it per card; the cards shown are computed from the links opened so far. Right after
@@ -458,7 +538,7 @@ export default defineComponent({
         this.own,
         this.address,
         this.item.gameId,
-      )
+      ) as unknown as HandEvent[]
       return {
         ...foldHand(events),
         lastDigest: events[events.length - 1]?.digest,
@@ -492,11 +572,22 @@ export default defineComponent({
     },
     // The cards this user can see: those both sides opened, plus, for the player right after
     // the deal, the first cards its own seed already gives.
-    view(): { playerCards: number[]; dealerUpCard?: number } {
+    view(): {
+      playerCards: number[]
+      dealerUpCard?: number
+      splitHands?: [number[], number[]]
+      activeSplitHand?: 0 | 1
+    } {
       return handView(this.state, this.seed)
     },
     playerTotal(): number {
       return handValue(this.view.playerCards).total
+    },
+    splitHand0Total(): number {
+      return handValue(this.view.splitHands?.[0] ?? []).total
+    },
+    splitHand1Total(): number {
+      return handValue(this.view.splitHands?.[1] ?? []).total
     },
     dealerTotal(): number {
       return handValue(this.state?.dealerCards ?? []).total
@@ -572,7 +663,9 @@ export default defineComponent({
         (move): move is Move => move !== 'bet',
       )
       // A natural can only stand, and that is sent without asking.
-      return moves.length === 1 && this.view.playerCards.length === 2
+      return !this.state?.split &&
+        moves.length === 1 &&
+        this.view.playerCards.length === 2
         ? []
         : moves
     },
@@ -819,17 +912,17 @@ export default defineComponent({
       if (suggested > 0n) this.amount = activeChain.toDisplayAmount(suggested)
     },
     moveLabel(move: Move): string {
-      return move === 'double' && this.state
-        ? this.$t('blackjackP2p.double', {
+      return (move === 'double' || move === 'split') && this.state
+        ? this.$t(`blackjackP2p.${move}`, {
             amount: this.display(this.state.wagerWei),
           })
         : this.$t(`blackjackP2p.${move}`)
     },
-    send(item: BlackjackHandItem, stampValueWei?: bigint) {
+    send(item: unknown, stampValueWei?: bigint) {
       if (this.busy) return
       this.sending = true
       this.$emit('sendFollowUp', {
-        items: [item],
+        items: [item as BlackjackHandItem],
         stampValueWei,
         settled: () => {
           this.sending = false
@@ -866,7 +959,10 @@ export default defineComponent({
       // The move opens the link of the card it asks for (or, to stand or double, the rest).
       const item = playerStep(this.state, move, this.seed)
       if (!item) return
-      this.send(item, move === 'double' ? this.state.wagerWei : undefined)
+      this.send(
+        item,
+        move === 'double' || move === 'split' ? this.state.wagerWei : undefined,
+      )
     },
     onPay() {
       const step = this.payStep

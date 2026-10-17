@@ -24,6 +24,14 @@ if (existsSync(packagesDir)) {
 const adaptorCompositionConfig = join(rootDir, 'packages/contracts/tsconfig.adaptor-tests.json')
 if (existsSync(adaptorCompositionConfig)) targetConfigs.push(adaptorCompositionConfig)
 
+// Explicit negotiation storage entries keep platform globals out of the pure core gate.
+for (const name of [
+  'tsconfig.storage-browser.json',
+  'tsconfig.storage-native.json',
+]) {
+  targetConfigs.push(join(rootDir, 'packages/swap-protocol', name))
+}
+
 const custodyConfig = join(rootDir, 'app/src/accounts/custody/tsconfig.json')
 if (existsSync(custodyConfig)) {
   targetConfigs.push(custodyConfig)

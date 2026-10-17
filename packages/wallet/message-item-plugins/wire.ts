@@ -41,6 +41,8 @@ import type {
   UnsupportedItem,
 } from '@frank/cashweb/types/messages'
 
+import { messageItemType } from './application-item'
+
 import {
   MessageItemDecodeError,
   MessageItemEncodeError,
@@ -242,9 +244,11 @@ function itemFrame(
   item: MessageItem,
   addressing: ItemAddressing,
 ): { type: string; frame: Uint8Array } {
-  const type = (item as { type?: unknown } | null)?.type
-  if (typeof type !== 'string')
-    throw new MessageItemNotCarriedError(String(type))
+  if (!item || typeof item.type !== 'string')
+    throw new MessageItemNotCarriedError(String(item))
+  const type = messageItemType(item)
+  if (item.type === 'application' && itemFrameRule(type).carried !== 'generic')
+    throw new MessageItemNotCarriedError(type)
   const rule = itemFrameRule(type, addressing)
   if (rule.carried === 'no' || !registry.has(type))
     throw new MessageItemNotCarriedError(type)
@@ -317,6 +321,9 @@ export function encodeItemFrames(
       )
     }
   })
+  const exceeded = watched.exceeded()
+  if (exceeded !== undefined)
+    throw new MessageItemEncodeError(frames[0].type, exceeded)
   return frames.map(f => f.frame)
 }
 
@@ -371,12 +378,22 @@ function readItemFrame(
   }
   if (itemFrameRule(type, addressing).carried === 'no' || !registry.has(type))
     return unsupported(child, 'unknown-type', type)
+  if (
+    registry.get(type)?.carrier === 'application' &&
+    itemFrameRule(type).carried !== 'generic'
+  )
+    return unsupported(child, 'unknown-type', type)
   try {
     const decoded = registry.decodeItem(type, bytes, {
       budget: watched.budget,
       ...(frame === undefined ? {} : { frame }),
     })
     if (decoded.kind !== 'item') return unsupported(child, 'unknown-type', type)
+    if (
+      decoded.item.type === 'application' &&
+      itemFrameRule(type).carried !== 'generic'
+    )
+      return unsupported(child, 'malformed', type)
     return decoded.item
   } catch (error) {
     const exceeded = watched.exceeded()
@@ -463,7 +480,14 @@ export function receiveLegacyItems(
   const watched = watch(standaloneItemBudget())
   const items = raw.map((value): MessageItem => {
     const type = (value as { type?: unknown } | null)?.type
-    const itemType = typeof type === 'string' ? type : undefined
+    let itemType = typeof type === 'string' ? type : undefined
+    if (type === 'application') {
+      try {
+        itemType = messageItemType(value as MessageItem)
+      } catch {
+        itemType = undefined
+      }
+    }
     const kept = (reason: UnsupportedItem['reason']): UnsupportedItem => {
       let text = ''
       try {

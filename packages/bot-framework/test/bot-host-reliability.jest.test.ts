@@ -1,3 +1,11 @@
+import * as negotiationStorage from '@frank/swap-protocol/src/storage/negotiation-native'
+import { NegotiationJournalError } from '@frank/swap-protocol/src/negotiation-journal'
+import { buildNegotiationOffer, TESTNET_NEGOTIATION_POLICY } from '@frank/swap-protocol/src/negotiation'
+import { encodeSignedSwapEvent } from '@frank/swap-protocol/src'
+import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { bytesToHex } from '@noble/hashes/utils.js'
+import { canonicalPollingFixture } from "@frank/wallet/chain/canonical-polling.testutil";
+import * as canonicalMailbox from "@frank/cashweb/relay/monad-mailbox-client";
 import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
 import { Wallet, getBytes } from "ethers";
 import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
@@ -16,6 +24,8 @@ jest.mock("../src/relay-profile-manager", () => ({
   },
 }));
 
+let mockFeatureEnabled = false;
+const mockFeatureScan = jest.fn();
 const mockDirectMessagesSend = jest.fn();
 const mockDirectMessagesFetchSince = jest.fn();
 const mockGetReceiveAddress = jest.fn();
@@ -30,6 +40,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
     createEvmChain: jest.fn((config: import("@frank/wallet/chain/evm-chain-config").EvmChainConfig) => ({
       chainIdentifier: "monad-testnet",
       directMessages: {
+        get scanAuthenticatedMailbox() { return mockFeatureEnabled ? mockFeatureScan : undefined },
         defaultStampQuote: async () => config.resolveDefaultStamp!({ chainIdentifier: "monad-testnet", minimumStamp: 0n }),
         fetchSince: mockDirectMessagesFetchSince,
         send: mockDirectMessagesSend,
@@ -97,6 +108,8 @@ describe("FrankBotHost Reliability Features", () => {
     ])
       delete process.env[key];
     jest.clearAllMocks();
+    mockFeatureEnabled = false;
+    mockFeatureScan.mockReset();
     mockDirectMessagesSend.mockImplementation(
       async (params: {
         onAttemptCreated?: (digest: string) => Promise<void>;
@@ -120,6 +133,102 @@ describe("FrankBotHost Reliability Features", () => {
 
   afterEach(() => {
     process.env = originalEnvironment;
+  });
+
+  describe('Installed signed negotiation recovery', () => {
+    async function until(predicate: () => boolean) {
+      for (let i = 0; i < 200; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)) }
+      throw new Error('Bot feature timeout')
+    }
+    it('scans old commands without dispatch, delivers new ordinary mail and rediscovers saved signed history', async () => {
+      mockFeatureEnabled = true;
+      const peer = MonadIdentity.fromPrivateKeyHex(`0x${'00'.repeat(31)}01`);
+      mockFeatureScan.mockImplementation(async ({ wallet, sinceMs }) => {
+        const context = { swapId: new Uint8Array(32).fill(1), conversationId: new Uint8Array(16).fill(2), parties: [peer.compressedPubKey, wallet.identity.compressedPubKey] as const, policy: TESTNET_NEGOTIATION_POLICY };
+        const offer = await buildNegotiationOffer(context, { xecPrincipal: 100n, evmPrincipal: 200n, expiry: 2000000000n }, async digest => new Uint8Array(peer.signHash(Buffer.from(digest))));
+        if (!offer.ok) throw new Error(offer.error.code);
+        const bytes = encodeSignedSwapEvent(offer.value);
+        if (!bytes.ok) throw new Error(bytes.error.code);
+        const record = { chainIdentifier: 'monad-testnet', senderPublicKey: peer.compressedPubKey, recipientPublicKey: wallet.identity.compressedPubKey, direction: 'incoming', payloadDigest: 'ab'.repeat(32), conversationId: '02020202-0202-0202-0202-020202020202', messageId: '03030303-0303-0303-0303-030303030303', items: [{ type: 'text', text: 'OLD PAYOUT COMMAND' }, { type: 'application', itemType: 'swap-negotiation-v1', value: { eventHex: bytesToHex(bytes.value) } }] };
+        return { records: sinceMs === 0 ? [record] : [], resumeFromInclusive: 20, truncated: false };
+      });
+      const onMessage = jest.fn(async () => undefined);
+      const definition = { id: 'negotiation-history', getProfile: () => ({ name: 'History', bot: true }), onMessage };
+      const config = { relayBaseUrl: 'http://127.0.0.1:8098', stateDir: `${stateDir}/negotiation` };
+      const host = new FrankBotHost(config);
+      await host.register(definition);
+      try {
+        await until(() => host.negotiationStatus(definition.id)?.state === 'ready');
+        expect(host.negotiationStatus(definition.id)?.journals[0].entries).toHaveLength(1);
+        expect(onMessage).not.toHaveBeenCalled();
+        expect(mockDirectMessagesSend).not.toHaveBeenCalled();
+        mockDirectMessagesFetchSince.mockResolvedValueOnce([{ senderAddress: { raw: mockPeer.address.toLowerCase() }, senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey), recipientPublicKey: getBytes('0x' + mockLocalSubject), recipientAddress: { raw: mockLocalAddress }, messageId: '04040404-0404-0404-0404-040404040404', conversationId: '02020202-0202-0202-0202-020202020202', payloadDigest: 'cd'.repeat(32), receivedTime: 1700000000000, items: [{ type: 'text', text: 'NEW ORDINARY' }] }]);
+        await (host as any).pollAllBots();
+        const instance = (host as any).instances.get(definition.id);
+        await instance.peerQueue.enqueue(mockPeer.address.toLowerCase(), async () => {});
+        expect(onMessage).toHaveBeenCalledTimes(1);
+        expect(onMessage.mock.calls[0][0].items).toEqual([{ type: 'text', text: 'NEW ORDINARY' }]);
+        expect(mockDirectMessagesSend).not.toHaveBeenCalled();
+      } finally { await host.stop() }
+      const restored = new FrankBotHost(config);
+      await restored.register(definition);
+      try {
+        await until(() => restored.negotiationStatus(definition.id)?.state === 'ready');
+        expect(restored.negotiationStatus(definition.id)?.journals[0].entries).toHaveLength(1);
+        expect(mockFeatureScan.mock.calls.at(-1)[0].sinceMs).toBe(20);
+        expect(onMessage).toHaveBeenCalledTimes(1);
+      } finally { await restored.stop() }
+    });
+    it('a second feature page pinned at capacity does not starve ordinary dispatch', async () => {
+      mockFeatureEnabled = true;
+      const peer = MonadIdentity.fromPrivateKeyHex(`0x${'00'.repeat(31)}01`);
+      let admissions = 0;
+      const open = negotiationStorage.createNativeNegotiationJournalStore;
+      const factory = jest.spyOn(negotiationStorage, 'createNativeNegotiationJournalStore').mockImplementation(async binding => {
+        const store = await open(binding);
+        return { ...store, compareAndSwap: async (key, expected, next) => {
+          if (++admissions > 1) throw new NegotiationJournalError('capacity', 'Synthetic account capacity');
+          return store.compareAndSwap(key, expected, next);
+        } };
+      });
+      mockFeatureScan.mockImplementation(async ({ wallet, sinceMs }) => {
+        const context = { swapId: new Uint8Array(32).fill(sinceMs === 0 ? 1 : 2), conversationId: new Uint8Array(16).fill(2), parties: [peer.compressedPubKey, wallet.identity.compressedPubKey] as const, policy: TESTNET_NEGOTIATION_POLICY };
+        const offer = await buildNegotiationOffer(context, { xecPrincipal: 100n, evmPrincipal: 200n, expiry: 2000000000n }, async digest => new Uint8Array(peer.signHash(Buffer.from(digest))));
+        if (!offer.ok) throw new Error(offer.error.code);
+        const bytes = encodeSignedSwapEvent(offer.value);
+        if (!bytes.ok) throw new Error(bytes.error.code);
+        return { records: [{ chainIdentifier: 'monad-testnet', senderPublicKey: peer.compressedPubKey, recipientPublicKey: wallet.identity.compressedPubKey, direction: 'incoming', payloadDigest: 'ab'.repeat(32), conversationId: '02020202-0202-0202-0202-020202020202', messageId: '03030303-0303-0303-0303-030303030303', items: [{ type: 'application', itemType: 'swap-negotiation-v1', value: { eventHex: bytesToHex(bytes.value) } }] }], resumeFromInclusive: sinceMs === 0 ? 10 : 20, truncated: true };
+      });
+      const onMessage = jest.fn(async () => undefined);
+      const host = new FrankBotHost({ relayBaseUrl: 'http://127.0.0.1:8098', stateDir: `${stateDir}/feature-capacity` });
+      try {
+        await host.register({ id: 'feature-capacity', getProfile: () => ({ name: 'Capacity', bot: true }), onMessage });
+        for (let count = 0; count < 1000 && host.negotiationStatus('feature-capacity')?.state !== 'capacity'; count++) await new Promise(resolve => setTimeout(resolve, 5));
+        expect(host.negotiationStatus('feature-capacity')?.state).toBe('capacity');
+        expect(host.negotiationStatus('feature-capacity')?.coverage).toBe(10);
+        expect(mockFeatureScan.mock.calls.map(call => call[0].sinceMs)).toEqual([0, 10]);
+        mockDirectMessagesFetchSince.mockResolvedValueOnce([{ senderAddress: { raw: mockPeer.address.toLowerCase() }, senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey), recipientPublicKey: getBytes('0x' + mockLocalSubject), recipientAddress: { raw: mockLocalAddress }, messageId: '04040404-0404-0404-0404-040404040404', conversationId: '02020202-0202-0202-0202-020202020202', payloadDigest: 'cd'.repeat(32), receivedTime: 1700000000000, items: [{ type: 'text', text: 'NEW ORDINARY' }] }]);
+        await (host as any).pollAllBots();
+        await (host as any).instances.get('feature-capacity').peerQueue.enqueue(mockPeer.address.toLowerCase(), async () => {});
+        expect(onMessage).toHaveBeenCalledTimes(1);
+        expect(mockDirectMessagesSend).not.toHaveBeenCalled();
+      } finally { await host.stop(); factory.mockRestore() }
+    });
+    it('a hanging feature scan permits ordinary polls and shutdown', async () => {
+      mockFeatureEnabled = true;
+      let finish!: (value: unknown) => void;
+      mockFeatureScan.mockImplementation(() => new Promise(resolve => { finish = resolve }));
+      const host = new FrankBotHost({ relayBaseUrl: 'http://127.0.0.1:8098', stateDir: `${stateDir}/hanging-feature` });
+      await host.register({ id: 'hanging-feature', getProfile: () => ({ name: 'Hang', bot: true }), onMessage: async () => undefined });
+      await until(() => mockFeatureScan.mock.calls.length === 1);
+      mockDirectMessagesFetchSince.mockResolvedValueOnce([]);
+      await (host as any).pollAllBots();
+      expect(mockDirectMessagesFetchSince).toHaveBeenCalled();
+      await host.stop();
+      finish({ records: [], resumeFromInclusive: 100, truncated: false });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(host.negotiationStatus('hanging-feature')).toBeUndefined();
+    });
   });
 
   describe("Conversation threading", () => {
@@ -266,6 +375,68 @@ describe("FrankBotHost Reliability Features", () => {
   });
 
   describe("Cursor persistence in LevelDB state", () => {
+    it("retains its replay position on an oversized canonical timestamp group", async () => {
+      const fixture = await canonicalPollingFixture();
+      const handled = jest.fn(async () => []);
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/canonical-prefix`,
+      });
+      await host.register({
+        id: "canonical-prefix",
+        getProfile: () => ({ name: "CanonicalPrefix", bot: true }),
+        onMessage: handled,
+      });
+      const instance = host["instances"].get("canonical-prefix")!;
+      const initial = instance.lastPollTimestamp;
+      const persisted = await instance.state.get("cursor:lastPollTimestamp");
+      const page = jest
+        .spyOn(canonicalMailbox, "fetchCanonicalMailboxPage")
+        .mockImplementation(async params => ({
+          records: [fixture.record(initial + 100)],
+          unreadable: [
+            { timestampMs: initial + 100, submissionIdentity: "ab".repeat(32) },
+          ],
+          nextCursor: String(Number(params.cursor ?? 0) + 1),
+        }));
+      mockDirectMessagesFetchSince.mockImplementation(params =>
+        fixture.client.fetchSince(params),
+      );
+      const error = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        await host["pollAllBots"]();
+        await host["pollAllBots"]();
+        expect(
+          mockDirectMessagesFetchSince.mock.calls
+            .slice(-2)
+            .map(([params]) => params.sinceMs),
+        ).toEqual([initial, initial]);
+        expect(instance.lastPollTimestamp).toBe(initial);
+        expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(
+          persisted,
+        );
+        expect(handled).not.toHaveBeenCalled();
+        expect(error.mock.calls.flat().join(" ")).toContain(
+          "complete timestamp prefix",
+        );
+        page.mockResolvedValue({ records: [fixture.record(initial + 100)] });
+        const recovered = await fixture.client.fetchSince({
+          wallet: instance.wallet,
+          sinceMs: initial,
+        });
+        expect(recovered).toHaveLength(1);
+        expect(recovered[0].receivedTime).toBe(initial + 100);
+      } finally {
+        page.mockRestore();
+        error.mockRestore();
+        mockDirectMessagesFetchSince.mockResolvedValue([]);
+        await host.stop();
+        await fixture.close();
+      }
+    });
+
     it("retains the cursor after an incomplete fetch rejection and handles the original on recovery", async () => {
       const handled: string[] = [];
       const definition: FrankBotDefinition = {

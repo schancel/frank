@@ -10,16 +10,16 @@ it('commits the first Node immutable binding with its format marker and retains 
       if (error) throw error
     })
     await backend.db.open()
-    await backend.bindImmutable('binding', 'original', ['schemaVersion', '2'])
+    await backend.bindImmutable('binding', 'original', ['schemaVersion', '3'])
     await backend.db.close()
     backend = messageMetadataBackend(location, error => {
       if (error) throw error
     })
     await backend.db.open()
-    expect(await backend.db.get('schemaVersion')).toBe('2')
+    expect(await backend.db.get('schemaVersion')).toBe('3')
     expect(await backend.db.get('binding')).toBe('original')
     await expect(
-      backend.bindImmutable('binding', 'replacement', ['schemaVersion', '2']),
+      backend.bindImmutable('binding', 'replacement', ['schemaVersion', '3']),
     ).rejects.toThrow('conflict')
     await backend.db.close()
   } finally {

@@ -149,27 +149,22 @@
               :address="address"
               @sendFollowUp="handleSendFollowUp"
             />
-            <chat-message-swap
-              v-else-if="item.type == 'swap-offer'"
-              :swap-id="item.swapId"
-              :offered-chain="item.offeredChain"
-              :offered-asset="item.offeredAsset"
-              :offered-amount="item.offeredAmount"
-              :requested-chain="item.requestedChain"
-              :requested-asset="item.requestedAsset"
-              :requested-amount="item.requestedAmount"
-              :status="item.status"
+            <component
+              :is="applicationRenderer(item.itemType)"
+              v-else-if="
+                item.type === 'application' &&
+                applicationRenderer(item.itemType)
+              "
+              :item="item"
+              :address="address"
+              :conversation-id="message.conversationId || ''"
+              :delivery-status="message.status"
+              :sender-address="message.senderAddress"
               :outbound="message.outbound"
-              :hash-lock="item.hashLock"
-              :preimage="item.preimage"
-              :leg-a-tx-hash="item.legATxHash"
-              :leg-b-tx-hash="item.legBTxHash"
-              :claim-tx-hash="item.claimTxHash"
-              :origin-instance-id="item.originInstanceId"
-              :recipient-address="address"
-              @accept="handleSwapAccept"
-              @cancel="handleSwapCancel"
             />
+            <span v-else-if="item.type === 'swap-offer'" class="text-caption">{{
+              $t('signedSwap.legacy')
+            }}</span>
             <chat-message-rps
               v-else-if="item.type == 'rps'"
               :item="item"
@@ -269,7 +264,7 @@ import ChatMessageStealth from './ChatMessageStealth.vue'
 import ChatMessageBlackjack from './ChatMessageBlackjack.vue'
 import ChatMessageDigitalGoods from './ChatMessageDigitalGoods.vue'
 import ChatMessageRaffle from './ChatMessageRaffle.vue'
-import ChatMessageSwap from './ChatMessageSwap.vue'
+import { applicationRenderer } from '../../../utils/application-renderers'
 import ChatMessageRps from './ChatMessageRps.vue'
 import ChatMessageDice from './ChatMessageDice.vue'
 import ChatMessageChannel from './ChatMessageChannel.vue'
@@ -311,7 +306,6 @@ export default defineComponent({
     ChatMessageBlackjack,
     ChatMessageDigitalGoods,
     ChatMessageRaffle,
-    ChatMessageSwap,
     ChatMessageRps,
     ChatMessageDice,
     ChatMessageChannel,
@@ -348,6 +342,7 @@ export default defineComponent({
     )
     const chats = useChatStore()
     return {
+      applicationRenderer,
       sentContactPayments,
       deleteMessage: chats.deleteMessage,
       sendDirectMessage: chats.sendMessage,
@@ -423,26 +418,6 @@ export default defineComponent({
       this.replyClicked({
         address: this.address,
         payloadDigest: this.payloadDigest,
-      })
-    },
-    handleSwapAccept(swapId: string) {
-      this.$emit('sendFollowUp', {
-        items: [
-          {
-            type: 'text',
-            text: `/swap accept ${swapId}`,
-          },
-        ],
-      })
-    },
-    handleSwapCancel(swapId: string) {
-      this.$emit('sendFollowUp', {
-        items: [
-          {
-            type: 'text',
-            text: `/swap cancel ${swapId}`,
-          },
-        ],
       })
     },
     /** Manual Retry of a failed message. It never deletes the message first: the store asks

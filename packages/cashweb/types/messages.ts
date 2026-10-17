@@ -816,7 +816,18 @@ export interface UnsupportedItem {
   frame: string
 }
 
+/** Feature-neutral local carrier. The registered plugin owns and validates `value`.
+ * Raw values must be JSON-safe plain data: no bigint, typed arrays, undefined, prototypes,
+ * accessors or cycles. Encode large integers and binary fields using a plugin-defined string
+ * representation. The existing type-27 wire carries only the plugin's own encoded bytes. */
+export interface ApplicationMessageItem {
+  type: 'application'
+  itemType: string
+  value: unknown
+}
+
 export type MessageItem =
+  | ApplicationMessageItem
   | StealthItem
   | RecipientAssetPaymentItem
   | P2PKHSendItem
@@ -897,6 +908,8 @@ export interface OutgoingFinancialOperation {
 export interface Message {
   /** Persisted before sealing; reused even for free financial message retries. */
   sealedMessageId?: string
+  /** Opaque retained application owner reference; never itself authorizes spending. */
+  applicationAuthorization?: { accountId: string; intentKey: string }
   financialOperations?: OutgoingFinancialOperation[]
   outbound: boolean
   status: string

@@ -486,3 +486,34 @@ test('wiping IndexedDB while local storage retains checkpoint triggers automated
   expect(messagingState.status).toBe('ready')
   expect(messagingState.reason).toBeNull()
 })
+test('directory installation starts independent feature lifetime and stop retains its cleanup', async () => {
+  const alice = await wallet(0, 'feature-owner')
+  const d = device(alice)
+  let release!: () => void
+  const pending = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const stop = jest.fn(() => pending)
+  const start = jest.fn(() => ({ stop }))
+  d.deps.startNegotiation = start
+  await configureMessagingForTest(d.deps)
+  mockStatus.status = 'ready'
+  await initializeMonadIdentity()
+  await until(() => messagingState.status === 'ready', 'installed feature')
+  expect(start).toHaveBeenCalledWith({
+    wallet: alice,
+    revision: 1,
+    account: mockStatus.account,
+  })
+  let closed = false
+  const cleanup = stopMessaging().then(() => {
+    closed = true
+  })
+  expect(stop).toHaveBeenCalledTimes(1)
+  expect(d.polling.stop).toHaveBeenCalledTimes(1)
+  await new Promise(resolve => setImmediate(resolve))
+  expect(closed).toBe(false)
+  release()
+  await cleanup
+  expect(closed).toBe(true)
+})

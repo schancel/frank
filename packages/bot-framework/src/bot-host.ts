@@ -1,3 +1,7 @@
+import {
+  startBotNegotiationRecovery,
+  type BotNegotiationRecovery,
+} from "./negotiation-recovery";
 import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
 import { DefaultStampUnavailableError, stampPolicyConfig } from '@frank/wallet/oracle/stamp-policy'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
@@ -173,6 +177,7 @@ function replyBudget(
 
 interface ActiveBotInstance {
   definition: FrankBotDefinition;
+  negotiation?: BotNegotiationRecovery;
   wallet: EvmChainWalletHandle;
   state: LevelBotStateStore;
   operations: InboundOperationStore;
@@ -211,9 +216,15 @@ interface ActiveBotInstance {
 
 export class FrankBotHost {
   private readonly options: Required<
-    Omit<BotHostOptions, "maxRepliesPerPeer" | "stampValueWei">
+    Omit<
+      BotHostOptions,
+      "maxRepliesPerPeer" | "stampValueWei" | "createMessageItemRegistry"
+    >
   > &
-    Pick<BotHostOptions, "maxRepliesPerPeer" | "stampValueWei">;
+    Pick<
+      BotHostOptions,
+      "maxRepliesPerPeer" | "stampValueWei" | "createMessageItemRegistry"
+    >;
   private readonly provider: JsonRpcProvider;
   private readonly chain: ActiveChain;
   private readonly fundingWallet?: Wallet;
@@ -257,6 +268,7 @@ export class FrankBotHost {
       "https://testnet-rpc.monad.xyz";
 
     this.options = {
+      createMessageItemRegistry: options.createMessageItemRegistry,
       relayBaseUrl,
       networkTag,
       stateDir:
@@ -409,6 +421,7 @@ export class FrankBotHost {
       identityPath: definition.defaultIdentityPath,
       network,
     });
+    let negotiation: BotNegotiationRecovery | undefined;
     let openedWallet: EvmChainWalletHandle | undefined;
     let openedDirectory: DirectoryManager | undefined;
     let uninstall: (() => void) | undefined;
@@ -445,6 +458,12 @@ export class FrankBotHost {
       await directory.publishWithRetry(definition.id);
       directory.startHeartbeat(this.options.heartbeatIntervalMs);
 
+      // Resolve composition before installing either wallet-scoped hook. A failed factory
+      // follows the existing registration cleanup without leaving an installed directory.
+      const messageItems = this.options.createMessageItemRegistry
+        ? this.options.createMessageItemRegistry()
+        : createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable);
+
       // Install canonical directory so chain.directMessages routes through canonical directory
       const removeDirectory = installCanonicalDirectory(
         wallet,
@@ -453,7 +472,7 @@ export class FrankBotHost {
       // The message-item plugins this bot's wallet sends and receives with.
       const removeMessageItems = installMessageItemRegistry(
         wallet,
-        createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable)
+        messageItems
       );
       const uninstallDirectory = () => {
         removeDirectory();
@@ -867,6 +886,13 @@ export class FrankBotHost {
         evmMainPrivateKey,
       };
 
+      negotiation = startBotNegotiationRecovery({
+        chain: this.chain,
+        wallet,
+        owner: operations.owner,
+        rootLocation: botStateDir,
+      });
+      instance.negotiation = negotiation;
       this.instances.set(definition.id, instance);
 
       if (definition.schedules) {
@@ -885,6 +911,7 @@ export class FrankBotHost {
       this.instances.delete(definition.id);
       uninstall?.();
       await Promise.allSettled([
+        negotiation?.stop(),
         operations.close(),
         openedDirectory?.close(),
         openedWallet?.close(),
@@ -2156,6 +2183,11 @@ export class FrankBotHost {
     });
   }
 
+  /** Copied signed evidence and feature health, independent of ordinary bot dispatch. */
+  negotiationStatus(botId: string): BotNegotiationRecovery["snapshot"] | undefined {
+    return this.instances.get(botId)?.negotiation?.snapshot;
+  }
+
   async stop(): Promise<void> {
     if (!this.running && this.instances.size === 0) return;
     this.closing = true;
@@ -2173,6 +2205,13 @@ export class FrankBotHost {
     this.scheduler.stop();
     // A reply waiting for a poll that will not come is released, and its handler told so.
     for (const instance of this.instances.values()) this.wakeReplies(instance);
+
+    const negotiationCleanup = [...this.instances.values()].map(
+      instance => instance.negotiation?.stop()
+    );
+    const negotiationClosed = await Promise.allSettled(negotiationCleanup);
+    if (negotiationClosed.some(result => result.status === "rejected"))
+      console.warn("[bot-host] Swap recovery cleanup failed; preserve retained evidence");
 
     // An in-flight relay or wallet call is waited for, never abandoned. A handler's own slow
     // call (a model request) is the handler's to end, on the `stopping` signal.

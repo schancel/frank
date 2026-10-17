@@ -53,6 +53,7 @@ module.exports = {
   // See https://github.com/vuejs/vue-jest/issues/188#issuecomment-620750728
   moduleFileExtensions: ['vue', 'js', 'jsx', 'json', 'ts', 'tsx'],
   moduleNameMapper: {
+    '^@frank/swap-protocol/(.*)$': '<rootDir>/../packages/swap-protocol/$1',
     // jsdom's browser/require conditions omit this package's node/import exports.
     // Resolve its public Node entry while loading the actual wrapper implementation.
     '^@quasar/app-vite$': require.resolve('@quasar/app-vite'),

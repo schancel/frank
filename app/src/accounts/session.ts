@@ -974,6 +974,68 @@ export function createAccountSession(deps: {
       }
       return material.bytes
     },
+    /** Session-bound ordinary identity signatures; no custody material crosses this capability. */
+    async createIdentityDigestSigner() {
+      const checkCurrent = captureDerivation()
+      const owner = await session.getWallet()
+      checkCurrent()
+      const accountId = state.account?.receipt.context.accountId
+      const revision = state.revision
+      const chainIdentifier = activeChain.chainIdentifier
+      const publicKey = readIdentityPublicKey(owner.identity)
+      if (!accountId || !publicKey) throw new CustodyError('locked')
+      const assertCurrent = () => {
+        checkCurrent()
+        if (
+          state.status !== 'ready' ||
+          wallet !== owner ||
+          state.revision !== revision ||
+          state.account?.receipt.context.accountId !== accountId ||
+          activeChain.chainIdentifier !== chainIdentifier ||
+          owner.chainIdentifier !== chainIdentifier
+        )
+          throw new CustodyError('closed')
+      }
+      assertCurrent()
+      return {
+        accountId,
+        revision,
+        chainIdentifier,
+        publicKey: new Uint8Array(publicKey),
+        assertCurrent,
+        async signDigest(digest: Uint8Array): Promise<Uint8Array> {
+          assertCurrent()
+          if (!(digest instanceof Uint8Array) || digest.length !== 32)
+            throw new Error('Invalid identity digest')
+          const copied = new Uint8Array(digest)
+          const material = await session.getActiveFamilyMaterial(
+            'identity-authentication',
+          )
+          try {
+            assertCurrent()
+            const identity =
+              'seed' in material
+                ? MonadIdentity.fromBip39Seed(material.seed)
+                : MonadIdentity.fromDomainRoot(material)
+            if (toHex(identity.compressedPubKey) !== toHex(publicKey))
+              throw new CustodyError('conflict')
+            const key = identity.toNakamotoPrivateKey()
+            try {
+              const signed = signEcdsa(key, copied)
+              if (!signed.ok) throw new Error('Identity signing failed')
+              assertCurrent()
+              return new Uint8Array(signed.value)
+            } finally {
+              key.bytes.fill(0)
+            }
+          } finally {
+            copied.fill(0)
+            if ('seed' in material) material.seed.fill(0)
+            else material.bytes.fill(0)
+          }
+        },
+      }
+    },
     /** A revocable Tempo signing capability; no private material survives a signing call. */
     async createTempoMainAccountSigner(
       chainIdentifier: 'tempo-testnet' | 'tempo-mainnet',

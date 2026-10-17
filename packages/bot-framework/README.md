@@ -81,3 +81,8 @@ async function main() {
 
 main().catch(console.error);
 ```
+
+Hosts may supply `createMessageItemRegistry` in `BotHostOptions` to compose a fresh wallet-scoped
+message registry for each registered bot. Omission preserves the framework defaults. The
+framework does not install application features implicitly; a factory failure aborts registration
+and closes its opened wallet, directory and journals.

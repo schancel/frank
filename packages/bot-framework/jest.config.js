@@ -5,6 +5,7 @@ module.exports = {
   testMatch: ["<rootDir>/test/**/*.jest.(spec|test).+(ts|js)"],
   moduleFileExtensions: ["js", "json", "ts"],
   moduleNameMapper: {
+    "^@frank/swap-protocol/(.*)$": "<rootDir>/../swap-protocol/$1",
     "^@frank/directory-admission$":
       "<rootDir>/../directory-admission/src/index.ts",
     "^@frank/directory-admission/browser$":

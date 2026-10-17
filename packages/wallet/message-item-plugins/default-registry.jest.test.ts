@@ -49,10 +49,12 @@ const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
   'contact-card': true,
   // Not a plugin: what a reader keeps in place of an item it cannot interpret.
   'unsupported': true,
+  // Neutral carrier: features register their own itemType, not this discriminator.
+  'application': true,
 }
 
 /** `MessageItem` members that deliberately have no plugin. */
-const NOT_PLUGINS = new Set(['unsupported'])
+const NOT_PLUGINS = new Set(['unsupported', 'application'])
 
 /** The `type` literals of `MessageItem`, read from the declaration by the TypeScript checker, so
  * this does not depend on the list above being kept in step by hand. */
@@ -217,8 +219,14 @@ describe('default message item registry', () => {
       '../message-item-plugins/wire',
     ])
     // The contract and the wire rule themselves name no plugin and no composition.
-    expect(importsOf('message-item-plugins/registry.ts')).toEqual([])
-    expect(importsOf('message-item-plugins/wire.ts')).toEqual(['./registry'])
+    expect(importsOf('message-item-plugins/application-item.ts')).toEqual([])
+    expect(importsOf('message-item-plugins/registry.ts')).toEqual([
+      './application-item',
+    ])
+    expect(importsOf('message-item-plugins/wire.ts')).toEqual([
+      './application-item',
+      './registry',
+    ])
     // The old hard-coded chain is gone: the path encodes and projects no item type itself.
     const source = readFileSync(
       join(__dirname, '..', 'chain/monad-canonical-dm.ts'),

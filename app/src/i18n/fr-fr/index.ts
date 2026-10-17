@@ -4,6 +4,16 @@
 import { fr as accountRecovery } from '../account-recovery'
 
 export default {
+  negotiationRecovery: {
+    'restoring': 'Restauration des échanges',
+    'scanning': 'Vérification des échanges',
+    'ready': 'Historique des échanges restauré',
+    'unsupported': 'Récupération des échanges indisponible sur ce réseau',
+    'incomplete': 'Vérification des échanges incomplète',
+    'capacity': 'Stockage des échanges plein',
+    'storage-error': 'Impossible de restaurer les échanges',
+  },
+
   qrScanner: {
     paymentHint:
       'Pour un paiement, scannez le code QR Recevoir du portefeuille. Un code QR de profil identifie un contact de messagerie et ne désigne pas une adresse de dépôt du portefeuille.',
@@ -939,6 +949,73 @@ export default {
       'Le paiement est enregistré, et son message n’a pas pu être livré. Ouvrez la discussion avec ce contact et réessayez le message : rien n’a été payé, et rien n’est payé deux fois.',
     tooLarge:
       'Ce paiement dépasse ce qu’un seul paiement à un contact peut transporter (environ {max} {unit}) ; envoyez-le en plusieurs fois.',
+  },
+  signedSwap: {
+    actions: { offer: 'Offre', accept: 'Acceptation', reject: 'Refus' },
+    title: 'Échange',
+    negotiationOnly:
+      'Négociation signée uniquement. Accepter ne transfère et n’autorise aucun fonds principal.',
+    offerAmount: 'Offrir {unit} sur {network}',
+    requestAmount: 'Demander {unit} sur {network}',
+    expiry: 'Expiration ({timezone})',
+    review: 'Vérifier',
+    propose: 'Signer et proposer',
+    newOffer: 'Nouvelle offre',
+    accept: 'Accepter',
+    reject: 'Refuser',
+    confirmResponse: 'Signer : {decision}',
+    stamp: 'Timbre du message',
+    baseUnits: 'unités de base',
+    history: 'Historique authentifié des négociations',
+    pending: 'Autorisations enregistrées',
+    resume: 'Reprendre l’autorisation initiale',
+    selectExpiry: 'Sélectionnez une date et une heure d’expiration.',
+    delivery: 'Livraison du message',
+    error: 'La négociation n’a pas pu se terminer',
+    legacy: 'Historique non signé non pris en charge',
+    phases: { claimed: 'Signature inachevée', signed: 'Signature enregistrée' },
+    deliveryStates: {
+      'confirmed': 'Livré',
+      'pending': 'Livraison en attente',
+      'payment-pending': 'Paiement du timbre en attente',
+      'error': 'Livraison inachevée',
+    },
+    errors: {
+      capacity:
+        'Capacité atteinte. Les autorisations enregistrées sont conservées.',
+      expired:
+        'Sélectionnez une expiration future pour une nouvelle autorisation. Les messages signés gardent leur expiration initiale.',
+      conflict:
+        'Cet emplacement de signature contient déjà une autorisation différente.',
+      invalidAmount:
+        'Entrez un montant décimal positif exact, dans la précision native et les limites du protocole.',
+      invalidIntent:
+        'L’autorisation enregistrée est invalide. Elle reste conservée pour inspection.',
+      sessionChanged:
+        'Le compte, le réseau ou la conversation authentifiée a changé. Vérifiez à nouveau.',
+      storage: 'Le stockage est indisponible. L’autorisation reste conservée.',
+      deliveryPending:
+        'La signature est enregistrée et la livraison initiale reste inachevée. Reprenez-la.',
+      failed:
+        'La négociation reste inachevée. Toute autorisation déjà enregistrée reste conservée.',
+    },
+    states: {
+      'restoring': 'Restauration des preuves de négociation',
+      'scanning': 'Vérification des messages authentifiés',
+      'ready': 'Prêt',
+      'unsupported': 'La négociation est indisponible sur ce réseau',
+      'incomplete': 'Les preuves authentifiées sont incomplètes',
+      'capacity': 'Capacité de stockage atteinte',
+      'storage-error': 'Échec du stockage des négociations',
+      'awaitingAdmission':
+        'L’événement signé attend son admission authentifiée',
+      'conflict': 'Preuves contradictoires',
+      'expired': 'Négociation expirée',
+      'offered': 'Offre authentifiée',
+      'accept':
+        'Acceptation authentifiée ; exécution du principal non autorisée',
+      'reject': 'Refus authentifié',
+    },
   },
   offerSwapDialog: {
     title: 'Proposer un échange atomique à',

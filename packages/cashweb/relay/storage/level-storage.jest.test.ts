@@ -155,7 +155,9 @@ describe('LevelMessageStore', () => {
       await store.saveMessage(canonical)
       await store.Close()
       const before = await snapshot(location)
-      expect(before.messages?.[plain.index]).toBe(serializeMessageWrapper(plain))
+      expect(before.messages?.[plain.index]).toBe(
+        serializeMessageWrapper(plain),
+      )
       expect(before.messages?.[canonical.index]).toBe(
         serializeMessageWrapper(canonical),
       )
@@ -194,7 +196,7 @@ describe('LevelMessageStore', () => {
     const db = level(join(location, 'messages'))
     const metadata = level(join(location, 'metadata'))
     await db.put('lastServerTime', '0')
-    await metadata.put('schemaVersion', '2')
+    await metadata.put('schemaVersion', '3')
     await Promise.all([db.close(), metadata.close()])
     const store = new LevelMessageStore(location)
     try {
@@ -510,7 +512,7 @@ describe('LevelMessageStore', () => {
     try {
       await seed(location, {
         messages: {
-          kept: serializeMessageWrapper(inbound('kept', 400)),
+          'kept': serializeMessageWrapper(inbound('kept', 400)),
           'relayCursor:0xaa': '5000',
           'relaySuppressionIndex:0xaa': JSON.stringify([
             { payloadDigest: 'gone', receivedTime: 456 },
@@ -613,7 +615,7 @@ describe('message store schema and mutation lifecycle', () => {
     'rejects schema marker %s unchanged and releases backend ownership',
     async marker => {
       await seed(location, {
-        metadata: { schemaVersion: marker, 'relayCursor:old': '456' },
+        metadata: { 'schemaVersion': marker, 'relayCursor:old': '456' },
         messages: { retained: 'original bytes' },
       })
       const before = await snapshot(location)
@@ -660,7 +662,7 @@ describe('message store schema and mutation lifecycle', () => {
     'reads current timestamp %s without writing',
     async time => {
       await seed(location, {
-        metadata: { schemaVersion: '2' },
+        metadata: { schemaVersion: '3' },
         messages: {
           saved: serializeMessageWrapper(inbound('saved', 456)),
           ...(time === undefined ? {} : { lastServerTime: time }),
@@ -694,7 +696,7 @@ describe('message store schema and mutation lifecycle', () => {
     'rejects malformed timestamp %s without repair',
     async time => {
       await seed(location, {
-        metadata: { schemaVersion: '2' },
+        metadata: { schemaVersion: '3' },
         messages: { lastServerTime: time },
       })
       await store.Open()
@@ -704,7 +706,7 @@ describe('message store schema and mutation lifecycle', () => {
       expect(put).not.toHaveBeenCalled()
       await store.Close()
       expect(await snapshot(location)).toEqual({
-        metadata: { schemaVersion: '2' },
+        metadata: { schemaVersion: '3' },
         messages: { lastServerTime: time },
       })
     },
@@ -794,7 +796,7 @@ describe('message store schema and mutation lifecycle', () => {
         )
       expect(marker.mock.calls[0]).toEqual([
         'schemaVersion',
-        '2',
+        '3',
         { sync: true },
       ])
       await store.Close()
@@ -882,7 +884,7 @@ describe('message store schema and mutation lifecycle', () => {
       await store.Close()
       expect(await snapshot(location)).toEqual({
         messages: {},
-        metadata: committed ? { schemaVersion: '2' } : {},
+        metadata: committed ? { schemaVersion: '3' } : {},
       })
       store = new LevelMessageStore(location)
       await store.Open()
@@ -901,17 +903,15 @@ describe('message store schema and mutation lifecycle', () => {
     await store.Close()
     expect(await snapshot(location)).toEqual({
       messages: {},
-      metadata: { schemaVersion: '2' },
+      metadata: { schemaVersion: '3' },
     })
     store = new LevelMessageStore(location)
     await store.Open()
     await store.saveMessage(wrapper())
     await store.clear()
-    await expect(
-      rawDb(store, 'metadataDb').get('schemaVersion'),
-    ).rejects.toMatchObject({ type: 'NotFoundError' })
+    expect(await rawDb(store, 'metadataDb').get('schemaVersion')).toBe('3')
     await store.saveMessage(wrapper('after-clear'), { advanceCursor: false })
-    expect(await rawDb(store, 'metadataDb').get('schemaVersion')).toBe('2')
+    expect(await rawDb(store, 'metadataDb').get('schemaVersion')).toBe('3')
   })
 
   it('retains anchors when message deletion fails after their commit', async () => {
@@ -945,10 +945,15 @@ describe('message store schema and mutation lifecycle', () => {
       await store.saveMessage(wrapper())
       await store.suppressAndDelete('0xaa', [], [{ payloadDigest: 'anchor' }])
       const db = component === 'messages' ? store.db : store.metadataDb
-      jest.spyOn(db, 'clear').mockImplementationOnce(async () => {
-        if (component === 'metadata') await db.del('schemaVersion')
-        throw new Error('clear interrupted')
-      })
+      if (component === 'messages')
+        jest
+          .spyOn(db, 'clear')
+          .mockRejectedValueOnce(new Error('clear interrupted'))
+      else
+        jest.spyOn(db, 'batch').mockImplementationOnce(async () => {
+          await db.del('schemaVersion')
+          throw new Error('clear interrupted')
+        })
       await expect(store.clear()).rejects.toMatchObject({
         code: 'write-uncertain',
       })
@@ -1044,12 +1049,12 @@ describe('message store IO and cleanup boundaries', () => {
 
   it('does not scan current history while accepting a current marker', async () => {
     await seed(location, {
-      metadata: { schemaVersion: '2' },
+      metadata: { schemaVersion: '3' },
       messages: { malformed: 'not JSON' },
     })
     const probe = jest.spyOn(LevelUp.prototype, 'iterator')
     await store.Open()
-    expect(probe).toHaveBeenCalledTimes(1)
+    expect(probe).toHaveBeenCalledTimes(2)
     expect(probe).toHaveBeenCalledWith({
       gte: 'financialEnvelope:',
       lt: 'financialEnvelope:\uffff',
@@ -1058,7 +1063,7 @@ describe('message store IO and cleanup boundaries', () => {
     await expect(iterator.next()).rejects.toThrow()
     await store.Close()
     expect(await snapshot(location)).toEqual({
-      metadata: { schemaVersion: '2' },
+      metadata: { schemaVersion: '3' },
       messages: { malformed: 'not JSON' },
     })
   })

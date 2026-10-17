@@ -1,3 +1,7 @@
+/* eslint-disable @typescript-eslint/no-var-requires */
+jest.mock('../utils/outgoing-application-authorization', () => ({
+  captureOutgoingApplicationAuthorization: jest.fn(async () => undefined),
+}))
 import { captureOutgoingFinancialOperations } from '../stealth-payments/outgoing'
 jest.mock('../stealth-payments/outgoing', () => ({
   captureOutgoingFinancialOperations: jest.fn(),
@@ -584,6 +588,37 @@ describe('outgoing direct messages (#269, #270)', () => {
         expect(send).toHaveBeenCalledTimes(1)
       },
     )
+  })
+
+  it('ordinary chat manual retry still raises a stamp below the current fee', async () => {
+    const { DirectMessageStampBelowFeeError } = require('@frank/wallet/chain')
+    const send = jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockRejectedValueOnce(new DirectMessageStampBelowFeeError(1000n, 5000n))
+      .mockResolvedValue(okResult(HASH))
+    const minimum = jest
+      .spyOn(activeChain.directMessages, 'minimumStamp')
+      .mockResolvedValue(5000n)
+    const chats = useChatStore()
+    await chats.sendMessage({
+      wallet,
+      address: PEER,
+      items: TEXT,
+      stampValue: 1000n,
+    })
+    const row = only(chats)[0]
+    expect(row.delivery?.failureReason).toBe('stamp-below-fee')
+    expect(
+      (
+        await chats.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: row.payloadDigest,
+        })
+      ).state,
+    ).toBe('sent')
+    expect(minimum).toHaveBeenCalled()
+    expect(send.mock.calls[1][0].stampValue).toBe(5000n)
   })
 
   describe('#269: a failed message survives a reload with its Retry', () => {
@@ -2568,5 +2603,165 @@ describe('financial UI cancellation', () => {
     expect(expose).not.toHaveBeenCalled()
     expect(submit).not.toHaveBeenCalled()
     expect(only(chats)).toEqual([])
+  })
+})
+
+describe('persisted application message handoff', () => {
+  const messageId = 'abababab-abab-5bab-8bab-abababababab'
+  const localMessageKey = `pending:application:${messageId}`
+  const conversationId = '11111111-1111-4111-8111-111111111111'
+  const items = [
+    {
+      type: 'application' as const,
+      itemType: 'synthetic-application',
+      value: { exact: 'retained' },
+    },
+  ]
+  const request = (stampValue: bigint, assertCurrent = () => undefined) => ({
+    wallet,
+    address: PEER,
+    conversationId,
+    localMessageKey,
+    applicationAuthorization: {
+      accountId: 'synthetic',
+      intentKey: 'synthetic',
+    },
+    messageId,
+    stampValue,
+    items,
+    assertCurrent,
+  })
+  beforeEach(async () => {
+    ;(await durable()).clear()
+    setActivePinia(createPinia())
+    jest.restoreAllMocks()
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+  })
+  it.each([false, true])(
+    'reconstructs a missing row using the original %s paid/free attempt and never changes sealed identity',
+    async paid => {
+      const attempt = jest
+        .spyOn(activeChain.directMessages, 'attemptOf')
+        .mockResolvedValue({ payloadDigest: HASH, paid })
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockResolvedValue({
+          ...okResult(HASH),
+          stampValueWei: paid ? 1000n : 0n,
+        })
+      const reconcile = reconcileReturns({
+        [HASH]: 'delivered',
+      })
+      const chats = useChatStore()
+      const outcome = await chats.deliverPersistedApplicationMessage(
+        request(paid ? 1000n : 0n),
+      )
+      expect(attempt).toHaveBeenCalledWith({ wallet, messageId })
+      expect(outcome.state).toBe('sent')
+      if (paid) {
+        expect(send).not.toHaveBeenCalled()
+        expect(reconcile).toHaveBeenCalled()
+      } else
+        expect(send).toHaveBeenCalledWith(
+          expect.objectContaining({
+            messageId,
+            stampValue: 0n,
+            conversationId,
+            items,
+          }),
+        )
+      expect(only(chats)[0].sealedMessageId).toBe(messageId)
+      // Deleting presentation and restarting never revokes the original application's authorization.
+      await chats.deleteMessage({ address: PEER, payloadDigest: HASH })
+      setActivePinia(createPinia())
+      send.mockClear()
+      reconcile.mockResolvedValue({
+        [HASH]: 'delivered',
+      })
+      expect(
+        (
+          await useChatStore().deliverPersistedApplicationMessage(
+            request(paid ? 1000n : 0n),
+          )
+        ).state,
+      ).toBe('sent')
+      expect(attempt).toHaveBeenCalledTimes(2)
+      if (!paid)
+        expect(send).toHaveBeenCalledWith(
+          expect.objectContaining({ messageId, stampValue: 0n }),
+        )
+    },
+  )
+  it.each(['recipient', 'sender', 'conversation', 'stamp', 'items'])(
+    'rejects a confirmed row with changed %s before trusting delivery or looking up a payment',
+    async changed => {
+      const chats = useChatStore()
+      jest
+        .spyOn(activeChain.directMessages, 'attemptOf')
+        .mockResolvedValue(undefined)
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockResolvedValue({ ...okResult(HASH), stampValueWei: 0n })
+      await chats.deliverPersistedApplicationMessage(request(0n))
+      const db = await durable(),
+        row = deserializeMessageWrapper(db.get(HASH)!)
+      if (changed === 'recipient') row.copartyAddress = ME
+      if (changed === 'sender') row.senderAddress = PEER
+      if (changed === 'conversation')
+        row.message.conversationId = '22222222-2222-4222-8222-222222222222'
+      if (changed === 'stamp') row.message.stampValueWei = 1n
+      if (changed === 'items') row.message.items = TEXT
+      db.set(HASH, serializeMessageWrapper(row))
+      jest.mocked(activeChain.directMessages.attemptOf!).mockClear()
+      await expect(
+        chats.deliverPersistedApplicationMessage(request(0n)),
+      ).rejects.toThrow('conflict')
+      expect(activeChain.directMessages.attemptOf).not.toHaveBeenCalled()
+    },
+  )
+  it('revocation during original attempt lookup prevents preparation and leaves ordinary chat usable', async () => {
+    const chats = useChatStore()
+    let current = true
+    jest
+      .spyOn(activeChain.directMessages, 'attemptOf')
+      .mockImplementation(async () => {
+        current = false
+        return undefined
+      })
+    const send = jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockResolvedValue(okResult(HASH))
+    await expect(
+      chats.deliverPersistedApplicationMessage(
+        request(0n, () => {
+          if (!current) throw new Error('revoked')
+        }),
+      ),
+    ).rejects.toThrow('revoked')
+    expect(send).not.toHaveBeenCalled()
+    await chats.sendMessage({
+      wallet,
+      address: PEER,
+      items: TEXT,
+      stampValue: 0n,
+    })
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+  it('a duplicate tab cannot create a second row or attempt while the original key is held', async () => {
+    const locks = new FakeLockManager(),
+      restore = locks.install(),
+      release = locks.hold(outgoingLockName(localMessageKey))
+    const send = jest.spyOn(activeChain.directMessages, 'send')
+    try {
+      expect(
+        (await useChatStore().deliverPersistedApplicationMessage(request(0n)))
+          .state,
+      ).toBe('busy')
+      expect(send).not.toHaveBeenCalled()
+      expect(await durable()).toHaveProperty('size', 0)
+    } finally {
+      release()
+      restore()
+    }
   })
 })

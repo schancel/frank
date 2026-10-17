@@ -9,15 +9,20 @@
   "main": "src/index.ts",
   "scripts": {
     "test": "jest",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "test:storage-browser": "node src/storage/browser-test.mjs && node src/storage/execution-browser-test.mjs",
+    "test:execution-browser": "node src/storage/execution-browser-test.mjs"
   },
   "dependencies": {
-    "@noble/hashes": "1.8.0"
+    "@noble/hashes": "1.8.0",
+    "@frank/codec": "*",
+    "level": "^7.0.0"
   },
   "devDependencies": {
     "@types/jest": "^29",
     "jest": "^29",
     "ts-jest": "^29",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@types/node": "^16.11.11"
   }
 }

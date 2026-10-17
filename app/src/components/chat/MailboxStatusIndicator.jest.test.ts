@@ -204,3 +204,36 @@ describe('MailboxStatusIndicator', () => {
     })
   })
 })
+
+it.each([enUS, frFR])(
+  'renders localized feature failure independently of successful ordinary mailbox status',
+  async messages => {
+    const { startAppNegotiationRecovery } = await import(
+      '../../utils/negotiation-recovery'
+    )
+    const { activeChain, setActiveChain } = await import('@frank/wallet/chain')
+    const previous = { ...activeChain }
+    setActiveChain({ ...previous, chainIdentifier: 'monad-testnet' })
+    setActivePinia(createPinia())
+    const handle = startAppNegotiationRecovery({
+      wallet: {} as never,
+      revision: 1,
+      account: {},
+    })
+    try {
+      const wrapper = mountIndicator(messages)
+      useMailboxStatusStore().setOk()
+      await wrapper.vm.$nextTick()
+      expect(
+        wrapper.get('[data-testid="negotiation-recovery-status"]').text(),
+      ).toBe(messages.negotiationRecovery['storage-error'])
+      expect(
+        wrapper.find('[data-testid="mailbox-status-indicator"]').exists(),
+      ).toBe(false)
+      wrapper.unmount()
+    } finally {
+      await handle.stop()
+      setActiveChain(previous)
+    }
+  },
+)

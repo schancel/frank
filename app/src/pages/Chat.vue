@@ -193,6 +193,7 @@
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
         @sendStealthClicked="openStealthDialog"
+        @swapClicked="openSwapDialog"
         ref="chatInput"
         v-model:message="message"
         v-model:attachments="attachments"
@@ -236,8 +237,12 @@
         v-if="swapDialog"
         :contact="contact"
         :address="recipientAddress"
-        :busy="sendingMessage"
-        @offer="sendSwapOffer"
+        :conversation-id="conversation?.id || ''"
+        :conversation-name="conversation?.name || ''"
+        :swap-id="swapId"
+        :stamp-value="swapStampValue"
+        :stamp-unavailable="stampUnavailable"
+        @newOffer="swapId = newSwapId()"
       />
     </q-dialog>
     <!-- Forward message dialog -->
@@ -422,6 +427,7 @@ export default defineComponent({
       stealthReviewedRequest: null as StealthDialogRequest | null,
       stealthReviewSequence: 0,
       swapDialog: false,
+      swapId: crypto.getRandomValues(new Uint8Array(32)),
       forwardDialogOpen: false,
       messageToForward: null as ChatMessage | null,
       // Automatic dealer steps already attempted in this page session.
@@ -1144,31 +1150,11 @@ export default defineComponent({
       }
       if (!this.bottom) this.$nextTick(this.buttonScrollBottom)
     },
-    async sendSwapOffer(item: MessageItem) {
-      const items: MessageItem[] = [item]
-      this.sendingMessage = true
-      const recipient = this.recipientAddress || this.address
-      try {
-        if (this.stampUnavailable) throw new Error(this.stampUnavailable)
-        const wallet = useMonadWallet()
-        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
-        await this.sendDirectMessage({
-          wallet,
-          address: recipient,
-          conversationId: this.conversation?.id,
-          items,
-          stampValue,
-          onPreparationProgress: this.showStampPreparation,
-        })
-      } catch (err) {
-        errorNotify(err instanceof Error ? err : new Error(String(err)))
-      } finally {
-        this.stampPreparationStatus = null
-        this.sendingMessage = false
-      }
-      if (!this.bottom) {
-        this.$nextTick(this.buttonScrollBottom)
-      }
+    newSwapId(): Uint8Array {
+      return crypto.getRandomValues(new Uint8Array(32))
+    },
+    openSwapDialog() {
+      this.swapDialog = true
     },
     // Shows the preparation stage of a send in the composer status line, translated --
     // only when a background on-chain funding transaction is genuinely in-flight.
@@ -1599,6 +1585,13 @@ export default defineComponent({
     },
   },
   computed: {
+    swapStampValue(): string {
+      try {
+        return activeChain.fromDisplayAmount(this.stampAmount || '0').toString()
+      } catch {
+        return ''
+      }
+    },
     isScreenerThread(): boolean {
       if (!this.conversation) return false
       if (this.screenerReplyOnceIds.has(this.conversation.id)) return false

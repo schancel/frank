@@ -45,7 +45,8 @@
     "axios": "^0.24.0",
     "bip39": "^3.0.2",
     "ethers": "^6.17.0",
-    "level": "^7.0.0"
+    "level": "^7.0.0",
+    "@frank/swap-protocol": "*"
   },
   "devDependencies": {
     "esbuild": "~0.28.0",

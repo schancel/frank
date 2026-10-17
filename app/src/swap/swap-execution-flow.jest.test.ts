@@ -1,4 +1,5 @@
 /** @jest-environment node */
+/* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-empty-function */
 const { JSDOM } = require('jsdom')
 const dom = new JSDOM('<html><body></body></html>', { url: 'http://localhost' })
 Object.assign(globalThis, {
@@ -294,7 +295,9 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
     })
     mounted.push(card)
 
-    expect(card.find('[data-testid="swap-execution-panel"]').exists()).toBe(true)
+    expect(card.find('[data-testid="swap-execution-panel"]').exists()).toBe(
+      true,
+    )
     expect(card.find('[data-testid="swap-prepare-btn"]').exists()).toBe(true)
 
     // 1. Prepare execution: reserves inputs and acquires custody hold
@@ -345,7 +348,7 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
 
   test('displays deep-reorg warning and enables unilateral refund when reorg exceeds 10 blocks', async () => {
     let xecFunding: any = { status: 'included', confirmations: 10 }
-    let evmFunding: any = { status: 'included', confirmations: 10 }
+    const evmFunding: any = { status: 'included', confirmations: 10 }
     let xecSettlement: any = {
       effect: 'none',
       status: 'unseen',

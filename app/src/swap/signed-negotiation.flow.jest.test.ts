@@ -1,4 +1,5 @@
 /** @jest-environment node */
+/* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-empty-function */
 /** Real SFCs, restored session signer, Level owner, canonical envelopes and authenticated journal.
  * DOM controls, chain RPC and relay HTTP are owned local stand-ins. */
 const { JSDOM } = require('jsdom')
@@ -207,8 +208,8 @@ const globalOptions = {
 let f: any,
   root: string,
   recovery: any,
-  mounted: any[] = [],
-  directories: any[] = [],
+  directories: any[] = []
+const mounted: any[] = [],
   reopenedWallets: any[] = []
 const previousChain = { ...activeChain }
 const receipt = (id: string) => ({

@@ -172,10 +172,7 @@ export interface SwapSecretVaultCapability {
 }
 
 export interface XecSwapCapability {
-  reserveInputs(input: {
-    swapId: string
-    principalSats: bigint
-  }): Promise<{
+  reserveInputs(input: { swapId: string; principalSats: bigint }): Promise<{
     inputs: readonly ReservedXecOutpoint[]
     feeSats: bigint
     fundingTxHex: string
@@ -196,10 +193,7 @@ export interface XecSwapCapability {
 }
 
 export interface EvmSwapCapability {
-  reserveInput(input: {
-    swapId: string
-    principalWei: bigint
-  }): Promise<{
+  reserveInput(input: { swapId: string; principalWei: bigint }): Promise<{
     input: ReservedEvmInput
     fundingTxHex: string
     fundingTxHash: string
@@ -325,7 +319,7 @@ export class SwapExecutionCoordinator {
     localPublicKey?: string
   }): Promise<readonly SwapExecutionRecord[]> {
     const rows = await this.options.store.listRecords()
-    const parsed = rows.map((row) => {
+    const parsed = rows.map(row => {
       const record = JSON.parse(row.raw) as SwapExecutionRecord
       if (record.version !== 1) {
         throw new Error('Unsupported swap execution record version')
@@ -333,7 +327,7 @@ export class SwapExecutionCoordinator {
       return record
     })
     return parsed.filter(
-      (r) =>
+      r =>
         (!filter?.accountIncarnation ||
           r.accountIncarnation === filter.accountIncarnation) &&
         (!filter?.localPublicKey ||
@@ -489,7 +483,7 @@ export class SwapExecutionCoordinator {
         retentionReleased: false,
         secretReceiptId,
         adaptorSecretHex,
-        xecInputs: xecReservation.inputs.map((i) => ({ ...i })),
+        xecInputs: xecReservation.inputs.map(i => ({ ...i })),
         evmInput: { ...evmReservation.input },
         xecFundingTxHex: xecReservation.fundingTxHex,
         xecFundingTxid: xecReservation.fundingTxid,

@@ -384,7 +384,7 @@ export async function authorizeNegotiation(input: {
   record = await input.owner.claimOutgoingApplicationMessage(claim)
   input.auth.assertCurrent()
   if (record.phase === 'signed') return signedRecord(record, intent, input.auth)
-  const sign: NegotiationDigestSigner = async (digest) => {
+  const sign: NegotiationDigestSigner = async digest => {
     input.auth.assertCurrent()
     if (input.now() >= expiry) throw new Error('Negotiation expired')
     if (intent.action !== 'offer')

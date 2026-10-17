@@ -106,7 +106,7 @@ export class NegotiationRecovery {
       state: this.state,
       coverage: this.coverage,
       journals: Object.freeze(
-        this.rows.map((row) => inspectNegotiationJournalRecord(row.raw)),
+        this.rows.map(row => inspectNegotiationJournalRecord(row.raw)),
       ),
     })
   }
@@ -128,7 +128,7 @@ export class NegotiationRecovery {
   private async refresh(): Promise<void> {
     if (!this.active || !this.store) return
     const rows = await this.store.listRecords()
-    const selected = rows.filter((row) => {
+    const selected = rows.filter(row => {
       const checked = inspectNegotiationJournalRecord(row.raw)
       if (
         checked.rowKey !== row.key ||
@@ -143,7 +143,7 @@ export class NegotiationRecovery {
       )
     })
     if (!this.active) return
-    this.rows = selected.map((row) => ({ ...row }))
+    this.rows = selected.map(row => ({ ...row }))
     this.coverage = await this.store.readCoverage(
       this.owner.messagingChainIdentifier,
     )
@@ -194,11 +194,11 @@ export class NegotiationRecovery {
       )
         throw new Error('Invalid scanner coverage')
       // Copy all caller-owned records before the first asynchronous admission.
-      const records = result.records.map((record) => ({
+      const records = result.records.map(record => ({
         ...record,
         senderPublicKey: new Uint8Array(record.senderPublicKey),
         recipientPublicKey: new Uint8Array(record.recipientPublicKey),
-        items: record.items.map((item) => ({
+        items: record.items.map(item => ({
           ...item,
           value:
             item.type === 'application' &&

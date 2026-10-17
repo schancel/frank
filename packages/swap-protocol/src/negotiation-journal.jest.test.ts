@@ -114,7 +114,7 @@ const journal = (
 ) => new NegotiationJournal({ store, owner: boundOwner, context: boundContext })
 function deferred() {
   let resolve!: () => void
-  const promise = new Promise<void>((done) => {
+  const promise = new Promise<void>(done => {
     resolve = done
   })
   return { promise, resolve }
@@ -136,7 +136,7 @@ function overwrite(
 it('limits production imports to pure existing boundaries and keeps core entry unchanged', () => {
   const source = readFileSync(join(__dirname, 'negotiation-journal.ts'), 'utf8')
   expect(
-    [...source.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((match) => match[1]),
+    [...source.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(match => match[1]),
   ).toEqual([
     '@noble/hashes/sha256.js',
     '@noble/hashes/utils.js',
@@ -268,34 +268,34 @@ it('rejects wrong delivery bindings, including wrong-chain duplicates, without a
   const raw = store.rows.get(engine.rowKey),
     writes = store.writes
   const variants: Array<(value: any) => void> = [
-    (value) => {
+    value => {
       value.authenticated.messagingChainIdentifier = 'xec-testnet'
     },
-    (value) => {
+    value => {
       value.authenticated.localPublicKey = b.compressedPubKey
     },
-    (value) => {
+    value => {
       value.authenticated.conversationId.fill(1)
     },
-    (value) => {
+    value => {
       value.authenticated.senderPublicKey = b.compressedPubKey
     },
-    (value) => {
+    value => {
       value.authenticated.recipientPublicKey = stranger.compressedPubKey
     },
-    (value) => {
+    value => {
       value.authenticated.direction = 'incoming'
     },
-    (value) => {
+    value => {
       value.authenticated.direction = undefined
     },
-    (value) => {
+    value => {
       value.messageId = undefined
     },
-    (value) => {
+    value => {
       value.stampedPayloadDigest = new Uint8Array(31)
     },
-    (value) => {
+    value => {
       value.eventBytes = new Uint8Array(1025)
     },
   ]
@@ -363,57 +363,57 @@ it('rejects malformed, unknown, oversized or changed stored bindings/metadata wi
   await engine.admit(admission(first))
   const valid = store.rows.get(engine.rowKey)!
   const variants: Array<(value: any) => void> = [
-    (value) => {
+    value => {
       value.version = 2
     },
-    (value) => {
+    value => {
       value.extra = true
     },
-    (value) => {
+    value => {
       value.entries[0].extra = true
     },
-    (value) => {
+    value => {
       value.owner.accountIncarnation = 'other'
     },
-    (value) => {
+    value => {
       value.owner.messagingChainIdentifier = 'xec-testnet'
     },
-    (value) => {
+    value => {
       value.owner.localPublicKey = bytesToHex(b.compressedPubKey)
     },
-    (value) => {
+    value => {
       value.context.conversationId = '00'.repeat(16)
     },
-    (value) => {
+    value => {
       value.context.swapId = '00'.repeat(32)
     },
-    (value) => {
+    value => {
       value.context.parties.reverse()
     },
-    (value) => {
+    value => {
       value.context.policy.name = 'other'
     },
-    (value) => {
+    value => {
       value.entries[0].senderPublicKey = bytesToHex(b.compressedPubKey)
     },
-    (value) => {
+    value => {
       value.entries[0].recipientPublicKey = bytesToHex(
         stranger.compressedPubKey,
       )
     },
-    (value) => {
+    value => {
       value.entries[0].direction = 'incoming'
     },
-    (value) => {
+    value => {
       value.entries[0].messageId = '0'.repeat(31)
     },
-    (value) => {
+    value => {
       value.entries[0].stampedPayloadDigest = 'AA'.repeat(32)
     },
-    (value) => {
+    value => {
       value.entries[0].eventBytes = '00'
     },
-    (value) => {
+    value => {
       value.entries.push(value.entries[0])
     },
   ]
@@ -564,7 +564,7 @@ it('snapshots Buffer inputs before delayed reads/CAS and never exposes mutable p
   const started = deferred(),
     gate = deferred(),
     actualRead = store.read.bind(store)
-  store.read = async (name) => {
+  store.read = async name => {
     started.resolve()
     await gate.promise
     return actualRead(name)
@@ -680,7 +680,7 @@ it('retains distinct valid signature bytes while leaving semantic duplicate redu
           evmPrincipal: 1000000000000000001n,
           expiry: 2000000000n,
         },
-        async (digest) =>
+        async digest =>
           secp256k1
             .sign(digest, secret, {
               lowS: true,

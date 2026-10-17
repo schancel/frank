@@ -73,7 +73,7 @@ function envelope(bytes: Uint8Array, outbound = true): NegotiationEnvelope {
 async function until(predicate: () => boolean) {
   for (let i = 0; i < 200; i++) {
     if (predicate()) return
-    await new Promise((resolve) => setTimeout(resolve, 5))
+    await new Promise(resolve => setTimeout(resolve, 5))
   }
   throw new Error('Recovery did not reach state')
 }
@@ -84,7 +84,7 @@ beforeEach(async () => {
   live = []
 })
 afterEach(async () => {
-  await Promise.all(live.map((item) => item.stop()))
+  await Promise.all(live.map(item => item.stop()))
   await rm(root, { recursive: true, force: true })
 })
 function options(
@@ -104,7 +104,7 @@ function options(
         localPublicKey: a.compressedPubKey,
         rootLocation: root,
       }),
-    scan: async (since) => ({
+    scan: async since => ({
       records: [],
       resumeFromInclusive: since,
       truncated: false,
@@ -196,7 +196,7 @@ test('hung scanning is revoked without waiting; late result neither admits nor c
   const scan = jest.fn(
     () =>
       new Promise<Awaited<ReturnType<NegotiationRecoveryOptions['scan']>>>(
-        (resolve) => {
+        resolve => {
           finish = resolve
         },
       ),
@@ -209,7 +209,7 @@ test('hung scanning is revoked without waiting; late result neither admits nor c
     resumeFromInclusive: 100,
     truncated: false,
   })
-  await new Promise((resolve) => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
   expect(await readdir(root)).toEqual([])
   const second = start(options())
   await until(() => second.snapshot.state === 'ready')
@@ -262,7 +262,7 @@ test('invalid provenance and nested outbox content cannot enter; capacity never 
 test('stop drains an owned admission without admitting coverage or publishing old completion', async () => {
   const { offer } = await signed()
   let release!: () => void
-  const blocked = new Promise<void>((resolve) => {
+  const blocked = new Promise<void>(resolve => {
     release = resolve
   })
   let writing = false
@@ -295,7 +295,7 @@ test('stop drains an owned admission without admitting coverage or publishing ol
   const cleanup = first.stop().then(() => {
     stopped = true
   })
-  await new Promise((resolve) => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
   expect(stopped).toBe(false)
   release()
   await cleanup
@@ -318,7 +318,7 @@ test('lost coverage CAS reads a committed winner; corruption is visible with no 
         const store = await original.openStore()
         return {
           ...store,
-          compareAndSwapCoverage: async (chain) => {
+          compareAndSwapCoverage: async chain => {
             await store.compareAndSwapCoverage(chain, undefined, 50)
             return false
           },
@@ -370,24 +370,24 @@ test('equal-timestamp truncated pages use only scanner coverage, and retry is in
     })
   const runtime = start(options({ scan, schedule }))
   await until(() =>
-    scheduled.some((task) => task.delay === 3000 && !task.canceled),
+    scheduled.some(task => task.delay === 3000 && !task.canceled),
   )
   expect(runtime.snapshot.state).toBe('incomplete')
   expect(runtime.snapshot.coverage).toBe(10)
-  scheduled.find((task) => task.delay === 3000 && !task.canceled)!.work()
+  scheduled.find(task => task.delay === 3000 && !task.canceled)!.work()
   await until(
     () =>
       scan.mock.calls.length === 2 &&
       runtime.snapshot.state === 'incomplete' &&
-      scheduled.filter((task) => task.delay === 3000 && !task.canceled)
-        .length === 2,
+      scheduled.filter(task => task.delay === 3000 && !task.canceled).length ===
+        2,
   )
-  scheduled.filter((task) => task.delay === 3000 && !task.canceled)[1].work()
+  scheduled.filter(task => task.delay === 3000 && !task.canceled)[1].work()
   await until(
     () =>
       scan.mock.calls.length === 3 && runtime.snapshot.journals.length === 1,
   )
-  expect(scan.mock.calls.map((call) => call[0])).toEqual([0, 10, 10])
+  expect(scan.mock.calls.map(call => call[0])).toEqual([0, 10, 10])
   expect(runtime.snapshot.journals[0].entries).toHaveLength(1)
 })
 test('same-peer conversations remain separate and malformed original identities remain inert', async () => {
@@ -430,7 +430,7 @@ test('same-peer conversations remain separate and malformed original identities 
   expect(runtime.snapshot.journals).toHaveLength(2)
   expect(
     runtime.snapshot.journals
-      .map((row) => bytesToHex(row.context.conversationId))
+      .map(row => bytesToHex(row.context.conversationId))
       .sort(),
   ).toEqual(['02'.repeat(16), '03'.repeat(16)])
 })
@@ -447,10 +447,10 @@ function manualSchedule() {
       }
     },
     has(delay: number) {
-      return tasks.some((task) => task.delay === delay && !task.canceled)
+      return tasks.some(task => task.delay === delay && !task.canceled)
     },
     fire(delay: number) {
-      const task = tasks.find((task) => task.delay === delay && !task.canceled)
+      const task = tasks.find(task => task.delay === delay && !task.canceled)
       if (!task) throw new Error(`Missing scheduled delay ${delay}`)
       task.canceled = true
       task.work()
@@ -459,7 +459,7 @@ function manualSchedule() {
 }
 test.each(['success', 'rejection'] as const)(
   'a timed-out scanner remains exclusive until late %s; retry starts from unchanged durable coverage',
-  async (outcome) => {
+  async outcome => {
     const { offer } = await signed()
     let resolve!: (
       result: Awaited<ReturnType<NegotiationRecoveryOptions['scan']>>,
@@ -502,12 +502,12 @@ test.each(['success', 'rejection'] as const)(
         truncated: false,
       })
     else reject(new Error('Late scanner rejection'))
-    await new Promise((done) => setImmediate(done))
+    await new Promise(done => setImmediate(done))
     expect(runtime.snapshot.journals).toEqual([])
     expect(runtime.snapshot.coverage).toBeUndefined()
     clock.fire(12000)
     await until(() => runtime.snapshot.state === 'ready')
-    expect(scan.mock.calls.map((call) => call[0])).toEqual([0, 0])
+    expect(scan.mock.calls.map(call => call[0])).toEqual([0, 0])
     expect(runtime.snapshot.coverage).toBe(20)
     expect(runtime.snapshot.journals).toEqual([])
   },
@@ -532,7 +532,7 @@ test('stop and replacement do not await a timed-out outstanding scanner; late re
   await until(() => clock.has(6000) || scan.mock.calls.length > 1)
   expect(scan).toHaveBeenCalledTimes(1)
   await runtime.stop()
-  expect(clock.tasks.every((task) => task.canceled)).toBe(true)
+  expect(clock.tasks.every(task => task.canceled)).toBe(true)
   const publications = publish.mock.calls.length
   const replacement = start(
     options({
@@ -545,7 +545,7 @@ test('stop and replacement do not await a timed-out outstanding scanner; late re
   )
   await until(() => replacement.snapshot.state === 'ready')
   reject(new Error('Stopped scanner rejection'))
-  await new Promise((done) => setImmediate(done))
+  await new Promise(done => setImmediate(done))
   expect(scan).toHaveBeenCalledTimes(1)
   expect(publish).toHaveBeenCalledTimes(publications)
   expect(replacement.snapshot.coverage).toBe(5)

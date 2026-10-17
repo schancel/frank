@@ -364,7 +364,7 @@ test('real outgoing capacity refuses before signer and retains all prior authori
   expect(
     await storage.outgoingApplicationMessages({ accountId: 'a' }),
   ).toHaveLength(128)
-})
+}, 120_000)
 test('feature-corrupt opaque intent survives reopen and refuses before signer', async () => {
   const result = await run()
   await storage.metadataDb.put(

@@ -10,7 +10,9 @@ import { build } from 'esbuild'
 const root = fileURLToPath(new URL('../../../../', import.meta.url))
 const bundle = await build({
   absWorkingDir: root,
-  entryPoints: ['packages/swap-protocol/src/storage/execution-browser-suite.ts'],
+  entryPoints: [
+    'packages/swap-protocol/src/storage/execution-browser-suite.ts',
+  ],
   bundle: true,
   format: 'esm',
   platform: 'browser',
@@ -100,7 +102,10 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ txHash: '0x' + 'dd'.repeat(32) }))
         return
       }
-      if (action === 'xec-observe-funding' || action === 'evm-observe-funding') {
+      if (
+        action === 'xec-observe-funding' ||
+        action === 'evm-observe-funding'
+      ) {
         res.end(
           JSON.stringify({
             status:
@@ -317,10 +322,7 @@ try {
     '02000000xecfund',
     '02000000xecclaim',
   ])
-  assert.deepEqual(stackState.evmBroadcasts, [
-    '0x02evmfund',
-    '0x02evmclaim',
-  ])
+  assert.deepEqual(stackState.evmBroadcasts, ['0x02evmfund', '0x02evmclaim'])
 } finally {
   await stop()
   await new Promise(resolve => server.close(resolve))

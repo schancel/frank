@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-var-requires */
 jest.mock('../utils/outgoing-application-authorization', () => ({
   captureOutgoingApplicationAuthorization: jest.fn(async () => undefined),
 }))

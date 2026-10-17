@@ -21,14 +21,14 @@ test('headless recovery bundles for browser without wallet, host storage, UI or 
       /packages\/(?:wallet|cashweb|bot-framework)|negotiation-(?:browser|native)|node_modules\/(?:level|vue|pinia)/,
     )
     expect(
-      output.metafile!.inputs[input].imports.some((item) =>
+      output.metafile!.inputs[input].imports.some(item =>
         item.path.startsWith('node:'),
       ),
     ).toBe(false)
   }
   expect(
     Object.values(output.metafile!.outputs).every(
-      (value) => value.imports.length === 0,
+      value => value.imports.length === 0,
     ),
   ).toBe(true)
 })

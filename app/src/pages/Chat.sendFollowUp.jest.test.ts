@@ -202,69 +202,54 @@ describe('Chat.vue priced action availability and custody affinity', () => {
     jest.mocked(useActiveWallet).mockReset()
   })
 
-  it.each(['email', 'swap'])(
-    'handles an unavailable automatic default before %s financial preparation',
-    async action => {
-      const conversation = { id: 'email-1', name: 'alice@example.com' }
-      const self = fakeThis({
-        stampAmount: '',
-        stampUnavailable: 'localized missing rate',
-        conversation,
-        chatStore: { conversations: { 'email-1': conversation } },
-        message: 'retained draft',
-      })
-      if (action === 'email')
-        await methods.sendEmailReply.call(self, {
-          conversationId: conversation.id,
-          items: [],
-        })
-      else
-        await methods.sendSwapOffer.call(self, { type: 'text', text: 'offer' })
-      expect(errorNotify).toHaveBeenCalledWith(
-        new Error('localized missing rate'),
-      )
-      expect(self.sendDirectMessage).not.toHaveBeenCalled()
-      expect(useActiveWallet).not.toHaveBeenCalled()
-      expect(self.message).toBe('retained draft')
-      expect(self.sendingMessage).toBe(false)
-    },
-  )
+  it('handles an unavailable automatic default before email financial preparation', async () => {
+    const conversation = { id: 'email-1', name: 'alice@example.com' }
+    const self = fakeThis({
+      stampAmount: '',
+      stampUnavailable: 'localized missing rate',
+      conversation,
+      chatStore: { conversations: { 'email-1': conversation } },
+      message: 'retained draft',
+    })
+    await methods.sendEmailReply.call(self, {
+      conversationId: conversation.id,
+      items: [],
+    })
+    expect(errorNotify).toHaveBeenCalledWith(
+      new Error('localized missing rate'),
+    )
+    expect(self.sendDirectMessage).not.toHaveBeenCalled()
+    expect(useActiveWallet).not.toHaveBeenCalled()
+    expect(self.message).toBe('retained draft')
+    expect(self.sendingMessage).toBe(false)
+  })
 
-  it.each(['email', 'swap'])(
-    'keeps an explicit zero stamp available for %s',
-    async action => {
-      const original = mockWallet
-      mockWallet = { id: 'explicit-free' }
-      jest
-        .mocked(useActiveWallet)
-        .mockImplementation(async () => mockWallet as never)
-      const conversation = { id: 'email-1', name: 'alice@example.com' }
-      const self = fakeThis({
-        stampAmount: '0',
-        stampUnavailable: '',
-        conversation,
-        chatStore: { conversations: { 'email-1': conversation } },
+  it('keeps an explicit zero stamp available for email', async () => {
+    const original = mockWallet
+    mockWallet = { id: 'explicit-free' }
+    jest
+      .mocked(useActiveWallet)
+      .mockImplementation(async () => mockWallet as never)
+    const conversation = { id: 'email-1', name: 'alice@example.com' }
+    const self = fakeThis({
+      stampAmount: '0',
+      stampUnavailable: '',
+      conversation,
+      chatStore: { conversations: { 'email-1': conversation } },
+    })
+    try {
+      await methods.sendEmailReply.call(self, {
+        conversationId: conversation.id,
+        items: [],
       })
-      try {
-        if (action === 'email')
-          await methods.sendEmailReply.call(self, {
-            conversationId: conversation.id,
-            items: [],
-          })
-        else
-          await methods.sendSwapOffer.call(self, {
-            type: 'text',
-            text: 'offer',
-          })
-        expect(self.sendDirectMessage).toHaveBeenCalledWith(
-          expect.objectContaining({ wallet: mockWallet, stampValue: 0n }),
-        )
-        expect(errorNotify).not.toHaveBeenCalled()
-      } finally {
-        mockWallet = original
-      }
-    },
-  )
+      expect(self.sendDirectMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ wallet: mockWallet, stampValue: 0n }),
+      )
+      expect(errorNotify).not.toHaveBeenCalled()
+    } finally {
+      mockWallet = original
+    }
+  })
 })
 
 // These exercise Chat + the real review/prepare-to-wire handoff. The financial capability

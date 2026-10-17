@@ -68,17 +68,11 @@
         @click="respond"
       />
     </div>
-    <div
-      v-if="showExecutionPanel"
-      data-testid="swap-execution-panel"
-    >
+    <div v-if="showExecutionPanel" data-testid="swap-execution-panel">
       <p data-testid="swap-execution-status" role="status">
         {{ $t(`chatMessageSwap.${executionStatusKey}`) }}
       </p>
-      <div
-        v-if="executionRecord"
-        data-testid="swap-selected-inputs"
-      >
+      <div v-if="executionRecord" data-testid="swap-selected-inputs">
         <p
           v-for="inp in executionRecord.xecInputs"
           :key="`${inp.txid}:${inp.vout}`"
@@ -86,7 +80,9 @@
           {{ `${inp.txid.slice(0, 12)}:${inp.vout} (${inp.valueSats})` }}
         </p>
         <p>
-          {{ `${executionRecord.evmInput.address} #${executionRecord.evmInput.nonce}` }}
+          {{
+            `${executionRecord.evmInput.address} #${executionRecord.evmInput.nonce}`
+          }}
         </p>
       </div>
       <p
@@ -290,8 +286,7 @@ export default defineComponent({
     },
     canFundExecution(): boolean {
       return (
-        this.showExecutionPanel &&
-        this.executionRecord?.phase === 'prepared'
+        this.showExecutionPanel && this.executionRecord?.phase === 'prepared'
       )
     },
     canCancelExecution(): boolean {

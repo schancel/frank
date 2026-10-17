@@ -100,7 +100,7 @@ function object(
   const keys = Object.keys(row)
   if (
     keys.length !== fields.length ||
-    fields.some((field) => !Object.prototype.hasOwnProperty.call(row, field))
+    fields.some(field => !Object.prototype.hasOwnProperty.call(row, field))
   )
     fail('corrupt-record', 'Unexpected record fields')
   return row
@@ -165,7 +165,7 @@ class JournalBinding {
     if (
       typeof owner.messagingChainIdentifier !== 'string' ||
       !registry.chains.some(
-        (chain) => chain.id === owner.messagingChainIdentifier,
+        chain => chain.id === owner.messagingChainIdentifier,
       )
     )
       fail('invalid-input', 'Canonical messaging chain required')
@@ -192,9 +192,7 @@ class JournalBinding {
       localPublicKey: copy(owner.localPublicKey, 33, 'local key'),
       messagingChainIdentifier: owner.messagingChainIdentifier,
     }
-    if (
-      !this.context.parties.some((key) => same(key, this.owner.localPublicKey))
-    )
+    if (!this.context.parties.some(key => same(key, this.owner.localPublicKey)))
       fail('invalid-input', 'Local key is not a negotiated party')
     this.binding = this.normalizedBinding()
     // Each component, including domain/version, has a four-byte BE byte-length prefix.
@@ -252,7 +250,7 @@ class JournalBinding {
     presence: 'absent' | 'present',
   ): NegotiationJournalSnapshot {
     const reduction = reduceNegotiationStandalone(
-      entries.map((entry) => hexToBytes(entry.eventBytes)),
+      entries.map(entry => hexToBytes(entry.eventBytes)),
       this.context,
     )
     if (!reduction.ok)
@@ -262,7 +260,7 @@ class JournalBinding {
       )
     return {
       presence,
-      entries: entries.map((entry) => ({
+      entries: entries.map(entry => ({
         ...entry,
         eventBytes: hexToBytes(entry.eventBytes),
         senderPublicKey: hexToBytes(entry.senderPublicKey),
@@ -324,7 +322,7 @@ class JournalBinding {
       fail('corrupt-record', 'Journal entry count limit')
     let total = 0
     const seen = new Set<string>()
-    const entries = (row.entries as unknown[]).map((value) => {
+    const entries = (row.entries as unknown[]).map(value => {
       const entry = object(value, [
         'eventBytes',
         'senderPublicKey',
@@ -444,7 +442,7 @@ export function inspectNegotiationJournalRecord(
         parties: [
           (context.parties as unknown[])[0],
           (context.parties as unknown[])[1],
-        ].map((value) => hexToBytes(storedHex(value, 33))) as [
+        ].map(value => hexToBytes(storedHex(value, 33))) as [
           Uint8Array,
           Uint8Array,
         ],
@@ -547,7 +545,7 @@ export class NegotiationJournal {
       const raw = await this.store.read(this.rowKey)
       const entries = this.bound.parse(raw)
       this.bound.authenticate(entry, 'invalid-input') // Even duplicate delivery must authenticate first.
-      if (entries.some((previous) => previous.eventBytes === entry.eventBytes))
+      if (entries.some(previous => previous.eventBytes === entry.eventBytes))
         return {
           ...this.bound.reconstruct(entries, 'present'),
           admission: 'duplicate',

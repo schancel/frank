@@ -41,7 +41,7 @@ export class BrowserSwapExecutionStore implements SwapExecutionStore {
 
   private withLock<T>(work: () => Promise<T>): Promise<T> {
     if (typeof navigator !== 'undefined' && navigator.locks?.request) {
-      return navigator.locks.request(this.lockName, work)
+      return navigator.locks.request(this.lockName, work) as Promise<T>
     }
     return work()
   }
@@ -51,21 +51,21 @@ export class BrowserSwapExecutionStore implements SwapExecutionStore {
   ): Promise<{ revision: number; raw: string } | undefined> {
     return await this.withLock(async () => {
       const db = await this.getDb()
-      return await new Promise<
-        { revision: number; raw: string } | undefined
-      >((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly')
-        const store = tx.objectStore(STORE_NAME)
-        const req = store.get(key)
-        req.onsuccess = () => {
-          const val = req.result as
-            | { revision: number; raw: string }
-            | undefined
-          resolve(val ? { revision: val.revision, raw: val.raw } : undefined)
-        }
-        req.onerror = () =>
-          reject(req.error ?? new Error('Failed to read swap operation'))
-      })
+      return await new Promise<{ revision: number; raw: string } | undefined>(
+        (resolve, reject) => {
+          const tx = db.transaction(STORE_NAME, 'readonly')
+          const store = tx.objectStore(STORE_NAME)
+          const req = store.get(key)
+          req.onsuccess = () => {
+            const val = req.result as
+              | { revision: number; raw: string }
+              | undefined
+            resolve(val ? { revision: val.revision, raw: val.raw } : undefined)
+          }
+          req.onerror = () =>
+            reject(req.error ?? new Error('Failed to read swap operation'))
+        },
+      )
     })
   }
 
@@ -116,7 +116,9 @@ export class BrowserSwapExecutionStore implements SwapExecutionStore {
         let matched = false
         tx.oncomplete = () => resolve(matched)
         tx.onabort = () =>
-          reject(tx.error ?? new Error('Swap execution CAS transaction aborted'))
+          reject(
+            tx.error ?? new Error('Swap execution CAS transaction aborted'),
+          )
         const getReq = store.get(key)
         getReq.onsuccess = () => {
           const current = getReq.result as

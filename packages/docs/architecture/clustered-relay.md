@@ -239,6 +239,29 @@ pub struct NodeClusterAttestation {
     - Exactly one worker in the source cluster claims each delivery job, preventing $N$-fold redundant forwarding storms to external relays.
     - Automatic exponential backoff and retry handling on HTTP 503 or transient network failure.
 
+### 6.5 Issue #1575: FoundationDB (`FoundationDbKvStore`) & `RelayKvStore` Transactional Keyspace
+
+- **Objective**: Provide a unified transactional key-value trait (`RelayKvStore`) with 80-bit monotonic `Versionstamp` ordering across embedded `RocksDbKvStore`, deterministic `MemoryKvStore`, and distributed `FoundationDbKvStore` (`LiveFoundationDbDriver` / `SimulatedFdbCluster`).
+- **Canonical Tuple Subspace Schema**:
+  - `'D'` (`SUBSPACE_DIRECTORY`): `D:<address_20>` $\rightarrow$ `KvDirectoryRecord` (signed `DirectoryStatement` CBOR + monotonic `revision`), updated via `put_directory_entry_cas` iff `new_rev > cur_rev`.
+  - `'U'` & `'U_addr'` (`SUBSPACE_USERNAMES` / `SUBSPACE_USERNAME_BY_ADDR`): `U:<normalized_handle>` and `U_addr:<address_20>` $\rightarrow$ `KvUsernameRecord`. `claim_username_kv` enforces first-claim-wins, same-holder idempotency, atomic handle rotation with cooling tombstone TTL (`released_until_ms`), and stale-claim rejection in one serializable transaction.
+  - `'P'` (`SUBSPACE_PAYMENT_DEDUP`): `P:<chain_id_be8>:<tx_hash_32>` $\rightarrow$ `KvPaymentClaimRecord` preventing cross-message stamp/burn replay across all replicas (`409 Conflict` via `KvError::CasConflict`).
+  - `'I'` (`SUBSPACE_INBOX`): `I:<recipient_20>:<versionstamp_10><payload_digest_32>` $\rightarrow$ `KvInboxMessageEntry` appended via `SetVersionstampedKey` (`admit_inbox_message_tx`) and paginated via `scan_inbox_since_cursor`.
+  - `'M'` (`SUBSPACE_MSG_DIGEST`): `M:<recipient_20>:<payload_digest_32>` $\rightarrow$ `KvDigestIndexRecord` ($O(1)$ idempotent retry lookup and tombstone pointer into `'I'`).
+  - `'G'` & `'G_meta'` (`SUBSPACE_GROUP_MESSAGES` / `SUBSPACE_GROUP_META`): `G:<group_id_32>:<versionstamp_10><msg_hash_32>` and `G_meta:<group_id_32>` $\rightarrow$ `KvGroupMeta` (`rotate_group_epoch_tx` enforcing `new_epoch == cur_epoch + 1`, and `post_group_message_tx` atomically verifying epoch/write-key, decrementing `credit_balance`, and appending the versionstamped group message).
+  - `'J'` (`SUBSPACE_SYNC_JOURNAL`): `J:<recipient_20>:<versionstamp_10>` $\rightarrow$ `KvJournalEntry` (`Delivered | Tombstoned | StateCheckpoint`) for multi-device delta sync (`tombstone_inbox_message_tx`, `scan_sync_journal_since_cursor`).
+- **FoundationDB Cluster Configuration (`frank.toml`)**:
+  ```toml
+  [registry.cluster]
+  enabled = true
+  driver = "foundationdb"
+  fdb_cluster_file = "/etc/foundationdb/fdb.cluster"
+  fdb_subspace_prefix = "frank_prod:"
+  ```
+- **Migration & Backup/Restore**:
+  - `export_kv_snapshot` and `import_kv_snapshot` stream all canonical subspaces in lexicographical order and import them in transactional chunks, preserving 80-bit `Versionstamp` cursors across standalone RocksDB and clustered FoundationDB deployments.
+  - Production FoundationDB clusters additionally support continuous point-in-time backup to S3/MinIO via `fdbbackup` / `fdbrestore`.
+
 ---
 
 ## 7. Security & Failure Invariants
@@ -246,9 +269,9 @@ pub struct NodeClusterAttestation {
 1. **Air-Gapped Revenue Safety**:
    - The relay server never holds the private key for the `payout_address`. A total server takeover cannot drain accumulated stamp revenue.
 2. **Fail-Closed on Coordination Loss**:
-   - If a clustered relay loses connectivity to Apache Kvrocks, it MUST fail-closed on new registrations and username claims (returning `HTTP 503 Service Unavailable`), preventing split-brain double-claims.
+   - If a clustered relay loses connectivity to FoundationDB or Apache Kvrocks, it MUST fail-closed on new registrations and username claims (returning `HTTP 503 Service Unavailable`), preventing split-brain double-claims.
    - Mailbox reads of already-cached local data MAY continue serving in read-only mode.
 3. **Ephemeral Pub/Sub Resilience**:
    - Dropped NATS notifications do NOT result in data loss because all messages are durably committed to the blob store and indexed before notification dispatch. The client protocol includes reconnect sync intervals.
 4. **Graceful Single-Binary Degradation**:
-   - If `[registry.cluster]` is absent or `enabled = false`, `cashwebd` compiles and runs as a completely self-contained binary without initializing any network sockets or client libraries for NATS or Kvrocks.
+   - If `[registry.cluster]` is absent or `enabled = false`, `cashwebd` compiles and runs as a completely self-contained binary without initializing any network sockets or client libraries for NATS, FoundationDB, or Kvrocks.

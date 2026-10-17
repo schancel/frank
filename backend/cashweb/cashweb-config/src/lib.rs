@@ -406,6 +406,12 @@ pub struct ClusterConf {
     /// Reserved Redis / Apache Kvrocks URL; rejected until a relay driver is implemented.
     #[serde(default)]
     pub kvrocks_url: Option<String>,
+    /// Optional FoundationDB `fdb.cluster` configuration file path (`#1575`).
+    #[serde(default)]
+    pub fdb_cluster_file: Option<PathBuf>,
+    /// Optional FoundationDB tuple subspace prefix (`#1575`).
+    #[serde(default)]
+    pub fdb_subspace_prefix: Option<String>,
     /// Core NATS pub/sub URL (e.g. `nats://nats-cluster:4222`).
     #[serde(default)]
     pub nats_url: Option<String>,
@@ -433,6 +439,8 @@ impl Default for ClusterConf {
             enabled: false,
             driver: default_cluster_driver(),
             kvrocks_url: None,
+            fdb_cluster_file: None,
+            fdb_subspace_prefix: None,
             nats_url: None,
             nats: None,
             cluster_name: None,
@@ -443,6 +451,16 @@ impl Default for ClusterConf {
 }
 
 impl ClusterConf {
+    /// Return the configured FoundationDB `fdb.cluster` file path, if present.
+    pub fn fdb_cluster_file(&self) -> Option<&std::path::Path> {
+        self.fdb_cluster_file.as_deref()
+    }
+
+    /// Return the configured FoundationDB tuple subspace prefix, if present.
+    pub fn fdb_subspace_prefix(&self) -> Option<&str> {
+        self.fdb_subspace_prefix.as_deref()
+    }
+
     /// Whether Clustered Core NATS notification bus is enabled.
     pub fn is_nats_enabled(&self) -> bool {
         if let Some(nats) = &self.nats {
@@ -2672,14 +2690,21 @@ continuity_file = "/var/lib/frank/continuity"
 
         let toml_str = r#"
             enabled = true
-            driver = "kvrocks"
+            driver = "foundationdb"
+            fdb_cluster_file = "/etc/foundationdb/fdb.cluster"
+            fdb_subspace_prefix = "frank_prod:"
             kvrocks_url = "redis://kvrocks-cluster:6666"
             nats_url = "nats://nats-cluster:4222"
             cluster_name = "frank-prod-us"
         "#;
         let parsed: ClusterConf = toml::from_str(toml_str).unwrap();
         assert!(parsed.enabled);
-        assert_eq!(parsed.driver, "kvrocks");
+        assert_eq!(parsed.driver, "foundationdb");
+        assert_eq!(
+            parsed.fdb_cluster_file(),
+            Some(std::path::Path::new("/etc/foundationdb/fdb.cluster"))
+        );
+        assert_eq!(parsed.fdb_subspace_prefix(), Some("frank_prod:"));
         assert_eq!(
             parsed.kvrocks_url.as_deref(),
             Some("redis://kvrocks-cluster:6666")

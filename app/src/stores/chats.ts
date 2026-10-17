@@ -5786,18 +5786,23 @@ export const useChatStore = defineStore('chats', {
     },
     /** Issue #70 & #1365: Transitions an invited group conversation to `'joined'` so the client
      * can begin polling the shared group mailbox. */
-    approveGroupInvite(conversationId: string): Conversation | undefined {
+    async approveGroupInvite(
+      conversationId: string,
+    ): Promise<Conversation | undefined> {
       const conv = this.conversations[conversationId]
       if (!conv || conv.kind !== 'group' || conv.membershipStatus !== 'invited')
         return undefined
       conv.membershipStatus = 'joined'
       conv.deletedAt = undefined
       conv.updatedAt = Date.now()
+      await this.flushPersistence?.()
       void this.syncGroupConversation(conversationId).catch(() => undefined)
       return conv
     },
     /** Issue #70 & #1365: Declines an invited group conversation and hides it from active chat lists. */
-    declineGroupInvite(conversationId: string): Conversation | undefined {
+    async declineGroupInvite(
+      conversationId: string,
+    ): Promise<Conversation | undefined> {
       const conv = this.conversations[conversationId]
       if (!conv || conv.kind !== 'group' || conv.membershipStatus !== 'invited')
         return undefined
@@ -5813,6 +5818,7 @@ export const useChatStore = defineStore('chats', {
       if (this.activeConversationId === conversationId) {
         this.activeConversationId = null
       }
+      await this.flushPersistence?.()
       return conv
     },
     dismissPendingParticipantRequest(
@@ -7161,7 +7167,9 @@ export const useChatStore = defineStore('chats', {
     /**
      * Issue #70: Leaves a group conversation locally and stops polling its shared mailbox.
      */
-    leaveGroupConversation(conversationId: string): Conversation | undefined {
+    async leaveGroupConversation(
+      conversationId: string,
+    ): Promise<Conversation | undefined> {
       const conv = this.conversations[conversationId]
       if (!conv || conv.kind !== 'group') return undefined
       conv.membershipStatus = 'left'
@@ -7169,6 +7177,7 @@ export const useChatStore = defineStore('chats', {
       if (this.activeConversationId === conversationId) {
         this.activeConversationId = null
       }
+      await this.flushPersistence?.()
       return conv
     },
     async notifyReceivedMessages(

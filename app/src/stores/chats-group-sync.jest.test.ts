@@ -309,7 +309,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(bobGroup.messages).toHaveLength(0)
     expect(bobGroup.pendingParticipantRequests).toBeUndefined()
     expect(daveDirect.messages).toHaveLength(2)
-    bobChats.declineGroupInvite(bobGroup.id)
+    await bobChats.declineGroupInvite(bobGroup.id)
     await bobChats.receiveMessages([unsolicited('declined-invite-dm')], BOB)
     expect(bobGroup.messages).toHaveLength(0)
     expect(daveDirect.messages).toHaveLength(3)
@@ -326,7 +326,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     ).toBe(0)
 
     // 4. Bob approves the group invitation and syncs the shared mailbox
-    bobChats.approveGroupInvite(bobGroup.id)
+    await bobChats.approveGroupInvite(bobGroup.id)
     expect(bobGroup.membershipStatus).toBe('joined')
     expect(bobChats.shouldPollGroupMailbox(bobGroup.id)).toBe(true)
 
@@ -424,7 +424,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(groupConv.messages).toHaveLength(1)
 
     // Leave group locally
-    chats.leaveGroupConversation(groupConv.id)
+    await chats.leaveGroupConversation(groupConv.id)
     expect(groupConv.membershipStatus).toBe('left')
     expect(chats.shouldPollGroupMailbox(groupConv.id)).toBe(false)
   })
@@ -507,7 +507,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       })
     const stop = bob.chats.startGroupLiveDelivery()
     expect(subscribe).not.toHaveBeenCalled()
-    bob.chats.approveGroupInvite(bob.group.id)
+    await bob.chats.approveGroupInvite(bob.group.id)
     expect(subscribe).toHaveBeenCalledTimes(1)
     currentOwnAddress = ALICE
     await alice.chats.sendGroupMessage({
@@ -525,7 +525,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       expect(bob.group.messages).toHaveLength(1)
       expect(bob.group.groupState.lastSyncedSeq).toBe(1)
       expect(messageStore.saveMessage).toHaveBeenCalledTimes(1)
-      bob.chats.leaveGroupConversation(bob.group.id)
+      await bob.chats.leaveGroupConversation(bob.group.id)
       expect(close).toHaveBeenCalledTimes(1)
       await wake()
       expect(messageStore.saveMessage).toHaveBeenCalledTimes(1)
@@ -562,7 +562,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
   it('cancels an in-flight durable read before persistence when stop-following wins', async () => {
     const alice = await makeGroup()
     const bob = await inviteBob(alice.group, alice.client)
-    bob.chats.approveGroupInvite(bob.group.id)
+    await bob.chats.approveGroupInvite(bob.group.id)
     currentOwnAddress = ALICE
     await alice.chats.sendGroupMessage({
       conversationId: alice.group.id,
@@ -599,7 +599,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     messageStore.saveMessage.mockClear()
     const pending = wake()
     await reading
-    bob.chats.leaveGroupConversation(bob.group.id)
+    await bob.chats.leaveGroupConversation(bob.group.id)
     release()
     await expect(pending).rejects.toThrow(/subscription changed/)
     expect(messageStore.saveMessage).not.toHaveBeenCalled()
@@ -860,7 +860,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     messageStore.saveMessage.mockRejectedValueOnce(
       new Error('disk interrupted'),
     )
-    bob.approveGroupInvite(group.id)
+    await bob.approveGroupInvite(group.id)
     await expect(
       bob.syncGroupConversation(group.id, {
         relayClient: client,
@@ -984,7 +984,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
   it('validates opaque pre-join history before reaching new messages and preserves the join boundary on restart', async () => {
     const { chats: alice, group, client } = await makeGroup()
     const { chats: bob, group: bobGroup } = await inviteBob(group, client)
-    bob.approveGroupInvite(group.id)
+    await bob.approveGroupInvite(group.id)
     currentOwnAddress = ALICE
     await alice.sendGroupMessage({
       conversationId: group.id,
@@ -1019,7 +1019,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       client,
       CHARLIE,
     )
-    charlie.approveGroupInvite(group.id)
+    await charlie.approveGroupInvite(group.id)
     const fetch = client.fetchGroupMessages.bind(client)
     jest
       .spyOn(client, 'fetchGroupMessages')
@@ -1105,4 +1105,95 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(accountSession.getGroupSigner).not.toHaveBeenCalled()
     expect(messageStore.deleteMessage.mock.calls.length).toBe(deletes)
   })
+})
+
+describe('durable local group decisions', () => {
+  it.each([
+    'approveGroupInvite',
+    'declineGroupInvite',
+    'leaveGroupConversation',
+  ])(
+    '%s completes after a successful write and ignores missing conversations',
+    async action => {
+      setActivePinia(createPinia())
+      const chats = useChatStore()
+      let resolve!: () => void
+      chats.flushPersistence = jest.fn(
+        () =>
+          new Promise<void>(done => {
+            resolve = done
+          }),
+      )
+      expect(await chats[action]('missing')).toBeUndefined()
+      expect(chats.flushPersistence).not.toHaveBeenCalled()
+      const conv = chats.createConversation({
+        participants: [ALICE, BOB],
+        address: BOB,
+        conversationId: '11111111-1111-4111-8111-111111111111',
+      })
+      conv.kind = 'group'
+      conv.membershipStatus =
+        action === 'leaveGroupConversation' ? 'joined' : 'invited'
+      const sync = jest
+        .spyOn(chats, 'syncGroupConversation')
+        .mockResolvedValue(0)
+      let complete = false
+      const result = chats[action](conv.id).then(value => {
+        complete = true
+        return value
+      })
+      await Promise.resolve()
+      expect(complete).toBe(false)
+      expect(sync).not.toHaveBeenCalled()
+      resolve()
+      expect(await result).toBe(conv)
+      expect(sync).toHaveBeenCalledTimes(
+        action === 'approveGroupInvite' ? 1 : 0,
+      )
+    },
+  )
+
+  it.each([
+    ['approveGroupInvite', 'invited', 'joined'],
+    ['declineGroupInvite', 'invited', 'declined'],
+    ['leaveGroupConversation', 'joined', 'left'],
+  ])(
+    '%s waits for persistence and retains state on failure',
+    async (action, initial, final) => {
+      setActivePinia(createPinia())
+      const chats = useChatStore()
+      const conv = chats.createConversation({
+        participants: [ALICE, BOB],
+        address: BOB,
+        conversationId: '11111111-1111-4111-8111-111111111111',
+      })
+      conv.kind = 'group'
+      conv.membershipStatus = initial
+      const sync = jest
+        .spyOn(chats, 'syncGroupConversation')
+        .mockResolvedValue(0)
+      let reject!: (error: Error) => void
+      chats.flushPersistence = jest.fn(
+        () =>
+          new Promise<void>((_resolve, fail) => {
+            reject = fail
+          }),
+      )
+      let complete = false
+      const result = Promise.resolve(chats[action](conv.id)).then(() => {
+        complete = true
+      })
+      const failure = expect(result).rejects.toThrow('disk failed')
+      expect(conv.membershipStatus).toBe(final)
+      if (final !== 'joined')
+        expect(chats.shouldPollGroupMailbox(conv.id)).toBe(false)
+      await Promise.resolve()
+      expect(complete).toBe(false)
+      expect(sync).not.toHaveBeenCalled()
+      reject(new Error('disk failed'))
+      await failure
+      expect(conv.membershipStatus).toBe(final)
+      expect(sync).not.toHaveBeenCalled()
+    },
+  )
 })

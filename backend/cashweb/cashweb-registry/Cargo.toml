@@ -3,7 +3,12 @@ name = "cashweb-registry"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+foundationdb = ["dep:foundationdb"]
+
 [dependencies]
+foundationdb = { version = "=0.9.2", optional = true, default-features = false, features = ["fdb-7_3", "embedded-fdb-include"] }
 bitcoinsuite-core = { path = "../../bitcoinsuite/bitcoinsuite-core" }
 bitcoinsuite-bitcoind = { path = "../../bitcoinsuite/bitcoinsuite-bitcoind" }
 bitcoinsuite-chronik-client = { path = "../../bitcoinsuite/bitcoinsuite-chronik-client" }

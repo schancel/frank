@@ -14,3 +14,6 @@ pub mod monad_profiles;
 pub mod notification_policy;
 pub mod pubkeyhash;
 pub mod topics;
+
+#[cfg(feature = "foundationdb")]
+pub mod foundationdb_driver;

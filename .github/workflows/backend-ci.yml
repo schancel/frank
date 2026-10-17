@@ -51,6 +51,8 @@ jobs:
     env:
       CC: gcc-12
       CXX: g++-12
+      # foundationdb-sys forwards this directory to Cargo's native linker search.
+      FDB_CLIENT_LIB_PATH: /usr/local/lib
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
       CARGO_BUILD_JOBS: 2
@@ -79,6 +81,25 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y gcc-12 g++-12
+      shell: bash
+
+    # cargo-make checks all features, including the optional live FDB driver. Its embedded
+    # headers do not provide the native client library needed by the linker and loader.
+    - name: Install FoundationDB 7.3.63 native client
+      run: |
+        set -euo pipefail
+        test "$(uname -m)" = x86_64
+        fdb_release_url=https://github.com/apple/foundationdb/releases/download/7.3.63
+        fdb_download_dir=$(mktemp -d)
+        trap 'rm -rf "$fdb_download_dir"' EXIT
+        curl --fail --location --retry 3 "$fdb_release_url/libfdb_c.x86_64.so" \
+          --output "$fdb_download_dir/libfdb_c.x86_64.so"
+        curl --fail --location --retry 3 "$fdb_release_url/libfdb_c.x86_64.so.sha256" \
+          --output "$fdb_download_dir/libfdb_c.x86_64.so.sha256"
+        (cd "$fdb_download_dir" && sha256sum --check libfdb_c.x86_64.so.sha256)
+        sudo install -m 0644 "$fdb_download_dir/libfdb_c.x86_64.so" /usr/local/lib/libfdb_c.so
+        sudo ldconfig
+        python3 -c 'import ctypes; ctypes.CDLL("libfdb_c.so")'
       shell: bash
 
     # Must come AFTER the main checkout: actions/checkout defaults to `clean: true`, which runs
@@ -128,6 +149,24 @@ jobs:
       with:
         toolchain: stable
         components: rustfmt, clippy
+
+    - name: Verify FoundationDB native linking with Rust
+      run: |
+        set -euo pipefail
+        fdb_probe_dir=$(mktemp -d)
+        trap 'rm -rf "$fdb_probe_dir"' EXIT
+        rustc --edition=2021 -L "native=$FDB_CLIENT_LIB_PATH" \
+          -o "$fdb_probe_dir/fdb-link-probe" - <<'RS'
+        #[link(name = "fdb_c")]
+        extern "C" {
+            fn fdb_get_max_api_version() -> i32;
+        }
+        fn main() {
+            assert!(unsafe { fdb_get_max_api_version() } >= 730);
+        }
+        RS
+        "$fdb_probe_dir/fdb-link-probe"
+      shell: bash
 
     - name: Restore compatible Cargo dependencies and build artifacts
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6

@@ -66,6 +66,8 @@ export interface ChainBalanceState {
   observedAt?: number
   stale?: boolean
   unavailableReason?: 'relay-unavailable'
+  /** The indexer has not returned a balance. Display only; not a zero balance. */
+  indexerPending?: boolean
 }
 
 export interface BalanceObservation {
@@ -80,6 +82,7 @@ export interface BalanceObservation {
 
 export type BalancePresentation =
   | { status: 'loading' }
+  | { status: 'pending' }
   | { status: 'available'; observation: BalanceObservation }
   | {
       status: 'unavailable'
@@ -140,6 +143,7 @@ function getBalancePresentation(
           ...(state.stale ? { stale: true } : {}),
         }
       : undefined
+  if (state.indexerPending && !observation) return { status: 'pending' }
   if (state.hasError) {
     return {
       status: 'unavailable',
@@ -368,14 +372,28 @@ export async function fetchChainBalance(
       } else {
         console.error(`Failed to fetch ${chainIdentifier} balance`, err)
       }
-      secondaryStates[chainIdentifier] = {
-        ...secondaryState(chain),
-        revision,
-        hasError: true,
-        unavailableReason:
-          err instanceof RelayWalletRouteUnavailableError
-            ? 'relay-unavailable'
-            : undefined,
+      const previous = secondaryState(chain)
+      const routeMissing = err instanceof RelayWalletRouteUnavailableError
+      const known = previous.loaded && previous.balance !== null
+      // A Bitcoin-family address is derived locally. Until the indexer answers, the
+      // balance is pending rather than missing, and a known observation stays visible.
+      if (
+        !known &&
+        !routeMissing &&
+        supportedEntry(chainIdentifier)?.family === 'bitcoin'
+      ) {
+        secondaryStates[chainIdentifier] = {
+          ...EMPTY_STATE,
+          revision,
+          indexerPending: true,
+        }
+      } else {
+        secondaryStates[chainIdentifier] = {
+          ...previous,
+          revision,
+          hasError: true,
+          unavailableReason: routeMissing ? 'relay-unavailable' : undefined,
+        }
       }
     } finally {
       if (secondaryPending.get(chainIdentifier) === generation)

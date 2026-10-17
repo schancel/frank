@@ -164,6 +164,15 @@ test('offers no edit button or double-click rename in the sidebar', async () => 
   )
 })
 
+test('shows Pending while a Bitcoin-family indexer has not answered', async () => {
+  const view = render()
+  mockPresentations.value.bitcoincash = { status: 'pending' }
+  await flushPromises()
+  expect(view.get('[data-test="bitcoincash-wallet-balance"]').text()).toBe(
+    'Pending',
+  )
+})
+
 test('updates the reserved native balance line without adding rows or hiding a wallet on RPC failure', async () => {
   const view = render()
   const row = view.get('[data-test="wallet-row"]')

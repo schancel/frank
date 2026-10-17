@@ -139,6 +139,8 @@ function nativeBalance(wallet: string): string {
   const key =
     presentation.status === 'loading'
       ? 'walletPanel.balanceLoading'
+      : presentation.status === 'pending'
+      ? 'walletPanel.balancePending'
       : presentation.status === 'unavailable' &&
         presentation.reason === 'relay-unavailable'
       ? 'walletPanel.relayUnavailable'

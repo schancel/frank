@@ -160,6 +160,8 @@
                           : $t(
                               balancePresentation.status === 'loading'
                                 ? 'walletPanel.balanceLoading'
+                                : balancePresentation.status === 'pending'
+                                ? 'walletPanel.balancePending'
                                 : balanceUnsupported
                                 ? 'walletPanel.balanceUnsupported'
                                 : balanceUnavailableKey,
@@ -434,6 +436,9 @@
                                   : $t(
                                       balancePresentation.status === 'loading'
                                         ? 'walletPanel.balanceLoading'
+                                        : balancePresentation.status ===
+                                          'pending'
+                                        ? 'walletPanel.balancePending'
                                         : balanceUnavailableKey,
                                     )
                               }}
@@ -1048,8 +1053,10 @@ export default defineComponent({
               })
               .catch(() => undefined)
           } else if (rotatesAddress) {
-            // The wallet's next unused receive address, never one that was already paid.
             const { wallet } = await openUtxoWallet(capability.entry.id)
+            // The lead address is derived here. Show it before the indexer confirms it is unused.
+            const local = wallet.localReceiveAddress?.()
+            if (current && local) displayAddress.value = local.raw
             const address = await wallet.getReceiveAddress()
             if (current) displayAddress.value = address.raw
           } else {
@@ -1059,7 +1066,9 @@ export default defineComponent({
           if (current) addressAvailability.value = 'ready'
         } catch {
           if (current) {
-            displayAddress.value = ''
+            // A local lead address stays visible. The unused check can be retried.
+            if (!(rotatesAddress && displayAddress.value))
+              displayAddress.value = ''
             addressAvailability.value = rotatesAddress
               ? 'discovery-unavailable'
               : 'unavailable'

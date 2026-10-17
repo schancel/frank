@@ -77,7 +77,7 @@ fn full_merge_message(
             cashweb_payload::proto::SignedPayload::decode(signed_payload)
                 .map_or_else(|_err| None, |proto| TopicPayload::parse_proto(&proto).ok())
         })
-        .filter_map(|item| item)
+        .flatten()
         .collect();
     // We want to use pop;
     signed_payloads.reverse();
@@ -124,22 +124,20 @@ impl<'a> DbTopics<'a> {
     /// Put a serialized `Message` to database.
     pub fn put_message(&self, timestamp: u64, message: &TopicPayload) -> Result<()> {
         let payload_hash = message.payload_hash().as_slice();
-        let possibly_existing_message = self.get_message(&payload_hash);
+        let possibly_existing_message = self.get_message(payload_hash);
         let db = self.db.rocksdb();
         let wrapper_buf = message.to_proto().encode_to_vec();
         let mut batch = rocksdb::WriteBatch::default();
         let mut new_burns = vec![];
-        let topic;
-        if possibly_existing_message.is_ok() {
-            let mut found_message = possibly_existing_message.unwrap();
+        let topic = if let Ok(mut found_message) = possibly_existing_message {
             new_burns.extend(found_message.add_burn_txs(message.txs()));
             // Update existing key.
             batch.merge_cf(
                 self.cf_payloads,
-                &payload_hash,
-                &message.to_proto().encode_to_vec(),
+                payload_hash,
+                message.to_proto().encode_to_vec(),
             );
-            topic = found_message
+            found_message
                 .payload()
                 .as_ref()
                 .ok_or(MissingPayload())?
@@ -147,14 +145,14 @@ impl<'a> DbTopics<'a> {
                 .clone()
         } else {
             new_burns.extend(message.txs());
-            batch.put_cf(self.cf_payloads, &payload_hash, &wrapper_buf);
-            topic = message
+            batch.put_cf(self.cf_payloads, payload_hash, &wrapper_buf);
+            message
                 .payload()
                 .as_ref()
                 .ok_or(MissingPayload())?
                 .topic
                 .clone()
-        }
+        };
 
         let split_topic = topic.split('.').collect::<Vec<_>>();
         if split_topic.len() > 10 {
@@ -197,7 +195,7 @@ impl<'a> DbTopics<'a> {
         // TODO: This should really use a merge operation that combines the burn_outputs.
         self.db
             .rocksdb()
-            .put_cf(self.cf_payloads, &payload_hash, &buf)?;
+            .put_cf(self.cf_payloads, payload_hash, &buf)?;
         Ok(())
     }
 
@@ -248,7 +246,7 @@ impl<'a> DbTopics<'a> {
             .ok_or_else(|| MissingValue(hex::encode(payload_digest)))?;
 
         let proto = cashweb_payload::proto::SignedPayload::decode(wrapper_bytes.as_slice())?;
-        Ok(TopicPayload::parse_proto(&proto).wrap_err(InvalidSignedPayloadInDb)?)
+        TopicPayload::parse_proto(&proto).wrap_err(InvalidSignedPayloadInDb)
     }
 
     /// Get a specific message by payload hash.
@@ -461,7 +459,7 @@ mod tests {
             message_one.payload_hash(),
             upvoted_wrapper[0].payload_hash()
         );
-        let merged_message = database.get_message(&upvoted_wrapper[1].payload_hash().as_slice())?;
+        let merged_message = database.get_message(upvoted_wrapper[1].payload_hash().as_slice())?;
         assert_eq!(merged_message.txs().len(), 2);
 
         // Destroy database

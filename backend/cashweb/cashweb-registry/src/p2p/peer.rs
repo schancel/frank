@@ -189,11 +189,11 @@ impl Peer {
         // be updated in the case of broadcast messages.
         if self.should_skip_relay(relay_info) {
             tx_ids
-                .into_iter()
-                .for_each(|tx_id| state.add_known_payload(&tx_id));
+                .iter()
+                .for_each(|tx_id| state.add_known_payload(tx_id));
             return RelayAction::SkippedOrigin;
         }
-        if tx_ids.into_iter().all(|tx_id| state.knows_payload(&tx_id)) {
+        if tx_ids.iter().all(|tx_id| state.knows_payload(tx_id)) {
             return RelayAction::KnowsPayload;
         }
         let response = client
@@ -225,8 +225,8 @@ impl Peer {
             return RelayAction::HttpError;
         }
         tx_ids
-            .into_iter()
-            .for_each(|tx_id| state.add_known_payload(&tx_id));
+            .iter()
+            .for_each(|tx_id| state.add_known_payload(tx_id));
         RelayAction::Success
     }
 

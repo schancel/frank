@@ -663,12 +663,12 @@ fn build_signed_message<T: prost::Message + Default>(
     let signed_message = cashweb_payload::proto::SignedPayload {
         pubkey: pubkey.array().to_vec(),
         sig: ecc
-            .sign(&seckey, payload_hash.byte_array().clone())
+            .sign(seckey, payload_hash.byte_array().clone())
             .to_vec(), // invalid sig
         sig_scheme: SignatureScheme::Ecdsa.into(),
         payload: broadcast_message_vec,
         payload_hash: payload_hash.as_slice().to_vec(),
-        burn_amount: burn_amount,
+        burn_amount,
         burn_txs: vec![cashweb_payload::proto::BurnTx {
             tx: tx.ser().to_vec(),
             burn_idx: 1,

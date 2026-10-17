@@ -74,7 +74,7 @@ impl<'a> DbMetadata<'a> {
                 timestamp: payload.timestamp,
                 pkh: pkh.clone(),
             };
-            batch.delete_cf(self.cf_pkh_by_time, &time_pkh.to_storage_bytes());
+            batch.delete_cf(self.cf_pkh_by_time, time_pkh.to_storage_bytes());
         }
         let new_payload = metadata_entry
             .payload()
@@ -83,14 +83,14 @@ impl<'a> DbMetadata<'a> {
 
         batch.put_cf(
             self.cf_metadata,
-            &pkh.to_storage_bytes(),
-            &metadata_entry.to_proto().encode_to_vec(),
+            pkh.to_storage_bytes(),
+            metadata_entry.to_proto().encode_to_vec(),
         );
         let time_pkh = TimePkh {
             timestamp: new_payload.timestamp,
             pkh: pkh.clone(),
         };
-        batch.put_cf(self.cf_pkh_by_time, time_pkh.to_storage_bytes(), &[]);
+        batch.put_cf(self.cf_pkh_by_time, time_pkh.to_storage_bytes(), []);
         self.db.write_batch(batch)?;
         Ok(())
     }
@@ -98,7 +98,7 @@ impl<'a> DbMetadata<'a> {
     /// Retrieve a [`cashweb_payload::proto::SignedPayload`] from the db.
     pub fn get(&self, pkh: &PubKeyHash) -> Result<Option<SignedPayload<proto::AddressMetadata>>> {
         use prost::Message;
-        let serialized_entry = match self.db.get(self.cf_metadata, &pkh.to_storage_bytes())? {
+        let serialized_entry = match self.db.get(self.cf_metadata, pkh.to_storage_bytes())? {
             Some(serialized_entry) => serialized_entry,
             None => return Ok(None),
         };
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(db.metadata().iter_by_time(1236).count(), 0);
 
         // Put data with invalid Protobuf encoding
-        db.put(db.cf(CF_METADATA)?, &pkh.to_storage_bytes(), b"foobar")?;
+        db.put(db.cf(CF_METADATA)?, pkh.to_storage_bytes(), b"foobar")?;
         // Results in CannotDecodeMetadataEntry
         assert_eq!(
             db.metadata()

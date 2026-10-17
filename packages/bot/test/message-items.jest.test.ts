@@ -254,6 +254,7 @@ it('actual app and all-bots registries carry signed offer/accept/reject bidirect
       'article-v1',
       'invoice-v1',
       'mental-poker-v1',
+      'webrtc-call-v1',
     ])
   } finally {
     await f.close()

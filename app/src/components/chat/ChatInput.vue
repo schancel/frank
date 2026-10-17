@@ -188,6 +188,20 @@
             <q-item
               clickable
               v-close-popup
+              data-testid="webrtc-call-menu-item"
+              @click="emitAndClose('webrtcCallClicked')"
+            >
+              <q-item-section avatar side>
+                <q-icon name="call" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.voiceVideoCall') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
               data-testid="swap-menu-item"
               @click="$emit('swapClicked')"
             >
@@ -540,10 +554,14 @@ export default defineComponent({
     'mentalPokerClicked',
     'articleClicked',
     'invoiceClicked',
+    'webrtcCallClicked',
     'sendStealthClicked',
     'swapClicked',
   ],
   methods: {
+    emitAndClose(event: 'webrtcCallClicked') {
+      this.$emit(event)
+    },
     /** Scale the AVU quote, retaining the adapter floor for paid presets and explicit zero. */
     multipliedStamp(tenths: number): bigint {
       const base = this.effectiveDefaultStampWei

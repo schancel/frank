@@ -10,6 +10,7 @@ import {
   pluginCapabilitiesNotYetAvailable,
   type MessageItemRegistry,
 } from '@frank/wallet/message-item-plugins/registry'
+import { createWebRtcCallPlugin } from '@frank/wallet/message-item-plugins/webrtc-call'
 
 export function createBotMessageItemRegistry(): MessageItemRegistry {
   const registry = createDefaultMessageItemRegistry(
@@ -22,5 +23,6 @@ export function createBotMessageItemRegistry(): MessageItemRegistry {
   registry.registerApplication(createArticlePlugin())
   registry.registerApplication(createInvoicePlugin())
   registry.registerApplication(createMentalPokerPlugin())
+  registry.registerApplication(createWebRtcCallPlugin())
   return registry
 }

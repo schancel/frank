@@ -205,6 +205,7 @@
         @invoiceClicked="invoiceDialog = true"
         @sendStealthClicked="openStealthDialog"
         @swapClicked="openSwapDialog"
+        @webrtcCallClicked="sendWebRtcCallInvite"
         ref="chatInput"
         v-model:message="message"
         v-model:attachments="attachments"
@@ -381,6 +382,7 @@ import {
   type ArticlePayload,
 } from '@frank/wallet/message-item-plugins/article'
 import { MENTAL_POKER_PLUGIN_ID } from '@frank/wallet/message-item-plugins/mental-poker'
+import { WebRtcCallSessionController } from '../utils/webrtc-call-controller'
 import {
   getOwnCanonicalAddress,
   sameCanonicalAddress,
@@ -1467,6 +1469,26 @@ export default defineComponent({
         return
       const built = buildMentalPokerChallenge({ own, peer, stakeWei: 0n })
       await this.sendFollowUpItems({ items: [built.item] })
+    },
+    async sendWebRtcCallInvite() {
+      if (this.sendingMessage) return
+      const peer = this.recipientAddress || this.address
+      const own = (await getOwnCanonicalAddress()) ?? 'self'
+      if (this.sendingMessage || peer !== (this.recipientAddress || this.address))
+        return
+      const controller = new WebRtcCallSessionController({
+        localPeerId: own,
+        remotePeerId: peer,
+      })
+      try {
+        const { item } = await controller.startOutgoingCall({
+          withVideo: false,
+        })
+        await this.sendFollowUpItems({ items: [item] })
+      } catch (err) {
+        controller.cleanup()
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+      }
     },
     async sendRpsChallenge({ move }: { move: RpsMove }) {
       if (this.sendingMessage || !this.rpsDialog) return

@@ -1,95 +1,110 @@
 # Content-Addressed Encrypted Blob Storage & Attachments
 
-- **Status**: Standard (Track C, Issue #983, Commit `e38d9cf6`)
-- **Scope**: Large payload (> 64 KB) offloading to S3-compatible object storage, Apache Kvrocks metadata indexing, ephemeral Core NATS fan-out, and end-to-end client decryption.
+- **Status**: Standard (Track C, Issues #452, #453, #983)
+- **Scope**: Content-oblivious encrypted attachment manifests (`EncryptedAttachmentManifest`), deterministic per-chunk AEAD nonce/AAD derivation, chunked staging and reference-counted garbage collection lifecycle, and the unified `BlobStore` trait across `RocksDbBlobStore`, `LocalFsBlobStore`, and `S3BlobStore`.
 
 ---
 
-## 1. Architectural Motivation
+## 1. Architectural Motivation & Content-Oblivious Boundary
 
-In high-throughput federated messaging, embedding large files (images, audio notes, PDF documents) directly inside RocksDB write-ahead logs (WAL) causes write amplification, LSM compaction freezes, and database bloat.
+In high-throughput federated messaging, embedding large files (images, audio notes, video streams, PDF documents) directly inside single-transaction database write batches causes write amplification, LSM compaction stalls, and memory spikes.
 
-Frank decouples control plane metadata from data plane payloads:
+Frank decouples the control plane from the bulk ciphertext data plane while enforcing a **strict content-oblivious boundary**:
 
-- **Control Plane**: Envelopes $\le 64\text{ KB}$ (metadata, DKSAP stamps, Chaum-Pedersen DLEQ proofs, expiration timestamps) are stored in **Apache Kvrocks** (or RocksDB in standalone mode).
-- **Data Plane**: Encrypted file attachments and payloads $> 64\text{ KB}$ are streamed directly to **S3-compatible Object Storage** (MinIO, Cloudflare R2, AWS S3) addressed purely by cryptographic hash.
-- **Event Plane**: Ephemeral **Core NATS** notifies connected nodes without storing persistent message copies.
+- **Control Plane (`RelayKvStore`)**: Compact envelopes ($\le 64\text{ KiB}$), canonical Frank-CBOR attachment manifests (`B_man:`), staging session states (`B_stg_ses:`), and owner reference counts (`B_ref:`) are persisted in the transactional `RelayKvStore` (RocksDB or FoundationDB).
+- **Data Plane (`BlobStore`)**: Bounded ciphertext chunks ($\le 1\text{ MiB}$, default $256\text{ KiB}$) are stored in `RocksDbBlobStore`, `LocalFsBlobStore`, or `S3BlobStore` (AWS S3, MinIO, Cloudflare R2, SeaweedFS).
+- **Zero Application Metadata in `BlobStore`**: Neither `EncryptedAttachmentManifest` nor `BlobStore` contains filenames, MIME types, media kinds, image/video dimensions, audio durations, thumbnails, call associations, or commerce semantics. All application metadata lives exclusively inside the end-to-end encrypted `Type 8` (`ApplicationItem`) message payload alongside the 256-bit symmetric key $K_{\text{blob}}$ and 24-byte `base_nonce`.
 
 ---
 
-## 2. End-to-End Cryptographic & Data Architecture
+## 2. Two-Level Opaque Identification & Per-Chunk Cryptography
+
+### 2.1 Two-Level Identifiers (`AttachmentId` + `ChunkDigest`)
+
+1. **`AttachmentId([u8; 32])`**: A fresh 256-bit random capability-scoped identifier generated per upload. Addressing manifests and published chunk namespaces by random `AttachmentId` rather than a global plaintext or unkeyed ciphertext hash prevents cross-user confirmation-of-a-file attacks and deduplication side channels.
+2. **`ChunkDigest([u8; 32])`**: The `SHA-256` digest of each individual encrypted chunk's ciphertext bytes (`SHA-256(chunk_ciphertext_i)`). Every staged upload, publication promotion, single-chunk read, and byte-range read verifies the chunk's `SHA-256` against the manifest before returning bytes.
+
+### 2.2 Deterministic Per-Chunk Nonce & AAD Derivation
+
+To prevent chunk reordering, truncation, duplication, or cross-attachment chunk splicing, each chunk $i \in [0, N)$ is encrypted with `XChaCha20-Poly1305` under $K_{\text{blob}}$ using a domain-separated per-chunk nonce and AAD:
+
+$$\text{mask}_i = \text{HMAC-SHA256}\bigl(K_{\text{blob}},\ \texttt{"frank-blob-chunk-v1"} \parallel \text{attachment\_id} \parallel \text{u32\_be}(i)\bigr)[0..24]$$
+
+$$\text{nonce}_i = \text{base\_nonce} \oplus \text{mask}_i$$
+
+$$\text{aad}_i = \texttt{"frank-blob-aad-v1"} \parallel \text{attachment\_id} \parallel \text{u32\_be}(i) \parallel \text{u8}(\text{is\_final\_chunk})$$
+
+---
+
+## 3. Canonical Frank-CBOR `EncryptedAttachmentManifest` Schema
+
+Manifests are encoded and decoded using deterministic `frank_cbor` (`encode_canonical` / `decode_canonical`) with unsigned integer map keys. Unknown keys $> 6$ are retained in `extra_fields: BTreeMap<i128, CborValue>` for forward-compatible version negotiation.
+
+### 3.1 Top-Level Manifest Map Keys
+
+| CBOR Key | Field Name | Rust Type | Normative Constraints |
+| :--- | :--- | :--- | :--- |
+| `1` | `schema_version` | `u32` | Must equal `1` (`MANIFEST_SCHEMA_VERSION`). |
+| `2` | `attachment_id` | `[u8; 32]` | 32-byte opaque capability-scoped attachment ID. |
+| `3` | `total_ciphertext_bytes` | `u64` | Exact sum of `byte_len` across all chunks ($\le 256\text{ MiB}$). |
+| `4` | `max_chunk_bytes` | `u32` | Bounded in $1..\!=\!1{,}048{,}576$ ($1\text{ MiB}$); default $262{,}144$ ($256\text{ KiB}$). |
+| `5` | `chunks` | `Vec<ManifestChunkSpec>` | Ordered array of chunk descriptors ($\le 4096$ chunks). |
+| `6` | `expires_at_ms` | `u64` | Unix epoch milliseconds when the published attachment expires. |
+| $> 6$ | `extra_fields` | `BTreeMap<i128, CborValue>` | Losslessly retained unknown future fields. |
+
+### 3.2 `ManifestChunkSpec` Map Keys
+
+| CBOR Key | Field Name | Rust Type | Normative Constraints |
+| :--- | :--- | :--- | :--- |
+| `1` | `index` | `u32` | Strictly contiguous $0..\text{chunks.len()}$. |
+| `2` | `byte_len` | `u32` | Ciphertext byte length in $1..\!=\!\text{max\_chunk\_bytes}$. |
+| `3` | `sha256` | `[u8; 32]` | `SHA-256` digest over the chunk's ciphertext bytes. |
+
+### 3.3 Resource Limits Enforced Before Allocation
+
+- `MAX_MANIFEST_BYTES`: `65_536` ($64\text{ KiB}$)
+- `DEFAULT_CHUNK_BYTES`: `262_144` ($256\text{ KiB}$)
+- `MAX_CHUNK_BYTES`: `1_048_576` ($1\text{ MiB}$)
+- `MAX_CHUNK_COUNT`: `4_096`
+- `MAX_ATTACHMENT_BYTES`: `268_435_456` ($256\text{ MiB}$)
+
+---
+
+## 4. Stage $\rightarrow$ Publish $\rightarrow$ Reference / GC State Machine
 
 ```mermaid
-flowchart TD
-    subgraph ClientSide ["Client-Side Security Boundary (Alice)"]
-        Plaintext["Plaintext Attachment<br/>(e.g., PDF, Image, Audio)"]
-        GenKey["Generate Ephemeral Key<br/>K_blob ← Rand(256 bits)"]
-        EncryptBlob["Encrypt Payload<br/>Ciphertext ← XChaCha20-Poly1305(K_blob, Plaintext)"]
-        HashBlob["Compute Content Address<br/>BlobDigest ← SHA-256(Ciphertext)"]
-
-        Plaintext --> EncryptBlob
-        GenKey --> EncryptBlob
-        EncryptBlob --> HashBlob
-    end
-
-    subgraph BlobUpload ["Content-Addressed Storage Ingestion"]
-        UploadBlob["PUT /blobs/{BlobDigest}<br/>(Header: Storage-Stamp / Auth)"]
-        ObjectStore[("S3 / MinIO Object Store<br/>Bucket: frank-relay-payloads<br/>Key: /blobs/{BlobDigest}")]
-
-        HashBlob --> UploadBlob
-        UploadBlob --> ObjectStore
-    end
-
-    subgraph MessagingPlane ["Encrypted Control & Messaging Plane"]
-        ComposeDM["Compose Type 8 Message Item<br/>Attachment Reference:<br/>• blob_digest: BlobDigest<br/>• key: K_blob (Encrypted)<br/>• size: ByteCount, mime: 'application/pdf'"]
-        WrapDM["Wrap in Type 5 / Type 1 / Type 25 Envelope<br/>(Signed by Alice, Stamped for Bob)"]
-        PushDM["PUT /mailbox/delivery<br/>(Lightweight Envelope &lt; 64 KB)"]
-
-        GenKey -.->|Key encrypted to Bob's M| ComposeDM
-        HashBlob --> ComposeDM
-        ComposeDM --> WrapDM
-        WrapDM --> PushDM
-    end
-
-    subgraph ClusteredBackend ["Clustered Relay Node Architecture"]
-        IngressNode["Relay Ingress Node"]
-        Kvrocks[("Apache Kvrocks<br/>(Metadata, Stamps, Mailbox Index)")]
-        CoreNATS{{"Ephemeral Core NATS<br/>Subject: frank.relay.notify.&lt;bob_hex&gt;"}}
-        WSNode["Relay WebSocket Connection Node"]
-
-        PushDM --> IngressNode
-        IngressNode -->|Index Metadata| Kvrocks
-        IngressNode -->|Publish Ping| CoreNATS
-        CoreNATS -->|Deliver Event| WSNode
-    end
-
-    subgraph RecipientSide ["Client-Side Decryption Boundary (Bob)"]
-        RecvPush["WebSocket Notification Received"]
-        SyncInbox["Fetch Envelope: GET /mailbox/messages"]
-        DecryptDM["Decrypt Envelope with Private Key m<br/>Extracts K_blob & BlobDigest"]
-        FetchBlob["GET /blobs/{BlobDigest}<br/>(Direct from Object Store or CDN)"]
-        DecryptFile["Decrypt Ciphertext with K_blob<br/>Recovers Original Attachment"]
-
-        WSNode -.->|Socket Push| RecvPush
-        RecvPush --> SyncInbox
-        Kvrocks -.-> SyncInbox
-        SyncInbox --> DecryptDM
-        DecryptDM --> FetchBlob
-        ObjectStore -.-> FetchBlob
-        FetchBlob --> DecryptFile
-    end
-
-    style ClientSide fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#fff
-    style RecipientSide fill:#0f172a,stroke:#34d399,stroke-width:2px,color:#fff
-    style ClusteredBackend fill:#1e1b4b,stroke:#818cf8,stroke-width:2px,color:#fff
-    style MessagingPlane fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#fff
-    style BlobUpload fill:#3b0764,stroke:#c084fc,stroke-width:2px,color:#fff
+stateDiagram-v2
+    [*] --> Staged: begin_staging(session_id, manifest, ttl)
+    Staged --> Staged: put_staged_chunk(session_id, idx, bytes)\n[verifies len + SHA-256; idempotent on retry]
+    Staged --> Published: publish_staged(session_id, now_ms, owner_ref)\n[promotes chunks + atomic KV manifest/ref commit]
+    Staged --> Reclaimed: gc_expired(now_ms >= staged_expires_at_ms)
+    Published --> Published: add_reference / remove_reference (> 0 refs remaining)
+    Published --> Tombstoned: gc_expired(expires_at_ms <= now_ms OR refs == 0)\n[atomic KV delete B_man + write B_gc tombstone]
+    Tombstoned --> Reclaimed: gc_expired deletes published chunks + B_gc tombstone
 ```
+
+### 4.1 Crash-Boundary Invariant Table
+
+| Crash Boundary | Durable KV State | Chunk Store State | Reader Visibility | Recovery / GC Behavior |
+| :--- | :--- | :--- | :--- | :--- |
+| Mid `put_staged_chunk` before `B_stg_got` write | `B_stg_ses` present, `B_stg_got` absent | Staged chunk present | Invisible (`NotFound`) | Client retry overwrites staged chunk idempotently; or `gc_expired` deletes staged chunk when session TTL expires. |
+| Mid `publish_staged` during chunk promotion (before KV commit) | `B_stg_ses` present, `B_man` absent | Partial published chunks written | Invisible (`NotFound`) | Retry of `publish_staged` completes promotion; if abandoned, `gc_expired` deletes both staged and unreferenced published chunks. |
+| Mid `publish_staged` after atomic KV commit, before staged chunk deletion | `B_man`, `B_ref`, and `B_cln` committed; `B_stg_ses` deleted | Published chunks intact; some staged chunks remain | **Readable & verified** | Next `gc_expired` sweeps `B_cln` and deletes leftover staged chunks without touching published chunks. |
+| Mid `gc_expired` after atomic unpublish transaction, before chunk deletion finishes | `B_man` and `B_ref` deleted; `B_gc` tombstone committed | Some published chunks still on disk/S3 | Invisible (`NotFound`) | Next `gc_expired` sweeps `B_gc`, deletes remaining published chunks, and removes `B_gc`. |
 
 ---
 
-## 3. Cryptographic Invariants
+## 5. `BlobStore` Adapters & S3 Compatibility (`#453`)
 
-1. **Zero Cleartext on Relays**: The blob storage provider never stores plaintext files. All data is encrypted client-side with an ephemeral 256-bit symmetric key $K_{\text{blob}}$ using XChaCha20-Poly1305 before transmission.
-2. **Key Transport Security**: The symmetric key $K_{\text{blob}}$ is encapsulated within the end-to-end encrypted Type 5 payload, sealed with the recipient's authenticated Diffie-Hellman key $M$. Only the intended recipient can recover $K_{\text{blob}}$.
-3. **Immutability & Content Verification**: The object identifier in storage is strictly equal to the SHA-256 (or BLAKE3) digest of the ciphertext. Recipients verify that the downloaded ciphertext matches the digest in the signed envelope before decryption.
+1. **`RocksDbBlobStore`**: Persists manifests/references in `RelayKvStore` and stores bounded chunks under `B_stg:{session_id}:{idx}` and `B_chk:{attachment_id}:{idx}` in `RelayKvStore`, avoiding multi-megabyte monolithic WriteBatches.
+2. **`LocalFsBlobStore`**: Persists manifests/references in `RelayKvStore` and writes immutable chunk files under `root_dir/staging/{session_hex}/{idx}.chunk` and `root_dir/chunks/{prefix}/{attachment_hex}/{idx}.chunk` using atomic temp-file write + `fsync` + `rename`.
+3. **`S3BlobStore`**: Persists authoritative manifests/references in `RelayKvStore` and stores immutable chunk payloads in S3-compatible object storage using only the portable S3 REST subset (`PUT`, `GET`, `HEAD`, `DELETE` with AWS SigV4 `Authorization` and `x-amz-content-sha256` payload verification). This subset works identically across AWS S3, MinIO, Cloudflare R2, and SeaweedFS without relying on provider-specific multipart-upload state or eventual-consistency bucket listing.
+
+---
+
+## 6. Threat Model Summary
+
+| Actor / Layer | What It Can Observe | What It Cannot Learn or Alter |
+| :--- | :--- | :--- |
+| **Relay / `RelayKvStore`** | Opaque `AttachmentId`, chunk count, per-chunk ciphertext sizes, `expires_at_ms`, and message `owner_ref` digests. | Plaintext bytes, $K_{\text{blob}}$, filename, MIME type, media dimensions, or whether two users uploaded the same file. |
+| **S3 / Object Storage Provider** | Opaque object keys (`staging/{session}/{idx}`, `chunks/{attachment_id}/{idx}`), ciphertext byte lengths, and `SHA-256` digests. | Cannot forge, reorder, truncate, or splice chunks undetected: `BlobStore::get_chunk` and `BlobStore::read_range` verify `SHA-256` against the signed manifest, and clients verify per-chunk XChaCha20-Poly1305 AEAD tags bound to `derive_chunk_nonce` and `derive_chunk_aad`. |

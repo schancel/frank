@@ -1,6 +1,7 @@
 //! Store provides structs for storing and retrieving registry data.
 //! Database is RocksDB, keys for metadata are (compact) scripts, values are protobuf encoded.
 
+pub mod blob_store;
 pub mod db;
 pub(crate) mod directory_preview;
 mod directory_preview_owner;

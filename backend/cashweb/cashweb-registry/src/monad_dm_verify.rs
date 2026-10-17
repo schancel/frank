@@ -206,17 +206,20 @@ pub struct CanonicalStampChecks {
     pub payload_digest: [u8; 32],
     /// Structurally unique members whose destination and T4 match. Still require chain checks.
     pub payments: Vec<PaymentMember>,
-    /// The sender's directory entry hash as the context states it. Not checked by the relay.
-    pub sender_directory_hash: [u8; 32],
-    /// The sender's message key as the context states it. Not checked by the relay.
-    pub sender_message_key: AccountRef,
+    /// The sender's directory entry hash as the context states it (None when sealed-sender is used).
+    pub sender_directory_hash: Option<[u8; 32]>,
+    /// The sender's message key as the context states it (None when sealed-sender is used).
+    pub sender_message_key: Option<AccountRef>,
 }
 
 /// What the context says about the sender: the hash of the sender's directory entry (field 4)
 /// and the sender's message key (field 6). The relay does not look the sender up and does not
-/// check either; it only requires them to be well formed. The recipient's client is what
-/// checks them, when it opens the message with the key the sender published.
-fn stated_sender(context: &[u8]) -> Result<([u8; 32], AccountRef)> {
+/// check either; it only requires them to be well formed. When sealed-sender is used, fields
+/// 2, 4, and 6 are omitted from the 13-entry context map.
+fn stated_sender(
+    context: &[u8],
+    sealed_sender: bool,
+) -> Result<(Option<[u8; 32]>, Option<AccountRef>)> {
     use frank_cbor::CborValue;
     let CborValue::Map(fields) =
         frank_cbor::decode_canonical(context).map_err(|_| CanonicalStampError::Encoding)?
@@ -227,12 +230,17 @@ fn stated_sender(context: &[u8]) -> Result<([u8; 32], AccountRef)> {
         fields
             .iter()
             .find_map(|(key, value)| (*key == wanted).then_some(value))
-            .ok_or(CanonicalStampError::Encoding)
     };
-    let CborValue::Bytes(hash) = field(4)? else {
+    if sealed_sender {
+        if field(2).is_some() || field(4).is_some() || field(6).is_some() {
+            return Err(CanonicalStampError::Encoding);
+        }
+        return Ok((None, None));
+    }
+    let Some(CborValue::Bytes(hash)) = field(4) else {
         return Err(CanonicalStampError::Encoding);
     };
-    let CborValue::Map(account) = field(6)? else {
+    let Some(CborValue::Map(account)) = field(6) else {
         return Err(CanonicalStampError::Encoding);
     };
     let [(0, CborValue::Int(key_type)), (1, CborValue::Bytes(key_bytes))] = account.as_slice()
@@ -240,13 +248,15 @@ fn stated_sender(context: &[u8]) -> Result<([u8; 32], AccountRef)> {
         return Err(CanonicalStampError::Encoding);
     };
     Ok((
-        hash.as_slice()
-            .try_into()
-            .map_err(|_| CanonicalStampError::Encoding)?,
-        AccountRef {
+        Some(
+            hash.as_slice()
+                .try_into()
+                .map_err(|_| CanonicalStampError::Encoding)?,
+        ),
+        Some(AccountRef {
             key_type: u32::try_from(*key_type).map_err(|_| CanonicalStampError::Encoding)?,
             key_bytes: key_bytes.clone(),
-        },
+        }),
     ))
 }
 
@@ -293,7 +303,8 @@ pub fn verify_canonical_stamp(input: CanonicalStampCheckInput<'_>) -> Result<Can
     {
         return Err(CanonicalStampError::Encoding);
     }
-    let (sender_directory_hash, sender_message_key) = stated_sender(input.context)?;
+    let (sender_directory_hash, sender_message_key) =
+        stated_sender(input.context, sender.is_none())?;
     let recipient_current = current_tuple(input.recipient_current, network)?;
     let evidence = input
         .recipient_evidence
@@ -313,11 +324,11 @@ pub fn verify_canonical_stamp(input: CanonicalStampCheckInput<'_>) -> Result<Can
     }
     let expected_context = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
         network,
-        sender,
+        sender: sender.as_ref(),
         recipient,
-        sender_directory_hash: &sender_directory_hash,
+        sender_directory_hash: sender_directory_hash.as_ref().map(|h| h.as_slice()),
         recipient_directory_hash: &evidence.hash,
-        sender_message_key: &sender_message_key,
+        sender_message_key: sender_message_key.as_ref(),
         recipient_message_key: &recipient_tuple.message,
         stamp_key: destination,
         ephemeral_point,

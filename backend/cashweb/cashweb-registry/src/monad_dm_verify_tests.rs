@@ -310,11 +310,11 @@ fn directional_fixture(sender: &Current, recipient: &Current) -> (Vec<u8>, Vec<u
     *map_value(&mut members[0], 4) = CborValue::Bytes(payment_commitment(&t3, 0).to_vec());
     let context = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
         network: "monad",
-        sender: &sender_p,
+        sender: Some(&sender_p),
         recipient: &recipient_p,
-        sender_directory_hash: &sender.evidence.hash,
+        sender_directory_hash: Some(&sender.evidence.hash),
         recipient_directory_hash: &recipient.evidence.hash,
-        sender_message_key: &sender.message_key,
+        sender_message_key: Some(&sender.message_key),
         recipient_message_key: &recipient.message_key,
         stamp_key: &recipient.stamp_key,
         ephemeral_point: &bytes(&v, "ephemeral_point"),

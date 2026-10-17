@@ -71,6 +71,8 @@ enum Parties {
     SenderKey([u8; 33]),
     /// The captured recipient writing to itself.
     ToSelf,
+    /// Sealed-sender: sender omitted from outer Type 11 payload and 13-entry context.
+    SealedSender,
 }
 
 /// The genuine message with `tag` mixed into its sealed body, so each tag is a different
@@ -123,6 +125,10 @@ fn build(
             for (sender, recipient) in [(2, 3), (4, 5), (6, 7)] {
                 *entry(&mut context, sender) = entry(&mut context, recipient).clone();
             }
+        }
+        Parties::SealedSender => {
+            sealed.retain(|(k, _)| *k != 1);
+            context.retain(|(k, _)| !matches!(*k, 2 | 4 | 6));
         }
     }
     let sealed = frank_cbor::encode_frame(
@@ -1289,5 +1295,27 @@ async fn a_delivered_message_is_read_back_over_http_and_a_login_works_once() {
     let bytes = response.bytes().await.unwrap();
     assert!(find(&bytes, b"X-Frank-Mailbox-Direction: in").is_some());
     assert!(find(&bytes, request.delivery()).is_some());
+    relay.stop().await;
+}
+
+/// Sealed-sender message: omits sender from Type 11 outer payload and 13-entry context, is admitted
+/// with sender_t1 zeroed, lands in the recipient's inbox (`b'I'`), and writes NO `b'O'` outbox row.
+#[tokio::test]
+async fn sealed_sender_message_delivers_to_recipient_inbox_without_sender_outbox_row() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let request = build(77_777, Parties::SealedSender, 1, Payment::signed);
+    let answer = relay.put(&request).await;
+    delivered(&answer, &request);
+    assert_eq!(answer.1["identity"]["sender_t1"], "00".repeat(32));
+
+    let hash = payload_hash(&request);
+    assert_eq!(relay.inbox(), [hash]);
+    assert_eq!(
+        relay.mailbox(relay.recipient()),
+        [(hash, MailboxDirection::In)]
+    );
+    // The relay never learns the sender's identity, so no `b'O'` row is written.
+    assert!(relay.mailbox(relay.sender()).is_empty());
+    assert_eq!(relay.broadcasts(), raws(&request));
     relay.stop().await;
 }

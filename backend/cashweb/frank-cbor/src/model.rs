@@ -676,8 +676,8 @@ pub enum TypedPayload {
         schema_version: u32,
         /// Field 0.
         network: String,
-        /// Field 1.
-        sender: AccountRef,
+        /// Field 1: optional in schema 2 when sealed-sender is used (sender identity is inside Type 6).
+        sender: Option<AccountRef>,
         /// Field 2.
         recipient: AccountRef,
         /// Field 3.
@@ -711,6 +711,12 @@ pub enum TypedPayload {
         conversation_id: Option<Vec<u8>>,
         /// Field 5, optional.
         conversation_name: Option<String>,
+        /// Field 7, optional sealed-sender routing identity P_S (present iff 8 and 9 are present).
+        sender: Option<AccountRef>,
+        /// Field 8, optional 32-byte sealed-sender directory statement hash T1 (present iff 7 and 9 are present).
+        sender_directory_hash: Option<Vec<u8>>,
+        /// Field 9, optional sealed-sender message-DH public key M_S (present iff 7 and 8 are present).
+        sender_message_key: Option<AccountRef>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },

@@ -99,18 +99,25 @@ pub(crate) fn validate_canonical_payment_set(
         network: network.to_owned(),
         chain_id,
         minimum,
-        sender_p: sender_p.key_bytes.clone(),
+        sender_p: sender_p
+            .as_ref()
+            .map(|s| s.key_bytes.clone())
+            .unwrap_or_default(),
         recipient_p: recipient_p.key_bytes.clone(),
-        sender_m: checks.sender_message_key.key_bytes.clone(),
+        sender_m: checks
+            .sender_message_key
+            .as_ref()
+            .map(|m| m.key_bytes.clone())
+            .unwrap_or_default(),
         recipient_m: recipient.message_key.key_bytes.clone(),
         stamp: destination.key_bytes.clone(),
-        sender_t1: checks.sender_directory_hash,
+        sender_t1: checks.sender_directory_hash.unwrap_or([0; 32]),
         recipient_t1: recipient_evidence.unwrap_or(&recipient.evidence).hash,
         payload_hash: checks.payload_digest,
     };
     // Both parties' mailboxes are keyed by the address of their key, so a key that is not a
     // point on the curve is a malformed message, refused here rather than failing in the store.
-    if policy.sender().is_err() || policy.recipient().is_err() {
+    if (!policy.sender_p.is_empty() && policy.sender().is_err()) || policy.recipient().is_err() {
         return Err(Error::Invalid);
     }
     let payments = canonical_signed_set(&request, &policy)?;
@@ -167,11 +174,14 @@ fn canonical_signed_set(
         key_type: 1,
         key_bytes: bytes.to_vec(),
     };
+    let sealed_sender = policy.sender_p.is_empty();
+    let expected_sender = (!sealed_sender).then(|| account(&policy.sender_p));
     if network != &policy.network
         || inner_network != network
         || payload_frame.schema_version != 2
         || payload_frame.min_reader_version != 2
-        || sender != &account(&policy.sender_p)
+        || sender != &expected_sender
+        || (sealed_sender && (!policy.sender_m.is_empty() || policy.sender_t1 != [0; 32]))
         || recipient != &account(&policy.recipient_p)
         || destination != &account(&policy.stamp)
         || recipient_payload_digest(network, &payload_frame.frame).map_err(|_| Error::Invalid)?
@@ -182,15 +192,15 @@ fn canonical_signed_set(
     {
         return Err(Error::Invalid);
     }
-    let sender_m = account(&policy.sender_m);
+    let sender_m = (!sealed_sender).then(|| account(&policy.sender_m));
     let recipient_m = account(&policy.recipient_m);
     let context = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
         network,
-        sender,
+        sender: sender.as_ref(),
         recipient,
-        sender_directory_hash: &policy.sender_t1,
+        sender_directory_hash: (!sealed_sender).then_some(policy.sender_t1.as_slice()),
         recipient_directory_hash: &policy.recipient_t1,
-        sender_message_key: &sender_m,
+        sender_message_key: sender_m.as_ref(),
         recipient_message_key: &recipient_m,
         stamp_key: destination,
         ephemeral_point,

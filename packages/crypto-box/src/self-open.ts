@@ -33,7 +33,9 @@ import {
   hkdfExpand,
   hkdfExtract,
   messageKeys,
+  sealedSenderMask,
   sharedSecret,
+  xorSenderPoint,
 } from './schedule.js'
 import {
   dh,
@@ -235,6 +237,25 @@ export function openAsSender(args: OpenAsSenderArgs): SuiteResult<Uint8Array> {
   if (!toRecipient.ok) {
     wipe(senderSecret.value.key)
     return toRecipient
+  }
+
+  if (envelope.maskedSender !== undefined) {
+    const mask = sealedSenderMask({
+      toRecipient: toRecipient.value,
+      salt: envelope.salt,
+      enc: envelope.enc,
+      recipientPublicKey: recipient.value,
+      context: context.value,
+    })
+    const unmasked = xorSenderPoint(envelope.maskedSender, mask)
+    mask.fill(0)
+    if (!equalBytes(unmasked, senderPoint)) {
+      unmasked.fill(0)
+      toRecipient.value.fill(0)
+      wipe(senderSecret.value.key)
+      return fail({ code: 'open-failed' })
+    }
+    unmasked.fill(0)
   }
 
   const senderDh = dh(senderSecret.value.key, recipient.value)

@@ -6,6 +6,7 @@ import {
   compareBytes,
   defaultContext,
   encodeDirectMessageCryptoContext,
+  decodeDirectMessageCryptoContext,
   encodeFrame,
   messageContentDigest,
   parseFrame,
@@ -48,10 +49,11 @@ export interface DirectMessageRoles {
     recipientPublicKey: Uint8Array
     plaintext: Uint8Array
     context: Uint8Array
+    sealedSender?: boolean
   }): SuiteResult<Uint8Array>
   openMessage(input: {
     envelope: Uint8Array
-    senderPublicKey: Uint8Array
+    senderPublicKey?: Uint8Array
     context: Uint8Array
   }): SuiteResult<Uint8Array>
   openOwnMessage?(input: {
@@ -209,14 +211,19 @@ function cryptoContext(
     sharedPoint: Uint8Array
     dleqProof: Uint8Array
   },
+  sealedSender = false,
 ): Uint8Array {
   return encodeDirectMessageCryptoContext({
     network,
-    sender: sender.statement.subject,
+    ...(sealedSender
+      ? {}
+      : {
+          sender: sender.statement.subject,
+          senderDirectoryHash: sender.statementHash,
+          senderMessageKey: sender.statement.preview.messageDhKey,
+        }),
     recipient: recipient.statement.subject,
-    senderDirectoryHash: sender.statementHash,
     recipientDirectoryHash: recipient.statementHash,
-    senderMessageKey: sender.statement.preview.messageDhKey,
     recipientMessageKey: recipient.statement.preview.messageDhKey,
     stampKey: recipient.statement.stampKey,
     ...proof,
@@ -264,6 +271,7 @@ export function prepareDirectMessage(input: {
   conversationName?: string
   items: readonly Uint8Array[]
   roles: DirectMessageRoles
+  sealedSender?: boolean
 }): PreparedDirectMessage {
   input = { ...input }
   let plaintext: Uint8Array | undefined
@@ -271,6 +279,7 @@ export function prepareDirectMessage(input: {
     const sender = current(input.network, input.senderCurrent)
     const recipient = current(input.network, input.recipientCurrent)
     localRoles(input.roles, sender, true)
+    const sealedSender = input.sealedSender === true
     const messageId = copy(input.messageId)
     // No conversation named: none is encoded, and never the message's own ID, which would
     // start a new conversation per message. Allocating an ID needs the sender's private salt,
@@ -297,6 +306,13 @@ export function prepareDirectMessage(input: {
     if (input.conversationName !== undefined) {
       contentEntries.push([5, input.conversationName])
     }
+    if (sealedSender) {
+      contentEntries.push(
+        [7, account(sender.statement.subject)],
+        [8, sender.statementHash],
+        [9, account(sender.statement.preview.messageDhKey)],
+      )
+    }
     plaintext = frame(12, cborMap(contentEntries))
     // Reject invalid authoring before invoking the capability or consuming entropy.
     parseFrame(plaintext)
@@ -304,7 +320,13 @@ export function prepareDirectMessage(input: {
       network: input.network,
       stampKey: recipient.statement.stampKey,
     })
-    const context = cryptoContext(input.network, sender, recipient, proof)
+    const context = cryptoContext(
+      input.network,
+      sender,
+      recipient,
+      proof,
+      sealedSender,
+    )
     const borrowed = copy(plaintext)
     let sealed: SuiteResult<Uint8Array>
     try {
@@ -314,25 +336,25 @@ export function prepareDirectMessage(input: {
         ),
         plaintext: borrowed,
         context: copy(context),
+        ...(sealedSender ? { sealedSender: true } : {}),
       })
     } finally {
       borrowed.fill(0)
     }
     if (!sealed.ok) throw new DirectMessageError('crypto')
-    const payload = frame(
-      11,
-      cborMap([
-        [0, input.network],
-        [1, account(sender.statement.subject)],
-        [2, account(recipient.statement.subject)],
-        [3, 1],
-        [4, copy(sealed.value)],
-        [5, proof.ephemeralPoint],
-        [6, proof.sharedPoint],
-        [7, proof.dleqProof],
-      ]),
-      2,
+    const payloadEntries: [number, Encodable][] = [[0, input.network]]
+    if (!sealedSender) {
+      payloadEntries.push([1, account(sender.statement.subject)])
+    }
+    payloadEntries.push(
+      [2, account(recipient.statement.subject)],
+      [3, 1],
+      [4, copy(sealed.value)],
+      [5, proof.ephemeralPoint],
+      [6, proof.sharedPoint],
+      [7, proof.dleqProof],
     )
+    const payload = frame(11, cborMap(payloadEntries), 2)
     // Production writer is subject to the same aggregate/depth budget across encryption.
     beginDirectMessageValidation(
       payload,
@@ -363,6 +385,96 @@ export function prepareDirectMessage(input: {
     return Object.freeze(result)
   } catch (error) {
     input.roles.dispose()
+    throw error
+  } finally {
+    plaintext?.fill(0)
+  }
+}
+
+export interface SealedDirectMessageSenderIdentity {
+  readonly sender: AccountRef
+  readonly senderT1: Uint8Array
+  readonly senderMessageKey: AccountRef
+}
+
+/**
+ * Recovers the authenticated sender identity (subject P_S, directory hash T1, and message key M_S)
+ * from a sealed-sender Type 11 payload without disposing the supplied role session on success.
+ */
+export function peekSealedDirectMessageSender(input: {
+  /** Sender mode authenticates the retained original with its self-open capability. */
+  mode?: 'recipient' | 'sender'
+  network: string
+  payload: Uint8Array
+  context: Uint8Array
+  roles: DirectMessageRoles
+}): SealedDirectMessageSenderIdentity {
+  let session: ReturnType<typeof beginDirectMessageValidation> | undefined
+  let plaintext: Uint8Array | undefined
+  try {
+    const payload = copy(input.payload)
+    const suppliedContext = copy(input.context)
+    const root = parseFrame(payload)
+    if (root.kind !== 'parsed' || root.typeId !== 11)
+      throw new DirectMessageError('context')
+    session = beginDirectMessageValidation(payload, defaultContext())
+    if (session.payload.typeId !== 11) throw new DirectMessageError('context')
+    const encrypted = session.payload.typed
+    if (
+      encrypted?.type !== 11 ||
+      encrypted.schemaVersion !== 2 ||
+      encrypted.network !== input.network ||
+      encrypted.sender !== undefined
+    ) {
+      throw new DirectMessageError('context')
+    }
+    const openOwn =
+      input.roles.openOwnMessage ?? input.roles.openOwnDirectMessage
+    if (input.mode === 'sender' && !openOwn)
+      throw new DirectMessageError('roles')
+    const opened =
+      input.mode === 'sender'
+        ? openOwn!.call(input.roles, {
+            envelope: copy(encrypted.cryptoBoxEnvelope),
+            recipientPublicKey: copy(
+              decodeDirectMessageCryptoContext(suppliedContext)
+                .recipientMessageKey.keyBytes,
+            ),
+            context: suppliedContext,
+          })
+        : input.roles.openMessage({
+            envelope: copy(encrypted.cryptoBoxEnvelope),
+            context: suppliedContext,
+          })
+    if (!opened.ok) throw new DirectMessageError('crypto')
+    plaintext = copy(opened.value)
+    opened.value.fill(0)
+    const continuation = session
+    session = undefined
+    const completed = continuation.completeAuthenticatedContent(plaintext)
+    const content = completed.content.typed
+    if (
+      content?.type !== 12 ||
+      content.network !== encrypted.network ||
+      content.sender === undefined ||
+      content.senderDirectoryHash === undefined ||
+      content.senderMessageKey === undefined
+    ) {
+      throw new DirectMessageError('context')
+    }
+    return Object.freeze({
+      sender: Object.freeze({
+        keyType: content.sender.keyType,
+        keyBytes: copy(content.sender.keyBytes),
+      }),
+      senderT1: copy(content.senderDirectoryHash),
+      senderMessageKey: Object.freeze({
+        keyType: content.senderMessageKey.keyType,
+        keyBytes: copy(content.senderMessageKey.keyBytes),
+      }),
+    })
+  } catch (error) {
+    session?.abort()
     throw error
   } finally {
     plaintext?.fill(0)
@@ -475,14 +587,22 @@ export function openDirectMessage(
         throw new DirectMessageError('current')
       unexpired(recipient, input.recipientCurrent.status.checkedTime)
     }
+    const sealedSender = encrypted.sender === undefined
     if (
       encrypted.network !== input.network ||
-      !accountEqual(encrypted.sender, sender.statement.subject) ||
+      (!sealedSender &&
+        !accountEqual(encrypted.sender!, sender.statement.subject)) ||
       !accountEqual(encrypted.recipient, recipient.statement.subject)
     )
       throw new DirectMessageError('context')
     localRoles(input.roles, recipientHead ?? recipient, false)
-    const context = cryptoContext(input.network, sender, recipient, encrypted)
+    const context = cryptoContext(
+      input.network,
+      sender,
+      recipient,
+      encrypted,
+      sealedSender,
+    )
     if (!equal(context, suppliedContext))
       throw new DirectMessageError('context')
     // Stage 10.4: current/immediately previous stamp, with no revision/time grace cutoff.
@@ -515,6 +635,23 @@ export function openDirectMessage(
       throw new DirectMessageError('context')
     if (content.network !== encrypted.network)
       throw new DirectMessageError('network')
+    if (sealedSender) {
+      if (
+        content.sender === undefined ||
+        content.senderDirectoryHash === undefined ||
+        content.senderMessageKey === undefined ||
+        !accountEqual(content.sender, sender.statement.subject) ||
+        !equal(content.senderDirectoryHash, sender.statementHash) ||
+        !accountEqual(
+          content.senderMessageKey,
+          sender.statement.preview.messageDhKey,
+        )
+      ) {
+        throw new DirectMessageError('context')
+      }
+    } else if (content.sender !== undefined) {
+      throw new DirectMessageError('context')
+    }
     if (
       !equal(
         content.contentDigest,
@@ -641,15 +778,23 @@ export function openOwnDirectMessage(
       unexpired(sender, input.senderCurrent.status.checkedTime)
     }
 
+    const sealedSender = encrypted.sender === undefined
     if (
       encrypted.network !== input.network ||
-      !accountEqual(encrypted.sender, sender.statement.subject) ||
+      (!sealedSender &&
+        !accountEqual(encrypted.sender!, sender.statement.subject)) ||
       !accountEqual(encrypted.recipient, recipient.statement.subject)
     )
       throw new DirectMessageError('context')
 
     localRoles(input.roles, senderHead ?? sender, false)
-    const context = cryptoContext(input.network, sender, recipient, encrypted)
+    const context = cryptoContext(
+      input.network,
+      sender,
+      recipient,
+      encrypted,
+      sealedSender,
+    )
     if (!equal(context, suppliedContext))
       throw new DirectMessageError('context')
 
@@ -675,6 +820,23 @@ export function openOwnDirectMessage(
       throw new DirectMessageError('context')
     if (content.network !== encrypted.network)
       throw new DirectMessageError('network')
+    if (sealedSender) {
+      if (
+        content.sender === undefined ||
+        content.senderDirectoryHash === undefined ||
+        content.senderMessageKey === undefined ||
+        !accountEqual(content.sender, sender.statement.subject) ||
+        !equal(content.senderDirectoryHash, sender.statementHash) ||
+        !accountEqual(
+          content.senderMessageKey,
+          sender.statement.preview.messageDhKey,
+        )
+      ) {
+        throw new DirectMessageError('context')
+      }
+    } else if (content.sender !== undefined) {
+      throw new DirectMessageError('context')
+    }
     if (
       !equal(
         content.contentDigest,

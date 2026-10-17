@@ -220,7 +220,10 @@ export function inspectCanonicalPreparedEnvelope(
   )
     throw new Error('canonical-stamp:payload')
   const fields = decodeCanonical(context)
-  if (!(fields instanceof Map) || fields.size !== 16)
+  const frame = parsed.typed
+  const sealedSender = frame.sender === undefined
+  const expectedContextSize = sealedSender ? 13 : 16
+  if (!(fields instanceof Map) || fields.size !== expectedContextSize)
     throw new Error('canonical-stamp:context')
   const account = (key: bigint): AccountRef => {
     const value = fields.get(key)
@@ -239,19 +242,22 @@ export function inspectCanonicalPreparedEnvelope(
       throw new Error('canonical-stamp:T1')
     return new Uint8Array(value)
   }
-  const frame = parsed.typed,
-    senderT1 = bytes(4n),
+  const senderT1 = sealedSender ? undefined : bytes(4n),
     recipientT1 = bytes(5n),
-    senderMessageKey = account(6n),
+    senderMessageKey = sealedSender ? undefined : account(6n),
     recipientMessageKey = account(7n),
     stampKey = account(8n)
   const expected = encodeDirectMessageCryptoContext({
     network: frame.network,
-    sender: frame.sender,
+    ...(sealedSender
+      ? {}
+      : {
+          sender: frame.sender,
+          senderDirectoryHash: senderT1,
+          senderMessageKey,
+        }),
     recipient: frame.recipient,
-    senderDirectoryHash: senderT1,
     recipientDirectoryHash: recipientT1,
-    senderMessageKey,
     recipientMessageKey,
     stampKey,
     ephemeralPoint: frame.ephemeralPoint,

@@ -575,7 +575,7 @@ pub(crate) enum Draft {
     Recipient {
         schema_version: u32,
         network: String,
-        sender: AccountRef,
+        sender: Option<AccountRef>,
         recipient: AccountRef,
         suite: u32,
         nonce: Option<Vec<u8>>,
@@ -593,6 +593,9 @@ pub(crate) enum Draft {
         content_digest: Vec<u8>,
         conversation_id: Option<Vec<u8>>,
         conversation_name: Option<String>,
+        sender: Option<AccountRef>,
+        sender_directory_hash: Option<Vec<u8>>,
+        sender_message_key: Option<AccountRef>,
         unknown: Vec<(u64, CborValue)>,
     },
     TransitionStatement {
@@ -1375,15 +1378,20 @@ pub(crate) fn parse_draft(
                 let map = fields(
                     Some(payload),
                     path,
-                    &[0, 1, 2, 3, 4, 5, 6, 7],
-                    &[],
+                    &[0, 2, 3, 4, 5, 6, 7],
+                    &[1],
                     true,
                     allow,
                 )?;
+                let sender = if map.has(1) {
+                    Some(account(map.get(1), &format!("{path}.1"))?)
+                } else {
+                    None
+                };
                 Ok(Draft::Recipient {
                     schema_version: 2,
                     network: network_tag(map.get(0), &format!("{path}.0"))?,
-                    sender: account(map.get(1), &format!("{path}.1"))?,
+                    sender,
                     recipient: account(map.get(2), &format!("{path}.2"))?,
                     suite: u32_in(map.get(3), &format!("{path}.3"), 0, 65_535)?,
                     nonce: None,
@@ -1411,7 +1419,7 @@ pub(crate) fn parse_draft(
                 Ok(Draft::Recipient {
                     schema_version: 1,
                     network: network_tag(map.get(0), &format!("{path}.0"))?,
-                    sender: account(map.get(1), &format!("{path}.1"))?,
+                    sender: Some(account(map.get(1), &format!("{path}.1"))?),
                     recipient: account(map.get(2), &format!("{path}.2"))?,
                     suite: u32_in(map.get(3), &format!("{path}.3"), 0, 65_535)?,
                     nonce: Some(bstr(map.get(4), &format!("{path}.4"), 1, 64)?),
@@ -1431,7 +1439,15 @@ pub(crate) fn parse_draft(
         }
         crate::limits::TYPE_ENCRYPTED_CONTENT => {
             // Field 4 is optional on the wire: writers should send it, readers accept absence.
-            let map = fields(Some(payload), path, &[0, 1, 2, 3], &[4, 5], true, allow)?;
+            // Fields 7, 8, 9 carry the optional sealed-sender identity (all-or-nothing in stage 9).
+            let map = fields(
+                Some(payload),
+                path,
+                &[0, 1, 2, 3],
+                &[4, 5, 6, 7, 8, 9],
+                true,
+                allow,
+            )?;
             let conversation_id = if map.has(4) {
                 Some(bstr(map.get(4), &format!("{path}.4"), 16, 16)?)
             } else {
@@ -1442,6 +1458,21 @@ pub(crate) fn parse_draft(
             } else {
                 None
             };
+            let sender = if map.has(7) {
+                Some(account(map.get(7), &format!("{path}.7"))?)
+            } else {
+                None
+            };
+            let sender_directory_hash = if map.has(8) {
+                Some(bstr(map.get(8), &format!("{path}.8"), 32, 32)?)
+            } else {
+                None
+            };
+            let sender_message_key = if map.has(9) {
+                Some(account(map.get(9), &format!("{path}.9"))?)
+            } else {
+                None
+            };
             Ok(Draft::Encrypted {
                 network: network_tag(map.get(0), &format!("{path}.0"))?,
                 message_id: bstr(map.get(1), &format!("{path}.1"), 16, 16)?,
@@ -1449,6 +1480,9 @@ pub(crate) fn parse_draft(
                 content_digest: bstr(map.get(3), &format!("{path}.3"), 32, 32)?,
                 conversation_id,
                 conversation_name,
+                sender,
+                sender_directory_hash,
+                sender_message_key,
                 unknown: map.unknown,
             })
         }
@@ -1712,7 +1746,9 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             schema_version,
             ..
         } => {
-            check_key_type(sender, &format!("{path}.1"))?;
+            if let Some(s) = sender {
+                check_key_type(s, &format!("{path}.1"))?;
+            }
             check_key_type(recipient, &format!("{path}.2"))?;
             if (*schema_version == 1 && *suite != ENCRYPTION_SUITE_PROOF)
                 || (*schema_version == 2 && *suite != ENCRYPTION_SUITE_DM_AUTH_XCHACHA)
@@ -1721,6 +1757,19 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
                     &format!("{path}.3"),
                     format!("encryption suite {suite} is unallocated (S2c)"),
                 ));
+            }
+            Ok(())
+        }
+        Draft::Encrypted {
+            sender,
+            sender_message_key,
+            ..
+        } => {
+            if let Some(s) = sender {
+                check_key_type(s, &format!("{path}.7"))?;
+            }
+            if let Some(m) = sender_message_key {
+                check_key_type(m, &format!("{path}.9"))?;
             }
             Ok(())
         }
@@ -1749,8 +1798,7 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             }
             Ok(())
         }
-        Draft::Encrypted { .. }
-        | Draft::TopicPost { .. }
+        Draft::TopicPost { .. }
         | Draft::TopicPostSubmission { .. }
         | Draft::TopicVoteSubmission { .. }
         | Draft::ForumView(_)

@@ -1027,3 +1027,407 @@ mod challenge_tests {
         assert_eq!(stored(&owner), 1);
     }
 }
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use bitcoinsuite_core::ecc::Ecc;
+    use sha3::{Digest, Keccak256};
+    use std::path::Path;
+
+    // Use the public protocol capture, then sign one ordinary, synthetic payment. No directory,
+    // node, private deployment configuration or application key material is involved.
+    fn paid_input() -> (CanonicalPaymentInput, [u8; 32]) {
+        use frank_cbor::{FramePayload, TypedPayload, ValidationResult};
+        let source: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../docs/protocol/cbor/vectors/dm-runtime.json"
+        ))
+        .unwrap();
+        let wire = &source["canonical_facade_final_http_case"]["wire"];
+        let delivery = hex::decode(wire["delivery"].as_str().unwrap()).unwrap();
+        let context = hex::decode(wire["context"].as_str().unwrap()).unwrap();
+        let ValidationResult::Parsed(frame) =
+            frank_cbor::validate_frame(&delivery, &frank_cbor::relay_context()).unwrap()
+        else {
+            panic!("captured direct message");
+        };
+        let Some(TypedPayload::DirectMessage {
+            network,
+            destination,
+            payload_frame,
+            payload_digest,
+            ..
+        }) = frame.typed.as_deref()
+        else {
+            panic!("direct message");
+        };
+        let Some(TypedPayload::RecipientPayload {
+            sender,
+            recipient,
+            shared_point,
+            ..
+        }) = payload_frame.typed.as_deref()
+        else {
+            panic!("recipient payload");
+        };
+        let CborValue::Map(context_fields) = decode_canonical(&context).unwrap() else {
+            panic!("context");
+        };
+        let message_key = |slot| {
+            let CborValue::Map(account) =
+                &context_fields.iter().find(|(k, _)| *k == slot).unwrap().1
+            else {
+                panic!("message key");
+            };
+            let CborValue::Bytes(key) = &account.iter().find(|(k, _)| *k == 1).unwrap().1 else {
+                panic!("public key");
+            };
+            key.clone()
+        };
+        let policy = FrozenCanonicalPolicy {
+            network: network.clone(),
+            chain_id: 10143,
+            minimum: 1,
+            sender_p: sender.key_bytes.clone(),
+            recipient_p: recipient.key_bytes.clone(),
+            sender_m: message_key(6),
+            recipient_m: message_key(7),
+            stamp: destination.key_bytes.clone(),
+            sender_t1: hex::decode(wire["sender_t1"].as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap(),
+            recipient_t1: hex::decode(wire["recipient_t1"].as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap(),
+            payload_hash: payload_digest.as_slice().try_into().unwrap(),
+        };
+        let (_, address) = crate::monad_dm_verify::canonical_stamp_destination(
+            network,
+            destination,
+            shared_point,
+            0,
+        )
+        .unwrap();
+        let secret = bitcoinsuite_ecc_secp256k1::EccSecp256k1::default()
+            .seckey_from_array([17; 32])
+            .unwrap();
+        let transaction = crate::monad_evm_tx::test_support::signed_eip1559_tx(
+            &secret,
+            10143,
+            0,
+            Address(address),
+            1,
+            &[],
+        )
+        .0;
+        let payment_hash: [u8; 32] = Keccak256::digest(&transaction).into();
+        let mut amount = [0; 32];
+        amount[31] = 1;
+        let member = cbor_map(vec![
+            (0, CborValue::Int(0)),
+            (1, CborValue::Bytes(payment_hash.to_vec())),
+            (2, CborValue::Bytes(amount.to_vec())),
+            (3, CborValue::Bytes(address.to_vec())),
+            (
+                4,
+                CborValue::Bytes(frank_cbor::payment_commitment(&policy.payload_hash, 0).to_vec()),
+            ),
+        ]);
+        let CborValue::Map(mut outer) = frame.payload else {
+            panic!("direct message map");
+        };
+        outer.iter_mut().find(|(k, _)| *k == 4).unwrap().1 = CborValue::Array(vec![member]);
+        let delivery = frank_cbor::encode_frame(
+            frank_cbor::EnvelopeFields {
+                type_id: 1,
+                schema_version: 1,
+                min_reader_version: 1,
+            },
+            FramePayload::Value(&CborValue::Map(outer)),
+        )
+        .unwrap();
+        let transactions =
+            encode_canonical(&CborValue::Array(vec![CborValue::Bytes(transaction)])).unwrap();
+        let mut body = Vec::new();
+        for (name, media, bytes) in [
+            ("delivery", "application/vnd.frank.cbor", delivery),
+            ("context", "application/cbor", context),
+            ("transactions", "application/cbor", transactions),
+        ] {
+            body.extend_from_slice(format!("--canonical-layout\r\nContent-Disposition: form-data; name=\"{name}\"\r\nContent-Type: {media}\r\n\r\n").as_bytes());
+            body.extend_from_slice(&bytes);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(b"--canonical-layout--\r\n");
+        let request = ExactRequest::parse(
+            body,
+            "multipart/form-data; boundary=canonical-layout".into(),
+        )
+        .unwrap();
+        (
+            CanonicalPaymentInput::without_directory(request, policy).unwrap(),
+            payment_hash,
+        )
+    }
+
+    fn raw_rows(path: &Path) -> Vec<(Vec<u8>, Vec<u8>)> {
+        assert_eq!(
+            rocksdb::DB::list_cf(&Options::default(), path).unwrap(),
+            ["default"]
+        );
+        let db = rocksdb::DB::open_for_read_only(&Options::default(), path, false).unwrap();
+        db.iterator(IteratorMode::Start)
+            .map(|row| {
+                let (key, value) = row.unwrap();
+                (key.to_vec(), value.to_vec())
+            })
+            .collect()
+    }
+
+    // Independently spell the CBOR v2 row, including fixed-width minimum and the exact request.
+    // Do not use encode_row, load, or production key builders to generate expected storage bytes.
+    fn persisted_row(message: &Claim) -> Vec<u8> {
+        assert_eq!(message.delivered_at, 1234);
+        assert_eq!(message.policy.network, "monad-testnet");
+        assert_eq!(message.policy.chain_id, 10143);
+        let mut bytes = vec![0xa5, 0x00, 0x02, 0x01, 0x59];
+        bytes.extend_from_slice(
+            &u16::try_from(message.request.body().len())
+                .unwrap()
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(message.request.body());
+        let content_type_len = u8::try_from(message.request.content_type().len()).unwrap();
+        assert!(content_type_len > 23);
+        bytes.extend_from_slice(&[0x02, 0x78, content_type_len]);
+        bytes.extend_from_slice(message.request.content_type().as_bytes());
+        bytes.extend_from_slice(&[0x03, 0x8b, 0x6d]);
+        bytes.extend_from_slice(b"monad-testnet");
+        bytes.extend_from_slice(&[0x19, 0x27, 0x9f, 0x50]);
+        bytes.extend_from_slice(&message.policy.minimum.to_be_bytes());
+        for key in [
+            &message.policy.sender_p,
+            &message.policy.recipient_p,
+            &message.policy.sender_m,
+            &message.policy.recipient_m,
+            &message.policy.stamp,
+        ] {
+            assert_eq!(key.len(), 33);
+            bytes.extend_from_slice(&[0x58, 0x21]);
+            bytes.extend_from_slice(key);
+        }
+        for hash in [
+            message.policy.sender_t1,
+            message.policy.recipient_t1,
+            message.policy.payload_hash,
+        ] {
+            bytes.extend_from_slice(&[0x58, 0x20]);
+            bytes.extend_from_slice(&hash);
+        }
+        bytes.extend_from_slice(&[0x04, 0x19, 0x04, 0xd2]);
+        bytes
+    }
+
+    #[test]
+    fn canonical_row_and_delivery_indexes_keep_exact_v2_bytes_across_reopen() {
+        let dir = tempdir::TempDir::new("canonical-layout").unwrap();
+        let registry_path = dir.path().join("registry.rocksdb");
+        let path = registry_path.with_extension("messages-v2");
+        let (input, payment_hash) = paid_input();
+        let owner = Owner::new(registry_path.clone());
+        let claim = owner.claim(input, 1234).unwrap();
+        let (retry, _) = paid_input();
+        assert_eq!(owner.claim(retry, 9999).unwrap().delivered_at, 1234);
+        let hash = claim.policy.payload_hash;
+        let sender = claim.policy.sender().unwrap();
+        let recipient = claim.policy.recipient().unwrap();
+        assert_ne!(sender, recipient);
+        let mut expected = vec![
+            ([b"R".as_slice(), &hash].concat(), persisted_row(&claim)),
+            ([b"T".as_slice(), &payment_hash].concat(), hash.to_vec()),
+            (b"L".to_vec(), 1234i64.to_be_bytes().to_vec()),
+        ];
+        for (kind, party) in [(b'I', recipient), (b'O', sender)] {
+            let key = [
+                [kind].as_slice(),
+                party.0.as_slice(),
+                1234i64.to_be_bytes().as_slice(),
+                hash.as_slice(),
+            ]
+            .concat();
+            expected.push((key, hash.to_vec()));
+        }
+        expected.sort();
+        drop(owner);
+        assert_eq!(raw_rows(&path), expected);
+        let reopened = Owner::new(registry_path);
+        let stored = reopened.get(&hash).unwrap().unwrap();
+        assert!(stored.request.exact_equal(&claim.request));
+        assert_eq!(stored.policy, claim.policy);
+        assert_eq!(stored.delivered_at, 1234);
+        assert_eq!(reopened.inbox(recipient, 0, None, 10).unwrap().len(), 1);
+        let sent = reopened.mailbox(sender, 0, None, 10).unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1, MailboxDirection::Out);
+        let (retry, _) = paid_input();
+        assert_eq!(reopened.claim(retry, 9999).unwrap().delivered_at, 1234);
+        drop(reopened);
+        assert_eq!(raw_rows(&path), expected);
+    }
+
+    #[test]
+    fn canonical_reads_are_lazy_and_open_failures_retry_without_reset() {
+        let dir = tempdir::TempDir::new("canonical-open").unwrap();
+        let registry_path = dir.path().join("registry.rocksdb");
+        let path = registry_path.with_extension("messages-v2");
+        let owner = Owner::new(registry_path.clone());
+        let address = Address([3; 20]);
+        let invalid = ExactRequest::parse(vec![0], "application/cbor".into()).unwrap();
+        let policy = crate::store::notification_policy::MailboxNotificationPolicy::default();
+        assert!(owner.get(&[0; 32]).unwrap().is_none());
+        assert!(owner.find_request(&invalid).unwrap().is_none());
+        assert!(owner.inbox(address, 0, None, 1).unwrap().is_empty());
+        assert!(owner.mailbox(address, 0, None, 1).unwrap().is_empty());
+        assert_eq!(owner.get_notification_policy(address).unwrap(), policy);
+        assert!(!path.exists());
+        std::fs::write(&path, b"owned sentinel").unwrap();
+        assert!(matches!(
+            owner.get(&[0; 32]),
+            Err(CanonicalError::Unavailable)
+        ));
+        assert!(matches!(
+            owner.put_notification_policy(address, &policy),
+            Err(CanonicalError::Unavailable)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), b"owned sentinel");
+        std::fs::remove_file(&path).unwrap();
+        #[cfg(unix)]
+        {
+            let target = dir.path().join("owned-symlink-target");
+            std::fs::create_dir(&target).unwrap();
+            std::fs::write(target.join("sentinel"), b"preserved").unwrap();
+            std::os::unix::fs::symlink(&target, &path).unwrap();
+            assert!(matches!(
+                owner.put_notification_policy(address, &policy),
+                Err(CanonicalError::Unavailable)
+            ));
+            assert_eq!(
+                std::fs::read(target.join("sentinel")).unwrap(),
+                b"preserved"
+            );
+            assert!(!target.join("CURRENT").exists());
+            std::fs::remove_file(&path).unwrap();
+        }
+        owner.put_notification_policy(address, &policy).unwrap();
+        assert!(matches!(
+            owner.find_request(&invalid),
+            Err(CanonicalError::Invalid)
+        ));
+        std::fs::rename(path.join("CURRENT"), path.join("CURRENT.saved")).unwrap();
+        assert!(matches!(
+            owner.get(&[0; 32]),
+            Err(CanonicalError::Unavailable)
+        ));
+        std::fs::rename(path.join("CURRENT.saved"), path.join("CURRENT")).unwrap();
+        assert_eq!(owner.get_notification_policy(address).unwrap(), policy);
+        drop(owner);
+        assert_eq!(
+            Owner::new(registry_path)
+                .get_notification_policy(address)
+                .unwrap(),
+            policy
+        );
+    }
+
+    fn stored_nonce(recipient: Address, epoch: [u8; 32], nonce: [u8; 32]) -> Vec<u8> {
+        [b"N".as_slice(), &recipient.0, &epoch, &nonce].concat()
+    }
+
+    #[test]
+    fn canonical_challenge_is_consumed_once_under_race_and_after_reopen() {
+        let dir = tempdir::TempDir::new("canonical-nonce-race").unwrap();
+        let registry_path = dir.path().join("registry.rocksdb");
+        let path = registry_path.with_extension("messages-v2");
+        let owner = Arc::new(Owner::new(registry_path.clone()));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let recipient = Address([3; 20]);
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let owner = owner.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    owner
+                        .consume_challenge([4; 32], recipient, [5; 32], 2000, 1000, 1)
+                        .unwrap()
+                })
+            })
+            .collect();
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| **r == ChallengeConsumption::Consumed)
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| **r == ChallengeConsumption::Rejected)
+                .count(),
+            7
+        );
+        drop(owner);
+        let expected = vec![(
+            stored_nonce(recipient, [4; 32], [5; 32]),
+            2000i64.to_be_bytes().to_vec(),
+        )];
+        assert_eq!(raw_rows(&path), expected);
+        let reopened = Owner::new(registry_path);
+        assert_eq!(
+            reopened
+                .consume_challenge([4; 32], recipient, [5; 32], 2000, 1000, 1)
+                .unwrap(),
+            ChallengeConsumption::Rejected
+        );
+        drop(reopened);
+        assert_eq!(raw_rows(&path), expected);
+    }
+
+    #[test]
+    fn malformed_challenge_scan_neither_prunes_expired_rows_nor_consumes_new_nonce() {
+        for bad_key in [false, true] {
+            let dir = tempdir::TempDir::new("canonical-nonce-malformed").unwrap();
+            let registry_path = dir.path().join("registry.rocksdb");
+            let path = registry_path.with_extension("messages-v2");
+            let recipient = Address([3; 20]);
+            let expired = stored_nonce(recipient, [4; 32], [0; 32]);
+            let mut malformed = stored_nonce(recipient, [4; 32], [1; 32]);
+            let expiry = if bad_key {
+                malformed.pop();
+                2000i64.to_be_bytes().to_vec()
+            } else {
+                vec![0]
+            };
+            {
+                let db = rocksdb::DB::open_default(&path).unwrap();
+                db.put(&expired, 999i64.to_be_bytes()).unwrap();
+                db.put(&malformed, &expiry).unwrap();
+            }
+            let expected = raw_rows(&path);
+            let owner = Owner::new(registry_path);
+            assert!(matches!(
+                owner.consume_challenge([4; 32], recipient, [2; 32], 2000, 1000, 10),
+                Err(CanonicalError::Unavailable)
+            ));
+            drop(owner);
+            assert_eq!(raw_rows(&path), expected);
+        }
+    }
+}

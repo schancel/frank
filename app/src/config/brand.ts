@@ -1,4 +1,5 @@
 import { readViteEnv } from '@frank/wallet/chain/vite-env'
+import rawBrands from '../../config/brands.json'
 
 export interface AppBrandProfile {
   readonly id: string
@@ -8,55 +9,13 @@ export interface AppBrandProfile {
   readonly appId: string
   readonly themeColor: string
   readonly backgroundColor: string
+  readonly heroLogo: string
+  readonly sidebarLogo: string
+  readonly publicIcons: Readonly<Record<string, string>>
 }
 
-export const BUILTIN_BRANDS: Readonly<Record<string, AppBrandProfile>> = {
-  frank: {
-    id: 'frank',
-    productName: 'Frank',
-    shortName: 'Frank',
-    description: 'Encrypted messaging and a multichain wallet',
-    appId: 'org.cashweb.stamp',
-    themeColor: '#121218',
-    backgroundColor: '#f7f7f2',
-  },
-  plainspoken: {
-    id: 'plainspoken',
-    productName: 'Plainspoken',
-    shortName: 'Plainspoken',
-    description: 'Encrypted messaging and a multichain wallet',
-    appId: 'org.cashweb.plainspoken',
-    themeColor: '#121218',
-    backgroundColor: '#f7f7f2',
-  },
-  signet: {
-    id: 'signet',
-    productName: 'Signet',
-    shortName: 'Signet',
-    description: 'Encrypted messaging and a multichain wallet',
-    appId: 'org.cashweb.signet',
-    themeColor: '#c8431e',
-    backgroundColor: '#f7f7f2',
-  },
-  stamp: {
-    id: 'stamp',
-    productName: 'Stamp',
-    shortName: 'Stamp',
-    description: 'Encrypted messaging and a multichain wallet',
-    appId: 'org.cashweb.stamp',
-    themeColor: '#121218',
-    backgroundColor: '#f7f7f2',
-  },
-  lotus: {
-    id: 'lotus',
-    productName: 'Lotus',
-    shortName: 'Lotus',
-    description: 'Encrypted messaging and a multichain wallet',
-    appId: 'org.cashweb.lotus',
-    themeColor: '#9d5cff',
-    backgroundColor: '#f7f7fb',
-  },
-}
+export const BUILTIN_BRANDS: Readonly<Record<string, AppBrandProfile>> =
+  rawBrands as Readonly<Record<string, AppBrandProfile>>
 
 function titleCaseSlug(slug: string): string {
   return slug
@@ -98,14 +57,18 @@ export function resolveAppBrand(
       .replace(/[^a-z0-9-]+/g, '-')
       .replace(/^-+|-+$/g, '') || 'frank'
 
+  const defaultFrank = BUILTIN_BRANDS.frank!
   const base: AppBrandProfile = BUILTIN_BRANDS[normalizedId] ?? {
     id: normalizedId,
     productName: titleCaseSlug(rawBrand),
     shortName: titleCaseSlug(rawBrand),
-    description: 'Encrypted messaging and a multichain wallet',
+    description: defaultFrank.description,
     appId: `org.cashweb.${normalizedId.replace(/-/g, '')}`,
-    themeColor: '#121218',
-    backgroundColor: '#f7f7f2',
+    themeColor: defaultFrank.themeColor,
+    backgroundColor: defaultFrank.backgroundColor,
+    heroLogo: defaultFrank.heroLogo,
+    sidebarLogo: defaultFrank.sidebarLogo,
+    publicIcons: defaultFrank.publicIcons,
   }
 
   const customName = (
@@ -127,6 +90,11 @@ export function resolveAppBrand(
   const backgroundColor =
     (readEnvValue('APP_BRAND_BACKGROUND_COLOR', env) || '').trim() ||
     base.backgroundColor
+  const heroLogo =
+    (readEnvValue('APP_BRAND_HERO_LOGO', env) || '').trim() || base.heroLogo
+  const sidebarLogo =
+    (readEnvValue('APP_BRAND_SIDEBAR_LOGO', env) || '').trim() ||
+    base.sidebarLogo
 
   return {
     id: base.id,
@@ -136,6 +104,9 @@ export function resolveAppBrand(
     appId,
     themeColor,
     backgroundColor,
+    heroLogo,
+    sidebarLogo,
+    publicIcons: base.publicIcons ?? {},
   }
 }
 

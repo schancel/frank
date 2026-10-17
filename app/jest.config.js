@@ -109,6 +109,8 @@ module.exports = {
     '^pages/(.*)$': '<rootDir>/src/pages/$1',
     '^assets/(.*)$': '<rootDir>/src/assets/$1',
     '^boot/(.*)$': '<rootDir>/src/boot/$1',
+    '^@brand-hero-logo$': '<rootDir>/src/assets/stamp-icon.png',
+    '^@brand-sidebar-logo$': '<rootDir>/src/assets/stamp-icon.png',
     // Locally-committed stub (see test/jest/utils/stub.css) rather than pulling in
     // @quasar/quasar-app-extension-testing-unit-jest just for a css stub; jest-transform-stub
     // below turns any matched css/asset file into a stub module anyway.

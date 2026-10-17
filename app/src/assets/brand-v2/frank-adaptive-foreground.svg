@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Frank adaptive icon foreground</title>
+  <g transform="translate(102 92) scale(.60)">
+    <path fill="#9D5CFF" d="M122 72c0-24 20-44 44-44h222c33 0 60 27 60 60s-27 60-60 60H210v292c0 24-20 44-44 44s-44-20-44-44V72Z"/>
+    <path fill="#9D5CFF" d="M232 194h158c32 0 58 26 58 58s-26 58-58 58H254l-76 45v-85c0-42 24-76 54-76Z"/>
+    <path fill="#00D9A3" d="M254 330h136c32 0 58 26 58 58s-26 58-58 58H254l-76 38v-78c0-42 34-76 76-76Z"/>
+  </g>
+</svg>

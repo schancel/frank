@@ -997,6 +997,95 @@ fn directory_preview_actual_retention_count_and_byte_caps_are_terminal_and_linea
     }
 }
 
+/// Wrapper-only unknown fields can exceed 10 MiB of persisted evidence in one accepted
+/// advance while the unchanged signed children and aggregate charge remain within policy.
+#[test]
+fn directory_preview_wrapper_heavy_advance_persists_more_than_ten_mib_atomically() {
+    let (a, mut pairs) = chain(48, 0);
+    let statements: Vec<_> = pairs.iter().map(|pair| pair.0.clone()).collect();
+    for (statement, wrapper) in &mut pairs {
+        let envelope = decode_canonical(&wrapper[9..]).unwrap();
+        let CborValue::Bytes(body) = field(&envelope, 3) else {
+            panic!("wrapper body")
+        };
+        let mut payload = decode_canonical(body).unwrap();
+        let signatures = field(&payload, 1).clone();
+        replace(&mut payload, 100, CborValue::Bytes(vec![42; 250_000]));
+        assert_eq!(field(&payload, 0), &CborValue::Bytes(statement.clone()));
+        assert_eq!(field(&payload, 1), &signatures);
+        *wrapper = encode_frame(
+            EnvelopeFields {
+                type_id: 2,
+                schema_version: 2,
+                min_reader_version: 1,
+            },
+            FramePayload::Value(&payload),
+        )
+        .unwrap();
+        assert!(wrapper.len() <= MAX_FRAME_BYTES);
+    }
+    // Only the wrapper changed: signatures, anchor, predecessor hashes and T1 remain valid.
+    assert_eq!(
+        pairs.iter().map(|pair| pair.0.clone()).collect::<Vec<_>>(),
+        statements
+    );
+    let charge: usize = pairs.iter().map(|pair| pair.0.len() + pair.1.len()).sum();
+    let evidence_bytes: usize = pairs.iter().map(|pair| pair.1.len()).sum();
+    assert!(charge < MAX_CHARGED_BYTES);
+    assert!(evidence_bytes > 10 * 1024 * 1024);
+    let mut expected_wrappers: Vec<_> = pairs.iter().map(|pair| pair.1.clone()).collect();
+    expected_wrappers.sort();
+    let temp = tempdir::TempDir::new("directory-preview-wrapper-heavy").unwrap();
+    let path = temp.path().join("db");
+    let status = {
+        let db = Db::open(&path).unwrap();
+        let d = db
+            .directory_preview(a.clone(), OpenMode::NewEnrollment)
+            .unwrap();
+        let candidates: Vec<_> = pairs.iter().map(candidate).collect();
+        // The entire oversized retained evidence set is accepted in this single atomic call.
+        let result = d.advance(&candidates, context(&relay())).unwrap();
+        assert_eq!(result.status.accepted, 48);
+        assert_eq!(result.status.retained, 48);
+        assert_eq!(result.status.charged_bytes, charge);
+        let cf = d.db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap();
+        let mut values: Vec<_> =
+            d.db.rocksdb()
+                .iterator_cf(cf, IteratorMode::Start)
+                .map(|row| row.unwrap().1.to_vec())
+                .collect();
+        assert_eq!(values.iter().map(Vec::len).sum::<usize>(), evidence_bytes);
+        values.sort();
+        assert!(
+            values == expected_wrappers,
+            "stored wrappers differ from exact accepted bytes"
+        );
+        result.status
+    };
+    let db = Db::open(&path).unwrap();
+    let reopened = db
+        .directory_preview(a, OpenMode::Reopen(status.checkpoint))
+        .unwrap();
+    assert_eq!(reopened.status().unwrap(), Some(status));
+    let current = reopened.current(context(&relay())).unwrap();
+    assert_eq!(current.evidence.statement, pairs.last().unwrap().0);
+    assert!(current.evidence.attestation == pairs.last().unwrap().1);
+    let cf = reopened.db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap();
+    let mut values: Vec<_> = reopened
+        .db
+        .rocksdb()
+        .iterator_cf(cf, IteratorMode::Start)
+        .map(|row| row.unwrap().1.to_vec())
+        .collect();
+    assert_eq!(values.iter().map(Vec::len).sum::<usize>(), evidence_bytes);
+    values.sort();
+    assert!(
+        values == expected_wrappers,
+        "stored wrappers differ from exact accepted bytes"
+    );
+    eprintln!("wrapper-heavy atomic advance accepted 48: persisted evidence {evidence_bytes} bytes; charge {charge} bytes; exact wrappers and reopen verified");
+}
+
 #[test]
 fn directory_preview_budget_and_integer_terminal_boundaries() {
     let shared: Value = serde_json::from_str(include_str!(

@@ -15,7 +15,47 @@ import {
 import { randomBytes, sha256 } from '@frank/crypto-box'
 import { keccak_256 } from '@noble/hashes/sha3'
 import { isLoopbackHostname } from './directory-client'
-import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
+import protocolChains from '../../../docs/protocol/chains/v1.json'
+
+/**
+ * Protocol chain network tags corresponding to `docs/protocol/chains/v1.json` entries.
+ * Owned here at the transport layer so `@frank/cashweb` never depends on `@frank/wallet`.
+ */
+const PROTOCOL_CHAIN_NETWORK_TAGS: Readonly<Record<string, string>> =
+  Object.freeze({
+    'monad-testnet': 'MONT',
+    'monad-regtest': 'MONR',
+    'monad-mainnet': 'MON1',
+    'xec-testnet': 'XECT',
+    'xec-regtest': 'XECR',
+    'xec-mainnet': 'XEC1',
+    'solana-devnet': 'SOLD',
+    'solana-testnet': 'SOLT',
+    'solana-mainnet': 'SOL1',
+    'ethereum-sepolia': 'SEPO',
+    'ethereum-mainnet': 'ETH1',
+    'hyperliquid-mainnet': 'HYPE',
+    'hyperliquid-testnet': 'HYPT',
+    'tempo-mainnet': 'TMPO',
+    'tempo-testnet': 'TMPT',
+    'btc-mainnet': 'BTC1',
+    'btc-testnet': 'BTCT',
+    'btc-testnet4': 'BTC4',
+    'bch-mainnet': 'BCH1',
+    'bch-testnet': 'BCHT',
+    'doge-mainnet': 'DOGE',
+    'doge-testnet': 'DOGT',
+    'litecoin-mainnet': 'LTC1',
+    'litecoin-testnet': 'LTCT',
+    'bnb-mainnet': 'BSC1',
+    'bnb-testnet': 'BSCT',
+    'polygon-mainnet': 'POL1',
+    'polygon-amoy': 'AMOY',
+    'base-mainnet': 'BASE',
+    'base-sepolia': 'BSES',
+    'arbitrum-mainnet': 'ARB1',
+    'arbitrum-sepolia': 'ARBS',
+  })
 
 export const CANONICAL_DM_MAX_BYTES = 8 * 1024 * 1024
 export const CANONICAL_DM_MAX_STATUS_BYTES = 16 * 1024
@@ -195,11 +235,13 @@ export function canonicalNetworkDescriptor(
     }
   }
 
-  for (const entry of Object.values(PROTOCOL_CHAINS)) {
+  for (const entry of protocolChains.chains) {
+    if (!(entry.id in PROTOCOL_CHAIN_NETWORK_TAGS)) continue
+    const networkTag = PROTOCOL_CHAIN_NETWORK_TAGS[entry.id]
     const entryIdLower = entry.id.toLowerCase()
-    const entryTagLower = entry.networkTag?.toLowerCase()
+    const entryTagLower = networkTag?.toLowerCase()
     const entryCaip2Lower = entry.caip2?.toLowerCase()
-    const tagHex = entry.networkTag ? toHex(text(entry.networkTag)) : undefined
+    const tagHex = networkTag ? toHex(text(networkTag)) : undefined
     const idHex = toHex(text(entry.id))
     if (
       lower === entryIdLower ||
@@ -207,15 +249,15 @@ export function canonicalNetworkDescriptor(
       (entryTagLower !== undefined && lower === entryTagLower) ||
       (entryCaip2Lower !== undefined && lower === entryCaip2Lower) ||
       (parsedNumericId !== undefined &&
-        entry.nativeChainId !== null &&
-        entry.nativeChainId === parsedNumericId) ||
+        entry.native_chain_id !== null &&
+        entry.native_chain_id === parsedNumericId) ||
       (tagHex !== undefined && strippedHex === tagHex) ||
       strippedHex === idHex
     ) {
       return {
-        tag: (entry.networkTag ?? entry.id) as 'MONT' | 'MON1' | 'MONR',
+        tag: (networkTag ?? entry.id) as 'MONT' | 'MON1' | 'MONR',
         network: entry.id,
-        chainId: entry.nativeChainId ? BigInt(entry.nativeChainId) : 0n,
+        chainId: entry.native_chain_id ? BigInt(entry.native_chain_id) : 0n,
       }
     }
   }

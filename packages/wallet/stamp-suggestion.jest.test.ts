@@ -1,6 +1,7 @@
 import {
   isqrt,
   computeGeometricStampSuggestion,
+  computePeerStampSuggestion,
   derivePeerStampMetrics,
   getMessageStampWei,
   getVerifiedReceivedMessageStampWei,
@@ -242,4 +243,28 @@ describe("Stamp Suggestion & Geometric Mean Convergence (Issues #819 & #820)", (
       expect(metrics.receivedCount).toBe(1);
     });
   });
+
+  describe("computePeerStampSuggestion (#820)", () => {
+    it("returns converged suggestion, peer metrics, and upward increase flag from message history", () => {
+      const messages = [
+        { outbound: true, stampValueWei: DEFAULT_STAMP, status: "confirmed" },
+        {
+          outbound: false,
+          stampValueWei: 9n * DEFAULT_STAMP,
+          verifiedStampValueWei: 9n * DEFAULT_STAMP,
+          status: "confirmed",
+        },
+      ];
+      const result = computePeerStampSuggestion({
+        messages,
+        defaultStampWei: DEFAULT_STAMP,
+      });
+      expect(result.suggestedStampWei).toBe(3n * DEFAULT_STAMP);
+      expect(result.lastSentWei).toBe(DEFAULT_STAMP);
+      expect(result.lastReceivedWei).toBe(9n * DEFAULT_STAMP);
+      expect(result.netReceivedWei).toBe(8n * DEFAULT_STAMP);
+      expect(result.isSuggestedIncrease).toBe(true);
+    });
+  });
 });
+

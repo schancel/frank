@@ -28,7 +28,10 @@ import {
   MonadStampedMessage,
   StoredMonadMessage,
   MonadStampPayment,
+  type MonadStampedMessageProto,
+  type StoredMonadMessageProto,
 } from '@frank/cashweb/relay/monad-mailbox-compat'
+export type { MonadStampedMessageProto, StoredMonadMessageProto }
 import { AccountLeaseHandle } from './monad-account-lease'
 import {
   MonadAccountTxSigner,
@@ -60,39 +63,6 @@ export const MONAD_STAMP_CALLDATA_LENGTH =
   BROADCAST_MESSAGE_LOKAD_ID.length +
   COMMITMENT_VERSION_TAG.length +
   STAMP_COMMITMENT_LENGTH
-
-/**
- * `MonadStampedMessage` from `monad_message.proto`, decoded/encoded here in plain-object form
- * (rather than a `jspb.Message` subclass). Field numbers match the `.proto`: the removed singular
- * transaction is reserved at 1, `encrypted_payload = 2`, `payload_hash = 3`, and
- * `stamp_payments = 4`.
- */
-export interface MonadStampedMessageProto {
-  stampPayments: Array<{ childIndex: number; rawTx: Uint8Array }>
-  encryptedPayload: Uint8Array
-  payloadHash: Uint8Array
-}
-
-/**
- * @deprecated Legacy protobuf DM transport type. Canonical CBOR envelope is the active path.
- * `StoredMonadMessage` from `monad_message.proto` — what both `PUT /message/monad`'s success
- * response and `GET /message/monad/:payload_hash` return. The old sender/hash assertions are
- * reserved at fields 2 and 3; `timestamp = 4`, `network_tag = 5`.
- */
-export interface StoredMonadMessageProto {
-  message: MonadStampedMessageProto | undefined
-  /** Milliseconds since the Unix epoch. Decoded via `jspb.BinaryReader.readInt64`, which returns a
-   * plain JS `number` (not `bigint`) — safe here since a millisecond timestamp is far below
-   * `Number.MAX_SAFE_INTEGER` for a very long time yet. */
-  timestamp: number
-  /** Frank-specific network tag (ticket #39, see `backend/cashweb/cashweb-registry/src/
-   * network_tag.rs` and PLAN.md constraint 9), e.g. `"MONT"`/`"MON1"` as raw bytes, stamped by the
-   * relay from its own `FRANK_NETWORK_TAG` configuration — never asserted by the client. Empty on
-   * records stored before this ticket shipped (proto3 default, not backfilled). Out of scope for
-   * this ticket: any client-side warning/rejection when this doesn't match what a client expects —
-   * this field only needs to exist, be populated by the relay, and decode correctly here. */
-  networkTag: Uint8Array
-}
 
 /**
  * @deprecated Legacy protobuf DM transport helper. Canonical CBOR envelope is the active path.

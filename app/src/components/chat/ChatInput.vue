@@ -175,6 +175,13 @@
           <!-- What the message will carry, in the compact form: the chip is a tight place. -->
           <span class="chat-stamp-pill-text q-ml-xs">{{ stampPillText }}</span>
           <span
+            v-if="defaultStampMode && suggestedIncrease"
+            class="chat-stamp-pill-increase q-ml-xs text-warning text-weight-bold"
+            data-testid="stamp-pill-increase"
+            aria-hidden="true"
+            >↑</span
+          >
+          <span
             v-if="stampMultiplier && stampMultiplier !== '1'"
             class="chat-stamp-pill-multiple q-ml-xs"
             data-testid="stamp-pill-multiple"
@@ -182,6 +189,12 @@
           >
           <q-tooltip max-width="280px">
             <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
+            <div
+              v-if="defaultStampMode && suggestedIncrease"
+              data-testid="stamp-tooltip-increase"
+            >
+              {{ $t('chatInput.stampSuggestedIncreaseNotice') }}
+            </div>
             <div>{{ $t('chatInput.stampWhat') }}</div>
             <div
               v-if="defaultStampMode && stampBasisNote"
@@ -196,6 +209,37 @@
                 <div class="text-subtitle2 text-weight-medium">
                   {{ $t('chatInput.stampPayment') }}
                 </div>
+                <q-badge
+                  outline
+                  :color="isDefaultStamp ? 'primary' : 'amber-8'"
+                  data-testid="stamp-mode-status"
+                >
+                  {{
+                    isDefaultStamp
+                      ? $t('chatInput.stampSuggestedMode')
+                      : $t('chatInput.stampOverriddenMode')
+                  }}
+                </q-badge>
+              </div>
+
+              <div
+                v-if="lastPeerStampText"
+                class="text-caption text-grey-7 q-mb-xs"
+                data-testid="stamp-last-peer-paid"
+              >
+                {{
+                  $t('chatInput.stampPeerLastPaid', {
+                    amount: lastPeerStampText,
+                  })
+                }}
+              </div>
+
+              <div
+                v-if="isDefaultStamp && suggestedIncrease"
+                class="text-caption text-warning text-weight-medium q-mb-xs"
+                data-testid="stamp-suggested-increase"
+              >
+                ↑ {{ $t('chatInput.stampSuggestedIncreaseNotice') }}
               </div>
 
               <div
@@ -379,6 +423,18 @@ export default defineComponent({
       type: BigInt as unknown as PropType<bigint>,
       default: undefined,
     },
+    suggestedStampWei: {
+      type: BigInt as unknown as PropType<bigint>,
+      default: undefined,
+    },
+    lastPeerStampWei: {
+      type: BigInt as unknown as PropType<bigint>,
+      default: undefined,
+    },
+    suggestedIncrease: {
+      type: Boolean,
+      default: false,
+    },
     defaultStampMode: { type: Boolean, default: true },
     stampUnavailable: { type: String, default: '' },
     stampBasisNote: { type: String, default: '' },
@@ -560,6 +616,7 @@ export default defineComponent({
         return
       }
       this.attachError = ''
+      this.typedStamp = null
       this.$emit('sendMessage', this.innerMessage)
     },
     blackjackClicked() {
@@ -688,10 +745,16 @@ export default defineComponent({
       return this.defaultStampMode
     },
     defaultStampText(): string {
-      const stamp = this.effectiveDefaultStampWei
+      const stamp = this.suggestedStampWei ?? this.effectiveDefaultStampWei
       return stamp === undefined || stamp <= 0n
         ? this.$t('chatInput.stampQuoteUnavailable')
         : formatCompactAmount(activeChain, stamp)
+    },
+    lastPeerStampText(): string {
+      if (this.lastPeerStampWei === undefined || this.lastPeerStampWei <= 0n) {
+        return ''
+      }
+      return formatCompactAmount(activeChain, this.lastPeerStampWei)
     },
     /** The stamp on the chip: the amount in the chain's unit, compact ("14.14 mMONT"); a
      * message with no stamp reads "Free". */

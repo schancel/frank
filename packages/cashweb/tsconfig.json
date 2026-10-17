@@ -19,8 +19,7 @@
     // Scoping to just what this package actually needs avoids that.
     "types": ["node", "jest"],
     "paths": {
-      "@frank/codec": ["../frank-codec/src/index.ts"],
-      "@frank/wallet/*": ["../wallet/*"]
+      "@frank/codec": ["../frank-codec/src/index.ts"]
     }
   },
   "include": [

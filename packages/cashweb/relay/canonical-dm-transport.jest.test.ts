@@ -706,6 +706,40 @@ describe('canonicalNetworkDescriptor', () => {
   it('throws on unknown descriptors', () => {
     expect(() => canonicalNetworkDescriptor('unknown')).toThrow(/Unknown installed Monad network descriptor/)
   })
+
+  it('keeps @frank/cashweb non-test source files free of @frank/wallet imports (#1247)', () => {
+    const fs = require('fs') as typeof import('fs')
+    const path = require('path') as typeof import('path')
+    const cashwebRoot = path.resolve(__dirname, '..')
+    const violations: string[] = []
+    function walk(dir: string) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === 'node_modules' || entry.name === 'dist') continue
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          walk(full)
+        } else if (
+          entry.name.endsWith('.ts') &&
+          !entry.name.endsWith('.test.ts') &&
+          !entry.name.endsWith('.spec.ts') &&
+          !entry.name.endsWith('.livecheck.ts')
+        ) {
+          const text = fs.readFileSync(full, 'utf8')
+          if (
+            /(?:import|export)\s+(?:type\s+)?[\s\S]*?from\s+['"]@frank\/wallet/.test(
+              text,
+            ) ||
+            /require\(\s*['"]@frank\/wallet/.test(text)
+          ) {
+            violations.push(path.relative(cashwebRoot, full))
+          }
+        }
+      }
+    }
+    walk(cashwebRoot)
+    expect(violations).toEqual([])
+  })
 })
+
 
 

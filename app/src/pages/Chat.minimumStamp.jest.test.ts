@@ -202,3 +202,96 @@ it('a real fee failure stays unavailable until a later fresh quote succeeds', as
   expect(self.defaultStampWei).toBe(60_000n)
   expect(self.minimumStampWei).toBe(45_000n)
 })
+
+describe('Chat.vue converged geometric stamp suggestion and per-message override (#820)', () => {
+  it('pre-fills the geometric suggestion from verified peer stamp history and marks upward adjustments', () => {
+    const self = fakeThis({
+      defaultStampWei: 1_000n,
+      minimumStampWei: 500n,
+      chatStore: { getStampWei: () => undefined },
+      peerMessages: [
+        { outbound: true, stampValueWei: 1_000n },
+        {
+          outbound: false,
+          stampValueWei: 4_000n,
+          stampPaymentStatus: 'received',
+        },
+      ],
+    })
+    self.isDefaultStampMode = page.computed.isDefaultStampMode.call(self)
+    self.peerStampSuggestion = page.computed.peerStampSuggestion.call(self)
+    self.suggestedStampWei = page.computed.suggestedStampWei.call(self)
+    self.lastPeerStampWei = page.computed.lastPeerStampWei.call(self)
+    self.isSuggestedIncrease = page.computed.isSuggestedIncrease.call(self)
+
+    // isqrt(1000 * 4000) = 2000; netReceived = 3000 so upward cap (1000 + 3000 = 4000) allows 2000
+    expect(self.suggestedStampWei).toBe(2_000n)
+    expect(self.lastPeerStampWei).toBe(4_000n)
+    expect(self.isSuggestedIncrease).toBe(true)
+    expect(page.computed.stampAmount.get.call(self)).toBe('2000')
+  })
+
+  it('resets a per-message stamp override back to the suggestion after sending a message', async () => {
+    let storedOverride: bigint | undefined = 5_000n
+    const setStampWei = jest.fn(
+      ({ stampWei }: { address: string; stampWei?: bigint }) => {
+        storedOverride = stampWei
+      },
+    )
+    const sendDirectMessage = jest.fn(async () => ({ state: 'sent' }))
+    const self = fakeThis({
+      defaultStampWei: 1_000n,
+      minimumStampWei: 500n,
+      stampUnavailable: '',
+      address: '0xPeer',
+      recipientAddress: '0xPeer',
+      conversation: { id: 'conv-peer' },
+      attachments: [],
+      message: 'hello',
+      replyDigest: null,
+      activeSendCount: 0,
+      sendingMessage: false,
+      bottom: true,
+      getAcceptancePrice: () => 0,
+      showStampPreparation: jest.fn(),
+      sendDirectMessage,
+      chatStore: {
+        getStampWei: () => storedOverride,
+        setStampWei,
+      },
+      peerMessages: [
+        { outbound: true, stampValueWei: 1_000n },
+        {
+          outbound: false,
+          stampValueWei: 4_000n,
+          stampPaymentStatus: 'received',
+        },
+      ],
+    })
+    Object.defineProperty(self, 'isDefaultStampMode', {
+      get: () => page.computed.isDefaultStampMode.call(self),
+    })
+    Object.defineProperty(self, 'stampAmount', {
+      get: () => page.computed.stampAmount.get.call(self),
+    })
+    self.resetStampDefault = () => page.methods.resetStampDefault.call(self)
+
+    // Before send: uses explicit override 5000
+    expect(self.isDefaultStampMode).toBe(false)
+    expect(self.stampAmount).toBe('5000')
+
+    await page.methods.sendMessage.call(self, 'hello')
+
+    expect(sendDirectMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ stampValue: 5_000n }),
+    )
+    // After send: override is cleared and composer returns to the converged suggestion (2000)
+    expect(setStampWei).toHaveBeenCalledWith({
+      address: 'conv-peer',
+      stampWei: undefined,
+    })
+    expect(self.isDefaultStampMode).toBe(true)
+    expect(self.stampAmount).toBe('2000')
+  })
+})
+

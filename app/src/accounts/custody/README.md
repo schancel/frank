@@ -64,7 +64,7 @@ WebCrypto may retain engine-owned copies, so erasure is best effort.
 
 ## Durable state and transitions
 
-The dedicated IDB database `frank-account-custody-<namespace>`, version 1, has one
+The dedicated IDB database `account-custody-<namespace>`, version 1, has one
 store `state`, key `account`. Its row contains `{schema: 1, revision, active,
 pending}`. Missing state means no account; malformed state never does. Revision
 counts only successful activations. There is one active account and at most one

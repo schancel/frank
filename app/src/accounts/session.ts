@@ -1523,8 +1523,8 @@ export async function resetAccountStorage(
   await clearAllWalletDatabases().catch(() => undefined)
   if (typeof indexedDB === 'undefined') return
   const names = new Set<string>([
-    `frank-account-custody-${namespace}`,
-    `frank-preview-vault-${namespace}`,
+    `account-custody-${namespace}`,
+    `account-vault-${namespace}`,
     ...allocatedWalletDbs,
   ])
   try {
@@ -1533,7 +1533,10 @@ export async function resetAccountStorage(
       for (const db of dbs) {
         if (
           db.name &&
-          (db.name.startsWith('frank-') ||
+          (db.name.startsWith('account-custody-') ||
+            db.name.startsWith('account-vault-') ||
+            db.name.startsWith('frank-') ||
+            db.name.includes('evm-wallet-state') ||
             db.name.includes('monad-wallet-state') ||
             db.name.includes('level-js'))
         ) {
@@ -1578,7 +1581,9 @@ export async function resetMessageAndChatStorage(
           (db.name.includes('level-js') ||
             db.name.includes('MessageStore') ||
             db.name.includes('vuex-store') ||
+            db.name.includes('evm-wallet-state') ||
             db.name.includes('monad-wallet-state') ||
+            db.name.startsWith('wallet-') ||
             db.name.startsWith('frank-wallet-'))
         ) {
           names.add(db.name)
@@ -1587,17 +1592,17 @@ export async function resetMessageAndChatStorage(
     } else {
       names.add('vuex-store')
       names.add('MessageStore')
-      names.add('monad-wallet-state')
+      names.add('evm-wallet-state')
     }
   } catch {
     names.add('vuex-store')
     names.add('MessageStore')
-    names.add('monad-wallet-state')
+    names.add('evm-wallet-state')
   }
   for (const name of names) {
     if (
-      name.startsWith('frank-account-custody-') ||
-      name.startsWith('frank-preview-vault-')
+      name.startsWith('account-custody-') ||
+      name.startsWith('account-vault-')
     ) {
       continue
     }
@@ -1621,7 +1626,7 @@ export const accountSession = createAccountSession({
   listen(invalidate, foreground) {
     const channel =
       typeof window.BroadcastChannel === 'function'
-        ? new window.BroadcastChannel('frank-account-changed-v1')
+        ? new window.BroadcastChannel('account-changed-v1')
         : undefined
     accountChannel = channel
     if (channel) channel.onmessage = invalidate

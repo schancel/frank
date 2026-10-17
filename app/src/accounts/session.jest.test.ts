@@ -785,9 +785,9 @@ test('resetAccountStorage deletes all indexedDB databases matching frank- and le
 
   const mockIndexedDb = {
     databases: jest.fn(async () => [
-      { name: 'frank-account-custody-local-account-v1' },
-      { name: 'frank-preview-vault-local-account-v1' },
-      { name: 'frank-monad-wallet-state-evm-0x123' },
+      { name: 'account-custody-local-account-v1' },
+      { name: 'account-vault-local-account-v1' },
+      { name: 'evm-wallet-state-evm-0x123' },
       { name: 'level-js-wallet-manifest' },
       { name: 'unrelated-app-db' },
     ]),
@@ -802,9 +802,9 @@ test('resetAccountStorage deletes all indexedDB databases matching frank- and le
   try {
     ;(global as any).indexedDB = mockIndexedDb
     await resetAccountStorage('local-account-v1')
-    expect(deleted).toContain('frank-account-custody-local-account-v1')
-    expect(deleted).toContain('frank-preview-vault-local-account-v1')
-    expect(deleted).toContain('frank-monad-wallet-state-evm-0x123')
+    expect(deleted).toContain('account-custody-local-account-v1')
+    expect(deleted).toContain('account-vault-local-account-v1')
+    expect(deleted).toContain('evm-wallet-state-evm-0x123')
     expect(deleted).toContain('level-js-wallet-manifest')
     expect(deleted).not.toContain('unrelated-app-db')
   } finally {
@@ -818,9 +818,9 @@ test('resetMessageAndChatStorage deletes level-js, MessageStore, vuex-store, mon
 
   const mockIndexedDb = {
     databases: jest.fn(async () => [
-      { name: 'frank-account-custody-local-account-v1' },
-      { name: 'frank-preview-vault-local-account-v1' },
-      { name: 'frank-monad-wallet-state-evm-0x123' },
+      { name: 'account-custody-local-account-v1' },
+      { name: 'account-vault-local-account-v1' },
+      { name: 'evm-wallet-state-evm-0x123' },
       { name: 'level-js-wallet-manifest' },
       { name: 'MessageStore' },
       { name: 'vuex-store' },
@@ -837,12 +837,12 @@ test('resetMessageAndChatStorage deletes level-js, MessageStore, vuex-store, mon
   try {
     ;(global as any).indexedDB = mockIndexedDb
     await resetMessageAndChatStorage('local-account-v1')
-    expect(deleted).toContain('frank-monad-wallet-state-evm-0x123')
+    expect(deleted).toContain('evm-wallet-state-evm-0x123')
     expect(deleted).toContain('level-js-wallet-manifest')
     expect(deleted).toContain('MessageStore')
     expect(deleted).toContain('vuex-store')
-    expect(deleted).not.toContain('frank-account-custody-local-account-v1')
-    expect(deleted).not.toContain('frank-preview-vault-local-account-v1')
+    expect(deleted).not.toContain('account-custody-local-account-v1')
+    expect(deleted).not.toContain('account-vault-local-account-v1')
     expect(deleted).not.toContain('unrelated-app-db')
   } finally {
     ;(global as any).indexedDB = originalIndexedDb

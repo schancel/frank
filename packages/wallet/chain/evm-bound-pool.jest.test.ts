@@ -46,12 +46,14 @@ it.each(['sub-account-pool', 'change-pool'] as const)(
       const material = createMonadWalletMaterial(roots);
       const statePath = `${config.walletStorageLocation}-evm-${material.mainAccount.address.toLowerCase()}`;
       material.dispose();
-      const namespacePath = join(statePath, namespace);
-      rmSync(namespacePath, { recursive: true });
-      const empty = level(namespacePath);
-      await empty.put('temporary', '1');
-      await empty.del('temporary');
-      await empty.close();
+      const namespacePath = join(statePath, 'spend-pool');
+      const db = level(namespacePath);
+      await db.del(
+        namespace === 'sub-account-pool'
+          ? 'sub-account:__wallet_binding__'
+          : 'change:__wallet_binding__'
+      );
+      await db.close();
       await expect(createEvmChain(config).createWallet(roots)).rejects.toThrow(
         namespace === 'sub-account-pool'
           ? 'Refusing to open an unbound sub-account store'

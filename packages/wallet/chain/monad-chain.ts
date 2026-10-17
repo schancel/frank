@@ -268,7 +268,7 @@ function readEnv(key: string): string | undefined {
   return readViteEnv(`QCLI_${key}`) ?? process.env[key];
 }
 
-export const CUSTOM_RELAY_STORAGE_KEY = "frank.relay.serverUrl";
+export const CUSTOM_RELAY_STORAGE_KEY = "relay.serverUrl";
 
 let memoryCustomRelayUrl: string | undefined = undefined;
 
@@ -442,7 +442,7 @@ export function loadMonadChainConfigFromEnv(overrides?: {
     ),
     subAccountPoolSize: Number(readEnv("MONAD_SUB_ACCOUNT_POOL_SIZE") ?? "8"),
     walletStorageLocation:
-      readEnv("MONAD_WALLET_STORAGE_LOCATION") ?? "frank-monad-wallet-state",
+      readEnv("MONAD_WALLET_STORAGE_LOCATION") ?? "evm-wallet-state",
   };
 }
 
@@ -2647,7 +2647,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 const messageId = getBytes(
                   keccak256(
                     toUtf8Bytes(
-                      `frank-wallet-sync:${item.chainIdentifier}:${item.txHash}`
+                      `wallet-sync:${item.chainIdentifier}:${item.txHash}`
                     )
                   )
                 ).slice(0, 16);

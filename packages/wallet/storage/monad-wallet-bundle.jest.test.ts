@@ -224,6 +224,59 @@ describe('MonadWalletPersistenceBundle', () => {
         }),
       ).rejects.toThrow('Unsupported or corrupt Monad wallet manifest')
     })
+
+    it('writes evm-wallet-state manifest and stores sub-account, change, and coin records in a single spend-pool LevelDB', async () => {
+      const { existsSync } = require('fs') as typeof import('fs')
+      const { LevelRecordStore, EVM_COIN_NAMESPACE } = require('./evm-coin-store') as typeof import('./evm-coin-store')
+
+      const bundle = await openMonadWalletBundle({
+        location: tempDir,
+        seed: { mnemonic: TEST_MNEMONIC },
+        mode: 'create',
+      })
+      bundle.pool.ensureSize(2)
+      await bundle.pool.flush()
+
+      const coinStore = await LevelRecordStore.open(tempDir, EVM_COIN_NAMESPACE)
+      const sampleCoin = {
+        address: '0x1111111111111111111111111111111111111111',
+        privateKey: '0x' + '11'.repeat(32),
+        origin: 'stealth' as const,
+        state: 'unspent' as const,
+        amountWei: '100',
+        claimedAmountWei: '100',
+        transactions: [],
+        discoveredAtMs: 1,
+      }
+      await coinStore.put(sampleCoin.address, sampleCoin)
+      await coinStore.close()
+      await bundle.close()
+
+      expect(existsSync(join(tempDir, 'spend-pool'))).toBe(true)
+      expect(existsSync(join(tempDir, 'sub-account-pool'))).toBe(false)
+      expect(existsSync(join(tempDir, 'change-pool'))).toBe(false)
+      expect(existsSync(join(tempDir, 'received-coins'))).toBe(false)
+
+      const manifestDb = level(join(tempDir, 'wallet-manifest'))
+      await manifestDb.open()
+      const manifest = JSON.parse(await manifestDb.get('manifest'))
+      await manifestDb.close()
+      expect(manifest.schema).toBe('evm-wallet-state')
+      expect(manifest.intents).toEqual(['spend-pool-v1'])
+
+      const spendPoolDb = level(join(tempDir, 'spend-pool'))
+      await spendPoolDb.open()
+      const keys: string[] = []
+      for await (const [k] of (spendPoolDb as any).iterator({})) {
+        keys.push(String(k))
+      }
+      await spendPoolDb.close()
+      expect(keys).toContain('sub-account:0')
+      expect(keys).toContain('sub-account:1')
+      expect(keys).toContain('sub-account:__wallet_binding__')
+      expect(keys).toContain('change:__wallet_binding__')
+      expect(keys).toContain(`coin:${sampleCoin.address}`)
+    })
   })
 
   describe('runOperation concurrency & admission draining', () => {
@@ -549,10 +602,7 @@ describe('existing-pool private topic owner', () => {
     'persistent %s projections stay closed after partial load failure and from close entry',
     async component => {
       const location = mkdtempSync(join(tmpdir(), 'admission-load-failure-'))
-      const path = join(
-        location,
-        component === 'pool' ? 'sub-account-pool' : 'change-pool',
-      )
+      const path = join(location, 'spend-pool')
       const make = () =>
         component === 'pool'
           ? new LevelSubAccountPoolStore(location)

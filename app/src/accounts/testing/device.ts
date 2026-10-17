@@ -183,7 +183,7 @@ export async function forgetAccountRoot(
   roots: Record<string, string>,
 ) {
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(`frank-preview-vault-${NAMESPACE}`)
+    const request = indexedDB.open(`account-vault-${NAMESPACE}`)
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error)
   })

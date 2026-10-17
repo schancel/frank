@@ -5,7 +5,7 @@ export async function database(namespace: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     let request: IDBOpenDBRequest
     try {
-      request = indexedDB.open(`frank-account-custody-${namespace}`, 1)
+      request = indexedDB.open(`account-custody-${namespace}`, 1)
     } catch {
       reject(new CustodyError('unavailable'))
       return

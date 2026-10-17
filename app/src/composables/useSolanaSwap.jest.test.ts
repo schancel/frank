@@ -122,7 +122,7 @@ describe("the Solana wallet's sync event", () => {
       stampValue: 0n,
       // Derived from the chain and the transaction: sending it again is the same message.
       messageId: getBytes(
-        keccak256(toUtf8Bytes('frank-wallet-sync:solana-devnet:SIG123')),
+        keccak256(toUtf8Bytes('wallet-sync:solana-devnet:SIG123')),
       ).slice(0, 16),
     })
   })

@@ -48,17 +48,13 @@ import {
 
 const MANIFEST_KEY = 'manifest'
 const SEED_KEY = 'seed'
-const MANIFEST_SCHEMA = 'frank-monad-wallet-state'
+export const MANIFEST_SCHEMA = 'evm-wallet-state'
 const MANIFEST_VERSION = 1
-const CURRENT_MANIFEST_INTENTS = [
-  'sub-account-pool-v2',
-  'change-pool-v2',
-] as const
+const CURRENT_MANIFEST_INTENTS = ['spend-pool-v1'] as const
 const ACCEPTED_MANIFEST_INTENTS: Record<number, readonly string[]> = {
-  1: ['sub-account-pool-v2', 'change-pool-v2'],
+  1: ['spend-pool-v1'],
   2: [
-    'sub-account-pool-v2',
-    'change-pool-v3-authoritative-tx',
+    'spend-pool-v1',
     'stamp-attempt-journal-v1',
     'stamp-payment-journal-v2-authoritative-tx',
   ],

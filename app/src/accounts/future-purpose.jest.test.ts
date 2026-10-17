@@ -101,8 +101,8 @@ async function sixthRoot(session: Session) {
 async function storedBytes() {
   const dump: Record<string, unknown> = {}
   for (const [name, stores] of [
-    ['frank-preview-vault-local-account-v1', ['records', 'fences']],
-    ['frank-account-custody-local-account-v1', ['state']],
+    ['account-vault-local-account-v1', ['records', 'fences']],
+    ['account-custody-local-account-v1', ['state']],
   ] as const) {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(name)

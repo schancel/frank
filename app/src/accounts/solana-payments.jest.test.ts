@@ -447,7 +447,7 @@ test.each([false, true])(
     expect((await a.inspect()).positions[a.primaryAddress].balance).toBe('900')
     const namespace = f.namespaces[0]
     expect(JSON.parse(namespace)).toEqual([
-      'frank-solana-payments',
+      'solana-payments',
       'actual-account-id',
       Buffer.from(await f.session.getCurvePublicKey('ed25519')).toString('hex'),
       input.chainIdentifier,

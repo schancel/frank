@@ -14,8 +14,11 @@ import {
   durableClear,
   durableDelete,
   durablePut,
-  openDurableLevel,
 } from './level-durability'
+import {
+  createSpendPoolPartitionDb,
+  SPEND_POOL_NAMESPACE,
+} from './level-spend-pool-store'
 
 /** Reserved `level` key for the persisted "next unused change index" pointer. Never collides with
  * a record key (`String(record.index)`, i.e. plain decimal digits only) since this key contains a
@@ -27,15 +30,8 @@ const BY_SOURCE_PREFIX = '__by_source__:'
 const RECOVERED_PREFIX = '__recovered_change__:'
 
 /**
- * `level`-backed `ChangePoolStore`, mirroring `LevelSubAccountPoolStore`
- * (`./level-sub-account-pool-store.ts`): an in-memory cache backed by a `level` database on disk,
- * so the change pool's "next unused index" pointer and swept-record audit trail
- * (`ChangeAccountRecord`, never private keys -- see `change-pool-storage.ts`'s file header) survive
- * app restarts.
- *
- * Uses its own on-disk location (`<location>/change-pool`, as opposed to
- * `LevelSubAccountPoolStore`'s `<location>/sub-account-pool`) so the two pools' persisted state
- * never collides even when pointed at the same parent `location`.
+ * `level`-backed `ChangePoolStore`, backed by the unified `<location>/spend-pool` LevelDB
+ * database under the `change:` key partition.
  */
 export class LevelChangePoolStore implements ChangePoolStore {
   private readonly dbLocation: string
@@ -59,7 +55,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
     allowUnboundForMigration = false,
     assertMutationAllowed: () => void = () => undefined,
   ) {
-    this.dbLocation = join(location, 'change-pool')
+    this.dbLocation = join(location, SPEND_POOL_NAMESPACE)
     this.cache = new Map<number, ChangeAccountRecord>()
     this.expectedBindingId = expectedBindingId
     this.allowUnboundForMigration = allowUnboundForMigration
@@ -78,22 +74,27 @@ export class LevelChangePoolStore implements ChangePoolStore {
     return this.openedDb
   }
 
-  /** Opens the underlying `level` database and populates the in-memory cache from it. Must be
-   * called (and awaited) before using the store -- same lifecycle as `LevelSubAccountPoolStore.
-   * Open()`. */
+  /** Opens the underlying `spend-pool` partition and populates the in-memory cache from it. */
   async Open(): Promise<void> {
     this.assertMutationAllowed()
     this.loaded = false
-    this.openedDb = level(this.dbLocation)
-    await openDurableLevel(this.openedDb!, this.rootLocation, 'change-pool')
-    await this.loadData()
+    this.openedDb = createSpendPoolPartitionDb(this.rootLocation, 'change')
+    await (this.openedDb as any).open()
+    try {
+      await this.loadData()
+    } catch (error) {
+      await (this.openedDb as any).close().catch(() => undefined)
+      throw error
+    }
     this.loaded = true
   }
 
   async Close(): Promise<void> {
     this.loaded = false
     await this.flush()
-    await this.db.close()
+    if (this.openedDb) {
+      await (this.openedDb as any).close()
+    }
   }
 
   private async loadData(): Promise<void> {

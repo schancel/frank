@@ -179,7 +179,7 @@ async function openAccount(relayBaseUrl: string, dir: string, state: string) {
         messageId: getBytes(
           keccak256(
             toUtf8Bytes(
-              `frank-wallet-sync:${item.chainIdentifier}:${item.txHash}`,
+              `wallet-sync:${item.chainIdentifier}:${item.txHash}`,
             ),
           ),
         ).slice(0, 16),

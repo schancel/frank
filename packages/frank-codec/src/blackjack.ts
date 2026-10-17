@@ -1,4 +1,10 @@
 /** Pure typed-item writing/projection. No game engine, authentication, or payment authority. */
+import {
+  blackjackFeatureCodec,
+  checkBlackjackSemantics,
+  parseBlackjackDraft,
+  type BlackjackWireItem,
+} from './blackjack-schema'
 import type { Encodable } from './cbor'
 import { TYPE_BLACKJACK_MESSAGE_ITEM } from './constants'
 import { FrankCodecError, FrankContextError } from './errors'
@@ -11,6 +17,13 @@ import type {
   ParsedFrame,
 } from './types'
 import { defaultContext, validateFrame } from './validate'
+
+export {
+  blackjackFeatureCodec,
+  checkBlackjackSemantics,
+  parseBlackjackDraft,
+  type BlackjackWireItem,
+}
 
 /** Nine closed application-facing shapes; quantities remain exact decimal strings. */
 export type BlackjackItem = { type: 'blackjack-move' } & BlackjackFields<

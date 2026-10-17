@@ -500,7 +500,7 @@ function conversationStateToNote(
   )
     note.readUpTo = read
   if (ours && conversation.subjectToNote && conversation.kind === 'direct') {
-    note.subject = usableSubject(conversation.name) ?? ''
+    note.subject = usableSubject(conversation.name ?? conversation.topic) ?? ''
     note.subjectSetAt = conversation.nameSetAt ?? 0
   }
   return note.clearedBefore === undefined &&
@@ -552,7 +552,8 @@ function recordNoted(
   if (
     note.subject !== undefined &&
     note.subjectSetAt === (conversation.nameSetAt ?? 0) &&
-    note.subject === (usableSubject(conversation.name) ?? '')
+    note.subject ===
+      (usableSubject(conversation.name ?? conversation.topic) ?? '')
   )
     conversation.subjectToNote = undefined
 }
@@ -697,14 +698,142 @@ function defaultChats(
 ): Readonly<Record<string, Conversation | undefined>> {
   const peers = new Set(
     Object.values(conversations)
-      .filter(c => c.kind !== 'group' && c.address)
-      .map(c => c.address),
+      .filter(
+        c => c.kind !== 'group' && c.address && isChainAddress(c.address),
+      )
+      .map(c => safeChainDisplayAddress(c.address) || c.address),
   )
   return Object.fromEntries(
     [...peers]
       .map(peer => [peer, peerThread(conversations, peer)] as const)
       .filter(([, thread]) => thread !== undefined),
   )
+}
+
+/**
+ * Heals only genuine legacy address-keyed duplicate entries for a peer's default direct thread.
+ * Preserves all conversations with explicit canonical conversation IDs (UUIDv4, UUIDv5, conv:...),
+ * email/bot/group threads, and conversations carrying a topic/subject, and never aliases `self`
+ * to a remote peer's conversation.
+ */
+export function autoHealDuplicateDirectConversations(
+  arg1:
+    | {
+        conversations: Record<string, Conversation>
+        chats?: Record<string, ChatState | undefined>
+        ownAddress?: string | null
+        activeChatAddr?: string | null
+        activeConversationId?: string | null
+        messages?: Record<string, ChatMessage | Message | undefined>
+        logicalMessages?: Record<string, LogicalMessageRecord | undefined>
+      }
+    | Record<string, Conversation>,
+  arg2?: Record<string, LogicalMessageRecord | undefined>,
+  arg3?: string | null,
+): void {
+  const isOptionsObj =
+    arg1 !== null &&
+    typeof arg1 === 'object' &&
+    'conversations' in arg1 &&
+    typeof arg1.conversations === 'object' &&
+    arg1.conversations !== null &&
+    !('kind' in (arg1.conversations as Record<string, unknown>))
+  const conversations = isOptionsObj
+    ? (arg1 as { conversations: Record<string, Conversation> }).conversations
+    : (arg1 as Record<string, Conversation>)
+  const ownAddress = isOptionsObj
+    ? (arg1 as { ownAddress?: string | null }).ownAddress ?? null
+    : getOwnCanonicalAddress()
+  const activeConversationId = isOptionsObj
+    ? (arg1 as { activeConversationId?: string | null }).activeConversationId ??
+      null
+    : arg3 ?? null
+  const messages = isOptionsObj
+    ? (
+        arg1 as {
+          messages?: Record<string, ChatMessage | Message | undefined>
+        }
+      ).messages
+    : undefined
+  const logicalMessages = isOptionsObj
+    ? (
+        arg1 as {
+          logicalMessages?: Record<string, LogicalMessageRecord | undefined>
+        }
+      ).logicalMessages
+    : arg2
+
+  const isExplicitIdentity = (conv: Conversation, key: string): boolean => {
+    if (conv.kind === 'email' || conv.kind === 'group') return true
+    if (usableSubject(conv.name ?? conv.topic) !== undefined) return true
+    if (key.startsWith('conv:') || conv.id.startsWith('conv:')) return true
+    if (
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        conv.id,
+      ) &&
+      key === conv.id
+    ) {
+      return true
+    }
+    return false
+  }
+
+  for (const [key, conv] of Object.entries(conversations)) {
+    if (!conv || isExplicitIdentity(conv, key)) continue
+    if (!isChainAddress(conv.address)) continue
+    const peer = safeChainDisplayAddress(conv.address) || conv.address
+    if (
+      ownAddress &&
+      sameCanonicalAddress(peer, ownAddress) &&
+      conv.participants.some(p => !sameCanonicalAddress(p, ownAddress))
+    ) {
+      continue
+    }
+    const primary =
+      peerThread(conversations, peer) ??
+      Object.values(conversations).find(
+        c =>
+          c &&
+          c !== conv &&
+          c.kind === 'direct' &&
+          isOpeningConversationId(c.id) &&
+          sameCanonicalAddress(c.address, peer) &&
+          usableSubject(c.name ?? c.topic) === undefined,
+      )
+    if (!primary || primary === conv) continue
+    if (
+      makeParticipantsKey(primary.participants) !==
+        makeParticipantsKey(conv.participants) &&
+      primary.participants.length > 1 &&
+      conv.participants.length > 1
+    ) {
+      continue
+    }
+    for (const msg of conv.messages ?? []) {
+      msg.conversationId = primary.id
+      if (!primary.messages.some(m => m.payloadDigest === msg.payloadDigest)) {
+        primary.messages.push(msg)
+      }
+      if (messages && messages[msg.payloadDigest]) {
+        messages[msg.payloadDigest]!.conversationId = primary.id
+      }
+      const logicalId = msg.logicalMessageId || msg.payloadDigest
+      if (
+        logicalMessages?.[logicalId] &&
+        logicalMessages[logicalId]?.conversationId === conv.id
+      ) {
+        logicalMessages[logicalId]!.conversationId = primary.id
+      }
+    }
+    primary.messages.sort(byRelayTime)
+    primary.lastRead = Math.max(primary.lastRead ?? 0, conv.lastRead ?? 0)
+    primary.lastReceived = Math.max(
+      primary.lastReceived ?? 0,
+      conv.lastReceived ?? 0,
+    )
+    recomputeChatAccounting(primary, activeConversationId)
+    delete conversations[key]
+  }
 }
 
 /** A subject as the wire accepts it (1 to 512 characters, not only whitespace, no control
@@ -772,7 +901,10 @@ function subjectReplaces(
 ): boolean {
   const current = conversation.nameSetAt ?? 0
   if (setAt !== current) return setAt > current
-  return (subject ?? '') >= (usableSubject(conversation.name) ?? '')
+  return (
+    (subject ?? '') >=
+    (usableSubject(conversation.name ?? conversation.topic) ?? '')
+  )
 }
 
 /** Gives the conversation a subject that {@link subjectReplaces} its current one. A subject
@@ -782,11 +914,15 @@ function setSubject(
   subject: string | undefined,
   setAt: number,
 ): void {
-  if (conversation.name !== subject) {
+  const current = conversation.name ?? conversation.topic
+  if (current !== subject) {
     conversation.updatedAt = Date.now()
     conversation.subjectToNote = undefined
   }
   conversation.name = subject
+  if (conversation.topic !== undefined) {
+    conversation.topic = subject
+  }
   conversation.nameSetAt = setAt
 }
 
@@ -796,7 +932,7 @@ function subjectToCarry(
   conversation: Conversation | undefined,
 ): string | undefined {
   if (!conversation || conversation.kind === 'email') return undefined
-  const subject = usableSubject(conversation.name)
+  const subject = usableSubject(conversation.name ?? conversation.topic)
   return subject === conversation.nameOnWire ? undefined : subject
 }
 
@@ -3663,13 +3799,21 @@ export const useChatStore = defineStore('chats', {
       this.conversations[id] = conv
       // A conversation the user created with a subject: the account's other devices learn
       // of it, and of its subject, now, and not only once a message is sent in it.
-      if (kind === 'direct' && usableSubject(name) !== undefined) {
+      if (kind === 'direct' && usableSubject(name ?? topic) !== undefined) {
         this.conversations[id].nameSetAt = Date.now()
         this.conversations[id].subjectToNote = true
         this.conversations[id].actedBy = accountTag()
         void this.noteConversationStates()
       }
       return this.conversations[id]
+    },
+    autoHealDuplicateDirectConversations(): void {
+      autoHealDuplicateDirectConversations({
+        conversations: this.conversations,
+        logicalMessages: this.logicalMessages,
+        activeConversationId: this.activeConversationId,
+        ownAddress: getOwnCanonicalAddress(),
+      })
     },
     renameConversation(id: string, subject: string): void {
       // A thread dropped while its subject was being edited: the one that replaced it.
@@ -3681,6 +3825,9 @@ export const useChatStore = defineStore('chats', {
       if (subject.trim() && normalized === undefined)
         throw new Error('Invalid conversation subject')
       conversation.name = normalized
+      if (conversation.topic !== undefined) {
+        conversation.topic = normalized
+      }
       conversation.updatedAt = Date.now()
       // The user's subject is the newest one this device knows of, and the account's other
       // devices are told. (The peer is told by the next message, which carries it.)
@@ -4980,6 +5127,7 @@ export const useChatStore = defineStore('chats', {
             opened !== thread &&
             opened.messages.length === 0 &&
             !opened.name &&
+            !opened.topic &&
             !opened.deletedAt
           ) {
             delete this.conversations[opened.id]

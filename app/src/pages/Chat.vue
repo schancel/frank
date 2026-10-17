@@ -241,7 +241,7 @@
         :contact="contact"
         :address="recipientAddress"
         :conversation-id="conversation?.id || ''"
-        :conversation-name="conversation?.name || ''"
+        :conversation-name="conversation?.name || conversation?.topic || ''"
         :swap-id="swapId"
         :stamp-value="swapStampValue"
         :stamp-unavailable="stampUnavailable"
@@ -1690,7 +1690,10 @@ export default defineComponent({
         this.conversation?.participants &&
         this.conversation.participants.length > 0
       ) {
-        return this.conversation.participants[0]
+        const nonSelf = this.conversation.participants.find(
+          p => !sameCanonicalAddress(p, this.ownAddress),
+        )
+        return nonSelf || this.conversation.participants[0]
       }
       if (this.isEmailThread) {
         try {
@@ -1705,9 +1708,15 @@ export default defineComponent({
     contact() {
       return this.getContactVuex(this.recipientAddress)
     },
+    conversationTopic(): string {
+      return this.conversation?.topic || this.conversation?.name || ''
+    },
     peerName(): string {
       if (this.conversation?.name) {
         return this.conversation.name
+      }
+      if (this.conversation?.topic) {
+        return this.conversation.topic
       }
       return this.getContactVuex(this.recipientAddress)?.profile?.name ?? ''
     },

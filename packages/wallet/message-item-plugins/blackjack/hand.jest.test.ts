@@ -1038,4 +1038,15 @@ describe('what a wallet may send', () => {
     ).toEqual([])
     expect(handPreviewText(bet)).toBe('Placed a blackjack bet')
   })
+
+  it('keeps headless blackjack modules free of Vue, Pinia, and wallet implementation imports', () => {
+    const fs = require('fs') as typeof import('fs')
+    const path = require('path') as typeof import('path')
+    const files = ['deck.ts', 'entropy.ts', 'escrow.ts', 'evm.ts', 'game.ts', 'hand.ts']
+    for (const file of files) {
+      const source = fs.readFileSync(path.join(__dirname, file), 'utf8')
+      expect(source).not.toMatch(/from\s+['"](?:vue|pinia|quasar|@frank\/cashweb)/)
+    }
+  })
 })
+

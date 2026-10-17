@@ -20,10 +20,21 @@ import type {
   ValidationResult,
 } from './types'
 import {
+  EMAIL_MESSAGE_ID_MAX_BYTES,
+  EMAIL_MESSAGE_ID_MIN_BYTES,
+  isEmailMessageId,
+} from './schema-primitives'
+import {
   defaultContext,
   validateFrame,
   type ValidationContext,
 } from './validate'
+
+export {
+  EMAIL_MESSAGE_ID_MAX_BYTES,
+  EMAIL_MESSAGE_ID_MIN_BYTES,
+  isEmailMessageId,
+}
 
 const bad = (msg: string, location = 'email-message-item') =>
   new FrankCodecError('schema', '8.2', msg, location)
@@ -37,6 +48,18 @@ function requireTextBytes(
   const length = value === undefined ? -1 : utf8Encode(value).length
   if (length < min || length > max) {
     throw bad(`${field} must be ${min}..${max} UTF-8 bytes`)
+  }
+}
+
+function requireEmailMessageId(value: string, field: string): void {
+  requireTextBytes(
+    value,
+    field,
+    EMAIL_MESSAGE_ID_MIN_BYTES,
+    EMAIL_MESSAGE_ID_MAX_BYTES,
+  )
+  if (!isEmailMessageId(value)) {
+    throw bad(`${field} must be an RFC 5322 <local@domain> message ID`)
   }
 }
 
@@ -158,7 +181,7 @@ export function encodeEmailAttachment(
 export function encodeEmailMessageItem(
   email: CanonicalEmailMessageItem,
 ): Uint8Array {
-  requireTextBytes(email.messageId, 'messageId', 1, 256)
+  requireEmailMessageId(email.messageId, 'messageId')
   if (
     !email.to ||
     email.to.length === 0 ||
@@ -175,13 +198,13 @@ export function encodeEmailMessageItem(
     requireTextBytes(email.htmlBody, 'htmlBody', 0, 524288)
   }
   if (email.inReplyTo !== undefined) {
-    requireTextBytes(email.inReplyTo, 'inReplyTo', 1, 256)
+    requireEmailMessageId(email.inReplyTo, 'inReplyTo')
   }
   if (email.references && email.references.length > 64) {
     throw bad('references must not exceed 64 items')
   }
   for (const reference of email.references ?? []) {
-    requireTextBytes(reference, 'reference', 1, 256)
+    requireEmailMessageId(reference, 'reference')
   }
   if (email.attachments && email.attachments.length > MAX_EMAIL_ATTACHMENTS) {
     throw bad(`attachments must not exceed ${MAX_EMAIL_ATTACHMENTS} items`)

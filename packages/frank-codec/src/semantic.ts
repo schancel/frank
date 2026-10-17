@@ -1,10 +1,12 @@
 // Stage 9: semantic checks that need no cryptography (README section 5, S3-S10, T3a.5).
+import { DEFAULT_FEATURE_CODEC_MAP } from './blackjack-schema'
 import { FrankCodecError } from './errors'
 import { utf8Encode } from './utf8'
 import { isCompressedPoint } from './point'
 import { contentHash } from './hash'
 import { MAX_DIRECTORY_VALIDITY_NS } from './constants'
 import { CANONICAL_USERNAME_REGEX } from './registration'
+import type { FeatureCodecDescriptor } from './schema-primitives'
 import {
   ACCOUNT_TYPE_BOT,
   ACCOUNT_TYPE_SERVICE,
@@ -224,7 +226,16 @@ export function checkTokenTransferSemantics(
 export function checkSemantics(
   typed: FinalPayload,
   prior: DirectoryStatement<ParsedFrame> | null | undefined,
+  featureCodecs: ReadonlyMap<
+    number,
+    FeatureCodecDescriptor
+  > = DEFAULT_FEATURE_CODEC_MAP,
 ): void {
+  const feature = featureCodecs.get(typed.type)
+  if (feature) {
+    feature.checkSemantics?.(typed as never)
+    return
+  }
   const P = 'root/payload'
   switch (typed.type) {
     case 6: {
@@ -232,74 +243,6 @@ export function checkSemantics(
         checkTokenTransferSemantics(typed.tokenTransfer, `${P}.6`)
       }
       return
-    }
-    case 18: {
-      if (typed.schema === 3) {
-        if (typed.action === 'challenge' || typed.action === 'accept') {
-          const max = typed.maxBetWei.reduce(
-            (n, b) => (n << 8n) | BigInt(b),
-            0n,
-          )
-          if (max < 1n || max > 10n ** 40n - 1n)
-            throw semantic('blackjack max bet range')
-        }
-        break
-      }
-      if (typed.schema === 2) {
-        const hand =
-          'playerCards' in typed
-            ? typed.playerCards
-            : 'dealerCards' in typed
-            ? typed.dealerCards
-            : undefined
-        if (hand && new Set(hand).size !== hand.length)
-          throw semantic('blackjack hand contains duplicate cards')
-        if (
-          typed.action === 'deal' &&
-          typed.playerCards.includes(typed.dealerUpCard)
-        )
-          throw semantic('deal up-card duplicates a player card')
-        if (typed.action === 'challenge' || typed.action === 'accept') {
-          const max = typed.maxBetWei.reduce(
-            (n, b) => (n << 8n) | BigInt(b),
-            0n,
-          )
-          if (max < 1n || max > 10n ** 40n - 1n)
-            throw semantic('blackjack max bet range')
-        }
-        break
-      }
-      if ((typed.gameId === 'welcome') !== (typed.action === 'welcome'))
-        throw semantic('welcome gameId is reserved iff action is welcome')
-      const cards =
-        'playerCards' in typed
-          ? typed.playerCards
-          : 'dealerCards' in typed
-          ? typed.dealerCards
-          : undefined
-      if (cards && new Set(cards).size !== cards.length)
-        throw semantic('blackjack hand contains duplicate cards')
-      if (
-        typed.action === 'deal' &&
-        typed.playerCards.includes(typed.dealerUpCard)
-      )
-        throw semantic('deal up-card duplicates a player card')
-      if (typed.action === 'welcome') {
-        const quantity = (bytes: Uint8Array) =>
-          bytes.reduce((n, b) => (n << 8n) | BigInt(b), 0n)
-        const min = quantity(typed.minWagerWei),
-          max = quantity(typed.maxWagerWei)
-        const limit = 10n ** 40n - 1n
-        if (
-          min < 1n ||
-          max < 1n ||
-          min > max ||
-          max > limit ||
-          (typed.feeHintWei !== undefined && quantity(typed.feeHintWei) > limit)
-        )
-          throw semantic('blackjack welcome quantity range/order')
-      }
-      break
     }
     case 25: {
       const child = typedOf(typed.payloadFrame, 1)

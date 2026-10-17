@@ -3672,4 +3672,59 @@ describe('wallet-lifetime EVM native operations', () => {
     ).rejects.toThrow('Native account block changed')
     expect(state.raws).toHaveLength(1)
   })
+
+  it('executes 1-account direct fast-path with zero intermediate hops and never creates a random staging wallet (#1203)', async () => {
+    const createRandomSpy = jest.spyOn(Wallet, 'createRandom')
+    try {
+      const state = chain([30_000n, 200_000n, 40_000n])
+      const { executor } = owner(state)
+      const result = await executor.sendLegacy({
+        recipient: { raw: recipient },
+        value: 100_000n,
+      })
+      expect(createRandomSpy).not.toHaveBeenCalled()
+      expect(result.intermediateTxHashes).toEqual([])
+      expect(result.totalValueSent).toBe(100_000n)
+      expect(result.totalFeePaid).toBe(fee)
+      expect(state.raws).toHaveLength(1)
+      const tx = Transaction.from(state.raws[0]!)
+      expect(tx.from?.toLowerCase()).toBe(wallets[1]!.address.toLowerCase())
+      expect(tx.to?.toLowerCase()).toBe(recipient)
+      expect(tx.value).toBe(100_000n)
+    } finally {
+      createRandomSpy.mockRestore()
+    }
+  })
+
+  it('selects the largest in-set account as leader for multi-account fan-in without creating an ephemeral staging wallet (#1203)', async () => {
+    const createRandomSpy = jest.spyOn(Wallet, 'createRandom')
+    try {
+      // Wallet 0: 50,000, Wallet 1: 90,000 (largest -> leader), Wallet 2: 70,000
+      const state = chain([50_000n, 90_000n, 70_000n])
+      const { executor } = owner(state)
+      const result = await executor.sendLegacy({
+        recipient: { raw: recipient },
+        value: 110_000n,
+      })
+      expect(createRandomSpy).not.toHaveBeenCalled()
+      // Only 1 peer (Wallet 2: 70,000 - 21,000 = 49,000 net) needed to top up Leader (Wallet 1: 90,000) to 139,000 >= 110,000 + 21,000
+      expect(result.intermediateTxHashes).toHaveLength(1)
+      expect(result.totalValueSent).toBe(110_000n)
+      expect(result.totalFeePaid).toBe(fee * 2n)
+      expect(state.raws).toHaveLength(2)
+
+      const fanInTx = Transaction.from(state.raws[0]!)
+      const drainTx = Transaction.from(state.raws[1]!)
+      const leaderAddress = wallets[1]!.address.toLowerCase()
+      const peerAddress = wallets[2]!.address.toLowerCase()
+
+      expect(fanInTx.from?.toLowerCase()).toBe(peerAddress)
+      expect(fanInTx.to?.toLowerCase()).toBe(leaderAddress)
+      expect(drainTx.from?.toLowerCase()).toBe(leaderAddress)
+      expect(drainTx.to?.toLowerCase()).toBe(recipient)
+      expect(drainTx.value).toBe(110_000n)
+    } finally {
+      createRandomSpy.mockRestore()
+    }
+  })
 })

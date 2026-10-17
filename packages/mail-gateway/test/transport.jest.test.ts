@@ -847,6 +847,7 @@ describe('MxDirectTransport delivery to a local peer', () => {
   it('enforces an overall session deadline even when a server trickles multiline reply bytes (#1346)', async () => {
     let trickleTimer: NodeJS.Timeout | undefined;
     const server = net.createServer((socket) => {
+      socket.on('error', () => {});
       socket.write('220-slow.remote.test line 0\r\n');
       let count = 1;
       trickleTimer = setInterval(() => {

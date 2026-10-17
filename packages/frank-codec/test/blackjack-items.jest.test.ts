@@ -2,12 +2,15 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import {
   beginDirectMessageValidation,
+  blackjackFeatureCodec,
   defaultContext,
   encodeBlackjackItem,
   FrankCodecError,
   fromHex,
   parseFrame,
   projectBlackjackItem,
+  standaloneItemBudget,
+  wrapFrame,
   type BlackjackItem,
   type Encodable,
   type ParsedFrame,
@@ -461,3 +464,68 @@ it.each(['containers', 'items'] as const)(
     ).toBe('resource@7')
   },
 )
+
+describe('composable FeatureCodecDescriptor boundaries', () => {
+  it('retains uninstalled feature frames in open containers while enforcing Stage 1-7 CBOR and item budgets', () => {
+    const uninstalledCtx = defaultContext({ featureCodecs: [] })
+    const item = stand()
+
+    // Root without opaque retention rejects uninstalled feature type at Stage 7 (V6.1)
+    expect(outcome(() => parseFrame(item, uninstalledCtx))).toBe(
+      'unsupported@7',
+    )
+
+    // Root with opaqueRetentionAllowed retains as unknown-type
+    const retainedRoot = parseFrame(
+      item,
+      defaultContext({ featureCodecs: [], opaqueRetentionAllowed: true }),
+    )
+    expect(retainedRoot.kind).toBe('retained')
+    if (retainedRoot.kind === 'retained') {
+      expect(retainedRoot.reason).toBe('unknown-type')
+    }
+
+    // Open container retains uninstalled feature item while parsing sibling core items
+    const rev = rev8Frame([item, textItem('hello')])
+    const parsedRev = parsed(rev, uninstalledCtx)
+    if (parsedRev.typed?.type !== 8) throw Error('expected type 8')
+    expect(parsedRev.typed.items[0]).toMatchObject({
+      kind: 'retained',
+      reason: 'unknown-type',
+      typeId: 18,
+    })
+    expect(parsedRev.typed.items[1]).toMatchObject({
+      kind: 'parsed',
+      typeId: 17,
+    })
+
+    // Malformed CBOR inside an uninstalled feature frame still fails Stage 7
+    const malformedPayloadFrame = wrapFrame(
+      new Uint8Array([
+        0xa4, 0x00, 0x12, 0x01, 0x01, 0x02, 0x01, 0x03, 0x41, 0xff,
+      ]),
+    )
+    expect(
+      outcome(() => parseFrame(rev8Frame([malformedPayloadFrame]), uninstalledCtx)),
+    ).toBe('malformed@7')
+
+    // 256-item budget is still enforced across uninstalled feature items
+    const budget = standaloneItemBudget(uninstalledCtx)
+    for (let i = 0; i < 256; i++) {
+      expect(budget.openFrame(item).kind).toBe('retained')
+    }
+    expect(outcome(() => budget.openFrame(item))).toBe('resource@8.4')
+
+    // Re-composing blackjackFeatureCodec restores full Stage 8/9 typed validation
+    const installedCtx = defaultContext({
+      featureCodecs: [blackjackFeatureCodec],
+    })
+    const typedResult = parsed(item, installedCtx)
+    expect(projectBlackjackItem(typedResult).item).toEqual({
+      type: 'blackjack-move',
+      gameId: 'bj-test',
+      action: 'stand',
+    })
+  })
+})
+

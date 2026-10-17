@@ -98,10 +98,6 @@ export class JournaledInboundSend {
         });
       const isOperatorMailbox =
         mailboxLocalPart !== undefined && isOperatorMailboxLocalPart(mailboxLocalPart);
-      const principalHasCredit =
-        isOperatorMailbox ||
-        this.ledger.getBalance(sender) > 0 ||
-        this.ledger.getThreadAllowance(sender, scope) > 0;
       const admitted = this.journal.admitInboundEmail({
         scopeAccount: scope,
         mailKey: key,
@@ -113,9 +109,7 @@ export class JournaledInboundSend {
         senderEmail: sender,
         dataSha256,
         raw: { kind: 'inline', bytes: mail.email.rawRfc822 },
-        principalHasCredit,
       });
-      if (admitted.kind === 'refused') return { kind: 'refused' };
       if (admitted.kind === 'echo') return { kind: 'echo' };
       if (admitted.email.disposition !== 'held') {
         if (admitted.email.disposition === 'relay' || admitted.email.disposition === 'released') {

@@ -77,7 +77,7 @@ export interface GatewayDatabase {
 }
 
 /**
- * Rows of the mail journal tables (format 8; the DDL is private to `mail-journal.ts`), as
+ * Rows of the mail journal tables (the DDL is private to `mail-journal.ts`), as
  * `node:sqlite` returns them. SQLite only, so they are not part of
  * `GatewayDatabase`: Kysely must not offer them on Postgres.
  */
@@ -100,12 +100,12 @@ export interface MailThreadRow {
 
 export interface MailMessageRow {
   scope_account: string;
-  rfc_message_id: string;
-  claimed_rfc_id: string | null;
   /** For an inbound row, its `inbound_email` key; for an outbound row, the key of the emitted mail. */
   mail_key: string;
   /** Set on every `frank_to_email` row, null on every `email_to_frank` row. Never compared with a mail key. */
   item_key: string | null;
+  /** Non-unique lookup field used only to find a reply's parent. */
+  rfc_message_id: string;
   /** Set on every `frank_to_email` row (the `frank_inbound` row it was bridged from), null otherwise. */
   payload_digest: string | null;
   frank_message_id: string;
@@ -167,8 +167,8 @@ export interface FrankInboundRow {
 export interface OutboundJobRow {
   job_id: number;
   scope_account: string;
-  /** The identifier the email goes out under: the key of its `mail_message` row. */
-  rfc_message_id: string;
+  /** The mail key of its `mail_message` row. */
+  mail_key: string;
   recipient_email: string;
   sender_local_part: string;
   bounce_token: string;

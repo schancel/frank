@@ -17,9 +17,11 @@
  * distinguished from "stands on soft 17" here -- a real casino's exact house rule on this point is
  * a menu choice, not a fairness property, and out of scope for this demo).
  */
-import { BlackjackMoveItem } from '@frank/cashweb/types/messages'
+import type { BlackjackItem as BlackjackMoveItem } from '@frank/codec'
 
 import { Card, deriveDeck, handValue, sha256Hex } from './deck'
+
+export type { BlackjackMoveItem }
 
 /** Default table limits. A dealer advertises its real limits in its `welcome` item (see
  * {@link BlackjackWelcome}); these constants are only the shared FALLBACK for a chat that holds no

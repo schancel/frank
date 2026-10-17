@@ -21,28 +21,23 @@ const ALIAS = 'threadreply001';
 const sha = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 
 function claimedJob(journal: MailJournal, suffix = '1'): number {
-  const input = {
-    outcome: 'bridged' as const,
+  const bridged = journal.recordFrankMessage({
+    outcome: 'bridged',
     payloadDigest: sha(`payload-${suffix}`),
     receivedTimeMs: 1000,
     stampValue: '0',
     scopeAccount: ACCOUNT,
     frankMessageId: suffix === '1' ? ID : '00000000-0000-0000-0000-000000000003',
     conversationId: CONVERSATION,
-    authoredMessageId: suffix === '1' ? RFC_ID : '<outbound-2@gw.example>',
+    rfcMessageId: suffix === '1' ? RFC_ID : '<outbound-2@gw.example>',
     itemKey: sha(`item-${suffix}`),
-  };
-  const render = journal.recordFrankMessage(input);
-  if (render.kind !== 'needs_render') throw new Error('Expected render request');
-  const bridged = journal.recordFrankMessage({
-    ...input,
-    emitted: { rfcMessageId: render.rfcMessageId, mailKey: sha(`mail-${suffix}`) },
+    mailKey: sha(`mail-${suffix}`),
   });
   if (bridged.kind !== 'bridged') throw new Error('Expected bridged message');
   journal.issueMailbox({ localPart: ALIAS, scopeAccount: ACCOUNT, conversationId: CONVERSATION });
   const job = journal.addOutboundJob({
     scopeAccount: ACCOUNT,
-    rfcMessageId: bridged.message.rfcMessageId,
+    mailKey: bridged.message.mailKey,
     recipientEmail: RECIPIENT,
     senderLocalPart: ALIAS,
     signedRfc822: { kind: 'inline', bytes: Buffer.from('signed mail') },

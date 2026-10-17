@@ -143,12 +143,16 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
         if (wallet.chainUtxoPool) {
           const primaryBalance = await wallet.getBalance().catch(() => 0n);
           const exceedsPrimary = value > primaryBalance;
+          const poolChain =
+            wallet.chainUtxoPool.getCleanCoins(chainIdentifier).length > 0
+              ? chainIdentifier
+              : "solana";
           let selection:
             | ReturnType<typeof wallet.chainUtxoPool.selectCoins>
             | undefined;
           try {
             selection = wallet.chainUtxoPool.selectCoins({
-              chain: "solana",
+              chain: poolChain,
               targetAmountWei: value,
             });
           } catch (err) {
@@ -219,9 +223,13 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
       async estimateLegacyFee(params) {
         const pool = params?.wallet?.chainUtxoPool;
         if (pool && params?.value) {
+          const poolChain =
+            pool.getCleanCoins(chainIdentifier).length > 0
+              ? chainIdentifier
+              : "solana";
           try {
             const selection = pool.selectCoins({
-              chain: "solana",
+              chain: poolChain,
               targetAmountWei: params.value,
             });
             return {

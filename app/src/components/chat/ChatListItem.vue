@@ -328,9 +328,13 @@ export default defineComponent({
       return this.conversation?.verifiedGateway === true
     },
     effectiveAddress(): string {
+      const nonSelfParticipant = this.conversation?.participants?.find(
+        p => !sameCanonicalAddress(p, this.ownAddress),
+      )
       return (
         this.conversation?.address ||
         this.chatAddress ||
+        nonSelfParticipant ||
         this.conversation?.participants?.[0] ||
         ''
       )

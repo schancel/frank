@@ -122,10 +122,6 @@ export interface MailThreadRecord {
 
 export interface MailMessageRecord {
   readonly scopeAccount: string;
-  /** The identifier this message is known by in the scope. For a contested message, the regenerated local one. */
-  readonly rfcMessageId: string;
-  /** Set only on a contested message: the identifier it claimed, which another message holds. */
-  readonly claimedRfcId?: string;
   /**
    * Identity of the RFC 5322 message: for an inbound message its `inbound_email`
    * key, for an outbound message the key of the emitted mail. Never compared
@@ -134,6 +130,8 @@ export interface MailMessageRecord {
   readonly mailKey: string;
   /** Outbound only: identity of the authored email item, independent of the seal. */
   readonly itemKey?: string;
+  /** The RFC Message-ID carried by this message (or the synthetic one for ID-less inbound mail). Non-unique lookup field for parent resolution. */
+  readonly rfcMessageId: string;
   /** Outbound only: the payload digest of the Frank message this email was bridged from. */
   readonly payloadDigest?: string;
   readonly frankMessageId: string;
@@ -151,7 +149,7 @@ export interface InboundEmailRecord {
   readonly mailboxLocalPart?: string;
   readonly conversationId?: string;
   readonly stampValue: string;
-  /** The identifier the mail claimed (its Message-ID, or the synthetic one). */
+  /** The identifier the mail carried (its Message-ID, or the synthetic one). */
   readonly rfcMessageId: string;
   readonly senderEmail: string;
   readonly dataSha256: string;
@@ -222,11 +220,12 @@ export type OutboundJobState = 'pending' | 'submitting' | 'uncertain' | 'sent' |
 export interface OutboundJobRecord {
   readonly jobId: number;
   readonly scopeAccount: string;
-  /** The identifier the email goes out under; with the scope and the recipient, the job's key. */
+  /** The mail key of the outbound `mail_message` row; with the scope and the recipient, the job's key. */
+  readonly mailKey: string;
+  /** Read from the job's `mail_message` row, as are `frankMessageId`, `conversationId` and `payloadDigest`. */
   readonly rfcMessageId: string;
   readonly recipientEmail: string;
   readonly senderLocalPart: string;
-  /** Read from the job's `mail_message` row, as are `conversationId` and `payloadDigest`. */
   readonly frankMessageId: string;
   readonly conversationId: string;
   readonly payloadDigest: string;

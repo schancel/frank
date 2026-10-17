@@ -34,6 +34,10 @@ export * from './email'
 export * from './plugin-item'
 export * from './directory-preview'
 export type {
+  FeatureCodecDescriptor,
+  SchemaVersionContext,
+} from './schema-primitives'
+export type {
   DirectMessageValidationSession,
   NestedItemBudget,
   Operation,
@@ -41,6 +45,8 @@ export type {
   ValidationContext,
 } from './validate'
 export {
+  CORE_KNOWN_TYPES,
+  DEFAULT_FEATURE_CODECS,
   DIRECT_MESSAGE_ITEM_CONTENT_DEPTH,
   KNOWN_TYPES,
   defaultContext,

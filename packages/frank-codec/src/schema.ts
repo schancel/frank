@@ -1,5 +1,6 @@
 // Stage 8.1 (type-specific limits), 8.2 (CDDL structure and ranges) and 8.3 (allocated
 // identifiers) for the version-1 payload schemas.
+import { DEFAULT_FEATURE_CODEC_MAP } from './blackjack-schema'
 import type { FrankValue } from './cbor'
 import {
   ENCRYPTION_SUITE_DM_AUTH_XCHACHA,
@@ -34,7 +35,6 @@ import {
   TYPE_MESSAGE_CONTENT_REVISION,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_TEXT_MESSAGE_ITEM,
-  TYPE_BLACKJACK_MESSAGE_ITEM,
   TYPE_STEALTH_MESSAGE_ITEM,
   TYPE_CHANNEL_UPDATE,
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
@@ -46,10 +46,8 @@ import {
   MAX_EMAIL_MESSAGE_ITEM_FRAME_BYTES,
   MAX_EMAIL_RECIPIENTS,
   MAX_EMAIL_ATTACHMENTS,
-  MAX_BLACKJACK_FRAME_BYTES,
   MAX_CHANNEL_UPDATE_FRAME_BYTES,
   MAX_CHANNEL_ALLOCATIONS,
-  MAX_CHANNEL_PARTICIPANTS,
   MAX_CHANNEL_SIGNATURES,
   MAX_CHANNEL_APP_STATE_BYTES,
   TYPE_TOPIC_POST,
@@ -62,8 +60,24 @@ import {
   U32_MAX,
   U64_MAX,
 } from './constants'
-import { ErrorCategory, ErrorStage, FrankCodecError } from './errors'
 import { isCompressedPoint, isProofEncoding } from './point'
+import {
+  asList,
+  bad,
+  bstr,
+  EMAIL_MESSAGE_ID_MAX_BYTES,
+  EMAIL_MESSAGE_ID_MIN_BYTES,
+  fail,
+  fields,
+  isEmailMessageId,
+  isMap,
+  tstr,
+  u32ish,
+  uintRange,
+  type FeatureCodecDescriptor,
+  type MapView,
+  type SchemaVersionContext,
+} from './schema-primitives'
 import type {
   AccountRef,
   AccountType,
@@ -84,107 +98,51 @@ import type {
   RelayBinding,
   SignatureEntry,
   Timestamp,
-  UnknownFields,
   ForumContent,
   ForumCursor,
   ForumAggregate,
   TopicPost,
-  BlackjackMessageItem,
-  BlackjackHandMessageItem,
-  BlackjackHandV3MessageItem,
   ChainAllocation,
-  ChannelUpdateItem,
   ParticipantBalance,
   EmailParty,
   EmailAttachment,
   EmailMessageItem,
 } from './types'
 
-function fail(
-  category: ErrorCategory,
-  stage: ErrorStage,
-  path: string,
-  message: string,
-): FrankCodecError {
-  return new FrankCodecError(category, stage, message, path)
+export {
+  asList,
+  bad,
+  bstr,
+  fields,
+  isMap,
+  tstr,
+  u32ish,
+  type FeatureCodecDescriptor,
+  type MapView,
+  type SchemaVersionContext,
 }
-
-const bad = (path: string, message: string) =>
-  fail('schema', '8.2', path, message)
 
 // ---------------------------------------------------------------------------------------------
 // Value getters (8.2)
 // ---------------------------------------------------------------------------------------------
-
-function isMap(
-  v: FrankValue | undefined,
-): v is ReadonlyMap<bigint, FrankValue> {
-  return v instanceof Map
-}
-
-function uintRange(
-  v: FrankValue | undefined,
-  path: string,
-  min: bigint,
-  max: bigint,
-): bigint {
-  if (typeof v !== 'bigint') throw bad(path, 'expected an unsigned integer')
-  if (v < min || v > max) throw bad(path, `integer outside ${min}..${max}`)
-  return v
-}
-
-function u32ish(
-  v: FrankValue | undefined,
-  path: string,
-  min: number,
-  max: number,
-): number {
-  return Number(uintRange(v, path, BigInt(min), BigInt(max)))
-}
-
-function bstr(
-  v: FrankValue | undefined,
-  path: string,
-  min: number,
-  max: number,
-): Uint8Array {
-  if (!(v instanceof Uint8Array)) throw bad(path, 'expected a byte string')
-  if (v.length < min || v.length > max)
-    throw bad(path, `byte string size outside ${min}..${max}`)
-  return v
-}
-
-function tstr(
-  v: FrankValue | undefined,
-  path: string,
-  min: number,
-  max: number,
-): string {
-  if (typeof v !== 'string') throw bad(path, 'expected a text string')
-  return textSize(v, path, min, max)
-}
-
-function textSize(v: string, path: string, min: number, max: number): string {
-  // .size counts UTF-8 bytes; the decoded string is well-formed, so count code points.
-  let n = 0
-  for (let i = 0; i < v.length; i++) {
-    const c = v.charCodeAt(i)
-    if (c < 0x80) n += 1
-    else if (c < 0x800) n += 2
-    else if (c >= 0xd800 && c <= 0xdbff) {
-      n += 4
-      i++
-    } else n += 3
-  }
-  if (n < min || n > max) throw bad(path, `text size outside ${min}..${max}`)
-  return v
-}
 
 const NETWORK_TAG = /^[a-z0-9][a-z0-9._-]{0,63}$/
 
 function networkTag(v: FrankValue | undefined, path: string): string {
   const s = tstr(v, path, 1, 64)
   if (!NETWORK_TAG.test(s)) throw bad(path, 'network tag does not match S1')
+  return s
+}
+
+function emailMessageId(v: FrankValue | undefined, path: string): string {
+  const s = tstr(
+    v,
+    path,
+    EMAIL_MESSAGE_ID_MIN_BYTES,
+    EMAIL_MESSAGE_ID_MAX_BYTES,
+  )
+  if (!isEmailMessageId(s))
+    throw bad(path, 'expected an RFC 5322 <local@domain> message ID')
   return s
 }
 
@@ -219,51 +177,6 @@ const KEY_LENGTHS: ReadonlyMap<number, number> = new Map([
   [2, 32],
   [3, 32],
 ])
-
-function asList(
-  v: FrankValue | undefined,
-  path: string,
-  min: number,
-  max: number,
-): FrankValue[] {
-  if (!Array.isArray(v)) throw bad(path, 'expected an array')
-  if (v.length < min || v.length > max)
-    throw bad(path, `array size outside ${min}..${max}`)
-  return v
-}
-
-interface MapView {
-  get(k: number): FrankValue | undefined
-  has(k: number): boolean
-  unknown: UnknownFields
-}
-
-/**
- * Checks a map against its declared keys. `open` maps (CDDL `* uint => frank-value`) retain
- * undeclared keys only when the enclosing frame is read through V6.3 (`allowUnknown`);
- * otherwise C12 makes an undeclared key a schema error. Closed maps never allow one.
- */
-function fields(
-  v: FrankValue | undefined,
-  path: string,
-  required: readonly number[],
-  optional: readonly number[],
-  open: boolean,
-  allowUnknown: boolean,
-): MapView {
-  if (!isMap(v)) throw bad(path, 'expected a map')
-  for (const k of required) {
-    if (!v.has(BigInt(k))) throw bad(path, `missing required key ${k}`)
-  }
-  const unknown = new Map<bigint, FrankValue>()
-  for (const [k, val] of v) {
-    const n = k <= BigInt(U32_MAX) ? Number(k) : -1
-    if (required.includes(n) || optional.includes(n)) continue
-    if (open && allowUnknown) unknown.set(k, val)
-    else throw bad(path, `undeclared key ${k} (C12)`)
-  }
-  return { get: k => v.get(BigInt(k)), has: k => v.has(BigInt(k)), unknown }
-}
 
 function account(v: FrankValue | undefined, path: string): AccountRef {
   const m = fields(v, path, [0, 1], [], false, false)
@@ -336,9 +249,14 @@ export function checkRootFrameLimit(
   typeId: number,
   frameLength: number,
   schemaVersion = 1,
+  featureCodecs: ReadonlyMap<
+    number,
+    FeatureCodecDescriptor
+  > = DEFAULT_FEATURE_CODEC_MAP,
 ): boolean {
-  if (typeId === TYPE_BLACKJACK_MESSAGE_ITEM)
-    return frameLength <= MAX_BLACKJACK_FRAME_BYTES
+  const feature = featureCodecs.get(typeId)
+  if (feature?.maxFrameBytes !== undefined)
+    return frameLength <= feature.maxFrameBytes
   if (typeId === TYPE_CHANNEL_UPDATE)
     return frameLength <= MAX_CHANNEL_UPDATE_FRAME_BYTES
   if (typeId === TYPE_FORWARDING_DELIVERY_ENVELOPE)
@@ -364,300 +282,21 @@ function tooMany(v: FrankValue | undefined, limit: number): boolean {
   return Array.isArray(v) && v.length > limit
 }
 
-/** Closed schema-1 shapes, also closed when projected from a compatible future envelope. */
-function blackjackPayload(payload: FrankValue): BlackjackMessageItem {
-  const P = 'root/payload'
-  if (!isMap(payload)) throw bad(P, 'blackjack payload must be a map')
-  const action = u32ish(payload.get(1n), `${P}.1`, 0, 6)
-  const card = (v: FrankValue | undefined, path: string) =>
-    u32ish(v, path, 0, 51)
-  const hand = (
-    v: FrankValue | undefined,
-    key: number,
-    min: number,
-    max: number,
-  ) =>
-    asList(v, `${P}.${key}`, min, max).map((c, i) =>
-      card(c, `${P}.${key}[${i}]`),
-    )
-  const read = (required: number[], optional: number[] = []) => {
-    const m = fields(payload, P, [0, 1, ...required], optional, false, false)
-    return {
-      m,
-      base: { type: 18 as const, gameId: tstr(m.get(0), `${P}.0`, 1, 128) },
-    }
-  }
-  switch (action) {
-    case 0: {
-      const { m, base } = read([2])
-      return {
-        ...base,
-        action: 'bet',
-        wagerTxHash: bstr(m.get(2), `${P}.2`, 32, 32),
-      }
-    }
-    case 1: {
-      const { m, base } = read([4, 5, 6])
-      return {
-        ...base,
-        action: 'deal',
-        serverSeedHash: bstr(m.get(4), `${P}.4`, 32, 32),
-        playerCards: hand(m.get(5), 5, 2, 2),
-        dealerUpCard: card(m.get(6), `${P}.6`),
-      }
-    }
-    case 2: {
-      const { m, base } = read([], [5])
-      return m.has(5)
-        ? { ...base, action: 'hit', playerCards: hand(m.get(5), 5, 3, 52) }
-        : { ...base, action: 'hit' }
-    }
-    case 3:
-      return { ...read([]).base, action: 'stand' }
-    case 4: {
-      if (payload.has(3n) === payload.has(5n))
-        throw bad(P, 'double requires exactly one request/response form')
-      const { m, base } = read(payload.has(3n) ? [3] : [5])
-      return m.has(3)
-        ? {
-            ...base,
-            action: 'double',
-            doubleWagerTxHash: bstr(m.get(3), `${P}.3`, 32, 32),
-          }
-        : { ...base, action: 'double', playerCards: hand(m.get(5), 5, 3, 3) }
-    }
-    case 5: {
-      const { m, base } = read([7, 8, 9])
-      const seed = tstr(m.get(8), `${P}.8`, 64, 64)
-      if (seed.length !== 64 || !/^[0-9a-f]+$/.test(seed))
-        throw bad(`${P}.8`, 'seed must be 64 lowercase ASCII hex characters')
-      const outcome = [
-        'player_win',
-        'dealer_win',
-        'push',
-        'player_blackjack',
-      ] as const
-      return {
-        ...base,
-        action: 'reveal',
-        dealerCards: hand(m.get(7), 7, 2, 52),
-        serverSeed: seed,
-        outcome: outcome[u32ish(m.get(9), `${P}.9`, 0, 3)],
-      }
-    }
-    default: {
-      const { m, base } = read([10, 11], [12, 13])
-      const result: BlackjackMessageItem = {
-        ...base,
-        action: 'welcome',
-        minWagerWei: bstr(m.get(10), `${P}.10`, 32, 32),
-        maxWagerWei: bstr(m.get(11), `${P}.11`, 32, 32),
-      }
-      if (m.has(12)) result.feeHintWei = bstr(m.get(12), `${P}.12`, 32, 32)
-      if (m.has(13)) {
-        result.rules = tstr(m.get(13), `${P}.13`, 0, 1200)
-        if (result.rules.length > 400)
-          throw bad(`${P}.13`, 'rules exceed 400 UTF-16 units')
-      }
-      return result
-    }
-  }
-}
-
-/** Closed schema-2 shapes: one peer-to-peer hand. No shape carries an amount of money. */
-function blackjackHandPayload(payload: FrankValue): BlackjackHandMessageItem {
-  const P = 'root/payload'
-  if (!isMap(payload)) throw bad(P, 'blackjack payload must be a map')
-  // Codes 16..25: disjoint from schema 1's 0..6, so no reader can take one for the other.
-  const action = u32ish(payload.get(1n), `${P}.1`, 16, 25) - 16
-  const hand = (
-    v: FrankValue | undefined,
-    key: number,
-    min: number,
-    max: number,
-  ) =>
-    asList(v, `${P}.${key}`, min, max).map((c, i) =>
-      u32ish(c, `${P}.${key}[${i}]`, 0, 51),
-    )
-  const read = (required: number[]) => {
-    const m = fields(payload, P, [0, 1, ...required], [], false, false)
-    // Fixed form, so a game id is always safe to use as a key: 32 lowercase hex characters.
-    const gameId = tstr(m.get(0), `${P}.0`, 32, 32)
-    if (!/^[0-9a-f]{32}$/.test(gameId))
-      throw bad(`${P}.0`, 'game id must be 32 lowercase ASCII hex characters')
-    return {
-      m,
-      base: { type: 18 as const, schema: 2 as const, gameId },
-    }
-  }
-  const hash = (m: MapView, key: number) =>
-    bstr(m.get(key), `${P}.${key}`, 32, 32)
-  switch (action) {
-    case 0: {
-      const dealer = u32ish(payload.get(2n), `${P}.2`, 0, 1) === 0
-      const { m, base } = read(dealer ? [2, 3, 4] : [2, 3])
-      return dealer
-        ? {
-            ...base,
-            action: 'challenge',
-            role: 'dealer',
-            maxBetWei: hash(m, 3),
-            commitment: hash(m, 4),
-          }
-        : {
-            ...base,
-            action: 'challenge',
-            role: 'player',
-            maxBetWei: hash(m, 3),
-          }
-    }
-    case 1: {
-      const { m, base } = read([3, 4])
-      return {
-        ...base,
-        action: 'accept',
-        maxBetWei: hash(m, 3),
-        commitment: hash(m, 4),
-      }
-    }
-    case 2:
-      return { ...read([]).base, action: 'bet' }
-    case 3: {
-      const { m, base } = read([5, 6])
-      return {
-        ...base,
-        action: 'deal',
-        playerCards: hand(m.get(5), 5, 2, 2),
-        dealerUpCard: u32ish(m.get(6), `${P}.6`, 0, 51),
-      }
-    }
-    case 4:
-      return { ...read([]).base, action: 'hit' }
-    case 5:
-      return { ...read([]).base, action: 'stand' }
-    case 6:
-      return { ...read([]).base, action: 'double' }
-    case 7: {
-      const { m, base } = read([5])
-      return { ...base, action: 'card', playerCards: hand(m.get(5), 5, 3, 52) }
-    }
-    case 8: {
-      const { m, base } = read([7, 8, 9])
-      const seed = tstr(m.get(8), `${P}.8`, 64, 64)
-      if (seed.length !== 64 || !/^[0-9a-f]+$/.test(seed))
-        throw bad(`${P}.8`, 'seed must be 64 lowercase ASCII hex characters')
-      const outcome = [
-        'player_win',
-        'dealer_win',
-        'push',
-        'player_blackjack',
-      ] as const
-      return {
-        ...base,
-        action: 'reveal',
-        dealerCards: hand(m.get(7), 7, 2, 52),
-        seed,
-        outcome: outcome[u32ish(m.get(9), `${P}.9`, 0, 3)],
-      }
-    }
-    default: {
-      const { m, base } = read([10])
-      return { ...base, action: 'refund', ref: hash(m, 10) }
-    }
-  }
-}
-
-/** Closed schema-3 shapes: a hand whose cards come from both sides' entropy. No shape states a
- * card, an outcome or an amount of money. */
-function blackjackHandV3Payload(
-  payload: FrankValue,
-): BlackjackHandV3MessageItem {
-  const P = 'root/payload'
-  if (!isMap(payload)) throw bad(P, 'blackjack payload must be a map')
-  // Codes 32..41: disjoint from schema 1's 0..6 and schema 2's 16..25.
-  const action = u32ish(payload.get(1n), `${P}.1`, 32, 41) - 32
-  const read = (required: number[]) => {
-    const m = fields(payload, P, [0, 1, 11, ...required], [], false, false)
-    const gameId = tstr(m.get(0), `${P}.0`, 32, 32)
-    if (!/^[0-9a-f]{32}$/.test(gameId))
-      throw bad(`${P}.0`, 'game id must be 32 lowercase ASCII hex characters')
-    // A challenge is message 0 of its hand; every other message follows one.
-    const seq =
-      action === 0
-        ? u32ish(m.get(11), `${P}.11`, 0, 0)
-        : u32ish(m.get(11), `${P}.11`, 1, 255)
-    return { m, base: { type: 18 as const, schema: 3 as const, gameId, seq } }
-  }
-  const hash = (m: MapView, key: number) =>
-    bstr(m.get(key), `${P}.${key}`, 32, 32)
-  switch (action) {
-    case 0: {
-      const dealer = u32ish(payload.get(2n), `${P}.2`, 0, 1) === 0
-      const { m, base } = read(dealer ? [2, 3, 4] : [2, 3])
-      return dealer
-        ? {
-            ...base,
-            action: 'challenge',
-            role: 'dealer',
-            maxBetWei: hash(m, 3),
-            commitment: hash(m, 4),
-          }
-        : {
-            ...base,
-            action: 'challenge',
-            role: 'player',
-            maxBetWei: hash(m, 3),
-          }
-    }
-    case 1: {
-      const { m, base } = read([3, 4, 12])
-      return {
-        ...base,
-        action: 'accept',
-        maxBetWei: hash(m, 3),
-        commitment: hash(m, 4),
-        prev: hash(m, 12),
-      }
-    }
-    case 2: {
-      const { m, base } = read([4, 12])
-      return {
-        ...base,
-        action: 'bet',
-        commitment: hash(m, 4),
-        prev: hash(m, 12),
-      }
-    }
-    case 9: {
-      const { m, base } = read([10, 12])
-      return { ...base, action: 'refund', ref: hash(m, 10), prev: hash(m, 12) }
-    }
-    default: {
-      const { m, base } = read([12, 13])
-      const names = [
-        'deal',
-        'hit',
-        'stand',
-        'double',
-        'card',
-        'reveal',
-      ] as const
-      return {
-        ...base,
-        action: names[action - 3],
-        link: hash(m, 13),
-        prev: hash(m, 12),
-      }
-    }
-  }
-}
-
 /** Reads R2-R4 counts from the decoded fields, before typed conversion. */
 export function checkTypeLimits(
   typeId: number,
   payload: FrankValue,
   schemaVersion = 1,
+  featureCodecs: ReadonlyMap<
+    number,
+    FeatureCodecDescriptor
+  > = DEFAULT_FEATURE_CODEC_MAP,
 ): void {
+  const feature = featureCodecs.get(typeId)
+  if (feature) {
+    feature.checkTypeLimits?.(payload, schemaVersion)
+    return
+  }
   if (!isMap(payload)) return
   const over = (what: string): never => {
     throw fail(
@@ -1225,11 +864,19 @@ export function parseDraft(
   typeId: number,
   payload: FrankValue,
   allow: boolean,
-  schema: { envelope: number; effective: number; minReader?: number } = {
+  schema: SchemaVersionContext = {
     envelope: 1,
     effective: 1,
   },
+  featureCodecs: ReadonlyMap<
+    number,
+    FeatureCodecDescriptor
+  > = DEFAULT_FEATURE_CODEC_MAP,
 ): DraftPayload {
+  const feature = featureCodecs.get(typeId)
+  if (feature) {
+    return feature.parseDraft(payload, allow, schema)
+  }
   const P = 'root/payload'
   switch (typeId) {
     case TYPE_DIRECT_MESSAGE_DELIVERY: {
@@ -1657,28 +1304,6 @@ export function parseDraft(
         unknownFields: m.unknown,
       }
     }
-    case TYPE_BLACKJACK_MESSAGE_ITEM: {
-      // Schema 2 adds the ten hand shapes to the schema-1 shapes. Their action codes (16..25)
-      // are disjoint from schema 1's (0..6), so the code alone says which closed map applies.
-      // A hand shape is read only from a frame that requires reader 2; anywhere else its action
-      // code is simply out of range for the schema-1 shapes.
-      const code = isMap(payload) ? payload.get(1n) : undefined
-      // Schema 3 adds the hand shapes with entropy from both sides, codes 32..41, read only by
-      // a reader that supports schema 3.
-      if (
-        typeof code === 'bigint' &&
-        code >= 32n &&
-        schema.effective >= 3 &&
-        (schema.minReader ?? 1) >= 2
-      )
-        return blackjackHandV3Payload(payload)
-      return typeof code === 'bigint' &&
-        code >= 16n &&
-        schema.effective >= 2 &&
-        (schema.minReader ?? 1) >= 2
-        ? blackjackHandPayload(payload)
-        : blackjackPayload(payload)
-    }
     case TYPE_STEALTH_MESSAGE_ITEM: {
       if (schema.effective >= 2) {
         const m = fields(payload, P, [0], [1], true, allow)
@@ -1754,7 +1379,7 @@ export function parseDraft(
       )
       const res: EmailMessageItem = {
         type: 26,
-        messageId: tstr(m.get(0), `${P}.0`, 1, 256),
+        messageId: emailMessageId(m.get(0), `${P}.0`),
         from: emailParty(m.get(1), `${P}.1`, allow),
         to: asList(m.get(2), `${P}.2`, 1, MAX_EMAIL_RECIPIENTS).map((e, i) =>
           emailParty(e, `${P}.2[${i}]`, allow),
@@ -1772,11 +1397,11 @@ export function parseDraft(
         res.htmlBody = tstr(m.get(6), `${P}.6`, 0, 524288)
       }
       if (m.has(7)) {
-        res.inReplyTo = tstr(m.get(7), `${P}.7`, 1, 256)
+        res.inReplyTo = emailMessageId(m.get(7), `${P}.7`)
       }
       if (m.has(8)) {
         res.references = asList(m.get(8), `${P}.8`, 0, 64).map((e, i) =>
-          tstr(e, `${P}.8[${i}]`, 1, 256),
+          emailMessageId(e, `${P}.8[${i}]`),
         )
       }
       if (m.has(9)) {
@@ -1868,7 +1493,18 @@ function checkSignatureShape(
 }
 
 /** Stage 8.3: allocated-identifier checks that need only the draft. */
-export function checkAllocated(d: DraftPayload): void {
+export function checkAllocated(
+  d: DraftPayload,
+  featureCodecs: ReadonlyMap<
+    number,
+    FeatureCodecDescriptor
+  > = DEFAULT_FEATURE_CODEC_MAP,
+): void {
+  const feature = featureCodecs.get(d.type)
+  if (feature) {
+    feature.checkAllocated?.(d)
+    return
+  }
   const P = 'root/payload'
   switch (d.type) {
     case 1:

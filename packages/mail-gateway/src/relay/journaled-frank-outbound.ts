@@ -322,6 +322,8 @@ export class JournaledFrankOutbound {
         (this.secureLinkPolicy === 'when-no-wkd' && !wkdKey) ||
         (this.secureLinkPolicy === 'subject-tag' && directive.triggered));
 
+    if (this.journal.findFrankInbound(digest)) return;
+
     const itemForKey: EmailItem = hasAttachments ? { ...item, attachments: undefined } : item;
     const replyAllowance =
       this.inboundStampValue !== undefined &&
@@ -332,20 +334,6 @@ export class JournaledFrankOutbound {
             wanted: this.defaultReplyAllowanceCount,
           }
         : undefined;
-    const input = {
-      ...base,
-      outcome: 'bridged' as const,
-      scopeAccount: scope,
-      frankMessageId: message.messageId,
-      conversationId,
-      authoredMessageId: item.messageId,
-      itemKey: emailItemKey(itemForKey),
-      ...(item.inReplyTo ? { inReplyTo: item.inReplyTo } : {}),
-      ...(replyAllowance ? { replyAllowance } : {}),
-    };
-    const first = this.journal.recordFrankMessage(input);
-    if (first.kind === 'duplicate' || first.kind === 'same_message') return;
-    if (first.kind !== 'needs_render') throw new Error('Unexpected Frank mail disposition');
 
     if (shouldUseSecureLink && this.secureMessagePortal) {
       const passphrase = directive.passphrase ?? this.secureLinkPassphrase;
@@ -390,7 +378,7 @@ export class JournaledFrankOutbound {
       const fromHeader = formatFromHeader(fromAddress, item.from?.name);
       bytes = renderMail(
         item,
-        first.rfcMessageId,
+        item.messageId,
         fromHeader,
         replyToAddress,
         recipient,
@@ -403,6 +391,7 @@ export class JournaledFrankOutbound {
       return reject('header_unsafe');
     }
     this.ledger.atomic(() => {
+      if (this.journal.findFrankInbound(digest)) return;
       if (!this.journal.findMailThread(scope, conversationId) &&
         this.journal.countFrankRootsSince(scope, Math.max(0, this.now() - 86_400_000)) >= this.maxNewThreadsPerDay) {
         reject('quota');
@@ -413,8 +402,16 @@ export class JournaledFrankOutbound {
         this.journal.issueMailbox({ localPart: fromLocalPart, scopeAccount: scope });
       }
       const recorded = this.journal.recordFrankMessage({
-        ...input,
-        emitted: { rfcMessageId: first.rfcMessageId, mailKey: mailKey(bytes) },
+        ...base,
+        outcome: 'bridged',
+        scopeAccount: scope,
+        frankMessageId: message.messageId!,
+        conversationId,
+        rfcMessageId: item.messageId,
+        itemKey: emailItemKey(itemForKey),
+        mailKey: mailKey(bytes),
+        ...(item.inReplyTo ? { inReplyTo: item.inReplyTo } : {}),
+        ...(replyAllowance ? { replyAllowance } : {}),
       });
       if (recorded.kind === 'duplicate' || recorded.kind === 'same_message') return;
       if (recorded.kind !== 'bridged') throw new Error('Frank mail did not bridge');
@@ -423,7 +420,7 @@ export class JournaledFrankOutbound {
       }
       const job = this.journal.addOutboundJob({
         scopeAccount: scope,
-        rfcMessageId: recorded.message.rfcMessageId,
+        mailKey: recorded.message.mailKey,
         recipientEmail: recipient,
         senderLocalPart: alias,
         signedRfc822: { kind: 'inline', bytes },

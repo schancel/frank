@@ -102,7 +102,7 @@ describe('journaled Frank outbound bridge', () => {
     expect(journal.listDueOutboundJobs(1000, 10)).toEqual([]);
   });
 
-  it.each(['<x@contested.gw.example>', '<x@no-message-id.gw.example>'])(
+  it.each(['<x@no-message-id.gw.example>', '<x@NO-MESSAGE-ID.GW.EXAMPLE>'])(
     'durably rejects authored mail ID %s in a gateway-reserved namespace', async (authoredId) => {
       const message = received();
       const email = message.items[0];
@@ -122,7 +122,7 @@ describe('journaled Frank outbound bridge', () => {
     const reserved = received();
     const firstItem = reserved.items[0];
     if (firstItem.type !== 'email') throw new Error('Expected email');
-    firstItem.messageId = '<x@contested.gw.example>';
+    firstItem.messageId = '<x@no-message-id.gw.example>';
     const later = received();
     later.payloadDigest = 'b'.repeat(64);
     later.receivedTime = 2000;

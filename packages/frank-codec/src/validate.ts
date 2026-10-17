@@ -2,6 +2,10 @@
 // type-2 attestation). The separate DM session resumes only the structural required-child
 // part of 10.1; it does not authenticate plaintext or perform the remaining stamp checks.
 // Ordinary `full` type-1 validation remains a context error.
+import {
+  DEFAULT_FEATURE_CODEC_MAP,
+  DEFAULT_FEATURE_CODECS,
+} from './blackjack-schema'
 import { Counters, FrankValue, decodeSingleItem, newCounters } from './cbor'
 import {
   FRAME_HEADER_BYTES,
@@ -19,7 +23,6 @@ import {
   TYPE_MESSAGE_CONTENT_REVISION,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_TEXT_MESSAGE_ITEM,
-  TYPE_BLACKJACK_MESSAGE_ITEM,
   TYPE_STEALTH_MESSAGE_ITEM,
   TYPE_CHANNEL_UPDATE,
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
@@ -48,6 +51,7 @@ import {
   parseForumContent,
   parseForumCursor,
 } from './schema'
+import type { FeatureCodecDescriptor } from './schema-primitives'
 import { checkSemantics } from './semantic'
 import type {
   ChildFrame,
@@ -60,6 +64,8 @@ import type {
   ValidationResult,
 } from './types'
 import { verifyDirectoryAttestation } from './verify'
+
+export { DEFAULT_FEATURE_CODECS, type FeatureCodecDescriptor }
 
 export type Operation = 'frame' | 'generic' | 'typed' | 'full'
 
@@ -90,7 +96,39 @@ export interface ValidationContext {
    * Preview wrappers require null because this codec does not validate their history.
    */
   priorDirectoryStatementFrame?: Uint8Array | null
+  /**
+   * Optional composed feature schema descriptors (default: `DEFAULT_FEATURE_CODECS`).
+   * When a feature descriptor is omitted, frames of that type still traverse Stages 1-7
+   * under the shared CBOR/container/depth budgets and are then treated as unknown types.
+   */
+  featureCodecs?: readonly FeatureCodecDescriptor[]
 }
+
+/** Core protocol types with built-in schemas in this codec. */
+export const CORE_KNOWN_TYPES: readonly number[] = [
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_MAILBOX_CHECKPOINT,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+  TYPE_FORUM_VIEW,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_OPERATION_STATUS,
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_STEALTH_MESSAGE_ITEM,
+  TYPE_CHANNEL_UPDATE,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
+  TYPE_EMAIL_MESSAGE_ITEM,
+  TYPE_PLUGIN_MESSAGE_ITEM,
+]
 
 /** Types with a version-1 schema in this codec (README E5). */
 export const KNOWN_TYPES: readonly number[] = [
@@ -111,7 +149,7 @@ export const KNOWN_TYPES: readonly number[] = [
   TYPE_FORUM_OPERATION_STATUS,
   TYPE_CONTAINER_MESSAGE_ITEM,
   TYPE_TEXT_MESSAGE_ITEM,
-  TYPE_BLACKJACK_MESSAGE_ITEM,
+  ...DEFAULT_FEATURE_CODECS.map(codec => codec.typeId),
   TYPE_STEALTH_MESSAGE_ITEM,
   TYPE_CHANNEL_UPDATE,
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
@@ -119,9 +157,29 @@ export const KNOWN_TYPES: readonly number[] = [
   TYPE_PLUGIN_MESSAGE_ITEM,
 ]
 
+function resolveFeatureCodecs(
+  ctx: ValidationContext,
+): ReadonlyMap<number, FeatureCodecDescriptor> {
+  if (
+    ctx.featureCodecs === undefined ||
+    ctx.featureCodecs === DEFAULT_FEATURE_CODECS
+  ) {
+    return DEFAULT_FEATURE_CODEC_MAP
+  }
+  return new Map(ctx.featureCodecs.map(codec => [codec.typeId, codec]))
+}
+
 export function defaultContext(
   overrides: Partial<ValidationContext> = {},
 ): ValidationContext {
+  const featureCodecs = overrides.featureCodecs ?? DEFAULT_FEATURE_CODECS
+  const featureMap = new Map(
+    featureCodecs.map(codec => [codec.typeId, codec.maxSchemaVersion]),
+  )
+  const knownTypes =
+    featureCodecs === DEFAULT_FEATURE_CODECS
+      ? KNOWN_TYPES
+      : [...CORE_KNOWN_TYPES, ...featureCodecs.map(codec => codec.typeId)]
   return {
     operation: 'typed',
     routeByteLimit: MAX_FRAME_BYTES,
@@ -129,22 +187,22 @@ export function defaultContext(
     // is read at schema 2, whose payment list may be empty (an unpaid message); the relay admits
     // deliveries under the same rule (frank-cbor's `relay_context`).
     readerVersion: 2,
-    supportedSchemas: KNOWN_TYPES.map(typeId => ({
+    supportedSchemas: knownTypes.map(typeId => ({
       typeId,
       schemaVersion:
-        typeId === TYPE_DIRECTORY_STATEMENT
-          ? 3
-          : typeId === TYPE_BLACKJACK_MESSAGE_ITEM
+        featureMap.get(typeId) ??
+        (typeId === TYPE_DIRECTORY_STATEMENT
           ? 3
           : typeId === TYPE_DIRECT_MESSAGE_DELIVERY ||
             typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
             typeId === TYPE_STEALTH_MESSAGE_ITEM ||
             typeId === TYPE_TOPIC_POST
           ? 2
-          : 1,
+          : 1),
     })),
     opaqueRetentionAllowed: false,
     priorDirectoryStatementFrame: null,
+    featureCodecs,
     ...overrides,
   }
 }
@@ -157,6 +215,7 @@ type Mode =
 interface Shared {
   ctx: ValidationContext
   supported: ReadonlyMap<number, number>
+  featureCodecs: ReadonlyMap<number, FeatureCodecDescriptor>
   counters: Counters
   /** R2: message items opened across the whole recursively opened graph. */
   itemsOpened: number
@@ -315,9 +374,10 @@ function processFrame(
     sh.counters,
     envDepth,
   )
-  const highest = KNOWN_TYPES.includes(env.typeId)
-    ? sh.supported.get(env.typeId)
-    : undefined
+  const highest =
+    CORE_KNOWN_TYPES.includes(env.typeId) || sh.featureCodecs.has(env.typeId)
+      ? sh.supported.get(env.typeId)
+      : undefined
   const keep = (reason: RetentionReason, message: string): RetainedFrame => {
     if (mode.kind === 'required')
       throw fail('unsupported', '7', message, location)
@@ -431,16 +491,22 @@ function processFrame(
 
   // Stage 8.1: type-specific limits.
   const effectiveSchema = Math.min(env.schemaVersion, highest)
+  const featureCodec = sh.featureCodecs.get(env.typeId)
   if (
     (mode.kind === 'root' ||
+      featureCodec?.enforceFrameLimitWhenNested === true ||
       (env.typeId >= TYPE_TOPIC_POST &&
         env.typeId <= TYPE_FORUM_OPERATION_STATUS) ||
       (env.typeId === TYPE_DIRECTORY_STATEMENT && effectiveSchema >= 4) ||
-      env.typeId === TYPE_BLACKJACK_MESSAGE_ITEM ||
       env.typeId === TYPE_CHANNEL_UPDATE ||
       env.typeId === TYPE_FORWARDING_DELIVERY_ENVELOPE ||
       env.typeId === TYPE_EMAIL_MESSAGE_ITEM) &&
-    !checkRootFrameLimit(env.typeId, f.length, effectiveSchema)
+    !checkRootFrameLimit(
+      env.typeId,
+      f.length,
+      effectiveSchema,
+      sh.featureCodecs,
+    )
   ) {
     throw fail(
       'resource',
@@ -450,14 +516,25 @@ function processFrame(
     )
   }
   const draft = relocating(location, () => {
-    checkTypeLimits(env.typeId, payload, env.schemaVersion)
+    checkTypeLimits(
+      env.typeId,
+      payload,
+      env.schemaVersion,
+      sh.featureCodecs,
+    )
     // Stage 8.2 and 8.3: structure, then allocated identifiers.
-    const d = parseDraft(env.typeId, payload, projection === 'newer-schema', {
-      envelope: env.schemaVersion,
-      effective: Math.min(env.schemaVersion, highest),
-      minReader: env.minReaderVersion,
-    })
-    checkAllocated(d)
+    const d = parseDraft(
+      env.typeId,
+      payload,
+      projection === 'newer-schema',
+      {
+        envelope: env.schemaVersion,
+        effective: Math.min(env.schemaVersion, highest),
+        minReader: env.minReaderVersion,
+      },
+      sh.featureCodecs,
+    )
+    checkAllocated(d, sh.featureCodecs)
     return d
   })
   // Stage 8.4: recursive opening of declared framed fields.
@@ -483,6 +560,7 @@ function processFrame(
       typed.type === 2 && !previewAttestation
         ? resolvePrior(sh.ctx)
         : undefined,
+      sh.featureCodecs,
     ),
   )
   parsed.typed = typed
@@ -767,6 +845,7 @@ function resolvePrior(
         readerVersion: ctx.readerVersion,
         opaqueRetentionAllowed: false,
         priorDirectoryStatementFrame: null,
+        featureCodecs: ctx.featureCodecs,
       }),
     )
   } catch (e) {
@@ -825,6 +904,7 @@ function validateRoot(
   const sh: Shared = supplied ?? {
     ctx,
     supported,
+    featureCodecs: resolveFeatureCodecs(ctx),
     counters: newCounters(),
     itemsOpened: 0,
   }
@@ -884,6 +964,7 @@ export function standaloneItemBudget(
       supported: new Map(
         ctx.supportedSchemas.map(s => [s.typeId, s.schemaVersion]),
       ),
+      featureCodecs: resolveFeatureCodecs(ctx),
       counters: newCounters(),
       itemsOpened: 0,
     },
@@ -951,6 +1032,7 @@ export function beginDirectMessageValidation(
     supported: new Map(
       ctx.supportedSchemas.map(s => [s.typeId, s.schemaVersion]),
     ),
+    featureCodecs: resolveFeatureCodecs(ctx),
     counters: newCounters(),
     itemsOpened: 0,
     capturePayload: (payload, depth, location) => {

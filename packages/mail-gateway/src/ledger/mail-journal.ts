@@ -1,26 +1,26 @@
 /**
- * Mail gateway journal (#1237, stage G1; format 4 with issued mailbox ownership).
+ * Mail gateway journal (#1237, #1347; format 9 on the content-hash model).
  *
  * The durable owner of: which email threads exist in a Frank account's scope,
- * which message holds each RFC Message-ID there, every inbound email the
- * gateway accepted and what became of it, the gateway's own send slots, every
- * Frank message it has bridged or refused, and the outbound email jobs.
- *
- * The journaled inbound-send coordinator is its first runtime caller. The
- * legacy SMTP and outbound-mail paths still await their replacement stages.
+ * which messages have been relayed or bridged there (keyed by content hash),
+ * every inbound email the gateway accepted and what became of it, the gateway's
+ * own send slots, every Frank message it has bridged or refused, and the
+ * outbound email jobs.
  *
  * Scope: every lookup and every key is inside one `scopeAccount`, the Frank
  * account on the Frank side of the thread (lowercase `0x` + 40 hex). A thread is
- * identified by (scope, conversation ID) and a message by (scope, RFC
- * Message-ID). Subject, peer address and recency are never keys.
+ * identified by (scope, conversation ID) and a message by (scope, mail key).
+ * Subject, peer address and recency are never keys.
  *
- * Holder rule (contract section 20): the holder of an identifier is the first
- * message relayed under it in the scope. Its row is never updated or replaced;
- * this module has no UPDATE or DELETE on `mail_message`. A later message with
- * the same identifier and the same content is the same message. A later message
- * with the same identifier and different content is kept as its own row under a
- * regenerated identifier, `<{key}@contested.{gatewayDomain}>`, with the
- * identifier it claimed in `claimed_rfc_id`.
+ * Content-hash model (#1347): an email is identified by its content hash
+ * (`mail_key` / `item_key`). Its row in `mail_message` is never updated or
+ * replaced; this module has no UPDATE or DELETE on `mail_message`. The RFC
+ * `Message-ID` is a non-unique lookup field used only to find a reply's parent;
+ * a reply naming a `Message-ID` that several stored emails carry joins the
+ * conversation of the earliest one that was actually relayed. The same email
+ * arriving twice (same content hash) is a no-op; two different emails with one
+ * `Message-ID` are both delivered. There is no ownership of a `Message-ID`, no
+ * renaming, no per-Message-ID claim cap, and no eviction.
  *
  * Two keys (contract section 21.2), both opaque 64-hex values computed by the
  * caller. This module stores and compares them and computes neither.
@@ -30,11 +30,10 @@
  *   content mail key to the envelope local part, so two aliases never share a
  *   row or send slot. The canonical content key alone decides whether an
  *   arriving mail is the scope's own outbound mail coming back. The delivery
- *   key supplies regenerated identifiers for contested or ID-less inbound mail.
+ *   key supplies synthetic identifiers for ID-less inbound mail.
  * - The **item key** identifies what a Frank user authored, whatever seal it
  *   arrived under. It decides whether a Frank message is a re-seal of one
- *   already bridged, and it is the regenerated identifier of a contested
- *   outbound mail.
+ *   already bridged.
  *
  * A mail key is only ever compared with a mail key (column `mail_key`) and an
  * item key with an item key (column `item_key`). No statement here compares one
@@ -56,8 +55,7 @@
  *
  * One process: at open the connection takes SQLite's exclusive locking mode and
  * runs one write transaction, so a second process (or connection) on the same
- * file cannot read or write it. Two arrivals therefore never race for a holder; they are
- * serialised on this connection.
+ * file cannot read or write it.
  *
  * Durability is the ledger connection's: SQLite's rollback journal with
  * `synchronous = FULL` (the defaults; the ledger sets no pragma). A committed
@@ -98,16 +96,16 @@ import type {
  * transaction with the `mail_journal_meta` row; they are not part of
  * `ensureLedgerSchemaSync` and not part of the Kysely migration.
  *
- * There is no migration and no reader for any other format, format 1 included.
- * A database whose marker is missing or is not `MAIL_JOURNAL_FORMAT` is refused
- * at open and left as it is; the development reset is to archive the SQLite
- * file together with the gateway wallet's stores (they are one unit for backup)
- * and start a new one.
+ * There is no migration and no reader for any other format, formats 1 and 2
+ * included. A database whose marker is missing or is not `MAIL_JOURNAL_FORMAT`
+ * is refused at open and left as it is; the development reset is to archive the
+ * SQLite file together with the gateway wallet's stores (they are one unit for
+ * backup) and start a new one.
  *
  * Identifier comparison is byte-exact: every key column is TEXT under SQLite's
  * default BINARY collation.
  */
-export const MAIL_JOURNAL_FORMAT = 8;
+export const MAIL_JOURNAL_FORMAT = 9;
 
 export const MAIL_JOURNAL_TABLES = [
   'mail_journal_meta',
@@ -150,22 +148,23 @@ const MAIL_JOURNAL_DDL = `
 
   CREATE TABLE mail_message (
     scope_account TEXT NOT NULL,
-    rfc_message_id TEXT NOT NULL,
-    claimed_rfc_id TEXT,
     mail_key TEXT NOT NULL,
     item_key TEXT,
+    rfc_message_id TEXT NOT NULL,
     payload_digest TEXT,
     frank_message_id TEXT NOT NULL,
     conversation_id TEXT NOT NULL,
     direction TEXT NOT NULL CHECK (direction IN ('email_to_frank', 'frank_to_email')),
     in_reply_to TEXT,
     created_at INTEGER NOT NULL,
-    PRIMARY KEY (scope_account, rfc_message_id),
+    PRIMARY KEY (scope_account, mail_key),
     CHECK ((direction = 'frank_to_email') = (item_key IS NOT NULL)),
     CHECK ((direction = 'frank_to_email') = (payload_digest IS NOT NULL))
   );
+  CREATE INDEX idx_mail_message_rfc ON mail_message(scope_account, rfc_message_id, created_at);
   CREATE INDEX idx_mail_message_frank ON mail_message(scope_account, frank_message_id);
-  CREATE INDEX idx_mail_message_mail_key ON mail_message(scope_account, mail_key);
+  CREATE UNIQUE INDEX idx_mail_message_item_key ON mail_message(scope_account, item_key)
+    WHERE item_key IS NOT NULL;
   CREATE UNIQUE INDEX idx_mail_message_digest ON mail_message(payload_digest)
     WHERE payload_digest IS NOT NULL;
 
@@ -187,7 +186,6 @@ const MAIL_JOURNAL_DDL = `
     CHECK (disposition <> 'held' OR expires_at IS NOT NULL),
     CHECK (raw IS NOT NULL OR disposition = 'expired')
   );
-  CREATE INDEX idx_inbound_email_claim ON inbound_email(scope_account, rfc_message_id);
   CREATE INDEX idx_inbound_email_expiry ON inbound_email(expires_at) WHERE disposition = 'held';
   CREATE UNIQUE INDEX idx_inbound_email_held ON inbound_email(held_message_id)
     WHERE held_message_id IS NOT NULL;
@@ -227,7 +225,7 @@ const MAIL_JOURNAL_DDL = `
   CREATE TABLE outbound_job (
     job_id INTEGER PRIMARY KEY AUTOINCREMENT,
     scope_account TEXT NOT NULL,
-    rfc_message_id TEXT NOT NULL,
+    mail_key TEXT NOT NULL,
     recipient_email TEXT NOT NULL,
     sender_local_part TEXT NOT NULL,
     bounce_token TEXT NOT NULL UNIQUE,
@@ -239,18 +237,12 @@ const MAIL_JOURNAL_DDL = `
     next_attempt_at INTEGER NOT NULL,
     last_error TEXT,
     created_at INTEGER NOT NULL,
-    UNIQUE (scope_account, rfc_message_id, recipient_email),
-    FOREIGN KEY (scope_account, rfc_message_id) REFERENCES mail_message(scope_account, rfc_message_id),
+    UNIQUE (scope_account, mail_key, recipient_email),
+    FOREIGN KEY (scope_account, mail_key) REFERENCES mail_message(scope_account, mail_key),
     FOREIGN KEY (sender_local_part) REFERENCES issued_mailbox(local_part)
   );
   CREATE INDEX idx_outbound_job_due ON outbound_job(state, next_attempt_at);
 `;
-
-/**
- * At most this many live inbound emails may claim one Message-ID in one scope.
- * Live means `held`, `relay` or `released`; an `echo` or `expired` row is not counted.
- */
-export const MAX_INBOUND_CLAIMS_PER_MESSAGE_ID = 8;
 
 /** How long an admitted mail may stay `held`, unpaid, before it can be expired: 72 hours. */
 export const INBOUND_HOLD_TTL_MS = 72 * 60 * 60 * 1000;
@@ -314,37 +306,23 @@ export interface AdmitInboundEmailInput {
   readonly dataSha256: string;
   /** Inline bytes must hash to `dataSha256`; a blob must be stored under `dataSha256`. */
   readonly raw: StoredMailBytes;
-  /**
-   * Whether the principal can pay for this mail now, read by the caller before admitting
-   * (owner decision OD-12). It changes one thing: when eight live mails already claim the
-   * identifier, a mail whose principal has credit is admitted by expiring the oldest
-   * `held` (unpaid) claimant early. It never displaces a relayed or released mail.
-   */
-  readonly principalHasCredit: boolean;
 }
 
 export type AdmitInboundEmailResult =
   /**
    * The mail is now durably owned, disposition `held` until it is relayed. `revived` is true
    * when this mail had been admitted before and expired unpaid: it is a new arrival, written
-   * again over its expired row. `displaced` is the unpaid claimant expired to make room (OD-12).
+   * again over its expired row.
    */
   | {
       readonly kind: 'admitted';
       readonly email: InboundEmailRecord;
       readonly revived: boolean;
-      readonly displaced?: InboundEmailRecord;
     }
   /** This exact mail is stored and has not expired. Its row was not written. */
   | { readonly kind: 'duplicate'; readonly email: InboundEmailRecord }
   /** The scope's own outbound mail coming back unchanged. Stored once as `echo`; never relayed. */
-  | { readonly kind: 'echo'; readonly email: InboundEmailRecord; readonly revived: boolean }
-  /**
-   * Eight live mails already claim this Message-ID in this scope. The mail was not stored.
-   * `clearsAtMs` is the earliest time one of them can expire; it is absent when all eight
-   * were relayed, which never clears.
-   */
-  | { readonly kind: 'refused'; readonly reason: 'claim_limit'; readonly clearsAtMs?: number };
+  | { readonly kind: 'echo'; readonly email: InboundEmailRecord; readonly revived: boolean };
 
 export interface RelayInboundEmailInput {
   readonly scopeAccount: string;
@@ -362,8 +340,6 @@ export interface RelayInboundEmailInput {
 export interface RelayInboundEmailResult {
   /** False when this mail was already relayed: the stored rows are returned and nothing was written. */
   readonly created: boolean;
-  /** True when another message holds the claimed Message-ID, so this one lives under a regenerated identifier. */
-  readonly contested: boolean;
   readonly email: InboundEmailRecord;
   readonly slot: FrankSendRecord;
   readonly message: MailMessageRecord;
@@ -383,11 +359,11 @@ export type RecordFrankMessageInput =
       readonly frankMessageId: string;
       readonly conversationId: string;
       /** The Message-ID the author chose for the email. */
-      readonly authoredMessageId: string;
+      readonly rfcMessageId: string;
       /** Item key of the decoded email item. */
       readonly itemKey: string;
-      /** Omitted on the first call. The identifier the email was rendered under and the mail key of its signed bytes. */
-      readonly emitted?: { readonly rfcMessageId: string; readonly mailKey: string };
+      /** Mail key of the rendered RFC 5322 email bytes. */
+      readonly mailKey: string;
       readonly inReplyTo?: string;
       /** Reply allowances to cover from the budget: `wanted` units of `unit` each, as many as the stamp covers. */
       readonly replyAllowance?: { readonly unit: string; readonly wanted: number };
@@ -402,17 +378,10 @@ export type RecordFrankMessageInput =
   | (FrankMessageBase & { readonly outcome: 'quarantined'; readonly scopeAccount?: string });
 
 export type RecordFrankMessageResult =
-  /**
-   * Nothing was written. Render and sign the email under `rfcMessageId`, then call again with
-   * `emitted`. Answered when `emitted` is absent, or names an identifier other than this one.
-   */
-  | { readonly kind: 'needs_render'; readonly rfcMessageId: string }
   | {
       readonly kind: 'bridged';
       readonly inbound: FrankInboundRecord;
       readonly message: MailMessageRecord;
-      /** True when the authored Message-ID was already held, so the email went out under `message.rfcMessageId`. */
-      readonly contested: boolean;
       /** True when this message opened the conversation in this scope. */
       readonly threadCreated: boolean;
       /** Reply allowances the stamp covered; already debited. */
@@ -429,8 +398,8 @@ export type RecordFrankMessageResult =
 
 export interface AddOutboundJobInput {
   readonly scopeAccount: string;
-  /** `message.rfcMessageId` from this unit's `bridged` result: the identifier the email goes out under. */
-  readonly rfcMessageId: string;
+  /** `message.mailKey` from this unit's `bridged` result: the key of its `mail_message` row. */
+  readonly mailKey: string;
   readonly recipientEmail: string;
   /** Issued alias for this exact scoped conversation; replies return through it. */
   readonly senderLocalPart: string;
@@ -472,7 +441,6 @@ const DOMAIN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+
 const ADDRESS = /^[\x21-\x7e]+@[\x21-\x7e]+$/;
 const MAILBOX_LOCAL_PART = /^[a-z0-9][a-z0-9_-]{2,31}$/;
 
-const CONTESTED_LABEL = 'contested';
 const NO_MESSAGE_ID_LABEL = 'no-message-id';
 
 function refuse(what: string): never {
@@ -573,10 +541,9 @@ function toThread(row: MailThreadRow): MailThreadRecord {
 function toMessage(row: MailMessageRow): MailMessageRecord {
   return {
     scopeAccount: row.scope_account,
-    rfcMessageId: row.rfc_message_id,
-    claimedRfcId: optional(row.claimed_rfc_id),
     mailKey: row.mail_key,
     itemKey: optional(row.item_key),
+    rfcMessageId: row.rfc_message_id,
     payloadDigest: optional(row.payload_digest),
     frankMessageId: row.frank_message_id,
     conversationId: row.conversation_id,
@@ -638,22 +605,24 @@ function toFrankInbound(row: FrankInboundRow): FrankInboundRecord {
   };
 }
 
-/** A job row with the three facts its `mail_message` row owns. */
+/** A job row with the facts its `mail_message` row owns. */
 type OutboundJobJoinedRow = OutboundJobRow & {
+  rfc_message_id: string;
   frank_message_id: string;
   conversation_id: string;
   payload_digest: string;
 };
 
 const JOB_SELECT = `
-  SELECT j.*, m.frank_message_id, m.conversation_id, m.payload_digest
+  SELECT j.*, m.rfc_message_id, m.frank_message_id, m.conversation_id, m.payload_digest
     FROM outbound_job j
-    JOIN mail_message m ON m.scope_account = j.scope_account AND m.rfc_message_id = j.rfc_message_id`;
+    JOIN mail_message m ON m.scope_account = j.scope_account AND m.mail_key = j.mail_key`;
 
 function toJob(row: OutboundJobJoinedRow): OutboundJobRecord {
   return {
     jobId: row.job_id,
     scopeAccount: row.scope_account,
+    mailKey: row.mail_key,
     rfcMessageId: row.rfc_message_id,
     recipientEmail: row.recipient_email,
     senderLocalPart: row.sender_local_part,
@@ -696,7 +665,7 @@ export class MailJournal {
    *   an alias, another spelling or an inherited property name is refused
    *   before any pragma or statement, because the first open stores it for good.
    * - No journal table present: creates all eight and the marker row.
-   * - Journal tables present: the marker row must exist, say format 8 and name
+   * - Journal tables present: the marker row must exist, say `MAIL_JOURNAL_FORMAT` and name
    *   the same chain identifier, gateway account and domain, and all eight tables must
    *   be there. Anything else throws `MailJournalOpenError` and changes nothing.
    * - A ledger with no SQLite connection (Postgres) is refused.
@@ -723,7 +692,6 @@ export class MailJournal {
     this.gatewayAccount = requireMatch('gatewayAccount', options.gatewayAccount, SCOPE_ACCOUNT);
     this.gatewayDomain = requireMatch('gatewayDomain', options.gatewayDomain, DOMAIN);
     const probe = '0'.repeat(64);
-    requireRfcId('gatewayDomain (too long for a regenerated Message-ID)', this.contestedIdFor(probe));
     requireRfcId('gatewayDomain (too long for a synthetic Message-ID)', this.noMessageIdFor(probe));
 
     const pragma = (name: string): string | number =>
@@ -805,31 +773,19 @@ export class MailJournal {
   // Identifiers
   // -------------------------------------------------------------------------
 
-  /**
-   * Regenerated local identifier of a contested message, the same on every retry of the same
-   * content. The key is the mail key of an inbound mail or the item key of an outbound one;
-   * their two derivations differ, so the two kinds never meet in this namespace.
-   */
-  contestedIdFor(key: string): string {
-    return `<${requireMatch('key', key, HEX_64)}@${CONTESTED_LABEL}.${this.gatewayDomain}>`;
-  }
-
   /** Synthetic identifier of a mail with no usable Message-ID. The same on every retry of the same mail. */
   noMessageIdFor(mailKey: string): string {
     return `<${requireMatch('mailKey', mailKey, HEX_64)}@${NO_MESSAGE_ID_LABEL}.${this.gatewayDomain}>`;
   }
 
   /**
-   * True when the ID's right-hand side is one of this gateway's two reserved
-   * namespaces (compared without regard to case). Such an ID is never accepted
+   * True when the ID's right-hand side is this gateway's reserved synthetic
+   * namespace (compared without regard to case). Such an ID is never accepted
    * as a claim from outside; the caller treats it as unusable.
    */
   isReservedMessageId(rfcMessageId: string): boolean {
     const rhs = rfcMessageId.slice(rfcMessageId.lastIndexOf('@') + 1, -1).toLowerCase();
-    return (
-      rhs === `${CONTESTED_LABEL}.${this.gatewayDomain}` ||
-      rhs === `${NO_MESSAGE_ID_LABEL}.${this.gatewayDomain}`
-    );
+    return rhs === `${NO_MESSAGE_ID_LABEL}.${this.gatewayDomain}`;
   }
 
   // -------------------------------------------------------------------------
@@ -974,14 +930,12 @@ export class MailJournal {
   }
 
   /**
-   * The message known by this identifier in this scope: the holder of a
-   * Message-ID, or a contested message by its regenerated identifier. Never
-   * returns another scope's row.
+   * The message stored under this mail key in this scope. Never returns another scope's row.
    */
-  findMailMessage(scopeAccount: string, rfcMessageId: string): MailMessageRecord | undefined {
+  findMailMessage(scopeAccount: string, mailKey: string): MailMessageRecord | undefined {
     requireMatch('scopeAccount', scopeAccount, SCOPE_ACCOUNT);
-    requireRfcId('rfcMessageId', rfcMessageId);
-    const row = this.messageRow(scopeAccount, rfcMessageId);
+    requireMatch('mailKey', mailKey, HEX_64);
+    const row = this.messageRow(scopeAccount, mailKey);
     return row && toMessage(row);
   }
 
@@ -1126,32 +1080,22 @@ export class MailJournal {
    * One transaction.
    *
    * The stored identifier is `messageIdHeader`, or `noMessageIdFor(mailKey)`
-   * when the header is absent or names one of this gateway's reserved
-   * namespaces. An outside sender can therefore never claim a regenerated
-   * identifier: such a mail is filed under its own synthetic one.
+   * when the header is absent or names this gateway's reserved synthetic
+   * namespace.
    *
    * In this order:
    *
-   * 1. Every `held` mail claiming the same identifier in the scope whose time
-   *    has passed is expired (at most eight rows), so the count below is right
-   *    at the moment it is made.
+   * 1. If the same (scope, mail key) is stored as `held` and its expiry has
+   *    passed, it is expired now.
    * 2. The same (scope, mail key) is stored and not expired: `duplicate`.
    * 3. The scope has an outbound message with this mail key: the scope's own
    *    mail coming back, stored once as `echo`. The Message-ID it bears is not
-   *    consulted, and an echo is not counted by the bound below.
-   * 4. Eight live mails (`held`, `relay`, `released`) already claim the
-   *    identifier: `refused`, with the time the earliest unpaid one can expire.
-   *    If `principalHasCredit`, the oldest unpaid claimant is expired now
-   *    instead and the mail is admitted; if all eight were relayed it is
-   *    refused whoever asks.
-   * 5. Otherwise stored as `held` for `INBOUND_HOLD_TTL_MS`. It owns no thread
+   *    consulted.
+   * 4. Otherwise stored as `held` for `INBOUND_HOLD_TTL_MS`. It owns no thread
    *    identity until relayed. A mail that had expired is written again over
    *    its own row (`revived`): it was never relayed or paid for, so it is a
    *    new arrival, with the new sender, bytes and expiry, no held-message
    *    link, and its original `created_at`.
-   *
-   * `duplicate` and `refused` do not store the arriving mail; the expiries of
-   * step 1 are committed with any answer.
    */
   admitInboundEmail(input: AdmitInboundEmailInput): AdmitInboundEmailResult {
     const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
@@ -1172,21 +1116,15 @@ export class MailJournal {
     if (requireStoredBytes('raw', input.raw) !== dataSha256) {
       refuse('raw: the bytes or blob key do not match dataSha256');
     }
-    if (typeof input.principalHasCredit !== 'boolean') refuse('principalHasCredit: not a boolean');
-    const principalHasCredit = input.principalHasCredit;
 
     return this.ledger.atomic((): AdmitInboundEmailResult => {
       const now = this.now();
-      const due = this.all<InboundEmailRow>(
-        `SELECT * FROM inbound_email
-          WHERE scope_account = ? AND rfc_message_id = ? AND disposition = 'held' AND expires_at <= ?`,
-        scope,
-        rfcId,
-        now
-      );
-      for (const row of due) this.expireHeldRow(row);
+      let stored = this.inboundEmailRow(scope, mailKey);
+      if (stored && stored.disposition === 'held' && stored.expires_at !== null && stored.expires_at <= now) {
+        this.expireHeldRow(stored);
+        stored = this.inboundEmailRow(scope, mailKey);
+      }
 
-      const stored = this.inboundEmailRow(scope, mailKey);
       if (stored && (stored.mailbox_local_part !== mailboxLocalPart || stored.conversation_id !== conversationId))
         throw new MailJournalStateError('Inbound delivery key has a different mailbox assignment');
       if (stored && stored.disposition !== 'expired') return { kind: 'duplicate', email: toInboundEmail(stored) };
@@ -1198,33 +1136,6 @@ export class MailJournal {
           scope,
           echoMailKey
         ) !== undefined;
-
-      let displaced: InboundEmailRecord | undefined;
-      if (!echo) {
-        const live = this.get<{ n: number }>(
-          `SELECT COUNT(*) AS n FROM inbound_email
-            WHERE scope_account = ? AND rfc_message_id = ? AND disposition IN ('held', 'relay', 'released')`,
-          scope,
-          rfcId
-        )!.n;
-        if (live >= MAX_INBOUND_CLAIMS_PER_MESSAGE_ID) {
-          // Only a `held` row can be chosen: it has no mail_message row and no slot, so it
-          // is never a holder and never a mail somebody paid for.
-          const oldestUnpaid = this.get<InboundEmailRow>(
-            `SELECT * FROM inbound_email
-              WHERE scope_account = ? AND rfc_message_id = ? AND disposition = 'held'
-              ORDER BY expires_at, rowid LIMIT 1`,
-            scope,
-            rfcId
-          );
-          if (!oldestUnpaid) return { kind: 'refused', reason: 'claim_limit' };
-          if (!principalHasCredit) {
-            return { kind: 'refused', reason: 'claim_limit', clearsAtMs: oldestUnpaid.expires_at! };
-          }
-          this.expireHeldRow(oldestUnpaid);
-          displaced = toInboundEmail(this.inboundEmailRow(scope, oldestUnpaid.mail_key)!);
-        }
-      }
 
       const disposition = echo ? 'echo' : 'held';
       const expiresAt = echo ? null : now + INBOUND_HOLD_TTL_MS;
@@ -1265,8 +1176,7 @@ export class MailJournal {
       }
       const email = toInboundEmail(this.inboundEmailRow(scope, mailKey)!);
       const revived = stored !== undefined;
-      if (echo) return { kind: 'echo', email, revived };
-      return displaced ? { kind: 'admitted', email, revived, displaced } : { kind: 'admitted', email, revived };
+      return echo ? { kind: 'echo', email, revived } : { kind: 'admitted', email, revived };
     });
   }
 
@@ -1276,8 +1186,8 @@ export class MailJournal {
    * none. `more` is true when due mails remain.
    *
    * Only a `held` row expires, ever: not `relay`, `released`, `echo` or
-   * `expired`. A `held` row has no `mail_message` row and no slot, so no holder
-   * and no relayed mail can expire.
+   * `expired`. A `held` row has no `mail_message` row and no slot, so no
+   * relayed mail can expire.
    */
   expireInboundEmails(limit: number): { expired: number; more: boolean } {
     if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 1000) {
@@ -1334,14 +1244,9 @@ export class MailJournal {
    * row for a new root, and the mail's disposition (`relay`, or `released` if
    * it had been held) with its expiry cleared.
    *
-   * - Parent: the message in this scope named by `inReplyTo`; if none, the
-   *   first hit scanning `references` from last to first; if none, a new root
-   *   whose conversation ID is the slot's message ID.
-   * - Holder: if no message holds the mail's Message-ID in this scope, this
-   *   one does. Otherwise it is contested and is stored under
-   *   `contestedIdFor(mailKey)` with `claimedRfcId`; the holder's row is not
-   *   touched, and a contested mail joins the holder's conversation only if its
-   *   own headers name it.
+   * - Parent: the earliest relayed message in this scope matching `inReplyTo`;
+   *   if none, the first hit scanning `references` from last to first; if none,
+   *   a new root whose conversation ID is the slot's message ID.
    * - Repeat: a mail already relayed returns its stored rows, `created: false`.
    * - An `echo` or `expired` mail is never relayed. Expiry is the transition,
    *   not the clock: a mail still `held` is relayed whatever its `expires_at`.
@@ -1367,15 +1272,12 @@ export class MailJournal {
 
       const existing = this.slotBySource('inbound_email', sourceKey);
       if (existing) {
-        const message = this.get<MailMessageRow>(
-          "SELECT * FROM mail_message WHERE scope_account = ? AND frank_message_id = ? AND direction = 'email_to_frank'",
-          scope,
-          existing.frank_message_id
-        );
-        if (!message) throw new MailJournalStateError('Send slot has no mail_message row');
+        const message = this.messageRow(scope, mailKey);
+        if (!message || message.direction !== 'email_to_frank' || message.frank_message_id !== existing.frank_message_id) {
+          throw new MailJournalStateError('Send slot has no mail_message row');
+        }
         return {
           created: false,
-          contested: message.claimed_rfc_id !== null,
           email: toInboundEmail(email),
           slot: toSlot(existing),
           message: toMessage(message),
@@ -1384,6 +1286,9 @@ export class MailJournal {
       if (email.disposition !== 'held') {
         throw new MailJournalStateError(`Inbound email is ${email.disposition}; it cannot be relayed`);
       }
+      if (this.messageRow(scope, mailKey)) {
+        throw new MailJournalStateError('Another message is stored under this mail key in this scope');
+      }
 
       const resolvedParent = this.resolveParent(scope, inReplyTo, references);
       const assignedConversationId = email.conversation_id ?? issuedConversationId;
@@ -1391,13 +1296,6 @@ export class MailJournal {
         ? undefined : resolvedParent;
       const frankMessageId = randomFrankId();
       const conversationId = assignedConversationId ?? parent?.conversation_id ?? frankMessageId;
-      const contested = this.messageRow(scope, email.rfc_message_id) !== undefined;
-      const rfcId = contested ? this.contestedIdFor(mailKey) : email.rfc_message_id;
-      if (contested && this.messageRow(scope, rfcId)) {
-        // Unreachable with real keys: an inbound mail is stored once, and an item key never
-        // equals a mail key. Refused rather than left to a key violation.
-        throw new MailJournalStateError('Another message is stored under this mail\'s regenerated identifier');
-      }
       const now = this.now();
 
       this.run(
@@ -1413,10 +1311,9 @@ export class MailJournal {
       );
       this.insertMessage({
         scope_account: scope,
-        rfc_message_id: rfcId,
-        claimed_rfc_id: contested ? email.rfc_message_id : null,
         mail_key: mailKey,
         item_key: null,
+        rfc_message_id: email.rfc_message_id,
         payload_digest: null,
         frank_message_id: frankMessageId,
         conversation_id: conversationId,
@@ -1441,10 +1338,9 @@ export class MailJournal {
 
       return {
         created: true,
-        contested,
         email: toInboundEmail(this.inboundEmailRow(scope, mailKey)!),
         slot: toSlot(this.slotBySource('inbound_email', sourceKey)!),
-        message: toMessage(this.messageRow(scope, rfcId)!),
+        message: toMessage(this.messageRow(scope, mailKey)!),
       };
     });
   }
@@ -1459,32 +1355,16 @@ export class MailJournal {
    * message, its `mail_message` row and the `mail_thread` row if the
    * conversation is new in the scope.
    *
-   * A message to bridge takes two calls, because the email must be rendered
-   * and signed under the identifier the journal assigns before its mail key
-   * exists. In this order, inside the transaction:
+   * In this order, inside the transaction:
    *
    * 1. The digest is stored: `duplicate`, nothing written.
-   * 2. The identifier is decided. If the scope's message under
-   *    `authoredMessageId` is an outbound one with this item key, this is a
-   *    re-seal. If another message holds it, this one is contested and its
-   *    identifier is `contestedIdFor(itemKey)`; an outbound row already there
-   *    with this item key is again a re-seal, and any other row there is a
-   *    `MailJournalStateError`. With no holder the identifier is the authored one.
-   * 3. A re-seal writes one `frank_inbound` row, `resealed`, with its stamp as
-   *    budget and nothing spent, and nothing else: `same_message`. No email, no
-   *    job, no allowance, whatever `emitted` says.
-   * 4. `emitted` is absent, or names another identifier than step 2's:
-   *    `needs_render` with the identifier, nothing written.
-   * 5. Otherwise the rows are written and `replyAllowance` debits as many whole
+   * 2. If the scope already has an outbound `mail_message` with `itemKey`, this
+   *    is a re-seal. It writes one `frank_inbound` row (`resealed`, with its
+   *    stamp as budget and nothing spent) and nothing else: `same_message`.
+   * 3. If another `mail_message` row already uses `mailKey` in this scope, it
+   *    throws `MailJournalStateError`.
+   * 4. Otherwise the rows are written and `replyAllowance` debits as many whole
    *    units as the budget covers, at most `wanted`: `bridged`.
-   *
-   * A stop between the two calls leaves nothing stored, so a repeat of the
-   * first call starts again. A stop after the second leaves the digest, and
-   * either call then answers `duplicate`. If a message took the identifier in
-   * between, the second call answers `needs_render` again with the new one.
-   *
-   * The journal cannot check that `emitted.mailKey` belongs to the signed
-   * bytes; a wrong value only makes a later echo unrecognised.
    *
    * An authored Message-ID in a reserved namespace is refused; the caller
    * records such a message as `rejected`.
@@ -1537,18 +1417,12 @@ export class MailJournal {
     const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
     const frankMessageId = requireMatch('frankMessageId', input.frankMessageId, FRANK_ID);
     const conversationId = requireMatch('conversationId', input.conversationId, FRANK_ID);
-    const authoredId = requireRfcId('authoredMessageId', input.authoredMessageId);
-    if (this.isReservedMessageId(authoredId)) {
-      refuse('authoredMessageId: it is in a namespace reserved for identifiers this gateway generates');
+    const rfcId = requireRfcId('rfcMessageId', input.rfcMessageId);
+    if (this.isReservedMessageId(rfcId)) {
+      refuse('rfcMessageId: it is in a namespace reserved for identifiers this gateway generates');
     }
     const itemKey = requireMatch('itemKey', input.itemKey, HEX_64);
-    const emitted =
-      input.emitted === undefined
-        ? undefined
-        : {
-            rfcMessageId: requireRfcId('emitted.rfcMessageId', input.emitted?.rfcMessageId),
-            mailKey: requireMatch('emitted.mailKey', input.emitted?.mailKey, HEX_64),
-          };
+    const mailKey = requireMatch('mailKey', input.mailKey, HEX_64);
     const inReplyTo =
       input.inReplyTo === undefined ? undefined : requireRfcId('inReplyTo', input.inReplyTo);
     let unit = 0n;
@@ -1565,28 +1439,7 @@ export class MailJournal {
       if (stored) return { kind: 'duplicate', inbound: toFrankInbound(stored) };
 
       // Item key against item key only. A row's mail key is never consulted here.
-      const isSameAuthoredEmail = (row: MailMessageRow): boolean =>
-        row.direction === 'frank_to_email' && row.item_key === itemKey;
-
-      const holder = this.messageRow(scope, authoredId);
-      let first: MailMessageRow | undefined;
-      let rfcId = authoredId;
-      const contested = holder !== undefined && !isSameAuthoredEmail(holder);
-      if (holder && !contested) {
-        first = holder;
-      } else if (contested) {
-        rfcId = this.contestedIdFor(itemKey);
-        const earlier = this.messageRow(scope, rfcId);
-        if (earlier) {
-          if (!isSameAuthoredEmail(earlier)) {
-            throw new MailJournalStateError(
-              'A different message is stored under the identifier this message would be regenerated to; nothing was written'
-            );
-          }
-          first = earlier;
-        }
-      }
-
+      const first = this.messageRowByItemKey(scope, itemKey);
       if (first) {
         this.insertFrankInbound({
           payload_digest: digest,
@@ -1607,8 +1460,10 @@ export class MailJournal {
         };
       }
 
-      if (emitted === undefined || emitted.rfcMessageId !== rfcId) {
-        return { kind: 'needs_render', rfcMessageId: rfcId };
+      if (this.messageRow(scope, mailKey)) {
+        throw new MailJournalStateError(
+          'A different message is stored under this mail key in this scope; nothing was written'
+        );
       }
 
       const budget = BigInt(stampValue);
@@ -1630,10 +1485,9 @@ export class MailJournal {
       });
       this.insertMessage({
         scope_account: scope,
-        rfc_message_id: rfcId,
-        claimed_rfc_id: contested ? authoredId : null,
-        mail_key: emitted.mailKey,
+        mail_key: mailKey,
         item_key: itemKey,
+        rfc_message_id: rfcId,
         payload_digest: digest,
         frank_message_id: frankMessageId,
         conversation_id: conversationId,
@@ -1652,8 +1506,7 @@ export class MailJournal {
       return {
         kind: 'bridged',
         inbound: toFrankInbound(this.frankInboundRow(digest)!),
-        message: toMessage(this.messageRow(scope, rfcId)!),
-        contested,
+        message: toMessage(this.messageRow(scope, mailKey)!),
         threadCreated,
         allowancesCovered: covered,
       };
@@ -1664,34 +1517,35 @@ export class MailJournal {
    * Adds one recipient's email job for a bridged message, `pending`, with a
    * fresh random bounce token. One transaction, at most one row.
    *
-   * The key is (scope, the identifier the email goes out under, recipient). The
-   * scope must have an outbound `mail_message` under that identifier; a job for
-   * an identifier with no message, an inbound message, or another scope's
-   * message is refused. A stored job with the same bytes is `existing`. A
-   * stored job with other bytes is `key_taken`: it is never overwritten.
+   * The key is (scope, the message's mail key, recipient). The scope must have
+   * an outbound `mail_message` under that mail key; a job for a mail key with
+   * no message, an inbound message, or another scope's message is refused. A
+   * stored job with the same bytes is `existing`. A stored job with other bytes
+   * is `key_taken`: it is never overwritten.
    *
-   * Two messages that bear one sealed Frank message ID have two `mail_message`
-   * rows under two identifiers, so each gets its own job to the same recipient.
+   * Two messages that bear one sealed Frank message ID or one RFC Message-ID
+   * have two `mail_message` rows under two mail keys, so each gets its own job
+   * to the same recipient.
    */
   addOutboundJob(input: AddOutboundJobInput): AddOutboundJobResult {
     const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
-    const rfcId = requireRfcId('rfcMessageId', input.rfcMessageId);
+    const mailKey = requireMatch('mailKey', input.mailKey, HEX_64);
     const recipient = requireAddress('recipientEmail', input.recipientEmail);
     const senderLocalPart = requireMailboxLocalPart(input.senderLocalPart);
     const digest = requireStoredBytes('signedRfc822', input.signedRfc822);
     const nextAttemptAt = requireTime('nextAttemptAtMs', input.nextAttemptAtMs);
 
     return this.ledger.atomic((): AddOutboundJobResult => {
-      const message = this.messageRow(scope, rfcId);
+      const message = this.messageRow(scope, mailKey);
       if (message?.direction !== 'frank_to_email') {
-        throw new MailJournalStateError('No bridged message under this identifier in this scope');
+        throw new MailJournalStateError('No bridged message under this mail key in this scope');
       }
       const issued = this.issuedMailbox(senderLocalPart);
       if (issued?.scopeAccount !== scope || issued.conversationId !== message.conversation_id) {
         throw new MailJournalStateError('Outbound sender must be an issued alias for this conversation');
       }
-      const key = [scope, rfcId, recipient] as const;
-      const select = `${JOB_SELECT} WHERE j.scope_account = ? AND j.rfc_message_id = ? AND j.recipient_email = ?`;
+      const key = [scope, mailKey, recipient] as const;
+      const select = `${JOB_SELECT} WHERE j.scope_account = ? AND j.mail_key = ? AND j.recipient_email = ?`;
       const stored = this.get<OutboundJobJoinedRow>(select, ...key);
       if (stored) {
         const same = storedDigest(stored.signed_rfc822) === digest && stored.sender_local_part === senderLocalPart;
@@ -1699,7 +1553,7 @@ export class MailJournal {
       }
       this.run(
         `INSERT INTO outbound_job
-           (scope_account, rfc_message_id, recipient_email, sender_local_part, bounce_token, signed_rfc822,
+           (scope_account, mail_key, recipient_email, sender_local_part, bounce_token, signed_rfc822,
             state, next_attempt_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
         ...key,
@@ -1868,7 +1722,7 @@ export class MailJournal {
         if (job.state !== 'failed' && job.state !== 'bounced') {
           throw new MailJournalStateError(`Outbound job ${jobId} is ${job.state}; it has not failed, so it gets no notice`);
         }
-        const message = this.messageRow(job.scope_account, job.rfc_message_id);
+        const message = this.messageRow(job.scope_account, job.mail_key);
         if (message?.direction !== 'frank_to_email' || message.payload_digest === null) {
           throw new MailJournalStateError(`Outbound job ${jobId} has no outbound message row`);
         }
@@ -2001,7 +1855,11 @@ export class MailJournal {
   }
 
   private findParentMessage(scope: string, candidateId: string): MailMessageRow | undefined {
-    const exact = this.messageRow(scope, candidateId);
+    const exact = this.get<MailMessageRow>(
+      'SELECT * FROM mail_message WHERE scope_account = ? AND rfc_message_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 1',
+      scope,
+      candidateId,
+    );
     if (exact) return exact;
 
     const inner =
@@ -2014,13 +1872,13 @@ export class MailJournal {
 
     if (FRANK_ID.test(localPart)) {
       const byFrankId = this.get<MailMessageRow>(
-        'SELECT * FROM mail_message WHERE scope_account = ? AND frank_message_id = ? ORDER BY created_at ASC LIMIT 1',
+        'SELECT * FROM mail_message WHERE scope_account = ? AND frank_message_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 1',
         scope,
         localPart,
       );
       if (byFrankId) return byFrankId;
       const byConvId = this.get<MailMessageRow>(
-        'SELECT * FROM mail_message WHERE scope_account = ? AND conversation_id = ? ORDER BY created_at DESC LIMIT 1',
+        'SELECT * FROM mail_message WHERE scope_account = ? AND conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
         scope,
         localPart,
       );
@@ -2035,14 +1893,14 @@ export class MailJournal {
       const msgId = compositeMatch[2];
       if (msgId) {
         const byFrankId = this.get<MailMessageRow>(
-          'SELECT * FROM mail_message WHERE scope_account = ? AND frank_message_id = ? ORDER BY created_at ASC LIMIT 1',
+          'SELECT * FROM mail_message WHERE scope_account = ? AND frank_message_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 1',
           scope,
           msgId,
         );
         if (byFrankId) return byFrankId;
       }
       const byConvId = this.get<MailMessageRow>(
-        'SELECT * FROM mail_message WHERE scope_account = ? AND conversation_id = ? ORDER BY created_at DESC LIMIT 1',
+        'SELECT * FROM mail_message WHERE scope_account = ? AND conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
         scope,
         convId,
       );
@@ -2086,11 +1944,19 @@ export class MailJournal {
     });
   }
 
-  private messageRow(scope: string, rfcMessageId: string): MailMessageRow | undefined {
+  private messageRow(scope: string, mailKey: string): MailMessageRow | undefined {
     return this.get<MailMessageRow>(
-      'SELECT * FROM mail_message WHERE scope_account = ? AND rfc_message_id = ?',
+      'SELECT * FROM mail_message WHERE scope_account = ? AND mail_key = ?',
       scope,
-      rfcMessageId
+      mailKey
+    );
+  }
+
+  private messageRowByItemKey(scope: string, itemKey: string): MailMessageRow | undefined {
+    return this.get<MailMessageRow>(
+      "SELECT * FROM mail_message WHERE scope_account = ? AND item_key = ? AND direction = 'frank_to_email'",
+      scope,
+      itemKey
     );
   }
 
@@ -2147,14 +2013,13 @@ export class MailJournal {
   private insertMessage(row: MailMessageRow): void {
     this.run(
       `INSERT INTO mail_message
-         (scope_account, rfc_message_id, claimed_rfc_id, mail_key, item_key, payload_digest, frank_message_id,
+         (scope_account, mail_key, item_key, rfc_message_id, payload_digest, frank_message_id,
           conversation_id, direction, in_reply_to, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       row.scope_account,
-      row.rfc_message_id,
-      row.claimed_rfc_id,
       row.mail_key,
       row.item_key,
+      row.rfc_message_id,
       row.payload_digest,
       row.frank_message_id,
       row.conversation_id,

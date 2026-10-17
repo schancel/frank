@@ -17,7 +17,7 @@ import type {
   EmailAttachment,
   AccountRef,
 } from '../src'
-import { bytesOf } from '../fixtures/builders'
+import { bytesOf, fr } from '../fixtures/builders'
 
 const ctx = defaultContext()
 
@@ -165,14 +165,6 @@ describe('Type 26: Email Message Item', () => {
       set: (email: CanonicalEmailMessageItem, value: string) => void
     }> = [
       {
-        field: 'messageId',
-        min: 1,
-        max: 256,
-        set: (e, v) => {
-          e.messageId = v
-        },
-      },
-      {
         field: 'subject',
         min: 0,
         max: 1024,
@@ -194,22 +186,6 @@ describe('Type 26: Email Message Item', () => {
         max: 524288,
         set: (e, v) => {
           e.htmlBody = v
-        },
-      },
-      {
-        field: 'inReplyTo',
-        min: 1,
-        max: 256,
-        set: (e, v) => {
-          e.inReplyTo = v
-        },
-      },
-      {
-        field: 'reference',
-        min: 1,
-        max: 256,
-        set: (e, v) => {
-          e.references = ['first', v]
         },
       },
       {
@@ -256,7 +232,7 @@ describe('Type 26: Email Message Item', () => {
 
     function email(): CanonicalEmailMessageItem {
       return {
-        messageId: 'message',
+        messageId: '<msg@a.b>',
         from: { address: 'a@b' },
         to: [{ address: 'c@d' }],
         cc: [{ address: 'e@f', name: '界' }],
@@ -327,6 +303,89 @@ describe('Type 26: Email Message Item', () => {
         validateEmailMessageItem(encodeEmailMessageItem(item)).typed.from
           .address,
       ).toBe('界')
+    })
+
+    describe.each([
+      {
+        field: 'messageId',
+        wireKey: 0,
+        set: (e: CanonicalEmailMessageItem, v: string) => {
+          e.messageId = v
+        },
+        setRaw: (m: Map<number, unknown>, v: string) => {
+          m.set(0, v)
+        },
+      },
+      {
+        field: 'inReplyTo',
+        wireKey: 7,
+        set: (e: CanonicalEmailMessageItem, v: string) => {
+          e.inReplyTo = v
+        },
+        setRaw: (m: Map<number, unknown>, v: string) => {
+          m.set(7, v)
+        },
+      },
+      {
+        field: 'reference',
+        wireKey: 8,
+        set: (e: CanonicalEmailMessageItem, v: string) => {
+          e.references = ['<first@a.b>', v]
+        },
+        setRaw: (m: Map<number, unknown>, v: string) => {
+          m.set(8, ['<first@a.b>', v])
+        },
+      },
+    ])('RFC 5322 Message-ID grammar ($field)', ({ field, set, setRaw }) => {
+      it('accepts exact 5-byte and 256-byte <local@domain> IDs and rejects out-of-range or malformed IDs in both encoder and decoder', () => {
+        const minValid = '<a@b>'
+        const maxValid = `<${'a'.repeat(252)}@b>`
+        expect(minValid.length).toBe(5)
+        expect(maxValid.length).toBe(256)
+        for (const valid of [minValid, maxValid]) {
+          const item = email()
+          set(item, valid)
+          const encoded = encodeEmailMessageItem(item)
+          expect(validateEmailMessageItem(encoded).typed).toMatchObject(item)
+        }
+
+        const overMax = `<${'a'.repeat(253)}@b>`
+        expect(overMax.length).toBe(257)
+        for (const outOfBounds of ['', '<a>', overMax]) {
+          const item = email()
+          set(item, outOfBounds)
+          expect(() => encodeEmailMessageItem(item)).toThrow(
+            `${field} must be 5..256 UTF-8 bytes`,
+          )
+        }
+
+        const baseFrame = validateEmailMessageItem(
+          encodeEmailMessageItem(email()),
+        )
+        const baseMap = baseFrame.payload as Map<bigint, unknown>
+        for (const badId of [
+          '',
+          '<a>',
+          overMax,
+          'message',
+          'local@domain',
+          '<missing-at>',
+          '<two@at@signs>',
+          '<has space@domain>',
+          '<nested<@domain>',
+          '<界@example.com>',
+        ]) {
+          const item = email()
+          set(item, badId)
+          expect(() => encodeEmailMessageItem(item)).toThrow(FrankCodecError)
+
+          const rawMap = new Map<number, unknown>()
+          for (const [k, v] of baseMap) rawMap.set(Number(k), v)
+          setRaw(rawMap, badId)
+          const rawFrame = fr(TYPE_EMAIL_MESSAGE_ITEM, rawMap as any)
+          expect(() => validateFrame(rawFrame, ctx)).toThrow(FrankCodecError)
+        }
+      })
     })
   })
 

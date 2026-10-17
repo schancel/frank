@@ -21,22 +21,17 @@ const SENDER_LOCAL_PART = 'threadreply001';
 const sha = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 
 function makeJob(journal: MailJournal, rawMail?: string): number {
-  const input = {
-    outcome: 'bridged' as const,
+  const bridged = journal.recordFrankMessage({
+    outcome: 'bridged',
     payloadDigest: sha('payload'),
     receivedTimeMs: 1000,
     stampValue: '0',
     scopeAccount: ACCOUNT,
     frankMessageId: ID,
     conversationId: CONVERSATION,
-    authoredMessageId: RFC_ID,
+    rfcMessageId: RFC_ID,
     itemKey: sha('item'),
-  };
-  const render = journal.recordFrankMessage(input);
-  if (render.kind !== 'needs_render') throw new Error('Expected render request');
-  const bridged = journal.recordFrankMessage({
-    ...input,
-    emitted: { rfcMessageId: render.rfcMessageId, mailKey: sha('mail') },
+    mailKey: sha('mail'),
   });
   if (bridged.kind !== 'bridged') throw new Error('Expected bridged message');
   journal.issueMailbox({
@@ -50,7 +45,7 @@ function makeJob(journal: MailJournal, rawMail?: string): number {
   );
   const job = journal.addOutboundJob({
     scopeAccount: ACCOUNT,
-    rfcMessageId: bridged.message.rfcMessageId,
+    mailKey: bridged.message.mailKey,
     recipientEmail: RECIPIENT,
     senderLocalPart: SENDER_LOCAL_PART,
     signedRfc822: { kind: 'inline', bytes: mail },

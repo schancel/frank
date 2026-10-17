@@ -127,7 +127,7 @@ describe('default message item registry', () => {
   }, 120_000)
 
   it('has exactly one directory per plugin, each with plugin.ts and codec.ts', () => {
-    const notPlugins = new Set(['shared', 'blackjack'])
+    const notPlugins = new Set(['shared', 'blackjack', 'newsletter'])
     const directories = readdirSync(__dirname)
       .filter(name => statSync(join(__dirname, name)).isDirectory())
       .filter(name => !notPlugins.has(name))

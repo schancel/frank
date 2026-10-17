@@ -197,6 +197,11 @@ export const rawFrFR = {
       'Un timbre est un petit paiement envoyé avec votre message à la personne à qui vous écrivez. Il paie son attention.',
     stampWhy:
       'Chaque message porte le timbre par défaut, sauf si vous choisissez un autre montant pour cette conversation. Saisissez 0 pour envoyer des messages gratuits.',
+    stampSuggestedMode: 'Timbre suggéré pour cette conversation',
+    stampOverriddenMode: 'Modifié pour ce message uniquement',
+    stampPeerLastPaid: 'Dernier timbre reçu : {amount}',
+    stampSuggestedIncreaseNotice:
+      'Supérieur à votre timbre précédent pour ce contact',
   },
   digitalGoods: {
     catalog: 'Catalogue',

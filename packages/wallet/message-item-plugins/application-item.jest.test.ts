@@ -9,6 +9,7 @@ import {
   encodePluginMessageItem,
   standaloneItemBudget,
   toHex,
+  TYPE_MESSAGE_CONTENT_REVISION,
   validateFrame,
   type ChildFrame,
 } from '@frank/codec'
@@ -59,14 +60,21 @@ const item = (
 const children = (frames: Uint8Array[]): ChildFrame[] => {
   const parsed = validateFrame(
     encodeFrame(
-      { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_MESSAGE_CONTENT_REVISION,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       new Map([
         [0, 'frank'],
         [1, frames],
       ]),
     ),
   )
-  if (parsed.kind !== 'parsed' || parsed.typed?.type !== 20)
+  if (
+    parsed.kind !== 'parsed' ||
+    parsed.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
+  )
     throw new Error('Expected revision')
   return parsed.typed.items
 }

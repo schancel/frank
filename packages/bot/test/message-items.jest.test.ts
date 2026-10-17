@@ -5,6 +5,7 @@ import {
   encodePluginMessageItem,
   MAX_CONTAINERS,
   standaloneItemBudget,
+  TYPE_MESSAGE_CONTENT_REVISION,
   validateFrame,
   type Encodable,
 } from '@frank/codec'
@@ -92,14 +93,21 @@ it('actual app and all-bots registries carry signed offer/accept/reject bidirect
     function children(frames: Uint8Array[]) {
       const parsed = validateFrame(
         encodeFrame(
-          { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
+          {
+            typeId: TYPE_MESSAGE_CONTENT_REVISION,
+            schemaVersion: 1,
+            minReaderVersion: 1,
+          },
           new Map<number, Encodable>([
             [0, 'frank'],
             [1, frames],
           ]),
         ),
       )
-      if (parsed.kind !== 'parsed' || parsed.typed?.type !== 20)
+      if (
+        parsed.kind !== 'parsed' ||
+        parsed.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
+      )
         throw Error('Invalid test revision')
       return parsed.typed.items
     }
@@ -242,6 +250,7 @@ it('actual app and all-bots registries carry signed offer/accept/reject bidirect
         pluginCapabilitiesNotYetAvailable,
       ).types(),
       'swap-negotiation-v1',
+      'newsletter-article-v1',
     ])
   } finally {
     await f.close()

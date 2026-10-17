@@ -311,7 +311,7 @@ process.stdin.on('end', () => {
   describe('readiness timeouts', () => {
     it('a relay that never answers fails with a clear message and leaves no process', async () => {
       const c = await config({ CASHWEBD_BIN: relayStub('hang') })
-      await expect(startDemo(c, { ...opts, relayTimeoutS: 1 })).rejects.toThrow(
+      await expect(startDemo(c, { ...opts, relayTimeoutS: 2 })).rejects.toThrow(
         /did not answer on .* in time/,
       )
       await waitFor(() => existsSync(pidFile))

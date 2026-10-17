@@ -51,6 +51,30 @@ CARGO_TARGET_DIR=/tmp/frank-group-live-cargo-target cargo test --manifest-path b
 The explicit two-router TypeScript gate below also checks repeated direct/proxied writes,
 unchanged receipt sequences and historical retries after rotation.
 
+## Explicit group append policy
+
+Every relay configuration must include `[registry.groups]` with an explicit
+`per_message_price_credits` nonnegative integer. Missing or invalid configuration fails
+startup and `--check-config` before opening databases or creating a session secret. Units
+are abstract credits per newly accepted message; message-size limits remain independent.
+The shipped development configurations explicitly select zero.
+
+The policy travels from daemon composition through `Registry`, the lazy group owner and
+all `GroupStore` constructors. There is no implicit free policy. Zero permits authenticated
+new appends. Positive prices return HTTP 503 with
+`{"error":"group_credit_funding_unavailable"}` for authenticated new content before any
+append, sequence or versionstamp mutation. This baseline has no balance, mint, debit,
+conversion, funding endpoint or signed quote. Positive configuration does not enable a
+funded service. Policy is immutable for a process lifetime and changes on restart; operators
+must coordinate configuration across hosting instances.
+
+Authenticated retries of previously accepted content return their original receipt even
+after a policy change or epoch rotation. Hosting relay policy governs foreign writes;
+home relays proxy the hosting decision without applying their own price. Reads, mirroring,
+imports and epoch transitions are outside this message-price gate. A future funded-credit
+implementation requires owner decisions on payer authorization and issuance, and must
+atomically debit with the existing append transaction while preserving receipt-first retries.
+
 ## Home-relay boundary
 
 Relay addresses are canonical root origins; client configuration, creation and signed-roster admission reject path prefixes, credentials, queries and fragments before creating durable group state. Browser clients require HTTPS except local HTTP development endpoints. Production upstream transport validates public IP/DNS destinations, pins the validated resolution, disables redirects and environment proxies, and applies DNS/connect/total deadlines plus streamed response budgets. Loopback upstream allowance is compiled only into Rust tests.

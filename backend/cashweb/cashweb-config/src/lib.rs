@@ -335,9 +335,20 @@ pub struct CashwebdConf {
     pub bitcoin_rpc: Option<BitcoindRpcClientConf>,
 }
 
+/// Operator policy for authoritative new group message appends.
+/// Units are abstract integer credits, independent of message size or any currency.
+/// Positive prices reject new appends until funded admission is implemented.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+pub struct GroupAppendPolicy {
+    /// Required flat price per newly accepted message. Explicit zero permits free appends.
+    pub per_message_price_credits: u64,
+}
+
 /// Configuration for a registry server
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct RegistryConf {
+    /// Mandatory group admission policy; omission is a startup error.
+    pub groups: GroupAppendPolicy,
     /// Path where the Registry's RocksDB database is stored.
     pub db_path: PathBuf,
     /// Open directory: this relay's own tuple and publishing limits. Omitted keeps the
@@ -2170,6 +2181,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "https://cashweb.registry"
 
                 [registry]
+                groups = { per_message_price_credits = 0 }
                 db_path = "/test/path"
                 net = "mainnet"
                 peers = ["https://example.com", "http://123.45.67.89"]
@@ -2196,6 +2208,9 @@ continuity_file = "/var/lib/frank/continuity"
                 host: "127.0.0.1:6543".parse()?,
                 url: "https://cashweb.registry".parse()?,
                 registry: RegistryConf {
+                    groups: crate::GroupAppendPolicy {
+                        per_message_price_credits: 0
+                    },
                     directory: None,
                     db_path: "/test/path".into(),
                     net: Net::Mainnet,
@@ -2250,6 +2265,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "https://cashweb.registry"
 
                 [registry]
+                groups = { per_message_price_credits = 0 }
                 db_path = "/test/path"
                 net = "mainnet"
                 peers = ["https://example.com", "http://123.45.67.89"]
@@ -2278,6 +2294,9 @@ continuity_file = "/var/lib/frank/continuity"
                 host: "127.0.0.1:6543".parse()?,
                 url: "https://cashweb.registry".parse()?,
                 registry: RegistryConf {
+                    groups: crate::GroupAppendPolicy {
+                        per_message_price_credits: 0
+                    },
                     directory: None,
                     db_path: "/test/path".into(),
                     net: Net::Mainnet,
@@ -2370,6 +2389,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "http://127.0.0.1:8098"
 
                 [registry]
+                groups = { per_message_price_credits = 0 }
                 db_path = "data/registry.rocksdb"
                 net = "mainnet"
                 peers = []
@@ -2402,6 +2422,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "https://cashweb.registry"
 
                 [registry]
+                groups = { per_message_price_credits = 0 }
                 db_path = "/test/path"
                 net = "mainnet"
                 peers = ["https://example.com", "http://123.45.67.89"]

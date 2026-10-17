@@ -473,6 +473,9 @@ pub enum GroupError {
     /// Caller's `write_sig`, `epoch`, or `X-Group-Read-Token` was rejected (`403 Forbidden`).
     #[error("group access forbidden: {0}")]
     Forbidden(String),
+    /// Positive-price new writes cannot be funded by this baseline.
+    #[error("group_credit_funding_unavailable")]
+    CreditFundingUnavailable,
     /// Underlying KV store or upstream proxy failure.
     #[error("group storage error: {0}")]
     Storage(String),
@@ -565,28 +568,35 @@ fn acceptance_key(group_id: &[u8; 32], digest: &[u8; 32]) -> Vec<u8> {
 pub struct GroupStore {
     kv: Arc<dyn RelayKvStore>,
     mirror_threshold: usize,
+    group_policy: cashweb_config::GroupAppendPolicy,
 }
 
 impl GroupStore {
     /// Construct a `GroupStore` over the given [`RelayKvStore`] with default mirror threshold (`2`).
-    pub fn new(kv: Arc<dyn RelayKvStore>) -> Self {
+    pub fn new(kv: Arc<dyn RelayKvStore>, group_policy: cashweb_config::GroupAppendPolicy) -> Self {
         Self {
             kv,
             mirror_threshold: DEFAULT_GROUP_MIRROR_THRESHOLD,
+            group_policy,
         }
     }
 
     /// Construct a `GroupStore` with a custom subscriber threshold `n` for auto-mirroring.
-    pub fn with_mirror_threshold(kv: Arc<dyn RelayKvStore>, mirror_threshold: usize) -> Self {
+    pub fn with_mirror_threshold(
+        kv: Arc<dyn RelayKvStore>,
+        mirror_threshold: usize,
+        group_policy: cashweb_config::GroupAppendPolicy,
+    ) -> Self {
         Self {
             kv,
             mirror_threshold: mirror_threshold.max(1),
+            group_policy,
         }
     }
 
     /// Construct an in-memory `GroupStore` for tests.
-    pub fn new_in_memory() -> Self {
-        Self::new(Arc::new(MemoryKvStore::new()))
+    pub fn new_in_memory(group_policy: cashweb_config::GroupAppendPolicy) -> Self {
+        Self::new(Arc::new(MemoryKvStore::new()), group_policy)
     }
 
     /// Borrow the underlying [`RelayKvStore`].
@@ -832,6 +842,19 @@ impl GroupStore {
             return Err(GroupError::Forbidden(
                 "invalid write_sig for active group epoch write_pubkey".into(),
             ));
+        }
+
+        // Historical receipts remain authoritative across operator policy changes.
+        // Authenticate NEW content before exposing funding admission, and reject before
+        // sequence/versionstamp allocation or any append-side storage effect.
+        if self.group_policy.per_message_price_credits > 0 {
+            if let Some(message) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
+                return Ok(GroupAppendOutcome {
+                    message,
+                    appended: false,
+                });
+            }
+            return Err(GroupError::CreditFundingUnavailable);
         }
 
         let sequence_key = seq_key(&group_id);
@@ -1282,15 +1305,17 @@ pub struct Owner {
     path: PathBuf,
     store: OnceLock<GroupStore>,
     mirror_threshold: usize,
+    group_policy: cashweb_config::GroupAppendPolicy,
 }
 
 impl Owner {
     /// Create a lazy group store owner beside `registry_db`.
-    pub fn new(registry_db: PathBuf) -> Self {
+    pub fn new(registry_db: PathBuf, group_policy: cashweb_config::GroupAppendPolicy) -> Self {
         Self {
             path: registry_db.with_extension(GROUP_STORE_EXTENSION),
             store: OnceLock::new(),
             mirror_threshold: DEFAULT_GROUP_MIRROR_THRESHOLD,
+            group_policy,
         }
     }
 
@@ -1301,7 +1326,11 @@ impl Owner {
             return Ok(store);
         }
         let kv = RocksDbKvStore::open(&self.path)?;
-        let store = GroupStore::with_mirror_threshold(Arc::new(kv), self.mirror_threshold);
+        let store = GroupStore::with_mirror_threshold(
+            Arc::new(kv),
+            self.mirror_threshold,
+            self.group_policy,
+        );
         store.check_baseline()?;
         let _ = self.store.set(store);
         self.store
@@ -1404,8 +1433,18 @@ mod tests {
     #[test]
     fn epoch_cas_backend_failures_are_not_reported_as_successful_creation_or_rotation() {
         let kv = Arc::new(MemoryKvStore::new());
-        let healthy = GroupStore::new(kv.clone());
-        let failing = GroupStore::new(Arc::new(FailingCommitKv(kv)));
+        let healthy = GroupStore::new(
+            kv.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
+        let failing = GroupStore::new(
+            Arc::new(FailingCommitKv(kv)),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         assert!(matches!(
@@ -1501,8 +1540,107 @@ mod tests {
         message
     }
 
+    #[test]
+    fn group_price_policy_rejects_unfunded_new_content_without_storage_effects() {
+        let kv = Arc::new(MemoryKvStore::new());
+        let store = GroupStore::new(
+            kv.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: u64::MAX,
+            },
+        );
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        let before = kv.scan_prefix_range(&[], None, 100).unwrap();
+        let (write_sk, _) = keypair(42);
+        assert_eq!(
+            store.put_message(&id, message_for(&id, 0, 1, &write_sk)),
+            Err(GroupError::CreditFundingUnavailable)
+        );
+        assert_eq!(kv.scan_prefix_range(&[], None, 100).unwrap(), before);
+        let mut forged = message_for(&id, 0, 2, &write_sk);
+        forged.write_sig = "00".repeat(64);
+        assert!(matches!(
+            store.put_message(&id, forged),
+            Err(GroupError::Forbidden(_))
+        ));
+    }
+
+    #[test]
+    fn group_zero_price_accepts_varied_sizes_and_retry_survives_positive_policy_reopen_rotation() {
+        let path = std::env::temp_dir().join(format!(
+            "frank-group-price-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let initial = root_frame(3, 0, &"00".repeat(32)).normalized().unwrap();
+        let id = initial.group_id.clone();
+        let (write_sk, _) = keypair(42);
+        let original = message_for(&id, 0, 1, &write_sk);
+        let receipt;
+        {
+            let store = GroupStore::new(
+                Arc::new(RocksDbKvStore::open(&path).unwrap()),
+                cashweb_config::GroupAppendPolicy {
+                    per_message_price_credits: 0,
+                },
+            );
+            store.put_epoch(&id, initial.clone()).unwrap();
+            receipt = store.put_message(&id, original.clone()).unwrap().message;
+            let mut large = message_for(&id, 0, 2, &write_sk);
+            large.ciphertext = "ab".repeat(1024 * 1024);
+            large.write_sig = sign_digest(&write_sk, &large.signing_digest().unwrap());
+            assert!(store.put_message(&id, large.clone()).unwrap().appended);
+            large.ciphertext.push_str("ab");
+            assert!(matches!(
+                store.put_message(&id, large),
+                Err(GroupError::InvalidInput(_))
+            ));
+        }
+        {
+            let store = GroupStore::new(
+                Arc::new(RocksDbKvStore::open(&path).unwrap()),
+                cashweb_config::GroupAppendPolicy {
+                    per_message_price_credits: 7,
+                },
+            );
+            let retry = store.put_message(&id, original.clone()).unwrap();
+            assert!(!retry.appended);
+            assert_eq!(retry.message, receipt);
+            store
+                .put_epoch(&id, root_frame(3, 1, &initial.epoch_hash))
+                .unwrap();
+            assert_eq!(
+                store.put_message(&id, original.clone()).unwrap().message,
+                receipt
+            );
+            assert!(matches!(
+                store.put_message(&id, message_for(&id, 0, 3, &write_sk)),
+                Err(GroupError::Forbidden(_))
+            ));
+            assert_eq!(
+                store.put_message(&id, message_for(&id, 1, 4, &write_sk)),
+                Err(GroupError::CreditFundingUnavailable)
+            );
+            let mut invalid_retry = original;
+            invalid_retry.write_sig = "00".repeat(64);
+            assert!(matches!(
+                store.put_message(&id, invalid_retry),
+                Err(GroupError::Forbidden(_))
+            ));
+            assert_eq!(store.list_messages(&id, 0, 10).unwrap().len(), 2);
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     fn verify_rotation_serializes_with_in_flight_appends(backend: Arc<dyn RelayKvStore>) {
-        let store = GroupStore::new(backend.clone());
+        let store = GroupStore::new(
+            backend.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         let committed = store.put_epoch(&id, initial).unwrap();
@@ -1513,7 +1651,12 @@ mod tests {
             pause: std::sync::atomic::AtomicBool::new(true),
             pause_at_lookup: false,
         });
-        let in_flight = GroupStore::new(paused_kv.clone());
+        let in_flight = GroupStore::new(
+            paused_kv.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let (old_write_sk, _) = keypair(42);
         let pending = message_for(&id, 0, 1, &old_write_sk);
         let pending_id = id.clone();
@@ -1540,7 +1683,12 @@ mod tests {
         let start = Arc::new(std::sync::Barrier::new(9));
         let mut writers = Vec::new();
         for nonce in 2..10 {
-            let replica = GroupStore::new(backend.clone());
+            let replica = GroupStore::new(
+                backend.clone(),
+                cashweb_config::GroupAppendPolicy {
+                    per_message_price_credits: 0,
+                },
+            );
             let writer_id = id.clone();
             let message = message_for(&id, 1, nonce, &new_write_sk);
             let writer_start = start.clone();
@@ -1577,7 +1725,12 @@ mod tests {
         verify_rotation_serializes_with_in_flight_appends(Arc::new(
             RocksDbKvStore::open(&path).unwrap(),
         ));
-        let reopened = GroupStore::new(Arc::new(RocksDbKvStore::open(&path).unwrap()));
+        let reopened = GroupStore::new(
+            Arc::new(RocksDbKvStore::open(&path).unwrap()),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let id = root_frame(3, 0, &"00".repeat(32)).group_id;
         assert_eq!(reopened.get_current_epoch(&id).unwrap().unwrap().epoch, 1);
         assert_eq!(reopened.list_messages(&id, 0, 10).unwrap().len(), 8);
@@ -1586,8 +1739,18 @@ mod tests {
     #[test]
     fn failed_atomic_append_does_not_publish_message_or_consume_sequence() {
         let kv = Arc::new(MemoryKvStore::new());
-        let healthy = GroupStore::new(kv.clone());
-        let failing = GroupStore::new(Arc::new(FailingCommitKv(kv.clone())));
+        let healthy = GroupStore::new(
+            kv.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
+        let failing = GroupStore::new(
+            Arc::new(FailingCommitKv(kv.clone())),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         healthy.put_epoch(&id, initial).unwrap();
@@ -1619,21 +1782,41 @@ mod tests {
         let id = initial.group_id.clone();
         {
             let backend = Arc::new(RocksDbKvStore::open(&path).unwrap());
-            let failing = GroupStore::new(Arc::new(FailingCommitKv(backend)));
+            let failing = GroupStore::new(
+                Arc::new(FailingCommitKv(backend)),
+                cashweb_config::GroupAppendPolicy {
+                    per_message_price_credits: 0,
+                },
+            );
             assert!(failing.put_epoch(&id, initial.clone()).is_err());
         }
         {
             let backend = Arc::new(RocksDbKvStore::open(&path).unwrap());
-            let healthy = GroupStore::new(backend.clone());
+            let healthy = GroupStore::new(
+                backend.clone(),
+                cashweb_config::GroupAppendPolicy {
+                    per_message_price_credits: 0,
+                },
+            );
             assert!(healthy.get_current_epoch(&id).unwrap().is_none());
             assert!(healthy.get_epoch(&id, 0).unwrap().is_none());
             let committed = healthy.put_epoch(&id, initial).unwrap();
-            let failing = GroupStore::new(Arc::new(FailingCommitKv(backend)));
+            let failing = GroupStore::new(
+                Arc::new(FailingCommitKv(backend)),
+                cashweb_config::GroupAppendPolicy {
+                    per_message_price_credits: 0,
+                },
+            );
             assert!(failing
                 .put_epoch(&id, root_frame(3, 1, &committed.epoch_hash))
                 .is_err());
         }
-        let reopened = GroupStore::new(Arc::new(RocksDbKvStore::open(&path).unwrap()));
+        let reopened = GroupStore::new(
+            Arc::new(RocksDbKvStore::open(&path).unwrap()),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let current = reopened.get_current_epoch(&id).unwrap().unwrap();
         assert_eq!(current.epoch, 0);
         assert_eq!(reopened.get_epoch(&id, 0).unwrap().unwrap(), current);
@@ -1646,7 +1829,9 @@ mod tests {
 
     #[test]
     fn mirrors_reject_authoritative_local_message_and_epoch_writes() {
-        let store = GroupStore::new_in_memory();
+        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store
@@ -1677,7 +1862,9 @@ mod tests {
 
     #[test]
     fn foreign_admission_requires_capability_and_preserves_authoritative_ownership() {
-        let store = GroupStore::new_in_memory();
+        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         assert!(store
@@ -1747,7 +1934,9 @@ mod tests {
         ));
         assert!(store.list_messages(&id, 0, 10).unwrap().is_empty());
         assert_eq!(store.get_current_epoch(&id).unwrap().unwrap(), current);
-        let local = GroupStore::new_in_memory();
+        let local = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         local.put_epoch(&id, initial.clone()).unwrap();
         assert!(local
             .record_foreign_subscriber(
@@ -1763,7 +1952,9 @@ mod tests {
 
     #[test]
     fn epoch_authority_rejects_forgery_and_binds_all_mutable_fields() {
-        let store = GroupStore::new_in_memory();
+        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         let (write_sk, _) = keypair(42);
@@ -1833,7 +2024,9 @@ mod tests {
 
     #[test]
     fn mirror_rejects_poisoned_certificates_messages_and_epoch_rollback() {
-        let store = GroupStore::new_in_memory();
+        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let epoch0 = root_frame(4, 0, &"00".repeat(32)).normalized().unwrap();
         let id = epoch0.group_id.clone();
         let mut poisoned = epoch0.clone();
@@ -1850,7 +2043,9 @@ mod tests {
             .ingest_mirrored_upstream(&id, Some(epoch0), &[])
             .unwrap();
         assert_eq!(store.get_current_epoch(&id).unwrap().unwrap(), epoch1);
-        let source = GroupStore::new_in_memory();
+        let source = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let source_epoch = root_frame(4, 0, &"00".repeat(32));
         source.put_epoch(&id, source_epoch).unwrap();
         let (write_sk, _) = keypair(42);
@@ -1881,7 +2076,9 @@ mod tests {
 
     #[test]
     fn epoch_cas_enforces_monotonicity_and_rejects_concurrent_collision_with_current_frame() {
-        let store = GroupStore::new_in_memory();
+        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let (group_sk, group_pk) = keypair(1);
         let group_id = hex::encode(derive_group_id(&group_pk));
 
@@ -1944,7 +2141,9 @@ mod tests {
 
     #[test]
     fn group_messages_enforce_epoch_write_key_and_reject_kicked_or_outsider_keys() {
-        let store = GroupStore::new_in_memory();
+        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let (group_sk, group_pk) = keypair(2);
         let group_id = hex::encode(derive_group_id(&group_pk));
 
@@ -2068,13 +2267,23 @@ mod tests {
     #[test]
     fn baseline_is_read_only_namespace_scoped_and_initializes_concurrently() {
         let empty = Arc::new(MemoryKvStore::new());
-        GroupStore::new(empty.clone())
-            .ingest_mirrored_upstream(&"00".repeat(32), None, &[])
-            .unwrap();
+        GroupStore::new(
+            empty.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        )
+        .ingest_mirrored_upstream(&"00".repeat(32), None, &[])
+        .unwrap();
         assert!(empty.scan_prefix_range(&[], None, 1).unwrap().is_empty());
         let kv = Arc::new(MemoryKvStore::new());
         kv.put(b"unrelated:registry", b"preserved").unwrap();
-        let store = GroupStore::new(kv.clone());
+        let store = GroupStore::new(
+            kv.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let initial = root_frame(3, 0, &"00".repeat(32));
         assert!(store
             .get_current_epoch(&initial.group_id)
@@ -2100,7 +2309,12 @@ mod tests {
         let threads: Vec<_> = [3, 4]
             .into_iter()
             .map(|seed| {
-                let replica = GroupStore::new(kv.clone());
+                let replica = GroupStore::new(
+                    kv.clone(),
+                    cashweb_config::GroupAppendPolicy {
+                        per_message_price_credits: 0,
+                    },
+                );
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
                     let epoch = root_frame(seed, 0, &"00".repeat(32));
@@ -2124,7 +2338,12 @@ mod tests {
             &initial.to_cbor_bytes().unwrap(),
         )
         .unwrap();
-        let unsupported = GroupStore::new(old.clone());
+        let unsupported = GroupStore::new(
+            old.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         assert!(matches!(
             unsupported.get_current_epoch(&initial.group_id),
             Err(GroupError::Storage(_))
@@ -2142,7 +2361,12 @@ mod tests {
     #[test]
     fn same_signed_content_race_appends_once_and_signature_encodings_share_receipt() {
         let kv = Arc::new(MemoryKvStore::new());
-        let store = GroupStore::new(kv.clone());
+        let store = GroupStore::new(
+            kv.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store.put_epoch(&id, initial).unwrap();
@@ -2151,7 +2375,12 @@ mod tests {
         let start = Arc::new(std::sync::Barrier::new(3));
         let threads: Vec<_> = (0..2)
             .map(|_| {
-                let replica = GroupStore::new(kv.clone());
+                let replica = GroupStore::new(
+                    kv.clone(),
+                    cashweb_config::GroupAppendPolicy {
+                        per_message_price_credits: 0,
+                    },
+                );
                 let id = id.clone();
                 let envelope = envelope.clone();
                 let start = start.clone();
@@ -2193,9 +2422,19 @@ mod tests {
         let envelope = message_for(&id, 0, 1, &key);
         let receipt = {
             let kv = Arc::new(RocksDbKvStore::open(&path).unwrap());
-            let store = GroupStore::new(kv.clone());
+            let store = GroupStore::new(
+                kv.clone(),
+                cashweb_config::GroupAppendPolicy {
+                    per_message_price_credits: 0,
+                },
+            );
             let initial = store.put_epoch(&id, initial).unwrap();
-            let failing = GroupStore::new(Arc::new(FailingCommitKv(kv.clone())));
+            let failing = GroupStore::new(
+                Arc::new(FailingCommitKv(kv.clone())),
+                cashweb_config::GroupAppendPolicy {
+                    per_message_price_credits: 0,
+                },
+            );
             assert!(failing.put_message(&id, envelope.clone()).is_err());
             assert!(kv
                 .get(&acceptance_key(
@@ -2214,7 +2453,12 @@ mod tests {
             store.put_epoch(&id, signed_epoch(&root, next)).unwrap();
             accepted.message
         };
-        let store = GroupStore::new(Arc::new(RocksDbKvStore::open(&path).unwrap()));
+        let store = GroupStore::new(
+            Arc::new(RocksDbKvStore::open(&path).unwrap()),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let retry = store.put_message(&id, envelope).unwrap();
         assert!(!retry.appended);
         assert_eq!(retry.message, receipt);
@@ -2228,7 +2472,12 @@ mod tests {
     #[test]
     fn same_content_cas_loser_acknowledges_winner_even_when_epoch_rotates() {
         let backend = Arc::new(MemoryKvStore::new());
-        let store = GroupStore::new(backend.clone());
+        let store = GroupStore::new(
+            backend.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         let initial = store.put_epoch(&id, initial).unwrap();
@@ -2241,7 +2490,12 @@ mod tests {
         });
         let (key, _) = keypair(42);
         let envelope = message_for(&id, 0, 1, &key);
-        let replica = GroupStore::new(paused.clone());
+        let replica = GroupStore::new(
+            paused.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let replica_id = id.clone();
         let pending = envelope.clone();
         let thread = std::thread::spawn(move || replica.put_message(&replica_id, pending));
@@ -2259,7 +2513,12 @@ mod tests {
     #[test]
     fn corrupt_acceptance_locator_and_original_signature_fail_without_appending() {
         let kv = Arc::new(MemoryKvStore::new());
-        let store = GroupStore::new(kv.clone());
+        let store = GroupStore::new(
+            kv.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store.put_epoch(&id, initial).unwrap();
@@ -2303,7 +2562,14 @@ mod tests {
             let kv = RocksDbKvStore::open(&path).unwrap();
             kv.put(&key, &raw).unwrap();
         }
-        assert!(Owner::new(registry).get().is_err());
+        assert!(Owner::new(
+            registry,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0
+            }
+        )
+        .get()
+        .is_err());
         let kv = RocksDbKvStore::open(&path).unwrap();
         assert!(kv.get(GROUP_FORMAT_KEY).unwrap().is_none());
         assert_eq!(kv.get(&key).unwrap().unwrap(), raw);
@@ -2311,7 +2577,12 @@ mod tests {
     #[test]
     fn stale_empty_acceptance_lookup_rechecks_receipt_before_rejecting_rotated_epoch() {
         let backend = Arc::new(MemoryKvStore::new());
-        let store = GroupStore::new(backend.clone());
+        let store = GroupStore::new(
+            backend.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         let initial = store.put_epoch(&id, initial).unwrap();
@@ -2324,7 +2595,12 @@ mod tests {
         });
         let (key, _) = keypair(42);
         let envelope = message_for(&id, 0, 1, &key);
-        let replica = GroupStore::new(paused.clone());
+        let replica = GroupStore::new(
+            paused.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let replica_id = id.clone();
         let pending = envelope.clone();
         let thread = std::thread::spawn(move || replica.put_message(&replica_id, pending));

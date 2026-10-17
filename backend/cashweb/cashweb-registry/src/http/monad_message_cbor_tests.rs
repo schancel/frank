@@ -189,6 +189,9 @@ impl NativeDirectoryFixture {
             Db::open(root.path().join("db")).unwrap(),
             Arc::new(DisabledChainAdapter),
             bitcoinsuite_core::Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
         ));
         let (directory, ready) =
             DirectoryRuntime::start_with_clock(registry.clone(), config.clone(), clock.clock())
@@ -268,6 +271,9 @@ impl NativeDirectoryFixture {
             crate::store::db::Db::open(root.path().join("db")).unwrap(),
             Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
             bitcoinsuite_core::Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
         ));
         // Nothing is re-published: the restarted relay finds the accounts in its own database.
         let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
@@ -366,6 +372,9 @@ async fn ordinary_directory_drop_releases_registry_before_reopen() {
         crate::store::db::Db::open(root.path().join("db")).unwrap(),
         Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
         bitcoinsuite_core::Net::Regtest,
+        cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        },
     ));
     let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
         registry,

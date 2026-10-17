@@ -224,6 +224,45 @@ function serveDocsPlugin() {
   }
 }
 
+function brandPublicIconsPlugin(brand) {
+  const assetsDir = path.resolve(__dirname, 'src/assets')
+  const iconEntries = Object.entries(brand.publicIcons || {})
+  return {
+    name: 'app:brand-public-icons',
+    configureServer(server) {
+      if (iconEntries.length === 0) return
+      server.middlewares.use((req, res, next) => {
+        const pathname = (req.url || '').split('?')[0].replace(/^\/+/, '')
+        const mappedRel = brand.publicIcons?.[pathname]
+        if (!mappedRel) return next()
+        const absPath = path.join(assetsDir, mappedRel)
+        if (!fs.existsSync(absPath)) return next()
+        const ext = path.extname(absPath).toLowerCase()
+        const mime =
+          ext === '.svg'
+            ? 'image/svg+xml'
+            : ext === '.ico'
+            ? 'image/x-icon'
+            : 'image/png'
+        res.setHeader('Content-Type', mime)
+        fs.createReadStream(absPath).pipe(res)
+      })
+    },
+    writeBundle(options) {
+      const outDir = options?.dir
+      if (!outDir || iconEntries.length === 0) return
+      for (const [publicRel, assetRel] of iconEntries) {
+        const srcPath = path.join(assetsDir, assetRel)
+        const destPath = path.join(outDir, publicRel)
+        if (fs.existsSync(srcPath)) {
+          fs.mkdirSync(path.dirname(destPath), { recursive: true })
+          fs.copyFileSync(srcPath, destPath)
+        }
+      }
+    },
+  }
+}
+
 export default configure(ctx => {
   return {
     // app boot file (/src/boot)
@@ -356,6 +395,7 @@ export default configure(ctx => {
         globalInject,
         protobufCjsInterop(),
         serveDocsPlugin(),
+        brandPublicIconsPlugin(activeBrand),
       ],
 
       // Vite equivalent of webpack's `extendWebpack`'s `cfg.resolve.modules` directory-prepend
@@ -396,6 +436,16 @@ export default configure(ctx => {
         viteConf.resolve.alias = {
           ...viteConf.resolve.alias,
           ...stdLibBrowserAliases,
+          '@brand-hero-logo': path.resolve(
+            __dirname,
+            'src/assets',
+            activeBrand.heroLogo,
+          ),
+          '@brand-sidebar-logo': path.resolve(
+            __dirname,
+            'src/assets',
+            activeBrand.sidebarLogo,
+          ),
           // Ticket #53 (package split): `bitcore-lib-xpi` used to live outside `node_modules`
           // (`local_modules/`), aliased in by hand here -- now a real yarn workspace package
           // (`packages/bitcore-lib-xpi`), symlinked into `node_modules` like any other

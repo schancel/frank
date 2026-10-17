@@ -9,10 +9,7 @@
   >
     <q-item-section avatar class="chat-list-link-avatar-section">
       <q-avatar rounded size="32px">
-        <img
-          src="~assets/brand-plainspoken/raster/plainspoken-transparent-512.png"
-          v-if="!icon"
-        />
+        <img src="@brand-sidebar-logo" v-if="!icon" />
         <q-icon :name="icon" size="24px" v-if="icon" />
       </q-avatar>
     </q-item-section>

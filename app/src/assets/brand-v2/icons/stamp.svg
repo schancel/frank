@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" role="img" aria-labelledby="title">
+  <title id="title">Payment stamp</title>
+  <path d="M6 3h12v4a3 3 0 0 0 0 6v8H6v-8a3 3 0 0 0 0-6V3Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M10 8h4m-4 4h4m-4 4h2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg>

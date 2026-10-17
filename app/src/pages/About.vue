@@ -26,7 +26,7 @@
           data-test="about-hero"
         >
           <q-avatar size="80px" class="q-mb-sm shadow-2">
-            <img src="~assets/stamp-icon.png" :alt="$t('about.appName')" />
+            <img src="@brand-hero-logo" :alt="$t('about.appName')" />
           </q-avatar>
           <div class="text-h4 text-weight-bold">
             {{ $t('about.appName') }}

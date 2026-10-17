@@ -76,6 +76,11 @@
         @navigateThread="navigateEmailThread"
         @archiveThread="archiveCurrentThread"
       />
+      <article-reader-pane
+        v-else-if="activeReaderArticle"
+        :article="activeReaderArticle"
+        @close="closeArticleReader"
+      />
       <q-page v-else class="chat-page-background column no-wrap">
         <div class="col relative-position">
           <q-scroll-area
@@ -111,6 +116,7 @@
                   @forwardClicked="handleForwardClicked"
                   @replyDivClick="scrollToMessage"
                   @sendFollowUp="sendFollowUpItems"
+                  @openReader="openArticleReader"
                   @playAgain="blackjackDialog = true"
                   @senderClicked="openSenderProfile"
                 />
@@ -149,7 +155,7 @@
       </q-page>
     </q-page-container>
     <q-footer
-      v-if="!isEmailThread"
+      v-if="!isEmailThread && !activeReaderArticle"
       bordered
       :height-hint="64"
       class="chat-footer chat-input-bar"
@@ -192,8 +198,11 @@
       <chat-input
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
+        @mentalPokerClicked="sendMentalPokerChallenge"
         @diceClicked="sendDiceChallenge"
         @rpsClicked="rpsDialog = true"
+        @articleClicked="articleDialog = true"
+        @invoiceClicked="invoiceDialog = true"
         @sendStealthClicked="openStealthDialog"
         @swapClicked="openSwapDialog"
         ref="chatInput"
@@ -229,6 +238,29 @@
           :busy="sendingMessage"
           @submit="sendRpsChallenge"
           @cancel="rpsDialog = false"
+        />
+      </q-card>
+    </q-dialog>
+    <q-dialog v-model="articleDialog">
+      <article-compose-form
+        v-if="articleDialog"
+        :initial-author-name="getProfile.profile?.name || ''"
+        @send="sendArticle"
+        @cancel="articleDialog = false"
+      />
+    </q-dialog>
+    <q-dialog v-model="invoiceDialog">
+      <q-card v-if="invoiceDialog" data-testid="invoice-dialog">
+        <invoice-compose-form
+          :payee-identity="ownAddress"
+          :receive-address="ownAddress"
+          :chain-key="activeChainKey"
+          :network-id="activeNetworkId"
+          :native-symbol="activeNativeSymbol"
+          :native-decimals="activeNativeDecimals"
+          :busy="sendingMessage"
+          @submit="sendInvoice"
+          @cancel="invoiceDialog = false"
         />
       </q-card>
     </q-dialog>
@@ -284,6 +316,9 @@ import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackChallengeForm from '../components/chat/BlackjackChallengeForm.vue'
 import RpsChallengeForm from '../components/chat/RpsChallengeForm.vue'
+import ArticleReaderPane from '../components/chat/ArticleReaderPane.vue'
+import ArticleComposeForm from '../components/chat/ArticleComposeForm.vue'
+import InvoiceComposeForm from '../components/chat/InvoiceComposeForm.vue'
 import SendStealthDialog from '../components/dialogs/SendStealthDialog.vue'
 import {
   configuredStealthAssets,
@@ -336,7 +371,16 @@ import {
   buildDiceChallenge,
   buildRpsChallenge,
 } from '../utils/p2p-games'
+import {
+  automaticMentalPokerSteps,
+  buildMentalPokerChallenge,
+} from '../utils/p2p-mental-poker'
 import type { RpsMove } from '@frank/wallet/message-item-plugins/rps/fair'
+import {
+  toArticleApplicationItem,
+  type ArticlePayload,
+} from '@frank/wallet/message-item-plugins/article'
+import { MENTAL_POKER_PLUGIN_ID } from '@frank/wallet/message-item-plugins/mental-poker'
 import {
   getOwnCanonicalAddress,
   sameCanonicalAddress,
@@ -352,11 +396,16 @@ import {
   activeChain,
   type DirectMessagePreparationProgress,
 } from '@frank/wallet/chain'
+import { getChainConfig } from '@frank/wallet/chain/chains-registry'
 import { formatDisplayNumber } from '../utils/chain-amount'
 import { nextFollowBottom } from '../utils/follow-bottom'
 import { composeChatItems, fitsOneMessage } from '../utils/chat-attachments'
 import type { PostAttachment } from '../utils/post-editor'
-import type { MessageItem, EmailItem } from '@frank/cashweb/types/messages'
+import type {
+  ApplicationMessageItem,
+  MessageItem,
+  EmailItem,
+} from '@frank/cashweb/types/messages'
 
 import { debounce, QScrollArea } from 'quasar'
 
@@ -389,6 +438,9 @@ export default defineComponent({
     ChatInput,
     BlackjackChallengeForm,
     RpsChallengeForm,
+    ArticleReaderPane,
+    ArticleComposeForm,
+    InvoiceComposeForm,
     SendStealthDialog,
     OfferSwapDialog,
     ForwardMessageDialog,
@@ -447,6 +499,10 @@ export default defineComponent({
       blackjackPreparing: false,
       blackjackPreparationSequence: 0,
       rpsDialog: false,
+      articleDialog: false,
+      invoiceDialog: false,
+      activeReaderArticle: null as ArticlePayload | null,
+      savedScrollPositionBeforeReader: 0,
       stealthDialog: false,
       stealthAssets: [] as StealthAssetOption[],
       stealthQuote: { status: 'idle' } as StealthDialogQuoteState,
@@ -1403,6 +1459,15 @@ export default defineComponent({
       const built = buildDiceChallenge(own, peer)
       await this.sendFollowUpItems({ items: [built.item] })
     },
+    async sendMentalPokerChallenge() {
+      if (this.sendingMessage) return
+      const peer = this.recipientAddress || this.address
+      const own = (await getOwnCanonicalAddress()) ?? 'self'
+      if (this.sendingMessage || peer !== (this.recipientAddress || this.address))
+        return
+      const built = buildMentalPokerChallenge({ own, peer, stakeWei: 0n })
+      await this.sendFollowUpItems({ items: [built.item] })
+    },
     async sendRpsChallenge({ move }: { move: RpsMove }) {
       if (this.sendingMessage || !this.rpsDialog) return
       const peer = this.recipientAddress || this.address
@@ -1417,6 +1482,31 @@ export default defineComponent({
       this.rpsDialog = false
       await this.sendFollowUpItems({ items: [built.item] })
     },
+    async sendArticle(payload: ArticlePayload) {
+      if (this.sendingMessage || !this.articleDialog) return
+      const item = toArticleApplicationItem(payload)
+      this.articleDialog = false
+      await this.sendFollowUpItems({ items: [item] })
+    },
+    async sendInvoice({ item }: { item: ApplicationMessageItem }) {
+      if (this.sendingMessage || !this.invoiceDialog) return
+      this.invoiceDialog = false
+      await this.sendFollowUpItems({ items: [item] })
+    },
+    openArticleReader(payload: ArticlePayload) {
+      this.savedScrollPositionBeforeReader = this.lastScrollPosition
+      this.activeReaderArticle = payload
+    },
+    closeArticleReader() {
+      const savedScroll = this.savedScrollPositionBeforeReader
+      this.activeReaderArticle = null
+      void this.$nextTick(() => {
+        const scrollArea = this.chatScroll
+        if (scrollArea && savedScroll > 0) {
+          scrollArea.setScrollPosition('vertical', savedScroll, 0)
+        }
+      })
+    },
     // Dealer steps that involve no choice and pay nothing (deal, card, a reveal that owes
     // nothing) are sent without asking. Each position of a hand is attempted once per page
     // session; a failed send stays in the chat with its Retry.
@@ -1428,7 +1518,14 @@ export default defineComponent({
       const hasP2pGame = this.peerMessages.some(m =>
         m.items?.some(it => it.type === 'dice' || it.type === 'rps'),
       )
-      if (!hasBlackjack && !hasP2pGame) {
+      const hasMentalPoker = this.peerMessages.some(m =>
+        m.items?.some(
+          it =>
+            it.type === 'application' &&
+            it.itemType === MENTAL_POKER_PLUGIN_ID,
+        ),
+      )
+      if (!hasBlackjack && !hasP2pGame && !hasMentalPoker) {
         return
       }
       const own = await getOwnCanonicalAddress()
@@ -1475,6 +1572,9 @@ export default defineComponent({
           : []),
         ...(hasP2pGame
           ? automaticP2pGameSteps(this.peerMessages, own, peer)
+          : []),
+        ...(hasMentalPoker
+          ? automaticMentalPokerSteps(this.peerMessages, own, peer)
           : []),
       ].find(candidate => !this.blackjackAttempted.has(candidate.key))
       if (!step || this.sendingMessage || this.resumingHand) return
@@ -1647,6 +1747,26 @@ export default defineComponent({
     },
   },
   computed: {
+    activeChainKey(): string {
+      return activeChain.chainIdentifier || 'monad'
+    },
+    activeNetworkId(): string {
+      try {
+        return getChainConfig(activeChain.chainIdentifier).chainId
+      } catch {
+        return '10143'
+      }
+    },
+    activeNativeSymbol(): string {
+      return activeChain.unit || 'MON'
+    },
+    activeNativeDecimals(): number {
+      try {
+        return getChainConfig(activeChain.chainIdentifier).nativeDecimals
+      } catch {
+        return 18
+      }
+    },
     swapStampValue(): string {
       try {
         return activeChain.fromDisplayAmount(this.stampAmount || '0').toString()

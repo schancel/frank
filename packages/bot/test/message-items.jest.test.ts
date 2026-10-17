@@ -251,6 +251,9 @@ it('actual app and all-bots registries carry signed offer/accept/reject bidirect
       ).types(),
       'swap-negotiation-v1',
       'newsletter-article-v1',
+      'article-v1',
+      'invoice-v1',
+      'mental-poker-v1',
     ])
   } finally {
     await f.close()

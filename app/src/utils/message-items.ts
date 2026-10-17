@@ -12,7 +12,10 @@
  */
 import { createNegotiationMessagePlugin } from '@frank/swap-protocol/src/message-plugin'
 import { TESTNET_NEGOTIATION_POLICY } from '@frank/swap-protocol/src/negotiation'
+import { createArticlePlugin } from '@frank/wallet/message-item-plugins/article'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
+import { createInvoicePlugin } from '@frank/wallet/message-item-plugins/invoice'
+import { createMentalPokerPlugin } from '@frank/wallet/message-item-plugins/mental-poker'
 import { createNewsletterArticlePlugin } from '@frank/wallet/message-item-plugins/newsletter'
 import {
   pluginCapabilitiesNotYetAvailable,
@@ -27,6 +30,9 @@ export function createAppMessageItemRegistry(): MessageItemRegistry {
     createNegotiationMessagePlugin(TESTNET_NEGOTIATION_POLICY),
   )
   registry.registerApplication(createNewsletterArticlePlugin())
+  registry.registerApplication(createArticlePlugin())
+  registry.registerApplication(createInvoicePlugin())
+  registry.registerApplication(createMentalPokerPlugin())
   return registry
 }
 

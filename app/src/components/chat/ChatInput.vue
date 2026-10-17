@@ -146,6 +146,48 @@
             <q-item
               clickable
               v-close-popup
+              data-testid="mental-poker-menu-item"
+              @click="$emit('mentalPokerClicked')"
+            >
+              <q-item-section avatar side>
+                <q-icon name="style" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.mentalPokerChallenge') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="article-menu-item"
+              @click="$emit('articleClicked')"
+            >
+              <q-item-section avatar side>
+                <q-icon name="article" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.writeArticle') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="invoice-menu-item"
+              @click="$emit('invoiceClicked')"
+            >
+              <q-item-section avatar side>
+                <q-icon name="receipt_long" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.createInvoice') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
               data-testid="swap-menu-item"
               @click="$emit('swapClicked')"
             >
@@ -495,6 +537,9 @@ export default defineComponent({
     'blackjackClicked',
     'diceClicked',
     'rpsClicked',
+    'mentalPokerClicked',
+    'articleClicked',
+    'invoiceClicked',
     'sendStealthClicked',
     'swapClicked',
   ],

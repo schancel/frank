@@ -1,6 +1,5 @@
-import { CANONICAL_DM_MAX_TRANSACTIONS } from '@frank/cashweb/relay/canonical-dm-transport';
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
-import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy";
+import { type DefaultStampQuote } from "../oracle/stamp-policy";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import {
@@ -9,10 +8,8 @@ import {
 } from "../storage/evm-native-operation-journal";
 import type {
   EvmWalletOperationAdmission,
-  MonadWalletOperationAdmission,
 } from "../storage/evm-wallet-bundle";
 import {
-  EvmInputAdmissionError,
   nativeAdmissionJournal,
   poolSpendAdmission,
 } from "../evm-input-admission";
@@ -23,50 +20,44 @@ import type {
   PublicNextRevisionExport,
 } from "../monad-wallet-handle";
 import {
-  deriveEvmStealthAddress,
-  deriveEvmStealthPrivateKey,
-  evmStealthItem,
-  stealthCoinFromItem,
-  stealthItemTransfer,
-} from "../monad-stealth";
-import {
   CONTACT_PAYMENT_NAMESPACE,
   EVM_COIN_NAMESPACE,
   LevelRecordStore,
   MemoryRecordStore,
-  messagePaymentOf,
-  applyStoredNativeCoinObservation,
-  recordStoredEvmCoin,
-  markStoredEvmCoinNoted,
-  registerStoredEvmErc20Payment,
-  registerStoredEvmNativePaymentSet,
-  refreshStoredEvmNativePaymentSet,
-  refreshStoredEvmErc20Position,
-  receivedErc20Payments,
-  fundedErc20Coins,
-  type EvmErc20Reader,
-  pendingCoinDue,
-  receivedCoinNoteOf,
-  receivedPaymentOf,
   spendableCoinTotal,
   spendableCoins,
   type ContactPayment,
   type EvmCoin,
-  type EvmCoinTransfer,
   type RecordStore,
 } from "../storage/evm-coin-store";
 import {
-  createEvmStealthPayments,
-  configuredEvmStealthToken,
   EVM_STEALTH_PREPARATION_NAMESPACE,
   type EvmStealthPreparation,
 } from "./evm-stealth-payments";
-import type {
-  StealthPaymentReceiptClaim,
-  StealthPaymentReceiptCapability,
-} from "../stealth-payment";
-import { Interface } from "ethers";
 import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
+import {
+  FUND_AHEAD_BACKOFF_MAX_MS,
+  FUND_AHEAD_BACKOFF_MIN_MS,
+  MainAccountBusyError,
+  TopicBurnPreparationError,
+  asNothingSent,
+  installEvmStampFundAheadCoordinator,
+  noteMainBalanceForFundAhead,
+  prepareCanonicalStampInventory,
+  prepareEvmTopicBurnAccount,
+  type MainAccountWait,
+} from "../evm-fund-ahead";
+import {
+  PENDING_COIN_PROBES_PER_PASS,
+  SELF_NOTE_RETRY_MS,
+  SOURCE_HELD_FOR_CONTACT_PAYMENT,
+  SWEEP_INCLUSION_WAIT_MS,
+  TRANSFER_FAILURE_RECHECK_MS,
+  consumeEvmSelfNotes,
+  createEvmReceivedCoinAndContactManager,
+  recordEvmReceivedCoins,
+  sourceIsHeld,
+} from "../evm-received-coin-manager";
 /**
  * `MonadChain`: the real `ActiveChain` implementation (ticket #41 -- see `PLAN.md`'s M9 section)
  * over the already-merged Monad wallet clients (`../wallet/monad-stamp-client.ts`,
@@ -123,13 +114,11 @@ import {
 
 import {
   ActiveChain,
-  DirectMessageAlreadyAttemptedError,
   ChainAddress,
   ChainTransaction,
   DirectMessageClient,
   DirectMessageFundAheadResult,
   DirectMessageStampQuote,
-  DirectMessageStampBelowFeeError,
   DirectMessagePreparationProgress,
   DirectMessageReceived,
   DirectMessageSendResult,
@@ -141,11 +130,9 @@ import {
 } from "./active-chain";
 import {
   MessageItem,
-  ReceivedCoinItem,
   StealthItem,
   WalletSyncItem,
 } from "@frank/cashweb/types/messages";
-import { WalletSyncItemRejectedError } from "@frank/cashweb/sync-dispatcher";
 import { applyWalletSyncItem } from "../sync-dispatcher";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
@@ -166,21 +153,15 @@ import type {
   MonadWalletMaterial,
 } from "../monad-wallet-material";
 import type { HDSeed } from "./active-chain";
-import { MonadChangePool } from "../monad-change-pool";
+import { EvmChangePool } from "../monad-change-pool";
 import {
-  FundAheadRefusedError,
-  MonadSubAccountPool,
-  STAMP_PAIR_TRANSFERS,
-  SubAccountSpendRefusedError,
+  EvmSubAccountPool,
 } from "../monad-account-pool";
 import { EvmSpendPool } from "../evm-spend-pool";
 import {
   EvmWallet,
   evmWalletInternals,
-  type CanonicalInventoryFunder,
-  type FundAheadBackoff,
   type MainAccountAdmission,
-  type ReceivedCoinOwner,
 } from "../evm-wallet";
 import {
   BurnNotSentError,
@@ -192,7 +173,6 @@ import {
   DEFAULT_MONAD_CHAIN_ID,
   monadProtocolIdentity,
 } from "../monad-provider";
-import { MonadAccountTxSigner } from "../monad-account-tx";
 import type { EvmWalletHandle } from "../evm-wallet-handle";
 
 import {
@@ -229,13 +209,11 @@ import {
   restoreOutgoingClaims,
   canonicalDirectMessages,
   installedMessageItemRegistry,
-  projectOutboxMessageRecord,
   type CanonicalDirectory,
   type CanonicalMessagingOwner,
   type OutgoingMessageStore,
 } from "./monad-canonical-dm";
-import { EvmStampPayer, waitForSpendSpacing } from "../evm-stamp-payer";
-import { EvmBlockWatcher } from "../evm-block-watcher";
+import { waitForSpendSpacing } from "../evm-stamp-payer";
 export {
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
@@ -549,71 +527,20 @@ export function installCanonicalDirectory(
       internals.canonicalDirectory = undefined;
   };
 }
-/**
- * A fund-ahead pass that could fund nothing (no money, a pair it cannot afford, an earlier
- * transfer still unresolved, a failed read) is not repeated on every host tick: the next pass
- * waits `FUND_AHEAD_BACKOFF_MIN_MS`, doubling while the reason stays the same, up to
- * `FUND_AHEAD_BACKOFF_MAX_MS`. Until then a call answers what the last pass answered and makes
- * no request; that is also the schedule on which a stuck transfer's bytes are offered again.
- * The wait ends early when a send prepares its inventory or when the wallet's own balance read
- * shows the main account grew. Process memory only: a restart starts with no wait.
- */
-/** How an operation waits for the main or identity account while an earlier payment from it has
- * not been seen on chain. By default it waits its turn, however long that is. */
-interface MainAccountWait {
-  /** Give up after this long with {@link MainAccountBusyError}. Default: no limit. */
-  waitMs?: number;
-  /** Called once when the operation starts to wait. */
-  onWaiting?: () => void;
-  /** For a spender the native journal does not record (a funding pass, a transfer to a
-   * contact): also wait while a transaction the native holder itself signed from the account
-   * is undecided. Journal operations leave this off: the journal's own rule refuses a second
-   * transaction over an undecided one at once, and a resume is the one driving it. */
-  waitForOwn?: boolean;
-}
-/** A funding pass signs from the main account outside the native journal: it waits for whatever
- * the wallet signed from that account earlier, a native operation's transaction included. */
-const FUNDING_FROM_MAIN: MainAccountWait = { waitForOwn: true };
-/** The caller's own deadline passed while the main account was still spent by an earlier payment
- * the chain has not shown. Nothing was signed; the same call can be made again. */
-export class MainAccountBusyError extends Error {
-  constructor() {
-    super(
-      "The main account is still spent by an earlier payment the chain has not shown, and the wait given for it ran out. Nothing was signed."
-    );
-    this.name = "MainAccountBusyError";
-  }
-}
-export const FUND_AHEAD_BACKOFF_MIN_MS = 4_000;
-export const FUND_AHEAD_BACKOFF_MAX_MS = 240_000;
-/** The main account was just read: more money than the last pass saw ends its wait. */
-function noteMainBalanceForFundAhead(wallet: object, balanceWei: bigint): void {
-  const internals = evmWalletInternals(wallet);
-  const waiting = internals.fundAheadBackoff;
-  if (
-    waiting?.mainBalanceWei !== undefined &&
-    balanceWei > waiting.mainBalanceWei
-  )
-    internals.fundAheadBackoff = undefined;
-}
-/**
- * Funds receipt-confirmed single-use sender accounts for one canonical stamp of `stampValueWei`,
- * from the wallet's own EVM main account, through the same pool machinery and owner admission as
- * every other inventory preparation. The accounts are left free for whichever message claims
- * them. Returns the funding transaction hashes (empty when inventory already sufficed).
- */
-export function prepareCanonicalStampInventory(
-  wallet: NativeWalletHandle,
-  input: Parameters<CanonicalInventoryFunder>[0]
-): Promise<string[]> {
-  const internals = evmWalletInternals(wallet);
-  const fund = internals.canonicalInventoryFunder;
-  if (!fund || internals.closed)
-    throw new Error(
-      "Canonical inventory requires live typed persistent custody"
-    );
-  return fund(input);
-}
+export {
+  FUND_AHEAD_BACKOFF_MAX_MS,
+  FUND_AHEAD_BACKOFF_MIN_MS,
+  MainAccountBusyError,
+  TopicBurnPreparationError,
+  prepareCanonicalStampInventory,
+} from "../evm-fund-ahead";
+export {
+  PENDING_COIN_PROBES_PER_PASS,
+  SELF_NOTE_RETRY_MS,
+  SOURCE_HELD_FOR_CONTACT_PAYMENT,
+  SWEEP_INCLUSION_WAIT_MS,
+  TRANSFER_FAILURE_RECHECK_MS,
+} from "../evm-received-coin-manager";
 /**
  * Scoped canonical message roles of the live typed wallet for one admitted Current of its own
  * subject. The caller disposes the result. No second copy of the wallet roots is needed.
@@ -660,24 +587,6 @@ function canonicalMessagingFor(wallet: EvmChainWalletHandle) {
     );
   return canonical;
 }
-/** The most pending coins one background pass asks the chain about. */
-export const PENDING_COIN_PROBES_PER_PASS = 8;
-/** How long the wallet waits before asking the chain a second time whether a received payment's
- * transfer really can never land. */
-export const TRANSFER_FAILURE_RECHECK_MS = 2_000;
-/** How long `sweepReceivedCoins` waits for its sweep to be included before answering `pending`. */
-export const SWEEP_INCLUSION_WAIT_MS = 10_000;
-
-/** Per wallet: the accounts (lower case) a signed transfer is held on while its message is being
- * delivered. Nothing else may take such an account's next nonce: not a native send or a sweep
- * (the journal refuses those), and not a funding transfer (which reads the nonce from the node,
- * so it asks here first). */
-const sourceIsHeld = (wallet: object, address: string): boolean =>
-  evmWalletInternals(wallet).heldTransferSources?.().has(address.toLowerCase()) ??
-  false;
-/** Why a funding transfer was refused: its source is held by a payment to a contact. */
-export const SOURCE_HELD_FOR_CONTACT_PAYMENT =
-  "These funds are held for a payment to a contact whose message is being delivered";
 function nativeOperationOwner(
   wallet: EvmChainWalletHandle
 ): EvmLegacyConsolidator {
@@ -775,52 +684,11 @@ function bareHex(bytes: Uint8Array): string {
   return hexlify(bytes).slice(2);
 }
 
-/**
- * Imports the recipient-owned payments of relay recovery obligations into the wallet's stamp
- * payment journal (status `discovered`, so the ordinary sweep path can spend them) and then, only
- * when it is safe, acknowledges terminal obligations so the relay can retire them.
- *
- * Ack safety (the relay forgets the obligation, so the journal becomes the only record of the
- * one-time-address payments):
- * - only a `durable` journal may trigger an ack; an in-memory journal (e.g. `walletStorageLocation:
- *   false`) is still filled for the current session but never acks, so a restart re-reads the
- *   obligation from the relay;
- * - for a terminal obligation EVERY child of the canonical message is journalled, not just the
- *   confirmed prefix: expired/attempts-exhausted claims can still have unconfirmed children land
- *   on chain after the ack, and the sweep checks the on-chain balance;
- * - the ack is sent only after every `confirmedChildren` index is verifiably present in the
- *   journal. A record whose confirmed child cannot be recovered is left un-acked.
- * Non-terminal obligations (`pending`, `fully_confirmed`, `delivered`) import the confirmed
- * children and are never acked (the relay answers 409).
- *
- * Best-effort relative to the inbox read (which already succeeded when this runs): a relay/network
- * failure here is retried on the next poll rather than failing message delivery.
- */
 /** Longest `fetchSince` waits for the recovery sync before returning the messages. */
 export const MAILBOX_RECOVERY_SYNC_WAIT_MS = 5_000;
 
-async function boundedSync(sync: Promise<void>): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      sync,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, MAILBOX_RECOVERY_SYNC_WAIT_MS);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
-
 /** @deprecated Recovery endpoint is retired; stamp discovery is unified through mailbox. */
 export const MAILBOX_RECOVERY_SYNC_INTERVAL_MS = 60_000;
-
-/** How long a received note from this wallet's own key that could not be applied is tried again
- * (and so kept in the reader's replay window) before it is passed. In memory: it starts over when
- * the wallet is reopened. */
-export const SELF_NOTE_RETRY_MS = 10 * 60_000;
-const MAX_WAITING_SELF_NOTES = 256;
 
 /** JSON-serializes `items` for use as a direct message's plaintext.
  * Throws only on `'p2pkh'` items, which are legacy Lotus-only script items.
@@ -847,41 +715,6 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
     throw new Error("Decrypted direct-message plaintext was not a JSON array");
   }
   return parsed as MessageItem[];
-}
-
-/** Preparing the account that will burn a topic post/vote failed before anything was posted. The
- * pool's funding is record-before-broadcast, so retrying resumes an already-sent funding
- * transaction instead of sending another; the message says so because the caller shows it as is. */
-export class TopicBurnPreparationError extends Error {
-  constructor(
-    reason: string,
-    options?: { cause?: unknown; stage?: "preparing" | "signing" }
-  ) {
-    super(
-      options?.stage === "signing"
-        ? `Could not build the burn (${reason}). Nothing was sent, and the funded account is kept. ` +
-            "It is safe to try again."
-        : `Could not prepare an account to burn from (${reason}). Nothing was sent. ` +
-            "It is safe to try again: a funding transaction that was already sent is reused, not repeated."
-    );
-    this.name = "TopicBurnPreparationError";
-    if (options?.cause !== undefined) {
-      (this as { cause?: unknown }).cause = options.cause;
-    }
-  }
-}
-
-/** A burn that failed while being built/signed (RPC hiccup after the account was funded) sent
- * nothing and left the funded account available: report it with the same "nothing sent, safe to
- * retry" message as a failed preparation. Every other error passes through untouched. */
-function asNothingSent(err: unknown): never {
-  if (err instanceof BurnNotSentError) {
-    throw new TopicBurnPreparationError(err.message, {
-      cause: err,
-      stage: "signing",
-    });
-  }
-  throw err;
 }
 
 /** Pure factory: builds an `ActiveChain` from an explicit `EvmChainConfig`. See this file's
@@ -1226,414 +1059,25 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       }
     );
   };
-  /** Funds (or reuses) one sub-account able to burn `voteWeightWei` in a single transaction and
-   * returns its pool index for the caller to lease. Admission conservatively holds reuse too:
-   * even its fee quote signs with the main account. See `MonadSubAccountPool.prepareBurnAccount`. */
-  const prepareTopicBurnAccount = async (
+  const prepareTopicBurnAccount = (
     wallet: EvmChainWalletHandle,
     voteWeightWei: bigint,
     onProgress:
       | ((progress: DirectMessagePreparationProgress) => void)
       | undefined
-  ): Promise<{ leaseIndex: number; leaseHolder: string }> => {
-    // The burn account is claimed for this one operation from the moment it is chosen, so a
-    // message being built at the same time is never given it.
-    const leaseHolder = `${wallet.identity.address.raw.toLowerCase()}:topic:${hexlify(
-      randomBytes(8)
-    )}`;
-    const mainPrivateKeyHex = mainPrivateKey(wallet);
-    const mainAccountSigner = new MonadAccountTxSigner({
-      privateKey: mainPrivateKeyHex,
-      provider: wallet.provider,
-      httpClient: wallet.httpClient,
+  ): Promise<{ leaseIndex: number; leaseHolder: string }> =>
+    prepareEvmTopicBurnAccount({
+      wallet,
+      voteWeightWei,
+      onProgress,
+      mainPrivateKey,
+      creatorBurnAddress: (w) => creatorForumPolicy(w).burnAddress,
+      sourceIsHeld,
+      sourceHeldRefusalMessage: SOURCE_HELD_FOR_CONTACT_PAYMENT,
+      runMainAccountExclusive,
     });
-    const internals = evmWalletInternals(wallet);
-    const mainAddress =
-      internals.material?.mainAccount.address ??
-      wallet.identity.address.raw;
-
-    try {
-      onProgress?.({ stage: "checking" });
-
-      const burnAddress = creatorForumPolicy(
-        internals.privateTopicWallet ?? wallet
-      ).burnAddress;
-      const gasReserveWei = await quoteMonadTopicBurnGasReserve({
-        signer: mainAccountSigner,
-        burnAddress,
-      });
-
-      const feeData =
-        typeof wallet.provider?.getFeeData === "function"
-          ? await wallet.provider.getFeeData().catch(() => undefined)
-          : undefined;
-      const gasPrice = feeData?.maxFeePerGas ?? feeData?.gasPrice ?? 0n;
-      const fundingGasLimit =
-        typeof wallet.provider?.estimateGas === "function"
-          ? await wallet.provider
-              .estimateGas({ from: mainAddress, to: mainAddress, value: 1n })
-              .catch(() => 21000n)
-          : 21000n;
-      const fundingGasFee = fundingGasLimit * gasPrice;
-      const requiredTotalWei = voteWeightWei + gasReserveWei + fundingGasFee;
-      const neededTargetBalance = voteWeightWei + gasReserveWei;
-
-      const getBal = async (addr: string) =>
-        typeof wallet.provider?.getBalance === "function"
-          ? await wallet.provider.getBalance(addr, "pending").catch(() => 0n)
-          : 0n;
-
-      const candidateGetter = internals.fundingCandidates;
-      const candidates = candidateGetter
-        ? candidateGetter()
-        : [
-            {
-              source: "main" as const,
-              address: mainAddress,
-              privateKey: () => mainPrivateKeyHex,
-            },
-          ];
-
-      const isEligible = (address: string) =>
-        !sourceIsHeld(wallet, address) &&
-        (typeof wallet.pool?.accountClaimedBy !== "function" ||
-          wallet.pool.accountClaimedBy(address) === undefined);
-
-      // 1. Check mainAccount first (if not held and balance >= requiredTotalWei -> fast path)
-      const mainCandidate = candidates.find((c) => c.source === "main");
-      let mainBalance = 0n;
-      if (mainCandidate && isEligible(mainCandidate.address)) {
-        mainBalance = await getBal(mainCandidate.address);
-      }
-
-      if (
-        mainCandidate &&
-        isEligible(mainCandidate.address) &&
-        mainBalance >= requiredTotalWei
-      ) {
-        const preparation = await runMainAccountExclusive(
-          wallet,
-          async () => {
-            return wallet.pool.prepareBurnAccount({
-              mainAccountSigner,
-              mainAccountAddress: mainAddress,
-              provider: wallet.provider,
-              burnValueWei: voteWeightWei,
-              gasReserveWei,
-              onProgress,
-              claimFor: leaseHolder,
-            });
-          },
-          {
-            ...FUNDING_FROM_MAIN,
-            onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
-          }
-        );
-        return { leaseIndex: preparation.index, leaseHolder };
-      }
-
-      // 2. If mainAccount balance < requiredTotalWei, check remaining candidates (identity, then received coins)
-      const otherCandidates = candidates.filter((c) => c.source !== "main");
-      let singleChosen: (typeof candidates)[number] | undefined;
-      const candidateBalances = new Map<string, bigint>();
-      if (mainCandidate) {
-        candidateBalances.set(mainCandidate.address.toLowerCase(), mainBalance);
-      }
-
-      for (const candidate of otherCandidates) {
-        if (!isEligible(candidate.address)) continue;
-        const bal = await getBal(candidate.address);
-        candidateBalances.set(candidate.address.toLowerCase(), bal);
-        if (bal >= requiredTotalWei) {
-          singleChosen = candidate;
-          break;
-        }
-      }
-
-      if (singleChosen !== undefined) {
-        const funderSigner = new MonadAccountTxSigner({
-          privateKey: singleChosen.privateKey(),
-          provider: wallet.provider,
-          httpClient: wallet.httpClient,
-        });
-        const preparation = await wallet.pool.prepareBurnAccount({
-          mainAccountSigner: funderSigner,
-          mainAccountAddress: mainAddress,
-          provider: wallet.provider,
-          burnValueWei: voteWeightWei,
-          gasReserveWei,
-          onProgress,
-          claimFor: leaseHolder,
-        });
-        if (singleChosen.source === "coin") {
-          wallet.invalidateBalanceCache?.();
-        }
-        return { leaseIndex: preparation.index, leaseHolder };
-      }
-
-      // 3. Multi-transaction aggregation across candidates
-      const contributableCandidates: Array<{
-        candidate: (typeof candidates)[number];
-        capacity: bigint;
-      }> = [];
-
-      for (const candidate of candidates) {
-        if (!isEligible(candidate.address)) continue;
-        let bal = candidateBalances.get(candidate.address.toLowerCase());
-        if (bal === undefined) {
-          bal = await getBal(candidate.address);
-          candidateBalances.set(candidate.address.toLowerCase(), bal);
-        }
-        if (bal > fundingGasFee) {
-          contributableCandidates.push({
-            candidate,
-            capacity: bal - fundingGasFee,
-          });
-        }
-      }
-
-      contributableCandidates.sort((a, b) =>
-        a.capacity > b.capacity ? -1 : 1
-      );
-
-      let remaining = neededTargetBalance;
-      const selectedFunders: Array<{
-        candidate: (typeof candidates)[number];
-        amountWei: bigint;
-      }> = [];
-
-      for (const item of contributableCandidates) {
-        if (remaining === 0n) break;
-        const contribution =
-          item.capacity < remaining ? item.capacity : remaining;
-        if (contribution <= 0n) continue;
-        selectedFunders.push({
-          candidate: item.candidate,
-          amountWei: contribution,
-        });
-        remaining -= contribution;
-      }
-
-      if (remaining === 0n && selectedFunders.length > 0) {
-        const funders = selectedFunders.map((f) => ({
-          signer: new MonadAccountTxSigner({
-            privateKey: f.candidate.privateKey(),
-            provider: wallet.provider,
-            httpClient: wallet.httpClient,
-          }),
-          amountWei: f.amountWei,
-          source: f.candidate.source,
-        }));
-
-        const hasMain = funders.some((f) => f.source === "main");
-        const hasCoin = funders.some((f) => f.source === "coin");
-
-        const executeMultiFund = async () => {
-          return wallet.pool.prepareBurnAccount({
-            mainAccountSigner: funders[0].signer,
-            mainAccountAddress: mainAddress,
-            funders,
-            provider: wallet.provider,
-            burnValueWei: voteWeightWei,
-            gasReserveWei,
-            onProgress,
-            claimFor: leaseHolder,
-          });
-        };
-
-        const preparation = hasMain
-          ? await runMainAccountExclusive(wallet, executeMultiFund, {
-              ...FUNDING_FROM_MAIN,
-              onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
-            })
-          : await executeMultiFund();
-
-        if (hasCoin) {
-          wallet.invalidateBalanceCache?.();
-        }
-        return { leaseIndex: preparation.index, leaseHolder };
-      }
-
-      // 4. Fallback to mainAccountSigner within runMainAccountExclusive so deficit error is surfaced cleanly
-      if (sourceIsHeld(wallet, mainAddress))
-        throw new Error(SOURCE_HELD_FOR_CONTACT_PAYMENT);
-
-      const preparation = await runMainAccountExclusive(
-        wallet,
-        async () => {
-          return wallet.pool.prepareBurnAccount({
-            mainAccountSigner,
-            mainAccountAddress: mainAddress,
-            provider: wallet.provider,
-            burnValueWei: voteWeightWei,
-            gasReserveWei,
-            onProgress,
-            claimFor: leaseHolder,
-          });
-        },
-        {
-          ...FUNDING_FROM_MAIN,
-          onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
-        }
-      );
-      return { leaseIndex: preparation.index, leaseHolder };
-    } catch (err) {
-      const reason =
-        typeof (err as { shortMessage?: unknown })?.shortMessage === "string"
-          ? (err as { shortMessage: string }).shortMessage
-          : err instanceof Error
-          ? err.message
-          : String(err);
-      throw new TopicBurnPreparationError(reason, { cause: err });
-    }
-  };
-  // The wallet sync boundary for a note this account wrote to itself from another device: the
-  // items the wire rule carries only in a self-addressed message. They are decoded as real items
-  // only when the message's authenticated sender is this wallet, and they are consumed here,
-  // through `applyWalletSyncItem` (chain affinity first, then the pool's own checks of the
-  // signed transaction), never handed to a host as a chat message.
-  //
-  // Runs outside the wallet's operation queue, as `applyWalletSyncItem` requires. Applying a note
-  // twice changes nothing; a digest settled in this session is not applied again.
-  //
-  // A note that cannot be applied never holds the reader's cursor for good. A refusal that would
-  // be repeated word for word is final at once. Anything else is tried again on later reads, for
-  // at most `SELF_NOTE_RETRY_MS` from the first failure in this session, and is then passed too.
-  // Either way the note changed nothing, and one warning says so.
-  const selfNoteRefusalIsFinal = (error: unknown): boolean => {
-    // Another chain's note.
-    if (error instanceof WalletSyncItemRejectedError) return true;
-    if (error instanceof SubAccountSpendRefusedError) {
-      // No applier yet: the wallet is not fully composed. A held row is usually another
-      // operation's and is released; two kinds of hold are not: the row is gone but for its
-      // terminal checkpoint, or it already carries a different spend.
-      if (error.code === "no-applier") return false;
-      if (error.code !== "held") return true;
-      return /compacted terminal checkpoint|another spend checkpoint/.test(
-        error.message
-      );
-    }
-    // The note's transaction cannot be this wallet's to record. (`conflicting-authorization` is
-    // not final: this device's own journal holds the pair while its member is pending.)
-    return (
-      error instanceof EvmInputAdmissionError &&
-      error.reason === "invalid-provenance"
-    );
-  };
-  const consumeSelfNotes = async (
-    wallet: EvmChainWalletHandle,
-    message: DirectMessageReceived,
-    onForeignWalletSync?: (item: WalletSyncItem) => Promise<void>
-  ): Promise<
-    | { kind: "none" }
-    | { kind: "consumed"; rest: DirectMessageReceived | undefined }
-    | { kind: "retry" }
-  > => {
-    const own = wallet.identity.address.raw.toLowerCase();
-    if (
-      message.senderAddress.raw.toLowerCase() !== own ||
-      message.recipientAddress.raw.toLowerCase() !== own
-    )
-      return { kind: "none" };
-    // Of the items carried only in a note to self, the wallet consumes the transaction records
-    // and the received-coin notes (those were applied to the coin list when the message was
-    // read, in `recordReceivedCoins`). A swap's record in the same note is the host's: it goes
-    // on with the rest of the message.
-    const isWalletNote = (item: MessageItem) =>
-      item.type === "wallet-sync" || item.type === "received-coin";
-    if (!message.items.some(isWalletNote)) return { kind: "none" };
-    const notes = message.items.filter((item) => item.type === "wallet-sync");
-    const others = message.items.filter((item) => !isWalletNote(item));
-    const itemRegistry = installedMessageItemRegistry(wallet);
-    const rawRest =
-      others.length > 0 ? { ...message, items: others } : undefined;
-    const rest =
-      rawRest !== undefined && itemRegistry !== undefined
-        ? projectOutboxMessageRecord(rawRest, itemRegistry)
-        : rawRest;
-    const digest = message.payloadDigest;
-    const internals = evmWalletInternals(wallet);
-    const settled = internals.settledSelfNotes;
-    if (settled.has(digest)) return { kind: "consumed", rest };
-    const waiting = internals.waitingSelfNotes;
-    try {
-      for (const note of notes) {
-        const item = note as WalletSyncItem;
-        if (item.chainIdentifier === wallet.chainIdentifier)
-          await applyWalletSyncItem(wallet, item);
-        else {
-          if (!onForeignWalletSync)
-            throw new Error(`Wallet sync owner unavailable for ${item.chainIdentifier}`);
-          await onForeignWalletSync(item);
-        }
-      }
-    } catch (error) {
-      // A foreign owner's availability is a host concern, not a terminal rejection by this
-      // wallet. Keep the relay cursor before this row and retry after that owner recovers.
-      if (notes.some((note) => (note as WalletSyncItem).chainIdentifier !== wallet.chainIdentifier))
-        throw error;
-      const detail = error instanceof Error ? error.message : String(error);
-      const since = waiting.get(digest) ?? Date.now();
-      const final = selfNoteRefusalIsFinal(error);
-      if (!final && Date.now() - since < SELF_NOTE_RETRY_MS) {
-        // Bounded: the oldest remembered failure is forgotten first (and starts over if seen).
-        if (!waiting.has(digest) && waiting.size >= MAX_WAITING_SELF_NOTES)
-          waiting.delete(waiting.keys().next().value as string);
-        waiting.set(digest, since);
-        return { kind: "retry" };
-      }
-      console.warn(
-        `[wallet-sync] a note this wallet wrote to itself was not applied and is passed (${digest}; ${
-          final ? "refused" : "still failing after the retry window"
-        }): ${detail}`
-      );
-    }
-    waiting.delete(digest);
-    settled.add(digest);
-    return { kind: "consumed", rest };
-  };
-  const recordReceivedCoins = async (
-    wallet: EvmChainWalletHandle,
-    messages: readonly DirectMessageReceived[]
-  ): Promise<void> => {
-    const owner = evmWalletInternals(wallet).receivedCoinOwner;
-    if (owner === undefined) return;
-    const own = wallet.identity.address.raw.toLowerCase();
-    // A note this account wrote to itself about a coin it received: how the coin's key is
-    // derived. It goes through the wallet sync boundary (chain affinity, then the coin list,
-    // which derives the key itself). Another chain's note is not this wallet's and is passed; a
-    // failed write fails the read, like every coin below.
-    for (const message of messages) {
-      if (
-        message.senderAddress.raw.toLowerCase() !== own ||
-        message.recipientAddress.raw.toLowerCase() !== own
-      )
-        continue;
-      for (const item of message.items)
-        if (item.type === "received-coin")
-          await applyWalletSyncItem(wallet, item).catch((error) => {
-            if (!(error instanceof WalletSyncItemRejectedError)) throw error;
-          });
-    }
-    for (const message of messages) {
-      // This wallet's own payment to someone else is not money it received.
-      if (
-        message.outbound === true ||
-        message.senderAddress.raw.toLowerCase() === own
-      )
-        continue;
-      for (const item of message.items)
-        if (item.type === "stealth")
-          await owner.recordStealthItem(item, {
-            payloadDigest: message.payloadDigest,
-            timestampMs: message.receivedTime ?? Date.now(),
-          });
-    }
-    // The stamps a message paid this wallet: one-time accounts too, found only through the
-    // message. A note this wallet wrote to itself pays its own stamp key, so it is included.
-    for (const message of messages)
-      if (message.outbound !== true) await owner.recordStampPayments(message);
-  };
+  const consumeSelfNotes = consumeEvmSelfNotes;
+  const recordReceivedCoins = recordEvmReceivedCoins;
   const directMessages: DirectMessageClient = {
     async quoteStamp(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
@@ -2380,12 +1824,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             contactPayments?.close(),
             coinListState?.close(),
           ]);
-        const pool = new MonadSubAccountPool({
+        const pool = new EvmSubAccountPool({
           keyring,
           store: subAccountStore,
           mainAccountAddress: mainAccount.address,
         });
-        const changePool = new MonadChangePool({
+        const changePool = new EvmChangePool({
           keyring: changeKeyring,
           store: changeStore,
         });
@@ -2591,181 +2035,25 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           const scanState = coinListState;
           const coinStore = coins;
           const paymentStore = contactPayments;
-          const nativeChainId = BigInt(config.chainId);
-          // What the chain says about the transfer a coin's message named. The wallet hands the
-          // carried signed transaction to the node itself (the sender and the relay do too; a
-          // second broadcast of a known or mined transaction changes nothing) and then reads the
-          // chain. The node's wording is never interpreted: whatever it answered, the transaction,
-          // its receipt and its sender's nonce say what happened.
-          const transferOf = async (
-            coin: EvmCoin
-          ): Promise<{ transfer: EvmCoinTransfer; valueWei?: bigint }> => {
-            if (coin.transactions.length === 0) return { transfer: "none" };
-            const transfer = stealthItemTransfer(
-              coin.transactions,
-              coin.address,
-              nativeChainId
-            );
-            // Named something that is not a plain transfer to this account on this chain.
-            if (transfer === undefined) return { transfer: "unseen" };
-            const included = async (): Promise<
-              { transfer: EvmCoinTransfer; valueWei?: bigint } | undefined
-            > => {
-              const receipt = await provider.getTransactionReceipt(
-                transfer.txHash
-              );
-              if (receipt === null) return undefined;
-              // A carried signed transaction was already checked to pay this account, and its
-              // value is its own.
-              if (transfer.valueWei !== undefined)
-                return receipt.status === 1
-                  ? { transfer: "included", valueWei: transfer.valueWei }
-                  : { transfer: "failed" };
-              // A bare hash proves nothing by being mined: anyone can name any transaction.
-              // Only one that itself pays this account counts, at what it pays. Any other
-              // (a contract call that pays the account, or someone else's transaction
-              // altogether) leaves the balance alone to decide.
-              const named = await provider.getTransaction(transfer.txHash);
-              if (named?.to?.toLowerCase() !== coin.address)
-                return { transfer: "none" };
-              return receipt.status === 1
-                ? { transfer: "included", valueWei: named.value }
-                : { transfer: "failed" };
-            };
-            const mined = await included();
-            if (mined !== undefined) return mined;
-            // Already judged unable to land: only a receipt can change that.
-            if (coin.state === "failed") return { transfer: "failed" };
-            if (transfer.rawTransaction === undefined)
-              return {
-                transfer:
-                  (await provider.getTransaction(transfer.txHash)) !== null
-                    ? "seen"
-                    : "unseen",
-              };
-            try {
-              await provider.broadcastTransaction(transfer.rawTransaction);
-              return { transfer: "seen" };
-            } catch {
-              // Refused: already known, already mined, its nonce used, or not acceptable yet.
-              if ((await provider.getTransaction(transfer.txHash)) !== null)
-                return (await included()) ?? { transfer: "seen" };
-              const signed = Transaction.from(transfer.rawTransaction);
-              const used = await provider.getTransactionCount(signed.from!);
-              if (used <= signed.nonce) return { transfer: "unseen" };
-              // The nonce is spent. By this transaction, if the chain shows it; if not, by
-              // another one, and this transfer can never land. That verdict is final for the
-              // money, so it is not taken from one reading: someone else (the sender, the relay)
-              // may have broadcast this very transaction a moment ago, and a node can report its
-              // nonce before its receipt. The chain is asked again after a pause.
-              const now = await included();
-              if (now !== undefined) return now;
-              await new Promise((resolve) =>
-                setTimeout(resolve, TRANSFER_FAILURE_RECHECK_MS)
-              );
-              if ((await provider.getTransaction(transfer.txHash)) !== null)
-                return (await included()) ?? { transfer: "seen" };
-              return (await included()) ?? { transfer: "failed" };
-            }
-          };
-          // Reads the chain for coins and records what it shows.
-          // - A coin already counted: its balance (one request), unless `pendingOnly`.
-          // - A pending coin: its transfer and its balance, at most
-          //   `PENDING_COIN_PROBES_PER_PASS` coins per pass, taken in turn.
-          // - A failed coin: one receipt read on a full or named read (a late inclusion makes it
-          //   received), nothing on the background pass. A spent coin: nothing, ever.
-          // So a pass makes no request at all when nothing is pending (and nothing is counted, or
-          // `pendingOnly`). A node that cannot be reached changes nothing: the coin keeps what was
-          // last read, unless `strict`, which rejects.
-          let coinsReadAtMs = 0;
-          let pendingTurn = 0;
-          let readingCoins: Promise<void> | undefined;
-          // One pass at a time: two passes would hand the same transaction to the node twice
-          // and read each other's half-finished effects.
-          let coinPasses: Promise<unknown> = Promise.resolve();
-          const readCoinsPass = (options: {
-            pendingOnly?: boolean;
-            only?: ReadonlySet<string>;
-            strict?: boolean;
-          }): Promise<void> => {
-            const run = coinPasses.then(() => readCoinsPassNow(options));
-            coinPasses = run.catch(() => undefined);
-            return run;
-          };
-          const readCoinsPassNow = async (options: {
-            pendingOnly?: boolean;
-            only?: ReadonlySet<string>;
-            strict?: boolean;
-          }): Promise<void> => {
-            let complete = true;
-            const all = coinStore
-              .all()
-              .filter(
-                (coin) => options.only === undefined || options.only.has(coin.address)
-              );
-            // A failed coin is looked at again only when asked for by name or on a full read
-            // (never by the background pass): if the chain shows its transfer after all, it is
-            // received.
-            // A claim the node still does not know long after its message is asked about less and
-            // less often (`pendingCoinDue`), unless this read names it.
-            const now = Date.now();
-            const nativeSet = (coin: EvmCoin) => coin.origin === "stealth" && coin.transactions.length > 1;
-            const pending = all.filter(
-              (coin) =>
-                (nativeSet(coin) && (options.only !== undefined || pendingCoinDue(coin, now))) ||
-                (coin.state === "pending" &&
-                  (options.only !== undefined || pendingCoinDue(coin, now))) ||
-                (coin.state === "failed" && !options.pendingOnly)
-            );
-            const probed =
-              options.only !== undefined ||
-              pending.length <= PENDING_COIN_PROBES_PER_PASS
-                ? pending
-                : Array.from(
-                    { length: PENDING_COIN_PROBES_PER_PASS },
-                    (_, i) => pending[(pendingTurn + i) % pending.length]!
-                  );
-            if (probed.length < pending.length) {
-              pendingTurn = (pendingTurn + probed.length) % pending.length;
-              complete = false;
-            }
-            const counted = options.pendingOnly
-              ? []
-              : all.filter((coin) => coin.state === "unspent" && !nativeSet(coin));
-            for (const coin of [...probed, ...counted]) {
-              if (evmWalletInternals(wallet).closed) return;
-              try {
-                if (nativeSet(coin)) { await refreshNativeSetCoin(coin, true); invalidateBalanceRead(); continue; }
-                const read =
-                  coin.state === "unspent" ? undefined : await transferOf(coin);
-                const balanceWei = await provider.getBalance(coin.address);
-                const current = coinStore.get(coin.address);
-                if (current === undefined || evmWalletInternals(wallet).closed) continue;
-                await applyStoredNativeCoinObservation(coinStore, coin.address, {
-                  balanceWei, transfer: read?.transfer, transferValueWei: read?.valueWei, atMs: Date.now(),
-                });
-                invalidateBalanceRead();
-              } catch (error) {
-                if (options.strict) throw error;
-                complete = false;
-              }
-            }
-            if (complete && !options.pendingOnly && options.only === undefined)
-              coinsReadAtMs = Date.now();
-          };
-          const readCoins = (maxAgeMs = 0): Promise<void> => {
-            if (maxAgeMs > 0 && Date.now() - coinsReadAtMs < maxAgeMs)
-              return Promise.resolve();
-            readingCoins ??= readCoinsPass({}).finally(() => {
-              readingCoins = undefined;
-            });
-            return readingCoins;
-          };
-          const recordCoin = async (coin: EvmCoin): Promise<void> => {
-            await recordStoredEvmCoin(coinStore, coin);
-            coinsReadAtMs = 0;
-            invalidateBalanceRead();
-          };
+          const spendPool = new EvmSpendPool({
+            identity,
+            mainAccount,
+            keyring,
+            changeKeyring,
+            pool,
+            changePool,
+            coinStore,
+            nativeJournal: () => topicOwner?.nativeJournal,
+            holdsSource: (address) =>
+              evmWalletInternals(wallet).nativeOperationOwner?.holdsSource(address) === true,
+          });
+          const resolveSource = (source: EvmNativeSource): Wallet =>
+            spendPool.resolveSource(source);
+          const coinSource = (coin: EvmCoin): EvmNativeSource =>
+            spendPool.coinSource(coin);
+          const getSources = (): Promise<EvmNativeSource[]> =>
+            spendPool.getSources();
+
           let primaryBalanceCache:
             | {
                 mainBalance: bigint;
@@ -2786,6 +2074,37 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             primaryBalanceCache = undefined;
             balancePartsRefresh = undefined;
           };
+
+          const coinAndContactManager = createEvmReceivedCoinAndContactManager({
+            chainIdentifier,
+            chainId: config.chainId,
+            networkTag: config.networkTag,
+            relayBaseUrl: config.relayBaseUrl,
+            forumNetwork: forumPolicy.network,
+            nativeDecimals,
+            unit,
+            identityKey,
+            identity,
+            mainAccount,
+            material,
+            pool,
+            provider,
+            coinStore,
+            paymentStore,
+            scanState,
+            preparations,
+            getWallet: () => wallet,
+            getTopicOwner: () => topicOwner!,
+            getSources,
+            coinSource,
+            invalidateBalanceRead,
+            requireOpenWallet,
+            canonicalMessagingFor,
+            directMessages,
+            runWalletExclusive,
+            runMainAccountExclusive,
+          });
+
           const readBalanceParts = async (): Promise<BalanceParts> => {
             requireOpenWallet(wallet);
             const generation = balanceReadGeneration;
@@ -2825,7 +2144,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // the chain yet) is never counted, whatever its message said.
               // The received inventory and funded sending accounts are independent reads.
               const [, sending] = await Promise.all([
-                readCoins(PRIMARY_BALANCE_CACHE_TTL_MS),
+                coinAndContactManager.readCoins(PRIMARY_BALANCE_CACHE_TTL_MS),
                 pool.availableBalanceTotal(
                   provider,
                   PRIMARY_BALANCE_CACHE_TTL_MS
@@ -2849,25 +2168,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }
           };
 
-          const spendPool = new EvmSpendPool({
-            identity,
-            mainAccount,
-            keyring,
-            changeKeyring,
-            pool,
-            changePool,
-            coinStore,
-            nativeJournal: () => topicOwner?.nativeJournal,
-            holdsSource: (address) =>
-              evmWalletInternals(wallet).nativeOperationOwner?.holdsSource(address) === true,
-          });
-          const resolveSource = (source: EvmNativeSource): Wallet =>
-            spendPool.resolveSource(source);
-          const coinSource = (coin: EvmCoin): EvmNativeSource =>
-            spendPool.coinSource(coin);
-          const getSources = (): Promise<EvmNativeSource[]> =>
-            spendPool.getSources();
-
           let closing: Promise<void> | undefined;
           const wallet: EvmChainWalletHandle = new EvmWallet({
             chainIdentifier,
@@ -2879,7 +2179,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             invalidateBalanceCache(networkTag?: string) {
               void networkTag;
               invalidateBalanceRead();
-              coinsReadAtMs = 0;
+              coinAndContactManager.invalidateCoinsRead();
             },
             async getReceiveAddress() {
               requireOpenWallet(wallet);
@@ -2905,54 +2205,20 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               void refresh.then(clear, clear);
               return refresh;
             },
-            getReceivedPayments() {
-              return coinStore.all().map((coin) => receivedPaymentOf(coin));
-            },
-            async refreshReceivedPayments() {
-              requireOpenWallet(wallet);
-              await readCoins();
-              return coinStore.all().map((coin) => receivedPaymentOf(coin));
-            },
-            getMessagePayment(payloadDigest) {
-              return messagePaymentOf(coinStore.all(), payloadDigest);
-            },
-            async checkMessagePayment(payloadDigest) {
-              requireOpenWallet(wallet);
-              const digest = payloadDigest.replace(/^0x/, "").toLowerCase();
-              const pending = coinStore
-                .all()
-                .filter(
-                  (coin) =>
-                    coin.payloadDigest === digest && (coin.state === "pending" || (coin.origin === "stealth" && coin.transactions.length > 1))
-                );
-              // Nothing pending: the answer is already known, and nothing is asked.
-              if (pending.length > 0)
-                await readCoinsPass({
-                  only: new Set(pending.map((coin) => coin.address)),
-                });
-              return messagePaymentOf(coinStore.all(), digest);
-            },
-            sweepReceivedCoins: (params) => sweepReceivedCoins(params),
-            recordReceivedCoin: (note) => recordReceivedCoin(note),
-            noteReceivedCoins: () => noteCoins(),
-            getContactPayments() {
-              return paymentStore.all().map((payment) => ({
-                messageId: payment.messageId,
-                ephemeralPubKey: payment.ephemeralPubKey,
-                recipientAddress: payment.recipientAddress,
-                valueWei: BigInt(payment.valueWei),
-                state: payment.state,
-                holdsFunds: holdsItsSource(payment),
-                ...(payment.txHash ? { txHash: payment.txHash } : {}),
-                ...(payment.failure ? { failure: payment.failure } : {}),
-              }));
-            },
-            sendToContact: (params) => sendToContact(params),
-            prepareContactPayment: (params) => prepareContactPayment(params),
-            resumeContactPayments: () => resumeContactPayments(),
-            settleContactPayment: (ephemeralPubKey) =>
-              settleContactPayment(ephemeralPubKey),
-            retryContactPayment: (messageId) => retryContactPayment(messageId),
+            getReceivedPayments: coinAndContactManager.getReceivedPayments,
+            refreshReceivedPayments:
+              coinAndContactManager.refreshReceivedPayments,
+            getMessagePayment: coinAndContactManager.getMessagePayment,
+            checkMessagePayment: coinAndContactManager.checkMessagePayment,
+            sweepReceivedCoins: coinAndContactManager.sweepReceivedCoins,
+            recordReceivedCoin: coinAndContactManager.recordReceivedCoin,
+            noteReceivedCoins: coinAndContactManager.noteCoins,
+            getContactPayments: coinAndContactManager.getContactPayments,
+            sendToContact: coinAndContactManager.sendToContact,
+            prepareContactPayment: coinAndContactManager.prepareContactPayment,
+            resumeContactPayments: coinAndContactManager.resumeContactPayments,
+            settleContactPayment: coinAndContactManager.settleContactPayment,
+            retryContactPayment: coinAndContactManager.retryContactPayment,
             recordStealthPayment: (item, origin) =>
               evmWalletInternals(wallet).receivedCoinOwner!.recordStealthItem(item, {
                 payloadDigest: origin?.payloadDigest,
@@ -2990,7 +2256,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               invalidateBalanceRead();
               try {
                 // A payment to a contact is broadcast only once the relay has its message.
-                if (heldForItsMessage(operationId))
+                if (coinAndContactManager.heldForItsMessage(operationId))
                   throw new Error(
                     "This transfer pays a contact and is broadcast once its message is delivered"
                   );
@@ -3078,7 +2344,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   (r) =>
                     r.kind === "native" &&
                     !r.cancelled &&
-                    !heldForItsMessage(r.operationId) &&
+                    !coinAndContactManager.heldForItsMessage(r.operationId) &&
                     r.members.some(
                       (m) =>
                         m.signed &&
@@ -3099,7 +2365,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   (r) =>
                     r.kind === "native" &&
                     !r.cancelled &&
-                    !heldForItsMessage(r.operationId) &&
+                    !coinAndContactManager.heldForItsMessage(r.operationId) &&
                     r.members.some(
                       (m) =>
                         m.signed &&
@@ -3400,1835 +2666,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 });
               },
             });
-          // Payments to contacts. One payment is: a transfer to a one-time address only the
-          // contact can spend from, and a message that carries the signed transfer and the
-          // ephemeral key the contact's wallet needs to find it.
-          //
-          // Order:
-          //   1. the message's stamp accounts are made ready, so the message itself will need
-          //      no transfer from the account the payment is then signed on;
-          //   2. the payment is saved (`planned`);
-          //   3. the transfer is planned and signed by the native operation owner, exactly as a
-          //      native send is (same sources, same journal, same reservation), and NOT broadcast;
-          //   4. the payment is saved with the signed transfer (`prepared`). From here its source
-          //      account is HELD: the journal refuses it to every other native send and sweep,
-          //      and the funding paths refuse it too (`heldTransferSources`), so nothing can take
-          //      the nonce the signed transfer needs;
-          //   5. the message carrying the item (with the signed transfer in it) goes through the
-          //      paid message path, which keeps its own exact bytes and retries them;
-          //   6. ONLY when the relay has confirmed it stored the message (`delivered`) does this
-          //      wallet broadcast the transfer. The contact's wallet broadcasts the carried
-          //      transfer too when it reads the message, so the money arrives even if this device
-          //      stops right after the relay's answer;
-          //   7. once the chain shows the transfer included the payment is `paid`.
-          // So money never moves before its message is with the relay. A relay that cannot be
-          // reached leaves nothing broadcast: every later mailbox read repeats 5 with the same
-          // message ID and then 6, from the saved record. Nothing is ever signed again.
-          const nativeOwner = evmWalletInternals(wallet).nativeOperationOwner!;
-          const financialAbi = new Interface([
-            "function transfer(address to,uint256 amount) returns (bool)",
-            "function balanceOf(address owner) view returns (uint256)",
-            "event Transfer(address indexed from,address indexed to,uint256 value)",
-          ]);
-          const assertFinancialActive = (): void => {
-            if (evmWalletInternals(wallet).closed)
-              throw new Error("Wallet financial session is closed");
-          };
-          const erc20Reader: EvmErc20Reader = {
-            call: ({ to, data, blockTag }) => provider.call({ to, data, blockTag }),
-            getBlock: (tag) => provider.getBlock(tag),
-            getTransactionReceipt: (hash) => provider.getTransactionReceipt(hash),
-          };
-          const tokenBalance = async (
-            contract: string,
-            address: string
-          ): Promise<bigint> => {
-            const encoded = await provider.call({
-              to: contract,
-              data: financialAbi.encodeFunctionData("balanceOf", [address]),
-            });
-            assertFinancialActive();
-            if (!/^0x[0-9a-fA-F]{64}$/.test(encoded))
-              throw new Error("Invalid ERC20 balance response");
-            return BigInt(encoded);
-          };
-          const verifiedFinancialReceipt = async (
-            raw: string,
-            recipientAddress: string,
-            maximumBlock?: number
-          ): Promise<bigint | undefined> => {
-            const tx = Transaction.from(raw);
-            const receipt = await provider.getTransactionReceipt(tx.hash!);
-            assertFinancialActive();
-            if (
-              receipt === null ||
-              (maximumBlock !== undefined && receipt.blockNumber > maximumBlock)
-            )
-              return undefined;
-            const block = await provider.getBlock(receipt.blockNumber);
-            assertFinancialActive();
-            if (
-              receipt.hash.toLowerCase() !== tx.hash ||
-              receipt.from.toLowerCase() !== tx.from!.toLowerCase() ||
-              receipt.to?.toLowerCase() !== tx.to!.toLowerCase()
-            )
-              throw new Error("Invalid ERC20 receipt inclusion");
-            if (!block?.hash)
-              throw new Error("Financial receipt canonical block unavailable");
-            if (block.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
-              if (maximumBlock !== undefined) return undefined;
-              throw new Error("Invalid ERC20 receipt inclusion");
-            }
-            if (receipt.status === 0) return 0n;
-            if (receipt.status !== 1) throw new Error("Invalid ERC20 receipt status");
-            if (
-              tx.data === "0x" &&
-              tx.to?.toLowerCase() === recipientAddress.toLowerCase()
-            )
-              return tx.value;
-            let value = 0n;
-            const indexes = new Set<number>();
-            for (const log of receipt.logs) {
-              if (
-                log.address.toLowerCase() !== tx.to!.toLowerCase() ||
-                log.topics[0]?.toLowerCase() !==
-                  financialAbi.getEvent("Transfer")!.topicHash.toLowerCase()
-              )
-                continue;
-              if (
-                indexes.has(log.index) ||
-                !Number.isSafeInteger(log.index) ||
-                log.index < 0 ||
-                log.topics.length !== 3 ||
-                !/^0x[0-9a-fA-F]{64}$/.test(log.data)
-              )
-                throw new Error("Invalid ERC20 receipt membership");
-              indexes.add(log.index);
-              const event = financialAbi.decodeEventLog("Transfer", log.data, [
-                ...log.topics,
-              ]);
-              if (
-                getAddress(event.from).toLowerCase() === tx.from!.toLowerCase() &&
-                getAddress(event.to).toLowerCase() === recipientAddress.toLowerCase()
-              )
-                value += BigInt(event.value);
-            }
-            return value;
-          };
-          const refreshNativeSetCoin = async (coin: EvmCoin, replay = false) => {
-            const atMs = Date.now();
-            let retryFailure: unknown;
-            const result = await refreshStoredEvmNativePaymentSet(
-              coinStore,
-              coin.address,
-              {
-                chainIdentifier,
-                ephemeralPubKey: coin.ephemeralPubKey!,
-                rawTransactions: coin.transactions.map((raw) => "0x" + raw),
-                amountWei: BigInt(coin.claimedAmountWei),
-                payloadDigest: coin.payloadDigest!,
-              },
-              async (address, raws) => {
-                const head = await provider.getBlock("latest");
-                assertFinancialActive();
-                if (!head?.hash)
-                  throw new Error("Native receipt snapshot block unavailable");
-                const amounts = await Promise.all(
-                  raws.map((raw) => verifiedFinancialReceipt(raw, address, head.number))
-                );
-                if (replay)
-                  for (let index = 0; index < raws.length; index++) {
-                    if (amounts[index] !== undefined) continue;
-                    try {
-                      assertFinancialActive();
-                      const response = await provider.broadcastTransaction(raws[index]!);
-                      if (
-                        response.hash.toLowerCase() !==
-                        Transaction.from(raws[index]!).hash
-                      )
-                        throw new Error("Unexpected native receipt retry hash");
-                    } catch (error) {
-                      retryFailure ??= error;
-                    }
-                  }
-                const balanceWei = await provider.getBalance(address, head.number);
-                const checked = await provider.getBlock(head.number);
-                assertFinancialActive();
-                if (checked?.hash?.toLowerCase() !== head.hash.toLowerCase())
-                  throw new Error("Native receipt snapshot changed; retry original set");
-                return { balanceWei, receivedAmountsWei: amounts };
-              },
-              atMs
-            );
-            assertFinancialActive();
-            if (!result.applied)
-              throw new Error("Native receipt observation changed; retry original set");
-            if (retryFailure !== undefined) throw retryFailure;
-            return result;
-          };
-          let cachedFeeRate: { maxFeePerGas: bigint; atMs: number } | undefined;
-          const getFeeRate = async (): Promise<bigint> => {
-            if (cachedFeeRate && Date.now() - cachedFeeRate.atMs < 6000) {
-              return cachedFeeRate.maxFeePerGas;
-            }
-            const fee = await provider.getFeeData();
-            const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice ?? 1n;
-            cachedFeeRate = { maxFeePerGas, atMs: Date.now() };
-            return maxFeePerGas;
-          };
-          const financialPayments = createEvmStealthPayments({
-            chainIdentifier,
-            nativeChainId: BigInt(config.chainId),
-            coordinationKey: JSON.stringify(topicOwner!.nativeJournal!.binding),
-            refreshJournal: async (id) => {
-              await topicOwner!.runLifetime((lifetime) =>
-                nativeAdmissionJournal(
-                  topicOwner!.inputAdmission,
-                  lifetime
-                ).refreshPreparation(id)
-              );
-            },
-            store: preparations!,
-            assertActive: assertFinancialActive,
-            derive: (recipientSpendPubKey) =>
-              deriveEvmStealthAddress({ recipientSpendPubKey }),
-            operations: () => topicOwner!.nativeJournal!.list(),
-            signIndependentPayment: (params) =>
-              topicOwner!.runLifetime((lifetime) =>
-                nativeOwner.signIndependentPayment(params, lifetime)
-              ),
-            submit: (id) =>
-              topicOwner!.runLifetime((lifetime) =>
-                nativeOwner.resumeIndependentPayment(id, lifetime)
-              ),
-            observe: (id) =>
-              topicOwner!.runLifetime(async (lifetime) => {
-                for (
-                  let index = 0;
-                  index < topicOwner!.nativeJournal!.get(id).members.length;
-                  index++
-                )
-                  await nativeOwner.observe(id, index, lifetime);
-              }),
-            release: (id) =>
-              topicOwner!.runLifetime((lifetime) =>
-                nativeOwner.releaseUnexposed(id, lifetime)
-              ),
-            async quote(input) {
-              const requested =
-                input.sourceAddress === undefined
-                  ? undefined
-                  : getAddress(input.sourceAddress).toLowerCase();
-              const mainAddress = mainAccount.address.toLowerCase();
-
-              // Fast-Path: In standard use, mainAccount holds the user's active MONT balance.
-              // If mainAccount is unreserved and covers amountAtomic + estimatedFee, return the quote immediately!
-              let mainBalance: bigint | undefined;
-              if (
-                input.asset.kind === "native" &&
-                (requested === undefined || requested === mainAddress) &&
-                !sourceIsHeld(wallet, mainAddress) &&
-                !nativeOwner.holdsSource(mainAddress)
-              ) {
-                const maxFeePerGas = await getFeeRate();
-                const estimatedFee = 21_000n * maxFeePerGas;
-                mainBalance = await provider.getBalance(mainAccount.address);
-                assertFinancialActive();
-                if (mainBalance >= input.amountAtomic + estimatedFee) {
-                  return {
-                    sources: [
-                      {
-                        sourceAddress: mainAddress,
-                        recipientAmountAtomic: input.amountAtomic,
-                        nativeBalanceAtomic: mainBalance,
-                        assetBalanceAtomic: mainBalance,
-                        estimatedNativeFeeAtomic: estimatedFee,
-                      },
-                    ],
-                  };
-                }
-              }
-
-              const owned = [
-                ...new Map(
-                  (await getSources()).map((source) => [source.address, source])
-                ).values(),
-              ];
-              if (
-                requested !== undefined &&
-                !owned.some((source) => source.address === requested)
-              )
-                throw new Error("Requested financial source is not owned");
-
-              // Bounded candidate inspection: avoid scanning dozens of empty/unfunded accounts
-              let sourcesToInspect: EvmNativeSource[];
-              if (requested !== undefined) {
-                sourcesToInspect = owned.filter((s) => s.address === requested);
-              } else if (input.asset.kind === "erc20") {
-                // Sub-accounts in pool and changePool never hold ERC20.
-                // Inspect all other sources (main, identity, coinStore stealth coins).
-                sourcesToInspect = owned.filter(
-                  (s) => s.kind !== "spend" && s.kind !== "change"
-                );
-              } else {
-                // For native, filter pool records to only those with 'available' status (never scan unfunded sub-accounts)
-                const availablePoolAddresses = new Set(
-                  pool
-                    .records()
-                    .filter(
-                      (r) =>
-                        r.status === "available" &&
-                        pool.claimedBy(r.index) === undefined &&
-                        !pool.isSpendReserved(r.index)
-                    )
-                    .map((r) => r.address.toLowerCase())
-                );
-                sourcesToInspect = owned.filter(
-                  (s) =>
-                    s.kind !== "spend" ||
-                    availablePoolAddresses.has(s.address.toLowerCase())
-                );
-              }
-
-              // Query balances concurrently (never 60+ sequential HTTP requests):
-              let lacksGas = false;
-              const inspected = await Promise.all(
-                sourcesToInspect.map(async (source) => {
-                  if (
-                    sourceIsHeld(wallet, source.address) ||
-                    nativeOwner.holdsSource(source.address)
-                  )
-                    return null;
-                  const native =
-                    source.address === mainAddress && mainBalance !== undefined
-                      ? mainBalance
-                      : await provider.getBalance(source.address);
-                  assertFinancialActive();
-                  const balance =
-                    input.asset.kind === "native"
-                      ? native
-                      : await tokenBalance(
-                          input.asset.contractAddress,
-                          source.address
-                        );
-                  assertFinancialActive();
-                  if (balance <= 0n) return null;
-                  if (input.asset.kind === "erc20" && native === 0n) {
-                    lacksGas = true;
-                    return null;
-                  }
-                  return { source, balance };
-                })
-              );
-
-              const candidates: { source: EvmNativeSource; balance: bigint }[] =
-                [];
-              for (const item of inspected) {
-                if (item !== null) candidates.push(item);
-              }
-
-              candidates.sort((a, b) =>
-                a.source.kind === "main" && b.source.kind !== "main"
-                  ? 1
-                  : b.source.kind === "main" && a.source.kind !== "main"
-                  ? -1
-                  : a.balance === b.balance
-                  ? a.source.address.localeCompare(b.source.address)
-                  : a.balance < b.balance
-                  ? -1
-                  : 1
-              );
-              const sources: {
-                sourceAddress: string;
-                recipientAmountAtomic: bigint;
-                nativeBalanceAtomic: bigint;
-                assetBalanceAtomic: bigint;
-                estimatedNativeFeeAtomic: bigint;
-              }[] = [];
-              let remaining = input.amountAtomic;
-              const maxFeePerGas = await getFeeRate();
-              const nativeFeePerSource = 21_000n * maxFeePerGas;
-
-              const allocate = async (ordered: typeof candidates) => {
-                sources.length = 0;
-                remaining = input.amountAtomic;
-                for (const candidate of ordered) {
-                  if (remaining === 0n || sources.length === 16) break;
-                  const native = input.asset.kind === "native";
-                  const target =
-                    input.asset.kind === "native"
-                      ? input.recipientAddress
-                      : input.asset.contractAddress;
-                  const tentative = native
-                    ? candidate.balance > nativeFeePerSource
-                      ? candidate.balance - nativeFeePerSource < remaining
-                        ? candidate.balance - nativeFeePerSource
-                        : remaining
-                      : 1n
-                    : candidate.balance < remaining
-                    ? candidate.balance
-                    : remaining;
-                  const quoteOne = (amount: bigint) =>
-                    topicOwner!.runLifetime((lifetime) =>
-                      nativeOwner.quoteIndependentPayment(
-                        {
-                          kind: native ? "native" : "contract",
-                          recipient: { raw: target },
-                          members: [
-                            {
-                              sourceAddress: candidate.source.address,
-                              value: native ? amount : 0n,
-                              ...(native ? { gasLimit: 21_000n } : {}),
-                              ...(native
-                                ? {}
-                                : {
-                                    data: financialAbi.encodeFunctionData(
-                                      "transfer",
-                                      [input.recipientAddress, amount]
-                                    ),
-                                  }),
-                            },
-                          ],
-                        },
-                        lifetime
-                      )
-                    );
-                  let fact = (await quoteOne(tentative)).sources[0]!;
-                  const available = native
-                    ? fact.nativeBalanceAtomic - fact.estimatedNativeFeeAtomic
-                    : candidate.balance;
-                  if (
-                    available <= 0n ||
-                    fact.nativeBalanceAtomic < fact.estimatedNativeFeeAtomic
-                  ) {
-                    lacksGas ||= !native;
-                    continue;
-                  }
-                  const amount = available < remaining ? available : remaining;
-                  if (!native && amount !== tentative)
-                    fact = (await quoteOne(amount)).sources[0]!;
-                  if (
-                    fact.nativeBalanceAtomic <
-                    fact.estimatedNativeFeeAtomic + (native ? amount : 0n)
-                  )
-                    throw new Error(
-                      "Financial source fee changed during quote; retry unsigned quote"
-                    );
-                  sources.push({
-                    ...fact,
-                    recipientAmountAtomic: amount,
-                    assetBalanceAtomic: native
-                      ? fact.nativeBalanceAtomic
-                      : candidate.balance,
-                  });
-                  remaining -= amount;
-                }
-              };
-              await allocate(candidates);
-              if (remaining > 0n && sources.length === 16) {
-                // Small-first is a preference, not permission to reject a feasible bounded set.
-                // Requote larger sources first; the owner still revalidates and reserves the
-                // complete frozen allocation before signing, under one total fee ceiling.
-                const largerFirst = [...candidates].sort((a, b) =>
-                  a.balance === b.balance
-                    ? candidates.indexOf(a) - candidates.indexOf(b)
-                    : a.balance > b.balance
-                    ? -1
-                    : 1
-                );
-                await allocate(largerFirst);
-              }
-              assertFinancialActive();
-              if (remaining > 0n)
-                throw new RangeError(
-                  sources.length === 16
-                    ? "Payment cannot fit the 16-member limit"
-                    : lacksGas
-                    ? "ERC20 payment needs native gas at owned sources"
-                    : "Insufficient unreserved payment funds"
-                );
-              return { sources };
-            },
-            tokenBalance,
-            tokenReceipt: verifiedFinancialReceipt,
-          });
-          // Complete a local release interrupted after its durable tombstone, before publishing.
-          // This only cancels never-exposed journal bytes; it makes no network request.
-          await financialPayments.recoverReleases();
-          const snapshotReceiptClaim = (
-            claim: StealthPaymentReceiptClaim
-          ): StealthPaymentReceiptClaim => ({
-            ...claim,
-            asset: { ...claim.asset },
-            ephemeralPublicKey: new Uint8Array(claim.ephemeralPublicKey),
-            recipientDestination: new Uint8Array(claim.recipientDestination),
-            // Public claims carry canonical wire hex; ethers and EVM persistence use DataHexString.
-            rawTransactions: claim.rawTransactions.map((raw) => {
-              if (
-                typeof raw !== "string" ||
-                raw.length > 32768 ||
-                !/^(?:[0-9a-f]{2})+$/.test(raw)
-              )
-                throw new Error("Invalid financial receipt transaction bytes");
-              return `0x${raw}`;
-            }),
-          });
-          const verifyReceiptClaim = (claim: StealthPaymentReceiptClaim): EvmCoin => {
-            assertFinancialActive();
-            if (
-              claim.chainIdentifier !== chainIdentifier ||
-              claim.amountAtomic <= 0n ||
-              claim.rawTransactions.length < 1 ||
-              claim.rawTransactions.length > 16 ||
-              claim.amountAtomic >= 1n << 256n ||
-              !/^[0-9a-fA-F]{64}$/.test(claim.payloadDigest)
-            )
-              throw new Error("Invalid financial receipt claim");
-            const derived = deriveEvmStealthPrivateKey({
-              recipientSpendSecret: identity.toPrivateKeyHex(),
-              ephemeralPubKey: claim.ephemeralPublicKey,
-            });
-            if (claim.recipientDestination.length !== 20)
-              throw new Error("EVM receipt destination must be 20 bytes");
-            const address = getAddress(hexlify(claim.recipientDestination)).toLowerCase();
-            if (derived.stealthAddress.toLowerCase() !== address)
-              throw new Error("Receipt account is not owned by this wallet");
-            const hashes = new Set<string>(),
-              sourceNonces = new Set<string>();
-            let intended = 0n;
-            for (const raw of claim.rawTransactions) {
-              const tx = Transaction.from(raw);
-              if (
-                !tx.isSigned() ||
-                tx.chainId !== BigInt(config.chainId) ||
-                hashes.has(tx.hash!)
-              )
-                throw new Error("Receipt transaction chain/signature/duplicate mismatch");
-              const sourceNonce = `${tx.from!.toLowerCase()}:${tx.nonce}`;
-              if (sourceNonces.has(sourceNonce))
-                throw new Error("Duplicate receipt source nonce");
-              sourceNonces.add(sourceNonce);
-              hashes.add(tx.hash!);
-              if (claim.asset.kind === "native") {
-                if (
-                  tx.to?.toLowerCase() !== address ||
-                  tx.value <= 0n ||
-                  tx.data !== "0x"
-                )
-                  throw new Error("Native receipt differs from exact claim");
-                intended += tx.value;
-              } else {
-                const contract = configuredEvmStealthToken(
-                  chainIdentifier,
-                  claim.asset.contractAddress
-                );
-                const decoded = financialAbi.decodeFunctionData("transfer", tx.data);
-                const value = BigInt(decoded[1]);
-                if (
-                  tx.to?.toLowerCase() !== contract ||
-                  tx.value !== 0n ||
-                  value <= 0n ||
-                  getAddress(decoded[0]).toLowerCase() !== address ||
-                  financialAbi
-                    .encodeFunctionData("transfer", [address, value])
-                    .toLowerCase() !== tx.data.toLowerCase()
-                )
-                  throw new Error("ERC20 receipt differs from exact claim");
-                intended += value;
-              }
-            }
-            if (intended !== claim.amountAtomic)
-              throw new Error("Receipt transaction set differs from intended amount");
-            return {
-              address,
-              privateKey: derived.stealthPrivateKey,
-              origin: "stealth",
-              state: "pending",
-              amountWei: "0",
-              claimedAmountWei:
-                claim.asset.kind === "native" ? claim.amountAtomic.toString() : "0",
-              transactions:
-                claim.asset.kind === "native"
-                  ? claim.rawTransactions.map((raw) => raw.slice(2).toLowerCase())
-                  : [],
-              ephemeralPubKey: hexlify(claim.ephemeralPublicKey).slice(2),
-              payloadDigest: claim.payloadDigest.toLowerCase(),
-              discoveredAtMs: Date.now(),
-            };
-          };
-          const recordFinancialReceipt = async (
-            input: StealthPaymentReceiptClaim
-          ): Promise<void> => {
-            const claim = snapshotReceiptClaim(input);
-            const coin = verifyReceiptClaim(claim);
-            await recordStoredEvmCoin(coinStore, coin);
-            assertFinancialActive();
-            if (claim.asset.kind === "native")
-              await registerStoredEvmNativePaymentSet(coinStore, coin.address, {
-                chainIdentifier,
-                ephemeralPubKey: coin.ephemeralPubKey!,
-                rawTransactions: claim.rawTransactions,
-                amountWei: claim.amountAtomic,
-                payloadDigest: claim.payloadDigest,
-              });
-            else
-              for (const raw of claim.rawTransactions)
-                await registerStoredEvmErc20Payment(coinStore, coin.address, {
-                  chainIdentifier,
-                  contractAddress: claim.asset.contractAddress,
-                  rawTransaction: raw,
-                  amountBaseUnits: BigInt(
-                    financialAbi.decodeFunctionData(
-                      "transfer",
-                      Transaction.from(raw).data
-                    )[1]
-                  ),
-                  payloadDigest: claim.payloadDigest,
-                  discoveredAtMs: coin.discoveredAtMs,
-                });
-            coinsReadAtMs = 0;
-          };
-          const requireRecordedReceipt = (claim: StealthPaymentReceiptClaim): void => {
-            const account = verifyReceiptClaim(claim);
-            const known = coinStore.get(account.address);
-            if (
-              !known ||
-              known.privateKey !== account.privateKey ||
-              known.ephemeralPubKey !== account.ephemeralPubKey ||
-              known.origin !== "stealth"
-            )
-              throw new Error("Receipt account derivation was not durably recorded");
-            const persisted =
-              claim.asset.kind === "native"
-                ? JSON.stringify(known.transactions) ===
-                    JSON.stringify(claim.rawTransactions.map((raw) => raw.slice(2))) &&
-                  known.payloadDigest === claim.payloadDigest.toLowerCase() &&
-                  known.claimedAmountWei === claim.amountAtomic.toString()
-                : claim.rawTransactions.every((raw) =>
-                    known.erc20Positions
-                      ?.find(
-                        (position) =>
-                          position.contractAddress ===
-                          configuredEvmStealthToken(
-                            chainIdentifier,
-                            claim.asset.kind === "erc20"
-                              ? claim.asset.contractAddress
-                              : ""
-                          )
-                      )
-                      ?.claims.some(
-                        (entry) =>
-                          entry.txHash === Transaction.from(raw).hash &&
-                          entry.rawTransaction === raw &&
-                          entry.amountBaseUnits ===
-                            BigInt(
-                              financialAbi.decodeFunctionData(
-                                "transfer",
-                                Transaction.from(raw).data
-                              )[1]
-                            ).toString() &&
-                          entry.payloadDigests.includes(claim.payloadDigest.toLowerCase())
-                      )
-                  );
-            if (!persisted)
-              throw new Error("Receipt claim must be durably recorded before submission");
-          };
-          Object.assign(wallet, {
-            stealthPayments: financialPayments,
-            stealthReceipts: {
-              record: recordFinancialReceipt,
-              async submit(input: StealthPaymentReceiptClaim) {
-                const claim = snapshotReceiptClaim(input);
-                requireRecordedReceipt(claim);
-                let failure: unknown;
-                for (const raw of claim.rawTransactions) {
-                  try {
-                    assertFinancialActive();
-                    const sent = await provider.broadcastTransaction(raw);
-                    assertFinancialActive();
-                    if (sent.hash.toLowerCase() !== Transaction.from(raw).hash)
-                      throw new Error("Unexpected received transaction hash");
-                  } catch (error) {
-                    failure ??= error;
-                  }
-                }
-                if (failure !== undefined) throw failure;
-              },
-              async observe(input: StealthPaymentReceiptClaim) {
-                const claim = snapshotReceiptClaim(input);
-                requireRecordedReceipt(claim);
-                const address = getAddress(
-                  hexlify(claim.recipientDestination)
-                ).toLowerCase();
-                const balance = await provider.getBalance(address);
-                assertFinancialActive();
-                const reserved =
-                  sourceIsHeld(wallet, address) || nativeOwner.holdsSource(address);
-                if (claim.asset.kind === "native") {
-                  if (claim.rawTransactions.length > 1) {
-                    const result = await refreshNativeSetCoin(coinStore.get(address)!);
-                    return {
-                      status:
-                        result.complete &&
-                        result.verifiedReceivedAmountWei === claim.amountAtomic
-                          ? "succeeded"
-                          : result.verifiedReceivedAmountWei > 0n
-                          ? "partial"
-                          : result.allFailed
-                          ? "failed"
-                          : "pending",
-                      intendedAmountAtomic: claim.amountAtomic,
-                      verifiedReceivedAmountAtomic: result.verifiedReceivedAmountWei,
-                      spendability:
-                        BigInt(result.coin.amountWei) === 0n
-                          ? "empty"
-                          : reserved
-                          ? "reserved"
-                          : result.verifiedReceivedAmountWei === 0n
-                          ? "pending"
-                          : "spendable",
-                    };
-                  }
-
-                  const received = await verifiedFinancialReceipt(
-                    claim.rawTransactions[0]!,
-                    address
-                  );
-                  assertFinancialActive();
-                  await applyStoredNativeCoinObservation(coinStore, address, {
-                    balanceWei: balance,
-                    transfer:
-                      received === undefined
-                        ? "unseen"
-                        : received === 0n
-                        ? "failed"
-                        : "included",
-                    ...(received === undefined ? {} : { transferValueWei: received }),
-                    atMs: Date.now(),
-                  });
-                  return {
-                    status:
-                      received === undefined
-                        ? "pending"
-                        : received === 0n
-                        ? "failed"
-                        : received === claim.amountAtomic
-                        ? "succeeded"
-                        : "partial",
-                    intendedAmountAtomic: claim.amountAtomic,
-                    ...(received === undefined
-                      ? {}
-                      : { verifiedReceivedAmountAtomic: received }),
-                    spendability:
-                      balance === 0n
-                        ? "empty"
-                        : reserved
-                        ? "reserved"
-                        : received === undefined
-                        ? "pending"
-                        : "spendable",
-                  };
-                }
-                const refreshed = await refreshStoredEvmErc20Position(
-                  coinStore,
-                  address,
-                  {
-                    chainIdentifier,
-                    contractAddress: claim.asset.contractAddress,
-                    reader: erc20Reader,
-                    atMs: Date.now(),
-                  }
-                );
-                assertFinancialActive();
-                if (!refreshed.applied)
-                  throw new Error("ERC20 observation changed; retry current receipt");
-                const contractAddress = claim.asset.contractAddress.toLowerCase();
-                const positionBalance = BigInt(
-                  refreshed.coin.erc20Positions!.find(
-                    (position) => position.contractAddress === contractAddress
-                  )!.balanceBaseUnits
-                );
-                const fees = await provider.getFeeData();
-                const gas =
-                  balance === 0n || positionBalance === 0n
-                    ? 0n
-                    : await provider.estimateGas({
-                        from: address,
-                        to: claim.asset.contractAddress,
-                        value: 0n,
-                        data: financialAbi.encodeFunctionData("transfer", [
-                          material.mainAccount.address,
-                          positionBalance < claim.amountAtomic
-                            ? positionBalance
-                            : claim.amountAtomic,
-                        ]),
-                      });
-                assertFinancialActive();
-                const price = fees.maxFeePerGas ?? fees.gasPrice;
-                if (price === null) throw new Error("Native fee observation unavailable");
-                const allPayments = receivedErc20Payments(refreshed.coin, {
-                  nativeBalanceWei: balance,
-                  requiredNativeFeeWei: (gas * price * 115n) / 100n,
-                  reserved,
-                });
-                const payments = claim.rawTransactions.map((raw) =>
-                  allPayments.find(
-                    (item) =>
-                      item.txHash === Transaction.from(raw).hash &&
-                      item.contractAddress === contractAddress
-                  )
-                );
-                if (payments.some((payment) => payment === undefined))
-                  throw new Error("ERC20 receipt claim unavailable");
-                const received = payments.reduce(
-                  (sum, payment) => sum + payment!.receivedAmountBaseUnits,
-                  0n
-                );
-                const allKnown = payments.every(
-                  (payment) =>
-                    payment!.status === "received" ||
-                    payment!.status === "partial" ||
-                    payment!.status === "failed"
-                );
-                return {
-                  status:
-                    allKnown && received === claim.amountAtomic
-                      ? "succeeded"
-                      : received > 0n ||
-                        (allKnown &&
-                          !payments.every((payment) => payment!.status === "failed"))
-                      ? "partial"
-                      : payments.every((payment) => payment!.status === "failed")
-                      ? "failed"
-                      : "pending",
-                  intendedAmountAtomic: claim.amountAtomic,
-                  verifiedReceivedAmountAtomic: received,
-                  spendability:
-                    positionBalance === 0n
-                      ? "empty"
-                      : reserved
-                      ? "reserved"
-                      : payments.some(
-                          (payment) => payment!.spendability === "needs-native-gas"
-                        )
-                      ? "needs-native-gas"
-                      : payments.some((payment) => payment!.spendability === "spendable")
-                      ? "spendable"
-                      : "pending",
-                };
-              },
-            } satisfies StealthPaymentReceiptCapability,
-          });
-          const signedTransferTo = (address: string) =>
-            topicOwner!
-              .nativeJournal!.list()
-              .find(
-                (row) =>
-                  !row.cancelled &&
-                  row.recipient === address &&
-                  row.members.length === 1 &&
-                  row.members[0]!.signed
-              );
-          const newMessageId = (): string => {
-            const bytes = randomBytes(16);
-            bytes[6] = (bytes[6]! & 0x0f) | 0x40;
-            bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-            const hex = hexlify(bytes).slice(2);
-            return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
-              12,
-              16
-            )}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-          };
-          const openedAtMs = Date.now();
-          const transferMember = (payment: ContactPayment) =>
-            payment.operationId === undefined
-              ? undefined
-              : topicOwner!
-                  .nativeJournal!.list()
-                  .find((row) => row.operationId === payment.operationId)
-                  ?.members[0];
-          const transferIncluded = (payment: ContactPayment): boolean =>
-            transferMember(payment)?.observation.state === "included-success";
-          /** Signed, not yet broadcast by this wallet, and not seen on the chain: its source is
-           * held against every OTHER operation. Once the chain shows the transfer (this wallet
-           * or the contact's put it there) nothing is held any more. */
-          const holdsItsSource = (payment: ContactPayment): boolean =>
-            (payment.state === "prepared" || payment.state === "failed") &&
-            !transferIncluded(payment);
-          evmWalletInternals(wallet).heldTransferSources = () => {
-            const held = financialPayments.heldSources();
-            for (const payment of paymentStore.all()) {
-              if (!holdsItsSource(payment)) continue;
-              const source = transferMember(payment)?.source.address;
-              if (source !== undefined) held.add(source);
-            }
-            return held;
-          };
-          /** A transfer that must not be broadcast yet: its message is not with the relay. */
-          const heldForItsMessage = (operationId: string): boolean =>
-            financialPayments.holdsForHost(operationId) || paymentStore
-              .all()
-              .some(
-                (payment) =>
-                  payment.operationId === operationId && holdsItsSource(payment)
-              );
-          // Whether a payment's bytes have begun to leave the device is the one fact a release
-          // turns on, so the two things that change it take turns: recording that a message
-          // carrying it has a durable attempt (`payloadDigest`, written BEFORE the relay sees a
-          // byte), and releasing a payment that has none.
-          let exposure: Promise<unknown> = Promise.resolve();
-          const exposureExclusive = <T>(task: () => Promise<T>): Promise<T> => {
-            const run = exposure.then(task);
-            exposure = run.catch(() => undefined);
-            return run;
-          };
-          // RELEASE: only a payment no byte of which ever left this device (no attempt digest).
-          // Its record is marked first, so a send that starts now is refused; then the journal
-          // cancels the signed, unexposed operation and its source is free. Nothing was sent,
-          // nothing can land.
-          /** Message items (by ephemeral key) a send is carrying right now. Such a payment is
-           * never released: its bytes may be on their way out. */
-          const inFlight = new Map<string, number>();
-          /** Cancels the journalled transfer of a released payment and drops its signed bytes.
-           * Repeatable: a stop between marking a payment released and this is finished by the
-           * next pass. */
-          const cancelReleasedTransfer = async (
-            payment: ContactPayment
-          ): Promise<void> => {
-            const row =
-              (payment.operationId === undefined
-                ? undefined
-                : topicOwner!
-                    .nativeJournal!.list()
-                    .find((r) => r.operationId === payment.operationId)) ??
-              // Stopped around signing: the journal may hold a signed row the record never
-              // learned of.
-              signedTransferTo(payment.stealthAddress);
-            if (row === undefined || row.cancelled) return;
-            await runWalletExclusive(wallet, (admission) =>
-              nativeOwner.releaseUnexposed(row.operationId, admission)
-            );
-          };
-          const releaseContactPayment = (stealthAddress: string): Promise<boolean> =>
-            exposureExclusive(async () => {
-              const payment = paymentStore.get(stealthAddress);
-              if (
-                payment === undefined ||
-                (payment.state !== "prepared" && payment.state !== "planned") ||
-                payment.payloadDigest !== undefined ||
-                inFlight.has(payment.ephemeralPubKey)
-              )
-                return false;
-              // Marked first, without its signed bytes: from here a message carrying its item is
-              // refused, and nothing on this device can send the transfer.
-              const {
-                rawTransaction: _raw,
-                txHash: _hash,
-                ...withoutBytes
-              } = payment;
-              const released: ContactPayment = {
-                ...withoutBytes,
-                state: "released",
-              };
-              await paymentStore.put(stealthAddress, released);
-              await cancelReleasedTransfer(payment);
-              return true;
-            });
-          const broadcastContactTransfer = async (
-            payment: ContactPayment
-          ): Promise<ContactPayment> => {
-            const operationId = payment.operationId!;
-            await runWalletExclusive(wallet, (admission) =>
-              runMainAccountExclusive(wallet, () =>
-                nativeOwner.resumeOperation(operationId, admission)
-              )
-            ).catch(() => undefined);
-            invalidateBalanceRead();
-            // Seen included (by this wallet's broadcast or the contact's): nothing more to do.
-            const member = topicOwner!
-              .nativeJournal!.list()
-              .find((row) => row.operationId === operationId)?.members[0];
-            if (member?.observation.state !== "included-success") return payment;
-            const paid: ContactPayment = { ...payment, state: "paid" };
-            await paymentStore.put(payment.stealthAddress, paid);
-            return paid;
-          };
-          let contactQueue: Promise<unknown> = Promise.resolve();
-          const contactExclusive = <T>(task: () => Promise<T>): Promise<T> => {
-            const run = contactQueue.then(task);
-            contactQueue = run.catch(() => undefined);
-            return run;
-          };
-          const finishContactPayment = async (
-            stealthAddress: string,
-            onProgress?: ContactSendParams["onProgress"],
-            takeOver = false
-          ): Promise<ContactPayment> => {
-            let payment = paymentStore.get(stealthAddress);
-            if (payment === undefined)
-              throw new Error("No such payment to a contact");
-            if (payment.state === "planned" && payment.stampValueWei === undefined)
-              throw new Error("Contact payment has no captured stamp amount; unsupported development journal format. Recover the signed payment before resetting its application records.");
-            if (payment.state === "planned") {
-              // Stopped around signing. A transfer the journal holds signed is this payment's;
-              // with none, nothing was signed and the plan is dropped.
-              const row = signedTransferTo(stealthAddress);
-              if (row === undefined) {
-                await paymentStore.delete(stealthAddress);
-                throw new Error(
-                  "The payment was never signed. Nothing was sent."
-                );
-              }
-              payment = {
-                ...payment,
-                state: "prepared",
-                operationId: row.operationId,
-                rawTransaction: row.members[0]!.signed!.rawTransaction,
-                txHash: row.members[0]!.signed!.transactionHash,
-              };
-              await paymentStore.put(stealthAddress, payment);
-            }
-            if (payment.state === "failed")
-              throw new ContactPaymentFailedError(
-                payment.messageId,
-                payment.failure ?? "ended"
-              );
-            if (payment.state === "delivered")
-              return broadcastContactTransfer(payment);
-            if (payment.state !== "prepared") return payment;
-            // Capture before journal updates replace the payment object during takeover.
-            if (payment.stampValueWei === undefined)
-              throw new Error("Contact payment has no captured stamp amount; unsupported development journal format. Recover the signed payment before resetting its application records.");
-            const stampValue = BigInt(payment.stampValueWei);
-            if (payment.deliveredBy === "host") {
-              // The host's own send path carries the message. Once it has an attempt, its
-              // outcome is asked for; `contactMessageDelivered` is told when the relay has it.
-              if (payment.payloadDigest === undefined) return payment;
-              const status = await directMessages
-                .reconcileAttempts({
-                  wallet,
-                  payloadDigests: [payment.payloadDigest],
-                })
-                .then(
-                  (statuses) => statuses[payment!.payloadDigest!],
-                  () => "live" as const
-                );
-              if (status === "delivered") {
-                payment = { ...payment, state: "delivered" };
-                await paymentStore.put(stealthAddress, payment);
-                return broadcastContactTransfer(payment);
-              }
-              // Its bytes went to a relay and that attempt is over (ended by the relay, or
-              // gone with the host's message): the payment is FINISHED, by the wallet, in a new
-              // message carrying the same signed transfer. Done for a payment left by an
-              // earlier session, or when asked (`takeOver`); never for one the host of this
-              // session may still be retrying itself.
-              if (
-                !(status === "dead" || status === "unknown") ||
-                !(takeOver || payment.createdAtMs < openedAtMs)
-              )
-                return payment;
-              payment = {
-                ...payment,
-                deliveredBy: "wallet",
-                messageId: newMessageId(),
-              };
-              await paymentStore.put(stealthAddress, payment);
-            }
-            onProgress?.({ stage: "delivering", txHash: payment.txHash });
-            let payloadDigest: string;
-            try {
-              payloadDigest = (
-                await directMessages.send({
-                  wallet,
-                  recipient: { raw: getAddress(payment.recipientAddress) },
-                  items: [itemOf(payment)],
-                  messageId: payment.messageId,
-                  ...(payment.conversationId === undefined
-                    ? {}
-                    : { conversationId: payment.conversationId }),
-                  stampValue,
-                })
-              ).payloadDigest;
-            } catch (error) {
-              // Sent before (this session or an earlier one): the answer is the original's.
-              if (!(error instanceof DirectMessageAlreadyAttemptedError))
-                throw error;
-              const status = (
-                await directMessages.reconcileAttempts({
-                  wallet,
-                  payloadDigests: [error.payloadDigest],
-                })
-              )[error.payloadDigest];
-              if (status === "dead") {
-                // The relay will never deliver that message. This wallet has not broadcast the
-                // transfer, and its source stays held: the bytes went to a relay. The item is
-                // kept: `retryContactPayment` sends it in a new message.
-                const failure = "the relay ended the message";
-                await paymentStore.put(stealthAddress, {
-                  ...payment,
-                  state: "failed",
-                  payloadDigest: error.payloadDigest,
-                  failure,
-                });
-                throw new ContactPaymentFailedError(payment.messageId, failure);
-              }
-              if (status !== "delivered") throw error;
-              payloadDigest = error.payloadDigest;
-            }
-            payment = { ...payment, state: "delivered", payloadDigest };
-            await paymentStore.put(stealthAddress, payment);
-            // The relay has the message. Now, and only now, the transfer is broadcast: the
-            // journalled bytes, the same the message carries. A failure here is not the
-            // payment's: the contact's wallet broadcasts them too, and later passes try again.
-            onProgress?.({ stage: "broadcasting", txHash: payment.txHash });
-            return broadcastContactTransfer(payment);
-          };
-          const itemOf = (payment: ContactPayment): StealthItem =>
-            evmStealthItem({
-              networkTag: config.networkTag,
-              ephemeralPubKey: getBytes(`0x${payment.ephemeralPubKey}`),
-              rawTransaction: payment.rawTransaction!,
-              amountWei: BigInt(payment.valueWei),
-              memo: payment.memo,
-            });
-          const sendToContact = (params: ContactSendParams) =>
-            payContact(params, false) as Promise<ContactSendResult>;
-          const prepareContactPayment = (params: ContactSendParams) =>
-            payContact(params, true) as Promise<PreparedContactPayment>;
-          // `hostDelivers`: the host sends the message that carries the item (a chat's own send
-          // path); the wallet learns of its delivery where that message passes through
-          // `directMessages` and broadcasts then.
-          const payContact = async (
-            params: ContactSendParams,
-            hostDelivers: boolean
-          ): Promise<ContactSendResult | PreparedContactPayment> => {
-            requireOpenWallet(wallet);
-            // This legacy payment is delivered by directMessages. Refuse before reserving or
-            // signing funds on networks without the canonical messaging service; the separate
-            // typed financial payment owner does not use this transport-coupled path.
-            if (!canonicalMessagingFor(wallet))
-              throw new CanonicalMessagingPendingError(
-                "Contact payments require canonical direct messaging."
-              );
-            if (params.value <= 0n)
-              throw new RangeError("Transfer value must be positive");
-            // The message item states the amount in an unsigned 64-bit field. A larger payment
-            // could be signed and then never described to the contact, so it is refused here.
-            if (params.value > MAX_STEALTH_ITEM_AMOUNT)
-              throw new ContactPaymentTooLargeError(
-                `This payment is larger than a single contact payment can carry (about ${formatUnits(
-                  MAX_STEALTH_ITEM_AMOUNT,
-                  nativeDecimals
-                ).slice(0, 4)} ${unit}); send it in parts`
-              );
-            const recipientAddress = getAddress(
-              params.recipient.raw
-            ).toLowerCase();
-            if (recipientAddress === identityKey)
-              throw new Error("A payment to a contact needs another account");
-            params.onProgress?.({ stage: "resolving-keys" });
-            // The contact's published signing key: the key the one-time address is derived
-            // from, and the key the message is sealed to. Unpublished: refused before anything.
-            let spendKey: Uint8Array | undefined;
-            let recipientStampKey: Uint8Array | undefined;
-            const directory = evmWalletInternals(wallet).canonicalDirectory;
-            if (directory !== undefined) {
-              const peer = await directory.peerCurrent({
-                address: params.recipient.raw,
-              });
-              if (!peer)
-                throw new CanonicalRecipientNotPublishedError(
-                  params.recipient.raw
-                );
-              spendKey = getBytes(`0x${peer.subject}`);
-              recipientStampKey = peer.current.stampKey.keyBytes;
-            } else {
-              spendKey = (
-                await fetchMonadProfile({
-                  relayBaseUrl: config.relayBaseUrl,
-                  address: { raw: params.recipient.raw },
-                })
-              )?.pubKey;
-            }
-            if (
-              spendKey === undefined ||
-              computeAddress(hexlify(spendKey)).toLowerCase() !==
-                recipientAddress
-            )
-              throw new Error(
-                "The contact has no published key for this address"
-              );
-            // The message is owed once the transfer is out, and it costs a stamp: refused here,
-            // before anything, when the wallet cannot pay for both.
-            // Capture the host default before signing. Preparation and any later recovery use
-            // this exact recipient amount; a changed fee floor is refused rather than raised.
-            let stampWei = params.stampValue;
-            if (stampWei === undefined) {
-              const quote = await directMessages.defaultStampQuote!({ wallet });
-              if (quote.status === "unavailable") throw new DefaultStampUnavailableError(quote);
-              stampWei = quote.amount;
-            }
-            if ((await wallet.getBalance()) < params.value + stampWei)
-              throw new RangeError(
-                "Insufficient funds for the payment and its message stamp"
-              );
-            params.onProgress?.({ stage: "deriving-stealth" });
-            const destination = deriveEvmStealthAddress({
-              recipientSpendPubKey: spendKey,
-            });
-            const stealthAddress = destination.stealthAddress.toLowerCase();
-            return contactExclusive(async () => {
-              requireOpenWallet(wallet);
-              // The message's stamp accounts first: any funding transfer the message needs is
-              // made now, before the payment's transfer is signed, so the two are ordered and
-              // the message will not need the held account again.
-              const prepare = evmWalletInternals(wallet).canonicalInventoryFunder;
-              if (
-                prepare !== undefined &&
-                recipientStampKey !== undefined &&
-                stampWei > 0n
-              )
-                await prepare({
-                  stampValueWei: stampWei,
-                  recipientStampKey,
-                  onProgress: undefined,
-                });
-              const messageId = newMessageId();
-              await paymentStore.put(stealthAddress, {
-                messageId,
-                stealthAddress,
-                ephemeralPubKey: hexlify(destination.ephemeralPubKey).slice(2),
-                recipientAddress,
-                valueWei: params.value.toString(),
-                ...(params.memo ? { memo: params.memo } : {}),
-                ...(params.conversationId === undefined
-                  ? {}
-                  : { conversationId: params.conversationId }),
-                stampValueWei: stampWei.toString(),
-                state: "planned",
-                deliveredBy: hostDelivers ? "host" : "wallet",
-                createdAtMs: Date.now(),
-              });
-              params.onProgress?.({ stage: "signing" });
-              try {
-                await runWalletExclusive(wallet, (admission) =>
-                  runMainAccountExclusive(wallet, () =>
-                    nativeOwner.signNative(
-                      { recipient: { raw: stealthAddress }, value: params.value },
-                      admission
-                    )
-                  )
-                );
-              } catch (error) {
-                if (signedTransferTo(stealthAddress) === undefined) {
-                  await paymentStore.delete(stealthAddress);
-                  throw error;
-                }
-              }
-              let payment: ContactPayment;
-              try {
-                payment = await finishContactPayment(
-                  stealthAddress,
-                  params.onProgress
-                );
-              } catch (error) {
-                const saved = paymentStore.get(stealthAddress);
-                if (
-                  error instanceof ContactPaymentFailedError ||
-                  error instanceof ContactPaymentReleasedError ||
-                  saved === undefined
-                )
-                  throw error;
-                throw new ContactPaymentPendingError(
-                  saved.messageId,
-                  saved.txHash,
-                  error
-                );
-              }
-              if (hostDelivers)
-                return {
-                  item: itemOf(payment),
-                  stampValue: stampWei,
-                  txHash: payment.txHash!,
-                  stealthAddress: destination.stealthAddress,
-                  value: params.value,
-                };
-              params.onProgress?.({ stage: "confirmed", txHash: payment.txHash });
-              return {
-                txHash: payment.txHash!,
-                stealthAddress: destination.stealthAddress,
-                value: params.value,
-                messageId: payment.messageId,
-                payloadDigest: payment.payloadDigest!,
-              };
-            });
-          };
-          let resumingContactPayments: Promise<void> | undefined;
-          const resumeContactPayments = (): Promise<void> => {
-            resumingContactPayments ??= contactExclusive(async () => {
-              // Nothing to finish (every payment paid, released or ended): no request is made.
-              for (const listed of paymentStore.all()) {
-                if (evmWalletInternals(wallet).closed) return;
-                let payment = listed;
-                // Released, and the app stopped before the journal cancelled its transfer:
-                // finished here (local, no request), so its source is not left held.
-                if (payment.state === "released") {
-                  await cancelReleasedTransfer(payment).catch(() => undefined);
-                  continue;
-                }
-                if (
-                  payment.state !== "planned" &&
-                  payment.state !== "prepared" &&
-                  payment.state !== "delivered" &&
-                  payment.state !== "failed"
-                )
-                  continue;
-                // Left by an earlier session with no byte ever sent (the app stopped between
-                // signing and the host's first save): released, its source is free again.
-                if (
-                  payment.deliveredBy === "host" &&
-                  payment.state === "prepared" &&
-                  payment.payloadDigest === undefined &&
-                  payment.createdAtMs < openedAtMs
-                ) {
-                  await releaseContactPayment(payment.stealthAddress).catch(
-                    () => undefined
-                  );
-                  continue;
-                }
-                // Exposed and not broadcast by this wallet: the contact's wallet may have put
-                // the transfer on the chain. If the chain shows it, the payment is paid and
-                // nothing is held.
-                const operationId = payment.operationId;
-                if (
-                  operationId !== undefined &&
-                  payment.state !== "delivered" &&
-                  payment.payloadDigest !== undefined
-                ) {
-                  await topicOwner!
-                    .runLifetime((lifetime) =>
-                      nativeOwner.observe(operationId, 0, lifetime)
-                    )
-                    .catch(() => undefined);
-                  if (transferIncluded(payment)) {
-                    payment = { ...payment, state: "paid" };
-                    await paymentStore.put(payment.stealthAddress, payment);
-                    continue;
-                  }
-                }
-                if (payment.state !== "failed")
-                  await finishContactPayment(payment.stealthAddress).catch(
-                    () => undefined
-                  );
-              }
-            })
-              .catch(() => undefined)
-              .finally(() => {
-                resumingContactPayments = undefined;
-              });
-            return resumingContactPayments;
-          };
-          // Brings one payment to an end, whichever way is right for it:
-          // - no byte of it ever left the device: RELEASED (transfer cancelled, source free);
-          // - its bytes went to a relay: FINISHED. A delivered message is followed by the
-          //   broadcast; one the relay ended, or whose host message is gone, is sent again by
-          //   the wallet in a new message carrying the same signed transfer.
-          // Never signs anything, and never releases a payment that was exposed.
-          const settleContactPayment = (
-            ephemeralPubKey: string
-          ): Promise<ContactPayment["state"] | "none"> =>
-            contactExclusive(async () => {
-              requireOpenWallet(wallet);
-              const key = ephemeralPubKey.replace(/^0x/, "").toLowerCase();
-              const found = paymentStore
-                .all()
-                .find((row) => row.ephemeralPubKey === key);
-              if (found === undefined) return "none";
-              const address = found.stealthAddress;
-              if (await releaseContactPayment(address)) return "released";
-              let payment = paymentStore.get(address)!;
-              if (payment.state === "failed") {
-                const { failure: _failure, payloadDigest: _digest, ...rest } =
-                  payment;
-                payment = {
-                  ...rest,
-                  deliveredBy: "wallet",
-                  messageId: newMessageId(),
-                  state: "prepared",
-                };
-                await paymentStore.put(address, payment);
-              }
-              if (
-                payment.state === "planned" ||
-                payment.state === "prepared" ||
-                payment.state === "delivered"
-              )
-                await finishContactPayment(address, undefined, true).catch(
-                  () => undefined
-                );
-              return paymentStore.get(address)?.state ?? "none";
-            });
-          const retryContactPayment = async (messageId: string): Promise<void> => {
-            const payment = paymentStore
-              .all()
-              .find((row) => row.messageId === messageId);
-            if (payment === undefined)
-              throw new Error("No such payment to a contact");
-            await settleContactPayment(payment.ephemeralPubKey);
-          };
-          const recordStampCoin: ReceivedCoinOwner["recordStampCoin"] = (
-            stamp
-          ) =>
-            recordCoin({
-              address: stamp.address.toLowerCase(),
-              privateKey: stamp.privateKey,
-              origin: "stamp",
-              state: "pending",
-              amountWei: "0",
-              claimedAmountWei: stamp.valueWei.toString(),
-              transactions: [stamp.transaction.replace(/^0x/, "").toLowerCase()],
-              payloadDigest: stamp.payloadDigest.replace(/^0x/, "").toLowerCase(),
-              childIndex: stamp.childIndex,
-              ...(stamp.stampSharedPoint === undefined
-                ? {}
-                : {
-                    stampSharedPoint: stamp.stampSharedPoint
-                      .replace(/^0x/, "")
-                      .toLowerCase(),
-                  }),
-              discoveredAtMs: stamp.timestampMs,
-            });
-          // A note this account wrote to itself about a coin: the key is derived here, from the
-          // note's data and this wallet's own secrets, and the coin is recorded only if that key
-          // opens the account the note names. It starts pending, like a coin read from a
-          // message: nothing is counted until the chain shows it.
-          const recordReceivedCoin = async (
-            note: ReceivedCoinItem
-          ): Promise<boolean> => {
-            const address = note.address.toLowerCase();
-            const transactions = (note.transactions ?? []).map((entry) =>
-              entry.replace(/^0x/, "").toLowerCase()
-            );
-            let coin: EvmCoin | undefined;
-            if (note.origin === "stealth") {
-              if (note.ephemeralPubKey === undefined) return false;
-              coin = stealthCoinFromItem({
-                item: {
-                  ephemeralPubKey: note.ephemeralPubKey,
-                  transactions,
-                  amount: 0,
-                  amountWei: note.claimedAmountWei,
-                },
-                recipientSpendSecret: identity.toPrivateKeyHex(),
-                payloadDigest: note.payloadDigest,
-                discoveredAtMs: note.timestamp,
-              });
-            } else {
-              const roles = material.canonicalRoles;
-              if (
-                roles === undefined ||
-                note.stampSharedPoint === undefined ||
-                note.childIndex === undefined
-              )
-                return false;
-              const sharedPoint = note.stampSharedPoint
-                .replace(/^0x/, "")
-                .toLowerCase();
-              const privateKey = roles.stampChildPrivateKey({
-                network: forumPolicy.network,
-                sharedPoint: getBytes(`0x${sharedPoint}`),
-                childIndex: note.childIndex,
-                address,
-              });
-              if (privateKey !== undefined)
-                coin = {
-                  address,
-                  privateKey,
-                  origin: "stamp",
-                  state: "pending",
-                  amountWei: "0",
-                  claimedAmountWei: note.claimedAmountWei,
-                  transactions,
-                  ...(note.payloadDigest === undefined
-                    ? {}
-                    : {
-                        payloadDigest: note.payloadDigest
-                          .replace(/^0x/, "")
-                          .toLowerCase(),
-                      }),
-                  childIndex: note.childIndex,
-                  stampSharedPoint: sharedPoint,
-                  discoveredAtMs: note.timestamp,
-                };
-            }
-            if (coin === undefined || coin.address !== address) return false;
-            // The mailbox holds this coin's note: it is not written again.
-            const known = coinStore.get(address);
-            if (known === undefined)
-              await recordCoin({ ...coin, notedAtMs: Date.now() });
-            else if (known.notedAtMs === undefined)
-              await markStoredEvmCoinNoted(coinStore, address, Date.now());
-            return true;
-          };
-          // Every coin gets one note to self saying how its key is derived: a FREE message (no
-          // stamp, no payment attempt, nothing funded or reserved), whose identity is fixed by
-          // the chain and the coin's account, so a repeat is the same message. Sent only once
-          // the coin list has read the whole mailbox (a restored wallet first reads the notes
-          // that are already there). A failure leaves the coin without `notedAtMs` and the next
-          // pass sends the note again; a coin whose note failed goes last, and one failure ends
-          // the pass, so a relay that cannot be reached is asked once per pass.
-          const noteFailures = new Set<string>();
-          let notingCoins: Promise<void> | undefined;
-          const noteCoins = (): Promise<void> => {
-            notingCoins ??= (async () => {
-              if (scanState.get("scan")?.complete !== true) return;
-              const waiting = coinStore
-                .all()
-                .filter((coin) => coin.notedAtMs === undefined)
-                .map((coin) => coin.address);
-              for (const address of [
-                ...waiting.filter((entry) => !noteFailures.has(entry)),
-                ...waiting.filter((entry) => noteFailures.has(entry)),
-              ]) {
-                if (evmWalletInternals(wallet).closed) return;
-                const coin = coinStore.get(address);
-                if (coin === undefined || coin.notedAtMs !== undefined) continue;
-                const note = receivedCoinNoteOf(coin, chainIdentifier);
-                if (note === undefined) continue;
-                try {
-                  await directMessages.send({
-                    wallet,
-                    recipient: toChainAddress(identity.address.raw),
-                    items: [note],
-                    stampValue: 0n,
-                    messageId: getBytes(
-                      keccak256(
-                        toUtf8Bytes(
-                          `frank-received-coin:${chainIdentifier}:${address}`
-                        )
-                      )
-                    ).slice(0, 16),
-                  });
-                } catch {
-                  noteFailures.delete(address);
-                  noteFailures.add(address);
-                  return;
-                }
-                noteFailures.delete(address);
-                const current = coinStore.get(address);
-                if (current !== undefined && current.notedAtMs === undefined)
-                  await markStoredEvmCoinNoted(coinStore, address, Date.now());
-              }
-            })()
-              .catch(() => undefined)
-              .finally(() => {
-                notingCoins = undefined;
-              });
-            return notingCoins;
-          };
-          // Moves the unspent coins of these messages to the main account: a seed-derived
-          // address, so the money survives the message and a restore from the seed. One journalled
-          // native operation per coin, each a single transfer; a coin an earlier sweep already
-          // carries is resumed there and never signed for twice.
-          const sweepReceivedCoins = async (params: {
-            payloadDigests: readonly string[];
-          }): Promise<Record<string, ReceivedCoinSweep>> => {
-            requireOpenWallet(wallet);
-            const asked = params.payloadDigests.map((digest) => ({
-              digest,
-              bare: digest.replace(/^0x/, "").toLowerCase(),
-            }));
-            const wanted = new Set(asked.map((entry) => entry.bare));
-            const coinsOf = () =>
-              coinStore
-                .all()
-                .filter(
-                  (coin) =>
-                    coin.payloadDigest !== undefined &&
-                    wanted.has(coin.payloadDigest)
-                );
-            const mainAddress = mainAccount.address.toLowerCase();
-            const live = () =>
-              coinsOf().filter(
-                (coin) => coin.state === "pending" || coin.state === "unspent"
-              );
-            let failure: string | undefined;
-            /** Coins the sweep left where they are: worth less than their own move. */
-            const left = new Set<string>();
-            /** Coins another operation of this wallet holds right now. */
-            const heldByOthers = new Set<string>();
-            const sweptAlready = (address: string): boolean =>
-              topicOwner!
-                .nativeJournal!.list()
-                .some(
-                  (row) =>
-                    !row.cancelled &&
-                    row.recipient === mainAddress &&
-                    row.members.some(
-                      (member) =>
-                        member.source.address === address &&
-                        member.observation.state === "included-success"
-                    )
-                );
-            const sweepOf = (address: string) =>
-              topicOwner!
-                .nativeJournal!.list()
-                .find(
-                  (row) =>
-                    !row.cancelled &&
-                    row.recipient === mainAddress &&
-                    row.members.some(
-                      (member) =>
-                        member.source.address === address &&
-                        member.observation.state !== "included-success" &&
-                        member.observation.state !== "included-revert"
-                    )
-                );
-            if (live().length > 0) {
-              try {
-                // What is really there, read now: a coin is never swept on an old reading.
-                await readCoinsPass({
-                  only: new Set(live().map((coin) => coin.address)),
-                  strict: true,
-                });
-                const owner = nativeOperationOwner(wallet);
-                const until = Date.now() + SWEEP_INCLUSION_WAIT_MS;
-                for (;;) {
-                  // A coin whose sweep is in a block is done: what is left of it is the
-                  // difference between the fee it allowed for and the fee it paid.
-                  const unspent = spendableCoins(live()).filter(
-                    (coin) =>
-                      !left.has(coin.address) &&
-                      !heldByOthers.has(coin.address) &&
-                      !sweptAlready(coin.address)
-                  );
-                  if (unspent.length === 0) break;
-                  const carried = new Set(
-                    unspent.flatMap((coin) => {
-                      const row = sweepOf(coin.address);
-                      return row === undefined ? [] : [row.operationId];
-                    })
-                  );
-                  const fresh = unspent.filter(
-                    (coin) => sweepOf(coin.address) === undefined
-                  );
-                  let waiting = false;
-                  for (const operationId of carried)
-                    await runWalletExclusive(wallet, (admission) =>
-                      runMainAccountExclusive(wallet, () =>
-                        owner.resumeOperation(operationId, admission)
-                      )
-                    ).catch((error) => {
-                      if (!(error instanceof NativeTransactionSubmissionError))
-                        throw error;
-                      waiting = true;
-                    });
-                  if (fresh.length > 0)
-                    await runWalletExclusive(wallet, (admission) =>
-                      runMainAccountExclusive(wallet, () =>
-                        owner.sweepSources(
-                          {
-                            sources: fresh.map(coinSource),
-                            recipient: { raw: mainAddress },
-                          },
-                          admission
-                        )
-                      )
-                    ).then(
-                      (swept) => {
-                        for (const address of swept.left) left.add(address);
-                        for (const address of swept.held)
-                          heldByOthers.add(address);
-                        if (swept.pending) waiting = true;
-                      },
-                      (error) => {
-                        if (!(error instanceof NativeTransactionSubmissionError))
-                          throw error;
-                        waiting = true;
-                      }
-                    );
-                  invalidateBalanceRead();
-                  await readCoinsPass({
-                    only: new Set(unspent.map((coin) => coin.address)),
-                    strict: true,
-                  });
-                  // Broadcast and not in a block yet: looked at again, for a bounded time.
-                  if (!waiting || Date.now() >= until) break;
-                  await new Promise((resolve) => setTimeout(resolve, 1_000));
-                  if (evmWalletInternals(wallet).closed) break;
-                }
-              } catch (error) {
-                failure = error instanceof Error ? error.message : String(error);
-              }
-            }
-            const answers: Record<string, ReceivedCoinSweep> = {};
-            for (const { digest, bare } of asked) {
-              const coins = coinStore
-                .all()
-                .filter((coin) => coin.payloadDigest === bare);
-              const moved = coins.some((coin) => sweptAlready(coin.address));
-              // Still holding money worth moving, or with a payment on its way (the node knows
-              // the transfer and it is not in a block yet): the message must stay. A payment the
-              // chain does not know at all holds nothing and keeps no message.
-              const held = coins.filter(
-                (coin) =>
-                  (coin.state === "unspent" &&
-                    !left.has(coin.address) &&
-                    !sweptAlready(coin.address)) ||
-                  (coin.state === "pending" &&
-                    (coin.transferSeen === true || failure !== undefined))
-              );
-              if (held.length === 0)
-                answers[digest] = { outcome: moved ? "swept" : "none" };
-              else if (
-                failure === undefined &&
-                held.every(
-                  (coin) =>
-                    coin.state === "unspent" && sweepOf(coin.address) !== undefined
-                )
-              )
-                answers[digest] = {
-                  outcome: "pending",
-                  reason: "The sweep is broadcast and not in a block yet",
-                };
-              else
-                answers[digest] = {
-                  outcome: "failed",
-                  reason:
-                    failure ??
-                    (held.some((coin) => coin.state === "pending")
-                      ? "A payment of this message is not on the chain yet"
-                      : held.some((coin) => heldByOthers.has(coin.address))
-                      ? "Another operation of this wallet is spending from these coins"
-                      : "The coins could not be moved"),
-                };
-            }
-            return answers;
-          };
           const walletInternals = evmWalletInternals(wallet);
-          walletInternals.receivedCoinOwner = {
-            recordStampCoin,
-            async recordStampPayments(message) {
-              const roles = material.canonicalRoles;
-              if (
-                roles === undefined ||
-                message.stampSharedPoint === undefined ||
-                message.recipientAddress.raw.toLowerCase() !== identityKey
-              )
-                return;
-              for (const payment of message.stampPayments) {
-                if (payment.childIndex === undefined) continue;
-                const address = payment.destinationAddress.toLowerCase();
-                if (coinStore.get(address) !== undefined) continue;
-                // Only an account this wallet's stamp key opens is a coin of this wallet.
-                const privateKey = roles.stampChildPrivateKey({
-                  network: forumPolicy.network,
-                  sharedPoint: getBytes(`0x${message.stampSharedPoint}`),
-                  childIndex: payment.childIndex,
-                  address,
-                });
-                if (privateKey === undefined) continue;
-                await recordStampCoin({
-                  address,
-                  privateKey,
-                  childIndex: payment.childIndex,
-                  stampSharedPoint: message.stampSharedPoint,
-                  payloadDigest: message.payloadDigest,
-                  valueWei: payment.valueWei,
-                  transaction: payment.rawTx ?? payment.txHash,
-                  timestampMs: message.receivedTime ?? Date.now(),
-                });
-              }
-            },
-            noteCoins,
-            checkPendingCoins: () =>
-              readCoinsPass({ pendingOnly: true }).catch(() => undefined),
-            async recordStealthItem(item, origin) {
-              if ((item.networkTag ?? item.chainId) !== config.networkTag) return;
-              const coin = stealthCoinFromItem({
-                item,
-                recipientSpendSecret: identity.toPrivateKeyHex(),
-                payloadDigest: origin.payloadDigest,
-                discoveredAtMs: origin.timestampMs,
-              });
-              if (coin !== undefined) await recordCoin(coin);
-            },
-            resumeContactPayments,
-            retryContactPayment,
-            mailboxScan: () =>
-              scanState.get("scan") ?? { complete: false, sinceMs: 0 },
-            recordMailboxScan: (progress) => scanState.put("scan", progress),
-            beginContactSend: (ephemeralPubKeys) =>
-              exposureExclusive(async () => {
-                // Refused here, before the send does anything durable: a released payment's
-                // transfer is cancelled, and a message carrying it must never exist.
-                for (const payment of paymentStore.all())
-                  if (
-                    payment.state === "released" &&
-                    ephemeralPubKeys.includes(payment.ephemeralPubKey)
-                  )
-                    throw new ContactPaymentReleasedError();
-                for (const key of ephemeralPubKeys)
-                  inFlight.set(key, (inFlight.get(key) ?? 0) + 1);
-                let ended = false;
-                return () => {
-                  if (ended) return;
-                  ended = true;
-                  for (const key of ephemeralPubKeys) {
-                    const left = (inFlight.get(key) ?? 1) - 1;
-                    if (left > 0) inFlight.set(key, left);
-                    else inFlight.delete(key);
-                  }
-                };
-              }),
-            contactMessageAttempted: (ephemeralPubKeys, payloadDigest) =>
-              exposureExclusive(async () => {
-                for (const payment of paymentStore.all()) {
-                  if (!ephemeralPubKeys.includes(payment.ephemeralPubKey)) continue;
-                  // Released: its signed transfer is cancelled. A message carrying it must
-                  // not leave: the contact could still broadcast those bytes.
-                  if (payment.state === "released")
-                    throw new ContactPaymentReleasedError();
-                  if (
-                    payment.state === "prepared" &&
-                    payment.payloadDigest !== payloadDigest
-                  )
-                    await paymentStore.put(payment.stealthAddress, {
-                      ...payment,
-                      payloadDigest,
-                    });
-                }
-              }),
-            async releaseUnsentContactPayments(ephemeralPubKeys) {
-              let released = false;
-              for (const payment of paymentStore.all())
-                if (ephemeralPubKeys.includes(payment.ephemeralPubKey))
-                  released =
-                    (await releaseContactPayment(payment.stealthAddress)) ||
-                    released;
-              return released;
-            },
-            contactMessageDelivered: (payloadDigest) =>
-              contactExclusive(async () => {
-                for (const payment of paymentStore.all()) {
-                  if (
-                    walletInternals.closed ||
-                    payment.deliveredBy !== "host" ||
-                    (payment.state !== "prepared" && payment.state !== "failed") ||
-                    payment.payloadDigest !== payloadDigest
-                  )
-                    continue;
-                  // The relay has the message: now the transfer is broadcast.
-                  const delivered: ContactPayment = {
-                    ...payment,
-                    state: "delivered",
-                  };
-                  await paymentStore.put(payment.stealthAddress, delivered);
-                  await broadcastContactTransfer(delivered);
-                }
-              }).catch(() => undefined),
-          };
+          await coinAndContactManager.installStealthAndContactOwners();
           // Wallet open, native operations. Local only: nothing in this block may make a network
           // request, ask for a signature or fail the open, and each step stands alone.
           // A plan that never signed (a crash or failure between the journal write and the first
@@ -5312,360 +2751,30 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           ) {
             const canonicalRoles = material.canonicalRoles;
             const installedNetworkTag = config.networkTag;
-            walletInternals.canonicalClientFactory = () => {
-              requireOpenWallet(wallet);
-              return new MonadCanonicalStampClient({
-                ...wallet,
-                walletState: topicOwner!,
-                canonicalRoles,
-                installedNetworkTag,
-                runCanonicalExclusive: (task) =>
-                  runWalletExclusive(wallet, (admission) => {
-                    if (admission === undefined)
-                      throw new Error("Canonical operation lifetime is unavailable");
-                    return task(admission);
-                  }, true),
-              });
-            };
-            const defaultGasReserveWei =
-              BigInt(21_000) * BigInt(2_000_000_000);
-            // What a stamp payment keeps back in each account for its own fee: the figure the
-            // payment intent subtracts (21,000 gas at the current fee cap). An inventory check
-            // made with any other figure can pass accounts the intent then finds too small.
-            const stampPaymentFeeReserve = async (): Promise<bigint> => {
-              try {
-                const feeData = await provider.getFeeData();
-                const feePerGas = feeData.maxFeePerGas ?? feeData.gasPrice;
-                if (feePerGas !== null && feePerGas !== undefined)
-                  return BigInt(21_000) * feePerGas;
-              } catch {
-                /* The fixed reserve below is the answer without a quote. */
-              }
-              return defaultGasReserveWei;
-            };
-            /**
-             * Funds single-use accounts for one stamp from the main account, left free for
-             * whichever message claims them. A send never calls this: it pays from coins the
-             * wallet already has. It is for a host that wants unlinkable payments prepared.
-             */
-            const fundStampAccounts = (input: {
-              stampValueWei: bigint;
-              feeReserveWei?: bigint;
-              onProgress?: (progress: DirectMessagePreparationProgress) => void;
-            }) =>
-              topicOwner!.runLifetime(async () => {
-                // A send changes what there is to fund: the next fund-ahead call looks again.
-                walletInternals.fundAheadBackoff = undefined;
-                const feeReserveWei =
-                  input.feeReserveWei ?? (await stampPaymentFeeReserve());
-                let fundingPrivateKey = mainAccount.privateKey;
-                // A main account that holds a signed transfer for a contact payment is not a
-                // funding source: its next nonce is that transfer's. Another source is looked
-                // for exactly as when the main account is empty.
-                const mainHeld = sourceIsHeld(wallet, mainAccount.address);
-                try {
-                  const mainBal = mainHeld
-                    ? 0n
-                    : await provider.getBalance(mainAccount.address);
-                  if (
-                    mainBal === 0n &&
-                    identity.address.raw.toLowerCase() !==
-                      mainAccount.address.toLowerCase()
-                  ) {
-                    const identBal = await provider.getBalance(
-                      identity.address.raw
-                    );
-                    if (identBal > 0n && !sourceIsHeld(wallet, identity.address.raw)) {
-                      fundingPrivateKey = identity.toPrivateKeyHex();
-                    }
-                  }
-                  // Received coins pay for stamps like any other funds: when the main account
-                  // cannot cover this stamp, the largest funded coin that can, and that no native
-                  // operation holds, funds the stamp accounts instead.
-                  const coinNeedWei =
-                    input.stampValueWei +
-                    BigInt(2 * STAMP_PAIR_TRANSFERS) * defaultGasReserveWei;
-                  if (
-                    mainBal < coinNeedWei &&
-                    fundingPrivateKey === mainAccount.privateKey
-                  ) {
-                    await readCoins();
-                    const funded = spendableCoins(coinStore.all())
-                      .filter((coin) => BigInt(coin.amountWei) >= coinNeedWei)
-                      .sort((a, b) =>
-                        BigInt(a.amountWei) > BigInt(b.amountWei) ? -1 : 1
-                      );
-                    for (const coin of funded) {
-                      const nonce = await provider.getTransactionCount(
-                        coin.address
-                      );
-                      if (
-                        !topicOwner!.nativeJournal!.canSelect(coin.address, nonce)
-                      )
-                        continue;
-                      fundingPrivateKey = coin.privateKey;
-                      coinsReadAtMs = 0;
-                      break;
-                    }
-                  }
-                } catch {}
-                if (mainHeld && fundingPrivateKey === mainAccount.privateKey)
-                  throw new Error(SOURCE_HELD_FOR_CONTACT_PAYMENT);
-                const mainAccountSigner = new MonadAccountTxSigner({
-                  privateKey: fundingPrivateKey,
-                  provider,
-                  httpClient,
-                });
-                return runMainAccountExclusive(
-                  wallet,
-                  async () =>
-                    pool.prepareStampInventory({
-                      mainAccountSigner,
-                      provider,
-                      stampValueWei: input.stampValueWei,
-                      gasReserveWei: feeReserveWei,
-                      minimumPaymentWei: transferFeeNow,
-                      onProgress: input.onProgress,
-                    }),
-                  FUNDING_FROM_MAIN
-                );
-              });
-            const prepareInventory: CanonicalInventoryFunder = async ({
-              stampValueWei,
-              onProgress,
-            }) =>
-              (await fundStampAccounts({ stampValueWei, onProgress }))
-                .fundingTxHashes;
-            walletInternals.canonicalInventoryFunder = prepareInventory;
-            // A stamp is paid from coins the wallet already has. Funded sub-accounts first (a
-            // payment from one links nothing), then the main account, then the identity account
-            // (spending from it links the identity to that payment on chain).
-            /** What one plain transfer is charged right now: the smallest payment a message
-             * makes. Its own read, so a funding pass does not age a send's fee quote. */
-            const transferFeeNow = async () => {
-              const fee = await provider.getFeeData();
-              return 21_000n * (fee.gasPrice ?? fee.maxFeePerGas ?? 0n);
-            };
-            pool.attachFunderSpacing((address) =>
-              waitForSpendSpacing(provider, address, config.spendSpacingBlocks)
-            );
-            // The wallet's one source of "current block" and of whether the chain answers.
-            // Use this network's client polling policy while a payment waits.
-            const blockWatcher = new EvmBlockWatcher({
-              provider,
-              ...(config.paymentPollIntervalMs === undefined
-                ? {}
-                : { intervalMs: config.paymentPollIntervalMs }),
-            });
-            walletInternals.blockWatcher = blockWatcher;
-            const stampPayer = new EvmStampPayer({
+            const stampPayer = installEvmStampFundAheadCoordinator({
+              wallet,
+              topicOwner,
+              canonicalRoles,
+              installedNetworkTag,
+              networkId: config.networkId,
+              mainAccount,
+              identity,
               pool,
               provider,
               httpClient,
-              watcher: blockWatcher,
+              coinStore,
+              readCoins: coinAndContactManager.readCoins,
+              invalidateCoinsRead: coinAndContactManager.invalidateCoinsRead,
               spendSpacingBlocks: config.spendSpacingBlocks,
+              paymentPollIntervalMs: config.paymentPollIntervalMs,
               reserveBalanceWei: config.reserveBalanceWei,
-              // A message took funded accounts: the next fund-ahead call looks again.
-              onPoolCoinsClaimed: () => {
-                walletInternals.fundAheadBackoff = undefined;
-              },
-              // Received coins pay for stamps like any other funds, after the wallet's own
-              // accounts. One that a native operation (a sweep, a send) is spending is left out.
-              coins: () =>
-                spendableCoins(coinStore.all())
-                  .filter(
-                    (coin) =>
-                      walletInternals.nativeOperationOwner?.holdsSource(
-                        coin.address
-                      ) !== true
-                  )
-                  .sort((a, b) =>
-                    BigInt(a.amountWei) > BigInt(b.amountWei) ? -1 : 1
-                  )
-                  .map((coin) => ({
-                    address: coin.address,
-                    privateKey: () => coin.privateKey,
-                  })),
-              // Its balance is about to change: the coin list reads the chain again.
-              onCoinClaimed: () => {
-                coinsReadAtMs = 0;
-              },
-              // An account holding the signed, not yet broadcast transfer of a payment to a
-              // contact pays no stamp: its next nonce is that transfer's. A message that could
-              // only be paid from it is refused at once (the payment may be waiting for that
-              // very message), exactly as its funding used to be.
-              accountHeld: (address) => sourceIsHeld(wallet, address),
-              canSelectAccount: (address, nonce) =>
-                topicOwner!.nativeJournal!.canSelect(address, nonce),
-              heldRefusal: () => new Error(SOURCE_HELD_FOR_CONTACT_PAYMENT),
-              accounts: [
-                {
-                  source: "main" as const,
-                  address: mainAccount.address,
-                  privateKey: () => mainAccount.privateKey,
-                },
-                ...(identity.address.raw.toLowerCase() ===
-                mainAccount.address.toLowerCase()
-                  ? []
-                  : [
-                      {
-                        source: "identity" as const,
-                        address: identity.address.raw,
-                        privateKey: () => identity.toPrivateKeyHex(),
-                      },
-                    ]),
-              ],
+              stampFundingTargetWei: config.stampFundingTargetWei,
+              sourceIsHeld,
+              sourceHeldRefusalMessage: SOURCE_HELD_FOR_CONTACT_PAYMENT,
+              requireOpenWallet,
+              runWalletExclusive,
+              runMainAccountExclusive,
             });
-
-            walletInternals.canonicalStampQuoter = (input) =>
-              topicOwner!.runLifetime(async () => {
-                if (input.stampValueWei > 0n) {
-                  const minimum = await stampPayer.minimumPaymentWei();
-                  if (input.stampValueWei < minimum)
-                    throw new DirectMessageStampBelowFeeError(
-                      input.stampValueWei, minimum
-                    );
-                }
-                const quote = await stampPayer.quote({
-                  ...input, maxPayments: CANONICAL_DM_MAX_TRANSACTIONS,
-                });
-                topicOwner!.assertOpen();
-                const common = {
-                  chainIdentifier: config.networkId,
-                  stampValueAtomic: quote.stampValueWei,
-                  spendableCapacityAtomic: quote.capacityWei,
-                };
-                return quote.status === "available"
-                  ? {
-                      ...common,
-                      status: "available",
-                      maximumNativeFeeAtomic: quote.maximumFeeWei,
-                    }
-                  : { ...common, status: "insufficient" };
-              });
-
-            // Funding ahead (#1235): the same preparation, asked for by the host between
-            // messages. Never called from here: opening a wallet makes no request.
-            const stampValueAhead = config.stampFundingTargetWei ?? 10_000_000_000_000_000n;
-            // The most one pass may move: the stamp value plus one fee reserve per transfer. A
-            // reserve above this ceiling (fees so high that it exceeds the stamp it serves)
-            // is not paid ahead; a send still funds its own accounts.
-            const reserveCeilingWei =
-              stampValueAhead > defaultGasReserveWei
-                ? stampValueAhead
-                : defaultGasReserveWei;
-            const maxValueAheadWei =
-              stampValueAhead + BigInt(STAMP_PAIR_TRANSFERS) * reserveCeilingWei;
-            const notFunded = (reason: string): DirectMessageFundAheadResult => ({
-              outcome: "not-funded",
-              fundingTxHashes: [],
-              reason,
-            });
-            const fundAheadPass = (): Promise<DirectMessageFundAheadResult> =>
-              topicOwner!.runLifetime(async () => {
-                let mainBalanceWei: bigint | undefined;
-                let result: DirectMessageFundAheadResult;
-                try {
-                  // An earlier transfer with no observed outcome is looked at before anything
-                  // else, whatever the inventory or the balance.
-                  const unresolved = pool
-                    .records()
-                    .some((record) => record.status === "funding");
-                  if (
-                    !unresolved &&
-                    (await pool.hasStampInventory({
-                      provider,
-                      stampValueWei: stampValueAhead,
-                      feeReserveWei: 0n,
-                      maxCacheAgeMs: Infinity,
-                    }))
-                  )
-                    return { outcome: "ready", fundingTxHashes: [] };
-                  // Only the main account pays ahead: it is the one account the lock taken
-                  // below orders. The identity-key fallback stays with a send's own funding.
-                  // Not while it holds a contact payment's signed transfer.
-                  if (sourceIsHeld(wallet, mainAccount.address))
-                    return notFunded("source-held");
-                  if (!unresolved)
-                    mainBalanceWei = await provider.getBalance(
-                      mainAccount.address
-                    );
-                  if (
-                    mainBalanceWei !== undefined &&
-                    mainBalanceWei < stampValueAhead
-                  )
-                    result = notFunded("insufficient-funds");
-                  else {
-                    const mainAccountSigner = new MonadAccountTxSigner({
-                      privateKey: mainAccount.privateKey,
-                      provider,
-                      httpClient,
-                    });
-                    const preparation = await runMainAccountExclusive(
-                      wallet,
-                      async () =>
-                        pool.fundStampInventoryAhead({
-                          mainAccountSigner,
-                          provider,
-                          stampValueWei: stampValueAhead,
-                          // What a stamp payment really keeps back: one plain transfer's gas
-                          // at the current fee cap. No probe is signed for it.
-                          gasReserveWei: stampPaymentFeeReserve,
-                          maxValueWei: maxValueAheadWei,
-                          minimumPaymentWei: transferFeeNow,
-                        }),
-                      FUNDING_FROM_MAIN
-                    );
-                    result = {
-                      outcome:
-                        preparation.fundingTxHashes.length > 0
-                          ? "funded"
-                          : "ready",
-                      fundingTxHashes: preparation.fundingTxHashes,
-                    };
-                  }
-                } catch (error) {
-                  // A funding failure is not the caller's: whatever was recorded is resumed by
-                  // the next pass, and a send pays from what the wallet has regardless.
-                  result = notFunded(
-                    error instanceof FundAheadRefusedError
-                      ? error.code
-                      : error instanceof Error
-                      ? error.message
-                      : String(error)
-                  );
-                }
-                // Every pass that got this far read the chain and moved nothing, whether it
-                // could not fund ("not-funded") or found, after looking, that nothing was
-                // needed ("ready"): the next ticks answer from memory until the wait ends, a
-                // message takes funded accounts, or the main account is seen to have grown.
-                if (result.outcome !== "funded") {
-                  const last = walletInternals.fundAheadBackoff;
-                  walletInternals.fundAheadBackoff = {
-                    result,
-                    delayMs:
-                      last !== undefined && last.result.reason === result.reason
-                        ? Math.min(last.delayMs * 2, FUND_AHEAD_BACKOFF_MAX_MS)
-                        : FUND_AHEAD_BACKOFF_MIN_MS,
-                    startedAtMs: Date.now(),
-                    mainBalanceWei,
-                  };
-                } else walletInternals.fundAheadBackoff = undefined;
-                return result;
-              });
-            // Single flight: a call made while a pass runs gets that pass's answer. A call made
-            // while the last pass's wait runs gets that pass's answer too, and nothing is asked.
-            let fundingAhead: Promise<DirectMessageFundAheadResult> | undefined;
-            walletInternals.stampFunderAhead = () => {
-              const waiting = walletInternals.fundAheadBackoff;
-              const waited = Date.now() - (waiting?.startedAtMs ?? 0);
-              if (waiting && waited >= 0 && waited < waiting.delayMs)
-                return Promise.resolve(waiting.result);
-              fundingAhead ??= fundAheadPass().finally(() => {
-                fundingAhead = undefined;
-              });
-              return fundingAhead;
-            };
             // State of the earlier send code is never silently ignored: named once, with how
             // to reset it. Nothing is migrated or deleted.
             if (storageLocation !== undefined)

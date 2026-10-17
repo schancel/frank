@@ -18,4 +18,5 @@ export function subAccountPath(index: number): string {
 }
 
 export type { DerivedSubAccount }
-export { EvmHdKeyring as MonadHdKeyring }
+export { EvmHdKeyring, EvmHdKeyring as MonadHdKeyring }
+

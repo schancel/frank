@@ -248,7 +248,7 @@ export type SubAccountSpendApplier = (
  * the pool (its records and each account's status) survives app restarts. Private keys are never
  * held or persisted by the pool itself — `getSigner()` re-derives one on demand from the keyring.
  */
-export class MonadSubAccountPool {
+export class EvmSubAccountPool {
   private readonly keyring: MonadHdKeyring;
   private readonly store: SubAccountPoolStore;
   /** Absolute sub-account index most recently returned by `selectForStamp()` (or `-1` before the
@@ -2424,3 +2424,6 @@ export interface FanOutFundingResult {
   signedTx: SignedMonadTx;
   txHash: string;
 }
+
+export { EvmSubAccountPool as MonadSubAccountPool };
+

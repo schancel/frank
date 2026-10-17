@@ -176,6 +176,7 @@ import {
 import type { EvmWalletHandle } from "../evm-wallet-handle";
 
 import {
+  hasUncorrelatedCanonicalPreSignIntent,
   openExistingPoolEvmWalletBundle,
   type EvmWalletPersistenceBundle,
 } from "../storage/evm-wallet-bundle";
@@ -2691,15 +2692,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           await topicOwner
             .runLifetime(async (lifetime) => {
               if (
-                topicOwner!.canonicalRetained
-                  ?.getIntents()
-                  .some((intent) =>
-                    intent.members.some(
-                      (m) =>
-                        pool.getRecord(m.reservation.index)?.status ===
-                        "available"
-                    )
-                  )
+                hasUncorrelatedCanonicalPreSignIntent(
+                  topicOwner!.canonicalRetained,
+                  pool
+                )
               )
                 return;
               await walletInternals.nativeOperationOwner!.applyRecordedEvidence(lifetime);

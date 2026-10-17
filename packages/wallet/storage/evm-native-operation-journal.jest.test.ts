@@ -499,7 +499,7 @@ describe('durable EVM native journal', () => {
     expect(journal.canSelect(address, 0)).toBe(false)
     expect(journal.canSelect(address, 1)).toBe(false)
   })
-  it('releases only unsigned claims while retaining public derivation provenance and capacity', async () => {
+  it('releases only unsigned claims while retaining public derivation provenance and excluding cancelled rows from active capacity', async () => {
     const input = plan()
     input.members[0]!.source = {
       kind: 'identity-stealth-v1',
@@ -509,7 +509,14 @@ describe('durable EVM native journal', () => {
     }
     const row = await journal.prepare(input)
     await journal.cancelUnsigned(row.operationId)
-    await reopen()
+    await journal.Close()
+    journal = new EvmNativeOperationJournal({
+      location: root,
+      binding,
+      maxBytes: row.reservedBytes,
+      maxRecords: 1,
+    })
+    await journal.Open()
     expect(journal.canSelect(address, 0)).toBe(true)
     expect(journal.sourceReferences()).toEqual([input.members[0]!.source])
     expect(journal.list()[0]!.reservedBytes).toBe(row.reservedBytes)
@@ -517,6 +524,9 @@ describe('durable EVM native journal', () => {
     await expect(
       journal.cancelUnsigned(next.operationId),
     ).rejects.toMatchObject({ code: 'conflict' })
+    await expect(journal.prepare(plan(1))).rejects.toMatchObject({
+      code: 'capacity',
+    })
   })
   it.each(['binding', 'version', 'charge'] as const)(
     'preserves incompatible %s bytes instead of resetting',

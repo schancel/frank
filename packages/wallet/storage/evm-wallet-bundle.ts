@@ -278,6 +278,21 @@ function parseManifest(value: string): MonadWalletManifest {
   return parsed as MonadWalletManifest
 }
 
+export function hasUncorrelatedCanonicalPreSignIntent(
+  canonicalRetained: CanonicalRetainedObligations | undefined,
+  pool: Pick<MonadSubAccountPool, 'getRecord'>,
+): boolean {
+  return Boolean(
+    canonicalRetained
+      ?.getIntents()
+      .some(intent =>
+        intent.members.some(
+          m => pool.getRecord(m.reservation.index)?.status === 'available',
+        ),
+      ),
+  )
+}
+
 function makeBundle(params: {
   durability: 'persistent' | 'test-only-ephemeral'
   bindingId: string
@@ -310,17 +325,7 @@ function makeBundle(params: {
   }
   poolOwners.set(params.pool, ownerToken)
   ordinaryPoolSelectionGuards.set(params.pool, () => {
-    if (
-      canonicalRetained
-        ?.getIntents()
-        .some(intent =>
-          intent.members.some(
-            m =>
-              params.pool.getRecord(m.reservation.index)?.status ===
-              'available',
-          ),
-        )
-    )
+    if (hasUncorrelatedCanonicalPreSignIntent(canonicalRetained, params.pool))
       throw new Error(
         'Canonical pre-sign intent requires explicit correlation before ordinary pool operations',
       )
@@ -365,15 +370,7 @@ function makeBundle(params: {
         params.assertEnclosingAdmission?.()
         if (
           !canonical &&
-          canonicalRetained
-            ?.getIntents()
-            .some(intent =>
-              intent.members.some(
-                m =>
-                  params.pool.getRecord(m.reservation.index)?.status ===
-                  'available',
-              ),
-            )
+          hasUncorrelatedCanonicalPreSignIntent(canonicalRetained, params.pool)
         )
           throw new Error(
             'Canonical pre-sign intent requires explicit correlation before ordinary pool operations',

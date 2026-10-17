@@ -425,6 +425,7 @@ class AdmissionOwner implements EvmInputAdmission {
       raw: string,
       hash: string,
       from?: string,
+      statusCommitted = false,
     ) => {
       const tx = this.tx(raw, from)
       if (tx.transactionHash !== hash.toLowerCase()) invalid()
@@ -448,6 +449,8 @@ class AdmissionOwner implements EvmInputAdmission {
         if (identical.length === 1) {
           authorization = identical[0]!.authorization
           observedConsumed = identical[0]!.observedConsumed
+        } else if (related.length === 0 && statusCommitted) {
+          observedConsumed = true
         }
       }
       add(
@@ -491,6 +494,9 @@ class AdmissionOwner implements EvmInputAdmission {
           lifecycle.spend.rawTx,
           lifecycle.spend.txHash,
           row.address,
+          !('status' in row) ||
+            row.status === 'spent' ||
+            row.status === 'retired',
         )
       const hasOwner = (poolAuthorities.get(row.index) ?? []).some(claim =>
         claim.resources.some(

@@ -311,6 +311,44 @@ describe('received coins', () => {
     expect(messagePaymentOf([landed, overdue], digest, LATE).status).toBe(
       'not-received',
     )
+
+    // Separate stamp and optional content payment accounting + multi-tx partial settlement (#1249)
+    const partialStealth: EvmCoin = {
+      ...coin({
+        address: '0x04',
+        origin: 'stealth',
+        claimedAmountWei: '2000',
+        transactions: ['aa'.repeat(32), 'bb'.repeat(32)],
+      }),
+      state: 'unspent',
+      amountWei: '1000',
+      receivedAmountWei: '1000',
+      settledTransactions: ['aa'.repeat(32)],
+      failedTransactions: [],
+      checkedAtMs: 2,
+    }
+    expect(receivedPaymentOf(partialStealth, EARLY)).toMatchObject({
+      status: 'pending',
+      partial: true,
+      receivedAmountWei: 1_000n,
+      claimedAmountWei: 2_000n,
+      transactions: ['aa'.repeat(32), 'bb'.repeat(32)],
+      settledTransactions: ['aa'.repeat(32)],
+      failedTransactions: [],
+      spendable: true,
+    })
+    expect(messagePaymentOf([landed, partialStealth], digest, EARLY)).toMatchObject({
+      status: 'pending',
+      partial: true,
+      receivedWei: 1_600n,
+      statedWei: 2_600n,
+      stampStatus: 'received',
+      stampReceivedWei: 600n,
+      stampStatedWei: 600n,
+      contentStatus: 'pending',
+      contentReceivedWei: 1_000n,
+      contentStatedWei: 2_000n,
+    })
   })
 
   it('survives a reopen of the same storage, key included; a new location starts empty', async () => {

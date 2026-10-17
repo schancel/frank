@@ -494,6 +494,33 @@ describe('ChatListItem title line', () => {
     )
   })
 
+  it('displays the recognized Screener stamp total even when unread count is 0 (#1696)', () => {
+    const wrapper = shallowMount(ChatListItem, {
+      props: {
+        chatAddress: '0xabc',
+        compact: false,
+        numUnread: 0,
+        screenerStamp: '0.05 MON (~0.50 AVU)',
+      },
+      global: {
+        mocks: {
+          $t: translator('en-us'),
+          $status: { setup: true },
+          $route: { params: {} },
+        },
+        stubs: {
+          QBadge: { props: ['label'], template: '<span>{{ label }}</span>' },
+        },
+      },
+    })
+    expect(wrapper.find('[data-testid="chat-unread-count"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.get('[data-testid="chat-screener-stamp"]').text()).toBe(
+      '0.05 MON (~0.50 AVU)',
+    )
+  })
+
   it('keeps the name and badge separate from stacked date/time and unread count', () => {
     mockOwnAddress.value = OWN_ADDRESS
     const wrapper = shallowMount(ChatListItem, {

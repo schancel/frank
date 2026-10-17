@@ -3,6 +3,7 @@ import {
   computeGeometricStampSuggestion,
   derivePeerStampMetrics,
   getMessageStampWei,
+  getVerifiedReceivedMessageStampWei,
 } from "./stamp-suggestion";
 
 describe("Stamp Suggestion & Geometric Mean Convergence (Issues #819 & #820)", () => {
@@ -183,6 +184,62 @@ describe("Stamp Suggestion & Geometric Mean Convergence (Issues #819 & #820)", (
       expect(metrics.netReceivedWei).toBe(5500n);
       expect(metrics.sentCount).toBe(2);
       expect(metrics.receivedCount).toBe(2);
+    });
+
+    it("counts only verified received stamp value and ignores unverified or shortfall promised stamps (#1249)", () => {
+      expect(
+        getVerifiedReceivedMessageStampWei({
+          outbound: false,
+          stampValueWei: 100_000n,
+          stampPaymentStatus: "pending",
+        })
+      ).toBe(0n);
+
+      expect(
+        getVerifiedReceivedMessageStampWei({
+          outbound: false,
+          stampValueWei: 100_000n,
+          verifiedStampValueWei: 40_000n,
+        })
+      ).toBe(40_000n);
+
+      expect(
+        getVerifiedReceivedMessageStampWei({
+          outbound: false,
+          stampValueWei: 100_000n,
+          stampPayments: [
+            { valueWei: 60_000n, receivedValueWei: 60_000n, status: "received" },
+            { valueWei: 40_000n, status: "pending" },
+          ],
+        })
+      ).toBe(60_000n);
+
+      const messages = [
+        { outbound: true, stampValueWei: 1_000n, status: "confirmed" },
+        // Inbound 1: promised 10_000n, but only 3_000n verified on-chain so far
+        {
+          outbound: false,
+          stampValueWei: 10_000n,
+          stampPayments: [
+            { valueWei: 3_000n, status: "received" as const },
+            { valueWei: 7_000n, status: "pending" as const },
+          ],
+          status: "confirmed",
+        },
+        // Inbound 2: promised 50_000n, but failed / unverified on-chain
+        {
+          outbound: false,
+          stampValueWei: 50_000n,
+          stampPaymentStatus: "failed" as const,
+          status: "confirmed",
+        },
+      ];
+
+      const metrics = derivePeerStampMetrics(messages);
+      expect(metrics.lastSentWei).toBe(1_000n);
+      expect(metrics.lastReceivedWei).toBe(3_000n);
+      expect(metrics.netReceivedWei).toBe(2_000n);
+      expect(metrics.receivedCount).toBe(1);
     });
   });
 });

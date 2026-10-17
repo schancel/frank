@@ -101,15 +101,28 @@
         <span data-testid="chat-timestamp-date">{{ timestampParts.date }}</span>
         <span data-testid="chat-timestamp-time">{{ timestampParts.time }}</span>
       </q-item-label>
-      <div v-if="!!effectiveNumUnread" class="chat-list-unread-chips">
+      <div
+        v-if="!!effectiveNumUnread || !!effectiveScreenerStamp"
+        class="chat-list-unread-chips"
+      >
         <q-badge
+          v-if="!!effectiveNumUnread"
           rounded
           color="secondary"
           :label="effectiveNumUnread"
           data-testid="chat-unread-count"
         />
         <q-badge
-          v-if="effectiveValueUnread"
+          v-if="effectiveScreenerStamp"
+          rounded
+          color="primary"
+          :label="effectiveScreenerStamp"
+          :title="effectiveScreenerStamp"
+          class="chat-list-unread-value"
+          data-testid="chat-screener-stamp"
+        />
+        <q-badge
+          v-else-if="!!effectiveNumUnread && effectiveValueUnread"
           rounded
           color="primary"
           :label="effectiveValueUnread"
@@ -358,6 +371,9 @@ export default defineComponent({
     effectiveValueUnread(): string {
       return this.valueUnread || ''
     },
+    effectiveScreenerStamp(): string {
+      return this.screenerStamp || ''
+    },
     timestampParts(): { date: string; time: string } {
       const timestamp =
         this.timestamp ||
@@ -536,6 +552,11 @@ export default defineComponent({
       default: () => 0,
     },
     valueUnread: {
+      type: String,
+      required: false,
+      default: () => '',
+    },
+    screenerStamp: {
       type: String,
       required: false,
       default: () => '',

@@ -189,6 +189,30 @@ describe('ChatMessageStealth', () => {
     )
   })
 
+  it('shows intended amount, observed settled amount, and pending/partial status when some transactions settle and others are pending (#1249)', () => {
+    mockPayment.value = coin({
+      status: 'pending',
+      partial: true,
+      amountWei: ONE,
+      receivedAmountWei: ONE,
+      claimedAmountWei: 2n * ONE,
+      spendable: true,
+    })
+    const wrapper = mountComponent()
+    expect(text(wrapper, 'stealth-status-badge')).toBe('Pending')
+    expect(text(wrapper, 'stealth-amount')).toBe(
+      activeChain.toDisplayAmount(ONE),
+    )
+    expect(
+      wrapper.find('[data-testid="stealth-amount-claimed"]').exists(),
+    ).toBe(false)
+    expect(text(wrapper, 'stealth-amount-mismatch')).toBe(
+      `The sender stated ${activeChain.toDisplayAmount(
+        2n * ONE,
+      )} MONT; the chain shows ${activeChain.toDisplayAmount(ONE)} MONT.`,
+    )
+  })
+
   it('received and spent since: still the amount that arrived, no longer called spendable', () => {
     mockPayment.value = coin({
       status: 'received',

@@ -108,6 +108,7 @@
               :chat-address="conversation.address || conversation.id"
               :value-unread="formatAmount(conversation.totalUnreadValue)"
               :num-unread="conversation.totalUnreadMessages"
+              :screener-stamp="screenerStampFor(conversation)"
               :compact="compact"
               @click="selectConversation(conversation)"
             />
@@ -186,6 +187,8 @@ import {
   type SearchSnippet,
 } from '../../utils/chat-search-index'
 import {
+  formatScreenerStampValue,
+  getPendingScreenerStampValueWei,
   isScreenerConversation,
   rankScreenerConversations,
   summarizeScreenerQueue,
@@ -336,6 +339,21 @@ export default defineComponent({
           return
         }
         return formatDisplayAmount(activeChain, BigInt(Math.trunc(amount)))
+      },
+      screenerStampFor(conversation?: Partial<Conversation>): string {
+        if (
+          !conversation ||
+          !isScreenerConversation(conversation, { isContact: isContactFn })
+        ) {
+          return ''
+        }
+        const pendingWei = getPendingScreenerStampValueWei(conversation)
+        if (pendingWei <= 0n) {
+          return ''
+        }
+        return formatScreenerStampValue(pendingWei, {
+          chain: activeChain,
+        }).combinedDisplay
       },
     }
   },

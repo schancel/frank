@@ -42,9 +42,9 @@ jest.mock('@frank/wallet/chain', () => ({
   activeChain: { toDisplayAmount: (n: bigint) => n.toString(), unit: 'MON' },
 }))
 jest.mock('./ChatListItem.vue', () => ({
-  props: ['valueUnread', 'numUnread'],
+  props: ['valueUnread', 'numUnread', 'screenerStamp'],
   template:
-    '<div data-testid="chat-item"><span data-testid="unread-value">{{ valueUnread }}</span></div>',
+    '<div data-testid="chat-item"><span data-testid="unread-value">{{ valueUnread }}</span><span v-if="screenerStamp" data-testid="chat-screener-stamp">{{ screenerStamp }}</span></div>',
 }))
 
 let mockWidth = 0
@@ -279,7 +279,7 @@ function loadBrowserChatList() {
 }
 
 describe('ChatList browser screener contact classification', () => {
-  it('excludes paid inbound contacts from the queue and in:screener search', async () => {
+  it('excludes paid inbound contacts from the queue and in:screener search, and displays per-row screener stamps (#1696)', async () => {
     mockChatStore.getSortedChatOrder = [
       {
         id: 'known-thread',
@@ -296,7 +296,7 @@ describe('ChatList browser screener contact classification', () => {
       {
         id: 'stranger-thread',
         address: 'unknown-stranger',
-        totalUnreadMessages: 1,
+        totalUnreadMessages: 0,
         messages: [
           {
             outbound: false,
@@ -310,6 +310,16 @@ describe('ChatList browser screener contact classification', () => {
         address: 'another-stranger',
         totalUnreadMessages: 1,
         messages: [
+          {
+            outbound: false,
+            senderAddress: 'another-stranger',
+            stampValueWei: 5n,
+          },
+          {
+            outbound: true,
+            senderAddress: 'self',
+            stampValueWei: 0n,
+          },
           {
             outbound: false,
             senderAddress: 'another-stranger',
@@ -341,7 +351,7 @@ describe('ChatList browser screener contact classification', () => {
       screenerSummary: { count: number; totalValueWei: bigint }
     }
     expect(vm.screenerSummary.count).toBe(2)
-    // The chip amount is the aggregate value of the pending queue.
+    // The chip amount is the aggregate value of the pending queue (7n + 3n after historical reply).
     expect(vm.screenerSummary.totalValueWei).toBe(10n)
     vm.activeFilter = 'screener'
     await wrapper.vm.$nextTick()
@@ -349,6 +359,10 @@ describe('ChatList browser screener contact classification', () => {
       'stranger-thread',
       'another-stranger-thread',
     ])
+    const stampBadges = wrapper.findAll('[data-testid="chat-screener-stamp"]')
+    expect(stampBadges).toHaveLength(2)
+    expect(stampBadges[0].text()).toContain('7 MON')
+    expect(stampBadges[1].text()).toContain('3 MON')
     vm.activeFilter = 'all'
     vm.searchQuery = 'in:screener'
     await wrapper.vm.$nextTick()

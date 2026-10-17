@@ -151,6 +151,43 @@ export function getConversationStampValueWei(
 }
 
 /**
+ * Computes the verified inbound stamp value for the current pending (unanswered)
+ * inbound batch of a conversation since the most recent outbound reply.
+ * If the user has never replied in this conversation, returns `getConversationStampValueWei(conversation)`.
+ */
+export function getPendingScreenerStampValueWei(
+  conversation: Partial<Conversation> | null | undefined,
+): bigint {
+  if (!conversation) return 0n
+
+  const messages = Array.isArray(conversation.messages)
+    ? conversation.messages
+    : []
+
+  let lastOutboundIndex = -1
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i]
+    if (msg && msg.outbound) {
+      lastOutboundIndex = i
+      break
+    }
+  }
+
+  if (lastOutboundIndex === -1) {
+    return getConversationStampValueWei(conversation)
+  }
+
+  let pendingInboundSum = 0n
+  for (let i = lastOutboundIndex + 1; i < messages.length; i += 1) {
+    const msg = messages[i]
+    if (msg && !msg.outbound) {
+      pendingInboundSum += getMessageStampValueWei(msg)
+    }
+  }
+  return pendingInboundSum
+}
+
+/**
  * Resolves the effective sender address for a conversation (handling both direct P2P and email).
  */
 export function getScreenerSenderAddress(
@@ -280,8 +317,8 @@ function normalizeTriageOptions(
  * Determines whether a conversation belongs in the Paid-Stranger Screener Queue ("The Tollbooth"):
  * - Must not be deleted (`!conversation.deletedAt`).
  * - Must not be explicitly approved or dismissed (`screenerStatus !== 'approved' && screenerStatus !== 'dismissed'`).
- * - Must have at least one inbound message (`!m.outbound`) and no outbound replies (`!m.outbound`).
- * - Must have a positive verified stamp value attached (`stampValue > 0`).
+ * - Must have at least one unanswered inbound message since the most recent outbound reply.
+ * - Must have a positive verified stamp value attached to the pending unanswered inbound batch (`stampValue > 0`).
  * - The sender must not be the user's own address and must not already be in `useContactStore()`.
  */
 export function isScreenerConversation(
@@ -300,18 +337,28 @@ export function isScreenerConversation(
     ? conversation.messages
     : []
 
-  // If the user has already replied in this conversation, it is no longer a screener thread
-  if (messages.some(m => m && m.outbound)) {
+  let lastOutboundIndex = -1
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i]
+    if (msg && msg.outbound) {
+      lastOutboundIndex = i
+      break
+    }
+  }
+
+  // If the user has replied and no new inbound messages have arrived since, it is not in the screener
+  const hasPendingInboundMessage = messages
+    .slice(lastOutboundIndex + 1)
+    .some(m => m && !m.outbound)
+  if (lastOutboundIndex >= 0 && !hasPendingInboundMessage) {
+    return false
+  }
+  if (!hasPendingInboundMessage && status !== 'pending') {
     return false
   }
 
-  const hasInboundMessage = messages.some(m => m && !m.outbound)
-  if (!hasInboundMessage && status !== 'pending') {
-    return false
-  }
-
-  // Must have attached a valid positive stamp
-  if (getConversationStampValueWei(conversation) <= 0n) {
+  // Must have attached a valid positive stamp on the pending unanswered inbound batch
+  if (getPendingScreenerStampValueWei(conversation) <= 0n) {
     return false
   }
 
@@ -343,7 +390,7 @@ export function isScreenerConversation(
 }
 
 /**
- * Filters and ranks Screener conversations by total verified stamp value received (descending),
+ * Filters and ranks Screener conversations by pending verified stamp value received (descending),
  * tie-breaking by most recent message timestamp (descending).
  */
 export function rankScreenerConversations<T extends Partial<Conversation>>(
@@ -355,8 +402,8 @@ export function rankScreenerConversations<T extends Partial<Conversation>>(
   const screened = conversations.filter(c => isScreenerConversation(c, options))
 
   return screened.sort((a, b) => {
-    const valA = getConversationStampValueWei(a)
-    const valB = getConversationStampValueWei(b)
+    const valA = getPendingScreenerStampValueWei(a)
+    const valB = getPendingScreenerStampValueWei(b)
     if (valB !== valA) {
       return valB > valA ? 1 : -1
     }
@@ -518,7 +565,7 @@ export function summarizeScreenerQueue(
   let unreadCount = 0
 
   for (const conv of ranked) {
-    totalValueWei += getConversationStampValueWei(conv)
+    totalValueWei += getPendingScreenerStampValueWei(conv)
     const convUnread =
       (conv as any).unreadCount ?? conv.totalUnreadMessages ?? 0
     if (convUnread > 0) {

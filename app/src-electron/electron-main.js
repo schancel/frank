@@ -58,15 +58,16 @@ const nativeIconSmall = nativeImage
 const nativeIcon = nativeImage.createFromPath(getIconPNGPath())
 
 async function createWindow() {
+  const appName = app.getName() || 'App'
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: 'Open Frank',
+      label: `Open ${appName}`,
       click: function () {
         mainWindow.show()
       },
     },
     {
-      label: 'Quit Frank',
+      label: `Quit ${appName}`,
       click: function () {
         mainWindow.destroy()
         app.quit()
@@ -154,7 +155,7 @@ function openExternal(url) {
 
 app.whenReady().then(() => {
   registerQuasarRuntime()
-  ipcMain.on('frank:update-badge', (event, count) => {
+  const handleUpdateBadge = (event, count) => {
     if (
       event.sender !== mainWindow?.webContents ||
       !Number.isSafeInteger(count) ||
@@ -163,10 +164,14 @@ app.whenReady().then(() => {
       return
     if (process.platform === 'win32') windowsBadgeUpdater?.update(count)
     else app.setBadgeCount(count)
-  })
-  ipcMain.on('frank:open-url', (event, url) => {
+  }
+  const handleOpenUrl = (event, url) => {
     if (event.sender === mainWindow?.webContents) openExternal(url)
-  })
+  }
+  ipcMain.on('app:update-badge', handleUpdateBadge)
+  ipcMain.on('frank:update-badge', handleUpdateBadge)
+  ipcMain.on('app:open-url', handleOpenUrl)
+  ipcMain.on('frank:open-url', handleOpenUrl)
   void createWindow()
 })
 

@@ -75,6 +75,8 @@ module.exports = {
       '<rootDir>/../packages/directory-admission/src/browser.ts',
     '^@frank/directory-admission/node$':
       '<rootDir>/../packages/directory-admission/src/node.ts',
+    '^@frank/wallet/chain/vite-env$':
+      '<rootDir>/../packages/wallet/chain/vite-env.node.ts',
     '^@frank/wallet/(.*)$': '<rootDir>/../packages/wallet/$1',
     '^@frank/price-feeds$': '<rootDir>/../packages/price-feeds/src/index.ts',
     '^@frank/price-feeds/(.*)$': '<rootDir>/../packages/price-feeds/src/$1',

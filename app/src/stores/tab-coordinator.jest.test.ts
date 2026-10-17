@@ -247,7 +247,7 @@ describe('Find open tab', () => {
     expect(focus).toHaveBeenCalledTimes(1)
     expect(notify).toHaveBeenCalledWith('Your open Frank tab', {
       body: 'Click this notification to return to the Frank tab using your account.',
-      tag: 'frank-find-active-tab',
+      tag: 'app-find-active-tab',
     })
     expect(broadcast).toHaveBeenCalledWith({
       type: 'FOCUS_RESULT',

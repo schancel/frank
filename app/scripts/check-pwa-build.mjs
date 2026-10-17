@@ -1,19 +1,29 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import vm from 'node:vm'
+import brandConfig from '../config/brand.cjs'
+
+const { resolveAppBrand } = brandConfig
+const activeBrand = resolveAppBrand(process.env)
 
 // Inspect the generated worker, rather than assuming Workbox accepted the config.
-const output = new URL('../dist/pwa/', import.meta.url)
+const appDir = fileURLToPath(new URL('../', import.meta.url))
+const distDir = process.env.APP_DIST_DIR
+  ? path.resolve(appDir, process.env.APP_DIST_DIR)
+  : path.resolve(appDir, 'dist/pwa')
+const output = pathToFileURL(distDir.endsWith('/') ? distDir : `${distDir}/`)
 const manifest = JSON.parse(
   readFileSync(new URL('manifest.json', output), 'utf8'),
 )
-assert.equal(manifest.name, 'Frank')
+assert.equal(manifest.name, activeBrand.productName)
+assert.equal(manifest.short_name, activeBrand.shortName)
 assert.equal(manifest.display, 'standalone')
 assert.equal(
   manifest.orientation,
   'any',
-  'Installed Frank must allow both portrait and landscape rotation',
+  `Installed ${activeBrand.productName} must allow both portrait and landscape rotation`,
 )
 for (const size of ['192x192', '512x512']) {
   const icon = manifest.icons.find(icon => icon.sizes === size)

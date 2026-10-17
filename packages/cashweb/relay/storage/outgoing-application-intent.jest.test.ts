@@ -227,10 +227,10 @@ it('surfaces malformed rows during list and restoration without deleting them', 
   ).toBe('{}')
   await raw.close()
 })
-it('rejects old schema2 unchanged', async () => {
+it('rejects old schema1 unchanged and opens schema2 cleanly', async () => {
   await store.Close()
   const raw = level(join(location, 'metadata'))
-  await raw.put('schemaVersion', '2')
+  await raw.put('schemaVersion', '1')
   await raw.put('retained', 'bytes')
   await raw.close()
   store = new LevelMessageStore(location)
@@ -238,9 +238,12 @@ it('rejects old schema2 unchanged', async () => {
     code: 'unsupported-schema',
   })
   const check = level(join(location, 'metadata'))
-  expect(await check.get('schemaVersion')).toBe('2')
+  expect(await check.get('schemaVersion')).toBe('1')
   expect(await check.get('retained')).toBe('bytes')
+  await check.put('schemaVersion', '2')
   await check.close()
+  store = new LevelMessageStore(location)
+  await expect(store.Open()).resolves.toBeUndefined()
 })
 it.each([
   { version: 2 },

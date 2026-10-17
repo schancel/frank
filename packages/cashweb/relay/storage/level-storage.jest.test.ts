@@ -604,7 +604,6 @@ describe('message store schema and mutation lifecycle', () => {
     'false',
     '0',
     '1',
-    '2',
     '4',
     '99',
     '"2"',

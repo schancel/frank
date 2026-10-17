@@ -347,9 +347,9 @@ export class LevelMessageStore implements MessageStore {
         } catch (cause) {
           throw new MessageStoreError('unsupported-schema', cause)
         }
-        if (parsed !== currentSchemaVersion)
+        if (parsed !== 2 && parsed !== currentSchemaVersion)
           throw new MessageStoreError('unsupported-schema')
-        this.schemaVersion = currentSchemaVersion
+        this.schemaVersion = parsed
       }
       // Validate new host recovery facts during required restoration, without writing defaults.
       await this.readFinancialBindings(this.openedMetadataDb!)

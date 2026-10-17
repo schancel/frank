@@ -262,21 +262,21 @@ export async function run(phase: string): Promise<unknown> {
     store = new LevelMessageStore('/owned-intent-ack')
     await rejects(store.Open(), 'unavailable')
     await store.Close()
-    await open('/owned-intent-schema2')
+    await open('/owned-intent-schema1')
     await store.claimOutgoingApplicationMessage(claim)
-    await store.metadataDb.put('schemaVersion', '2')
+    await store.metadataDb.put('schemaVersion', '1')
     await store.Close()
-    store = new LevelMessageStore('/owned-intent-schema2')
+    store = new LevelMessageStore('/owned-intent-schema1')
     await rejects(store.Open(), 'unsupported-schema')
     await store.Close()
     const raw = messageMetadataBackend(
-      '/owned-intent-schema2/metadata',
+      '/owned-intent-schema1/metadata',
       error => {
         if (error) throw error
       },
     )
     await raw.db.open()
-    equal(await raw.db.get('schemaVersion'), '2')
+    equal(await raw.db.get('schemaVersion'), '1')
     check(
       (
         await raw.db.get('outgoingApplicationIntent:' + claim.intentKey)

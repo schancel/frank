@@ -33,7 +33,7 @@ function signed(revision, predecessor, padding = 0, entropy = 0) {
   payload.set(13n, predecessor)
   payload.set(100n, new Uint8Array(padding))
   const statement = encodeFrame(
-    { typeId: 4, schemaVersion: 5, minReaderVersion: 4 },
+    { typeId: 1, schemaVersion: 5, minReaderVersion: 4 },
     payload,
   )
   const extraEntropy = new Uint8Array(32)

@@ -85,7 +85,7 @@ fn main() {
         let type2 = unhex(r, "type2_hex");
         let (env, statement) = open(&type4);
         let (_, wrapper) = open(&type2);
-        assert_eq!(integer(field(&env, 0)), 4, "{id}");
+        assert_eq!(integer(field(&env, 0)), 1, "{id}");
         assert_eq!(
             bytes(field(&wrapper, 0)),
             type4,
@@ -152,7 +152,7 @@ fn main() {
     ]);
     let frame = encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: 1,
             schema_version: 4,
             min_reader_version: 4,
         },

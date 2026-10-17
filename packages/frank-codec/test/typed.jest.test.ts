@@ -62,28 +62,28 @@ describe('typed conversion and exact-byte retention', () => {
     const t = p.typed
     if (t?.type !== 2) throw new Error('type 2 expected')
     const st = asParsed(t.statementFrame).typed
-    if (st?.type !== 4) throw new Error('type 4 expected')
+    if (st?.type !== 1) throw new Error('type 1 expected')
     expect(st.revision).toBe(18446744073709551615n)
     expect(typeof st.revision).toBe('bigint')
     expect(typeof st.timestamp.seconds).toBe('bigint')
 
     for (const seconds of [I64_MIN, I64_MAX, 0n, -1n]) {
       const f = fr(
-        4,
+        1,
         new Map([...statementPayload(), [3, ts(seconds, 999_999_999)]]),
       )
       const q = parse(f, { priorDirectoryStatementFrame: null }).typed
-      if (q?.type !== 4) throw new Error('type 4 expected')
+      if (q?.type !== 1) throw new Error('type 1 expected')
       expect(q.timestamp.seconds).toBe(seconds)
       expect(q.timestamp.nanoseconds).toBe(999_999_999)
     }
     // One outside the i64 range is a schema error at 8.2, one below u64 zero likewise.
     for (const bad of [I64_MAX + 1n, I64_MIN - 1n]) {
-      const f = fr(4, new Map([...statementPayload(), [3, ts(bad, 0)]]))
+      const f = fr(1, new Map([...statementPayload(), [3, ts(bad, 0)]]))
       expect(() => parse(f)).toThrow(/i64/)
     }
     expect(() =>
-      parse(fr(4, new Map([...statementPayload(), [2, U64_MAX + 1n]]))),
+      parse(fr(1, new Map([...statementPayload(), [2, U64_MAX + 1n]]))),
     ).toThrow(RangeError)
   })
 
@@ -95,12 +95,12 @@ describe('typed conversion and exact-byte retention', () => {
     input.fill(0) // caller mutates its buffer after parsing
     expect(p.frame).toEqual(original)
     const t = p.typed
-    if (t?.type !== 1) throw new Error('type 1 expected')
+    if (t?.type !== 10) throw new Error('type 10 expected')
     const child = asParsed(t.payloadFrame)
     // The child's bytes are exactly the byte string carried in field 2 of the parent.
     expect(child.frame).toEqual(type5Frame())
     expect(toHex(original)).toContain(toHex(child.frame))
-    expect(child.typeId).toBe(5)
+    expect(child.typeId).toBe(11)
   })
 
   it('opens the recursive message-item graph and retains unknown children byte for byte', () => {
@@ -110,24 +110,24 @@ describe('typed conversion and exact-byte retention', () => {
     const rev = rev8Frame([textItem('hello'), middle])
     const p = parse(type6Frame(rev))
     const t6 = p.typed
-    if (t6?.type !== 6) throw new Error('type 6 expected')
+    if (t6?.type !== 12) throw new Error('type 12 expected')
     const r8 = asParsed(t6.revisionFrame)
     expect(r8.frame).toEqual(rev)
     const t8 = r8.typed
-    if (t8?.type !== 8) throw new Error('type 8 expected')
+    if (t8?.type !== 20) throw new Error('type 20 expected')
     expect(t8.items).toHaveLength(2)
     const c16 = asParsed(t8.items[1])
     expect(c16.frame).toEqual(middle)
     const t16 = c16.typed
-    if (t16?.type !== 16) throw new Error('type 16 expected')
+    if (t16?.type !== 21) throw new Error('type 21 expected')
     const kept = asRetained(t16.items[1])
     expect(kept.reason).toBe('unknown-type')
     expect(kept.typeId).toBe(UNKNOWN_TYPE)
     expect(kept.frame).toEqual(unknown)
     const deep = asParsed(t16.items[2]).typed
-    if (deep?.type !== 16) throw new Error('type 16 expected')
+    if (deep?.type !== 21) throw new Error('type 21 expected')
     expect(asParsed(deep.items[0]).typed).toMatchObject({
-      type: 17,
+      type: 22,
       text: 'two levels down',
     })
   })
@@ -136,7 +136,7 @@ describe('typed conversion and exact-byte retention', () => {
     const weird = body('ffff', 9) // version 9, nonsense after
     const p = parse(
       fr(
-        8,
+        20,
         M([
           [0, 'frank'],
           [1, [textItem(), weird]],
@@ -144,7 +144,7 @@ describe('typed conversion and exact-byte retention', () => {
       ),
     )
     const t = p.typed
-    if (t?.type !== 8) throw new Error('type 8 expected')
+    if (t?.type !== 20) throw new Error('type 20 expected')
     const kept = asRetained(t.items[1])
     expect(kept.reason).toBe('unsupported-frame-version')
     expect(kept.frame).toEqual(weird)
@@ -163,7 +163,7 @@ describe('typed conversion and exact-byte retention', () => {
     })
     const p = parse(cp)
     const t = p.typed
-    if (t?.type !== 3) throw new Error('type 3 expected')
+    if (t?.type !== 14) throw new Error('type 14 expected')
     expect(t.facts[1].payload).toEqual(unknownInFact)
     expect(t.sections?.[1].value).toEqual(unknownInSection)
     expect(t.sections?.[1].sectionType).toBe(0x7fff0001)
@@ -172,7 +172,7 @@ describe('typed conversion and exact-byte retention', () => {
 
   it('retains unknown fields of a newer compatible schema and the original frame (V6.3)', () => {
     const f = fr(
-      17,
+      22,
       M([
         [0, 'x'],
         [5, new Uint8Array([1, 2])],
@@ -185,7 +185,7 @@ describe('typed conversion and exact-byte retention', () => {
     expect(p.projection).toBe('newer-schema')
     expect(p.schemaVersion).toBe(3)
     const t = p.typed
-    if (t?.type !== 17) throw new Error('type 17 expected')
+    if (t?.type !== 22) throw new Error('type 22 expected')
     expect(t.text).toBe('x')
     expect([...t.unknownFields.keys()]).toEqual([5n, 9n])
     expect(p.frame).toEqual(f)
@@ -195,10 +195,10 @@ describe('typed conversion and exact-byte retention', () => {
 
   it('returns no partial typed object when a later child fails', () => {
     const bad = fr(
-      8,
+      20,
       M([
         [0, 'frank'],
-        [1, [textItem(), fr(17, M([[0, 5]]))]],
+        [1, [textItem(), fr(22, M([[0, 5]]))]],
       ]),
     )
     let result: unknown
@@ -218,12 +218,12 @@ describe('T1/T1a content hashes and one-byte mutation', () => {
     // Computed with Python hashlib over the section 8 transcript, not with this codec.
     const p = parse(WORKED_TEXT_HI)
     expect(toHex(contentHash(p))).toBe(
-      'eb07b6621727aba0b063616dec5355c23f506c77635a7124c4064d2ecc9afad0',
+      '128985c9a648dd9bdf280e4e6513db8616d1e7c94dc546cb17b342864b45de91',
     )
     expect(
       toHex(commonTranscript('frank/content-hash/v1', 'frank', WORKED_TEXT_HI)),
     ).toBe(
-      '00156672616e6b2f636f6e74656e742d686173682f763100056672616e6b0000001746524e4b010000000ea40011010102010345a100626869',
+      '00156672616e6b2f636f6e74656e742d686173682f763100056672616e6b0000001746524e4b010000000ea40016010102010345a100626869',
     )
   })
 

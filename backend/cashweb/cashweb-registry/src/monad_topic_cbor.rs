@@ -53,9 +53,9 @@ use crate::{
 /// limit passed to the codec: a request larger than this is rejected before any decoding.
 pub const MAX_TOPIC_EVENT_FRAME_BYTES: u64 = 1_048_576;
 
-const TYPE_TOPIC_POST: u32 = 9;
-const TYPE_TOPIC_POST_SUBMISSION: u32 = 10;
-const TYPE_TOPIC_VOTE_SUBMISSION: u32 = 11;
+const TYPE_TOPIC_POST: u32 = 40;
+const TYPE_TOPIC_POST_SUBMISSION: u32 = 41;
+const TYPE_TOPIC_VOTE_SUBMISSION: u32 = 42;
 
 /// A validated type-10 post submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -611,19 +611,19 @@ mod tests {
         if let Some(parent) = parent {
             fields.push((2, bytes(&parent)));
         }
-        frame(9, &cbor_map(fields))
+        frame(40, &cbor_map(fields))
     }
 
     fn submission_frame(net: &str, post: &[u8], burn_tx: &[u8]) -> Vec<u8> {
         frame(
-            10,
+            41,
             &cbor_map(vec![(0, text(net)), (1, bytes(post)), (2, bytes(burn_tx))]),
         )
     }
 
     fn vote_frame(net: &str, target: &[u8; 32], burn_tx: &[u8]) -> Vec<u8> {
         frame(
-            11,
+            42,
             &cbor_map(vec![
                 (0, text(net)),
                 (1, bytes(target)),
@@ -735,7 +735,7 @@ mod tests {
     #[test]
     fn a_bare_post_has_no_burn_and_is_not_an_event() {
         let error = parse_topic_event(&post_frame(NET, "t", None), NET).unwrap_err();
-        assert_eq!(error, TopicEventError::UnexpectedRoot(9));
+        assert_eq!(error, TopicEventError::UnexpectedRoot(40));
     }
 
     #[test]
@@ -835,9 +835,9 @@ mod tests {
 
     #[test]
     fn a_direct_message_or_unknown_type_is_not_a_topic_event() {
-        let dm = frame(1, &cbor_map(vec![(0, text(NET))]));
+        let dm = frame(10, &cbor_map(vec![(0, text(NET))]));
         assert_eq!(codec_error(&dm).0, "unsupported");
-        let text_item = frame(17, &cbor_map(vec![(0, text("hi"))]));
+        let text_item = frame(22, &cbor_map(vec![(0, text("hi"))]));
         assert_eq!(codec_error(&text_item).0, "unsupported");
     }
 
@@ -846,7 +846,7 @@ mod tests {
         // The schemas carry no direction, value, or sender (T8); a field that claims one is a
         // schema error rather than an assertion the relay might trust.
         let with_direction = frame(
-            11,
+            42,
             &cbor_map(vec![
                 (0, text(NET)),
                 (1, bytes(&[1; 32])),
@@ -862,7 +862,7 @@ mod tests {
 
     #[test]
     fn an_embedded_post_that_is_not_type_9_is_rejected() {
-        let not_a_post = frame(17, &cbor_map(vec![(0, text("hi"))]));
+        let not_a_post = frame(22, &cbor_map(vec![(0, text("hi"))]));
         let event = submission_frame(NET, &not_a_post, &[1]);
         assert_eq!(
             codec_error(&event),
@@ -886,7 +886,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|schema| schema["type_id"] == 9);
+                .any(|schema| schema["type_id"] == 40);
             if !supports_topics
                 || !id.contains("topic-")
                 || case["validation_context"]["operation"] != "typed"
@@ -900,14 +900,14 @@ mod tests {
                     assert!(result.is_err(), "{id} must be rejected");
                     rejects += 1;
                 }
-                "accept" if case["type_id"] == 9 => {
+                "accept" if case["type_id"] == 40 => {
                     assert_eq!(
                         result,
-                        Err(TopicEventError::UnexpectedRoot(9)),
+                        Err(TopicEventError::UnexpectedRoot(40)),
                         "{id}: a bare post carries no burn"
                     );
                 }
-                "accept" if case["type_id"] == 10 || case["type_id"] == 11 => {
+                "accept" if case["type_id"] == 41 || case["type_id"] == 42 => {
                     result.unwrap_or_else(|error| panic!("{id}: {error}"));
                     accepts += 1;
                 }

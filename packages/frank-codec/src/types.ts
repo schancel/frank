@@ -99,9 +99,9 @@ export interface OpaqueSection {
 }
 
 export interface ForwardingDeliveryEnvelope<F> {
-  type: 25
+  type: 13
   destination: AccountRef
-  /** The inner direct-message-delivery (type-1) frame. */
+  /** The inner direct-message-delivery (type-10) frame. */
   payloadFrame: F
   /** Digest of the exact field-2 frame. */
   payloadDigest: Uint8Array
@@ -115,10 +115,10 @@ export interface ForwardingDeliveryEnvelope<F> {
 }
 
 export interface DirectMessageDelivery<F> {
-  type: 1
+  type: 10
   network: string
   destination: AccountRef
-  /** The type-5 recipient-encrypted-payload frame. */
+  /** The type-11 recipient-encrypted-payload frame. */
   payloadFrame: F
   /** T3 digest of the exact field-2 frame, as encoded (not verified at stages 1-9). */
   payloadDigest: Uint8Array
@@ -132,14 +132,14 @@ export interface DirectMessageDelivery<F> {
 
 export interface DirectoryAttestation<F> {
   type: 2
-  /** The type-4 directory-statement frame. */
+  /** The type-1 directory-statement frame. */
   statementFrame: F
   signatures: SignatureEntry[]
   unknownFields: UnknownFields
 }
 
 export interface MailboxCheckpoint {
-  type: 3
+  type: 14
   network: string
   owner: AccountRef
   checkpointId: Uint8Array
@@ -150,7 +150,7 @@ export interface MailboxCheckpoint {
 }
 
 export interface DirectoryStatement<F> {
-  type: 4
+  type: 1
   network: string
   subject: AccountRef
   revision: bigint
@@ -221,7 +221,7 @@ export interface PreviewDirectoryRoles {
 }
 
 interface RecipientEncryptedPayloadCommon {
-  type: 5
+  type: 11
   network: string
   sender: AccountRef
   recipient: AccountRef
@@ -263,7 +263,7 @@ export interface TokenTransfer {
 }
 
 export interface EncryptedMessageContent<F> {
-  type: 6
+  type: 12
   network: string
   messageId: Uint8Array
   /** Allocated by whoever starts the conversation and carried by every message in it. Writers
@@ -271,14 +271,14 @@ export interface EncryptedMessageContent<F> {
   conversationId?: Uint8Array
   conversationName?: string
   tokenTransfer?: TokenTransfer
-  /** The type-8 message-content-revision frame. */
+  /** The type-20 message-content-revision frame. */
   revisionFrame: F
   contentDigest: Uint8Array
   unknownFields: UnknownFields
 }
 
 export interface KeyTransitionStatement {
-  type: 7
+  type: 3
   network: string
   subject: AccountRef
   priorAuthority: AccountRef
@@ -288,11 +288,11 @@ export interface KeyTransitionStatement {
 }
 
 interface TopicPostCommon {
-  type: 9
+  type: 40
   network: string
   /** Exact UTF-8, never normalized (S12). */
   topic: string
-  /** T1 hash of the parent type-9 frame; absent for a top-level post. */
+  /** T1 hash of the parent type-40 frame; absent for a top-level post. */
   parentHash?: Uint8Array
   /** Opaque in version 1. */
   body: Uint8Array
@@ -359,16 +359,16 @@ interface ForumCursorCommon {
 export type ForumCursor = ForumCursorCommon &
   (
     | {
-        family: 13
+        family: 44
         topic: string
         since: Timestamp
         last: { timestamp: Timestamp; hash: Uint8Array }
       }
-    | { family: 14; last: string }
+    | { family: 45; last: string }
   )
 
 export interface ForumView<F> {
-  type: 12
+  type: 43
   network: string
   postFrame: F
   author: Uint8Array
@@ -383,7 +383,7 @@ export interface ForumView<F> {
   unknownFields: UnknownFields
 }
 export interface ForumTopicPage<F, K = ForumCursor> {
-  type: 13
+  type: 44
   network: string
   topic: string
   since: Timestamp
@@ -401,7 +401,7 @@ export interface ForumDiscoveryEntry {
   unknownFields: UnknownFields
 }
 export interface ForumDiscoveryPage<K = ForumCursor> {
-  type: 14
+  type: 45
   network: string
   revision: bigint
   entries: ForumDiscoveryEntry[]
@@ -411,7 +411,7 @@ export interface ForumDiscoveryPage<K = ForumCursor> {
   unknownFields: UnknownFields
 }
 interface ForumOperationCommon<F> {
-  type: 15
+  type: 46
   network: string
   submittedFrame: F
   targetHash: Uint8Array
@@ -447,9 +447,9 @@ export type ForumOperationStatus<F> = ForumOperationCommon<F> &
   )
 
 export interface TopicPostSubmission<F> {
-  type: 10
+  type: 41
   network: string
-  /** The type-9 topic-post frame. */
+  /** The type-40 topic-post frame. */
   postFrame: F
   /** Raw signed chain transaction that burns for the post (T7, T8). */
   burnTx: Uint8Array
@@ -457,9 +457,9 @@ export interface TopicPostSubmission<F> {
 }
 
 export interface TopicVoteSubmission {
-  type: 11
+  type: 42
   network: string
-  /** T1 hash of the target type-9 frame. */
+  /** T1 hash of the target type-40 frame. */
   targetHash: Uint8Array
   /** Raw signed chain transaction that burns for the vote (T7, T8). */
   burnTx: Uint8Array
@@ -467,25 +467,25 @@ export interface TopicVoteSubmission {
 }
 
 export interface MessageContentRevision<C> {
-  type: 8
+  type: 20
   items: C[]
   unknownFields: UnknownFields
 }
 
 export interface ContainerMessageItem<C> {
-  type: 16
+  type: 21
   items: C[]
   unknownFields: UnknownFields
 }
 
 export interface TextMessageItem {
-  type: 17
+  type: 22
   text: string
   unknownFields: UnknownFields
 }
 
 export interface StealthMessageItem {
-  type: 19
+  type: 24
   networkTag: string
   ephemeralPubKey: AccountRef
   transactions: Uint8Array[]
@@ -504,7 +504,7 @@ export interface StealthAssetTransfer {
 }
 
 export interface StealthAssetMessageItem {
-  type: 19
+  type: 24
   transfers: StealthAssetTransfer[]
   memo?: string
   unknownFields: UnknownFields
@@ -524,7 +524,7 @@ export interface ChainAllocation {
 }
 
 export interface ChannelUpdateItem {
-  type: 24
+  type: 25
   channelId: Uint8Array
   appId: string
   sequenceNumber: number
@@ -605,7 +605,7 @@ export interface PluginMessageItem {
 }
 
 export interface EmailMessageItem {
-  type: 26
+  type: 23
   messageId: string
   from: EmailParty
   to: EmailParty[]
@@ -653,9 +653,9 @@ export type BlackjackFields<H, Q> = { gameId: string } & (
     }
 )
 
-/** Closed type-18 projection; exact frame bytes remain on the enclosing ParsedFrame. */
+/** Closed type-26 projection; exact frame bytes remain on the enclosing ParsedFrame. */
 export type BlackjackMessageItem = {
-  type: 18
+  type: 26
   schema?: never
 } & BlackjackFields<Uint8Array, Uint8Array>
 
@@ -684,9 +684,9 @@ export type BlackjackHandFields<H, Q> = { gameId: string } & (
   | { action: 'refund'; ref: H }
 )
 
-/** Closed type-18 schema-2 projection. */
+/** Closed type-26 schema-2 projection. */
 export type BlackjackHandMessageItem = {
-  type: 18
+  type: 26
   schema: 2
 } & BlackjackHandFields<Uint8Array, Uint8Array>
 
@@ -720,9 +720,9 @@ export type BlackjackHandV3Fields<H, Q> = { gameId: string; seq: number } & (
   | { action: 'refund'; ref: H; prev: H }
 )
 
-/** Closed type-18 schema-3 projection. */
+/** Closed type-26 schema-3 projection. */
 export type BlackjackHandV3MessageItem = {
-  type: 18
+  type: 26
   schema: 3
 } & BlackjackHandV3Fields<Uint8Array, Uint8Array>
 

@@ -197,13 +197,13 @@ describe('closed shapes and independently reachable boundaries', () => {
           continue
         const missing = new Map(value)
         missing.delete(key)
-        expect(outcome(() => parseFrame(fr(18, missing)))).toBe('schema@8.2')
+        expect(outcome(() => parseFrame(fr(26, missing)))).toBe('schema@8.2')
       }
       for (let key = 2n; key <= 14n; key++) {
         if (value.has(key) || (f.id === 'hit-request' && key === 5n)) continue
         const extra = new Map(value)
         extra.set(key, 0)
-        expect(outcome(() => parseFrame(fr(18, extra)))).toBe('schema@8.2')
+        expect(outcome(() => parseFrame(fr(26, extra)))).toBe('schema@8.2')
       }
     }
   })
@@ -226,7 +226,7 @@ describe('closed shapes and independently reachable boundaries', () => {
         for (const bad of [null, true] as const) {
           const changed = new Map(value)
           changed.set(key, bad)
-          expect(outcome(() => parseFrame(fr(18, changed)))).toBe('schema@8.2')
+          expect(outcome(() => parseFrame(fr(26, changed)))).toBe('schema@8.2')
         }
       const input = f.application
       if (!input) throw Error(`missing application ${f.id}`)
@@ -281,7 +281,7 @@ describe('closed shapes and independently reachable boundaries', () => {
       for (const bad of badValues) {
         const changed = mapOf(id)
         changed.set(BigInt(key), bad)
-        expect(outcome(() => parseFrame(fr(18, changed)))).toBe('schema@8.2')
+        expect(outcome(() => parseFrame(fr(26, changed)))).toBe('schema@8.2')
       }
     }
   })
@@ -290,7 +290,7 @@ describe('closed shapes and independently reachable boundaries', () => {
       let bytes = new Uint8Array()
       for (let n = size - 100; n < size; n++) {
         bytes = fr(
-          18,
+          26,
           M([
             [0, 'x'],
             [1, 3],
@@ -310,26 +310,26 @@ describe('closed shapes and independently reachable boundaries', () => {
     const old = defaultContext({
       readerVersion: 99,
       supportedSchemas: [
-        { typeId: 16, schemaVersion: 1 },
-        { typeId: 17, schemaVersion: 1 },
+        { typeId: 21, schemaVersion: 1 },
+        { typeId: 22, schemaVersion: 1 },
       ],
     })
     const welcome = raw('welcome'),
       text = textItem('last')
     const p = parsed(containerItem([welcome, text]), old)
-    if (p.typed?.type !== 16) throw Error('container')
+    if (p.typed?.type !== 21) throw Error('container')
     expect(p.typed.items.map(c => c.kind)).toEqual(['retained', 'parsed'])
     expect(p.typed.items.map(c => c.frame)).toEqual([welcome, text])
     expect(outcome(() => parseFrame(welcome, old))).toBe('unsupported@7')
     expect(
       parseFrame(welcome, { ...old, opaqueRetentionAllowed: true }).kind,
     ).toBe('retained')
-    for (let typeId = 1; typeId <= 15; typeId++)
+    for (const typeId of [1, 2, 3, 10, 11, 12, 13, 14, 40, 41, 42, 43, 44, 45, 46])
       expect(
         outcome(() => parseFrame(containerItem([fr(typeId, M([]))]))),
       ).toBe('semantic@8.4')
     const badRequired = fr(
-      6,
+      12,
       M([
         [0, NET],
         [1, bytesOf(16, 1)],
@@ -351,9 +351,9 @@ describe('closed shapes and independently reachable boundaries', () => {
     expect(outcome(() => parseFrame(at))).toBe('parsed')
     expect(outcome(() => parseFrame(containerItem([at])))).toBe('resource@7')
   })
-  it('continues type18 through the public opaque DM session with inherited depth and terminal ownership', () => {
+  it('continues type26 through the public opaque DM session with inherited depth and terminal ownership', () => {
     const payload = fr(
-      5,
+      11,
       M([
         [0, NET],
         [1, acct1(9)],
@@ -367,10 +367,10 @@ describe('closed shapes and independently reachable boundaries', () => {
       2,
       2,
     )
-    const root = fr(1, deliveryPayload({ payloadFrame: payload }))
+    const root = fr(10, deliveryPayload({ payloadFrame: payload }))
     const content = (item: Uint8Array) =>
       fr(
-        6,
+        12,
         M([
           [0, NET],
           [1, bytesOf(16, 1)],
@@ -385,7 +385,7 @@ describe('closed shapes and independently reachable boundaries', () => {
     session.payload.frame.fill(0)
     expect(
       session.completeAuthenticatedContent(content(item)).content.typeId,
-    ).toBe(6)
+    ).toBe(12)
     expect(() => session.completeAuthenticatedContent(content(item))).toThrow()
     item = containerItem([item])
     expect(outcome(() => parseFrame(content(item)))).toBe('parsed')
@@ -406,7 +406,7 @@ describe('closed shapes and independently reachable boundaries', () => {
 })
 
 it.each(['containers', 'items'] as const)(
-  'type18 continuation shares aggregate-only %s counters',
+  'type26 continuation shares aggregate-only %s counters',
   kind => {
     const grouped = (count: number): Encodable[] => {
       const groups: Encodable[] = []
@@ -419,7 +419,7 @@ it.each(['containers', 'items'] as const)(
       return groups
     }
     const payload = fr(
-      5,
+      11,
       M([
         [0, NET],
         [1, acct1(9)],
@@ -435,9 +435,9 @@ it.each(['containers', 'items'] as const)(
     )
     const fields = deliveryPayload({ payloadFrame: payload })
     fields.set(99, grouped(kind === 'containers' ? 8000 : 60000))
-    const root = fr(1, fields, 3, 1)
+    const root = fr(10, fields, 3, 1)
     const content = fr(
-      6,
+      12,
       M([
         [0, NET],
         [1, bytesOf(16, 1)],

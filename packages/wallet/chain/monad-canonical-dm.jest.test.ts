@@ -426,7 +426,7 @@ describe('canonical DM pipeline: Type 24 channel-update items (#965)', () => {
       // Item 0: Text item
       const item0 = opened.items[0]
       expect(item0.kind).toBe('parsed')
-      expect(item0.typed?.type).toBe(17)
+      expect(item0.typed?.type).toBe(22)
       expect((item0.typed as any).text).toBe('State channel update proposal')
 
       // Item 1: Channel-update item

@@ -55,7 +55,7 @@ async function viewFixture(
   })
   const tx = (await import('ethers')).Transaction.from(raw)
   const bytes = encodeForumReadFrame(
-    12,
+    43,
     new Map<number, Encodable>([
       [0, policy.network],
       [1, post],
@@ -98,7 +98,7 @@ function topicPage(rows: Uint8Array[], next?: Uint8Array, echo?: Uint8Array) {
   ])
   if (next) map.set(5, next)
   if (echo) map.set(7, echo)
-  return encodeForumReadFrame(13, map)
+  return encodeForumReadFrame(44, map)
 }
 function discovery(topics: string[], next?: Uint8Array, echo?: Uint8Array) {
   const map = new Map<number, Encodable>([
@@ -119,7 +119,7 @@ function discovery(topics: string[], next?: Uint8Array, echo?: Uint8Array) {
   ])
   if (next) map.set(3, next)
   if (echo) map.set(5, echo)
-  return encodeFrame({ typeId: 14, schemaVersion: 1, minReaderVersion: 1 }, map)
+  return encodeFrame({ typeId: 45, schemaVersion: 1, minReaderVersion: 1 }, map)
 }
 function response(data: Uint8Array) {
   return { data, headers: { 'content-type': 'application/cbor' } }
@@ -134,7 +134,7 @@ it('traverses 129 canonical topic rows and publishes only complete output', asyn
     Array.from({ length: 129 }, (_, i) => viewFixture(i + 1)),
   )
   const cursor = encodeForumCursor({
-    family: 13,
+    family: 44,
     network: policy.network,
     epoch,
     revision,
@@ -169,7 +169,7 @@ it('traverses 129 canonical topic rows and publishes only complete output', asyn
 })
 it('traverses discovery without rounding counts and fails on continuation loss', async () => {
   const cursor = encodeForumCursor({
-    family: 14,
+    family: 45,
     network: policy.network,
     epoch,
     revision,
@@ -201,7 +201,7 @@ it('retries expiry with fresh first page at most twice', async () => {
 })
 it('rejects missing cursor echo and duplicate rows without empty fallback', async () => {
   const cursor = encodeForumCursor({
-    family: 14,
+    family: 45,
     network: policy.network,
     epoch,
     revision,
@@ -240,7 +240,7 @@ it('bounds discovery staging at 32768 rows without publishing its prefix', async
     )
     const makeCursor = (last: string) =>
       encodeForumCursor({
-        family: 14,
+        family: 45,
         network: policy.network,
         epoch,
         revision,
@@ -353,7 +353,7 @@ it('charges projection and bookkeeping toward the 64 MiB attempt bound', async (
     )
     const makeCursor = (last: string) =>
       encodeForumCursor({
-        family: 14,
+        family: 45,
         network: policy.network,
         epoch,
         revision,
@@ -371,7 +371,7 @@ it('charges projection and bookkeeping toward the 64 MiB attempt bound', async (
 })
 it('retries a fully validated same-query incarnation race from a fresh first page', async () => {
   const old = encodeForumCursor({
-    family: 14,
+    family: 45,
     network: policy.network,
     epoch,
     revision,
@@ -379,7 +379,7 @@ it('retries a fully validated same-query incarnation race from a fresh first pag
     last: 'a',
   })
   const fresh = encodeForumCursor({
-    family: 14,
+    family: 45,
     network: policy.network,
     epoch,
     revision,
@@ -398,7 +398,7 @@ it('retries a fully validated same-query incarnation race from a fresh first pag
 })
 it('does not retry an intrinsically malformed cursor/page revision binding', async () => {
   const cursor = encodeForumCursor({
-    family: 14,
+    family: 45,
     network: policy.network,
     epoch,
     revision: revision - 1n,
@@ -413,7 +413,7 @@ it('does not retry an intrinsically malformed cursor/page revision binding', asy
 })
 it('does not retry valid pages whose echo changed the last tuple', async () => {
   const old = encodeForumCursor({
-    family: 14,
+    family: 45,
     network: policy.network,
     epoch,
     revision,
@@ -421,7 +421,7 @@ it('does not retry valid pages whose echo changed the last tuple', async () => {
     last: 'a',
   })
   const forged = encodeForumCursor({
-    family: 14,
+    family: 45,
     network: policy.network,
     epoch,
     revision,

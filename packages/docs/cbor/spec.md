@@ -17,14 +17,14 @@ Every independently stored, signed, hashed, or forwarded Frank object is seriali
 | **5** | 4 bytes | Body Length | Big-endian uint32 payload length (bytes `9..N`) |
 | **9** | $N$ bytes | CBOR Envelope | Canonical CBOR map `{ 0: type_id, 1: schema_version, 2: min_reader_version, 3: payload_bytes }` |
 
-Worked example: a Type 17 text item `{0: "hi"}` (23 bytes total):
+Worked example: a Type 22 text item `{0: "hi"}` (23 bytes total):
 
 ```text
 46 52 4e 4b            FRNK (magic)
 01                     frame version 1
 00 00 00 0e            CBOR body length 14
 a4                     envelope map, 4 entries
-  00 11                  0: type_id = 17 (text-message-item)
+  00 16                  0: type_id = 22 (text-message-item)
   01 01                  1: schema_version = 1
   02 01                  2: min_reader_version = 1
   03 45                  3: payload = 5-byte string
@@ -50,32 +50,32 @@ To ensure byte-for-byte deterministic hashing across all languages (TypeScript, 
 
 | Type ID |   Hex    | Name                                             | CDDL Schema Rule                 | Description                                                                                                   |
 | :-----: | :------: | :----------------------------------------------- | :------------------------------- | :------------------------------------------------------------------------------------------------------------ |
-|  **1**  | `0x0001` | Direct Message Delivery                          | `direct-message-delivery`        | Outermost DKSAP message container with payment stamps                                                         |
-|  **2**  | `0x0002` | Directory Attestation                            | `directory-attestation`          | Wraps and signs a Type 4 directory statement with ECDSA                                                       |
-|  **3**  | `0x0003` | Mailbox Checkpoint                               | `mailbox-checkpoint`             | Durable journal facts and mailbox state checkpoint                                                            |
-|  **4**  | `0x0004` | Directory Statement                              | `directory-statement`            | Account-to-relay binding, public keys ($P, M, P'$), and revision                                              |
-|  **5**  | `0x0005` | Recipient Encrypted Payload                      | `recipient-encrypted-payload-v2` | XChaCha20-Poly1305 ciphertext with DLEQ zero-knowledge proof                                                  |
-|  **6**  | `0x0006` | Encrypted Message Content                        | `encrypted-message-content`      | Inner decrypted container with logical message ID & payload                                                   |
-|  **7**  | `0x0007` | Key Transition Statement                         | `key-transition-statement`       | Cryptographic authorization linking a retiring key to a new subject key                                       |
-|  **8**  | `0x0008` | Message Content Revision                         | `message-content-revision`       | Ordered array of semantic message items                                                                       |
-|  **9**  | `0x0009` | Topic Post Content                               | `topic-post`                     | Public forum post content with structured authored entries                                                    |
-| **10**  | `0x000a` | Topic Post Submission                            | `topic-post-submission`          | Initial post creation paired with raw signed on-chain burn transaction ($T_7$)                                 |
-| **11**  | `0x000b` | Topic Vote Submission                            | `topic-vote-submission`          | Upvote on existing post paired with raw signed on-chain burn transaction ($T_7$)                               |
-| **12**  | `0x000c` | Forum Post Observation                           | `forum-single-view`              | Single post observation paired with author address, raw signed burn tx, and vote weight                       |
-| **13**  | `0x000d` | Forum Topic Batch (`forum-topic-page`)           | `forum-topic-page`               | Paginated batch of up to 128 post observation frames within a topic, with continuation cursor and relay epoch |
-| **14**  | `0x000e` | Forum Discovery Listing (`forum-discovery-page`) | `forum-discovery-page`           | Paginated directory of active topics, post counts, and last activity timestamps                               |
-| **15**  | `0x000f` | Forum Operation Status                           | `forum-operation-status`         | Relay submission/confirmation status report for an on-chain burn transaction                                  |
-| **16**  | `0x0010` | Container Message Item                           | `container-message-item`         | Opaque nested child frame container for multi-item deliveries                                                 |
-| **17**  | `0x0011` | UTF-8 Text Item                                  | `text-message-item`              | Plaintext chat message text up to 256 KiB                                                                     |
-| **18**  | `0x0012` | Blackjack Message Item                           | `blackjack item (closed shapes)` | Peer-to-peer blackjack hand and move items (closed payload shapes, up to 4 KiB)                               |
-| **19**  | `0x0013` | Stealth Payment Item                             | `stealth-message-item`           | Single-use ephemeral DKSAP on-chain transfer notification                                                     |
-| **24**  | `0x0018` | Universal State Channel Update                   | `channel-update-item`            | Instant off-chain multi-network state execution and interactive turns                                         |
-| **25**  | `0x0019` | Forwarding Delivery Envelope                     | `forwarding-delivery-envelope`   | Store-and-forward relay hop delivery envelope with storage stamps (up to 32 MiB)                              |
-| **26**  | `0x001a` | Email Bridge Message Item                        | `email-message-item`             | Email carried through a gateway: parties, subject, bodies, references and attachments                         |
+|  **1**  | `0x0001` | Directory Statement                              | `directory-statement`            | Account-to-relay binding, public keys ($P, M, P'$), and revision                                              |
+|  **2**  | `0x0002` | Directory Attestation                            | `directory-attestation`          | Wraps and signs a Type 1 directory statement with ECDSA                                                       |
+|  **3**  | `0x0003` | Key Transition Statement                         | `key-transition-statement`       | Cryptographic authorization linking a retiring key to a new subject key                                       |
+| **10**  | `0x000a` | Direct Message Delivery                          | `direct-message-delivery`        | Outermost DKSAP message container with payment stamps                                                         |
+| **11**  | `0x000b` | Recipient Encrypted Payload                      | `recipient-encrypted-payload-v2` | XChaCha20-Poly1305 ciphertext with DLEQ zero-knowledge proof                                                  |
+| **12**  | `0x000c` | Encrypted Message Content                        | `encrypted-message-content`      | Inner decrypted container with logical message ID & payload                                                   |
+| **13**  | `0x000d` | Forwarding Delivery Envelope                     | `forwarding-delivery-envelope`   | Store-and-forward relay hop delivery envelope with storage stamps (up to 32 MiB)                              |
+| **14**  | `0x000e` | Mailbox Checkpoint                               | `mailbox-checkpoint`             | Durable journal facts and mailbox state checkpoint                                                            |
+| **20**  | `0x0014` | Message Content Revision                         | `message-content-revision`       | Ordered array of semantic message items                                                                       |
+| **21**  | `0x0015` | Container Message Item                           | `container-message-item`         | Opaque nested child frame container for multi-item deliveries                                                 |
+| **22**  | `0x0016` | UTF-8 Text Item                                  | `text-message-item`              | Plaintext chat message text up to 256 KiB                                                                     |
+| **23**  | `0x0017` | Email Bridge Message Item                        | `email-message-item`             | Email carried through a gateway: parties, subject, bodies, references and attachments                         |
+| **24**  | `0x0018` | Stealth Payment Item                             | `stealth-message-item`           | Single-use ephemeral DKSAP on-chain transfer notification                                                     |
+| **25**  | `0x0019` | Universal State Channel Update                   | `channel-update-item`            | Instant off-chain multi-network state execution and interactive turns                                         |
+| **26**  | `0x001a` | Blackjack Message Item                           | `blackjack item (closed shapes)` | Peer-to-peer blackjack hand and move items (closed payload shapes, up to 4 KiB)                               |
 | **27**  | `0x001b` | Generic Plugin Message Item                      | `plugin-message-item`            | Application item type identifier with the owning plugin's opaque bytes (up to 512 KiB)                        |
+| **40**  | `0x0028` | Topic Post Content                               | `topic-post`                     | Public forum post content with structured authored entries                                                    |
+| **41**  | `0x0029` | Topic Post Submission                            | `topic-post-submission`          | Initial post creation paired with raw signed on-chain burn transaction ($T_7$)                                 |
+| **42**  | `0x002a` | Topic Vote Submission                            | `topic-vote-submission`          | Upvote on existing post paired with raw signed on-chain burn transaction ($T_7$)                               |
+| **43**  | `0x002b` | Forum Post Observation                           | `forum-single-view`              | Single post observation paired with author address, raw signed burn tx, and vote weight                       |
+| **44**  | `0x002c` | Forum Topic Batch (`forum-topic-page`)           | `forum-topic-page`               | Paginated batch of up to 128 post observation frames within a topic, with continuation cursor and relay epoch |
+| **45**  | `0x002d` | Forum Discovery Listing (`forum-discovery-page`) | `forum-discovery-page`           | Paginated directory of active topics, post counts, and last activity timestamps                               |
+| **46**  | `0x002e` | Forum Operation Status                           | `forum-operation-status`         | Relay submission/confirmation status report for an on-chain burn transaction                                  |
 
 > [!NOTE]
-> **Database Pagination vs. Web Pages**: In Types 13 and 14 (`forum-topic-page` and `forum-discovery-page`), the term **"Page"** refers strictly to cursor-based database query result sets (holding up to 128 verified post observations with continuation cursors), not HTML documents or rendered web pages.
+> **Database Pagination vs. Web Pages**: In Types 44 and 45 (`forum-topic-page` and `forum-discovery-page`), the term **"Page"** refers strictly to cursor-based database query result sets (holding up to 128 verified post observations with continuation cursors), not HTML documents or rendered web pages.
 
 ---
 

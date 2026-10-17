@@ -47,7 +47,7 @@ fn anchor() -> Anchor {
             .unwrap(),
         },
         revision_zero: hex::decode(
-            "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+            "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         )
         .unwrap()
         .try_into()
@@ -899,7 +899,7 @@ fn chain(count: usize, padding: usize) -> (Anchor, Vec<ExactFrames>) {
         );
         let statement = encode_frame(
             EnvelopeFields {
-                type_id: 4,
+                type_id: 1,
                 schema_version: if padding > 0 { 5 } else { 4 },
                 min_reader_version: 4,
             },

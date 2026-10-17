@@ -112,7 +112,7 @@ fn signed(secret: u32, signer: u32, edit: impl Fn(&mut Vec<(u64, CborValue)>)) -
     edit(&mut fields);
     let statement = encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: 1,
             schema_version: 4,
             min_reader_version: 4,
         },
@@ -1055,7 +1055,7 @@ async function main(){
   const subject=codec.toHex(payload.get(1n).get(1n)),endpoint='https://127.0.0.1:'+port;
   const trust={network:'monad-testnet',subject,rev0T1:'00'.repeat(32),relayId:'000102030405060708090a0b0c0d0e0f',relayIdentity:{keyType:1,point:subject},endpoint,bindingExpiryNs:1700007200000000000n};
   payload.set(4n,[new Map([[0n,codec.fromHex(trust.relayId)],[1n,endpoint],[2n,new Map([[0n,1n],[1n,codec.fromHex(subject)]])],[3n,new Map([[0n,1700007200n],[1n,0n]])]])]);
-  const statement=codec.encodeFrame({typeId:4,schemaVersion:4,minReaderVersion:4},payload);const signature=new SigningKey('0x'+'1'.padStart(64,'0')).sign('0x'+codec.toHex(codec.directorySignatureDigest(trust.network,statement)));
+  const statement=codec.encodeFrame({typeId:1,schemaVersion:4,minReaderVersion:4},payload);const signature=new SigningKey('0x'+'1'.padStart(64,'0')).sign('0x'+codec.toHex(codec.directorySignatureDigest(trust.network,statement)));
   const integer=h=>{let b=Buffer.from(h.slice(2),'hex');while(b.length>1&&b[0]===0)b=b.subarray(1);if(b[0]&128)b=Buffer.concat([Buffer.from([0]),b]);return Buffer.concat([Buffer.from([2,b.length]),b]);};const pair=Buffer.concat([integer(signature.r),integer(signature.s)]),der=Buffer.concat([Buffer.from([48,pair.length]),pair]);
   const attestation=codec.encodeFrame({typeId:2,schemaVersion:1,minReaderVersion:1},new Map([[0n,statement],[1n,[new Map([[0n,1n],[1n,payload.get(1n)],[2n,der]])]]]));
   trust.rev0T1=codec.toHex(codec.contentHash(codec.validateFrame(statement,codec.previewDirectoryContext())));

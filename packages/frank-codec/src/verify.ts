@@ -162,15 +162,15 @@ function verifyEntry(
 
 function statementOf(f: ParsedFrame): DirectoryStatement<ParsedFrame> {
   const t = f.typed
-  if (!t || t.type !== 4)
-    throw new Error('internal: expected an opened type-4 frame')
+  if (!t || t.type !== 1)
+    throw new Error('internal: expected an opened type-1 frame')
   return t
 }
 
 function transitionOf(f: ParsedFrame): KeyTransitionStatement {
   const t = f.typed
-  if (!t || t.type !== 7)
-    throw new Error('internal: expected an opened type-7 frame')
+  if (!t || t.type !== 3)
+    throw new Error('internal: expected an opened type-3 frame')
   return t
 }
 

@@ -93,8 +93,8 @@ describe('type 27 vectors (docs/protocol/cbor/vectors/plugin-message-item.json)'
       f => f.id === 'revision-with-text-and-plugin-item',
     )!
     const parsed = validateFrame(fromHex(c.frameHex))
-    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 8)
-      throw new Error('expected a type-8 revision')
+    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 20)
+      throw new Error('expected a type-20 revision')
     expect(parsed.typed.items.map(i => i.kind)).toEqual(['parsed', 'parsed'])
     expect(isPluginMessageItemFrame(parsed.typed.items[1])).toBe(true)
   })
@@ -173,10 +173,10 @@ describe('type 27 writer and limits', () => {
   })
 })
 
-// A structural type-1 -> type-5 -> type-6 -> type-8 message whose items are plugin items.
+// A structural type-10 -> type-11 -> type-12 -> type-20 message whose items are plugin items.
 function session(items: Uint8Array[]): NestedItemBudget {
   const encrypted = fr(
-    5,
+    11,
     M([
       [0, NET],
       [1, acct1(9)],
@@ -190,9 +190,9 @@ function session(items: Uint8Array[]): NestedItemBudget {
     2,
     2,
   )
-  const root = fr(1, deliveryPayload({ payloadFrame: encrypted }), 1, 1)
+  const root = fr(10, deliveryPayload({ payloadFrame: encrypted }), 1, 1)
   const content = fr(
-    6,
+    12,
     M([
       [0, NET],
       [1, bytesOf(16, 7)],

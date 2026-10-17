@@ -143,9 +143,9 @@ describe('Cross-Layer (On-Chain + Relay) Surveillance Analysis', () => {
     expect(parsed.kind).toBe('parsed')
     if (parsed.kind !== 'parsed') throw new Error('Failed to parse frame')
 
-    expect(parsed.typeId).toBe(11) // TYPE_TOPIC_VOTE_SUBMISSION
+    expect(parsed.typeId).toBe(42) // TYPE_TOPIC_VOTE_SUBMISSION
     expect(parsed.typed).toBeDefined()
-    expect(parsed.typed?.type).toBe(11)
+    expect(parsed.typed?.type).toBe(42)
 
     const voteSubmission = parsed.typed as {
       type: 11

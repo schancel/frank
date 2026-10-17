@@ -140,10 +140,10 @@ export function checkManifest(m: Manifest, readme: string): string[] {
     }
     // Context nullness rules.
     const nonNull = (x: unknown) => x !== null && x !== undefined
-    if (envType !== 1 && nonNull(v.payment_policy))
-      at('payment_policy for a non-type-1 root')
-    if (envType !== 1 && nonNull(v.decrypted_frame_hex))
-      at('decrypted_frame_hex for a non-type-1 root')
+    if (envType !== 10 && nonNull(v.payment_policy))
+      at('payment_policy for a non-type-10 root')
+    if (envType !== 10 && nonNull(v.decrypted_frame_hex))
+      at('decrypted_frame_hex for a non-type-10 root')
     if (envType !== 2 && nonNull(v.prior_directory_statement_frame_hex)) {
       at('prior_directory_statement_frame_hex for a non-type-2 root')
     }
@@ -183,13 +183,13 @@ export function checkManifest(m: Manifest, readme: string): string[] {
         checkPair(c, other, at)
       }
     }
-    // A typed/full prior statement must be a valid type-4 frame accepted by validation.
+    // A typed/full prior statement must be a valid type-1 frame accepted by validation.
     const prior = v.prior_directory_statement_frame_hex
     if (prior) {
       try {
         const r = validateFrame(fromHex(prior), defaultContext())
-        if (r.kind !== 'parsed' || r.typeId !== 4)
-          at('prior statement is not a type-4 frame')
+        if (r.kind !== 'parsed' || r.typeId !== 1)
+          at('prior statement is not a type-1 frame')
       } catch (e) {
         if (e instanceof FrankCodecError)
           at(`prior statement is invalid: ${e.message}`)

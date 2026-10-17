@@ -246,11 +246,11 @@ function makeFakeChain(
 
 function decodePostSubmission(putBody: Uint8Array) {
   const decoded = validateFrame(putBody, defaultContext({ operation: 'typed' }))
-  if (decoded.kind !== 'parsed' || decoded.typed?.type !== 10) {
+  if (decoded.kind !== 'parsed' || decoded.typed?.type !== 41) {
     throw new Error('expected a type-10 CBOR submission')
   }
   const post = decoded.typed.postFrame.typed
-  if (post?.type !== 9) throw new Error('expected an embedded type-9 post')
+  if (post?.type !== 40) throw new Error('expected an embedded type-9 post')
   return { submission: decoded.typed, post }
 }
 
@@ -259,7 +259,7 @@ function confirmedStatus(body: Uint8Array): Uint8Array {
   const parsed = validateFrame(body, defaultContext())
   if (
     parsed.kind !== 'parsed' ||
-    (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)
+    (parsed.typed?.type !== 41 && parsed.typed?.type !== 42)
   )
     throw new Error('Expected canonical operation')
   const operation = parsed.typed
@@ -268,7 +268,7 @@ function confirmedStatus(body: Uint8Array): Uint8Array {
   )
   observedBurns.set(tx.hash!.toLowerCase(), tx)
   const hash =
-    operation.type === 10
+    operation.type === 41
       ? contentHash(operation.postFrame)
       : operation.targetHash
   return encodeForumReadFrame(
@@ -1208,7 +1208,7 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
     const parsed = validateFrame(put.body, defaultContext())
     if (
       parsed.kind !== 'parsed' ||
-      (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)
+      (parsed.typed?.type !== 41 && parsed.typed?.type !== 42)
     )
       throw new Error('expected a topic post or vote submission')
     return Transaction.from(

@@ -54,7 +54,7 @@ fn build_delivery_with_payments(
     if let Some(dleq) = colocated_dleq {
         entries.push((6, dleq));
     }
-    fr(1, &cbor_map(entries))
+    fr(10, &cbor_map(entries))
 }
 
 #[test]

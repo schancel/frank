@@ -21,7 +21,7 @@ fn frame(kind: u32, payload: &CborValue, schema: u32, min: u32) -> Vec<u8> {
 }
 fn encrypted_with(suite: i128, schema: u32, min: u32) -> Vec<u8> {
     frame(
-        5,
+        11,
         &cbor_map(vec![
             (0, CborValue::Text(NET.into())),
             (1, acct1(9)),
@@ -54,11 +54,11 @@ fn root(extra: Option<CborValue>) -> Vec<u8> {
     if let Some(extra) = extra {
         fields.push((99, extra));
     }
-    frame(1, &cbor_map(fields), schema, 1)
+    frame(10, &cbor_map(fields), schema, 1)
 }
 fn content_items(extra: Option<CborValue>, items: Vec<Vec<u8>>) -> Vec<u8> {
     let revision = fr(
-        8,
+        20,
         &cbor_map(vec![
             (0, CborValue::Text("frank".into())),
             (
@@ -78,7 +78,7 @@ fn content_items(extra: Option<CborValue>, items: Vec<Vec<u8>>) -> Vec<u8> {
     if let Some(extra) = extra {
         fields.push((99, extra));
     }
-    frame(6, &cbor_map(fields), schema, 1)
+    frame(12, &cbor_map(fields), schema, 1)
 }
 fn content(extra: Option<CborValue>) -> Vec<u8> {
     content_items(extra, vec![unknown_item(1)])
@@ -204,10 +204,10 @@ fn required_content_and_first_error_order() {
     };
     for (bad, expected) in [
         (unknown_item(1), "semantic@8.4"),
-        (raw(17), "semantic@8.4"),
-        (raw(6), "malformed@7"),
-        (frame(6, &cbor_map(vec![]), 3, 3), "unsupported@7"),
-        (fr(6, &cbor_map(vec![])), "schema@8.2"),
+        (raw(22), "semantic@8.4"),
+        (raw(12), "malformed@7"),
+        (frame(12, &cbor_map(vec![]), 3, 3), "unsupported@7"),
+        (fr(12, &cbor_map(vec![])), "schema@8.2"),
         (vec![0], "frame@2"),
     ] {
         assert_eq!(outcome(finish(&root(None), &bad)), expected);
@@ -319,7 +319,7 @@ fn actual_type5_position_sets_depth_boundary() {
 
 fn container(items: Vec<Vec<u8>>) -> Vec<u8> {
     fr(
-        16,
+        21,
         &cbor_map(vec![(
             0,
             CborValue::Array(items.into_iter().map(CborValue::Bytes).collect()),
@@ -329,7 +329,7 @@ fn container(items: Vec<Vec<u8>>) -> Vec<u8> {
 
 #[test]
 fn recursive_item_depth_and_256_item_budget() {
-    let mut item = fr(17, &cbor_map(vec![(0, CborValue::Text("hello".into()))]));
+    let mut item = fr(22, &cbor_map(vec![(0, CborValue::Text("hello".into()))]));
     for _ in 0..7 {
         item = container(vec![item]);
     }

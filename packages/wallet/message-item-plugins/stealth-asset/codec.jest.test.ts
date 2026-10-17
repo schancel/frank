@@ -45,14 +45,14 @@ const sample: RecipientAssetPaymentItem = {
 function children(frames: Uint8Array[]) {
   const revision = validateFrame(
     encodeFrame(
-      { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
       new Map<number, Encodable>([
         [0, 'frank'],
         [1, frames],
       ])
     )
   )
-  if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+  if (revision.kind !== 'parsed' || revision.typed?.type !== 20)
     throw new Error('Expected revision')
   return revision.typed.items
 }
@@ -62,7 +62,7 @@ it('round trips exact recipient amounts through composed dedicated-frame messagi
   const parsed = validateFrame(frames[0])
   expect(
     parsed.kind === 'parsed' && [parsed.typeId, parsed.schemaVersion]
-  ).toEqual([19, 2])
+  ).toEqual([24, 2])
   expect(
     decodeItemFrames(registry, children(frames), standaloneItemBudget())
   ).toEqual([sample])

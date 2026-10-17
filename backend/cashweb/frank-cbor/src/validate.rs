@@ -346,7 +346,7 @@ fn process_frame(
             ));
         }
     }
-    if matches!(mode, Mode::Open) && (1..=15).contains(&env.type_id) {
+    if matches!(mode, Mode::Open) && crate::limits::is_assigned_non_item_type(env.type_id) {
         return Err(fail(
             ErrorCategory::Semantic,
             ErrorStage::S84,
@@ -503,7 +503,7 @@ fn process_frame(
     }
     let effective_schema = parsed.schema_version.min(highest_schema);
     if (matches!(mode, Mode::Root)
-        || (9..=15).contains(&parsed.type_id)
+        || (40..=46).contains(&parsed.type_id)
         || parsed.type_id == crate::limits::TYPE_BLACKJACK_ITEM
         || (parsed.type_id == TYPE_DIRECTORY_STATEMENT && effective_schema >= 4))
         && !check_root_frame_limit(parsed.type_id, parsed.frame.len(), effective_schema)
@@ -1183,7 +1183,7 @@ fn open_children(
                 .into_iter()
                 .enumerate()
                 .map(|(i, bytes)| {
-                    open_required(bytes, 12, env_depth + 2, shared, &format!("{path}.4[{i}]"))
+                    open_required(bytes, 43, env_depth + 2, shared, &format!("{path}.4[{i}]"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(TypedPayload::ForumTopicPage(ForumTopicPage {
@@ -1226,7 +1226,7 @@ fn open_children(
             let ValidationResult::Parsed(submitted_frame) = process_frame(
                 v.submitted_frame,
                 Mode::Required {
-                    type_ids: vec![10, 11],
+                    type_ids: vec![41, 42],
                 },
                 env_depth + 1,
                 shared,
@@ -1406,7 +1406,7 @@ fn validate_root<'a>(
 pub struct DirectMessageValidatedContent {
     /// Original root, returned only after the required content child passes stages 1–9.
     pub root: ParsedFrame,
-    /// Structurally validated required type-6 plaintext.
+    /// Structurally validated required type-12 plaintext.
     pub content: ParsedFrame,
 }
 
@@ -1446,7 +1446,7 @@ impl DirectMessageValidationSession {
     }
 
     /// The caller MUST authenticate these bytes before calling. This resumes required
-    /// type-6 validation with the actual original graph counters and nesting depth.
+    /// type-12 validation with the actual original graph counters and nesting depth.
     /// The plaintext has its own MAX_FRAME_BYTES bound, not a second route-byte charge.
     pub fn complete_authenticated_content(
         self,
@@ -1469,7 +1469,7 @@ impl DirectMessageValidationSession {
             capture_payload: false,
             payload_position: None,
         };
-        let result = open_required(bytes.to_vec(), 6, self.depth, &mut shared, &self.location);
+        let result = open_required(bytes.to_vec(), 12, self.depth, &mut shared, &self.location);
         if let Some(context) = shared.context_error {
             return Err(Error::Context(context));
         }
@@ -1490,9 +1490,9 @@ impl DirectMessageValidationSession {
     pub fn abort(self) {}
 }
 
-/// Begin structural stages 1–9 for an actual type-1/type-5 root containing a production
-/// type-5 schema-2/min-reader-2/suite-1 payload. Requires [`Operation::Typed`]; ordinary
-/// parsing and its unsupported full type-1 operation are unchanged. Owns the context.
+/// Begin structural stages 1–9 for an actual type-10/type-11 root containing a production
+/// type-11 schema-2/min-reader-2/suite-1 payload. Requires [`Operation::Typed`]; ordinary
+/// parsing and its unsupported full type-10 operation are unchanged. Owns the context.
 pub fn begin_direct_message_validation(
     bytes: &[u8],
     ctx: &ValidationContext,
@@ -1510,7 +1510,7 @@ pub fn begin_direct_message_validation(
     let context = ctx.clone();
     let (result, mut shared) = validate_root(bytes, &context, true)?;
     let root = match result {
-        ValidationResult::Parsed(root) if root.type_id == 1 || root.type_id == 5 => root,
+        ValidationResult::Parsed(root) if root.type_id == 10 || root.type_id == 11 => root,
         _ => {
             return Err(Error::Context(ContextError(
                 "DM sessions require a type-1/type-5 root".into(),

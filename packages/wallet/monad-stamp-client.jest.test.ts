@@ -481,7 +481,7 @@ async function makeCanonicalConsumerFixture(
         ])
       const tuple = senderExport.configuration.relay
       const statement = encodeFrame(
-        { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+        { typeId: 1, schemaVersion: 4, minReaderVersion: 4 },
         cborMap([
           [0, 'monad-testnet'],
           [1, account(leaves.auth.public.compressedPoint)],
@@ -1150,7 +1150,7 @@ describe('canonical durable consumer barriers', () => {
       const delivery = attempt.request.parts.delivery
       const parsed = validateFrame(delivery, defaultContext())
       expect(parsed.kind).toBe('parsed')
-      if (parsed.kind !== 'parsed' || parsed.typed?.type !== 1) {
+      if (parsed.kind !== 'parsed' || parsed.typed?.type !== 10) {
         throw new Error('Expected parsed type 1 delivery frame')
       }
       // Inspect the prepared envelope to get the expected recipient and DLEQ proof

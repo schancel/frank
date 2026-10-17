@@ -185,7 +185,7 @@ fn open(raw: &[u8]) -> Check<Frame> {
 fn validate(raw: &[u8]) -> Check<Frame> {
     let f = open(raw)?;
     let p = &f.p;
-    let supported = if f.kind == 9 { 2 } else { 1 };
+    let supported = if f.kind == 40 { 2 } else { 1 };
     let future = f.schema > supported;
     need(
         f.min <= supported && f.schema >= supported,
@@ -193,7 +193,7 @@ fn validate(raw: &[u8]) -> Check<Frame> {
     )?;
     text(get(p, 0)?, 1, 64)?;
     match f.kind {
-        9 => {
+        40 => {
             need(raw.len() <= 1048576, "post limit")?;
             keys(p, &[0, 1, 2, 3], future)?;
             text(get(p, 1)?, 1, 512)?;
@@ -218,29 +218,29 @@ fn validate(raw: &[u8]) -> Check<Frame> {
                 }
             }
         }
-        10 | 11 => {
+        41 | 42 => {
             keys(p, &[0, 1, 2], future)?;
             need(
-                raw.len() <= if f.kind == 10 { 1048576 } else { 65536 },
+                raw.len() <= if f.kind == 41 { 1048576 } else { 65536 },
                 "submission limit",
             )?;
             bytes(get(p, 2)?, 1, 16384)?;
-            if f.kind == 10 {
+            if f.kind == 41 {
                 let post = validate(bytes(get(p, 1)?, 9, 1048576)?)?;
                 need(
-                    post.kind == 9 && get(&post.p, 0)? == get(p, 0)?,
+                    post.kind == 40 && get(&post.p, 0)? == get(p, 0)?,
                     "post network",
                 )?;
             } else {
                 bytes(get(p, 1)?, 32, 32)?;
             }
         }
-        12 => {
+        43 => {
             need(raw.len() <= 2097152, "view limit")?;
             keys(p, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], future)?;
             let post = validate(bytes(get(p, 1)?, 9, 1048576)?)?;
             need(
-                post.kind == 9 && get(&post.p, 0)? == get(p, 0)?,
+                post.kind == 40 && get(&post.p, 0)? == get(p, 0)?,
                 "view network",
             )?;
             bytes(get(p, 2)?, 20, 20)?;
@@ -260,9 +260,9 @@ fn validate(raw: &[u8]) -> Check<Frame> {
                 return Err("sign".into());
             }
         }
-        13 | 14 => {
+        44 | 45 => {
             need(raw.len() <= 4194304, "page limit")?;
-            let topic = f.kind == 13;
+            let topic = f.kind == 44;
             keys(
                 p,
                 if topic {
@@ -295,7 +295,7 @@ fn validate(raw: &[u8]) -> Check<Frame> {
             for row in rows {
                 if topic {
                     let v = validate(bytes(row, 9, 2097152)?)?;
-                    need(v.kind == 12, "row type")?;
+                    need(v.kind == 43, "row type")?;
                     let post_bytes = bytes(get(&v.p, 1)?, 9, 1048576)?;
                     let post = validate(post_bytes)?;
                     need(
@@ -323,15 +323,15 @@ fn validate(raw: &[u8]) -> Check<Frame> {
                 }
             }
         }
-        15 => {
+        46 => {
             need(raw.len() <= 2097152, "status limit")?;
             keys(p, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], future)?;
             let sub = validate(bytes(get(p, 1)?, 9, 1048576)?)?;
             need(
-                (sub.kind == 10 || sub.kind == 11) && get(&sub.p, 0)? == get(p, 0)?,
+                (sub.kind == 41 || sub.kind == 42) && get(&sub.p, 0)? == get(p, 0)?,
                 "status network",
             )?;
-            let target = if sub.kind == 10 {
+            let target = if sub.kind == 41 {
                 t1(bytes(get(&sub.p, 1)?, 9, 1048576)?).to_vec()
             } else {
                 bytes(get(&sub.p, 1)?, 32, 32)?.to_vec()
@@ -401,7 +401,7 @@ fn rust_origin() -> Vec<u8> {
         ),
     ]);
     encode(
-        9,
+        40,
         2,
         2,
         &m(vec![

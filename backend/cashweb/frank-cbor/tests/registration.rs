@@ -449,7 +449,7 @@ fn strict_der_rejects_malformed_and_high_s() {
                     .iter()
                     .map(|t| SupportedSchema {
                         type_id: *t,
-                        schema_version: if *t == 4 { 3 } else { 1 },
+                        schema_version: if *t == 1 { 3 } else { 1 },
                     })
                     .collect(),
                 opaque_retention_allowed: false,
@@ -517,7 +517,7 @@ fn wrong_network_signature_verifies_only_over_the_ambient_network() {
             .iter()
             .map(|t| SupportedSchema {
                 type_id: *t,
-                schema_version: if *t == 4 { 3 } else { 1 },
+                schema_version: if *t == 1 { 3 } else { 1 },
             })
             .collect(),
         opaque_retention_allowed: false,
@@ -686,7 +686,7 @@ fn unsupported_algorithm_precedes_any_signature_verification() {
 #[test]
 fn a_full_type2_transition_authorization_verifies() {
     // Built with real keys via the secp256k1-abc test surface: secret 1 is the subject,
-    // secret 2 the prior authority signing the type-7 frame. The corpus has no transition
+    // secret 2 the prior authority signing the type-3 frame. The corpus has no transition
     // case, so the T2a path is pinned here.
     use secp256k1_abc::{PublicKey, Secp256k1, SecretKey};
 
@@ -708,7 +708,7 @@ fn a_full_type2_transition_authorization_verifies() {
         ])
     };
     let prior_statement = common::fr(
-        4,
+        1,
         &frank_cbor::cbor_map(vec![
             (0, frank_cbor::CborValue::Text(NET.to_string())),
             (1, account(&prior_key)),
@@ -719,7 +719,7 @@ fn a_full_type2_transition_authorization_verifies() {
         ]),
     );
     let transition_statement = common::fr(
-        7,
+        3,
         &frank_cbor::cbor_map(vec![
             (0, frank_cbor::CborValue::Text(NET.to_string())),
             (1, account(&prior_key)),
@@ -737,7 +737,7 @@ fn a_full_type2_transition_authorization_verifies() {
         .serialize_der()
         .to_vec();
     let statement = common::fr(
-        4,
+        1,
         &frank_cbor::cbor_map(vec![
             (0, frank_cbor::CborValue::Text(NET.to_string())),
             (1, account(&subject_key)),
@@ -795,7 +795,7 @@ fn a_full_type2_transition_authorization_verifies() {
             .iter()
             .map(|t| SupportedSchema {
                 type_id: *t,
-                schema_version: if *t == 4 { 3 } else { 1 },
+                schema_version: if *t == 1 { 3 } else { 1 },
             })
             .collect(),
         opaque_retention_allowed: false,
@@ -807,7 +807,7 @@ fn a_full_type2_transition_authorization_verifies() {
     let last = corrupted.len() - 1;
     corrupted[last] ^= 0x01;
     let bad_statement = common::fr(
-        4,
+        1,
         &frank_cbor::cbor_map(vec![
             (0, frank_cbor::CborValue::Text(NET.to_string())),
             (1, account(&subject_key)),
@@ -879,7 +879,7 @@ fn directory_statement_canonical_username_valid_and_round_trip() {
 
     for handle in valid_handles {
         let statement = common::fr(
-            4,
+            1,
             &frank_cbor::cbor_map(vec![
                 (0, frank_cbor::CborValue::Text("frank-test".to_string())),
                 (1, common::acct1(1)),
@@ -934,7 +934,7 @@ fn directory_statement_canonical_username_semantic_rejections() {
 
     for handle in invalid_handles {
         let statement = common::fr(
-            4,
+            1,
             &frank_cbor::cbor_map(vec![
                 (0, frank_cbor::CborValue::Text("frank-test".to_string())),
                 (1, common::acct1(1)),
@@ -983,7 +983,7 @@ fn directory_statement_canonical_username_schema_rejections() {
 
     for handle in invalid_length_handles {
         let statement = common::fr(
-            4,
+            1,
             &frank_cbor::cbor_map(vec![
                 (0, frank_cbor::CborValue::Text("frank-test".to_string())),
                 (1, common::acct1(1)),
@@ -1023,7 +1023,7 @@ fn directory_statement_canonical_username_schema_rejections() {
         frank_cbor::CborValue::Bytes(vec![1, 2, 3]),
     ] {
         let statement = common::fr(
-            4,
+            1,
             &frank_cbor::cbor_map(vec![
                 (0, frank_cbor::CborValue::Text("frank-test".to_string())),
                 (1, common::acct1(1)),
@@ -1068,7 +1068,7 @@ fn directory_statement_canonical_username_signed_attestation() {
 
     let account = |key: &[u8]| common::stamp_account(&hex::encode(key));
     let statement = common::fr(
-        4,
+        1,
         &frank_cbor::cbor_map(vec![
             (0, frank_cbor::CborValue::Text(NET.to_string())),
             (1, account(&pub_key_bytes)),
@@ -1137,7 +1137,7 @@ fn directory_statement_canonical_username_signed_attestation() {
 
     // Tampering with the statement's username fails signature verification
     let tampered_statement = common::fr(
-        4,
+        1,
         &frank_cbor::cbor_map(vec![
             (0, frank_cbor::CborValue::Text(NET.to_string())),
             (1, account(&pub_key_bytes)),
@@ -1257,7 +1257,7 @@ fn directory_statement_account_type_and_bot_role_rejections() {
 
     // Out of bounds account_type (> 3) -> Schema error
     let invalid_type_cbor = common::fr(
-        4,
+        1,
         &frank_cbor::cbor_map(vec![
             (0, frank_cbor::CborValue::Text(NET.to_string())),
             (1, account(&pub_key_bytes)),
@@ -1289,7 +1289,7 @@ fn directory_statement_account_type_and_bot_role_rejections() {
 
     // Out of bounds bot_role (> 7) -> Schema error
     let invalid_role_cbor = common::fr(
-        4,
+        1,
         &frank_cbor::cbor_map(vec![
             (0, frank_cbor::CborValue::Text(NET.to_string())),
             (1, account(&pub_key_bytes)),
@@ -1322,7 +1322,7 @@ fn directory_statement_account_type_and_bot_role_rejections() {
 
     // bot_role on Person (account_type 0) -> Semantic error
     let semantic_err_cbor = common::fr(
-        4,
+        1,
         &frank_cbor::cbor_map(vec![
             (0, frank_cbor::CborValue::Text(NET.to_string())),
             (1, account(&pub_key_bytes)),

@@ -73,7 +73,7 @@ export function isStealthAssetMessageItemFrame(
   return (
     frame.typeId === TYPE_STEALTH_MESSAGE_ITEM &&
     frame.schemaVersion >= 2 &&
-    frame.typed?.type === 19 &&
+    frame.typed?.type === 24 &&
     'transfers' in frame.typed
   )
 }

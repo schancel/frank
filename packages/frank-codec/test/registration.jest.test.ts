@@ -192,7 +192,7 @@ describe('the account-registration corpus (README section 11, M9)', () => {
   })
 })
 
-describe('schema-version dispatch of the type-4 statement (V1/V2, M4)', () => {
+describe('schema-version dispatch of the type-1 statement (V1/V2, M4)', () => {
   it('a schema-2 reader projects a schema-3 statement through V6.3 and retains field 9', () => {
     const r = validateFrame(
       frameOf('reg-fixture-v63-profile-retained'),
@@ -202,7 +202,7 @@ describe('schema-version dispatch of the type-4 statement (V1/V2, M4)', () => {
       throw new Error('not a parsed type-2')
     expect(r.typed.statementFrame.projection).toBe('newer-schema')
     const st = r.typed.statementFrame.typed
-    if (st?.type !== 4) throw new Error('statement not typed')
+    if (st?.type !== 1) throw new Error('statement not typed')
     expect(st.schemaVersion).toBe(3)
     expect(st.profileEntries).toBeUndefined()
     expect([...st.unknownFields.keys()]).toEqual([9n])
@@ -217,7 +217,7 @@ describe('schema-version dispatch of the type-4 statement (V1/V2, M4)', () => {
       throw new Error('not a parsed type-2')
     expect(r.typed.statementFrame.projection).toBe('exact')
     const st = r.typed.statementFrame.typed
-    if (st?.type !== 4) throw new Error('statement not typed')
+    if (st?.type !== 1) throw new Error('statement not typed')
     expect(st.schemaVersion).toBe(3)
     if (!st.profileEntries) throw new Error('field 9 absent')
     expect(st.profileEntries.map(e => e.kind)).toEqual([
@@ -422,7 +422,7 @@ describe('stage 10.6 (full)', () => {
     })
   })
 
-  it('fails closed with a context error for a type-1 full root (10.1-10.5 outside this slice)', () => {
+  it('fails closed with a context error for a type-10 full root (10.1-10.5 outside this slice)', () => {
     expect(() =>
       validateFrame(deliveryFrame(), {
         ...defaultContext(),
@@ -484,7 +484,7 @@ describe('stage 10.6 (full)', () => {
 
 describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
   // Real secp256k1 keys: secret 1 signs the attestation, secret 2 is the prior authority that
-  // signs the type-7 transition frame; the subject is the key behind secret 1.
+  // signs the type-3 transition frame; the subject is the key behind secret 1.
   const subjectSecret = new Uint8Array(32).fill(1)
   const priorSecret = new Uint8Array(32).fill(2)
   const subjectKey = secp256k1.getPublicKey(subjectSecret, true)
@@ -495,7 +495,7 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
     new Uint8Array(secp256k1.sign(digest, secret).toDERRawBytes())
 
   const priorStatement = encodeFrame(
-    { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+    { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
     M([
       [0, NETWORK],
       [
@@ -546,7 +546,7 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
     ]),
   )
   const transitionStatement = encodeFrame(
-    { typeId: 7, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: 3, schemaVersion: 1, minReaderVersion: 1 },
     M([
       [0, NETWORK],
       [
@@ -574,7 +574,7 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
     ]),
   )
   const statement = encodeFrame(
-    { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+    { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
     M([
       [0, NETWORK],
       [
@@ -680,19 +680,19 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
     routeByteLimit: 8_388_617,
     readerVersion: 2,
     supportedSchemas: [
-      { typeId: 1, schemaVersion: 1 },
+      { typeId: 1, schemaVersion: 3 },
       { typeId: 2, schemaVersion: 1 },
       { typeId: 3, schemaVersion: 1 },
-      { typeId: 4, schemaVersion: 3 },
-      { typeId: 5, schemaVersion: 1 },
-      { typeId: 6, schemaVersion: 1 },
-      { typeId: 7, schemaVersion: 1 },
-      { typeId: 8, schemaVersion: 1 },
-      { typeId: 9, schemaVersion: 1 },
       { typeId: 10, schemaVersion: 1 },
       { typeId: 11, schemaVersion: 1 },
-      { typeId: 16, schemaVersion: 1 },
-      { typeId: 17, schemaVersion: 1 },
+      { typeId: 12, schemaVersion: 1 },
+      { typeId: 14, schemaVersion: 1 },
+      { typeId: 20, schemaVersion: 1 },
+      { typeId: 21, schemaVersion: 1 },
+      { typeId: 22, schemaVersion: 1 },
+      { typeId: 40, schemaVersion: 1 },
+      { typeId: 41, schemaVersion: 1 },
+      { typeId: 42, schemaVersion: 1 },
     ],
     opaqueRetentionAllowed: false,
     priorDirectoryStatementFrame: priorStatement,
@@ -746,7 +746,7 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
     )
     void withBadTransition
     const badTransitionStatement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
       M([
         [0, NETWORK],
         [
@@ -858,7 +858,7 @@ describe('directory statement spendKeys (field 14)', () => {
     const edKey = new Uint8Array(32).fill(0x22)
 
     const statement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
       M([
         [0, 'monad-testnet'],
         [
@@ -925,7 +925,7 @@ describe('directory statement spendKeys (field 14)', () => {
     const ctx = defaultContext({ operation: 'typed' })
     const validated = validateFrame(statement, ctx)
     expect(validated.kind).toBe('parsed')
-    if (validated.kind === 'parsed' && validated.typed?.type === 4) {
+    if (validated.kind === 'parsed' && validated.typed?.type === 1) {
       expect(validated.typed.spendKeys).toBeDefined()
       expect(validated.typed.spendKeys?.length).toBe(2)
       expect(validated.typed.spendKeys?.[0]).toEqual({
@@ -948,7 +948,7 @@ describe('directory statement spendKeys (field 14)', () => {
 
     // edKey (keyType 2) placed before secpKey (keyType 1)
     const statement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
       M([
         [0, 'monad-testnet'],
         [
@@ -1031,7 +1031,7 @@ describe('directory statement spendKeys (field 14)', () => {
     const badEdKey = new Uint8Array(33).fill(0x22) // keyType 2 expects 32 bytes
 
     const statement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
       M([
         [0, 'monad-testnet'],
         [
@@ -1109,7 +1109,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
 
   const makeStatement = (handle: any) =>
     encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
       M([
         [0, 'monad-testnet'],
         [
@@ -1182,8 +1182,8 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
       )
       expect(res.kind).toBe('parsed')
       if (res.kind !== 'parsed') throw new Error('not parsed')
-      expect(res.typed?.type).toBe(4)
-      if (res.typed?.type === 4) {
+      expect(res.typed?.type).toBe(1)
+      if (res.typed?.type === 1) {
         expect(res.typed.canonicalUsername).toBe(handle)
       }
     }
@@ -1264,8 +1264,8 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
       encodedWithHandle,
       defaultContext({ operation: 'typed' }),
     )
-    if (parsedWith.kind !== 'parsed' || parsedWith.typed?.type !== 4) {
-      throw new Error('expected parsed type 4')
+    if (parsedWith.kind !== 'parsed' || parsedWith.typed?.type !== 1) {
+      throw new Error('expected parsed type 1')
     }
     expect(parsedWith.typed.canonicalUsername).toBe('alice-01')
 
@@ -1282,8 +1282,8 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
       encodedWithoutHandle,
       defaultContext({ operation: 'typed' }),
     )
-    if (parsedWithout.kind !== 'parsed' || parsedWithout.typed?.type !== 4) {
-      throw new Error('expected parsed type 4')
+    if (parsedWithout.kind !== 'parsed' || parsedWithout.typed?.type !== 1) {
+      throw new Error('expected parsed type 1')
     }
     expect(parsedWithout.typed.canonicalUsername).toBeUndefined()
   })
@@ -1348,7 +1348,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
     expect(res.typed?.type).toBe(2)
     if (res.typed?.type === 2) {
       const st = res.typed.statementFrame.typed
-      if (st?.type === 4) {
+      if (st?.type === 1) {
         expect(st.canonicalUsername).toBe('valid-agent_42')
       } else {
         throw new Error('inner statement not typed')
@@ -1424,7 +1424,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
 
     const res = validateFrame(encoded, defaultContext())
     expect(res.kind).toBe('parsed')
-    if (res.kind === 'parsed' && res.typed?.type === 4) {
+    if (res.kind === 'parsed' && res.typed?.type === 1) {
       expect(res.typed.accountType).toBe(codec.ACCOUNT_TYPE_SERVICE)
       expect(res.typed.botRole).toBe(codec.BOT_ROLE_FAUCET)
     } else {
@@ -1457,7 +1457,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
 
     // Invalid accountType 4 (> 3)
     const badTypeStatement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
       M([
         [0, 'monad-testnet'],
         [
@@ -1497,7 +1497,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
 
     // Invalid botRole 8 (> 7)
     const badRoleStatement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
       M([
         [0, 'monad-testnet'],
         [
@@ -1538,7 +1538,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
 
     // Semantic rejection: botRole on Person (accountType 0)
     const roleOnPerson = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
       M([
         [0, 'monad-testnet'],
         [

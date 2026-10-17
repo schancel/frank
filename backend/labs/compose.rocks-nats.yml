@@ -1,0 +1,39 @@
+name: frank-lab-rocks-nats
+services:
+  nats:
+    image: nats:2.10-alpine
+    command: ["-m", "8222"]
+    ports:
+      - "127.0.0.1:14222:4222"
+      - "127.0.0.1:18222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  relay:
+    build:
+      context: ../..
+      dockerfile: backend/labs/Dockerfile
+      target: relay
+    ports:
+      - "127.0.0.1:${FRANK_LAB_RELAY_PORT:-18084}:8080"
+    volumes:
+      - ./rocks-nats.toml:/etc/cashwebd/cashwebd.toml:ro
+      - relay-data:/data
+    depends_on:
+      nats:
+        condition: service_healthy
+  contract:
+    profiles: ["test"]
+    build:
+      context: ../..
+      dockerfile: backend/labs/Dockerfile
+      target: contract
+    environment:
+      FRANK_LAB_NATS_URL: nats://nats:4222
+    depends_on:
+      nats:
+        condition: service_healthy
+volumes:
+  relay-data:

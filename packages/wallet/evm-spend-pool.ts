@@ -1,9 +1,9 @@
 import { Wallet, getBytes, hexlify, randomBytes } from "ethers";
 import type { MonadIdentity } from "./monad-identity";
-import type { MonadHdKeyring } from "./monad-hd-keyring";
-import type { MonadChangeKeyring } from "./monad-change-keyring";
-import type { MonadSubAccountPool } from "./monad-account-pool";
-import type { MonadChangePool } from "./monad-change-pool";
+import type { EvmHdKeyring } from "./monad-hd-keyring";
+import type { EvmChangeKeyring } from "./monad-change-keyring";
+import type { EvmSubAccountPool } from "./monad-account-pool";
+import type { EvmChangePool } from "./monad-change-pool";
 import { deriveEvmStealthPrivateKey } from "./monad-stealth";
 import {
   fundedErc20Coins,
@@ -30,10 +30,10 @@ export type EvmSpendPoolJournalSource =
 export interface EvmSpendPoolParams {
   readonly mainAccount: Wallet;
   readonly identity: MonadIdentity;
-  readonly keyring: MonadHdKeyring;
-  readonly changeKeyring: MonadChangeKeyring;
-  readonly pool: MonadSubAccountPool;
-  readonly changePool: MonadChangePool;
+  readonly keyring: EvmHdKeyring;
+  readonly changeKeyring: EvmChangeKeyring;
+  readonly pool: EvmSubAccountPool;
+  readonly changePool: EvmChangePool;
   readonly coinStore: RecordStore<EvmCoin>;
   readonly nativeJournal: EvmSpendPoolJournalSource;
   readonly holdsSource?: (address: string) => boolean;
@@ -51,10 +51,10 @@ export class EvmSpendPool {
   readonly mainAccount: Wallet;
   readonly identity: MonadIdentity;
   readonly identityPublicKey: string;
-  readonly keyring: MonadHdKeyring;
-  readonly changeKeyring: MonadChangeKeyring;
-  readonly pool: MonadSubAccountPool;
-  readonly changePool: MonadChangePool;
+  readonly keyring: EvmHdKeyring;
+  readonly changeKeyring: EvmChangeKeyring;
+  readonly pool: EvmSubAccountPool;
+  readonly changePool: EvmChangePool;
   readonly coinStore: RecordStore<EvmCoin>;
   readonly nativeJournal: EvmSpendPoolJournalSource;
   private readonly defaultHoldsSource?: (address: string) => boolean;

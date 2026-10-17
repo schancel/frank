@@ -18,4 +18,5 @@ export function changeAccountPath(index: number): string {
 }
 
 export type { DerivedChangeAccount }
-export { EvmChangeKeyring as MonadChangeKeyring }
+export { EvmChangeKeyring, EvmChangeKeyring as MonadChangeKeyring }
+

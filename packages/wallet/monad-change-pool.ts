@@ -157,7 +157,7 @@ export type ChangeSweepOutcome =
  * keyring-plus-store shape (see this file's header for what's deliberately *not* mirrored -- no
  * per-account status/lifecycle).
  */
-export class MonadChangePool {
+export class EvmChangePool {
   private readonly keyring: MonadChangeKeyring
   private readonly store: ChangePoolStore
   private walletOperationGate?: <T>(
@@ -479,7 +479,7 @@ export class MonadChangePool {
 
 /** Shared params for the "sweep whatever a lease release just spent" helpers below. */
 interface SweepAfterReleaseParams {
-  changePool: MonadChangePool
+  changePool: EvmChangePool
   /** Signer for the burn account that was just released -- callers already have this in hand,
    * since it's the same signer used to build/submit the tx whose settlement triggered the release
    * (e.g. `pool.getSigner(handle.index, { provider, httpClient })`). */
@@ -581,3 +581,6 @@ export async function awaitLeaseSettlementAndSweepChange(
   const sweep = await sweepIfSpent(settlement.record, params.sweep)
   return { ...settlement, sweep }
 }
+
+export { EvmChangePool as MonadChangePool }
+

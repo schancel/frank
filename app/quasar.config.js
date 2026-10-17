@@ -18,10 +18,15 @@ import inject from '@rollup/plugin-inject'
 import stdLibBrowser from 'node-stdlib-browser'
 import publicClientEnv from './config/public-client-env.cjs'
 import relayDevProxyConfig from './config/relay-dev-proxy.cjs'
+import brandConfig from './config/brand.cjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const { filterPublicClientEnv } = publicClientEnv
 const { relayDevProxy } = relayDevProxyConfig
+const { resolveAppBrand } = brandConfig
+const activeBrand = resolveAppBrand(process.env)
+process.env.QCLI_APP_BRAND = activeBrand.id
+process.env.QCLI_APP_BRAND_NAME = activeBrand.productName
 
 import { execSync } from 'node:child_process'
 function resolveGitCommitHash() {
@@ -295,8 +300,17 @@ export default configure(ctx => {
     // https://quasar.dev/quasar-cli/cli-documentation/prefetch-feature
     // preFetch: true
 
+    htmlVariables: {
+      productName: activeBrand.productName,
+      productDescription: activeBrand.description,
+      brandId: activeBrand.id,
+    },
+
     // Full list of options: https://quasar.dev/quasar-cli/quasar-conf-js#Property%3A-build
     build: {
+      ...(process.env.APP_DIST_DIR
+        ? { distDir: path.resolve(__dirname, process.env.APP_DIST_DIR) }
+        : {}),
       // Quasar otherwise exposes every QCLI_* variable. Keep this an explicit public inventory so
       // a legacy/custom QCLI_MONAD_*_RPC_URL cannot place an upstream provider key in the bundle.
       env: {
@@ -556,6 +570,13 @@ export default configure(ctx => {
       // Do not inject `<meta name="theme-color">`, which triggers Safari 26 (macOS Tahoe)
       // floating toolbar tint/overlay mode and shifts fixed headers behind browser chrome.
       injectPWAMetaTags: false,
+      extendPWAManifestJson(manifest) {
+        manifest.name = activeBrand.productName
+        manifest.short_name = activeBrand.shortName
+        manifest.description = activeBrand.description
+        manifest.theme_color = activeBrand.themeColor
+        manifest.background_color = activeBrand.backgroundColor
+      },
       extendPWAGenerateSWOptions(options) {
         return {
           // Keep the current precache while its pages can still lazy-load old chunks.
@@ -597,13 +618,16 @@ export default configure(ctx => {
         // Build-time protobuf tooling is not a native runtime dependency.
         delete pkg.optionalDependencies
         pkg.type = 'module'
+        pkg.productName = activeBrand.productName
+        pkg.description = activeBrand.description
         return pkg
       },
 
       builder: {
         // https://www.electron.build/configuration/configuration
 
-        appId: 'org.cashweb.stamp',
+        appId: activeBrand.appId,
+        productName: activeBrand.productName,
         mac: {
           icon: 'src-electron/electron-assets/icons/icon.icns',
         },

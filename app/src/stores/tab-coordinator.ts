@@ -7,8 +7,8 @@
  *
  * In WebKit/Safari, concurrent IDBDatabase handles trigger process-level SQLite
  * locks and IDBOpenDBRequest.onblocked. When a secondary tab opens, this coordinator
- * detects the existing active tab via BroadcastChannel('frank:tab-sync') and displays
- * a dedicated "Frank is open in another tab" screen with a one-click takeover button,
+ * detects the existing active tab via BroadcastChannel('app:tab-sync') and displays
+ * a dedicated "open in another tab" screen with a one-click takeover button,
  * preventing storage corruption or misleading setup/seed-import screens.
  */
 import { defineStore } from 'pinia'
@@ -44,10 +44,10 @@ export function generateTabId(): string {
 function getStoredTabId(): string {
   try {
     if (typeof sessionStorage !== 'undefined') {
-      let id = sessionStorage.getItem('frank:tab-id')
+      let id = sessionStorage.getItem('app:tab-id')
       if (!id) {
         id = generateTabId()
-        sessionStorage.setItem('frank:tab-id', id)
+        sessionStorage.setItem('app:tab-id', id)
       }
       return id
     }
@@ -102,7 +102,7 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
       if (syncChannel) return
       if (typeof BroadcastChannel !== 'undefined') {
         try {
-          syncChannel = new BroadcastChannel('frank:tab-sync')
+          syncChannel = new BroadcastChannel('app:tab-sync')
           syncChannel.onmessage = (event: MessageEvent<TabSyncMessage>) => {
             this.handleMessage(event.data)
           }
@@ -297,7 +297,7 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
                     body: translateMessage(
                       'accountRecovery.find_tab_notification_body',
                     ),
-                    tag: 'frank-find-active-tab',
+                    tag: 'app-find-active-tab',
                   },
                 )
                 notification.onclick = () => {

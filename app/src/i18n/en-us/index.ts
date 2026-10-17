@@ -1,9 +1,10 @@
 // This is just an example,
 // so you can safely delete all default props below
 
+import { applyBrandToLocaleMessages } from '../../config/brand'
 import { en as accountRecovery } from '../account-recovery'
 
-export default {
+export const rawEnUS = {
   negotiationRecovery: {
     'restoring': 'Restoring swap history',
     'scanning': 'Checking swap history',
@@ -2001,3 +2002,6 @@ export default {
   },
   close: 'Close',
 }
+
+export default applyBrandToLocaleMessages(rawEnUS)
+

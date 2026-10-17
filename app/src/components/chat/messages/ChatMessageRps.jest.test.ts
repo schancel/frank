@@ -303,4 +303,41 @@ describe('ChatMessageRps.vue', () => {
       stampValueWei: 0n,
     })
   })
+
+  test('P2P challenger sees own committed move and can reveal & pay when peer wins a staked match', async () => {
+    const { saveRpsSecret } = await import('../../../utils/p2p-games')
+    saveRpsSecret('self', '0x123', 'm1', 'scissors', salt)
+    const ownStart = mount(ChatMessageRps, {
+      props: { item: start, address: '0x123', outbound: true },
+      global: { stubs: quasarStubs, mocks: { $t: t } },
+    })
+    expect(ownStart.find('[data-testid="rps-own-committed"]').text()).toContain(
+      'Scissors',
+    )
+    expect(ownStart.find('[data-testid="rps-rock"]').exists()).toBe(false)
+
+    // Peer plays rock against our committed scissors -> peer wins 2x STAKE
+    chat({ outbound: true, item: start }, { outbound: false, item: mine })
+    const dealerBubble = mount(ChatMessageRps, {
+      props: { item: mine, address: '0x123', outbound: false },
+      global: { stubs: quasarStubs, mocks: { $t: t } },
+    })
+    expect(dealerBubble.find('[data-testid="rps-peer-move"]').text()).toContain(
+      'Rock',
+    )
+    const payBtn = dealerBubble.find('[data-testid="rps-dealer-pay"]')
+    expect(payBtn.exists()).toBe(true)
+    await payBtn.trigger('click')
+    const [paidPayload] = dealerBubble.emitted('sendFollowUp')![0] as [any]
+    expect(paidPayload.stampValueWei).toBe(STAKE * 2n)
+    expect(paidPayload.items[0]).toMatchObject({
+      type: 'rps',
+      action: 'resolve',
+      matchId: 'm1',
+      botMove: 'scissors',
+      playerMove: 'rock',
+      secretSalt: salt,
+      outcome: 'win',
+    })
+  })
 })

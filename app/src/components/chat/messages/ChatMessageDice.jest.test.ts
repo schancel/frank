@@ -445,4 +445,50 @@ describe('ChatMessageDice.vue', () => {
     const bubble = mountCard(store.activeConversation.messages[0].items[0])
     expect(bubble.find('[data-testid="dice-waiting"]').exists()).toBe(false)
   })
+
+  test('P2P dealer sees own commitment status and can reveal & pay or refund a winning peer roll', async () => {
+    const { saveDiceSecret } = await import('../../../utils/p2p-games')
+    saveDiceSecret('self', '0x123', 'r1', secret)
+    const tableItem: SatoshiDiceItem = {
+      type: 'dice',
+      action: 'table',
+      rollId: 'r1',
+      commitment,
+    }
+    const ownTable = mount(ChatMessageDice, {
+      props: { item: tableItem, address: '0x123', outbound: true },
+      global: { stubs: quasarStubs, mocks: { $t: t } },
+    })
+    expect(ownTable.find('[data-testid="dice-own-committed"]').exists()).toBe(
+      true,
+    )
+    expect(ownTable.find('[data-testid="dice-roll-btn"]').exists()).toBe(false)
+
+    // Peer rolls with a winning target (65535 guarantees a win)
+    const peerSeed = 'c3'.repeat(16)
+    const peerRoll: SatoshiDiceItem = {
+      type: 'dice',
+      action: 'roll',
+      rollId: 'r1',
+      commitment,
+      clientSeed: peerSeed,
+      target: 65535,
+      wagerWei: STAKE.toString(),
+    }
+    chat({ outbound: true, item: tableItem }, { outbound: false, item: peerRoll })
+    const dealerBubble = mount(ChatMessageDice, {
+      props: { item: peerRoll, address: '0x123', outbound: false },
+      global: { stubs: quasarStubs, mocks: { $t: t } },
+    })
+    expect(dealerBubble.find('[data-testid="dice-peer-bet"]').exists()).toBe(
+      true,
+    )
+    const payBtn = dealerBubble.find('[data-testid="dice-dealer-pay"]')
+    expect(payBtn.exists()).toBe(true)
+    await payBtn.trigger('click')
+    const [paidPayload] = dealerBubble.emitted('sendFollowUp')![0] as [any]
+    expect(paidPayload.stampValueWei).toBe(dicePayoutWei(STAKE, 65535))
+    expect(paidPayload.items[0].action).toBe('result')
+    expect(paidPayload.items[0].serverSecret).toBe(secret)
+  })
 })

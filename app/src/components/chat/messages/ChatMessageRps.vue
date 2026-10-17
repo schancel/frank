@@ -5,79 +5,127 @@
       <span class="text-weight-bold">Rock-Paper-Scissors</span>
     </div>
 
-    <!-- The bot has committed to its move -->
+    <!-- The bot has committed to its move, or this user sent a P2P challenge commitment -->
     <template v-if="item.action === 'start'">
-      <!-- The commitment is a long hash: on hover here; the result says whether it matched. -->
-      <div class="q-mb-xs" :title="item.commitHash" data-testid="rps-committed">
-        The bot has committed to its move.
+      <div
+        v-if="outbound"
+        class="q-mb-xs"
+        :title="item.commitHash"
+        data-testid="rps-own-committed"
+      >
+        {{ ownStartText }}
       </div>
-      <template v-if="!played">
-        <div class="text-weight-medium q-mb-xs">Stake:</div>
-        <div class="row items-center q-gutter-xs q-mb-xs">
-          <q-btn
-            v-for="chip in wagerChips"
-            :key="chip.label"
-            dense
-            no-caps
-            size="sm"
-            :outline="wagerInput !== chip.value"
-            color="primary"
-            :label="chip.label"
-            :data-testid="`rps-chip-${chip.value || 'free'}`"
-            @click="wagerInput = chip.value"
-          />
+      <template v-else>
+        <!-- The commitment is a long hash: on hover here; the result says whether it matched. -->
+        <div
+          class="q-mb-xs"
+          :title="item.commitHash"
+          data-testid="rps-committed"
+        >
+          The bot has committed to its move.
         </div>
-        <q-input
-          v-model="wagerInput"
-          dense
-          outlined
-          label="Stake"
-          :suffix="unit"
-          inputmode="decimal"
-          data-testid="rps-wager-input"
-          style="max-width: 200px"
-        />
-        <div class="text-grey-8 q-my-xs">
-          Your stake is paid with your move. A win pays twice the stake, a tie
-          returns it.
-        </div>
-        <div class="row q-gutter-xs">
-          <q-btn
-            v-for="move in moves"
-            :key="move"
+        <template v-if="!played">
+          <div class="text-weight-medium q-mb-xs">Stake:</div>
+          <div class="row items-center q-gutter-xs q-mb-xs">
+            <q-btn
+              v-for="chip in wagerChips"
+              :key="chip.label"
+              dense
+              no-caps
+              size="sm"
+              :outline="wagerInput !== chip.value"
+              color="primary"
+              :label="chip.label"
+              :data-testid="`rps-chip-${chip.value || 'free'}`"
+              @click="wagerInput = chip.value"
+            />
+          </div>
+          <q-input
+            v-model="wagerInput"
             dense
-            no-caps
-            color="primary"
-            outline
-            :label="moveLabel(move)"
-            :data-testid="`rps-${move}`"
-            :disable="submitting"
-            @click="chooseMove(move)"
+            outlined
+            label="Stake"
+            :suffix="unit"
+            inputmode="decimal"
+            data-testid="rps-wager-input"
+            style="max-width: 200px"
           />
+          <div class="text-grey-8 q-my-xs">
+            Your stake is paid with your move. A win pays twice the stake, a tie
+            returns it.
+          </div>
+          <div class="row q-gutter-xs">
+            <q-btn
+              v-for="move in moves"
+              :key="move"
+              dense
+              no-caps
+              color="primary"
+              outline
+              :label="moveLabel(move)"
+              :data-testid="`rps-${move}`"
+              :disable="submitting"
+              @click="chooseMove(move)"
+            />
+          </div>
+        </template>
+        <div
+          v-else-if="moveFailed"
+          class="text-negative"
+          data-testid="rps-move-not-sent"
+        >
+          {{ $t('gameFairness.moveNotSent') }}
+        </div>
+        <div v-else class="text-grey-7" data-testid="rps-moved">
+          You have moved.
         </div>
       </template>
-      <div
-        v-else-if="moveFailed"
-        class="text-negative"
-        data-testid="rps-move-not-sent"
-      >
-        {{ $t('gameFairness.moveNotSent') }}
-      </div>
-      <div v-else class="text-grey-7" data-testid="rps-moved">
-        You have moved.
-      </div>
     </template>
 
-    <!-- The player's own move -->
+    <!-- The player's own move, or an inbound move from a peer against our challenge -->
     <template v-else-if="item.action === 'move'">
-      <div data-testid="rps-move">
+      <div v-if="isPeerMove" data-testid="rps-peer-move">
+        {{ peerMoveText }}
+      </div>
+      <div v-else data-testid="rps-move">
         You played <strong>{{ moveLabel(item.playerMove) }}</strong>
         <span v-if="item.wagerWei && item.wagerWei !== '0'">
           for {{ displayWager(item.wagerWei) }}</span
         >.
       </div>
+      <div v-if="dealerStep" class="row q-gutter-xs q-mt-xs">
+        <q-btn
+          v-if="dealerStep.payWei > 0n"
+          dense
+          no-caps
+          color="primary"
+          data-testid="rps-dealer-pay"
+          :disable="submitting"
+          :label="
+            $t('gameFairness.rpsDealerPay', {
+              move: moveLabel(dealerStep.ownMove),
+              amount: displayWager(dealerStep.payWei.toString()),
+            })
+          "
+          @click="resolveAsDealer"
+        />
+        <q-btn
+          v-else
+          dense
+          no-caps
+          color="primary"
+          data-testid="rps-dealer-reveal"
+          :disable="submitting"
+          :label="
+            $t('gameFairness.rpsDealerReveal', {
+              move: moveLabel(dealerStep.ownMove),
+            })
+          "
+          @click="resolveAsDealer"
+        />
+      </div>
       <div
-        v-if="waiting"
+        v-else-if="waiting"
         :class="waiting.late ? 'text-weight-bold' : 'game-waiting-quiet'"
         data-testid="rps-waiting"
       >
@@ -160,6 +208,7 @@ import {
   verifyRpsTypedResult,
   type RpsMove,
 } from '@frank/wallet/message-item-plugins/rps/fair'
+import { useChatStore } from '../../../stores/chats'
 import { formatDisplayAmount } from '../../../utils/chain-amount'
 import {
   BOT_ANSWER_WAIT_MS,
@@ -168,6 +217,12 @@ import {
   type ChatGameItem,
 } from '../../../utils/chat-game-items'
 import { errorNotify } from '../../../utils/notifications'
+import {
+  dealerRpsStepForMatch,
+  loadRpsSecret,
+  type DealerRpsStep,
+  type P2pGameChatMessage,
+} from '../../../utils/p2p-games'
 
 export default defineComponent({
   name: 'ChatMessageRps',
@@ -179,6 +234,10 @@ export default defineComponent({
     address: {
       type: String,
       required: true,
+    },
+    outbound: {
+      type: Boolean,
+      default: false,
     },
   },
   emits: ['sendFollowUp'],
@@ -211,9 +270,66 @@ export default defineComponent({
       return activeChain.unit
     },
     outcomeHeadline(): string {
+      if (this.outbound) {
+        if (this.item.outcome === 'win') return 'YOU LOSE'
+        if (this.item.outcome === 'lose') return 'YOU WIN'
+        return 'A TIE'
+      }
       if (this.item.outcome === 'win') return 'YOU WIN'
       if (this.item.outcome === 'lose') return 'YOU LOSE'
       return 'A TIE'
+    },
+    ownStartText(): string {
+      const secret = this.item.matchId
+        ? loadRpsSecret(
+            'self',
+            this.address,
+            this.item.matchId,
+            this.item.commitHash,
+          )
+        : undefined
+      if (secret) {
+        return this.$t('gameFairness.rpsOwnCommittedMove', {
+          move: this.moveLabel(secret.move),
+        })
+      }
+      return this.$t('gameFairness.rpsOwnCommitted')
+    },
+    isPeerMove(): boolean {
+      if (this.item.action !== 'move' || this.outbound) return false
+      const all = chatGameItems('rps', this.address)
+      return all.some(
+        entry =>
+          !entry.outbound &&
+          entry.item === this.item &&
+          all.some(
+            prev =>
+              prev.outbound &&
+              prev.item.action === 'start' &&
+              prev.item.matchId === this.item.matchId,
+          ),
+      )
+    },
+    peerMoveText(): string {
+      const move = this.moveLabel(this.item.playerMove)
+      if (this.item.wagerWei && this.item.wagerWei !== '0') {
+        return this.$t('gameFairness.rpsPeerMoveStaked', {
+          move,
+          amount: this.displayWager(this.item.wagerWei),
+        })
+      }
+      return this.$t('gameFairness.rpsPeerMove', { move })
+    },
+    dealerStep(): DealerRpsStep | undefined {
+      if (this.item.action !== 'move' || !this.item.matchId) return undefined
+      const messages = (useChatStore().activeConversation?.messages ??
+        []) as readonly P2pGameChatMessage[]
+      return dealerRpsStepForMatch(
+        messages,
+        'self',
+        this.address,
+        this.item.matchId,
+      )
     },
     /** The message carrying the player's own move in this item's match, if there is one. */
     mineEntry(): ChatGameItem<RpsItem> | undefined {
@@ -238,6 +354,22 @@ export default defineComponent({
      * the player moved. A match played by typing has no move item of the player's, so it is
      * checked against the commitment the bot sent first. */
     check(): FairCheck {
+      if (this.outbound) {
+        const peerMove = chatGameItems('rps', this.address).find(
+          entry =>
+            !entry.outbound &&
+            entry.item.action === 'move' &&
+            entry.item.matchId === this.item.matchId,
+        )?.item
+        if (peerMove) return verifyRpsResult(this.item, peerMove)
+        const ownStart = chatGameItems('rps', this.address).find(
+          entry =>
+            entry.outbound &&
+            entry.item.action === 'start' &&
+            entry.item.matchId === this.item.matchId,
+        )?.item
+        return verifyRpsTypedResult(this.item, ownStart)
+      }
       if (this.mine) return verifyRpsResult(this.item, this.mine)
       const start = chatGameItems('rps', this.address).find(
         entry =>
@@ -250,7 +382,8 @@ export default defineComponent({
     /** What the result pays, and what the wallet reports its message carried: never shown as
      * verified, since the wallet's figure is not a chain check. */
     payout(): { amount: string; carried: string; short: boolean } | null {
-      if (this.item.action !== 'resolve' || !this.item.outcome) return null
+      if (this.item.action !== 'resolve' || !this.item.outcome || this.outbound)
+        return null
       const owed = rpsPayoutWei(
         BigInt(this.item.wagerWei ?? '0'),
         this.item.outcome,
@@ -271,7 +404,7 @@ export default defineComponent({
     },
     /** The player's own move, while the bot has not answered it: how long it has waited. */
     waiting(): { seconds: number; late: boolean } | null {
-      if (this.item.action !== 'move') return null
+      if (this.item.action !== 'move' || this.isPeerMove) return null
       const all = chatGameItems('rps', this.address)
       if (
         all.some(
@@ -330,6 +463,17 @@ export default defineComponent({
         items: [mine],
         // The stake is the value of the move message itself: a free game carries no stamp.
         stampValueWei: wager,
+        settled: () => {
+          this.submitting = false
+        },
+      })
+    },
+    resolveAsDealer() {
+      if (this.submitting || !this.dealerStep) return
+      this.submitting = true
+      this.$emit('sendFollowUp', {
+        items: [this.dealerStep.item],
+        stampValueWei: this.dealerStep.payWei,
         settled: () => {
           this.submitting = false
         },

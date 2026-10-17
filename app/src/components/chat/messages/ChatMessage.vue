@@ -169,12 +169,14 @@
               v-else-if="item.type == 'rps'"
               :item="item"
               :address="address"
+              :outbound="message.outbound"
               @sendFollowUp="handleSendFollowUp"
             />
             <chat-message-dice
               v-else-if="item.type == 'dice'"
               :item="item"
               :address="address"
+              :outbound="message.outbound"
               @sendFollowUp="handleSendFollowUp"
             />
             <chat-message-channel

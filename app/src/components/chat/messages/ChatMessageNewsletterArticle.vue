@@ -65,7 +65,7 @@
         unelevated
         color="primary"
         icon="menu_book"
-        label="Read Article"
+        :label="readArticleLabel"
         data-testid="newsletter-read-btn"
         @click="readerOpen = true"
       />
@@ -94,7 +94,7 @@
               class="text-caption text-grey-7 q-mt-xs"
               data-testid="newsletter-reader-author"
             >
-              By {{ article.author }}
+              {{ authorByline }}
             </div>
           </div>
           <q-btn
@@ -102,7 +102,7 @@
             round
             dense
             icon="close"
-            aria-label="Close reader"
+            :aria-label="closeReaderLabel"
             data-testid="newsletter-reader-close-btn"
             @click="readerOpen = false"
           />
@@ -165,7 +165,7 @@
           <q-btn
             flat
             no-caps
-            label="Close"
+            :label="closeLabel"
             color="primary"
             data-testid="newsletter-reader-footer-close-btn"
             @click="readerOpen = false"
@@ -246,6 +246,18 @@ export default defineComponent({
         .split(/\n\s*\n/)
         .map(paragraph => paragraph.trim())
         .filter(Boolean)
+    },
+    authorByline(): string {
+      return this.article?.author ? `By ${this.article.author}` : ''
+    },
+    readArticleLabel(): string {
+      return 'Read Article'
+    },
+    closeReaderLabel(): string {
+      return 'Close reader'
+    },
+    closeLabel(): string {
+      return 'Close'
     },
   },
 })

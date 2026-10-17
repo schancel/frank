@@ -165,6 +165,8 @@ export const rawFrFR = {
     messageTooLarge:
       'Ce message est trop volumineux pour être envoyé. Retirez une image ou raccourcissez le texte.',
     blackjackChallenge: 'Défi de blackjack',
+    diceChallenge: 'Défi de Satoshi Dice',
+    rpsChallenge: 'Défi Pierre-Feuille-Ciseaux',
     placeHolder: 'Écrire un message...',
     emojiPickerTitle: 'Choisir un emoji',
     stampPrice: 'Prix du timbre',
@@ -281,6 +283,28 @@ export const rawFrFR = {
     awaiting: 'En attente de la révélation du bot ({seconds} s).',
     noAnswer:
       'Le bot n’a pas répondu après {seconds} s. Votre mise est chez le bot et rien n’a été révélé.',
+    diceOwnCommitted:
+      'Vous vous êtes engagé sur un secret pour ce lancer. En attente du lancer de votre pair.',
+    dicePeerBet: 'Le pair a misé {amount} sur un lancer inférieur à {target}.',
+    diceDealerReveal: 'Révéler le lancer ({rolled})',
+    diceDealerPay: 'Révéler et payer {amount} (lancer {rolled})',
+    diceDealerRefund: 'Rembourser la mise ({amount})',
+    rpsOwnCommitted:
+      'Vous vous êtes engagé sur un coup caché. En attente du coup de votre pair.',
+    rpsOwnCommittedMove:
+      'Votre coup caché : {move}. En attente du coup de votre pair.',
+    rpsPeerMove: 'Le pair a joué {move}.',
+    rpsPeerMoveStaked: 'Le pair a joué {move} pour {amount}.',
+    rpsDealerReveal: 'Révéler le coup ({move})',
+    rpsDealerPay: 'Révéler ({move}) et payer {amount}',
+    rpsChallengeTitle: 'Défi Pierre-Feuille-Ciseaux',
+    rpsChallengeHint:
+      'Choisissez votre coup caché. Son engagement SHA-256 est envoyé en premier ; votre coup est révélé après celui de votre pair.',
+    rpsMoveRock: 'Pierre',
+    rpsMovePaper: 'Feuille',
+    rpsMoveScissors: 'Ciseaux',
+    rpsSendChallenge: 'Envoyer le défi',
+    rpsCancel: 'Annuler',
   },
   raffleDraw: {
     verified: "Le tirage correspond à l'engagement de la graine",

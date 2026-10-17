@@ -160,6 +160,8 @@ export const rawEnUS = {
     messageTooLarge:
       'This message is too large to send. Remove a picture or shorten the text.',
     blackjackChallenge: 'Blackjack challenge',
+    diceChallenge: 'Satoshi Dice challenge',
+    rpsChallenge: 'Rock-Paper-Scissors challenge',
     placeHolder: 'Write a message...',
     emojiPickerTitle: 'Select an emoji',
     stampPrice: 'Stamp Price',
@@ -274,6 +276,28 @@ export const rawEnUS = {
     awaiting: 'Waiting for the bot to reveal ({seconds} s).',
     noAnswer:
       'The bot has not answered after {seconds} s. Your stake is with the bot and nothing has been revealed.',
+    diceOwnCommitted:
+      'You committed to a secret for this roll. Waiting for peer to roll.',
+    dicePeerBet: 'Peer bet {amount} on a roll below {target}.',
+    diceDealerReveal: 'Reveal roll ({rolled})',
+    diceDealerPay: 'Reveal & pay {amount} (rolled {rolled})',
+    diceDealerRefund: 'Refund stake ({amount})',
+    rpsOwnCommitted:
+      'You committed to a hidden move. Waiting for peer to play.',
+    rpsOwnCommittedMove:
+      'Your hidden move: {move}. Waiting for peer to play.',
+    rpsPeerMove: 'Peer played {move}.',
+    rpsPeerMoveStaked: 'Peer played {move} for {amount}.',
+    rpsDealerReveal: 'Reveal move ({move})',
+    rpsDealerPay: 'Reveal ({move}) & pay {amount}',
+    rpsChallengeTitle: 'Rock-Paper-Scissors Challenge',
+    rpsChallengeHint:
+      'Pick your hidden move. Its SHA-256 commitment is sent first; your move is revealed after your peer plays.',
+    rpsMoveRock: 'Rock',
+    rpsMovePaper: 'Paper',
+    rpsMoveScissors: 'Scissors',
+    rpsSendChallenge: 'Send challenge',
+    rpsCancel: 'Cancel',
   },
   raffleDraw: {
     verified: 'Draw matches the seed commitment',

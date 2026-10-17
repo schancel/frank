@@ -118,6 +118,34 @@
             <q-item
               clickable
               v-close-popup
+              data-testid="dice-menu-item"
+              @click="diceClicked"
+            >
+              <q-item-section avatar side>
+                <q-icon name="casino" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.diceChallenge') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="rps-menu-item"
+              @click="rpsClicked"
+            >
+              <q-item-section avatar side>
+                <q-icon name="sports_esports" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.rpsChallenge') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
               data-testid="swap-menu-item"
               @click="$emit('swapClicked')"
             >
@@ -465,6 +493,8 @@ export default defineComponent({
     'sendMessage',
     'sendFollowUp',
     'blackjackClicked',
+    'diceClicked',
+    'rpsClicked',
     'sendStealthClicked',
     'swapClicked',
   ],
@@ -621,6 +651,12 @@ export default defineComponent({
     },
     blackjackClicked() {
       this.$emit('blackjackClicked')
+    },
+    diceClicked() {
+      this.$emit('diceClicked')
+    },
+    rpsClicked() {
+      this.$emit('rpsClicked')
     },
     sendStealthClicked() {
       this.$emit('sendStealthClicked')

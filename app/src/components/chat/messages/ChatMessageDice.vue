@@ -24,15 +24,69 @@
       {{ $t(`gameFairness.diceRejectionReasons.${rejection.rejectionReason}`) }}
     </div>
 
-    <!-- The player's own bet -->
+    <!-- The player's own bet, or an inbound bet from a peer when this user offered the roll -->
     <template v-if="item.action === 'roll'">
-      <div class="text-body2" data-testid="dice-bet">
+      <div v-if="isPeerRoll" class="text-body2" data-testid="dice-peer-bet">
+        {{
+          $t('gameFairness.dicePeerBet', {
+            amount: displayMon(item.wagerWei),
+            target: item.target,
+          })
+        }}
+      </div>
+      <div v-else class="text-body2" data-testid="dice-bet">
         Bet {{ displayMon(item.wagerWei) }} on a roll below
         <strong>{{ item.target }}</strong
         >.
       </div>
+      <div v-if="dealerStep" class="row q-gutter-xs q-mt-xs">
+        <q-btn
+          v-if="dealerStep.payWei > 0n"
+          no-caps
+          dense
+          color="primary"
+          data-testid="dice-dealer-pay"
+          :disable="rolling"
+          :label="
+            $t('gameFairness.diceDealerPay', {
+              amount: displayMon(dealerStep.payWei.toString()),
+              rolled: dealerStep.luckyNumber,
+            })
+          "
+          @click="revealAsDealer"
+        />
+        <q-btn
+          v-else
+          no-caps
+          dense
+          color="primary"
+          data-testid="dice-dealer-reveal"
+          :disable="rolling"
+          :label="
+            $t('gameFairness.diceDealerReveal', {
+              rolled: dealerStep.luckyNumber,
+            })
+          "
+          @click="revealAsDealer"
+        />
+        <q-btn
+          v-if="dealerStep.payWei > 0n"
+          no-caps
+          dense
+          flat
+          color="primary"
+          data-testid="dice-dealer-refund"
+          :disable="rolling"
+          :label="
+            $t('gameFairness.diceDealerRefund', {
+              amount: displayMon(dealerStep.wagerWei.toString()),
+            })
+          "
+          @click="refundAsDealer"
+        />
+      </div>
       <div
-        v-if="waiting"
+        v-else-if="waiting"
         class="text-body2"
         :class="waiting.late ? 'text-weight-bold' : 'game-waiting-quiet'"
         data-testid="dice-waiting"
@@ -117,92 +171,102 @@
       </template>
 
       <template v-if="offer">
-        <!-- The commitment itself is a long hash: it is on hover here, and in full under
-        "how this was checked" on the result. -->
         <div
+          v-if="outbound"
           class="text-body2 text-grey-8 q-mb-xs"
           :title="offer.commitment"
-          data-testid="dice-committed"
+          data-testid="dice-own-committed"
         >
-          The bot has committed to its secret for the next roll.
+          {{ $t('gameFairness.diceOwnCommitted') }}
         </div>
-        <div class="text-body2 text-weight-medium q-mb-xs">1. Target:</div>
-        <div class="row q-gutter-xs q-mb-sm">
-          <q-btn
-            v-for="preset in presets"
-            :key="preset.target"
-            no-caps
-            :color="target === preset.target ? 'primary' : 'grey-8'"
-            :outline="target !== preset.target"
-            :label="`${preset.label} (${preset.multiplier}x)`"
-            :data-testid="`dice-preset-${preset.target}`"
-            @click="target = preset.target"
+        <template v-else>
+          <!-- The commitment itself is a long hash: it is on hover here, and in full under
+          "how this was checked" on the result. -->
+          <div
+            class="text-body2 text-grey-8 q-mb-xs"
+            :title="offer.commitment"
+            data-testid="dice-committed"
+          >
+            The bot has committed to its secret for the next roll.
+          </div>
+          <div class="text-body2 text-weight-medium q-mb-xs">1. Target:</div>
+          <div class="row q-gutter-xs q-mb-sm">
+            <q-btn
+              v-for="preset in presets"
+              :key="preset.target"
+              no-caps
+              :color="target === preset.target ? 'primary' : 'grey-8'"
+              :outline="target !== preset.target"
+              :label="`${preset.label} (${preset.multiplier}x)`"
+              :data-testid="`dice-preset-${preset.target}`"
+              @click="target = preset.target"
+            />
+          </div>
+
+          <div class="text-body2 text-weight-medium q-mb-xs">2. Stake:</div>
+          <div class="row q-gutter-xs items-center q-mb-xs">
+            <q-btn
+              v-for="chip in wagerChips"
+              :key="chip.value"
+              no-caps
+              :outline="wagerInput !== chip.value"
+              color="primary"
+              :label="chip.value ? chip.label : $t('gameFairness.dicePractice')"
+              :data-testid="`dice-chip-${chip.value || 'free'}`"
+              @click="wagerInput = chip.value"
+            />
+          </div>
+
+          <q-input
+            v-model="wagerInput"
+            outlined
+            label="Stake"
+            :suffix="unit"
+            inputmode="decimal"
+            class="q-mb-xs"
+            data-testid="dice-wager-input"
+            style="max-width: 220px"
           />
-        </div>
 
-        <div class="text-body2 text-weight-medium q-mb-xs">2. Stake:</div>
-        <div class="row q-gutter-xs items-center q-mb-xs">
+          <div
+            v-if="practice"
+            class="text-body2 text-grey-9 q-mb-sm"
+            data-testid="dice-practice-description"
+          >
+            {{ $t('gameFairness.dicePracticeDescription') }}
+          </div>
+          <div v-else class="text-body2 text-grey-9 q-mb-sm">
+            Your stake is paid with the bet message. A win pays
+            <strong class="text-positive">{{ estimatedPayout }}</strong
+            >.
+          </div>
+
           <q-btn
-            v-for="chip in wagerChips"
-            :key="chip.value"
             no-caps
-            :outline="wagerInput !== chip.value"
-            color="primary"
-            :label="chip.value ? chip.label : $t('gameFairness.dicePractice')"
-            :data-testid="`dice-chip-${chip.value || 'free'}`"
-            @click="wagerInput = chip.value"
+            color="amber-9"
+            text-color="black"
+            class="full-width text-weight-bold"
+            :label="
+              practice
+                ? $t('gameFairness.dicePracticeRoll')
+                : $t('gameFairness.diceRoll')
+            "
+            data-testid="dice-roll-btn"
+            :loading="rolling"
+            :disable="rolling || played"
+            @click="rollDice"
           />
-        </div>
-
-        <q-input
-          v-model="wagerInput"
-          outlined
-          label="Stake"
-          :suffix="unit"
-          inputmode="decimal"
-          class="q-mb-xs"
-          data-testid="dice-wager-input"
-          style="max-width: 220px"
-        />
-
-        <div
-          v-if="practice"
-          class="text-body2 text-grey-9 q-mb-sm"
-          data-testid="dice-practice-description"
-        >
-          {{ $t('gameFairness.dicePracticeDescription') }}
-        </div>
-        <div v-else class="text-body2 text-grey-9 q-mb-sm">
-          Your stake is paid with the bet message. A win pays
-          <strong class="text-positive">{{ estimatedPayout }}</strong
-          >.
-        </div>
-
-        <q-btn
-          no-caps
-          color="amber-9"
-          text-color="black"
-          class="full-width text-weight-bold"
-          :label="
-            practice
-              ? $t('gameFairness.dicePracticeRoll')
-              : $t('gameFairness.diceRoll')
-          "
-          data-testid="dice-roll-btn"
-          :loading="rolling"
-          :disable="rolling || played"
-          @click="rollDice"
-        />
-        <div
-          v-if="betFailed"
-          class="text-body2 text-negative q-mt-xs"
-          data-testid="dice-bet-not-sent"
-        >
-          {{ $t('gameFairness.moveNotSent') }}
-        </div>
-        <div v-else-if="played" class="text-body2 text-grey-7 q-mt-xs">
-          You have bet on this roll.
-        </div>
+          <div
+            v-if="betFailed"
+            class="text-body2 text-negative q-mt-xs"
+            data-testid="dice-bet-not-sent"
+          >
+            {{ $t('gameFairness.moveNotSent') }}
+          </div>
+          <div v-else-if="played" class="text-body2 text-grey-7 q-mt-xs">
+            You have bet on this roll.
+          </div>
+        </template>
       </template>
     </template>
   </div>
@@ -219,6 +283,7 @@ import {
   verifyDiceResult,
   type FairCheck,
 } from '@frank/wallet/message-item-plugins/dice/fair'
+import { useChatStore } from '../../../stores/chats'
 import { formatDisplayAmount } from '../../../utils/chain-amount'
 import {
   BOT_ANSWER_WAIT_MS,
@@ -228,6 +293,11 @@ import {
   randomHex,
 } from '../../../utils/chat-game-items'
 import { errorNotify } from '../../../utils/notifications'
+import {
+  dealerDiceStepForRoll,
+  type DealerDiceStep,
+  type P2pGameChatMessage,
+} from '../../../utils/p2p-games'
 
 export default defineComponent({
   name: 'ChatMessageDice',
@@ -239,6 +309,10 @@ export default defineComponent({
     address: {
       type: String,
       required: true,
+    },
+    outbound: {
+      type: Boolean,
+      default: false,
     },
   },
   emits: ['sendFollowUp'],
@@ -281,6 +355,35 @@ export default defineComponent({
     unit(): string {
       return activeChain.unit
     },
+    /** Whether this `roll` item was sent by the peer against a roll we offered. */
+    isPeerRoll(): boolean {
+      if (this.item.action !== 'roll' || this.outbound) return false
+      const all = chatGameItems('dice', this.address)
+      return all.some(
+        entry =>
+          !entry.outbound &&
+          entry.item === this.item &&
+          all.some(
+            prev =>
+              prev.outbound &&
+              ((prev.item.action === 'table' &&
+                prev.item.rollId === this.item.rollId) ||
+                (prev.item.action === 'result' &&
+                  prev.item.nextRollId === this.item.rollId)),
+          ),
+      )
+    },
+    dealerStep(): DealerDiceStep | undefined {
+      if (this.item.action !== 'roll' || !this.item.rollId) return undefined
+      const messages = (useChatStore().activeConversation?.messages ??
+        []) as readonly P2pGameChatMessage[]
+      return dealerDiceStepForRoll(
+        messages,
+        'self',
+        this.address,
+        this.item.rollId,
+      )
+    },
     /** The roll this card lets the player bet on: the one the bot committed to in this item. */
     offer(): { rollId: string; commitment: string } | undefined {
       const rollId =
@@ -313,6 +416,18 @@ export default defineComponent({
      * value give. Whether the payout arrived is a separate matter (`payout`). */
     check(): FairCheck {
       const all = chatGameItems('dice', this.address)
+      if (this.outbound) {
+        const peerBet = all.find(
+          entry =>
+            !entry.outbound &&
+            entry.item.action === 'roll' &&
+            entry.item.rollId === this.item.rollId,
+        )?.item
+        const ownResults = all
+          .filter(entry => entry.outbound && entry.item.action === 'result')
+          .map(entry => entry.item)
+        return verifyDiceResult(this.item, peerBet, ownResults)
+      }
       const bet = all.find(
         entry =>
           entry.outbound &&
@@ -329,7 +444,8 @@ export default defineComponent({
      * either short, or claimed. */
     payout(): { amount: string; carried: string; short: boolean } | null {
       const owed = BigInt(this.item.payoutWei ?? '0')
-      if (this.item.action !== 'result' || owed <= 0n) return null
+      if (this.item.action !== 'result' || owed <= 0n || this.outbound)
+        return null
       const carried =
         chatGameItems('dice', this.address).find(
           entry =>
@@ -359,7 +475,8 @@ export default defineComponent({
     },
     /** The player's own bet, while the bot has not answered it: how long it has waited. */
     waiting(): { seconds: number; late: boolean } | null {
-      if (this.item.action !== 'roll' || this.rejection) return null
+      if (this.item.action !== 'roll' || this.rejection || this.isPeerRoll)
+        return null
       const all = chatGameItems('dice', this.address)
       if (
         all.some(
@@ -422,6 +539,28 @@ export default defineComponent({
         items: [bet],
         // The stake is the value of the bet message itself: a practice roll carries no stamp.
         stampValueWei: wager,
+        settled: () => {
+          this.rolling = false
+        },
+      })
+    },
+    revealAsDealer() {
+      if (this.rolling || !this.dealerStep) return
+      this.rolling = true
+      this.$emit('sendFollowUp', {
+        items: [this.dealerStep.item],
+        stampValueWei: this.dealerStep.payWei,
+        settled: () => {
+          this.rolling = false
+        },
+      })
+    },
+    refundAsDealer() {
+      if (this.rolling || !this.dealerStep) return
+      this.rolling = true
+      this.$emit('sendFollowUp', {
+        items: [this.dealerStep.refundItem],
+        stampValueWei: this.dealerStep.wagerWei,
         settled: () => {
           this.rolling = false
         },

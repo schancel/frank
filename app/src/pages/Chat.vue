@@ -192,6 +192,8 @@
       <chat-input
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
+        @diceClicked="sendDiceChallenge"
+        @rpsClicked="rpsDialog = true"
         @sendStealthClicked="openStealthDialog"
         @swapClicked="openSwapDialog"
         ref="chatInput"
@@ -218,6 +220,15 @@
           :busy="sendingMessage || blackjackPreparing"
           @submit="sendBlackjackChallenge"
           @cancel="cancelBlackjackPreparation"
+        />
+      </q-card>
+    </q-dialog>
+    <q-dialog v-model="rpsDialog">
+      <q-card v-if="rpsDialog" data-testid="rps-dialog">
+        <rps-challenge-form
+          :busy="sendingMessage"
+          @submit="sendRpsChallenge"
+          @cancel="rpsDialog = false"
         />
       </q-card>
     </q-dialog>
@@ -272,6 +283,7 @@ import EmailThreadView, {
 import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackChallengeForm from '../components/chat/BlackjackChallengeForm.vue'
+import RpsChallengeForm from '../components/chat/RpsChallengeForm.vue'
 import SendStealthDialog from '../components/dialogs/SendStealthDialog.vue'
 import {
   configuredStealthAssets,
@@ -319,6 +331,12 @@ import {
   newSeed,
   saveSeed,
 } from '../utils/blackjack-hand'
+import {
+  automaticP2pGameSteps,
+  buildDiceChallenge,
+  buildRpsChallenge,
+} from '../utils/p2p-games'
+import type { RpsMove } from '@frank/wallet/message-item-plugins/rps/fair'
 import {
   getOwnCanonicalAddress,
   sameCanonicalAddress,
@@ -370,6 +388,7 @@ export default defineComponent({
     ChatMessageReply,
     ChatInput,
     BlackjackChallengeForm,
+    RpsChallengeForm,
     SendStealthDialog,
     OfferSwapDialog,
     ForwardMessageDialog,
@@ -427,6 +446,7 @@ export default defineComponent({
       blackjackDialog: false,
       blackjackPreparing: false,
       blackjackPreparationSequence: 0,
+      rpsDialog: false,
       stealthDialog: false,
       stealthAssets: [] as StealthAssetOption[],
       stealthQuote: { status: 'idle' } as StealthDialogQuoteState,
@@ -1374,57 +1394,89 @@ export default defineComponent({
           this.blackjackPreparing = false
       }
     },
+    async sendDiceChallenge() {
+      if (this.sendingMessage) return
+      const peer = this.recipientAddress || this.address
+      const own = (await getOwnCanonicalAddress()) ?? 'self'
+      if (this.sendingMessage || peer !== (this.recipientAddress || this.address))
+        return
+      const built = buildDiceChallenge(own, peer)
+      await this.sendFollowUpItems({ items: [built.item] })
+    },
+    async sendRpsChallenge({ move }: { move: RpsMove }) {
+      if (this.sendingMessage || !this.rpsDialog) return
+      const peer = this.recipientAddress || this.address
+      const own = (await getOwnCanonicalAddress()) ?? 'self'
+      if (
+        this.sendingMessage ||
+        !this.rpsDialog ||
+        peer !== (this.recipientAddress || this.address)
+      )
+        return
+      const built = buildRpsChallenge(own, peer, move)
+      this.rpsDialog = false
+      await this.sendFollowUpItems({ items: [built.item] })
+    },
     // Dealer steps that involve no choice and pay nothing (deal, card, a reveal that owes
     // nothing) are sent without asking. Each position of a hand is attempted once per page
     // session; a failed send stays in the chat with its Retry.
     async runBlackjackDealer() {
       if (this.sendingMessage || this.resumingHand) return
-      if (
-        !this.peerMessages.some(m =>
-          m.items?.some(it => it.type === 'blackjack-hand'),
-        )
-      ) {
+      const hasBlackjack = this.peerMessages.some(m =>
+        m.items?.some(it => it.type === 'blackjack-hand'),
+      )
+      const hasP2pGame = this.peerMessages.some(m =>
+        m.items?.some(it => it.type === 'dice' || it.type === 'rps'),
+      )
+      if (!hasBlackjack && !hasP2pGame) {
         return
       }
       const own = await getOwnCanonicalAddress()
       if (!own || this.sendingMessage || this.resumingHand) return
-      // First finish what this user already decided: a hand message that was cut off (the
-      // window closed mid-send) or failed counts as sent in the hand, so nothing else can
-      // happen until it is delivered. Free steps are sent again; money is only settled.
-      // While that is awaited no other trigger (watchers, a finished send) may pick a step.
-      let wallet: ReturnType<typeof useMonadWallet>
-      try {
-        wallet = useMonadWallet()
-      } catch {
-        return
-      }
       const peer = this.recipientAddress || this.address
-      this.resumingHand = true
-      let resumed: number
-      try {
-        resumed = await resumeHandMessages({
-          store: this.chatStore as unknown as HandResumeStore,
-          wallet,
-          address: peer,
-          own,
-          messages: this.peerMessages,
-          attempted: this.blackjackAttempted,
-          // Without a quote, every positive stamp is money: settle its original attempt.
-          // Free recovery still proceeds; no new default is invented.
-          ordinaryStampWei: this.stampUnavailable
-            ? 0n
-            : activeChain.fromDisplayAmount(this.stampAmount),
-        })
-      } finally {
-        this.resumingHand = false
+      if (hasBlackjack) {
+        // First finish what this user already decided: a hand message that was cut off (the
+        // window closed mid-send) or failed counts as sent in the hand, so nothing else can
+        // happen until it is delivered. Free steps are sent again; money is only settled.
+        // While that is awaited no other trigger (watchers, a finished send) may pick a step.
+        let wallet: ReturnType<typeof useMonadWallet>
+        try {
+          wallet = useMonadWallet()
+        } catch {
+          return
+        }
+        this.resumingHand = true
+        let resumed: number
+        try {
+          resumed = await resumeHandMessages({
+            store: this.chatStore as unknown as HandResumeStore,
+            wallet,
+            address: peer,
+            own,
+            messages: this.peerMessages,
+            attempted: this.blackjackAttempted,
+            // Without a quote, every positive stamp is money: settle its original attempt.
+            // Free recovery still proceeds; no new default is invented.
+            ordinaryStampWei: this.stampUnavailable
+              ? 0n
+              : activeChain.fromDisplayAmount(this.stampAmount),
+          })
+        } finally {
+          this.resumingHand = false
+        }
+        if (resumed > 0) {
+          void this.runBlackjackDealer()
+          return
+        }
       }
-      if (resumed > 0) {
-        void this.runBlackjackDealer()
-        return
-      }
-      const step = automaticDealerSteps(this.peerMessages, own, peer).find(
-        candidate => !this.blackjackAttempted.has(candidate.key),
-      )
+      const step = [
+        ...(hasBlackjack
+          ? automaticDealerSteps(this.peerMessages, own, peer)
+          : []),
+        ...(hasP2pGame
+          ? automaticP2pGameSteps(this.peerMessages, own, peer)
+          : []),
+      ].find(candidate => !this.blackjackAttempted.has(candidate.key))
       if (!step || this.sendingMessage || this.resumingHand) return
       this.blackjackAttempted.add(step.key)
       await this.sendFollowUpItems({ items: [step.item] })

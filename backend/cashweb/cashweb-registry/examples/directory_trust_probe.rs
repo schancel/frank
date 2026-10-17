@@ -158,7 +158,7 @@ struct Continuity {
 fn canonical_hex(value: &str, max_bytes: usize) -> bool {
     !value.is_empty()
         && value.len() <= max_bytes * 2
-        && value.len() % 2 == 0
+        && value.len().is_multiple_of(2)
         && value
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))

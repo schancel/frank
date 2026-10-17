@@ -65,8 +65,8 @@ pub(crate) mod serde_bytes_33 {
                 mut seq: A,
             ) -> Result<Self::Value, A::Error> {
                 let mut arr = [0u8; 33];
-                for i in 0..33 {
-                    arr[i] = seq.next_element()?.ok_or_else(|| {
+                for elem in &mut arr {
+                    *elem = seq.next_element()?.ok_or_else(|| {
                         serde::de::Error::custom("expected 33 elements in sequence")
                     })?;
                 }

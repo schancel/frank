@@ -212,9 +212,13 @@ export class EvmSpendPool {
    */
   sourceHeld(source: EvmNativeSource, mainAccountHolder: string): boolean {
     if (source.kind === "spend") {
+      const record = this.pool.getRecord(source.index);
       return (
         this.pool.claimedBy(source.index) !== undefined ||
-        this.pool.getRecord(source.index)?.status === "in-use"
+        record?.status === "in-use" ||
+        record?.status === "funding" ||
+        ((record?.status === "spent" || record?.status === "retired") &&
+          !record.lifecycle?.spend)
       );
     }
     const claimant = this.pool.accountClaimedBy(source.address);
@@ -232,11 +236,16 @@ export class EvmSpendPool {
     const indices = sources.flatMap((source) =>
       source.kind === "spend" ? [source.index] : []
     );
-    const held = indices.find(
-      (index) =>
+    const held = indices.find((index) => {
+      const record = this.pool.getRecord(index);
+      return (
         this.pool.claimedBy(index) !== undefined ||
-        this.pool.getRecord(index)?.status === "in-use"
-    );
+        record?.status === "in-use" ||
+        record?.status === "funding" ||
+        ((record?.status === "spent" || record?.status === "retired") &&
+          !record.lifecycle?.spend)
+      );
+    });
     if (held !== undefined) {
       throw new RangeError(
         `Sub-account ${held} is held by another operation; plan the send again`

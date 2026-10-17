@@ -3396,10 +3396,12 @@ describe('a native plan that never signed is cancelled (#1235 Stage C)', () => {
     expect(reopened.wallet.getNativeOperations!()).toHaveLength(1)
   })
 
-  // Coordinator item 7. On main e8d87c2d: the send below is refused the same way, but its
-  // never-signed plan stays, the admission is `conflicting-authorization` from then on (in the
-  // session and after every reopen), and no later send of any kind is admitted.
-  test('a pool row spent by a transaction no native member owns, then a native plan from it at the next nonce: the send is refused, its plan is cancelled, and the admission is ready again; the same at open', async () => {
+  // #1330 + Coordinator item 7:
+  // 1) A pool row spent by a transaction no native member owns (committed via applyWalletSyncItem at
+  //    nonce 0) can spend its residual balance at nonce 1 via a native send.
+  // 2) An uncheckpointed terminal row (held by `pool-retained` `role: 'hold'`) is skipped by the
+  //    planner in favor of `main`, and a crashed never-signed plan on disk for it is cancelled at open.
+  test('a pool row spent by a transaction no native member owns spends its residual at the next nonce; an uncheckpointed terminal row is skipped by planning and its crashed plan is cancelled at open (#1330)', async () => {
     const f = await composedWithProductionFundedPoolRow(dir)
     const { wallet } = f
     // What a paid message leaves: the account's own key spent part of it at nonce 0, recorded on
@@ -3414,64 +3416,63 @@ describe('a native plan that never signed is cancelled (#1235 Stage C)', () => {
     f.rpc.balances.set(f.poolAddress, 99000n)
     expect(await f.admission()).toMatchObject({ status: 'ready' })
     // Only the residual covers this (main holds 40000): a native plan from the row at nonce 1.
-    const residualSend = () =>
-      outcome(
-        wallet.sendLegacy!({ recipient: { raw: recipient }, value: 60000n }),
-      )
-    const refused = await residualSend()
-    // The send's own error: the admission refuses to authorize the signature.
-    expect(refused.error).toMatchObject({
-      name: 'EvmInputAdmissionError',
-      reason: 'conflicting-authorization',
+    const residual = await wallet.sendNative({
+      recipient: { raw: recipient },
+      value: 60000n,
     })
     const [plan] = wallet.getNativeOperations!()
     expect(plan).toMatchObject({
-      cancelled: true,
+      cancelled: false,
       members: [
         {
           source: { kind: 'spend', index: 0, address: f.poolAddress },
-          signed: null,
-          exposed: false,
+          exposed: true,
         },
       ],
     })
     expect(Transaction.from(plan!.members[0]!.unsignedTransaction).nonce).toBe(1)
-    expect(f.rpc.broadcast).not.toHaveBeenCalled()
-    expect(await f.admission()).toMatchObject({ status: 'ready' })
-    // The wallet is not stuck: a send main can cover is admitted, signed and broadcast.
-    await f.sendFromMain()
+    expect(residual.txHash).toBe(plan!.members[0]!.signed!.transactionHash)
     expect(f.rpc.broadcast).toHaveBeenCalledTimes(1)
-    expect(Transaction.from(f.rpc.broadcast.mock.calls[0]![0]).from).toBe(
-      expected[0].main,
-    )
-    // What remains: the residual itself is still unreachable. The same send is refused the
-    // same way every time (and cancelled every time).
-    f.rpc.balances.set(f.main, 40000n)
-    const again = await residualSend()
-    expect(again.error).toMatchObject({ reason: 'conflicting-authorization' })
-    expect(wallet.getNativeOperations!().map(row => row.cancelled)).toEqual([
-      true,
-      false,
-      true,
-    ])
     expect(wallet.pool.getRecord(0)).toMatchObject({
       status: 'spent',
       lifecycle: { spend: { rawTx } },
     })
     expect(await f.admission()).toMatchObject({ status: 'ready' })
-    // At open: the state main leaves on disk, a never-signed plan at the next nonce, uncancelled.
+    // An uncheckpointed terminal row (row 1 retired with no lifecycle.spend) is held by admission
+    // and skipped by the planner in favor of main.
+    const row1Address = wallet.pool.getRecord(1)!.address.toLowerCase()
+    wallet.pool.setStatus(1, 'in-use')
+    wallet.pool.setStatus(1, 'retired')
+    await wallet.pool.flush()
+    f.rpc.balances.set(row1Address, 90000n)
+    f.rpc.broadcast.mockClear()
+    await f.sendFromMain()
+    expect(
+      wallet.getNativeOperations!()[0]!.members[0]!.observation.state,
+    ).toBe('included-success')
+    expect(f.rpc.broadcast).toHaveBeenCalledTimes(1)
+    expect(Transaction.from(f.rpc.broadcast.mock.calls[0]![0]).from).toBe(
+      expected[0].main,
+    )
+    // A crashed never-signed plan on row 2 that later became terminal without a checkpoint
+    // makes admission conflicting until reopen cancels the unsigned plan.
+    wallet.pool.ensureUnfundedSize(3)
+    const row2Address = wallet.pool.getRecord(2)!.address.toLowerCase()
     const stuck = await crashedPlan(
       f,
-      { kind: 'spend', address: f.poolAddress, index: 0 },
-      1,
+      { kind: 'spend', address: row2Address, index: 2 },
+      0,
     )
+    wallet.pool.setStatus(2, 'in-use')
+    wallet.pool.setStatus(2, 'retired')
+    await wallet.pool.flush()
     expect(await f.admission()).toMatchObject({
       status: 'unavailable',
       reason: 'conflicting-authorization',
     })
     await wallet.close()
     const reopened = await f.open()
-    expect(reopened.wallet.getNativeOperations!()[3]).toEqual({
+    expect(reopened.wallet.getNativeOperations!()[2]).toEqual({
       ...stuck,
       cancelled: true,
     })

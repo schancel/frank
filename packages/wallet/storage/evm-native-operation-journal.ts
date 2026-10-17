@@ -717,10 +717,10 @@ export class EvmNativeOperationJournal {
           pairs.add(pair)
         }
     }
+    const activeRows = [...rows.values()].filter(r => !r.cancelled)
     if (
-      rows.size > this.maxRecords ||
-      [...rows.values()].reduce((n, r) => n + r.reservedBytes, 0) >
-        this.maxBytes
+      activeRows.length > this.maxRecords ||
+      activeRows.reduce((n, r) => n + r.reservedBytes, 0) > this.maxBytes
     )
       fail('capacity')
     this.rows = rows
@@ -860,12 +860,13 @@ export class EvmNativeOperationJournal {
             return clone(existing)
           }
         }
+        const activeRows = [...this.rows.values()].filter(r => !r.cancelled)
         if (
           !Array.isArray(frozen.members) ||
           !frozen.members.length ||
           frozen.members.length > MAX_MEMBERS ||
           this.nextSequence >= Number.MAX_SAFE_INTEGER ||
-          this.rows.size >= this.maxRecords
+          activeRows.length >= this.maxRecords
         )
           fail('capacity')
         const row: EvmNativeOperation = {
@@ -910,7 +911,7 @@ export class EvmNativeOperationJournal {
         row.reservedBytes = reservation(row)
         const validated = validateRow(row, this.binding)
         if (
-          [...this.rows.values()].reduce((n, r) => n + r.reservedBytes, 0) +
+          activeRows.reduce((n, r) => n + r.reservedBytes, 0) +
             row.reservedBytes >
           this.maxBytes
         )

@@ -3737,6 +3737,15 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
         fundingOverrides: FUNDING,
         receipt: { maxAttempts: 0 },
       });
+    const topUp = (bufferSize = 2) =>
+      pool.topUpPool({
+        mainAccountSigner,
+        burnValue: 1_000n,
+        gasReserve: 10n,
+        bufferSize,
+        overrides: FUNDING,
+        receipt: { maxAttempts: 0 },
+      });
     const fundedTargets = () =>
       httpClient.submitRawTransaction.mock.calls.map(([raw]) =>
         Transaction.from(raw).to!.toLowerCase()
@@ -3754,6 +3763,7 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
       pool,
       prepareBurn,
       prepareStamp,
+      topUp,
       provider,
       statuses,
     };
@@ -3830,6 +3840,20 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
     await stamp.prepareStamp();
     expect(stamp.fundedTargets()).toEqual([stamp.address(1), stamp.address(2)]);
     expect(stamp.statuses()).toEqual(["unfunded", "available", "available"]);
+
+    const topUp = await setup();
+    topUp.handFund(0);
+    await topUp.nativeSpend(0);
+    await topUp.nativeSpend(1);
+    topUp.attach();
+    await topUp.topUp(2);
+    expect(topUp.fundedTargets()).toEqual([topUp.address(2), topUp.address(3)]);
+    expect(topUp.statuses()).toEqual([
+      "available",
+      "unfunded",
+      "available",
+      "available",
+    ]);
   });
 
   it("a cancelled unsigned plan releases its row; a signed member keeps it, also once reverted", async () => {

@@ -2352,13 +2352,19 @@ export class EvmSubAccountPool {
 
     const currentlyAvailable = this.store
       .getAll()
-      .filter((record) => record.status === "available").length;
+      .filter(
+        (record) =>
+          record.status === "available" && !this.isSpendReserved(record.index)
+      ).length;
     const deficit = bufferSize - currentlyAvailable;
     if (deficit <= 0) return [];
 
     const targets = this.store
       .getAll()
-      .filter((record) => record.status === "unfunded")
+      .filter(
+        (record) =>
+          record.status === "unfunded" && !this.isSpendReserved(record.index)
+      )
       .slice(0, deficit);
     while (targets.length < deficit) {
       const index = this.nextFreshIndex();

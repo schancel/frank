@@ -55,7 +55,7 @@ it.each([false, true])(
     expect(projected.memberIndex).toBe(spl ? 4294967295 : 0)
     expect(projected.asset.kind).toBe(spl ? 'spl' : 'native')
     expect(projected.recipient).toEqual(source.recipientSpendKey.keyBytes)
-    expect(projected.recipientDestination).toEqual(source.transfer.destination)
+    expect(projected.recipientDestination).toEqual(source.transfer.address)
     expect(projected.rawSignedTransaction).toEqual(source.transfer.rawTx)
   },
 )
@@ -128,13 +128,13 @@ const invalid: Array<[string, (entry: StealthAssetTransfer) => void]> = [
   [
     'alias',
     e => {
-      e.transfer.networkTag = 'solana'
+      e.transfer.network = 'solana'
     },
   ],
   [
     'different family',
     e => {
-      e.transfer.networkTag = 'btc-testnet'
+      e.transfer.network = 'btc-testnet'
     },
   ],
   [
@@ -164,13 +164,13 @@ const invalid: Array<[string, (entry: StealthAssetTransfer) => void]> = [
   [
     'destination length',
     e => {
-      e.transfer.destination = new Uint8Array(31)
+      e.transfer.address = new Uint8Array(31)
     },
   ],
   [
     'signature length',
     e => {
-      e.transfer.txId = new Uint8Array(32)
+      e.transfer.transactionId = new Uint8Array(32)
     },
   ],
   [
@@ -252,13 +252,13 @@ it('copies every projected public byte field and binds all frozen Q inputs', () 
   const projected = projectExperimentalSolanaStealthTransfer(entry)
   const originalQ = toHex(experimentalSolanaStealthTranscript(entry))
   entry.recipientSpendKey.keyBytes.fill(8)
-  entry.transfer.destination.fill(8)
+  entry.transfer.address.fill(8)
   entry.transfer.rawTx!.fill(8)
   entry.transfer.token!.fill(8)
   entry.tokenProgram!.fill(8)
   entry.derivationContext!.fill(8)
   expect(projected.recipient).not.toEqual(entry.recipientSpendKey.keyBytes)
-  expect(projected.recipientDestination).not.toEqual(entry.transfer.destination)
+  expect(projected.recipientDestination).not.toEqual(entry.transfer.address)
   expect(projected.rawSignedTransaction).not.toEqual(entry.transfer.rawTx)
   if (projected.asset.kind !== 'spl') throw new Error('expected SPL')
   expect(projected.asset.mint).not.toEqual(entry.transfer.token)

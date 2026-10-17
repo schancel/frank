@@ -43,11 +43,16 @@ export function toBcs(p: ParsedFrame): Uint8Array {
       w.bytes(toBcs(t.payloadFrame)).fixed(t.payloadDigest)
       w.uleb(t.payments.length)
       for (const m of t.payments) {
-        w.u32(m.childIndex)
+        if (!(m.value instanceof Uint8Array))
+          throw new Error('BCS fixture payments are 32-byte quantities')
+        if (m.childIndex === undefined || m.commitment === undefined)
+          throw new Error('BCS fixture payments are stamps')
+        w.string(m.network)
           .bytes(m.transactionId)
           .fixed(m.value)
           .bytes(m.address)
           .fixed(m.commitment)
+          .u32(m.childIndex)
       }
       return w.toBytes()
     case 5:

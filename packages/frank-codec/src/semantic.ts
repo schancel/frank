@@ -17,6 +17,7 @@ import {
   type ForumCursor,
   type ForumTopicPage,
   type ForumDiscoveryPage,
+  type PaymentMember,
   type TokenTransfer,
 } from './types'
 
@@ -221,6 +222,58 @@ export function checkTokenTransferSemantics(
   }
 }
 
+function paymentTxKey(p: PaymentMember): Uint8Array {
+  if (p.vout === undefined) return p.transactionId
+  const out = new Uint8Array(p.transactionId.length + 4)
+  out.set(p.transactionId, 0)
+  const dv = new DataView(
+    out.buffer,
+    out.byteOffset + p.transactionId.length,
+    4,
+  )
+  dv.setUint32(0, p.vout, false)
+  return out
+}
+
+function paymentOrder(a: PaymentMember, b: PaymentMember): number {
+  const ar = a.childIndex !== undefined ? 0 : 1
+  const br = b.childIndex !== undefined ? 0 : 1
+  if (ar !== br) return ar - br
+  if (a.childIndex !== undefined && b.childIndex !== undefined) {
+    const c = cmpNum(a.childIndex, b.childIndex)
+    if (c) return c
+  }
+  return compareBytes(a.transactionId, b.transactionId)
+}
+
+/** Stamp members first (child index, then txid), then stealth members by txid. */
+function checkPaymentList(pays: readonly PaymentMember[], path: string): void {
+  requireOrdered(pays, paymentOrder, 'payment members', path, false)
+  const seenIdx = new Set<number>()
+  let stampAt = 0
+  for (const p of pays) {
+    if (p.childIndex === undefined) continue
+    if (seenIdx.has(p.childIndex)) throw semantic('duplicate child index', path)
+    seenIdx.add(p.childIndex)
+  }
+  requireUnique(pays.map(paymentTxKey), 'transaction id', path)
+  requireUnique(
+    pays.map(p => p.address),
+    'payment address',
+    path,
+  )
+  pays.forEach((p, i) => {
+    if (p.childIndex === undefined) return
+    if (p.childIndex !== stampAt) {
+      throw semantic(
+        'child indices must be exactly contiguous 0..n-1 (T3a.5)',
+        `${path}[${i}]`,
+      )
+    }
+    stampAt += 1
+  })
+}
+
 export function checkSemantics(
   typed: FinalPayload,
   prior: DirectoryStatement<ParsedFrame> | null | undefined,
@@ -302,97 +355,17 @@ export function checkSemantics(
       break
     }
     case 25: {
-      const child = typedOf(typed.payloadFrame, 1)
-      const pays = typed.payments
-      requireOrdered(
-        pays,
-        (a, b) =>
-          cmpNum(a.childIndex, b.childIndex) ||
-          compareBytes(a.transactionId, b.transactionId),
-        'payment members',
-        `${P}.4`,
-        false,
-      )
-      const seenIdx = new Set<number>()
-      for (const p of pays) {
-        if (seenIdx.has(p.childIndex))
-          throw semantic('duplicate child index', `${P}.4`)
-        seenIdx.add(p.childIndex)
-      }
-      requireUnique(
-        pays.map(p => {
-          if (p.vout === undefined) return p.transactionId
-          const out = new Uint8Array(p.transactionId.length + 4)
-          out.set(p.transactionId, 0)
-          const dv = new DataView(
-            out.buffer,
-            out.byteOffset + p.transactionId.length,
-            4,
-          )
-          dv.setUint32(0, p.vout, false)
-          return out
-        }),
-        'transaction id',
-        `${P}.4`,
-      )
-      if (typed.network !== child.network) {
-        throw semantic(
-          'forwarding network differs from the type-1 network',
-          `${P}.0`,
-        )
-      }
+      typedOf(typed.payloadFrame, 1)
+      checkPaymentList(typed.payments, `${P}.4`)
       if (typed.destination.keyType !== 1) {
         throw semantic('destination account must be key type 1', `${P}.1`)
       }
-      requireUnique(
-        pays.map(p => p.address),
-        'payment address',
-        `${P}.4`,
-      )
-      pays.forEach((p, i) => {
-        if (p.childIndex !== i) {
-          throw semantic(
-            'child indices must be exactly contiguous 0..n-1 (T3a.5)',
-            `${P}.4[${i}]`,
-          )
-        }
-      })
       return
     }
     case 1: {
       const child = typedOf(typed.payloadFrame, 5)
       const pays = typed.payments
-      requireOrdered(
-        pays,
-        (a, b) =>
-          cmpNum(a.childIndex, b.childIndex) ||
-          compareBytes(a.transactionId, b.transactionId),
-        'payment members',
-        `${P}.4`,
-        false,
-      )
-      const seenIdx = new Set<number>()
-      for (const p of pays) {
-        if (seenIdx.has(p.childIndex))
-          throw semantic('duplicate child index', `${P}.4`)
-        seenIdx.add(p.childIndex)
-      }
-      requireUnique(
-        pays.map(p => {
-          if (p.vout === undefined) return p.transactionId
-          const out = new Uint8Array(p.transactionId.length + 4)
-          out.set(p.transactionId, 0)
-          const dv = new DataView(
-            out.buffer,
-            out.byteOffset + p.transactionId.length,
-            4,
-          )
-          dv.setUint32(0, p.vout, false)
-          return out
-        }),
-        'transaction id',
-        `${P}.4`,
-      )
+      checkPaymentList(pays, `${P}.4`)
       if (typed.network !== child.network) {
         throw semantic(
           'delivery network differs from the type-5 network (S8)',
@@ -416,19 +389,6 @@ export function checkSemantics(
       if (typed.recipient !== undefined && typed.recipient.keyType !== 1) {
         throw semantic('recipient account must be key type 1', `${P}.5`)
       }
-      requireUnique(
-        pays.map(p => p.address),
-        'payment address',
-        `${P}.4`,
-      )
-      pays.forEach((p, i) => {
-        if (p.childIndex !== i) {
-          throw semantic(
-            'child indices must be exactly contiguous 0..n-1 (T3a.5)',
-            `${P}.4[${i}]`,
-          )
-        }
-      })
       return
     }
     case 2: {

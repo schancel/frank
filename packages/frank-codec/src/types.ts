@@ -17,36 +17,31 @@ export interface Timestamp {
   nanoseconds: number
 }
 
+/** One stamp payment (field 7) or one stealth payment (field 8), on its own network. */
 export interface PaymentMember {
-  childIndex: number
+  /** Field 0: chain this payment settles on. */
+  network: string
   transactionId: Uint8Array
   /** 32-byte big-endian EVM quantity (C8) or satoshi uint64 bigint. */
   value: Uint8Array | bigint
   address: Uint8Array
-  commitment: Uint8Array
+  /** Field 4. Required when `childIndex` is present. */
+  commitment?: Uint8Array
   /** Optional UTXO output index (vout). */
   vout?: number
   /** Optional raw signed transaction bytes. */
   rawTx?: Uint8Array
+  /** Field 7. Present means a stamp payment. */
+  childIndex?: number
+  /** Field 8. Present means a stealth payment. */
+  stealthMetadata?: StealthMetadata
+  /** Field 9. Allowed only with stealth metadata. */
+  token?: Uint8Array
 }
 
 export interface StealthMetadata {
   ephemeralPubKey: AccountRef
   viewTag?: number | Uint8Array
-}
-
-export interface PaymentTransfer {
-  networkTag: string
-  txId: Uint8Array
-  vout?: number
-  destination: Uint8Array
-  /** 32-byte big-endian EVM quantity (C8) or satoshi uint64 bigint. */
-  value: Uint8Array | bigint
-  token?: Uint8Array
-  stealthMetadata?: StealthMetadata
-  commitment?: Uint8Array
-  /** Optional raw signed transaction bytes. */
-  rawTx?: Uint8Array
 }
 
 export interface SignatureEntry {
@@ -105,7 +100,6 @@ export interface OpaqueSection {
 
 export interface ForwardingDeliveryEnvelope<F> {
   type: 25
-  network: string
   destination: AccountRef
   /** The inner direct-message-delivery (type-1) frame. */
   payloadFrame: F
@@ -500,9 +494,9 @@ export interface StealthMessageItem {
   unknownFields: UnknownFields
 }
 
-/** A schema-2 recipient payment. Its token identifier is owned by `transfer.token`. */
+/** A schema-2 recipient payment. Field 0 is the stealth arm of `payment-member`. */
 export interface StealthAssetTransfer {
-  transfer: PaymentTransfer
+  transfer: PaymentMember
   derivationScheme: number
   recipientSpendKey: AccountRef
   tokenProgram?: Uint8Array

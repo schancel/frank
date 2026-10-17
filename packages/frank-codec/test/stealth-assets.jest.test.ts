@@ -37,9 +37,9 @@ const ephemeral = fromHex(
 )
 const entry = (): CanonicalStealthAssetMessageItem['transfers'][number] => ({
   transfer: {
-    networkTag: 'monad-testnet',
-    txId: 'ab'.repeat(32),
-    destination: 'cd'.repeat(20),
+    network: 'monad-testnet',
+    transactionId: 'ab'.repeat(32),
+    address: 'cd'.repeat(20),
     value: 2n ** 200n + 7n,
     token: 'ef'.repeat(20),
     stealthMetadata: { keyType: 1, ephemeralPubKey: ephemeral },

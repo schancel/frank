@@ -485,11 +485,7 @@ A future type-5 schema must allocate an updated authenticated context (and raise
 requirement) before adding fields. This type-specific fail-closed rule prevents retained extension
 bytes from falling outside the AEAD transcript.
 
-S3. Payment members are ordered by numeric `child_index`, then bytewise
-`transaction_id`. Child indices and transaction identifiers MUST each be
-independently unique. Because T3a.4 also requires the child indices to be exactly contiguous
-`0..member_count-1` and unique, the `transaction_id` tie-break can never decide
-an order; a verifier still checks both rules, and every violation is `semantic`. Child indices are `uint31` values in
+S3. A payment member is one stamp payment (field 7 present) or one stealth payment (field 8 present), and it carries its own network tag in field 0. That tag is the chain the payment settles on. It is not required to equal the enclosing frame's network, and one list may contain both kinds and distinct networks. Stamp members are ordered before stealth members. Stamp members are ordered by numeric child index, then bytewise transaction id. Stealth members are ordered by bytewise transaction id. Stamp child indices MUST be unique and, after that order, exactly contiguous `0..stamp_count-1` (T3a.5). Transaction identifiers, paired with vout when field 5 is present, MUST be unique across the whole list, and destination addresses MUST be unique across the whole list. Every violation is `semantic`. Child indices are `uint31` values in
 `0..2147483647` (a range kept from the #60 design; no BIP32 derivation is involved, T3a). Amounts need not be equal. Independently verified values are
 added with checked unsigned 256-bit arithmetic; overflow rejects. Their sum
 MUST be greater than or equal to the applicable minimum. Each encoded amount
@@ -544,9 +540,8 @@ order is authored semantic order, not a set to be resorted.
 S9. The type-1 destination account (field 1) is the recipient stamp key `P'`
 that the sender used, and MUST be key type 1 (otherwise `semantic`). Which key
 `P'` may be, its binding to the recipient's directory statement, belongs to
-S10a and is checked at stage 10.4, not by this rule. For each payment, the
-type-5 fields `E` (6), `X` (7) and proof (8) verify by T3b, and `X`, the
-network, `P'` and the child index derive, by T3a, the exact child public key
+S10a and is checked at stage 10.4, not by this rule. For each stamp payment, the
+type-5 fields `E` (6), `X` (7) and proof (8) verify by T3b. T3b stays bound to the type-1 delivery network, which S8 requires to equal the type-5 network. `X`, the payment member's own network (field 0), `P'` and the child index derive, by T3a, the exact child public key
 and chain address. Payment field 3 MUST equal that canonical address, the
 independently observed transaction destination MUST equal field 3, and payment
 field 3 values MUST be independently unique, a stage 9 `semantic` list check
@@ -781,13 +776,12 @@ from schema 1's network string: a reader projecting against schema 1 rejects the
 new payload rather than silently treating a token payment as native. Readers
 supporting schema 2 must also require per-type schema-2 support and min-reader 2.
 
-Each entry contains the existing `payment-transfer` record (field 0), a positive
-uint32 derivation scheme (field 1), the authenticated recipient spending
-`account-ref` (field 2), an optional 32-byte token program (field 3), and optional
-1–1024-byte scheme context (field 4). The transfer owns the canonical network,
-destination, exact uint64 or 256-bit quantity, token identifier, transaction
-evidence and ephemeral key. Its amount must be positive and stealth metadata is
-required. Recipient and ephemeral key types must match. A token program requires
+Each entry's field 0 is a `payment-member` in the stealth arm: field 8 is present, field 7 is absent, and the amount in field 2 is positive. Field 1 of the entry is a positive
+uint32 derivation scheme, field 2 the authenticated recipient spending
+`account-ref`, field 3 an optional 32-byte token program, and field 4 optional
+1–1024-byte scheme context. The payment member owns the canonical network (its field 0),
+destination, exact uint64 or 256-bit quantity, token identifier (field 9), transaction
+evidence and ephemeral key (field 8). Recipient and ephemeral key types must match. A token program requires
 a token identifier; no program is inferred from a mint or display symbol.
 
 Scheme 1 is allocated to `secp256k1-ecdh-add-v1`, the existing recipient-public-key
@@ -1090,6 +1084,7 @@ is selected without caller discretion:
 | --------------------------: | ----------------------------------------------- |
 | 1, 3, 4, 5, 6, 7, 9, 10, 11 | The validated payload's field 0                 |
 |                           2 | The opened type-4 statement's validated field 0 |
+|                          25 | The opened inner type-1 payload's field 0       |
 |                   8, 16, 17 | The literal `frank`                             |
 
 Content hashes are undefined for an unknown type. A pure opaque forwarder
@@ -1130,10 +1125,13 @@ longer enters the derivation of stamp keys; because the frame includes `E`, `X`
 and the proof, the digest and every T4 commitment cover them, so a payment
 member authorizes exactly one stamp derivation for one payload.
 
+T3f. The forwarding payload digest is SHA-256 of the common transcript with domain
+`frank/forwarding-payload/v1` and empty context. `frame` is the exact inner type-1 frame (type 25 field 2). The network argument is that frame's own field 0. Type 25 has no network tag; a map key 0 on a type-25 payload is a stage 8.2 `schema` error (`undeclared key 0 (C12)`). Field 3 of type 25 is this digest.
+
 T3a. Stamp destination derivation, byte-exact. `n` is the secp256k1 group order,
 `G` its generator, and all points are 33-byte compressed SEC1 encodings in
 every hash input. `P'` is the type-1 field 1 key (S9), `E` the type-5 field 6,
-`X` the type-5 field 7, and `network` the type-5 field 0. Both hashes below
+`X` the type-5 field 7, and `network` the payment member's field 0. The DLEQ transcript in T3b still uses the type-5 field 0. Both hashes below
 (here and in T3b) start with the section 8 domain-and-network prefix
 `u16be(len(domain)) || ascii(domain) || u16be(len(network)) ||
 utf8(network)`, so every variable-length input carries its length.
@@ -1154,8 +1152,8 @@ n`; there is no modular reduction and no skipping to another index.
    inputs). Serialize it uncompressed, remove the `04` prefix, hash the
    remaining 64 bytes with Keccak-256, and use the final 20 bytes as the EVM
    destination address.
-4. A payment set's sorted child indices MUST be exactly contiguous
-   `0..member_count-1`; a violation is `semantic` (stage 9).
+4. A payment set's stamp members, after the S3 order, MUST have child indices exactly contiguous
+   `0..stamp_count-1` (T3a.5); a violation is `semantic` (stage 9). Stealth members have no child index and are not counted.
 5. Recipient: with stamp secret `d'` (`P' = d'*G`), compute `X = d'*E` (this
    MUST equal the frame's field 7), then the spend scalar for child `i` is
    `t_i*d' mod n` (reject zero, which cannot occur for `1 <= t_i < n` and

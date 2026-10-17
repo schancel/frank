@@ -169,11 +169,12 @@ async function canonicalFixture(
         4,
         [
           cborMap([
-            [0, 0],
+            [0, captured.network],
             [1, getBytes(tx.hash!)],
             [2, new Uint8Array(32).fill(0).map((_, i) => (i === 31 ? 1 : 0))],
             [3, fromHex(captured.destination)],
             [4, fromHex(captured.t4)],
+            [7, 0],
           ]),
         ],
       ],
@@ -795,11 +796,12 @@ async function recoveryStorageFixture(
     transactions.push(getBytes(raw))
     payments.push(
       cborMap([
-        [0, childIndex],
+        [0, wire.network],
         [1, getBytes(tx.hash!)],
         [2, getBytes('0x' + valueWei.toString(16).padStart(64, '0'))],
         [3, destination.address],
         [4, commitment],
+        [7, childIndex],
       ]),
     )
   }

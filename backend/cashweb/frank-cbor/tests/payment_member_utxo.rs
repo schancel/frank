@@ -21,11 +21,12 @@ fn utxo_payment(
     vout: Option<u32>,
 ) -> CborValue {
     let mut entries = vec![
-        (0, int(i128::from(index))),
+        (0, CborValue::Text(NET.to_string())),
         (1, CborValue::Bytes(txid)),
         (2, value),
         (3, CborValue::Bytes(bytes_of(20, 50 + index))),
         (4, CborValue::Bytes(payment_commitment(t3, index).to_vec())),
+        (7, int(i128::from(index))),
     ];
     if let Some(v) = vout {
         entries.push((5, int(i128::from(v))));

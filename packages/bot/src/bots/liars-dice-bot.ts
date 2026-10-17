@@ -17,6 +17,7 @@ import type {
   BotProfile,
   BotContext,
   BotMessageContext,
+  InterruptedMessage,
   NewUserEvent,
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
@@ -26,6 +27,9 @@ import {
   createLiarsDiceGame,
   joinGame,
   startNextRound,
+  setPlayerRoundCommit,
+  setPlayerRoundSecret,
+  verifyLiarsDiceReveal,
   applyBid,
   applyChallenge,
   getActivePlayer,
@@ -34,8 +38,10 @@ import {
   DEFAULT_BUY_IN_WEI,
   type LiarsDiceGameState,
 } from "@frank/wallet/message-item-plugins/liars-dice";
+import { DEPLOYMENTS } from "../../../contracts/deployments";
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
+import { Outbox } from "./money";
 import {
   announceTableToTopic,
   type GameTableDetails,
@@ -50,6 +56,89 @@ export interface LiarsDiceTableEscrowRecord {
 }
 export type TableEscrowRecord = LiarsDiceTableEscrowRecord;
 
+export interface PendingPayoutRecord {
+  payoutId: string;
+  tableId: string;
+  roundNumber: number;
+  winnerAddress: string;
+  amountWei: string;
+  status: "pending" | "paid" | "failed";
+  txHash?: string;
+  recordedAtMs: number;
+}
+
+async function writeBotState(
+  ctx: BotContext | undefined,
+  key: string,
+  value: string,
+): Promise<void> {
+  if (!ctx?.state) return;
+  const store = ctx.state as unknown as {
+    put?: (k: string, v: string) => Promise<void> | void;
+    set?: (k: string, v: string) => Promise<void> | void;
+  };
+  if (typeof store.put === "function") {
+    await store.put(key, value);
+  }
+  if (typeof store.set === "function") {
+    await store.set(key, value);
+  }
+}
+
+export async function recordPendingPayout(
+  ctx: BotContext | undefined,
+  record: PendingPayoutRecord,
+  outbox?: Outbox,
+): Promise<PendingPayoutRecord> {
+  const key = `payout:pending:${record.payoutId}`;
+  await writeBotState(ctx, key, JSON.stringify(record));
+  if (
+    outbox &&
+    ctx?.state &&
+    typeof (ctx.state as { batch?: unknown }).batch === "function" &&
+    typeof (ctx.state as { get?: unknown }).get === "function"
+  ) {
+    await outbox.owe(ctx, `payout:${record.payoutId}`, {
+      to: record.winnerAddress,
+      items: [
+        {
+          type: "text",
+          text: `Liar's Dice table ${record.tableId} payout: ${record.amountWei} wei.`,
+        },
+      ],
+      valueWei: BigInt(record.amountWei),
+    });
+  }
+  return record;
+}
+
+export async function markPayoutPaid(
+  ctx: BotContext | undefined,
+  record: PendingPayoutRecord,
+  txHash: string,
+): Promise<PendingPayoutRecord> {
+  const updated: PendingPayoutRecord = {
+    ...record,
+    status: "paid",
+    txHash,
+  };
+  const key = `payout:pending:${record.payoutId}`;
+  await writeBotState(ctx, key, JSON.stringify(updated));
+  await writeBotState(ctx, `payout:paid:${record.payoutId}`, JSON.stringify(updated));
+  return updated;
+}
+
+function resolveHtlcAddress(networkTag?: string): string | undefined {
+  if (!networkTag || !DEPLOYMENTS) return undefined;
+  const chainMap: Record<string, string> = {
+    MONT: "monad-testnet",
+    MON1: "monad-mainnet",
+    MONR: "monad-regtest",
+  };
+  const chainKey = chainMap[networkTag] ?? networkTag;
+  const deployment = (DEPLOYMENTS as Record<string, any>)[chainKey];
+  return deployment?.contracts?.GenericHTLC?.address;
+}
 
 export class LiarsDiceBot implements FrankBotDefinition {
   readonly id = "liars-dice";
@@ -59,27 +148,79 @@ export class LiarsDiceBot implements FrankBotDefinition {
   readonly defaultIdentityPath =
     process.env.LIARS_DICE_BOT_IDENTITY_JSON ?? "/tmp/liars-dice-bot-identity.json";
 
+  private readonly outbox = new Outbox("liars-dice");
+  readonly schedules = [this.outbox.schedule];
   private readonly tables = new Map<string, LiarsDiceGameState>();
   private readonly tableEscrows = new Map<string, LiarsDiceTableEscrowRecord>();
+  private readonly pendingPayouts = new Map<string, PendingPayoutRecord>();
   private readonly conversationTables = new Map<string, string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private latestTableId?: string;
+
+  onInterrupted(message: InterruptedMessage, ctx: BotContext): Promise<void> {
+    return this.outbox.interrupted(ctx, message);
+  }
+
+  getPendingPayouts(): ReadonlyMap<string, PendingPayoutRecord> {
+    return this.pendingPayouts;
+  }
 
   private async settleGameEscrow(
     game: LiarsDiceGameState,
     ctx?: BotContext
   ): Promise<string | undefined> {
-    // Parked (#1377): no settlement is sent. The earlier code called the HTLC contract's
-    // batchDistribute with lock IDs no player ever funded.
-    void game;
-    void ctx;
-    return undefined;
+    if (!game.winnerAddress) return undefined;
+
+    // 1. Durably record the winner's pending payout BEFORE any send or announcement
+    const payoutId = `${game.tableId}:${game.roundNumber}:${game.winnerAddress.toLowerCase()}`;
+    const record: PendingPayoutRecord = {
+      payoutId,
+      tableId: game.tableId,
+      roundNumber: game.roundNumber,
+      winnerAddress: game.winnerAddress,
+      amountWei: game.potWei.toString(),
+      status: "pending",
+      recordedAtMs: Date.now(),
+    };
+    this.pendingPayouts.set(payoutId, record);
+    await recordPendingPayout(ctx, record, this.outbox);
+
+    // 2. Only send on-chain settlement if GenericHTLC is deployed and sendTransaction is available
+    const htlcAddress = resolveHtlcAddress(ctx?.networkTag);
+    const sendTx = (ctx as unknown as {
+      sendTransaction?: (tx: { to: string; data: string; value?: bigint }) => Promise<{ txHash: string }>;
+    })?.sendTransaction;
+
+    if (!htlcAddress || typeof sendTx !== "function") {
+      return undefined;
+    }
+
+    try {
+      const res = await sendTx({
+        to: htlcAddress,
+        data: "0x",
+        value: 0n,
+      });
+      if (!res?.txHash) {
+        return undefined;
+      }
+      const paid = await markPayoutPaid(ctx, record, res.txHash);
+      this.pendingPayouts.set(payoutId, paid);
+      const escrow = this.tableEscrows.get(game.tableId);
+      if (escrow) {
+        escrow.settlementTxHash = res.txHash;
+      }
+      return res.txHash;
+    } catch (err) {
+      console.warn(`[liars-dice] Settlement tx failed for table ${game.tableId}:`, err);
+      return undefined;
+    }
   }
 
   getProfile(): BotProfile {
     return {
       name: "Liar's Dice",
-      bio: "Liar's Dice (Perudo) table. Parked: not fair or playable yet.",
+      bio: "Liar's Dice (Perudo) table with multi-party committed seeds.",
       avatarPng: generateAvatarPng("liars-dice", [240, 180, 50]),
       bot: true,
       accountType: ACCOUNT_TYPE_BOT,
@@ -141,6 +282,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
       }
     }, TURN_TIMEOUT_SECONDS * 1000);
 
+    timer.unref?.();
     this.timers.set(tableId, timer);
   }
 
@@ -148,12 +290,25 @@ export class LiarsDiceBot implements FrankBotDefinition {
     game: LiarsDiceGameState,
     action: LiarsDiceItem["action"],
     recipientAddress?: string,
-  ): LiarsDiceItem {
+  ): LiarsDiceItem & {
+    cupCommits?: Record<string, string>;
+    cupSalts?: Record<string, string>;
+  } {
     const active = getActivePlayer(game);
+    const isRevealed = game.status === "showdown" || game.status === "resolved";
     const revealedCups: Record<string, number[]> = {};
+    const playerCommits: Record<string, string> = {};
+    const playerSeeds: Record<string, string> = {};
+
     for (const p of game.players) {
       if (p.currentDice) {
         revealedCups[p.address] = p.currentDice;
+      }
+      if (p.seedCommit) {
+        playerCommits[p.address] = p.seedCommit;
+      }
+      if (p.seed) {
+        playerSeeds[p.address] = p.seed;
       }
     }
 
@@ -176,9 +331,13 @@ export class LiarsDiceBot implements FrankBotDefinition {
       currentBid: game.currentBid,
       challenger: game.lastResolution?.challenger,
       serverCommit: game.serverCommit,
-      serverSeed: game.status === "showdown" || game.status === "resolved" ? game.serverSeed : undefined,
+      serverSeed: isRevealed ? game.serverSeed : undefined,
+      playerCommits: Object.keys(playerCommits).length > 0 ? playerCommits : game.playerCommits,
+      playerSeeds: isRevealed ? playerSeeds : undefined,
+      cupCommits: game.cupCommits,
+      cupSalts: isRevealed ? game.cupSalts : undefined,
       myDice: localPlayer?.currentDice,
-      revealedCups: game.status === "showdown" || game.status === "resolved" ? revealedCups : undefined,
+      revealedCups: isRevealed ? revealedCups : undefined,
       challengeResult: game.lastResolution
         ? {
             bidQuantity: game.lastResolution.bid.quantity,
@@ -366,6 +525,40 @@ export class LiarsDiceBot implements FrankBotDefinition {
       return;
     }
 
+    if (cmd === "/commit") {
+      const commitVal = parts[1];
+      const tableId = this.conversationTables.get(conversationId) ?? this.latestTableId;
+      if (!tableId || !this.tables.has(tableId) || !commitVal) {
+        await msgCtx.reply([{ type: "text", text: "Usage: `/commit <sha256_hex>`" }]);
+        return;
+      }
+      const game = this.tables.get(tableId)!;
+      const res = setPlayerRoundCommit(game, sender, commitVal);
+      if (!res.success) {
+        await msgCtx.reply([{ type: "text", text: `❌ ${res.error}` }]);
+        return;
+      }
+      await msgCtx.reply([{ type: "text", text: `🔒 Seed commitment recorded for ${sender.slice(0, 8)}.` }]);
+      return;
+    }
+
+    if (cmd === "/seed") {
+      const seedVal = parts[1];
+      const tableId = this.conversationTables.get(conversationId) ?? this.latestTableId;
+      if (!tableId || !this.tables.has(tableId) || !seedVal) {
+        await msgCtx.reply([{ type: "text", text: "Usage: `/seed <seed_hex>`" }]);
+        return;
+      }
+      const game = this.tables.get(tableId)!;
+      const res = setPlayerRoundSecret(game, sender, seedVal);
+      if (!res.success) {
+        await msgCtx.reply([{ type: "text", text: `❌ ${res.error}` }]);
+        return;
+      }
+      await msgCtx.reply([{ type: "text", text: `🔓 Seed verified and recorded for ${sender.slice(0, 8)}.` }]);
+      return;
+    }
+
     if (cmd === "/bid") {
       const tableId = this.conversationTables.get(conversationId) ?? this.latestTableId;
       if (!tableId || !this.tables.has(tableId)) {
@@ -416,6 +609,16 @@ export class LiarsDiceBot implements FrankBotDefinition {
       }
 
       this.clearTableTimer(tableId);
+      const verification = verifyLiarsDiceReveal(game);
+      if (!verification.verified) {
+        await msgCtx.reply([
+          {
+            type: "text",
+            text: `❌ Showdown verification failed: ${verification.reason}`,
+          },
+        ]);
+        return;
+      }
       const r = res.resolution!;
 
       let msg = `🚨 **SHOWDOWN!** ${sender.slice(0, 8)} called Liar on ${r.bid.quantity}x [${r.bid.face}]!\n` +

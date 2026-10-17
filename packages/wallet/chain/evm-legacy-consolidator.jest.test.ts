@@ -3727,4 +3727,106 @@ describe('wallet-lifetime EVM native operations', () => {
       createRandomSpy.mockRestore()
     }
   })
+
+  it('dispatches Phase 1 peer fan-in broadcasts asynchronously without blocking on multi-block waits and completes Phase 2 leader drain once confirmed (#1217)', async () => {
+    // 3 accounts: Wallet 0 (90,000 -> leader), Wallet 1 (60,000 -> peer 1), Wallet 2 (55,000 -> peer 2)
+    // Target: 140,000 (needs leader + both peers: 90,000 + (60,000 - 21,000) + (55,000 - 21,000) = 163,000 >= 140,000 + 21,000)
+    const state = chain([90_000n, 60_000n, 55_000n])
+    state.setMode('retained') // Transactions stay unconfirmed in mempool until mined
+
+    const nextLook = jest.fn(async () => {
+      throw new Error('nextLook must not be awaited during non-blocking dispatchFanIn')
+    })
+    const executor = new EvmLegacyConsolidator({
+      journal,
+      provider: state.provider as unknown as Provider,
+      transactionBuilder: new NativeEvmTransactionBuilder(),
+      getSources: async () => sources(),
+      sign: async (source, raw) =>
+        wallets
+          .find(w => w.address.toLowerCase() === source.address)!
+          .signTransaction(Transaction.from(raw)),
+      nextLook,
+    })
+
+    const stages: string[] = []
+    const handle = await executor.dispatchFanIn({
+      recipient: { raw: recipient },
+      value: 140_000n,
+      onProgress: p => stages.push(p.status.stage),
+    })
+
+    // Phase 1 returned immediately without calling nextLook or blocking on inclusion
+    expect(nextLook).not.toHaveBeenCalled()
+    expect(handle.phase).toBe('fan-in-pending')
+    expect(handle.fanInTxHashes).toHaveLength(2)
+    expect(stages).toEqual(['planning', 'consolidating'])
+
+    // Both peer fan-in txs were broadcast in Phase 1, while leader drain tx was signed & persisted but NOT broadcast yet
+    expect(state.raws).toHaveLength(2)
+    const persisted = journal.get(handle.operationId)
+    expect(persisted.members).toHaveLength(3)
+    expect(persisted.members[0]!.exposed).toBe(true)
+    expect(persisted.members[1]!.exposed).toBe(true)
+    expect(persisted.members[2]!.exposed).toBe(false)
+    expect(persisted.members[2]!.signed).not.toBeNull()
+
+    // Put peer fan-in txs in mempool (still unconfirmed) and call resumePendingConsolidation
+    inMempool(state, state.raws[0]!)
+    inMempool(state, state.raws[1]!)
+    const stillFanIn = await executor.resumePendingConsolidation(handle.operationId)
+    expect(stillFanIn.phase).toBe('fan-in-pending')
+    expect(state.raws).toHaveLength(2) // Leader drain still not broadcast
+
+    // Mine only the first peer fan-in tx -> second peer still unconfirmed -> stays in fan-in-pending
+    state.mine(state.raws[0]!)
+    const partialFanIn = await executor.resumePendingConsolidation(handle.operationId)
+    expect(partialFanIn.phase).toBe('fan-in-pending')
+    expect(state.raws).toHaveLength(2)
+
+    // Mine the second peer fan-in tx and reopen journal to verify persistence across restarts
+    state.mine(state.raws[1]!)
+    await reopen()
+    const recovered = owner(state, { sources: [], noPoolRows: true })
+
+    // Now all fan-in peers are confirmed -> resumePendingConsolidation broadcasts Phase 2 leader drain!
+    // Since mode is 'retained', the drain tx is broadcast to mempool and returns 'drain-pending' without blocking
+    const drainDispatched = await recovered.executor.resumePendingConsolidation(handle.operationId)
+    expect(drainDispatched.phase).toBe('drain-pending')
+    expect(state.raws).toHaveLength(3)
+    expect(recovered.sign).not.toHaveBeenCalled()
+
+    // Mine the Phase 2 leader drain tx and reconcile
+    state.mine(state.raws[2]!)
+    const [completed] = await recovered.executor.reconcilePendingConsolidations()
+    expect(completed!.phase).toBe('completed')
+    expect(completed!.result).toEqual({
+      txHash: persisted.members[2]!.signed!.transactionHash,
+      intermediateTxHashes: handle.fanInTxHashes,
+      totalValueSent: 140_000n,
+      totalFeePaid: fee * 3n,
+    })
+    expect(state.balances.get(recipient)).toBe(140_000n)
+    expect(recovered.executor.getUnresolvedLegacySend()).toEqual([])
+  })
+
+  it('supports executeAsync for both multi-account fan-in and single-account direct fast-path (#1217)', async () => {
+    const state = chain([50_000n, 90_000n, 70_000n])
+    const { executor } = owner(state, { noPoolRows: true })
+
+    // 1. Multi-account via executeAsync: Phase 1 broadcasts fan-in, Phase 2 resumes drain
+    const phase1 = await executor.executeAsync({
+      recipient: { raw: recipient },
+      value: 110_000n,
+    })
+    expect(phase1.phase).toBe('fan-in-pending')
+    expect(phase1.fanInTxHashes).toHaveLength(1)
+    expect(state.raws).toHaveLength(1)
+
+    const phase2 = await executor.executeAsync(phase1.operationId)
+    expect(phase2.phase).toBe('completed')
+    expect(phase2.totalValueSent).toBe(110_000n)
+    expect(phase2.totalFeePaid).toBe(fee * 2n)
+    expect(state.raws).toHaveLength(2)
+  })
 })

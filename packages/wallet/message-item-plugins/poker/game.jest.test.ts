@@ -3,7 +3,12 @@ import {
   joinPokerTable,
   startNewHand,
   applyPlayerAction,
+  setPokerPlayerCommit,
+  setPokerPlayerSeed,
+  verifyPokerShowdown,
+  foldPokerState,
 } from './game'
+import { commitSeed } from './deck'
 
 describe("Texas Hold'em Poker Game Engine", () => {
   it('manages blinds, streets (preflop, flop, turn, river), and showdown settlement', () => {
@@ -89,6 +94,10 @@ describe("Texas Hold'em Poker Game Engine", () => {
     // Total chips across both players equals 2000
     const totalChips = table.players.reduce((sum, p) => sum + p.chips, 0)
     expect(totalChips).toBe(2000)
+
+    // Showdown verification succeeds on untampered state
+    const check = verifyPokerShowdown(table)
+    expect(check.verified).toBe(true)
   })
 
   it('immediately awards pot when all other players fold', () => {
@@ -115,5 +124,160 @@ describe("Texas Hold'em Poker Game Engine", () => {
     expect(table.winners![0].address).toBe(bbPlayer.address)
     expect(table.winners![0].amount).toBe(30)
     expect(bbPlayer.chips).toBe(980 + 30)
+  })
+
+  it('verifies multi-party committed seeds and rejects tampered hole cards or mismatched seed reveals', () => {
+    const table = createPokerTable({
+      tableId: 'poker_fair_1',
+      buyInChips: 1000,
+      smallBlind: 10,
+      bigBlind: 20,
+      serverSeed: 'dealer-secret-999',
+    })
+    joinPokerTable(table, '0xAlice')
+    joinPokerTable(table, '0xBob')
+
+    const aliceSeed = 'alice-secret-111'
+    const bobSeed = 'bob-secret-222'
+    expect(setPokerPlayerCommit(table, '0xAlice', commitSeed(aliceSeed)).success).toBe(true)
+    expect(setPokerPlayerCommit(table, '0xBob', commitSeed(bobSeed)).success).toBe(true)
+
+    // Mismatched seed reveal is rejected
+    expect(setPokerPlayerSeed(table, '0xAlice', 'wrong-alice-seed').success).toBe(false)
+    expect(setPokerPlayerSeed(table, '0xAlice', aliceSeed).success).toBe(true)
+    expect(setPokerPlayerSeed(table, '0xBob', bobSeed).success).toBe(true)
+
+    expect(
+      startNewHand(table, 'dealer-secret-999', {
+        '0xAlice': aliceSeed,
+        '0xBob': bobSeed,
+      }).success,
+    ).toBe(true)
+
+    expect(verifyPokerShowdown(table).verified).toBe(true)
+
+    // Tamper with Alice's hole cards
+    const originalCard = table.players[0].holeCards[0]
+    table.players[0].holeCards[0] = (originalCard + 1) % 52
+    const tamperedCardCheck = verifyPokerShowdown(table)
+    expect(tamperedCardCheck.verified).toBe(false)
+    expect(tamperedCardCheck.reason).toMatch(/hole cards/i)
+    table.players[0].holeCards[0] = originalCard
+
+    // Tamper with serverSeed
+    const badServerCheck = verifyPokerShowdown({
+      ...table,
+      serverSeed: 'forged-server-seed',
+    })
+    expect(badServerCheck.verified).toBe(false)
+    expect(badServerCheck.reason).toMatch(/server seed/i)
+  })
+
+  it('deterministically folds table state from mailbox messages and flags tampered reveals', () => {
+    const table = createPokerTable({
+      tableId: 'poker_fold_log',
+      buyInChips: 1000,
+      smallBlind: 10,
+      bigBlind: 20,
+    })
+    joinPokerTable(table, '0xAlice')
+    joinPokerTable(table, '0xBob')
+    startNewHand(table, 'server-seed-abc', {
+      '0xAlice': 'alice-seed-abc',
+      '0xBob': 'bob-seed-abc',
+    })
+
+    // Play out to showdown via all-in and call
+    const first = table.players[table.activePlayerIndex].address
+    const second = table.players.find(p => p.address !== first)!.address
+    applyPlayerAction(table, first, 'all_in')
+    applyPlayerAction(table, second, 'call')
+    expect(table.street).toBe('settled')
+
+    const validMessages = [
+      {
+        type: 'poker' as const,
+        tableId: table.tableId,
+        action: 'create' as const,
+        smallBlind: 10,
+        bigBlind: 20,
+        pot: 0,
+      },
+      {
+        type: 'poker' as const,
+        tableId: table.tableId,
+        action: 'deal' as const,
+        smallBlind: 10,
+        bigBlind: 20,
+        pot: 30,
+        street: 'preflop' as const,
+        serverCommit: table.serverCommit,
+        playerCommits: table.playerCommits,
+        holeCardCommits: table.holeCardCommits,
+        players: table.players.map((p, idx) => ({
+          address: p.address,
+          chips: 980,
+          currentStreetBet: 20,
+          totalHandBet: 20,
+          folded: false,
+          isAllIn: false,
+          isDealerButton: idx === table.dealerIndex,
+          isSmallBlind: idx === table.dealerIndex,
+          isBigBlind: idx !== table.dealerIndex,
+        })),
+      },
+      {
+        type: 'poker' as const,
+        tableId: table.tableId,
+        action: 'showdown' as const,
+        smallBlind: 10,
+        bigBlind: 20,
+        pot: 2000,
+        street: 'showdown' as const,
+        boardCards: table.boardCards,
+        serverSeed: table.serverSeed,
+        playerSeeds: table.playerSeeds,
+        holeCardSalts: table.holeCardSalts,
+        players: table.players.map((p, idx) => ({
+          address: p.address,
+          chips: p.chips,
+          currentStreetBet: 0,
+          totalHandBet: 1000,
+          folded: false,
+          isAllIn: true,
+          isDealerButton: idx === table.dealerIndex,
+          isSmallBlind: idx === table.dealerIndex,
+          isBigBlind: idx !== table.dealerIndex,
+          holeCards: [...p.holeCards],
+        })),
+        winners: table.winners?.map(w => ({
+          address: w.address,
+          amount: w.amount,
+        })),
+      },
+    ]
+
+    const foldedValid = foldPokerState(validMessages)
+    expect(foldedValid).toBeDefined()
+    expect(foldedValid!.verified).toBe(true)
+    expect(foldedValid!.boardCards).toEqual(table.boardCards)
+
+    // Now tamper with a hole card in the showdown message
+    const tamperedMessages = [
+      validMessages[0],
+      validMessages[1],
+      {
+        ...validMessages[2],
+        players: validMessages[2].players.map((p, idx) =>
+          idx === 0
+            ? { ...p, holeCards: [(p.holeCards![0] + 1) % 52, p.holeCards![1]] }
+            : p,
+        ),
+      },
+    ]
+    const foldedTampered = foldPokerState(tamperedMessages)
+    expect(foldedTampered).toBeDefined()
+    expect(foldedTampered!.verified).toBe(false)
+    expect(foldedTampered!.verificationError).toBeDefined()
   })
 })

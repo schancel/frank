@@ -2,7 +2,13 @@ import {
   DERIVATION_REGISTRY_CODE,
   DERIVATION_REGISTRY_ID,
   DOMAIN_PURPOSES,
+  OPENPGP_CANONICAL_CREATION_TIMESTAMP,
+  OPENPGP_DOMAIN_PURPOSE,
+  OPENPGP_ED25519_SUBKEY_INFO,
+  OPENPGP_INFO_LABEL,
+  OPENPGP_X25519_SUBKEY_INFO,
   deriveDomainRoot,
+  deriveOpenPgpSeeds,
   registryEntry,
 } from './index.js'
 
@@ -125,5 +131,43 @@ describe('frank-domain-roots-v1', () => {
     expect(first.bytes).toEqual(second.bytes)
     first.bytes.fill(0)
     expect(hex(second.bytes)).not.toBe('00'.repeat(32))
+  })
+
+  it('derives deterministic OpenPGP primary signing and encryption subkey seeds strictly isolated from all other roots', () => {
+    expect(OPENPGP_DOMAIN_PURPOSE).toBe('openpgp')
+    expect(OPENPGP_INFO_LABEL).toBe('frank.openpgp.v1')
+    expect(OPENPGP_ED25519_SUBKEY_INFO).toBe('frank.openpgp.ed25519.v1')
+    expect(OPENPGP_X25519_SUBKEY_INFO).toBe('frank.openpgp.x25519.v1')
+    expect(registryEntry('openpgp')).toEqual({
+      purpose: 'openpgp',
+      code: 6,
+      label: 'frank.openpgp.v1',
+      outputLength: 32,
+      interpretation: 'openpgp-ed25519-x25519-master-seed',
+    })
+
+    const seedA = Uint8Array.from({ length: 32 }, (_, idx) => (idx * 13 + 5) & 0xff)
+    const seedB = Uint8Array.from(seedA)
+    const derivedA = deriveOpenPgpSeeds(seedA)
+    const derivedB = deriveOpenPgpSeeds(seedB)
+
+    expect(derivedA.primarySigningSeed).toHaveLength(32)
+    expect(derivedA.encryptionSubkeySeed).toHaveLength(32)
+    expect(derivedA.creationTimestamp).toBe(OPENPGP_CANONICAL_CREATION_TIMESTAMP)
+    expect(derivedA.primarySigningSeed).toEqual(derivedB.primarySigningSeed)
+    expect(derivedA.encryptionSubkeySeed).toEqual(derivedB.encryptionSubkeySeed)
+    expect(derivedA.creationTimestamp).toBe(derivedB.creationTimestamp)
+    expect(hex(derivedA.primarySigningSeed)).not.toBe(
+      hex(derivedA.encryptionSubkeySeed),
+    )
+
+    const openPgpDomainRoot = deriveDomainRoot(seedA, 'openpgp')
+    const allDerived = [
+      ...DOMAIN_PURPOSES.map(purpose => hex(deriveDomainRoot(seedA, purpose).bytes)),
+      hex(openPgpDomainRoot.bytes),
+      hex(derivedA.primarySigningSeed),
+      hex(derivedA.encryptionSubkeySeed),
+    ]
+    expect(new Set(allDerived).size).toBe(allDerived.length)
   })
 })

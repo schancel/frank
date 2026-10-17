@@ -5,6 +5,7 @@ import { InboundEmail } from '../types';
 import { BlobStore } from '../storage/blob-store';
 import type { MessageItem } from '@frank/cashweb/types/messages';
 import { isOperationalLocalPart } from '../mailbox/operational-local-parts';
+import { extractOpenPgpArmoredMessage, isOpenPgpArmoredMessage } from '../wkd/wkd';
 
 export interface InboundRecipientResolution {
   readonly accountAddress: string;
@@ -195,7 +196,10 @@ export class InboundEmailHandler {
 
     if (hasCredit) {
       // Funded sender -> deliver immediately as stamped direct message
-      const textContent = email.textBody || '[Empty message body]';
+      const armoredOpenPgp = isOpenPgpArmoredMessage(email.textBody)
+        ? email.textBody
+        : extractOpenPgpArmoredMessage(email.textBody, email.rawRfc822);
+      const textContent = armoredOpenPgp || email.textBody || '[Empty message body]';
 
       const emailItem: MessageItem = {
         type: 'email',

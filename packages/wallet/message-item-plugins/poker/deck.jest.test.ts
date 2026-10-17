@@ -4,6 +4,10 @@ import {
   formatCard,
   isRedSuit,
   derivePokerDeck,
+  deriveJointPokerSeed,
+  commitSeed,
+  commitHoleCards,
+  verifyHoleCardsCommitment,
 } from './deck'
 
 describe('Mental Poker Deck', () => {
@@ -52,5 +56,37 @@ describe('Mental Poker Deck', () => {
     const deckOther = derivePokerDeck(sSeed, 'other-seed')
     expect(deckOther).not.toEqual(deck1)
     expect(new Set(deckOther).size).toBe(52)
+  })
+
+  it('mixes multi-party player seeds so no single party can unilaterally choose the deck', () => {
+    const serverSeed = 'server-secret-seed-1'
+    const playerSeeds1 = {
+      '0xAlice': 'alice-seed-1',
+      '0xBob': 'bob-seed-1',
+    }
+    const playerSeeds2 = {
+      '0xAlice': 'alice-seed-1',
+      '0xBob': 'bob-seed-2',
+    }
+
+    const joint1 = deriveJointPokerSeed(serverSeed, playerSeeds1, ['0xAlice', '0xBob'])
+    const joint2 = deriveJointPokerSeed(serverSeed, playerSeeds2, ['0xAlice', '0xBob'])
+    expect(joint1).not.toBe(joint2)
+
+    const deck1 = derivePokerDeck(serverSeed, playerSeeds1, ['0xAlice', '0xBob'])
+    const deck2 = derivePokerDeck(serverSeed, playerSeeds2, ['0xAlice', '0xBob'])
+    expect(deck1).not.toEqual(deck2)
+    expect(new Set(deck1).size).toBe(52)
+  })
+
+  it('commits and verifies hole cards and rejects tampered cards or salts', () => {
+    const hole: [number, number] = [12, 51]
+    const salt = 'random-salt-xyz'
+    const commit = commitHoleCards(hole, salt)
+    expect(commit).toHaveLength(64)
+    expect(verifyHoleCardsCommitment(hole, salt, commit)).toBe(true)
+    expect(verifyHoleCardsCommitment([12, 50], salt, commit)).toBe(false)
+    expect(verifyHoleCardsCommitment(hole, 'wrong-salt', commit)).toBe(false)
+    expect(commitSeed('my-secret')).toHaveLength(64)
   })
 })

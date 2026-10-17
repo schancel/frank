@@ -64,6 +64,24 @@ export interface SendLegacyParams {
    */
   mainAccountWaitMs?: number
 }
+export type AsyncConsolidationPhase =
+  | 'fan-in-pending'
+  | 'drain-pending'
+  | 'completed'
+export interface AsyncConsolidationHandle {
+  readonly operationId: string
+  readonly phase: AsyncConsolidationPhase
+  readonly status: AsyncConsolidationPhase
+  readonly txHash: string
+  readonly drainTxHash: string
+  readonly fanInTxHashes: string[]
+  readonly intermediateTxHashes: string[]
+  readonly relatedTxHashes?: ReadonlyArray<string>
+  readonly operation: EvmNativeOperation
+  readonly result?: LegacySendResult
+  readonly totalValueSent?: bigint
+  readonly totalFeePaid?: bigint
+}
 /** One call to a contract from the main account, recorded and recovered like a native send. */
 export interface ContractCallParams {
   to: ChainAddress
@@ -2055,6 +2073,301 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
   ): Promise<LegacySendResult> {
     return this.legacyResult(await this.resumeOperation(operationId, lifetime))
+  }
+  private asyncConsolidationHandle(
+    row: EvmNativeOperation,
+    phase: AsyncConsolidationPhase,
+    result?: LegacySendResult,
+  ): AsyncConsolidationHandle {
+    const drainTxHash =
+      row.members[row.members.length - 1]!.signed!.transactionHash
+    const fanInTxHashes = row.members
+      .slice(0, -1)
+      .map(m => m.signed!.transactionHash)
+    return {
+      operationId: row.operationId,
+      phase,
+      status: phase,
+      txHash: drainTxHash,
+      drainTxHash,
+      fanInTxHashes,
+      intermediateTxHashes: fanInTxHashes,
+      ...(fanInTxHashes.length > 0 ? { relatedTxHashes: fanInTxHashes } : {}),
+      operation: row,
+      ...(result !== undefined
+        ? {
+            result,
+            totalValueSent: result.totalValueSent,
+            totalFeePaid: result.totalFeePaid,
+          }
+        : {}),
+    }
+  }
+  /**
+   * Non-blocking Phase 1 multi-account consolidation dispatch (Issue #1217).
+   *
+   * Plans and signs the entire operation, persists all signed members in the journal,
+   * and broadcasts Phase 1 peer fan-in transactions without blocking on multi-block
+   * confirmation waits before returning an `AsyncConsolidationHandle`.
+   * Phase 2 (the leader drain to the recipient) executes once fan-in transactions
+   * confirm via `resumePendingConsolidation`.
+   */
+  dispatchFanIn(
+    params: SendLegacyParams,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<AsyncConsolidationHandle> {
+    params = { ...params, recipient: { ...params.recipient } }
+    return this.runWithLocalPass(lifetime, async planned => {
+      const journal = this.journal(lifetime),
+        { provider } = this.config
+      params.onProgress?.({ status: { stage: 'planning' } })
+      let row = await this.plan(params, 'legacy', lifetime)
+      planned(row.operationId)
+      row = await this.sign(row, lifetime)
+      await params.onSigned?.(this.transactionHandle(row))
+
+      if (row.members.length > 1) {
+        let failure: unknown
+        for (let i = 0; i < row.members.length - 1; i++) {
+          try {
+            await this.observe(row.operationId, i, lifetime)
+            const member = journal.get(row.operationId).members[i]!
+            if (member.observation.state === 'included-success') continue
+            if (
+              member.observation.state === 'included-revert' ||
+              nativeMemberSuperseded(member)
+            ) {
+              failure ??= new Error(
+                'Original native member reverted; retained for disposition',
+              )
+              continue
+            }
+            await this.untilFundsSettled(member)
+            await journal.markExposed(row.operationId, i)
+            const response = await provider.broadcastTransaction(
+              member.signed!.rawTransaction,
+            )
+            if (response.hash.toLowerCase() !== member.signed!.transactionHash)
+              throw new Error('Unexpected native transaction hash')
+          } catch (reason) {
+            failure ??= reason
+          }
+        }
+        if (failure !== undefined)
+          throw new EvmNativeOperationPendingError(
+            journal.get(row.operationId),
+            failure,
+          )
+        row = journal.get(row.operationId)
+        const fanInHashes = row.members
+          .slice(0, -1)
+          .map(m => m.signed!.transactionHash)
+        const completedCount = row.members
+          .slice(0, -1)
+          .filter(m => m.observation.state === 'included-success').length
+        params.onProgress?.({
+          status: {
+            stage: 'consolidating',
+            completed: completedCount,
+            total: fanInHashes.length,
+            stagingTxHashes: fanInHashes,
+          },
+        })
+        return this.asyncConsolidationHandle(row, 'fan-in-pending')
+      }
+
+      // Single-account direct fast-path: no fan-in peers needed.
+      await this.observe(row.operationId, 0, lifetime)
+      row = journal.get(row.operationId)
+      let member = row.members[0]!
+      if (
+        member.observation.state === 'included-revert' ||
+        nativeMemberSuperseded(member)
+      )
+        throw new EvmNativeOperationPendingError(
+          row,
+          new Error(
+            'Original native member reverted; retained for disposition',
+          ),
+        )
+      if (member.observation.state !== 'included-success') {
+        await this.untilFundsSettled(member)
+        await journal.markExposed(row.operationId, 0)
+        try {
+          const response = await provider.broadcastTransaction(
+            member.signed!.rawTransaction,
+          )
+          if (response.hash.toLowerCase() !== member.signed!.transactionHash)
+            throw new Error('Unexpected native transaction hash')
+        } catch (reason) {
+          throw new EvmNativeOperationPendingError(
+            journal.get(row.operationId),
+            reason,
+          )
+        }
+        await this.observe(row.operationId, 0, lifetime)
+        row = journal.get(row.operationId)
+        member = row.members[0]!
+      }
+      if (member.observation.state === 'included-success') {
+        const result = this.legacyResult(row)
+        params.onProgress?.({
+          status: { stage: 'confirmed', txHash: result.txHash },
+        })
+        return this.asyncConsolidationHandle(row, 'completed', result)
+      }
+      params.onProgress?.({
+        status: {
+          stage: 'broadcasting',
+          txHash: member.signed!.transactionHash,
+        },
+      })
+      return this.asyncConsolidationHandle(row, 'drain-pending')
+    })
+  }
+  /**
+   * Non-blocking asynchronous consolidation execution or resumption (Issue #1217).
+   */
+  executeAsync(
+    paramsOrOperationId: SendLegacyParams | string,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<AsyncConsolidationHandle> {
+    if (typeof paramsOrOperationId === 'string') {
+      return this.resumePendingConsolidation(paramsOrOperationId, lifetime)
+    }
+    return this.dispatchFanIn(paramsOrOperationId, lifetime)
+  }
+  /**
+   * Non-blocking Phase 2 consolidation resumption (Issue #1217).
+   *
+   * Re-observes Phase 1 peer fan-in transactions. While any fan-in transaction is still
+   * unconfirmed, returns `{ phase: 'fan-in-pending' }` without blocking on multi-block waits.
+   * Once all fan-in transactions confirm (`included-success`), broadcasts the Phase 2 leader
+   * drain transaction and returns `'drain-pending'` or `'completed'`.
+   */
+  resumePendingConsolidation(
+    operationId: string,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<AsyncConsolidationHandle> {
+    return this.runWithLocalPass(lifetime, async planned => {
+      planned(operationId)
+      const journal = this.journal(lifetime),
+        { provider } = this.config
+      let row = journal.get(operationId)
+      if (row.cancelled) throw new Error('Native operation was cancelled')
+      if (row.kind !== 'legacy')
+        throw new Error('Operation is not a legacy consolidation')
+      row = await this.sign(row, lifetime)
+
+      // Phase 1: check / advance peer fan-in members
+      let failure: unknown
+      for (let i = 0; i < row.members.length - 1; i++) {
+        try {
+          await this.observe(operationId, i, lifetime)
+          row = journal.get(operationId)
+          const member = row.members[i]!
+          if (member.observation.state === 'included-success') continue
+          if (
+            member.observation.state === 'included-revert' ||
+            nativeMemberSuperseded(member)
+          ) {
+            failure ??= new Error(
+              'Original native member reverted; retained for disposition',
+            )
+            continue
+          }
+          if (!member.exposed || member.observation.state === 'missing') {
+            await this.untilFundsSettled(member)
+            if (!member.exposed) await journal.markExposed(operationId, i)
+            const response = await provider.broadcastTransaction(
+              member.signed!.rawTransaction,
+            )
+            if (response.hash.toLowerCase() !== member.signed!.transactionHash)
+              throw new Error('Unexpected native transaction hash')
+            await this.observe(operationId, i, lifetime)
+          }
+        } catch (reason) {
+          failure ??= reason
+        }
+      }
+      if (failure !== undefined)
+        throw new EvmNativeOperationPendingError(
+          journal.get(operationId),
+          failure,
+        )
+
+      row = journal.get(operationId)
+      const allFanInConfirmed = row.members
+        .slice(0, -1)
+        .every(m => m.observation.state === 'included-success')
+      if (!allFanInConfirmed) {
+        return this.asyncConsolidationHandle(row, 'fan-in-pending')
+      }
+
+      // Phase 2: all fan-in peers confirmed -> execute leader drain to recipient
+      const drainIndex = row.members.length - 1
+      await this.observe(operationId, drainIndex, lifetime)
+      row = journal.get(operationId)
+      let drainMember = row.members[drainIndex]!
+      if (
+        drainMember.observation.state === 'included-revert' ||
+        nativeMemberSuperseded(drainMember)
+      )
+        throw new EvmNativeOperationPendingError(
+          row,
+          new Error(
+            'Original native member reverted; retained for disposition',
+          ),
+        )
+      if (drainMember.observation.state !== 'included-success') {
+        if (
+          !drainMember.exposed ||
+          drainMember.observation.state === 'missing'
+        ) {
+          await this.untilFundsSettled(drainMember)
+          if (!drainMember.exposed)
+            await journal.markExposed(operationId, drainIndex)
+          try {
+            const response = await provider.broadcastTransaction(
+              drainMember.signed!.rawTransaction,
+            )
+            if (
+              response.hash.toLowerCase() !==
+              drainMember.signed!.transactionHash
+            )
+              throw new Error('Unexpected native transaction hash')
+          } catch (reason) {
+            throw new EvmNativeOperationPendingError(
+              journal.get(operationId),
+              reason,
+            )
+          }
+          await this.observe(operationId, drainIndex, lifetime)
+          row = journal.get(operationId)
+          drainMember = row.members[drainIndex]!
+        }
+      }
+      if (drainMember.observation.state === 'included-success') {
+        const result = this.legacyResult(row)
+        return this.asyncConsolidationHandle(row, 'completed', result)
+      }
+      return this.asyncConsolidationHandle(row, 'drain-pending')
+    })
+  }
+  /**
+   * Reconciles all unresolved legacy consolidation operations without blocking on multi-block waits.
+   */
+  async reconcilePendingConsolidations(
+    lifetime?: WalletOperationLifetime,
+  ): Promise<AsyncConsolidationHandle[]> {
+    const unresolved = this.getUnresolvedLegacySend()
+    const handles: AsyncConsolidationHandle[] = []
+    for (const op of unresolved) {
+      handles.push(
+        await this.resumePendingConsolidation(op.operationId, lifetime),
+      )
+    }
+    return handles
   }
   private contractResendAt = new Map<string, { at: number; waitMs: number }>()
   private readonly missedOnce = new Set<string>()

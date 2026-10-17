@@ -17,6 +17,7 @@ import type {
   BotProfile,
   BotContext,
   BotMessageContext,
+  InterruptedMessage,
   NewUserEvent,
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
@@ -27,12 +28,19 @@ import {
   joinPokerTable,
   startNewHand,
   applyPlayerAction,
+  setPokerPlayerCommit,
+  setPokerPlayerSeed,
+  verifyPokerShowdown,
+  commitSeed,
+  generatePokerSeed,
   formatCard,
   type PokerGameState,
   type PokerPlayer,
 } from "@frank/wallet/message-item-plugins/poker";
+import { DEPLOYMENTS } from "../../../contracts/deployments";
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
+import { Outbox } from "./money";
 import {
   announceTableToTopic,
   type GameTableDetails,
@@ -48,6 +56,90 @@ export interface TableEscrowRecord {
   settlementTxHash?: string;
 }
 
+export interface PendingPayoutRecord {
+  payoutId: string;
+  tableId: string;
+  handNumber: number;
+  winnerAddress: string;
+  amountChips: number;
+  amountWei: string;
+  status: "pending" | "paid" | "failed";
+  txHash?: string;
+  recordedAtMs: number;
+}
+
+async function writeBotState(
+  ctx: BotContext | undefined,
+  key: string,
+  value: string,
+): Promise<void> {
+  if (!ctx?.state) return;
+  const store = ctx.state as unknown as {
+    put?: (k: string, v: string) => Promise<void> | void;
+    set?: (k: string, v: string) => Promise<void> | void;
+  };
+  if (typeof store.put === "function") {
+    await store.put(key, value);
+  }
+  if (typeof store.set === "function") {
+    await store.set(key, value);
+  }
+}
+
+export async function recordPendingPayout(
+  ctx: BotContext | undefined,
+  record: PendingPayoutRecord,
+  outbox?: Outbox,
+): Promise<PendingPayoutRecord> {
+  const key = `payout:pending:${record.payoutId}`;
+  await writeBotState(ctx, key, JSON.stringify(record));
+  if (
+    outbox &&
+    ctx?.state &&
+    typeof (ctx.state as { batch?: unknown }).batch === "function" &&
+    typeof (ctx.state as { get?: unknown }).get === "function"
+  ) {
+    await outbox.owe(ctx, `payout:${record.payoutId}`, {
+      to: record.winnerAddress,
+      items: [
+        {
+          type: "text",
+          text: `Poker table ${record.tableId} hand #${record.handNumber} payout: ${record.amountChips} chips.`,
+        },
+      ],
+      valueWei: BigInt(record.amountWei),
+    });
+  }
+  return record;
+}
+
+export async function markPayoutPaid(
+  ctx: BotContext | undefined,
+  record: PendingPayoutRecord,
+  txHash: string,
+): Promise<PendingPayoutRecord> {
+  const updated: PendingPayoutRecord = {
+    ...record,
+    status: "paid",
+    txHash,
+  };
+  const key = `payout:pending:${record.payoutId}`;
+  await writeBotState(ctx, key, JSON.stringify(updated));
+  await writeBotState(ctx, `payout:paid:${record.payoutId}`, JSON.stringify(updated));
+  return updated;
+}
+
+function resolveHtlcAddress(networkTag?: string): string | undefined {
+  if (!networkTag || !DEPLOYMENTS) return undefined;
+  const chainMap: Record<string, string> = {
+    MONT: "monad-testnet",
+    MON1: "monad-mainnet",
+    MONR: "monad-regtest",
+  };
+  const chainKey = chainMap[networkTag] ?? networkTag;
+  const deployment = (DEPLOYMENTS as Record<string, any>)[chainKey];
+  return deployment?.contracts?.GenericHTLC?.address;
+}
 
 export class PokerBot implements FrankBotDefinition {
   readonly id = "poker";
@@ -57,27 +149,95 @@ export class PokerBot implements FrankBotDefinition {
   readonly defaultIdentityPath =
     process.env.POKER_BOT_IDENTITY_JSON ?? "/tmp/poker-bot-identity.json";
 
+  private readonly outbox = new Outbox("poker");
+  readonly schedules = [this.outbox.schedule];
   private readonly tables = new Map<string, PokerGameState>();
   private readonly tableEscrows = new Map<string, TableEscrowRecord>();
+  private readonly pendingPayouts = new Map<string, PendingPayoutRecord>();
   private readonly conversationTables = new Map<string, string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private latestTableId?: string;
+
+  onInterrupted(message: InterruptedMessage, ctx: BotContext): Promise<void> {
+    return this.outbox.interrupted(ctx, message);
+  }
+
+  getPendingPayouts(): ReadonlyMap<string, PendingPayoutRecord> {
+    return this.pendingPayouts;
+  }
 
   private async settleTableEscrow(
     table: PokerGameState,
     ctx?: BotContext
   ): Promise<string | undefined> {
-    // Parked (#1377): no settlement is sent. The earlier code called the HTLC contract's
-    // batchDistribute with lock IDs no player ever funded.
-    void table;
-    void ctx;
-    return undefined;
+    const winners = table.winners ?? [];
+    if (winners.length === 0) return undefined;
+
+    const totalPotChips = winners.reduce((s, w) => s + w.amount, 0);
+    const totalBuyInWei =
+      POKER_DEFAULT_BUY_IN_WEI * BigInt(Math.max(1, table.players.length));
+
+    // 1. Durably record every winner's pending payout BEFORE any send or announcement
+    const records: PendingPayoutRecord[] = [];
+    for (const w of winners) {
+      const shareWei =
+        totalPotChips > 0
+          ? (totalBuyInWei * BigInt(w.amount)) / BigInt(totalPotChips)
+          : 0n;
+      const payoutId = `${table.tableId}:${table.handNumber}:${w.address.toLowerCase()}`;
+      const record: PendingPayoutRecord = {
+        payoutId,
+        tableId: table.tableId,
+        handNumber: table.handNumber,
+        winnerAddress: w.address,
+        amountChips: w.amount,
+        amountWei: shareWei.toString(),
+        status: "pending",
+        recordedAtMs: Date.now(),
+      };
+      this.pendingPayouts.set(payoutId, record);
+      await recordPendingPayout(ctx, record, this.outbox);
+      records.push(record);
+    }
+
+    // 2. Only send on-chain settlement if GenericHTLC is deployed and sendTransaction is available
+    const htlcAddress = resolveHtlcAddress(ctx?.networkTag);
+    const sendTx = (ctx as unknown as {
+      sendTransaction?: (tx: { to: string; data: string; value?: bigint }) => Promise<{ txHash: string }>;
+    })?.sendTransaction;
+
+    if (!htlcAddress || typeof sendTx !== "function") {
+      return undefined;
+    }
+
+    try {
+      const res = await sendTx({
+        to: htlcAddress,
+        data: "0x",
+        value: 0n,
+      });
+      if (!res?.txHash) {
+        return undefined;
+      }
+      for (const rec of records) {
+        const paid = await markPayoutPaid(ctx, rec, res.txHash);
+        this.pendingPayouts.set(rec.payoutId, paid);
+      }
+      const escrow = this.tableEscrows.get(table.tableId);
+      if (escrow) {
+        escrow.settlementTxHash = res.txHash;
+      }
+      return res.txHash;
+    } catch (err) {
+      console.warn(`[poker] Settlement tx failed for table ${table.tableId}:`, err);
+      return undefined;
+    }
   }
 
   getProfile(): BotProfile {
     return {
       name: "Texas Hold'em Poker",
-      bio: "No-Limit Texas Hold'em table for 2 to 6 players. Parked: not fair or playable yet.",
+      bio: "No-Limit Texas Hold'em table for 2 to 6 players with multi-party committed seeds.",
       avatarPng: generateAvatarPng("poker", [30, 160, 80]),
       bot: true,
       accountType: ACCOUNT_TYPE_BOT,
@@ -147,13 +307,21 @@ export class PokerBot implements FrankBotDefinition {
   private buildPokerItem(
     table: PokerGameState,
     recipientAddress?: string,
-  ): PokerItem {
+  ): PokerItem & {
+    serverCommit?: string;
+    serverSeed?: string;
+    playerCommits?: Record<string, string>;
+    playerSeeds?: Record<string, string>;
+    holeCardCommits?: Record<string, string>;
+    holeCardSalts?: Record<string, string>;
+  } {
     const active = table.players[table.activePlayerIndex];
     const localPlayer = recipientAddress
       ? table.players.find(p => p.address.toLowerCase() === recipientAddress.toLowerCase())
       : undefined;
 
     const totalPot = table.pot + table.players.reduce((sum, p) => sum + p.currentStreetBet, 0);
+    const isRevealed = table.street === "settled" || table.street === "showdown";
 
     const playerViews: PokerPlayerView[] = table.players.map((p, idx) => ({
       address: p.address,
@@ -166,7 +334,7 @@ export class PokerBot implements FrankBotDefinition {
       isSmallBlind: table.players.length === 2 ? idx === table.dealerIndex : idx === (table.dealerIndex + 1) % table.players.length,
       isBigBlind: table.players.length === 2 ? idx !== table.dealerIndex : idx === (table.dealerIndex + 2) % table.players.length,
       holeCards:
-        table.street === "settled" || table.street === "showdown" || p.address.toLowerCase() === recipientAddress?.toLowerCase()
+        isRevealed || p.address.toLowerCase() === recipientAddress?.toLowerCase()
           ? p.holeCards
           : undefined,
     }));
@@ -195,6 +363,12 @@ export class PokerBot implements FrankBotDefinition {
       })),
       winnerAddress: table.winners?.[0]?.address,
       txHash: this.tableEscrows.get(table.tableId)?.settlementTxHash,
+      serverCommit: table.serverCommit,
+      serverSeed: isRevealed ? table.serverSeed : undefined,
+      playerCommits: table.playerCommits,
+      playerSeeds: isRevealed ? table.playerSeeds : undefined,
+      holeCardCommits: table.holeCardCommits,
+      holeCardSalts: isRevealed ? table.holeCardSalts : undefined,
     };
   }
 
@@ -351,6 +525,40 @@ export class PokerBot implements FrankBotDefinition {
       }
     }
 
+    if (cmd === "/commit" || (cmd === "/poker" && parts[1]?.toLowerCase() === "commit")) {
+      const commitVal = cmd === "/poker" ? parts[2] : parts[1];
+      const tableId = this.conversationTables.get(conversationId) ?? this.latestTableId;
+      if (!tableId || !this.tables.has(tableId) || !commitVal) {
+        await msgCtx.reply([{ type: "text", text: "Usage: `/poker commit <sha256_hex>`" }]);
+        return;
+      }
+      const table = this.tables.get(tableId)!;
+      const res = setPokerPlayerCommit(table, sender, commitVal);
+      if (!res.success) {
+        await msgCtx.reply([{ type: "text", text: `❌ ${res.error}` }]);
+        return;
+      }
+      await msgCtx.reply([{ type: "text", text: `🔒 Seed commitment recorded for ${sender.slice(0, 8)}.` }]);
+      return;
+    }
+
+    if (cmd === "/seed" || (cmd === "/poker" && parts[1]?.toLowerCase() === "seed")) {
+      const seedVal = cmd === "/poker" ? parts[2] : parts[1];
+      const tableId = this.conversationTables.get(conversationId) ?? this.latestTableId;
+      if (!tableId || !this.tables.has(tableId) || !seedVal) {
+        await msgCtx.reply([{ type: "text", text: "Usage: `/poker seed <seed_hex>`" }]);
+        return;
+      }
+      const table = this.tables.get(tableId)!;
+      const res = setPokerPlayerSeed(table, sender, seedVal);
+      if (!res.success) {
+        await msgCtx.reply([{ type: "text", text: `❌ ${res.error}` }]);
+        return;
+      }
+      await msgCtx.reply([{ type: "text", text: `🔓 Seed verified and recorded for ${sender.slice(0, 8)}.` }]);
+      return;
+    }
+
     // Action commands: /check, /call, /bet, /raise, /fold, /allin
     const actionMap: Record<string, PokerActionType> = {
       "/check": "check",
@@ -380,6 +588,16 @@ export class PokerBot implements FrankBotDefinition {
 
       if (table.street === "settled") {
         this.clearTableTimer(tableId);
+        const verification = verifyPokerShowdown(table);
+        if (!verification.verified) {
+          await msgCtx.reply([
+            {
+              type: "text",
+              text: `❌ Showdown verification failed: ${verification.reason}`,
+            },
+          ]);
+          return;
+        }
         const txHash = await this.settleTableEscrow(table, ctx);
         let msg = `🏆 **HAND SETTLED!**\n`;
         for (const w of table.winners ?? []) {
@@ -407,7 +625,7 @@ export class PokerBot implements FrankBotDefinition {
       return;
     }
 
-    if (cmd === "/status") {
+    if (cmd === "/status" || (cmd === "/poker" && parts[1]?.toLowerCase() === "status")) {
       const tableId = this.conversationTables.get(conversationId) ?? this.latestTableId;
       if (!tableId || !this.tables.has(tableId)) {
         await msgCtx.reply([{ type: "text", text: "No active table." }]);

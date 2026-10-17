@@ -20,8 +20,70 @@ export function generateSeed(): string {
   return randomBytes(32).toString('hex')
 }
 
+export function commitSeed(seed: string): string {
+  return sha256Hex(seed)
+}
+
+export function commitDiceCup(dice: readonly number[], salt: string): string {
+  const sorted = [...dice].sort((a, b) => a - b)
+  return sha256Hex(`liars-dice-cup:${sorted.join(',')}:${salt}`)
+}
+
+export function verifyDiceCupCommitment(
+  dice: readonly number[],
+  salt: string,
+  commitment: string,
+): boolean {
+  if (!salt || !commitment) return false
+  return (
+    commitDiceCup(dice, salt) === commitment.replace(/^0x/, '').toLowerCase()
+  )
+}
+
 /**
- * Derives `count` dice faces (1..6) deterministically from server and player seeds.
+ * Combines the server seed with every active player's revealed seed in a
+ * deterministic order so no single party (neither bot nor any single player)
+ * can unilaterally choose or predict the dice rolls.
+ */
+export function deriveJointDiceSeed(
+  serverSeed: string,
+  playerSeeds: string | readonly string[] | Record<string, string>,
+  playerOrder?: readonly string[],
+): string {
+  if (typeof playerSeeds === 'string') {
+    return createHmac('sha256', serverSeed).update(playerSeeds).digest('hex')
+  }
+  if (Array.isArray(playerSeeds)) {
+    return createHmac('sha256', serverSeed)
+      .update(playerSeeds.join(':'))
+      .digest('hex')
+  }
+  const normalized = new Map<string, string>()
+  for (const [addr, seed] of Object.entries(playerSeeds)) {
+    normalized.set(addr.toLowerCase(), seed)
+  }
+  const orderedKeys: string[] = []
+  if (playerOrder && playerOrder.length > 0) {
+    for (const addr of playerOrder) {
+      const k = addr.toLowerCase()
+      if (normalized.has(k) && !orderedKeys.includes(k)) {
+        orderedKeys.push(k)
+      }
+    }
+  }
+  const remainingKeys = [...normalized.keys()]
+    .filter(k => !orderedKeys.includes(k))
+    .sort()
+  orderedKeys.push(...remainingKeys)
+
+  const transcript = orderedKeys
+    .map(k => `${k}:${normalized.get(k) ?? ''}`)
+    .join('|')
+  return createHmac('sha256', serverSeed).update(transcript).digest('hex')
+}
+
+/**
+ * Derives `count` dice faces (1..6) deterministically from server/joint and player seeds.
  * Neither party alone can predict or bias the result.
  * Modulo bias is avoided using rejection sampling.
  */
@@ -29,14 +91,20 @@ export function derivePlayerDice(
   serverSeed: string,
   playerSeed: string,
   count: number,
+  jointSeed?: string,
+  playerAddress?: string,
 ): number[] {
   if (count <= 0) return []
   const dice: number[] = []
   let extraRound = 0
+  const effectiveKey = jointSeed ?? serverSeed
+  const baseSalt = playerAddress
+    ? `${playerAddress.toLowerCase()}:${playerSeed}`
+    : playerSeed
 
   while (dice.length < count) {
-    const salt = extraRound === 0 ? playerSeed : `${playerSeed}:${extraRound}`
-    const hmac = createHmac('sha256', serverSeed).update(salt).digest()
+    const salt = extraRound === 0 ? baseSalt : `${baseSalt}:${extraRound}`
+    const hmac = createHmac('sha256', effectiveKey).update(salt).digest()
 
     for (let i = 0; i < hmac.length && dice.length < count; i++) {
       const b = hmac[i]

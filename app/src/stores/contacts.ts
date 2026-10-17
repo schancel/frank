@@ -32,6 +32,64 @@ import { markRaw } from 'vue'
 import { inferCuratedBotAttributes } from '../utils/curated-bots'
 import { setOutboundWakeupTokenProvider } from '@frank/cashweb/relay/canonical-dm-transport'
 import { syncRelayNotificationPolicy } from '../utils/webpush-sync'
+import {
+  CONTACT_KEY_ROTATION_DOMAIN,
+  createContactKeyRotationStatement,
+  deriveAddressFromPublicKeyHex,
+  encodeContactKeyRotationPayload,
+  hashContactKeyRotationPayload,
+  normalizeMasterPublicKeyHex,
+  verifyContactKeyRotationStatement,
+  type ContactKeyRotationRejectionReason,
+  type ContactKeyRotationStatement,
+  type ContactKeyRotationVerificationResult,
+  type CreateContactKeyRotationStatementParams,
+  type VerifyContactKeyRotationOptions,
+} from '../utils/contact-key-rotation'
+
+export {
+  CONTACT_KEY_ROTATION_DOMAIN,
+  createContactKeyRotationStatement,
+  deriveAddressFromPublicKeyHex,
+  encodeContactKeyRotationPayload,
+  hashContactKeyRotationPayload,
+  normalizeMasterPublicKeyHex,
+  verifyContactKeyRotationStatement,
+  type ContactKeyRotationRejectionReason,
+  type ContactKeyRotationStatement,
+  type ContactKeyRotationVerificationResult,
+  type CreateContactKeyRotationStatementParams,
+  type VerifyContactKeyRotationOptions,
+}
+
+export interface UnverifiedHandleResolution {
+  handle: string
+  pinnedAddress: string
+  conflictingAddress: string
+  detectedAt: number
+}
+
+export type ContactKeyRotationResult =
+  | {
+      ok: true
+      applied: true
+      oldAddress: string
+      newAddress: string
+      sequence: number
+      rotationNotice: string
+    }
+  | {
+      ok: false
+      applied: false
+      reason: ContactKeyRotationRejectionReason
+      warning: string
+      address?: string
+    }
+
+function normalizeHandle(handle: string): string {
+  const trimmed = handle.trim()
+  return (trimmed.startsWith('@') ? trimmed.slice(1) : trimmed).toLowerCase()
+}
 
 const pendingOutboundWakeupTokens = new Map<string, string>()
 
@@ -131,6 +189,22 @@ export type ContactState = {
   inboundWakeupToken?: string
   /** 32-byte hex wakeup token preimage this contact issued to us so we can wake them via X-Cashweb-Wakeup-Token. */
   outboundWakeupToken?: string
+  /** Canonical address this contact is pinned to (#1369). */
+  pinnedAddress?: string
+  /** Compressed 33-byte secp256k1 master public key hex authorised to sign key rotations (#1369). */
+  masterPublicKeyHex?: string | null
+  /** Highest validated key rotation sequence number applied for this contact (#1369). */
+  lastRotationSequence?: number
+  /** Previous address this contact was rotated from (#1369). */
+  rotatedFromAddress?: string | null
+  /** User-facing notice recorded when a valid master-key rotation statement rotated this contact (#1369). */
+  rotationNotice?: string | null
+  /** User-facing warning recorded when an invalid or replayed rotation statement was rejected (#1369). */
+  rotationWarning?: string | null
+  /** User-facing warning recorded when a handle resolved to a different address without a valid rotation statement (#1369). */
+  handleConflictWarning?: string | null
+  /** Structured record of an unverified handle resolution conflict (#1369). */
+  unverifiedHandleResolution?: UnverifiedHandleResolution | null
 }
 
 export interface CuratedDefaultProvenance {
@@ -197,6 +271,14 @@ type RestorableContactState = {
   }
   inboundWakeupToken?: string
   outboundWakeupToken?: string
+  pinnedAddress?: string
+  masterPublicKeyHex?: string | null
+  lastRotationSequence?: number
+  rotatedFromAddress?: string | null
+  rotationNotice?: string | null
+  rotationWarning?: string | null
+  handleConflictWarning?: string | null
+  unverifiedHandleResolution?: UnverifiedHandleResolution | null
 }
 
 export type RestorableState = {
@@ -222,6 +304,11 @@ export async function rehydrateContacts(
     try {
       contacts[address] = {
         ...contact,
+        pinnedAddress:
+          contact.pinnedAddress ??
+          safeToChainDisplayAddress(address) ??
+          address,
+        lastRotationSequence: contact.lastRotationSequence ?? 0,
         profile: {
           ...profile,
           // A username saved before handles came only from the relay's name store was copied
@@ -358,6 +445,18 @@ export const useContactStore = defineStore('contacts', {
           : Uint8Array.from(stored as ArrayLike<number>)
       return markRaw(profilePubKeyFromBytes(bytes))
     },
+    getPinnedContactByHandle: state => (handle: string): ContactState | undefined => {
+      if (!handle) return undefined
+      const target = normalizeHandle(handle)
+      for (const contact of Object.values(state.contacts)) {
+        if (!contact) continue
+        const addedBy = contact.profile?.addedByUsername
+        if (addedBy && normalizeHandle(addedBy) === target) {
+          return contact
+        }
+      }
+      return undefined
+    },
   },
   actions: {
     addContact({
@@ -368,6 +467,35 @@ export const useContactStore = defineStore('contacts', {
       contact: Partial<ContactState>
     }) {
       const apiAddress = toChainDisplayAddress(address)
+      const addedByHandle = contact.profile?.addedByUsername
+      if (addedByHandle) {
+        const normalizedAddedBy = normalizeHandle(addedByHandle)
+        for (const [existingAddr, existingContact] of Object.entries(
+          this.contacts,
+        )) {
+          if (
+            existingContact &&
+            existingAddr !== apiAddress &&
+            existingContact.profile?.addedByUsername &&
+            normalizeHandle(existingContact.profile.addedByUsername) ===
+              normalizedAddedBy
+          ) {
+            const pinnedAddr = existingContact.pinnedAddress ?? existingAddr
+            const warning = `Handle "${existingContact.profile.addedByUsername}" resolved to ${apiAddress} without a verified master-key rotation statement; keeping pinned address ${pinnedAddr}`
+            existingContact.profile.usernameReassigned = true
+            existingContact.profile.username = null
+            existingContact.handleConflictWarning = warning
+            existingContact.unverifiedHandleResolution = {
+              handle: existingContact.profile.addedByUsername,
+              pinnedAddress: pinnedAddr,
+              conflictingAddress: apiAddress,
+              detectedAt: Date.now(),
+            }
+            return
+          }
+        }
+      }
+
       const existing = this.contacts[apiAddress]
       const derivedInbound =
         contact.inboundWakeupToken ?? existing?.inboundWakeupToken
@@ -378,8 +506,42 @@ export const useContactStore = defineStore('contacts', {
       if (resolvedOutbound) {
         pendingOutboundWakeupTokens.delete(apiAddress)
       }
+      const rawMasterKey =
+        contact.masterPublicKeyHex !== undefined
+          ? contact.masterPublicKeyHex
+          : existing?.masterPublicKeyHex ?? null
+      const normalizedMasterKey = rawMasterKey
+        ? normalizeMasterPublicKeyHex(rawMasterKey) ?? rawMasterKey.toLowerCase()
+        : null
+
       const fixedContact: ContactState = {
         ...contact,
+        pinnedAddress: contact.pinnedAddress
+          ? toChainDisplayAddress(contact.pinnedAddress)
+          : existing?.pinnedAddress ?? apiAddress,
+        masterPublicKeyHex: normalizedMasterKey,
+        lastRotationSequence:
+          contact.lastRotationSequence ?? existing?.lastRotationSequence ?? 0,
+        rotatedFromAddress:
+          contact.rotatedFromAddress !== undefined
+            ? contact.rotatedFromAddress
+            : existing?.rotatedFromAddress ?? null,
+        rotationNotice:
+          contact.rotationNotice !== undefined
+            ? contact.rotationNotice
+            : existing?.rotationNotice ?? null,
+        rotationWarning:
+          contact.rotationWarning !== undefined
+            ? contact.rotationWarning
+            : existing?.rotationWarning ?? null,
+        handleConflictWarning:
+          contact.handleConflictWarning !== undefined
+            ? contact.handleConflictWarning
+            : existing?.handleConflictWarning ?? null,
+        unverifiedHandleResolution:
+          contact.unverifiedHandleResolution !== undefined
+            ? contact.unverifiedHandleResolution
+            : existing?.unverifiedHandleResolution ?? null,
         profile: {
           name: contact.profile?.name ?? null,
           signedName: contact.profile?.signedName,
@@ -407,6 +569,291 @@ export const useContactStore = defineStore('contacts', {
       this.contacts[apiAddress] = fixedContact
       void syncRelayNotificationPolicy()
     },
+    /**
+     * Adds a contact resolved by username/handle and pins it to `address` (and optionally
+     * `masterPublicKeyHex`). If a contact is already pinned for `handle` at a different address,
+     * the existing contact is NEVER silently re-pointed; instead a handle conflict warning is
+     * recorded on the pinned contact (#1369).
+     */
+    addContactByHandle({
+      handle,
+      address,
+      masterPublicKeyHex,
+      contact,
+    }: {
+      handle: string
+      address: string
+      masterPublicKeyHex?: string | null
+      contact?: Partial<ContactState>
+    }) {
+      const apiAddress = toChainDisplayAddress(address)
+      const normalizedHandle = normalizeHandle(handle)
+      for (const [existingAddr, existingContact] of Object.entries(
+        this.contacts,
+      )) {
+        if (
+          existingContact &&
+          existingContact.profile?.addedByUsername &&
+          normalizeHandle(existingContact.profile.addedByUsername) ===
+            normalizedHandle
+        ) {
+          if (existingAddr !== apiAddress) {
+            const pinnedAddr = existingContact.pinnedAddress ?? existingAddr
+            const warning = `Handle "${existingContact.profile.addedByUsername}" resolved to ${apiAddress} without a verified master-key rotation statement; keeping pinned address ${pinnedAddr}`
+            existingContact.profile.usernameReassigned = true
+            existingContact.profile.username = null
+            existingContact.handleConflictWarning = warning
+            existingContact.unverifiedHandleResolution = {
+              handle: existingContact.profile.addedByUsername,
+              pinnedAddress: pinnedAddr,
+              conflictingAddress: apiAddress,
+              detectedAt: Date.now(),
+            }
+          }
+          return existingContact
+        }
+      }
+
+      this.addContact({
+        address: apiAddress,
+        contact: {
+          ...contact,
+          pinnedAddress: apiAddress,
+          masterPublicKeyHex:
+            masterPublicKeyHex ?? contact?.masterPublicKeyHex ?? null,
+          lastRotationSequence: contact?.lastRotationSequence ?? 0,
+          profile: {
+            name: contact?.profile?.name ?? handle,
+            signedName: contact?.profile?.signedName,
+            username: contact?.profile?.username ?? normalizedHandle,
+            addedByUsername: handle,
+            usernameReassigned: false,
+            bio: contact?.profile?.bio ?? '',
+            avatar: contact?.profile?.avatar ?? '',
+            pubKey: contact?.profile?.pubKey ?? null,
+            isBot: contact?.profile?.isBot,
+            accountType: contact?.profile?.accountType,
+            botRole: contact?.profile?.botRole,
+          },
+        },
+      })
+      return this.contacts[apiAddress]
+    },
+    /**
+     * Observes a directory handle resolution for an existing handle-pinned contact (#1369).
+     * Never re-points a pinned contact unless a valid master-key rotation statement is supplied.
+     */
+    resolveContactHandle({
+      handle,
+      resolvedAddress,
+      rotationStatement,
+    }: {
+      handle: string
+      resolvedAddress: string
+      rotationStatement?: ContactKeyRotationStatement
+    }) {
+      const apiResolved = toChainDisplayAddress(resolvedAddress)
+      const normalizedHandle = normalizeHandle(handle)
+      let matchedAddr: string | undefined
+      let matchedContact: ContactState | undefined
+      for (const [addr, c] of Object.entries(this.contacts)) {
+        if (
+          c?.profile?.addedByUsername &&
+          normalizeHandle(c.profile.addedByUsername) === normalizedHandle
+        ) {
+          matchedAddr = addr
+          matchedContact = c
+          break
+        }
+      }
+
+      if (!matchedContact || !matchedAddr) {
+        return {
+          ok: false as const,
+          reason: 'contact-not-found' as const,
+        }
+      }
+
+      const pinnedAddr = matchedContact.pinnedAddress ?? matchedAddr
+      if (sameCanonicalAddress(pinnedAddr, apiResolved)) {
+        return {
+          ok: true as const,
+          address: pinnedAddr,
+          rotated: false,
+        }
+      }
+
+      if (rotationStatement) {
+        return this.applyContactKeyRotation(rotationStatement)
+      }
+
+      const handleLabel = matchedContact.profile.addedByUsername ?? handle
+      const warning = `Handle "${handleLabel}" now resolves to ${apiResolved} without a verified master-key rotation statement; keeping pinned address ${pinnedAddr}`
+      matchedContact.profile.usernameReassigned = true
+      matchedContact.profile.username = null
+      matchedContact.handleConflictWarning = warning
+      matchedContact.unverifiedHandleResolution = {
+        handle: handleLabel,
+        pinnedAddress: pinnedAddr,
+        conflictingAddress: apiResolved,
+        detectedAt: Date.now(),
+      }
+      return {
+        ok: false as const,
+        applied: false as const,
+        reason: 'unverified-handle-resolution' as const,
+        pinnedAddress: pinnedAddr,
+        conflictingAddress: apiResolved,
+        warning,
+      }
+    },
+    /**
+     * Applies a master-key-signed `ContactKeyRotationStatement` to a pinned contact (#1369).
+     * Rejects invalid, unauthorized, or replayed (`sequence <= lastRotationSequence`) statements
+     * without changing the contact's address, and records `rotationWarning` on the contact.
+     */
+    applyContactKeyRotation(
+      statement: ContactKeyRotationStatement,
+    ): ContactKeyRotationResult {
+      const oldAddr = safeToChainDisplayAddress(statement?.oldAddress)
+      const newAddr = safeToChainDisplayAddress(statement?.newAddress)
+
+      let targetAddress = oldAddr && this.contacts[oldAddr] ? oldAddr : undefined
+      let targetContact = targetAddress ? this.contacts[targetAddress] : undefined
+
+      if (!targetContact && oldAddr) {
+        const normalizedMaster = statement?.masterPublicKeyHex
+          ? normalizeMasterPublicKeyHex(statement.masterPublicKeyHex)
+          : null
+        for (const [addr, candidate] of Object.entries(this.contacts)) {
+          if (!candidate) continue
+          if (
+            candidate.pinnedAddress === oldAddr ||
+            candidate.rotatedFromAddress === oldAddr ||
+            (normalizedMaster &&
+              candidate.masterPublicKeyHex === normalizedMaster)
+          ) {
+            targetAddress = addr
+            targetContact = candidate
+            break
+          }
+        }
+      }
+
+      if (!targetContact || !targetAddress) {
+        return {
+          ok: false,
+          applied: false,
+          reason: 'contact-not-found',
+          warning: 'Cannot rotate key: pinned contact not found',
+        }
+      }
+
+      const currentSequence = targetContact.lastRotationSequence ?? 0
+      const pinnedAddr = targetContact.pinnedAddress ?? targetAddress
+
+      // Check replay/stale sequence first if the statement is replayed against an already-rotated contact
+      if (
+        typeof statement?.sequence === 'number' &&
+        Number.isSafeInteger(statement.sequence) &&
+        statement.sequence >= 1 &&
+        statement.sequence <= currentSequence
+      ) {
+        const warning = `Rejected replayed or stale key rotation statement (sequence ${statement.sequence} <= ${currentSequence})`
+        targetContact.rotationWarning = warning
+        return {
+          ok: false,
+          applied: false,
+          reason: 'replayed-or-stale-sequence',
+          warning,
+          address: targetAddress,
+        }
+      }
+
+      let expectedMasterKey = targetContact.masterPublicKeyHex ?? null
+      if (!expectedMasterKey && targetContact.profile?.pubKey) {
+        try {
+          const pubHex = Buffer.from(
+            targetContact.profile.pubKey.toBuffer(),
+          ).toString('hex')
+          expectedMasterKey = normalizeMasterPublicKeyHex(pubHex)
+        } catch {
+          // ignore
+        }
+      }
+
+      const verification = verifyContactKeyRotationStatement(statement, {
+        expectedOldAddress: pinnedAddr,
+        expectedMasterPublicKeyHex: expectedMasterKey,
+        lastRotationSequence: currentSequence,
+        requireOldAddressBinding: !expectedMasterKey,
+      })
+
+      if (!verification.valid) {
+        targetContact.rotationWarning = verification.message
+        return {
+          ok: false,
+          applied: false,
+          reason: verification.reason,
+          warning: verification.message,
+          address: targetAddress,
+        }
+      }
+
+      if (
+        newAddr &&
+        newAddr !== targetAddress &&
+        this.contacts[newAddr] !== undefined
+      ) {
+        const warning = `Cannot rotate contact from ${targetAddress} to ${newAddr}: destination address is already a contact`
+        targetContact.rotationWarning = warning
+        return {
+          ok: false,
+          applied: false,
+          reason: 'new-address-conflict',
+          warning,
+          address: targetAddress,
+        }
+      }
+
+      const canonicalOld = verification.oldAddress
+      const canonicalNew = verification.newAddress
+      const rotationNotice = `Contact key rotated from ${canonicalOld} to ${canonicalNew} (sequence #${verification.sequence})`
+
+      const rotatedContact: ContactState = {
+        ...targetContact,
+        pinnedAddress: canonicalNew,
+        masterPublicKeyHex: verification.normalizedMasterPublicKeyHex,
+        lastRotationSequence: verification.sequence,
+        rotatedFromAddress: canonicalOld,
+        rotationNotice,
+        rotationWarning: null,
+        handleConflictWarning: null,
+        unverifiedHandleResolution: null,
+        profile: {
+          ...targetContact.profile,
+          usernameReassigned: false,
+        },
+      }
+
+      delete this.contacts[targetAddress]
+      this.contacts[canonicalNew] = rotatedContact
+      void syncRelayNotificationPolicy()
+
+      return {
+        ok: true,
+        applied: true,
+        oldAddress: canonicalOld,
+        newAddress: canonicalNew,
+        sequence: verification.sequence,
+        rotationNotice,
+      }
+    },
+    rotatePinnedContact(
+      statement: ContactKeyRotationStatement,
+    ): ContactKeyRotationResult {
+      return this.applyContactKeyRotation(statement)
+    },
     setUpdateInterval(interval: number) {
       this.updateInterval = interval
     },
@@ -416,6 +863,14 @@ export const useContactStore = defineStore('contacts', {
       inbox,
       inboundWakeupToken,
       outboundWakeupToken,
+      pinnedAddress,
+      masterPublicKeyHex,
+      lastRotationSequence,
+      rotatedFromAddress,
+      rotationNotice,
+      rotationWarning,
+      handleConflictWarning,
+      unverifiedHandleResolution,
     }: Partial<ContactState> & { address: string }) {
       const apiAddress = toChainDisplayAddress(address)
       const contact = this.contacts[apiAddress]
@@ -427,6 +882,14 @@ export const useContactStore = defineStore('contacts', {
             inbox,
             inboundWakeupToken,
             outboundWakeupToken,
+            pinnedAddress,
+            masterPublicKeyHex,
+            lastRotationSequence,
+            rotatedFromAddress,
+            rotationNotice,
+            rotationWarning,
+            handleConflictWarning,
+            unverifiedHandleResolution,
           },
         })
         return
@@ -439,6 +902,33 @@ export const useContactStore = defineStore('contacts', {
       }
       if (outboundWakeupToken !== undefined) {
         contact.outboundWakeupToken = outboundWakeupToken
+      }
+      if (pinnedAddress !== undefined) {
+        contact.pinnedAddress = toChainDisplayAddress(pinnedAddress)
+      }
+      if (masterPublicKeyHex !== undefined) {
+        contact.masterPublicKeyHex = masterPublicKeyHex
+          ? normalizeMasterPublicKeyHex(masterPublicKeyHex) ??
+            masterPublicKeyHex.toLowerCase()
+          : null
+      }
+      if (lastRotationSequence !== undefined) {
+        contact.lastRotationSequence = lastRotationSequence
+      }
+      if (rotatedFromAddress !== undefined) {
+        contact.rotatedFromAddress = rotatedFromAddress
+      }
+      if (rotationNotice !== undefined) {
+        contact.rotationNotice = rotationNotice
+      }
+      if (rotationWarning !== undefined) {
+        contact.rotationWarning = rotationWarning
+      }
+      if (handleConflictWarning !== undefined) {
+        contact.handleConflictWarning = handleConflictWarning
+      }
+      if (unverifiedHandleResolution !== undefined) {
+        contact.unverifiedHandleResolution = unverifiedHandleResolution
       }
     },
     setNotify({ address, value }: { address: string; value: boolean }) {
@@ -740,6 +1230,21 @@ export const useContactStore = defineStore('contacts', {
                   username: handle.username,
                   usernameReassigned: handle.reassigned,
                 }
+          const handleConflictPatch =
+            handle === undefined
+              ? {}
+              : handle.reassigned
+              ? {
+                  handleConflictWarning:
+                    oldContactInfo.handleConflictWarning ??
+                    `Handle "${
+                      oldContactInfo.profile?.addedByUsername ?? ''
+                    }" is now held by a different address without a verified key rotation; keeping pinned address ${canonical}`,
+                }
+              : {
+                  handleConflictWarning: null,
+                  unverifiedHandleResolution: null,
+                }
           const profileInfo = await fetchContactProfile(chainAddress)
           if (!profileInfo) {
             console.debug(`No registered profile found for ${address}`)
@@ -752,6 +1257,7 @@ export const useContactStore = defineStore('contacts', {
                 : `${shortAddressLabel(displayAddress)} (Unregistered)`
             this.updateContact({
               address,
+              ...handleConflictPatch,
               profile: {
                 ...oldContactInfo.profile,
                 ...handleFields,
@@ -768,6 +1274,7 @@ export const useContactStore = defineStore('contacts', {
           const oldName = oldContactInfo.profile.name
           this.updateContact({
             address,
+            ...handleConflictPatch,
             profile: {
               ...oldContactInfo.profile,
               // A registered profile without a display name must not keep the "Loading..."

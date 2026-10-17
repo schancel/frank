@@ -1,5 +1,9 @@
 import {
   derivePlayerDice,
+  deriveJointDiceSeed,
+  commitSeed,
+  commitDiceCup,
+  verifyDiceCupCommitment,
   countMatchingDice,
   validateBid,
   sha256Hex,
@@ -25,6 +29,30 @@ describe("Liar's Dice (Perudo) Dice Engine", () => {
     // Different seed produces different roll
     const diceOther = derivePlayerDice(serverSeed, 'different-seed', 5)
     expect(diceOther).not.toEqual(dice1)
+  })
+
+  it('mixes multi-party seeds so no single party can unilaterally choose dice rolls', () => {
+    const seeds1 = { '0xAlice': 'alice-seed-1', '0xBob': 'bob-seed-1' }
+    const seeds2 = { '0xAlice': 'alice-seed-1', '0xBob': 'bob-seed-2' }
+
+    const joint1 = deriveJointDiceSeed(serverSeed, seeds1, ['0xAlice', '0xBob'])
+    const joint2 = deriveJointDiceSeed(serverSeed, seeds2, ['0xAlice', '0xBob'])
+    expect(joint1).not.toBe(joint2)
+
+    const aliceDice1 = derivePlayerDice(serverSeed, 'alice-seed-1', 5, joint1, '0xAlice')
+    const aliceDice2 = derivePlayerDice(serverSeed, 'alice-seed-1', 5, joint2, '0xAlice')
+    expect(aliceDice1).not.toEqual(aliceDice2)
+  })
+
+  it('commits and verifies dice cups and rejects tampered dice', () => {
+    const cup = [1, 2, 4, 5, 6]
+    const salt = 'cup-salt-123'
+    const commit = commitDiceCup(cup, salt)
+    expect(commit).toHaveLength(64)
+    expect(verifyDiceCupCommitment(cup, salt, commit)).toBe(true)
+    expect(verifyDiceCupCommitment([1, 2, 4, 5, 5], salt, commit)).toBe(false)
+    expect(verifyDiceCupCommitment(cup, 'wrong-salt', commit)).toBe(false)
+    expect(commitSeed('secret')).toBe(sha256Hex('secret'))
   })
 
   it('computes matching dice with wild Aces (1s)', () => {

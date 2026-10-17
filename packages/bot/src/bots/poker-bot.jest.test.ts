@@ -1,7 +1,5 @@
-// PARKED (#1377): the poker code is kept for the rebuild and is not registered anywhere. These
-// tests describe its pre-rebuild behaviour (no commitment, no buy-in, a malformed emit from the
-// card); they keep it compiling and are not a statement that it is fair or playable.
 import { PokerBot } from './poker-bot'
+import { commitSeed, foldPokerState } from '@frank/wallet/message-item-plugins/poker'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
 
 // No deployment record: the registry has no GenericHTLC address for any network.
@@ -18,6 +16,7 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
       state: {
         get: jest.fn(),
         set: jest.fn(),
+        put: jest.fn(),
       },
     } as unknown as BotContext
   })
@@ -66,6 +65,9 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     const dealItem = replyStart.mock.calls[0][0][1]
     expect(dealItem.pot).toBe(30) // 10 SB + 20 BB
     expect(dealItem.street).toBe('preflop')
+    expect(dealItem.serverCommit).toBeDefined()
+    expect(dealItem.playerCommits).toBeDefined()
+    expect(dealItem.holeCardCommits).toBeDefined()
 
     // 4. In heads-up, dealer is SB and acts first preflop
     const firstActAddress = dealItem.activePlayer
@@ -129,5 +131,107 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     expect(textReply).toContain('HAND SETTLED')
     expect(textReply).not.toContain('On-Chain Settlement')
     expect(replyFold.mock.calls[0][0][1].txHash).toBeUndefined()
+  })
+
+  it('durably records pending payouts before sending settlement announcement and verifies multi-party commitments', async () => {
+    const events: string[] = []
+    ;(mockBotCtx.state as any).put = jest.fn(async (key: string) => {
+      if (key.startsWith('payout:pending:')) {
+        events.push(`record:${key}`)
+      }
+    })
+
+    // 1. Create & join
+    const replyCreate = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/poker create' }],
+      reply: replyCreate,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    const replyJoin = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xBob',
+      items: [{ type: 'text', text: '/poker join' }],
+      reply: replyJoin,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    // 2. Both players commit and reveal seeds before starting hand
+    const aliceSeed = 'alice-custom-poker-seed'
+    const bobSeed = 'bob-custom-poker-seed'
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: `/poker commit ${commitSeed(aliceSeed)}` }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+    await bot.onMessage({
+      senderAddress: '0xBob',
+      items: [{ type: 'text', text: `/poker commit ${commitSeed(bobSeed)}` }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    // Mismatched seed reveal is rejected
+    const replyBadSeed = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: `/poker seed wrong-seed` }],
+      reply: replyBadSeed,
+    } as unknown as BotMessageContext, mockBotCtx)
+    expect(replyBadSeed.mock.calls[0][0][0].text).toContain('does not match')
+
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: `/poker seed ${aliceSeed}` }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+    await bot.onMessage({
+      senderAddress: '0xBob',
+      items: [{ type: 'text', text: `/poker seed ${bobSeed}` }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    // 3. Start hand and play to showdown via /allin and /call
+    const replyStart = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/poker start' }],
+      reply: replyStart,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    const dealItem = replyStart.mock.calls[0][0][1]
+    const firstActor = dealItem.activePlayer
+    const secondActor = firstActor === '0xAlice' ? '0xBob' : '0xAlice'
+
+    const replyAllIn = jest.fn()
+    await bot.onMessage({
+      senderAddress: firstActor,
+      items: [{ type: 'text', text: '/allin' }],
+      reply: replyAllIn,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    const replyCall = jest.fn(async () => {
+      events.push('reply:settled')
+    })
+    await bot.onMessage({
+      senderAddress: secondActor,
+      items: [{ type: 'text', text: '/call' }],
+      reply: replyCall,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    expect(events.length).toBeGreaterThanOrEqual(2)
+    expect(events[0]).toMatch(/^record:payout:pending:/)
+    expect(events[events.length - 1]).toBe('reply:settled')
+    expect(bot.getPendingPayouts().size).toBeGreaterThanOrEqual(1)
+
+    // Fold state from the emitted messages and verify showdown
+    const settleItem = replyCall.mock.calls[0][0][1]
+    const folded = foldPokerState([
+      replyCreate.mock.calls[0][0][1],
+      replyJoin.mock.calls[0][0][1],
+      { ...dealItem, action: 'deal' },
+      settleItem,
+    ])
+    expect(folded).toBeDefined()
+    expect(folded!.verified).toBe(true)
   })
 })

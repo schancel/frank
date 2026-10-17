@@ -2,12 +2,15 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { SigningKey } from 'ethers';
+import { deriveOpenPgpSeeds } from '@frank/domain-roots';
+import type { EmailItem } from '@frank/cashweb/types/messages';
 import type { DirectMessageReceived } from '@frank/wallet/chain/active-chain';
 import { CreditLedger } from '../src/ledger/credit-ledger';
 import { MailJournal } from '../src/ledger/mail-journal';
 import { LocalFsBlobStore } from '../src/storage/local-fs-blob-store';
 import { ResendWebhookHttp } from '../src/host/resend-webhook-http';
 import type { ResendInboundWebhook } from '../src/smtp/resend-inbound-webhook';
+import { InboundEmailHandler } from '../src/smtp/inbound-server';
 import { createIssuedMailboxLookup } from '../src/smtp/issued-mailbox-lookup';
 import { JournaledFrankOutbound } from '../src/relay/journaled-frank-outbound';
 import {
@@ -15,7 +18,11 @@ import {
   buildSecp256k1OpenPgpPublicKey,
   computeOpenPgpV4Fingerprint,
   dearmorOpenPgpPublicKey,
+  decryptOpenPgpMessage,
+  deriveDeterministicOpenPgpKeypair,
   discoverWkdPublicKey,
+  encryptOpenPgpMessage,
+  isOpenPgpArmoredMessage,
   isValidWkdHash,
   wkdHashLocalPart,
   wkdUrlsForAddress,
@@ -363,6 +370,266 @@ describe('OpenPGP Web Key Directory (WKD) server & client discovery', () => {
           `OpenPGP: url=https://signet.mx/.well-known/openpgpkey/hu/${huAlice}?l=alice`,
         );
         expect(raw).toContain('Encrypted(Secret message)');
+      } finally {
+        ledger.sqlite?.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('End-to-End Deterministic OpenPGP Key Derivation & Ciphertext Passthrough (#1695)', () => {
+    const ACCOUNT_ROOT_SEED = Uint8Array.from(
+      { length: 32 },
+      (_, idx) => (idx * 17 + 0x23) & 0xff,
+    );
+
+    it('restores identical Ed25519 + X25519 WKD/OpenPGP public keys from the same seed and decrypts messages encrypted to it', () => {
+      const restoredWalletA = deriveDeterministicOpenPgpKeypair(
+        new Uint8Array(ACCOUNT_ROOT_SEED),
+        'alice@signet.mx',
+      );
+      const restoredWalletB = deriveDeterministicOpenPgpKeypair(
+        new Uint8Array(ACCOUNT_ROOT_SEED),
+        'alice@signet.mx',
+      );
+
+      expect(restoredWalletA.publicKeyPacket.equals(restoredWalletB.publicKeyPacket)).toBe(true);
+      expect(restoredWalletA.armoredPublicKey).toBe(restoredWalletB.armoredPublicKey);
+      expect(restoredWalletA.fingerprint).toBe(restoredWalletB.fingerprint);
+      expect(restoredWalletA.subkeyFingerprint).toBe(restoredWalletB.subkeyFingerprint);
+
+      const cleartext = 'End-to-end encrypted message across wallet recovery!';
+      const armoredCiphertext = encryptOpenPgpMessage(
+        cleartext,
+        restoredWalletA.publicKeyPacket,
+      );
+      expect(isOpenPgpArmoredMessage(armoredCiphertext)).toBe(true);
+
+      // Both restored wallets (using either accountRootSeed or deriveOpenPgpSeeds output) decrypt the ciphertext
+      expect(decryptOpenPgpMessage(armoredCiphertext, ACCOUNT_ROOT_SEED)).toBe(cleartext);
+      expect(
+        decryptOpenPgpMessage(armoredCiphertext, deriveOpenPgpSeeds(ACCOUNT_ROOT_SEED)),
+      ).toBe(cleartext);
+      expect(
+        decryptOpenPgpMessage(armoredCiphertext, restoredWalletB.encryptionSubkeySeed),
+      ).toBe(cleartext);
+    });
+
+    it('passes already OpenPGP-encrypted outbound email bodies through unchanged without double-encryption', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frank-wkd-e2e-outbound-'));
+      const ledger = new CreditLedger(
+        path.join(dir, 'mail.sqlite'),
+        new LocalFsBlobStore({ inMemory: true }),
+      );
+      try {
+        const journal = new MailJournal(ledger, {
+          chainIdentifier: 'monad-testnet',
+          gatewayAccount: GATEWAY_ACCOUNT,
+          gatewayDomain: 'signet.mx',
+          now: () => 1000,
+        });
+        const bobOpenPgp = deriveDeterministicOpenPgpKeypair(
+          ACCOUNT_ROOT_SEED,
+          'bob@proton.me',
+        );
+        const clientCiphertext = encryptOpenPgpMessage(
+          'Client-side pre-encrypted payload',
+          bobOpenPgp.publicKeyPacket,
+        );
+
+        const encryptSpy = jest.fn(async (plaintext: string) =>
+          encryptOpenPgpMessage(plaintext, bobOpenPgp.publicKeyPacket),
+        );
+
+        const outbound = new JournaledFrankOutbound({
+          journal,
+          ledger,
+          gatewayDomain: 'signet.mx',
+          mailboxSalt: SALT,
+          now: () => 1000,
+          resolveSenderUsername: async () => 'alice',
+          discoverRecipientWkdKey: async (addr) =>
+            addr === 'bob@proton.me'
+              ? { keyBytes: bobOpenPgp.publicKeyPacket, url: wkdUrlsForAddress(addr).advancedUrl }
+              : undefined,
+          encryptBodyWithOpenPgp: encryptSpy,
+        });
+
+        const message: DirectMessageReceived = {
+          senderAddress: { raw: SCOPE_ALICE },
+          recipientAddress: { raw: GATEWAY_ACCOUNT },
+          payloadDigest: 'd'.repeat(64),
+          stampValueWei: 1000n,
+          stampPayments: [],
+          receivedTime: 1000,
+          conversationId: '00000000-0000-0000-0000-000000000003',
+          messageId: '00000000-0000-0000-0000-000000000004',
+          items: [
+            {
+              type: 'email',
+              messageId: '<msg-e2e-preencrypted@signet.mx>',
+              inReplyTo: '<parent-1@proton.me>',
+              references: ['<root-1@proton.me>', '<parent-1@proton.me>'],
+              from: { address: 'alice@signet.mx', name: 'Alice' },
+              to: [{ address: 'bob@proton.me' }],
+              subject: 'E2E OpenPGP Pre-Encrypted',
+              textBody: clientCiphertext,
+            },
+          ],
+        };
+
+        await outbound.handle(message);
+        expect(encryptSpy).not.toHaveBeenCalled();
+
+        const [job] = journal.listDueOutboundJobs(1000, 10);
+        expect(job).toBeDefined();
+        if (job.signedRfc822.kind !== 'inline') throw new Error('Expected inline bytes');
+        const rawRfc822 = Buffer.from(job.signedRfc822.bytes).toString('utf8');
+
+        expect(rawRfc822).toContain('From: "Alice" <alice@signet.mx>');
+        expect(rawRfc822).toContain('To: bob@proton.me');
+        expect(rawRfc822).toContain('Message-ID: <msg-e2e-preencrypted@signet.mx>');
+        expect(rawRfc822).toContain('In-Reply-To: <parent-1@proton.me>');
+        expect(rawRfc822).toContain('References: <root-1@proton.me> <parent-1@proton.me>');
+        expect(rawRfc822).toContain('Content-Transfer-Encoding: 7bit');
+
+        const expectedCrLfCiphertext = clientCiphertext.replace(/\r?\n/g, '\r\n');
+        expect(rawRfc822).toContain(expectedCrLfCiphertext);
+
+        // Recipient decrypts the exact body from the outbound RFC 5322 message
+        const bodySection = rawRfc822.split('\r\n\r\n').slice(1).join('\r\n\r\n').trim();
+        expect(decryptOpenPgpMessage(bodySection, ACCOUNT_ROOT_SEED)).toBe(
+          'Client-side pre-encrypted payload',
+        );
+      } finally {
+        ledger.sqlite?.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('forwards inbound OpenPGP-encrypted email intact into Frank EmailItem and decrypts with seed-derived OpenPGP key', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frank-wkd-e2e-inbound-'));
+      const ledger = new CreditLedger(
+        path.join(dir, 'mail.sqlite'),
+        new LocalFsBlobStore({ inMemory: true }),
+      );
+      try {
+        const aliceOpenPgp = deriveDeterministicOpenPgpKeypair(
+          ACCOUNT_ROOT_SEED,
+          'alice@signet.mx',
+        );
+        const inboundCiphertext = encryptOpenPgpMessage(
+          'Inbound secret from external ProtonMail sender',
+          aliceOpenPgp.publicKeyPacket,
+        );
+
+        ledger.grantReplyAllowance('peer@proton.me', SCOPE_ALICE, 2);
+
+        const deliveredCalls: Array<{
+          recipientAddress: string;
+          items: unknown[];
+        }> = [];
+
+        const handler = new InboundEmailHandler({
+          gatewayDomain: 'signet.mx',
+          ledger,
+          stampProvider: {
+            chainFamily: 'evm',
+            assetUnit: 'wei',
+            getBalance: async () => ({
+              raw: 10_000_000_000_000_000_000n,
+              display: '10 MON',
+              isLowBalance: false,
+            }),
+            checkHealth: async () => ({ ok: true }),
+            stampAndSendDirectMessage: async (params) => {
+              deliveredCalls.push({
+                recipientAddress: params.recipientAddress,
+                items: params.items ?? [],
+              });
+              return {
+                txHash: '0x' + 'f'.repeat(64),
+                payloadDigest: 'e'.repeat(64),
+                recipientAddress: params.recipientAddress,
+              };
+            },
+          },
+          relayLookup: async (localPart) =>
+            localPart === 'alice' ? { accountAddress: SCOPE_ALICE } : undefined,
+        });
+
+        // 1. Direct armored textBody
+        const res1 = await handler.processInboundEmail({
+          messageId: '<inbound-pgp-1@proton.me>',
+          fromAddress: 'peer@proton.me',
+          fromName: 'Peer',
+          fromDomain: 'proton.me',
+          toAddress: 'alice@signet.mx',
+          localPart: 'alice',
+          subject: 'Encrypted Reply',
+          textBody: inboundCiphertext,
+          dkimValid: true,
+          spfValid: true,
+          rawRfc822: Buffer.from(
+            `From: peer@proton.me\r\nTo: alice@signet.mx\r\nSubject: Encrypted Reply\r\n\r\n${inboundCiphertext}`,
+            'utf8',
+          ),
+        });
+
+        expect(res1.status).toBe('delivered');
+        expect(deliveredCalls).toHaveLength(1);
+        const bridgedEmail1 = (deliveredCalls[0].items as EmailItem[]).find(
+          (i) => i.type === 'email',
+        );
+        expect(bridgedEmail1).toBeDefined();
+        expect(bridgedEmail1!.textBody).toBe(inboundCiphertext);
+        expect(
+          decryptOpenPgpMessage(bridgedEmail1!.textBody, ACCOUNT_ROOT_SEED),
+        ).toBe('Inbound secret from external ProtonMail sender');
+
+        // 2. PGP/MIME multipart/encrypted where textBody is empty and ciphertext is in rawRfc822
+        const mimeRaw = [
+          'From: peer@proton.me',
+          'To: alice@signet.mx',
+          'Subject: PGP/MIME Encrypted',
+          'Content-Type: multipart/encrypted; protocol="application/pgp-encrypted"; boundary="pgp-b"',
+          '',
+          '--pgp-b',
+          'Content-Type: application/pgp-encrypted',
+          '',
+          'Version: 1',
+          '',
+          '--pgp-b',
+          'Content-Type: application/octet-stream; name="encrypted.asc"',
+          '',
+          inboundCiphertext,
+          '--pgp-b--',
+        ].join('\r\n');
+
+        const res2 = await handler.processInboundEmail({
+          messageId: '<inbound-pgp-2@proton.me>',
+          fromAddress: 'peer@proton.me',
+          fromName: 'Peer',
+          fromDomain: 'proton.me',
+          toAddress: 'alice@signet.mx',
+          localPart: 'alice',
+          subject: 'PGP/MIME Encrypted',
+          textBody: '',
+          dkimValid: true,
+          spfValid: true,
+          rawRfc822: Buffer.from(mimeRaw, 'utf8'),
+        });
+
+        expect(res2.status).toBe('delivered');
+        expect(deliveredCalls).toHaveLength(2);
+        const bridgedEmail2 = (deliveredCalls[1].items as EmailItem[]).find(
+          (i) => i.type === 'email',
+        );
+        expect(bridgedEmail2).toBeDefined();
+        expect(bridgedEmail2!.textBody).toBe(inboundCiphertext);
+        expect(
+          decryptOpenPgpMessage(bridgedEmail2!.textBody, ACCOUNT_ROOT_SEED),
+        ).toBe('Inbound secret from external ProtonMail sender');
       } finally {
         ledger.sqlite?.close();
         fs.rmSync(dir, { recursive: true, force: true });

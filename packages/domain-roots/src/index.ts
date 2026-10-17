@@ -21,7 +21,7 @@ const ROOT_LENGTH = 32
 const OUTPUT_LENGTH = 32
 const EXTRACT_SALT = ascii('frank/domain-root-registry/v1')
 
-const registry = Object.freeze({
+const coreRegistry = Object.freeze({
   'ecash-bch-wallet': Object.freeze({
     code: 1,
     label: 'frank/domain-root/v1/ecash-bch-wallet',
@@ -49,12 +49,34 @@ const registry = Object.freeze({
   }),
 } as const)
 
-export type DomainPurpose = keyof typeof registry
+export const OPENPGP_DOMAIN_PURPOSE = 'openpgp' as const
+export const OPENPGP_INFO_LABEL = 'frank.openpgp.v1' as const
+export const OPENPGP_ED25519_SUBKEY_INFO = 'frank.openpgp.ed25519.v1' as const
+export const OPENPGP_X25519_SUBKEY_INFO = 'frank.openpgp.x25519.v1' as const
+/**
+ * Canonical fixed creation epoch (2023-11-14T22:13:20Z) so two wallets restored
+ * from the same seed produce byte-for-byte identical OpenPGP packets without sync.
+ */
+export const OPENPGP_CANONICAL_CREATION_TIMESTAMP = 1_700_000_000 as const
+
+const registry = Object.freeze({
+  ...coreRegistry,
+  [OPENPGP_DOMAIN_PURPOSE]: Object.freeze({
+    code: 6,
+    label: OPENPGP_INFO_LABEL,
+    interpretation: 'openpgp-ed25519-x25519-master-seed',
+  }),
+} as const)
+
+export type DomainPurpose = keyof typeof coreRegistry
+export type ExtendedDomainPurpose = keyof typeof registry
 
 export type DomainInterpretation =
-  (typeof registry)[DomainPurpose]['interpretation']
+  (typeof registry)[ExtendedDomainPurpose]['interpretation']
 
-export interface DomainRegistryEntry<Purpose extends DomainPurpose> {
+export interface DomainRegistryEntry<
+  Purpose extends ExtendedDomainPurpose = DomainPurpose,
+> {
   readonly purpose: Purpose
   readonly code: (typeof registry)[Purpose]['code']
   readonly label: (typeof registry)[Purpose]['label']
@@ -62,17 +84,25 @@ export interface DomainRegistryEntry<Purpose extends DomainPurpose> {
   readonly interpretation: (typeof registry)[Purpose]['interpretation']
 }
 
-export interface DomainRoot<Purpose extends DomainPurpose = DomainPurpose> {
+export interface DomainRoot<
+  Purpose extends ExtendedDomainPurpose = DomainPurpose,
+> {
   readonly registry: typeof DERIVATION_REGISTRY_ID
   readonly purpose: Purpose
   readonly bytes: Uint8Array
 }
 
+export interface DerivedOpenPgpSeeds {
+  readonly primarySigningSeed: Uint8Array
+  readonly encryptionSubkeySeed: Uint8Array
+  readonly creationTimestamp: typeof OPENPGP_CANONICAL_CREATION_TIMESTAMP
+}
+
 export const DOMAIN_PURPOSES = Object.freeze(
-  Object.keys(registry) as DomainPurpose[],
+  Object.keys(coreRegistry) as DomainPurpose[],
 )
 
-export function registryEntry<Purpose extends DomainPurpose>(
+export function registryEntry<Purpose extends ExtendedDomainPurpose>(
   purpose: Purpose,
 ): DomainRegistryEntry<Purpose> {
   if (!Object.prototype.hasOwnProperty.call(registry, purpose)) {
@@ -88,7 +118,7 @@ export function registryEntry<Purpose extends DomainPurpose>(
   }) as DomainRegistryEntry<Purpose>
 }
 
-export function deriveDomainRoot<Purpose extends DomainPurpose>(
+export function deriveDomainRoot<Purpose extends ExtendedDomainPurpose>(
   accountRoot: Uint8Array,
   purpose: Purpose,
 ): DomainRoot<Purpose> {
@@ -109,7 +139,45 @@ export function deriveDomainRoot<Purpose extends DomainPurpose>(
   }
 }
 
-function derivationInfo(entry: DomainRegistryEntry<DomainPurpose>): Uint8Array {
+/**
+ * Derives deterministic OpenPGP primary signing (Ed25519) and encryption subkey (X25519)
+ * 32-byte seeds from the 32-byte Frank account root seed using the dedicated `'openpgp'`
+ * domain root (`frank.openpgp.v1`) and subkey labels (`frank.openpgp.ed25519.v1`,
+ * `frank.openpgp.x25519.v1`), paired with a canonical creation timestamp.
+ */
+export function deriveOpenPgpSeeds(
+  accountRootSeed: Uint8Array,
+): DerivedOpenPgpSeeds {
+  const openPgpRoot = deriveDomainRoot(accountRootSeed, OPENPGP_DOMAIN_PURPOSE)
+  let subkeyPrk: Uint8Array | undefined
+  try {
+    subkeyPrk = extract(sha256, openPgpRoot.bytes, ascii(OPENPGP_INFO_LABEL))
+    const primarySigningSeed = expand(
+      sha256,
+      subkeyPrk,
+      ascii(OPENPGP_ED25519_SUBKEY_INFO),
+      OUTPUT_LENGTH,
+    )
+    const encryptionSubkeySeed = expand(
+      sha256,
+      subkeyPrk,
+      ascii(OPENPGP_X25519_SUBKEY_INFO),
+      OUTPUT_LENGTH,
+    )
+    return Object.freeze({
+      primarySigningSeed,
+      encryptionSubkeySeed,
+      creationTimestamp: OPENPGP_CANONICAL_CREATION_TIMESTAMP,
+    })
+  } finally {
+    openPgpRoot.bytes.fill(0)
+    subkeyPrk?.fill(0)
+  }
+}
+
+function derivationInfo(
+  entry: DomainRegistryEntry<ExtendedDomainPurpose>,
+): Uint8Array {
   const registryId = ascii(DERIVATION_REGISTRY_ID)
   const label = ascii(entry.label)
   return concatenate([

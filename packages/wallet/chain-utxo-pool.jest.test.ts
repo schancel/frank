@@ -1032,4 +1032,293 @@ describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', ()
       expect(pool.utxo.getAncestorCount('txD', 'lotus')).toBe(2)
     })
   })
+
+  describe('Two-Tier Confirmation Archiving & Atomic Batch Commits (Issue #1218)', () => {
+    const walletA = Wallet.createRandom()
+    const walletB = Wallet.createRandom()
+    const walletC = Wallet.createRandom()
+
+    it('moves confirmed spent coins past confirmation threshold from utxo:active:* into utxo:archive:* via archiveConfirmedSpentCoins', async () => {
+      const batchCalls: Array<unknown> = []
+      const mockDb: any = {
+        batch: jest.fn(async (ops: unknown) => {
+          batchCalls.push(ops)
+        }),
+      }
+      const pool = new ChainUtxoPool([], { database: mockDb })
+
+      const activeClean = pool.evm.registerSubAccount({
+        chain: 'monad',
+        address: walletA.address,
+        privateKey: walletA.privateKey,
+        balanceWei: 250_000n,
+      })
+
+      const unconfirmedSpent = pool.evm.registerSubAccount({
+        chain: 'monad',
+        address: walletB.address,
+        privateKey: walletB.privateKey,
+        balanceWei: 100_000n,
+      })
+      pool.markSpent(unconfirmedSpent.id, 1, {
+        confirmations: 2,
+        spentAtBlockHeight: 99,
+      })
+
+      const confirmedSpent = pool.evm.registerSubAccount({
+        chain: 'monad',
+        address: walletC.address,
+        privateKey: walletC.privateKey,
+        balanceWei: 150_000n,
+      })
+      pool.markSpent(confirmedSpent.id, 1, {
+        confirmations: 8,
+        spentAtBlockHeight: 90,
+      })
+
+      // Before archiving, all 3 are in utxo:active:*
+      expect(pool.getStorageKey(activeClean.id)).toBe(`utxo:active:${activeClean.id}`)
+      expect(pool.getStorageKey(unconfirmedSpent.id)).toBe(`utxo:active:${unconfirmedSpent.id}`)
+      expect(pool.getStorageKey(confirmedSpent.id)).toBe(`utxo:active:${confirmedSpent.id}`)
+
+      // Archive spent coins with >= 6 confirmations
+      const archived = await pool.archiveConfirmedSpentCoins({
+        minConfirmations: 6,
+        currentBlockHeight: 100,
+      })
+
+      expect(archived).toHaveLength(1)
+      expect(archived[0]!.id).toBe(confirmedSpent.id)
+
+      // Confirmed spent coin moved to utxo:archive:*, others remain in utxo:active:*
+      expect(pool.getStorageKey(activeClean.id)).toBe(`utxo:active:${activeClean.id}`)
+      expect(pool.getStorageKey(unconfirmedSpent.id)).toBe(`utxo:active:${unconfirmedSpent.id}`)
+      expect(pool.getStorageKey(confirmedSpent.id)).toBe(`utxo:archive:${confirmedSpent.id}`)
+
+      expect(pool.getActiveStorageEntries('monad').has(`utxo:active:${confirmedSpent.id}`)).toBe(false)
+      expect(pool.getArchiveStorageEntries('monad').has(`utxo:archive:${confirmedSpent.id}`)).toBe(true)
+      expect(pool.getAllCoins('monad')).toHaveLength(2)
+      expect(pool.getArchivedCoins('monad')).toHaveLength(1)
+
+      // Durable batch was invoked with atomic del from utxo:active:* and put to utxo:archive:*
+      expect(mockDb.batch).toHaveBeenCalledTimes(1)
+      expect(batchCalls[0]).toEqual([
+        { type: 'del', key: `utxo:active:${confirmedSpent.id}` },
+        {
+          type: 'put',
+          key: `utxo:archive:${confirmedSpent.id}`,
+          value: expect.any(String),
+        },
+      ])
+    })
+
+    it('commits coin updates atomically via commitBatch / durableBatch and rolls back completely on failure', async () => {
+      let shouldFailDb = false
+      const mockDb: any = {
+        batch: jest.fn(async () => {
+          if (shouldFailDb) {
+            throw new Error('simulated LevelDB disk write failure')
+          }
+        }),
+      }
+      const pool = new ChainUtxoPool([], { database: mockDb })
+
+      const coin1 = pool.evm.registerSubAccount({
+        chain: 'monad',
+        address: walletA.address,
+        privateKey: walletA.privateKey,
+        balanceWei: 100_000n,
+      })
+
+      // 1. Successful atomic batch commit (mark coin1 spent, register coin2)
+      const commitRes = await pool.commitBatch([
+        {
+          type: 'markSpent',
+          id: coin1.id,
+          finalNonce: 1,
+          confirmations: 6,
+        },
+        {
+          type: 'register',
+          coin: {
+            chain: 'monad',
+            address: walletB.address,
+            privateKey: walletB.privateKey,
+            balanceWei: 80_000n,
+            origin: 'change',
+          },
+        },
+      ])
+
+      expect(commitRes.activeCount).toBe(2)
+      expect(pool.getCoin(coin1.id)?.status).toBe('spent')
+      expect(pool.getCleanCoins('monad')).toHaveLength(1)
+      expect(mockDb.batch).toHaveBeenCalledTimes(1)
+
+      // 2. Failing mutation in middle of batch rolls back earlier mutations in the same batch
+      await expect(
+        pool.commitBatch([
+          { type: 'archive', id: coin1.id },
+          { type: 'markPending', id: 'non-existent-utxo-id' },
+        ]),
+      ).rejects.toThrow('UTXO not found')
+
+      // coin1 was NOT archived because the batch rolled back
+      expect(pool.getCoin(coin1.id)).toBeDefined()
+      expect(pool.getArchivedCoin(coin1.id)).toBeUndefined()
+      expect(pool.getStorageKey(coin1.id)).toBe(`utxo:active:${coin1.id}`)
+
+      // 3. Failing durableBatch write rolls back all in-memory state and tier maps
+      shouldFailDb = true
+      await expect(
+        pool.commitBatch([
+          { type: 'archive', id: coin1.id },
+          {
+            type: 'register',
+            coin: {
+              chain: 'monad',
+              address: walletC.address,
+              privateKey: walletC.privateKey,
+              balanceWei: 50_000n,
+              origin: 'change',
+            },
+          },
+        ]),
+      ).rejects.toThrow('simulated LevelDB disk write failure')
+
+      expect(pool.getCoin(coin1.id)).toBeDefined()
+      expect(pool.getArchivedCoins('monad')).toHaveLength(0)
+      expect(pool.getAllCoins('monad')).toHaveLength(2)
+      expect(pool.getStorageKey(coin1.id)).toBe(`utxo:active:${coin1.id}`)
+    })
+  })
+
+  describe('Automated CPFP Fee Acceleration for Stuck Native UTXO Transactions (Issue #1213)', () => {
+    let pool: ChainUtxoPool
+
+    beforeEach(() => {
+      pool = new ChainUtxoPool()
+    })
+
+    it('computes required child fee covering package deficit and builds CPFP child sweep plan', () => {
+      const parentTxId = 'deadbeef'.repeat(8)
+      const selfChangeAddr = 'ecash:qz2708636sn2st080sfs53q9fa2z6q5925d40gv4e5'
+      const destSelfAddr = 'ecash:qp9999999999999999999999999999999999999999'
+
+      const changeCoin = pool.utxo.registerOutpoint({
+        chain: 'ecash',
+        address: selfChangeAddr,
+        privateKey: '0x' + '11'.repeat(32),
+        txid: parentTxId,
+        vout: 1,
+        balanceWei: 20_000n,
+        origin: 'change',
+        parentTxHash: parentTxId,
+      })
+
+      // Parent: 250 vbytes, paid only 250 sats (1 sat/vB)
+      // Child: 150 vbytes
+      // Target package rate: 5 sat/vB -> total package (250 + 150) * 5 = 2,000 sats
+      // Required child fee = max(150 * 5 = 750, 2,000 - 250 = 1,750) = 1,750 sats
+      const plan = pool.utxo.planCpfpAcceleration({
+        parentTxId,
+        parentVsize: 250,
+        parentFee: 250n,
+        changeCoin,
+        childVsize: 150,
+        targetPackageFeePerByte: 5,
+        destinationAddress: destSelfAddr,
+        dustThreshold: 546n,
+      })
+
+      expect(plan.feeChild).toBe(1_750n)
+      expect(plan.childFee).toBe(1_750n)
+      expect(plan.standaloneChildFee).toBe(750n)
+      expect(plan.targetPackageFee).toBe(2_000n)
+      expect(plan.outputValue).toBe(20_000n - 1_750n)
+      expect(plan.destinationAddress).toBe(destSelfAddr)
+      expect(plan.effectivePackageFeePerByte).toBe(5)
+      expect(plan.outputs).toEqual([
+        {
+          address: destSelfAddr,
+          value: 18_250n,
+          amountWei: 18_250n,
+        },
+      ])
+
+      // Execute buildCpfpChildTransfer to transition parent change coin to pending and register child coin
+      const transfer = pool.utxo.buildCpfpChildTransfer({
+        parentTxId,
+        parentVsize: 250,
+        parentFee: 250n,
+        changeCoin,
+        childVsize: 150,
+        targetPackageFeePerByte: 5,
+        destinationAddress: destSelfAddr,
+        dustThreshold: 546n,
+      })
+
+      expect(transfer.childTxId).toBeDefined()
+      expect(pool.getCoin(changeCoin.id)?.status).toBe('pending')
+      expect(transfer.childCoin).toBeDefined()
+      expect(transfer.childCoin?.balanceWei).toBe(18_250n)
+      expect(transfer.childCoin?.address).toBe(destSelfAddr)
+      expect(pool.utxo.getMempoolAncestors(transfer.childTxId, 'ecash').has(parentTxId)).toBe(true)
+    })
+
+    it('enforces standalone child fee floor when parent already paid near target rate and rejects insufficient change value', () => {
+      const parentTxId = 'cafebabe'.repeat(8)
+      const changeCoin = pool.utxo.registerOutpoint({
+        chain: 'ecash',
+        address: 'ecash:qz2708636sn2st080sfs53q9fa2z6q5925d40gv4e5',
+        privateKey: '0x' + '22'.repeat(32),
+        txid: parentTxId,
+        vout: 0,
+        balanceWei: 1_200n,
+        origin: 'change',
+      })
+
+      // Parent paid 1,800 sats for 200 vB; child is 140 vB; target is 5 sat/vB
+      // Package target = (200 + 140) * 5 = 1,700 sats; deficit = -100 sats
+      // Standalone child floor = 140 * 5 = 700 sats -> feeChild = 700n
+      // Wait: changeCoin.value (1,200) <= feeChild (700) + dustThreshold (546) = 1,246 -> must reject!
+      expect(() =>
+        pool.utxo.planCpfpAcceleration({
+          parentTxId,
+          parentVsize: 200,
+          parentFee: 1_800n,
+          changeCoin,
+          childVsize: 140,
+          targetPackageFeePerByte: 5,
+          dustThreshold: 546n,
+        }),
+      ).toThrow(/Insufficient change coin value/)
+
+      // Increase change coin balance above 700 + 546 = 1,246 -> succeeds with standaloneChildFee = 700n
+      changeCoin.balanceWei = 2_000n
+      const plan = pool.utxo.planCpfpAcceleration({
+        parentTxId,
+        parentVsize: 200,
+        parentFee: 1_800n,
+        changeCoin,
+        childVsize: 140,
+        targetPackageFeePerByte: 5,
+        dustThreshold: 546n,
+      })
+      expect(plan.feeChild).toBe(700n)
+      expect(plan.outputValue).toBe(1_300n)
+
+      // Once parent is confirmed on-chain, CPFP is rejected
+      pool.utxo.markTransactionConfirmed(parentTxId)
+      expect(() =>
+        pool.utxo.planCpfpAcceleration({
+          parentTxId,
+          parentVsize: 200,
+          parentFee: 200n,
+          changeCoin,
+          targetPackageFeePerByte: 5,
+        }),
+      ).toThrow(/already confirmed/)
+    })
+  })
 })

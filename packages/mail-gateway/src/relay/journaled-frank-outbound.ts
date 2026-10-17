@@ -16,7 +16,7 @@ import {
   type SecureMessagePortal,
 } from '../secure-link/secure-message-portal';
 import type { FrankInboundRejectReason } from '../types';
-import { wkdHashLocalPart } from '../wkd/wkd';
+import { isOpenPgpArmoredMessage, wkdHashLocalPart } from '../wkd/wkd';
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 const MAX_SUBJECT_BYTES = 600;
@@ -99,7 +99,7 @@ function renderMail(
   const mailSubject = encodedSubject(subject);
   const bodySource = overrideTextBody ?? item.textBody;
   const normalizedBody = bodySource.replace(/\r?\n/g, '\r\n');
-  const use7Bit = isSafe7BitBody(normalizedBody);
+  const use7Bit = isOpenPgpArmoredMessage(normalizedBody) || isSafe7BitBody(normalizedBody);
   const transferEncoding = use7Bit ? '7bit' : 'base64';
   const renderedBody = use7Bit
     ? normalizedBody
@@ -303,7 +303,10 @@ export class JournaledFrankOutbound {
     let effectiveBody: string | undefined;
     let effectiveSubject: string | undefined;
     let wkdKey: { keyBytes: Uint8Array; url: string } | undefined;
-    if (this.discoverRecipientWkdKey) {
+    const alreadyOpenPgpEncrypted = isOpenPgpArmoredMessage(item.textBody);
+    if (alreadyOpenPgpEncrypted) {
+      effectiveBody = item.textBody;
+    } else if (this.discoverRecipientWkdKey) {
       try {
         wkdKey = await this.discoverRecipientWkdKey(recipient);
         if (wkdKey && this.encryptBodyWithOpenPgp) {
@@ -317,6 +320,7 @@ export class JournaledFrankOutbound {
     const shouldUseSecureLink =
       Boolean(this.secureMessagePortal) &&
       this.secureLinkPolicy !== 'off' &&
+      !alreadyOpenPgpEncrypted &&
       !effectiveBody &&
       (this.secureLinkPolicy === 'always' ||
         (this.secureLinkPolicy === 'when-no-wkd' && !wkdKey) ||

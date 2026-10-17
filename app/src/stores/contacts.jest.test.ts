@@ -38,12 +38,17 @@ jest.mock('../utils/contact-username', () => ({
 
 import { useChatStore } from './chats'
 import {
+  createContactKeyRotationStatement,
+  deriveAddressFromPublicKeyHex,
   isBlankName,
+  normalizeMasterPublicKeyHex,
   omitSessionCuratedDefaults,
   rehydrateContacts,
   useContactStore,
+  verifyContactKeyRotationStatement,
 } from './contacts'
 import type { ContactState } from './contacts'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { activeChain } from '@frank/wallet/chain'
 
 import { toChainDisplayAddress as toDisplay } from '../utils/chain-address'
@@ -1155,4 +1160,309 @@ describe('stores/contacts.ts (ticket #42)', () => {
       expect(Object.keys(contacts.getContacts)).toEqual([ADDRESS])
     })
   })
+
+  describe('pinned contacts and master-key-authorised key rotation (#1369)', () => {
+    const MASTER_PRIV_HEX = '11'.repeat(32)
+    const MASTER_PUB_HEX = Buffer.from(
+      secp256k1.getPublicKey(Buffer.from(MASTER_PRIV_HEX, 'hex'), true),
+    )
+      .toString('hex')
+      .toLowerCase()
+
+    const WRONG_MASTER_PRIV_HEX = '22'.repeat(32)
+
+    const OLD_ACCOUNT_PRIV_HEX = '33'.repeat(32)
+    const OLD_ACCOUNT_PUB_HEX = Buffer.from(
+      secp256k1.getPublicKey(Buffer.from(OLD_ACCOUNT_PRIV_HEX, 'hex'), true),
+    )
+      .toString('hex')
+      .toLowerCase()
+    const PINNED_ADDR = deriveAddressFromPublicKeyHex(OLD_ACCOUNT_PUB_HEX)!
+    const ROTATED_ADDR = toDisplay(`0x${'5a'.repeat(20)}`)
+    const SECOND_ROTATED_ADDR = toDisplay(`0x${'6b'.repeat(20)}`)
+    const IMPOSTOR_ADDR = toDisplay(`0x${'7c'.repeat(20)}`)
+
+    it('pins the resolved address and masterPublicKeyHex when adding a contact by handle', () => {
+      const contacts = useContactStore()
+      contacts.addContactByHandle({
+        handle: 'alice@frank.com',
+        address: PINNED_ADDR.toLowerCase(),
+        masterPublicKeyHex: MASTER_PUB_HEX.toUpperCase(),
+        contact: {
+          profile: {
+            name: 'Alice',
+            bio: 'Original Alice',
+            avatar: '',
+            pubKey: null,
+          },
+        },
+      })
+
+      expect(contacts.isContact(PINNED_ADDR)).toBe(true)
+      const stored = contacts.getContact(PINNED_ADDR)
+      expect(stored.pinnedAddress).toBe(toDisplay(PINNED_ADDR))
+      expect(stored.masterPublicKeyHex).toBe(
+        normalizeMasterPublicKeyHex(MASTER_PUB_HEX),
+      )
+      expect(stored.lastRotationSequence).toBe(0)
+      expect(stored.profile.addedByUsername).toBe('alice@frank.com')
+      expect(
+        contacts.getPinnedContactByHandle('@Alice@frank.com')?.pinnedAddress,
+      ).toBe(toDisplay(PINNED_ADDR))
+    })
+
+    it('never silently re-points a pinned contact when the same handle resolves to a new address without a rotation statement', () => {
+      const contacts = useContactStore()
+      contacts.addContactByHandle({
+        handle: 'alice@frank.com',
+        address: PINNED_ADDR,
+        masterPublicKeyHex: MASTER_PUB_HEX,
+        contact: {
+          profile: {
+            name: 'Alice',
+            bio: '',
+            avatar: '',
+            pubKey: null,
+          },
+        },
+      })
+
+      // Directory later resolves alice@frank.com to IMPOSTOR_ADDR without a rotation statement
+      const outcome = contacts.resolveContactHandle({
+        handle: 'alice@frank.com',
+        resolvedAddress: IMPOSTOR_ADDR,
+      })
+
+      expect(outcome.ok).toBe(false)
+      expect(contacts.isContact(PINNED_ADDR)).toBe(true)
+      expect(contacts.isContact(IMPOSTOR_ADDR)).toBe(false)
+
+      const pinned = contacts.getContact(PINNED_ADDR)
+      expect(pinned.pinnedAddress).toBe(toDisplay(PINNED_ADDR))
+      expect(pinned.profile.usernameReassigned).toBe(true)
+      expect(pinned.profile.username).toBeNull()
+      expect(pinned.handleConflictWarning).toContain('alice@frank.com')
+      expect(pinned.handleConflictWarning).toContain(toDisplay(IMPOSTOR_ADDR))
+      expect(pinned.unverifiedHandleResolution).toEqual(
+        expect.objectContaining({
+          handle: 'alice@frank.com',
+          pinnedAddress: toDisplay(PINNED_ADDR),
+          conflictingAddress: toDisplay(IMPOSTOR_ADDR),
+        }),
+      )
+
+      // Attempting to re-add by the same handle with a different address also keeps the pinned address
+      contacts.addContactByHandle({
+        handle: 'alice@frank.com',
+        address: IMPOSTOR_ADDR,
+      })
+      expect(contacts.isContact(IMPOSTOR_ADDR)).toBe(false)
+      expect(Object.keys(contacts.contacts)).toEqual([toDisplay(PINNED_ADDR)])
+    })
+
+    it('rotates a pinned contact to newAddress on a valid master-key-signed ContactKeyRotationStatement and records rotation notice', () => {
+      const contacts = useContactStore()
+      contacts.addContactByHandle({
+        handle: 'alice@frank.com',
+        address: PINNED_ADDR,
+        masterPublicKeyHex: MASTER_PUB_HEX,
+        contact: {
+          profile: {
+            name: 'Alice',
+            bio: 'Pinned friend',
+            avatar: '',
+            pubKey: null,
+          },
+        },
+      })
+
+      const statement = createContactKeyRotationStatement({
+        masterPrivateKey: MASTER_PRIV_HEX,
+        oldAddress: PINNED_ADDR,
+        newAddress: ROTATED_ADDR,
+        sequence: 1,
+        issuedAt: 1_700_000_000_000,
+      })
+
+      expect(
+        verifyContactKeyRotationStatement(statement, {
+          expectedMasterPublicKeyHex: MASTER_PUB_HEX,
+          expectedOldAddress: PINNED_ADDR,
+          lastRotationSequence: 0,
+        }),
+      ).toEqual(
+        expect.objectContaining({
+          valid: true,
+          oldAddress: toDisplay(PINNED_ADDR),
+          newAddress: toDisplay(ROTATED_ADDR),
+          sequence: 1,
+        }),
+      )
+
+      const result = contacts.applyContactKeyRotation(statement)
+      expect(result).toEqual(
+        expect.objectContaining({
+          ok: true,
+          applied: true,
+          oldAddress: toDisplay(PINNED_ADDR),
+          newAddress: toDisplay(ROTATED_ADDR),
+          sequence: 1,
+        }),
+      )
+
+      expect(contacts.isContact(PINNED_ADDR)).toBe(false)
+      expect(contacts.isContact(ROTATED_ADDR)).toBe(true)
+
+      const rotated = contacts.getContact(ROTATED_ADDR)
+      expect(rotated.pinnedAddress).toBe(toDisplay(ROTATED_ADDR))
+      expect(rotated.rotatedFromAddress).toBe(toDisplay(PINNED_ADDR))
+      expect(rotated.lastRotationSequence).toBe(1)
+      expect(rotated.rotationNotice).toContain(toDisplay(PINNED_ADDR))
+      expect(rotated.rotationNotice).toContain(toDisplay(ROTATED_ADDR))
+      expect(rotated.rotationWarning).toBeNull()
+      expect(rotated.profile.name).toBe('Alice')
+      expect(rotated.profile.addedByUsername).toBe('alice@frank.com')
+    })
+
+    it('supports a contact without a pre-pinned masterPublicKeyHex when oldKeySignatureHex binds oldAddress to the rotation statement', () => {
+      const contacts = useContactStore()
+      contacts.addContactByHandle({
+        handle: 'bob@frank.com',
+        address: PINNED_ADDR,
+        contact: {
+          profile: {
+            name: 'Bob',
+            bio: '',
+            avatar: '',
+            pubKey: null,
+          },
+        },
+      })
+
+      const statement = createContactKeyRotationStatement({
+        masterPrivateKey: MASTER_PRIV_HEX,
+        oldPrivateKey: OLD_ACCOUNT_PRIV_HEX,
+        oldAddress: PINNED_ADDR,
+        newAddress: ROTATED_ADDR,
+        sequence: 1,
+        issuedAt: 1_700_000_000_500,
+      })
+
+      const result = contacts.applyContactKeyRotation(statement)
+      expect(result.ok).toBe(true)
+      expect(contacts.isContact(PINNED_ADDR)).toBe(false)
+      expect(contacts.isContact(ROTATED_ADDR)).toBe(true)
+      expect(contacts.getContact(ROTATED_ADDR).masterPublicKeyHex).toBe(
+        MASTER_PUB_HEX,
+      )
+      expect(contacts.getContact(ROTATED_ADDR).lastRotationSequence).toBe(1)
+    })
+
+    it('rejects replayed (sequence <= current), tampered signature, or wrong-master-key rotation statements with a warning and leaves the pinned contact untouched', () => {
+      const contacts = useContactStore()
+      contacts.addContactByHandle({
+        handle: 'alice@frank.com',
+        address: PINNED_ADDR,
+        masterPublicKeyHex: MASTER_PUB_HEX,
+        contact: {
+          profile: {
+            name: 'Alice',
+            bio: '',
+            avatar: '',
+            pubKey: null,
+          },
+        },
+      })
+
+      // 1. Wrong master key
+      const wrongMasterStatement = createContactKeyRotationStatement({
+        masterPrivateKey: WRONG_MASTER_PRIV_HEX,
+        oldAddress: PINNED_ADDR,
+        newAddress: IMPOSTOR_ADDR,
+        sequence: 1,
+        issuedAt: 1_700_000_001_000,
+      })
+      const wrongKeyResult =
+        contacts.applyContactKeyRotation(wrongMasterStatement)
+      expect(wrongKeyResult).toEqual(
+        expect.objectContaining({
+          ok: false,
+          applied: false,
+          reason: 'master-key-mismatch',
+        }),
+      )
+      expect(contacts.isContact(PINNED_ADDR)).toBe(true)
+      expect(contacts.isContact(IMPOSTOR_ADDR)).toBe(false)
+      expect(contacts.getContact(PINNED_ADDR).rotationWarning).toBeTruthy()
+
+      // 2. Tampered payload (newAddress modified after signing)
+      const validStatement = createContactKeyRotationStatement({
+        masterPrivateKey: MASTER_PRIV_HEX,
+        oldAddress: PINNED_ADDR,
+        newAddress: ROTATED_ADDR,
+        sequence: 2,
+        issuedAt: 1_700_000_002_000,
+      })
+      const tamperedStatement = {
+        ...validStatement,
+        newAddress: IMPOSTOR_ADDR,
+      }
+      const tamperedResult = contacts.applyContactKeyRotation(tamperedStatement)
+      expect(tamperedResult).toEqual(
+        expect.objectContaining({
+          ok: false,
+          applied: false,
+          reason: 'invalid-signature',
+        }),
+      )
+      expect(contacts.isContact(PINNED_ADDR)).toBe(true)
+      expect(contacts.isContact(IMPOSTOR_ADDR)).toBe(false)
+      expect(contacts.getContact(PINNED_ADDR).rotationWarning).toContain(
+        'signature',
+      )
+
+      // 3. Apply valid rotation (sequence = 2) -> moves to ROTATED_ADDR
+      const applied = contacts.applyContactKeyRotation(validStatement)
+      expect(applied.ok).toBe(true)
+      expect(contacts.isContact(ROTATED_ADDR)).toBe(true)
+      expect(contacts.getContact(ROTATED_ADDR).lastRotationSequence).toBe(2)
+
+      // 4. Replay the exact same sequence = 2 statement
+      const replayedSame = contacts.applyContactKeyRotation(validStatement)
+      expect(replayedSame).toEqual(
+        expect.objectContaining({
+          ok: false,
+          applied: false,
+          reason: 'replayed-or-stale-sequence',
+        }),
+      )
+      expect(contacts.isContact(ROTATED_ADDR)).toBe(true)
+      expect(contacts.getContact(ROTATED_ADDR).rotationWarning).toContain(
+        'sequence 2 <= 2',
+      )
+
+      // 5. Stale sequence (sequence = 1 < 2) from current address ROTATED_ADDR -> SECOND_ROTATED_ADDR
+      const staleStatement = createContactKeyRotationStatement({
+        masterPrivateKey: MASTER_PRIV_HEX,
+        oldAddress: ROTATED_ADDR,
+        newAddress: SECOND_ROTATED_ADDR,
+        sequence: 1,
+        issuedAt: 1_700_000_003_000,
+      })
+      const staleResult = contacts.applyContactKeyRotation(staleStatement)
+      expect(staleResult).toEqual(
+        expect.objectContaining({
+          ok: false,
+          applied: false,
+          reason: 'replayed-or-stale-sequence',
+        }),
+      )
+      expect(contacts.isContact(ROTATED_ADDR)).toBe(true)
+      expect(contacts.isContact(SECOND_ROTATED_ADDR)).toBe(false)
+      expect(contacts.getContact(ROTATED_ADDR).pinnedAddress).toBe(
+        toDisplay(ROTATED_ADDR),
+      )
+    })
+  })
 })
+

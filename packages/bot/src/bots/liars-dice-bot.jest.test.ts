@@ -1,7 +1,5 @@
-// PARKED (#1377): the liar's dice code is kept for the rebuild and is not registered anywhere. These
-// tests describe its pre-rebuild behaviour (no commitment, no buy-in, a malformed emit from the
-// card); they keep it compiling and are not a statement that it is fair or playable.
 import { LiarsDiceBot } from './liars-dice-bot'
+import { commitSeed, foldLiarsDiceState } from '@frank/wallet/message-item-plugins/liars-dice'
 import { amountsOf } from './chain-amounts.testutil'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
 
@@ -20,6 +18,7 @@ describe("Liar's Dice Bot Table Coordinator", () => {
       state: {
         get: jest.fn(),
         set: jest.fn(),
+        put: jest.fn(),
       },
     } as unknown as BotContext
   })
@@ -86,6 +85,10 @@ describe("Liar's Dice Bot Table Coordinator", () => {
 
     expect(replyStart).toHaveBeenCalledTimes(1)
     expect(replyStart.mock.calls[0][0][0].text).toContain('Round 1 started')
+    const startItem = replyStart.mock.calls[0][0][1]
+    expect(startItem.serverCommit).toBeDefined()
+    expect(startItem.playerCommits).toBeDefined()
+    expect(startItem.myDice).toHaveLength(5)
 
     // 4. Alice bids 2 threes
     const replyBid = jest.fn()
@@ -112,6 +115,8 @@ describe("Liar's Dice Bot Table Coordinator", () => {
     expect(item.type).toBe('liars-dice')
     expect(item.action).toBe('showdown')
     expect(item.challengeResult).toBeDefined()
+    expect(item.serverSeed).toBeDefined()
+    expect(item.playerSeeds).toBeDefined()
   })
 
   it('sends no settlement transaction while GenericHTLC is not deployed on the bot\'s network', async () => {
@@ -170,5 +175,114 @@ describe("Liar's Dice Bot Table Coordinator", () => {
     expect(msg).toContain('GAME OVER')
     expect(msg).not.toContain('On-Chain Settlement')
     expect(replyLiar.mock.calls[0][0][1].txHash).toBeUndefined()
+  })
+
+  it('durably records pending payouts before sending settlement announcement and verifies multi-party commitments', async () => {
+    const events: string[] = []
+    ;(mockBotCtx.state as any).put = jest.fn(async (key: string) => {
+      if (key.startsWith('payout:pending:')) {
+        events.push(`record:${key}`)
+      }
+    })
+
+    const replyCreate = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/create' }],
+      reply: replyCreate,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    const replyJoin = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xBob',
+      items: [{ type: 'text', text: '/join' }],
+      reply: replyJoin,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    const tableId = (bot as any).latestTableId
+    const game = (bot as any).tables.get(tableId)
+    game.players[0].diceCount = 1
+    game.players[1].diceCount = 1
+
+    const replyStart = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/start' }],
+      reply: replyStart,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    // Custom player commit + reveal during round
+    const aliceSeed = 'alice-custom-dice-seed'
+    const bobSeed = 'bob-custom-dice-seed'
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: `/commit ${commitSeed(aliceSeed)}` }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+    await bot.onMessage({
+      senderAddress: '0xBob',
+      items: [{ type: 'text', text: `/commit ${commitSeed(bobSeed)}` }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    // Mismatched seed reveal is rejected
+    const replyBadSeed = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/seed wrong-seed' }],
+      reply: replyBadSeed,
+    } as unknown as BotMessageContext, mockBotCtx)
+    expect(replyBadSeed.mock.calls[0][0][0].text).toContain('does not match')
+
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: `/seed ${aliceSeed}` }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+    await bot.onMessage({
+      senderAddress: '0xBob',
+      items: [{ type: 'text', text: `/seed ${bobSeed}` }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    const replyBid = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/bid 1 2' }],
+      reply: replyBid,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    const replyLiar = jest.fn(async () => {
+      events.push('reply:resolved')
+    })
+    await bot.onMessage({
+      senderAddress: '0xBob',
+      items: [{ type: 'text', text: '/liar' }],
+      reply: replyLiar,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    expect(events.length).toBeGreaterThanOrEqual(2)
+    expect(events[0]).toMatch(/^record:payout:pending:/)
+    expect(events[events.length - 1]).toBe('reply:resolved')
+    expect(bot.getPendingPayouts().size).toBe(1)
+
+    const showdownItem = replyLiar.mock.calls[0][0][1]
+    const folded = foldLiarsDiceState([
+      replyCreate.mock.calls[0][0][1],
+      replyJoin.mock.calls[0][0][1],
+      {
+        ...replyStart.mock.calls[0][0][1],
+        playerCommits: {
+          '0xAlice': commitSeed(aliceSeed),
+          '0xBob': commitSeed(bobSeed),
+        },
+        cupCommits: game.cupCommits,
+      },
+      replyBid.mock.calls[0][0][1],
+      showdownItem,
+    ])
+    expect(folded).toBeDefined()
+    expect(folded!.verified).toBe(true)
+    expect(folded!.status).toBe('resolved')
   })
 })

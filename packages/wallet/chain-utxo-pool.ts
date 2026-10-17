@@ -21,7 +21,7 @@
  * 5. Chain Family Adapters: Dedicated adapters for EVM, Solana, and UTXO families.
  */
 
-import { getAddress, Provider } from 'ethers'
+import { getAddress, keccak256, toUtf8Bytes, Provider } from 'ethers'
 import {
   Blockhash,
   Keypair,
@@ -37,9 +37,13 @@ import {
   orderOfMagnitude2,
   calculateDecoyJitterDelayMs,
 } from './monad-change-distribution'
+import { durableBatch } from './storage/level-durability'
+import type { LevelDB } from 'level'
 
-export { calculateDecoyJitterDelayMs }
+export { calculateDecoyJitterDelayMs, durableBatch }
 
+export const UTXO_ACTIVE_KEY_PREFIX = 'utxo:active:'
+export const UTXO_ARCHIVE_KEY_PREFIX = 'utxo:archive:'
 
 export type ChainFamily = 'evm' | 'solana' | 'utxo'
 
@@ -65,6 +69,8 @@ export interface ChainUtxoCoin {
   readonly address: string
   readonly privateKey: string // attached private key for immediate signing
   balanceWei: bigint // standard base amount (wei, lamports, satoshis)
+  /** Alias for balanceWei on UTXO coins */
+  value?: bigint
   nonce?: number // for evm / solana account UTXOs
   outpoint?: { txid: string; vout: number } // for native UTXO family
   status: ChainUtxoStatus
@@ -80,6 +86,8 @@ export interface ChainUtxoCoin {
   readonly parentTxHash?: string
   readonly requiresConfirmation?: boolean
   readonly index?: number
+  confirmations?: number
+  spentAtBlockHeight?: number
 }
 
 export interface SelectCoinsParams {
@@ -205,6 +213,194 @@ export interface RegisterUtxoOutpointParams {
 export interface ArchiveSpentCoinsParams {
   readonly maxAgeMs?: number
   readonly chain?: string
+  readonly minConfirmations?: number
+  readonly currentBlockHeight?: number
+}
+
+export interface ArchiveConfirmedSpentCoinsOptions {
+  readonly minConfirmations?: number
+  readonly currentBlockHeight?: number
+  readonly maxAgeMs?: number
+  readonly chain?: string
+}
+
+export type ChainUtxoBatchMutation =
+  | {
+      readonly type: 'register' | 'put' | 'upsert'
+      readonly coin: Partial<ChainUtxoCoin> & {
+        chain: string
+        address: string
+        privateKey: string
+      }
+    }
+  | {
+      readonly type: 'markPending' | 'pending'
+      readonly id: string
+    }
+  | {
+      readonly type: 'markSpent' | 'spent'
+      readonly id: string
+      readonly finalNonce?: number
+      readonly confirmations?: number
+      readonly spentAtBlockHeight?: number
+    }
+  | {
+      readonly type: 'releasePending' | 'release'
+      readonly id: string
+    }
+  | {
+      readonly type: 'updateBalanceAndNonce' | 'update'
+      readonly id: string
+      readonly balanceWei: bigint
+      readonly nonce: number
+    }
+  | {
+      readonly type: 'archive'
+      readonly id: string
+    }
+  | {
+      readonly type: 'delete' | 'del'
+      readonly id: string
+    }
+
+export interface ChainUtxoBatchMutationsObject {
+  readonly register?: ReadonlyArray<
+    Partial<ChainUtxoCoin> & {
+      chain: string
+      address: string
+      privateKey: string
+    }
+  >
+  readonly upsert?: ReadonlyArray<
+    Partial<ChainUtxoCoin> & {
+      chain: string
+      address: string
+      privateKey: string
+    }
+  >
+  readonly markPending?: ReadonlyArray<string>
+  readonly markSpent?: ReadonlyArray<
+    | string
+    | {
+        id: string
+        finalNonce?: number
+        confirmations?: number
+        spentAtBlockHeight?: number
+      }
+  >
+  readonly releasePending?: ReadonlyArray<string>
+  readonly updateBalanceAndNonce?: ReadonlyArray<{
+    id: string
+    balanceWei: bigint
+    nonce: number
+  }>
+  readonly archive?: ReadonlyArray<string>
+  readonly delete?: ReadonlyArray<string>
+}
+
+export interface ChainUtxoBatchCommitResult {
+  readonly operations: ReadonlyArray<
+    { type: 'put'; key: string; value: string } | { type: 'del'; key: string }
+  >
+  readonly activeCount: number
+  readonly archivedCount: number
+}
+
+export interface ChainUtxoPoolOptions {
+  readonly database?: LevelDB
+}
+
+export interface CpfpAccelerationParams {
+  readonly parentTxId?: string
+  readonly parentTxHash?: string
+  readonly parentVsize: number | bigint
+  readonly parentFee: bigint | number
+  readonly changeCoin?:
+    | ChainUtxoCoin
+    | string
+    | {
+        id?: string
+        chain?: string
+        family?: ChainFamily
+        address?: string
+        privateKey?: string
+        balanceWei?: bigint
+        value?: bigint
+        outpoint?: { txid: string; vout: number }
+        txid?: string
+        vout?: number
+        status?: ChainUtxoStatus
+        origin?: ChainUtxoOrigin
+        parentTxHash?: string
+      }
+  readonly targetPackageFeePerByte: number | bigint
+  readonly childVsize?: number | bigint
+  readonly destinationAddress?: string
+  readonly dustThreshold?: bigint | number
+  readonly dustThresholdWei?: bigint
+  readonly chain?: string
+  readonly maxAncestors?: number
+  readonly commitState?: boolean
+  readonly childTxId?: string
+}
+
+export interface CpfpAccelerationPlan {
+  readonly parentTxId: string
+  readonly parentVsize: number
+  readonly parentFee: bigint
+  readonly childVsize: number
+  readonly packageVsize: number
+  readonly targetPackageFeePerByte: number
+  readonly standaloneChildFee: bigint
+  readonly targetPackageFee: bigint
+  readonly feeChild: bigint
+  readonly childFee: bigint
+  readonly dustThreshold: bigint
+  readonly changeCoin: ChainUtxoCoin
+  readonly inputOutpoint: { txid: string; vout: number }
+  readonly inputValue: bigint
+  readonly destinationAddress: string
+  readonly outputValue: bigint
+  readonly childOutputValue: bigint
+  readonly effectivePackageFeePerByte: number
+  readonly ancestorCount: number
+  readonly outputs: ReadonlyArray<{
+    address: string
+    value: bigint
+    amountWei: bigint
+  }>
+}
+
+export interface CpfpChildTransferResult extends CpfpAccelerationPlan {
+  readonly childTxId: string
+  readonly txHash: string
+  readonly childCoin?: ChainUtxoCoin
+}
+
+export function serializeUtxoCoin(coin: ChainUtxoCoin): string {
+  return JSON.stringify({
+    ...coin,
+    balanceWei: coin.balanceWei.toString(),
+  })
+}
+
+export function deserializeUtxoCoin(raw: string): ChainUtxoCoin {
+  const parsed = JSON.parse(raw) as Record<string, unknown>
+  const coin: ChainUtxoCoin = {
+    ...(parsed as unknown as ChainUtxoCoin),
+    balanceWei: BigInt(String(parsed.balanceWei ?? '0')),
+  }
+  Object.defineProperty(coin, 'value', {
+    get() {
+      return this.balanceWei
+    },
+    set(v: bigint) {
+      this.balanceWei = v
+    },
+    enumerable: false,
+    configurable: true,
+  })
+  return coin
 }
 
 /**
@@ -752,7 +948,27 @@ export class UtxoChainFamilyAdapter {
   isOutpointSpent(txid: string, vout: number, chain?: string): boolean {
     return this.pool.isOutpointSpent(txid, vout, chain)
   }
+
+  /**
+   * Computes an automated Child-Pays-For-Parent (CPFP) fee acceleration spend plan
+   * for a stuck unconfirmed native UTXO parent transaction (Issue #1213).
+   */
+  planCpfpAcceleration(params: CpfpAccelerationParams): CpfpAccelerationPlan {
+    return this.pool.planCpfpAcceleration(params)
+  }
+
+  /**
+   * Builds and applies a Child-Pays-For-Parent (CPFP) child transfer sweeping the
+   * unconfirmed parent change coin to a self-owned destination address (Issue #1213).
+   */
+  buildCpfpChildTransfer(
+    params: CpfpAccelerationParams,
+  ): CpfpChildTransferResult {
+    return this.pool.buildCpfpChildTransfer(params)
+  }
 }
+
+export { UtxoChainFamilyAdapter as NativeUtxoChainAdapter }
 
 /**
  * Unified Chain UTXO Pool.
@@ -763,6 +979,9 @@ export class UtxoChainFamilyAdapter {
 export class ChainUtxoPool {
   private readonly coinsById = new Map<string, ChainUtxoCoin>()
   private readonly archivedCoinsById = new Map<string, ChainUtxoCoin>()
+  private readonly activeStorageTier = new Map<string, string>()
+  private readonly archiveStorageTier = new Map<string, string>()
+  private database?: LevelDB
   private readonly coinsByAddress = new Map<string, Set<string>>()
   private readonly cleanCoinIdsByChain = new Map<string, Set<string>>()
   private readonly pendingCoinIdsByChain = new Map<string, Set<string>>()
@@ -778,7 +997,11 @@ export class ChainUtxoPool {
   readonly solana: SolanaChainFamilyAdapter
   readonly utxo: UtxoChainFamilyAdapter
 
-  constructor(initialCoins: ChainUtxoCoin[] = []) {
+  constructor(
+    initialCoins: ChainUtxoCoin[] = [],
+    options?: ChainUtxoPoolOptions,
+  ) {
+    this.database = options?.database
     this.evm = new EvmChainFamilyAdapter(this)
     this.solana = new SolanaChainFamilyAdapter(this)
     this.utxo = new UtxoChainFamilyAdapter(this)
@@ -786,6 +1009,10 @@ export class ChainUtxoPool {
     for (const coin of initialCoins) {
       this.registerCoin(coin)
     }
+  }
+
+  attachStorage(database: LevelDB): void {
+    this.database = database
   }
 
   chainKey(chain: string): string {
@@ -1065,7 +1292,7 @@ export class ChainUtxoPool {
       family,
       address: canonicalAddress,
       privateKey: coin.privateKey,
-      balanceWei: isSpentOutpoint ? 0n : (coin.balanceWei ?? 0n),
+      balanceWei: isSpentOutpoint ? 0n : (coin.balanceWei ?? coin.value ?? 0n),
       nonce: coin.nonce ?? (family !== 'utxo' ? 0 : undefined),
       outpoint: coin.outpoint,
       status,
@@ -1079,7 +1306,24 @@ export class ChainUtxoPool {
       parentTxHash: coin.parentTxHash,
       requiresConfirmation: coin.requiresConfirmation,
       index: coin.index,
+      ...(coin.confirmations !== undefined
+        ? { confirmations: coin.confirmations }
+        : {}),
+      ...(coin.spentAtBlockHeight !== undefined
+        ? { spentAtBlockHeight: coin.spentAtBlockHeight }
+        : {}),
     }
+
+    Object.defineProperty(record, 'value', {
+      get() {
+        return this.balanceWei
+      },
+      set(v: bigint) {
+        this.balanceWei = v
+      },
+      enumerable: false,
+      configurable: true,
+    })
 
     // Clean up previous indices if overwriting
     const existing = this.coinsById.get(id)
@@ -1087,8 +1331,13 @@ export class ChainUtxoPool {
       this.removeFromIndices(existing)
     }
     this.archivedCoinsById.delete(id)
+    this.archiveStorageTier.delete(`${UTXO_ARCHIVE_KEY_PREFIX}${id}`)
 
     this.coinsById.set(id, record)
+    this.activeStorageTier.set(
+      `${UTXO_ACTIVE_KEY_PREFIX}${id}`,
+      serializeUtxoCoin(record),
+    )
 
     // Register mempool DAG outpoint dependency if parentTxHash is attached
     if (record.parentTxHash && record.outpoint) {
@@ -1365,12 +1614,61 @@ export class ChainUtxoPool {
   }
 
   /**
+   * Returns the two-tier storage key (`utxo:active:${id}` or `utxo:archive:${id}`) for a coin.
+   */
+  getStorageKey(id: string): string | undefined {
+    if (this.coinsById.has(id)) return `${UTXO_ACTIVE_KEY_PREFIX}${id}`
+    if (this.archivedCoinsById.has(id)) return `${UTXO_ARCHIVE_KEY_PREFIX}${id}`
+    return undefined
+  }
+
+  /**
+   * Returns a snapshot of active storage tier entries (`utxo:active:*`).
+   */
+  getActiveStorageEntries(chain?: string): Map<string, string> {
+    if (!chain) return new Map(this.activeStorageTier)
+    const cKey = this.chainKey(chain)
+    const filtered = new Map<string, string>()
+    for (const [key, value] of this.activeStorageTier.entries()) {
+      const id = key.slice(UTXO_ACTIVE_KEY_PREFIX.length)
+      const coin = this.coinsById.get(id)
+      if (coin && this.chainKey(coin.chain) === cKey) {
+        filtered.set(key, value)
+      }
+    }
+    return filtered
+  }
+
+  /**
+   * Returns a snapshot of cold archive storage tier entries (`utxo:archive:*`).
+   */
+  getArchiveStorageEntries(chain?: string): Map<string, string> {
+    if (!chain) return new Map(this.archiveStorageTier)
+    const cKey = this.chainKey(chain)
+    const filtered = new Map<string, string>()
+    for (const [key, value] of this.archiveStorageTier.entries()) {
+      const id = key.slice(UTXO_ARCHIVE_KEY_PREFIX.length)
+      const coin = this.archivedCoinsById.get(id)
+      if (coin && this.chainKey(coin.chain) === cKey) {
+        filtered.set(key, value)
+      }
+    }
+    return filtered
+  }
+
+  /**
    * Two-tier storage archiving:
    * Moves fully drained ($0 wei) and spent coins older than maxAgeMs (default 1 hour)
-   * from the active coinsById map into an archived map/collection archivedCoinsById,
+   * from the active coinsById map (`utxo:active:*`) into `archivedCoinsById` (`utxo:archive:*`),
    * keeping the hot active memory index small.
    */
   archiveSpentCoins(params?: ArchiveSpentCoinsParams): ChainUtxoCoin[] {
+    if (
+      params?.minConfirmations !== undefined ||
+      params?.currentBlockHeight !== undefined
+    ) {
+      return this.archiveConfirmedSpentCoins(params)
+    }
     const maxAgeMs = params?.maxAgeMs ?? 3_600_000
     const now = Date.now()
     const archived: ChainUtxoCoin[] = []
@@ -1385,14 +1683,443 @@ export class ChainUtxoPool {
         coin.balanceWei === 0n &&
         now - coin.lastUpdatedMs >= maxAgeMs
       ) {
-        this.coinsById.delete(coin.id)
-        this.removeFromIndices(coin)
-        this.archivedCoinsById.set(coin.id, coin)
+        this.moveCoinToArchiveTier(coin)
         archived.push(coin)
       }
     }
 
     return archived
+  }
+
+  private moveCoinToArchiveTier(coin: ChainUtxoCoin): void {
+    this.coinsById.delete(coin.id)
+    this.removeFromIndices(coin)
+    this.archivedCoinsById.set(coin.id, coin)
+    this.activeStorageTier.delete(`${UTXO_ACTIVE_KEY_PREFIX}${coin.id}`)
+    this.archiveStorageTier.set(
+      `${UTXO_ARCHIVE_KEY_PREFIX}${coin.id}`,
+      serializeUtxoCoin(coin),
+    )
+  }
+
+  /**
+   * Two-tier storage archiving by confirmation threshold (Issue #1218):
+   * Moves spent/drained coins past confirmation threshold from the active tier (`utxo:active:*`)
+   * into the archive tier (`utxo:archive:*`), while keeping active spendable coins in hot memory.
+   */
+  archiveConfirmedSpentCoins(
+    options?: ArchiveConfirmedSpentCoinsOptions,
+  ): ChainUtxoCoin[] {
+    const minConfirmations = options?.minConfirmations ?? 1
+    const now = Date.now()
+    const snapshot = this.captureStateSnapshot()
+    const archived: ChainUtxoCoin[] = []
+    const batchOps: Array<
+      { type: 'put'; key: string; value: string } | { type: 'del'; key: string }
+    > = []
+    const coins = Array.from(this.coinsById.values())
+
+    for (const coin of coins) {
+      if (
+        options?.chain &&
+        this.chainKey(coin.chain) !== this.chainKey(options.chain)
+      ) {
+        continue
+      }
+      if (coin.status !== 'spent' || coin.balanceWei !== 0n) {
+        continue
+      }
+      if (
+        options?.maxAgeMs !== undefined &&
+        now - coin.lastUpdatedMs < options.maxAgeMs
+      ) {
+        continue
+      }
+
+      let effectiveConfirmations: number | undefined
+      if (
+        options?.currentBlockHeight !== undefined &&
+        coin.spentAtBlockHeight !== undefined
+      ) {
+        effectiveConfirmations = Math.max(
+          0,
+          options.currentBlockHeight - coin.spentAtBlockHeight,
+        )
+      } else if (coin.confirmations !== undefined) {
+        effectiveConfirmations = coin.confirmations
+      } else if (coin.txHash && this.isTransactionConfirmed(coin.txHash)) {
+        effectiveConfirmations = Math.max(1, minConfirmations)
+      } else if (
+        coin.outpoint &&
+        this.isTransactionConfirmed(coin.outpoint.txid)
+      ) {
+        effectiveConfirmations = Math.max(1, minConfirmations)
+      } else if (options?.minConfirmations === undefined && !coin.txHash) {
+        effectiveConfirmations = 1
+      } else {
+        effectiveConfirmations = 0
+      }
+
+      if (effectiveConfirmations >= minConfirmations) {
+        this.moveCoinToArchiveTier(coin)
+        archived.push(coin)
+        batchOps.push(
+          { type: 'del', key: `${UTXO_ACTIVE_KEY_PREFIX}${coin.id}` },
+          {
+            type: 'put',
+            key: `${UTXO_ARCHIVE_KEY_PREFIX}${coin.id}`,
+            value: serializeUtxoCoin(coin),
+          },
+        )
+      }
+    }
+
+    if (this.database && batchOps.length > 0) {
+      let writePromise: Promise<unknown>
+      try {
+        writePromise = Promise.resolve(
+          durableBatch(this.database, batchOps),
+        ).catch(err => {
+          this.restoreStateSnapshot(snapshot)
+          throw err
+        })
+      } catch (err) {
+        this.restoreStateSnapshot(snapshot)
+        throw err
+      }
+      const plainCopy = [...archived]
+      Object.defineProperty(archived, 'then', {
+        value: (
+          onFulfilled?: (v: ChainUtxoCoin[]) => unknown,
+          onRejected?: (e: unknown) => unknown,
+        ) => writePromise.then(() => plainCopy).then(onFulfilled, onRejected),
+        enumerable: false,
+      })
+      Object.defineProperty(archived, 'catch', {
+        value: (onRejected?: (e: unknown) => unknown) =>
+          writePromise.then(() => plainCopy).catch(onRejected),
+        enumerable: false,
+      })
+      Object.defineProperty(archived, 'finally', {
+        value: (onFinally?: () => void) =>
+          writePromise.then(() => plainCopy).finally(onFinally),
+        enumerable: false,
+      })
+    }
+
+    return archived
+  }
+
+  private captureStateSnapshot() {
+    const cloneCoin = (c: ChainUtxoCoin): ChainUtxoCoin => {
+      const copy: ChainUtxoCoin = {
+        ...c,
+        ...(c.outpoint ? { outpoint: { ...c.outpoint } } : {}),
+      }
+      Object.defineProperty(copy, 'value', {
+        get() {
+          return this.balanceWei
+        },
+        set(v: bigint) {
+          this.balanceWei = v
+        },
+        enumerable: false,
+        configurable: true,
+      })
+      return copy
+    }
+    const cloneSetMap = (m: Map<string, Set<string>>) => {
+      const out = new Map<string, Set<string>>()
+      for (const [k, v] of m.entries()) {
+        out.set(k, new Set(v))
+      }
+      return out
+    }
+    return {
+      coinsById: new Map(
+        Array.from(this.coinsById.entries(), ([k, v]) => [k, cloneCoin(v)]),
+      ),
+      archivedCoinsById: new Map(
+        Array.from(this.archivedCoinsById.entries(), ([k, v]) => [
+          k,
+          cloneCoin(v),
+        ]),
+      ),
+      activeStorageTier: new Map(this.activeStorageTier),
+      archiveStorageTier: new Map(this.archiveStorageTier),
+      coinsByAddress: cloneSetMap(this.coinsByAddress),
+      cleanCoinIdsByChain: cloneSetMap(this.cleanCoinIdsByChain),
+      pendingCoinIdsByChain: cloneSetMap(this.pendingCoinIdsByChain),
+      coinsByOutpoint: new Map(this.coinsByOutpoint),
+      spentOutpointKeys: new Set(this.spentOutpointKeys),
+      outpointDependencies: cloneSetMap(this.outpointDependencies),
+      txDependencies: cloneSetMap(this.txDependencies),
+      unconfirmedTxHashes: new Set(this.unconfirmedTxHashes),
+      confirmedTxHashes: new Set(this.confirmedTxHashes),
+    }
+  }
+
+  private restoreStateSnapshot(
+    snapshot: ReturnType<ChainUtxoPool['captureStateSnapshot']>,
+  ): void {
+    const replaceMap = <K, V>(target: Map<K, V>, source: Map<K, V>) => {
+      target.clear()
+      for (const [k, v] of source.entries()) target.set(k, v)
+    }
+    const replaceSet = <T>(target: Set<T>, source: Set<T>) => {
+      target.clear()
+      for (const v of source.values()) target.add(v)
+    }
+    replaceMap(this.coinsById, snapshot.coinsById)
+    replaceMap(this.archivedCoinsById, snapshot.archivedCoinsById)
+    replaceMap(this.activeStorageTier, snapshot.activeStorageTier)
+    replaceMap(this.archiveStorageTier, snapshot.archiveStorageTier)
+    replaceMap(this.coinsByAddress, snapshot.coinsByAddress)
+    replaceMap(this.cleanCoinIdsByChain, snapshot.cleanCoinIdsByChain)
+    replaceMap(this.pendingCoinIdsByChain, snapshot.pendingCoinIdsByChain)
+    replaceMap(this.coinsByOutpoint, snapshot.coinsByOutpoint)
+    replaceSet(this.spentOutpointKeys, snapshot.spentOutpointKeys)
+    replaceMap(this.outpointDependencies, snapshot.outpointDependencies)
+    replaceMap(this.txDependencies, snapshot.txDependencies)
+    replaceSet(this.unconfirmedTxHashes, snapshot.unconfirmedTxHashes)
+    replaceSet(this.confirmedTxHashes, snapshot.confirmedTxHashes)
+  }
+
+  /**
+   * Atomic batch commit (`commitBatch` / `durableBatch`, Issue #1218):
+   * Applies a set of coin mutations atomically across hot memory and two-tier storage
+   * (`utxo:active:*` / `utxo:archive:*`), committing via `durableBatch` when a LevelDB
+   * backend is attached, and rolling back all in-memory and tier mutations if any
+   * step or durable write fails.
+   */
+  async commitBatch(
+    mutations:
+      | ReadonlyArray<ChainUtxoBatchMutation>
+      | ChainUtxoBatchMutationsObject
+      | ((pool: ChainUtxoPool) => void | Promise<void>),
+    databaseOverride?: LevelDB,
+  ): Promise<ChainUtxoBatchCommitResult> {
+    const snapshot = this.captureStateSnapshot()
+    const operations: Array<
+      { type: 'put'; key: string; value: string } | { type: 'del'; key: string }
+    > = []
+
+    const recordActivePut = (coin: ChainUtxoCoin, wasArchived: boolean) => {
+      if (wasArchived) {
+        operations.push({
+          type: 'del',
+          key: `${UTXO_ARCHIVE_KEY_PREFIX}${coin.id}`,
+        })
+      }
+      operations.push({
+        type: 'put',
+        key: `${UTXO_ACTIVE_KEY_PREFIX}${coin.id}`,
+        value: serializeUtxoCoin(coin),
+      })
+    }
+
+    const recordArchiveMove = (coin: ChainUtxoCoin) => {
+      operations.push(
+        { type: 'del', key: `${UTXO_ACTIVE_KEY_PREFIX}${coin.id}` },
+        {
+          type: 'put',
+          key: `${UTXO_ARCHIVE_KEY_PREFIX}${coin.id}`,
+          value: serializeUtxoCoin(coin),
+        },
+      )
+    }
+
+    const applySingleMutation = (mutation: ChainUtxoBatchMutation) => {
+      switch (mutation.type) {
+        case 'register':
+        case 'put':
+        case 'upsert': {
+          const family =
+            mutation.coin.family ?? inferChainFamily(mutation.coin.chain)
+          const canonicalAddress = formatUtxoAddress(
+            mutation.coin.address,
+            mutation.coin.chain,
+            family,
+          )
+          const nonceOrOutpoint =
+            mutation.coin.outpoint ?? mutation.coin.nonce ?? 0
+          const id =
+            mutation.coin.id ??
+            makeUtxoId(
+              mutation.coin.chain,
+              canonicalAddress,
+              nonceOrOutpoint,
+              family,
+            )
+          const wasArchived = this.archivedCoinsById.has(id)
+          const registered = this.registerCoin(mutation.coin)
+          recordActivePut(registered, wasArchived)
+          break
+        }
+        case 'markPending':
+        case 'pending': {
+          const updated = this.markPending(mutation.id)
+          recordActivePut(updated, false)
+          break
+        }
+        case 'markSpent':
+        case 'spent': {
+          const updated = this.markSpent(mutation.id, mutation.finalNonce, {
+            confirmations: mutation.confirmations,
+            spentAtBlockHeight: mutation.spentAtBlockHeight,
+          })
+          recordActivePut(updated, false)
+          break
+        }
+        case 'releasePending':
+        case 'release': {
+          const updated = this.releasePending(mutation.id)
+          recordActivePut(updated, false)
+          break
+        }
+        case 'updateBalanceAndNonce':
+        case 'update': {
+          const updated = this.updateBalanceAndNonce({
+            id: mutation.id,
+            balanceWei: mutation.balanceWei,
+            nonce: mutation.nonce,
+          })
+          recordActivePut(updated, false)
+          break
+        }
+        case 'archive': {
+          const coin = this.coinsById.get(mutation.id)
+          if (!coin) {
+            throw new Error(`UTXO not found in active pool: ${mutation.id}`)
+          }
+          if (coin.status !== 'spent' || coin.balanceWei !== 0n) {
+            throw new Error(
+              `Cannot archive unspent or non-zero UTXO: ${mutation.id}`,
+            )
+          }
+          this.moveCoinToArchiveTier(coin)
+          recordArchiveMove(coin)
+          break
+        }
+        case 'delete':
+        case 'del': {
+          const active = this.coinsById.get(mutation.id)
+          const archived = this.archivedCoinsById.get(mutation.id)
+          if (!active && !archived) {
+            throw new Error(`UTXO not found: ${mutation.id}`)
+          }
+          if (active) {
+            this.coinsById.delete(mutation.id)
+            this.removeFromIndices(active)
+            this.activeStorageTier.delete(
+              `${UTXO_ACTIVE_KEY_PREFIX}${mutation.id}`,
+            )
+            operations.push({
+              type: 'del',
+              key: `${UTXO_ACTIVE_KEY_PREFIX}${mutation.id}`,
+            })
+          }
+          if (archived) {
+            this.archivedCoinsById.delete(mutation.id)
+            this.archiveStorageTier.delete(
+              `${UTXO_ARCHIVE_KEY_PREFIX}${mutation.id}`,
+            )
+            operations.push({
+              type: 'del',
+              key: `${UTXO_ARCHIVE_KEY_PREFIX}${mutation.id}`,
+            })
+          }
+          break
+        }
+        default:
+          throw new Error(
+            `Unsupported batch mutation: ${JSON.stringify(mutation)}`,
+          )
+      }
+    }
+
+    try {
+      if (typeof mutations === 'function') {
+        await mutations(this)
+        // Diff storage tiers against snapshot to build durable batch operations
+        for (const [key] of snapshot.activeStorageTier.entries()) {
+          if (!this.activeStorageTier.has(key)) {
+            operations.push({ type: 'del', key })
+          }
+        }
+        for (const [key] of snapshot.archiveStorageTier.entries()) {
+          if (!this.archiveStorageTier.has(key)) {
+            operations.push({ type: 'del', key })
+          }
+        }
+        for (const [key, value] of this.activeStorageTier.entries()) {
+          if (snapshot.activeStorageTier.get(key) !== value) {
+            operations.push({ type: 'put', key, value })
+          }
+        }
+        for (const [key, value] of this.archiveStorageTier.entries()) {
+          if (snapshot.archiveStorageTier.get(key) !== value) {
+            operations.push({ type: 'put', key, value })
+          }
+        }
+      } else if (Array.isArray(mutations)) {
+        for (const m of mutations) {
+          applySingleMutation(m)
+        }
+      } else {
+        const obj = mutations as ChainUtxoBatchMutationsObject
+        for (const coin of [...(obj.register ?? []), ...(obj.upsert ?? [])]) {
+          applySingleMutation({ type: 'register', coin })
+        }
+        for (const id of obj.markPending ?? []) {
+          applySingleMutation({ type: 'markPending', id })
+        }
+        for (const item of obj.markSpent ?? []) {
+          if (typeof item === 'string') {
+            applySingleMutation({ type: 'markSpent', id: item })
+          } else {
+            applySingleMutation({
+              type: 'markSpent',
+              id: item.id,
+              finalNonce: item.finalNonce,
+              confirmations: item.confirmations,
+              spentAtBlockHeight: item.spentAtBlockHeight,
+            })
+          }
+        }
+        for (const id of obj.releasePending ?? []) {
+          applySingleMutation({ type: 'releasePending', id })
+        }
+        for (const u of obj.updateBalanceAndNonce ?? []) {
+          applySingleMutation({
+            type: 'updateBalanceAndNonce',
+            id: u.id,
+            balanceWei: u.balanceWei,
+            nonce: u.nonce,
+          })
+        }
+        for (const id of obj.archive ?? []) {
+          applySingleMutation({ type: 'archive', id })
+        }
+        for (const id of obj.delete ?? []) {
+          applySingleMutation({ type: 'delete', id })
+        }
+      }
+
+      const db = databaseOverride ?? this.database
+      if (db && operations.length > 0) {
+        await durableBatch(db, operations)
+      }
+
+      return {
+        operations,
+        activeCount: this.coinsById.size,
+        archivedCount: this.archivedCoinsById.size,
+      }
+    } catch (error) {
+      this.restoreStateSnapshot(snapshot)
+      throw error
+    }
   }
 
   /**
@@ -1571,6 +2298,10 @@ export class ChainUtxoPool {
       this.pendingCoinIdsByChain.set(cKey, pendingSet)
     }
     pendingSet.add(id)
+    this.activeStorageTier.set(
+      `${UTXO_ACTIVE_KEY_PREFIX}${id}`,
+      serializeUtxoCoin(coin),
+    )
 
     return coin
   }
@@ -1578,7 +2309,11 @@ export class ChainUtxoPool {
   /**
    * Marks a coin as permanently spent after confirmation.
    */
-  markSpent(id: string, finalNonce?: number): ChainUtxoCoin {
+  markSpent(
+    id: string,
+    finalNonce?: number,
+    options?: { confirmations?: number; spentAtBlockHeight?: number },
+  ): ChainUtxoCoin {
     const coin = this.coinsById.get(id)
     if (!coin) {
       throw new Error(`UTXO not found: ${id}`)
@@ -1596,6 +2331,12 @@ export class ChainUtxoPool {
     } else if (coin.nonce !== undefined) {
       coin.nonce = Math.max(1, coin.nonce + 1)
     }
+    if (options?.confirmations !== undefined) {
+      coin.confirmations = options.confirmations
+    }
+    if (options?.spentAtBlockHeight !== undefined) {
+      coin.spentAtBlockHeight = options.spentAtBlockHeight
+    }
     coin.balanceWei = 0n
     coin.lastUpdatedMs = Date.now()
 
@@ -1605,6 +2346,10 @@ export class ChainUtxoPool {
       this.spentOutpointKeys.add(opScoped)
       this.spentOutpointKeys.add(opGlobal)
     }
+    this.activeStorageTier.set(
+      `${UTXO_ACTIVE_KEY_PREFIX}${id}`,
+      serializeUtxoCoin(coin),
+    )
 
     return coin
   }
@@ -1634,6 +2379,10 @@ export class ChainUtxoPool {
       this.cleanCoinIdsByChain.set(cKey, cleanSet)
     }
     cleanSet.add(id)
+    this.activeStorageTier.set(
+      `${UTXO_ACTIVE_KEY_PREFIX}${id}`,
+      serializeUtxoCoin(coin),
+    )
 
     return coin
   }
@@ -1694,6 +2443,10 @@ export class ChainUtxoPool {
       this.removeFromStatusIndices(coin)
       coin.status = 'spent'
     }
+    this.activeStorageTier.set(
+      `${UTXO_ACTIVE_KEY_PREFIX}${coin.id}`,
+      serializeUtxoCoin(coin),
+    )
 
     return coin
   }
@@ -2062,6 +2815,265 @@ export class ChainUtxoPool {
       totalFeesWei,
       totalNetWei,
       consolidationOutputs,
+    }
+  }
+
+  /**
+   * Computes an automated Child-Pays-For-Parent (CPFP) fee acceleration spend plan
+   * for a stuck unconfirmed native UTXO parent transaction (Issue #1213).
+   *
+   * Formula:
+   *   feeChild = max(
+   *     childVsize * targetPackageFeePerByte,
+   *     ceil(targetPackageFeePerByte * (parentVsize + childVsize)) - parentFee
+   *   )
+   * Verifies `changeCoin.value > feeChild + dustThreshold` and returns the child spend plan
+   * sweeping `changeCoin` to a self-owned destination address.
+   */
+  planCpfpAcceleration(params: CpfpAccelerationParams): CpfpAccelerationPlan {
+    const parentVsize = Number(params.parentVsize)
+    if (!Number.isFinite(parentVsize) || parentVsize <= 0) {
+      throw new Error('parentVsize must be a positive number')
+    }
+    const childVsize = Number(params.childVsize ?? 140)
+    if (!Number.isFinite(childVsize) || childVsize <= 0) {
+      throw new Error('childVsize must be a positive number')
+    }
+    const parentFee = BigInt(params.parentFee)
+    if (parentFee < 0n) {
+      throw new Error('parentFee must be non-negative')
+    }
+    const targetRate = Number(params.targetPackageFeePerByte)
+    if (!Number.isFinite(targetRate) || targetRate <= 0) {
+      throw new Error('targetPackageFeePerByte must be positive')
+    }
+
+    let resolvedCoin: ChainUtxoCoin | undefined
+    if (typeof params.changeCoin === 'string') {
+      resolvedCoin = this.getCoin(params.changeCoin)
+      if (!resolvedCoin) {
+        throw new Error(`CPFP change coin not found: ${params.changeCoin}`)
+      }
+    } else if (params.changeCoin && typeof params.changeCoin === 'object') {
+      const candidate = params.changeCoin
+      if (candidate.id && this.coinsById.has(candidate.id)) {
+        resolvedCoin = this.coinsById.get(candidate.id)!
+      } else if (candidate.outpoint) {
+        const existing = this.getUtxoByOutpoint(
+          candidate.outpoint.txid,
+          candidate.outpoint.vout,
+          candidate.chain ?? params.chain,
+        )
+        if (existing) {
+          resolvedCoin = existing
+        }
+      }
+      if (!resolvedCoin) {
+        const chain = candidate.chain ?? params.chain ?? 'ecash'
+        const address =
+          candidate.address ?? params.destinationAddress ?? 'ecash:qpself'
+        const outpoint = candidate.outpoint ?? {
+          txid:
+            ('txid' in candidate ? candidate.txid : undefined) ??
+            params.parentTxId ??
+            params.parentTxHash ??
+            'parent_tx',
+          vout: ('vout' in candidate ? candidate.vout : undefined) ?? 0,
+        }
+        const balanceWei = candidate.balanceWei ?? candidate.value ?? 0n
+        const id =
+          candidate.id ?? makeUtxoId(chain, address, outpoint, 'utxo')
+        resolvedCoin = {
+          id,
+          chain,
+          family: 'utxo',
+          address: formatUtxoAddress(address, chain, 'utxo'),
+          privateKey: candidate.privateKey ?? '',
+          balanceWei,
+          outpoint,
+          status: candidate.status ?? 'clean',
+          origin: candidate.origin ?? 'change',
+          lastUpdatedMs: Date.now(),
+          parentTxHash:
+            candidate.parentTxHash ??
+            params.parentTxId ??
+            params.parentTxHash ??
+            outpoint.txid,
+        }
+        Object.defineProperty(resolvedCoin, 'value', {
+          get() {
+            return this.balanceWei
+          },
+          set(v: bigint) {
+            this.balanceWei = v
+          },
+          enumerable: false,
+          configurable: true,
+        })
+      }
+    } else {
+      const lookupParent = (
+        params.parentTxId ??
+        params.parentTxHash ??
+        ''
+      ).toLowerCase()
+      if (lookupParent) {
+        resolvedCoin = Array.from(this.coinsById.values()).find(
+          c =>
+            c.status !== 'spent' &&
+            (c.outpoint?.txid.toLowerCase() === lookupParent ||
+              c.parentTxHash?.toLowerCase() === lookupParent),
+        )
+      }
+    }
+
+    if (!resolvedCoin) {
+      throw new Error(
+        'Unconfirmed changeCoin is required for CPFP acceleration',
+      )
+    }
+    if (resolvedCoin.status === 'spent') {
+      throw new Error(
+        `Cannot accelerate CPFP using already spent coin: ${resolvedCoin.id}`,
+      )
+    }
+
+    const parentTxId =
+      params.parentTxId ??
+      params.parentTxHash ??
+      resolvedCoin.outpoint?.txid ??
+      resolvedCoin.parentTxHash
+    if (!parentTxId) {
+      throw new Error('parentTxId is required for CPFP acceleration')
+    }
+    if (this.isTransactionConfirmed(parentTxId)) {
+      throw new Error(
+        `Parent transaction ${parentTxId} is already confirmed; CPFP acceleration is not needed`,
+      )
+    }
+
+    const maxAncestors = params.maxAncestors ?? MAX_UNCONFIRMED_MEMPOOL_ANCESTORS
+    const ancestors = this.getMempoolAncestors(
+      resolvedCoin,
+      resolvedCoin.chain,
+    )
+    if (!this.isTransactionConfirmed(parentTxId)) {
+      ancestors.add(parentTxId.toLowerCase())
+    }
+    const ancestorCount = ancestors.size
+    if (ancestorCount > maxAncestors) {
+      throw new Error(
+        `Mempool ancestor limit exceeded for CPFP: ${ancestorCount} unconfirmed ancestors (limit: ${maxAncestors})`,
+      )
+    }
+
+    const packageVsize = parentVsize + childVsize
+    const standaloneChildFee =
+      typeof params.targetPackageFeePerByte === 'bigint'
+        ? BigInt(childVsize) * params.targetPackageFeePerByte
+        : BigInt(Math.ceil(childVsize * targetRate))
+    const targetPackageFee =
+      typeof params.targetPackageFeePerByte === 'bigint'
+        ? params.targetPackageFeePerByte * BigInt(packageVsize)
+        : BigInt(Math.ceil(targetRate * packageVsize))
+    const deficitFee = targetPackageFee - parentFee
+    const feeChild =
+      deficitFee > standaloneChildFee ? deficitFee : standaloneChildFee
+
+    const dustThreshold = BigInt(
+      params.dustThreshold ?? params.dustThresholdWei ?? 546n,
+    )
+    const inputValue = resolvedCoin.balanceWei ?? resolvedCoin.value ?? 0n
+
+    if (inputValue <= feeChild + dustThreshold) {
+      throw new Error(
+        `Insufficient change coin value (${inputValue}) to cover CPFP child fee (${feeChild}) plus dust threshold (${dustThreshold})`,
+      )
+    }
+
+    const outputValue = inputValue - feeChild
+    const destinationAddress = formatUtxoAddress(
+      params.destinationAddress ?? resolvedCoin.address,
+      resolvedCoin.chain,
+      'utxo',
+    )
+    const inputOutpoint = resolvedCoin.outpoint ?? {
+      txid: parentTxId,
+      vout: 0,
+    }
+    const effectivePackageFeePerByte =
+      Number(parentFee + feeChild) / packageVsize
+
+    return {
+      parentTxId,
+      parentVsize,
+      parentFee,
+      childVsize,
+      packageVsize,
+      targetPackageFeePerByte: targetRate,
+      standaloneChildFee,
+      targetPackageFee,
+      feeChild,
+      childFee: feeChild,
+      dustThreshold,
+      changeCoin: resolvedCoin,
+      inputOutpoint,
+      inputValue,
+      destinationAddress,
+      outputValue,
+      childOutputValue: outputValue,
+      effectivePackageFeePerByte,
+      ancestorCount,
+      outputs: [
+        {
+          address: destinationAddress,
+          value: outputValue,
+          amountWei: outputValue,
+        },
+      ],
+    }
+  }
+
+  /**
+   * Builds and applies a Child-Pays-For-Parent (CPFP) child transfer sweeping the
+   * unconfirmed parent change coin to a self-owned destination address (Issue #1213).
+   */
+  buildCpfpChildTransfer(
+    params: CpfpAccelerationParams,
+  ): CpfpChildTransferResult {
+    const plan = this.planCpfpAcceleration(params)
+    const childTxId =
+      params.childTxId ??
+      keccak256(
+        toUtf8Bytes(
+          `cpfp:${plan.parentTxId}:${plan.inputOutpoint.vout}:${plan.destinationAddress}:${plan.outputValue}:${plan.feeChild}`,
+        ),
+      ).slice(2)
+
+    let childCoin: ChainUtxoCoin | undefined
+    if (params.commitState !== false) {
+      if (this.coinsById.has(plan.changeCoin.id)) {
+        this.markPending(plan.changeCoin.id)
+      }
+      childCoin = this.registerUtxoOutpoint({
+        chain: plan.changeCoin.chain,
+        address: plan.destinationAddress,
+        privateKey: plan.changeCoin.privateKey,
+        txid: childTxId,
+        vout: 0,
+        balanceWei: plan.outputValue,
+        origin: 'change',
+        parentTxHash: plan.parentTxId,
+        label: 'CPFP Child Accelerated Output',
+      })
+      this.registerTxDependency(childTxId, plan.parentTxId)
+    }
+
+    return {
+      ...plan,
+      childTxId,
+      txHash: childTxId,
+      childCoin,
     }
   }
 }

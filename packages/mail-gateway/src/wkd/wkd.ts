@@ -1,4 +1,8 @@
 import * as crypto from 'node:crypto';
+import {
+  deriveOpenPgpSeeds,
+  OPENPGP_CANONICAL_CREATION_TIMESTAMP,
+} from '@frank/domain-roots';
 import { SigningKey } from 'ethers';
 import type { InboundRecipientResolution } from '../smtp/inbound-server';
 
@@ -100,16 +104,35 @@ export function wkdUrlsForAddress(emailAddress: string): WkdUrls {
 
 /**
  * Default deterministic key creation timestamp (2023-11-14T22:13:20Z) used when
- * synthesizing OpenPGP public keys from Cashweb secp256k1 identity keys so that
- * fingerprints remain stable across requests.
+ * synthesizing OpenPGP public keys so that fingerprints remain stable across requests.
  */
-export const DEFAULT_OPENPGP_CREATION_TIME_SECONDS = 1_700_000_000;
+export const DEFAULT_OPENPGP_CREATION_TIME_SECONDS = OPENPGP_CANONICAL_CREATION_TIMESTAMP;
 
 /**
  * ASN.1 OID for secp256k1 (`1.3.132.0.10`) prefixed with length byte `0x05`,
  * as required by RFC 6637 section 9.
  */
 const SECP256K1_OID_WITH_LEN = Buffer.from([0x05, 0x2b, 0x81, 0x04, 0x00, 0x0a]);
+
+/**
+ * ASN.1 OID for Ed25519 (`1.3.6.1.4.1.11591.15.1`) prefixed with length byte `0x09`,
+ * per draft-koch-eddsa-for-openpgp / RFC 9580.
+ */
+const ED25519_OID_WITH_LEN = Buffer.from([
+  0x09, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xda, 0x47, 0x0f, 0x01,
+]);
+
+/**
+ * ASN.1 OID for Curve25519 / X25519 (`1.3.6.1.4.1.3029.1.5.1`) prefixed with length byte `0x0a`,
+ * per draft-koch-eddsa-for-openpgp / RFC 9580.
+ */
+const CURVE25519_OID_WITH_LEN = Buffer.from([
+  0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01,
+]);
+
+const ED25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
+const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
+const X25519_SPKI_PREFIX = Buffer.from('302a300506032b656e032100', 'hex');
 
 /**
  * RFC 6637 KDF parameters for ECDH:
@@ -210,6 +233,304 @@ export function buildSecp256k1OpenPgpPublicKey(params: {
     encodeNewFormatPacket(13, userIdBody),
     encodeNewFormatPacket(14, subKeyBody),
   ]);
+}
+
+function encodeOpenPgpMpiFromNative25519Point(raw32ByteKey: Uint8Array): Buffer {
+  if (raw32ByteKey.byteLength !== 32) {
+    throw new Error(`Expected 32-byte Ed25519/X25519 public key, got ${raw32ByteKey.byteLength}`);
+  }
+  // 0x40 prefix + 32-byte little-endian/native point = 33 bytes (263 bits = 0x0107).
+  return Buffer.concat([Buffer.from([0x01, 0x07, 0x40]), Buffer.from(raw32ByteKey)]);
+}
+
+function encodeOpenPgpMpiFromBigEndianScalar(bytes: Uint8Array): Buffer {
+  let start = 0;
+  while (start < bytes.byteLength - 1 && bytes[start] === 0) {
+    start++;
+  }
+  const trimmed = Buffer.from(bytes.subarray(start));
+  const firstByte = trimmed[0] ?? 0;
+  let highestBit = 0;
+  for (let bit = 7; bit >= 0; bit--) {
+    if ((firstByte & (1 << bit)) !== 0) {
+      highestBit = bit + 1;
+      break;
+    }
+  }
+  const bitLen = highestBit === 0 ? 0 : (trimmed.length - 1) * 8 + highestBit;
+  const header = Buffer.allocUnsafe(2);
+  header.writeUInt16BE(bitLen, 0);
+  return Buffer.concat([header, trimmed]);
+}
+
+function deriveEd25519PublicKeyFromSeed(seed32: Uint8Array): {
+  privateKey: crypto.KeyObject;
+  publicKeyBytes: Buffer;
+} {
+  if (seed32.byteLength !== 32) {
+    throw new Error('Ed25519 seed must be 32 bytes');
+  }
+  const privateKey = crypto.createPrivateKey({
+    key: Buffer.concat([ED25519_PKCS8_PREFIX, Buffer.from(seed32)]),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  const spki = crypto.createPublicKey(privateKey).export({
+    format: 'der',
+    type: 'spki',
+  }) as Buffer;
+  return {
+    privateKey,
+    publicKeyBytes: Buffer.from(spki.subarray(spki.length - 32)),
+  };
+}
+
+function deriveX25519PublicKeyFromSeed(seed32: Uint8Array): {
+  privateKey: crypto.KeyObject;
+  publicKeyBytes: Buffer;
+} {
+  if (seed32.byteLength !== 32) {
+    throw new Error('X25519 seed must be 32 bytes');
+  }
+  const privateKey = crypto.createPrivateKey({
+    key: Buffer.concat([X25519_PKCS8_PREFIX, Buffer.from(seed32)]),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  const spki = crypto.createPublicKey(privateKey).export({
+    format: 'der',
+    type: 'spki',
+  }) as Buffer;
+  return {
+    privateKey,
+    publicKeyBytes: Buffer.from(spki.subarray(spki.length - 32)),
+  };
+}
+
+function buildEd25519PublicKeyPacketBody(
+  ed25519PubKey32: Uint8Array,
+  creationTimeSeconds: number,
+): Buffer {
+  const header = Buffer.allocUnsafe(6);
+  header[0] = 0x04; // Version 4
+  header.writeUInt32BE(creationTimeSeconds >>> 0, 1);
+  header[5] = 22; // Algorithm 22: EdDSA (draft-koch-eddsa-for-openpgp)
+  const mpi = encodeOpenPgpMpiFromNative25519Point(ed25519PubKey32);
+  return Buffer.concat([header, ED25519_OID_WITH_LEN, mpi]);
+}
+
+function buildX25519PublicSubkeyPacketBody(
+  x25519PubKey32: Uint8Array,
+  creationTimeSeconds: number,
+): Buffer {
+  const header = Buffer.allocUnsafe(6);
+  header[0] = 0x04; // Version 4
+  header.writeUInt32BE(creationTimeSeconds >>> 0, 1);
+  header[5] = 18; // Algorithm 18: ECDH
+  const mpi = encodeOpenPgpMpiFromNative25519Point(x25519PubKey32);
+  return Buffer.concat([header, CURVE25519_OID_WITH_LEN, mpi, ECDH_KDF_PARAMS]);
+}
+
+function computeV4KeyPacketFingerprintBytes(packetBody: Uint8Array): Buffer {
+  const prefix = Buffer.allocUnsafe(3);
+  prefix[0] = 0x99;
+  prefix.writeUInt16BE(packetBody.byteLength, 1);
+  return crypto.createHash('sha1').update(prefix).update(packetBody).digest();
+}
+
+function buildDeterministicEd25519SignaturePacketBody(params: {
+  sigType: number;
+  creationTimeSeconds: number;
+  keyFlagsMask: number;
+  primaryKeyBody: Buffer;
+  targetPayload: Buffer;
+  ed25519PrivateKey: crypto.KeyObject;
+}): Buffer {
+  const primaryFp = computeV4KeyPacketFingerprintBytes(params.primaryKeyBody);
+  const issuerKeyId = primaryFp.subarray(12, 20);
+
+  // Subpacket 2: Signature Creation Time (4 bytes)
+  const spCreation = Buffer.allocUnsafe(6);
+  spCreation[0] = 5;
+  spCreation[1] = 2;
+  spCreation.writeUInt32BE(params.creationTimeSeconds >>> 0, 2);
+
+  // Subpacket 27: Key Flags (1 byte)
+  const spKeyFlags = Buffer.from([2, 27, params.keyFlagsMask & 0xff]);
+
+  // Subpacket 33: Issuer Fingerprint (v4: 0x04 + 20-byte SHA-1)
+  const spIssuerFp = Buffer.concat([Buffer.from([22, 33, 0x04]), primaryFp]);
+
+  const hashedSubpackets = Buffer.concat([spCreation, spKeyFlags, spIssuerFp]);
+
+  // Unhashed Subpacket 16: Issuer Key ID (8 bytes)
+  const unhashedSubpackets = Buffer.concat([Buffer.from([9, 16]), issuerKeyId]);
+
+  const sigHeader = Buffer.allocUnsafe(6);
+  sigHeader[0] = 0x04; // Version 4 signature
+  sigHeader[1] = params.sigType & 0xff;
+  sigHeader[2] = 22; // Public-key algorithm 22 (EdDSA)
+  sigHeader[3] = 8; // Hash algorithm 8 (SHA-256)
+  sigHeader.writeUInt16BE(hashedSubpackets.length, 4);
+
+  const signedHeaderAndHashed = Buffer.concat([sigHeader, hashedSubpackets]);
+  const trailer = Buffer.allocUnsafe(6);
+  trailer[0] = 0x04;
+  trailer[1] = 0xff;
+  trailer.writeUInt32BE(signedHeaderAndHashed.length, 2);
+
+  const primaryPrefix = Buffer.allocUnsafe(3);
+  primaryPrefix[0] = 0x99;
+  primaryPrefix.writeUInt16BE(params.primaryKeyBody.length, 1);
+
+  const hashInput = Buffer.concat([
+    primaryPrefix,
+    params.primaryKeyBody,
+    params.targetPayload,
+    signedHeaderAndHashed,
+    trailer,
+  ]);
+  const digest = crypto.createHash('sha256').update(hashInput).digest();
+  const rawSig = crypto.sign(null, digest, params.ed25519PrivateKey);
+  const rMpi = encodeOpenPgpMpiFromBigEndianScalar(rawSig.subarray(0, 32));
+  const sMpi = encodeOpenPgpMpiFromBigEndianScalar(rawSig.subarray(32, 64));
+
+  const unhashedLen = Buffer.allocUnsafe(2);
+  unhashedLen.writeUInt16BE(unhashedSubpackets.length, 0);
+  const left16 = digest.subarray(0, 2);
+
+  return Buffer.concat([
+    signedHeaderAndHashed,
+    unhashedLen,
+    unhashedSubpackets,
+    left16,
+    rMpi,
+    sMpi,
+  ]);
+}
+
+/**
+ * Synthesizes a deterministic RFC 4880 / RFC 6637 / draft-koch-eddsa-for-openpgp v4
+ * OpenPGP Transferable Public Key with an Ed25519 primary signing key (Tag 6, alg 22)
+ * and X25519 encryption subkey (Tag 14, alg 18), plus deterministic self-certification
+ * (0x13) and subkey-binding (0x18) signature packets when `ed25519SigningSeed` is provided.
+ */
+export function buildEd25519X25519OpenPgpPublicKey(params: {
+  ed25519PublicKey: Uint8Array;
+  x25519PublicKey: Uint8Array;
+  userId: string;
+  creationTimeSeconds?: number;
+  ed25519SigningSeed?: Uint8Array;
+}): Buffer {
+  const userId = params.userId.trim();
+  if (!userId) {
+    throw new Error('OpenPGP User ID must not be empty');
+  }
+  const creationTimeSeconds =
+    params.creationTimeSeconds ?? DEFAULT_OPENPGP_CREATION_TIME_SECONDS;
+  const primaryKeyBody = buildEd25519PublicKeyPacketBody(
+    params.ed25519PublicKey,
+    creationTimeSeconds,
+  );
+  const userIdBody = Buffer.from(userId, 'utf8');
+  const subKeyBody = buildX25519PublicSubkeyPacketBody(
+    params.x25519PublicKey,
+    creationTimeSeconds,
+  );
+
+  if (!params.ed25519SigningSeed) {
+    return Buffer.concat([
+      encodeNewFormatPacket(6, primaryKeyBody),
+      encodeNewFormatPacket(13, userIdBody),
+      encodeNewFormatPacket(14, subKeyBody),
+    ]);
+  }
+
+  const { privateKey } = deriveEd25519PublicKeyFromSeed(params.ed25519SigningSeed);
+  const uidPrefix = Buffer.allocUnsafe(5);
+  uidPrefix[0] = 0xb4;
+  uidPrefix.writeUInt32BE(userIdBody.length, 1);
+  const uidSigBody = buildDeterministicEd25519SignaturePacketBody({
+    sigType: 0x13, // Positive certification of a User ID and Public-Key packet
+    creationTimeSeconds,
+    keyFlagsMask: 0x03, // Certify (0x01) | Sign (0x02)
+    primaryKeyBody,
+    targetPayload: Buffer.concat([uidPrefix, userIdBody]),
+    ed25519PrivateKey: privateKey,
+  });
+
+  const subkeyPrefix = Buffer.allocUnsafe(3);
+  subkeyPrefix[0] = 0x99;
+  subkeyPrefix.writeUInt16BE(subKeyBody.length, 1);
+  const subkeySigBody = buildDeterministicEd25519SignaturePacketBody({
+    sigType: 0x18, // Subkey Binding Signature
+    creationTimeSeconds,
+    keyFlagsMask: 0x0c, // Encrypt communications (0x04) | Encrypt storage (0x08)
+    primaryKeyBody,
+    targetPayload: Buffer.concat([subkeyPrefix, subKeyBody]),
+    ed25519PrivateKey: privateKey,
+  });
+
+  return Buffer.concat([
+    encodeNewFormatPacket(6, primaryKeyBody),
+    encodeNewFormatPacket(13, userIdBody),
+    encodeNewFormatPacket(2, uidSigBody),
+    encodeNewFormatPacket(14, subKeyBody),
+    encodeNewFormatPacket(2, subkeySigBody),
+  ]);
+}
+
+export interface DeterministicOpenPgpKeypair {
+  readonly primarySigningSeed: Uint8Array;
+  readonly encryptionSubkeySeed: Uint8Array;
+  readonly ed25519PublicKey: Buffer;
+  readonly x25519PublicKey: Buffer;
+  readonly creationTimestamp: number;
+  readonly publicKeyPacket: Buffer;
+  readonly armoredPublicKey: string;
+  readonly fingerprint: string;
+  readonly subkeyFingerprint: string;
+}
+
+/**
+ * Derives a deterministic OpenPGP v4 Ed25519 + X25519 Transferable Public Key and keypair
+ * directly from a 32-byte Frank `accountRootSeed` via `deriveOpenPgpSeeds`.
+ * Two wallets restored from the same seed produce byte-for-byte identical OpenPGP keys.
+ */
+export function deriveDeterministicOpenPgpKeypair(
+  accountRootSeed: Uint8Array,
+  userId: string,
+  creationTimeSeconds?: number,
+): DeterministicOpenPgpKeypair {
+  const seeds = deriveOpenPgpSeeds(accountRootSeed);
+  const creationTimestamp = creationTimeSeconds ?? seeds.creationTimestamp;
+  const ed25519 = deriveEd25519PublicKeyFromSeed(seeds.primarySigningSeed);
+  const x25519 = deriveX25519PublicKeyFromSeed(seeds.encryptionSubkeySeed);
+  const publicKeyPacket = buildEd25519X25519OpenPgpPublicKey({
+    ed25519PublicKey: ed25519.publicKeyBytes,
+    x25519PublicKey: x25519.publicKeyBytes,
+    userId,
+    creationTimeSeconds: creationTimestamp,
+    ed25519SigningSeed: seeds.primarySigningSeed,
+  });
+  const subKeyBody = buildX25519PublicSubkeyPacketBody(
+    x25519.publicKeyBytes,
+    creationTimestamp,
+  );
+  const fingerprint = computeOpenPgpV4Fingerprint(publicKeyPacket);
+  const subkeyFingerprint = computeV4KeyPacketFingerprintBytes(subKeyBody).toString('hex');
+
+  return {
+    primarySigningSeed: seeds.primarySigningSeed,
+    encryptionSubkeySeed: seeds.encryptionSubkeySeed,
+    ed25519PublicKey: ed25519.publicKeyBytes,
+    x25519PublicKey: x25519.publicKeyBytes,
+    creationTimestamp,
+    publicKeyPacket,
+    armoredPublicKey: armorOpenPgpPublicKey(publicKeyPacket),
+    fingerprint,
+    subkeyFingerprint,
+  };
 }
 
 function extractPublicKeyPacketBody(publicKeyOrPacketBody: Uint8Array): Uint8Array {
@@ -380,6 +701,375 @@ export function dearmorOpenPgpPublicKey(armoredOrBinary: Uint8Array | string): B
   return decoded;
 }
 
+/**
+ * Returns true if `text` is an OpenPGP ASCII-armored encrypted message
+ * (`-----BEGIN PGP MESSAGE-----` ... `-----END PGP MESSAGE-----`).
+ */
+export function isOpenPgpArmoredMessage(text: string): boolean {
+  if (typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  return (
+    trimmed.startsWith('-----BEGIN PGP MESSAGE-----') &&
+    trimmed.endsWith('-----END PGP MESSAGE-----')
+  );
+}
+
+/**
+ * Extracts an OpenPGP ASCII-armored message block (`-----BEGIN PGP MESSAGE-----` ...
+ * `-----END PGP MESSAGE-----`) from a text body or raw RFC 5322 / PGP-MIME (`multipart/encrypted`
+ * or `application/octet-stream`) email payload if present.
+ */
+export function extractOpenPgpArmoredMessage(
+  textBody?: string,
+  rawRfc822?: Uint8Array,
+): string | undefined {
+  const blockRegex = /-----BEGIN PGP MESSAGE-----[\s\S]*?-----END PGP MESSAGE-----/;
+  if (typeof textBody === 'string' && textBody.length > 0) {
+    if (isOpenPgpArmoredMessage(textBody)) {
+      return textBody.trim();
+    }
+    const textMatch = textBody.match(blockRegex);
+    if (textMatch) {
+      return textMatch[0].replace(/\r\n/g, '\n');
+    }
+  }
+  if (rawRfc822 && rawRfc822.byteLength > 0) {
+    const rawText = Buffer.from(rawRfc822).toString('utf8');
+    const directMatch = rawText.match(blockRegex);
+    if (directMatch) {
+      return directMatch[0].replace(/\r\n/g, '\n');
+    }
+    // Check base64-encoded MIME sections (e.g. application/octet-stream encrypted.asc)
+    const sections = rawText.replace(/\r\n/g, '\n').split('\n\n');
+    for (const section of sections) {
+      const cleaned = section.replace(/[^A-Za-z0-9+/=]/g, '');
+      if (cleaned.length >= 40 && cleaned.length % 4 === 0) {
+        try {
+          const decoded = Buffer.from(cleaned, 'base64').toString('utf8');
+          const b64Match = decoded.match(blockRegex);
+          if (b64Match) {
+            return b64Match[0].replace(/\r\n/g, '\n');
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Wraps binary OpenPGP message packet bytes in RFC 4880 ASCII armor (`-----BEGIN PGP MESSAGE-----`).
+ */
+export function armorOpenPgpMessage(binaryMessage: Uint8Array): string {
+  if (binaryMessage.byteLength === 0) {
+    throw new Error('Cannot armor empty OpenPGP message');
+  }
+  const base64 = Buffer.from(binaryMessage).toString('base64');
+  const wrapped = base64.match(/.{1,64}/g)?.join('\n') ?? '';
+  const crc = crc24OpenPgp(binaryMessage);
+  const crcBytes = Buffer.from([(crc >> 16) & 0xff, (crc >> 8) & 0xff, crc & 0xff]);
+  const crcBase64 = crcBytes.toString('base64');
+  return [
+    '-----BEGIN PGP MESSAGE-----',
+    '',
+    wrapped,
+    `=${crcBase64}`,
+    '-----END PGP MESSAGE-----',
+  ].join('\n');
+}
+
+/**
+ * Parses an ASCII-armored OpenPGP message (`-----BEGIN PGP MESSAGE-----`) or binary packet
+ * stream into a validated `Buffer`, verifying the CRC-24 trailer when present.
+ */
+export function dearmorOpenPgpMessage(armoredOrBinary: Uint8Array | string): Buffer {
+  if (typeof armoredOrBinary !== 'string') {
+    const asText = Buffer.from(
+      armoredOrBinary.subarray(0, Math.min(64, armoredOrBinary.byteLength)),
+    ).toString('utf8');
+    if (!asText.trimStart().startsWith('-----BEGIN PGP MESSAGE-----')) {
+      if (armoredOrBinary.byteLength < 3 || (armoredOrBinary[0] & 0x80) === 0) {
+        throw new Error('Invalid binary OpenPGP message packet');
+      }
+      return Buffer.from(armoredOrBinary);
+    }
+    armoredOrBinary = Buffer.from(armoredOrBinary).toString('utf8');
+  }
+
+  const trimmed = armoredOrBinary.trim();
+  const beginMarker = '-----BEGIN PGP MESSAGE-----';
+  const endMarker = '-----END PGP MESSAGE-----';
+  const beginIdx = trimmed.indexOf(beginMarker);
+  const endIdx = trimmed.indexOf(endMarker);
+  if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) {
+    throw new Error('Missing OpenPGP message ASCII armor headers');
+  }
+
+  const inner = trimmed.slice(beginIdx + beginMarker.length, endIdx).replace(/\r\n/g, '\n');
+  const blankLineIdx = inner.indexOf('\n\n');
+  const bodySection = blankLineIdx !== -1 ? inner.slice(blankLineIdx + 2) : inner.trim();
+  const lines = bodySection
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  let expectedCrc: number | undefined;
+  const base64Lines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('=')) {
+      const crcBuf = Buffer.from(line.slice(1), 'base64');
+      if (crcBuf.length !== 3) {
+        throw new Error('Invalid OpenPGP CRC-24 armor trailer');
+      }
+      expectedCrc = (crcBuf[0] << 16) | (crcBuf[1] << 8) | crcBuf[2];
+    } else if (!line.includes(':')) {
+      base64Lines.push(line);
+    }
+  }
+
+  const decoded = Buffer.from(base64Lines.join(''), 'base64');
+  if (decoded.length < 3 || (decoded[0] & 0x80) === 0) {
+    throw new Error('Decoded OpenPGP message does not start with a valid packet tag');
+  }
+  if (expectedCrc !== undefined) {
+    const actualCrc = crc24OpenPgp(decoded);
+    if (actualCrc !== expectedCrc) {
+      throw new Error('OpenPGP message ASCII armor CRC-24 checksum mismatch');
+    }
+  }
+  return decoded;
+}
+
+function parseNewFormatPackets(stream: Uint8Array): Array<{ tag: number; body: Buffer }> {
+  const packets: Array<{ tag: number; body: Buffer }> = [];
+  let offset = 0;
+  while (offset < stream.byteLength) {
+    const header = stream[offset];
+    if ((header & 0xc0) !== 0xc0) {
+      throw new Error('Expected new-format OpenPGP packet header');
+    }
+    const tag = header & 0x3f;
+    const len0 = stream[offset + 1];
+    let bodyLen = 0;
+    let bodyOffset = offset + 2;
+    if (len0 < 192) {
+      bodyLen = len0;
+    } else if (len0 < 224) {
+      bodyLen = ((len0 - 192) << 8) + stream[offset + 2] + 192;
+      bodyOffset = offset + 3;
+    } else if (len0 === 255) {
+      bodyLen = Buffer.from(
+        stream.buffer,
+        stream.byteOffset + offset + 2,
+        4,
+      ).readUInt32BE(0);
+      bodyOffset = offset + 6;
+    } else {
+      throw new Error('Unsupported partial length in OpenPGP packet');
+    }
+    packets.push({
+      tag,
+      body: Buffer.from(stream.subarray(bodyOffset, bodyOffset + bodyLen)),
+    });
+    offset = bodyOffset + bodyLen;
+  }
+  return packets;
+}
+
+function extractX25519EncryptionSubkeyFromTransferableKey(
+  publicKeyOrArmored: Uint8Array | string,
+): { x25519PublicKey: Buffer; keyId: Buffer; subkeyFingerprint: Buffer } {
+  const keyBytes = dearmorOpenPgpPublicKey(publicKeyOrArmored);
+  const packets = parseNewFormatPackets(keyBytes);
+  for (const pkt of packets) {
+    if (pkt.tag === 14 && pkt.body.length >= 6 + CURVE25519_OID_WITH_LEN.length + 35) {
+      const version = pkt.body[0];
+      const alg = pkt.body[5];
+      const oidSlice = pkt.body.subarray(6, 6 + CURVE25519_OID_WITH_LEN.length);
+      if (version === 0x04 && alg === 18 && oidSlice.equals(CURVE25519_OID_WITH_LEN)) {
+        const mpiOffset = 6 + CURVE25519_OID_WITH_LEN.length;
+        if (pkt.body[mpiOffset + 2] !== 0x40) {
+          throw new Error('Expected 0x40 Curve25519 point prefix in OpenPGP subkey MPI');
+        }
+        const x25519PublicKey = Buffer.from(pkt.body.subarray(mpiOffset + 3, mpiOffset + 35));
+        const subkeyFingerprint = computeV4KeyPacketFingerprintBytes(pkt.body);
+        const keyId = Buffer.from(subkeyFingerprint.subarray(12, 20));
+        return { x25519PublicKey, keyId, subkeyFingerprint };
+      }
+    }
+  }
+  throw new Error('No Curve25519/X25519 ECDH encryption subkey (tag 14) found in OpenPGP public key');
+}
+
+function deriveOpenPgpSessionKey(params: {
+  sharedSecret: Uint8Array;
+  ephemeralPublicKey: Uint8Array;
+  recipientPublicKey: Uint8Array;
+  keyId: Uint8Array;
+}): Buffer {
+  return crypto
+    .createHash('sha256')
+    .update('frank.openpgp.seipd.v1\0')
+    .update(params.sharedSecret)
+    .update(params.ephemeralPublicKey)
+    .update(params.recipientPublicKey)
+    .update(params.keyId)
+    .digest();
+}
+
+/**
+ * Encrypts `plaintext` to a recipient's OpenPGP Transferable Public Key (containing an X25519
+ * ECDH subkey) into an RFC 4880 ASCII-armored OpenPGP message (`-----BEGIN PGP MESSAGE-----`).
+ * If `plaintext` is already an OpenPGP ASCII-armored message, returns it unchanged without double-encryption.
+ */
+export function encryptOpenPgpMessage(
+  plaintext: string,
+  recipientPublicKey: Uint8Array | string,
+): string {
+  if (isOpenPgpArmoredMessage(plaintext)) {
+    return plaintext;
+  }
+  const { x25519PublicKey, keyId } =
+    extractX25519EncryptionSubkeyFromTransferableKey(recipientPublicKey);
+  const ephemeral = crypto.generateKeyPairSync('x25519');
+  const ephSpki = ephemeral.publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
+  const ephemeralPublicKey = Buffer.from(ephSpki.subarray(ephSpki.length - 32));
+
+  const recipientKeyObj = crypto.createPublicKey({
+    key: Buffer.concat([X25519_SPKI_PREFIX, x25519PublicKey]),
+    format: 'der',
+    type: 'spki',
+  });
+  const sharedSecret = crypto.diffieHellman({
+    privateKey: ephemeral.privateKey,
+    publicKey: recipientKeyObj,
+  });
+
+  const sessionKey = deriveOpenPgpSessionKey({
+    sharedSecret,
+    ephemeralPublicKey,
+    recipientPublicKey: x25519PublicKey,
+    keyId,
+  });
+
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', sessionKey, iv);
+  cipher.setAAD(keyId);
+  const ciphertext = Buffer.concat([
+    cipher.update(Buffer.from(plaintext, 'utf8')),
+    cipher.final(),
+  ]);
+  const authTag = cipher.getAuthTag();
+
+  // Packet 1: Tag 1 (PKESK v3: 0x03 || 8-byte keyId || alg 18 || MPI(0x40 || ephemeralPubKey))
+  const pkeskBody = Buffer.concat([
+    Buffer.from([0x03]),
+    keyId,
+    Buffer.from([18]),
+    encodeOpenPgpMpiFromNative25519Point(ephemeralPublicKey),
+  ]);
+
+  // Packet 2: Tag 18 (SEIPD v1: 0x01 || 12-byte IV || 16-byte GCM tag || ciphertext)
+  const seipdBody = Buffer.concat([
+    Buffer.from([0x01]),
+    iv,
+    authTag,
+    ciphertext,
+  ]);
+
+  return armorOpenPgpMessage(
+    Buffer.concat([
+      encodeNewFormatPacket(1, pkeskBody),
+      encodeNewFormatPacket(18, seipdBody),
+    ]),
+  );
+}
+
+/**
+ * Decrypts an ASCII-armored or binary OpenPGP message encrypted via `encryptOpenPgpMessage`
+ * using either the recipient's 32-byte `accountRootSeed`, `deriveOpenPgpSeeds` output, or
+ * raw 32-byte `encryptionSubkeySeed`.
+ */
+export function decryptOpenPgpMessage(
+  armoredOrBinaryMessage: string | Uint8Array,
+  recipientKeyMaterial:
+    | Uint8Array
+    | { readonly encryptionSubkeySeed: Uint8Array }
+    | { readonly accountRootSeed: Uint8Array },
+): string {
+  const packetStream = dearmorOpenPgpMessage(armoredOrBinaryMessage);
+  const packets = parseNewFormatPackets(packetStream);
+  const pkesk = packets.find((p) => p.tag === 1);
+  const seipd = packets.find((p) => p.tag === 18);
+  if (!pkesk || !seipd) {
+    throw new Error('OpenPGP message is missing PKESK (tag 1) or SEIPD (tag 18) packet');
+  }
+  if (pkesk.body.length < 1 + 8 + 1 + 35 || pkesk.body[0] !== 0x03 || pkesk.body[9] !== 18) {
+    throw new Error('Unsupported OpenPGP PKESK packet format');
+  }
+  const keyId = pkesk.body.subarray(1, 9);
+  if (pkesk.body[12] !== 0x40) {
+    throw new Error('Expected 0x40 Curve25519 point prefix in PKESK ephemeral MPI');
+  }
+  const ephemeralPublicKey = pkesk.body.subarray(13, 45);
+
+  if (seipd.body.length < 1 + 12 + 16 || seipd.body[0] !== 0x01) {
+    throw new Error('Unsupported OpenPGP SEIPD packet format');
+  }
+  const iv = seipd.body.subarray(1, 13);
+  const authTag = seipd.body.subarray(13, 29);
+  const ciphertext = seipd.body.subarray(29);
+
+  const candidateSubkeySeeds: Uint8Array[] = [];
+  if (recipientKeyMaterial instanceof Uint8Array) {
+    try {
+      candidateSubkeySeeds.push(deriveOpenPgpSeeds(recipientKeyMaterial).encryptionSubkeySeed);
+    } catch {
+      // Fall through if not a 32-byte account root
+    }
+    candidateSubkeySeeds.push(recipientKeyMaterial);
+  } else if ('encryptionSubkeySeed' in recipientKeyMaterial) {
+    candidateSubkeySeeds.push(recipientKeyMaterial.encryptionSubkeySeed);
+  } else if ('accountRootSeed' in recipientKeyMaterial) {
+    candidateSubkeySeeds.push(
+      deriveOpenPgpSeeds(recipientKeyMaterial.accountRootSeed).encryptionSubkeySeed,
+    );
+  }
+
+  const ephemeralKeyObj = crypto.createPublicKey({
+    key: Buffer.concat([X25519_SPKI_PREFIX, ephemeralPublicKey]),
+    format: 'der',
+    type: 'spki',
+  });
+
+  for (const subkeySeed of candidateSubkeySeeds) {
+    try {
+      const { privateKey, publicKeyBytes } = deriveX25519PublicKeyFromSeed(subkeySeed);
+      const sharedSecret = crypto.diffieHellman({
+        privateKey,
+        publicKey: ephemeralKeyObj,
+      });
+      const sessionKey = deriveOpenPgpSessionKey({
+        sharedSecret,
+        ephemeralPublicKey,
+        recipientPublicKey: publicKeyBytes,
+        keyId,
+      });
+      const decipher = crypto.createDecipheriv('aes-256-gcm', sessionKey, iv);
+      decipher.setAAD(keyId);
+      decipher.setAuthTag(authTag);
+      const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      return plaintext.toString('utf8');
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error('Failed to decrypt OpenPGP message with the provided key material');
+}
+
 export interface DiscoveredWkdKey {
   readonly emailAddress: string;
   readonly localPart: string;
@@ -505,6 +1195,12 @@ function extractPublicKeyFromRelayPayload(payload: unknown, accountAddress?: str
       return extractPublicKeyFromRelayPayload(matched);
     }
   }
+  if (
+    typeof record.openPgpPublicKey === 'string' &&
+    record.openPgpPublicKey.trim().startsWith('-----BEGIN PGP PUBLIC KEY BLOCK-----')
+  ) {
+    return record.openPgpPublicKey.trim();
+  }
   const candidates = [
     record.publicKey,
     record.pubKey,
@@ -551,6 +1247,13 @@ async function fetchAccountPublicKeyFromRelay(
     }
   }
   return undefined;
+}
+
+function isAlreadyOpenPgpPublicKey(pubKey: Uint8Array | string): boolean {
+  if (typeof pubKey === 'string') {
+    return pubKey.trimStart().startsWith('-----BEGIN PGP PUBLIC KEY BLOCK-----');
+  }
+  return pubKey.byteLength > 3 && (pubKey[0] & 0xc0) === 0xc0 && (pubKey[0] & 0x3f) === 6;
 }
 
 /**
@@ -677,10 +1380,12 @@ export function createWkdHttpHandler(options: WkdHttpHandlerOptions): WkdHttpHan
 
     try {
       const userId = `${resolvedLocalPart ?? resolvedAccount}@${domain}`;
-      const keyBytes = buildSecp256k1OpenPgpPublicKey({
-        compressedOrUncompressedPubKey: pubKey,
-        userId,
-      });
+      const keyBytes = isAlreadyOpenPgpPublicKey(pubKey)
+        ? dearmorOpenPgpPublicKey(pubKey)
+        : buildSecp256k1OpenPgpPublicKey({
+            compressedOrUncompressedPubKey: pubKey,
+            userId,
+          });
       return {
         status: 200,
         headers: {

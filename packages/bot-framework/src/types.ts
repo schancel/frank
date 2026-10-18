@@ -277,6 +277,15 @@ export interface BotHostOptions {
   /** What bot top-ups leave in the shared funding wallet, for the faucet that pays from it.
    * Default: `FAUCET_MIN_RESERVE_WEI`, else 0.1 MON, the faucet's own reserve. */
   fundingReserveWei?: bigint;
+  /** Optional Frank recipient address (`0x...`, or `FRANK_BOT_FUNDING_ALERT_ADDRESS`) that receives
+   * a DM alert when the shared funding wallet balance drops below `fundingAlertBelowWei`. */
+  fundingAlertAddress?: string;
+  /** Balance threshold (default 10 MON, or `FRANK_BOT_FUNDING_ALERT_BELOW_WEI`) below which the
+   * shared funding wallet triggers a low-balance DM to `fundingAlertAddress`. */
+  fundingAlertBelowWei?: bigint;
+  /** Minimum interval in ms between repeated low-balance DM alerts while the funding wallet
+   * remains below `fundingAlertBelowWei` (default 6 hours). Resets once topped back up. */
+  fundingAlertCooldownMs?: number;
   /** The longest one relay or wallet call of a bot's poll, or one send of a stored reply, may
    * take before the host stops waiting for it. Default: 30 seconds. */
   callTimeoutMs?: number;

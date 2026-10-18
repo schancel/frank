@@ -112,6 +112,8 @@ const TOP_UP_CHECK_MS = 30_000;
 // After a top-up was sent, none is sent for this long, whatever the balance reads meanwhile.
 const TOP_UP_INTERVAL_MS = 5 * 60_000;
 const TOP_UP_RECEIPT_MS = 60_000;
+const FUNDING_ALERT_BELOW_WEI = 10_000_000_000_000_000_000n; // 10 MON
+const FUNDING_ALERT_COOLDOWN_MS = 6 * 60 * 60_000; // 6 hours
 
 // One relay or wallet question of a poll may take this long. Past it that bot's poll ends with
 // an error and its next poll starts afresh; the other bots never waited for it.
@@ -218,12 +220,12 @@ export class FrankBotHost {
   private readonly options: Required<
     Omit<
       BotHostOptions,
-      "maxRepliesPerPeer" | "stampValueWei" | "createMessageItemRegistry"
+      "maxRepliesPerPeer" | "stampValueWei" | "createMessageItemRegistry" | "fundingAlertAddress"
     >
   > &
     Pick<
       BotHostOptions,
-      "maxRepliesPerPeer" | "stampValueWei" | "createMessageItemRegistry"
+      "maxRepliesPerPeer" | "stampValueWei" | "createMessageItemRegistry" | "fundingAlertAddress"
     >;
   private readonly provider: JsonRpcProvider;
   private readonly chain: ActiveChain;
@@ -245,6 +247,8 @@ export class FrankBotHost {
   private pollTimer?: NodeJS.Timeout;
   private registrationTimer?: NodeJS.Timeout;
   private lastRegistrationPollMs = 0;
+  private lastFundingAlertMs = 0;
+  private fundingAlertInFlight = false;
   private readonly scheduler = new BotScheduler();
   private stopPromise?: Promise<void>;
   private resolveStop?: () => void;
@@ -331,6 +335,17 @@ export class FrankBotHost {
       fundingReserveWei:
         options.fundingReserveWei ??
         BigInt(process.env.FAUCET_MIN_RESERVE_WEI || FUNDING_RESERVE_WEI),
+      fundingAlertAddress:
+        options.fundingAlertAddress ??
+        (process.env.FRANK_BOT_FUNDING_ALERT_ADDRESS?.trim() || undefined),
+      fundingAlertBelowWei:
+        options.fundingAlertBelowWei ??
+        BigInt(
+          process.env.FRANK_BOT_FUNDING_ALERT_BELOW_WEI ||
+            FUNDING_ALERT_BELOW_WEI
+        ),
+      fundingAlertCooldownMs:
+        options.fundingAlertCooldownMs ?? FUNDING_ALERT_COOLDOWN_MS,
     };
 
     if (this.options.topUpToWei <= this.options.topUpBelowWei)
@@ -1014,6 +1029,64 @@ export class FrankBotHost {
     }
   }
 
+  private async maybeSendFundingLowAlert(
+    knownFunderBal?: bigint
+  ): Promise<void> {
+    const alertAddress = this.options.fundingAlertAddress;
+    if (!alertAddress || !this.fundingWallet || this.fundingAlertInFlight) {
+      return;
+    }
+    const sender =
+      this.instances.get("faucet") ??
+      this.instances.get("qwen") ??
+      this.instances.values().next().value;
+    if (!sender) return;
+
+    this.fundingAlertInFlight = true;
+    try {
+      const funderBal =
+        knownFunderBal ??
+        (await this.provider.getBalance(this.fundingWallet.address));
+      if (funderBal >= this.options.fundingAlertBelowWei) {
+        this.lastFundingAlertMs = 0;
+        return;
+      }
+      const now = Date.now();
+      if (
+        this.lastFundingAlertMs > 0 &&
+        now - this.lastFundingAlertMs < this.options.fundingAlertCooldownMs
+      ) {
+        return;
+      }
+      const remainingText = sender.context.formatAmount(funderBal);
+      const thresholdText = sender.context.formatAmount(
+        this.options.fundingAlertBelowWei
+      );
+      await sender.context.sendMessage(
+        alertAddress,
+        [
+          {
+            type: "text",
+            text: `⚠️ Shared bot funding wallet (${this.fundingWallet.address}) is running low: ${remainingText} remaining (below ${thresholdText} alert threshold). Please top up ${this.fundingWallet.address}.`,
+          },
+        ],
+        undefined,
+        { stampValueWei: 0n }
+      );
+      this.lastFundingAlertMs = Date.now();
+      console.warn(
+        `[bot-host] Sent low-funding DM alert to ${alertAddress} (${remainingText} remaining in ${this.fundingWallet.address})`
+      );
+    } catch (err) {
+      console.warn(
+        `[bot-host] Failed sending low-funding DM alert to ${alertAddress}:`,
+        err instanceof Error ? err.message : err
+      );
+    } finally {
+      this.fundingAlertInFlight = false;
+    }
+  }
+
   /** Tops up, from the shared funding wallet, each of a bot's accounts that holds less than the
    * threshold. "sent": a funding transaction was handed to the node. "failed": an account could
    * not be looked at or funded; nothing is lost, the next call tries again. */
@@ -1023,6 +1096,7 @@ export class FrankBotHost {
   ): Promise<"sent" | "idle" | "failed"> {
     if (!this.fundingWallet || !this.nonceSequencer) return "idle";
     let outcome: "sent" | "idle" | "failed" = "idle";
+    let latestFunderBal: bigint | undefined;
     for (const target of targets) {
       let sent = false;
       try {
@@ -1031,6 +1105,7 @@ export class FrankBotHost {
         const funderBal = await this.provider.getBalance(
           this.fundingWallet.address
         );
+        latestFunderBal = funderBal;
         // Up to the target, and never into the funding wallet's reserve.
         const wanted = target.toWei - bal;
         const spare = funderBal - this.options.fundingReserveWei;
@@ -1054,6 +1129,8 @@ export class FrankBotHost {
         );
         sent = true;
         outcome = "sent";
+        latestFunderBal =
+          funderBal > fundAmount ? funderBal - fundAmount : 0n;
         try {
           await tx.wait(1, TOP_UP_RECEIPT_MS);
         } catch (waitError) {
@@ -1073,6 +1150,7 @@ export class FrankBotHost {
         );
       }
     }
+    await this.maybeSendFundingLowAlert(latestFunderBal);
     return outcome;
   }
 

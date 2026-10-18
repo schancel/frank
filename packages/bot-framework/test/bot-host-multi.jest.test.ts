@@ -510,4 +510,55 @@ describe("several bots on one host", () => {
     expect(overlapped).toBe(false);
     send.mockRestore();
   });
+
+  it("sends a Frank DM alert to fundingAlertAddress when the shared funding wallet drops below threshold and resets after top-up", async () => {
+    const alertRecipient = "0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3";
+    newHost({
+      fundingPrivateKeyHex: "0x" + "22".repeat(32),
+      fundingAlertAddress: alertRecipient,
+      fundingAlertBelowWei: 10n * 10n ** 18n,
+      fundingAlertCooldownMs: 60_000,
+    });
+    const funderAddress = (host as any).fundingWallet.address;
+    let funderBalance = 8n * 10n ** 18n;
+    (host as any).provider = {
+      getBalance: jest.fn(async (addr: string) =>
+        addr.toLowerCase() === funderAddress.toLowerCase()
+          ? funderBalance
+          : 10n * 10n ** 18n
+      ),
+      getFeeData: jest.fn(async () => ({ gasPrice: 1n })),
+    };
+    await host!.registerAll([bot("faucet")]);
+    const instance = instanceOf("faucet");
+    const sendSpy = jest
+      .spyOn(instance.context, "sendMessage")
+      .mockResolvedValue({
+        payloadDigest: "cc".repeat(32),
+        stampValueWei: 0n,
+      } as never);
+
+    await (host as any).fundBot("faucet", instance.fundingTargets);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(sendSpy.mock.calls[0][0]).toBe(alertRecipient);
+    expect(sendSpy.mock.calls[0][1]).toEqual([
+      {
+        type: "text",
+        text: expect.stringContaining(funderAddress),
+      },
+    ]);
+
+    // Second check within cooldown does not duplicate the DM
+    await (host as any).fundBot("faucet", instance.fundingTargets);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+
+    // Once topped back up >= threshold, alert state resets so a future drop alerts again
+    funderBalance = 25n * 10n ** 18n;
+    await (host as any).fundBot("faucet", instance.fundingTargets);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+
+    funderBalance = 5n * 10n ** 18n;
+    await (host as any).fundBot("faucet", instance.fundingTargets);
+    expect(sendSpy).toHaveBeenCalledTimes(2);
+  });
 });

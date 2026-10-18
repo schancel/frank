@@ -155,10 +155,8 @@ import type {
   MonadWalletMaterial,
 } from "../monad-wallet-material";
 import type { HDSeed } from "./active-chain";
-import { EvmChangePool } from "../monad-change-pool";
-import {
-  EvmSubAccountPool,
-} from "../monad-account-pool";
+import { EvmChangePool } from "../evm-change-pool";
+import { EvmSubAccountPool } from "../evm-account-pool";
 import { EvmSpendPool } from "../evm-spend-pool";
 import {
   EvmWallet,
@@ -918,7 +916,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       return;
     }
     const holder = mainAccountHolder(wallet);
-    const addresses = mainAccountAddresses(wallet);
+    const addresses =
+      options.addresses !== undefined && options.addresses.length > 0
+        ? [
+            ...new Set(
+              options.addresses.map((address) => address.toLowerCase())
+            ),
+          ]
+        : mainAccountAddresses(wallet);
     const others = () =>
       addresses.filter((address) => {
         const claimant = pool.accountClaimedBy(address);
@@ -952,7 +957,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             await waitForSpendSpacing(
               wallet.provider,
               address,
-              config.spendSpacingBlocks
+              config.spendSpacingBlocks,
+              { reserveBalanceWei: config.reserveBalanceWei }
             );
         } catch (error) {
           internals.runningMainTasks -= 1;

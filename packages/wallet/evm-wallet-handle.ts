@@ -1,9 +1,9 @@
 /** Shared and concrete EVM handle contracts; leaf implementation owners remain unchanged. */
 import type { Provider, Wallet } from "ethers";
-import type { MonadSubAccountPool } from "./monad-account-pool";
+import type { EvmSubAccountPool as MonadSubAccountPool } from "./evm-account-pool";
 import type { SubAccountLeaseManager } from "./monad-account-lease";
 import type { MonadTxSubmitter } from "./monad-account-tx";
-import type { MonadChangePool } from "./monad-change-pool";
+import type { EvmChangePool as MonadChangePool } from "./evm-change-pool";
 import type { StampPaymentJournal } from "./storage/stamp-payment-journal";
 import type { StampAttemptJournal } from "./storage/stamp-attempt-journal";
 import type { TopicOperationJournal } from "./storage/topic-operation-journal";

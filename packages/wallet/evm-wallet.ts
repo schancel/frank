@@ -1,10 +1,10 @@
 import type { Provider, Wallet } from "ethers";
 import type { EvmChainWalletHandle, EvmWalletHandle } from "./evm-wallet-handle";
 import type { EvmSpendPool, EvmSpendPoolFundingCandidate } from "./evm-spend-pool";
-import type { MonadSubAccountPool } from "./monad-account-pool";
+import type { EvmSubAccountPool as MonadSubAccountPool } from "./evm-account-pool";
 import type { SubAccountLeaseManager } from "./monad-account-lease";
 import type { MonadTxSubmitter } from "./monad-account-tx";
-import type { MonadChangePool } from "./monad-change-pool";
+import type { EvmChangePool as MonadChangePool } from "./evm-change-pool";
 import type { StampPaymentJournal } from "./storage/stamp-payment-journal";
 import type { StampAttemptJournal } from "./storage/stamp-attempt-journal";
 import type {

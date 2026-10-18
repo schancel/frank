@@ -224,5 +224,110 @@ describe('a stamp paid from an account whose funds have just arrived', () => {
     watcher.stop()
     expect(waits).toEqual([])
   })
+
+  it('returns at once from waitForSpendSpacing when balance after spend stays at or above reserveBalanceWei', async () => {
+    const MON = 10n ** 18n
+    const state = { head: 100, minedAt: [100], balanceWei: 25n * MON }
+    const base = node(state)
+    const provider = {
+      ...base.provider,
+      getBalance: async () => state.balanceWei,
+    } as unknown as Provider
+    await expect(
+      waitForSpendSpacing(provider, ADDRESS, 3, {
+        reserveBalanceWei: 10n * MON,
+        spendValueWei: 1n * MON,
+      }),
+    ).resolves.toBeUndefined()
+  })
+
+  it('skips newly-funded immature pool sub-accounts and pays immediately from a ready main account instead of stalling 4 blocks', async () => {
+    const MON = 10n ** 18n
+    const POOL_A = '0x' + '11'.repeat(20)
+    const POOL_B = '0x' + '22'.repeat(20)
+    const state = { head: 100, poolFundedAt: 100 }
+    const provider = {
+      getBlockNumber: async () => state.head,
+      getTransactionCount: async () => 0,
+      getBalance: async (address: string, block?: number) => {
+        const lower = address.toLowerCase()
+        if (lower === ADDRESS) return 20n * MON
+        if (block !== undefined && block < state.poolFundedAt) return 0n
+        return MON / 10n
+      },
+      getFeeData: async () => ({
+        gasPrice: 102n * 10n ** 9n,
+        maxFeePerGas: 202n * 10n ** 9n,
+        maxPriorityFeePerGas: 2n * 10n ** 9n,
+      }),
+    } as unknown as Provider
+    let mainClaimed: string | undefined
+    let poolClaimed: string | undefined
+    const pool = {
+      fundedCapacities: async () => [
+        { index: 0, address: POOL_A, capacityWei: MON / 20n },
+        { index: 1, address: POOL_B, capacityWei: MON / 20n },
+      ],
+      claimStampAccounts: (
+        holder: string,
+        _stampValueWei: bigint,
+        _feeReserveWei: bigint,
+        eligible?: (index: number, address: string) => boolean,
+      ) => {
+        const candidates = [
+          { index: 0, address: POOL_A, paymentValueWei: (MON / 100n * 3n) / 8n },
+          { index: 1, address: POOL_B, paymentValueWei: (MON / 100n * 5n) / 8n },
+        ].filter(c => eligible?.(c.index, c.address) !== false)
+        if (candidates.length < 2) return undefined
+        poolClaimed = holder
+        return candidates
+      },
+      accountClaimedBy: () => mainClaimed,
+      accountGeneration: () => 0,
+      claimAccount: (holder: string) => ((mainClaimed = holder), true),
+      releaseAccountClaim: () => (mainClaimed = undefined),
+      releaseClaim: () => {
+        poolClaimed = undefined
+        mainClaimed = undefined
+      },
+    } as unknown as MonadSubAccountPool
+    const watcher = new EvmBlockWatcher({ provider, intervalMs: 20 })
+    const payer = new EvmStampPayer({
+      pool,
+      provider,
+      httpClient: {} as never,
+      watcher,
+      spendSpacingBlocks: 3,
+      reserveBalanceWei: 10n * MON,
+      accounts: [{ source: 'main', address: ADDRESS, privateKey: () => '' }],
+    })
+    const waits: (number | undefined)[] = []
+    // At block 100, pool accounts were just funded at block 100 (immature until block 104),
+    // but main account has settled funds >= 10 MON reserve: claim resolves immediately from main!
+    const immediate = await payer.claim({
+      holder: 'msg-during-pool-maturity',
+      stampValueWei: MON / 100n,
+      onWaiting: blocks => waits.push(blocks),
+    })
+    expect(waits).toEqual([])
+    expect(poolClaimed).toBeUndefined()
+    expect(immediate.accounts).toEqual([
+      expect.objectContaining({ source: 'main', address: ADDRESS, nonce: 0 }),
+    ])
+
+    // Once block 104 arrives, the pool sub-accounts are mature (104 - 4 >= 100) and are used with 0 wait!
+    mainClaimed = undefined
+    state.head = 104
+    const matured = await payer.claim({
+      holder: 'msg-after-pool-maturity',
+      stampValueWei: MON / 100n,
+      onWaiting: blocks => waits.push(blocks),
+    })
+    watcher.stop()
+    expect(waits).toEqual([])
+    expect(poolClaimed).toBe('msg-after-pool-maturity')
+    expect(matured.accounts.map(a => a.source)).toEqual(['pool', 'pool'])
+  })
 })
+
 

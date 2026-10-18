@@ -17,8 +17,8 @@ import { BurnNotSentError } from "./monad-account-lease";
 import {
   FundAheadRefusedError,
   STAMP_PAIR_TRANSFERS,
-  type MonadSubAccountPool,
-} from "./monad-account-pool";
+  type EvmSubAccountPool as MonadSubAccountPool,
+} from "./evm-account-pool";
 import { MonadAccountTxSigner } from "./monad-account-tx";
 import type { MonadHttpClient } from "./monad-http";
 import type { MonadIdentity } from "./monad-identity";
@@ -47,6 +47,8 @@ export interface MainAccountWait {
    * transaction over an undecided one at once, and a resume is the one driving it.
    */
   waitForOwn?: boolean;
+  /** Specific account addresses to claim/wait on instead of both main and identity. */
+  addresses?: readonly string[];
 }
 
 /**
@@ -602,7 +604,7 @@ export function installEvmStampFundAheadCoordinator(
             minimumPaymentWei: transferFeeNow,
             onProgress: input.onProgress,
           }),
-        FUNDING_FROM_MAIN
+        { ...FUNDING_FROM_MAIN, addresses: [mainAccountSigner.address] }
       );
     });
 
@@ -612,8 +614,11 @@ export function installEvmStampFundAheadCoordinator(
   }) => (await fundStampAccounts({ stampValueWei, onProgress })).fundingTxHashes;
   walletInternals.canonicalInventoryFunder = prepareInventory;
 
-  pool.attachFunderSpacing((address) =>
-    waitForSpendSpacing(provider, address, spendSpacingBlocks)
+  pool.attachFunderSpacing((address, spendValueWei) =>
+    waitForSpendSpacing(provider, address, spendSpacingBlocks, {
+      reserveBalanceWei,
+      spendValueWei,
+    })
   );
   const blockWatcher = new EvmBlockWatcher({
     provider,
@@ -761,7 +766,7 @@ export function installEvmStampFundAheadCoordinator(
                 maxValueWei: maxValueAheadWei,
                 minimumPaymentWei: transferFeeNow,
               }),
-            FUNDING_FROM_MAIN
+            { ...FUNDING_FROM_MAIN, addresses: [mainAccount.address] }
           );
           result = {
             outcome:

@@ -87,8 +87,7 @@
           <q-badge
             v-for="tag in validArticle.tags"
             :key="tag"
-            outline
-            color="primary"
+            class="article-reader-tag-pill"
           >
             {{ formatTag(tag) }}
           </q-badge>
@@ -449,7 +448,7 @@ export default defineComponent({
       return { textAlign: alignment }
     },
     formatTag(tag: string): string {
-      return `#${tag}`
+      return `#${tag.replace(/^#+/, '')}`
     },
   },
 })
@@ -459,14 +458,18 @@ export default defineComponent({
 .article-reader-pane {
   width: 100%;
   height: 100%;
-  background: var(--q-dark-page, #fff);
+  background: #fcfbf9;
+  color: #18181b;
   overflow: hidden;
+  border-radius: 12px;
 }
 
 .article-reader-header {
   position: sticky;
   top: 0;
   z-index: 2;
+  background: rgba(252, 251, 249, 0.92);
+  border-bottom: 1px solid rgba(24, 24, 27, 0.08);
   backdrop-filter: blur(8px);
 }
 
@@ -479,31 +482,76 @@ export default defineComponent({
   margin: 0 auto;
   word-break: break-word;
   overflow-wrap: anywhere;
+  color: inherit;
 }
 
 .article-reader-author,
 .article-reader-meta {
-  opacity: 0.8;
+  color: #52525b;
+  font-weight: 500;
 }
 
 .article-reader-summary {
-  line-height: 1.5;
-  opacity: 0.9;
+  color: #3f3f46;
+  line-height: 1.55;
+}
+
+.article-reader-tag-pill {
+  background: rgba(234, 88, 12, 0.12) !important;
+  color: #c2410c !important;
+  border: 1px solid rgba(234, 88, 12, 0.24);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-weight: 600;
+  font-size: 0.75rem;
 }
 
 .article-markdown-body {
-  line-height: 1.7;
+  color: #27272a;
+  line-height: 1.75;
+
+  :deep(a),
+  a {
+    color: #ea580c;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  :deep(code),
+  code {
+    background: rgba(24, 24, 27, 0.06);
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.9em;
+  }
+}
+
+.article-md-heading {
+  color: #18181b;
+  line-height: 1.3;
 }
 
 .article-md-code-block {
   overflow-x: auto;
-  background: rgba(128, 128, 128, 0.12);
-  font-family: monospace;
+  background: #f4f4f5;
+  color: #18181b;
+  border: 1px solid rgba(24, 24, 27, 0.08);
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  code {
+    background: transparent;
+    padding: 0;
+  }
 }
 
 .article-md-blockquote {
-  border-left: 3px solid rgba(128, 128, 128, 0.45);
-  opacity: 0.9;
+  border-left: 3px solid #ea580c;
+  background: rgba(234, 88, 12, 0.05);
+  color: #3f3f46;
+  padding: 8px 14px;
+  border-radius: 0 8px 8px 0;
 }
 
 .article-md-table-wrap {
@@ -515,8 +563,82 @@ export default defineComponent({
 
   th,
   td {
-    padding: 6px 10px;
-    border: 1px solid rgba(128, 128, 128, 0.3);
+    padding: 8px 12px;
+    border: 1px solid rgba(24, 24, 27, 0.14);
+  }
+
+  th {
+    background: rgba(24, 24, 27, 0.04);
+    font-weight: 600;
+  }
+}
+
+:global(.body--dark) .article-reader-pane,
+.body--dark .article-reader-pane {
+  background: #0f172a;
+  color: #f8fafc;
+
+  .article-reader-header {
+    background: rgba(15, 23, 42, 0.92);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .article-reader-author,
+  .article-reader-meta {
+    color: #94a3b8;
+  }
+
+  .article-reader-summary {
+    color: #cbd5e1;
+  }
+
+  .article-reader-tag-pill {
+    background: rgba(249, 115, 22, 0.18) !important;
+    color: #fdba74 !important;
+    border-color: rgba(249, 115, 22, 0.32);
+  }
+
+  .article-markdown-body {
+    color: #e2e8f0;
+
+    a {
+      color: #fb923c;
+    }
+
+    code {
+      background: rgba(255, 255, 255, 0.1);
+    }
+  }
+
+  .article-md-heading {
+    color: #f8fafc;
+  }
+
+  .article-md-code-block {
+    background: #1e293b;
+    color: #f8fafc;
+    border-color: rgba(255, 255, 255, 0.1);
+
+    code {
+      background: transparent;
+    }
+  }
+
+  .article-md-blockquote {
+    border-left-color: #f97316;
+    background: rgba(249, 115, 22, 0.08);
+    color: #cbd5e1;
+  }
+
+  .article-md-table {
+    th,
+    td {
+      border-color: rgba(255, 255, 255, 0.14);
+    }
+
+    th {
+      background: rgba(255, 255, 255, 0.05);
+    }
   }
 }
 </style>

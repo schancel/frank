@@ -611,11 +611,53 @@ export default defineComponent({
 })
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 .rps-game {
   max-width: 100%;
   min-width: 0;
   font: inherit;
   letter-spacing: normal;
+  background: #ffffff;
+  color: #1e293b;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 14px;
+  padding: 12px 14px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+
+  .text-grey-7,
+  .text-grey-8,
+  .text-grey-9,
+  .game-waiting-quiet {
+    color: #475569 !important;
+  }
+
+  :deep(.q-field--outlined .q-field__control) {
+    border-radius: 10px !important;
+    background: rgba(15, 23, 42, 0.03);
+  }
+
+  .body--dark & {
+    background: #1e293b;
+    color: #f8fafc;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+
+    .text-grey-7,
+    .text-grey-8,
+    .text-grey-9,
+    .game-waiting-quiet {
+      color: #cbd5e1 !important;
+    }
+
+    :deep(.q-field--outlined .q-field__control) {
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    :deep(.q-field__native),
+    :deep(.q-field__label),
+    :deep(.q-field__suffix) {
+      color: #f8fafc !important;
+    }
+  }
 }
 </style>

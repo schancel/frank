@@ -33,6 +33,7 @@
         :label="uiLabels.yourHoleCards"
         :sentence="uiLabels.yourHoleCards"
         :cards="viewerHoleCards"
+        :hidden="0"
         :hidden-count="0"
       />
       <BlackjackCards
@@ -40,6 +41,7 @@
         :label="uiLabels.yourHoleCards"
         :sentence="uiLabels.yourHoleCards"
         :cards="[]"
+        :hidden="2"
         :hidden-count="2"
       />
     </div>
@@ -49,6 +51,7 @@
         :label="uiLabels.communityBoard"
         :sentence="uiLabels.communityBoard"
         :cards="communityCards"
+        :hidden="hiddenCommunityCount"
         :hidden-count="hiddenCommunityCount"
       />
     </div>
@@ -68,6 +71,7 @@
         :label="uiLabels.opponentHoleCards"
         :sentence="uiLabels.opponentHoleCards"
         :cards="opponentHoleCards"
+        :hidden="0"
         :hidden-count="0"
       />
       <BlackjackCards
@@ -75,6 +79,7 @@
         :label="uiLabels.opponentHoleCards"
         :sentence="uiLabels.opponentHoleCards"
         :cards="[]"
+        :hidden="2"
         :hidden-count="2"
       />
     </div>
@@ -101,15 +106,18 @@
 
     <div
       v-if="showActionBar"
-      class="row items-center q-gutter-xs q-mt-xs"
+      class="mp-actions row items-center q-gutter-xs q-mt-xs"
       data-testid="mp-actions"
     >
       <q-btn
         v-if="canAcceptAndShuffle"
         dense
+        rounded
         unelevated
+        no-caps
         color="primary"
         size="sm"
+        class="mp-action-btn"
         data-testid="mp-accept-btn"
         :label="uiLabels.acceptAndShuffle"
         @click="onAcceptAndShuffle"
@@ -117,9 +125,12 @@
       <q-btn
         v-if="canCheck"
         dense
+        rounded
         unelevated
+        no-caps
         color="secondary"
         size="sm"
+        class="mp-action-btn"
         data-testid="mp-check-btn"
         :label="uiLabels.check"
         @click="onCheck"
@@ -127,9 +138,12 @@
       <q-btn
         v-if="canCall"
         dense
+        rounded
         unelevated
+        no-caps
         color="primary"
         size="sm"
+        class="mp-action-btn"
         data-testid="mp-call-btn"
         :label="callButtonLabel"
         @click="onCall"
@@ -137,9 +151,12 @@
       <q-btn
         v-if="canFold"
         dense
+        rounded
         outline
+        no-caps
         color="negative"
         size="sm"
+        class="mp-action-btn"
         data-testid="mp-fold-btn"
         :label="uiLabels.fold"
         @click="onFold"
@@ -147,9 +164,12 @@
       <q-btn
         v-if="canRevealAndPay"
         dense
+        rounded
         unelevated
+        no-caps
         color="positive"
         size="sm"
+        class="mp-action-btn"
         data-testid="mp-settle-btn"
         :label="uiLabels.revealAndPay"
         @click="onRevealAndPay"
@@ -554,19 +574,59 @@ function onRevealAndPay(): void {
 
 <style scoped>
 .mp-card {
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: linear-gradient(155deg, #0b221c 0%, #0f172a 100%);
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 16px;
+  padding: 14px !important;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.32);
+  min-width: 280px;
+  max-width: 440px;
+}
+
+.mp-pot-row {
+  background: rgba(255, 255, 255, 0.08);
   border-radius: 10px;
-  background: rgba(20, 28, 40, 0.55);
-  min-width: 240px;
+  padding: 6px 10px;
+  color: #f8fafc;
+}
+
+.mp-section {
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 10px;
+  padding: 8px 10px;
 }
 
 .mp-deck-status {
-  opacity: 0.82;
+  color: #cbd5e1;
+  opacity: 0.9;
   font-family: monospace;
 }
 
 .mp-hidden-placeholder {
+  color: #cbd5e1;
   font-family: monospace;
-  opacity: 0.75;
+  opacity: 0.85;
+}
+
+.mp-result {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 6px 10px;
+  color: #fbbf24;
+}
+
+.mp-actions :deep(.q-btn),
+.mp-action-btn {
+  border-radius: 999px !important;
+  padding: 4px 12px;
+  font-weight: 600;
+}
+
+:deep(.blackjack-cards-label),
+:deep(.bj-row__label),
+:deep(.bj-row__total) {
+  color: #e2e8f0;
+  opacity: 0.95;
 }
 </style>

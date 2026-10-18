@@ -303,7 +303,7 @@ describe('ChatMessageInvoice & InvoiceComposeForm (#679)', () => {
     const tagInput = cardWrapper.find(
       '[data-testid="invoice-private-tag-input"]',
     )
-    await tagInput.setValue('priority-vendor')
+    await tagInput.setValue('#priority-vendor')
     await cardWrapper
       .find('[data-testid="invoice-private-tag-add"]')
       .trigger('click')
@@ -311,10 +311,50 @@ describe('ChatMessageInvoice & InvoiceComposeForm (#679)', () => {
     expect(privateTagStore.getTags(submitted.payload.invoiceId)).toEqual([
       'q4-budget',
       'tax-deductible',
-      'priority-vendor',
+      '#priority-vendor',
     ])
+    const chips = cardWrapper.findAll('[data-testid="invoice-private-tag-chip"]')
+    expect(chips).toHaveLength(3)
+    expect(chips[2].text()).toContain('#priority-vendor')
+    expect(chips[2].text()).not.toContain('##priority-vendor')
+  })
+
+  it('populates and clears ISO-8601 expiry timestamps via quick expiry preset buttons', async () => {
+    const privateTagStore = new InvoicePrivateTagStore({ storage: null })
+    const composeWrapper = mount(InvoiceComposeForm, {
+      props: {
+        payeeIdentity: sampleInvoice.payeeIdentity,
+        receiveAddress: sampleInvoice.receiveAddress,
+        chainKey: 'monad',
+        networkId: '10143',
+        nativeSymbol: 'MON',
+        nativeDecimals: 18,
+        privateTagStore,
+      },
+      global: { stubs: quasarStubs },
+    })
+
+    const expiryInput = composeWrapper.find(
+      '[data-testid="invoice-compose-expiry"]',
+    )
+    expect((expiryInput.element as HTMLInputElement).value).toBe('')
     expect(
-      cardWrapper.findAll('[data-testid="invoice-private-tag-chip"]'),
-    ).toHaveLength(3)
+      composeWrapper.find('[data-testid="invoice-expiry-preset-clear"]').exists(),
+    ).toBe(false)
+
+    await composeWrapper
+      .find('[data-testid="invoice-expiry-preset-24h"]')
+      .trigger('click')
+
+    const presetIso = (expiryInput.element as HTMLInputElement).value
+    expect(presetIso).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+    expect(Number.isNaN(Date.parse(presetIso))).toBe(false)
+
+    const clearBtn = composeWrapper.find(
+      '[data-testid="invoice-expiry-preset-clear"]',
+    )
+    expect(clearBtn.exists()).toBe(true)
+    await clearBtn.trigger('click')
+    expect((expiryInput.element as HTMLInputElement).value).toBe('')
   })
 })

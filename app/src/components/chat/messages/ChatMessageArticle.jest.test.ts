@@ -207,7 +207,7 @@ describe('ChatMessageArticle, ArticleReaderPane, and ArticleComposeForm', () => 
       .setValue('# Section 1\n\nBody text with **bold**.')
     await compose
       .find('[data-testid="article-compose-tags"]')
-      .setValue('protocol, spec')
+      .setValue('#protocol, ##spec, #bewp')
 
     // Toggle live preview on and off
     await compose
@@ -219,6 +219,12 @@ describe('ChatMessageArticle, ArticleReaderPane, and ArticleComposeForm', () => 
     expect(
       compose.find('[data-testid="article-reader-pane"]').exists(),
     ).toBe(true)
+    expect(
+      compose.find('[data-testid="article-reader-tags"]').text(),
+    ).toContain('#bewp')
+    expect(
+      compose.find('[data-testid="article-reader-tags"]').text(),
+    ).not.toContain('##bewp')
     await compose
       .find('[data-testid="article-compose-preview-toggle"]')
       .trigger('click')
@@ -239,8 +245,43 @@ describe('ChatMessageArticle, ArticleReaderPane, and ArticleComposeForm', () => 
       summary: 'Short summary for the card',
       authorName: 'Satoshi',
       markdownBody: '# Section 1\n\nBody text with **bold**.',
-      tags: ['protocol', 'spec'],
+      tags: ['protocol', 'spec', 'bewp'],
     })
     expect(toArticleApplicationItem(emitted!).itemType).toBe(ARTICLE_PLUGIN_ID)
+  })
+
+  it('normalizes leading # in tags on ChatMessageArticle and ArticleReaderPane and supports formatting toolbar buttons', async () => {
+    const taggedArticle: ArticlePayload = {
+      ...sampleArticle,
+      tags: ['#bewp', '##privacy'],
+    }
+    const cardWrapper = mountCard(toArticleApplicationItem(taggedArticle))
+    const tagsText = cardWrapper.find('[data-testid="article-card-tags"]').text()
+    expect(tagsText).toContain('#bewp')
+    expect(tagsText).not.toContain('##bewp')
+    expect(tagsText).toContain('#privacy')
+    expect(tagsText).not.toContain('##privacy')
+
+    const compose = mount(ArticleComposeForm, {
+      global: { stubs: quasarStubs },
+    })
+    expect(compose.find('[data-testid="article-compose-toolbar"]').exists()).toBe(
+      true,
+    )
+    await compose.find('[data-testid="article-toolbar-heading"]').trigger('click')
+    await compose.find('[data-testid="article-toolbar-bold"]').trigger('click')
+    await compose.find('[data-testid="article-toolbar-quote"]').trigger('click')
+    await compose.find('[data-testid="article-toolbar-code"]').trigger('click')
+    await compose.find('[data-testid="article-toolbar-list"]').trigger('click')
+    await compose.find('[data-testid="article-toolbar-link"]').trigger('click')
+
+    const bodyEl = compose.find('[data-testid="article-compose-body"]')
+      .element as HTMLTextAreaElement
+    expect(bodyEl.value).toContain('## Section heading')
+    expect(bodyEl.value).toContain('**bold text**')
+    expect(bodyEl.value).toContain('> Quoted insight')
+    expect(bodyEl.value).toContain('`code`')
+    expect(bodyEl.value).toContain('- List item')
+    expect(bodyEl.value).toContain('[link text](https://example.com)')
   })
 })

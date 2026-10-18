@@ -24,7 +24,7 @@
     </div>
 
     <div
-      class="text-subtitle1 text-weight-bold q-mb-xs"
+      class="text-subtitle1 text-weight-bold q-mb-xs article-card-title"
       dir="auto"
       data-testid="article-card-title"
     >
@@ -56,9 +56,7 @@
       <q-badge
         v-for="tag in articleData.tags"
         :key="tag"
-        outline
-        color="grey-7"
-        class="text-caption"
+        class="text-caption article-card-tag-pill"
       >
         {{ formatTag(tag) }}
       </q-badge>
@@ -70,8 +68,10 @@
         dense
         no-caps
         unelevated
+        rounded
         color="primary"
         icon="menu_book"
+        class="article-open-reader-btn"
         :label="openReaderLabel"
         :aria-label="openReaderAriaLabel"
         data-testid="article-open-reader"
@@ -235,7 +235,7 @@ export default defineComponent({
       return fallback
     },
     formatTag(tag: string): string {
-      return `#${tag}`
+      return `#${tag.replace(/^#+/, '')}`
     },
     onOpenReader() {
       if (!this.articleData) return
@@ -266,19 +266,73 @@ export default defineComponent({
 
 <style lang="scss" scoped>
 .chat-message-article-card {
-  min-width: 240px;
-  max-width: 460px;
-  border: 1px solid rgba(128, 128, 128, 0.28);
-  background: rgba(255, 255, 255, 0.06);
+  min-width: 260px;
+  max-width: 480px;
+  background: #ffffff;
+  color: #0f172a;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-left: 4px solid #ea580c;
+  border-radius: 14px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+  padding: 14px 16px !important;
+}
+
+.article-card-title {
+  color: #0f172a;
+  line-height: 1.35;
 }
 
 .article-card-meta,
 .article-card-author {
-  opacity: 0.8;
+  color: #475569;
+  font-weight: 500;
 }
 
 .article-card-summary {
-  line-height: 1.45;
-  opacity: 0.92;
+  color: #334155;
+  line-height: 1.5;
+}
+
+.article-card-tag-pill {
+  background: rgba(234, 88, 12, 0.12) !important;
+  color: #c2410c !important;
+  border: 1px solid rgba(234, 88, 12, 0.24);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-weight: 600;
+}
+
+.article-open-reader-btn {
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-weight: 600;
+}
+
+:global(.body--dark) .chat-message-article-card,
+.body--dark .chat-message-article-card {
+  background: #0f172a;
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-left: 4px solid #f97316;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+
+  .article-card-title {
+    color: #f8fafc;
+  }
+
+  .article-card-meta,
+  .article-card-author {
+    color: #94a3b8;
+  }
+
+  .article-card-summary {
+    color: #cbd5e1;
+  }
+
+  .article-card-tag-pill {
+    background: rgba(249, 115, 22, 0.18) !important;
+    color: #fdba74 !important;
+    border-color: rgba(249, 115, 22, 0.32);
+  }
 }
 </style>

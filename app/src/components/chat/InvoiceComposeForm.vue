@@ -2,7 +2,6 @@
   <q-card-section
     class="invoice-compose-form q-pa-sm"
     data-testid="invoice-compose-form"
-    style="min-width: 300px"
   >
     <div class="row items-center justify-between q-mb-xs">
       <div class="text-subtitle2 text-weight-bold" data-testid="invoice-compose-title">
@@ -18,7 +17,7 @@
     </div>
 
     <div
-      class="text-caption q-mb-sm"
+      class="text-caption q-mb-sm invoice-compose-address"
       data-testid="invoice-compose-address"
       :title="effectiveReceiveAddress"
     >
@@ -38,7 +37,7 @@
 
     <div
       v-if="parsedBaseUnitsPreview"
-      class="text-caption q-mb-xs"
+      class="text-caption q-mb-xs invoice-compose-base-units"
       data-testid="invoice-compose-base-units"
     >
       {{ parsedBaseUnitsPreview }}
@@ -75,6 +74,36 @@
       :disable="busy"
       data-testid="invoice-compose-expiry"
     />
+
+    <div
+      class="row items-center q-gutter-xs q-mb-sm"
+      data-testid="invoice-compose-expiry-presets"
+    >
+      <q-btn
+        v-for="preset in expiryPresets"
+        :key="preset.id"
+        outline
+        dense
+        no-caps
+        size="sm"
+        color="primary"
+        :label="preset.label"
+        :disable="busy"
+        :data-testid="`invoice-expiry-preset-${preset.id}`"
+        @click="applyExpiryPreset(preset.durationMs)"
+      />
+      <q-btn
+        v-if="expiresAtInput"
+        flat
+        dense
+        no-caps
+        size="sm"
+        :label="clearExpiryLabel"
+        :disable="busy"
+        data-testid="invoice-expiry-preset-clear"
+        @click="clearExpiry"
+      />
+    </div>
 
     <q-input
       v-model="privateTagsInput"
@@ -233,6 +262,32 @@ export default defineComponent({
     expiryPlaceholder(): string {
       return '2030-01-01T00:00:00Z'
     },
+    expiryPresets(): ReadonlyArray<{
+      id: string
+      label: string
+      durationMs: number
+    }> {
+      return [
+        {
+          id: '1h',
+          label: this.tr('invoice.expiryPreset1h', '1h'),
+          durationMs: 60 * 60 * 1000,
+        },
+        {
+          id: '24h',
+          label: this.tr('invoice.expiryPreset24h', '24h'),
+          durationMs: 24 * 60 * 60 * 1000,
+        },
+        {
+          id: '7d',
+          label: this.tr('invoice.expiryPreset7d', '7d'),
+          durationMs: 7 * 24 * 60 * 60 * 1000,
+        },
+      ]
+    },
+    clearExpiryLabel(): string {
+      return this.tr('invoice.clearExpiry', 'Clear')
+    },
     privateTagsFieldLabel(): string {
       return this.tr(
         'invoice.privateTagsLabel',
@@ -337,6 +392,14 @@ export default defineComponent({
       }
       return fallback
     },
+    applyExpiryPreset(durationMs: number) {
+      if (this.busy) return
+      this.expiresAtInput = new Date(Date.now() + durationMs).toISOString()
+    },
+    clearExpiry() {
+      if (this.busy) return
+      this.expiresAtInput = ''
+    },
     submitInvoice() {
       this.submissionError = ''
       if (this.busy || !this.canSubmit || !this.parsedBaseUnits) return
@@ -385,3 +448,19 @@ export default defineComponent({
   },
 })
 </script>
+
+<style lang="scss" scoped>
+.invoice-compose-form {
+  min-width: min(420px, 90vw);
+  padding: 16px !important;
+
+  :deep(.q-field--outlined .q-field__control) {
+    border-radius: 10px !important;
+  }
+}
+
+.invoice-compose-address,
+.invoice-compose-base-units {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+</style>

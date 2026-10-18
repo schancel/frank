@@ -7,7 +7,7 @@
     <template v-if="invoice.action === 'request'">
       <div class="row items-center justify-between q-gutter-xs q-mb-xs">
         <div
-          class="text-caption text-weight-bold"
+          class="text-caption text-weight-bold invoice-id-pill"
           data-testid="invoice-id"
           :title="invoice.invoiceId"
         >
@@ -16,6 +16,7 @@
         <q-badge
           :color="statusBadgeColor"
           text-color="white"
+          class="invoice-status-pill"
           data-testid="invoice-status-badge"
         >
           {{ statusBadgeLabel }}
@@ -23,19 +24,19 @@
       </div>
 
       <div
-        class="text-subtitle1 text-weight-bold q-mb-xs"
+        class="invoice-hero-amount q-mb-xs"
         data-testid="invoice-amount"
         :title="exactBaseUnitsTitle"
       >
         {{ formattedAmountWithSymbol }}
       </div>
 
-      <div class="text-caption q-mb-xs" data-testid="invoice-network">
+      <div class="text-caption invoice-meta-row q-mb-xs" data-testid="invoice-network">
         {{ networkSummaryText }}
       </div>
 
       <div
-        class="text-caption q-mb-xs"
+        class="text-caption invoice-meta-row invoice-mono-row q-mb-xs"
         data-testid="invoice-payee"
         :title="invoice.payeeIdentity"
       >
@@ -43,7 +44,7 @@
       </div>
 
       <div
-        class="text-caption q-mb-xs"
+        class="text-caption invoice-meta-row invoice-mono-row q-mb-xs"
         data-testid="invoice-destination"
         :title="invoice.receiveAddress"
       >
@@ -60,7 +61,7 @@
 
       <div
         v-if="invoice.expiresAtIso"
-        class="text-caption q-mb-xs"
+        class="text-caption invoice-meta-row q-mb-xs"
         data-testid="invoice-expiry"
       >
         {{ expirySummaryText }}
@@ -92,9 +93,7 @@
           <q-badge
             v-for="tag in privateTags"
             :key="tag"
-            outline
-            color="grey-7"
-            class="text-caption"
+            class="text-caption invoice-tag-chip"
             data-testid="invoice-private-tag-chip"
           >
             {{ formatTagChip(tag) }}
@@ -126,7 +125,7 @@
             dense
             no-caps
             size="sm"
-            color="primary"
+            color="info"
             :label="addPrivateTagLabel"
             data-testid="invoice-private-tag-add"
             @click="onAddPrivateTag"
@@ -158,6 +157,7 @@
           no-caps
           dense
           color="primary"
+          class="invoice-pay-btn"
           :label="payButtonLabel"
           :loading="paying"
           :disable="paying || !canPay"
@@ -178,27 +178,27 @@
         <div class="text-caption text-weight-bold q-mb-xs">
           {{ confirmHeaderText }}
         </div>
-        <div class="text-caption" data-testid="invoice-confirm-payee">
+        <div class="text-caption invoice-meta-row invoice-mono-row" data-testid="invoice-confirm-payee">
           {{ confirmPayeeText }}
         </div>
-        <div class="text-caption" data-testid="invoice-confirm-network">
+        <div class="text-caption invoice-meta-row" data-testid="invoice-confirm-network">
           {{ confirmNetworkText }}
         </div>
         <div
-          class="text-caption"
+          class="text-caption invoice-meta-row"
           data-testid="invoice-confirm-amount"
           :title="exactBaseUnitsTitle"
         >
           {{ confirmAmountText }}
         </div>
         <div
-          class="text-caption"
+          class="text-caption invoice-meta-row invoice-mono-row"
           data-testid="invoice-confirm-destination"
           :title="invoice.receiveAddress"
         >
           {{ confirmDestinationText }}
         </div>
-        <div class="text-caption q-mb-xs" data-testid="invoice-confirm-fee">
+        <div class="text-caption invoice-meta-row q-mb-xs" data-testid="invoice-confirm-fee">
           {{ confirmFeeText }}
         </div>
 
@@ -217,6 +217,7 @@
             flat
             no-caps
             dense
+            text-color="white"
             :label="cancelConfirmLabel"
             :disable="paying"
             data-testid="invoice-confirm-cancel"
@@ -227,21 +228,21 @@
     </template>
 
     <template v-else-if="invoice.action === 'receipt'">
-      <div data-testid="invoice-receipt-card">
+      <div class="invoice-receipt-box" data-testid="invoice-receipt-card">
         <div class="text-caption text-weight-bold q-mb-xs">
           {{ receiptHeaderText }}
         </div>
-        <div class="text-caption" data-testid="invoice-receipt-id">
+        <div class="text-caption invoice-meta-row invoice-mono-row" data-testid="invoice-receipt-id">
           {{ receiptInvoiceIdText }}
         </div>
         <div
-          class="text-caption"
+          class="text-caption invoice-meta-row invoice-mono-row"
           data-testid="invoice-receipt-tx"
           :title="invoice.txHash"
         >
           {{ receiptTxHashText }}
         </div>
-        <div class="text-caption text-grey-7" data-testid="invoice-receipt-note">
+        <div class="text-caption invoice-receipt-note" data-testid="invoice-receipt-note">
           {{ receiptCanonicalNoteText }}
         </div>
       </div>
@@ -628,7 +629,7 @@ export default defineComponent({
       return `${trimmed.slice(0, 6)}...${trimmed.slice(-4)}`
     },
     formatTagChip(tag: string): string {
-      return `#${tag}`
+      return `#${tag.replace(/^#+/, '')}`
     },
     removeTagAriaLabel(tag: string): string {
       return `Remove private tag ${tag}`
@@ -751,27 +752,92 @@ export default defineComponent({
 
 <style lang="scss" scoped>
 .invoice-card {
-  min-width: 240px;
+  background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  padding: 14px 16px !important;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+  min-width: 270px;
   max-width: 420px;
-  border: 1px solid rgba(128, 128, 128, 0.28);
-  background: rgba(255, 255, 255, 0.05);
+}
+
+.invoice-id-pill {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.invoice-status-pill {
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-weight: 600;
+}
+
+.invoice-hero-amount,
+[data-testid='invoice-amount'] {
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #ffffff;
+}
+
+.invoice-meta-row {
+  color: #cbd5e1;
+}
+
+.invoice-mono-row {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .invoice-description {
   white-space: pre-wrap;
   word-break: break-word;
+  color: #f1f5f9;
+  background: rgba(15, 23, 42, 0.45);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.invoice-tag-chip {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #e2e8f0 !important;
+  border-radius: 999px;
+  padding: 2px 8px;
 }
 
 .invoice-confirm-box {
-  border: 1px solid rgba(25, 118, 210, 0.45);
-  background: rgba(25, 118, 210, 0.08);
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(59, 130, 246, 0.5);
+  border-radius: 12px;
+  padding: 10px 12px !important;
+  color: #f8fafc;
 }
 
 .invoice-tag-input {
-  border: 1px solid rgba(128, 128, 128, 0.35);
-  border-radius: 4px;
-  padding: 2px 6px;
-  background: transparent;
-  color: inherit;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: #f8fafc;
+  outline: none;
+
+  &::placeholder {
+    color: rgba(203, 213, 225, 0.65);
+  }
+}
+
+.invoice-receipt-box,
+[data-testid='invoice-receipt-card'] {
+  border-left: 3px solid #10b981;
+  padding-left: 10px;
+  color: #f8fafc;
+}
+
+.invoice-receipt-note {
+  color: #cbd5e1;
+  margin-top: 4px;
 }
 </style>

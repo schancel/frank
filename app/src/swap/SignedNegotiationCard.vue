@@ -1,30 +1,44 @@
 <template>
   <section
+    class="signed-negotiation-card"
     data-testid="signed-negotiation-card"
     :aria-label="$t('signedSwap.title')"
   >
-    <strong>{{ $t('signedSwap.title') }}</strong>
-    <p>{{ $t('signedSwap.negotiationOnly') }}</p>
-    <p role="status">{{ $t(`signedSwap.states.${state}`) }}</p>
+    <div class="snc-header">
+      <strong class="snc-title">{{ $t('signedSwap.title') }}</strong>
+      <p role="status" class="snc-status-pill" :class="`snc-status--${state}`">
+        {{ $t(`signedSwap.states.${state}`) }}
+      </p>
+    </div>
+    <p class="snc-subtitle">{{ $t('signedSwap.negotiationOnly') }}</p>
     <p
       v-if="
         journal?.reduction.history.decision &&
         !journal.reduction.violation &&
         state !== journal.reduction.history.decision
       "
+      class="snc-decision-note"
     >
       {{ $t(`signedSwap.states.${journal.reduction.history.decision}`) }}
     </p>
-    <template v-if="offer">
-      <p>
-        {{ amount(offer.terms.xecPrincipal, xec.nativeDecimals!) }}
-        {{ xec.unit }} · {{ xec.name }}
+    <div v-if="offer" class="snc-terms-box">
+      <p class="snc-leg-row">
+        <span class="snc-leg-amount">
+          {{ amount(offer.terms.xecPrincipal, xec.nativeDecimals!) }}
+          {{ xec.unit }}
+        </span>
+        <span class="snc-leg-dot">·</span>
+        <span class="snc-leg-chain">{{ xec.name }}</span>
       </p>
-      <p>
-        {{ amount(offer.terms.evmPrincipal, evm.nativeDecimals!) }}
-        {{ evm.unit }} · {{ evm.name }}
+      <p class="snc-leg-row">
+        <span class="snc-leg-amount">
+          {{ amount(offer.terms.evmPrincipal, evm.nativeDecimals!) }}
+          {{ evm.unit }}
+        </span>
+        <span class="snc-leg-dot">·</span>
+        <span class="snc-leg-chain">{{ evm.name }}</span>
       </p>
-      <p>
+      <p class="snc-expiry-row">
         {{
           new Date(Number(offer.terms.expiry) * 1000).toLocaleString(
             undefined,
@@ -32,32 +46,45 @@
           )
         }}
       </p>
-    </template>
-    <p v-if="deliveryStatus">
+    </div>
+    <p v-if="deliveryStatus" class="snc-meta-row">
       {{ $t('signedSwap.delivery') }}:
       {{ $t(`signedSwap.deliveryStates.${deliveryStatus}`) }}
     </p>
-    <p v-if="error" role="alert">
+    <p v-if="error" role="alert" class="snc-error-banner">
       {{ $t('signedSwap.error') }}: {{ $t(`signedSwap.errors.${error}`) }}
     </p>
-    <template v-if="canRespond">
+    <div v-if="canRespond" class="snc-action-row">
       <q-btn
+        unelevated
+        no-caps
+        class="snc-btn snc-btn--accept"
         :label="$t('signedSwap.accept')"
         :disable="status.busy || responding"
         @click="decision = 'accept'"
       />
       <q-btn
+        flat
+        no-caps
+        class="snc-btn snc-btn--reject"
         :label="$t('signedSwap.reject')"
         :disable="status.busy || responding"
         @click="decision = 'reject'"
       />
-    </template>
-    <div v-if="decision && canRespond" data-testid="swap-response-review">
-      <p>
+    </div>
+    <div
+      v-if="decision && canRespond"
+      class="snc-response-review"
+      data-testid="swap-response-review"
+    >
+      <p class="snc-response-context">
         {{ address }} · {{ conversationId }} · {{ $t('signedSwap.stamp') }}: 0
         {{ $t('signedSwap.baseUnits') }}
       </p>
       <q-btn
+        unelevated
+        no-caps
+        class="snc-btn snc-btn--confirm"
         :label="
           $t('signedSwap.confirmResponse', {
             decision: $t(`signedSwap.${decision}`),
@@ -68,18 +95,31 @@
         @click="respond"
       />
     </div>
-    <div v-if="showExecutionPanel" data-testid="swap-execution-panel">
-      <p data-testid="swap-execution-status" role="status">
+    <div
+      v-if="showExecutionPanel"
+      class="snc-execution-panel"
+      data-testid="swap-execution-panel"
+    >
+      <p
+        class="snc-execution-status"
+        data-testid="swap-execution-status"
+        role="status"
+      >
         {{ $t(`chatMessageSwap.${executionStatusKey}`) }}
       </p>
-      <div v-if="executionRecord" data-testid="swap-selected-inputs">
+      <div
+        v-if="executionRecord"
+        class="snc-selected-inputs"
+        data-testid="swap-selected-inputs"
+      >
         <p
           v-for="inp in executionRecord.xecInputs"
           :key="`${inp.txid}:${inp.vout}`"
+          class="snc-input-mono"
         >
           {{ `${inp.txid.slice(0, 12)}:${inp.vout} (${inp.valueSats})` }}
         </p>
-        <p>
+        <p class="snc-input-mono">
           {{
             `${executionRecord.evmInput.address} #${executionRecord.evmInput.nonce}`
           }}
@@ -87,61 +127,79 @@
       </div>
       <p
         v-if="executionRecord && executionRecord.reorgWarning"
+        class="snc-error-banner"
         data-testid="swap-reorg-warning"
         role="alert"
       >
         {{ $t('signedSwap.error') }}: {{ executionRecord.reorgWarning }}
       </p>
-      <q-btn
-        v-if="canPrepareExecution"
-        data-testid="swap-prepare-btn"
-        :label="$t('signedSwap.review')"
-        :loading="execState.busy || executing"
-        :disable="execState.busy || executing"
-        @click="prepareExecution"
-      />
-      <q-btn
-        v-if="canFundExecution"
-        data-testid="swap-fund-btn"
-        :label="
-          $t('chatMessageSwap.lockDeposit', {
-            amount: amount(offer!.terms.xecPrincipal, xec.nativeDecimals!),
-            asset: xec.unit,
-          })
-        "
-        :loading="execState.busy || executing"
-        :disable="execState.busy || executing"
-        @click="fundExecution"
-      />
-      <q-btn
-        v-if="canCancelExecution"
-        data-testid="swap-cancel-btn"
-        :label="$t('chatMessageSwap.cancel')"
-        :loading="execState.busy || executing"
-        :disable="execState.busy || executing"
-        @click="cancelExecution"
-      />
-      <q-btn
-        v-if="canClaimExecution"
-        data-testid="swap-claim-btn"
-        :label="
-          $t('chatMessageSwap.claimFunds', {
-            amount: amount(offer!.terms.evmPrincipal, evm.nativeDecimals!),
-            asset: evm.unit,
-          })
-        "
-        :loading="execState.busy || executing"
-        :disable="execState.busy || executing"
-        @click="claimExecution"
-      />
-      <q-btn
-        v-if="canRefundExecution"
-        data-testid="swap-refund-btn"
-        :label="$t('chatMessageSwap.refundDeposit')"
-        :loading="execState.busy || executing"
-        :disable="execState.busy || executing"
-        @click="refundExecution"
-      />
+      <div class="snc-action-row">
+        <q-btn
+          v-if="canPrepareExecution"
+          unelevated
+          no-caps
+          class="snc-btn snc-btn--primary"
+          data-testid="swap-prepare-btn"
+          :label="$t('signedSwap.review')"
+          :loading="execState.busy || executing"
+          :disable="execState.busy || executing"
+          @click="prepareExecution"
+        />
+        <q-btn
+          v-if="canFundExecution"
+          unelevated
+          no-caps
+          class="snc-btn snc-btn--accept"
+          data-testid="swap-fund-btn"
+          :label="
+            $t('chatMessageSwap.lockDeposit', {
+              amount: amount(offer!.terms.xecPrincipal, xec.nativeDecimals!),
+              asset: xec.unit,
+            })
+          "
+          :loading="execState.busy || executing"
+          :disable="execState.busy || executing"
+          @click="fundExecution"
+        />
+        <q-btn
+          v-if="canCancelExecution"
+          flat
+          no-caps
+          class="snc-btn snc-btn--reject"
+          data-testid="swap-cancel-btn"
+          :label="$t('chatMessageSwap.cancel')"
+          :loading="execState.busy || executing"
+          :disable="execState.busy || executing"
+          @click="cancelExecution"
+        />
+        <q-btn
+          v-if="canClaimExecution"
+          unelevated
+          no-caps
+          class="snc-btn snc-btn--accept"
+          data-testid="swap-claim-btn"
+          :label="
+            $t('chatMessageSwap.claimFunds', {
+              amount: amount(offer!.terms.evmPrincipal, evm.nativeDecimals!),
+              asset: evm.unit,
+            })
+          "
+          :loading="execState.busy || executing"
+          :disable="execState.busy || executing"
+          @click="claimExecution"
+        />
+        <q-btn
+          v-if="canRefundExecution"
+          unelevated
+          no-caps
+          class="snc-btn snc-btn--warning"
+          data-testid="swap-refund-btn"
+          :label="$t('chatMessageSwap.refundDeposit')"
+          :loading="execState.busy || executing"
+          :disable="execState.busy || executing"
+          @click="refundExecution"
+        />
+      </div>
     </div>
   </section>
 </template>
@@ -470,3 +528,213 @@ export default defineComponent({
   },
 })
 </script>
+<style scoped>
+.signed-negotiation-card {
+  background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-left: 4px solid #38bdf8;
+  border-radius: 16px;
+  padding: 14px 16px;
+  min-width: 270px;
+  max-width: 420px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+  text-align: left;
+}
+
+.snc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.snc-title {
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+}
+
+.snc-status-pill {
+  margin: 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: rgba(56, 189, 248, 0.16);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.snc-status--accept {
+  background: rgba(16, 185, 129, 0.18);
+  color: #6ee7b7;
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.snc-status--reject,
+.snc-status--expired,
+.snc-status--conflict,
+.snc-status--storage-error {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.snc-subtitle {
+  margin: 0 0 10px;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  color: #94a3b8;
+}
+
+.snc-decision-note {
+  margin: 0 0 8px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  font-size: 0.76rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: #cbd5e1;
+}
+
+.snc-terms-box {
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.snc-leg-row {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.snc-leg-amount {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.snc-leg-dot {
+  color: #64748b;
+}
+
+.snc-leg-chain {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.snc-expiry-row {
+  margin: 2px 0 0;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.1);
+  font-size: 0.75rem;
+  color: #cbd5e1;
+}
+
+.snc-meta-row {
+  margin: 0 0 8px;
+  font-size: 0.76rem;
+  color: #cbd5e1;
+}
+
+.snc-error-banner {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+.snc-action-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.snc-btn {
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.8rem;
+  padding: 4px 14px;
+}
+
+.snc-btn--accept {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #ffffff;
+}
+
+.snc-btn--reject {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+}
+
+.snc-btn--primary,
+.snc-btn--confirm {
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+  color: #ffffff;
+}
+
+.snc-btn--warning {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: #ffffff;
+}
+
+.snc-response-review {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.snc-response-context {
+  margin: 0 0 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.7rem;
+  color: #94a3b8;
+  word-break: break-all;
+}
+
+.snc-execution-panel {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.snc-execution-status {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #38bdf8;
+}
+
+.snc-selected-inputs {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+}
+
+.snc-input-mono {
+  margin: 2px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.72rem;
+  color: #cbd5e1;
+}
+</style>

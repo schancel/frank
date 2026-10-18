@@ -185,7 +185,7 @@ export class NegotiationRecovery {
         this.owner.messagingChainIdentifier,
       )
       if (!this.active) return
-      this.publish('scanning')
+      if (this.state !== 'ready') this.publish('scanning')
       const result = await this.scan(expected ?? 0)
       if (!this.active) return
       if (

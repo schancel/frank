@@ -3,14 +3,33 @@
     v-if="
       status.snapshot &&
       status.snapshot.state !== 'ready' &&
-      status.snapshot.state !== 'unsupported'
+      status.snapshot.state !== 'unsupported' &&
+      status.snapshot.state !== 'restoring' &&
+      status.snapshot.state !== 'scanning'
     "
-    data-testid="negotiation-recovery-status"
-    role="status"
-    aria-live="polite"
-    class="text-caption q-mx-xs"
-    >{{ $t(`negotiationRecovery.${status.snapshot.state}`) }}</span
+    class="negotiation-recovery-indicator"
   >
+    <q-btn
+      flat
+      dense
+      round
+      size="sm"
+      icon="sync_problem"
+      color="warning"
+      :aria-label="$t(`negotiationRecovery.${status.snapshot.state}`)"
+    >
+      <q-tooltip>{{
+        $t(`negotiationRecovery.${status.snapshot.state}`)
+      }}</q-tooltip>
+    </q-btn>
+    <span
+      data-testid="negotiation-recovery-status"
+      class="q-sr-only"
+      role="status"
+      aria-live="polite"
+      >{{ $t(`negotiationRecovery.${status.snapshot.state}`) }}</span
+    >
+  </span>
 </template>
 <script lang="ts">
 import { defineComponent } from 'vue'
@@ -20,3 +39,10 @@ export default defineComponent({
   setup: () => ({ status }),
 })
 </script>
+<style scoped>
+.negotiation-recovery-indicator {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+</style>

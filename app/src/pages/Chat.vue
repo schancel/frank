@@ -303,6 +303,7 @@
         :stamp-value="swapStampValue"
         :stamp-unavailable="stampUnavailable"
         @newOffer="swapId = newSwapId()"
+        @close="swapDialog = false"
       />
     </q-dialog>
     <!-- Forward message dialog -->

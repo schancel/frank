@@ -53,6 +53,7 @@ const mountForm = () =>
           props: ['disable', 'label'],
           template: '<button :disabled="disable">{{ label }}</button>',
         },
+        QIcon: { template: '<i />' },
       },
     },
   })
@@ -105,4 +106,26 @@ test('error survives closing/reopening and a deliberate new offer requests anoth
     .trigger('click')
   expect(reopened.emitted('newOffer')).toHaveLength(1)
   reopened.unmount()
+})
+test('expiry preset populates future datetime and successful propose emits close', async () => {
+  const { captureNegotiation, sendNegotiation } = jest.requireMock(
+    '../../swap/negotiation-commands',
+  )
+  captureNegotiation.mockResolvedValue({
+    context: { swapId: new Uint8Array(32).fill(1) },
+    stampValueWei: '0',
+  })
+  sendNegotiation.mockResolvedValue(undefined)
+  const w = mountForm()
+  await w.find('[data-testid="swap-xec-amount"]').setValue('100')
+  await w.find('[data-testid="swap-evm-amount"]').setValue('1')
+  await w.find('[data-testid="swap-expiry-preset-24h"]').trigger('click')
+  await w.find('[data-testid="swap-review"]').trigger('click')
+  await flushPromises()
+  expect(w.find('[data-testid="swap-review-panel"]').exists()).toBe(true)
+  await w.find('[data-testid="swap-propose"]').trigger('click')
+  await flushPromises()
+  expect(w.emitted('close')).toHaveLength(1)
+  expect(w.emitted('newOffer')).toHaveLength(1)
+  w.unmount()
 })

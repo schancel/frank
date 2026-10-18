@@ -61,7 +61,10 @@ export function negotiationUnavailable(): string {
   )
     return 'restoring'
   const recovery = negotiationRecoveryStatus.snapshot
-  return recovery?.state === 'ready' ? '' : recovery?.state ?? 'restoring'
+  return recovery?.state === 'ready' ||
+    (recovery?.state === 'scanning' && recovery.coverage !== undefined)
+    ? ''
+    : recovery?.state ?? 'restoring'
 }
 export interface CapturedNegotiation {
   readonly auth: NegotiationAuthorization

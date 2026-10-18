@@ -1055,5 +1055,67 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
       caller.cleanup()
       unregisterCallSessionController(invitePayload.callId)
     })
+
+    it('expands into full-stage theater view when clicking the primary video or expand button and swaps primary/PiP on PiP click', async () => {
+      const harness = createLinkedPeerHarness()
+      const caller = new WebRtcCallSessionController({
+        callId: 'call_stage_expand_01',
+        gatherTimeoutMs: 5,
+        peerConnectionFactory: () => harness.callerPc,
+        mediaDevices: harness.callerMediaDevices,
+      })
+      const callee = new WebRtcCallSessionController({
+        callId: 'call_stage_expand_01',
+        gatherTimeoutMs: 5,
+        peerConnectionFactory: () => harness.calleePc,
+        mediaDevices: harness.calleeMediaDevices,
+      })
+
+      const { payload: invite } = await caller.startOutgoingCall({
+        withVideo: true,
+      })
+      callee.receiveIncomingInvite(invite)
+      const { payload: accept } = await callee.acceptIncomingCall({
+        withVideo: true,
+      })
+      await caller.handleIncomingAccept(accept)
+      harness.connectPeersAndOpenDataChannel()
+
+      const wrapper = mountCallCard({
+        payload: invite,
+        controller: caller,
+        outbound: true,
+      })
+      await wrapper.vm.$nextTick()
+
+      const card = wrapper.find('[data-testid="webrtc-call-card"]')
+      expect(card.classes()).not.toContain('webrtc-call-card--expanded')
+
+      // Clicking the remote (primary) video expands the call into full-stage theater view
+      await wrapper.find('[data-testid="webrtc-remote-video"]').trigger('click')
+      await wrapper.vm.$nextTick()
+      expect(card.classes()).toContain('webrtc-call-card--expanded')
+
+      // Clicking the PiP (local) video swaps local to primary stage
+      const localSlot = wrapper
+        .find('[data-testid="webrtc-local-video"]')
+        .element.parentElement!
+      expect(localSlot.classList.contains('webrtc-video-slot--pip')).toBe(true)
+      await wrapper.find('[data-testid="webrtc-local-video"]').trigger('click')
+      await wrapper.vm.$nextTick()
+      expect(localSlot.classList.contains('webrtc-video-slot--primary')).toBe(
+        true,
+      )
+
+      // Clicking the expand/minimize header toggle collapses back to inline card
+      await wrapper
+        .find('[data-testid="webrtc-toggle-expand"]')
+        .trigger('click')
+      await wrapper.vm.$nextTick()
+      expect(card.classes()).not.toContain('webrtc-call-card--expanded')
+
+      wrapper.unmount()
+      callee.cleanup()
+    })
   })
 })

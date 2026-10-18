@@ -1,9 +1,18 @@
 <template>
-  <div class="webrtc-call-card q-pa-sm rounded-borders" data-testid="webrtc-call-card">
-    <div class="row items-center justify-between q-mb-xs">
+  <div
+    class="webrtc-call-card q-pa-sm rounded-borders"
+    :class="{
+      'webrtc-call-card--expanded': isStageExpanded && showVideoViewport,
+      'webrtc-call-card--compact': !isPrimaryCallCard,
+    }"
+    data-testid="webrtc-call-card"
+  >
+    <div class="webrtc-call-header row items-center justify-between q-mb-xs">
       <div class="row items-center q-gutter-xs">
-        <q-icon :name="headerIconName" size="18px" :color="headerIconColor" />
-        <span class="text-weight-bold text-caption" data-testid="webrtc-call-title">
+        <div class="webrtc-call-icon-badge row items-center justify-center">
+          <q-icon :name="headerIconName" size="16px" :color="headerIconColor" />
+        </div>
+        <span class="text-weight-bold text-caption webrtc-call-title" data-testid="webrtc-call-title">
           {{ uiLabels.title }}
         </span>
       </div>
@@ -11,15 +20,15 @@
         <q-badge
           :color="privacyBadgeColor"
           text-color="white"
-          class="text-caption"
+          class="webrtc-pill-badge text-caption"
           data-testid="webrtc-privacy-badge"
         >
           {{ privacyBadgeText }}
         </q-badge>
         <q-badge
-          color="blue-grey-7"
+          color="blue-grey-8"
           text-color="white"
-          class="text-caption"
+          class="webrtc-pill-badge text-caption"
           data-testid="webrtc-media-badge"
         >
           {{ mediaBadgeText }}
@@ -27,34 +36,74 @@
         <q-badge
           :color="statusBadgeColor"
           text-color="white"
-          class="text-caption"
+          class="webrtc-pill-badge text-caption"
           data-testid="webrtc-status-badge"
         >
           {{ statusBadgeText }}
         </q-badge>
+        <q-btn
+          v-if="showVideoViewport"
+          dense
+          round
+          flat
+          size="sm"
+          class="webrtc-expand-header-btn"
+          :icon="isStageExpanded ? 'close_fullscreen' : 'open_in_full'"
+          data-testid="webrtc-toggle-expand"
+          :aria-label="expandStageLabel"
+          @click="onToggleExpandStage"
+        />
       </div>
     </div>
 
     <div
       v-if="isSecurityAbort"
       role="alert"
-      class="text-caption text-negative text-weight-bold q-mb-xs"
+      class="webrtc-meta-banner webrtc-meta-banner--danger text-caption text-weight-bold q-mb-xs"
       data-testid="webrtc-security-alert"
     >
-      {{ uiLabels.dtlsMismatch }}
+      <q-icon name="gpp_bad" size="14px" class="q-mr-xs" />
+      <span>{{ uiLabels.dtlsMismatch }}</span>
+    </div>
+
+    <div
+      v-else-if="isDtlsVerified && isPrimaryCallCard"
+      class="webrtc-meta-row row items-center justify-between text-caption q-mb-xs"
+    >
+      <div class="webrtc-dtls-pill row items-center no-wrap" data-testid="webrtc-dtls-badge">
+        <q-icon name="verified_user" size="13px" class="q-mr-xs" />
+        <span>{{ uiLabels.dtlsVerified }}</span>
+      </div>
+      <div
+        v-if="isConnectedOrConnecting"
+        class="webrtc-peer-audio-pill row items-center no-wrap"
+        data-testid="webrtc-peer-mute-badge"
+      >
+        <q-icon :name="isRemoteMuted ? 'mic_off' : 'graphic_eq'" size="13px" class="q-mr-xs" />
+        <span>{{ peerMuteStatusText }}</span>
+      </div>
     </div>
 
     <div
       v-else-if="isDtlsVerified"
-      class="text-caption text-positive q-mb-xs"
+      class="webrtc-dtls-pill row items-center no-wrap text-caption q-mb-xs"
       data-testid="webrtc-dtls-badge"
     >
-      {{ uiLabels.dtlsVerified }}
+      <q-icon name="verified_user" size="13px" class="q-mr-xs" />
+      <span>{{ uiLabels.dtlsVerified }}</span>
+    </div>
+
+    <div
+      v-else-if="isConnectedOrConnecting"
+      class="row items-center justify-between text-caption q-mb-xs"
+      data-testid="webrtc-peer-mute-badge"
+    >
+      <span>{{ peerMuteStatusText }}</span>
     </div>
 
     <div
       v-if="isAnsweredElsewhere"
-      class="text-caption text-grey-5 q-mb-xs"
+      class="text-caption text-grey-4 q-mb-xs"
       data-testid="webrtc-answered-elsewhere"
     >
       {{ uiLabels.answeredElsewhereNotice }}
@@ -68,14 +117,6 @@
       {{ uiLabels.audioOnlyFallback }}
     </div>
 
-    <div
-      v-if="isConnectedOrConnecting"
-      class="row items-center justify-between text-caption q-mb-xs"
-      data-testid="webrtc-peer-mute-badge"
-    >
-      <span>{{ peerMuteStatusText }}</span>
-    </div>
-
     <audio
       ref="remoteAudioEl"
       data-testid="webrtc-remote-audio"
@@ -86,21 +127,35 @@
 
     <div
       v-if="showVideoViewport"
-      class="webrtc-video-viewport row q-col-gutter-xs q-mb-sm"
+      class="webrtc-video-viewport q-mb-sm"
+      :class="{ 'webrtc-video-viewport--expanded': isStageExpanded }"
       data-testid="webrtc-video-viewport"
     >
-      <div class="col-6">
+      <div
+        class="webrtc-video-slot"
+        :class="effectiveLocalPrimary ? 'webrtc-video-slot--primary' : 'webrtc-video-slot--pip'"
+        @click.stop="onLocalVideoSlotClick"
+      >
         <video
           ref="localVideoEl"
           class="webrtc-video-element"
+          :class="{ 'webrtc-video-element--mirrored': !isScreenShareEnabled }"
           data-testid="webrtc-local-video"
           :aria-label="uiLabels.localVideo"
           muted
           playsinline
           autoplay
         />
+        <div class="webrtc-video-chip">
+          {{ uiLabels.youBadge }}
+        </div>
       </div>
-      <div class="col-6">
+
+      <div
+        class="webrtc-video-slot"
+        :class="effectiveLocalPrimary ? 'webrtc-video-slot--pip' : 'webrtc-video-slot--primary'"
+        @click.stop="onRemoteVideoSlotClick"
+      >
         <video
           ref="remoteVideoEl"
           class="webrtc-video-element"
@@ -110,19 +165,22 @@
           playsinline
           autoplay
         />
+        <div class="webrtc-video-stage-hint">
+          <q-icon :name="isStageExpanded ? 'close_fullscreen' : 'open_in_full'" size="14px" />
+          <span>{{ expandStageHintText }}</span>
+        </div>
       </div>
     </div>
 
     <div
       v-if="canAnswerIncoming"
-      class="row items-center q-gutter-xs q-mt-xs"
+      class="webrtc-control-dock row items-center justify-center q-gutter-sm q-mt-xs"
       data-testid="webrtc-incoming-actions"
     >
       <q-btn
-        dense
         unelevated
-        color="positive"
-        size="sm"
+        no-caps
+        class="webrtc-dock-btn webrtc-dock-btn--answer"
         icon="call"
         data-testid="webrtc-answer-audio"
         :label="uiLabels.answerAudio"
@@ -130,10 +188,9 @@
         @click="onAnswerAudio"
       />
       <q-btn
-        dense
         unelevated
-        color="primary"
-        size="sm"
+        no-caps
+        class="webrtc-dock-btn webrtc-dock-btn--active"
         icon="videocam"
         data-testid="webrtc-answer-video"
         :label="uiLabels.answerVideo"
@@ -141,10 +198,9 @@
         @click="onAnswerVideo"
       />
       <q-btn
-        dense
-        outline
-        color="negative"
-        size="sm"
+        unelevated
+        no-caps
+        class="webrtc-dock-btn webrtc-dock-btn--hangup"
         icon="call_end"
         data-testid="webrtc-reject"
         :label="uiLabels.decline"
@@ -155,14 +211,13 @@
 
     <div
       v-else-if="canCancelOutgoing"
-      class="row items-center q-gutter-xs q-mt-xs"
+      class="webrtc-control-dock row items-center justify-center q-gutter-sm q-mt-xs"
       data-testid="webrtc-outgoing-actions"
     >
       <q-btn
-        dense
-        outline
-        color="negative"
-        size="sm"
+        unelevated
+        no-caps
+        class="webrtc-dock-btn webrtc-dock-btn--hangup"
         icon="call_end"
         data-testid="webrtc-cancel"
         :label="uiLabels.cancel"
@@ -173,14 +228,14 @@
 
     <div
       v-else-if="isConnectedOrConnecting"
-      class="row items-center q-gutter-xs q-mt-xs"
+      class="webrtc-control-dock row items-center justify-center q-gutter-xs q-mt-xs"
       data-testid="webrtc-active-controls"
     >
       <q-btn
-        dense
         unelevated
-        :color="isLocalMuted ? 'warning' : 'secondary'"
-        size="sm"
+        no-caps
+        class="webrtc-dock-btn"
+        :class="isLocalMuted ? 'webrtc-dock-btn--muted' : 'webrtc-dock-btn--glass'"
         :icon="isLocalMuted ? 'mic_off' : 'mic'"
         data-testid="webrtc-toggle-mute"
         :label="muteButtonLabel"
@@ -188,10 +243,10 @@
         @click="onToggleMute"
       />
       <q-btn
-        dense
         unelevated
-        :color="isLocalVideoEnabled ? 'primary' : 'secondary'"
-        size="sm"
+        no-caps
+        class="webrtc-dock-btn"
+        :class="isLocalVideoEnabled ? 'webrtc-dock-btn--active' : 'webrtc-dock-btn--glass'"
         :icon="isLocalVideoEnabled ? 'videocam' : 'videocam_off'"
         data-testid="webrtc-toggle-video"
         :label="videoButtonLabel"
@@ -199,10 +254,9 @@
         @click="onToggleVideo"
       />
       <q-btn
-        dense
-        flat
-        color="secondary"
-        size="sm"
+        unelevated
+        no-caps
+        class="webrtc-dock-btn webrtc-dock-btn--glass"
         icon="cameraswitch"
         data-testid="webrtc-switch-camera"
         :label="uiLabels.switchCamera"
@@ -210,10 +264,10 @@
         @click="onSwitchCamera"
       />
       <q-btn
-        dense
         unelevated
-        :color="isScreenShareEnabled ? 'accent' : 'secondary'"
-        size="sm"
+        no-caps
+        class="webrtc-dock-btn"
+        :class="isScreenShareEnabled ? 'webrtc-dock-btn--screen' : 'webrtc-dock-btn--glass'"
         :icon="isScreenShareEnabled ? 'stop_screen_share' : 'screen_share'"
         data-testid="webrtc-toggle-screen"
         :label="screenShareButtonLabel"
@@ -221,10 +275,9 @@
         @click="onToggleScreenShare"
       />
       <q-btn
-        dense
         unelevated
-        color="negative"
-        size="sm"
+        no-caps
+        class="webrtc-dock-btn webrtc-dock-btn--hangup"
         icon="call_end"
         data-testid="webrtc-hangup"
         :label="uiLabels.hangup"
@@ -344,12 +397,19 @@ const uiLabels = {
   peerMuted: 'Peer muted',
   peerUnmuted: 'Peer audio active',
   audioOnlyFallback: 'Audio preserved (camera/screen unavailable)',
+  youBadge: 'You',
+  expandStage: 'Expand call to full view',
+  collapseStage: 'Minimize call to chat card',
+  clickToExpandHint: 'Click video to expand',
+  clickToMinimizeHint: 'Click video to minimize',
 }
 
 const localVideoEl = ref<HTMLVideoElement | null>(null)
 const remoteVideoEl = ref<HTMLVideoElement | null>(null)
 const remoteAudioEl = ref<HTMLAudioElement | null>(null)
 const snapshotVersion = ref(0)
+const isStageExpanded = ref(false)
+const isLocalPrimary = ref(false)
 
 const resolvedPayload = computed<WebRtcCallPayload | null>(() => {
   if (props.payload) return props.payload
@@ -885,6 +945,47 @@ const screenShareButtonLabel = computed<string>(() => {
     : uiLabels.shareScreen
 })
 
+const effectiveLocalPrimary = computed<boolean>(() => {
+  if (effectivePhase.value === 'ringing_outgoing') return true
+  return isLocalPrimary.value
+})
+
+const expandStageLabel = computed<string>(() => {
+  return isStageExpanded.value ? uiLabels.collapseStage : uiLabels.expandStage
+})
+
+const expandStageHintText = computed<string>(() => {
+  return isStageExpanded.value
+    ? uiLabels.clickToMinimizeHint
+    : uiLabels.clickToExpandHint
+})
+
+function onToggleExpandStage(): void {
+  isStageExpanded.value = !isStageExpanded.value
+}
+
+function onLocalVideoSlotClick(): void {
+  if (effectiveLocalPrimary.value) {
+    isStageExpanded.value = !isStageExpanded.value
+  } else {
+    isLocalPrimary.value = true
+  }
+}
+
+function onRemoteVideoSlotClick(): void {
+  if (!effectiveLocalPrimary.value) {
+    isStageExpanded.value = !isStageExpanded.value
+  } else {
+    isLocalPrimary.value = false
+  }
+}
+
+watch(showVideoViewport, visible => {
+  if (!visible) {
+    isStageExpanded.value = false
+  }
+})
+
 async function onAnswerAudio(): Promise<void> {
   const ctrl = ensureActiveController()
   if (!ctrl) return
@@ -972,6 +1073,7 @@ async function onToggleScreenShare(): Promise<void> {
 }
 
 function onHangup(): void {
+  isStageExpanded.value = false
   const ctrl = ensureActiveController()
   if (!ctrl) return
   const res = ctrl.hangup()
@@ -1000,23 +1102,266 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .webrtc-call-card {
+  position: relative;
   border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  color: #f8fafc;
+  min-width: 280px;
+  max-width: 480px;
+  padding: 12px !important;
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.webrtc-call-card--compact {
+  min-width: 220px;
+  padding: 8px 12px !important;
+  background: rgba(15, 23, 42, 0.85);
+}
+
+.webrtc-call-card--expanded {
+  position: fixed;
+  inset: 16px;
+  z-index: 6000;
+  max-width: none;
+  min-width: 0;
+  border-radius: 22px;
+  background: linear-gradient(160deg, rgba(10, 15, 28, 0.97) 0%, rgba(17, 24, 39, 0.98) 100%);
+  backdrop-filter: blur(24px);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.16);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 16px 20px !important;
+}
+
+.webrtc-call-icon-badge {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.webrtc-call-title {
+  color: #f8fafc;
+  font-size: 0.86rem;
+  letter-spacing: 0.01em;
+}
+
+.webrtc-pill-badge {
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-weight: 600;
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+}
+
+.webrtc-expand-header-btn {
+  color: #e2e8f0 !important;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.webrtc-expand-header-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.webrtc-meta-row {
+  gap: 8px;
+}
+
+.webrtc-dtls-pill {
+  color: #4ade80;
+  font-weight: 600;
+  font-size: 0.72rem;
+}
+
+.webrtc-peer-audio-pill {
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.71rem;
+}
+
+.webrtc-meta-banner--danger {
+  background: rgba(239, 68, 68, 0.18);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+  padding: 6px 10px;
   border-radius: 10px;
-  background: rgba(20, 28, 40, 0.55);
-  min-width: 240px;
+  display: flex;
+  align-items: center;
 }
 
 .webrtc-video-viewport {
-  background: rgba(0, 0, 0, 0.45);
-  border-radius: 8px;
-  padding: 4px;
+  position: relative;
+  width: 100%;
+  height: 250px;
+  background: radial-gradient(circle at center, #1e293b 0%, #090d16 100%);
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 24px rgba(0, 0, 0, 0.6);
+}
+
+.webrtc-video-viewport--expanded {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 320px;
+  border-radius: 18px;
+}
+
+.webrtc-video-slot {
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.webrtc-video-slot--primary {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.webrtc-video-slot--pip {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 96px;
+  height: 128px;
+  z-index: 3;
+  border-radius: 12px;
+  border: 1.5px solid rgba(255, 255, 255, 0.32);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+  background: #0f172a;
+}
+
+.webrtc-video-viewport--expanded .webrtc-video-slot--pip {
+  right: 18px;
+  bottom: 18px;
+  width: 168px;
+  height: 224px;
+  border-radius: 16px;
+}
+
+.webrtc-video-slot--pip:hover {
+  transform: scale(1.04);
+  border-color: rgba(255, 255, 255, 0.65);
 }
 
 .webrtc-video-element {
   width: 100%;
-  max-height: 180px;
-  border-radius: 6px;
-  background: #000;
+  height: 100%;
+  display: block;
+  background: #090d16;
   object-fit: cover;
+}
+
+.webrtc-video-viewport--expanded .webrtc-video-slot--primary .webrtc-video-element {
+  object-fit: contain;
+}
+
+.webrtc-video-element--mirrored {
+  transform: scaleX(-1);
+}
+
+.webrtc-video-chip {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(8px);
+  color: #f8fafc;
+  font-size: 0.65rem;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.webrtc-video-stage-hint {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.68);
+  backdrop-filter: blur(8px);
+  color: #e2e8f0;
+  font-size: 0.68rem;
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+
+.webrtc-video-slot--primary:hover .webrtc-video-stage-hint {
+  opacity: 1;
+}
+
+.webrtc-control-dock {
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 6px 10px;
+  flex-wrap: wrap;
+}
+
+.webrtc-dock-btn {
+  border-radius: 999px !important;
+  padding: 5px 12px !important;
+  font-size: 0.76rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.01em;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, background 0.14s ease;
+}
+
+.webrtc-dock-btn:hover {
+  transform: translateY(-1px);
+}
+
+.webrtc-dock-btn--glass {
+  background: rgba(255, 255, 255, 0.13) !important;
+  color: #f8fafc !important;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.webrtc-dock-btn--glass:hover {
+  background: rgba(255, 255, 255, 0.22) !important;
+}
+
+.webrtc-dock-btn--active {
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+}
+
+.webrtc-dock-btn--screen {
+  background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%) !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(109, 40, 217, 0.42);
+}
+
+.webrtc-dock-btn--muted {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%) !important;
+  color: #0f172a !important;
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.35);
+}
+
+.webrtc-dock-btn--answer {
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%) !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 14px rgba(34, 197, 94, 0.45);
+}
+
+.webrtc-dock-btn--hangup {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%) !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 14px rgba(239, 68, 68, 0.45);
 }
 </style>

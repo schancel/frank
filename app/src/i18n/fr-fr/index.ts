@@ -280,30 +280,53 @@ export const rawFrFR = {
       'SHA-256(secret) doit être égal à l’engagement ; le tirage correspond aux 16 premiers bits de HMAC-SHA256(secret, votre valeur).',
     rpsVerified:
       'Vérifié : le coup et le sel révélés par le bot correspondent à l’engagement envoyé avant votre coup.',
+    rpsVerifiedPeer:
+      'Vérifié : le coup et le sel révélés par votre adversaire correspondent à l’engagement envoyé avant votre coup.',
     payoutClaimed:
       'Gain : {amount}. Le bot indique que ce message le transporte ; ce n’est pas encore vérifié sur la chaîne.',
+    payoutClaimedPeer:
+      'Gain : {amount}. Votre adversaire indique que ce message le transporte ; ce n’est pas encore vérifié sur la chaîne.',
     payoutMissing:
       'Gain : {amount}, mais ce message transportait {carried}. Vous n’avez pas été payé en totalité.',
     awaiting: 'En attente de la révélation du bot ({seconds} s).',
+    awaitingPeer: 'En attente de la révélation de votre adversaire ({seconds} s).',
     noAnswer:
       'Le bot n’a pas répondu après {seconds} s. Votre mise est chez le bot et rien n’a été révélé.',
+    noAnswerPeer: 'Votre adversaire n’a pas répondu après {seconds} s.',
     diceOwnCommitted:
       'Vous vous êtes engagé sur un secret pour ce lancer. En attente du lancer de votre pair.',
     dicePeerBet: 'Le pair a misé {amount} sur un lancer inférieur à {target}.',
     diceDealerReveal: 'Révéler le lancer ({rolled})',
     diceDealerPay: 'Révéler et payer {amount} (lancer {rolled})',
     diceDealerRefund: 'Rembourser la mise ({amount})',
+    rpsBotCommitted: 'Le bot s’est engagé sur son coup.',
+    rpsPeerCommitted: 'Votre adversaire s’est engagé sur son coup.',
     rpsOwnCommitted:
       'Vous vous êtes engagé sur un coup caché. En attente du coup de votre pair.',
+    rpsOwnCommittedStaked:
+      'Vous vous êtes engagé sur un coup caché (mise : {amount}). En attente du coup de votre pair.',
     rpsOwnCommittedMove:
       'Votre coup caché : {move}. En attente du coup de votre pair.',
+    rpsOwnCommittedMoveStaked:
+      'Votre coup caché : {move} (mise : {amount}). En attente du coup de votre pair.',
+    rpsFixedStake: 'Mise du défi : {amount}',
+    rpsFixedStakeHint:
+      'Votre mise équivalente ({amount}) est payée avec votre coup. Une victoire rapporte le double de la mise, une égalité la restitue.',
+    rpsFixedStakeFree: 'Mise du défi : Gratuit',
+    rpsFixedStakeFreeHint: 'Manche gratuite : aucune mise n’est payée avec votre coup.',
     rpsPeerMove: 'Le pair a joué {move}.',
     rpsPeerMoveStaked: 'Le pair a joué {move} pour {amount}.',
     rpsDealerReveal: 'Révéler le coup ({move})',
     rpsDealerPay: 'Révéler ({move}) et payer {amount}',
+    rpsYouLabel: 'Vous :',
+    rpsBotLabel: 'Bot :',
+    rpsOpponentLabel: 'Adversaire :',
     rpsChallengeTitle: 'Défi Pierre-Feuille-Ciseaux',
     rpsChallengeHint:
-      'Choisissez votre coup caché. Son engagement SHA-256 est envoyé en premier ; votre coup est révélé après celui de votre pair.',
+      'Choisissez votre coup caché et la mise. Son engagement SHA-256 est envoyé en premier ; votre coup est révélé après celui de votre pair.',
+    rpsStakeLabel: 'Mise',
+    rpsStakeFree: 'Gratuit',
+    rpsInvalidStake: 'Saisissez la mise sous forme de nombre.',
     rpsMoveRock: 'Pierre',
     rpsMovePaper: 'Feuille',
     rpsMoveScissors: 'Ciseaux',

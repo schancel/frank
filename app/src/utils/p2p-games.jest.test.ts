@@ -188,4 +188,69 @@ describe('P2P Satoshi Dice & Rock-Paper-Scissors commit-reveal glue', () => {
     expect(winStep!.payWei).toBe(rpsPayoutWei(wagerWei, 'win'))
     expect(automaticP2pGameSteps(winMessages, alice, bob)).toEqual([])
   })
+
+  it('encodes challenger wagerWei and opponentAddress on P2P RPS start item and rejects mismatched peer wagers', () => {
+    const wagerWei = 10n ** 16n
+    const challenge = buildRpsChallenge(
+      alice,
+      bob,
+      'paper',
+      'match-rps-staked',
+      wagerWei,
+    )
+    expect(challenge.item.wagerWei).toBe(wagerWei.toString())
+    expect(challenge.item.opponentAddress).toBe(bob)
+
+    // Mismatched peer wager is rejected by dealerRpsStepForMatch
+    const mismatchedMessages: P2pGameChatMessage[] = [
+      { outbound: true, items: [challenge.item] },
+      {
+        outbound: false,
+        items: [
+          {
+            type: 'rps',
+            action: 'move',
+            matchId: 'match-rps-staked',
+            commitHash: challenge.item.commitHash,
+            playerMove: 'rock',
+            wagerWei: (wagerWei * 10n).toString(),
+          },
+        ],
+      },
+    ]
+    expect(
+      dealerRpsStepForMatch(
+        mismatchedMessages,
+        alice,
+        bob,
+        'match-rps-staked',
+      ),
+    ).toBeUndefined()
+
+    // Matching peer wager succeeds
+    const matchedMessages: P2pGameChatMessage[] = [
+      { outbound: true, items: [challenge.item] },
+      {
+        outbound: false,
+        items: [
+          {
+            type: 'rps',
+            action: 'move',
+            matchId: 'match-rps-staked',
+            commitHash: challenge.item.commitHash,
+            playerMove: 'rock',
+            wagerWei: wagerWei.toString(),
+          },
+        ],
+      },
+    ]
+    const step = dealerRpsStepForMatch(
+      matchedMessages,
+      alice,
+      bob,
+      'match-rps-staked',
+    )
+    expect(step).toBeDefined()
+    expect(step!.wagerWei).toBe(wagerWei)
+  })
 })

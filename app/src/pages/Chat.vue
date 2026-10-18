@@ -1500,7 +1500,13 @@ export default defineComponent({
         errorNotify(err instanceof Error ? err : new Error(String(err)))
       }
     },
-    async sendRpsChallenge({ move }: { move: RpsMove }) {
+    async sendRpsChallenge({
+      move,
+      wagerWei,
+    }: {
+      move: RpsMove
+      wagerWei?: bigint
+    }) {
       if (this.sendingMessage || !this.rpsDialog) return
       const peer = this.recipientAddress || this.address
       const own = (await getOwnCanonicalAddress()) ?? 'self'
@@ -1510,7 +1516,13 @@ export default defineComponent({
         peer !== (this.recipientAddress || this.address)
       )
         return
-      const built = buildRpsChallenge(own, peer, move)
+      const built = buildRpsChallenge(
+        own,
+        peer,
+        move,
+        undefined,
+        wagerWei ?? 0n,
+      )
       this.rpsDialog = false
       await this.sendFollowUpItems({ items: [built.item] })
     },

@@ -273,9 +273,12 @@ export function buildRpsChallenge(
   peer: string,
   move: RpsMove,
   matchId: string = newGameId(),
+  wagerWei?: bigint,
 ): { item: RpsItem; move: RpsMove; salt: string } {
   const salt = newRpsSalt(matchId, own)
   saveRpsSecret(own, peer, matchId, move, salt)
+  const peerTrimmed = peer.trim()
+  const isEvmPeer = /^0x[0-9a-fA-F]{40}$/.test(peerTrimmed)
   return {
     move,
     salt,
@@ -284,6 +287,8 @@ export function buildRpsChallenge(
       action: 'start',
       matchId,
       commitHash: rpsCommitment(move, salt),
+      ...(wagerWei !== undefined ? { wagerWei: wagerWei.toString() } : {}),
+      ...(isEvmPeer ? { opponentAddress: peerTrimmed } : {}),
     },
   }
 }
@@ -400,6 +405,7 @@ export function dealerRpsStepForMatch(
   if (!matchId) return undefined
 
   let offeredCommitHash: string | undefined
+  let offeredWagerWei: bigint | undefined
   let moveItem: RpsItem | undefined
   let alreadyResolved = false
 
@@ -409,6 +415,13 @@ export function dealerRpsStepForMatch(
       if (msg.outbound) {
         if (item.action === 'start' && item.matchId === matchId) {
           offeredCommitHash = item.commitHash
+          if (item.wagerWei !== undefined) {
+            try {
+              offeredWagerWei = BigInt(item.wagerWei)
+            } catch {
+              offeredWagerWei = undefined
+            }
+          }
         } else if (item.action === 'resolve' && item.matchId === matchId) {
           alreadyResolved = true
         }
@@ -444,6 +457,9 @@ export function dealerRpsStepForMatch(
     return undefined
   }
   if (wagerWei < 0n) return undefined
+  if (offeredWagerWei !== undefined && wagerWei !== offeredWagerWei) {
+    return undefined
+  }
 
   const outcome = evaluateRps(playerMove, secret.move)
   const payWei = rpsPayoutWei(wagerWei, outcome)

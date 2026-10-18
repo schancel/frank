@@ -340,4 +340,60 @@ describe('ChatMessageRps.vue', () => {
       outcome: 'win',
     })
   })
+
+  test('P2P responder sees opponent label and locked challenger stake without stake input picker', async () => {
+    const p2pStart: RpsItem = {
+      type: 'rps',
+      action: 'start',
+      matchId: 'm-p2p',
+      commitHash,
+      wagerWei: (5n * 10n ** 16n).toString(),
+      opponentAddress: '0x1111111111111111111111111111111111111111',
+    }
+    const wrapper = mountCard(p2pStart)
+    expect(wrapper.get('[data-testid="rps-committed"]').text()).toBe(
+      enUS.gameFairness.rpsPeerCommitted,
+    )
+    expect(wrapper.find('[data-testid="rps-wager-input"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="rps-fixed-stake"]').text()).toContain(
+      '0.05 MON',
+    )
+
+    await wrapper.find('[data-testid="rps-paper"]').trigger('click')
+    const [payload] = wrapper.emitted('sendFollowUp')![0] as [any]
+    expect(payload.stampValueWei).toBe(5n * 10n ** 16n)
+    expect(payload.items).toEqual([
+      {
+        type: 'rps',
+        action: 'move',
+        matchId: 'm-p2p',
+        commitHash,
+        playerMove: 'paper',
+        wagerWei: (5n * 10n ** 16n).toString(),
+      },
+    ])
+
+    // On resolve in a P2P match, shows Opponent: instead of Bot:
+    const p2pMove: RpsItem = {
+      type: 'rps',
+      action: 'move',
+      matchId: 'm-p2p',
+      commitHash,
+      playerMove: 'rock',
+      wagerWei: (5n * 10n ** 16n).toString(),
+    }
+    const p2pResolved: RpsItem = {
+      ...resolved,
+      matchId: 'm-p2p',
+      wagerWei: (5n * 10n ** 16n).toString(),
+    }
+    chat(
+      { outbound: false, item: p2pStart },
+      { outbound: true, item: p2pMove },
+      { outbound: false, item: p2pResolved, paid: 10n * 10n ** 16n },
+    )
+    const resolvedCard = mountCard(p2pResolved)
+    expect(resolvedCard.text()).toContain('Opponent:')
+    expect(resolvedCard.text()).not.toContain('Bot:')
+  })
 })

@@ -5,7 +5,7 @@
       <span class="text-weight-bold">Rock-Paper-Scissors</span>
     </div>
 
-    <!-- The bot has committed to its move, or this user sent a P2P challenge commitment -->
+    <!-- The bot has committed to its move, or this user/peer sent a P2P challenge commitment -->
     <template v-if="item.action === 'start'">
       <div
         v-if="outbound"
@@ -22,38 +22,55 @@
           :title="item.commitHash"
           data-testid="rps-committed"
         >
-          The bot has committed to its move.
+          {{
+            isP2pMatch
+              ? $t('gameFairness.rpsPeerCommitted')
+              : $t('gameFairness.rpsBotCommitted')
+          }}
         </div>
         <template v-if="!played">
-          <div class="text-weight-medium q-mb-xs">Stake:</div>
-          <div class="row items-center q-gutter-xs q-mb-xs">
-            <q-btn
-              v-for="chip in wagerChips"
-              :key="chip.label"
+          <template v-if="fixedWagerWei !== undefined">
+            <div
+              class="text-weight-medium q-mb-xs"
+              data-testid="rps-fixed-stake"
+            >
+              {{ fixedStakeLabel }}
+            </div>
+            <div class="text-grey-8 q-my-xs">
+              {{ fixedStakeHint }}
+            </div>
+          </template>
+          <template v-else>
+            <div class="text-weight-medium q-mb-xs">Stake:</div>
+            <div class="row items-center q-gutter-xs q-mb-xs">
+              <q-btn
+                v-for="chip in wagerChips"
+                :key="chip.label"
+                dense
+                no-caps
+                size="sm"
+                :outline="wagerInput !== chip.value"
+                color="primary"
+                :label="chip.label"
+                :data-testid="`rps-chip-${chip.value || 'free'}`"
+                @click="wagerInput = chip.value"
+              />
+            </div>
+            <q-input
+              v-model="wagerInput"
               dense
-              no-caps
-              size="sm"
-              :outline="wagerInput !== chip.value"
-              color="primary"
-              :label="chip.label"
-              :data-testid="`rps-chip-${chip.value || 'free'}`"
-              @click="wagerInput = chip.value"
+              outlined
+              label="Stake"
+              :suffix="unit"
+              inputmode="decimal"
+              data-testid="rps-wager-input"
+              style="max-width: 200px"
             />
-          </div>
-          <q-input
-            v-model="wagerInput"
-            dense
-            outlined
-            label="Stake"
-            :suffix="unit"
-            inputmode="decimal"
-            data-testid="rps-wager-input"
-            style="max-width: 200px"
-          />
-          <div class="text-grey-8 q-my-xs">
-            Your stake is paid with your move. A win pays twice the stake, a tie
-            returns it.
-          </div>
+            <div class="text-grey-8 q-my-xs">
+              Your stake is paid with your move. A win pays twice the stake, a
+              tie returns it.
+            </div>
+          </template>
           <div class="row q-gutter-xs">
             <q-btn
               v-for="move in moves"
@@ -130,9 +147,18 @@
         data-testid="rps-waiting"
       >
         {{
-          $t(waiting.late ? 'gameFairness.noAnswer' : 'gameFairness.awaiting', {
-            seconds: waiting.seconds,
-          })
+          $t(
+            waiting.late
+              ? isP2pMatch
+                ? 'gameFairness.noAnswerPeer'
+                : 'gameFairness.noAnswer'
+              : isP2pMatch
+                ? 'gameFairness.awaitingPeer'
+                : 'gameFairness.awaiting',
+            {
+              seconds: waiting.seconds,
+            },
+          )
         }}
       </div>
     </template>
@@ -140,10 +166,20 @@
     <template v-else-if="item.action === 'resolve'">
       <div class="q-my-xs">
         <div>
-          You: <strong>{{ moveLabel(item.playerMove) }}</strong>
+          {{ $t('gameFairness.rpsYouLabel') }}
+          <strong>{{
+            moveLabel(outbound ? item.botMove : item.playerMove)
+          }}</strong>
         </div>
         <div>
-          Bot: <strong>{{ moveLabel(item.botMove) }}</strong>
+          {{
+            isP2pMatch
+              ? $t('gameFairness.rpsOpponentLabel')
+              : $t('gameFairness.rpsBotLabel')
+          }}
+          <strong>{{
+            moveLabel(outbound ? item.playerMove : item.botMove)
+          }}</strong>
         </div>
       </div>
       <div
@@ -166,13 +202,21 @@
           $t(
             payout.short
               ? 'gameFairness.payoutMissing'
-              : 'gameFairness.payoutClaimed',
+              : isP2pMatch
+                ? 'gameFairness.payoutClaimedPeer'
+                : 'gameFairness.payoutClaimed',
             payout,
           )
         }}
       </div>
       <div v-if="check.ok" class="text-positive" data-testid="rps-verified">
-        {{ $t('gameFairness.rpsVerified') }}
+        {{
+          $t(
+            isP2pMatch
+              ? 'gameFairness.rpsVerifiedPeer'
+              : 'gameFairness.rpsVerified',
+          )
+        }}
       </div>
       <q-banner
         v-else
@@ -209,6 +253,7 @@ import {
   type RpsMove,
 } from '@frank/wallet/message-item-plugins/rps/fair'
 import { useChatStore } from '../../../stores/chats'
+import { useContactStore } from '../../../stores/contacts'
 import { formatDisplayAmount } from '../../../utils/chain-amount'
 import {
   BOT_ANSWER_WAIT_MS,
@@ -269,6 +314,68 @@ export default defineComponent({
     unit(): string {
       return activeChain.unit
     },
+    isP2pMatch(): boolean {
+      if (
+        this.outbound ||
+        this.isPeerMove ||
+        Boolean(this.item.opponentAddress)
+      ) {
+        return true
+      }
+      if (this.item.action === 'start' && this.item.wagerWei !== undefined) {
+        return true
+      }
+      const all = chatGameItems('rps', this.address)
+      if (
+        all.some(
+          entry =>
+            entry.item.matchId === this.item.matchId &&
+            ((entry.outbound && entry.item.action === 'start') ||
+              (entry.outbound && entry.item.action === 'resolve') ||
+              Boolean(entry.item.opponentAddress) ||
+              (entry.item.action === 'start' &&
+                entry.item.wagerWei !== undefined)),
+        )
+      ) {
+        return true
+      }
+      try {
+        const contact = useContactStore().getContact(this.address)
+        if (contact?.profile && contact.profile.isBot === false) {
+          return true
+        }
+      } catch {
+        // Pinia store may be uninitialized in standalone component tests
+      }
+      return false
+    },
+    fixedWagerWei(): bigint | undefined {
+      if (this.item.action !== 'start' || this.item.wagerWei === undefined) {
+        return undefined
+      }
+      try {
+        const parsed = BigInt(this.item.wagerWei)
+        return parsed >= 0n ? parsed : undefined
+      } catch {
+        return undefined
+      }
+    },
+    fixedStakeLabel(): string {
+      if (this.fixedWagerWei === undefined || this.fixedWagerWei === 0n) {
+        return this.$t('gameFairness.rpsFixedStakeFree')
+      }
+      return this.$t('gameFairness.rpsFixedStake', {
+        amount: this.displayWager(this.fixedWagerWei.toString()),
+      })
+    },
+    fixedStakeHint(): string {
+      if (this.fixedWagerWei === undefined || this.fixedWagerWei === 0n) {
+        return this.$t('gameFairness.rpsFixedStakeFreeHint')
+      }
+      return this.$t('gameFairness.rpsFixedStakeHint', {
+        amount: this.displayWager(this.fixedWagerWei.toString()),
+      })
+    },
     outcomeHeadline(): string {
       if (this.outbound) {
         if (this.item.outcome === 'win') return 'YOU LOSE'
@@ -288,9 +395,22 @@ export default defineComponent({
             this.item.commitHash,
           )
         : undefined
+      const staked =
+        this.item.wagerWei !== undefined && this.item.wagerWei !== '0'
       if (secret) {
+        if (staked) {
+          return this.$t('gameFairness.rpsOwnCommittedMoveStaked', {
+            move: this.moveLabel(secret.move),
+            amount: this.displayWager(this.item.wagerWei),
+          })
+        }
         return this.$t('gameFairness.rpsOwnCommittedMove', {
           move: this.moveLabel(secret.move),
+        })
+      }
+      if (staked) {
+        return this.$t('gameFairness.rpsOwnCommittedStaked', {
+          amount: this.displayWager(this.item.wagerWei),
         })
       }
       return this.$t('gameFairness.rpsOwnCommitted')
@@ -442,9 +562,10 @@ export default defineComponent({
     },
     chooseMove(move: RpsMove) {
       if (this.submitting || !this.item.matchId || !this.item.commitHash) return
-      const wager = parseWager(this.wagerInput, a =>
-        activeChain.fromDisplayAmount(a),
-      )
+      const wager =
+        this.fixedWagerWei !== undefined
+          ? this.fixedWagerWei
+          : parseWager(this.wagerInput, a => activeChain.fromDisplayAmount(a))
       if (wager === undefined) {
         errorNotify(new Error('Enter the stake as a number.'))
         return

@@ -273,30 +273,53 @@ export const rawEnUS = {
       'SHA-256(secret) must equal the commitment; the roll is the first 16 bits of HMAC-SHA256(secret, your value).',
     rpsVerified:
       'Verified: the move and salt the bot revealed match the commitment it sent before you moved.',
+    rpsVerifiedPeer:
+      'Verified: the move and salt your opponent revealed match the commitment sent before you moved.',
     payoutClaimed:
       'Payout: {amount}. The bot says this message carries it; that is not yet verified on chain.',
+    payoutClaimedPeer:
+      'Payout: {amount}. Your opponent says this message carries it; that is not yet verified on chain.',
     payoutMissing:
       'Payout: {amount}, but this message carried {carried}. You have not been paid in full.',
     awaiting: 'Waiting for the bot to reveal ({seconds} s).',
+    awaitingPeer: 'Waiting for your opponent to reveal ({seconds} s).',
     noAnswer:
       'The bot has not answered after {seconds} s. Your stake is with the bot and nothing has been revealed.',
+    noAnswerPeer: 'Your opponent has not answered after {seconds} s.',
     diceOwnCommitted:
       'You committed to a secret for this roll. Waiting for peer to roll.',
     dicePeerBet: 'Peer bet {amount} on a roll below {target}.',
     diceDealerReveal: 'Reveal roll ({rolled})',
     diceDealerPay: 'Reveal & pay {amount} (rolled {rolled})',
     diceDealerRefund: 'Refund stake ({amount})',
+    rpsBotCommitted: 'The bot has committed to its move.',
+    rpsPeerCommitted: 'Your opponent has committed to a move.',
     rpsOwnCommitted:
       'You committed to a hidden move. Waiting for peer to play.',
+    rpsOwnCommittedStaked:
+      'You committed to a hidden move (stake: {amount}). Waiting for peer to play.',
     rpsOwnCommittedMove:
       'Your hidden move: {move}. Waiting for peer to play.',
+    rpsOwnCommittedMoveStaked:
+      'Your hidden move: {move} (stake: {amount}). Waiting for peer to play.',
+    rpsFixedStake: 'Challenge stake: {amount}',
+    rpsFixedStakeHint:
+      'Your matching stake ({amount}) is paid with your move. A win pays twice the stake, a tie returns it.',
+    rpsFixedStakeFree: 'Challenge stake: Free',
+    rpsFixedStakeFreeHint: 'Free round: no stake is paid with your move.',
     rpsPeerMove: 'Peer played {move}.',
     rpsPeerMoveStaked: 'Peer played {move} for {amount}.',
     rpsDealerReveal: 'Reveal move ({move})',
     rpsDealerPay: 'Reveal ({move}) & pay {amount}',
+    rpsYouLabel: 'You:',
+    rpsBotLabel: 'Bot:',
+    rpsOpponentLabel: 'Opponent:',
     rpsChallengeTitle: 'Rock-Paper-Scissors Challenge',
     rpsChallengeHint:
-      'Pick your hidden move. Its SHA-256 commitment is sent first; your move is revealed after your peer plays.',
+      'Pick your hidden move and stake. Your SHA-256 move commitment is sent first and revealed after your peer plays.',
+    rpsStakeLabel: 'Stake',
+    rpsStakeFree: 'Free',
+    rpsInvalidStake: 'Enter the stake as a number.',
     rpsMoveRock: 'Rock',
     rpsMovePaper: 'Paper',
     rpsMoveScissors: 'Scissors',

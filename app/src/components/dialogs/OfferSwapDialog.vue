@@ -254,7 +254,6 @@
             }"
             :address="address"
             :conversation-id="conversationId"
-            delivery-status=""
             :sender-address="entry.senderAddress"
             :outbound="entry.outbound"
           />

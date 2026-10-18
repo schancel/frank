@@ -47,10 +47,6 @@
         }}
       </p>
     </div>
-    <p v-if="deliveryStatus" class="snc-meta-row">
-      {{ $t('signedSwap.delivery') }}:
-      {{ $t(`signedSwap.deliveryStates.${deliveryStatus}`) }}
-    </p>
     <p v-if="error" role="alert" class="snc-error-banner">
       {{ $t('signedSwap.error') }}: {{ $t(`signedSwap.errors.${error}`) }}
     </p>
@@ -227,6 +223,7 @@ import {
   claimSwapExecution,
   refundSwapExecution,
   cancelSwapExecution,
+  reconcileSwapExecution,
 } from './swap-execution-commands'
 export default defineComponent({
   name: 'SignedNegotiationCard',
@@ -234,7 +231,7 @@ export default defineComponent({
     item: { type: Object as PropType<ApplicationMessageItem>, required: true },
     address: { type: String, required: true },
     conversationId: { type: String, required: true },
-    deliveryStatus: { type: String, required: true },
+    deliveryStatus: { type: String, default: '' },
     senderAddress: { type: String, required: true },
     outbound: { type: Boolean, required: true },
   },
@@ -247,6 +244,7 @@ export default defineComponent({
       error: '',
       responding: false,
       executing: false,
+      ticks: 0,
       now: BigInt(Math.floor(Date.now() / 1000)),
       timer: undefined as ReturnType<typeof setInterval> | undefined,
     }
@@ -254,6 +252,18 @@ export default defineComponent({
   mounted() {
     this.timer = setInterval(() => {
       this.now = BigInt(Math.floor(Date.now() / 1000))
+      this.ticks += 1
+      if (
+        this.ticks % 5 === 0 &&
+        !this.executing &&
+        !this.execState.busy &&
+        this.swapIdHex &&
+        (this.executionRecord?.phase === 'funding' ||
+          this.executionRecord?.phase === 'claiming' ||
+          this.executionRecord?.phase === 'refund-pending')
+      ) {
+        void reconcileSwapExecution(this.swapIdHex).catch(() => undefined)
+      }
     }, 1000)
   },
   beforeUnmount() {

@@ -158,7 +158,6 @@
               :item="item"
               :address="address"
               :conversation-id="message.conversationId || ''"
-              :delivery-status="message.status"
               :sender-address="message.senderAddress"
               :outbound="message.outbound"
               @sendFollowUp="handleSendFollowUp"

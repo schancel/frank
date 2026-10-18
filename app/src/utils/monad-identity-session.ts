@@ -13,6 +13,7 @@
  */
 import { watch } from 'vue'
 import { startAppNegotiationRecovery } from './negotiation-recovery'
+import { startAppSwapExecution } from '../swap/live-swap-execution'
 import type { NativeWalletHandle, WalletHandle } from '@frank/wallet/chain'
 import {
   installCanonicalDirectory,
@@ -67,6 +68,7 @@ interface Live {
   polling: Stoppable
   reconcile: Stoppable
   negotiation?: { stop(): Promise<void> }
+  swapExecution?: { stop(): Promise<void> }
 }
 export interface MessagingDeps {
   session: {
@@ -91,6 +93,7 @@ export interface MessagingDeps {
   startPolling: (options: { wallet: WalletHandle }) => Stoppable
   startReconcile: (options: { wallet: WalletHandle }) => Stoppable
   startNegotiation?: typeof startAppNegotiationRecovery
+  startSwapExecution?: typeof startAppSwapExecution
   /**
    * Picks up what the account's wallets signed earlier and did not finish (a swap interrupted
    * by a reload) once the account is open and can send its notes to itself. Costs no network
@@ -218,6 +221,7 @@ function productionDeps(): MessagingDeps {
       }
     },
     startNegotiation: startAppNegotiationRecovery,
+    startSwapExecution: startAppSwapExecution,
     startPolling: startDirectMessagePolling,
     startReconcile: startOutgoingReconciliation,
     resumeLegacy: () =>
@@ -393,10 +397,17 @@ export async function stopMessaging(): Promise<void> {
       '[startMessaging] Swap recovery cleanup failed; retained evidence needs reopening',
     )
   })
+  const swapExecutionCleanup = previous.swapExecution
+    ?.stop()
+    .catch(() => undefined)
   previous.polling.stop()
   previous.reconcile.stop()
   previous.uninstall()
-  await Promise.all([previous.directory.close(), negotiationCleanup])
+  await Promise.all([
+    previous.directory.close(),
+    negotiationCleanup,
+    swapExecutionCleanup,
+  ])
 }
 
 function reasonOf(error: unknown): MessagingReason {
@@ -529,6 +540,11 @@ export async function startMessaging(): Promise<void> {
         reconcile: d.startReconcile({ wallet: handle }),
       }
       live.negotiation = d.startNegotiation?.({
+        wallet,
+        revision,
+        account: negotiationAccount,
+      })
+      live.swapExecution = d.startSwapExecution?.({
         wallet,
         revision,
         account: negotiationAccount,

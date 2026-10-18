@@ -172,7 +172,13 @@ export interface SwapSecretVaultCapability {
 }
 
 export interface XecSwapCapability {
-  reserveInputs(input: { swapId: string; principalSats: bigint }): Promise<{
+  reserveInputs(input: {
+    swapId: string
+    principalSats: bigint
+    role?: SwapRole
+    localPublicKey?: string
+    peerPublicKey?: string
+  }): Promise<{
     inputs: readonly ReservedXecOutpoint[]
     feeSats: bigint
     fundingTxHex: string
@@ -193,7 +199,13 @@ export interface XecSwapCapability {
 }
 
 export interface EvmSwapCapability {
-  reserveInput(input: { swapId: string; principalWei: bigint }): Promise<{
+  reserveInput(input: {
+    swapId: string
+    principalWei: bigint
+    role?: SwapRole
+    localPublicKey?: string
+    peerPublicKey?: string
+  }): Promise<{
     input: ReservedEvmInput
     fundingTxHex: string
     fundingTxHash: string
@@ -406,10 +418,16 @@ export class SwapExecutionCoordinator {
         this.options.xec.reserveInputs({
           swapId: input.swapId,
           principalSats: input.xecPrincipal,
+          role: input.role,
+          localPublicKey: input.localPublicKey,
+          peerPublicKey: input.peerPublicKey,
         }),
         this.options.evm.reserveInput({
           swapId: input.swapId,
           principalWei: input.evmPrincipal,
+          role: input.role,
+          localPublicKey: input.localPublicKey,
+          peerPublicKey: input.peerPublicKey,
         }),
       ])
       xecReserved = true

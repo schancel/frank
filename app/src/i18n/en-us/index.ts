@@ -973,7 +973,7 @@ export const rawEnUS = {
   },
   signedSwap: {
     actions: { offer: 'Offer', accept: 'Acceptance', reject: 'Rejection' },
-    title: 'Swap',
+    title: 'Swap Offer',
     negotiationOnly:
       'Signed negotiation only. Accepting does not transfer or authorize principal funds.',
     offerAmount: 'Offer {unit} on {network}',

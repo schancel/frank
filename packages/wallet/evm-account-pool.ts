@@ -2011,20 +2011,32 @@ export class EvmSubAccountPool {
     maxCacheAgeMs: number
   ): Promise<bigint> {
     const now = Date.now();
+    // Non-dust threshold (0.01 MON = 10^16 wei): well above the ~0.004242 MON gas + MIP-4
+    // reserve left behind on normal spent stamp accounts, recovering real MONT held on
+    // spent/retired sub-accounts while ignoring tiny gas-reserve leftovers.
+    const TERMINAL_SPENDABLE_THRESHOLD_WEI = BigInt("10000000000000000");
+    const candidates = this.store
+      .getAll()
+      .filter(
+        (record) =>
+          (record.status === "available" ||
+            record.status === "spent" ||
+            record.status === "retired") &&
+          !this.isSpendReserved(record.index)
+      );
     const balances = await Promise.all(
-      this.store
-        .getAll()
-        .filter(
-          (record) =>
-            record.status === "available" && !this.isSpendReserved(record.index)
-        )
-        .map((record) => {
-          const cached = this.capacityCache.get(record.index);
-          return cached?.balanceWei !== undefined &&
-            now - cached.checkedAtMs < maxCacheAgeMs
+      candidates.map(async (record) => {
+        const cached = this.capacityCache.get(record.index);
+        const balance =
+          cached?.balanceWei !== undefined &&
+          now - cached.checkedAtMs < maxCacheAgeMs
             ? cached.balanceWei
-            : provider.getBalance(record.address);
-        })
+            : await provider.getBalance(record.address);
+        return record.status === "available" ||
+          balance > TERMINAL_SPENDABLE_THRESHOLD_WEI
+          ? balance
+          : BigInt(0);
+      })
     );
     return balances.reduce((sum, balance) => sum + balance, BigInt(0));
   }

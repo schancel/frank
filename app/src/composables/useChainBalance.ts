@@ -126,6 +126,10 @@ function getBalancePresentation(
       formattedBalance: monad.formattedBalance.value,
       loaded: monad.loaded.value,
       hasError: monad.hasError.value,
+      ...(monad.observedAt?.value !== undefined
+        ? { observedAt: monad.observedAt.value }
+        : {}),
+      ...(monad.stale?.value ? { stale: true } : {}),
     }
   } else if (isSolanaChain(chain)) state = solanaState.value
   else if (secondaryChainIdentifier(chain)) state = secondaryState(chain)

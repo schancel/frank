@@ -599,7 +599,7 @@ export function createEvmReceivedCoinAndContactManager(
     strict?: boolean;
   }): Promise<void> => {
     const wallet = getWallet();
-    let complete = true;
+    let hadError = false;
     const all = coinStore
       .all()
       .filter(
@@ -614,7 +614,9 @@ export function createEvmReceivedCoinAndContactManager(
           (options.only !== undefined || pendingCoinDue(coin, now))) ||
         (coin.state === "pending" &&
           (options.only !== undefined || pendingCoinDue(coin, now))) ||
-        (coin.state === "failed" && !options.pendingOnly)
+        (coin.state === "failed" &&
+          !options.pendingOnly &&
+          (options.only !== undefined || pendingCoinDue(coin, now)))
     );
     const probed =
       options.only !== undefined ||
@@ -626,39 +628,69 @@ export function createEvmReceivedCoinAndContactManager(
           );
     if (probed.length < pending.length) {
       pendingTurn = (pendingTurn + probed.length) % pending.length;
-      complete = false;
     }
     const counted = options.pendingOnly
       ? []
       : all.filter((coin) => coin.state === "unspent" && !nativeSet(coin));
-    for (const coin of [...probed, ...counted]) {
+    const targets = [...probed, ...counted];
+    const BATCH_SIZE = 16;
+    let anyBalanceChanged = false;
+    for (let offset = 0; offset < targets.length; offset += BATCH_SIZE) {
       if (evmWalletInternals(wallet).closed) return;
-      try {
-        if (nativeSet(coin)) {
-          await refreshNativeSetCoin(coin, true);
-          invalidateBalanceRead();
-          continue;
-        }
-        const read =
-          coin.state === "unspent" ? undefined : await transferOf(coin);
-        const balanceWei = await provider.getBalance(coin.address);
-        const current = coinStore.get(coin.address);
-        if (current === undefined || evmWalletInternals(wallet).closed) {
-          continue;
-        }
-        await applyStoredNativeCoinObservation(coinStore, coin.address, {
-          balanceWei,
-          transfer: read?.transfer,
-          transferValueWei: read?.valueWei,
-          atMs: Date.now(),
-        });
-        invalidateBalanceRead();
-      } catch (error) {
-        if (options.strict) throw error;
-        complete = false;
-      }
+      const batch = targets.slice(offset, offset + BATCH_SIZE);
+      await Promise.all(
+        batch.map(async (coin) => {
+          if (evmWalletInternals(wallet).closed) return;
+          try {
+            if (nativeSet(coin)) {
+              const before = coinStore.get(coin.address);
+              await refreshNativeSetCoin(coin, true);
+              const after = coinStore.get(coin.address);
+              if (
+                before?.state !== after?.state ||
+                before?.amountWei !== after?.amountWei
+              ) {
+                anyBalanceChanged = true;
+              }
+              return;
+            }
+            const [read, balanceWei] = await Promise.all([
+              coin.state === "unspent"
+                ? Promise.resolve(undefined)
+                : transferOf(coin),
+              provider.getBalance(coin.address),
+            ]);
+            const current = coinStore.get(coin.address);
+            if (current === undefined || evmWalletInternals(wallet).closed) {
+              return;
+            }
+            const updated = await applyStoredNativeCoinObservation(
+              coinStore,
+              coin.address,
+              {
+                balanceWei,
+                transfer: read?.transfer,
+                transferValueWei: read?.valueWei,
+                atMs: Date.now(),
+              }
+            );
+            if (
+              current.state !== updated.state ||
+              current.amountWei !== updated.amountWei
+            ) {
+              anyBalanceChanged = true;
+            }
+          } catch (error) {
+            if (options.strict) throw error;
+            hadError = true;
+          }
+        })
+      );
     }
-    if (complete && !options.pendingOnly && options.only === undefined) {
+    if (anyBalanceChanged) {
+      invalidateBalanceRead();
+    }
+    if (!hadError && !options.pendingOnly && options.only === undefined) {
       coinsReadAtMs = Date.now();
     }
   };

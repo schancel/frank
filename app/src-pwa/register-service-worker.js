@@ -166,6 +166,15 @@ if (typeof window !== 'undefined') {
   window.isUpdateAvailable = isUpdateAvailable
 }
 
+function watchInstallingWorker(registration, worker) {
+  if (!worker || typeof worker.addEventListener !== 'function') return
+  worker.addEventListener('statechange', () => {
+    if (worker.state === 'installed' && registration?.waiting) {
+      offerUpdate(registration)
+    }
+  })
+}
+
 register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
   ready(registration) {
     activeRegistration = registration
@@ -188,6 +197,14 @@ register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
     activeRegistration = registration
     if (registration.waiting) {
       offerUpdate(registration)
+    }
+    if (registration.installing) {
+      watchInstallingWorker(registration, registration.installing)
+    }
+    if (typeof registration.addEventListener === 'function') {
+      registration.addEventListener('updatefound', () => {
+        watchInstallingWorker(registration, registration.installing)
+      })
     }
     checkForUpdate()
     document.addEventListener('visibilitychange', checkForUpdate)

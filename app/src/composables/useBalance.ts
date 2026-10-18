@@ -51,6 +51,8 @@ export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 // active wallet (so consumers can tell "not loaded" from a real zero); cleared when the wallet
 // changes or the last consumer unmounts.
 const balance = ref<bigint | null>(null)
+const stale = ref(false)
+const observedAt = ref<number | undefined>(undefined)
 const hasError = ref(false)
 // The active wallet's chain cannot be reached: the wallet's own reads say so (`chainHealth`),
 // or the balance read just failed on the network. Shown as a warning for that chain; paid
@@ -159,6 +161,8 @@ async function fetchBalance(force: boolean) {
     // Wallet changed: drop the old value and invalidate anything still in flight for it.
     walletKey = key
     balance.value = null
+    stale.value = false
+    observedAt.value = undefined
     cordoned.value = 0n
     cordonedReadAtMs = undefined
     hasError.value = false
@@ -176,9 +180,27 @@ async function fetchBalance(force: boolean) {
     const wallet = await useActiveWallet()
     if (!isCurrent()) return
     if (typeof activeChain?.nativeTransfers?.getBalance !== 'function') return
+    const walletWithObs = wallet as {
+      getBalanceObservation?: () =>
+        | { balance: bigint; observedAt: number }
+        | undefined
+    }
+    if (balance.value === null) {
+      const obs = walletWithObs?.getBalanceObservation?.()
+      if (obs !== undefined) {
+        balance.value = obs.balance
+        stale.value = true
+        observedAt.value = obs.observedAt
+      }
+    }
     const next = await activeChain.nativeTransfers.getBalance({ wallet })
     if (!isCurrent()) return
     balance.value = next
+    stale.value = false
+    const latestObs = walletWithObs?.getBalanceObservation?.()
+    if (latestObs !== undefined) {
+      observedAt.value = latestObs.observedAt
+    }
     // Best effort: a failed read keeps the last cordoned amount and never fails the balance.
     // Throttled (`CORDONED_POLL_MS`); a failed read also waits out the interval.
     const now = Date.now()
@@ -291,6 +313,8 @@ function acquire() {
         const [oldRev, oldAccStatus, oldMsgStatus] = oldValue ?? []
         if (newRev !== oldRev || newAccStatus !== oldAccStatus) {
           balance.value = null
+          stale.value = false
+          observedAt.value = undefined
           cordoned.value = 0n
           cordonedReadAtMs = undefined
           hasError.value = false
@@ -319,6 +343,8 @@ function release() {
   window.removeEventListener(APP_STATE_EVENT, onAppState)
   backgrounded = false
   balance.value = null
+  stale.value = false
+  observedAt.value = undefined
   cordoned.value = 0n
   cordonedReadAtMs = undefined
   hasError.value = false
@@ -336,6 +362,8 @@ export function useBalance() {
   }
   return {
     balance: readonly(balance),
+    stale: readonly(stale),
+    observedAt: readonly(observedAt),
     formattedBalance,
     exactBalance,
     total,

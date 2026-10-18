@@ -994,7 +994,7 @@ export const rawFrFR = {
   },
   signedSwap: {
     actions: { offer: 'Offre', accept: 'Acceptation', reject: 'Refus' },
-    title: 'Échange',
+    title: 'Offre d’échange',
     negotiationOnly:
       'Négociation signée uniquement. Accepter ne transfère et n’autorise aucun fonds principal.',
     offerAmount: 'Offrir {unit} sur {network}',

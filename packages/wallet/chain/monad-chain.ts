@@ -2075,10 +2075,41 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             | {
                 mainBalance: bigint;
                 identityBalance: bigint;
+                changeBalance: bigint;
                 cachedAtMs: number;
               }
             | undefined;
           const PRIMARY_BALANCE_CACHE_TTL_MS = 4_000;
+          const balanceObsStorageKey =
+            storageLocation !== undefined
+              ? `frank:evm-balance-obs:${chainIdentifier}:${mainAccount.address.toLowerCase()}`
+              : undefined;
+          let lastBalanceObservation:
+            | { balance: bigint; observedAt: number }
+            | undefined = (() => {
+            if (!balanceObsStorageKey) return undefined;
+            try {
+              const raw =
+                globalThis.localStorage?.getItem(balanceObsStorageKey);
+              if (!raw) return undefined;
+              const parsed = JSON.parse(raw) as {
+                balance?: string;
+                observedAt?: number;
+              };
+              if (
+                typeof parsed?.balance === "string" &&
+                typeof parsed?.observedAt === "number"
+              ) {
+                return {
+                  balance: BigInt(parsed.balance),
+                  observedAt: parsed.observedAt,
+                };
+              }
+            } catch {
+              // Ignore localStorage access/parse errors
+            }
+            return undefined;
+          })();
 
           type BalanceParts = Awaited<
             ReturnType<NonNullable<EvmChainWalletHandle["getBalanceParts"]>>
@@ -2129,6 +2160,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               const now = Date.now();
               let mainBalance: bigint;
               let identityBalance: bigint;
+              let changeBalance: bigint;
 
               if (
                 primaryBalanceCache !== undefined &&
@@ -2137,21 +2169,51 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               ) {
                 mainBalance = primaryBalanceCache.mainBalance;
                 identityBalance = primaryBalanceCache.identityBalance;
+                changeBalance = primaryBalanceCache.changeBalance;
               } else {
                 const readAddress = (address: string): Promise<bigint> =>
                   transactionBuilder.getBalance({ address, provider });
-                [mainBalance, identityBalance] = await Promise.all([
-                  readAddress(mainAccount.address),
-                  identity.address.raw.toLowerCase() ===
-                  mainAccount.address.toLowerCase()
-                    ? Promise.resolve(0n)
-                    : readAddress(identity.address.raw),
-                ]);
+                const changeAddressSet = new Set<string>();
+                for (const rec of changePool.records()) {
+                  changeAddressSet.add(rec.address.toLowerCase());
+                }
+                for (const rec of changePool.recoveredAccounts()) {
+                  changeAddressSet.add(rec.address.toLowerCase());
+                }
+                if (storageLocation !== undefined) {
+                  for (const idx of [0, 1, 2, 3, 4]) {
+                    changeAddressSet.add(
+                      changeKeyring
+                        .deriveChangeAccount(idx)
+                        .address.toLowerCase()
+                    );
+                  }
+                }
+                const changeAddresses = [...changeAddressSet];
+                const [nextMain, nextIdentity, ...changeBalances] =
+                  await Promise.all([
+                    readAddress(mainAccount.address),
+                    identity.address.raw.toLowerCase() ===
+                    mainAccount.address.toLowerCase()
+                      ? Promise.resolve(0n)
+                      : readAddress(identity.address.raw),
+                    ...changeAddresses.map((addr) =>
+                      readAddress(addr).catch(() => 0n)
+                    ),
+                  ]);
+                mainBalance = nextMain;
+                identityBalance = nextIdentity;
+                const SIGNIFICANT_CHANGE_WEI = 10_000_000_000_000_000n;
+                changeBalance = changeBalances.reduce(
+                  (sum, b) => (b > SIGNIFICANT_CHANGE_WEI ? sum + b : sum),
+                  0n
+                );
                 if (generation === balanceReadGeneration) {
                   noteMainBalanceForFundAhead(wallet, mainBalance);
                   primaryBalanceCache = {
                     mainBalance,
                     identityBalance,
+                    changeBalance,
                     cachedAtMs: now,
                   };
                 }
@@ -2160,7 +2222,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // Plus every received coin the chain shows funded. A pending coin (nothing seen on
               // the chain yet) is never counted, whatever its message said.
               // The received inventory and funded sending accounts are independent reads.
-              const [, sending] = await Promise.all([
+              const [, poolSending] = await Promise.all([
                 coinAndContactManager.readCoins(PRIMARY_BALANCE_CACHE_TTL_MS),
                 pool.availableBalanceTotal(
                   provider,
@@ -2168,10 +2230,32 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 ),
               ]);
               const received = spendableCoins(coinStore.all());
+              const receivedTotal = spendableCoinTotal(coinStore.all());
+              const sending = poolSending + changeBalance;
+              const observedAt = Date.now();
+              const totalBalance =
+                mainBalance + identityBalance + receivedTotal + sending;
+              lastBalanceObservation = {
+                balance: totalBalance,
+                observedAt,
+              };
+              if (balanceObsStorageKey) {
+                try {
+                  globalThis.localStorage?.setItem(
+                    balanceObsStorageKey,
+                    JSON.stringify({
+                      balance: totalBalance.toString(),
+                      observedAt,
+                    })
+                  );
+                } catch {
+                  // Ignore localStorage quota/access errors
+                }
+              }
               return {
                 main: mainBalance,
                 profile: identityBalance,
-                received: spendableCoinTotal(coinStore.all()),
+                received: receivedTotal,
                 receivedCount: received.length,
                 sending,
               };
@@ -2207,6 +2291,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return (
                 parts.main + parts.profile + parts.received + parts.sending
               );
+            },
+            getBalanceObservation() {
+              return lastBalanceObservation;
             },
             // The one account of where the wallet's money is: every coin a send can draw on.
             // `getBalance` is its sum, and the app's breakdown shows its rows.

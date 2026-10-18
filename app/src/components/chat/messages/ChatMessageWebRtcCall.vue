@@ -76,6 +76,14 @@
       <span>{{ peerMuteStatusText }}</span>
     </div>
 
+    <audio
+      ref="remoteAudioEl"
+      data-testid="webrtc-remote-audio"
+      autoplay
+      playsinline
+      style="display: none"
+    />
+
     <div
       v-if="showVideoViewport"
       class="webrtc-video-viewport row q-col-gutter-xs q-mb-sm"
@@ -98,6 +106,7 @@
           class="webrtc-video-element"
           data-testid="webrtc-remote-video"
           :aria-label="uiLabels.remoteVideo"
+          muted
           playsinline
           autoplay
         />
@@ -238,6 +247,7 @@ import {
   type WebRtcIceTransportPolicy,
   type WebRtcMediaIntent,
 } from '@frank/wallet/message-item-plugins/webrtc-call'
+import { useChatStore } from '../../../stores/chats'
 import {
   WebRtcCallSessionController,
   getCallSessionController,
@@ -257,6 +267,8 @@ const props = withDefaults(
     messages?: readonly WebRtcCallEnvelope[]
     outbound?: boolean
     address?: string
+    conversationId?: string
+    deliveryStatus?: string
     senderAddress?: string
     localDeviceId?: string
     nowMs?: number
@@ -336,6 +348,7 @@ const uiLabels = {
 
 const localVideoEl = ref<HTMLVideoElement | null>(null)
 const remoteVideoEl = ref<HTMLVideoElement | null>(null)
+const remoteAudioEl = ref<HTMLAudioElement | null>(null)
 const snapshotVersion = ref(0)
 
 const resolvedPayload = computed<WebRtcCallPayload | null>(() => {
@@ -344,13 +357,90 @@ const resolvedPayload = computed<WebRtcCallPayload | null>(() => {
   return null
 })
 
+const conversationMessages = computed<readonly WebRtcCallEnvelope[]>(() => {
+  if (props.messages && props.messages.length > 0) {
+    return props.messages
+  }
+  try {
+    const store = useChatStore() as unknown as {
+      activeConversation?: { messages?: readonly WebRtcCallEnvelope[] } | null
+      conversations?: Record<
+        string,
+        { messages?: readonly WebRtcCallEnvelope[] } | undefined
+      >
+    }
+    const activeMsgs = store?.activeConversation?.messages
+    if (activeMsgs && activeMsgs.length > 0) {
+      return activeMsgs
+    }
+    const convId = props.conversationId || props.address
+    if (convId && store?.conversations) {
+      const direct = store.conversations[convId]?.messages
+      if (direct && direct.length > 0) return direct
+      const bySuffix = Object.entries(store.conversations).find(([k]) =>
+        k.toLowerCase().endsWith(convId.toLowerCase()),
+      )?.[1]?.messages
+      if (bySuffix && bySuffix.length > 0) return bySuffix
+    }
+  } catch {
+    // Pinia store not active in isolated unit test
+  }
+  return []
+})
+
+const foldedState = computed<FoldedWebRtcCallState | null>(() => {
+  if (props.state) return props.state
+  const current = resolvedPayload.value
+  if (!current) return null
+
+  if (conversationMessages.value.length > 0) {
+    const fromConversation = foldWebRtcCallState(
+      conversationMessages.value,
+      current.callId,
+      {
+        localDeviceId: props.localDeviceId,
+        nowMs: props.nowMs,
+      },
+    )
+    if (fromConversation) return fromConversation
+  }
+
+  return foldWebRtcCallState(
+    [
+      {
+        payload: current,
+        outbound: Boolean(props.outbound),
+        senderAddress: props.senderAddress,
+      },
+    ],
+    current.callId,
+    {
+      localDeviceId: props.localDeviceId,
+      nowMs: props.nowMs,
+    },
+  )
+})
+
 const activeController = computed<WebRtcCallSessionController | null>(() => {
   void snapshotVersion.value
   if (props.controller !== undefined) {
     return props.controller
   }
-  const callId = resolvedPayload.value?.callId ?? props.state?.callId
-  return callId ? getCallSessionController(callId) : null
+  const current = resolvedPayload.value
+  const callId = current?.callId ?? props.state?.callId
+  if (!callId) return null
+  const existing = getCallSessionController(callId)
+  if (existing) return existing
+  if (current?.action === 'invite' && !props.outbound) {
+    return getOrCreateCallSessionController(callId, {
+      localPeerId: props.address,
+      remotePeerId: props.senderAddress,
+      invite: current,
+      outbound: false,
+      senderDeviceId: props.localDeviceId,
+    })
+  }
+  return null
 })
 
 function ensureActiveController(): WebRtcCallSessionController | null {
@@ -368,7 +458,7 @@ function ensureActiveController(): WebRtcCallSessionController | null {
     remotePeerId: props.outbound ? props.address : props.senderAddress,
     invite,
     outbound: props.outbound,
-    localDeviceId: props.localDeviceId,
+    senderDeviceId: props.localDeviceId,
   })
 }
 
@@ -395,63 +485,123 @@ function attachStreamsToVideoElements(
 ): void {
   if (localVideoEl.value && 'srcObject' in localVideoEl.value) {
     try {
-      ;(localVideoEl.value as unknown as { srcObject: unknown }).srcObject =
-        localStream
+      const el = localVideoEl.value as unknown as {
+        srcObject: unknown
+        play?: () => Promise<void>
+      }
+      if (el.srcObject !== localStream) {
+        el.srcObject = localStream
+      }
+      if (localStream) {
+        void el.play?.().catch(() => {})
+      }
     } catch {
       // Ignore JSDOM srcObject assignment limitations
     }
   }
   if (remoteVideoEl.value && 'srcObject' in remoteVideoEl.value) {
     try {
-      ;(remoteVideoEl.value as unknown as { srcObject: unknown }).srcObject =
-        remoteStream
+      const el = remoteVideoEl.value as unknown as {
+        srcObject: unknown
+        play?: () => Promise<void>
+      }
+      if (el.srcObject !== remoteStream) {
+        el.srcObject = remoteStream
+      }
+      if (remoteStream) {
+        void el.play?.().catch(() => {})
+      }
+    } catch {
+      // Ignore JSDOM srcObject assignment limitations
+    }
+  }
+  if (remoteAudioEl.value && 'srcObject' in remoteAudioEl.value) {
+    try {
+      const el = remoteAudioEl.value as unknown as {
+        srcObject: unknown
+        play?: () => Promise<void>
+      }
+      if (el.srcObject !== remoteStream) {
+        el.srcObject = remoteStream
+      }
+      if (remoteStream) {
+        void el.play?.().catch(() => {})
+      }
     } catch {
       // Ignore JSDOM srcObject assignment limitations
     }
   }
 }
 
+let unsubscribeController: (() => void) | null = null
+
 watch(
   activeController,
   nextCtrl => {
+    unsubscribeController?.()
+    unsubscribeController = null
     controllerSnapshot.value = nextCtrl ? nextCtrl.getSnapshot() : null
     if (nextCtrl) {
       attachStreamsToVideoElements(
         nextCtrl.getLocalStream(),
         nextCtrl.getRemoteStream(),
       )
+      unsubscribeController = nextCtrl.subscribe({
+        onStateChange: snap => {
+          snapshotVersion.value += 1
+          controllerSnapshot.value = snap
+          attachStreamsToVideoElements(
+            nextCtrl.getLocalStream(),
+            nextCtrl.getRemoteStream(),
+          )
+        },
+        onLocalStream: stream => {
+          snapshotVersion.value += 1
+          attachStreamsToVideoElements(stream, nextCtrl.getRemoteStream())
+        },
+        onRemoteStream: stream => {
+          snapshotVersion.value += 1
+          attachStreamsToVideoElements(nextCtrl.getLocalStream(), stream)
+        },
+      })
     }
   },
   { immediate: true },
 )
 
-const foldedState = computed<FoldedWebRtcCallState | null>(() => {
-  if (props.state) return props.state
-  const current = resolvedPayload.value
-  if (!current) return null
+watch(
+  [conversationMessages, activeController, resolvedPayload],
+  ([msgs, ctrl, currentPayload]) => {
+    const targetCallId =
+      currentPayload?.callId ?? props.state?.callId ?? ctrl?.getSnapshot().callId
+    if (!targetCallId) return
+    const targetCtrl = ctrl ?? getCallSessionController(targetCallId)
+    if (!targetCtrl) return
 
-  if (props.messages && props.messages.length > 0) {
-    return foldWebRtcCallState(props.messages, current.callId, {
-      localDeviceId: props.localDeviceId,
-      nowMs: props.nowMs,
-    })
-  }
-
-  return foldWebRtcCallState(
-    [
-      {
-        payload: current,
+    if (currentPayload && currentPayload.action !== 'invite') {
+      void targetCtrl.handleSignalingPayload(currentPayload, {
         outbound: Boolean(props.outbound),
-        senderAddress: props.senderAddress,
-      },
-    ],
-    current.callId,
-    {
-      localDeviceId: props.localDeviceId,
-      nowMs: props.nowMs,
-    },
-  )
-})
+      })
+    }
+
+    for (const env of msgs) {
+      const p =
+        env.payload ??
+        extractWebRtcCallPayload(env) ??
+        (Array.isArray((env as { items?: unknown[] }).items)
+          ? (env as { items: unknown[] }).items
+              .map(it => extractWebRtcCallPayload(it))
+              .find((x): x is WebRtcCallPayload => x !== null) ?? null
+          : null)
+      if (p && p.callId === targetCallId && p.action !== 'invite') {
+        void targetCtrl.handleSignalingPayload(p, {
+          outbound: Boolean(env.outbound),
+        })
+      }
+    }
+  },
+  { immediate: true, deep: true },
+)
 
 const effectivePhase = computed<WebRtcCallControllerPhase>(() => {
   void snapshotVersion.value
@@ -582,7 +732,14 @@ const showVideoViewport = computed<boolean>(() => {
   const snap = activeController.value
     ? activeController.value.getSnapshot()
     : controllerSnapshot.value
-  if (!isConnectedOrConnecting.value) return false
+  const phase = effectivePhase.value
+  if (
+    phase !== 'connected' &&
+    phase !== 'connecting' &&
+    phase !== 'ringing_outgoing'
+  ) {
+    return false
+  }
   return Boolean(
     effectiveMediaMode.value === 'video' ||
       effectiveMediaMode.value === 'screen' ||
@@ -592,6 +749,20 @@ const showVideoViewport = computed<boolean>(() => {
       snap?.remoteScreenShareEnabled,
   )
 })
+
+watch(
+  [showVideoViewport, localVideoEl, remoteVideoEl, remoteAudioEl],
+  () => {
+    const ctrl = activeController.value
+    if (ctrl) {
+      attachStreamsToVideoElements(
+        ctrl.getLocalStream(),
+        ctrl.getRemoteStream(),
+      )
+    }
+  },
+  { flush: 'post' },
+)
 
 const canAnswerIncoming = computed<boolean>(() => {
   return (
@@ -777,7 +948,13 @@ function onHangup(): void {
 }
 
 onBeforeUnmount(() => {
-  if (props.cleanupOnUnmount !== false && activeController.value) {
+  unsubscribeController?.()
+  unsubscribeController = null
+  if (
+    props.cleanupOnUnmount !== false &&
+    props.controller !== undefined &&
+    activeController.value
+  ) {
     activeController.value.cleanup()
   }
 })

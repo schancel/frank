@@ -70,8 +70,8 @@
         aria-haspopup="menu"
         :disable="disable"
       >
-        <q-menu>
-          <q-list style="min-width: 100px">
+        <q-menu anchor="top left" self="bottom left" max-height="80vh">
+          <q-list dense style="min-width: 220px" class="q-py-xs">
             <q-item
               clickable
               v-close-popup
@@ -86,6 +86,61 @@
               </q-item-section>
             </q-item>
 
+            <!-- Send Stealth: encrypted transfer inside direct message payload -->
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="send-stealth-menu-item"
+              @click="sendStealthClicked"
+            >
+              <q-item-section avatar side>
+                <q-icon name="visibility_off" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.sendStealth') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="swap-menu-item"
+              @click="$emit('swapClicked')"
+            >
+              <q-item-section avatar side
+                ><q-icon name="swap_horiz"
+              /></q-item-section>
+              <q-item-section>{{ $t('signedSwap.title') }}</q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="invoice-menu-item"
+              @click="$emit('invoiceClicked')"
+            >
+              <q-item-section avatar side>
+                <q-icon name="receipt_long" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.createInvoice') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="article-menu-item"
+              @click="$emit('articleClicked')"
+            >
+              <q-item-section avatar side>
+                <q-icon name="article" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.writeArticle') }}
+              </q-item-section>
+            </q-item>
+
             <q-item
               clickable
               v-close-popup
@@ -97,6 +152,34 @@
               </q-item-section>
               <q-item-section>
                 {{ $t('calendarInvite.attachCalendarOrContact') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="webrtc-call-menu-item"
+              @click="emitAndClose('webrtcCallClicked', { withVideo: false })"
+            >
+              <q-item-section avatar side>
+                <q-icon name="call" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.voiceVideoCall') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="webrtc-video-call-menu-item"
+              @click="emitAndClose('webrtcCallClicked', { withVideo: true })"
+            >
+              <q-item-section avatar side>
+                <q-icon name="videocam" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('webrtcCall.mediaMode.video') }}
               </q-item-section>
             </q-item>
 
@@ -154,89 +237,6 @@
               </q-item-section>
               <q-item-section>
                 {{ $t('chatInput.mentalPokerChallenge') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="article-menu-item"
-              @click="$emit('articleClicked')"
-            >
-              <q-item-section avatar side>
-                <q-icon name="article" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.writeArticle') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="invoice-menu-item"
-              @click="$emit('invoiceClicked')"
-            >
-              <q-item-section avatar side>
-                <q-icon name="receipt_long" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.createInvoice') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="webrtc-call-menu-item"
-              @click="emitAndClose('webrtcCallClicked', { withVideo: false })"
-            >
-              <q-item-section avatar side>
-                <q-icon name="call" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.voiceVideoCall') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="webrtc-video-call-menu-item"
-              @click="emitAndClose('webrtcCallClicked', { withVideo: true })"
-            >
-              <q-item-section avatar side>
-                <q-icon name="videocam" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('webrtcCall.mediaMode.video') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="swap-menu-item"
-              @click="$emit('swapClicked')"
-            >
-              <q-item-section avatar side
-                ><q-icon name="swap_horiz"
-              /></q-item-section>
-              <q-item-section>{{ $t('signedSwap.title') }}</q-item-section>
-            </q-item>
-
-            <!-- Send Stealth: encrypted transfer inside direct message payload -->
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="send-stealth-menu-item"
-              @click="sendStealthClicked"
-            >
-              <q-item-section avatar side>
-                <q-icon name="visibility_off" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.sendStealth') }}
               </q-item-section>
             </q-item>
           </q-list>

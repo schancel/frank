@@ -31,8 +31,8 @@ import {
 } from '@frank/wallet/message-item-plugins/webrtc-call'
 
 export const WEBRTC_CONTROL_DATA_CHANNEL_LABEL = WEBRTC_DATA_CHANNEL_LABEL
-export const DEFAULT_CALL_INVITE_TTL_MS = 60_000
-export const DEFAULT_ICE_GATHER_TIMEOUT_MS = 400
+export const DEFAULT_CALL_INVITE_TTL_MS = 120_000
+export const DEFAULT_ICE_GATHER_TIMEOUT_MS = 1_500
 
 export type WebRtcCallControllerPhase =
   | 'idle'
@@ -167,7 +167,16 @@ export interface WebRtcCallControllerSnapshot {
   dataChannelMessagesSentCount: number
 }
 
-export interface WebRtcCallControllerOptions {
+export interface WebRtcCallControllerListener {
+  onPhaseChange?: (phase: WebRtcCallControllerPhase) => void
+  onStateChange?: (snapshot: WebRtcCallControllerSnapshot) => void
+  onRemoteStream?: (stream: MinimalMediaStream | null) => void
+  onLocalStream?: (stream: MinimalMediaStream | null) => void
+  onSecurityViolation?: (reason: string) => void
+}
+
+export interface WebRtcCallControllerOptions
+  extends WebRtcCallControllerListener {
   callId?: string
   senderDeviceId?: string
   localPeerId?: string
@@ -185,12 +194,9 @@ export interface WebRtcCallControllerOptions {
   generateCertificate?: (
     keygenAlgorithm: Record<string, unknown>,
   ) => Promise<unknown>
-  onPhaseChange?: (phase: WebRtcCallControllerPhase) => void
-  onStateChange?: (snapshot: WebRtcCallControllerSnapshot) => void
-  onRemoteStream?: (stream: MinimalMediaStream | null) => void
-  onLocalStream?: (stream: MinimalMediaStream | null) => void
-  onSecurityViolation?: (reason: string) => void
 }
+
+export type WebRtcCallSessionControllerOptions = WebRtcCallControllerOptions
 
 const DEFAULT_FALLBACK_TURN_SERVERS: RTCIceServer[] = [
   {
@@ -307,6 +313,8 @@ export class WebRtcCallSessionController {
   private dataChannelSeq = 0
   private relayMessagesSentCount = 0
   private dataChannelMessagesSentCount = 0
+  private readonly listeners = new Set<WebRtcCallControllerListener>()
+  private readonly processedSignalingKeys = new Set<string>()
 
   constructor(options: WebRtcCallControllerOptions = {}) {
     this.callId = options.callId ?? generateCallId()
@@ -373,6 +381,13 @@ export class WebRtcCallSessionController {
     this.onSecurityViolation = options.onSecurityViolation
   }
 
+  public subscribe(listener: WebRtcCallControllerListener): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
   public getSnapshot(): WebRtcCallControllerSnapshot {
     return {
       callId: this.callId,
@@ -430,12 +445,40 @@ export class WebRtcCallSessionController {
     this.phase = next
     if (changed) {
       this.onPhaseChange?.(next)
+      for (const listener of this.listeners) {
+        listener.onPhaseChange?.(next)
+      }
     }
     this.emitState()
   }
 
   private emitState(): void {
-    this.onStateChange?.(this.getSnapshot())
+    const snap = this.getSnapshot()
+    this.onStateChange?.(snap)
+    for (const listener of this.listeners) {
+      listener.onStateChange?.(snap)
+    }
+  }
+
+  private notifyLocalStream(stream: MinimalMediaStream | null): void {
+    this.onLocalStream?.(stream)
+    for (const listener of this.listeners) {
+      listener.onLocalStream?.(stream)
+    }
+  }
+
+  private notifyRemoteStream(stream: MinimalMediaStream | null): void {
+    this.onRemoteStream?.(stream)
+    for (const listener of this.listeners) {
+      listener.onRemoteStream?.(stream)
+    }
+  }
+
+  private notifySecurityViolation(reason: string): void {
+    this.onSecurityViolation?.(reason)
+    for (const listener of this.listeners) {
+      listener.onSecurityViolation?.(reason)
+    }
   }
 
   private async createConfiguredPeerConnection(): Promise<MinimalPeerConnection> {
@@ -487,7 +530,7 @@ export class WebRtcCallSessionController {
       if (event.track.kind === 'video') {
         this.remoteVideoEnabled = true
       }
-      this.onRemoteStream?.(this.remoteStream)
+      this.notifyRemoteStream(this.remoteStream)
       this.emitState()
     }
 
@@ -607,14 +650,14 @@ export class WebRtcCallSessionController {
           answer.sdp,
           this.localFingerprintSha256 ?? generateEphemeralFingerprintSha256(),
         )
+        await this.pc.setLocalDescription({
+          type: 'answer',
+          sdp: ensured.sdp,
+        })
         const sanitizedAnswer = sanitizeSdpForIcePolicy(
           ensured.sdp,
           this.icePolicy,
         )
-        await this.pc.setLocalDescription({
-          type: 'answer',
-          sdp: sanitizedAnswer,
-        })
         this.mediaMode = parsed.mediaIntent
         if (parsed.mediaIntent === 'screen') {
           this.remoteScreenShareEnabled = true
@@ -725,10 +768,16 @@ export class WebRtcCallSessionController {
     })
 
     let combinedSdp = pc.localDescription?.sdp || initialSdp
-    const lineEnding = combinedSdp.includes('\r\n') ? '\r\n' : '\n'
-    for (const cand of collectedCandidates) {
-      if (!combinedSdp.includes(cand)) {
-        combinedSdp = `${combinedSdp.replace(/(\r?\n)+$/, '')}${lineEnding}${cand}${lineEnding}`
+    // In real browsers, `pc.localDescription.sdp` already embeds gathered candidates into their
+    // respective `m=` media sections; appending audio/video candidates at the end of a multi-m-line
+    // SDP places them under `m=application` with a mismatched `ice-ufrag`. Only append synthetic
+    // candidates when `localDescription.sdp` has not inlined any `a=candidate:` lines (e.g. test mocks).
+    if (!/^a=candidate:/m.test(combinedSdp)) {
+      const lineEnding = combinedSdp.includes('\r\n') ? '\r\n' : '\n'
+      for (const cand of collectedCandidates) {
+        if (!combinedSdp.includes(cand)) {
+          combinedSdp = `${combinedSdp.replace(/(\r?\n)+$/, '')}${lineEnding}${cand}${lineEnding}`
+        }
       }
     }
 
@@ -823,7 +872,7 @@ export class WebRtcCallSessionController {
     try {
       const stream = await this.acquireInitialMedia({ withVideo })
       this.localStream = stream
-      this.onLocalStream?.(stream)
+      this.notifyLocalStream(stream)
 
       const pc = await this.createConfiguredPeerConnection()
       for (const track of stream.getTracks()) {
@@ -1020,7 +1069,7 @@ export class WebRtcCallSessionController {
     try {
       const stream = await this.acquireInitialMedia({ withVideo })
       this.localStream = stream
-      this.onLocalStream?.(stream)
+      this.notifyLocalStream(stream)
 
       const pc = await this.createConfiguredPeerConnection()
       for (const track of stream.getTracks()) {
@@ -1148,6 +1197,11 @@ export class WebRtcCallSessionController {
     }
 
     const isOutbound = Boolean(options?.outbound)
+    const sigKey = `${payload.action}:${payload.sequence}:${payload.senderDeviceId}:${isOutbound ? 'out' : 'in'}`
+    if (this.processedSignalingKeys.has(sigKey)) {
+      return
+    }
+    this.processedSignalingKeys.add(sigKey)
 
     if (
       this.phase === 'ringing_incoming' &&
@@ -1258,7 +1312,7 @@ export class WebRtcCallSessionController {
       } else {
         this.localStream = videoStream
       }
-      this.onLocalStream?.(this.localStream)
+      this.notifyLocalStream(this.localStream)
 
       if (this.pc) {
         if (this.videoSender) {
@@ -1413,11 +1467,11 @@ export class WebRtcCallSessionController {
       this.localFingerprintSha256 ?? generateEphemeralFingerprintSha256(),
     )
     this.localFingerprintSha256 = ensured.fingerprint
-    const sanitized = sanitizeSdpForIcePolicy(ensured.sdp, this.icePolicy)
     await this.pc.setLocalDescription({
       type: 'offer',
-      sdp: sanitized,
+      sdp: ensured.sdp,
     })
+    const sanitized = sanitizeSdpForIcePolicy(ensured.sdp, this.icePolicy)
     this.sendControlMessage({
       type: 'renegotiate_offer',
       mediaIntent: this.mediaMode,
@@ -1527,7 +1581,7 @@ export class WebRtcCallSessionController {
     this.dtlsVerified = false
     this.cleanup()
     this.setPhase('security_abort')
-    this.onSecurityViolation?.(reason)
+    this.notifySecurityViolation(reason)
   }
 
   /**
@@ -1555,7 +1609,7 @@ export class WebRtcCallSessionController {
         }
       }
       this.localStream = null
-      this.onLocalStream?.(null)
+      this.notifyLocalStream(null)
     }
 
     if (this.remoteStream) {
@@ -1568,7 +1622,7 @@ export class WebRtcCallSessionController {
         }
       }
       this.remoteStream = null
-      this.onRemoteStream?.(null)
+      this.notifyRemoteStream(null)
     }
 
     this.videoSender = null

@@ -11,6 +11,8 @@ import {
 } from '@frank/wallet/message-item-plugins/webrtc-call'
 import {
   WebRtcCallSessionController,
+  registerCallSessionController,
+  unregisterCallSessionController,
   type MinimalDataChannel,
   type MinimalMediaDevices,
   type MinimalMediaStream,
@@ -939,6 +941,70 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
         expect(track.stoppedCount).toBeGreaterThan(0)
       }
       expect(harness.callerPc.closed).toBe(true)
+    })
+
+    it('shows outgoing local video preview during ringing_outgoing and survives optimistic message re-keying without stopping camera tracks', async () => {
+      const harness = createLinkedPeerHarness()
+      const caller = new WebRtcCallSessionController({
+        callId: 'call_rekey_preview_01',
+        gatherTimeoutMs: 5,
+        peerConnectionFactory: () => harness.callerPc,
+        mediaDevices: harness.callerMediaDevices,
+      })
+      const callee = new WebRtcCallSessionController({
+        callId: 'call_rekey_preview_01',
+        gatherTimeoutMs: 5,
+        peerConnectionFactory: () => harness.calleePc,
+        mediaDevices: harness.calleeMediaDevices,
+      })
+
+      const { payload: invite } = await caller.startOutgoingCall({
+        withVideo: true,
+      })
+      registerCallSessionController(invite.callId, caller)
+
+      // Optimistic message bubble mounts (without explicit :controller prop, using shared registry)
+      const optimisticWrapper = mountCallCard({
+        payload: invite,
+        outbound: true,
+      })
+      expect(
+        optimisticWrapper.find('[data-testid="webrtc-local-video"]').exists(),
+      ).toBe(true)
+
+      // Optimistic bubble unmounts when re-keyed to committed payloadDigest ~1.5s later
+      optimisticWrapper.unmount()
+      for (const track of harness.callerTracks) {
+        expect(track.stoppedCount).toBe(0)
+      }
+      expect(harness.callerPc.closed).toBe(false)
+
+      // Callee answers and committed caller bubble mounts with [invite, accept] messages
+      callee.receiveIncomingInvite(invite)
+      const { payload: accept } = await callee.acceptIncomingCall({
+        withVideo: true,
+      })
+
+      const committedWrapper = mountCallCard({
+        payload: invite,
+        outbound: true,
+        messages: [
+          { payload: invite, outbound: true },
+          { payload: accept, outbound: false },
+        ],
+      })
+      await new Promise(resolve => setTimeout(resolve, 10))
+      harness.connectPeersAndOpenDataChannel()
+      await committedWrapper.vm.$nextTick()
+
+      expect(caller.getSnapshot().phase).toBe('connected')
+      expect(
+        committedWrapper.find('[data-testid="webrtc-status-badge"]').text(),
+      ).toBe('In Call')
+
+      committedWrapper.unmount()
+      caller.cleanup()
+      unregisterCallSessionController(invite.callId, caller)
     })
   })
 })

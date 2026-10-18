@@ -1619,10 +1619,20 @@ export function registerCallSessionController(
   activeCallControllers.set(callId, controller)
 }
 
+export function unregisterCallSessionController(
+  callId: string,
+  controller?: WebRtcCallSessionController,
+): void {
+  if (!callId) return
+  if (!controller || activeCallControllers.get(callId) === controller) {
+    activeCallControllers.delete(callId)
+  }
+}
+
 export function getCallSessionController(
   callId: string,
-): WebRtcCallSessionController | undefined {
-  return activeCallControllers.get(callId)
+): WebRtcCallSessionController | null {
+  return activeCallControllers.get(callId) ?? null
 }
 
 export function getOrCreateCallSessionController(
@@ -1644,4 +1654,5 @@ export function getOrCreateCallSessionController(
   activeCallControllers.set(callId, created)
   return created
 }
+
 

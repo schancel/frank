@@ -623,6 +623,11 @@ export class WebRtcCallSessionController {
       }
     }
     channel.onclose = () => {
+      if (this.phase === 'connected') {
+        this.cleanup()
+        this.setPhase('ended')
+        return
+      }
       this.emitState()
     }
     channel.onmessage = event => {

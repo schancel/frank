@@ -1137,5 +1137,61 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
       wrapper.unmount()
       callee.cleanup()
     })
+
+    it('renders Ended (and no active call controls) on historical invite and accept cards when no live controller exists', async () => {
+      const harness = createLinkedPeerHarness()
+      const caller = new WebRtcCallSessionController({
+        callId: 'call_history_ended_01',
+        gatherTimeoutMs: 5,
+        peerConnectionFactory: () => harness.callerPc,
+        mediaDevices: harness.callerMediaDevices,
+      })
+      const callee = new WebRtcCallSessionController({
+        callId: 'call_history_ended_01',
+        gatherTimeoutMs: 5,
+        peerConnectionFactory: () => harness.calleePc,
+        mediaDevices: harness.calleeMediaDevices,
+      })
+
+      const { payload: invite } = await caller.startOutgoingCall({
+        withVideo: false,
+      })
+      callee.receiveIncomingInvite(invite)
+      const { payload: accept } = await callee.acceptIncomingCall({
+        withVideo: false,
+      })
+      caller.cleanup()
+      callee.cleanup()
+
+      const historyMessages = [
+        { payload: invite, outbound: true },
+        { payload: accept, outbound: false },
+      ]
+
+      // Mount both the historical `invite` card and `accept` card without a live controller
+      const inviteWrapper = mountCallCard({
+        payload: invite,
+        outbound: true,
+        messages: historyMessages,
+      })
+      const acceptWrapper = mountCallCard({
+        payload: accept,
+        outbound: false,
+        messages: historyMessages,
+      })
+
+      expect(
+        inviteWrapper.find('[data-testid="webrtc-status-badge"]').text(),
+      ).toBe('Ended')
+      expect(
+        inviteWrapper.find('[data-testid="webrtc-active-controls"]').exists(),
+      ).toBe(false)
+      expect(
+        acceptWrapper.find('[data-testid="webrtc-status-badge"]').text(),
+      ).toBe('Ended')
+
+      inviteWrapper.unmount()
+      acceptWrapper.unmount()
+    })
   })
 })

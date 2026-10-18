@@ -442,19 +442,26 @@ const conversationMessages = computed<readonly WebRtcCallEnvelope[]>(() => {
         string,
         { messages?: readonly WebRtcCallEnvelope[] } | undefined
       >
+      chats?: Record<
+        string,
+        { messages?: readonly WebRtcCallEnvelope[] } | undefined
+      >
     }
     const activeMsgs = store?.activeConversation?.messages
     if (activeMsgs && activeMsgs.length > 0) {
       return activeMsgs
     }
     const convId = props.conversationId || props.address
-    if (convId && store?.conversations) {
-      const direct = store.conversations[convId]?.messages
-      if (direct && direct.length > 0) return direct
-      const bySuffix = Object.entries(store.conversations).find(([k]) =>
-        k.toLowerCase().endsWith(convId.toLowerCase()),
-      )?.[1]?.messages
-      if (bySuffix && bySuffix.length > 0) return bySuffix
+    if (convId) {
+      for (const map of [store?.conversations, store?.chats]) {
+        if (!map) continue
+        const direct = map[convId]?.messages
+        if (direct && direct.length > 0) return direct
+        const bySuffix = Object.entries(map).find(([k]) =>
+          k.toLowerCase().endsWith(convId.toLowerCase()),
+        )?.[1]?.messages
+        if (bySuffix && bySuffix.length > 0) return bySuffix
+      }
     }
   } catch {
     // Pinia store not active in isolated unit test
@@ -693,6 +700,11 @@ watch(
 const effectivePhase = computed<WebRtcCallControllerPhase>(() => {
   void snapshotVersion.value
   const current = resolvedPayload.value
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
+    : controllerSnapshot.value
+  const folded = foldedState.value
+
   if (!isPrimaryCallCard.value && current) {
     switch (current.action) {
       case 'cancel':
@@ -702,28 +714,66 @@ const effectivePhase = computed<WebRtcCallControllerPhase>(() => {
       case 'hangup':
         return 'ended'
       case 'accept': {
-        const snap = activeController.value
-          ? activeController.value.getSnapshot()
-          : controllerSnapshot.value
         if (snap && snap.phase !== 'idle') return snap.phase
-        return 'connected'
+        if (
+          folded &&
+          (folded.phase === 'ended' ||
+            folded.phase === 'rejected' ||
+            folded.phase === 'cancelled' ||
+            folded.phase === 'expired')
+        ) {
+          return folded.phase
+        }
+        if (props.state?.phase === 'connected') {
+          return 'connected'
+        }
+        return 'ended'
       }
       case 'ice_batch':
-        return 'connecting'
+        if (snap && snap.phase !== 'idle') return snap.phase
+        return 'ended'
     }
   }
-  const snap = activeController.value
-    ? activeController.value.getSnapshot()
-    : controllerSnapshot.value
+
   if (snap && snap.phase !== 'idle') {
+    if (
+      folded &&
+      (folded.phase === 'ended' ||
+        folded.phase === 'rejected' ||
+        folded.phase === 'cancelled' ||
+        folded.phase === 'expired') &&
+      (snap.phase === 'ringing_outgoing' ||
+        snap.phase === 'ringing_incoming' ||
+        snap.phase === 'connecting' ||
+        snap.phase === 'connected')
+    ) {
+      return folded.phase
+    }
     return snap.phase
   }
-  const folded = foldedState.value
+
   if (!folded) return 'idle'
   if (folded.phase === 'failed') {
-    const reason = (folded.failureReason ?? folded.securityError ?? '').toLowerCase()
+    const reason = (
+      folded.failureReason ??
+      folded.securityError ??
+      ''
+    ).toLowerCase()
     return reason.includes('fingerprint') ? 'security_abort' : 'ended'
   }
+
+  // Without a live controller in memory (and when not driven by an explicit static `props.state`
+  // in unit tests), a historical call from chat history cannot be actively `connected` or
+  // `ringing_outgoing` because no local RTCPeerConnection exists for it.
+  if (props.state === undefined) {
+    if (folded.phase === 'connected') {
+      return 'ended'
+    }
+    if (folded.phase === 'ringing_outgoing') {
+      return 'ended'
+    }
+  }
+
   return folded.phase
 })
 

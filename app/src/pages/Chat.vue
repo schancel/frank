@@ -218,6 +218,7 @@
         :stamp-basis-note="defaultStampBasisNote"
         :default-stamp-mode="isDefaultStampMode"
         :stamp-unavailable="stampUnavailable"
+        :stamp-unavailable-pending="isStampUnavailablePending"
         @resetStampDefault="resetStampDefault"
         @sendMessage="sendMessage"
         @sendFollowUp="sendFollowUpItems"
@@ -495,7 +496,7 @@ export default defineComponent({
       // Until a fresh quote arrives, the default remains unavailable.
       minimumStampWei: 0n as bigint,
       defaultStampWei: undefined as bigint | undefined,
-      defaultStampFailure: 'missing-rate' as string,
+      defaultStampFailure: '' as string,
       defaultStampBasisNote: '',
       stampQuoteSequence: 0,
       stampQuoteTimer: undefined as ReturnType<typeof setInterval> | undefined,
@@ -1862,6 +1863,30 @@ export default defineComponent({
           `chatInput.stampQuoteReasons.${this.defaultStampFailure}`,
         ),
       })
+    },
+    isStampUnavailablePending(): boolean {
+      const target = this.conversation?.id || this.recipientAddress
+      const explicit = target ? this.chatStore.getStampWei(target) : undefined
+      if (
+        explicit !== undefined &&
+        explicit > 0n &&
+        explicit < this.minimumStampWei
+      ) {
+        return false
+      }
+      if (!this.isDefaultStampMode || this.defaultStampWei !== undefined) {
+        return false
+      }
+      if (!this.defaultStampFailure) {
+        return true
+      }
+      if (
+        this.defaultStampFailure === 'messaging-pending' &&
+        !this.messagingState.reason
+      ) {
+        return true
+      }
+      return false
     },
     isEmailThread(): boolean {
       if (this.conversation?.kind === 'email') {

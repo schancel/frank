@@ -52,7 +52,7 @@
       </div>
     </div>
     <div
-      v-if="stampUnavailable"
+      v-if="stampUnavailable && !stampUnavailablePending"
       class="col-12 text-negative text-caption q-px-md"
       role="alert"
       data-testid="stamp-unavailable"
@@ -556,6 +556,7 @@ export default defineComponent({
     },
     defaultStampMode: { type: Boolean, default: true },
     stampUnavailable: { type: String, default: '' },
+    stampUnavailablePending: { type: Boolean, default: false },
     stampBasisNote: { type: String, default: '' },
     // A send is in progress. Blocks sending (Enter, the send button) and the toolbar controls,
     // but deliberately NOT the text box itself (#396): disabling a focused textarea drops its

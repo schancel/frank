@@ -189,13 +189,27 @@
               clickable
               v-close-popup
               data-testid="webrtc-call-menu-item"
-              @click="emitAndClose('webrtcCallClicked')"
+              @click="emitAndClose('webrtcCallClicked', { withVideo: false })"
             >
               <q-item-section avatar side>
                 <q-icon name="call" />
               </q-item-section>
               <q-item-section>
                 {{ $t('chatInput.voiceVideoCall') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="webrtc-video-call-menu-item"
+              @click="emitAndClose('webrtcCallClicked', { withVideo: true })"
+            >
+              <q-item-section avatar side>
+                <q-icon name="videocam" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('webrtcCall.mediaMode.video') }}
               </q-item-section>
             </q-item>
 
@@ -228,6 +242,27 @@
           </q-list>
         </q-menu>
       </q-btn>
+
+      <q-btn
+        dense
+        flat
+        round
+        icon="call"
+        data-testid="webrtc-audio-call-btn"
+        :aria-label="$t('webrtcCall.mediaMode.audio')"
+        :disable="disable"
+        @click="emitAndClose('webrtcCallClicked', { withVideo: false })"
+      />
+      <q-btn
+        dense
+        flat
+        round
+        icon="videocam"
+        data-testid="webrtc-video-call-btn"
+        :aria-label="$t('webrtcCall.mediaMode.video')"
+        :disable="disable"
+        @click="emitAndClose('webrtcCallClicked', { withVideo: true })"
+      />
 
       <div class="col chat-input-container row no-wrap items-center">
         <q-input
@@ -559,8 +594,11 @@ export default defineComponent({
     'swapClicked',
   ],
   methods: {
-    emitAndClose(event: 'webrtcCallClicked') {
-      this.$emit(event)
+    emitAndClose(
+      event: 'webrtcCallClicked',
+      payload?: { withVideo?: boolean },
+    ) {
+      this.$emit(event, payload)
     },
     /** Scale the AVU quote, retaining the adapter floor for paid presets and explicit zero. */
     multipliedStamp(tenths: number): bigint {

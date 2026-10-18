@@ -382,7 +382,11 @@ import {
   type ArticlePayload,
 } from '@frank/wallet/message-item-plugins/article'
 import { MENTAL_POKER_PLUGIN_ID } from '@frank/wallet/message-item-plugins/mental-poker'
-import { WebRtcCallSessionController } from '../utils/webrtc-call-controller'
+import {
+  WebRtcCallSessionController,
+  registerCallSessionController,
+  unregisterCallSessionController,
+} from '../utils/webrtc-call-controller'
 import {
   getOwnCanonicalAddress,
   sameCanonicalAddress,
@@ -1470,7 +1474,7 @@ export default defineComponent({
       const built = buildMentalPokerChallenge({ own, peer, stakeWei: 0n })
       await this.sendFollowUpItems({ items: [built.item] })
     },
-    async sendWebRtcCallInvite() {
+    async sendWebRtcCallInvite(options?: { withVideo?: boolean }) {
       if (this.sendingMessage) return
       const peer = this.recipientAddress || this.address
       const own = (await getOwnCanonicalAddress()) ?? 'self'
@@ -1480,12 +1484,18 @@ export default defineComponent({
         localPeerId: own,
         remotePeerId: peer,
       })
+      let registeredCallId: string | null = null
       try {
-        const { item } = await controller.startOutgoingCall({
-          withVideo: false,
+        const { item, payload } = await controller.startOutgoingCall({
+          withVideo: Boolean(options?.withVideo),
         })
+        registeredCallId = payload.callId
+        registerCallSessionController(payload.callId, controller)
         await this.sendFollowUpItems({ items: [item] })
       } catch (err) {
+        if (registeredCallId) {
+          unregisterCallSessionController(registeredCallId, controller)
+        }
         controller.cleanup()
         errorNotify(err instanceof Error ? err : new Error(String(err)))
       }

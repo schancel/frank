@@ -1608,3 +1608,40 @@ export class WebRtcCallSessionController {
     }
   }
 }
+
+const activeCallControllers = new Map<string, WebRtcCallSessionController>()
+
+export function registerCallSessionController(
+  callId: string,
+  controller: WebRtcCallSessionController,
+): void {
+  if (!callId) return
+  activeCallControllers.set(callId, controller)
+}
+
+export function getCallSessionController(
+  callId: string,
+): WebRtcCallSessionController | undefined {
+  return activeCallControllers.get(callId)
+}
+
+export function getOrCreateCallSessionController(
+  callId: string,
+  options?: WebRtcCallSessionControllerOptions & {
+    invite?: WebRtcCallPayload
+    outbound?: boolean
+  },
+): WebRtcCallSessionController {
+  const existing = activeCallControllers.get(callId)
+  if (existing) return existing
+  const created = new WebRtcCallSessionController({
+    ...options,
+    callId,
+  })
+  if (options?.invite && options.invite.action === 'invite' && !options.outbound) {
+    created.receiveIncomingInvite(options.invite, options.remotePeerId)
+  }
+  activeCallControllers.set(callId, created)
+  return created
+}
+

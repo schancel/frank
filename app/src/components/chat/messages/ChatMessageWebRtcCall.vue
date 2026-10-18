@@ -240,6 +240,8 @@ import {
 } from '@frank/wallet/message-item-plugins/webrtc-call'
 import {
   WebRtcCallSessionController,
+  getCallSessionController,
+  getOrCreateCallSessionController,
   type CameraFacingMode,
   type MinimalMediaStream,
   type WebRtcCallControllerPhase,
@@ -335,17 +337,54 @@ const uiLabels = {
 const localVideoEl = ref<HTMLVideoElement | null>(null)
 const remoteVideoEl = ref<HTMLVideoElement | null>(null)
 const snapshotVersion = ref(0)
+
+const resolvedPayload = computed<WebRtcCallPayload | null>(() => {
+  if (props.payload) return props.payload
+  if (props.item) return extractWebRtcCallPayload(props.item)
+  return null
+})
+
+const activeController = computed<WebRtcCallSessionController | null>(() => {
+  void snapshotVersion.value
+  if (props.controller !== undefined) {
+    return props.controller
+  }
+  const callId = resolvedPayload.value?.callId ?? props.state?.callId
+  return callId ? getCallSessionController(callId) : null
+})
+
+function ensureActiveController(): WebRtcCallSessionController | null {
+  if (props.controller !== undefined) {
+    return props.controller
+  }
+  const current = resolvedPayload.value
+  const callId = current?.callId ?? props.state?.callId
+  if (!callId) return null
+  const invite =
+    foldedState.value?.invite ??
+    (current?.action === 'invite' ? current : undefined)
+  return getOrCreateCallSessionController(callId, {
+    localPeerId: props.outbound ? props.senderAddress : props.address,
+    remotePeerId: props.outbound ? props.address : props.senderAddress,
+    invite,
+    outbound: props.outbound,
+    localDeviceId: props.localDeviceId,
+  })
+}
+
 const controllerSnapshot = ref<WebRtcCallControllerSnapshot | null>(
-  props.controller ? props.controller.getSnapshot() : null,
+  activeController.value ? activeController.value.getSnapshot() : null,
 )
 
-function syncControllerSnapshot(): void {
+function syncControllerSnapshot(
+  ctrl: WebRtcCallSessionController | null = activeController.value,
+): void {
   snapshotVersion.value += 1
-  if (props.controller) {
-    controllerSnapshot.value = props.controller.getSnapshot()
+  if (ctrl) {
+    controllerSnapshot.value = ctrl.getSnapshot()
     attachStreamsToVideoElements(
-      props.controller.getLocalStream(),
-      props.controller.getRemoteStream(),
+      ctrl.getLocalStream(),
+      ctrl.getRemoteStream(),
     )
   }
 }
@@ -373,7 +412,7 @@ function attachStreamsToVideoElements(
 }
 
 watch(
-  () => props.controller,
+  activeController,
   nextCtrl => {
     controllerSnapshot.value = nextCtrl ? nextCtrl.getSnapshot() : null
     if (nextCtrl) {
@@ -385,12 +424,6 @@ watch(
   },
   { immediate: true },
 )
-
-const resolvedPayload = computed<WebRtcCallPayload | null>(() => {
-  if (props.payload) return props.payload
-  if (props.item) return extractWebRtcCallPayload(props.item)
-  return null
-})
 
 const foldedState = computed<FoldedWebRtcCallState | null>(() => {
   if (props.state) return props.state
@@ -422,8 +455,8 @@ const foldedState = computed<FoldedWebRtcCallState | null>(() => {
 
 const effectivePhase = computed<WebRtcCallControllerPhase>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   if (snap && snap.phase !== 'idle') {
     return snap.phase
@@ -440,8 +473,8 @@ const effectivePhase = computed<WebRtcCallControllerPhase>(() => {
 
 const effectiveMediaMode = computed<WebRtcMediaIntent>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   if (snap && snap.phase !== 'idle') {
     return snap.mediaMode
@@ -455,8 +488,8 @@ const effectiveMediaMode = computed<WebRtcMediaIntent>(() => {
 
 const effectiveIcePolicy = computed<WebRtcIceTransportPolicy>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   if (snap) {
     return snap.icePolicy
@@ -470,8 +503,8 @@ const effectiveIcePolicy = computed<WebRtcIceTransportPolicy>(() => {
 
 const isAnsweredElsewhere = computed<boolean>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   if (snap?.answeredElsewhere) return true
   return Boolean(foldedState.value?.answeredElsewhere)
@@ -479,8 +512,8 @@ const isAnsweredElsewhere = computed<boolean>(() => {
 
 const isSecurityAbort = computed<boolean>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   if (snap?.phase === 'security_abort' || snap?.securityViolationReason) {
     return true
@@ -493,48 +526,48 @@ const isSecurityAbort = computed<boolean>(() => {
 
 const isDtlsVerified = computed<boolean>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   return Boolean(snap?.dtlsVerified && !isSecurityAbort.value)
 })
 
 const isVideoDegradedOrDenied = computed<boolean>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   return Boolean(snap?.videoDegradedOrDenied)
 })
 
 const isLocalMuted = computed<boolean>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   return Boolean(snap?.localMuted)
 })
 
 const isRemoteMuted = computed<boolean>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   return Boolean(snap?.remoteMuted)
 })
 
 const isLocalVideoEnabled = computed<boolean>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   return Boolean(snap?.videoEnabled)
 })
 
 const isScreenShareEnabled = computed<boolean>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   return Boolean(snap?.screenShareEnabled)
 })
@@ -546,8 +579,8 @@ const isConnectedOrConnecting = computed<boolean>(() => {
 
 const showVideoViewport = computed<boolean>(() => {
   void snapshotVersion.value
-  const snap = props.controller
-    ? props.controller.getSnapshot()
+  const snap = activeController.value
+    ? activeController.value.getSnapshot()
     : controllerSnapshot.value
   if (!isConnectedOrConnecting.value) return false
   return Boolean(
@@ -644,87 +677,96 @@ const screenShareButtonLabel = computed<string>(() => {
 })
 
 async function onAnswerAudio(): Promise<void> {
-  if (!props.controller) return
+  const ctrl = ensureActiveController()
+  if (!ctrl) return
   const invite =
     foldedState.value?.invite ??
     (resolvedPayload.value?.action === 'invite'
       ? resolvedPayload.value
       : undefined)
-  const { item } = await props.controller.acceptIncomingCall({
+  const { item } = await ctrl.acceptIncomingCall({
     withVideo: false,
     invite,
   })
-  syncControllerSnapshot()
+  syncControllerSnapshot(ctrl)
   emit('answer', { item, withVideo: false })
   emit('sendFollowUp', { items: [item] })
 }
 
 async function onAnswerVideo(): Promise<void> {
-  if (!props.controller) return
+  const ctrl = ensureActiveController()
+  if (!ctrl) return
   const invite =
     foldedState.value?.invite ??
     (resolvedPayload.value?.action === 'invite'
       ? resolvedPayload.value
       : undefined)
-  const { item } = await props.controller.acceptIncomingCall({
+  const { item } = await ctrl.acceptIncomingCall({
     withVideo: true,
     invite,
   })
-  syncControllerSnapshot()
+  syncControllerSnapshot(ctrl)
   emit('answer', { item, withVideo: true })
   emit('sendFollowUp', { items: [item] })
 }
 
 function onReject(): void {
-  if (!props.controller) return
-  const { item } = props.controller.rejectIncomingCall()
-  syncControllerSnapshot()
+  const ctrl = ensureActiveController()
+  if (!ctrl) return
+  const { item } = ctrl.rejectIncomingCall()
+  syncControllerSnapshot(ctrl)
   emit('reject', { item })
   emit('sendFollowUp', { items: [item] })
 }
 
 function onCancel(): void {
-  if (!props.controller) return
-  const { item } = props.controller.cancelOutgoingCall()
-  syncControllerSnapshot()
+  const ctrl = ensureActiveController()
+  if (!ctrl) return
+  const { item } = ctrl.cancelOutgoingCall()
+  syncControllerSnapshot(ctrl)
   emit('cancel', { item })
   emit('sendFollowUp', { items: [item] })
 }
 
 function onToggleMute(): void {
-  if (!props.controller) return
-  const muted = props.controller.toggleMute()
-  syncControllerSnapshot()
+  const ctrl = ensureActiveController()
+  if (!ctrl) return
+  const muted = ctrl.toggleMute()
+  syncControllerSnapshot(ctrl)
   emit('muteChange', muted)
 }
 
 async function onToggleVideo(): Promise<void> {
-  if (!props.controller) return
-  const next = !props.controller.getSnapshot().videoEnabled
-  const enabled = await props.controller.setVideoEnabled(next)
-  syncControllerSnapshot()
+  const ctrl = ensureActiveController()
+  if (!ctrl) return
+  const next = !ctrl.getSnapshot().videoEnabled
+  const enabled = await ctrl.setVideoEnabled(next)
+  syncControllerSnapshot(ctrl)
   emit('videoChange', enabled)
 }
 
 async function onSwitchCamera(): Promise<void> {
-  if (!props.controller) return
-  const mode = await props.controller.switchCameraFacingMode()
-  syncControllerSnapshot()
+  const ctrl = ensureActiveController()
+  if (!ctrl) return
+  const mode = await ctrl.switchCameraFacingMode()
+  syncControllerSnapshot(ctrl)
   emit('cameraSwitch', mode)
 }
 
 async function onToggleScreenShare(): Promise<void> {
-  if (!props.controller) return
-  const next = !props.controller.getSnapshot().screenShareEnabled
-  const enabled = await props.controller.setScreenShareEnabled(next)
-  syncControllerSnapshot()
+  const ctrl = ensureActiveController()
+  if (!ctrl) return
+  const next = !ctrl.getSnapshot().screenShareEnabled
+  const enabled = await ctrl.setScreenShareEnabled(next)
+  syncControllerSnapshot(ctrl)
   emit('screenShareChange', enabled)
 }
 
 function onHangup(): void {
-  if (!props.controller) return
-  const res = props.controller.hangup()
-  syncControllerSnapshot()
+  const ctrl = ensureActiveController()
+  if (!ctrl) return
+  const res = ctrl.hangup()
+  syncControllerSnapshot(ctrl)
   emit('hangup', {
     sentViaDataChannel: res.sentViaDataChannel,
     item: res.followUpItem,
@@ -735,8 +777,8 @@ function onHangup(): void {
 }
 
 onBeforeUnmount(() => {
-  if (props.cleanupOnUnmount !== false && props.controller) {
-    props.controller.cleanup()
+  if (props.cleanupOnUnmount !== false && activeController.value) {
+    activeController.value.cleanup()
   }
 })
 </script>

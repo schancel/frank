@@ -32,6 +32,8 @@
     "build-android-release": "yarn build-android && yarn zipalign-android && apksigner sign --ks release.keystore.jks --out ./dist/capacitor/android/apk/release/app-release.apk ./dist/capacitor/android/apk/release/app-release-unsigned-aligned.apk",
     "test:unit": "jest --config test/jest/accounts.config.cjs --updateSnapshot",
     "test:unit:ci": "jest --config test/jest/accounts.config.cjs --ci",
+    "test:integration": "jest --config test/jest/accounts.config.cjs --ci --testPathPattern='(\\.integration\\.jest\\.test\\.ts|swap/swap-.*\\.jest\\.test\\.ts)$'",
+    "test:browser": "node test/browser/app-smoke.mjs",
     "test:unit:coverage": "jest --config test/jest/accounts.config.cjs --coverage",
     "test:unit:watch": "jest --config test/jest/accounts.config.cjs --watch",
     "test:unit:watchAll": "jest --config test/jest/accounts.config.cjs --watchAll",

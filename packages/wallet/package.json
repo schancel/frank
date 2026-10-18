@@ -5,7 +5,10 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "test": "jest"
+    "test": "jest",
+    "test:unit": "jest --testPathIgnorePatterns='(\\.integration\\.jest\\.test\\.ts|privacy-simulation-engine\\.jest\\.test\\.ts|chain/two-wallets\\.jest\\.test\\.ts)$'",
+    "test:integration": "jest --testPathPattern='(\\.integration\\.jest\\.test\\.ts|privacy-simulation-engine\\.jest\\.test\\.ts|chain/two-wallets\\.jest\\.test\\.ts)$'",
+    "bench": "TSX_TSCONFIG_PATH=tsconfig.jest.json node --import tsx scripts/wallet-hot-path-bench.ts"
   },
   "dependencies": {
     "@frank/cashweb": "*",

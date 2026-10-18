@@ -145,10 +145,27 @@ export interface Record {
   generations: [bigint, bigint]
   predecessor: Uint8Array | null
 }
+const authenticatedPreviewCache = new Map<
+  string,
+  ReturnType<typeof verifyPreviewDirectoryEvidence>
+>()
+
 export function authenticate(anchor: Anchor, wrapper: Uint8Array): Record {
   let signed
   try {
-    signed = verifyPreviewDirectoryEvidence(wrapper, anchor.network)
+    const cacheKey = `${anchor.network}:${Buffer.from(
+      wrapper.buffer,
+      wrapper.byteOffset,
+      wrapper.byteLength,
+    ).toString('hex')}`
+    signed = authenticatedPreviewCache.get(cacheKey)
+    if (!signed) {
+      signed = verifyPreviewDirectoryEvidence(
+        new Uint8Array(wrapper),
+        anchor.network,
+      )
+      authenticatedPreviewCache.set(cacheKey, signed)
+    }
   } catch {
     fail('evidence')
   }

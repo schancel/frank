@@ -1787,6 +1787,7 @@ async function send(
     // A paid stamp is never smaller than what the chain charges to move it. The wallet's own
     // default is raised to that; an amount the caller chose is refused, not changed.
     let requestedWei = stampValueWei
+    let claimWaited = false
     // Explicit paid sends queue while the node is unreachable. A new implicit default instead
     // reports an unavailable fee before claiming or signing; free messages bypass this path.
     for (;;) {
@@ -1815,16 +1816,19 @@ async function send(
             // The only coin that could pay is spent by an earlier payment: this send waits
             // its turn, and meanwhile asks the chain about that one payment (never the relay).
             whileBusy: busyHolder => {
+              claimWaited = true
               // A wallet being closed ends the wait (`payer()` refuses a closed wallet):
               // nothing was signed, the claim loop lets go, and close is not held up.
               owner.payer()
               return settleHolder(owner, busyHolder)
             },
-            onWaiting: blocksRemaining =>
+            onWaiting: blocksRemaining => {
+              claimWaited = true
               params.onPreparationProgress?.({
                 stage: 'waiting-for-payment',
                 ...(blocksRemaining === undefined ? {} : { blocksRemaining }),
-              }),
+              })
+            },
           }),
         )
         break
@@ -1836,13 +1840,16 @@ async function send(
           throw error
         }
         owner.payer()
+        claimWaited = true
         params.onPreparationProgress?.({ stage: 'waiting-for-chain' })
         await owner.lifetime(() => payer.watcher.whenReachable(params.signal))
       }
     }
     // Fresh snapshots after any wait: the message is sealed to the Current pair in force.
     const senderCurrent = await directory.selfCurrent()
-    const recipient = await directory.peerCurrent({ subject: peer.subject })
+    const recipient = claimWaited
+      ? await directory.peerCurrent({ subject: peer.subject })
+      : peer
     if (!recipient)
       throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
     const roles = owner.roles.create(directory.network, senderCurrent)
@@ -2461,6 +2468,19 @@ async function readMailbox(
         { cause: truncated },
       )
   }
+  const peerLookupCache = new Map<
+    string,
+    Promise<Awaited<ReturnType<typeof directory.peerCurrent>>>
+  >()
+  const lookupPeerCurrent = (subject: string) => {
+    const key = subject.toLowerCase()
+    let pending = peerLookupCache.get(key)
+    if (!pending) {
+      pending = directory.peerCurrent({ subject })
+      peerLookupCache.set(key, pending)
+    }
+    return pending
+  }
   for (const page of pages) {
     // A record this client cannot decode is never a message, never paid and never a received
     // stamp. It is reported as terminal, under the relay's own identity for it, so the host's
@@ -2489,9 +2509,7 @@ async function readMailbox(
       // Any peer with a published entry that verifies is shown; no peer list is consulted.
       let peer
       try {
-        peer = await directory.peerCurrent({
-          subject: peerSubjectHex,
-        })
+        peer = await lookupPeerCurrent(peerSubjectHex)
       } catch (error) {
         const code = (error as { code?: string } | null)?.code
         if (code === 'invalid' || code === 'fork') {

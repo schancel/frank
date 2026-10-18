@@ -107,16 +107,32 @@ export function directMessageText(text: string): Uint8Array {
   return bytes
 }
 
+const verifiedEvidenceCache = new Map<string, PreviewDirectoryEvidence>()
+
 function evidence(
   network: string,
   value: HistoricalEvidence,
 ): PreviewDirectoryEvidence {
-  if (value.kind !== 'historical-evidence')
-    throw new DirectMessageError('evidence')
-  const parsed = verifyPreviewDirectoryEvidence(
-    copy(value.attestation),
-    network,
+  if (
+    value.kind !== 'historical-evidence' ||
+    !(value.attestation instanceof Uint8Array) ||
+    !(value.statement instanceof Uint8Array) ||
+    !(value.hash instanceof Uint8Array)
   )
+    throw new DirectMessageError('evidence')
+  const key = `${network}:${Buffer.from(
+    value.attestation.buffer,
+    value.attestation.byteOffset,
+    value.attestation.byteLength,
+  ).toString('hex')}`
+  let parsed = verifiedEvidenceCache.get(key)
+  if (!parsed) {
+    parsed = verifyPreviewDirectoryEvidence(
+      copy(value.attestation),
+      network,
+    )
+    verifiedEvidenceCache.set(key, parsed)
+  }
   if (
     !equal(parsed.statementFrame.frame, value.statement) ||
     !equal(parsed.statementHash, value.hash)

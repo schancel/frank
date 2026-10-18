@@ -57,6 +57,16 @@ export interface DerivedKeypair {
 export type DerivedSubAccount = DerivedKeypair
 export type DerivedChangeAccount = DerivedKeypair
 
+interface BranchCacheEntry {
+  branchNode?: HDNodeWallet
+  readonly derivedCache: Map<number, DerivedKeypair>
+}
+
+const masterBranchCache = new WeakMap<
+  HDNodeWallet,
+  Map<string, BranchCacheEntry>
+>()
+
 /**
  * Curve-level secp256k1 HD keyring holding a master HD node in memory
  * and deriving sub-accounts on demand from any specified BIP-44 path prefix.
@@ -64,6 +74,8 @@ export type DerivedChangeAccount = DerivedKeypair
 export class Secp256k1HdKeyring {
   readonly masterNode: HDNodeWallet
   readonly pathPrefix: string
+  private readonly cacheEntry: BranchCacheEntry
+  private readonly derivedCache: Map<number, DerivedKeypair>
 
   constructor(
     masterNode: HDNodeWallet,
@@ -71,6 +83,24 @@ export class Secp256k1HdKeyring {
   ) {
     this.masterNode = masterNode
     this.pathPrefix = resolveBip44Path(pathConfigOrPrefix)
+    let byPrefix = masterBranchCache.get(masterNode)
+    if (!byPrefix) {
+      byPrefix = new Map<string, BranchCacheEntry>()
+      masterBranchCache.set(masterNode, byPrefix)
+    }
+    let entry = byPrefix.get(this.pathPrefix)
+    if (!entry) {
+      entry = { derivedCache: new Map<number, DerivedKeypair>() }
+      byPrefix.set(this.pathPrefix, entry)
+    }
+    this.cacheEntry = entry
+    this.derivedCache = entry.derivedCache
+  }
+
+  private getBranchNode(): HDNodeWallet {
+    return (this.cacheEntry.branchNode ??= this.masterNode.derivePath(
+      this.pathPrefix,
+    ))
   }
 
   /** Builds keyring from a BIP-39 mnemonic phrase and path configuration. */
@@ -125,13 +155,21 @@ export class Secp256k1HdKeyring {
 
   /** Deterministically derives child keypair at `${this.pathPrefix}/${index}`. */
   deriveSubAccount(index: number): DerivedKeypair {
-    const node = this.masterNode.derivePath(this.subAccountPath(index))
-    return {
+    const fullPath = this.subAccountPath(index)
+    const cached = this.derivedCache.get(index)
+    if (cached) return cached
+    const node =
+      index < 0x80000000
+        ? this.getBranchNode().deriveChild(index)
+        : this.masterNode.derivePath(fullPath)
+    const derived: DerivedKeypair = {
       index,
       address: node.address,
       privateKey: node.privateKey,
       publicKey: node.publicKey,
     }
+    this.derivedCache.set(index, derived)
+    return derived
   }
 
   /** Alias for deriveSubAccount for change-keyring consumers. */
@@ -145,7 +183,7 @@ export class Secp256k1HdKeyring {
     publicKey: Uint8Array
     chainCode: Uint8Array
   } {
-    const branch = this.masterNode.derivePath(this.pathPrefix).neuter()
+    const branch = this.getBranchNode().neuter()
     return {
       path: this.pathPrefix,
       publicKey: getBytes(branch.publicKey),

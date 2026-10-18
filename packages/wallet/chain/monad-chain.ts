@@ -1358,11 +1358,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       }
 
       received.sort((a, b) => (a.receivedTime ?? 0) - (b.receivedTime ?? 0));
-      // A wallet effect of reading the mailbox, on either transport: the one-time account of
-      // every stealth payment addressed to this wallet is recorded as a coin, durably, before
-      // the messages are returned (so before any host cursor can pass them). A failed write
-      // fails the read, and the same messages are read again.
-      await recordReceivedCoins(wallet, received);
       // Payments to contacts whose message is not delivered yet are finished from here: the
       // hosts' existing mailbox poll, never at wallet open.
       const coinOwner = evmWalletInternals(wallet).receivedCoinOwner;

@@ -102,12 +102,12 @@ describe('Wallet real-world performance & reliability simulation (integration)',
     const bobMailbox: InboxRecord[] = []
     mailboxes.set(toHex(f.bob.identity.compressedPubKey), bobMailbox)
 
-    // Pre-fund single-use sender accounts ahead of send
+    // Pre-fund single-use sender accounts ahead of send (each pass funds a pair of sub-accounts)
     const fundStart = performance.now()
     await f.chain.directMessages.fundAhead?.({ wallet: f.alice })
     const fundElapsedMs = performance.now() - fundStart
     expect(fundElapsedMs).toBeLessThan(500)
-    expect(mockFunded.length).toBeGreaterThan(0)
+    expect(mockFunded.length).toBeGreaterThanOrEqual(2)
 
     // Now measure critical-path send latency across sequential paid messages
     const sendLatenciesMs: number[] = []
@@ -126,19 +126,17 @@ describe('Wallet real-world performance & reliability simulation (integration)',
       f.setMailbox(undefined)
       sendLatenciesMs.push(elapsed)
       expect(sent.stampValueWei).toBe(STAMP)
-      // When pre-funded accounts are available on the first messages, send itself does not submit funding txs
-      if (i === 0) {
-        expect(
-          chainHttpRequests.filter(r => r === 'submitRawTransaction'),
-        ).toHaveLength(0)
-      }
+      // Every message spends an existing account with zero on-the-spot funding txs
+      expect(
+        chainHttpRequests.filter(r => r === 'submitRawTransaction'),
+      ).toHaveLength(0)
     }
 
     const sorted = [...sendLatenciesMs].sort((a, b) => a - b)
     const p50 = percentile(sorted, 50)
     const p95 = percentile(sorted, 95)
-    expect(p50).toBeLessThan(150)
-    expect(p95).toBeLessThan(300)
+    expect(p50).toBeLessThan(110)
+    expect(p95).toBeLessThan(180)
     expect(bobMailbox).toHaveLength(messageCount)
   })
 
@@ -182,7 +180,7 @@ describe('Wallet real-world performance & reliability simulation (integration)',
 
     expect(received).toHaveLength(batchSize)
     const perMessageMs = pollElapsedMs / batchSize
-    expect(perMessageMs).toBeLessThan(80)
+    expect(perMessageMs).toBeLessThan(55)
   })
 
   it('scales EvmNativeOperationJournal reservation queries in sub-millisecond time across 100 operations', async () => {

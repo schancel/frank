@@ -110,7 +110,7 @@ async function main() {
     }
   })
 
-  // 3. SimulatedLedger EIP-1559 transfer build + sign + submit
+  // 3. Wallet-side EIP-1559 transfer build + sign (and simulated node submit)
   const ledger = new SimulatedLedger()
   const senderPrivKey = '0x' + '33'.repeat(32)
   const senderWallet = new Wallet(senderPrivKey)
@@ -121,6 +121,16 @@ async function main() {
     httpClient: ledger,
   })
   const recipientAddr = '0x' + '44'.repeat(20)
+  await measureAsync('EIP-1559 wallet build + sign (no node verify)', 250, async i => {
+    const signed = await txSigner.buildAndSignTransfer(recipientAddr, 1000n, {
+      nonce: i,
+      gasLimit: 21000n,
+      maxFeePerGas: 100n,
+      maxPriorityFeePerGas: 10n,
+      chainId: 10143n,
+    })
+    if (!signed.txHash) throw new Error('missing txHash')
+  })
   await measureAsync('EIP-1559 build + sign + simulated submit', 200, async () => {
     const signed = await txSigner.buildAndSignTransfer(recipientAddr, 1000n)
     await ledger.submitRawTransaction(signed.rawTx)

@@ -297,14 +297,13 @@ export class MonadAccountTxSigner {
     const parsed = Transaction.from(rawTx);
     if (
       parsed.unsignedSerialized !== input.unsignedSerialized ||
-      parsed.from?.toLowerCase() !== input.from ||
       parsed.hash === null
     )
       throw new Error("Canonical signed transaction mismatch");
     return {
       rawTx,
       txHash: parsed.hash,
-      from: parsed.from!,
+      from: this.wallet.address,
       to: parsed.to!,
       value: parsed.value,
       data: parsed.data,
@@ -357,7 +356,7 @@ export class MonadAccountTxSigner {
     return {
       rawTx,
       txHash: parsed.hash,
-      from: parsed.from ?? this.wallet.address,
+      from: this.wallet.address,
       to: parsed.to,
       value: parsed.value,
       data: parsed.data,

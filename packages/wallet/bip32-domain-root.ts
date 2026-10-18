@@ -1,4 +1,4 @@
-import { HDNodeWallet } from 'ethers'
+import { HDNodeWallet, hexlify } from 'ethers'
 
 export type Bip32DomainRootPurpose = 'evm-wallet' | 'identity-authentication'
 
@@ -9,6 +9,8 @@ export interface Bip32DomainRoot<
   readonly purpose: Purpose
   readonly bytes: Uint8Array
 }
+
+const masterNodeCache = new Map<string, HDNodeWallet>()
 
 /**
  * Constructs the BIP-32 master for an already-derived, purpose-tagged domain root.
@@ -37,7 +39,13 @@ export function bip32MasterFromDomainRoot(
     throw new Error('BIP-32 domain root must contain 16 to 64 bytes')
   }
   try {
-    return HDNodeWallet.fromSeed(snapshot)
+    const cacheKey = `${expectedPurpose}:${hexlify(snapshot)}`
+    let master = masterNodeCache.get(cacheKey)
+    if (!master) {
+      master = HDNodeWallet.fromSeed(snapshot)
+      masterNodeCache.set(cacheKey, master)
+    }
+    return master
   } finally {
     snapshot.fill(0)
   }

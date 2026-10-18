@@ -147,6 +147,38 @@ function roleOwner(
     seed
       ? deriveBip39RoleLeaves({ seed, ...generations })
       : deriveRoleLeaves({ ...roots!, ...generations })
+  const leavesCache = new Map<string, ReturnType<typeof derive>>()
+  const getCachedLeaves = (generations: Omit<Bip39RoleDerivation, 'seed'>) => {
+    const key = `${generations.messageGeneration}:${generations.stampGeneration}:${generations.previousStampGeneration ?? 'none'}`
+    let leaves = leavesCache.get(key)
+    if (!leaves) {
+      leaves = derive(generations)
+      leavesCache.set(key, leaves)
+    }
+    return leaves
+  }
+  const evidenceCache = new Map<
+    string,
+    ReturnType<typeof verifyPreviewDirectoryEvidence>
+  >()
+  const verifyCachedEvidence = (attestation: Uint8Array, network: string) => {
+    const key = `${network}:${hexlify(attestation)}`
+    let evidence = evidenceCache.get(key)
+    if (!evidence) {
+      evidence = verifyPreviewDirectoryEvidence(attestation, network)
+      evidenceCache.set(key, evidence)
+    }
+    return evidence
+  }
+  let cachedSelfOpenKey: Uint8Array | undefined
+  const getSelfOpenKey = () => {
+    if (!cachedSelfOpenKey) {
+      cachedSelfOpenKey = historical
+        ? selfOpenKeyFromBip39Seed(auxiliarySecret)
+        : selfOpenKeyFromRoot(auxiliarySecret)
+    }
+    return cachedSelfOpenKey
+  }
   const registry = historical ? BIP39_DERIVATION : DERIVATION_REGISTRY_ID
   // Historical auxiliaries consume the complete seed. Domain-root auxiliaries are unchanged.
   const auxiliarySecret = seed ?? roots!.messageRoot.bytes
@@ -163,208 +195,197 @@ function roleOwner(
     configuration: () => C,
   ) => {
     if (disposed) throw new Error('canonical-roles:disposed')
-    const leaves = derive({
+    const leaves = getCachedLeaves({
       messageGeneration: 0n,
       stampGeneration: 0n,
     })
-    try {
-      const auth = leaves.auth.public,
-        message = leaves.message.public,
-        stamp = leaves.stamp.public
-      if (!sameBytes(auth.compressedPoint, ownedIdentity))
-        throw new Error('canonical-roles:identity-mismatch')
-      const account = (key: Uint8Array) =>
-        cborMap([
-          [0, 1],
-          [1, key],
-        ])
-      const time = (t: { seconds: bigint; nanoseconds: number }) =>
-        cborMap([
-          [0, t.seconds],
-          [1, t.nanoseconds],
-        ])
-      const tuple = owned.relay
-      const statement = encodeFrame(
-        { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
-        cborMap([
-          [0, owned.network],
-          [1, account(auth.compressedPoint)],
-          [2, revision],
-          [3, time(owned.issuedAt)],
+    const auth = leaves.auth.public,
+      message = leaves.message.public,
+      stamp = leaves.stamp.public
+    if (!sameBytes(auth.compressedPoint, ownedIdentity))
+      throw new Error('canonical-roles:identity-mismatch')
+    const account = (key: Uint8Array) =>
+      cborMap([
+        [0, 1],
+        [1, key],
+      ])
+    const time = (t: { seconds: bigint; nanoseconds: number }) =>
+      cborMap([
+        [0, t.seconds],
+        [1, t.nanoseconds],
+      ])
+    const tuple = owned.relay
+    const statement = encodeFrame(
+      { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+      cborMap([
+        [0, owned.network],
+        [1, account(auth.compressedPoint)],
+        [2, revision],
+        [3, time(owned.issuedAt)],
+        [
+          4,
           [
-            4,
-            [
-              cborMap([
-                [0, tuple.relayId],
-                [1, tuple.endpoint],
-                [2, account(tuple.identity.keyBytes)],
-                [3, time(tuple.expiry)],
-              ]),
-            ],
+            cborMap([
+              [0, tuple.relayId],
+              [1, tuple.endpoint],
+              [2, account(tuple.identity.keyBytes)],
+              [3, time(tuple.expiry)],
+            ]),
           ],
-          [6, time(owned.expiresAt)],
-          [8, account(stamp.compressedPoint)],
-          [10, account(message.compressedPoint)],
-          [11, 0],
-          [12, 0],
-          [13, predecessor],
-        ]),
-      )
-      const digest = directorySignatureDigest(owned.network, statement)
-      const signature = leaves.auth.useSecret(secret => {
-        const key = privateKeyFromSecretBytes(secret, true)
-        if (!key.ok) throw new Error('canonical-rev0:auth-key')
-        try {
-          const signed = signEcdsa(key.value, digest)
-          if (!signed.ok) throw new Error('canonical-rev0:signature')
-          return new Uint8Array(signed.value)
-        } finally {
-          key.value.bytes.fill(0)
-        }
-      })
-      const attestation = encodeFrame(
-        { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
-        cborMap([
-          [0, statement],
+        ],
+        [6, time(owned.expiresAt)],
+        [8, account(stamp.compressedPoint)],
+        [10, account(message.compressedPoint)],
+        [11, 0],
+        [12, 0],
+        [13, predecessor],
+      ]),
+    )
+    const digest = directorySignatureDigest(owned.network, statement)
+    const signature = leaves.auth.useSecret(secret => {
+      const key = privateKeyFromSecretBytes(secret, true)
+      if (!key.ok) throw new Error('canonical-rev0:auth-key')
+      try {
+        const signed = signEcdsa(key.value, digest)
+        if (!signed.ok) throw new Error('canonical-rev0:signature')
+        return new Uint8Array(signed.value)
+      } finally {
+        key.value.bytes.fill(0)
+      }
+    })
+    const attestation = encodeFrame(
+      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      cborMap([
+        [0, statement],
+        [
+          1,
           [
-            1,
-            [
-              cborMap([
-                [0, 1],
-                [1, account(auth.compressedPoint)],
-                [2, signature],
-              ]),
-            ],
+            cborMap([
+              [0, 1],
+              [1, account(auth.compressedPoint)],
+              [2, signature],
+            ]),
           ],
-        ]),
+        ],
+      ]),
+    )
+    const evidence = verifyCachedEvidence(attestation, owned.network)
+    if (
+      !sameBytes(evidence.statementFrame.frame, statement) ||
+      evidence.statement.revision !== revision ||
+      !sameBytes(evidence.statement.subject.keyBytes, auth.compressedPoint) ||
+      !sameBytes(
+        evidence.statement.stampKey.keyBytes,
+        stamp.compressedPoint,
+      ) ||
+      !sameBytes(
+        evidence.statement.preview.messageDhKey.keyBytes,
+        message.compressedPoint,
       )
-      const evidence = verifyPreviewDirectoryEvidence(
-        attestation,
-        owned.network,
-      )
-      if (
-        !sameBytes(evidence.statementFrame.frame, statement) ||
-        evidence.statement.revision !== revision ||
-        !sameBytes(evidence.statement.subject.keyBytes, auth.compressedPoint) ||
-        !sameBytes(
-          evidence.statement.stampKey.keyBytes,
-          stamp.compressedPoint,
-        ) ||
-        !sameBytes(
-          evidence.statement.preview.messageDhKey.keyBytes,
-          message.compressedPoint,
-        )
-      )
-        throw new Error('canonical-rev0:evidence-mismatch')
-      return Object.freeze({
-        kind,
-        revision,
-        registry,
-        networkTag: owned.networkTag,
-        network: owned.network,
-        chainId: owned.chainId,
-        authAddress: computeAddress(
-          hexlify(auth.compressedPoint),
-        ).toLowerCase(),
-        auth,
-        message,
-        stamp,
-        get statement() {
-          return new Uint8Array(statement)
-        },
-        get attestation() {
-          return new Uint8Array(attestation)
-        },
-        get t1() {
-          return new Uint8Array(evidence.statementHash)
-        },
-        get configuration() {
-          return configuration()
-        },
-      })
-    } finally {
-      leaves.dispose()
-    }
+    )
+      throw new Error('canonical-rev0:evidence-mismatch')
+    return Object.freeze({
+      kind,
+      revision,
+      registry,
+      networkTag: owned.networkTag,
+      network: owned.network,
+      chainId: owned.chainId,
+      authAddress: computeAddress(
+        hexlify(auth.compressedPoint),
+      ).toLowerCase(),
+      auth,
+      message,
+      stamp,
+      get statement() {
+        return new Uint8Array(statement)
+      },
+      get attestation() {
+        return new Uint8Array(attestation)
+      },
+      get t1() {
+        return new Uint8Array(evidence.statementHash)
+      },
+      get configuration() {
+        return configuration()
+      },
+    })
   }
   return Object.freeze({
     derivationRegistry: registry,
     verifyRetainedRecoveryCustody(proof: CanonicalRecoveryCustody): void {
       if (disposed) throw new Error('canonical-roles:disposed')
       const recovery = inspectRetainedCanonicalRecovery(proof)
-      const leaves = derive({
+      const leaves = getCachedLeaves({
         messageGeneration: 0n,
         stampGeneration: BigInt(recovery.stampGeneration),
       })
-      try {
-        if (
-          !sameBytes(leaves.auth.public.compressedPoint, ownedIdentity) ||
-          !sameBytes(
-            leaves.stamp.public.compressedPoint,
-            getBytes('0x' + recovery.stampKeyHex),
-          )
+      if (
+        !sameBytes(leaves.auth.public.compressedPoint, ownedIdentity) ||
+        !sameBytes(
+          leaves.stamp.public.compressedPoint,
+          getBytes('0x' + recovery.stampKeyHex),
         )
-          throw new Error('canonical-roles:retained-custody-mismatch')
-        for (const account of recovery.accounts) {
-          const domain = 'frank/stamp-child/v1',
-            network = recovery.request.identity.network
-          const prefix = Uint8Array.from([
-            0,
-            domain.length,
-            ...Array.from(domain, c => c.charCodeAt(0)),
-            0,
-            network.length,
-            ...Array.from(network, c => c.charCodeAt(0)),
-          ])
-          const index = account.childIndex,
-            sharedPoint = getBytes('0x' + recovery.sharedPointHex)
-          const tweak = bytesToBigint(
-            getBytes(
-              sha256(
-                concat([
-                  prefix,
-                  sharedPoint,
-                  Uint8Array.of(index >>> 24, index >>> 16, index >>> 8, index),
-                ]),
-              ),
+      )
+        throw new Error('canonical-roles:retained-custody-mismatch')
+      for (const account of recovery.accounts) {
+        const domain = 'frank/stamp-child/v1',
+          network = recovery.request.identity.network
+        const prefix = Uint8Array.from([
+          0,
+          domain.length,
+          ...Array.from(domain, c => c.charCodeAt(0)),
+          0,
+          network.length,
+          ...Array.from(network, c => c.charCodeAt(0)),
+        ])
+        const index = account.childIndex,
+          sharedPoint = getBytes('0x' + recovery.sharedPointHex)
+        const tweak = bytesToBigint(
+          getBytes(
+            sha256(
+              concat([
+                prefix,
+                sharedPoint,
+                Uint8Array.of(index >>> 24, index >>> 16, index >>> 8, index),
+              ]),
             ),
+          ),
+        )
+        const order =
+          0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
+        if (tweak <= 0n || tweak >= order)
+          throw new Error('canonical-roles:retained-tweak')
+        const expected = canonicalStampDestination({
+          network,
+          stampKey: {
+            keyType: 1,
+            keyBytes: leaves.stamp.public.compressedPoint,
+          },
+          sharedPoint,
+          childIndex: index,
+        })
+        leaves.stamp.useSecret(secret => {
+          const child = getBytes(
+            '0x' +
+              ((bytesToBigint(secret) * tweak) % order)
+                .toString(16)
+                .padStart(64, '0'),
           )
-          const order =
-            0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
-          if (tweak <= 0n || tweak >= order)
-            throw new Error('canonical-roles:retained-tweak')
-          const expected = canonicalStampDestination({
-            network,
-            stampKey: {
-              keyType: 1,
-              keyBytes: leaves.stamp.public.compressedPoint,
-            },
-            sharedPoint,
-            childIndex: index,
-          })
-          leaves.stamp.useSecret(secret => {
-            const child = getBytes(
-              '0x' +
-                ((bytesToBigint(secret) * tweak) % order)
-                  .toString(16)
-                  .padStart(64, '0'),
-            )
-            try {
-              if (
-                computeAddress(hexlify(child)).toLowerCase() !==
-                  account.address ||
-                !sameBytes(
-                  getBytes(SigningKey.computePublicKey(hexlify(child), true)),
-                  expected.publicKey,
-                )
+          try {
+            if (
+              computeAddress(hexlify(child)).toLowerCase() !==
+                account.address ||
+              !sameBytes(
+                getBytes(SigningKey.computePublicKey(hexlify(child), true)),
+                expected.publicKey,
               )
-                throw new Error('canonical-roles:retained-child-mismatch')
-            } finally {
-              child.fill(0)
-            }
-          })
-        }
-      } finally {
-        leaves.dispose()
+            )
+              throw new Error('canonical-roles:retained-child-mismatch')
+          } finally {
+            child.fill(0)
+          }
+        })
       }
     },
     stampChildPrivateKey(input: {
@@ -375,52 +396,48 @@ function roleOwner(
     }): string | undefined {
       if (disposed) throw new Error('canonical-roles:disposed')
       // The stamp key never rotates (see `prepareRevisionZero`): generation zero is the key.
-      const leaves = derive({
+      const leaves = getCachedLeaves({
         messageGeneration: 0n,
         stampGeneration: 0n,
       })
-      try {
-        const domain = 'frank/stamp-child/v1'
-        const prefix = Uint8Array.from([
-          0,
-          domain.length,
-          ...Array.from(domain, c => c.charCodeAt(0)),
-          0,
-          input.network.length,
-          ...Array.from(input.network, c => c.charCodeAt(0)),
-        ])
-        const index = input.childIndex
-        if (!Number.isSafeInteger(index) || index < 0 || index > 0x7fffffff)
-          return undefined
-        const tweak = bytesToBigint(
-          getBytes(
-            sha256(
-              concat([
-                prefix,
-                input.sharedPoint,
-                Uint8Array.of(index >>> 24, index >>> 16, index >>> 8, index),
-              ]),
-            ),
+      const domain = 'frank/stamp-child/v1'
+      const prefix = Uint8Array.from([
+        0,
+        domain.length,
+        ...Array.from(domain, c => c.charCodeAt(0)),
+        0,
+        input.network.length,
+        ...Array.from(input.network, c => c.charCodeAt(0)),
+      ])
+      const index = input.childIndex
+      if (!Number.isSafeInteger(index) || index < 0 || index > 0x7fffffff)
+        return undefined
+      const tweak = bytesToBigint(
+        getBytes(
+          sha256(
+            concat([
+              prefix,
+              input.sharedPoint,
+              Uint8Array.of(index >>> 24, index >>> 16, index >>> 8, index),
+            ]),
           ),
-        )
-        const order =
-          0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
-        if (tweak <= 0n || tweak >= order) return undefined
-        return leaves.stamp.useSecret(secret => {
-          const child =
-            '0x' +
-            ((bytesToBigint(secret) * tweak) % order)
-              .toString(16)
-              .padStart(64, '0')
-          return computeAddress(
-            SigningKey.computePublicKey(child, false),
-          ).toLowerCase() === input.address.toLowerCase()
-            ? child
-            : undefined
-        })
-      } finally {
-        leaves.dispose()
-      }
+        ),
+      )
+      const order =
+        0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
+      if (tweak <= 0n || tweak >= order) return undefined
+      return leaves.stamp.useSecret(secret => {
+        const child =
+          '0x' +
+          ((bytesToBigint(secret) * tweak) % order)
+            .toString(16)
+            .padStart(64, '0')
+        return computeAddress(
+          SigningKey.computePublicKey(child, false),
+        ).toLowerCase() === input.address.toLowerCase()
+          ? child
+          : undefined
+      })
     },
     prepareRevisionZero(
       input: PublicRevisionZeroInput,
@@ -454,27 +471,21 @@ function roleOwner(
     },
     publicGenerationZeroPoints() {
       if (disposed) throw new Error('canonical-roles:disposed')
-      const leaves = derive({
+      const leaves = getCachedLeaves({
         messageGeneration: 0n,
         stampGeneration: 0n,
       })
-      try {
-        return {
-          auth: leaves.auth.public.compressedPoint,
-          message: leaves.message.public.compressedPoint,
-          stamp: leaves.stamp.public.compressedPoint,
-        }
-      } finally {
-        leaves.auth.dispose()
-        leaves.message.dispose()
-        leaves.stamp.dispose()
+      return {
+        auth: new Uint8Array(leaves.auth.public.compressedPoint),
+        message: new Uint8Array(leaves.message.public.compressedPoint),
+        stamp: new Uint8Array(leaves.stamp.public.compressedPoint),
       }
     },
     create(network: string, current: Current): MonadCanonicalRoles {
       if (disposed) throw new Error('canonical-roles:disposed')
       if (current.kind !== 'current')
         throw new Error('canonical-roles:current-required')
-      const evidence = verifyPreviewDirectoryEvidence(
+      const evidence = verifyCachedEvidence(
         current.evidence.attestation,
         network,
       )
@@ -505,7 +516,7 @@ function roleOwner(
               previousStampGeneration: current.generations[1] - 1n,
             }),
       }
-      const leaves = derive(derivation)
+      const leaves = getCachedLeaves(derivation)
       if (
         !sameBytes(leaves.auth.public.compressedPoint, ownedIdentity) ||
         !sameBytes(
@@ -523,12 +534,9 @@ function roleOwner(
               current.previousStamp.keyBytes,
             )))
       ) {
-        leaves.dispose()
         throw new Error('canonical-roles:local-mismatch')
       }
-      const selfOpenKey = historical
-        ? selfOpenKeyFromBip39Seed(auxiliarySecret)
-        : selfOpenKeyFromRoot(auxiliarySecret)
+      const selfOpenKey = getSelfOpenKey()
       let closed = false
       const session: MonadCanonicalRoles = Object.freeze({
         auth: leaves.auth.public,
@@ -639,8 +647,6 @@ function roleOwner(
         },
         dispose() {
           closed = true
-          selfOpenKey.fill(0)
-          leaves.dispose()
           sessions.delete(session)
         },
       })
@@ -650,6 +656,10 @@ function roleOwner(
     dispose() {
       disposed = true
       for (const session of sessions) session.dispose()
+      for (const leaves of leavesCache.values()) leaves.dispose()
+      leavesCache.clear()
+      evidenceCache.clear()
+      cachedSelfOpenKey?.fill(0)
       seed?.fill(0)
       auxiliarySecret.fill(0)
       if (roots) for (const root of Object.values(roots)) root.bytes.fill(0)

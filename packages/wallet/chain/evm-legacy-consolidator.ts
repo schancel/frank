@@ -706,19 +706,39 @@ export class EvmLegacyConsolidator {
           )
             await this.observe(row.operationId, i, lifetime)
         }
+    const unheldSources = [...sources.values()].filter(
+      source => !this.config.sourceHeld?.(source),
+    )
+    const accounts = await Promise.all(
+      unheldSources.map(source => this.account(source.address)),
+    )
+    const eligible = unheldSources.flatMap((source, index) => {
+      const account = accounts[index]!
+      return journal.canSelect(source.address, account.nonce)
+        ? [{ source, account }]
+        : []
+    })
+    const spendableValues =
+      this.config.transactionBuilder.supportsNativeConsolidation === true
+        ? eligible.map(({ account }) => BigInt(account.balanceWei))
+        : await Promise.all(
+            eligible.map(({ source }) =>
+              this.config.transactionBuilder.getBalance({
+                address: source.address,
+                provider: this.config.provider,
+              }),
+            ),
+          )
     const result: AvailableSource[] = []
-    for (const source of sources.values()) {
-      if (this.config.sourceHeld?.(source)) continue
-      const account = await this.account(source.address)
-      if (!journal.canSelect(source.address, account.nonce)) continue
-      const spendableValue =
-        this.config.transactionBuilder.supportsNativeConsolidation === true
-          ? BigInt(account.balanceWei)
-          : await this.config.transactionBuilder.getBalance({
-              address: source.address,
-              provider: this.config.provider,
-            })
-      if (spendableValue > 0n) result.push({ source, account, spendableValue })
+    for (let i = 0; i < eligible.length; i++) {
+      const spendableValue = spendableValues[i]!
+      if (spendableValue > 0n) {
+        result.push({
+          source: eligible[i]!.source,
+          account: eligible[i]!.account,
+          spendableValue,
+        })
+      }
     }
     return result
   }

@@ -309,6 +309,7 @@ export class WebRtcCallSessionController {
   private remoteStream: MinimalMediaStream | null = null
   private screenTrack: MinimalMediaStreamTrack | null = null
   private videoSender: MinimalRtpSender | null = null
+  private expiryTimer: ReturnType<typeof setTimeout> | null = null
   private signalingSequence = 0
   private dataChannelSeq = 0
   private relayMessagesSentCount = 0
@@ -440,7 +441,35 @@ export class WebRtcCallSessionController {
     return this.dataChannelSeq
   }
 
+  private clearExpiryTimer(): void {
+    if (this.expiryTimer !== null) {
+      clearTimeout(this.expiryTimer)
+      this.expiryTimer = null
+    }
+  }
+
+  private scheduleExpiryTimer(expiresAtMs?: number): void {
+    this.clearExpiryTimer()
+    if (expiresAtMs === undefined) return
+    const delayMs = expiresAtMs - this.nowMs()
+    if (delayMs <= 0 || delayMs > 3_600_000) return
+    this.expiryTimer = setTimeout(() => {
+      this.expiryTimer = null
+      if (
+        this.phase === 'ringing_outgoing' ||
+        this.phase === 'ringing_incoming'
+      ) {
+        this.cleanup()
+        this.setPhase('expired')
+      }
+    }, delayMs)
+    ;(this.expiryTimer as unknown as { unref?: () => void })?.unref?.()
+  }
+
   private setPhase(next: WebRtcCallControllerPhase): void {
+    if (next !== 'ringing_outgoing' && next !== 'ringing_incoming') {
+      this.clearExpiryTimer()
+    }
     const changed = this.phase !== next
     this.phase = next
     if (changed) {
@@ -913,6 +942,7 @@ export class WebRtcCallSessionController {
       }
       this.relayMessagesSentCount += 1
       this.setPhase('ringing_outgoing')
+      this.scheduleExpiryTimer(payload.expiresAtMs)
       return {
         payload,
         item: toWebRtcCallApplicationItem(payload),
@@ -975,6 +1005,7 @@ export class WebRtcCallSessionController {
       invite.dtlsFingerprintSha256 ?? null
     this.pendingIncomingInvite = invite
     this.setPhase('ringing_incoming')
+    this.scheduleExpiryTimer(invite.expiresAtMs)
     return { acceptedForRinging: true }
   }
 
@@ -1012,6 +1043,7 @@ export class WebRtcCallSessionController {
       invite.dtlsFingerprintSha256 ?? null
     this.pendingIncomingInvite = invite
     this.setPhase('ringing_incoming')
+    this.scheduleExpiryTimer(invite.expiresAtMs)
     return {
       acceptedForRinging: true,
       reason: 'glare_lost_switched_to_incoming',
@@ -1589,6 +1621,7 @@ export class WebRtcCallSessionController {
    * `RTCDataChannel` and `RTCPeerConnection`, and releases all references.
    */
   public cleanup(): void {
+    this.clearExpiryTimer()
     if (this.screenTrack) {
       try {
         this.screenTrack.onended = null

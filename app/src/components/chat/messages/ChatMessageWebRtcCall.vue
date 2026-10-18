@@ -388,10 +388,16 @@ const conversationMessages = computed<readonly WebRtcCallEnvelope[]>(() => {
   return []
 })
 
+const isPrimaryCallCard = computed<boolean>(() => {
+  if (props.controller !== undefined || props.state !== undefined) return true
+  return !resolvedPayload.value || resolvedPayload.value.action === 'invite'
+})
+
 const foldedState = computed<FoldedWebRtcCallState | null>(() => {
   if (props.state) return props.state
   const current = resolvedPayload.value
   if (!current) return null
+  const effectiveNowMs = props.nowMs ?? Date.now()
 
   if (conversationMessages.value.length > 0) {
     const fromConversation = foldWebRtcCallState(
@@ -399,7 +405,7 @@ const foldedState = computed<FoldedWebRtcCallState | null>(() => {
       current.callId,
       {
         localDeviceId: props.localDeviceId,
-        nowMs: props.nowMs,
+        nowMs: effectiveNowMs,
       },
     )
     if (fromConversation) return fromConversation
@@ -416,7 +422,7 @@ const foldedState = computed<FoldedWebRtcCallState | null>(() => {
     current.callId,
     {
       localDeviceId: props.localDeviceId,
-      nowMs: props.nowMs,
+      nowMs: effectiveNowMs,
     },
   )
 })
@@ -431,13 +437,18 @@ const activeController = computed<WebRtcCallSessionController | null>(() => {
   if (!callId) return null
   const existing = getCallSessionController(callId)
   if (existing) return existing
-  if (current?.action === 'invite' && !props.outbound) {
+  if (
+    current?.action === 'invite' &&
+    !props.outbound &&
+    (!foldedState.value || foldedState.value.phase === 'ringing_incoming')
+  ) {
     return getOrCreateCallSessionController(callId, {
       localPeerId: props.address,
       remotePeerId: props.senderAddress,
       invite: current,
       outbound: false,
       senderDeviceId: props.localDeviceId,
+      ...(props.nowMs !== undefined ? { nowMs: () => props.nowMs! } : {}),
     })
   }
   return null
@@ -459,6 +470,7 @@ function ensureActiveController(): WebRtcCallSessionController | null {
     invite,
     outbound: props.outbound,
     senderDeviceId: props.localDeviceId,
+    ...(props.nowMs !== undefined ? { nowMs: () => props.nowMs! } : {}),
   })
 }
 
@@ -483,6 +495,7 @@ function attachStreamsToVideoElements(
   localStream: MinimalMediaStream | null,
   remoteStream: MinimalMediaStream | null,
 ): void {
+  if (!isPrimaryCallCard.value) return
   if (localVideoEl.value && 'srcObject' in localVideoEl.value) {
     try {
       const el = localVideoEl.value as unknown as {
@@ -605,6 +618,26 @@ watch(
 
 const effectivePhase = computed<WebRtcCallControllerPhase>(() => {
   void snapshotVersion.value
+  const current = resolvedPayload.value
+  if (!isPrimaryCallCard.value && current) {
+    switch (current.action) {
+      case 'cancel':
+        return 'cancelled'
+      case 'reject':
+        return 'rejected'
+      case 'hangup':
+        return 'ended'
+      case 'accept': {
+        const snap = activeController.value
+          ? activeController.value.getSnapshot()
+          : controllerSnapshot.value
+        if (snap && snap.phase !== 'idle') return snap.phase
+        return 'connected'
+      }
+      case 'ice_batch':
+        return 'connecting'
+    }
+  }
   const snap = activeController.value
     ? activeController.value.getSnapshot()
     : controllerSnapshot.value
@@ -614,9 +647,8 @@ const effectivePhase = computed<WebRtcCallControllerPhase>(() => {
   const folded = foldedState.value
   if (!folded) return 'idle'
   if (folded.phase === 'failed') {
-    return folded.failureReason?.includes('fingerprint')
-      ? 'security_abort'
-      : 'ended'
+    const reason = (folded.failureReason ?? folded.securityError ?? '').toLowerCase()
+    return reason.includes('fingerprint') ? 'security_abort' : 'ended'
   }
   return folded.phase
 })
@@ -668,10 +700,12 @@ const isSecurityAbort = computed<boolean>(() => {
   if (snap?.phase === 'security_abort' || snap?.securityViolationReason) {
     return true
   }
-  return Boolean(
-    foldedState.value?.phase === 'failed' &&
-      foldedState.value?.failureReason?.includes('fingerprint'),
-  )
+  const reason = (
+    foldedState.value?.failureReason ??
+    foldedState.value?.securityError ??
+    ''
+  ).toLowerCase()
+  return Boolean(foldedState.value?.phase === 'failed' && reason.includes('fingerprint'))
 })
 
 const isDtlsVerified = computed<boolean>(() => {
@@ -723,12 +757,14 @@ const isScreenShareEnabled = computed<boolean>(() => {
 })
 
 const isConnectedOrConnecting = computed<boolean>(() => {
+  if (!isPrimaryCallCard.value) return false
   const phase = effectivePhase.value
   return phase === 'connected' || phase === 'connecting'
 })
 
 const showVideoViewport = computed<boolean>(() => {
   void snapshotVersion.value
+  if (!isPrimaryCallCard.value) return false
   const snap = activeController.value
     ? activeController.value.getSnapshot()
     : controllerSnapshot.value
@@ -765,12 +801,14 @@ watch(
 )
 
 const canAnswerIncoming = computed<boolean>(() => {
+  if (!isPrimaryCallCard.value) return false
   return (
     effectivePhase.value === 'ringing_incoming' && !isAnsweredElsewhere.value
   )
 })
 
 const canCancelOutgoing = computed<boolean>(() => {
+  if (!isPrimaryCallCard.value) return false
   return effectivePhase.value === 'ringing_outgoing'
 })
 

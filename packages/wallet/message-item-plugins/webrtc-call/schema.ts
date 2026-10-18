@@ -855,6 +855,7 @@ export function parseWebRtcCallApplicationItem(
     itemType?: unknown
     value?: unknown
     payload?: unknown
+    item?: unknown
   }
 
   if (candidate.type === 'application') {
@@ -885,6 +886,21 @@ export function parseWebRtcCallApplicationItem(
     }
   }
 
+  if (candidate.type === undefined && candidate.itemType === undefined) {
+    if (candidate.payload !== undefined && candidate.payload !== itemOrPayload) {
+      const fromPayload = parseWebRtcCallApplicationItem(candidate.payload)
+      if (fromPayload) return fromPayload
+    }
+    if (candidate.item !== undefined && candidate.item !== itemOrPayload) {
+      const fromItem = parseWebRtcCallApplicationItem(candidate.item)
+      if (fromItem) return fromItem
+    }
+    if (candidate.value !== undefined && candidate.value !== itemOrPayload) {
+      const fromValue = parseWebRtcCallApplicationItem(candidate.value)
+      if (fromValue) return fromValue
+    }
+  }
+
   try {
     return validateWebRtcCallPayload(itemOrPayload)
   } catch {
@@ -895,7 +911,19 @@ export function parseWebRtcCallApplicationItem(
 export function extractWebRtcCallPayload(
   item: unknown,
 ): WebRtcCallPayload | null {
-  return parseWebRtcCallApplicationItem(item)
+  const direct = parseWebRtcCallApplicationItem(item)
+  if (direct) return direct
+  if (
+    typeof item === 'object' &&
+    item !== null &&
+    Array.isArray((item as { items?: unknown[] }).items)
+  ) {
+    for (const sub of (item as { items: unknown[] }).items) {
+      const parsed = parseWebRtcCallApplicationItem(sub)
+      if (parsed) return parsed
+    }
+  }
+  return null
 }
 
 function unwrapWebRtcCallPayload(

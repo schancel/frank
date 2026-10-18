@@ -1,6 +1,10 @@
 <template>
   <span
-    v-if="status.snapshot"
+    v-if="
+      status.snapshot &&
+      status.snapshot.state !== 'ready' &&
+      status.snapshot.state !== 'unsupported'
+    "
     data-testid="negotiation-recovery-status"
     role="status"
     aria-live="polite"

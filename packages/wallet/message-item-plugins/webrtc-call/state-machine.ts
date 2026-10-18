@@ -30,6 +30,7 @@ export interface FoldedWebRtcCallState {
   mediaIntent: WebRtcMediaIntent
   icePolicy: WebRtcIceTransportPolicy
   expiresAtMs: number
+  invite?: WebRtcCallPayload
   offerSdp: string | null
   answerSdp: string | null
   offerFingerprintSha256: string | null
@@ -39,15 +40,20 @@ export interface FoldedWebRtcCallState {
   candidates: string[]
   terminationReason: string | null
   securityError: string | null
+  failureReason?: string | null
 }
 
 export interface SignalingMessageEnvelope {
+  payload?: WebRtcCallPayload
+  item?: unknown
   outbound?: boolean
   senderAddress?: string
   recipientAddress?: string
   status?: string
   items?: readonly unknown[]
 }
+
+export type WebRtcCallEnvelope = SignalingMessageEnvelope
 
 export interface FoldWebRtcCallOptions {
   localAddress?: string
@@ -92,6 +98,9 @@ function isTerminalPhase(phase: WebRtcCallPhase): boolean {
 function redactIfTerminal(
   state: FoldedWebRtcCallState,
 ): FoldedWebRtcCallState {
+  if (state.securityError && !state.failureReason) {
+    state.failureReason = state.securityError
+  }
   if (isTerminalPhase(state.phase)) {
     state.offerSdp = null
     state.answerSdp = null
@@ -281,6 +290,7 @@ export function foldWebRtcCallState(
     mediaIntent,
     icePolicy,
     expiresAtMs,
+    invite,
     offerSdp: invite.sdp
       ? sanitizeSdpForIcePolicy(invite.sdp, icePolicy)
       : null,
@@ -292,6 +302,7 @@ export function foldWebRtcCallState(
     candidates: [],
     terminationReason: null,
     securityError: null,
+    failureReason: null,
   }
 
   if (

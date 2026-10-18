@@ -1006,5 +1006,54 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
       caller.cleanup()
       unregisterCallSessionController(invite.callId, caller)
     })
+
+    it('renders Ringing with Answer Audio, Answer Video, and Decline buttons on an incoming invite bubble mounted without an explicit controller prop', async () => {
+      const harness = createLinkedPeerHarness()
+      const caller = new WebRtcCallSessionController({
+        callId: 'call_incoming_ui_001',
+        gatherTimeoutMs: 5,
+        peerConnectionFactory: () => harness.callerPc,
+        mediaDevices: harness.callerMediaDevices,
+      })
+      const { item: inviteItem, payload: invitePayload } =
+        await caller.startOutgoingCall({ withVideo: false })
+
+      const incomingWrapper = mountCallCard({
+        item: inviteItem,
+        outbound: false,
+        address: '0xbbbb',
+        senderAddress: '0xaaaa',
+      })
+
+      expect(
+        incomingWrapper.find('[data-testid="webrtc-status-badge"]').text(),
+      ).toBe('Ringing')
+      expect(
+        incomingWrapper.find('[data-testid="webrtc-answer-audio"]').exists(),
+      ).toBe(true)
+      expect(
+        incomingWrapper.find('[data-testid="webrtc-answer-video"]').exists(),
+      ).toBe(true)
+      expect(
+        incomingWrapper.find('[data-testid="webrtc-reject"]').exists(),
+      ).toBe(true)
+
+      // Clicking Decline emits reject follow-up and transitions to Declined
+      await incomingWrapper
+        .find('[data-testid="webrtc-reject"]')
+        .trigger('click')
+      await incomingWrapper.vm.$nextTick()
+
+      expect(
+        incomingWrapper.find('[data-testid="webrtc-status-badge"]').text(),
+      ).toBe('Declined')
+      expect(
+        incomingWrapper.find('[data-testid="webrtc-answer-audio"]').exists(),
+      ).toBe(false)
+
+      incomingWrapper.unmount()
+      caller.cleanup()
+      unregisterCallSessionController(invitePayload.callId)
+    })
   })
 })

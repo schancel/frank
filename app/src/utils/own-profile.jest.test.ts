@@ -21,7 +21,7 @@ import {
   MonadIdentity,
   fetchMonadProfile,
   type MonadProfileFields,
-} from '@frank/wallet/monad-identity'
+} from '@frank/wallet/evm-identity'
 
 import { useProfileStore } from '../stores/my-profile'
 import {
@@ -378,8 +378,8 @@ it('a queued refresh of a stopped session cannot reclaim another account profile
 
 it('a stalled old account read does not block claiming and refreshing the new account', async () => {
   const api = jest.requireActual(
-    '@frank/wallet/monad-identity',
-  ) as typeof import('@frank/wallet/monad-identity')
+    '@frank/wallet/evm-identity',
+  ) as typeof import('@frank/wallet/evm-identity')
   const one = device()
   const oldIdentity = MonadIdentity.generate()
   const newIdentity = MonadIdentity.generate()
@@ -427,8 +427,8 @@ it('a stalled old account read does not block claiming and refreshing the new ac
 
 it('stopping an in-flight own-profile GET aborts the request and does not adopt or publish', async () => {
   const api = jest.requireActual(
-    '@frank/wallet/monad-identity',
-  ) as typeof import('@frank/wallet/monad-identity')
+    '@frank/wallet/evm-identity',
+  ) as typeof import('@frank/wallet/evm-identity')
   const one = device()
   const identity = MonadIdentity.generate()
   claimProfileStore(one.store, identity.address.raw)

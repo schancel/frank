@@ -38,10 +38,10 @@ import { join } from 'path'
 
 import * as bip39 from 'bip39'
 
-import { MonadChangeKeyring } from '@frank/wallet/monad-change-keyring'
-import { MonadChangePool } from '@frank/wallet/monad-change-pool'
-import { MonadHdKeyring } from '@frank/wallet/monad-hd-keyring'
-import { MonadSubAccountPool } from '@frank/wallet/monad-account-pool'
+import { MonadChangeKeyring } from '@frank/wallet/secp256k1-hd-keyring'
+import { MonadChangePool } from '@frank/wallet/evm-change-pool'
+import { MonadHdKeyring } from '@frank/wallet/secp256k1-hd-keyring'
+import { MonadSubAccountPool } from '@frank/wallet/evm-account-pool'
 import { LevelChangePoolStore } from '@frank/wallet/storage/level-change-pool-store'
 import { LevelSubAccountPoolStore } from '@frank/wallet/storage/level-sub-account-pool-store'
 

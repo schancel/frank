@@ -1,9 +1,9 @@
 import { Wallet, getBytes, hexlify, randomBytes } from "ethers";
-import type { MonadIdentity } from "./monad-identity";
+import type { MonadIdentity } from "./evm-identity";
 import type { EvmHdKeyring, EvmChangeKeyring } from "./secp256k1-hd-keyring";
 import type { EvmSubAccountPool } from "./evm-account-pool";
 import type { EvmChangePool } from "./evm-change-pool";
-import { deriveEvmStealthPrivateKey } from "./monad-stealth";
+import { deriveEvmStealthPrivateKey } from "./evm-stealth";
 import {
   fundedErc20Coins,
   spendableCoins,

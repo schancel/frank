@@ -12,7 +12,7 @@ import {
   lookupUsername,
   usernamesOfAddresses,
 } from '@frank/cashweb/relay/username-client'
-import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 
 export interface ContactHandle {
   /** The name the relay says this address holds now, or `null` when it holds none. */

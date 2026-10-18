@@ -38,9 +38,9 @@ import { JsonRpcProvider, Wallet, formatEther, getAddress } from 'ethers'
 import level from 'level'
 
 import { deriveDomainRoot } from '@frank/domain-roots'
-import { MonadChangeKeyring } from '@frank/wallet/monad-change-keyring'
-import { MonadHdKeyring } from '@frank/wallet/monad-hd-keyring'
-import { createMonadWalletMaterial, type MonadRootBundle } from '@frank/wallet/monad-wallet-material'
+import { MonadChangeKeyring } from '@frank/wallet/secp256k1-hd-keyring'
+import { MonadHdKeyring } from '@frank/wallet/secp256k1-hd-keyring'
+import { createMonadWalletMaterial, type MonadRootBundle } from '@frank/wallet/evm-wallet-material'
 
 import { rpcUrlList } from './chain-rpc'
 import { realStackEnv } from './real-stack'

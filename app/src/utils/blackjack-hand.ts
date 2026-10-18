@@ -30,7 +30,7 @@ import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha256.js'
 import { fromHex } from '@frank/codec'
 import { heldOutgoingLocks } from './outgoing-lock'
-import { messagingWallet } from './monad-identity-session'
+import { messagingWallet } from './identity-session'
 
 /** What a wallet keeps back for the fees of the messages a hand still needs. */
 export const HAND_FEE_RESERVE_WEI = BET_MESSAGE_FEE_RESERVE_WEI

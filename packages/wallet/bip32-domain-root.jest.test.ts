@@ -6,8 +6,8 @@ import {
   type Bip32DomainRoot,
 } from './bip32-domain-root'
 import { EvmHdKeyring, EvmChangeKeyring } from './secp256k1-hd-keyring'
-import { MonadIdentity } from './monad-identity'
-import { createMonadWalletMaterial } from './monad-wallet-material'
+import { MonadIdentity } from './evm-identity'
+import { createMonadWalletMaterial } from './evm-wallet-material'
 
 // Public predecessor outputs captured at 9b1c9605 from the repository's domain-root vectors.
 // These literals pin interpretation and real consumer paths independently of the renamed helper.

@@ -7,8 +7,8 @@ import {
   MonadStampRecoveredAttemptError,
   MonadStampRejectedError,
   MonadStampTerminalError,
-} from '@frank/wallet/monad-stamp-client'
-import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
+} from '@frank/wallet/evm-stamp-client'
+import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/mailbox-client'
 import type {
   MessageItem,
   OutgoingFailureReason,

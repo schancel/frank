@@ -20,7 +20,7 @@ import { nodeDirectoryStorage } from '@frank/cashweb/relay/open-directory-node'
 import {
   prepareMonadNextRevisionExport,
   prepareMonadRevisionZeroExport,
-} from "@frank/wallet/chain/monad-chain";
+} from "@frank/wallet/chain/evm-chain";
 import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 const hexOf = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex')
 

@@ -23,18 +23,18 @@ import {
   type Fixture,
   type InboxRecord,
 } from "@frank/wallet/chain/canonical-two-wallets.testutil";
-import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
-import { MonadStampPendingAttemptError } from "@frank/wallet/monad-stamp-client";
+import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
+import { MonadStampPendingAttemptError } from "@frank/wallet/evm-stamp-client";
 import { FrankBotHost } from "../src/bot-host";
 import type { FrankBotDefinition } from "../src/types";
 
-jest.mock("@frank/wallet/monad-provider", () =>
+jest.mock("@frank/wallet/evm-provider", () =>
   require("@frank/wallet/chain/canonical-two-wallets.testutil").offlineProviderModule()
 );
-jest.mock("@frank/wallet/monad-http", () =>
+jest.mock("@frank/wallet/evm-http", () =>
   require("@frank/wallet/chain/canonical-two-wallets.testutil").offlineHttpModule()
 );
-jest.mock("@frank/cashweb/relay/monad-mailbox-client", () =>
+jest.mock("@frank/cashweb/relay/mailbox-client", () =>
   require("@frank/wallet/chain/canonical-two-wallets.testutil").offlineMailboxModule()
 );
 jest.mock("../src/relay-profile-manager", () => ({
@@ -57,8 +57,8 @@ jest.mock("../src/directory-manager", () => ({
 }));
 // The host builds its own chain and wallet at registration; that stays a stand-in. The fixture
 // builds the real chain through the same module, recognised by its storage location.
-jest.mock("@frank/wallet/chain/monad-chain", () => {
-  const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
+jest.mock("@frank/wallet/chain/evm-chain", () => {
+  const actual = jest.requireActual("@frank/wallet/chain/evm-chain");
   const hostWallets = new WeakSet<object>();
   return {
     ...actual,
@@ -71,8 +71,8 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
             topics: { post: jest.fn() },
             createWallet: async (roots: MonadRootBundle) => {
               const { MonadIdentity } = jest.requireActual<
-                typeof import("@frank/wallet/monad-identity")
-              >("@frank/wallet/monad-identity");
+                typeof import("@frank/wallet/evm-identity")
+              >("@frank/wallet/evm-identity");
               const identity = MonadIdentity.fromDomainRoot(
                 roots.authentication
               );
@@ -136,7 +136,7 @@ describe("the bot host's poll on a real wallet (#1236 Q3)", () => {
     // refuses to fund ahead otherwise).
     f = await fixture({ resolveDefaultStamp: fixedStampDefault(10n ** 9n), stampFundingTargetWei: 10n ** 9n });
     const { installCanonicalDirectory } = jest.requireMock(
-      "@frank/wallet/chain/monad-chain"
+      "@frank/wallet/chain/evm-chain"
     );
     installCanonicalDirectory(
       f.alice,

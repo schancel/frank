@@ -34,9 +34,9 @@ import {
   MonadStampPendingAttemptError,
   MonadStampRecoveredAttemptError,
   MonadStampTerminalError,
-} from '@frank/wallet/monad-stamp-client'
-import { MonadRpcError } from '@frank/wallet/monad-http'
-import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
+} from '@frank/wallet/evm-stamp-client'
+import { MonadRpcError } from '@frank/wallet/evm-http'
+import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/mailbox-client'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
 import {
   deserializeMessageWrapper,

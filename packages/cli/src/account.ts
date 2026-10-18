@@ -19,14 +19,14 @@ import { RelayProfileManager } from '@frank/bot-framework/relay-profile-manager'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 import { deriveDomainRoot } from '@frank/domain-roots'
 import type { DirectMessageReceived } from '@frank/wallet/chain/active-chain'
-import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
+import { installMessageItemRegistry } from '@frank/wallet/chain/canonical-dm'
 import {
   createEvmChain,
   installCanonicalDirectory,
   loadMonadChainConfigFromEnv,
-} from '@frank/wallet/chain/monad-chain'
+} from '@frank/wallet/chain/evm-chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
-import { createMonadWalletMaterial } from '@frank/wallet/monad-wallet-material'
+import { createMonadWalletMaterial } from '@frank/wallet/evm-wallet-material'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
 

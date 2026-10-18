@@ -462,7 +462,7 @@ Module._resolveFilename=function(name,parent,...args){
  return resolve.call(this,name,parent,...args);
 };
 
-const {createMonadWalletMaterial}=require(repo+'/packages/wallet/monad-wallet-material.ts');
+const {createMonadWalletMaterial}=require(repo+'/packages/wallet/evm-wallet-material.ts');
 const vector=require(repo+'/packages/domain-roots/vectors/domain-roots-v1.json').vectors[1];
 const roots=Object.fromEntries([['evm','evm-wallet'],['authentication','identity-authentication'],['messaging','messaging-encryption']].map(([key,purpose])=>[key,{registry:'frank-domain-roots-v1',purpose,bytes:Uint8Array.from(Buffer.from(vector.outputs[purpose],'hex'))}]));
 const material=createMonadWalletMaterial(roots);

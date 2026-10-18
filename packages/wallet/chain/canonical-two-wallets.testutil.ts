@@ -9,9 +9,9 @@ import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
  * A test file mocks three modules with the factories below (Jest hoists `jest.mock`, so the calls
  * themselves must be in the test file):
  *
- *   jest.mock('<wallet>/monad-provider', () => require('<this file>').offlineProviderModule())
- *   jest.mock('<wallet>/monad-http', () => require('<this file>').offlineHttpModule())
- *   jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>
+ *   jest.mock('<wallet>/evm-provider', () => require('<this file>').offlineProviderModule())
+ *   jest.mock('<wallet>/evm-http', () => require('<this file>').offlineHttpModule())
+ *   jest.mock('@frank/cashweb/relay/mailbox-client', () =>
  *     require('<this file>').offlineMailboxModule())
  */
 import { mkdtempSync, rmSync } from 'fs'
@@ -26,14 +26,14 @@ import {
 import { openNodeDirectoryStore } from '../../directory-admission/src/node'
 import type { DirectoryStore } from '../../directory-admission/src'
 import domainVectors from '../../domain-roots/vectors/domain-roots-v1.json'
-import type { MonadRootBundle } from '../monad-wallet-material'
-import type { PublicRevisionZeroInput } from '../monad-wallet-handle'
+import type { MonadRootBundle } from '../evm-wallet-material'
+import type { PublicRevisionZeroInput } from '../evm-wallet-handle'
 import {
   createEvmChain,
   installCanonicalDirectory,
   prepareMonadRevisionZeroExport,
   type CanonicalDirectory,
-} from "./monad-chain";
+} from "./evm-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
@@ -142,7 +142,7 @@ export const offlineChain = {
 }
 
 export function offlineProviderModule() {
-  const actual = jest.requireActual('../monad-provider')
+  const actual = jest.requireActual('../evm-provider')
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const ethers = require('ethers')
   return {
@@ -253,7 +253,7 @@ export function offlineHttpModule() {
   const ethers = require('ethers')
   const mined = new Set<string>()
   return {
-    ...jest.requireActual('../monad-http'),
+    ...jest.requireActual('../evm-http'),
     MonadHttpClient: class {
       async submitRawTransaction(raw: string) {
         chainHttpRequests.push('submitRawTransaction')
@@ -285,7 +285,7 @@ export function offlineMailboxModule() {
     ),
   })
   return {
-    ...jest.requireActual('@frank/cashweb/relay/monad-mailbox-client'),
+    ...jest.requireActual('@frank/cashweb/relay/mailbox-client'),
     fetchCanonicalInboxPage: jest.fn(getInbox),
     fetchMonadMailboxInboxPage: jest.fn(getInbox),
     fetchMonadMailboxInbox: jest.fn(async (params: any) => {

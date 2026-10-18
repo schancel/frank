@@ -1,6 +1,6 @@
 import { Wallet } from 'ethers'
 import { bip32MasterFromDomainRoot } from '../bip32-domain-root'
-import { MONAD_IDENTITY_DERIVATION_PATH } from '../monad-identity'
+import { MONAD_IDENTITY_DERIVATION_PATH } from '../evm-identity'
 import { MemoryRecordStore } from '../storage/evm-coin-store'
 import { TempoPathUsdJournal, TempoPathUsdTransfers, type TempoPathUsdOperation, type TempoPathUsdRpc } from './tempo-pathusd-operation'
 import { TempoPathUsdReceiveScanner, type TempoReceiveBatch } from './tempo-pathusd-receive'

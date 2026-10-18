@@ -1,5 +1,5 @@
 import { Interface, type Provider, type TransactionRequest } from "ethers";
-import type { MonadTxOverrides } from "../monad-account-tx";
+import type { MonadTxOverrides } from "../evm-account-tx";
 
 export interface EvmTransferParams {
   readonly from: string;

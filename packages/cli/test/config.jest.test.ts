@@ -3,7 +3,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import * as bip39 from 'bip39'
 
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 
 import {
   ensureStorageLayout,

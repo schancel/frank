@@ -9,18 +9,18 @@ import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
 import { readFileSync, existsSync, statSync, writeFileSync } from 'fs'
 import { JsonRpcProvider } from 'ethers'
 
-import { MonadHttpClient } from '@frank/wallet/monad-http'
+import { MonadHttpClient } from '@frank/wallet/evm-http'
 import {
   MonadAccountTxSigner,
   MonadTxSubmitter,
-} from '@frank/wallet/monad-account-tx'
+} from '@frank/wallet/evm-account-tx'
 import {
   fetchMonadProfile,
   MonadIdentity,
   MonadProfileFields,
   registerMonadIdentity,
   registerMonadIdentityCbor,
-} from '@frank/wallet/monad-identity'
+} from '@frank/wallet/evm-identity'
 import type { ProfileInfo } from '@frank/wallet/chain/active-chain'
 import { randomBytes } from 'crypto'
 import {
@@ -31,13 +31,13 @@ import {
   canonicalNetworkDescriptor,
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
-import type { MonadTxOverrides } from '@frank/wallet/monad-account-tx'
+import type { MonadTxOverrides } from '@frank/wallet/evm-account-tx'
 import {
   canonicalMonadStampClient,
   loadMonadChainConfigFromEnv,
-} from "@frank/wallet/chain/monad-chain";
+} from "@frank/wallet/chain/evm-chain";
 import type { EvmChainConfig } from "@frank/wallet/chain/evm-chain-config";
-import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
+import type { MonadRootBundle } from '@frank/wallet/evm-wallet-material'
 import { computeAddress } from 'ethers'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
@@ -52,11 +52,11 @@ import {
 import {
   fetchCanonicalInboxPage,
   type CanonicalMailboxAuthParams,
-} from '@frank/cashweb/relay/monad-mailbox-client'
+} from '@frank/cashweb/relay/mailbox-client'
 import {
   createCanonicalMessageRoles,
   prepareCanonicalStampInventory,
-} from "@frank/wallet/chain/monad-chain";
+} from "@frank/wallet/chain/evm-chain";
 import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 export function requiredEnv(name: string): string {
   const value = process.env[name]

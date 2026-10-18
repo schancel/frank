@@ -8,7 +8,7 @@ import {
   type ActiveChain,
   type NativeWalletHandle,
 } from '@frank/wallet/chain'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import { createNativeNegotiationJournalStore } from '@frank/swap-protocol/src/storage/negotiation-native'
 import {
   buildNegotiationOffer,

@@ -43,7 +43,7 @@ const mockEnsureConversationIdSalt = jest.fn(async () => {
   setConversationIdSalt(new Uint8Array(16).fill(7))
 })
 
-jest.mock('../utils/monad-identity-session', () => ({
+jest.mock('../utils/identity-session', () => ({
   nameOwnProfile: (...args: unknown[]) => mockNameOwnProfile(...args),
   ensureConversationIdSalt: () => mockEnsureConversationIdSalt(),
   messagingWallet: () => undefined,

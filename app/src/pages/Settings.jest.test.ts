@@ -22,7 +22,7 @@ jest.mock('src/accounts/session', () => ({
 
 // See navigate-back.jest.test.ts: vue-router 5's ESM-only dev-only dependencies.
 // The panel's own behaviour is covered by its test; Settings only mounts it.
-jest.mock('../utils/monad-identity-session', () => ({
+jest.mock('../utils/identity-session', () => ({
   messagingState: { status: 'pending', reason: null, participants: {} },
   exportPublicIdentity: jest.fn(),
   refreshMessaging: jest.fn(),

@@ -1,7 +1,7 @@
 import * as negotiation from './negotiation'
 import { readFileSync } from 'fs'
 import { standaloneItemBudget } from '@frank/codec'
-import { MonadIdentity } from '../../wallet/monad-identity'
+import { MonadIdentity } from '../../wallet/evm-identity'
 import { encodeSignedSwapEvent, type SwapResult } from './index'
 import {
   buildNegotiationOffer,

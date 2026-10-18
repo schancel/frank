@@ -310,3 +310,21 @@ export class UtxoHdKeyring extends Secp256k1HdKeyring {
     )
   }
 }
+
+export const DERIVATION_PATH_PREFIX = "m/44'/60'/0'/0"
+
+export function subAccountPath(index: number): string {
+  return subAccountPathFor(DERIVATION_PATH_PREFIX, index)
+}
+
+export const CHANGE_DERIVATION_PATH_PREFIX = "m/44'/60'/0'/1"
+
+export function changeAccountPath(index: number): string {
+  return subAccountPathFor(CHANGE_DERIVATION_PATH_PREFIX, index)
+}
+
+export {
+  EvmHdKeyring as MonadHdKeyring,
+  EvmChangeKeyring as MonadChangeKeyring,
+}
+

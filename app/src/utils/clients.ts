@@ -2,7 +2,7 @@ import assert from 'assert'
 import type RelayClient from '@frank/cashweb/relay'
 import type { Wallet } from '@frank/cashweb/legacy-wallet'
 import type { NativeWalletHandle, WalletHandle } from '@frank/wallet/chain'
-import { messagingWallet } from './monad-identity-session'
+import { messagingWallet } from './identity-session'
 
 let wallet: Wallet | null = null
 export function useWallet(newWallet?: Wallet) {

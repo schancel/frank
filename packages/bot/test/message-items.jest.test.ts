@@ -17,7 +17,7 @@ import { createBotMessageItemRegistry } from '../src/message-items'
 import { createAppMessageItemRegistry } from '../../../app/src/utils/message-items'
 import { createDefaultMessageItemRegistry } from '../../wallet/message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '../../wallet/message-item-plugins/registry'
-import { installMessageItemRegistry } from '../../wallet/chain/monad-canonical-dm'
+import { installMessageItemRegistry } from '../../wallet/chain/canonical-dm'
 import {
   STAMP,
   table,
@@ -34,13 +34,13 @@ import {
 } from '../../swap-protocol/src/negotiation'
 import type { ApplicationMessageItem } from '@frank/cashweb/types/messages'
 
-jest.mock('../../wallet/monad-provider', () =>
+jest.mock('../../wallet/evm-provider', () =>
   require('../../wallet/chain/canonical-two-wallets.testutil').offlineProviderModule(),
 )
-jest.mock('../../wallet/monad-http', () =>
+jest.mock('../../wallet/evm-http', () =>
   require('../../wallet/chain/canonical-two-wallets.testutil').offlineHttpModule(),
 )
-jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>
+jest.mock('@frank/cashweb/relay/mailbox-client', () =>
   require('../../wallet/chain/canonical-two-wallets.testutil').offlineMailboxModule(),
 )
 function encodeItemFramesUnsupported(

@@ -5,7 +5,7 @@ import { getAddress, hexlify, randomBytes } from 'ethers';
 import level from 'level';
 
 import { hmacSha256 } from '@frank/crypto-box';
-import { createEvmChain } from '@frank/wallet/chain/monad-chain';
+import { createEvmChain } from '@frank/wallet/chain/evm-chain';
 import type { ActiveChain } from '@frank/wallet/chain/active-chain';
 import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config';
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle';
@@ -14,7 +14,7 @@ import {
   createMonadWalletMaterial,
   evmWalletPoolBindingId,
   type MonadRootBundle,
-} from '@frank/wallet/monad-wallet-material';
+} from '@frank/wallet/evm-wallet-material';
 
 const ROOT_REGISTRY = 'frank-domain-roots-v1';
 const NETWORK = 'monad-testnet';

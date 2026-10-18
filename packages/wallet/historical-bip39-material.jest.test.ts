@@ -6,8 +6,8 @@ import { conversationIdSaltFromBip39Seed } from '@frank/cashweb/relay/conversati
 import {
   createMonadWalletMaterial,
   legacyMnemonicWalletMaterial,
-} from './monad-wallet-material'
-import { MONAD_IDENTITY_DERIVATION_PATH } from './monad-identity'
+} from './evm-wallet-material'
+import { MONAD_IDENTITY_DERIVATION_PATH } from './evm-identity'
 
 const phrase = 'test test test test test test test test test test test junk'
 const seedOf = () => getBytes(Mnemonic.fromPhrase(phrase).computeSeed())

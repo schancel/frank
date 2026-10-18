@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES } from "@frank/cashweb/relay/monad-message-envelope";
-import { serializeMessageItems } from "@frank/wallet/chain/monad-chain";
+import { MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES } from "@frank/cashweb/relay/message-envelope";
+import { serializeMessageItems } from "@frank/wallet/chain/evm-chain";
 
 import {
   buildFulfillItems,

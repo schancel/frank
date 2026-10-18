@@ -64,12 +64,12 @@
  */
 import { Provider } from 'ethers'
 
-import { MonadChangeKeyring } from './monad-change-keyring'
+import { MonadChangeKeyring } from './secp256k1-hd-keyring'
 import {
   MonadAccountTxSigner,
   MonadTxOverrides,
   type MonadTxSubmitter,
-} from './monad-account-tx'
+} from './evm-account-tx'
 import {
   AccountLeaseHandle,
   AwaitLeaseSettlementParams,
@@ -77,7 +77,7 @@ import {
   LeaseSettlementResult,
   SubAccountLeaseManager,
   awaitLeaseSettlement,
-} from './monad-account-lease'
+} from './evm-account-lease'
 import { SubAccountRecord } from './storage/sub-account-pool-storage'
 import {
   ChangeAccountRecord,

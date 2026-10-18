@@ -10,7 +10,7 @@ import {
   uuidv5Bytes,
 } from '@frank/cashweb/relay/conversation-id'
 import { LevelMessageStore } from '@frank/cashweb/relay/storage/level-storage'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import {
   authorizeNegotiation,
   encodeLocalNegotiationIntent,

@@ -31,12 +31,12 @@ import {
   ComputeBudgetProgram,
 } from '@solana/web3.js'
 import { getBase58Encoder } from '@solana/codecs-strings'
-import { MonadAccountTxSigner, type MonadTxSubmitter } from './monad-account-tx'
+import { MonadAccountTxSigner, type MonadTxSubmitter } from './evm-account-tx'
 import {
   computeGeometricRadixChangeSplits,
   orderOfMagnitude2,
   calculateDecoyJitterDelayMs,
-} from './monad-change-distribution'
+} from './evm-change-distribution'
 import { durableBatch } from './storage/level-durability'
 import type { LevelDB } from 'level'
 

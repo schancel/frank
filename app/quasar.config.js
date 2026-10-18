@@ -276,7 +276,7 @@ export default configure(ctx => {
       'setup-apis',
       // ticket #42: separate from 'setup-apis' (the pre-existing Lotus boot sequence) -- see this
       // boot file's own header comment for why.
-      'monad-direct-messages',
+      'direct-messages',
       // Was `ctx.mode.electron ? 'electron' : 'capacitor'` -- an unconditional fallback that
       // loaded the capacitor boot file (and its `@capacitor/core` import) for *any* non-electron
       // mode, including plain SPA. Under webpack this silently resolved anyway; found live under

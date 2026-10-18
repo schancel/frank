@@ -2,7 +2,7 @@ import { constants, closeSync, existsSync, fstatSync, openSync, readFileSync } f
 import { isAbsolute } from 'node:path';
 import { getAddress } from 'ethers';
 import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config';
-import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain';
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain';
 import { canonicalNetworkDescriptor } from '@frank/cashweb/relay/canonical-dm-transport';
 
 export interface GatewayIdentityConfig {

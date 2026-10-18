@@ -39,10 +39,10 @@ import { deriveDomainRoot } from '../domain-roots/src'
 import {
   installCanonicalDirectory,
   loadMonadChainConfigFromEnv,
-} from "@frank/wallet/chain/monad-chain";
+} from "@frank/wallet/chain/evm-chain";
 import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 import { BET_MESSAGE_FEE_RESERVE_WEI } from '@frank/wallet/message-item-plugins/blackjack/game'
-import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
+import { installMessageItemRegistry } from '@frank/wallet/chain/canonical-dm'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
 

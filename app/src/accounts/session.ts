@@ -7,7 +7,7 @@ import {
 import { reactive, readonly } from 'vue'
 import { HDNodeWallet, getAddress } from 'ethers'
 import { bip32MasterFromDomainRoot } from '@frank/wallet/bip32-domain-root'
-import { MONAD_IDENTITY_DERIVATION_PATH } from '@frank/wallet/monad-identity'
+import { MONAD_IDENTITY_DERIVATION_PATH } from '@frank/wallet/evm-identity'
 import type { TempoPathUsdSigner } from '@frank/wallet/chain/tempo-pathusd-operation'
 import { toHex } from '@frank/codec'
 import {
@@ -29,7 +29,7 @@ import {
   resolveChainAdapter,
 } from '@frank/wallet/chain'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
-import type { HistoricalBip39Seed } from '@frank/wallet/monad-wallet-material'
+import type { HistoricalBip39Seed } from '@frank/wallet/evm-wallet-material'
 import { BIP39_DERIVATION, BIP39_RECOVERY_FORMAT } from '@frank/account-vault'
 import {
   privateKeyFromBytes,
@@ -50,7 +50,7 @@ import {
   ecashStealthPoint,
   type EcashStealthCustody,
 } from '@frank/wallet/ecash-stealth'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import { Platform } from 'quasar'
 import type { DomainRoot } from '@frank/domain-roots'
 import {

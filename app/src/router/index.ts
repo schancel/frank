@@ -44,7 +44,7 @@ async function ensureChatState(
       // followed before the wallet is at hand: wait for it then.
       if (!hasConversationIdSalt()) {
         const { ensureConversationIdSalt } = await import(
-          '../utils/monad-identity-session'
+          '../utils/identity-session'
         )
         await ensureConversationIdSalt()
         // The user may have gone elsewhere while the wallet opened.

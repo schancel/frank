@@ -7,7 +7,7 @@ import { getChainRegistryEntry } from "@frank/wallet/chain/chains-registry";
 import {
   createEvmChain,
   loadMonadChainConfigFromEnv,
-} from "@frank/wallet/chain/monad-chain";
+} from "@frank/wallet/chain/evm-chain";
 import { chainAmounts } from "../src/amounts";
 
 const chainOf = (chainIdentifier: string) => {

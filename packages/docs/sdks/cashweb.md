@@ -24,7 +24,7 @@
 ## 3. Usage Example: Mailbox Ingress & Sync
 
 ```typescript
-import { MonadMailboxClient } from "@frank/cashweb/relay/monad-mailbox-client";
+import { MonadMailboxClient } from "@frank/cashweb/relay/mailbox-client";
 
 // Initialize client connected to an authenticated relay
 const client = new MonadMailboxClient({

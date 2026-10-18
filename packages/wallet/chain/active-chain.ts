@@ -65,8 +65,8 @@ export type {
 } from "@frank/cashweb/types/messages";
 import type { AccountType, BotRole, PaymentTransfer } from "@frank/codec";
 export type { AccountType, BotRole, PaymentTransfer } from "@frank/codec";
-import type { MonadRootBundle, HistoricalBip39Seed } from "../monad-wallet-material";
-export type { MonadRootBundle } from "../monad-wallet-material";
+import type { MonadRootBundle, HistoricalBip39Seed } from "../evm-wallet-material";
+export type { MonadRootBundle } from "../evm-wallet-material";
 import {
   ChainAddress,
   ChainFamily,

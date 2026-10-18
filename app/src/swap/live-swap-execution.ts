@@ -19,7 +19,7 @@ import {
 import type { EcashWallet } from '@frank/wallet/ecash-wallet'
 import type { EcashNativeOperation } from '@frank/wallet/ecash-operation-store'
 import type { EcashSdkWallet } from '@frank/wallet/ecash-sdk-backend'
-import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
+import { MonadAccountTxSigner } from '@frank/wallet/evm-account-tx'
 import {
   InMemorySwapExecutionStore,
   SWAP_FINALITY_CONFIRMATIONS,

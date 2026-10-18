@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { deriveDomainRoot } from '@frank/domain-roots';
-import { MonadIdentity } from '@frank/wallet/monad-identity';
+import { MonadIdentity } from '@frank/wallet/evm-identity';
 import { loadGatewayProvisionConfig } from '../src/host/gateway-config';
 import { provisionNewMailGateway } from '../src/host/gateway-provision';
 import { openGatewayWallet } from '../src/host/gateway-wallet';

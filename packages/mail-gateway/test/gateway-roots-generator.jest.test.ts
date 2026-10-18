@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadGatewayWalletRoots } from '../src/host/gateway-wallet';
 import { generateGatewayRoots } from '../src/host/gateway-roots-generator';
-import { createMonadWalletMaterial } from '@frank/wallet/monad-wallet-material';
+import { createMonadWalletMaterial } from '@frank/wallet/evm-wallet-material';
 
 describe('one-time mail gateway roots generation', () => {
   let top: string;

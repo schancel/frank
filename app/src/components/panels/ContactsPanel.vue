@@ -310,8 +310,8 @@ import { isOwnAddress } from 'src/utils/own-address'
 import {
   searchMonadProfiles,
   decodeProfileBytes,
-} from '@frank/wallet/monad-identity'
-import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+} from '@frank/wallet/evm-identity'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import {
   searchUsernames,
   usernamesOfAddresses,

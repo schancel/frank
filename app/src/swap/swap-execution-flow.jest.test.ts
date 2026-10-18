@@ -75,7 +75,7 @@ const globalOptions = {
   mocks: { $t: translate },
 }
 
-const { MonadIdentity: EvmIdentity } = require('@frank/wallet/monad-identity')
+const { MonadIdentity: EvmIdentity } = require('@frank/wallet/evm-identity')
 
 describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', () => {
   const previousChain = { ...activeChain }

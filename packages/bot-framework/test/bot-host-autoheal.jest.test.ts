@@ -1,11 +1,11 @@
 import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
-import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
+import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
 import { FrankBotHost } from "../src/bot-host";
 import { RelayProfileManager } from "../src/relay-profile-manager";
 import {
   MonadMailboxRetryableError,
   MonadMailboxAuthError,
-} from "@frank/cashweb/relay/monad-mailbox-client";
+} from "@frank/cashweb/relay/mailbox-client";
 import type { FrankBotDefinition } from "../src/types";
 
 jest.mock("../src/relay-profile-manager", () => ({
@@ -14,8 +14,8 @@ jest.mock("../src/relay-profile-manager", () => ({
   },
 }));
 
-jest.mock("@frank/wallet/chain/monad-chain", () => {
-  const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
+jest.mock("@frank/wallet/chain/evm-chain", () => {
+  const actual = jest.requireActual("@frank/wallet/chain/evm-chain");
   return {
     ...actual,
     createEvmChain: jest.fn((config: import("@frank/wallet/chain/evm-chain-config").EvmChainConfig) => ({
@@ -32,8 +32,8 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
         .fn()
         .mockImplementation(async (roots: MonadRootBundle) => {
           const { MonadIdentity } = jest.requireActual<
-            typeof import("@frank/wallet/monad-identity")
-          >("@frank/wallet/monad-identity");
+            typeof import("@frank/wallet/evm-identity")
+          >("@frank/wallet/evm-identity");
           const identity = MonadIdentity.fromDomainRoot(roots.authentication);
           return { identity, close: jest.fn().mockResolvedValue(undefined) };
         }),

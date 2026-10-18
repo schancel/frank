@@ -37,13 +37,13 @@ import {
   MIN_DIRECT_MESSAGE_POLL_INTERVAL_MS,
   startDirectMessagePolling,
 } from './pinia-chain-adapter'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import {
   MonadMailboxAuthError,
   MonadMailboxChallengeCapacityError,
   MonadMailboxError,
   MonadMailboxUnavailableError,
-} from '@frank/cashweb/relay/monad-mailbox-client'
+} from '@frank/cashweb/relay/mailbox-client'
 import { activeChain, type WalletHandle } from '@frank/wallet/chain'
 
 jest.mock('axios', () => ({ __esModule: true, default: jest.fn() }))

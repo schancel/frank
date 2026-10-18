@@ -1,5 +1,5 @@
 import { canonicalPollingFixture } from '@frank/wallet/chain/canonical-polling.testutil'
-import * as canonicalMailbox from '@frank/cashweb/relay/monad-mailbox-client'
+import * as canonicalMailbox from '@frank/cashweb/relay/mailbox-client'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
 /**
  * Unit tests for `pinia-chain-adapter.ts` (ticket #42): the `DirectMessageReceived` ->

@@ -15,8 +15,8 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from "fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 
-import { MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES } from "@frank/cashweb/relay/monad-message-envelope";
-import { serializeMessageItems } from "@frank/wallet/chain/monad-chain";
+import { MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES } from "@frank/cashweb/relay/message-envelope";
+import { serializeMessageItems } from "@frank/wallet/chain/evm-chain";
 import { MessageItem } from "@frank/cashweb/types/messages";
 
 export const DEFAULT_CATALOG_DIR = join(__dirname, "demo-catalog");

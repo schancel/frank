@@ -1,6 +1,6 @@
 import * as bip39 from 'bip39'
 
-import { fetchMonadProfile, MonadIdentity } from '@frank/wallet/monad-identity'
+import { fetchMonadProfile, MonadIdentity } from '@frank/wallet/evm-identity'
 import {
   loadConfig,
   loadIdentity,

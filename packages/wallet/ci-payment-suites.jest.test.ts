@@ -25,12 +25,12 @@ describe('the wallet suites hosted CI names', () => {
     expect(existsSync(join(__dirname, name))).toBe(true)
   })
   it.each([
-    'chain/monad-parallel-send.jest.test.ts',
-    'chain/monad-parallel-send.anvil.jest.test.ts',
-    'chain/monad-outgoing-message-store.jest.test.ts',
-    'chain/monad-fund-ahead.jest.test.ts',
-    'chain/monad-canonical-dm-message-id.jest.test.ts',
-    'chain/monad-chain.jest.test.ts',
+    'chain/evm-parallel-send.jest.test.ts',
+    'chain/evm-parallel-send.anvil.jest.test.ts',
+    'chain/outgoing-message-store.jest.test.ts',
+    'chain/evm-fund-ahead.jest.test.ts',
+    'chain/canonical-dm-message-id.jest.test.ts',
+    'chain/evm-chain.jest.test.ts',
     'evm-spend-spacing.jest.test.ts',
   ])('the send path suite %s is run', name => {
     expect(named).toContain(name)

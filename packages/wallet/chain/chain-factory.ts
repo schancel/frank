@@ -1,7 +1,7 @@
 import { ActiveChain, NativeAssetChain } from "./active-chain";
 import type { EcashChain, EcashChainConfig } from "./ecash-chain";
 import { getChainRegistryEntry } from "./chains-registry";
-import { createEvmChain } from "./monad-chain";
+import { createEvmChain } from "./evm-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
 
 export type { EvmChainConfig } from "./evm-chain-config";

@@ -14,19 +14,20 @@ const demoEntries = new Map([
   ['packages/cashweb/relay/canonical-dm.jest.test.ts', '/node'],
   ['packages/cashweb/relay/directory-client.ts', null],
   ['packages/cashweb/relay/directory-client.jest.test.ts', '/node'],
-  ['packages/cashweb/relay/monad-mailbox-client.ts', null],
-  ['packages/cashweb/relay/monad-mailbox-client.jest.test.ts', '/node'],
+  ['packages/cashweb/relay/mailbox-client.ts', null],
+  ['packages/cashweb/relay/mailbox-client.jest.test.ts', '/node'],
   // The open directory: shared client logic takes its stores from the caller; the Node storage
   // helper (bots, tests) and the app's messaging session are the only places that open one.
   ['packages/cashweb/relay/open-directory.ts', null],
   ['packages/cashweb/relay/open-directory-node.ts', '/node'],
-  ['app/src/utils/monad-identity-session.ts', '/browser'],
-  ['app/src/utils/monad-identity-session.jest.test.ts', '/browser'],
+  ['app/src/utils/identity-session.ts', '/browser'],
+  ['app/src/utils/identity-session.jest.test.ts', '/browser'],
   // The Qwen bot uses the same open directory through the Node storage helper and only names
   // the public Current type. Its host test admits a fixture through a Node store.
   ['packages/bot/qwen-bot-common.ts', null],
   ['packages/bot/qwen-host-safety.jest.test.ts', '/node'],
-  ['packages/wallet/chain/monad-canonical-dm.jest.test.ts', '/node'],
+  ['packages/wallet/chain/canonical-dm.jest.test.ts', '/node'],
+  ['packages/wallet/chain/canonical-polling.testutil.ts', '/node'],
 ])
 // A jest test may replace its own allowlisted entry with a mock; nothing else may call it in.
 function isJestMock(node, file) {

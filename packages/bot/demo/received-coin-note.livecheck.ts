@@ -36,7 +36,7 @@ import { join } from 'path'
 import { hexlify } from 'ethers'
 import type { ReceivedCoinItem } from '@frank/cashweb/types/messages'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
-import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
+import { installMessageItemRegistry } from '@frank/wallet/chain/canonical-dm'
 import {
   createRelayPricedEvmChain,
   installCanonicalDirectory,
@@ -44,8 +44,8 @@ import {
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
-import { registerMonadIdentity } from '@frank/wallet/monad-identity'
-import { deriveEvmStealthAddress } from '@frank/wallet/monad-stealth'
+import { registerMonadIdentity } from '@frank/wallet/evm-identity'
+import { deriveEvmStealthAddress } from '@frank/wallet/evm-stealth'
 import { DirectoryManager } from '@frank/bot-framework/directory-manager'
 
 import { freePort, startRealRelay, type RealRelay } from './real-stack'

@@ -46,7 +46,7 @@ export async function identifyLegacyAccount(phrase: string): Promise<string> {
   const { validateMnemonic } = await import('bip39')
   const canonical = phrase.trim().toLowerCase().replace(/\s+/g, ' ')
   if (!validateMnemonic(canonical)) throw new Error('Invalid legacy phrase')
-  const { MonadIdentity } = await import('@frank/wallet/monad-identity')
+  const { MonadIdentity } = await import('@frank/wallet/evm-identity')
   return MonadIdentity.fromSeed({ mnemonic: canonical }).displayAddress
 }
 

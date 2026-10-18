@@ -23,12 +23,12 @@
  * address must still pay a stamp to reach us). This is demo-grade loop prevention, not
  * anti-abuse.
  */
-import { canonicalMonadEnvelopeAddress } from '@frank/cashweb/relay/monad-message-envelope'
+import { canonicalMonadEnvelopeAddress } from '@frank/cashweb/relay/message-envelope'
 import {
   fetchMonadProfile,
   isBotAccount,
   isBotProfileSignedPayload,
-} from '@frank/wallet/monad-identity'
+} from '@frank/wallet/evm-identity'
 import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 

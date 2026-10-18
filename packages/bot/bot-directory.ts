@@ -18,7 +18,7 @@ import {
   type AccountType,
   type BotRole,
 } from '@frank/codec'
-import { MonadProfileFields } from '@frank/wallet/monad-identity'
+import { MonadProfileFields } from '@frank/wallet/evm-identity'
 
 export type BotKey =
   | 'blackjack'

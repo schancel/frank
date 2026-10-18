@@ -21,7 +21,7 @@ import {
   deriveEvmStealthAddress,
   deriveEvmStealthPrivateKey,
   type EvmStealthDestination,
-} from './monad-stealth'
+} from './evm-stealth'
 import type { EvmChainWalletHandle } from "./evm-wallet-handle";
 import { parseAddressWithOptionalRelay } from './chain/active-chain'
 import { fromHex, toHex } from '@frank/codec'

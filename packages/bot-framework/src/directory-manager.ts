@@ -9,10 +9,10 @@ import { canonicalNetworkDescriptor } from "@frank/cashweb/relay/canonical-dm-tr
 import {
   prepareMonadNextRevisionExport,
   prepareMonadRevisionZeroExport,
-} from "@frank/wallet/chain/monad-chain";
+} from "@frank/wallet/chain/evm-chain";
 import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 
-import { fetchMonadProfile } from "@frank/wallet/monad-identity";
+import { fetchMonadProfile } from "@frank/wallet/evm-identity";
 import { toChainAddress, type DirectoryPeerInfo } from "./types";
 import type { DirectoryFetch } from "@frank/cashweb/relay/directory-client";
 

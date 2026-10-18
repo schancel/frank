@@ -5,7 +5,7 @@ import {
   loadMonadChainConfigFromEnv,
 } from '@frank/wallet/chain'
 import { runNativeTransactionExclusive } from '@frank/wallet/chain/chain-wallet'
-import { createMonadJsonRpcProvider } from '@frank/wallet/monad-provider'
+import { createMonadJsonRpcProvider } from '@frank/wallet/evm-provider'
 import { LevelRecordStore } from '@frank/wallet/storage/evm-coin-store'
 import {
   TempoPathUsdJournal,

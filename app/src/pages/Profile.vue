@@ -98,13 +98,13 @@ import { viewportPageStyle } from 'src/utils/layout'
 
 import { useProfileStore } from 'src/stores/my-profile'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
-import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import {
   MonadIdentity,
   type MonadProfileFields,
   registerMonadIdentityCbor,
   validateProfileUsername,
-} from '@frank/wallet/monad-identity'
+} from '@frank/wallet/evm-identity'
 
 import { validateProfileDisplayName } from '@frank/wallet/profile-display-name'
 import { profileNameError } from '../utils/profile-name'

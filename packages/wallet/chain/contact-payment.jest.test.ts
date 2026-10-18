@@ -38,21 +38,21 @@ import {
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
 import { withDefaultMessageItems } from './message-items.testutil'
-import { deriveEvmStealthPrivateKey } from '../monad-stealth'
+import { deriveEvmStealthPrivateKey } from '../evm-stealth'
 import {
   CONTACT_PAYMENT_NAMESPACE,
   LevelRecordStore,
   type ContactPayment,
 } from '../storage/evm-coin-store'
-import { createEvmChain, installCanonicalDirectory } from './monad-chain'
+import { createEvmChain, installCanonicalDirectory } from './evm-chain'
 
-jest.mock('../monad-provider', () =>
+jest.mock('../evm-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
 )
-jest.mock('../monad-http', () =>
+jest.mock('../evm-http', () =>
   require('./canonical-two-wallets.testutil').offlineHttpModule(),
 )
-jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>
+jest.mock('@frank/cashweb/relay/mailbox-client', () =>
   require('./canonical-two-wallets.testutil').offlineMailboxModule(),
 )
 
@@ -1012,7 +1012,7 @@ describe('a payment to a contact', () => {
       expect(await late.getBalance()).toBe(VALUE + STAMP)
 
       // Done once: a later read asks the relay only what the host asked.
-      const mailbox = jest.requireMock('@frank/cashweb/relay/monad-mailbox-client')
+      const mailbox = jest.requireMock('@frank/cashweb/relay/mailbox-client')
       const reads = () =>
         (mailbox.fetchCanonicalInboxPage as jest.Mock).mock.calls.filter(
           call => (call[0].sinceMs ?? 0) < afterEverything,
@@ -1030,7 +1030,7 @@ describe('a payment to a contact', () => {
       recipient: bob.identity.address,
       value: VALUE,
     })
-    const mailbox = jest.requireMock('@frank/cashweb/relay/monad-mailbox-client')
+    const mailbox = jest.requireMock('@frank/cashweb/relay/mailbox-client')
     const page = mailbox.fetchCanonicalInboxPage as jest.Mock
     const whole = page.getMockImplementation()!
     // A relay that always has another page.

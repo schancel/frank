@@ -32,7 +32,7 @@ import {
 import { rehydateChat, useChatStore } from '../stores/chats'
 import { activeChain } from '@frank/wallet/chain'
 import type { WalletHandle } from '@frank/wallet/chain'
-import { MonadStampPendingAttemptError } from '@frank/wallet/monad-stamp-client'
+import { MonadStampPendingAttemptError } from '@frank/wallet/evm-stamp-client'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
 import { setConversationIdSalt as installTestConversationIdSalt } from '../stores/chats'
 import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'

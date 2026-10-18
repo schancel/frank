@@ -49,13 +49,13 @@ Object.defineProperty(globalThis.navigator, 'locks', {
     },
   },
 })
-jest.mock('@frank/wallet/monad-provider', () =>
+jest.mock('@frank/wallet/evm-provider', () =>
   require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineProviderModule(),
 )
-jest.mock('@frank/wallet/monad-http', () =>
+jest.mock('@frank/wallet/evm-http', () =>
   require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineHttpModule(),
 )
-jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => ({
+jest.mock('@frank/cashweb/relay/mailbox-client', () => ({
   ...require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineMailboxModule(),
   fetchCanonicalMailboxPage: jest.fn(),
 }))
@@ -78,7 +78,7 @@ jest.mock('../adapters/level-message-store', () => ({
     return Promise.resolve(mockStore)
   },
 }))
-jest.mock('../utils/monad-identity-session', () => ({
+jest.mock('../utils/identity-session', () => ({
   messagingWallet: () => mockWallet,
   ensureConversationIdSalt: async () => undefined,
 }))
@@ -115,10 +115,10 @@ const { activeChain, setActiveChain } = require('@frank/wallet/chain')
 const {
   installCanonicalDirectory,
   conversationIdSaltOf,
-} = require('@frank/wallet/chain/monad-chain')
+} = require('@frank/wallet/chain/evm-chain')
 const {
   installMessageItemRegistry,
-} = require('@frank/wallet/chain/monad-canonical-dm')
+} = require('@frank/wallet/chain/canonical-dm')
 const {
   restoreCanonicalRequest,
 } = require('@frank/cashweb/relay/canonical-dm-transport')
@@ -142,7 +142,7 @@ const MessageBubble =
   require('../components/chat/messages/ChatMessage.vue').default
 const Form = require('../components/dialogs/OfferSwapDialog.vue').default
 const en = require('../i18n/en-us').default
-const mailbox = require('@frank/cashweb/relay/monad-mailbox-client')
+const mailbox = require('@frank/cashweb/relay/mailbox-client')
 jest.setTimeout(60000)
 const pass = defineComponent({
   inheritAttrs: false,

@@ -26,7 +26,7 @@ import {
   getCustomRelayBaseUrl,
 } from '@frank/wallet/chain'
 import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import {
   verifyMeraLoginProfile,
   type MeraLoginVerification,

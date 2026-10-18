@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { getAddress } from 'ethers';
 import { deriveDomainRoot } from '@frank/domain-roots';
-import { createMonadWalletMaterial } from '@frank/wallet/monad-wallet-material';
+import { createMonadWalletMaterial } from '@frank/wallet/evm-wallet-material';
 import { loadGatewayWalletRoots } from './gateway-wallet';
 
 export interface GenerateGatewayRootsInput {

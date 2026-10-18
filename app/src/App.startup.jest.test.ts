@@ -118,7 +118,7 @@ jest.mock('./accounts/session', () => ({
   },
 }))
 const mockIdentity = jest.fn(async () => undefined)
-jest.mock('./utils/monad-identity-session', () => ({
+jest.mock('./utils/identity-session', () => ({
   initializeMonadIdentity: () => mockIdentity(),
   messagingState: { status: 'pending' },
   messagingWallet: () => undefined,
@@ -181,7 +181,7 @@ jest.mock('vue-router', () => {
 /* eslint-disable @typescript-eslint/no-var-requires */
 const App = require('./App.vue').default
 const setupApis = require('./boot/setup-apis').default
-const messagingBoot = require('./boot/monad-direct-messages').default
+const messagingBoot = require('./boot/direct-messages').default
 const createRouter = require('./router').default
 const {
   createStoragePlugin,

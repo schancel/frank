@@ -2,8 +2,8 @@ import type { Provider, Wallet } from "ethers";
 import type { EvmChainWalletHandle, EvmWalletHandle } from "./evm-wallet-handle";
 import type { EvmSpendPool, EvmSpendPoolFundingCandidate } from "./evm-spend-pool";
 import type { EvmSubAccountPool as MonadSubAccountPool } from "./evm-account-pool";
-import type { SubAccountLeaseManager } from "./monad-account-lease";
-import type { MonadTxSubmitter } from "./monad-account-tx";
+import type { SubAccountLeaseManager } from "./evm-account-lease";
+import type { MonadTxSubmitter } from "./evm-account-tx";
 import type { EvmChangePool as MonadChangePool } from "./evm-change-pool";
 import type { StampPaymentJournal } from "./storage/stamp-payment-journal";
 import type { StampAttemptJournal } from "./storage/stamp-attempt-journal";
@@ -11,13 +11,13 @@ import type {
   CanonicalWalletBindingMismatchError,
   EvmWalletOperationAdmission,
 } from "./storage/evm-wallet-bundle";
-import type { MonadWalletMaterial } from "./monad-wallet-material";
-import type { MonadIdentity } from "./monad-identity";
-import type { MonadCanonicalStampClient } from "./monad-stamp-client";
+import type { MonadWalletMaterial } from "./evm-wallet-material";
+import type { MonadIdentity } from "./evm-identity";
+import type { MonadCanonicalStampClient } from "./evm-stamp-client";
 import type {
   CanonicalDirectory,
   canonicalDirectMessages,
-} from "./chain/monad-canonical-dm";
+} from "./chain/canonical-dm";
 import type {
   DirectMessageFundAheadResult,
   DirectMessagePreparationProgress,

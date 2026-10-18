@@ -23,7 +23,7 @@ import { join, resolve } from 'path'
 import { hexlify, keccak256, randomBytes, toUtf8Bytes } from 'ethers'
 
 import { EvmSubAccountPool as MonadSubAccountPool } from '../evm-account-pool'
-import { SubAccountLeaseManager } from '../monad-account-lease'
+import { SubAccountLeaseManager } from '../evm-account-lease'
 import { EvmChangePool as MonadChangePool } from '../evm-change-pool'
 import {
   EvmChangeKeyring as MonadChangeKeyring,
@@ -39,7 +39,7 @@ import {
   InMemorySubAccountPoolStore,
   type SubAccountRecord,
 } from './sub-account-pool-storage'
-import { validateMonadWalletState } from './monad-wallet-state-validator'
+import { validateMonadWalletState } from './evm-wallet-state-validator'
 import { durableBatch, openDurableLevel } from './level-durability'
 import {
   InMemoryTopicOperationJournal,

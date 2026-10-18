@@ -1,6 +1,6 @@
 export * from './types';
 export * from './stamps/stamp-provider.interface';
-export * from './stamps/monad-stamp-provider';
+export * from './stamps/evm-stamp-provider';
 export * from './stamps/ecash-stamp-provider';
 export * from './storage/blob-store';
 export * from './storage/local-fs-blob-store';

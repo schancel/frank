@@ -11,7 +11,7 @@ import {
   createWalletMaterialFromPath,
   createSeedBundleFromPath,
 } from './bip39-import'
-import { MONAD_IDENTITY_DERIVATION_PATH } from './monad-identity'
+import { MONAD_IDENTITY_DERIVATION_PATH } from './evm-identity'
 
 describe('BIP-39 Import & Derivation Scanner (Issue #847)', () => {
   const TEST_PHRASE = 'test test test test test test test test test test test junk'

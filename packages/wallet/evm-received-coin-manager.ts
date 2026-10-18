@@ -47,7 +47,7 @@ import {
   CanonicalRecipientNotPublishedError,
   installedMessageItemRegistry,
   projectOutboxMessageRecord,
-} from "./chain/monad-canonical-dm";
+} from "./chain/canonical-dm";
 import {
   EvmInputAdmissionError,
   nativeAdmissionJournal,
@@ -57,16 +57,16 @@ import type { EvmChainWalletHandle } from "./evm-wallet-handle";
 import {
   SubAccountSpendRefusedError,
   type MonadSubAccountPool,
-} from "./monad-account-pool";
-import { fetchMonadProfile, type MonadIdentity } from "./monad-identity";
+} from "./evm-account-pool";
+import { fetchMonadProfile, type MonadIdentity } from "./evm-identity";
 import {
   deriveEvmStealthAddress,
   deriveEvmStealthPrivateKey,
   evmStealthItem,
   stealthCoinFromItem,
   stealthItemTransfer,
-} from "./monad-stealth";
-import type { MonadWalletMaterial } from "./monad-wallet-material";
+} from "./evm-stealth";
+import type { MonadWalletMaterial } from "./evm-wallet-material";
 import { DefaultStampUnavailableError } from "./oracle/stamp-policy";
 import type {
   StealthPaymentReceiptCapability,

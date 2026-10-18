@@ -20,7 +20,7 @@ import {
 import { homedir } from 'os'
 import { join, resolve } from 'path'
 
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import { openMonadWalletBundle } from '@frank/wallet/storage/evm-wallet-bundle'
 import { LevelStampAttemptJournal } from '@frank/wallet/storage/stamp-attempt-journal'
 import { LevelStampPaymentJournal } from '@frank/wallet/storage/stamp-payment-journal'

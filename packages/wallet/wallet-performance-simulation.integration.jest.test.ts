@@ -15,17 +15,17 @@ import {
   type Fixture,
   type InboxRecord,
 } from './chain/canonical-two-wallets.testutil'
-import { installCanonicalDirectory } from './chain/monad-chain'
+import { installCanonicalDirectory } from './chain/evm-chain'
 import { toHex } from '@frank/codec'
 import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
 
-jest.mock('./monad-provider', () =>
+jest.mock('./evm-provider', () =>
   require('./chain/canonical-two-wallets.testutil').offlineProviderModule(),
 )
-jest.mock('./monad-http', () =>
+jest.mock('./evm-http', () =>
   require('./chain/canonical-two-wallets.testutil').offlineHttpModule(),
 )
-jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => {
+jest.mock('@frank/cashweb/relay/mailbox-client', () => {
   const mod =
     require('./chain/canonical-two-wallets.testutil').offlineMailboxModule()
   return {

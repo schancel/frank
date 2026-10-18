@@ -29,15 +29,15 @@ import {
   poolSpendAdmission,
   type WalletOperationLifetime,
 } from '../evm-input-admission'
-import { MonadHdKeyring } from '../monad-hd-keyring'
-import { MonadChangeKeyring } from '../monad-change-keyring'
-import { MonadSubAccountPool } from '../monad-account-pool'
-import { MonadChangePool } from '../monad-change-pool'
-import { SubAccountLeaseManager } from '../monad-account-lease'
+import { MonadHdKeyring } from '../secp256k1-hd-keyring'
+import { MonadChangeKeyring } from '../secp256k1-hd-keyring'
+import { MonadSubAccountPool } from '../evm-account-pool'
+import { MonadChangePool } from '../evm-change-pool'
+import { SubAccountLeaseManager } from '../evm-account-lease'
 import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-store'
 import { InMemoryChangePoolStore } from '../storage/change-pool-storage'
 import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
-import { validateMonadWalletState } from '../storage/monad-wallet-state-validator'
+import { validateMonadWalletState } from '../storage/evm-wallet-state-validator'
 import * as durability from '../storage/level-durability'
 import { summarizeEvmNativeOperation } from './evm-native-operation-status'
 

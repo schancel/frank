@@ -1,5 +1,5 @@
 import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
-import { inspectCanonicalPreparedEnvelope } from '../monad-stamp-stealth'
+import { inspectCanonicalPreparedEnvelope } from '../evm-stamp-stealth'
 import { paymentCommitment } from '@frank/codec'
 import {
   LevelStampAttemptJournal,

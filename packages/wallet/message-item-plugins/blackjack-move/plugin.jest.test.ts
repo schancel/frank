@@ -92,7 +92,7 @@ describe('blackjack welcome action (#395)', () => {
 
   it('round-trips through the item serialization, hydrate and the preview', async () => {
     const { deserializeMessageItems, serializeMessageItems } = await import(
-      '../../chain/monad-chain'
+      '../../chain/evm-chain'
     )
     const items = deserializeMessageItems(
       serializeMessageItems([welcomeItem as never, { type: 'text', text: 'hi' }]),

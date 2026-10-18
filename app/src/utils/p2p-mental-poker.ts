@@ -30,7 +30,7 @@ import {
 
 import { newGameId } from './blackjack-hand'
 import { randomHex } from './chat-game-items'
-import { messagingWallet } from './monad-identity-session'
+import { messagingWallet } from './identity-session'
 
 export interface P2pMentalPokerChatMessage {
   outbound?: boolean

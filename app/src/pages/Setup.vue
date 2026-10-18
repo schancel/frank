@@ -929,13 +929,13 @@ import {
   retryLegacyInspection,
 } from '../accounts/legacy'
 import { usePersistentStorageStore } from '../stores/persistent-storage'
-import { nameOwnProfile } from '../utils/monad-identity-session'
+import { nameOwnProfile } from '../utils/identity-session'
 import { restoreOwnProfileWithRelay } from '../utils/own-profile'
 import {
   PendingProfilePreviewError,
   readPendingProfilePreview,
 } from '../accounts/pending-profile-preview'
-import type { MonadIdentity } from '@frank/wallet/monad-identity'
+import type { MonadIdentity } from '@frank/wallet/evm-identity'
 import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import {
   getDefaultRelayBaseUrl,

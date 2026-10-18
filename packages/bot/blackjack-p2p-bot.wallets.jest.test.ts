@@ -39,13 +39,13 @@ import {
   type BotAccount,
 } from './blackjack-p2p-bot'
 
-jest.mock('@frank/wallet/monad-provider', () =>
+jest.mock('@frank/wallet/evm-provider', () =>
   require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineProviderModule(),
 )
-jest.mock('@frank/wallet/monad-http', () =>
+jest.mock('@frank/wallet/evm-http', () =>
   require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineHttpModule(),
 )
-jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>
+jest.mock('@frank/cashweb/relay/mailbox-client', () =>
   require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineMailboxModule(),
 )
 

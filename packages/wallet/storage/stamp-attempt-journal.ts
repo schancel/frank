@@ -1,6 +1,6 @@
 import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
 import { CANONICAL_TERMINAL_REASONS } from '@frank/cashweb/relay/canonical-dm-transport'
-import { inspectCanonicalPreparedEnvelope } from '../monad-stamp-stealth'
+import { inspectCanonicalPreparedEnvelope } from '../evm-stamp-stealth'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join } from 'path'

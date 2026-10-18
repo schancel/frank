@@ -38,15 +38,15 @@ import {
 import {
   CanonicalMessageItemsNotInstalledError,
   installMessageItemRegistry,
-} from './monad-canonical-dm'
+} from './canonical-dm'
 
-jest.mock('../monad-provider', () =>
+jest.mock('../evm-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
 )
-jest.mock('../monad-http', () =>
+jest.mock('../evm-http', () =>
   require('./canonical-two-wallets.testutil').offlineHttpModule(),
 )
-jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>
+jest.mock('@frank/cashweb/relay/mailbox-client', () =>
   require('./canonical-two-wallets.testutil').offlineMailboxModule(),
 )
 

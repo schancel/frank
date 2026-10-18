@@ -62,13 +62,13 @@
  */
 import { Provider, Transaction, getAddress } from "ethers";
 
-import { MonadHdKeyring } from "./monad-hd-keyring";
+import { MonadHdKeyring } from "./secp256k1-hd-keyring";
 import {
   MonadAccountTxSigner,
   MonadTxOverrides,
   MonadTxSubmitter,
   SignedMonadTx,
-} from "./monad-account-tx";
+} from "./evm-account-tx";
 import {
   InMemorySubAccountPoolStore,
   assertSubAccountLifecycleMatrix,
@@ -85,7 +85,7 @@ import type { MonadWalletOperationAdmission } from "./storage/evm-wallet-bundle"
 import {
   selectStampAccounts,
   type SelectedStampAccount,
-} from "./monad-stamp-account-selection";
+} from "./evm-stamp-account-selection";
 
 export type {
   SubAccountPoolStore,

@@ -22,22 +22,22 @@ import {
 import {
   installCanonicalDirectory,
   loadMonadChainConfigFromEnv,
-} from "@frank/wallet/chain/monad-chain";
+} from "@frank/wallet/chain/evm-chain";
 import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 
 import {
   fetchMonadProfilesSince,
   decodeProfileBytes,
   MONAD_IDENTITY_DERIVATION_PATH,
-} from "@frank/wallet/monad-identity";
+} from "@frank/wallet/evm-identity";
 import { bip32MasterFromDomainRoot } from "@frank/wallet/bip32-domain-root";
 import { canonicalNetworkDescriptor } from "@frank/cashweb/relay/canonical-dm-transport";
 import {
   MonadMailboxAuthError,
   MonadMailboxRetryableError,
-} from "@frank/cashweb/relay/monad-mailbox-client";
+} from "@frank/cashweb/relay/mailbox-client";
 import type { MessageItem } from "@frank/cashweb/types/messages";
-import { installMessageItemRegistry } from "@frank/wallet/chain/monad-canonical-dm";
+import { installMessageItemRegistry } from "@frank/wallet/chain/canonical-dm";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
 import { pluginCapabilitiesNotYetAvailable } from "@frank/wallet/message-item-plugins/registry";
 import type {

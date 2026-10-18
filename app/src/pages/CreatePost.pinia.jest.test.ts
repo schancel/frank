@@ -8,7 +8,7 @@ import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import type { ForumMessage } from '@frank/wallet/forum-model'
 import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
-import { MonadTopicPostAbandonedError } from '@frank/wallet/monad-topic-post-client'
+import { MonadTopicPostAbandonedError } from '@frank/wallet/evm-topic-post-client'
 
 const mockTopicPost = jest.fn()
 const mockFetchOne = jest.fn()

@@ -224,7 +224,7 @@ export default defineComponent({
       percentilePresets: PERCENTILE_PRESETS,
       sliderPercentile: 0,
       // Ticket #61: the field itself now interprets this in the active chain's display unit
-      // (chain/monad-chain.ts's fromDisplayAmount, MON) -- labeling it so a Monad user doesn't
+      // (chain/evm-chain.ts's fromDisplayAmount, MON) -- labeling it so a Monad user doesn't
       // read this as a Lotus-XPI amount, matching the mismatch already found in Forum.vue.
       chainUnit: activeChain.unit,
     }

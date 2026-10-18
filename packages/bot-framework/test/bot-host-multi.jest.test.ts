@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Wallet, getBytes } from "ethers";
-import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
+import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
 import { FrankBotHost } from "../src/bot-host";
 import { FaucetBot } from "../../bot/src/bots/faucet-bot";
 import { EVMNonceSequencer } from "../src/nonce-sequencer";
@@ -38,8 +38,8 @@ jest.mock("../src/directory-manager", () => ({
 
 const mockSend = jest.fn();
 const mockFetchSince = jest.fn();
-jest.mock("@frank/wallet/chain/monad-chain", () => {
-  const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
+jest.mock("@frank/wallet/chain/evm-chain", () => {
+  const actual = jest.requireActual("@frank/wallet/chain/evm-chain");
   return {
     ...actual,
     createEvmChain: jest.fn((config: import("@frank/wallet/chain/evm-chain-config").EvmChainConfig) => ({
@@ -57,8 +57,8 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
       topics: { post: jest.fn() },
       createWallet: jest.fn(async (roots: MonadRootBundle) => {
         const { MonadIdentity } = jest.requireActual<
-          typeof import("@frank/wallet/monad-identity")
-        >("@frank/wallet/monad-identity");
+          typeof import("@frank/wallet/evm-identity")
+        >("@frank/wallet/evm-identity");
         const identity = MonadIdentity.fromDomainRoot(roots.authentication);
         return {
           identity,

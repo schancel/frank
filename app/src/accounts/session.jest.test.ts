@@ -29,7 +29,7 @@ import type { EcashStealthCustody } from '@frank/wallet/ecash-stealth'
 import { secp256k1 } from '@noble/curves/secp256k1'
 import { Transaction, Wallet, keccak256 } from 'ethers'
 import { bip32MasterFromDomainRoot } from '@frank/wallet/bip32-domain-root'
-import { MONAD_IDENTITY_DERIVATION_PATH } from '@frank/wallet/monad-identity'
+import { MONAD_IDENTITY_DERIVATION_PATH } from '@frank/wallet/evm-identity'
 import { lockingScript, parseTransaction } from '@frank/nakamoto'
 import { BIP39_RECOVERY_FORMAT } from '@frank/account-vault'
 import { createUtxoChain } from '@frank/wallet/chain/utxo-chain'
@@ -78,7 +78,7 @@ import {
   DERIVATION_REGISTRY_ID,
   type DomainRoot,
 } from '@frank/domain-roots'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/evm-identity'
 import {
   TempoPathUsdJournal,
   TempoPathUsdTransfers,
@@ -2108,7 +2108,7 @@ test('privately opens real EVM owners with the same Frank identity and separate 
       config: EvmChainConfig,
       material:
         | import('@frank/wallet/chain/active-chain').MonadRootBundle
-        | import('@frank/wallet/monad-wallet-material').HistoricalBip39Seed,
+        | import('@frank/wallet/evm-wallet-material').HistoricalBip39Seed,
     ) => {
       const candidate = (await createEvmChain(config).createWallet(
         material,
@@ -2304,7 +2304,7 @@ test('uses the historical EVM seed derivation unchanged and wipes its borrowed c
       config: EvmChainConfig,
       material:
         | import('@frank/wallet/chain/active-chain').MonadRootBundle
-        | import('@frank/wallet/monad-wallet-material').HistoricalBip39Seed,
+        | import('@frank/wallet/evm-wallet-material').HistoricalBip39Seed,
     ) => {
       expect(material).toMatchObject({ derivation: BIP39_DERIVATION })
       if (!('seed' in material)) throw new Error('expected historical seed')

@@ -13,13 +13,13 @@
  *   answer or a restart.
  */
 import { getAddress, Transaction, type Provider } from 'ethers'
-import { selectStampAccounts } from './monad-stamp-account-selection'
+import { selectStampAccounts } from './evm-stamp-account-selection'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
 import {
   InsufficientStampFundsError,
   type EvmSubAccountPool as MonadSubAccountPool,
 } from './evm-account-pool'
-import { MonadAccountTxSigner, type MonadTxSubmitter } from './monad-account-tx'
+import { MonadAccountTxSigner, type MonadTxSubmitter } from './evm-account-tx'
 import {
   ChainUnreachableError,
   ChainWaitCancelledError,

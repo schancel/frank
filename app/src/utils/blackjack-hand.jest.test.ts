@@ -23,11 +23,11 @@ import {
   undeliveredHandMessages,
   type HandChatMessage,
 } from './blackjack-hand'
-import { messagingWallet } from './monad-identity-session'
+import { messagingWallet } from './identity-session'
 import { outgoingLockName } from './outgoing-lock'
 import { FakeLockManager } from './__fakes__/web-locks'
 
-jest.mock('./monad-identity-session', () => ({
+jest.mock('./identity-session', () => ({
   messagingWallet: jest.fn(),
 }))
 

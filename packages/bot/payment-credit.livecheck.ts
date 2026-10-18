@@ -15,7 +15,7 @@ import {
   restoreCanonicalRequest,
   type CanonicalFetch,
 } from "@frank/cashweb/relay/canonical-dm-transport";
-import { installCanonicalDirectory } from "@frank/wallet/chain/monad-chain";
+import { installCanonicalDirectory } from "@frank/wallet/chain/evm-chain";
 import { ensureSolonet } from "./demo/regtest/monad-regtest";
 import { monadOf, openMonadWallet } from "./demo/regtest/monad-wallets";
 import { startRegtestStack } from "./demo/regtest/regtest-stack";

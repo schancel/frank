@@ -1,7 +1,7 @@
 import axios from 'axios'
 import { usernamesOfAddresses } from '@frank/cashweb/relay/username-client'
-import { decodeProfileBytes, isCborFrame } from '@frank/wallet/monad-identity'
-import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+import { decodeProfileBytes, isCborFrame } from '@frank/wallet/evm-identity'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 
 export class PendingProfilePreviewError extends Error {
   constructor(readonly code: 'unreachable' | 'unverified') {

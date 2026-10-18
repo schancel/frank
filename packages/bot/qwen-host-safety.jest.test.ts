@@ -19,9 +19,9 @@ import {
 } from "@frank/cashweb/relay/canonical-dm-transport";
 import { openNodeDirectoryStore } from "@frank/directory-admission/node";
 import { InMemoryNativeTransactionAttemptStore } from "@frank/wallet/chain/chain-wallet";
-import { MonadStampPendingAttemptError } from "@frank/wallet/monad-stamp-client";
+import { MonadStampPendingAttemptError } from "@frank/wallet/evm-stamp-client";
 import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
-import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
+import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
 import { FrankBotHost } from "../bot-framework/src/bot-host";
 import { LevelBotStateStore } from "../bot-framework/src/state-store";
 import { PassThrough } from "stream";
@@ -79,8 +79,8 @@ jest.mock("../bot-framework/src/directory-manager", () => ({
     }),
   },
 }));
-jest.mock("@frank/wallet/chain/monad-chain", () => {
-  const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
+jest.mock("@frank/wallet/chain/evm-chain", () => {
+  const actual = jest.requireActual("@frank/wallet/chain/evm-chain");
   return {
     ...actual,
     createEvmChain: (config: import("@frank/wallet/chain/evm-chain-config").EvmChainConfig) => ({
@@ -106,8 +106,8 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
 // Offline chain for the one test that runs the real canonical wallet: the RPC reports only
 // these balances, and a submitted transfer is mined at once. No other test reaches either.
 const mockBalances = new Map<string, bigint>();
-jest.mock("@frank/wallet/monad-provider", () => {
-  const actual = jest.requireActual("@frank/wallet/monad-provider");
+jest.mock("@frank/wallet/evm-provider", () => {
+  const actual = jest.requireActual("@frank/wallet/evm-provider");
   const ethers = jest.requireActual("ethers");
   return {
     ...actual,
@@ -157,11 +157,11 @@ jest.mock("@frank/wallet/monad-provider", () => {
     },
   };
 });
-jest.mock("@frank/wallet/monad-http", () => {
+jest.mock("@frank/wallet/evm-http", () => {
   const ethers = jest.requireActual("ethers");
   const mined = new Set<string>();
   return {
-    ...jest.requireActual("@frank/wallet/monad-http"),
+    ...jest.requireActual("@frank/wallet/evm-http"),
     MonadHttpClient: class {
       async submitRawTransaction(raw: string) {
         const tx = ethers.Transaction.from(raw);
@@ -311,11 +311,11 @@ beforeEach(() => {
   mockCreate.mockImplementation(
     async (
       roots: Parameters<
-        typeof import("@frank/wallet/monad-wallet-material").createMonadWalletMaterial
+        typeof import("@frank/wallet/evm-wallet-material").createMonadWalletMaterial
       >[0]
     ) => {
       const { createMonadWalletMaterial } = await import(
-        "@frank/wallet/monad-wallet-material"
+        "@frank/wallet/evm-wallet-material"
       );
       const material = createMonadWalletMaterial(roots);
       local = material.identity;
@@ -1295,8 +1295,8 @@ describe("with the real canonical wallet", () => {
   const RELAY = "https://relay-a.example";
   const NOW = { seconds: 100n, nanoseconds: 0 };
   const actual = jest.requireActual<
-    typeof import("@frank/wallet/chain/monad-chain")
-  >("@frank/wallet/chain/monad-chain");
+    typeof import("@frank/wallet/chain/evm-chain")
+  >("@frank/wallet/chain/evm-chain");
   const roots = (): MonadRootBundle => {
     const account = randomBytes(32);
     return {

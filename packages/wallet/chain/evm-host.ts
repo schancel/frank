@@ -1,4 +1,4 @@
-import { createEvmChain } from "./monad-chain";
+import { createEvmChain } from "./evm-chain";
 import { defaultNativeEvmTransactionBuilder } from "./evm-transaction-builder";
 import type { ActiveChain, NativeAssetChain } from "./active-chain";
 import type { EvmChainConfig } from "./evm-chain-config";

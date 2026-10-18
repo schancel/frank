@@ -2,7 +2,7 @@ import axios from 'axios'
 import {
   MonadIdentity,
   buildSignedDirectoryStatement,
-} from '@frank/wallet/monad-identity'
+} from '@frank/wallet/evm-identity'
 import {
   verifyMeraLoginProfile,
   type MeraLoginVerification,

@@ -22,13 +22,13 @@ import {
 import { EvmChangeKeyring } from '@frank/wallet/secp256k1-hd-keyring'
 import { encodeEncryptedMessageContent } from '@frank/codec/token-transfer'
 import type { TokenTransfer } from '@frank/codec/types'
-import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
+import { buildEnvelope } from '@frank/cashweb/relay/message-envelope'
 import {
   allocateOpeningConversationId,
   conversationIdSalt,
 } from '@frank/cashweb/relay/conversation-id'
-import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
-import { fetchMonadProfile } from '@frank/wallet/monad-identity'
+import { serializeMessageItems } from '@frank/wallet/chain/evm-chain'
+import { fetchMonadProfile } from '@frank/wallet/evm-identity'
 
 import { loadConfig, loadIdentity, resolveDataDir } from '../config'
 import { outputError, outputResult } from '../util'

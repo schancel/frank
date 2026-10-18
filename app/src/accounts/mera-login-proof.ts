@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { decodeProfileBytes, isCborFrame } from '@frank/wallet/monad-identity'
+import { decodeProfileBytes, isCborFrame } from '@frank/wallet/evm-identity'
 
 export type MeraLoginVerification = 'existing' | 'unverified' | 'unreachable'
 

@@ -5,9 +5,9 @@ import { randomBytes } from 'crypto';
 import level from 'level';
 
 import { deriveDomainRoot } from '@frank/domain-roots';
-import { createEvmChain } from './monad-chain';
+import { createEvmChain } from './evm-chain';
 import type { EvmChainConfig } from './evm-chain-config';
-import { createMonadWalletMaterial } from '../monad-wallet-material';
+import { createMonadWalletMaterial } from '../evm-wallet-material';
 
 it.each(['sub-account-pool', 'change-pool'] as const)(
   'refuses a fresh %s after a bound typed wallet has existed',

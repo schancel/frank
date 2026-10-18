@@ -10,15 +10,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getBytes, Transaction, Wallet } from 'ethers'
 import domainVectors from '../../domain-roots/vectors/domain-roots-v1.json'
-import { MonadHdKeyring } from '../monad-hd-keyring'
-import { MonadChangeKeyring } from '../monad-change-keyring'
+import { MonadHdKeyring } from '../secp256k1-hd-keyring'
+import { MonadChangeKeyring } from '../secp256k1-hd-keyring'
 import {
   deriveEvmStealthAddress,
   deriveEvmStealthPrivateKey,
-} from '../monad-stealth'
+} from '../evm-stealth'
 import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
 import { SimulatedLedger } from '../privacy-simulation-engine'
-import { MonadAccountTxSigner } from '../monad-account-tx'
+import { MonadAccountTxSigner } from '../evm-account-tx'
 
 function percentile(sorted: readonly number[], p: number): number {
   if (sorted.length === 0) return 0

@@ -15,7 +15,7 @@ import { dirname, join } from 'path'
 import { provisionBotProfile } from '@frank/bot-framework/bot-profile-admission'
 import { deriveDomainRoot } from '@frank/domain-roots'
 import { bip32MasterFromDomainRoot } from '@frank/wallet/bip32-domain-root'
-import { MONAD_IDENTITY_DERIVATION_PATH, MonadIdentity } from '@frank/wallet/monad-identity'
+import { MONAD_IDENTITY_DERIVATION_PATH, MonadIdentity } from '@frank/wallet/evm-identity'
 
 import { CuratedEntry } from '../print-curated-defaults'
 import { BOT_PROFILES } from '../bot-directory'

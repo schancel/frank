@@ -176,7 +176,7 @@ import { useSettingsStore } from '../stores/settings'
 import {
   ensureConversationIdSalt,
   nameOwnProfile,
-} from '../utils/monad-identity-session'
+} from '../utils/identity-session'
 import { isChainAddress, toChainDisplayAddress } from '../utils/chain-address'
 import { shortAddress } from '../utils/short-address'
 import { getOwnCanonicalAddress } from '../utils/own-address'

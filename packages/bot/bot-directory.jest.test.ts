@@ -5,7 +5,7 @@ import {
   MonadIdentity,
   registerMonadIdentity,
   registerMonadIdentityCbor,
-} from '@frank/wallet/monad-identity'
+} from '@frank/wallet/evm-identity'
 import { validateProfileDisplayName } from '@frank/wallet/profile-display-name'
 
 import {
@@ -28,8 +28,8 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-jest.mock('@frank/wallet/monad-identity', () => ({
-  ...jest.requireActual('@frank/wallet/monad-identity'),
+jest.mock('@frank/wallet/evm-identity', () => ({
+  ...jest.requireActual('@frank/wallet/evm-identity'),
   fetchMonadProfile: jest.fn(),
   registerMonadIdentity: jest.fn(),
   registerMonadIdentityCbor: jest.fn(),

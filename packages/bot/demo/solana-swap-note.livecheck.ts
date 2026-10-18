@@ -41,7 +41,7 @@ import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import { formatBaseUnit } from '@frank/wallet/chain/base-unit'
 import { swapRecordId } from '@frank/wallet/chain/evm-legacy-consolidator'
-import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
+import { installMessageItemRegistry } from '@frank/wallet/chain/canonical-dm'
 import {
   createRelayPricedEvmChain,
   installCanonicalDirectory,
@@ -49,7 +49,7 @@ import {
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
-import { registerMonadIdentity } from '@frank/wallet/monad-identity'
+import { registerMonadIdentity } from '@frank/wallet/evm-identity'
 import {
   BrowserSolanaLegacyJournal,
   createSolanaDex,

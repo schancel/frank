@@ -430,6 +430,14 @@ export class WebRtcCallSessionController {
     return this.controlChannel
   }
 
+  public getLocalPeerId(): string {
+    return this.localPeerId
+  }
+
+  public getRemotePeerId(): string {
+    return this.remotePeerId
+  }
+
   private nextSignalingSequence(): number {
     const seq = this.signalingSequence
     this.signalingSequence += 1
@@ -487,6 +495,7 @@ export class WebRtcCallSessionController {
     for (const listener of this.listeners) {
       listener.onStateChange?.(snap)
     }
+    notifyActiveCallRegistryListeners()
   }
 
   private notifyLocalStream(stream: MinimalMediaStream | null): void {
@@ -1697,6 +1706,42 @@ export class WebRtcCallSessionController {
 }
 
 const activeCallControllers = new Map<string, WebRtcCallSessionController>()
+const activeCallRegistryListeners = new Set<() => void>()
+
+function notifyActiveCallRegistryListeners(): void {
+  for (const listener of activeCallRegistryListeners) {
+    try {
+      listener()
+    } catch {
+      // Ignore listener errors
+    }
+  }
+}
+
+export function subscribeActiveCallControllers(
+  listener: () => void,
+): () => void {
+  activeCallRegistryListeners.add(listener)
+  return () => {
+    activeCallRegistryListeners.delete(listener)
+  }
+}
+
+export function getActiveCallSessionControllers(): WebRtcCallSessionController[] {
+  const result: WebRtcCallSessionController[] = []
+  for (const ctrl of activeCallControllers.values()) {
+    const phase = ctrl.getSnapshot().phase
+    if (
+      phase === 'ringing_outgoing' ||
+      phase === 'ringing_incoming' ||
+      phase === 'connecting' ||
+      phase === 'connected'
+    ) {
+      result.push(ctrl)
+    }
+  }
+  return result
+}
 
 export function registerCallSessionController(
   callId: string,
@@ -1704,6 +1749,7 @@ export function registerCallSessionController(
 ): void {
   if (!callId) return
   activeCallControllers.set(callId, controller)
+  notifyActiveCallRegistryListeners()
 }
 
 export function unregisterCallSessionController(
@@ -1713,6 +1759,7 @@ export function unregisterCallSessionController(
   if (!callId) return
   if (!controller || activeCallControllers.get(callId) === controller) {
     activeCallControllers.delete(callId)
+    notifyActiveCallRegistryListeners()
   }
 }
 
@@ -1739,6 +1786,7 @@ export function getOrCreateCallSessionController(
     created.receiveIncomingInvite(options.invite, options.remotePeerId)
   }
   activeCallControllers.set(callId, created)
+  notifyActiveCallRegistryListeners()
   return created
 }
 

@@ -1081,6 +1081,23 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
       await caller.handleIncomingAccept(accept)
       harness.connectPeersAndOpenDataChannel()
 
+      // Simulate a 325px left sidebar (.frank-main-drawer) in the layout
+      const fakeDrawer = document.createElement('div')
+      fakeDrawer.className = 'frank-main-drawer'
+      fakeDrawer.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          top: 0,
+          right: 325,
+          bottom: 800,
+          width: 325,
+          height: 800,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        } as DOMRect)
+      document.body.appendChild(fakeDrawer)
+
       const wrapper = mountCallCard({
         payload: invite,
         controller: caller,
@@ -1091,10 +1108,12 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
       const card = wrapper.find('[data-testid="webrtc-call-card"]')
       expect(card.classes()).not.toContain('webrtc-call-card--expanded')
 
-      // Clicking the remote (primary) video expands the call into full-stage theater view
+      // Clicking the remote (primary) video expands the call into chat-pane theater view,
+      // leaving the 325px sidebar + 12px margin uncovered (left: 337px)
       await wrapper.find('[data-testid="webrtc-remote-video"]').trigger('click')
       await wrapper.vm.$nextTick()
       expect(card.classes()).toContain('webrtc-call-card--expanded')
+      expect((card.element as HTMLElement).style.left).toBe('337px')
 
       // Clicking the PiP (local) video swaps local to primary stage
       const localSlot = wrapper
@@ -1114,6 +1133,7 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
       await wrapper.vm.$nextTick()
       expect(card.classes()).not.toContain('webrtc-call-card--expanded')
 
+      document.body.removeChild(fakeDrawer)
       wrapper.unmount()
       callee.cleanup()
     })

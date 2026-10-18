@@ -1,10 +1,12 @@
 <template>
   <div
+    ref="cardRootEl"
     class="webrtc-call-card q-pa-sm rounded-borders"
     :class="{
       'webrtc-call-card--expanded': isStageExpanded && showVideoViewport,
       'webrtc-call-card--compact': !isPrimaryCallCard,
     }"
+    :style="expandedStageStyle"
     data-testid="webrtc-call-card"
   >
     <div class="webrtc-call-header row items-center justify-between q-mb-xs">
@@ -289,7 +291,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ApplicationMessageItem } from '@frank/cashweb/types/messages'
 import {
   extractWebRtcCallPayload,
@@ -404,12 +406,24 @@ const uiLabels = {
   clickToMinimizeHint: 'Click video to minimize',
 }
 
+const cardRootEl = ref<HTMLElement | null>(null)
 const localVideoEl = ref<HTMLVideoElement | null>(null)
 const remoteVideoEl = ref<HTMLVideoElement | null>(null)
 const remoteAudioEl = ref<HTMLAudioElement | null>(null)
 const snapshotVersion = ref(0)
 const isStageExpanded = ref(false)
 const isLocalPrimary = ref(false)
+const expandedStageInsets = ref<{
+  left: number
+  top: number
+  right: number
+  bottom: number
+}>({
+  left: 12,
+  top: 12,
+  right: 12,
+  bottom: 12,
+})
 
 const resolvedPayload = computed<WebRtcCallPayload | null>(() => {
   if (props.payload) return props.payload
@@ -960,13 +974,68 @@ const expandStageHintText = computed<string>(() => {
     : uiLabels.clickToExpandHint
 })
 
+const expandedStageStyle = computed<Record<string, string> | undefined>(() => {
+  if (!isStageExpanded.value || !showVideoViewport.value) {
+    return undefined
+  }
+  const { left, top, right, bottom } = expandedStageInsets.value
+  return {
+    left: `${left}px`,
+    top: `${top}px`,
+    right: `${right}px`,
+    bottom: `${bottom}px`,
+  }
+})
+
+function updateExpandedStageBounds(): void {
+  if (typeof document === 'undefined') return
+  let leftEdge = 0
+  let topEdge = 0
+
+  const drawerEl = document.querySelector(
+    '.frank-main-drawer',
+  ) as HTMLElement | null
+  if (drawerEl && typeof drawerEl.getBoundingClientRect === 'function') {
+    const drawerRect = drawerEl.getBoundingClientRect()
+    if (drawerRect.width > 0 && drawerRect.right > 0 && drawerRect.left >= -5) {
+      leftEdge = Math.max(leftEdge, Math.round(drawerRect.right))
+    }
+  }
+
+  const chatContainerEl = (cardRootEl.value?.closest('.chat-container') ??
+    document.querySelector('.chat-container')) as HTMLElement | null
+  if (
+    chatContainerEl &&
+    typeof chatContainerEl.getBoundingClientRect === 'function'
+  ) {
+    const chatRect = chatContainerEl.getBoundingClientRect()
+    if (chatRect.width > 0) {
+      leftEdge = Math.max(leftEdge, Math.round(chatRect.left))
+    }
+    if (chatRect.height > 0 && chatRect.top > 0) {
+      topEdge = Math.max(topEdge, Math.round(chatRect.top))
+    }
+  }
+
+  expandedStageInsets.value = {
+    left: leftEdge + 12,
+    top: topEdge + 12,
+    right: 12,
+    bottom: 12,
+  }
+}
+
 function onToggleExpandStage(): void {
-  isStageExpanded.value = !isStageExpanded.value
+  const next = !isStageExpanded.value
+  if (next) {
+    updateExpandedStageBounds()
+  }
+  isStageExpanded.value = next
 }
 
 function onLocalVideoSlotClick(): void {
   if (effectiveLocalPrimary.value) {
-    isStageExpanded.value = !isStageExpanded.value
+    onToggleExpandStage()
   } else {
     isLocalPrimary.value = true
   }
@@ -974,7 +1043,7 @@ function onLocalVideoSlotClick(): void {
 
 function onRemoteVideoSlotClick(): void {
   if (!effectiveLocalPrimary.value) {
-    isStageExpanded.value = !isStageExpanded.value
+    onToggleExpandStage()
   } else {
     isLocalPrimary.value = false
   }
@@ -983,6 +1052,36 @@ function onRemoteVideoSlotClick(): void {
 watch(showVideoViewport, visible => {
   if (!visible) {
     isStageExpanded.value = false
+  }
+})
+
+watch(isStageExpanded, expanded => {
+  if (expanded) {
+    updateExpandedStageBounds()
+  }
+})
+
+let layoutResizeObserver: ResizeObserver | null = null
+
+onMounted(() => {
+  updateExpandedStageBounds()
+  if (typeof window !== 'undefined') {
+    window.addEventListener('resize', updateExpandedStageBounds, {
+      passive: true,
+    })
+  }
+  if (typeof ResizeObserver !== 'undefined' && typeof document !== 'undefined') {
+    layoutResizeObserver = new ResizeObserver(() => {
+      if (isStageExpanded.value) {
+        updateExpandedStageBounds()
+      }
+    })
+    const drawerEl = document.querySelector('.frank-main-drawer')
+    if (drawerEl) layoutResizeObserver.observe(drawerEl)
+    const chatEl =
+      cardRootEl.value?.closest('.chat-container') ??
+      document.querySelector('.chat-container')
+    if (chatEl) layoutResizeObserver.observe(chatEl)
   }
 })
 
@@ -1088,6 +1187,11 @@ function onHangup(): void {
 }
 
 onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('resize', updateExpandedStageBounds)
+  }
+  layoutResizeObserver?.disconnect()
+  layoutResizeObserver = null
   unsubscribeController?.()
   unsubscribeController = null
   if (
@@ -1122,8 +1226,8 @@ onBeforeUnmount(() => {
 
 .webrtc-call-card--expanded {
   position: fixed;
-  inset: 16px;
-  z-index: 6000;
+  inset: 12px 12px 12px var(--webrtc-sidebar-offset, 12px);
+  z-index: 1500;
   max-width: none;
   min-width: 0;
   border-radius: 22px;

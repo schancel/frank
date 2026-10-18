@@ -131,6 +131,18 @@
             <q-resize-observer @resize="onBannerResize" />
             <chat-banner-stack :stamp-status="stampPreparationStatus" />
           </div>
+          <div
+            v-if="detachedActiveCallController"
+            class="chat-floating-webrtc-call"
+            data-testid="chat-floating-webrtc-call"
+          >
+            <chat-message-web-rtc-call
+              :controller="detachedActiveCallController"
+              :address="detachedActiveCallController.getRemotePeerId()"
+              :cleanup-on-unmount="false"
+              @sendFollowUp="sendDetachedCallFollowUp"
+            />
+          </div>
         </div>
         <q-page-sticky
           position="bottom-right"
@@ -383,9 +395,13 @@ import {
   type ArticlePayload,
 } from '@frank/wallet/message-item-plugins/article'
 import { MENTAL_POKER_PLUGIN_ID } from '@frank/wallet/message-item-plugins/mental-poker'
+import { extractWebRtcCallPayload } from '@frank/wallet/message-item-plugins/webrtc-call'
+import ChatMessageWebRtcCall from '../components/chat/messages/ChatMessageWebRtcCall.vue'
 import {
   WebRtcCallSessionController,
+  getActiveCallSessionControllers,
   registerCallSessionController,
+  subscribeActiveCallControllers,
   unregisterCallSessionController,
 } from '../utils/webrtc-call-controller'
 import {
@@ -440,6 +456,7 @@ const scrollDuration = 0
 export default defineComponent({
   components: {
     ChatMessageComponent,
+    ChatMessageWebRtcCall,
     EmailThreadView,
     ChatMessageReply,
     ChatInput,
@@ -461,6 +478,8 @@ export default defineComponent({
     }
   },
   beforeUnmount() {
+    this.unsubscribeActiveCalls?.()
+    this.unsubscribeActiveCalls = null
     this.cancelBlackjackPreparation()
     window.removeEventListener('resize', this.resizeHandler)
     window.removeEventListener('focus', this.onWindowFocus)
@@ -525,6 +544,8 @@ export default defineComponent({
       // An own undelivered hand message is being resumed; no automatic step meanwhile.
       resumingHand: false,
       screenerReplyOnceIds: new Set<string>(),
+      activeCallRegistryTick: 0,
+      unsubscribeActiveCalls: null as (() => void) | null,
     }
   },
   setup() {
@@ -556,6 +577,9 @@ export default defineComponent({
   },
   emits: ['giveLotusClicked'],
   mounted() {
+    this.unsubscribeActiveCalls = subscribeActiveCallControllers(() => {
+      this.activeCallRegistryTick += 1
+    })
     void this.refreshMinimumStamp()
     this.stampQuoteTimer = setInterval(
       () => void this.refreshMinimumStamp(),
@@ -1501,6 +1525,32 @@ export default defineComponent({
         errorNotify(err instanceof Error ? err : new Error(String(err)))
       }
     },
+    async sendDetachedCallFollowUp({
+      items,
+      stampValueWei,
+    }: {
+      items: MessageItem[]
+      stampValueWei?: bigint
+    }) {
+      const ctrl = this.detachedActiveCallController
+      const peer = ctrl?.getRemotePeerId() || this.recipientAddress || this.address
+      if (!peer || !items.length) return
+      if (sameCanonicalAddress(peer, this.recipientAddress || this.address)) {
+        await this.sendFollowUpItems({ items, stampValueWei })
+        return
+      }
+      try {
+        const wallet = useMonadWallet()
+        await this.sendDirectMessage({
+          wallet,
+          address: peer,
+          items,
+          stampValue: stampValueWei ?? this.minimumStampWei ?? 0n,
+        })
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+      }
+    },
     async sendRpsChallenge({
       move,
       wagerWei,
@@ -2019,6 +2069,28 @@ export default defineComponent({
 
       return this.messages.slice(start, end)
     },
+    detachedActiveCallController(): WebRtcCallSessionController | null {
+      void this.activeCallRegistryTick
+      const activeControllers = getActiveCallSessionControllers()
+      if (activeControllers.length === 0) return null
+      const visibleCallIds = new Set<string>()
+      for (const msg of this.chunkedMessages) {
+        if (!Array.isArray(msg.items)) continue
+        for (const item of msg.items) {
+          const payload = extractWebRtcCallPayload(item)
+          if (payload?.callId && payload.action === 'invite') {
+            visibleCallIds.add(payload.callId)
+          }
+        }
+      }
+      for (const ctrl of activeControllers) {
+        const callId = ctrl.getSnapshot().callId
+        if (!visibleCallIds.has(callId)) {
+          return ctrl
+        }
+      }
+      return null
+    },
     peerStampSuggestion(): PeerStampSuggestionResult | undefined {
       if (this.defaultStampWei === undefined) return undefined
       return computePeerStampSuggestion({
@@ -2191,6 +2263,14 @@ export default defineComponent({
 
 .chat-banner-overlay {
   z-index: 1;
+}
+
+.chat-floating-webrtc-call {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 1400;
+  max-width: min(380px, calc(100% - 32px));
 }
 
 .chat-group-recipient {

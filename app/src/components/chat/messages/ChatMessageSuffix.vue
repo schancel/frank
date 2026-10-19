@@ -18,45 +18,36 @@
       >{{ announced }}</span
     >
     <div
-      v-if="status === 'error'"
-      class="outgoing-status outgoing-status--failed"
-      data-testid="outgoing-failed"
-    >
-      <q-icon name="error" color="negative" />
-      <div>
-        <div>{{ $t('chatMessage.failedToSend') }}</div>
-        <div v-if="failureText" data-testid="outgoing-failure-reason">
-          {{ failureText }}
-        </div>
-      </div>
-    </div>
-    <div
-      v-else-if="status === 'payment-pending'"
-      class="outgoing-status"
-      data-testid="outgoing-payment-pending"
-    >
-      <q-icon name="schedule" />
-      <span>{{ paymentText }}</span>
-    </div>
-    <div
-      v-else-if="paymentSummaryText && paymentSummary !== 'pending'"
-      class="outgoing-status"
-      data-testid="outgoing-payment-summary"
-    >
-      {{ paymentSummaryText }}
-    </div>
-    <div
       class="outgoing-footer"
       :class="suffixPlacement"
       data-testid="outgoing-footer"
     >
       <span
-        v-if="status === 'pending' && outbound"
+        v-if="status === 'error'"
+        class="outgoing-status outgoing-status--failed"
+        data-testid="outgoing-failed"
+      >
+        <q-icon name="error" color="negative" />
+        <span>{{ $t('chatMessage.failedToSend') }}</span>
+        <span v-if="failureText" data-testid="outgoing-failure-reason">
+          {{ failureText }}
+        </span>
+      </span>
+      <span
+        v-else-if="status === 'payment-pending'"
+        class="outgoing-status"
+        data-testid="outgoing-payment-pending"
+      >
+        <q-icon name="schedule" />
+        <span>{{ paymentText }}</span>
+      </span>
+      <span
+        v-else-if="status === 'pending' && outbound"
         data-testid="outgoing-sending"
         >{{ sendingText }}</span
       >
       <span
-        v-if="paymentSummaryText && paymentSummary === 'pending'"
+        v-else-if="paymentSummaryText"
         data-testid="outgoing-payment-summary"
         >{{ paymentSummaryText }}</span
       >
@@ -311,6 +302,7 @@ export default defineComponent({
 }
 .outgoing-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
@@ -324,13 +316,9 @@ export default defineComponent({
   justify-content: flex-start;
 }
 .outgoing-status {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 8px 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   white-space: normal;
-  line-height: 1.5;
-  font-size: 0.875rem;
-  text-align: left;
 }
 </style>

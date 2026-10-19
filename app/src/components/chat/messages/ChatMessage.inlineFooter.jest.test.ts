@@ -252,6 +252,12 @@ describe('inline bubble footer (#391)', () => {
     expect(suffix.get('[data-testid="outgoing-failed"]').classes()).toContain(
       'outgoing-status',
     )
+    expect(
+      suffix.get('[data-testid="outgoing-failed"]').element.parentElement,
+    ).toBe(footer)
+    expect(
+      suffix.get('[data-testid="outgoing-failed"]').element.nextElementSibling,
+    ).toBe(time)
     expect(suffix.find('[data-testid="outgoing-retry"]').exists()).toBe(true)
     for (const status of ['pending', 'payment-pending', 'confirmed']) {
       await setStatus(wrapper, status)

@@ -276,26 +276,26 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
         expect(
           sent.get('[data-testid="outgoing-payment-summary"]').text(),
         ).toBe(t(key))
+        const label = sent.get(
+          '[data-testid="outgoing-payment-summary"]',
+        ).element
+        expect(label.parentElement).toBe(
+          sent.get('[data-testid="outgoing-footer"]').element,
+        )
+        expect(label.nextElementSibling).toBe(
+          sent.get('[data-testid="outgoing-amount"]').element,
+        )
         if (summary === 'pending') {
-          const label = sent.get(
-            '[data-testid="outgoing-payment-summary"]',
-          ).element
-          expect(label.parentElement).toBe(
-            sent.get('[data-testid="outgoing-footer"]').element,
-          )
-          expect(label.nextElementSibling).toBe(
-            sent.get('[data-testid="outgoing-amount"]').element,
-          )
           expect(label.textContent).toBe(messages === enUS ? 'Sent' : 'Envoyé')
-          expect(sent.findAll('.outgoing-status')).toHaveLength(0)
         }
+        expect(sent.findAll('.outgoing-status')).toHaveLength(0)
         // A real string in both languages, never the key.
         expect(t(key)).not.toBe(key)
       }
     },
   )
 
-  it('keeps one time/amount/actions footer through send and payment transitions, without a separate success row', async () => {
+  it('keeps one time/amount/actions footer through send and payment transitions, with status to the left of the time', async () => {
     const wrapper = mountSuffix({
       status: 'pending',
       inline: true,
@@ -326,12 +326,18 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       expect(
         wrapper.find('[data-testid="outgoing-payment-summary"]').exists(),
       ).toBe(false)
-      expect(
-        wrapper
-          .get('[data-testid="outgoing-footer"]')
-          .find('[data-testid="outgoing-failed"]')
-          .exists(),
-      ).toBe(false)
+      if (props.status === 'error') {
+        const failed = wrapper.get('[data-testid="outgoing-failed"]').element
+        expect(failed.parentElement).toBe(footer)
+        expect(failed.nextElementSibling).toBe(time)
+      } else {
+        expect(
+          wrapper
+            .get('[data-testid="outgoing-footer"]')
+            .find('[data-testid="outgoing-failed"]')
+            .exists(),
+        ).toBe(false)
+      }
     }
     wrapper.unmount()
   })

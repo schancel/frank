@@ -781,6 +781,20 @@ export type DappApprovalKind =
   | 'sign_typed_data'
   | 'send_transaction'
   | 'switch_chain'
+  | 'add_chain'
+
+export interface DappCustomChainMetadata {
+  chainId: bigint
+  chainIdHex: string
+  chainName: string
+  nativeCurrency: {
+    name: string
+    symbol: string
+    decimals: number
+  }
+  rpcUrls: string[]
+  blockExplorerUrls?: string[]
+}
 
 export interface PendingDappApproval {
   id: string
@@ -821,12 +835,23 @@ export interface FrankDappRpcBackend {
   sweepFromPool?: (
     shortfallWei: bigint,
     recipientPersonaAddress: string,
+    chainId?: bigint,
   ) => Promise<{ sweepTxHashes: string[]; fundedWei: bigint }>
 }
 
 export interface FrankDappBridgeRouterOptions {
   keyring: DappPersonaKeyring
   initialChainId?: bigint | number
+  /**
+   * Dedicated chain ID used for Frank's anti-spam message stamps (completely decoupled
+   * from whichever EVM chain a connected dApp is transacting on).
+   */
+  stampChainId?: bigint | number
+  /**
+   * Chain IDs where Frank maintains a multi-EOA sub-account/stealth pool eligible for JIT sweeps.
+   * Defaults to `[initialChainId]` (and `stampChainId` if provided).
+   */
+  poolEnabledChainIds?: Iterable<bigint | number>
   supportedChainIds?: Iterable<bigint | number>
   rpcBackend?: FrankDappRpcBackend
   defaultBurnerForNewOrigins?: boolean
@@ -862,14 +887,23 @@ function normalizeMessageBytes(rawMessage: string): Uint8Array {
 /**
  * Origin-verified EIP-1193 JSON-RPC request router and non-blocking inline approval queue (`#1709`).
  *
- * Never spawns popup windows; interactive requests (`eth_requestAccounts`, `personal_sign`,
- * `eth_signTypedData_v4`, `eth_sendTransaction`, `wallet_switchEthereumChain`) enqueue a
- * `PendingDappApproval` resolved by `approveRequest(id)` or `rejectRequest(id)`.
+ * Key Multi-Chain & Stamp-Chain Decoupling Invariants:
+ * 1. Frank's messaging stamp chain (`stampChainId`) is completely independent from the dApp chain.
+ * 2. Each connected dApp origin tracks its own pinned `chainId` (`originChainIds`) so switching
+ *    chains on Uniswap (e.g. Arbitrum `0xa4b1`) never breaks Polymarket (Polygon `0x89`) or Monad (`0x279f`).
+ * 3. Supports `wallet_addEthereumChain` (EIP-3085) for dynamic EVM chain registration.
+ * 4. Gates JIT sub-account pool sweeps behind `poolEnabledChainIds` so pool sweeps only run on chains
+ *    where a sub-account pool actually exists for that chain's gas token.
  */
 export class FrankDappBridgeRouter {
   private readonly keyring: DappPersonaKeyring
+  private defaultChainId: bigint
   private currentChainId: bigint
+  private stampChainId: bigint
+  private readonly originChainIds = new Map<string, bigint>()
   private readonly supportedChainIds: Set<bigint>
+  private readonly poolEnabledChainIds: Set<bigint>
+  private readonly customChains = new Map<bigint, DappCustomChainMetadata>()
   private readonly rpcBackend: FrankDappRpcBackend
   private readonly defaultBurnerForNewOrigins: boolean
   private readonly nowMs: () => number
@@ -878,25 +912,87 @@ export class FrankDappBridgeRouter {
 
   constructor(options: FrankDappBridgeRouterOptions) {
     this.keyring = options.keyring
-    this.currentChainId = BigInt(options.initialChainId ?? 10143) // Monad testnet default or custom
+    this.defaultChainId = BigInt(options.initialChainId ?? 10143)
+    this.currentChainId = this.defaultChainId
+    this.stampChainId = BigInt(options.stampChainId ?? this.defaultChainId)
     this.supportedChainIds = new Set<bigint>([
-      this.currentChainId,
-      1n,
-      10n,
-      8453n,
-      10143n,
-      31337n,
-      42161n,
-      11155111n,
+      this.defaultChainId,
+      this.stampChainId,
+      1n,        // Ethereum Mainnet
+      10n,       // Optimism
+      56n,       // BNB Smart Chain
+      97n,       // BNB Testnet
+      137n,      // Polygon PoS
+      999n,      // HyperEVM
+      8453n,     // Base
+      10143n,    // Monad Testnet
+      31337n,    // Hardhat / Anvil
+      42161n,    // Arbitrum One
+      80002n,    // Polygon Amoy
+      84532n,    // Base Sepolia
+      421614n,   // Arbitrum Sepolia
+      11155111n, // Ethereum Sepolia
     ])
     if (options.supportedChainIds) {
       for (const id of options.supportedChainIds) {
         this.supportedChainIds.add(BigInt(id))
       }
     }
+    this.poolEnabledChainIds = new Set<bigint>(
+      options.poolEnabledChainIds
+        ? Array.from(options.poolEnabledChainIds, (id) => BigInt(id))
+        : [this.defaultChainId],
+    )
     this.rpcBackend = options.rpcBackend ?? {}
     this.defaultBurnerForNewOrigins = options.defaultBurnerForNewOrigins ?? false
     this.nowMs = options.nowMs ?? (() => Date.now())
+  }
+
+  getStampChainId(): bigint {
+    return this.stampChainId
+  }
+
+  getStampChainIdHex(): string {
+    return `0x${this.stampChainId.toString(16)}`
+  }
+
+  setStampChainId(chainId: bigint | number): void {
+    const id = BigInt(chainId)
+    this.stampChainId = id
+    this.supportedChainIds.add(id)
+  }
+
+  isPoolSweepEnabledForChain(chainId: bigint | number): boolean {
+    return this.poolEnabledChainIds.has(BigInt(chainId))
+  }
+
+  getChainIdForOrigin(rawOrigin?: string): bigint {
+    if (rawOrigin) {
+      const normalized = normalizeDappOrigin(rawOrigin)
+      const pinned = this.originChainIds.get(normalized)
+      if (pinned !== undefined) {
+        return pinned
+      }
+    }
+    return this.defaultChainId
+  }
+
+  getChainIdHexForOrigin(rawOrigin?: string): string {
+    return `0x${this.getChainIdForOrigin(rawOrigin).toString(16)}`
+  }
+
+  setChainIdForOrigin(rawOrigin: string, chainId: bigint | number): void {
+    const normalized = normalizeDappOrigin(rawOrigin)
+    const id = BigInt(chainId)
+    if (!this.supportedChainIds.has(id)) {
+      throw new Error(`Unsupported chainId: ${id.toString()}`)
+    }
+    this.originChainIds.set(normalized, id)
+    this.currentChainId = id
+  }
+
+  getCustomChain(chainId: bigint | number): DappCustomChainMetadata | null {
+    return this.customChains.get(BigInt(chainId)) ?? null
   }
 
   getChainIdHex(): string {
@@ -946,6 +1042,7 @@ export class FrankDappBridgeRouter {
       method: string
       params: unknown[]
       personaAddress?: string
+      chainIdHex?: string
       jitRequirement?: DappJitSweepRequirement
     },
     handler: (options?: { burner?: boolean; personaIndex?: number }) => Promise<T>,
@@ -959,7 +1056,7 @@ export class FrankDappBridgeRouter {
       method: meta.method,
       params: meta.params,
       personaAddress: meta.personaAddress,
-      chainIdHex: this.getChainIdHex(),
+      chainIdHex: meta.chainIdHex ?? this.getChainIdHexForOrigin(meta.origin),
       createdAtMs: this.nowMs(),
       ...(meta.jitRequirement ? { jitRequirement: meta.jitRequirement } : {}),
     }
@@ -1002,12 +1099,14 @@ export class FrankDappBridgeRouter {
         ? [request.params]
         : []
 
+    const originChainId = this.getChainIdForOrigin(origin)
+
     switch (request.method) {
       case 'eth_chainId':
-        return this.getChainIdHex()
+        return `0x${originChainId.toString(16)}`
 
       case 'net_version':
-        return this.currentChainId.toString(10)
+        return originChainId.toString(10)
 
       case 'eth_accounts': {
         const connected = this.keyring.getConnectedPersonaForOrigin(origin)
@@ -1017,6 +1116,9 @@ export class FrankDappBridgeRouter {
       case 'eth_requestAccounts': {
         const existing = this.keyring.getConnectedPersonaForOrigin(origin)
         if (existing) {
+          if (!this.originChainIds.has(origin)) {
+            this.originChainIds.set(origin, this.defaultChainId)
+          }
           return [existing.address]
         }
         return await this.enqueueApproval(
@@ -1031,6 +1133,9 @@ export class FrankDappBridgeRouter {
               burner: approveOpts?.burner ?? this.defaultBurnerForNewOrigins,
               personaIndex: approveOpts?.personaIndex,
             })
+            if (!this.originChainIds.has(origin)) {
+              this.originChainIds.set(origin, this.defaultChainId)
+            }
             return [persona.address]
           },
         )
@@ -1066,6 +1171,9 @@ export class FrankDappBridgeRouter {
               burner: approveOpts?.burner ?? this.defaultBurnerForNewOrigins,
               personaIndex: approveOpts?.personaIndex,
             })
+            if (!this.originChainIds.has(origin)) {
+              this.originChainIds.set(origin, this.defaultChainId)
+            }
             return [
               {
                 parentCapability: 'eth_accounts',
@@ -1084,6 +1192,7 @@ export class FrankDappBridgeRouter {
 
       case 'wallet_revokePermissions': {
         this.keyring.disconnectOrigin(origin)
+        this.originChainIds.delete(origin)
         return null
       }
 
@@ -1099,10 +1208,11 @@ export class FrankDappBridgeRouter {
         if (!this.supportedChainIds.has(targetChainId)) {
           throw new Eip1193ProviderRpcError(
             EIP1193_ERROR_CODES.UNRECOGNIZED_CHAIN_ID,
-            `Unrecognized or unsupported chainId: ${arg.chainId}`,
+            `Unrecognized or unsupported chainId: ${arg.chainId}. Call wallet_addEthereumChain first.`,
           )
         }
-        if (targetChainId === this.currentChainId) {
+        if (targetChainId === originChainId) {
+          this.originChainIds.set(origin, targetChainId)
           return null
         }
         return await this.enqueueApproval(
@@ -1111,8 +1221,64 @@ export class FrankDappBridgeRouter {
             origin,
             method: request.method,
             params: paramsArray,
+            chainIdHex: `0x${targetChainId.toString(16)}`,
           },
           async () => {
+            this.originChainIds.set(origin, targetChainId)
+            this.currentChainId = targetChainId
+            return null
+          },
+        )
+      }
+
+      case 'wallet_addEthereumChain': {
+        const arg = paramsArray[0] as {
+          chainId?: string
+          chainName?: string
+          nativeCurrency?: { name?: string; symbol?: string; decimals?: number }
+          rpcUrls?: string[]
+          blockExplorerUrls?: string[]
+        } | undefined
+        if (
+          !arg ||
+          typeof arg.chainId !== 'string' ||
+          !/^0x[0-9a-fA-F]+$/.test(arg.chainId) ||
+          !arg.chainName ||
+          !Array.isArray(arg.rpcUrls) ||
+          arg.rpcUrls.length === 0
+        ) {
+          throw new Eip1193ProviderRpcError(
+            EIP1193_ERROR_CODES.INVALID_PARAMS,
+            'wallet_addEthereumChain requires chainId, chainName, and rpcUrls',
+          )
+        }
+        const targetChainId = BigInt(arg.chainId)
+        const chainIdHex = `0x${targetChainId.toString(16)}`
+        return await this.enqueueApproval(
+          {
+            kind: 'add_chain',
+            origin,
+            method: request.method,
+            params: paramsArray,
+            chainIdHex,
+          },
+          async () => {
+            this.supportedChainIds.add(targetChainId)
+            this.customChains.set(targetChainId, {
+              chainId: targetChainId,
+              chainIdHex,
+              chainName: String(arg.chainName),
+              nativeCurrency: {
+                name: String(arg.nativeCurrency?.name ?? arg.chainName),
+                symbol: String(arg.nativeCurrency?.symbol ?? 'ETH'),
+                decimals: Number(arg.nativeCurrency?.decimals ?? 18),
+              },
+              rpcUrls: arg.rpcUrls!.map(String),
+              blockExplorerUrls: Array.isArray(arg.blockExplorerUrls)
+                ? arg.blockExplorerUrls.map(String)
+                : undefined,
+            })
+            this.originChainIds.set(origin, targetChainId)
             this.currentChainId = targetChainId
             return null
           },
@@ -1121,7 +1287,7 @@ export class FrankDappBridgeRouter {
 
       case 'eth_blockNumber': {
         const blockNum = this.rpcBackend.getBlockNumber
-          ? await this.rpcBackend.getBlockNumber(this.currentChainId)
+          ? await this.rpcBackend.getBlockNumber(originChainId)
           : 0n
         return `0x${blockNum.toString(16)}`
       }
@@ -1135,7 +1301,7 @@ export class FrankDappBridgeRouter {
           )
         }
         const balanceWei = this.rpcBackend.getBalanceWei
-          ? await this.rpcBackend.getBalanceWei(getAddress(address), this.currentChainId)
+          ? await this.rpcBackend.getBalanceWei(getAddress(address), originChainId)
           : 0n
         return `0x${balanceWei.toString(16)}`
       }
@@ -1151,7 +1317,7 @@ export class FrankDappBridgeRouter {
         const nonce = this.rpcBackend.getTransactionCount
           ? await this.rpcBackend.getTransactionCount(
               getAddress(address),
-              this.currentChainId,
+              originChainId,
             )
           : 0
         return `0x${nonce.toString(16)}`
@@ -1160,7 +1326,7 @@ export class FrankDappBridgeRouter {
       case 'eth_estimateGas': {
         const txObj = (paramsArray[0] ?? {}) as Record<string, unknown>
         const gas = this.rpcBackend.estimateGas
-          ? await this.rpcBackend.estimateGas(txObj, this.currentChainId)
+          ? await this.rpcBackend.estimateGas(txObj, originChainId)
           : 21_000n
         return `0x${gas.toString(16)}`
       }
@@ -1171,7 +1337,7 @@ export class FrankDappBridgeRouter {
         if (!this.rpcBackend.ethCall) {
           return '0x'
         }
-        return await this.rpcBackend.ethCall(txObj, blockTag, this.currentChainId)
+        return await this.rpcBackend.ethCall(txObj, blockTag, originChainId)
       }
 
       case 'eth_getTransactionReceipt': {
@@ -1179,7 +1345,7 @@ export class FrankDappBridgeRouter {
         if (!this.rpcBackend.getTransactionReceipt) {
           return null
         }
-        return await this.rpcBackend.getTransactionReceipt(txHash, this.currentChainId)
+        return await this.rpcBackend.getTransactionReceipt(txHash, originChainId)
       }
 
       case 'personal_sign': {
@@ -1280,11 +1446,11 @@ export class FrankDappBridgeRouter {
         const domainChainId = parsedTypedData.domain?.chainId
         if (
           domainChainId !== undefined &&
-          BigInt(String(domainChainId)) !== this.currentChainId
+          BigInt(String(domainChainId)) !== originChainId
         ) {
           throw new Eip1193ProviderRpcError(
             EIP1193_ERROR_CODES.INVALID_PARAMS,
-            `EIP-712 domain chainId (${String(domainChainId)}) mismatches active chainId (${this.currentChainId.toString()})`,
+            `EIP-712 domain chainId (${String(domainChainId)}) mismatches active chainId (${originChainId.toString()})`,
           )
         }
 
@@ -1374,7 +1540,7 @@ export class FrankDappBridgeRouter {
             : txParam.gasLimit
               ? parseHexOrDecimalBigInt(txParam.gasLimit, 21_000n)
               : this.rpcBackend.estimateGas
-                ? await this.rpcBackend.estimateGas(txParam, this.currentChainId)
+                ? await this.rpcBackend.estimateGas(txParam, originChainId)
                 : 21_000n
 
           const maxFeePerGasWei = txParam.maxFeePerGas
@@ -1382,11 +1548,11 @@ export class FrankDappBridgeRouter {
             : txParam.gasPrice
               ? parseHexOrDecimalBigInt(txParam.gasPrice, 1_000_000_000n)
               : this.rpcBackend.getMaxFeePerGasWei
-                ? await this.rpcBackend.getMaxFeePerGasWei(this.currentChainId)
+                ? await this.rpcBackend.getMaxFeePerGasWei(originChainId)
                 : 1_000_000_000n
 
           const personaBalanceWei = this.rpcBackend.getBalanceWei
-            ? await this.rpcBackend.getBalanceWei(connected.address, this.currentChainId)
+            ? await this.rpcBackend.getBalanceWei(connected.address, originChainId)
             : 0n
 
           const jitRequirement = calculateDappJitSweepRequirement({
@@ -1416,16 +1582,22 @@ export class FrankDappBridgeRouter {
                 : this.rpcBackend.getTransactionCount
                   ? await this.rpcBackend.getTransactionCount(
                       connected.address,
-                      this.currentChainId,
+                      originChainId,
                     )
                   : 0
 
             const currentBalanceWei = this.rpcBackend.getBalanceWei
               ? await this.rpcBackend.getBalanceWei(
                   connected.address,
-                  this.currentChainId,
+                  originChainId,
                 )
               : personaBalanceWei
+
+            const chainScopedSweepFromPool =
+              this.rpcBackend.sweepFromPool && this.isPoolSweepEnabledForChain(originChainId)
+                ? (shortfallWei: bigint, recipientAddr: string) =>
+                    this.rpcBackend.sweepFromPool!(shortfallWei, recipientAddr, originChainId)
+                : undefined
 
             const signed = await executeDappJitSweepAndSignTx({
               keyring: this.keyring,
@@ -1439,15 +1611,15 @@ export class FrankDappBridgeRouter {
                 gasLimit,
                 maxFeePerGasWei,
                 maxPriorityFeePerGasWei,
-                chainId: this.currentChainId,
+                chainId: originChainId,
               },
-              sweepFromPool: this.rpcBackend.sweepFromPool,
+              sweepFromPool: chainScopedSweepFromPool,
             })
 
             if (this.rpcBackend.broadcastSignedTransaction) {
               return await this.rpcBackend.broadcastSignedTransaction(
                 signed.signedTxHex,
-                this.currentChainId,
+                originChainId,
                 {
                   origin,
                   personaAddress: signed.personaAddress,

@@ -419,4 +419,122 @@ describe('dApp Bridge (#1708, #1709, #1710)', () => {
       )
     })
   })
+
+  describe('Multi-Chain dApp Isolation & Stamp Chain Decoupling', () => {
+    it('decouples Frank stampChainId from per-origin dApp chains, supports EIP-3085 wallet_addEthereumChain, and scopes JIT pool sweeps per chain', async () => {
+      const keyring = new DappPersonaKeyring({
+        masterSeedOrMnemonic: TEST_MNEMONIC,
+      })
+      const frankStampChainId = 0xf7a6n // Example dedicated low-fee Frank Stamp chain
+      const sweepCalls: Array<{ shortfallWei: bigint; recipient: string; chainId?: bigint }> = []
+
+      const router = new FrankDappBridgeRouter({
+        keyring,
+        initialChainId: 10143n, // Monad default
+        stampChainId: frankStampChainId,
+        supportedChainIds: [10143n, 1n, 42161n, 137n, frankStampChainId],
+        poolEnabledChainIds: [10143n, frankStampChainId],
+        rpcBackend: {
+          getBalanceWei: async (_addr, chainId) => {
+            // Persona has 0 balance on Monad (triggers JIT pool sweep), 1 ETH on Arbitrum
+            return chainId === 10143n ? 0n : 1_000_000_000_000_000_000n
+          },
+          getTransactionCount: async () => 0,
+          estimateGas: async () => 21_000n,
+          getMaxFeePerGasWei: async () => 1_000_000_000n,
+          sweepFromPool: async (shortfallWei, recipient, chainId) => {
+            sweepCalls.push({ shortfallWei, recipient, chainId })
+            return {
+              sweepTxHashes: ['0x' + 'c'.repeat(64)],
+              fundedWei: shortfallWei,
+            }
+          },
+        },
+      })
+
+      // 1. Frank's internal stamp chain is tracked independently of dApp origins
+      expect(router.getStampChainId()).toBe(frankStampChainId)
+      expect(router.getStampChainIdHex()).toBe('0xf7a6')
+
+      const uniswapOrigin = 'https://app.uniswap.org'
+      const polymarketOrigin = 'https://polymarket.com'
+
+      // Connect both dApps (each gets its own isolated burner persona EOA)
+      const p1 = router.handleRequest(uniswapOrigin, { method: 'eth_requestAccounts' })
+      await router.approveRequest(router.listPendingApprovals()[0].id, { burner: true })
+      const [uniswapAddr] = (await p1) as string[]
+
+      const p2 = router.handleRequest(polymarketOrigin, { method: 'eth_requestAccounts' })
+      await router.approveRequest(router.listPendingApprovals()[0].id, { burner: true })
+      const [polymarketAddr] = (await p2) as string[]
+      expect(uniswapAddr).not.toBe(polymarketAddr)
+
+      // 2. Switch Uniswap to Arbitrum (0xa4b1 = 42161) and Polymarket to Polygon (0x89 = 137)
+      const switchUni = router.handleRequest(uniswapOrigin, {
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: '0xa4b1' }],
+      })
+      await router.approveRequest(router.listPendingApprovals()[0].id)
+      await switchUni
+
+      const switchPoly = router.handleRequest(polymarketOrigin, {
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: '0x89' }],
+      })
+      await router.approveRequest(router.listPendingApprovals()[0].id)
+      await switchPoly
+
+      // Verify per-origin chain isolation: both tabs operate simultaneously on different chains!
+      expect(await router.handleRequest(uniswapOrigin, { method: 'eth_chainId' })).toBe('0xa4b1')
+      expect(await router.handleRequest(polymarketOrigin, { method: 'eth_chainId' })).toBe('0x89')
+      // And Frank's stamp chain is still untouched:
+      expect(router.getStampChainIdHex()).toBe('0xf7a6')
+
+      // 3. EIP-3085 wallet_addEthereumChain adds a custom L2/AppChain and switches that origin to it
+      const customOrigin = 'https://dex.custom-rollup.xyz'
+      const addChainPromise = router.handleRequest(customOrigin, {
+        method: 'wallet_addEthereumChain',
+        params: [
+          {
+            chainId: '0x12345',
+            chainName: 'Custom Rollup Mainnet',
+            nativeCurrency: { name: 'Rollup Gas', symbol: 'RGAS', decimals: 18 },
+            rpcUrls: ['https://rpc.custom-rollup.xyz'],
+          },
+        ],
+      })
+      const pendingAdd = router.listPendingApprovals()
+      expect(pendingAdd).toHaveLength(1)
+      expect(pendingAdd[0].kind).toBe('add_chain')
+      await router.approveRequest(pendingAdd[0].id)
+      await addChainPromise
+
+      expect(await router.handleRequest(customOrigin, { method: 'eth_chainId' })).toBe('0x12345')
+      expect(router.getCustomChain(0x12345n)?.chainName).toBe('Custom Rollup Mainnet')
+      // Uniswap is still on Arbitrum!
+      expect(await router.handleRequest(uniswapOrigin, { method: 'eth_chainId' })).toBe('0xa4b1')
+
+      // 4. JIT pool sweep is chain-scoped: Monad (10143n) is in poolEnabledChainIds, so a shortfall sweeps on 10143n
+      const monadDapp = 'https://nad.fun'
+      const pMonad = router.handleRequest(monadDapp, { method: 'eth_requestAccounts' })
+      await router.approveRequest(router.listPendingApprovals()[0].id)
+      const [monadPersonaAddr] = (await pMonad) as string[]
+
+      const txMonadPromise = router.handleRequest(monadDapp, {
+        method: 'eth_sendTransaction',
+        params: [
+          {
+            from: monadPersonaAddr,
+            to: '0x3333333333333333333333333333333333333333',
+            value: '0xde0b6b3a7640000', // 1 MON
+          },
+        ],
+      })
+      await router.approveRequest(router.listPendingApprovals()[0].id)
+      await txMonadPromise
+      expect(sweepCalls).toHaveLength(1)
+      expect(sweepCalls[0].chainId).toBe(10143n)
+    })
+  })
 })
+

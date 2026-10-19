@@ -208,6 +208,16 @@ register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
     }
     checkForUpdate()
     document.addEventListener('visibilitychange', checkForUpdate)
+    if (
+      typeof window !== 'undefined' &&
+      typeof window.addEventListener === 'function'
+    ) {
+      window.addEventListener('focus', checkForUpdate)
+    }
+    if (typeof setInterval === 'function') {
+      const timer = setInterval(checkForUpdate, 60_000)
+      if (timer && typeof timer.unref === 'function') timer.unref()
+    }
   },
 
   updated(registration) {

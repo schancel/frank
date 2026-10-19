@@ -22,6 +22,8 @@ const reference = process.argv
 const rowPath = 'app/src/components/chat/ChatListItem.vue'
 const styles = []
 const storeInputs = {
+  'src/utils/chat-deletion-navigation':
+    'export const useChatDeletionNavigation = () => async () => {}',
   'src/stores/chats':
     'export const useChatStore = () => ({getLatestMessage: () => ({text: "A message preview that stays inside the conversation row", outbound: false})})',
   'src/stores/contacts':

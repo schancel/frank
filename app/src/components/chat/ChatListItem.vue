@@ -90,7 +90,10 @@
       v-show="!compact"
       side
       class="chat-list-metadata column items-end justify-start"
-      :class="{ 'chat-list-metadata-unread': !!effectiveNumUnread }"
+      :class="{
+        'chat-list-metadata-unread':
+          !!effectiveNumUnread || !!effectiveScreenerStamp,
+      }"
     >
       <q-item-label
         caption
@@ -625,7 +628,7 @@ export default defineComponent({
 .chat-list-account-badge {
   flex: 0 0 auto;
   max-width: 100%;
-  margin-left: 0;
+  margin-left: 0 !important;
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -642,7 +645,7 @@ export default defineComponent({
   width: 72px;
   min-width: 0;
   max-width: 72px;
-  padding-left: 8px;
+  padding-left: 4px;
 }
 
 .chat-list-metadata-unread {
@@ -674,16 +677,19 @@ export default defineComponent({
 
 .chat-list-unread-value {
   max-width: 100%;
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 2px 6px;
   white-space: normal;
   overflow-wrap: anywhere;
-  text-align: right;
+  text-align: center;
 }
 
 .chat-list-timestamp {
   display: none;
 }
 
-@container (min-width: 320px) {
+@container (min-width: 240px) {
   .chat-list-metadata {
     display: flex;
   }

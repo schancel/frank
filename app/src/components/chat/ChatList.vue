@@ -371,6 +371,7 @@ export default defineComponent({
       },
       screenerStampFor(conversation?: Partial<Conversation>): string {
         if (
+          activeFilter.value !== 'screener' ||
           !conversation ||
           !isScreenerConversation(conversation, { isContact: isContactFn })
         ) {
@@ -382,7 +383,7 @@ export default defineComponent({
         }
         return formatScreenerStampValue(pendingWei, {
           chain: activeChain,
-        }).combinedDisplay
+        }).nativeDisplay
       },
     }
   },

@@ -536,18 +536,17 @@ describe('dApp Bridge (#1708, #1709, #1710)', () => {
       expect(sweepCalls[0].chainId).toBe(10143n)
     })
 
-    it('reports virtual aggregated pool balance to connected dApps (eth_getBalance, Multicall3 eth_call, and stateOverrides) with optional per-origin privacy mask while sweeping real shortfall on send', async () => {
+    it('reports virtual aggregated pool balance to connected dApps (eth_getBalance, Multicall3 eth_call, and stateOverrides) with default 10 AVU per-origin privacy mask while sweeping real shortfall on send', async () => {
       const keyring = new DappPersonaKeyring({
         masterSeedOrMnemonic: TEST_MNEMONIC,
       })
-      const poolBalanceWei = 12_500_000_000_000_000_000n // 12.5 MON across sub-account pool EOAs
+      const poolBalanceWei = 100_000_000_000_000_000_000n // 100 AVU / MON across sub-account pool EOAs
       const observedStateOverrides: Array<Record<string, { balance: string }> | undefined> = []
       const sweepCalls: Array<{ shortfallWei: bigint; recipient: string }> = []
 
       const router = new FrankDappBridgeRouter({
         keyring,
         initialChainId: 10143n,
-        virtualBalancePrivacyMask: true,
         rpcBackend: {
           getBalanceWei: async () => 0n, // Ephemeral persona EOA has 0 on-chain balance before JIT sweep
           getSpendablePoolBalanceWei: async () => poolBalanceWei,
@@ -578,7 +577,7 @@ describe('dApp Bridge (#1708, #1709, #1710)', () => {
       await router.approveRequest(router.listPendingApprovals()[0].id, { burner: true })
       const [personaB] = (await pB) as string[]
 
-      // 1. Both sites see ~12.5 MON even though their ephemeral persona EOAs hold 0 on-chain!
+      // 1. Both sites see a substantial spendable balance in [90 AVU, 99 AVU] even though their ephemeral EOAs hold 0 on-chain!
       const balHexA = (await router.handleRequest(siteA, {
         method: 'eth_getBalance',
         params: [personaA, 'latest'],
@@ -591,12 +590,14 @@ describe('dApp Bridge (#1708, #1709, #1710)', () => {
       const balWeiA = BigInt(balHexA)
       const balWeiB = BigInt(balHexB)
 
-      expect(balWeiA).toBeGreaterThan(12_499_999_000_000_000_000n)
-      expect(balWeiA).toBeLessThanOrEqual(poolBalanceWei)
-      expect(balWeiB).toBeGreaterThan(12_499_999_000_000_000_000n)
-      expect(balWeiB).toBeLessThanOrEqual(poolBalanceWei)
-      // Per-origin privacy mask ensures two colluding websites do not see the exact same 18-digit wei tail
-      expect(balWeiA).not.toBe(balWeiB)
+      expect(balWeiA).toBeGreaterThanOrEqual(90_000_000_000_000_000_000n)
+      expect(balWeiA).toBeLessThanOrEqual(99_000_000_000_000_000_000n)
+      expect(balWeiB).toBeGreaterThanOrEqual(90_000_000_000_000_000_000n)
+      expect(balWeiB).toBeLessThanOrEqual(99_000_000_000_000_000_000n)
+      // Even when rounded to 2 decimal places (centi-tokens), the two websites see different macro numbers!
+      const centiTokensA = balWeiA / 10_000_000_000_000_000n
+      const centiTokensB = balWeiB / 10_000_000_000_000_000n
+      expect(centiTokensA).not.toBe(centiTokensB)
 
       // 2. Multicall3.getEthBalance(personaA) (0x4d2301cc) also returns the virtual balance
       const multicallData = `0x4d2301cc000000000000000000000000${personaA.slice(2).toLowerCase()}`

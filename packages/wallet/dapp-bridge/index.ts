@@ -858,6 +858,9 @@ export interface FrankDappRpcBackend {
   ) => Promise<{ sweepTxHashes: string[]; fundedWei: bigint }>
 }
 
+export const DEFAULT_VIRTUAL_BALANCE_MASK_MAX_WEI = 10_000_000_000_000_000_000n // 10 AVU / native units
+export const DEFAULT_VIRTUAL_BALANCE_MASK_MAX_BPS = 1500n // Max 15% of pool balance withheld for privacy
+
 export interface FrankDappBridgeRouterOptions {
   keyring: DappPersonaKeyring
   initialChainId?: bigint | number
@@ -875,30 +878,51 @@ export interface FrankDappBridgeRouterOptions {
   rpcBackend?: FrankDappRpcBackend
   defaultBurnerForNewOrigins?: boolean
   /**
-   * When true, subtracts a tiny deterministic per-origin sub-micro-unit dust offset
-   * (`< 10^12 wei` = `< 0.000001` token) from the virtual pool balance reported to
-   * each website so two colluding dApps cannot correlate a user across burner personas
-   * by matching all 18 decimal digits of their exact wei balance.
+   * When true (default), subtracts a deterministic per-origin macro + micro noise offset
+   * (up to `virtualBalanceMaskMaxWei` = `10 AVU`, capped at `virtualBalanceMaskMaxBps` = `15%`
+   * of the pool balance) from the virtual balance reported to each website.
+   * This defeats customer-pipeline flow trackers that correlate users across dApps by
+   * matching rounded token/USD balances as well as exact 18-digit wei balances.
    */
   virtualBalancePrivacyMask?: boolean
+  virtualBalanceMaskMaxWei?: bigint
+  virtualBalanceMaskMaxBps?: bigint | number
   nowMs?: () => number
 }
 
 /**
- * Computes a deterministic per-origin dust offset in `[1, 999_999_999_999]` wei (`< 0.000001` token)
- * so two websites querying `eth_getBalance` at the same instant never see the exact same 18-digit
- * wei tail across different burner Persona EOAs.
+ * Computes a deterministic per-origin balance mask offset up to `maxMaskWei` (default `10 AVU` = `10 * 10^18 wei`),
+ * capped at `maxMaskBps` (default `1500` bps = `15%`) of `poolBalanceWei`, with a floor of `10%` of the cap.
+ * Ensures two websites querying `eth_getBalance` differ at the macro whole-token / decimal level (not just dust wei),
+ * defeating cross-site customer-pipeline balance correlation even when trackers round to 1-2 decimals or USD.
  */
 export function computeOriginVirtualBalanceMaskOffsetWei(
   origin: string,
   personaAddress: string,
+  poolBalanceWei: bigint = DEFAULT_VIRTUAL_BALANCE_MASK_MAX_WEI * 10n,
+  options?: {
+    maxMaskWei?: bigint
+    maxMaskBps?: bigint | number
+  },
 ): bigint {
+  if (poolBalanceWei <= 0n) return 0n
+  const maxMaskWei = options?.maxMaskWei ?? DEFAULT_VIRTUAL_BALANCE_MASK_MAX_WEI
+  const maxMaskBps = BigInt(options?.maxMaskBps ?? DEFAULT_VIRTUAL_BALANCE_MASK_MAX_BPS)
+
+  const bpsCapWei = (poolBalanceWei * maxMaskBps) / 10_000n
+  const effectiveMaxWei = bpsCapWei < maxMaskWei ? bpsCapWei : maxMaskWei
+  if (effectiveMaxWei <= 1n) return 0n
+
+  const minMaskWei = effectiveMaxWei / 10n
+  const spanWei = effectiveMaxWei - minMaskWei
+  if (spanWei <= 0n) return minMaskWei
+
   const normalizedOrigin = normalizeDappOrigin(origin)
   const digestHex = keccak256(
     toUtf8Bytes(`frank-virtual-balance-mask-v1:${normalizedOrigin}:${personaAddress.toLowerCase()}`),
   )
-  const raw64 = BigInt(digestHex.slice(0, 18))
-  return (raw64 % 999_999_999_999n) + 1n
+  const raw256 = BigInt(digestHex)
+  return minMaskWei + (raw256 % spanWei)
 }
 
 interface InternalPendingApproval {
@@ -950,6 +974,8 @@ export class FrankDappBridgeRouter {
   private readonly rpcBackend: FrankDappRpcBackend
   private readonly defaultBurnerForNewOrigins: boolean
   private readonly virtualBalancePrivacyMask: boolean
+  private readonly virtualBalanceMaskMaxWei: bigint
+  private readonly virtualBalanceMaskMaxBps: bigint
   private readonly nowMs: () => number
   private readonly pendingApprovals = new Map<string, InternalPendingApproval>()
   private approvalSeq = 0
@@ -989,7 +1015,12 @@ export class FrankDappBridgeRouter {
     )
     this.rpcBackend = options.rpcBackend ?? {}
     this.defaultBurnerForNewOrigins = options.defaultBurnerForNewOrigins ?? false
-    this.virtualBalancePrivacyMask = options.virtualBalancePrivacyMask ?? false
+    this.virtualBalancePrivacyMask = options.virtualBalancePrivacyMask ?? true
+    this.virtualBalanceMaskMaxWei =
+      options.virtualBalanceMaskMaxWei ?? DEFAULT_VIRTUAL_BALANCE_MASK_MAX_WEI
+    this.virtualBalanceMaskMaxBps = BigInt(
+      options.virtualBalanceMaskMaxBps ?? DEFAULT_VIRTUAL_BALANCE_MASK_MAX_BPS,
+    )
     this.nowMs = options.nowMs ?? (() => Date.now())
   }
 
@@ -1043,8 +1074,16 @@ export class FrankDappBridgeRouter {
     }
 
     let adjustedPoolWei = rawPoolWei
-    if (this.virtualBalancePrivacyMask && rawPoolWei > 1_000_000_000_000_000n) {
-      const offset = computeOriginVirtualBalanceMaskOffsetWei(origin, personaAddress)
+    if (this.virtualBalancePrivacyMask) {
+      const offset = computeOriginVirtualBalanceMaskOffsetWei(
+        origin,
+        personaAddress,
+        rawPoolWei,
+        {
+          maxMaskWei: this.virtualBalanceMaskMaxWei,
+          maxMaskBps: this.virtualBalanceMaskMaxBps,
+        },
+      )
       if (rawPoolWei > offset) {
         adjustedPoolWei = rawPoolWei - offset
       }

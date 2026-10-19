@@ -84,6 +84,7 @@ export default () => {
       to.path === '/setup' ||
       to.path === '/onboard' ||
       to.path.startsWith('/onboard/') ||
+      to.path.startsWith('/claim=') ||
       to.path === '/changelog' ||
       to.path === '/about' ||
       to.path === '/welcome' ||

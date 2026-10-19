@@ -11,6 +11,11 @@ import { pendingRelayData, useContactStore } from '../stores/contacts'
 import { createRoutes } from '../router/routes'
 import createAppRouter from '../router/index'
 import { setStartupRestoration } from '../boot/startup-state'
+import {
+  createClaimLink,
+  parseClaimLink,
+} from '../../../packages/wallet/claim-link'
+import IdentityQrDialog from '../components/dialogs/IdentityQrDialog.vue'
 import Onboard from './Onboard.vue'
 
 const mockCreateDirect = jest.fn()
@@ -62,11 +67,13 @@ const mockPush = jest.fn(async () => undefined)
 const mockRoute = reactive<{
   path: string
   fullPath: string
+  hash?: string
   params: Record<string, string>
   query: Record<string, string>
 }>({
   path: '/onboard',
   fullPath: '/onboard',
+  hash: '',
   params: {},
   query: {},
 })
@@ -159,6 +166,11 @@ beforeEach(() => {
     pendingError: null,
   })
   mockRoute.query = {}
+  mockRoute.hash = ''
+  mockRoute.fullPath = '/onboard'
+  if (typeof window !== 'undefined') {
+    window.location.hash = ''
+  }
   mockPush.mockClear()
   mockCreateDirect.mockReset()
   mockBeginPasskey.mockReset()
@@ -440,6 +452,228 @@ describe('Onboard.vue & /onboard route', () => {
       expect(mockPush).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
     } finally {
       view.unmount()
+    }
+  })
+
+  test('when a valid #claim=<token> hash fragment is present and user is already logged in (status === ready), displays bearer claim banner and imports sender contact + decrypted welcome note into chat without overwriting account', async () => {
+    Object.assign(mockAccount, {
+      status: 'ready',
+      revision: 1,
+      account: {
+        accountId: 'existing-acc-bearer',
+        displayName: 'Existing Alice',
+        descriptor: 'DESC-EXISTING-BEARER',
+        receipt: { operationId: 'op-existing-bearer' },
+      },
+    })
+
+    const created = createClaimLink({
+      baseUrl: 'https://signet.mx/#/onboard',
+      senderAddress: PEER_ADDRESS,
+      senderName: 'Vitalik (@vitalik)',
+      amountAtomic: 50_000_000_000_000_000n,
+      note: 'Welcome to Frank! Here is 0.05 MON to reply.',
+      createdAtMs: 1720000000000,
+    })
+
+    window.location.hash = `#claim=${created.fragmentToken}`
+    mockRoute.hash = `#claim=${created.fragmentToken}`
+
+    const contactStore = useContactStore()
+    const fetchContactSpy = jest
+      .spyOn(contactStore, 'fetchAndAddContact')
+      .mockResolvedValue(undefined as never)
+
+    const view = renderOnboard()
+    try {
+      const banner = view.get('[data-test="onboard-bearer-claim-banner"]')
+      expect(banner.text()).toContain('Vitalik (@vitalik)')
+      expect(banner.text()).toContain('50000000000000000')
+      expect(banner.text()).toContain(created.bearerAccount.evmAddress)
+      expect(banner.text()).toContain(
+        'Welcome to Frank! Here is 0.05 MON to reply.',
+      )
+
+      await view.get('[data-test="onboard-import-existing"]').trigger('click')
+      await flushPromises()
+
+      expect(mockCreateDirect).not.toHaveBeenCalled()
+      expect(mockSession.activatePending).not.toHaveBeenCalled()
+      expect(mockAccount.account?.accountId).toBe('existing-acc-bearer')
+
+      expect(fetchContactSpy).toHaveBeenCalledWith({
+        address: PEER_ADDRESS,
+        contact: pendingContactNamed('Vitalik (@vitalik)'),
+      })
+
+      const chatStore = useChatStore()
+      const conv = chatStore.chats[PEER_ADDRESS] ?? chatStore.activeConversation
+      expect(conv).toBeTruthy()
+      expect(conv?.messages).toHaveLength(1)
+      expect(conv?.messages[0]?.payloadDigest).toBe(
+        `onboard-bearer-claim-${created.bearerAccount.claimIdHex}`,
+      )
+      expect(conv?.messages[0]?.items).toEqual([
+        {
+          type: 'text',
+          text: 'Welcome to Frank! Here is 0.05 MON to reply.',
+        },
+      ])
+
+      expect(mockPush).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  test('when a valid #claim=<token> hash fragment is present and no account is logged in, clicking onboard-create-direct creates account, imports bearer claim welcome note and sender contact, and routes to /chat/<senderAddress>', async () => {
+    const created = createClaimLink({
+      baseUrl: 'https://signet.mx/#/onboard',
+      senderAddress: PEER_ADDRESS,
+      senderName: 'Satoshi (@satoshi)',
+      amountAtomic: 25_000_000_000_000_000n,
+      note: 'Zero-backend bearer claim onboarding note!',
+      createdAtMs: 1720000100000,
+    })
+
+    window.location.hash = `#claim=${created.fragmentToken}`
+    mockRoute.hash = `#claim=${created.fragmentToken}`
+
+    mockCreateDirect.mockImplementation(async (name: string) => {
+      mockAccount.pending = {
+        status: 'staging',
+        account: {
+          accountId: 'acc-bearer-new',
+          displayName: name,
+          descriptor: 'DESC-BEARER-NEW',
+          receipt: { operationId: 'attempt-bearer-direct-1' },
+        },
+        expectedActive: { revision: 0, accountId: null },
+      } as never
+      mockAccount.pendingReady = true
+      mockAccount.pendingIdentityAddress =
+        '0x9999999999999999999999999999999999999999'
+      return { attemptId: 'attempt-bearer-direct-1' }
+    })
+
+    const contactStore = useContactStore()
+    const fetchContactSpy = jest
+      .spyOn(contactStore, 'fetchAndAddContact')
+      .mockResolvedValue(undefined as never)
+
+    const view = renderOnboard()
+    try {
+      const banner = view.get('[data-test="onboard-bearer-claim-banner"]')
+      expect(banner.text()).toContain('Satoshi (@satoshi)')
+      expect(banner.text()).toContain(
+        'Zero-backend bearer claim onboarding note!',
+      )
+
+      await view.get('[data-test="onboard-create-direct"]').trigger('click')
+      await flushPromises()
+
+      expect(mockCreateDirect).toHaveBeenCalledWith('Frank User')
+      expect(mockSession.activatePending).toHaveBeenCalledWith(
+        'attempt-bearer-direct-1',
+        { revision: 0, accountId: null },
+      )
+      expect(fetchContactSpy).toHaveBeenCalledWith({
+        address: PEER_ADDRESS,
+        contact: pendingContactNamed('Satoshi (@satoshi)'),
+      })
+
+      const chatStore = useChatStore()
+      const conv = chatStore.chats[PEER_ADDRESS] ?? chatStore.activeConversation
+      expect(conv).toBeTruthy()
+      expect(conv?.messages).toHaveLength(1)
+      expect(conv?.messages[0]?.payloadDigest).toBe(
+        `onboard-bearer-claim-${created.bearerAccount.claimIdHex}`,
+      )
+      expect(conv?.messages[0]?.items).toEqual([
+        {
+          type: 'text',
+          text: 'Zero-backend bearer claim onboarding note!',
+        },
+      ])
+
+      expect(mockPush).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  test('IdentityQrDialog creates a funded claim link with gift amount and welcome note that parses back cleanly', async () => {
+    const dialog = mount(IdentityQrDialog, {
+      props: {
+        modelValue: true,
+        inline: true,
+        address: PEER_ADDRESS,
+        name: 'Alice Sender',
+      },
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+        },
+        directives: {
+          'close-popup': {},
+        },
+        stubs: {
+          QDialog: { template: '<div><slot /></div>' },
+          QrcodeVue: { template: '<div />' },
+          QCard: { template: '<div><slot /></div>' },
+          QCardSection: { template: '<div><slot /></div>' },
+          QAvatar: { template: '<div><slot /></div>' },
+          QIcon: { template: '<i />' },
+          QSpace: { template: '<div />' },
+          QSkeleton: { template: '<div />' },
+          QBtn: {
+            props: ['label', 'disable'],
+            template: '<button :disabled="disable">{{ label }}<slot /></button>',
+          },
+          QInput: {
+            props: ['modelValue', 'disable', 'label'],
+            template:
+              '<input :value="modelValue" :disabled="disable" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+          },
+        },
+      },
+    })
+
+    try {
+      expect(dialog.find('[data-test="copy-invite-link-btn"]').exists()).toBe(
+        true,
+      )
+      expect(
+        dialog.find('[data-test="claim-link-creator-panel"]').exists(),
+      ).toBe(false)
+
+      await dialog
+        .get('[data-test="toggle-claim-link-creator-btn"]')
+        .trigger('click')
+      expect(
+        dialog.find('[data-test="claim-link-creator-panel"]').exists(),
+      ).toBe(true)
+
+      const noteInput = dialog.get('[data-test="claim-link-note-input"]')
+      await noteInput.setValue('Funded invite from IdentityQrDialog')
+
+      await dialog.get('[data-test="generate-claim-link-btn"]').trigger('click')
+
+      const output = dialog.get('[data-test="generated-claim-link-output"]')
+      const generatedUrl = output.text().trim()
+      expect(generatedUrl).toMatch(/^https:\/\/signet\.mx\/#claim=/)
+      expect(dialog.find('[data-test="copy-claim-link-btn"]').exists()).toBe(
+        true,
+      )
+
+      const parsed = parseClaimLink(generatedUrl)
+      expect(parsed).not.toBeNull()
+      expect(parsed?.senderAddress).toBe(PEER_ADDRESS)
+      expect(parsed?.senderName).toBe('Alice Sender')
+      expect(parsed?.amountAtomic).toBe(50_000_000_000_000_000n)
+      expect(parsed?.note).toBe('Funded invite from IdentityQrDialog')
+    } finally {
+      dialog.unmount()
     }
   })
 })

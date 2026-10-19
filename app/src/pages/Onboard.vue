@@ -48,6 +48,41 @@
             </p>
           </q-card-section>
 
+          <q-card-section v-if="bearerClaim" class="q-pt-xs">
+            <q-banner
+              dense
+              rounded
+              class="bg-grey-2 text-grey-9 q-pa-sm"
+              data-test="onboard-bearer-claim-banner"
+            >
+              <div class="text-caption">
+                <strong>{{ bearerClaimUi.senderLabel }}</strong>
+                <span data-test="onboard-bearer-claim-sender">{{
+                  bearerClaim.senderName ||
+                  shortAddress(bearerClaim.senderAddress)
+                }}</span>
+              </div>
+              <div class="text-caption">
+                <strong>{{ bearerClaimUi.amountLabel }}</strong>
+                <span data-test="onboard-bearer-claim-amount">{{
+                  String(bearerClaim.amountAtomic)
+                }}</span>
+              </div>
+              <div class="text-caption">
+                <strong>{{ bearerClaimUi.bearerAccountLabel }}</strong>
+                <span data-test="onboard-bearer-claim-eoa">{{
+                  bearerClaim.bearerAccount.evmAddress
+                }}</span>
+              </div>
+              <div v-if="bearerClaim.note" class="text-caption">
+                <strong>{{ bearerClaimUi.noteLabel }}</strong>
+                <span data-test="onboard-bearer-claim-note">{{
+                  bearerClaim.note
+                }}</span>
+              </div>
+            </q-banner>
+          </q-card-section>
+
           <q-card-section v-if="subjectParam || emailParam" class="q-pt-xs">
             <q-banner
               dense
@@ -152,7 +187,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTranslate } from '../composables/useTranslate'
 import { accountSession, accountStatus as account } from '../accounts/session'
@@ -181,6 +216,11 @@ import { isChainAddress, toChainDisplayAddress } from '../utils/chain-address'
 import { shortAddress } from '../utils/short-address'
 import { getOwnCanonicalAddress } from '../utils/own-address'
 import { setCustomRelayBaseUrl } from '@frank/wallet/chain'
+import {
+  deriveClaimBearerAccount,
+  parseClaimLink,
+  type ParsedClaimLink,
+} from '../../../packages/wallet/claim-link'
 
 defineProps<{ myDrawerOpen?: boolean }>()
 const emit = defineEmits(['toggleMyDrawerOpen', 'setupCompleted'])
@@ -190,6 +230,93 @@ const router = useRouter()
 const t = useTranslate()
 const ceremony = createAccountCeremony()
 const passkeysSupported = supportsMeraPasskeys()
+
+const bearerClaimUi = {
+  senderLabel: 'From: ',
+  amountLabel: 'Gift Amount (wei): ',
+  bearerAccountLabel: 'Bearer EOA: ',
+  noteLabel: 'Welcome Note: ',
+}
+
+const windowHash = ref(typeof window !== 'undefined' ? window.location.hash : '')
+const redeemedClaimIds = ref<string[]>([])
+
+function onWindowHashChange() {
+  if (typeof window !== 'undefined') {
+    windowHash.value = window.location.hash
+  }
+}
+
+onMounted(() => {
+  if (typeof window !== 'undefined') {
+    windowHash.value = window.location.hash
+    window.addEventListener('hashchange', onWindowHashChange)
+  }
+})
+
+function extractBearerClaimFromCandidate(
+  candidate?: string | null,
+): ParsedClaimLink | null {
+  if (!candidate || typeof candidate !== 'string') return null
+  const trimmed = candidate.trim()
+  if (!trimmed) return null
+  const direct = parseClaimLink(trimmed)
+  if (direct) {
+    return {
+      ...direct,
+      bearerAccount:
+        direct.bearerAccount ?? deriveClaimBearerAccount(direct.seedBytes),
+    }
+  }
+  const match = /(?:^|[#&])claim=([A-Za-z0-9\-_]+)/.exec(trimmed)
+  if (match?.[1]) {
+    const parsed = parseClaimLink(`#claim=${match[1]}`)
+    if (parsed) {
+      return {
+        ...parsed,
+        bearerAccount:
+          parsed.bearerAccount ?? deriveClaimBearerAccount(parsed.seedBytes),
+      }
+    }
+  }
+  return null
+}
+
+const bearerClaim = computed<ParsedClaimLink | null>(() => {
+  const routeHash = (route as { hash?: string }).hash
+  const fullPathHash =
+    typeof route.fullPath === 'string' && route.fullPath.includes('#')
+      ? route.fullPath.slice(route.fullPath.indexOf('#'))
+      : ''
+  const liveWindowHash =
+    typeof window !== 'undefined' ? window.location.hash : ''
+
+  return (
+    extractBearerClaimFromCandidate(routeHash) ??
+    extractBearerClaimFromCandidate(fullPathHash) ??
+    extractBearerClaimFromCandidate(windowHash.value) ??
+    extractBearerClaimFromCandidate(liveWindowHash)
+  )
+})
+
+function recordRedeemedClaimId(claimIdHex: string) {
+  if (!claimIdHex) return
+  if (!redeemedClaimIds.value.includes(claimIdHex)) {
+    redeemedClaimIds.value.push(claimIdHex)
+  }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const existingRaw = localStorage.getItem('frank:redeemed-claim-ids')
+      const existing = existingRaw ? (JSON.parse(existingRaw) as string[]) : []
+      const merged = Array.from(
+        new Set([...(Array.isArray(existing) ? existing : []), claimIdHex]),
+      )
+      localStorage.setItem('frank:redeemed-claim-ids', JSON.stringify(merged))
+    }
+  } catch {
+    // ignore storage failures in restricted contexts
+  }
+}
 
 function firstQueryString(val: unknown): string {
   if (typeof val === 'string') return val.trim()
@@ -238,7 +365,11 @@ watch([nameParam, emailParam], ([newName, newEmail]) => {
 
 const peerDisplayLabel = computed(() => {
   if (peerNameParam.value) return peerNameParam.value
+  if (bearerClaim.value?.senderName) return bearerClaim.value.senderName
   if (peerParam.value) return shortAddress(peerParam.value)
+  if (bearerClaim.value?.senderAddress) {
+    return shortAddress(bearerClaim.value.senderAddress)
+  }
   return ''
 })
 
@@ -300,6 +431,7 @@ async function fetchClaimTokenPayload(
 }
 
 async function completeOnboardingMigration() {
+  const activeBearerClaim = bearerClaim.value
   const claimData = claimParam.value
     ? await fetchClaimTokenPayload(claimParam.value)
     : null
@@ -308,11 +440,13 @@ async function completeOnboardingMigration() {
     claimData?.peer ||
     claimData?.peerAddress ||
     peerParam.value ||
+    activeBearerClaim?.senderAddress ||
     ''
   ).trim()
   const resolvedPeerName = (
     claimData?.peerName ||
     peerNameParam.value ||
+    activeBearerClaim?.senderName ||
     ''
   ).trim()
   const resolvedSubject = (
@@ -324,6 +458,7 @@ async function completeOnboardingMigration() {
     claimData?.textBody ||
     claimData?.text ||
     textBodyParam.value ||
+    activeBearerClaim?.note ||
     ''
   ).trim()
   const resolvedConvId = (
@@ -331,6 +466,10 @@ async function completeOnboardingMigration() {
     conversationIdParam.value ||
     ''
   ).trim()
+
+  if (activeBearerClaim) {
+    recordRedeemedClaimId(activeBearerClaim.bearerAccount.claimIdHex)
+  }
 
   if (resolvedPeer && isChainAddress(resolvedPeer)) {
     const canonicalPeer = toChainDisplayAddress(resolvedPeer)
@@ -375,9 +514,11 @@ async function completeOnboardingMigration() {
         const digest = (
           claimData?.payloadDigest ||
           claimData?.messageId ||
-          (claimParam.value
-            ? `onboard-claim-${claimParam.value}`
-            : `onboard-import-${resolvedConvId || canonicalPeer.toLowerCase()}`)
+          (activeBearerClaim
+            ? `onboard-bearer-claim-${activeBearerClaim.bearerAccount.claimIdHex}`
+            : claimParam.value
+              ? `onboard-claim-${claimParam.value}`
+              : `onboard-import-${resolvedConvId || canonicalPeer.toLowerCase()}`)
         ).trim()
 
         const alreadyExists =
@@ -389,7 +530,10 @@ async function completeOnboardingMigration() {
             typeof claimData?.timestamp === 'number' &&
             Number.isFinite(claimData.timestamp)
               ? claimData.timestamp
-              : Date.now()
+              : typeof activeBearerClaim?.createdAtMs === 'number' &&
+                  Number.isFinite(activeBearerClaim.createdAtMs)
+                ? activeBearerClaim.createdAtMs
+                : Date.now()
           const ownAddress = await getOwnCanonicalAddress().catch(() => null)
           const isOutbound = claimData?.direction === 'inbound'
           const importedMessage: ChatMessage = {
@@ -509,7 +653,15 @@ function importWithExistingAccount() {
 
 onBeforeUnmount(() => {
   alive = false
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('hashchange', onWindowHashChange)
+  }
   ceremony.cancel()
+})
+
+defineExpose({
+  bearerClaim,
+  redeemedClaimIds,
 })
 </script>
 

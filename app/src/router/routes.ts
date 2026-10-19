@@ -87,6 +87,17 @@ export function createRoutes(): RouteRecordRaw[] {
         },
         { path: 'setup', component: () => import('pages/Setup.vue') },
         { path: 'onboard', component: () => import('pages/Onboard.vue') },
+        {
+          path: 'dapp-bridge',
+          component: () => import('components/panels/DappBridgePanel.vue'),
+        },
+        {
+          path: 'claim=:token(.*)',
+          redirect: to => ({
+            path: '/onboard',
+            hash: `#claim=${String(to.params.token || '')}`,
+          }),
+        },
       ],
     },
   ]

@@ -133,6 +133,89 @@
             />
           </template>
         </q-input>
+        <div class="row q-gutter-xs q-mt-xs">
+          <q-btn
+            flat
+            dense
+            no-caps
+            size="sm"
+            icon="share"
+            color="primary"
+            :label="claimUiLabels.copyInviteLink"
+            :aria-label="claimUiLabels.copyInviteLink"
+            :disable="!resolvedAddress"
+            data-test="copy-invite-link-btn"
+            @click="copyInviteLink"
+          />
+          <q-btn
+            flat
+            dense
+            no-caps
+            size="sm"
+            icon="card_giftcard"
+            color="primary"
+            :label="claimUiLabels.toggleClaimCreator"
+            :aria-label="claimUiLabels.toggleClaimCreator"
+            :disable="!resolvedAddress"
+            data-test="toggle-claim-link-creator-btn"
+            @click="toggleClaimLinkCreator"
+          />
+        </div>
+        <div
+          v-if="showClaimLinkCreator"
+          class="q-mt-sm q-pa-sm rounded-borders bg-grey-1"
+          data-test="claim-link-creator-panel"
+        >
+          <q-input
+            dense
+            outlined
+            v-model="claimLinkAmount"
+            :label="claimUiLabels.giftAmountLabel"
+            class="q-mb-xs"
+            data-test="claim-link-amount-input"
+          />
+          <q-input
+            dense
+            outlined
+            v-model="claimLinkNote"
+            :label="claimUiLabels.welcomeNoteLabel"
+            class="q-mb-xs"
+            data-test="claim-link-note-input"
+          />
+          <div class="row items-center q-gutter-xs">
+            <q-btn
+              unelevated
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              :label="claimUiLabels.generateClaimLink"
+              :disable="!resolvedAddress"
+              data-test="generate-claim-link-btn"
+              @click="generateFundedClaimLink"
+            />
+            <q-btn
+              v-if="generatedClaimLinkUrl"
+              flat
+              dense
+              no-caps
+              size="sm"
+              icon="content_copy"
+              color="primary"
+              :label="claimUiLabels.copyClaimLink"
+              data-test="copy-claim-link-btn"
+              @click="copyGeneratedClaimLink"
+            />
+          </div>
+          <div
+            v-if="generatedClaimLinkUrl"
+            class="text-caption q-mt-xs ellipsis"
+            :data-value="generatedClaimLinkUrl"
+            data-test="generated-claim-link-output"
+          >
+            {{ generatedClaimLinkUrl }}
+          </div>
+        </div>
         <q-btn
           v-show="false"
           flat
@@ -281,6 +364,89 @@
             />
           </template>
         </q-input>
+        <div class="row q-gutter-xs q-mt-xs">
+          <q-btn
+            flat
+            dense
+            no-caps
+            size="sm"
+            icon="share"
+            color="primary"
+            :label="claimUiLabels.copyInviteLink"
+            :aria-label="claimUiLabels.copyInviteLink"
+            :disable="!resolvedAddress"
+            data-test="copy-invite-link-btn"
+            @click="copyInviteLink"
+          />
+          <q-btn
+            flat
+            dense
+            no-caps
+            size="sm"
+            icon="card_giftcard"
+            color="primary"
+            :label="claimUiLabels.toggleClaimCreator"
+            :aria-label="claimUiLabels.toggleClaimCreator"
+            :disable="!resolvedAddress"
+            data-test="toggle-claim-link-creator-btn"
+            @click="toggleClaimLinkCreator"
+          />
+        </div>
+        <div
+          v-if="showClaimLinkCreator"
+          class="q-mt-sm q-pa-sm rounded-borders bg-grey-1"
+          data-test="claim-link-creator-panel"
+        >
+          <q-input
+            dense
+            outlined
+            v-model="claimLinkAmount"
+            :label="claimUiLabels.giftAmountLabel"
+            class="q-mb-xs"
+            data-test="claim-link-amount-input"
+          />
+          <q-input
+            dense
+            outlined
+            v-model="claimLinkNote"
+            :label="claimUiLabels.welcomeNoteLabel"
+            class="q-mb-xs"
+            data-test="claim-link-note-input"
+          />
+          <div class="row items-center q-gutter-xs">
+            <q-btn
+              unelevated
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              :label="claimUiLabels.generateClaimLink"
+              :disable="!resolvedAddress"
+              data-test="generate-claim-link-btn"
+              @click="generateFundedClaimLink"
+            />
+            <q-btn
+              v-if="generatedClaimLinkUrl"
+              flat
+              dense
+              no-caps
+              size="sm"
+              icon="content_copy"
+              color="primary"
+              :label="claimUiLabels.copyClaimLink"
+              data-test="copy-claim-link-btn"
+              @click="copyGeneratedClaimLink"
+            />
+          </div>
+          <div
+            v-if="generatedClaimLinkUrl"
+            class="text-caption q-mt-xs ellipsis"
+            :data-value="generatedClaimLinkUrl"
+            data-test="generated-claim-link-output"
+          >
+            {{ generatedClaimLinkUrl }}
+          </div>
+        </div>
         <q-btn
           v-show="false"
           flat
@@ -316,6 +482,16 @@ import { ownUsername } from 'src/utils/own-username'
 import UsernameHandle from 'src/components/contacts/UsernameHandle.vue'
 import { isRawQrAddress } from 'src/components/dialogs/QrScannerDialog.vue'
 import { isDevicePairingUri } from '@frank/wallet/device-pairing'
+import { createClaimLink } from '../../../../packages/wallet/claim-link'
+
+function parseGiftAmountAtomic(raw: string): bigint {
+  const trimmed = String(raw ?? '').trim()
+  if (!trimmed) return BigInt(0)
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(trimmed)
+  if (!match) return BigInt(0)
+  const fracStr = (match[2] ?? '').slice(0, 18).padEnd(18, '0')
+  return BigInt(match[1] + fracStr)
+}
 
 function extractScannablePeerTarget(raw: string): string | null {
   const trimmed = raw.trim()
@@ -363,6 +539,20 @@ export default defineComponent({
       name?: string
       avatar?: string
     }>({})
+
+    const showClaimLinkCreator = ref(false)
+    const claimLinkAmount = ref('0.05')
+    const claimLinkNote = ref('')
+    const generatedClaimLinkUrl = ref('')
+
+    const claimUiLabels = {
+      copyInviteLink: 'Copy Invite Link',
+      toggleClaimCreator: 'Create Funded Claim Link',
+      giftAmountLabel: 'Gift Amount',
+      welcomeNoteLabel: 'Welcome Note',
+      generateClaimLink: 'Generate Claim Link',
+      copyClaimLink: 'Copy Claim Link',
+    }
 
     const scannerVideo = ref<HTMLVideoElement>()
     const cameraGeneration = ref(0)
@@ -560,11 +750,46 @@ export default defineComponent({
       () => props.avatar || internalProfile.value.avatar || '',
     )
 
+    const inviteLinkUrl = computed(() => {
+      if (!resolvedAddress.value) return ''
+      const peer = encodeURIComponent(resolvedAddress.value)
+      const peerName = encodeURIComponent(displayName.value || '')
+      return peerName
+        ? `https://signet.mx/#/onboard?peer=${peer}&peerName=${peerName}`
+        : `https://signet.mx/#/onboard?peer=${peer}`
+    })
+
+    const toggleClaimLinkCreator = () => {
+      showClaimLinkCreator.value = !showClaimLinkCreator.value
+    }
+
+    const generateFundedClaimLink = () => {
+      if (!resolvedAddress.value) return
+      const amountAtomic = parseGiftAmountAtomic(claimLinkAmount.value)
+      const trimmedNote = claimLinkNote.value.trim()
+      const created = createClaimLink({
+        baseUrl: 'https://signet.mx/#/onboard',
+        senderAddress: resolvedAddress.value,
+        senderName: displayName.value || undefined,
+        amountAtomic,
+        ...(trimmedNote ? { note: trimmedNote } : {}),
+      })
+      generatedClaimLinkUrl.value = created.url
+    }
+
     return {
       resolvedAddress,
       displayName,
       displayUsername,
       avatarSrc,
+      inviteLinkUrl,
+      showClaimLinkCreator,
+      claimLinkAmount,
+      claimLinkNote,
+      generatedClaimLinkUrl,
+      claimUiLabels,
+      toggleClaimLinkCreator,
+      generateFundedClaimLink,
       scannerVideo,
       cameraGeneration,
       scannerStatus,
@@ -576,6 +801,28 @@ export default defineComponent({
         if (!resolvedAddress.value) return
         try {
           await copyToClipboard(resolvedAddress.value)
+          addressCopiedNotify()
+        } catch (err) {
+          errorNotify(err, {
+            fallbackKey: 'receiveBitcoinDialog.unableCopyAddress',
+          })
+        }
+      },
+      async copyInviteLink() {
+        if (!inviteLinkUrl.value) return
+        try {
+          await copyToClipboard(inviteLinkUrl.value)
+          addressCopiedNotify()
+        } catch (err) {
+          errorNotify(err, {
+            fallbackKey: 'receiveBitcoinDialog.unableCopyAddress',
+          })
+        }
+      },
+      async copyGeneratedClaimLink() {
+        if (!generatedClaimLinkUrl.value) return
+        try {
+          await copyToClipboard(generatedClaimLinkUrl.value)
           addressCopiedNotify()
         } catch (err) {
           errorNotify(err, {

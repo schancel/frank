@@ -70,96 +70,11 @@
         />
       </q-card-section>
       <q-card-section
-        v-if="quote.status === 'pending'"
-        role="status"
-        data-testid="stealth-quote-pending"
-        >{{ $t('sendStealthDialog.checkingQuote') }}</q-card-section
-      >
-      <q-card-section
-        v-else-if="quote.status === 'error'"
+        v-if="quote.status === 'error'"
         role="alert"
+        class="text-negative text-caption q-pt-none"
         data-testid="stealth-quote-error"
         >{{ quote.message }}</q-card-section
-      >
-      <q-card-section
-        v-if="matchingQuote && selectedOption"
-        data-testid="stealth-quote-summary"
-      >
-        <div>
-          {{ $t('sendStealthDialog.recipientAmount') }}:
-          <span data-testid="stealth-reviewed-amount"
-            >{{
-              format(
-                matchingQuote.payment.amountAtomic,
-                selectedOption.decimals,
-              )
-            }}
-            {{ selectedOption.unit }}</span
-          >
-        </div>
-        <div>
-          {{ $t('sendStealthDialog.nativeBalance') }}:
-          <span data-testid="stealth-native-balance"
-            >{{
-              format(
-                matchingQuote.payment.nativeBalanceAtomic,
-                selectedOption.nativeDecimals,
-              )
-            }}
-            {{ selectedOption.nativeUnit }}</span
-          >
-        </div>
-        <div>
-          {{ $t('sendStealthDialog.nativeFee') }}:
-          <span data-testid="stealth-native-fee"
-            >{{
-              format(
-                matchingQuote.payment.estimatedNativeFeeAtomic,
-                selectedOption.nativeDecimals,
-              )
-            }}
-            {{ selectedOption.nativeUnit }}</span
-          >
-        </div>
-        <div>
-          {{ $t('sendStealthDialog.feeCeiling') }}:
-          <span data-testid="stealth-fee-ceiling"
-            >{{
-              format(
-                matchingQuote.maxNativeFeeAtomic,
-                selectedOption.nativeDecimals,
-              )
-            }}
-            {{ selectedOption.nativeUnit }}</span
-          >
-        </div>
-        <div>
-          {{ $t('sendStealthDialog.messageStamp') }}:
-          <span data-testid="stealth-message-stamp"
-            >{{
-              format(
-                matchingQuote.stampValueAtomic,
-                matchingQuote.stampDecimals,
-              )
-            }}
-            {{ matchingQuote.stampUnit }}</span
-          >
-        </div>
-        <div>
-          {{ $t('sendStealthDialog.messageStampFee') }}:
-          <span data-testid="stealth-message-stamp-fee"
-            >{{
-              format(matchingQuote.stampFeeAtomic, matchingQuote.stampDecimals)
-            }}
-            {{ matchingQuote.stampUnit }}</span
-          >
-        </div>
-      </q-card-section>
-      <q-card-section
-        v-if="matchingQuote && !readyQuote"
-        role="alert"
-        data-testid="stealth-insufficient-funds"
-        >{{ $t('sendStealthDialog.insufficientFunds') }}</q-card-section
       >
       <q-card-actions align="right">
         <q-btn
@@ -171,16 +86,8 @@
         />
         <q-btn
           flat
-          :disable="!canReview || busy || quote.status === 'pending'"
-          :loading="quote.status === 'pending'"
-          :label="$t('sendStealthDialog.reviewBtnLabel')"
-          color="primary"
-          data-testid="stealth-review-btn"
-          @click="reviewStealth"
-        />
-        <q-btn
-          flat
-          :disable="!readyQuote || busy"
+          :disable="!canSend || busy"
+          :loading="busy"
           :label="$t('sendStealthDialog.sendBtnLabel')"
           color="primary"
           data-testid="stealth-send-confirm-btn"
@@ -197,8 +104,6 @@ import { useBalance } from '../../composables/useBalance'
 import {
   formatStealthAmount,
   parseStealthAmount,
-  sameStealthAsset,
-  sameStealthRequest,
   stealthAssetKey,
   type StealthAssetOption,
   type StealthDialogRequest,
@@ -206,7 +111,7 @@ import {
   type ReviewedStealthDialogIntent,
 } from '../../stealth-payments/options'
 
-/** Presentation only: composition supplies supported assets, observed balances and unsigned quotes. */
+/** Direct stealth payment composer: select asset, enter amount and optional memo, and send in one step. */
 export default defineComponent({
   name: 'SendStealthDialog',
   props: {
@@ -225,7 +130,8 @@ export default defineComponent({
   emits: {
     cancel: () => true,
     review: (request: StealthDialogRequest) => request.amountAtomic > 0n,
-    send: (intent: ReviewedStealthDialogIntent) => intent.amountAtomic > 0n,
+    send: (intent: StealthDialogRequest | ReviewedStealthDialogIntent) =>
+      intent.amountAtomic > 0n,
   },
   setup() {
     const { balance: activeBalance, loaded: balanceLoaded } = useBalance()
@@ -239,9 +145,6 @@ export default defineComponent({
       selectedKey: this.options[0]?.key ?? '',
       amount: '',
       memo: '',
-      reviewedRequest: undefined as StealthDialogRequest | undefined,
-      quoteAtReview: undefined as StealthDialogQuoteState | undefined,
-      autoReviewTimer: undefined as ReturnType<typeof setTimeout> | undefined,
     }
   },
   computed: {
@@ -277,64 +180,14 @@ export default defineComponent({
         memo: this.memo.trim(),
       }
     },
-    canReview(): boolean {
+    canSend(): boolean {
       const request = this.request,
         balance = this.availableBalanceAtomic
       return (
         !!request && (balance === undefined || request.amountAtomic <= balance)
       )
     },
-    matchingQuote():
-      | Extract<StealthDialogQuoteState, { status: 'ready' }>
-      | undefined {
-      const quote = this.quote,
-        request = this.request
-      if (
-        quote.status !== 'ready' ||
-        quote === this.quoteAtReview ||
-        !this.reviewedRequest ||
-        !request ||
-        !sameStealthRequest(quote.request, request) ||
-        !sameStealthRequest(this.reviewedRequest, request)
-      )
-        return undefined
-      const payment = quote.payment
-      if (
-        payment.chainIdentifier !== request.chainIdentifier ||
-        !sameStealthAsset(payment.asset, request.asset) ||
-        payment.amountAtomic !== request.amountAtomic ||
-        payment.assetBalanceAtomic < 0n ||
-        payment.nativeBalanceAtomic < 0n ||
-        payment.estimatedNativeFeeAtomic < 0n ||
-        quote.maxNativeFeeAtomic < payment.estimatedNativeFeeAtomic ||
-        quote.stampValueAtomic < 0n ||
-        quote.stampFeeAtomic < 0n
-      )
-        return undefined
-      return quote
-    },
-    readyQuote():
-      | Extract<StealthDialogQuoteState, { status: 'ready' }>
-      | undefined {
-      const quote = this.matchingQuote
-      if (
-        !quote ||
-        quote.payment.assetBalanceAtomic < quote.request.amountAtomic
-      )
-        return undefined
-      const nativeNeeded =
-        quote.maxNativeFeeAtomic +
-        (quote.request.asset.kind === 'native'
-          ? quote.request.amountAtomic
-          : 0n)
-      return quote.payment.nativeBalanceAtomic >= nativeNeeded
-        ? quote
-        : undefined
-    },
     availableBalanceAtomic(): bigint | undefined {
-      if (this.matchingQuote) {
-        return this.matchingQuote.payment.assetBalanceAtomic
-      }
       const option = this.selectedOption
       if (!option) return undefined
       if (option.balanceAtomic !== undefined) {
@@ -373,84 +226,25 @@ export default defineComponent({
   },
   watch: {
     selectedKey() {
-      this.cancelAutoReview()
       this.amount = ''
-      this.reviewedRequest = undefined
-    },
-    amount() {
-      this.reviewedRequest = undefined
-      this.scheduleAutoReview()
-    },
-    memo() {
-      this.reviewedRequest = undefined
-      this.scheduleAutoReview()
-    },
-    address() {
-      this.cancelAutoReview()
-      this.reviewedRequest = undefined
     },
     options() {
       if (!this.options.some(option => option.key === this.selectedKey))
         this.selectedKey = this.options[0]?.key ?? ''
-      this.cancelAutoReview()
-      this.reviewedRequest = undefined
     },
   },
   methods: {
     format: formatStealthAmount,
-    scheduleAutoReview() {
-      this.cancelAutoReview()
-      if (!this.canReview || this.busy) return
-      this.autoReviewTimer = setTimeout(() => {
-        if (this.canReview && !this.busy && !this.matchingQuote) {
-          this.reviewStealth()
-        }
-      }, 400)
-    },
-    cancelAutoReview() {
-      if (this.autoReviewTimer) {
-        clearTimeout(this.autoReviewTimer)
-        this.autoReviewTimer = undefined
-      }
-    },
-    reviewStealth() {
-      this.cancelAutoReview()
-      if (
-        this.busy ||
-        !this.canReview ||
-        this.quote.status === 'pending' ||
-        !this.request
-      )
-        return
-      this.reviewedRequest = this.request
-      this.quoteAtReview = this.quote
-      this.$emit('review', this.reviewedRequest)
-    },
     sendStealth() {
-      const quote = this.readyQuote
-      if (this.busy || !quote || !this.request) return
-      const payment = quote.payment
+      if (this.busy || !this.canSend || !this.request) return
       this.$emit('send', {
         ...this.request,
-        quote: {
-          ...payment,
-          asset: { ...payment.asset },
-          recipientDestination: new Uint8Array(payment.recipientDestination),
-          recipientSpendPublicKey: new Uint8Array(
-            payment.recipientSpendPublicKey,
-          ),
-          ephemeralPublicKey: new Uint8Array(payment.ephemeralPublicKey),
-        },
-        maxNativeFeeAtomic: quote.maxNativeFeeAtomic,
-        stampValue: quote.stampValueAtomic,
+        asset: { ...this.request.asset },
       })
     },
   },
   mounted() {
     ;(this.$refs.amountInput as { focus?: () => void } | undefined)?.focus?.()
-  },
-  beforeUnmount() {
-    this.cancelAutoReview()
   },
 })
 </script>

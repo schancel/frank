@@ -602,5 +602,41 @@ describe('read-only stamp affordability', () => {
     stampPayer.release('skewed-replica')
     watcher.stop()
   })
+
+  it('retries transient -32007 upstream RPC rate-limit errors and skips nonce reads on empty accounts during quote', async () => {
+    let mainBalanceAttempts = 0
+    const txCountAddresses: string[] = []
+    const { stampPayer, watcher } = payer(
+      { [at(main)]: MON, [at(coins[0])]: 0n },
+      {
+        spendSpacingBlocks: 3,
+        provider: {
+          getBalance: async (address, block) => {
+            if (address.toLowerCase() === at(main).toLowerCase() && block === undefined) {
+              mainBalanceAttempts += 1
+              if (mainBalanceAttempts === 1) {
+                throw Object.assign(
+                  new Error('could not coalesce error (error={ "code": -32007, "message": "upstream RPC error" })'),
+                  { code: 'UNKNOWN_ERROR', error: { code: -32007, message: 'upstream RPC error' } },
+                )
+              }
+              return MON
+            }
+            return address.toLowerCase() === at(main).toLowerCase() ? MON : 0n
+          },
+          getTransactionCount: async (address) => {
+            txCountAddresses.push(address.toLowerCase())
+            return 0
+          },
+        },
+      },
+    )
+    const quote = await stampPayer.quote({ stampValueWei: MON / 100n })
+    expect(quote.status).toBe('available')
+    expect(mainBalanceAttempts).toBe(2)
+    expect(txCountAddresses).toContain(at(main).toLowerCase())
+    expect(txCountAddresses).not.toContain(at(coins[0]).toLowerCase())
+    watcher.stop()
+  })
 })
 

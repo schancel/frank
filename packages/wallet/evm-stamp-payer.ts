@@ -263,10 +263,31 @@ export class EvmStampPayer {
         cancel = () => reject(new ChainWaitCancelledError())
         signal?.addEventListener('abort', cancel, { once: true })
       })
-      const value = await Promise.race([task(), stopped])
-      if (signal?.aborted) throw new ChainWaitCancelledError()
-      this.watcher.noteSuccess()
-      return value
+      let lastError: unknown
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const value = await Promise.race([task(), stopped])
+          if (signal?.aborted) throw new ChainWaitCancelledError()
+          this.watcher.noteSuccess()
+          return value
+        } catch (error) {
+          if (error instanceof ChainWaitCancelledError) throw error
+          lastError = error
+          const msg = String((error as { message?: unknown })?.message ?? error)
+          const isTransientRpcLimit =
+            /upstream RPC error|-32007|-32005|-32016|429|50[234]|bad gateway/i.test(
+              msg,
+            )
+          if (!isTransientRpcLimit || attempt >= 3 || signal?.aborted) {
+            throw error
+          }
+          await Promise.race([
+            new Promise<void>(resolve => setTimeout(resolve, attempt * 150)),
+            stopped,
+          ])
+        }
+      }
+      throw lastError
     } catch (error) {
       if (error instanceof ChainWaitCancelledError) throw error
       this.watcher.noteFailure(error)
@@ -525,13 +546,23 @@ export class EvmStampPayer {
         this.config.accountHeld?.(address)
       )
         return undefined
-      const [balance, nonce, pending, before, matured] = await this.read(() =>
+      const balance = await this.read(() => provider.getBalance(address))
+      if (balance <= reserve) {
+        return {
+          address,
+          nonce: 0,
+          generation,
+          capacityWei: 0n,
+        }
+      }
+      const [nonce, pending, before, matured] = await this.read(() =>
         Promise.all([
-          provider.getBalance(address),
           provider
             .getTransactionCount(address, head)
             .catch(() => provider.getTransactionCount(address, 'latest')),
-          provider.getTransactionCount(address, 'pending'),
+          provider
+            .getTransactionCount(address, 'pending')
+            .catch(() => undefined),
           spacing > 0 && head >= spacing
             ? provider
                 .getTransactionCount(address, head - spacing)
@@ -547,7 +578,7 @@ export class EvmStampPayer {
       const known = this.coins.get(address.toLowerCase())
       const settled = this.settledNonce.get(address.toLowerCase())
       if (
-        pending !== nonce ||
+        (pending !== undefined && pending !== nonce) ||
         (settled !== undefined && nonce <= settled) ||
         (known !== undefined && known.nonce > nonce)
       )
@@ -574,26 +605,42 @@ export class EvmStampPayer {
         capacityWei: usable > reserve ? usable - reserve : 0n,
       }
     }
+    const mapBounded = async <I, O>(
+      items: readonly I[],
+      fn: (item: I) => Promise<O>,
+    ): Promise<O[]> => {
+      const results = new Array<O>(items.length)
+      let cursor = 0
+      const workers = Array.from(
+        { length: Math.min(4, items.length) },
+        async () => {
+          while (cursor < items.length) {
+            const idx = cursor++
+            results[idx] = await fn(items[idx]!)
+          }
+        },
+      )
+      await Promise.all(workers)
+      return results
+    }
     const records = pool
       .records()
       .filter(
         record =>
           record.status === 'available' && !pool.isSpendReserved(record.index),
       )
-    const poolStates = await Promise.all(
-      records.map(async record => {
-        const state = await snapshot(record.address, true)
-        return state === undefined
-          ? undefined
-          : { ...state, index: record.index }
-      }),
-    )
+    const poolStates = await mapBounded(records, async record => {
+      const state = await snapshot(record.address, true)
+      return state === undefined
+        ? undefined
+        : { ...state, index: record.index }
+    })
     const candidates = [
       ...this.config.accounts,
       ...(this.config.coins?.() ?? []),
     ]
-    const fallbackStates = await Promise.all(
-      candidates.map(account => snapshot(account.address)),
+    const fallbackStates = await mapBounded(candidates, account =>
+      snapshot(account.address),
     )
     // Recheck reservations after all asynchronous reads, immediately before pure selection.
     const poolAccounts = poolStates.filter(

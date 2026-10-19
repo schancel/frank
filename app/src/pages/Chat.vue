@@ -1267,7 +1267,41 @@ export default defineComponent({
     },
     /** The financial owner saves the original signed payment; the message owner then binds
      * its complete sealed envelope before delivery and submits that same authorized operation. */
-    async sendStealthPayment(intent: ReviewedStealthDialogIntent) {
+    async sendStealthPayment(
+      intentOrRequest: ReviewedStealthDialogIntent | StealthDialogRequest,
+    ) {
+      if (this.sendingMessage) return
+      let intent: ReviewedStealthDialogIntent
+      if (!('quote' in intentOrRequest)) {
+        this.sendingMessage = true
+        try {
+          await this.reviewStealthPayment(intentOrRequest)
+        } finally {
+          this.sendingMessage = false
+        }
+        const capturedFromReview = this.stealthReview
+        const reviewedReq = this.stealthReviewedRequest
+        if (
+          !capturedFromReview ||
+          !reviewedReq ||
+          this.stealthQuote.status !== 'ready'
+        ) {
+          if (this.stealthQuote.status === 'error') {
+            errorNotify(new Error(this.stealthQuote.message), {
+              fallbackKey: 'sendStealthDialog.notSent',
+            })
+          }
+          return
+        }
+        intent = {
+          ...reviewedReq,
+          quote: capturedFromReview.quote,
+          maxNativeFeeAtomic: capturedFromReview.maxNativeFeeAtomic,
+          stampValue: capturedFromReview.stampValue,
+        }
+      } else {
+        intent = intentOrRequest
+      }
       const captured = this.stealthReview
       if (this.sendingMessage || !captured || !this.stealthReviewedRequest)
         return

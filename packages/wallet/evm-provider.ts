@@ -738,10 +738,41 @@ export function createMonadRelayRpcConnection(
             return retryResponse;
           }
 
+          const isReadOnlyRequest = (() => {
+            if (!currentRequest.body) return true;
+            try {
+              const reqText = new TextDecoder().decode(currentRequest.body);
+              return !reqText.includes("eth_sendRawTransaction");
+            } catch {
+              return false;
+            }
+          })();
+
+          const hasTransientRpcRateLimit =
+            response.statusCode === 200 &&
+            isReadOnlyRequest &&
+            response.body.length > 0 &&
+            (() => {
+              try {
+                const resText = new TextDecoder().decode(response.body);
+                return (
+                  resText.includes('"code":-32007') ||
+                  resText.includes('"code": -32007') ||
+                  resText.includes('"code":-32005') ||
+                  resText.includes('"code": -32005') ||
+                  resText.includes('"code":-32016') ||
+                  resText.includes('"code": -32016')
+                );
+              } catch {
+                return false;
+              }
+            })();
+
           const isTransientGateway =
             response.statusCode === 502 ||
             response.statusCode === 503 ||
-            response.statusCode === 504;
+            response.statusCode === 504 ||
+            hasTransientRpcRateLimit;
 
           if (
             isTransientGateway &&

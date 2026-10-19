@@ -1465,4 +1465,3 @@ describe('stores/contacts.ts (ticket #42)', () => {
     })
   })
 })
-

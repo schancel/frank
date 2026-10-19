@@ -445,18 +445,20 @@ export const useContactStore = defineStore('contacts', {
           : Uint8Array.from(stored as ArrayLike<number>)
       return markRaw(profilePubKeyFromBytes(bytes))
     },
-    getPinnedContactByHandle: state => (handle: string): ContactState | undefined => {
-      if (!handle) return undefined
-      const target = normalizeHandle(handle)
-      for (const contact of Object.values(state.contacts)) {
-        if (!contact) continue
-        const addedBy = contact.profile?.addedByUsername
-        if (addedBy && normalizeHandle(addedBy) === target) {
-          return contact
+    getPinnedContactByHandle:
+      state =>
+      (handle: string): ContactState | undefined => {
+        if (!handle) return undefined
+        const target = normalizeHandle(handle)
+        for (const contact of Object.values(state.contacts)) {
+          if (!contact) continue
+          const addedBy = contact.profile?.addedByUsername
+          if (addedBy && normalizeHandle(addedBy) === target) {
+            return contact
+          }
         }
-      }
-      return undefined
-    },
+        return undefined
+      },
   },
   actions: {
     addContact({
@@ -511,7 +513,8 @@ export const useContactStore = defineStore('contacts', {
           ? contact.masterPublicKeyHex
           : existing?.masterPublicKeyHex ?? null
       const normalizedMasterKey = rawMasterKey
-        ? normalizeMasterPublicKeyHex(rawMasterKey) ?? rawMasterKey.toLowerCase()
+        ? normalizeMasterPublicKeyHex(rawMasterKey) ??
+          rawMasterKey.toLowerCase()
         : null
 
       const fixedContact: ContactState = {
@@ -718,8 +721,11 @@ export const useContactStore = defineStore('contacts', {
       const oldAddr = safeToChainDisplayAddress(statement?.oldAddress)
       const newAddr = safeToChainDisplayAddress(statement?.newAddress)
 
-      let targetAddress = oldAddr && this.contacts[oldAddr] ? oldAddr : undefined
-      let targetContact = targetAddress ? this.contacts[targetAddress] : undefined
+      let targetAddress =
+        oldAddr && this.contacts[oldAddr] ? oldAddr : undefined
+      let targetContact = targetAddress
+        ? this.contacts[targetAddress]
+        : undefined
 
       if (!targetContact && oldAddr) {
         const normalizedMaster = statement?.masterPublicKeyHex

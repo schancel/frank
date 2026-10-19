@@ -1,7 +1,12 @@
 <template>
   <q-card class="article-compose-card" data-testid="article-compose-form">
-    <q-card-section class="row items-center justify-between q-pb-sm article-compose-header">
-      <div class="text-h6 text-weight-bold" data-testid="article-compose-heading">
+    <q-card-section
+      class="row items-center justify-between q-pb-sm article-compose-header"
+    >
+      <div
+        class="text-h6 text-weight-bold"
+        data-testid="article-compose-heading"
+      >
         {{ headingText }}
       </div>
       <q-btn
@@ -19,7 +24,10 @@
 
     <q-separator />
 
-    <q-card-section v-if="!showPreview" class="q-gutter-sm article-compose-fields">
+    <q-card-section
+      v-if="!showPreview"
+      class="q-gutter-sm article-compose-fields"
+    >
       <q-input
         v-model="title"
         outlined
@@ -125,7 +133,11 @@
         :article="previewPayload"
         @close="showPreview = false"
       />
-      <div v-else class="text-caption text-grey" data-testid="article-compose-preview-empty">
+      <div
+        v-else
+        class="text-caption text-grey"
+        data-testid="article-compose-preview-empty"
+      >
         {{ emptyPreviewText }}
       </div>
     </q-card-section>
@@ -219,9 +231,7 @@ export default defineComponent({
         .filter(tag => tag.length > 0)
     },
     canSubmit(): boolean {
-      return (
-        this.title.trim().length > 0 && this.markdownBody.trim().length > 0
-      )
+      return this.title.trim().length > 0 && this.markdownBody.trim().length > 0
     },
     previewPayload(): ArticlePayload | null {
       try {
@@ -298,21 +308,30 @@ export default defineComponent({
           id: 'bold',
           icon: 'format_bold',
           shortLabel: this.translate('article.formatBoldShort', 'Bold'),
-          ariaLabel: this.translate('article.formatBoldAria', 'Insert bold text'),
+          ariaLabel: this.translate(
+            'article.formatBoldAria',
+            'Insert bold text',
+          ),
           testId: 'article-toolbar-bold',
         },
         {
           id: 'italic',
           icon: 'format_italic',
           shortLabel: this.translate('article.formatItalicShort', 'Italic'),
-          ariaLabel: this.translate('article.formatItalicAria', 'Insert italic text'),
+          ariaLabel: this.translate(
+            'article.formatItalicAria',
+            'Insert italic text',
+          ),
           testId: 'article-toolbar-italic',
         },
         {
           id: 'heading',
           icon: 'title',
           shortLabel: this.translate('article.formatHeadingShort', 'Heading'),
-          ariaLabel: this.translate('article.formatHeadingAria', 'Insert heading'),
+          ariaLabel: this.translate(
+            'article.formatHeadingAria',
+            'Insert heading',
+          ),
           testId: 'article-toolbar-heading',
         },
         {
@@ -333,7 +352,10 @@ export default defineComponent({
           id: 'list',
           icon: 'format_list_bulleted',
           shortLabel: this.translate('article.formatListShort', 'List'),
-          ariaLabel: this.translate('article.formatListAria', 'Insert bullet list'),
+          ariaLabel: this.translate(
+            'article.formatListAria',
+            'Insert bullet list',
+          ),
           testId: 'article-toolbar-list',
         },
         {
@@ -354,7 +376,11 @@ export default defineComponent({
     ): string {
       const internal = (
         this as unknown as {
-          $?: { appContext?: { config?: { globalProperties?: Record<string, unknown> } } }
+          $?: {
+            appContext?: {
+              config?: { globalProperties?: Record<string, unknown> }
+            }
+          }
         }
       ).$
       const gp = internal?.appContext?.config?.globalProperties
@@ -364,7 +390,11 @@ export default defineComponent({
       if (typeof t === 'function') {
         try {
           const result = t.call(this, key, values)
-          if (typeof result === 'string' && result !== key && result.length > 0) {
+          if (
+            typeof result === 'string' &&
+            result !== key &&
+            result.length > 0
+          ) {
             return result
           }
         } catch {
@@ -379,10 +409,16 @@ export default defineComponent({
         | { $el?: HTMLElement; getNativeElement?: () => HTMLElement }
         | undefined
       if (!refObj) return null
-      if (typeof HTMLTextAreaElement !== 'undefined' && refObj instanceof HTMLTextAreaElement) {
+      if (
+        typeof HTMLTextAreaElement !== 'undefined' &&
+        refObj instanceof HTMLTextAreaElement
+      ) {
         return refObj
       }
-      if ('getNativeElement' in refObj && typeof refObj.getNativeElement === 'function') {
+      if (
+        'getNativeElement' in refObj &&
+        typeof refObj.getNativeElement === 'function'
+      ) {
         const el = refObj.getNativeElement()
         if (el && el.tagName === 'TEXTAREA') return el as HTMLTextAreaElement
       }
@@ -415,29 +451,44 @@ export default defineComponent({
       let insertion = ''
       switch (action) {
         case 'bold':
-          insertion = `**${selected || this.translate('article.sampleBold', 'bold text')}**`
+          insertion = `**${
+            selected || this.translate('article.sampleBold', 'bold text')
+          }**`
           break
         case 'italic':
-          insertion = `*${selected || this.translate('article.sampleItalic', 'italic text')}*`
+          insertion = `*${
+            selected || this.translate('article.sampleItalic', 'italic text')
+          }*`
           break
         case 'heading':
-          insertion = `${needsLeadingNewline}## ${selected || this.translate('article.sampleHeading', 'Section heading')}\n`
+          insertion = `${needsLeadingNewline}## ${
+            selected ||
+            this.translate('article.sampleHeading', 'Section heading')
+          }\n`
           break
         case 'quote':
-          insertion = `${needsLeadingNewline}> ${selected || this.translate('article.sampleQuote', 'Quoted insight')}\n`
+          insertion = `${needsLeadingNewline}> ${
+            selected || this.translate('article.sampleQuote', 'Quoted insight')
+          }\n`
           break
         case 'code':
           if (selected.includes('\n')) {
             insertion = `${needsLeadingNewline}\`\`\`\n${selected}\n\`\`\`\n`
           } else {
-            insertion = `\`${selected || this.translate('article.sampleCode', 'code')}\``
+            insertion = `\`${
+              selected || this.translate('article.sampleCode', 'code')
+            }\``
           }
           break
         case 'list':
-          insertion = `${needsLeadingNewline}- ${selected || this.translate('article.sampleListItem', 'List item')}\n`
+          insertion = `${needsLeadingNewline}- ${
+            selected || this.translate('article.sampleListItem', 'List item')
+          }\n`
           break
         case 'link':
-          insertion = `[${selected || this.translate('article.sampleLinkText', 'link text')}](https://example.com)`
+          insertion = `[${
+            selected || this.translate('article.sampleLinkText', 'link text')
+          }](https://example.com)`
           break
       }
 
@@ -466,9 +517,7 @@ export default defineComponent({
       }
       if (this.parsedTags.length > 0) {
         if (this.parsedTags.length > ARTICLE_MAX_TAGS) {
-          throw new RangeError(
-            `At most ${ARTICLE_MAX_TAGS} tags are allowed`,
-          )
+          throw new RangeError(`At most ${ARTICLE_MAX_TAGS} tags are allowed`)
         }
         for (const tag of this.parsedTags) {
           if (tag.length > ARTICLE_MAX_TAG_CHARS) {

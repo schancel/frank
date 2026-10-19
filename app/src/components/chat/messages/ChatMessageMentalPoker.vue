@@ -22,9 +22,13 @@
       {{ deckStatusText }}
     </div>
 
-    <div class="mp-pot-row row items-center justify-between text-caption q-mb-sm">
+    <div
+      class="mp-pot-row row items-center justify-between text-caption q-mb-sm"
+    >
       <span data-testid="mp-stake-label">{{ stakeDisplay }}</span>
-      <span class="text-weight-bold" data-testid="mp-pot-label">{{ potDisplay }}</span>
+      <span class="text-weight-bold" data-testid="mp-pot-label">{{
+        potDisplay
+      }}</span>
     </div>
 
     <div class="mp-section q-mb-sm" data-testid="mp-viewer-hole-section">
@@ -96,10 +100,7 @@
       class="mp-verification row items-center q-gutter-xs q-mb-sm"
       data-testid="mp-verification-badge"
     >
-      <q-badge
-        :color="verificationBadgeColor"
-        text-color="white"
-      >
+      <q-badge :color="verificationBadgeColor" text-color="white">
         {{ verificationBadgeText }}
       </q-badge>
     </div>
@@ -270,8 +271,7 @@ const foldedState = computed<FoldedMentalPokerState | null>(() => {
   }
 
   const viewerRole: MentalPokerRole =
-    current.actor ??
-    (props.outbound === false ? 'accepter' : 'challenger')
+    current.actor ?? (props.outbound === false ? 'accepter' : 'challenger')
   const secrets = getOrCreateMentalPokerSecrets(
     current.handId,
     viewerRole,
@@ -325,6 +325,7 @@ const streetLabel = computed(() => {
     case 'showdown':
       return 'Showdown'
     case 'complete':
+    default:
       return 'Complete'
   }
 })
@@ -418,7 +419,9 @@ const isActiveBettingStreet = computed(() => {
 const isViewerTurn = computed(() => {
   const s = foldedState.value
   if (!s) return false
-  return s.turnRole === s.viewerRole && s.pendingViewerKeyRevealIndices.length === 0
+  return (
+    s.turnRole === s.viewerRole && s.pendingViewerKeyRevealIndices.length === 0
+  )
 })
 
 const canAcceptAndShuffle = computed(() => {

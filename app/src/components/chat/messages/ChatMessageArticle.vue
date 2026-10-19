@@ -215,7 +215,11 @@ export default defineComponent({
     ): string {
       const internal = (
         this as unknown as {
-          $?: { appContext?: { config?: { globalProperties?: Record<string, unknown> } } }
+          $?: {
+            appContext?: {
+              config?: { globalProperties?: Record<string, unknown> }
+            }
+          }
         }
       ).$
       const gp = internal?.appContext?.config?.globalProperties
@@ -225,7 +229,11 @@ export default defineComponent({
       if (typeof t === 'function') {
         try {
           const result = t.call(this, key, values)
-          if (typeof result === 'string' && result !== key && result.length > 0) {
+          if (
+            typeof result === 'string' &&
+            result !== key &&
+            result.length > 0
+          ) {
             return result
           }
         } catch {
@@ -249,7 +257,10 @@ export default defineComponent({
         | { $el?: HTMLElement; focus?: () => void }
         | HTMLElement
         | undefined
-      if (btnRef && typeof (btnRef as { focus?: () => void }).focus === 'function') {
+      if (
+        btnRef &&
+        typeof (btnRef as { focus?: () => void }).focus === 'function'
+      ) {
         ;(btnRef as { focus: () => void }).focus()
       } else if (
         btnRef &&

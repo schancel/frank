@@ -219,12 +219,7 @@ describe('P2P Satoshi Dice & Rock-Paper-Scissors commit-reveal glue', () => {
       },
     ]
     expect(
-      dealerRpsStepForMatch(
-        mismatchedMessages,
-        alice,
-        bob,
-        'match-rps-staked',
-      ),
+      dealerRpsStepForMatch(mismatchedMessages, alice, bob, 'match-rps-staked'),
     ).toBeUndefined()
 
     // Matching peer wager succeeds

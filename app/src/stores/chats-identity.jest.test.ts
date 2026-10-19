@@ -158,10 +158,7 @@ describe('Canonical Conversation Identity & Multi-Thread Preservation (#1237)', 
     it('keeps self conversation distinct from [self, peer] conversations across activation and reload', async () => {
       const store = useChatStore()
 
-      const convPeer = store.openDirectConversation(PEER_A, [
-        SELF_ADDR,
-        PEER_A,
-      ])
+      const convPeer = store.openDirectConversation(PEER_A, [SELF_ADDR, PEER_A])
       const convSelf = store.openDirectConversation(SELF_ADDR, [SELF_ADDR])
 
       expect(convSelf.id).not.toBe(convPeer.id)

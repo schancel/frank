@@ -153,8 +153,8 @@
                 ? 'gameFairness.noAnswerPeer'
                 : 'gameFairness.noAnswer'
               : isP2pMatch
-                ? 'gameFairness.awaitingPeer'
-                : 'gameFairness.awaiting',
+              ? 'gameFairness.awaitingPeer'
+              : 'gameFairness.awaiting',
             {
               seconds: waiting.seconds,
             },
@@ -203,8 +203,8 @@
             payout.short
               ? 'gameFairness.payoutMissing'
               : isP2pMatch
-                ? 'gameFairness.payoutClaimedPeer'
-                : 'gameFairness.payoutClaimed',
+              ? 'gameFairness.payoutClaimedPeer'
+              : 'gameFairness.payoutClaimed',
             payout,
           )
         }}

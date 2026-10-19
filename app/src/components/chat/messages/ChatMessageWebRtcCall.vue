@@ -14,7 +14,10 @@
         <div class="webrtc-call-icon-badge row items-center justify-center">
           <q-icon :name="headerIconName" size="16px" :color="headerIconColor" />
         </div>
-        <span class="text-weight-bold text-caption webrtc-call-title" data-testid="webrtc-call-title">
+        <span
+          class="text-weight-bold text-caption webrtc-call-title"
+          data-testid="webrtc-call-title"
+        >
           {{ uiLabels.title }}
         </span>
       </div>
@@ -72,7 +75,10 @@
       v-else-if="isDtlsVerified && isPrimaryCallCard"
       class="webrtc-meta-row row items-center justify-between text-caption q-mb-xs"
     >
-      <div class="webrtc-dtls-pill row items-center no-wrap" data-testid="webrtc-dtls-badge">
+      <div
+        class="webrtc-dtls-pill row items-center no-wrap"
+        data-testid="webrtc-dtls-badge"
+      >
         <q-icon name="verified_user" size="13px" class="q-mr-xs" />
         <span>{{ uiLabels.dtlsVerified }}</span>
       </div>
@@ -81,7 +87,11 @@
         class="webrtc-peer-audio-pill row items-center no-wrap"
         data-testid="webrtc-peer-mute-badge"
       >
-        <q-icon :name="isRemoteMuted ? 'mic_off' : 'graphic_eq'" size="13px" class="q-mr-xs" />
+        <q-icon
+          :name="isRemoteMuted ? 'mic_off' : 'graphic_eq'"
+          size="13px"
+          class="q-mr-xs"
+        />
         <span>{{ peerMuteStatusText }}</span>
       </div>
     </div>
@@ -135,7 +145,11 @@
     >
       <div
         class="webrtc-video-slot"
-        :class="effectiveLocalPrimary ? 'webrtc-video-slot--primary' : 'webrtc-video-slot--pip'"
+        :class="
+          effectiveLocalPrimary
+            ? 'webrtc-video-slot--primary'
+            : 'webrtc-video-slot--pip'
+        "
         @click.stop="onLocalVideoSlotClick"
       >
         <video
@@ -155,7 +169,11 @@
 
       <div
         class="webrtc-video-slot"
-        :class="effectiveLocalPrimary ? 'webrtc-video-slot--pip' : 'webrtc-video-slot--primary'"
+        :class="
+          effectiveLocalPrimary
+            ? 'webrtc-video-slot--pip'
+            : 'webrtc-video-slot--primary'
+        "
         @click.stop="onRemoteVideoSlotClick"
       >
         <video
@@ -168,7 +186,10 @@
           autoplay
         />
         <div class="webrtc-video-stage-hint">
-          <q-icon :name="isStageExpanded ? 'close_fullscreen' : 'open_in_full'" size="14px" />
+          <q-icon
+            :name="isStageExpanded ? 'close_fullscreen' : 'open_in_full'"
+            size="14px"
+          />
           <span>{{ expandStageHintText }}</span>
         </div>
       </div>
@@ -237,7 +258,9 @@
         unelevated
         no-caps
         class="webrtc-dock-btn"
-        :class="isLocalMuted ? 'webrtc-dock-btn--muted' : 'webrtc-dock-btn--glass'"
+        :class="
+          isLocalMuted ? 'webrtc-dock-btn--muted' : 'webrtc-dock-btn--glass'
+        "
         :icon="isLocalMuted ? 'mic_off' : 'mic'"
         data-testid="webrtc-toggle-mute"
         :label="muteButtonLabel"
@@ -248,7 +271,11 @@
         unelevated
         no-caps
         class="webrtc-dock-btn"
-        :class="isLocalVideoEnabled ? 'webrtc-dock-btn--active' : 'webrtc-dock-btn--glass'"
+        :class="
+          isLocalVideoEnabled
+            ? 'webrtc-dock-btn--active'
+            : 'webrtc-dock-btn--glass'
+        "
         :icon="isLocalVideoEnabled ? 'videocam' : 'videocam_off'"
         data-testid="webrtc-toggle-video"
         :label="videoButtonLabel"
@@ -269,7 +296,11 @@
         unelevated
         no-caps
         class="webrtc-dock-btn"
-        :class="isScreenShareEnabled ? 'webrtc-dock-btn--screen' : 'webrtc-dock-btn--glass'"
+        :class="
+          isScreenShareEnabled
+            ? 'webrtc-dock-btn--screen'
+            : 'webrtc-dock-btn--glass'
+        "
         :icon="isScreenShareEnabled ? 'stop_screen_share' : 'screen_share'"
         data-testid="webrtc-toggle-screen"
         :label="screenShareButtonLabel"
@@ -339,7 +370,10 @@ const emit = defineEmits<{
     e: 'sendFollowUp',
     payload: { items: ApplicationMessageItem[]; stampValueWei?: bigint },
   ): void
-  (e: 'answer', payload: { item: ApplicationMessageItem; withVideo: boolean }): void
+  (
+    e: 'answer',
+    payload: { item: ApplicationMessageItem; withVideo: boolean },
+  ): void
   (e: 'reject', payload: { item: ApplicationMessageItem }): void
   (e: 'cancel', payload: { item: ApplicationMessageItem }): void
   (
@@ -565,10 +599,7 @@ function syncControllerSnapshot(
   snapshotVersion.value += 1
   if (ctrl) {
     controllerSnapshot.value = ctrl.getSnapshot()
-    attachStreamsToVideoElements(
-      ctrl.getLocalStream(),
-      ctrl.getRemoteStream(),
-    )
+    attachStreamsToVideoElements(ctrl.getLocalStream(), ctrl.getRemoteStream())
   }
 }
 
@@ -587,7 +618,7 @@ function attachStreamsToVideoElements(
         el.srcObject = localStream
       }
       if (localStream) {
-        void el.play?.().catch(() => {})
+        void el.play?.().catch(() => undefined)
       }
     } catch {
       // Ignore JSDOM srcObject assignment limitations
@@ -603,7 +634,7 @@ function attachStreamsToVideoElements(
         el.srcObject = remoteStream
       }
       if (remoteStream) {
-        void el.play?.().catch(() => {})
+        void el.play?.().catch(() => undefined)
       }
     } catch {
       // Ignore JSDOM srcObject assignment limitations
@@ -619,7 +650,7 @@ function attachStreamsToVideoElements(
         el.srcObject = remoteStream
       }
       if (remoteStream) {
-        void el.play?.().catch(() => {})
+        void el.play?.().catch(() => undefined)
       }
     } catch {
       // Ignore JSDOM srcObject assignment limitations
@@ -667,7 +698,9 @@ watch(
   [conversationMessages, activeController, resolvedPayload],
   ([msgs, ctrl, currentPayload]) => {
     const targetCallId =
-      currentPayload?.callId ?? props.state?.callId ?? ctrl?.getSnapshot().callId
+      currentPayload?.callId ??
+      props.state?.callId ??
+      ctrl?.getSnapshot().callId
     if (!targetCallId) return
     const targetCtrl = ctrl ?? getCallSessionController(targetCallId)
     if (!targetCtrl) return
@@ -829,7 +862,9 @@ const isSecurityAbort = computed<boolean>(() => {
     foldedState.value?.securityError ??
     ''
   ).toLowerCase()
-  return Boolean(foldedState.value?.phase === 'failed' && reason.includes('fingerprint'))
+  return Boolean(
+    foldedState.value?.phase === 'failed' && reason.includes('fingerprint'),
+  )
 })
 
 const isDtlsVerified = computed<boolean>(() => {
@@ -1004,9 +1039,7 @@ const videoButtonLabel = computed<string>(() => {
 })
 
 const screenShareButtonLabel = computed<string>(() => {
-  return isScreenShareEnabled.value
-    ? uiLabels.stopScreen
-    : uiLabels.shareScreen
+  return isScreenShareEnabled.value ? uiLabels.stopScreen : uiLabels.shareScreen
 })
 
 const effectiveLocalPrimary = computed<boolean>(() => {
@@ -1120,7 +1153,10 @@ onMounted(() => {
       passive: true,
     })
   }
-  if (typeof ResizeObserver !== 'undefined' && typeof document !== 'undefined') {
+  if (
+    typeof ResizeObserver !== 'undefined' &&
+    typeof document !== 'undefined'
+  ) {
     layoutResizeObserver = new ResizeObserver(() => {
       if (isStageExpanded.value) {
         updateExpandedStageBounds()
@@ -1281,9 +1317,14 @@ onBeforeUnmount(() => {
   max-width: none;
   min-width: 0;
   border-radius: 22px;
-  background: linear-gradient(160deg, rgba(10, 15, 28, 0.97) 0%, rgba(17, 24, 39, 0.98) 100%);
+  background: linear-gradient(
+    160deg,
+    rgba(10, 15, 28, 0.97) 0%,
+    rgba(17, 24, 39, 0.98) 100%
+  );
   backdrop-filter: blur(24px);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.16);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.72),
+    0 0 0 1px rgba(255, 255, 255, 0.16);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -1412,7 +1453,9 @@ onBeforeUnmount(() => {
   object-fit: cover;
 }
 
-.webrtc-video-viewport--expanded .webrtc-video-slot--primary .webrtc-video-element {
+.webrtc-video-viewport--expanded
+  .webrtc-video-slot--primary
+  .webrtc-video-element {
   object-fit: contain;
 }
 

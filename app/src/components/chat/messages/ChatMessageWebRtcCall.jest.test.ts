@@ -338,9 +338,7 @@ function createLinkedPeerHarness(options?: {
 
       for (const s of callerSenders) {
         if (s.track) {
-          const remoteTrack = createMockTrack(
-            s.track.kind as 'audio' | 'video',
-          )
+          const remoteTrack = createMockTrack(s.track.kind as 'audio' | 'video')
           calleeTracks.push(remoteTrack)
           calleePc.ontrack?.({
             track: remoteTrack,
@@ -350,9 +348,7 @@ function createLinkedPeerHarness(options?: {
       }
       for (const s of calleeSenders) {
         if (s.track) {
-          const remoteTrack = createMockTrack(
-            s.track.kind as 'audio' | 'video',
-          )
+          const remoteTrack = createMockTrack(s.track.kind as 'audio' | 'video')
           callerTracks.push(remoteTrack)
           callerPc.ontrack?.({
             track: remoteTrack,
@@ -381,7 +377,8 @@ function mountCallCard(props: Record<string, unknown>) {
       stubs: {
         'q-icon': { template: '<i />' },
         'q-badge': {
-          template: '<span :data-testid="$attrs[\'data-testid\']"><slot /></span>',
+          template:
+            '<span :data-testid="$attrs[\'data-testid\']"><slot /></span>',
         },
         'q-btn': {
           props: ['label', 'ariaLabel', 'icon'],
@@ -517,9 +514,7 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
       expect(callee.getSnapshot().remoteMuted).toBe(false)
 
       // 5. Caller clicks Hang Up -> sent over P2P DataChannel with zero extra relay messages
-      await callerWrapper
-        .find('[data-testid="webrtc-hangup"]')
-        .trigger('click')
+      await callerWrapper.find('[data-testid="webrtc-hangup"]').trigger('click')
       expect(caller.getSnapshot().phase).toBe('ended')
       expect(callee.getSnapshot().phase).toBe('ended')
 
@@ -623,8 +618,7 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
       expect(callee.getSnapshot().remoteScreenShareEnabled).toBe(true)
 
       // Simulate user clicking browser native "Stop sharing" button on the screen track
-      const screenTrack =
-        harness.callerTracks[harness.callerTracks.length - 1]
+      const screenTrack = harness.callerTracks[harness.callerTracks.length - 1]
       screenTrack?.onended?.()
       await new Promise(resolve => setTimeout(resolve, 15))
 
@@ -742,9 +736,9 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
       expect(
         wrapper.find('[data-testid="webrtc-security-alert"]').exists(),
       ).toBe(true)
-      expect(
-        wrapper.find('[data-testid="webrtc-status-badge"]').text(),
-      ).toBe('Security Abort')
+      expect(wrapper.find('[data-testid="webrtc-status-badge"]').text()).toBe(
+        'Security Abort',
+      )
     })
 
     it('aborts if a mid-call DataChannel renegotiate_offer contains a mismatched DTLS fingerprint', async () => {
@@ -770,7 +764,7 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
 
       // Inject a renegotiate_offer over the DataChannel with an attacker fingerprint
       const ch = caller.getControlDataChannel()
-      ch?. send(
+      ch?.send(
         JSON.stringify({
           type: 'renegotiate_offer',
           mediaIntent: 'video',
@@ -814,9 +808,9 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
         controller: caller,
         outbound: true,
       })
-      expect(
-        wrapper.find('[data-testid="webrtc-privacy-badge"]').text(),
-      ).toBe('Relay-Only IP Hidden')
+      expect(wrapper.find('[data-testid="webrtc-privacy-badge"]').text()).toBe(
+        'Relay-Only IP Hidden',
+      )
     })
 
     it('resolves simultaneous outgoing invite glare deterministically and stops ringing on multi-device acceptance', async () => {
@@ -1116,8 +1110,7 @@ describe('ChatMessageWebRtcCall & WebRtcCallSessionController (#464, #466, #468)
       expect((card.element as HTMLElement).style.left).toBe('337px')
 
       // Clicking the PiP (local) video swaps local to primary stage
-      const localSlot = wrapper
-        .find('[data-testid="webrtc-local-video"]')
+      const localSlot = wrapper.find('[data-testid="webrtc-local-video"]')
         .element.parentElement!
       expect(localSlot.classList.contains('webrtc-video-slot--pip')).toBe(true)
       await wrapper.find('[data-testid="webrtc-local-video"]').trigger('click')

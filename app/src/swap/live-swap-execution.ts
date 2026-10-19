@@ -663,9 +663,7 @@ export function createLiveEvmSwapCapability(
         )
         const escrowWallet = new ethers.Wallet(escrowPrivKey)
         const [balance, nonce] = await Promise.all([
-          evmWallet.provider
-            .getBalance(escrowWallet.address)
-            .catch(() => 0n),
+          evmWallet.provider.getBalance(escrowWallet.address).catch(() => 0n),
           evmWallet.provider
             .getTransactionCount(escrowWallet.address)
             .catch(() => 0),

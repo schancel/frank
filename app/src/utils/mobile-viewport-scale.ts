@@ -32,13 +32,7 @@ export interface EffectiveViewportScale {
 export function normalizeUiScaleSetting(raw: unknown): UiScaleSetting {
   if (raw === 'auto') return 'auto'
   const num = typeof raw === 'string' ? Number(raw) : raw
-  if (
-    num === 85 ||
-    num === 100 ||
-    num === 115 ||
-    num === 130 ||
-    num === 150
-  ) {
+  if (num === 85 || num === 100 || num === 115 || num === 130 || num === 150) {
     return num
   }
   return DEFAULT_UI_SCALE

@@ -139,9 +139,7 @@ live('two devices of one account, through the real relay', () => {
       const {
         openRealWallet,
       } = require('../../../packages/bot/demo/real-stack')
-      const {
-        conversationIdSaltOf,
-      } = require('@frank/wallet/chain/evm-chain')
+      const { conversationIdSaltOf } = require('@frank/wallet/chain/evm-chain')
       const { createPinia, setActivePinia } = require('pinia')
       const { createApp } = require('vue')
       const chatsModule = require('./chats')

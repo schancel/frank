@@ -109,10 +109,7 @@
               dir="auto"
               data-testid="article-md-heading"
             >
-              <template
-                v-for="(node, nodeIdx) in block.inlines"
-                :key="nodeIdx"
-              >
+              <template v-for="(node, nodeIdx) in block.inlines" :key="nodeIdx">
                 <a
                   v-if="node.type === 'link'"
                   :href="node.href"
@@ -142,10 +139,7 @@
               dir="auto"
               data-testid="article-md-paragraph"
             >
-              <template
-                v-for="(node, nodeIdx) in block.inlines"
-                :key="nodeIdx"
-              >
+              <template v-for="(node, nodeIdx) in block.inlines" :key="nodeIdx">
                 <a
                   v-if="node.type === 'link'"
                   :href="node.href"
@@ -182,10 +176,7 @@
               dir="auto"
               data-testid="article-md-blockquote"
             >
-              <template
-                v-for="(node, nodeIdx) in block.inlines"
-                :key="nodeIdx"
-              >
+              <template v-for="(node, nodeIdx) in block.inlines" :key="nodeIdx">
                 <a
                   v-if="node.type === 'link'"
                   :href="node.href"
@@ -392,7 +383,11 @@ export default defineComponent({
     ): string {
       const internal = (
         this as unknown as {
-          $?: { appContext?: { config?: { globalProperties?: Record<string, unknown> } } }
+          $?: {
+            appContext?: {
+              config?: { globalProperties?: Record<string, unknown> }
+            }
+          }
         }
       ).$
       const gp = internal?.appContext?.config?.globalProperties
@@ -402,7 +397,11 @@ export default defineComponent({
       if (typeof t === 'function') {
         try {
           const result = t.call(this, key, values)
-          if (typeof result === 'string' && result !== key && result.length > 0) {
+          if (
+            typeof result === 'string' &&
+            result !== key &&
+            result.length > 0
+          ) {
             return result
           }
         } catch {
@@ -522,7 +521,8 @@ export default defineComponent({
     background: rgba(24, 24, 27, 0.06);
     padding: 2px 5px;
     border-radius: 4px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+      monospace;
     font-size: 0.9em;
   }
 }

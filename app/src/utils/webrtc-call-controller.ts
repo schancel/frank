@@ -819,7 +819,10 @@ export class WebRtcCallSessionController {
       const lineEnding = combinedSdp.includes('\r\n') ? '\r\n' : '\n'
       for (const cand of collectedCandidates) {
         if (!combinedSdp.includes(cand)) {
-          combinedSdp = `${combinedSdp.replace(/(\r?\n)+$/, '')}${lineEnding}${cand}${lineEnding}`
+          combinedSdp = `${combinedSdp.replace(
+            /(\r?\n)+$/,
+            '',
+          )}${lineEnding}${cand}${lineEnding}`
         }
       }
     }
@@ -1015,8 +1018,7 @@ export class WebRtcCallSessionController {
     this.callId = invite.callId
     this.mediaMode = invite.mediaIntent ?? 'audio'
     this.icePolicy = invite.icePolicy ?? this.icePolicy
-    this.expectedRemoteFingerprintSha256 =
-      invite.dtlsFingerprintSha256 ?? null
+    this.expectedRemoteFingerprintSha256 = invite.dtlsFingerprintSha256 ?? null
     this.pendingIncomingInvite = invite
     this.setPhase('ringing_incoming')
     this.scheduleExpiryTimer(invite.expiresAtMs)
@@ -1053,8 +1055,7 @@ export class WebRtcCallSessionController {
     this.callId = invite.callId
     this.mediaMode = invite.mediaIntent ?? 'audio'
     this.icePolicy = invite.icePolicy ?? this.icePolicy
-    this.expectedRemoteFingerprintSha256 =
-      invite.dtlsFingerprintSha256 ?? null
+    this.expectedRemoteFingerprintSha256 = invite.dtlsFingerprintSha256 ?? null
     this.pendingIncomingInvite = invite
     this.setPhase('ringing_incoming')
     this.scheduleExpiryTimer(invite.expiresAtMs)
@@ -1093,8 +1094,7 @@ export class WebRtcCallSessionController {
     }
 
     this.callId = invite.callId
-    this.expectedRemoteFingerprintSha256 =
-      invite.dtlsFingerprintSha256 ?? null
+    this.expectedRemoteFingerprintSha256 = invite.dtlsFingerprintSha256 ?? null
 
     if (
       !invite.sdp ||
@@ -1109,8 +1109,7 @@ export class WebRtcCallSessionController {
     }
     this.dtlsVerified = true
 
-    const withVideo =
-      options?.withVideo ?? invite.mediaIntent === 'video'
+    const withVideo = options?.withVideo ?? invite.mediaIntent === 'video'
 
     try {
       const stream = await this.acquireInitialMedia({ withVideo })
@@ -1243,7 +1242,9 @@ export class WebRtcCallSessionController {
     }
 
     const isOutbound = Boolean(options?.outbound)
-    const sigKey = `${payload.action}:${payload.sequence}:${payload.senderDeviceId}:${isOutbound ? 'out' : 'in'}`
+    const sigKey = `${payload.action}:${payload.sequence}:${
+      payload.senderDeviceId
+    }:${isOutbound ? 'out' : 'in'}`
     if (this.processedSignalingKeys.has(sigKey)) {
       return
     }
@@ -1787,12 +1788,14 @@ export function getOrCreateCallSessionController(
     ...options,
     callId,
   })
-  if (options?.invite && options.invite.action === 'invite' && !options.outbound) {
+  if (
+    options?.invite &&
+    options.invite.action === 'invite' &&
+    !options.outbound
+  ) {
     created.receiveIncomingInvite(options.invite, options.remotePeerId)
   }
   activeCallControllers.set(callId, created)
   notifyActiveCallRegistryListeners()
   return created
 }
-
-

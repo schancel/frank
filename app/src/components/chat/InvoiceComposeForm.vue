@@ -4,7 +4,10 @@
     data-testid="invoice-compose-form"
   >
     <div class="row items-center justify-between q-mb-xs">
-      <div class="text-subtitle2 text-weight-bold" data-testid="invoice-compose-title">
+      <div
+        class="text-subtitle2 text-weight-bold"
+        data-testid="invoice-compose-title"
+      >
         {{ titleText }}
       </div>
       <q-badge
@@ -58,7 +61,9 @@
 
     <div
       class="text-caption q-mb-xs"
-      :class="descriptionByteLength > maxDescriptionBytes ? 'text-negative' : ''"
+      :class="
+        descriptionByteLength > maxDescriptionBytes ? 'text-negative' : ''
+      "
       data-testid="invoice-compose-byte-count"
     >
       {{ byteCountSummary }}
@@ -116,7 +121,10 @@
       data-testid="invoice-compose-private-tags"
     />
 
-    <div class="text-caption text-grey-7 q-mb-sm" data-testid="invoice-compose-private-hint">
+    <div
+      class="text-caption text-grey-7 q-mb-sm"
+      data-testid="invoice-compose-private-hint"
+    >
       {{ privateTagsHintText }}
     </div>
 
@@ -235,11 +243,9 @@ export default defineComponent({
       return this.tr('invoice.composeTitle', 'Create Native Invoice')
     },
     amountFieldLabel(): string {
-      return this.tr(
-        'invoice.amountLabel',
-        `Amount (${this.nativeSymbol})`,
-        { symbol: this.nativeSymbol },
-      )
+      return this.tr('invoice.amountLabel', `Amount (${this.nativeSymbol})`, {
+        symbol: this.nativeSymbol,
+      })
     },
     amountPlaceholder(): string {
       return '0.0'
@@ -254,10 +260,7 @@ export default defineComponent({
       )
     },
     expiryFieldLabel(): string {
-      return this.tr(
-        'invoice.expiryLabel',
-        'Expires at ISO-8601 (optional)',
-      )
+      return this.tr('invoice.expiryLabel', 'Expires at ISO-8601 (optional)')
     },
     expiryPlaceholder(): string {
       return '2030-01-01T00:00:00Z'
@@ -387,7 +390,11 @@ export default defineComponent({
           }
         }
       ).$?.appContext?.config?.globalProperties
-      if (typeof gp?.$te === 'function' && gp.$te(key) && typeof gp.$t === 'function') {
+      if (
+        typeof gp?.$te === 'function' &&
+        gp.$te(key) &&
+        typeof gp.$t === 'function'
+      ) {
         return gp.$t(key, params)
       }
       return fallback
@@ -409,7 +416,8 @@ export default defineComponent({
           action: 'request',
           schemaVersion: 1,
           invoiceId,
-          payeeIdentity: this.payeeIdentity.trim() || this.effectiveReceiveAddress,
+          payeeIdentity:
+            this.payeeIdentity.trim() || this.effectiveReceiveAddress,
           chainKey: this.chainKey.trim(),
           networkId: String(this.networkId).trim(),
           nativeSymbol: this.nativeSymbol.trim(),
@@ -441,8 +449,7 @@ export default defineComponent({
           privateTags: savedPrivateTags,
         })
       } catch (err) {
-        this.submissionError =
-          err instanceof Error ? err.message : String(err)
+        this.submissionError = err instanceof Error ? err.message : String(err)
       }
     },
   },

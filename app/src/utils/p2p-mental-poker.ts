@@ -87,7 +87,8 @@ export function getOrCreateMentalPokerSeedHex(
 
   const primaryKey = storageKeyForHand(own, peer, handId)
   const fallbackKey = peerFallbackStorageKey(peer, handId)
-  const mem = memorySeedByHand.get(primaryKey) ?? memorySeedByHand.get(fallbackKey)
+  const mem =
+    memorySeedByHand.get(primaryKey) ?? memorySeedByHand.get(fallbackKey)
   if (mem) return mem
 
   try {
@@ -147,13 +148,15 @@ function pickKeySubset(
   return out
 }
 
-export function buildMentalPokerChallenge(params: {
-  own?: string
-  peer?: string
-  stakeWei?: bigint | string
-  handId?: string
-  privateKeyHex?: string
-} = {}): {
+export function buildMentalPokerChallenge(
+  params: {
+    own?: string
+    peer?: string
+    stakeWei?: bigint | string
+    handId?: string
+    privateKeyHex?: string
+  } = {},
+): {
   handId: string
   stakeWei: bigint
   secrets: MentalPokerSecrets

@@ -84,9 +84,9 @@ describe('ChatMessageInvoice & InvoiceComposeForm (#679)', () => {
       'Audit retainer installment',
     )
     expect(wrapper.find('[data-testid="invoice-pay-btn"]').exists()).toBe(true)
-    expect(
-      wrapper.find('[data-testid="invoice-confirm-group"]').exists(),
-    ).toBe(false)
+    expect(wrapper.find('[data-testid="invoice-confirm-group"]').exists()).toBe(
+      false,
+    )
   })
 
   it('requires an explicit second confirmation step before signing or broadcasting', async () => {
@@ -189,9 +189,9 @@ describe('ChatMessageInvoice & InvoiceComposeForm (#679)', () => {
     const payBtn = wrapper.find('[data-testid="invoice-pay-btn"]')
     expect(payBtn.attributes('disabled')).toBeDefined()
     await payBtn.trigger('click')
-    expect(
-      wrapper.find('[data-testid="invoice-confirm-group"]').exists(),
-    ).toBe(false)
+    expect(wrapper.find('[data-testid="invoice-confirm-group"]').exists()).toBe(
+      false,
+    )
     expect(payHandler).not.toHaveBeenCalled()
   })
 
@@ -234,9 +234,9 @@ describe('ChatMessageInvoice & InvoiceComposeForm (#679)', () => {
     const payBtn = wrapper.find('[data-testid="invoice-pay-btn"]')
     expect(payBtn.attributes('disabled')).toBeDefined()
     await payBtn.trigger('click')
-    expect(
-      wrapper.find('[data-testid="invoice-confirm-group"]').exists(),
-    ).toBe(false)
+    expect(wrapper.find('[data-testid="invoice-confirm-group"]').exists()).toBe(
+      false,
+    )
     expect(failingPayHandler).toHaveBeenCalledTimes(1)
   })
 
@@ -313,7 +313,9 @@ describe('ChatMessageInvoice & InvoiceComposeForm (#679)', () => {
       'tax-deductible',
       '#priority-vendor',
     ])
-    const chips = cardWrapper.findAll('[data-testid="invoice-private-tag-chip"]')
+    const chips = cardWrapper.findAll(
+      '[data-testid="invoice-private-tag-chip"]',
+    )
     expect(chips).toHaveLength(3)
     expect(chips[2].text()).toContain('#priority-vendor')
     expect(chips[2].text()).not.toContain('##priority-vendor')
@@ -339,7 +341,9 @@ describe('ChatMessageInvoice & InvoiceComposeForm (#679)', () => {
     )
     expect((expiryInput.element as HTMLInputElement).value).toBe('')
     expect(
-      composeWrapper.find('[data-testid="invoice-expiry-preset-clear"]').exists(),
+      composeWrapper
+        .find('[data-testid="invoice-expiry-preset-clear"]')
+        .exists(),
     ).toBe(false)
 
     await composeWrapper

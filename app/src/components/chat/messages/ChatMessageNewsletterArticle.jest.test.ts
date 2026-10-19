@@ -49,7 +49,8 @@ function mountArticle(item: ApplicationMessageItem = makeItem()) {
         QDialog: {
           props: ['modelValue'],
           emits: ['update:modelValue'],
-          template: '<div v-if="modelValue" class="q-dialog-stub"><slot /></div>',
+          template:
+            '<div v-if="modelValue" class="q-dialog-stub"><slot /></div>',
         },
         QCard: {
           template: '<div class="q-card-stub"><slot /></div>',
@@ -83,9 +84,9 @@ describe('ChatMessageNewsletterArticle', () => {
     expect(
       wrapper.find('[data-testid="newsletter-article-source"]').text(),
     ).toBe('Stamped Dispatch')
-    expect(
-      wrapper.find('[data-testid="newsletter-article-date"]').text(),
-    ).toBe('2025-10-17')
+    expect(wrapper.find('[data-testid="newsletter-article-date"]').text()).toBe(
+      '2025-10-17',
+    )
     expect(
       wrapper.find('[data-testid="newsletter-article-title"]').text(),
     ).toBe('Zero-Leakage Reader Views for Encrypted Messaging')
@@ -94,9 +95,9 @@ describe('ChatMessageNewsletterArticle', () => {
     ).toBe(
       'Why self-contained CBOR article payloads eliminate web-beacon tracking.',
     )
-    expect(wrapper.find('[data-testid="newsletter-read-btn"]').text()).toContain(
-      'Read Article',
-    )
+    expect(
+      wrapper.find('[data-testid="newsletter-read-btn"]').text(),
+    ).toContain('Read Article')
     expect(
       wrapper.find('[data-testid="newsletter-reader-dialog"]').exists(),
     ).toBe(false)
@@ -125,9 +126,9 @@ describe('ChatMessageNewsletterArticle', () => {
 
     const dialog = wrapper.find('[data-testid="newsletter-reader-dialog"]')
     expect(dialog.exists()).toBe(true)
-    expect(
-      wrapper.find('[data-testid="newsletter-reader-title"]').text(),
-    ).toBe(sampleArticle.title)
+    expect(wrapper.find('[data-testid="newsletter-reader-title"]').text()).toBe(
+      sampleArticle.title,
+    )
     expect(
       wrapper.find('[data-testid="newsletter-reader-author"]').text(),
     ).toContain('Elena Vance')
@@ -144,9 +145,9 @@ describe('ChatMessageNewsletterArticle', () => {
       'Second paragraph with deeper technical analysis.',
     )
 
-    expect(wrapper.find('[data-testid="newsletter-reader-tags"]').text()).toContain(
-      '#privacy',
-    )
+    expect(
+      wrapper.find('[data-testid="newsletter-reader-tags"]').text(),
+    ).toContain('#privacy')
     expect(
       wrapper.find('[data-testid="newsletter-reader-url"]').attributes('href'),
     ).toBe(sampleArticle.url)

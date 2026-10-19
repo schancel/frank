@@ -60,10 +60,7 @@ import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
 import { useTabCoordinatorStore } from 'src/stores/tab-coordinator'
 import { accountStatus } from './accounts/session'
-import {
-  messagingState,
-  messagingWallet,
-} from 'src/utils/identity-session'
+import { messagingState, messagingWallet } from 'src/utils/identity-session'
 import { activeChain } from '@frank/wallet/chain'
 import {
   CHAT_SEARCH_SHORTCUT,

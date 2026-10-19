@@ -814,9 +814,9 @@ describe('Profile.vue', () => {
 })
 
 describe('profile protocol field admission', () => {
-  const real = jest.requireActual<
-    typeof import('@frank/wallet/evm-identity')
-  >('@frank/wallet/evm-identity')
+  const real = jest.requireActual<typeof import('@frank/wallet/evm-identity')>(
+    '@frank/wallet/evm-identity',
+  )
   const identity = real.MonadIdentity.fromPrivateKeyHex('0x' + '02'.repeat(32))
   function editor(restoredProfile: object = {}) {
     const stored = {

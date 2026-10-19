@@ -31,7 +31,10 @@
         {{ formattedAmountWithSymbol }}
       </div>
 
-      <div class="text-caption invoice-meta-row q-mb-xs" data-testid="invoice-network">
+      <div
+        class="text-caption invoice-meta-row q-mb-xs"
+        data-testid="invoice-network"
+      >
         {{ networkSummaryText }}
       </div>
 
@@ -152,7 +155,10 @@
       </div>
 
       <!-- Step 1: Primary Pay trigger (never signs/broadcasts directly; opens explicit confirmation) -->
-      <div v-if="!outbound && !confirming" class="row items-center justify-end q-mt-xs">
+      <div
+        v-if="!outbound && !confirming"
+        class="row items-center justify-end q-mt-xs"
+      >
         <q-btn
           no-caps
           dense
@@ -178,10 +184,16 @@
         <div class="text-caption text-weight-bold q-mb-xs">
           {{ confirmHeaderText }}
         </div>
-        <div class="text-caption invoice-meta-row invoice-mono-row" data-testid="invoice-confirm-payee">
+        <div
+          class="text-caption invoice-meta-row invoice-mono-row"
+          data-testid="invoice-confirm-payee"
+        >
           {{ confirmPayeeText }}
         </div>
-        <div class="text-caption invoice-meta-row" data-testid="invoice-confirm-network">
+        <div
+          class="text-caption invoice-meta-row"
+          data-testid="invoice-confirm-network"
+        >
           {{ confirmNetworkText }}
         </div>
         <div
@@ -198,7 +210,10 @@
         >
           {{ confirmDestinationText }}
         </div>
-        <div class="text-caption invoice-meta-row q-mb-xs" data-testid="invoice-confirm-fee">
+        <div
+          class="text-caption invoice-meta-row q-mb-xs"
+          data-testid="invoice-confirm-fee"
+        >
           {{ confirmFeeText }}
         </div>
 
@@ -232,7 +247,10 @@
         <div class="text-caption text-weight-bold q-mb-xs">
           {{ receiptHeaderText }}
         </div>
-        <div class="text-caption invoice-meta-row invoice-mono-row" data-testid="invoice-receipt-id">
+        <div
+          class="text-caption invoice-meta-row invoice-mono-row"
+          data-testid="invoice-receipt-id"
+        >
           {{ receiptInvoiceIdText }}
         </div>
         <div
@@ -242,7 +260,10 @@
         >
           {{ receiptTxHashText }}
         </div>
-        <div class="text-caption invoice-receipt-note" data-testid="invoice-receipt-note">
+        <div
+          class="text-caption invoice-receipt-note"
+          data-testid="invoice-receipt-note"
+        >
           {{ receiptCanonicalNoteText }}
         </div>
       </div>
@@ -408,6 +429,7 @@ export default defineComponent({
         case 'expired':
           return this.tr('invoice.status.expired', 'expired')
         case 'exception_manual_review':
+        default:
           return this.tr(
             'invoice.status.exceptionManualReview',
             'exception_manual_review',
@@ -525,7 +547,10 @@ export default defineComponent({
     },
     blockReasonText(): string {
       if (!this.requestInvoice) return ''
-      if (this.resolution.paymentBlocked && this.resolution.paymentBlockedReason) {
+      if (
+        this.resolution.paymentBlocked &&
+        this.resolution.paymentBlockedReason
+      ) {
         return this.resolution.paymentBlockedReason
       }
       return ''

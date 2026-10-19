@@ -372,6 +372,12 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
       expect(sfc).toMatch(/\.drawer-balance-footer\s*\{[^}]*height:\s*64px/)
       expect(sfc).toMatch(/\.drawer-balance-footer\s*\{[^}]*min-height:\s*64px/)
       expect(sfc).toMatch(/\.drawer-balance-item\s*\{[^}]*min-height:\s*63px/)
+      expect(sfc).toMatch(
+        /\.drawer-balance-status-side\s*\{[^}]*flex-direction:\s*row\s*!important/,
+      )
+      expect(sfc).toMatch(
+        /\.drawer-balance-status-side\s*\{[^}]*flex-wrap:\s*nowrap\s*!important/,
+      )
     })
 
     it('renders the drawer-balance-footer class when setup is ready', () => {

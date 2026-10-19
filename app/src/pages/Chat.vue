@@ -1521,7 +1521,10 @@ export default defineComponent({
       if (this.sendingMessage) return
       const peer = this.recipientAddress || this.address
       const own = (await getOwnCanonicalAddress()) ?? 'self'
-      if (this.sendingMessage || peer !== (this.recipientAddress || this.address))
+      if (
+        this.sendingMessage ||
+        peer !== (this.recipientAddress || this.address)
+      )
         return
       const built = buildDiceChallenge(own, peer)
       await this.sendFollowUpItems({ items: [built.item] })
@@ -1530,7 +1533,10 @@ export default defineComponent({
       if (this.sendingMessage) return
       const peer = this.recipientAddress || this.address
       const own = (await getOwnCanonicalAddress()) ?? 'self'
-      if (this.sendingMessage || peer !== (this.recipientAddress || this.address))
+      if (
+        this.sendingMessage ||
+        peer !== (this.recipientAddress || this.address)
+      )
         return
       const built = buildMentalPokerChallenge({ own, peer, stakeWei: 0n })
       await this.sendFollowUpItems({ items: [built.item] })
@@ -1539,7 +1545,10 @@ export default defineComponent({
       if (this.sendingMessage) return
       const peer = this.recipientAddress || this.address
       const own = (await getOwnCanonicalAddress()) ?? 'self'
-      if (this.sendingMessage || peer !== (this.recipientAddress || this.address))
+      if (
+        this.sendingMessage ||
+        peer !== (this.recipientAddress || this.address)
+      )
         return
       const controller = new WebRtcCallSessionController({
         localPeerId: own,
@@ -1569,7 +1578,8 @@ export default defineComponent({
       stampValueWei?: bigint
     }) {
       const ctrl = this.detachedActiveCallController
-      const peer = ctrl?.getRemotePeerId() || this.recipientAddress || this.address
+      const peer =
+        ctrl?.getRemotePeerId() || this.recipientAddress || this.address
       if (!peer || !items.length) return
       if (sameCanonicalAddress(peer, this.recipientAddress || this.address)) {
         await this.sendFollowUpItems({ items, stampValueWei })
@@ -1652,8 +1662,7 @@ export default defineComponent({
       const hasMentalPoker = this.peerMessages.some(m =>
         m.items?.some(
           it =>
-            it.type === 'application' &&
-            it.itemType === MENTAL_POKER_PLUGIN_ID,
+            it.type === 'application' && it.itemType === MENTAL_POKER_PLUGIN_ID,
         ),
       )
       if (!hasBlackjack && !hasP2pGame && !hasMentalPoker) {
@@ -2136,9 +2145,7 @@ export default defineComponent({
       })
     },
     suggestedStampWei(): bigint | undefined {
-      return (
-        this.peerStampSuggestion?.suggestedStampWei ?? this.defaultStampWei
-      )
+      return this.peerStampSuggestion?.suggestedStampWei ?? this.defaultStampWei
     },
     lastPeerStampWei(): bigint | undefined {
       return this.peerStampSuggestion?.lastReceivedWei

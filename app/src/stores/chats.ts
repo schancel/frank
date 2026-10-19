@@ -698,9 +698,7 @@ function defaultChats(
 ): Readonly<Record<string, Conversation | undefined>> {
   const peers = new Set(
     Object.values(conversations)
-      .filter(
-        c => c.kind !== 'group' && c.address && isChainAddress(c.address),
-      )
+      .filter(c => c.kind !== 'group' && c.address && isChainAddress(c.address))
       .map(c => safeChainDisplayAddress(c.address) || c.address),
   )
   return Object.fromEntries(

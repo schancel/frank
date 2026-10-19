@@ -911,4 +911,3 @@ describe('splitting a pair (#152)', () => {
     )
   })
 })
-

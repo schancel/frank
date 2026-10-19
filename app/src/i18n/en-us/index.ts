@@ -298,8 +298,7 @@ export const rawEnUS = {
       'You committed to a hidden move. Waiting for peer to play.',
     rpsOwnCommittedStaked:
       'You committed to a hidden move (stake: {amount}). Waiting for peer to play.',
-    rpsOwnCommittedMove:
-      'Your hidden move: {move}. Waiting for peer to play.',
+    rpsOwnCommittedMove: 'Your hidden move: {move}. Waiting for peer to play.',
     rpsOwnCommittedMoveStaked:
       'Your hidden move: {move} (stake: {amount}). Waiting for peer to play.',
     rpsFixedStake: 'Challenge stake: {amount}',
@@ -2126,4 +2125,3 @@ export const rawEnUS = {
 }
 
 export default applyBrandToLocaleMessages(rawEnUS)
-

@@ -90,7 +90,9 @@ describe('ChatMessageMentalPoker.vue & p2p-mental-poker (#62)', () => {
     await acceptBtn.trigger('click')
     const emitted = wrapper.emitted('accept')
     expect(emitted).toBeTruthy()
-    const acceptStep = emitted![0][0] as ReturnType<typeof buildMentalPokerAccept>
+    const acceptStep = emitted![0][0] as ReturnType<
+      typeof buildMentalPokerAccept
+    >
     expect(acceptStep.payload.action).toBe('shuffle_and_lock')
     expect(acceptStep.payload.deckY).toHaveLength(52)
   })
@@ -193,9 +195,9 @@ describe('ChatMessageMentalPoker.vue & p2p-mental-poker (#62)', () => {
     expect(
       aliceWrapper.get('[data-testid="mp-viewer-hole-section"]').text(),
     ).toContain(aliceCard0)
-    expect(
-      aliceWrapper.get('[data-testid="mp-opponent-hidden"]').text(),
-    ).toBe("['??', '??']")
+    expect(aliceWrapper.get('[data-testid="mp-opponent-hidden"]').text()).toBe(
+      "['??', '??']",
+    )
 
     // Alice has Check and Fold buttons on her turn
     const checkBtn = aliceWrapper.get('[data-testid="mp-check-btn"]')
@@ -327,9 +329,9 @@ describe('ChatMessageMentalPoker.vue & p2p-mental-poker (#62)', () => {
     expect(wrapper.get('[data-testid="mp-street-badge"]').text()).toBe(
       'Showdown',
     )
-    expect(wrapper.get('[data-testid="mp-verification-badge"]').text()).toContain(
-      'Provably Fair • 52 cards double-locked on secp256k1',
-    )
+    expect(
+      wrapper.get('[data-testid="mp-verification-badge"]').text(),
+    ).toContain('Provably Fair • 52 cards double-locked on secp256k1')
     expect(wrapper.find('[data-testid="mp-opponent-hidden"]').exists()).toBe(
       false,
     )

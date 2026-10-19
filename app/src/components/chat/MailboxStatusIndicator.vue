@@ -55,3 +55,11 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.mailbox-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+</style>

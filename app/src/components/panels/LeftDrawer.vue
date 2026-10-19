@@ -879,11 +879,18 @@ export default defineComponent({
 .drawer-balance-item {
   min-height: 63px;
   height: 63px;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .drawer-balance-status-side {
-  padding-left: 0;
+  padding-left: 4px;
   min-width: 0;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 2px;
+  flex-shrink: 0;
 
   &:empty {
     display: none;

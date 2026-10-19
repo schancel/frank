@@ -685,4 +685,3 @@ describe('WebRTC call actions live in the menu and do not crowd the mobile input
     wrapper.unmount()
   })
 })
-

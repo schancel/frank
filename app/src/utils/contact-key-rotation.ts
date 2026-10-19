@@ -77,7 +77,11 @@ function stripHexPrefix(hex: string): string {
 function hexToBytes(hex: string): Uint8Array | null {
   if (typeof hex !== 'string') return null
   const clean = stripHexPrefix(hex)
-  if (clean.length === 0 || clean.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(clean)) {
+  if (
+    clean.length === 0 ||
+    clean.length % 2 !== 0 ||
+    !/^[0-9a-fA-F]+$/.test(clean)
+  ) {
     return null
   }
   return Uint8Array.from(Buffer.from(clean, 'hex'))
@@ -188,7 +192,9 @@ export function createContactKeyRotationStatement(
   const oldAddress = toChainDisplayAddress(params.oldAddress)
   const newAddress = toChainDisplayAddress(params.newAddress)
   if (sameCanonicalAddress(oldAddress, newAddress)) {
-    throw new Error('Contact key rotation newAddress must differ from oldAddress')
+    throw new Error(
+      'Contact key rotation newAddress must differ from oldAddress',
+    )
   }
   if (!Number.isSafeInteger(params.sequence) || params.sequence < 1) {
     throw new Error('Contact key rotation sequence must be a positive integer')
@@ -249,7 +255,8 @@ export function verifyContactKeyRotationStatement(
     return {
       valid: false,
       reason: 'invalid-address',
-      message: 'Rotation statement contains an invalid oldAddress or newAddress',
+      message:
+        'Rotation statement contains an invalid oldAddress or newAddress',
     }
   }
 
@@ -286,7 +293,8 @@ export function verifyContactKeyRotationStatement(
     return {
       valid: false,
       reason: 'invalid-master-public-key',
-      message: 'Rotation statement masterPublicKeyHex is not a valid secp256k1 key',
+      message:
+        'Rotation statement masterPublicKeyHex is not a valid secp256k1 key',
     }
   }
 
@@ -390,7 +398,10 @@ export function verifyContactKeyRotationStatement(
   const derivedMasterAddr = deriveAddressFromPublicKeyHex(
     normalizedMasterPublicKeyHex,
   )
-  if (derivedMasterAddr && sameCanonicalAddress(derivedMasterAddr, oldAddress)) {
+  if (
+    derivedMasterAddr &&
+    sameCanonicalAddress(derivedMasterAddr, oldAddress)
+  ) {
     oldKeyBound = true
   }
 
@@ -408,7 +419,8 @@ export function verifyContactKeyRotationStatement(
       return {
         valid: false,
         reason: 'invalid-old-key-signature',
-        message: 'Rotation statement oldKeySignatureHex has invalid recovery bit',
+        message:
+          'Rotation statement oldKeySignatureHex has invalid recovery bit',
       }
     }
     try {
@@ -426,11 +438,14 @@ export function verifyContactKeyRotationStatement(
       const recoveredPoint = parsedOldSig
         .addRecoveryBit(recovery)
         .recoverPublicKey(digest)
-      const recoveredPubHex = Buffer.from(recoveredPoint.toRawBytes(true)).toString(
-        'hex',
-      )
+      const recoveredPubHex = Buffer.from(
+        recoveredPoint.toRawBytes(true),
+      ).toString('hex')
       const recoveredAddress = deriveAddressFromPublicKeyHex(recoveredPubHex)
-      if (!recoveredAddress || !sameCanonicalAddress(recoveredAddress, oldAddress)) {
+      if (
+        !recoveredAddress ||
+        !sameCanonicalAddress(recoveredAddress, oldAddress)
+      ) {
         return {
           valid: false,
           reason: 'invalid-old-key-signature',

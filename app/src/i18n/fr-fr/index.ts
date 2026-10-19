@@ -289,7 +289,8 @@ export const rawFrFR = {
     payoutMissing:
       'Gain : {amount}, mais ce message transportait {carried}. Vous n’avez pas été payé en totalité.',
     awaiting: 'En attente de la révélation du bot ({seconds} s).',
-    awaitingPeer: 'En attente de la révélation de votre adversaire ({seconds} s).',
+    awaitingPeer:
+      'En attente de la révélation de votre adversaire ({seconds} s).',
     noAnswer:
       'Le bot n’a pas répondu après {seconds} s. Votre mise est chez le bot et rien n’a été révélé.',
     noAnswerPeer: 'Votre adversaire n’a pas répondu après {seconds} s.',
@@ -313,7 +314,8 @@ export const rawFrFR = {
     rpsFixedStakeHint:
       'Votre mise équivalente ({amount}) est payée avec votre coup. Une victoire rapporte le double de la mise, une égalité la restitue.',
     rpsFixedStakeFree: 'Mise du défi : Gratuit',
-    rpsFixedStakeFreeHint: 'Manche gratuite : aucune mise n’est payée avec votre coup.',
+    rpsFixedStakeFreeHint:
+      'Manche gratuite : aucune mise n’est payée avec votre coup.',
     rpsPeerMove: 'Le pair a joué {move}.',
     rpsPeerMoveStaked: 'Le pair a joué {move} pour {amount}.',
     rpsDealerReveal: 'Révéler le coup ({move})',
@@ -2178,7 +2180,8 @@ export const rawFrFR = {
       localVideo: 'Aperçu vidéo local',
       remoteVideo: 'Vidéo du correspondant',
       dtlsVerified: 'Empreinte DTLS-SRTP vérifiée',
-      dtlsMismatch: 'Échec de vérification de l’empreinte DTLS — Appel interrompu',
+      dtlsMismatch:
+        'Échec de vérification de l’empreinte DTLS — Appel interrompu',
       answeredElsewhereNotice: 'Pris sur un autre appareil',
       peerMuted: 'Micro du pair coupé',
       peerUnmuted: 'Audio du pair actif',
@@ -2189,4 +2192,3 @@ export const rawFrFR = {
 }
 
 export default applyBrandToLocaleMessages(rawFrFR)
-

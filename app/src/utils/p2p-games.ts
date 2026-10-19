@@ -76,13 +76,17 @@ const memoryDiceSecrets = new Map<string, string>()
 const memoryRpsSecrets = new Map<string, { move: RpsMove; salt: string }>()
 
 const diceStorageKey = (own: string, peer: string, rollId: string) =>
-  `frank:p2p-dice:${(own || 'self').toLowerCase()}:${peer.toLowerCase()}:${rollId}`
+  `frank:p2p-dice:${(
+    own || 'self'
+  ).toLowerCase()}:${peer.toLowerCase()}:${rollId}`
 
 const dicePeerKey = (peer: string, rollId: string) =>
   `frank:p2p-dice:*:${peer.toLowerCase()}:${rollId}`
 
 const rpsStorageKey = (own: string, peer: string, matchId: string) =>
-  `frank:p2p-rps:${(own || 'self').toLowerCase()}:${peer.toLowerCase()}:${matchId}`
+  `frank:p2p-rps:${(
+    own || 'self'
+  ).toLowerCase()}:${peer.toLowerCase()}:${matchId}`
 
 const rpsPeerKey = (peer: string, matchId: string) =>
   `frank:p2p-rps:*:${peer.toLowerCase()}:${matchId}`

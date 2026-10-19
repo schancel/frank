@@ -83,7 +83,8 @@ try {
   const browserWsUrl = await new Promise((resolve, reject) => {
     let stderr = ''
     const timer = setTimeout(
-      () => reject(new Error(`Timed out waiting for Chrome DevTools:\n${stderr}`)),
+      () =>
+        reject(new Error(`Timed out waiting for Chrome DevTools:\n${stderr}`)),
       15_000,
     )
     child.once('exit', (code, sig) => {
@@ -137,7 +138,9 @@ try {
   function send(method, params = {}) {
     const id = ++nextId
     socket.send(JSON.stringify({ id, method, params }))
-    return new Promise((resolve, reject) => pending.set(id, { resolve, reject }))
+    return new Promise((resolve, reject) =>
+      pending.set(id, { resolve, reject }),
+    )
   }
 
   await send('Runtime.enable')
@@ -400,7 +403,9 @@ try {
   assert.equal(
     runtimeExceptions.length,
     0,
-    `Uncaught runtime exceptions during smoke run: ${runtimeExceptions.join('\n')}`,
+    `Uncaught runtime exceptions during smoke run: ${runtimeExceptions.join(
+      '\n',
+    )}`,
   )
   console.log(
     '[browser-smoke] 4/4 CSS regression & runtime exception checks passed',

@@ -97,9 +97,9 @@ describe('ChatMessageArticle, ArticleReaderPane, and ArticleComposeForm', () => 
     expect(wrapper.find('[data-testid="article-card-title"]').text()).toBe(
       sampleArticle.title,
     )
-    expect(wrapper.find('[data-testid="article-card-author"]').text()).toContain(
-      'Grace Hopper',
-    )
+    expect(
+      wrapper.find('[data-testid="article-card-author"]').text(),
+    ).toContain('Grace Hopper')
     expect(wrapper.find('[data-testid="article-card-date"]').text()).toBe(
       '2026-10-17',
     )
@@ -124,21 +124,19 @@ describe('ChatMessageArticle, ArticleReaderPane, and ArticleComposeForm', () => 
     await openBtn.trigger('click')
 
     expect(wrapper.emitted('openReader')?.[0]).toEqual([sampleArticle])
-    expect(
-      wrapper.find('[data-testid="article-reader-pane"]').exists(),
-    ).toBe(true)
-    expect(
-      wrapper.find('[data-testid="article-reader-title"]').text(),
-    ).toBe(sampleArticle.title)
-    expect(
-      wrapper.findAll('[data-testid="article-md-heading"]'),
-    ).toHaveLength(2)
+    expect(wrapper.find('[data-testid="article-reader-pane"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-testid="article-reader-title"]').text()).toBe(
+      sampleArticle.title,
+    )
+    expect(wrapper.findAll('[data-testid="article-md-heading"]')).toHaveLength(
+      2,
+    )
     expect(
       wrapper.find('[data-testid="article-md-code-block"]').text(),
     ).toContain('const ok = true;')
-    expect(
-      wrapper.find('[data-testid="article-md-table"]').exists(),
-    ).toBe(true)
+    expect(wrapper.find('[data-testid="article-md-table"]').exists()).toBe(true)
     expect(
       wrapper.findAll('[data-testid="article-md-task-checkbox"]'),
     ).toHaveLength(2)
@@ -152,21 +150,21 @@ describe('ChatMessageArticle, ArticleReaderPane, and ArticleComposeForm', () => 
 
     // Close via Back button
     await wrapper.find('[data-testid="article-reader-back"]').trigger('click')
-    expect(
-      wrapper.find('[data-testid="article-reader-pane"]').exists(),
-    ).toBe(false)
+    expect(wrapper.find('[data-testid="article-reader-pane"]').exists()).toBe(
+      false,
+    )
 
     // Re-open and close via Escape key
     await openBtn.trigger('click')
-    expect(
-      wrapper.find('[data-testid="article-reader-pane"]').exists(),
-    ).toBe(true)
+    expect(wrapper.find('[data-testid="article-reader-pane"]').exists()).toBe(
+      true,
+    )
     await wrapper
       .find('[data-testid="article-reader-pane"]')
       .trigger('keydown.esc')
-    expect(
-      wrapper.find('[data-testid="article-reader-pane"]').exists(),
-    ).toBe(false)
+    expect(wrapper.find('[data-testid="article-reader-pane"]').exists()).toBe(
+      false,
+    )
   })
 
   it('supports standalone ArticleReaderPane close via window Escape key', async () => {
@@ -216,9 +214,9 @@ describe('ChatMessageArticle, ArticleReaderPane, and ArticleComposeForm', () => 
     expect(
       compose.find('[data-testid="article-compose-preview"]').exists(),
     ).toBe(true)
-    expect(
-      compose.find('[data-testid="article-reader-pane"]').exists(),
-    ).toBe(true)
+    expect(compose.find('[data-testid="article-reader-pane"]').exists()).toBe(
+      true,
+    )
     expect(
       compose.find('[data-testid="article-reader-tags"]').text(),
     ).toContain('#bewp')
@@ -256,7 +254,9 @@ describe('ChatMessageArticle, ArticleReaderPane, and ArticleComposeForm', () => 
       tags: ['#bewp', '##privacy'],
     }
     const cardWrapper = mountCard(toArticleApplicationItem(taggedArticle))
-    const tagsText = cardWrapper.find('[data-testid="article-card-tags"]').text()
+    const tagsText = cardWrapper
+      .find('[data-testid="article-card-tags"]')
+      .text()
     expect(tagsText).toContain('#bewp')
     expect(tagsText).not.toContain('##bewp')
     expect(tagsText).toContain('#privacy')
@@ -265,10 +265,12 @@ describe('ChatMessageArticle, ArticleReaderPane, and ArticleComposeForm', () => 
     const compose = mount(ArticleComposeForm, {
       global: { stubs: quasarStubs },
     })
-    expect(compose.find('[data-testid="article-compose-toolbar"]').exists()).toBe(
-      true,
-    )
-    await compose.find('[data-testid="article-toolbar-heading"]').trigger('click')
+    expect(
+      compose.find('[data-testid="article-compose-toolbar"]').exists(),
+    ).toBe(true)
+    await compose
+      .find('[data-testid="article-toolbar-heading"]')
+      .trigger('click')
     await compose.find('[data-testid="article-toolbar-bold"]').trigger('click')
     await compose.find('[data-testid="article-toolbar-quote"]').trigger('click')
     await compose.find('[data-testid="article-toolbar-code"]').trigger('click')

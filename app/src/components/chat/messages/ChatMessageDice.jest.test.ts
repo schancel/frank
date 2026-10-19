@@ -475,7 +475,10 @@ describe('ChatMessageDice.vue', () => {
       target: 65535,
       wagerWei: STAKE.toString(),
     }
-    chat({ outbound: true, item: tableItem }, { outbound: false, item: peerRoll })
+    chat(
+      { outbound: true, item: tableItem },
+      { outbound: false, item: peerRoll },
+    )
     const dealerBubble = mount(ChatMessageDice, {
       props: { item: peerRoll, address: '0x123', outbound: false },
       global: { stubs: quasarStubs, mocks: { $t: t } },

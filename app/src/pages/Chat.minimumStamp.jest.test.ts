@@ -294,4 +294,3 @@ describe('Chat.vue converged geometric stamp suggestion and per-message override
     expect(self.stampAmount).toBe('2000')
   })
 })
-

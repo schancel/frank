@@ -56,7 +56,11 @@ describe('Multi-brand whitebox configuration', () => {
     for (const [slug, profile] of Object.entries(BUILTIN_BRANDS)) {
       const heroPath = path.resolve(assetsRoot, profile.heroLogo)
       const sidebarPath = path.resolve(assetsRoot, profile.sidebarLogo)
-      expect({ slug, file: profile.heroLogo, exists: fs.existsSync(heroPath) }).toEqual({
+      expect({
+        slug,
+        file: profile.heroLogo,
+        exists: fs.existsSync(heroPath),
+      }).toEqual({
         slug,
         file: profile.heroLogo,
         exists: true,
@@ -143,4 +147,3 @@ describe('Multi-brand whitebox configuration', () => {
     }
   })
 })
-

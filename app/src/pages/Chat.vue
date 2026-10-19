@@ -511,6 +511,8 @@ export default defineComponent({
     this.cancelBlackjackPreparation()
     window.removeEventListener('resize', this.resizeHandler)
     window.removeEventListener('focus', this.onWindowFocus)
+    window.removeEventListener('frank:blind-wakeup-sync', this.onWindowFocus)
+    document.removeEventListener('visibilitychange', this.onVisibilityChange)
     window.removeEventListener('keydown', this.handleTriageKeydown)
     this.clearComposeFocusTimers()
     if (this.stampQuoteTimer) clearInterval(this.stampQuoteTimer)
@@ -651,6 +653,8 @@ export default defineComponent({
     // Adjust the chat width when window resizes
     window.addEventListener('resize', debounce(this.resizeHandler, 50))
     window.addEventListener('focus', this.onWindowFocus)
+    window.addEventListener('frank:blind-wakeup-sync', this.onWindowFocus)
+    document.addEventListener('visibilitychange', this.onVisibilityChange)
     window.addEventListener('keydown', this.handleTriageKeydown)
     const req = this.chatStore?.composeFocusRequest
     if (
@@ -679,19 +683,32 @@ export default defineComponent({
     // still-unfocused page as focus lost and moves focus to the opener (#277).
     // One later attempt covers an overlay that is still inert on this turn.
     onWindowFocus() {
+      const req = this.chatStore?.composeFocusRequest
+      if (
+        req &&
+        req.nonce > this.lastHandledFocusNonce &&
+        this.matchesConversation(req.conversationId)
+      ) {
+        this.lastHandledFocusNonce = req.nonce
+        this.scheduleComposeFocus(true)
+        return
+      }
       if (Date.now() < this.expectingWindowFocusUntil) {
-        this.expectingWindowFocusUntil = 0
-        if (!this.hasComposeFocus()) {
-          this.scheduleComposeFocus(true)
-        }
+        this.scheduleComposeFocus(true)
+      }
+    },
+    onVisibilityChange() {
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'visible'
+      ) {
+        this.onWindowFocus()
       }
     },
     matchesConversation(idOrAddress: string | null | undefined): boolean {
       if (!idOrAddress) return true
       if (this.address && this.address === idOrAddress) return true
       if (this.conversation?.id && this.conversation.id === idOrAddress)
-        return true
-      if (this.recipientAddress && this.recipientAddress === idOrAddress)
         return true
       const storeConv =
         this.chatStore?.conversations?.[idOrAddress] ??
@@ -701,9 +718,17 @@ export default defineComponent({
       if (storeConv) {
         if (this.conversation?.id && storeConv.id === this.conversation.id)
           return true
+        if (
+          this.conversation?.id &&
+          storeConv.id &&
+          storeConv.id !== this.conversation.id
+        )
+          return false
         if (storeConv.address && this.matchesConversation(storeConv.address))
           return true
       }
+      if (this.recipientAddress && this.recipientAddress === idOrAddress)
+        return true
       if (
         isChainAddress(idOrAddress) &&
         ((this.address &&
@@ -735,6 +760,18 @@ export default defineComponent({
         (root ? root.contains(active) : true)
       )
     },
+    hasActiveComposeHighlight() {
+      if (!this.hasComposeFocus()) return false
+      if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
+        return false
+      }
+      const active = document.activeElement
+      const qField = active?.closest?.('.q-field')
+      if (qField && !qField.classList.contains('q-field--focused')) {
+        return false
+      }
+      return true
+    },
     // Opening a chat (mount or a reused route) places the caret (#411). On this
     // turn, before MainLayout's narrow-overlay restore (one tick later) treats a
     // still-unfocused page as focus lost and moves focus to the opener (#277).
@@ -745,32 +782,50 @@ export default defineComponent({
     scheduleComposeFocus(force = false) {
       this.clearComposeFocusTimers()
       if (force) {
-        this.expectingWindowFocusUntil = Date.now() + 1000
+        this.expectingWindowFocusUntil = Date.now() + 2000
       }
-      const immediateFocused = this.focusComposeNow(force)
-      if (immediateFocused && !force) {
+      const effectiveForce =
+        force || Date.now() < this.expectingWindowFocusUntil
+      const immediateFocused = this.focusComposeNow(effectiveForce)
+      if (immediateFocused && !effectiveForce) {
         return
       }
       void this.$nextTick(() => {
-        if (!this.hasComposeFocus()) {
-          this.focusComposeNow(force)
+        if (
+          effectiveForce
+            ? !this.hasActiveComposeHighlight()
+            : !this.hasComposeFocus()
+        ) {
+          this.focusComposeNow(effectiveForce)
         }
       })
-      const t1 = setTimeout(() => {
-        if (!this.hasComposeFocus()) {
-          this.focusComposeNow(force)
-        }
-      }, 50)
-      const t2 = setTimeout(() => {
-        if (!this.hasComposeFocus()) {
-          this.focusComposeNow(force)
-        }
-      }, 150)
-      this.composeFocusTimers.push(t1, t2)
+      for (const delayMs of [50, 150, 350]) {
+        const timer = setTimeout(() => {
+          if (
+            effectiveForce
+              ? !this.hasActiveComposeHighlight()
+              : !this.hasComposeFocus()
+          ) {
+            this.focusComposeNow(effectiveForce)
+          }
+        }, delayMs)
+        this.composeFocusTimers.push(timer)
+      }
     },
     focusComposeNow(force = false) {
       if (!this.composeAutofocusAllowed(force)) return false
-      ;(this.$refs.chatInput as { focus?: () => void } | undefined)?.focus?.()
+      if (this.isEmailThread) {
+        const emailView = this.$refs.emailThreadView as
+          | { focusReply?: () => void }
+          | undefined
+        emailView?.focusReply?.()
+        return this.hasComposeFocus()
+      }
+      ;(
+        this.$refs.chatInput as
+          | { focus?: (options?: { forceRefocus?: boolean }) => void }
+          | undefined
+      )?.focus?.({ forceRefocus: force })
       return this.hasComposeFocus()
     },
     finePointer() {
@@ -2262,6 +2317,7 @@ export default defineComponent({
           | undefined,
       ) {
         if (!req || req.nonce <= this.lastHandledFocusNonce) return
+        this.expectingWindowFocusUntil = Date.now() + 2000
         if (this.matchesConversation(req.conversationId)) {
           this.lastHandledFocusNonce = req.nonce
           this.scheduleComposeFocus(true)
@@ -2270,7 +2326,16 @@ export default defineComponent({
     },
     'chatStore.activeConversationId'(newActiveId: string | null | undefined) {
       if (newActiveId && this.matchesConversation(newActiveId)) {
-        this.scheduleComposeFocus(false)
+        const req = this.chatStore?.composeFocusRequest
+        const force = Boolean(
+          req &&
+            req.nonce > this.lastHandledFocusNonce &&
+            this.matchesConversation(req.conversationId),
+        )
+        if (force && req) {
+          this.lastHandledFocusNonce = req.nonce
+        }
+        this.scheduleComposeFocus(force)
       }
     },
     'address'(newAddr: string) {

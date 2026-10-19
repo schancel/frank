@@ -375,4 +375,55 @@ describe('opening a chat focuses the compose box (#411)', () => {
     expect(document.activeElement).toBe(composeBox())
     wrapper.unmount()
   })
+
+  it('focuses composer when notification click navigates to another conversation via setActiveConversation({ requestFocus: true })', async () => {
+    setPointer(true)
+    const wrapper = mountChat()
+    await settle()
+
+    // User had focused a control outside the drawer before clicking notification
+    const outside = document.createElement('button')
+    outside.type = 'button'
+    document.body.appendChild(outside)
+    outside.focus()
+    expect(document.activeElement).toBe(outside)
+
+    // Notification click calls setActiveConversation(OTHER, { requestFocus: true }),
+    // followed by async router navigation updating Chat.vue address to OTHER.
+    mockChatStore.setActiveConversation(OTHER, { requestFocus: true })
+    await nextTick()
+    ;(wrapper.vm as unknown as { address: string }).address = OTHER
+    await settle()
+
+    expect(document.activeElement).toBe(composeBox())
+    wrapper.unmount()
+  })
+
+  it('forces refocus on window focus even when composeBox was already document.activeElement in an unfocused macOS window', async () => {
+    setPointer(true)
+    const wrapper = mountChat()
+    await settle()
+    expect(document.activeElement).toBe(composeBox())
+
+    const focusSpy = jest.spyOn(
+      (wrapper.vm.$refs as { chatInput: { focus: () => void } }).chatInput,
+      'focus',
+    )
+    focusSpy.mockClear()
+
+    // Notification click for OTHER while composeBox was already document.activeElement
+    mockChatStore.setActiveConversation(OTHER, { requestFocus: true })
+    ;(wrapper.vm as unknown as { address: string }).address = OTHER
+    await settle()
+
+    // macOS finishes activating the browser window after notification click
+    window.dispatchEvent(new Event('focus'))
+    await nextTick()
+
+    expect(focusSpy).toHaveBeenCalledWith({ forceRefocus: true })
+    expect(document.activeElement).toBe(composeBox())
+    focusSpy.mockRestore()
+    wrapper.unmount()
+  })
 })
+

@@ -120,6 +120,11 @@ export function desktopNotify(
 
   notify.onclick = () => {
     try {
+      notify.close?.()
+    } catch {
+      // Ignored
+    }
+    try {
       window.focus()
     } catch {
       // Ignored: window.focus may be restricted in some browser contexts

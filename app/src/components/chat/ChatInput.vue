@@ -290,7 +290,12 @@
         </q-menu>
       </q-btn>
 
-      <div class="col chat-input-container row no-wrap items-center">
+      <div
+        class="col chat-input-container row no-wrap items-center"
+        :class="{ 'chat-input-container--focused': isInputFocused }"
+        @focusin="isInputFocused = true"
+        @focusout="onContainerFocusout"
+      >
         <q-input
           ref="inputBox"
           class="col chat-input-field"
@@ -298,6 +303,8 @@
           dense
           borderless
           autogrow
+          @focus="isInputFocused = true"
+          @blur="isInputFocused = false"
           @paste="pasted($event)"
           @drop.prevent="dropped($event)"
           @keydown.enter.exact.prevent
@@ -602,6 +609,7 @@ export default defineComponent({
       // The stamp as the user is typing it; shown while it still means the chosen amount.
       typedStamp: null as string | null,
       multiplierSteps: STAMP_MULTIPLIER_TENTHS,
+      isInputFocused: false,
     }
   },
   emits: [
@@ -622,6 +630,14 @@ export default defineComponent({
     'swapClicked',
   ],
   methods: {
+    onContainerFocusout(e: FocusEvent) {
+      const container = e.currentTarget as HTMLElement | null
+      const next = e.relatedTarget as Node | null
+      if (container && next && container.contains(next)) {
+        return
+      }
+      this.isInputFocused = false
+    },
     closeAttachMenu() {
       const menu = this.$refs.attachMenu as
         | { hide?: () => void }
@@ -665,14 +681,43 @@ export default defineComponent({
       this.$emit('resetStampDefault')
     },
     /** Public focus target for chat-level focus handoffs. */
-    focus() {
+    focus(options?: { forceRefocus?: boolean }) {
       const box = this.$refs.inputBox as
         | { focus?: () => void; nativeEl?: HTMLElement; $el?: HTMLElement }
         | undefined
+      const el =
+        box?.nativeEl ??
+        (box?.$el?.querySelector?.('textarea, input') as
+          | HTMLTextAreaElement
+          | HTMLInputElement
+          | null
+          | undefined)
+      const fieldEl = box?.$el
+      const quasarFieldUnfocused =
+        fieldEl instanceof HTMLElement &&
+        fieldEl.classList.contains('q-field') &&
+        !fieldEl.classList.contains('q-field--focused')
+      if (
+        el instanceof HTMLElement &&
+        document.activeElement === el &&
+        (options?.forceRefocus || quasarFieldUnfocused || !this.isInputFocused)
+      ) {
+        // When a notification is clicked on macOS while the window is in the
+        // background (or when the compose <textarea> remained the tab's
+        // document.activeElement across a window blur / route reuse),
+        // document.activeElement is already `el`, which causes both Quasar's
+        // QInput.focus() (`inputRef.value !== document.activeElement`) and
+        // native el.focus() to no-op without firing `focusin` or restoring
+        // QField's focused/highlighted state. Blurring first forces a clean
+        // focus transition.
+        el.blur()
+      }
       box?.focus?.()
-      const el = box?.nativeEl ?? box?.$el?.querySelector?.('textarea, input')
       if (el instanceof HTMLElement && document.activeElement !== el) {
-        el.focus()
+        el.focus({ preventScroll: true })
+      }
+      if (el instanceof HTMLElement && document.activeElement === el) {
+        this.isInputFocused = true
       }
     },
     // A pasted picture becomes an attachment; pasted text is left to the text box.
@@ -1054,7 +1099,8 @@ export default defineComponent({
   transition: border-color 0.2s ease, box-shadow 0.2s ease,
     background-color 0.2s ease;
 
-  &:focus-within {
+  &:focus-within,
+  &.chat-input-container--focused {
     border-color: var(--q-primary);
     box-shadow: 0 0 0 1px var(--q-primary);
   }

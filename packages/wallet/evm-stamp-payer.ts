@@ -264,7 +264,7 @@ export class EvmStampPayer {
         signal?.addEventListener('abort', cancel, { once: true })
       })
       let lastError: unknown
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      for (let attempt = 1; attempt <= 4; attempt++) {
         try {
           const value = await Promise.race([task(), stopped])
           if (signal?.aborted) throw new ChainWaitCancelledError()
@@ -275,14 +275,14 @@ export class EvmStampPayer {
           lastError = error
           const msg = String((error as { message?: unknown })?.message ?? error)
           const isTransientRpcLimit =
-            /upstream RPC error|-32007|-32005|-32016|429|50[234]|bad gateway/i.test(
+            /upstream RPC error|-32007|-32005|-32016|429|50[234]|bad gateway|relay RPC transport failed|invalid_rpc_upstream_response|rpc_upstream_unavailable/i.test(
               msg,
             )
-          if (!isTransientRpcLimit || attempt >= 3 || signal?.aborted) {
+          if (!isTransientRpcLimit || attempt >= 4 || signal?.aborted) {
             throw error
           }
           await Promise.race([
-            new Promise<void>(resolve => setTimeout(resolve, attempt * 150)),
+            new Promise<void>(resolve => setTimeout(resolve, attempt * 250)),
             stopped,
           ])
         }
@@ -753,12 +753,19 @@ export class EvmStampPayer {
         let tryClaimImmaturePool: (() => Promise<StampClaim | undefined>) | undefined
         if (allowed('pool')) {
           // Balances this process has not read yet are read here, outside the claim.
-          const capacities = await pool.fundedCapacities(provider, feeReserveWei, {
-            fromBalance: true,
-            maxCacheAgeMs: Infinity,
-          })
+          const capacities = await this.read(
+            () =>
+              pool.fundedCapacities(provider, feeReserveWei, {
+                fromBalance: true,
+                maxCacheAgeMs: Infinity,
+              }),
+            input.signal,
+          )
+          const fundedCapacities = capacities.filter(
+            account => account.capacityWei > 0n,
+          )
           const poolHead =
-            lag > 1 && capacities.length > 0
+            lag > 1 && fundedCapacities.length > 0
               ? await this.watcher.current(input.signal)
               : 0
           // Restoring keys reconstructs addresses, not a proof that their nonce is still zero.
@@ -772,35 +779,41 @@ export class EvmStampPayer {
               mature: boolean
             }
           >()
-          await Promise.all(
-            capacities.map(async account => {
-              const generation = pool.accountGeneration(account.address)
-              const [latest, pending, matured] = await this.read(
-                () =>
-                  Promise.all([
-                    provider.getTransactionCount(account.address, 'latest'),
-                    provider.getTransactionCount(account.address, 'pending'),
-                    lag > 1 &&
-                    poolHead >= lag &&
-                    typeof provider.getBalance === 'function'
-                      ? provider
-                          .getBalance(account.address, poolHead - lag)
-                          .catch(() => undefined)
-                      : Promise.resolve(undefined),
-                  ]),
-                input.signal,
-              )
-              if (pending === latest)
-                current.set(account.index, {
-                  nonce: latest,
-                  generation,
-                  matured,
-                  mature:
-                    matured === undefined ||
-                    matured >= account.capacityWei + feeReserveWei,
-                })
-            }),
+          let cursor = 0
+          const workers = Array.from(
+            { length: Math.min(2, fundedCapacities.length) },
+            async () => {
+              while (cursor < fundedCapacities.length) {
+                const account = fundedCapacities[cursor++]!
+                const generation = pool.accountGeneration(account.address)
+                const [latest, pending, matured] = await this.read(
+                  () =>
+                    Promise.all([
+                      provider.getTransactionCount(account.address, 'latest'),
+                      provider.getTransactionCount(account.address, 'pending'),
+                      lag > 1 &&
+                      poolHead >= lag &&
+                      typeof provider.getBalance === 'function'
+                        ? provider
+                            .getBalance(account.address, poolHead - lag)
+                            .catch(() => undefined)
+                        : Promise.resolve(undefined),
+                    ]),
+                  input.signal,
+                )
+                if (pending === latest)
+                  current.set(account.index, {
+                    nonce: latest,
+                    generation,
+                    matured,
+                    mature:
+                      matured === undefined ||
+                      matured >= account.capacityWei + feeReserveWei,
+                  })
+              }
+            },
           )
+          await Promise.all(workers)
           const eligible = (index: number, address: string) => {
             const state = current.get(index)
             return (

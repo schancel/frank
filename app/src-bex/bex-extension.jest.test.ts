@@ -82,15 +82,15 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     })
   })
 
-  it('builds Safari MV3 manifest with non-persistent background and web_accessible_resources for inpage.js fallback', () => {
+  it('builds Safari MV3 manifest with service_worker background and web_accessible_resources for inpage.js fallback', () => {
     const manifest = buildExtensionManifest('safari', '0.3.0')
     expect(manifest.manifest_version).toBe(3)
     expect(manifest.permissions).toEqual(['storage', 'activeTab', 'scripting'])
     expect(manifest.background).toEqual({
       service_worker: 'background.js',
-      scripts: ['background.js'],
-      type: 'module',
-      persistent: false,
+    })
+    expect(manifest.content_security_policy).toEqual({
+      extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
     })
     expect(manifest.web_accessible_resources).toEqual([
       {

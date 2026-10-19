@@ -372,6 +372,16 @@ export function getDefaultRelayBaseUrl(): string {
       // keep configured
     }
   }
+  if (
+    !configured &&
+    typeof window !== "undefined" &&
+    window.location &&
+    ["chrome-extension:", "safari-web-extension:", "moz-extension:"].includes(
+      window.location.protocol
+    )
+  ) {
+    return "https://relay.signet.mx";
+  }
   return configured ?? "http://127.0.0.1:8098";
 }
 

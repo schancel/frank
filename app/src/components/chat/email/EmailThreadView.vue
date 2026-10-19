@@ -2766,13 +2766,20 @@ export default defineComponent({
 
 .chat-stamp-btn {
   flex-shrink: 0;
-  height: 28px;
-  padding: 0 8px;
+  min-height: 28px;
+  height: auto;
+  padding: 2px 10px;
   border-radius: 14px;
   font-size: 12px;
+  white-space: nowrap;
   color: var(--q-primary);
   background-color: var(--q-chat-stamp-bg, rgba(0, 0, 0, 0.05));
   transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.chat-stamp-btn :deep(.q-btn__content) {
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .chat-stamp-btn:hover:not(:disabled) {

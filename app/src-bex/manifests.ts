@@ -13,7 +13,23 @@ export const EXTENSION_CONTENT_MATCHES = [
   'http://127.0.0.1/*',
 ]
 
-export function buildContentScripts(): ExtensionContentScript[] {
+export function buildContentScripts(
+  target: ExtensionTarget = 'chrome',
+): ExtensionContentScript[] {
+  if (target === 'safari') {
+    return [
+      {
+        matches: [...EXTENSION_CONTENT_MATCHES],
+        js: ['inpage.js'],
+        run_at: 'document_start',
+      },
+      {
+        matches: [...EXTENSION_CONTENT_MATCHES],
+        js: ['content.js'],
+        run_at: 'document_start',
+      },
+    ]
+  }
   return [
     {
       matches: [...EXTENSION_CONTENT_MATCHES],
@@ -49,7 +65,10 @@ export function buildExtensionManifest(
       default_popup: 'index.html?extMode=popup',
       default_title: 'Frank',
     },
-    content_scripts: buildContentScripts(),
+    content_security_policy: {
+      extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+    },
+    content_scripts: buildContentScripts(target),
   }
 
   if (target === 'chrome') {
@@ -94,9 +113,6 @@ export function buildExtensionManifest(
       permissions: ['storage', 'activeTab', 'scripting'],
       background: {
         service_worker: 'background.js',
-        scripts: ['background.js'],
-        type: 'module',
-        persistent: false,
       },
       web_accessible_resources: [
         {

@@ -422,6 +422,8 @@ export default configure(ctx => {
           __VUE_OPTIONS_API__: JSON.stringify(true),
           __VUE_PROD_DEVTOOLS__: JSON.stringify(false),
           __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: JSON.stringify(false),
+          __INTLIFY_JIT_COMPILATION__: JSON.stringify(true),
+          __INTLIFY_DROP_MESSAGE_COMPILER__: JSON.stringify(false),
         }
         // Ticket #54 (fixed): `process.env.MONAD_*`/`CASHWEB_*` reads throughout this app used to
         // always be `undefined` regardless of what was configured -- `viteConf.define` genuinely

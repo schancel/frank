@@ -94,6 +94,10 @@ function copyDirectoryFiltered(srcDir, destDir) {
   for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
     if (
       entry.name === 'service-worker.js' ||
+      entry.name === 'sw.js' ||
+      entry.name === 'sw.js.map' ||
+      entry.name === 'push-sw.js' ||
+      entry.name === 'register-service-worker.js' ||
       entry.name === 'manifest.json' ||
       entry.name.startsWith('workbox-')
     ) {
@@ -121,6 +125,7 @@ function ensureFallbackStaticAssets(targetDir) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Frank Companion</title>
+    <link rel="stylesheet" href="/extension-popup.css" />
   </head>
   <body>
     <div id="q-app"></div>
@@ -129,7 +134,34 @@ function ensureFallbackStaticAssets(targetDir) {
 `,
       'utf8',
     )
+  } else {
+    let html = fs.readFileSync(indexHtmlPath, 'utf8')
+    // Remove inline <script>...</script> blocks (without src) which violate Manifest V3 script-src 'self' CSP
+    html = html.replace(/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/gi, '')
+    // Remove PWA <link rel="manifest" href="/manifest.json"> so the browser does not parse the WebExtension manifest as a Web App Manifest
+    html = html.replace(/<link[^>]*\brel=["']?manifest["']?[^>]*>/gi, '')
+    if (!html.includes('extension-popup.css')) {
+      html = html.replace(
+        '</head>',
+        '<link rel="stylesheet" href="/extension-popup.css"></head>',
+      )
+    }
+    fs.writeFileSync(indexHtmlPath, html, 'utf8')
   }
+
+  fs.writeFileSync(
+    path.join(targetDir, 'extension-popup.css'),
+    `html, body, #q-app {
+  min-width: 400px !important;
+  min-height: 580px !important;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+`,
+    'utf8',
+  )
 
   const iconsDir = path.join(targetDir, 'icons')
   fs.mkdirSync(iconsDir, { recursive: true })

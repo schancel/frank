@@ -172,7 +172,17 @@ function checkForUpdate() {
   void checkForAppUpdate({ resetDeferral: false })
 }
 
-if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+const isHttpOrHttpsOrigin =
+  typeof window === 'undefined' ||
+  !window.location?.protocol ||
+  window.location.protocol === 'https:' ||
+  window.location.protocol === 'http:'
+
+if (
+  isHttpOrHttpsOrigin &&
+  typeof navigator !== 'undefined' &&
+  'serviceWorker' in navigator
+) {
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (reloadAfterActivation) {
       reloadAfterActivation = false
@@ -206,52 +216,57 @@ if (typeof window !== 'undefined') {
   window.isUpdateAvailable = isUpdateAvailable
 }
 
-register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
-  ready(registration) {
-    activeRegistration = registration
-    attachRegistrationListeners(registration)
-    checkForUpdate()
-    import('src/utils/webpush-sync')
-      .then(({ ensureBrowserPushSubscription, syncRelayNotificationPolicy }) =>
-        ensureBrowserPushSubscription({
-          serviceWorkerRegistration: registration,
-        }).then(sub => {
-          if (sub) {
-            return syncRelayNotificationPolicy({ pushSubscription: sub })
-          }
-          return null
-        }),
+if (isHttpOrHttpsOrigin) {
+  register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
+    ready(registration) {
+      activeRegistration = registration
+      attachRegistrationListeners(registration)
+      checkForUpdate()
+      import('src/utils/webpush-sync')
+        .then(
+          ({ ensureBrowserPushSubscription, syncRelayNotificationPolicy }) =>
+            ensureBrowserPushSubscription({
+              serviceWorkerRegistration: registration,
+            }).then(sub => {
+              if (sub) {
+                return syncRelayNotificationPolicy({ pushSubscription: sub })
+              }
+              return null
+            }),
+        )
+        .catch(() => undefined)
+    },
+
+    registered(registration) {
+      activeRegistration = registration
+      attachRegistrationListeners(registration)
+      checkForUpdate()
+      document.addEventListener('visibilitychange', checkForUpdate)
+      if (
+        typeof window !== 'undefined' &&
+        typeof window.addEventListener === 'function'
+      ) {
+        window.addEventListener('focus', checkForUpdate)
+      }
+      if (typeof setInterval === 'function') {
+        const timer = setInterval(checkForUpdate, 60_000)
+        if (timer && typeof timer.unref === 'function') timer.unref()
+      }
+    },
+
+    updated(registration) {
+      activeRegistration = registration
+      offerUpdate(registration)
+    },
+
+    offline() {
+      console.log(
+        'No internet connection found. App is running in offline mode.',
       )
-      .catch(() => undefined)
-  },
+    },
 
-  registered(registration) {
-    activeRegistration = registration
-    attachRegistrationListeners(registration)
-    checkForUpdate()
-    document.addEventListener('visibilitychange', checkForUpdate)
-    if (
-      typeof window !== 'undefined' &&
-      typeof window.addEventListener === 'function'
-    ) {
-      window.addEventListener('focus', checkForUpdate)
-    }
-    if (typeof setInterval === 'function') {
-      const timer = setInterval(checkForUpdate, 60_000)
-      if (timer && typeof timer.unref === 'function') timer.unref()
-    }
-  },
-
-  updated(registration) {
-    activeRegistration = registration
-    offerUpdate(registration)
-  },
-
-  offline() {
-    console.log('No internet connection found. App is running in offline mode.')
-  },
-
-  error(error) {
-    console.error('Error during service worker registration:', error)
-  },
-})
+    error(error) {
+      console.error('Error during service worker registration:', error)
+    },
+  })
+}

@@ -544,11 +544,15 @@ export async function startMessaging(): Promise<void> {
         revision,
         account: negotiationAccount,
       })
-      live.swapExecution = d.startSwapExecution?.({
-        wallet,
-        revision,
-        account: negotiationAccount,
-      })
+      try {
+        live.swapExecution = d.startSwapExecution?.({
+          wallet,
+          revision,
+          account: negotiationAccount,
+        })
+      } catch (swapErr) {
+        console.warn('[startMessaging] swapExecution start failed:', swapErr)
+      }
       setDirectoryLookup(address => found.lookup(address))
       failures = 0
       state.status = 'ready'
@@ -563,6 +567,25 @@ export async function startMessaging(): Promise<void> {
     } catch (err) {
       console.error('[startMessaging] install failed:', err)
       failure = 'account-unavailable'
+      if (live) {
+        const partial = live
+        live = undefined
+        partial.polling.stop()
+        partial.reconcile.stop()
+        try {
+          partial.uninstall()
+        } catch {
+          // ignore
+        }
+        await Promise.all([
+          Promise.resolve()
+            .then(() => partial.negotiation?.stop())
+            .catch(() => undefined),
+          Promise.resolve()
+            .then(() => partial.swapExecution?.stop())
+            .catch(() => undefined),
+        ])
+      }
     }
   }
   await directory?.close().catch(() => undefined)

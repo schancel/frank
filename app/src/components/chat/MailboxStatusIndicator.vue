@@ -1,6 +1,6 @@
 <template>
-  <negotiation-recovery-indicator />
-  <span v-if="message" class="mailbox-status-indicator">
+  <negotiation-recovery-indicator v-bind="$attrs" />
+  <span v-if="message" v-bind="$attrs" class="mailbox-status-indicator">
     <q-btn
       flat
       dense
@@ -38,6 +38,7 @@ const keyByState = {
 export default defineComponent({
   name: 'MailboxStatusIndicator',
   components: { NegotiationRecoveryIndicator },
+  inheritAttrs: false,
   setup() {
     return { status: useMailboxStatusStore(), messaging: messagingState }
   },

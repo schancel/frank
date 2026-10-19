@@ -4,6 +4,7 @@ import {
   createNativeOnlyEvmChain,
   DirectMessageAlreadyAttemptedError,
   getChainRegistryEntry,
+  getWallets,
   isChainUnreachableError,
   loadMonadChainConfigFromEnv,
   PROTOCOL_CHAINS,
@@ -18,6 +19,10 @@ import type {
   WalletSyncItem,
 } from '@frank/cashweb/types/messages'
 import { accountSession } from './session'
+import {
+  RelayWalletRouteUnavailableError,
+  requireRelayWalletRoute,
+} from './relay-wallet-route'
 import {
   validateEvmWalletConfiguration,
   verifyEvmRelayRoute,
@@ -358,9 +363,26 @@ export async function recoverSecondaryEvmWallets(
   if (peers.length === 0) return
   if (accountSession.peekWallet() !== primary)
     throw new Error('EVM recovery owner changed')
+  let hostRelayBaseUrl = ''
+  try {
+    hostRelayBaseUrl = normalizedRelay(
+      loadMonadChainConfigFromEnv().relayBaseUrl,
+    )
+  } catch {
+    hostRelayBaseUrl = ''
+  }
   const results = await Promise.allSettled(
     peers.map(async peer => {
       try {
+        if (hostRelayBaseUrl && typeof fetch === 'function') {
+          try {
+            await requireRelayWalletRoute(hostRelayBaseUrl, peer.id)
+          } catch (routeErr) {
+            if (routeErr instanceof RelayWalletRouteUnavailableError) {
+              return
+            }
+          }
+        }
         const opened = await openEvmWallet(peer.id)
         if (
           accountSession.peekWallet() !== primary ||
@@ -389,12 +411,15 @@ export async function recoverSecondaryEvmWallets(
     }),
   )
   try {
-    const recovery = await recoverAllWallets()
-    for (const failure of recovery.failed) {
-      console.warn(
-        `Wallet recovery skipped for ${failure.walletId}:`,
-        failure.error,
-      )
+    const activeWallets = typeof getWallets === 'function' ? getWallets() : []
+    if (activeWallets.length > 0) {
+      const recovery = await recoverAllWallets(activeWallets)
+      for (const failure of recovery.failed) {
+        console.warn(
+          `Wallet recovery skipped for ${failure.walletId}:`,
+          failure.error,
+        )
+      }
     }
   } catch (err) {
     console.warn('Wallet recovery loop warning:', err)

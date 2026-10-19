@@ -368,16 +368,16 @@ export async function fetchChainBalance(
       }
     } catch (err) {
       if (!isCurrent()) return
+      const routeMissing = err instanceof RelayWalletRouteUnavailableError
       if (isChainUnreachableError(err)) {
         console.warn(
           `Failed to fetch ${chainIdentifier} balance (chain unreachable)`,
           err,
         )
-      } else {
+      } else if (!routeMissing) {
         console.error(`Failed to fetch ${chainIdentifier} balance`, err)
       }
       const previous = secondaryState(chain)
-      const routeMissing = err instanceof RelayWalletRouteUnavailableError
       const known = previous.loaded && previous.balance !== null
       // A Bitcoin-family address is derived locally. Until the indexer answers, the
       // balance is pending rather than missing, and a known observation stays visible.
@@ -491,7 +491,9 @@ export async function fetchChainBalance(
       ])
     } catch (err) {
       if (!isCurrent()) return
-      console.error('Failed to acquire Solana balance address', err)
+      if (!(err instanceof RelayWalletRouteUnavailableError)) {
+        console.error('Failed to acquire Solana balance address', err)
+      }
       solanaState.value = {
         ...solanaState.value,
         hasError: true,

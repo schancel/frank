@@ -359,7 +359,7 @@ export default configure(ctx => {
         browser: ['es2020'],
       },
 
-      sourcemap: true,
+      sourcemap: Boolean(ctx.dev),
 
       vueRouterMode: 'hash', // available values: 'hash', 'history'
 

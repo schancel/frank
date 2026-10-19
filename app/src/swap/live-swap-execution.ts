@@ -763,8 +763,19 @@ export function startAppSwapExecution(input: {
   let browserStore: BrowserSwapExecutionStore | undefined
   let store: SwapExecutionStore
   if (typeof indexedDB !== 'undefined') {
-    browserStore = new BrowserSwapExecutionStore()
-    store = browserStore
+    try {
+      const rawAddress =
+        (input.wallet.identity as { address?: string } | undefined)?.address ??
+        'default'
+      const namespace =
+        `${activeChain.chainIdentifier}:${rawAddress}:${input.revision}`
+          .replace(/[^a-zA-Z0-9_:-]/g, '_')
+          .slice(0, 128) || 'default'
+      browserStore = new BrowserSwapExecutionStore(namespace)
+      store = browserStore
+    } catch {
+      store = new InMemorySwapExecutionStore()
+    }
   } else {
     store = new InMemorySwapExecutionStore()
   }

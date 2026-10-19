@@ -682,6 +682,17 @@ describe('WebRTC call actions live in the menu and do not crowd the mobile input
     expect(wrapper.emitted('webrtcCallClicked')?.[1]).toEqual([
       { withVideo: true },
     ])
+
+    expect(audioMenu.text()).toBe(enUS.chatInput.phoneCall)
+    expect(
+      wrapper.find('[data-testid="attach-calendar-vcard-menu-item"]').text(),
+    ).toBe(enUS.chatInput.attachFile)
+    expect(wrapper.find('[data-testid="games-submenu-item"]').exists()).toBe(
+      true,
+    )
+    expect(
+      wrapper.find('[data-testid="more-actions-submenu-item"]').exists(),
+    ).toBe(true)
     wrapper.unmount()
   })
 })

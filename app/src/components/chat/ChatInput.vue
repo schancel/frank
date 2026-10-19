@@ -70,7 +70,12 @@
         aria-haspopup="menu"
         :disable="disable"
       >
-        <q-menu anchor="top left" self="bottom left" max-height="80vh">
+        <q-menu
+          ref="attachMenu"
+          anchor="top left"
+          self="bottom left"
+          max-height="80vh"
+        >
           <q-list dense style="min-width: 220px" class="q-py-xs">
             <q-item
               clickable
@@ -79,10 +84,24 @@
               @click="pickImages"
             >
               <q-item-section avatar side>
-                <q-icon name="attach_file" />
+                <q-icon name="image" />
               </q-item-section>
               <q-item-section>
                 {{ $t('chatInput.attachImage') }}
+              </q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="attach-calendar-vcard-menu-item"
+              @click="pickImages"
+            >
+              <q-item-section avatar side>
+                <q-icon name="attach_file" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.attachFile') }}
               </q-item-section>
             </q-item>
 
@@ -104,60 +123,6 @@
             <q-item
               clickable
               v-close-popup
-              data-testid="swap-menu-item"
-              @click="$emit('swapClicked')"
-            >
-              <q-item-section avatar side
-                ><q-icon name="swap_horiz"
-              /></q-item-section>
-              <q-item-section>{{ $t('signedSwap.title') }}</q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="invoice-menu-item"
-              @click="$emit('invoiceClicked')"
-            >
-              <q-item-section avatar side>
-                <q-icon name="receipt_long" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.createInvoice') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="article-menu-item"
-              @click="$emit('articleClicked')"
-            >
-              <q-item-section avatar side>
-                <q-icon name="article" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.writeArticle') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="attach-calendar-vcard-menu-item"
-              @click="pickImages"
-            >
-              <q-item-section avatar side>
-                <q-icon name="event" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('calendarInvite.attachCalendarOrContact') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
               data-testid="webrtc-call-menu-item"
               @click="emitAndClose('webrtcCallClicked', { withVideo: false })"
             >
@@ -165,7 +130,7 @@
                 <q-icon name="call" />
               </q-item-section>
               <q-item-section>
-                {{ $t('chatInput.voiceVideoCall') }}
+                {{ $t('chatInput.phoneCall') }}
               </q-item-section>
             </q-item>
 
@@ -183,61 +148,143 @@
               </q-item-section>
             </q-item>
 
-            <!-- A blackjack challenge is one more message type, offered in every chat. -->
+            <div class="chat-menu-divider q-my-xs" role="separator" />
+
+            <!-- Submenu: Payments & Docs (Invoices, Swaps, Articles) -->
             <q-item
               clickable
-              v-close-popup
-              data-testid="blackjack-menu-item"
-              @click="blackjackClicked"
+              data-testid="more-actions-submenu-item"
             >
               <q-item-section avatar side>
-                <q-icon name="casino" />
+                <q-icon name="apps" />
               </q-item-section>
               <q-item-section>
-                {{ $t('chatInput.blackjackChallenge') }}
+                {{ $t('chatInput.moreActionsSubmenu') }}
               </q-item-section>
+              <q-item-section side>
+                <q-icon name="keyboard_arrow_right" />
+              </q-item-section>
+              <q-menu anchor="top end" self="top start">
+                <q-list dense style="min-width: 210px" class="q-py-xs">
+                  <q-item
+                    clickable
+                    v-close-popup
+                    data-testid="invoice-menu-item"
+                    @click="closeMenuAndEmit('invoiceClicked')"
+                  >
+                    <q-item-section avatar side>
+                      <q-icon name="receipt_long" />
+                    </q-item-section>
+                    <q-item-section>
+                      {{ $t('chatInput.createInvoice') }}
+                    </q-item-section>
+                  </q-item>
+
+                  <q-item
+                    clickable
+                    v-close-popup
+                    data-testid="swap-menu-item"
+                    @click="closeMenuAndEmit('swapClicked')"
+                  >
+                    <q-item-section avatar side>
+                      <q-icon name="swap_horiz" />
+                    </q-item-section>
+                    <q-item-section>
+                      {{ $t('signedSwap.title') }}
+                    </q-item-section>
+                  </q-item>
+
+                  <q-item
+                    clickable
+                    v-close-popup
+                    data-testid="article-menu-item"
+                    @click="closeMenuAndEmit('articleClicked')"
+                  >
+                    <q-item-section avatar side>
+                      <q-icon name="article" />
+                    </q-item-section>
+                    <q-item-section>
+                      {{ $t('chatInput.writeArticle') }}
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+              </q-menu>
             </q-item>
 
+            <!-- Submenu: Games (Blackjack, Satoshi Dice, Rock-Paper-Scissors, Heads-Up Poker) -->
             <q-item
               clickable
-              v-close-popup
-              data-testid="dice-menu-item"
-              @click="diceClicked"
-            >
-              <q-item-section avatar side>
-                <q-icon name="casino" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.diceChallenge') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="rps-menu-item"
-              @click="rpsClicked"
+              data-testid="games-submenu-item"
             >
               <q-item-section avatar side>
                 <q-icon name="sports_esports" />
               </q-item-section>
               <q-item-section>
-                {{ $t('chatInput.rpsChallenge') }}
+                {{ $t('chatInput.gamesSubmenu') }}
               </q-item-section>
-            </q-item>
+              <q-item-section side>
+                <q-icon name="keyboard_arrow_right" />
+              </q-item-section>
+              <q-menu anchor="top end" self="top start">
+                <q-list dense style="min-width: 220px" class="q-py-xs">
+                  <!-- A blackjack challenge is one more message type, offered in every chat. -->
+                  <q-item
+                    clickable
+                    v-close-popup
+                    data-testid="blackjack-menu-item"
+                    @click="blackjackClicked"
+                  >
+                    <q-item-section avatar side>
+                      <q-icon name="casino" />
+                    </q-item-section>
+                    <q-item-section>
+                      {{ $t('chatInput.blackjackChallenge') }}
+                    </q-item-section>
+                  </q-item>
 
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="mental-poker-menu-item"
-              @click="$emit('mentalPokerClicked')"
-            >
-              <q-item-section avatar side>
-                <q-icon name="style" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.mentalPokerChallenge') }}
-              </q-item-section>
+                  <q-item
+                    clickable
+                    v-close-popup
+                    data-testid="dice-menu-item"
+                    @click="diceClicked"
+                  >
+                    <q-item-section avatar side>
+                      <q-icon name="casino" />
+                    </q-item-section>
+                    <q-item-section>
+                      {{ $t('chatInput.diceChallenge') }}
+                    </q-item-section>
+                  </q-item>
+
+                  <q-item
+                    clickable
+                    v-close-popup
+                    data-testid="rps-menu-item"
+                    @click="rpsClicked"
+                  >
+                    <q-item-section avatar side>
+                      <q-icon name="sports_esports" />
+                    </q-item-section>
+                    <q-item-section>
+                      {{ $t('chatInput.rpsChallenge') }}
+                    </q-item-section>
+                  </q-item>
+
+                  <q-item
+                    clickable
+                    v-close-popup
+                    data-testid="mental-poker-menu-item"
+                    @click="closeMenuAndEmit('mentalPokerClicked')"
+                  >
+                    <q-item-section avatar side>
+                      <q-icon name="style" />
+                    </q-item-section>
+                    <q-item-section>
+                      {{ $t('chatInput.mentalPokerChallenge') }}
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+              </q-menu>
             </q-item>
           </q-list>
         </q-menu>
@@ -575,10 +622,27 @@ export default defineComponent({
     'swapClicked',
   ],
   methods: {
+    closeAttachMenu() {
+      const menu = this.$refs.attachMenu as
+        | { hide?: () => void }
+        | undefined
+      menu?.hide?.()
+    },
+    closeMenuAndEmit(
+      event:
+        | 'swapClicked'
+        | 'invoiceClicked'
+        | 'articleClicked'
+        | 'mentalPokerClicked',
+    ) {
+      this.closeAttachMenu()
+      this.$emit(event)
+    },
     emitAndClose(
       event: 'webrtcCallClicked',
       payload?: { withVideo?: boolean },
     ) {
+      this.closeAttachMenu()
       this.$emit(event, payload)
     },
     /** Scale the AVU quote, retaining the adapter floor for paid presets and explicit zero. */
@@ -732,15 +796,19 @@ export default defineComponent({
       this.$emit('sendMessage', this.innerMessage)
     },
     blackjackClicked() {
+      this.closeAttachMenu()
       this.$emit('blackjackClicked')
     },
     diceClicked() {
+      this.closeAttachMenu()
       this.$emit('diceClicked')
     },
     rpsClicked() {
+      this.closeAttachMenu()
       this.$emit('rpsClicked')
     },
     sendStealthClicked() {
+      this.closeAttachMenu()
       this.$emit('sendStealthClicked')
     },
     addEmoji(value: { id: string }) {
@@ -1126,5 +1194,10 @@ body.body--dark {
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
     }
   }
+}
+
+.chat-menu-divider {
+  height: 1px;
+  background: rgba(128, 128, 128, 0.2);
 }
 </style>

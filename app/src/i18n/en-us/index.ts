@@ -155,6 +155,7 @@ export const rawEnUS = {
     sendStealth: 'Send Stealth',
     offerSwap: 'Offer Atomic Swap',
     attachImage: 'Attach Image',
+    attachFile: 'Attach File',
     removeAttachment: 'Remove {name}',
     imageRefused: '{name} cannot be sent: {reason}.',
     messageTooLarge:
@@ -166,6 +167,9 @@ export const rawEnUS = {
     writeArticle: 'Write Markdown article',
     createInvoice: 'Send native invoice',
     voiceVideoCall: 'Voice / Video Call',
+    phoneCall: 'Phone Call',
+    gamesSubmenu: 'Games',
+    moreActionsSubmenu: 'Payments & Docs',
     placeHolder: 'Write a message...',
     emojiPickerTitle: 'Select an emoji',
     stampPrice: 'Stamp Price',

@@ -160,6 +160,7 @@ export const rawFrFR = {
     sendStealth: 'Envoi furtif',
     offerSwap: 'Proposer un échange atomique',
     attachImage: 'Attacher une image',
+    attachFile: 'Joindre un fichier',
     removeAttachment: 'Retirer {name}',
     imageRefused: '{name} ne peut pas être envoyée : {reason}.',
     messageTooLarge:
@@ -171,6 +172,9 @@ export const rawFrFR = {
     writeArticle: 'Écrire un article Markdown',
     createInvoice: 'Envoyer une facture native',
     voiceVideoCall: 'Appel vocal / vidéo',
+    phoneCall: 'Appel téléphonique',
+    gamesSubmenu: 'Jeux',
+    moreActionsSubmenu: 'Paiements et docs',
     placeHolder: 'Écrire un message...',
     emojiPickerTitle: 'Choisir un emoji',
     stampPrice: 'Prix du timbre',

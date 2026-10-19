@@ -178,4 +178,17 @@ describe('IdentityQrDialog', () => {
     ).toBe(true)
     expect(wrapper.find('[data-test="identity-qr-code"]').exists()).toBe(true)
   })
+
+  it('renders inline without a modal dialog wrapper when inline is true', async () => {
+    const wrapper = mountDialog({ inline: true })
+    await flushPromises()
+
+    expect(wrapper.find('.identity-qr-inline-wrapper').exists()).toBe(true)
+    expect(wrapper.find('.identity-qr-card--inline').exists()).toBe(true)
+    expect(wrapper.find('[data-test="identity-qr-scanner"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-test="identity-qr-code"]').exists()).toBe(true)
+  })
 })
+

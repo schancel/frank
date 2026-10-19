@@ -50,7 +50,7 @@
               :aria-label="$t('qrScanner.open')"
               :title="$t('qrScanner.open')"
               data-test="add-contact-scan"
-              @click="showScanner = true"
+              @click="showMyQrDialog = !showMyQrDialog"
             />
           </div>
 
@@ -317,7 +317,12 @@
         :validate-address="validateScannedAddress"
         @scan="address = $event"
       />
-      <identity-qr-dialog v-model="showMyQrDialog" @scan="address = $event" />
+      <identity-qr-dialog
+        v-model="showMyQrDialog"
+        inline
+        class="q-mt-md"
+        @scan="address = $event"
+      />
     </q-page>
   </q-page-container>
 </template>

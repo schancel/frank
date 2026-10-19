@@ -22,7 +22,7 @@
             icon="qr_code"
             :aria-label="$t('contactBookDialog.myQrCode')"
             data-test="panel-my-qr"
-            @click="showMyQrDialog = true"
+            @click="openMyQr"
           />
           <q-btn
             dense
@@ -260,7 +260,6 @@
         </q-item>
       </q-list>
     </q-scroll-area>
-    <identity-qr-dialog v-model="showMyQrDialog" @scan="onQrScanned" />
     <q-dialog
       :model-value="!!deleteTarget"
       persistent
@@ -304,7 +303,6 @@ import { profileAvatar } from 'src/utils/avatar'
 import { activeChain } from '@frank/wallet/chain'
 import { openChat, openContactProfile, openPage } from 'src/utils/routes'
 import { isNarrowWidth } from 'src/utils/layout'
-import IdentityQrDialog from 'src/components/dialogs/IdentityQrDialog.vue'
 import DeleteContactDialog from 'src/components/dialogs/DeleteContactDialog.vue'
 import { isOwnAddress } from 'src/utils/own-address'
 import {
@@ -332,7 +330,6 @@ interface NetworkSearchResult {
 
 export default defineComponent({
   components: {
-    IdentityQrDialog,
     DeleteContactDialog,
     AccountBadge,
     UsernameHandle,
@@ -654,6 +651,22 @@ export default defineComponent({
       openPage(router, target)
     }
 
+    function openMyQr() {
+      showMyQrDialog.value = true
+      const from =
+        router.currentRoute?.value?.fullPath ||
+        router.currentRoute?.value?.path ||
+        ''
+      const params = new URLSearchParams({ mode: 'contact' })
+      if (from) {
+        params.set('from', from)
+      }
+      openPage(router, `/qr?${params.toString()}`)
+      if (isNarrow()) {
+        emit('closeDrawer')
+      }
+    }
+
     function onQrScanned(scanned: string) {
       const trimmed = scanned.trim()
       if (!trimmed) return
@@ -685,6 +698,7 @@ export default defineComponent({
       addAndStartChat,
       addAndOpenProfile,
       openAddContact,
+      openMyQr,
       onQrScanned,
       deleteTarget,
       showMyQrDialog,

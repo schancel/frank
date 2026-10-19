@@ -1,11 +1,159 @@
 <template>
+  <div
+    v-if="inline && modelValue"
+    class="identity-qr-inline-wrapper full-width"
+    data-test="identity-qr-dialog"
+  >
+    <q-card
+      flat
+      bordered
+      class="q-pa-sm identity-qr-card identity-qr-card--inline"
+      data-test="identity-qr-card"
+    >
+      <q-card-section class="row items-center q-py-xs q-px-sm">
+        <q-avatar size="32px" class="q-mr-sm shadow-1">
+          <img v-if="avatarSrc" :src="avatarSrc" />
+          <q-icon v-else name="person" size="20px" color="primary" />
+        </q-avatar>
+        <div class="col ellipsis">
+          <div
+            class="text-subtitle2 text-weight-bold ellipsis"
+            data-test="identity-qr-name"
+          >
+            {{ displayName }}
+          </div>
+          <div
+            v-if="displayUsername"
+            class="text-caption"
+            data-test="identity-qr-username"
+          >
+            <username-handle :username="displayUsername" />
+          </div>
+        </div>
+        <q-space />
+        <q-btn
+          icon="close"
+          flat
+          round
+          dense
+          :aria-label="$t('close')"
+          data-test="identity-qr-close"
+          @click="closeDialog"
+        />
+      </q-card-section>
+
+      <!-- Live QR Camera Scanner at Top -->
+      <q-card-section class="q-py-xs q-px-sm">
+        <div
+          class="identity-qr-scanner-box rounded-borders overflow-hidden relative-position"
+          data-test="identity-qr-scanner"
+        >
+          <video
+            ref="scannerVideo"
+            :key="cameraGeneration"
+            autoplay
+            muted
+            playsinline
+            class="identity-qr-scanner-video"
+            data-test="identity-qr-scanner-video"
+          />
+          <div
+            class="identity-qr-scanner-overlay row items-center justify-between no-wrap q-px-sm q-py-xs"
+          >
+            <div class="row items-center no-wrap col ellipsis">
+              <q-icon
+                name="qr_code_scanner"
+                size="16px"
+                class="q-mr-xs text-white"
+              />
+              <span
+                role="status"
+                aria-live="polite"
+                class="text-caption text-white ellipsis"
+                data-test="identity-qr-scanner-status"
+              >
+                {{ $t(`qrScanner.${scannerStatus}`) }}
+              </span>
+            </div>
+            <q-btn
+              v-if="canRetryScanner"
+              flat
+              dense
+              no-caps
+              size="sm"
+              color="white"
+              :label="$t('qrScanner.retry')"
+              data-test="identity-qr-scanner-retry"
+              @click="startScanner"
+            />
+          </div>
+        </div>
+      </q-card-section>
+
+      <!-- Own QR Code Below Scanner -->
+      <q-card-section class="row justify-center items-center q-py-xs q-px-sm">
+        <div
+          class="q-pa-sm bg-white rounded-borders shadow-1 text-center"
+          data-test="identity-qr-container"
+        >
+          <qrcode-vue
+            v-if="resolvedAddress"
+            :value="resolvedAddress"
+            :size="172"
+            level="H"
+            data-test="identity-qr-code"
+          />
+          <q-skeleton v-else size="172px" square />
+          <div class="text-caption text-grey-7 q-mt-xs">
+            {{ $t('profileDialog.scanPrompt') }}
+          </div>
+        </div>
+      </q-card-section>
+
+      <q-card-section class="q-py-xs q-px-sm">
+        <q-input
+          dense
+          outlined
+          readonly
+          v-model="resolvedAddress"
+          class="identity-address-field"
+          data-test="identity-address-input"
+        >
+          <template #append>
+            <q-btn
+              flat
+              dense
+              round
+              icon="content_copy"
+              color="primary"
+              :aria-label="$t('a11y.copyAddress')"
+              :disable="!resolvedAddress"
+              data-test="copy-identity-address-btn"
+              @click="copyAddress"
+            />
+          </template>
+        </q-input>
+        <q-btn
+          v-show="false"
+          flat
+          dense
+          no-caps
+          size="sm"
+          color="primary"
+          :label="$t('profileDialog.goToWallet')"
+          data-test="identity-dialog-goto-wallet"
+          @click="goToWallet"
+        />
+      </q-card-section>
+    </q-card>
+  </div>
   <q-dialog
+    v-else-if="!inline"
     :model-value="modelValue"
     data-test="identity-qr-dialog"
     @update:model-value="onModelValueUpdate"
   >
     <q-card
-      style="min-width: 320px; max-width: 420px; width: 100%"
       class="q-pa-sm identity-qr-card"
       data-test="identity-qr-card"
     >
@@ -116,6 +264,7 @@
           outlined
           readonly
           v-model="resolvedAddress"
+          class="identity-address-field"
           data-test="identity-address-input"
         >
           <template #append>
@@ -197,6 +346,10 @@ export default defineComponent({
     avatar: {
       type: String,
       default: '',
+    },
+    inline: {
+      type: Boolean,
+      default: false,
     },
   },
   emits: ['update:modelValue', 'go-to-wallet', 'scan'],
@@ -446,9 +599,25 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.identity-qr-inline-wrapper {
+  display: flex;
+  justify-content: center;
+}
+
+.identity-qr-card {
+  width: 100%;
+  max-width: 440px;
+  margin: 0 auto;
+  border-radius: 14px;
+}
+
+.identity-qr-card--inline {
+  max-width: 500px;
+}
+
 .identity-qr-scanner-box {
   background: #0f172a;
-  height: 156px;
+  height: clamp(168px, 28vh, 224px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -468,5 +637,11 @@ export default defineComponent({
   bottom: 0;
   background: rgba(15, 23, 42, 0.72);
   backdrop-filter: blur(4px);
+}
+
+.identity-address-field :deep(input) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
 }
 </style>

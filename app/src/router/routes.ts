@@ -78,6 +78,10 @@ export function createRoutes(): RouteRecordRaw[] {
           component: () => import('pages/AddContact.vue'),
         },
         {
+          path: 'qr',
+          component: () => import('pages/IdentityQrPage.vue'),
+        },
+        {
           path: 'add-topic',
           component: () => import('pages/AddTopic.vue'),
         },

@@ -19,7 +19,7 @@
             :aria-label="$t('contactBookDialog.myQrCode')"
             data-testid="chat-list-qr-btn"
             data-test="chat-list-qr-btn"
-            @click="showIdentityQrDialog = true"
+            @click="openQrPage"
           />
           <q-btn
             dense
@@ -174,7 +174,6 @@
         </q-item>
       </q-list>
     </q-scroll-area>
-    <identity-qr-dialog v-model="showIdentityQrDialog" @scan="onQrScanned" />
   </div>
 </template>
 
@@ -183,7 +182,6 @@ import { computed, defineComponent, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
-import IdentityQrDialog from '../dialogs/IdentityQrDialog.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
 import { useContactStore } from '../../stores/contacts'
 
@@ -317,6 +315,20 @@ export default defineComponent({
         searchInputRef.value?.select()
       },
       openPage,
+      openQrPage() {
+        showIdentityQrDialog.value = true
+        const from =
+          router.currentRoute?.value?.fullPath ||
+          router.currentRoute?.value?.path ||
+          ''
+        const target = from.startsWith('/chat')
+          ? `/qr?from=${encodeURIComponent(from)}`
+          : '/qr'
+        openPage(router, target)
+        if (isNarrowWidth($q.screen.width)) {
+          emit('closeDrawer')
+        }
+      },
       openNewConversation() {
         const from =
           router.currentRoute?.value?.fullPath ||
@@ -395,7 +407,6 @@ export default defineComponent({
   },
   components: {
     ChatListItem,
-    IdentityQrDialog,
   },
 })
 </script>

@@ -150,3 +150,36 @@ it('preserves Later for the same waiting worker on background checks but offers 
   await new Promise(resolve => setImmediate(resolve))
   expect(harness.notice).toHaveBeenCalledTimes(2)
 })
+
+it('offers an update when registration.update() starts an installing worker that finishes later', async () => {
+  const harness = registrationHarness()
+  let stateChangeHandler: (() => void) | undefined
+  const installingWorker = {
+    state: 'installing',
+    postMessage: jest.fn(),
+    addEventListener: jest.fn((event: string, cb: () => void) => {
+      if (event === 'statechange') stateChangeHandler = cb
+    }),
+  }
+  const registration: {
+    installing: typeof installingWorker | null
+    waiting: typeof installingWorker | null
+    update: jest.Mock
+  } = {
+    installing: null,
+    waiting: null,
+    update: jest.fn(async () => {
+      registration.installing = installingWorker
+    }),
+  }
+  harness.getRegistration.mockResolvedValue(registration)
+  await harness.check()
+  expect(harness.notice).not.toHaveBeenCalled()
+  expect(installingWorker.addEventListener).toHaveBeenCalledTimes(1)
+
+  installingWorker.state = 'installed'
+  registration.waiting = installingWorker
+  registration.installing = null
+  stateChangeHandler?.()
+  expect(harness.notice).toHaveBeenCalledTimes(1)
+})

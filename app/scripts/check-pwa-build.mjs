@@ -124,6 +124,9 @@ for (const path of [
   '/secure/message-token/verify?code=123456',
   '/onboard/claim/claim-token',
   '/onboard/claim/claim-token?source=email',
+  '/docs',
+  '/docs/',
+  '/docs/guide/introduction.html',
   '/sw.js',
   '/workbox-12345678.js',
 ]) {
@@ -151,6 +154,7 @@ const urls = new Set(precache.map(entry => entry.url))
 assert(urls.has('index.html'))
 for (const url of urls) {
   assert(!url.endsWith('.map'), `Source map in precache: ${url}`)
+  assert(!url.startsWith('docs/'), `Static docs file in precache: ${url}`)
   assert(!/^https?:/.test(url), `Remote response in precache: ${url}`)
   assert(existsSync(new URL(url, output)), `Missing precached file: ${url}`)
 }

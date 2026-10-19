@@ -58,6 +58,42 @@ export function isUpdateAvailable() {
   return Boolean(updateNotice || activeRegistration?.waiting)
 }
 
+const watchedWorkers = typeof WeakSet === 'function' ? new WeakSet() : null
+const watchedRegistrations =
+  typeof WeakSet === 'function' ? new WeakSet() : null
+
+function watchInstallingWorker(registration, worker) {
+  if (!worker || typeof worker.addEventListener !== 'function') return
+  if (watchedWorkers) {
+    if (watchedWorkers.has(worker)) return
+    watchedWorkers.add(worker)
+  }
+  worker.addEventListener('statechange', () => {
+    if (worker.state === 'installed' && registration?.waiting) {
+      offerUpdate(registration)
+    }
+  })
+}
+
+function attachRegistrationListeners(registration) {
+  if (!registration || typeof registration !== 'object') return
+  if (registration.waiting) {
+    offerUpdate(registration)
+  }
+  if (registration.installing) {
+    watchInstallingWorker(registration, registration.installing)
+  }
+  if (typeof registration.addEventListener === 'function') {
+    if (watchedRegistrations) {
+      if (watchedRegistrations.has(registration)) return
+      watchedRegistrations.add(registration)
+    }
+    registration.addEventListener('updatefound', () => {
+      watchInstallingWorker(registration, registration.installing)
+    })
+  }
+}
+
 export async function checkForAppUpdate({ resetDeferral = true } = {}) {
   if (
     refreshing ||
@@ -76,8 +112,12 @@ export async function checkForAppUpdate({ resetDeferral = true } = {}) {
       if (refreshing) return null
       activeRegistration = registration || null
       if (!registration) return null
+      attachRegistrationListeners(registration)
       await registration.update()
       if (refreshing) return null
+      if (registration.installing) {
+        watchInstallingWorker(registration, registration.installing)
+      }
       if (registration.waiting) offerUpdate(registration)
       return registration
     } catch (error) {
@@ -127,7 +167,7 @@ function checkForUpdate() {
     return
   }
   const now = Date.now()
-  if (now - lastUpdateCheck < 30_000) return
+  if (now - lastUpdateCheck < 5_000) return
   lastUpdateCheck = now
   void checkForAppUpdate({ resetDeferral: false })
 }
@@ -166,18 +206,10 @@ if (typeof window !== 'undefined') {
   window.isUpdateAvailable = isUpdateAvailable
 }
 
-function watchInstallingWorker(registration, worker) {
-  if (!worker || typeof worker.addEventListener !== 'function') return
-  worker.addEventListener('statechange', () => {
-    if (worker.state === 'installed' && registration?.waiting) {
-      offerUpdate(registration)
-    }
-  })
-}
-
 register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
   ready(registration) {
     activeRegistration = registration
+    attachRegistrationListeners(registration)
     checkForUpdate()
     import('src/utils/webpush-sync')
       .then(({ ensureBrowserPushSubscription, syncRelayNotificationPolicy }) =>
@@ -195,17 +227,7 @@ register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
 
   registered(registration) {
     activeRegistration = registration
-    if (registration.waiting) {
-      offerUpdate(registration)
-    }
-    if (registration.installing) {
-      watchInstallingWorker(registration, registration.installing)
-    }
-    if (typeof registration.addEventListener === 'function') {
-      registration.addEventListener('updatefound', () => {
-        watchInstallingWorker(registration, registration.installing)
-      })
-    }
+    attachRegistrationListeners(registration)
     checkForUpdate()
     document.addEventListener('visibilitychange', checkForUpdate)
     if (

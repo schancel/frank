@@ -167,6 +167,7 @@
           :label="$t('sendStealthDialog.cancelBtnLabel')"
           color="primary"
           v-close-popup
+          @click="$emit('cancel')"
         />
         <q-btn
           flat
@@ -222,6 +223,7 @@ export default defineComponent({
     },
   },
   emits: {
+    cancel: () => true,
     review: (request: StealthDialogRequest) => request.amountAtomic > 0n,
     send: (intent: ReviewedStealthDialogIntent) => intent.amountAtomic > 0n,
   },
@@ -452,3 +454,12 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped lang="scss">
+.dialog-medium {
+  width: 100%;
+  max-width: 560px;
+  min-width: 0;
+  margin: 0 auto;
+}
+</style>

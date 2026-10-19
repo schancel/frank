@@ -315,10 +315,13 @@ import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { ownUsername } from 'src/utils/own-username'
 import UsernameHandle from 'src/components/contacts/UsernameHandle.vue'
 import { isRawQrAddress } from 'src/components/dialogs/QrScannerDialog.vue'
+import { isDevicePairingUri } from '@frank/wallet/device-pairing'
 
 function extractScannablePeerTarget(raw: string): string | null {
   const trimmed = raw.trim()
-  if (!trimmed || trimmed.length > 256) return null
+  if (!trimmed || trimmed.length > 512) return null
+  if (isDevicePairingUri(trimmed)) return trimmed
+  if (trimmed.length > 256) return null
   if (isRawQrAddress(trimmed)) return trimmed
   if (/^@[a-zA-Z0-9_.-]{1,64}$/.test(trimmed)) return trimmed
   return null

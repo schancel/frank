@@ -25,6 +25,85 @@
       @setupNavigationLocked="setSetupNavigationLocked"
       @setupCompleted="$emit('setupCompleted')"
     />
+    <div
+      v-if="showMobileBottomNav"
+      class="frank-mobile-bottom-nav row items-center justify-around no-wrap"
+      data-testid="mobile-bottom-nav"
+    >
+      <q-btn
+        flat
+        dense
+        no-caps
+        stack
+        icon="forum"
+        :label="$t('chatList.directMessages')"
+        :color="currentRoutePath.startsWith('/chat') ? 'primary' : undefined"
+        data-testid="mobile-nav-chats"
+        @click="$router.push('/chat')"
+      />
+      <q-btn
+        flat
+        dense
+        no-caps
+        stack
+        icon="dynamic_feed"
+        :label="$t('leftDrawer.forum')"
+        :color="currentRoutePath.startsWith('/forum') ? 'primary' : undefined"
+        data-testid="mobile-nav-forum"
+        @click="$router.push('/forum')"
+      />
+      <q-btn
+        flat
+        dense
+        no-caps
+        stack
+        icon="contacts"
+        :label="$t('contactBookDialog.contacts')"
+        :color="
+          currentRoutePath.startsWith('/add-contact') ||
+          currentRoutePath.startsWith('/contacts')
+            ? 'primary'
+            : undefined
+        "
+        data-testid="mobile-nav-contacts"
+        @click="$router.push('/add-contact')"
+      />
+      <q-btn
+        flat
+        dense
+        no-caps
+        stack
+        icon="account_balance_wallet"
+        :label="$t('leftDrawer.wallet')"
+        :color="currentRoutePath.startsWith('/wallet') ? 'primary' : undefined"
+        data-testid="mobile-nav-wallet"
+        @click="$router.push('/wallet')"
+      />
+      <q-btn
+        flat
+        dense
+        no-caps
+        stack
+        icon="qr_code_scanner"
+        :label="$t('contactBookDialog.myQrCode')"
+        :color="currentRoutePath.startsWith('/qr') ? 'primary' : undefined"
+        data-testid="mobile-nav-qr"
+        @click="$router.push('/qr')"
+      />
+      <q-btn
+        flat
+        dense
+        no-caps
+        stack
+        icon="settings"
+        :label="$t('leftDrawer.settings')"
+        :color="
+          currentRoutePath.startsWith('/settings') ? 'primary' : undefined
+        "
+        data-testid="mobile-nav-settings"
+        @click="$router.push('/settings')"
+      />
+    </div>
   </q-layout>
 </template>
 
@@ -413,6 +492,18 @@ export default defineComponent({
     overlayOpen(): boolean {
       return this.myDrawerOpen && isNarrowWidth(this.screenWidth)
     },
+    currentRoutePath(): string {
+      return this.$router?.currentRoute?.value?.path ?? ''
+    },
+    showMobileBottomNav(): boolean {
+      const setup = Boolean(
+        (this as unknown as { $status?: { setup?: boolean } }).$status?.setup,
+      )
+      if (!setup || this.setupNavigationLocked) return false
+      if (!isNarrowWidth(this.screenWidth)) return false
+      const path = this.currentRoutePath
+      return !path.startsWith('/chat/') && !path.startsWith('/setup')
+    },
     drawerWidth(): number {
       if (isNarrowWidth(this.screenWidth)) {
         return compactCutoff
@@ -454,6 +545,18 @@ export default defineComponent({
   max-height: 100vh;
   max-height: var(--frank-vh, 100dvh);
   overflow: hidden;
+}
+
+.frank-mobile-bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  min-height: 56px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--q-color-bg-surface, #fff);
+  border-top: 1px solid rgba(128, 128, 128, 0.2);
+  z-index: 1000;
 }
 
 // Long page content can grow q-layout beyond the viewport; Quasar's standard drawer is

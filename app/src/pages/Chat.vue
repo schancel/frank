@@ -206,6 +206,95 @@
             : $t('chat.groupRecipientNotice', { name: recipientName })
         }}
       </div>
+      <!-- Inline expandable composer/action sheet (replaces modal dialogs) -->
+      <div
+        v-if="
+          blackjackDialog ||
+          rpsDialog ||
+          articleDialog ||
+          invoiceDialog ||
+          stealthDialog ||
+          swapDialog ||
+          (forwardDialogOpen && messageToForward)
+        "
+        class="chat-inline-sheet q-pa-sm"
+        data-testid="chat-inline-sheet"
+      >
+        <q-card
+          v-if="blackjackDialog"
+          data-testid="blackjack-dialog"
+          class="chat-inline-sheet-card"
+        >
+          <blackjack-challenge-form
+            :busy="sendingMessage || blackjackPreparing"
+            @submit="sendBlackjackChallenge"
+            @cancel="cancelBlackjackPreparation"
+          />
+        </q-card>
+        <q-card
+          v-if="rpsDialog"
+          data-testid="rps-dialog"
+          class="chat-inline-sheet-card"
+        >
+          <rps-challenge-form
+            :busy="sendingMessage"
+            @submit="sendRpsChallenge"
+            @cancel="rpsDialog = false"
+          />
+        </q-card>
+        <article-compose-form
+          v-if="articleDialog"
+          :initial-author-name="getProfile.profile?.name || ''"
+          @send="sendArticle"
+          @cancel="articleDialog = false"
+        />
+        <q-card
+          v-if="invoiceDialog"
+          data-testid="invoice-dialog"
+          class="chat-inline-sheet-card"
+        >
+          <invoice-compose-form
+            :payee-identity="ownAddress"
+            :receive-address="ownAddress"
+            :chain-key="activeChainKey"
+            :network-id="activeNetworkId"
+            :native-symbol="activeNativeSymbol"
+            :native-decimals="activeNativeDecimals"
+            :busy="sendingMessage"
+            @submit="sendInvoice"
+            @cancel="invoiceDialog = false"
+          />
+        </q-card>
+        <send-stealth-dialog
+          v-if="stealthDialog"
+          :contact="contact"
+          :address="recipientAddress"
+          :busy="sendingMessage"
+          :options="stealthAssets"
+          :quote="stealthQuote"
+          @review="reviewStealthPayment"
+          @send="sendStealthPayment"
+          @cancel="stealthDialog = false"
+        />
+        <offer-swap-dialog
+          v-if="swapDialog"
+          :contact="contact"
+          :address="recipientAddress"
+          :conversation-id="conversation?.id || ''"
+          :conversation-name="conversation?.name || conversation?.topic || ''"
+          :swap-id="swapId"
+          :stamp-value="swapStampValue"
+          :stamp-unavailable="stampUnavailable"
+          @newOffer="swapId = newSwapId()"
+          @close="swapDialog = false"
+        />
+        <forward-message-dialog
+          v-if="forwardDialogOpen && messageToForward"
+          :message="messageToForward"
+          @forward="handleForwardToContact"
+          @close="forwardDialogOpen = false"
+        />
+      </div>
       <!-- Message box -->
       <chat-input
         @giveLotusClicked="$emit('giveLotusClicked')"
@@ -236,84 +325,6 @@
         @sendFollowUp="sendFollowUpItems"
       />
     </q-footer>
-    <!-- A blackjack challenge from the composer's message-type menu: any chat, any contact. -->
-    <q-dialog v-model="blackjackDialog" @hide="cancelBlackjackPreparation">
-      <q-card v-if="blackjackDialog" data-testid="blackjack-dialog">
-        <blackjack-challenge-form
-          :busy="sendingMessage || blackjackPreparing"
-          @submit="sendBlackjackChallenge"
-          @cancel="cancelBlackjackPreparation"
-        />
-      </q-card>
-    </q-dialog>
-    <q-dialog v-model="rpsDialog">
-      <q-card v-if="rpsDialog" data-testid="rps-dialog">
-        <rps-challenge-form
-          :busy="sendingMessage"
-          @submit="sendRpsChallenge"
-          @cancel="rpsDialog = false"
-        />
-      </q-card>
-    </q-dialog>
-    <q-dialog v-model="articleDialog">
-      <article-compose-form
-        v-if="articleDialog"
-        :initial-author-name="getProfile.profile?.name || ''"
-        @send="sendArticle"
-        @cancel="articleDialog = false"
-      />
-    </q-dialog>
-    <q-dialog v-model="invoiceDialog">
-      <q-card v-if="invoiceDialog" data-testid="invoice-dialog">
-        <invoice-compose-form
-          :payee-identity="ownAddress"
-          :receive-address="ownAddress"
-          :chain-key="activeChainKey"
-          :network-id="activeNetworkId"
-          :native-symbol="activeNativeSymbol"
-          :native-decimals="activeNativeDecimals"
-          :busy="sendingMessage"
-          @submit="sendInvoice"
-          @cancel="invoiceDialog = false"
-        />
-      </q-card>
-    </q-dialog>
-    <!-- Send Stealth dialog: multi-chain encrypted stealth payment -->
-    <q-dialog v-model="stealthDialog" :persistent="sendingMessage">
-      <send-stealth-dialog
-        v-if="stealthDialog"
-        :contact="contact"
-        :address="recipientAddress"
-        :busy="sendingMessage"
-        :options="stealthAssets"
-        :quote="stealthQuote"
-        @review="reviewStealthPayment"
-        @send="sendStealthPayment"
-      />
-    </q-dialog>
-    <!-- Offer Swap dialog: cross-chain atomic swap offer -->
-    <q-dialog v-model="swapDialog">
-      <offer-swap-dialog
-        v-if="swapDialog"
-        :contact="contact"
-        :address="recipientAddress"
-        :conversation-id="conversation?.id || ''"
-        :conversation-name="conversation?.name || conversation?.topic || ''"
-        :swap-id="swapId"
-        :stamp-value="swapStampValue"
-        :stamp-unavailable="stampUnavailable"
-        @newOffer="swapId = newSwapId()"
-        @close="swapDialog = false"
-      />
-    </q-dialog>
-    <!-- Forward message dialog -->
-    <q-dialog v-model="forwardDialogOpen">
-      <forward-message-dialog
-        v-if="messageToForward"
-        :message="messageToForward"
-        @forward="handleForwardToContact"
-      />
-    </q-dialog>
   </div>
 </template>
 
@@ -2326,6 +2337,19 @@ export default defineComponent({
 .chat-input-bar {
   min-height: 64px;
   box-sizing: border-box;
+}
+
+.chat-inline-sheet {
+  max-height: min(72vh, 560px);
+  overflow-y: auto;
+  border-top: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.chat-inline-sheet-card {
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  border-radius: 14px;
 }
 
 :deep(.chat-input-toolbar) {

@@ -21,6 +21,7 @@ import {
   pluginCapabilitiesNotYetAvailable,
   type MessageItemRegistry,
 } from '@frank/wallet/message-item-plugins/registry'
+import { createSwapHandshakePlugin } from '@frank/wallet/message-item-plugins/swap-handshake'
 import { createWebRtcCallPlugin } from '@frank/wallet/message-item-plugins/webrtc-call'
 
 export function createAppMessageItemRegistry(): MessageItemRegistry {
@@ -35,6 +36,7 @@ export function createAppMessageItemRegistry(): MessageItemRegistry {
   registry.registerApplication(createInvoicePlugin())
   registry.registerApplication(createMentalPokerPlugin())
   registry.registerApplication(createWebRtcCallPlugin())
+  registry.registerApplication(createSwapHandshakePlugin())
   return registry
 }
 

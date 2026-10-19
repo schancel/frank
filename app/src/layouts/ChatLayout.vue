@@ -222,8 +222,12 @@
       </q-toolbar>
     </q-header>
 
-    <q-dialog v-model="subjectEditorOpen" @hide="cancelSubjectEditor">
-      <q-card>
+    <div
+      v-if="subjectEditorOpen"
+      class="chat-inline-action-bar q-pa-sm"
+      data-testid="subject-editor-bar"
+    >
+      <q-card flat bordered>
         <q-card-section>
           <div class="text-h6">{{ $t('chatLayout.editSubject') }}</div>
           <q-input
@@ -249,18 +253,33 @@
           />
         </q-card-actions>
       </q-card>
-    </q-dialog>
+    </div>
 
-    <q-dialog v-model="confirmClearOpen">
-      <clear-history-dialog :address="address" :name="conversationLabel" />
-    </q-dialog>
-    <q-dialog v-model="confirmDeleteOpen">
+    <div
+      v-show="confirmClearOpen"
+      class="chat-inline-action-bar q-pa-sm"
+      data-testid="confirm-clear-bar"
+    >
+      <clear-history-dialog
+        :address="address"
+        :name="conversationLabel"
+        @cancel="confirmClearOpen = false"
+        @cleared="confirmClearOpen = false"
+      />
+    </div>
+    <div
+      v-show="confirmDeleteOpen"
+      class="chat-inline-action-bar q-pa-sm"
+      data-testid="confirm-delete-bar"
+    >
       <delete-chat-dialog
         :address="address"
         :name="conversationLabel"
         :after-delete="onChatDeleted"
+        @cancel="confirmDeleteOpen = false"
+        @deleted="confirmDeleteOpen = false"
       />
-    </q-dialog>
+    </div>
 
     <!-- Full-pane swap, not a side-by-side layout -- direct user feedback: Info deserves the same
     amount of room a chat gets, and on a narrow/mobile viewport there's no room for both panes at

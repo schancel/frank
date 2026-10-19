@@ -260,23 +260,18 @@
         </q-item>
       </q-list>
     </q-scroll-area>
-    <q-dialog
-      :model-value="!!deleteTarget"
-      persistent
-      @update:model-value="
-        value => {
-          if (!value) deleteTarget = null
-        }
-      "
+    <div
+      v-if="deleteTarget"
+      class="q-pa-sm"
+      data-testid="contacts-inline-delete"
     >
       <delete-contact-dialog
-        v-if="deleteTarget"
         :address="deleteTarget.address"
         :name="deleteTarget.name"
         @cancel="deleteTarget = null"
         @deleted="deleteTarget = null"
       />
-    </q-dialog>
+    </div>
   </div>
 </template>
 

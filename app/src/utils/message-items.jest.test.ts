@@ -14,6 +14,7 @@ it('explicitly installs inert negotiation in the actual app composition without 
   expect(defaults.has('invoice-v1')).toBe(false)
   expect(defaults.has('mental-poker-v1')).toBe(false)
   expect(defaults.has('webrtc-call-v1')).toBe(false)
+  expect(defaults.has('swap-handshake-v1')).toBe(false)
   expect(app.types()).toEqual([
     ...defaults.types(),
     'swap-negotiation-v1',
@@ -22,6 +23,7 @@ it('explicitly installs inert negotiation in the actual app composition without 
     'invoice-v1',
     'mental-poker-v1',
     'webrtc-call-v1',
+    'swap-handshake-v1',
   ])
   expect(messageItems.types()).toEqual(app.types())
   expect(app).not.toBe(messageItems)

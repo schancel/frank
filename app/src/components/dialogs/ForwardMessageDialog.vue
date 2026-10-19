@@ -3,7 +3,14 @@
     <q-card-section class="row items-center q-pb-none">
       <div class="text-h6">{{ $t('chatMessage.forwardMessage') }}</div>
       <q-space />
-      <q-btn flat round icon="close" color="primary" v-close-popup />
+      <q-btn
+        flat
+        round
+        icon="close"
+        color="primary"
+        v-close-popup
+        @click="$emit('close')"
+      />
     </q-card-section>
 
     <!-- Message preview -->
@@ -66,7 +73,13 @@
     </q-card-section>
 
     <q-card-actions align="right">
-      <q-btn flat :label="$t('close')" color="primary" v-close-popup />
+      <q-btn
+        flat
+        :label="$t('close')"
+        color="primary"
+        v-close-popup
+        @click="$emit('close')"
+      />
     </q-card-actions>
   </q-card>
 </template>
@@ -84,7 +97,7 @@ export default defineComponent({
       required: true,
     },
   },
-  emits: ['forward'],
+  emits: ['forward', 'close'],
   setup() {
     const contactStore = useContactStore()
     return {
@@ -140,3 +153,12 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped lang="scss">
+.dialog-medium {
+  width: 100%;
+  max-width: 560px;
+  min-width: 0;
+  margin: 0 auto;
+}
+</style>

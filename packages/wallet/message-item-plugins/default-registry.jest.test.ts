@@ -135,6 +135,7 @@ describe('default message item registry', () => {
       'invoice',
       'mental-poker',
       'webrtc-call',
+      'swap-handshake',
     ])
     const directories = readdirSync(__dirname)
       .filter(name => statSync(join(__dirname, name)).isDirectory())

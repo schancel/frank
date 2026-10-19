@@ -13,6 +13,7 @@
         :label="$t('deleteChatDialog.cancel')"
         color="primary"
         v-close-popup
+        @click="$emit('cancel')"
       />
       <q-btn
         flat
@@ -32,6 +33,7 @@ import { accountSession } from 'src/accounts/session'
 import { toChainDisplayAddress } from 'src/utils/chain-address'
 
 export default defineComponent({
+  emits: ['cancel', 'deleted'],
   setup() {
     const chatStore = useChatStore()
     return {
@@ -80,6 +82,7 @@ export default defineComponent({
       )
         return
       afterDelete(id)
+      this.$emit('deleted', id)
     },
   },
 })

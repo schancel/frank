@@ -2,7 +2,7 @@
   <q-card
     @keydown.stop
     data-test="delete-contact-dialog"
-    style="max-width: 480px"
+    style="width: 100%; max-width: 480px; margin: 0 auto"
   >
     <q-card-section>
       <div class="text-h6">

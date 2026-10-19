@@ -13,13 +13,14 @@
         :label="$t('clearHistoryDialog.cancel')"
         color="primary"
         v-close-popup
+        @click="$emit('cancel')"
       />
       <q-btn
         flat
         :label="$t('clearHistoryDialog.clear')"
         color="primary"
         v-close-popup
-        @click="clearChat(address)"
+        @click="onClear"
       />
     </q-card-actions>
   </q-card>
@@ -29,6 +30,7 @@
 import { defineComponent } from 'vue'
 import { useChatStore } from 'src/stores/chats'
 export default defineComponent({
+  emits: ['cancel', 'cleared'],
   setup() {
     const chatStore = useChatStore()
     return {
@@ -43,6 +45,12 @@ export default defineComponent({
     name: {
       type: String,
       default: () => '',
+    },
+  },
+  methods: {
+    onClear() {
+      this.clearChat(this.address)
+      this.$emit('cleared')
     },
   },
 })

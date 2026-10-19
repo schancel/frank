@@ -137,21 +137,30 @@
         </q-item>
       </q-list>
 
-      <q-dialog v-model="confirmClearOpen">
+      <div
+        v-show="confirmClearOpen"
+        class="q-px-md q-pb-md"
+        data-test="info-clear-history-sheet"
+      >
         <clear-history-dialog
           :address="conversationId"
           :name="contact?.profile?.name ?? ''"
+          @cancel="confirmClearOpen = false"
+          @cleared="confirmClearOpen = false"
         />
-      </q-dialog>
-      <q-dialog v-model="confirmDeleteOpen" persistent>
+      </div>
+      <div
+        v-if="confirmDeleteOpen"
+        class="q-px-md q-pb-md"
+        data-test="info-delete-contact-sheet"
+      >
         <delete-contact-dialog
-          v-if="confirmDeleteOpen"
           :address="address"
           :name="contact?.profile?.name ?? ''"
           @cancel="confirmDeleteOpen = false"
           @deleted="contactDeleted"
         />
-      </q-dialog>
+      </div>
     </q-page>
   </q-page-container>
 </template>

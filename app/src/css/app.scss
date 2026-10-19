@@ -302,3 +302,174 @@ body,
   max-height: var(--frank-vh, 100dvh) !important;
   overflow: hidden !important;
 }
+
+// ============================================================================
+// Unified Frank Button, Pill & Composer Control Design System
+// Prevents Quasar Material Design 2 defaults (ALL-CAPS text-transform, wrapping
+// .q-btn__content inside fixed-height pills, and 3px boxy corners) from
+// creating inconsistent button styles or multi-line pill overflow glitches.
+// ============================================================================
+.q-btn {
+  text-transform: none !important;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+
+  .q-btn__content {
+    flex-wrap: nowrap !important;
+  }
+}
+
+.q-btn:not(.q-btn--round):not(.q-btn--rounded) {
+  border-radius: 10px;
+}
+
+.q-btn--rounded {
+  border-radius: 999px;
+}
+
+.q-btn--standard:not(.q-btn--flat):not(.q-btn--outline) {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
+
+  &::before {
+    box-shadow: none !important;
+  }
+}
+
+.frank-tonal-btn {
+  border-radius: 10px !important;
+  background-color: var(--q-chat-stamp-bg, rgba(0, 0, 0, 0.05));
+  color: var(--q-color-text, inherit);
+  font-weight: 600;
+  transition: background-color 0.15s ease, color 0.15s ease,
+    border-color 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background-color: var(--q-chat-stamp-bg-hover, rgba(0, 0, 0, 0.09));
+    color: var(--q-primary);
+  }
+}
+
+.chat-attach-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  color: var(--q-color-text-muted, #757575);
+  transition: color 0.15s ease, background-color 0.15s ease;
+
+  &:hover:not(:disabled) {
+    color: var(--q-primary);
+  }
+}
+
+.chat-stamp-btn {
+  flex-shrink: 0;
+  min-height: 28px;
+  height: auto;
+  padding: 2px 10px;
+  border-radius: 999px !important;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--q-primary);
+  background-color: var(--q-chat-stamp-bg, rgba(0, 0, 0, 0.05));
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+
+  .q-btn__content {
+    flex-wrap: nowrap !important;
+    white-space: nowrap !important;
+  }
+
+  &:hover:not(:disabled) {
+    background-color: var(--q-chat-stamp-bg-hover, rgba(0, 0, 0, 0.09));
+  }
+}
+
+.chat-stamp-pill-text {
+  font-weight: 600;
+  font-size: 11px;
+  font-family: inherit;
+  opacity: 0.92;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-stamp-pill-multiple {
+  font-size: 10px;
+  font-weight: 600;
+  opacity: 0.82;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.chat-stamp-explanation {
+  opacity: 0.8;
+  max-width: 320px;
+}
+
+.chat-send-btn {
+  align-self: center;
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  min-height: 38px;
+  padding: 0 !important;
+  border-radius: 12px !important;
+  background-color: var(--q-primary) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+
+  .q-icon {
+    font-size: 18px;
+  }
+
+  &:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.22);
+  }
+
+  &:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  }
+
+  &:disabled {
+    opacity: 0.45 !important;
+    box-shadow: none !important;
+  }
+}
+
+body.body--dark {
+  .frank-tonal-btn {
+    background-color: rgba(255, 255, 255, 0.08);
+
+    &:hover:not(:disabled) {
+      background-color: rgba(255, 255, 255, 0.14);
+      color: var(--q-primary);
+    }
+  }
+
+  .chat-attach-btn {
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  .chat-stamp-btn {
+    background-color: rgba(255, 255, 255, 0.08);
+
+    &:hover:not(:disabled) {
+      background-color: rgba(255, 255, 255, 0.14);
+    }
+  }
+
+  .chat-send-btn {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+
+    &:hover:not(:disabled) {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+    }
+  }
+}
+

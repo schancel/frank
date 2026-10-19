@@ -279,10 +279,12 @@
                       class="row items-center justify-end q-mb-sm html-toggle-row"
                     >
                       <q-btn
-                        flat
+                        unelevated
+                        no-caps
                         dense
                         size="sm"
                         color="primary"
+                        class="frank-tonal-btn q-px-sm"
                         :label="
                           isHtmlView(card.id) ? 'Show Plain Text' : 'Show HTML'
                         "
@@ -308,11 +310,11 @@
                       />
                       <div v-if="card.quotedBody" class="q-mt-sm">
                         <q-btn
-                          flat
+                          unelevated
                           dense
                           no-caps
                           size="xs"
-                          color="grey-7"
+                          class="frank-tonal-btn q-px-sm"
                           icon="more_horiz"
                           :label="
                             isQuoteExpanded(card.id)
@@ -373,22 +375,26 @@
                   <q-separator />
                   <q-card-actions
                     align="right"
-                    class="q-px-md q-py-xs bg-grey-1"
+                    class="q-px-md q-py-xs bg-grey-1 q-gutter-x-xs"
                     :class="{ 'bg-grey-10': $q.dark.isActive }"
                   >
                     <q-btn
-                      flat
+                      unelevated
+                      no-caps
                       dense
                       size="sm"
                       icon="reply"
+                      class="frank-tonal-btn q-px-sm"
                       :label="$t('emailThread.reply')"
                       @click.stop="prepareReply(card, 'reply')"
                     />
                     <q-btn
-                      flat
+                      unelevated
+                      no-caps
                       dense
                       size="sm"
                       icon="reply_all"
+                      class="frank-tonal-btn q-px-sm"
                       :label="$t('emailThread.replyAll')"
                       v-if="canReplyAll(card)"
                       @click.stop="prepareReply(card, 'reply_all')"
@@ -462,9 +468,22 @@
         </div>
       </div>
 
+      <!-- Stamp / Network Status Banner (full width so it never wraps composer action buttons) -->
+      <div
+        v-if="stampStatus"
+        class="text-caption text-warning q-mb-xs row items-center no-wrap composer-stamp-status"
+        role="status"
+        data-testid="composer-stamp-status"
+      >
+        <q-icon name="info_outline" size="15px" class="q-mr-xs col-auto" />
+        <span class="col">{{ stampStatus }}</span>
+      </div>
+
       <!-- Composer Controls Header -->
-      <div class="row items-center justify-between q-mb-sm composer-header-bar">
-        <div class="row items-center q-gutter-x-sm">
+      <div
+        class="row items-center justify-between no-wrap q-mb-sm composer-header-bar"
+      >
+        <div class="row items-center no-wrap q-gutter-x-xs">
           <template v-if="showReplyModeToggle">
             <q-btn-toggle
               v-model="replyMode"
@@ -496,11 +515,11 @@
             {{ $t('emailThread.newEmail') }}
           </span>
           <q-btn
-            flat
+            unelevated
             dense
             no-caps
             size="sm"
-            class="recipient-toggle-btn q-px-sm"
+            class="recipient-toggle-btn frank-tonal-btn q-px-sm"
             :class="{ 'recipient-toggle-btn--active': showCc }"
             :label="
               showCc ? $t('emailThread.hideCc') : $t('emailThread.showCc')
@@ -508,11 +527,11 @@
             @click="showCc = !showCc"
           />
           <q-btn
-            flat
+            unelevated
             dense
             no-caps
             size="sm"
-            class="recipient-toggle-btn q-px-sm"
+            class="recipient-toggle-btn frank-tonal-btn q-px-sm"
             :class="{ 'recipient-toggle-btn--active': showBcc }"
             :label="
               showBcc ? $t('emailThread.hideBcc') : $t('emailThread.showBcc')
@@ -521,12 +540,9 @@
           />
         </div>
         <div
-          class="col-auto row items-center q-gutter-x-xs"
+          class="col-auto row items-center no-wrap q-gutter-x-xs"
           data-testid="composer-top-actions"
         >
-          <div class="text-caption text-grey-6 q-mr-xs" v-if="stampStatus">
-            {{ stampStatus }}
-          </div>
           <!-- Hidden file input -->
           <input
             type="file"
@@ -541,10 +557,9 @@
             flat
             round
             dense
-            color="grey-7"
             icon="attach_file"
             :disable="sending"
-            class="attach-btn"
+            class="attach-btn chat-attach-btn"
             @click="triggerFileInput"
             data-testid="attach-file-btn"
           >
@@ -634,6 +649,7 @@
                 <q-btn
                   flat
                   dense
+                  no-caps
                   color="primary"
                   data-testid="email-input-stamp-free"
                   :label="$t('chatInput.stampFree', 'Free')"
@@ -688,6 +704,7 @@
                   <q-btn
                     flat
                     dense
+                    no-caps
                     size="sm"
                     color="primary"
                     :label="$t('chatInput.stampReset', 'Default')"
@@ -977,14 +994,14 @@
         </q-btn>
         <q-btn
           v-if="activeReplyCard"
-          flat
+          unelevated
           dense
-          size="xs"
+          no-caps
+          size="sm"
           icon="reply"
-          color="primary"
+          class="frank-tonal-btn q-px-sm"
           :label="$t('emailThread.quoteOriginal', 'Quote Original')"
           @click="insertOriginalQuote(activeReplyCard)"
-          class="q-px-xs"
         >
           <q-tooltip>{{
             $t('emailThread.quoteOriginal', 'Quote Original')
@@ -992,16 +1009,17 @@
         </q-btn>
         <q-space />
         <q-btn
-          flat
+          unelevated
           dense
-          size="xs"
+          no-caps
+          size="sm"
+          class="frank-tonal-btn q-px-sm"
           :icon="isPreviewMode ? 'edit' : 'visibility'"
           :label="
             isPreviewMode
               ? $t('emailThread.edit', 'Edit')
               : $t('emailThread.preview', 'Preview')
           "
-          color="grey-7"
           @click="isPreviewMode = !isPreviewMode"
         />
       </div>
@@ -2599,28 +2617,26 @@ export default defineComponent({
 }
 
 .recipient-toggle-btn {
-  border: 1px dashed rgba(0, 0, 0, 0.18);
-  border-radius: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 999px !important;
   font-size: 11px;
-  font-weight: 500;
-  color: var(--q-primary, #1976d2);
+  font-weight: 600;
+  color: var(--q-primary, #c8431e);
   transition: all 0.15s ease;
-  min-height: 24px;
+  min-height: 26px;
 }
 
 .recipient-toggle-btn:hover {
-  background: rgba(25, 118, 210, 0.08);
-  border-style: solid;
+  background: var(--q-chat-stamp-bg-hover, rgba(0, 0, 0, 0.09));
 }
 
 .recipient-toggle-btn--active {
-  background: rgba(25, 118, 210, 0.12);
-  border-style: solid;
-  border-color: var(--q-primary, #1976d2);
+  background: var(--q-chat-stamp-bg-hover, rgba(0, 0, 0, 0.12));
+  border-color: var(--q-primary, #c8431e);
 }
 
 .body--dark .recipient-toggle-btn {
-  border-color: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.16);
 }
 
 .recipients-container {
@@ -2739,9 +2755,23 @@ export default defineComponent({
 }
 
 .send-btn {
-  border-radius: 8px;
+  flex-shrink: 0;
+  min-height: 36px;
+  border-radius: 12px !important;
   font-weight: 600;
-  letter-spacing: 0.2px;
+  letter-spacing: -0.005em;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+}
+
+.send-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.22);
+}
+
+.send-btn:disabled {
+  opacity: 0.45 !important;
+  box-shadow: none !important;
 }
 
 .email-body-preview {
@@ -2769,7 +2799,7 @@ export default defineComponent({
   min-height: 28px;
   height: auto;
   padding: 2px 10px;
-  border-radius: 14px;
+  border-radius: 999px !important;
   font-size: 12px;
   white-space: nowrap;
   color: var(--q-primary);
@@ -2778,8 +2808,8 @@ export default defineComponent({
 }
 
 .chat-stamp-btn :deep(.q-btn__content) {
-  flex-wrap: nowrap;
-  white-space: nowrap;
+  flex-wrap: nowrap !important;
+  white-space: nowrap !important;
 }
 
 .chat-stamp-btn:hover:not(:disabled) {
@@ -2790,14 +2820,16 @@ export default defineComponent({
   font-weight: 600;
   font-size: 11px;
   font-family: inherit;
-  opacity: 0.9;
+  opacity: 0.92;
   white-space: nowrap;
 }
 
 .chat-stamp-pill-multiple {
   font-size: 10px;
-  opacity: 0.8;
+  font-weight: 600;
+  opacity: 0.82;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .chat-stamp-explanation {

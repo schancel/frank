@@ -423,6 +423,7 @@
               <q-btn
                 flat
                 dense
+                no-caps
                 color="primary"
                 data-testid="chat-input-stamp-free"
                 :label="$t('chatInput.stampFree')"
@@ -469,6 +470,7 @@
                 <q-btn
                   flat
                   dense
+                  no-caps
                   size="sm"
                   color="primary"
                   icon="restart_alt"
@@ -1063,7 +1065,7 @@ export default defineComponent({
 })
 </script>
 
-<style lang="scss">
+<style lang="scss" scoped>
 .chat-input-toolbar {
   display: flex;
   align-items: center;
@@ -1112,14 +1114,14 @@ export default defineComponent({
   font-size: 14px;
   line-height: 1.4;
 
-  .q-field__native {
+  :deep(.q-field__native) {
     padding: 6px 0;
     max-height: 140px;
   }
 }
 
 .chat-input-field--empty {
-  .q-field__native {
+  :deep(.q-field__native) {
     height: 32px !important;
     min-height: 32px !important;
     max-height: 32px !important;
@@ -1131,14 +1133,21 @@ export default defineComponent({
 
 .chat-stamp-btn {
   flex-shrink: 0;
-  max-width: 46%;
-  height: 28px;
-  padding: 0 8px;
-  border-radius: 14px;
+  max-width: 48%;
+  min-height: 28px;
+  height: auto;
+  padding: 2px 10px;
+  border-radius: 999px;
   font-size: 12px;
+  white-space: nowrap;
   color: var(--q-primary);
   background-color: var(--q-chat-stamp-bg, rgba(0, 0, 0, 0.05));
   transition: background-color 0.15s ease, opacity 0.15s ease;
+
+  :deep(.q-btn__content) {
+    flex-wrap: nowrap !important;
+    white-space: nowrap !important;
+  }
 
   &:hover:not(:disabled) {
     background-color: var(--q-chat-stamp-bg-hover, rgba(0, 0, 0, 0.09));
@@ -1149,7 +1158,7 @@ export default defineComponent({
   font-weight: 600;
   font-size: 11px;
   font-family: inherit;
-  opacity: 0.9;
+  opacity: 0.92;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1158,8 +1167,10 @@ export default defineComponent({
 /* Secondary to the amount; the first thing to go when the composer is narrow. */
 .chat-stamp-pill-multiple {
   font-size: 10px;
-  opacity: 0.8;
+  font-weight: 600;
+  opacity: 0.82;
   white-space: nowrap;
+  flex-shrink: 0;
 
   @media (max-width: 540px) {
     display: none;
@@ -1172,7 +1183,7 @@ export default defineComponent({
   }
 
   .chat-stamp-btn {
-    padding: 0 6px;
+    padding: 2px 6px;
   }
 }
 
@@ -1195,7 +1206,7 @@ export default defineComponent({
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
   transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
 
-  .q-icon {
+  :deep(.q-icon) {
     font-size: 18px;
   }
 
@@ -1215,7 +1226,7 @@ export default defineComponent({
   }
 }
 
-body.body--dark {
+:global(body.body--dark) {
   .chat-attach-btn {
     color: rgba(255, 255, 255, 0.6);
   }

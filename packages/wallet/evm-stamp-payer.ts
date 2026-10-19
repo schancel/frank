@@ -163,10 +163,14 @@ export async function waitForSpendSpacing(
     try {
       const head = await provider.getBlockNumber()
       const [now, before, pending] = await Promise.all([
-        provider.getTransactionCount(address, head),
+        provider
+          .getTransactionCount(address, head)
+          .catch(() => provider.getTransactionCount(address, 'latest')),
         head < blocks
           ? Promise.resolve(undefined)
-          : provider.getTransactionCount(address, head - blocks),
+          : provider
+              .getTransactionCount(address, head - blocks)
+              .catch(() => undefined),
         provider.getTransactionCount(address, 'pending'),
       ])
       if (pending <= now) {
@@ -303,14 +307,21 @@ export class EvmStampPayer {
     for (;;) {
       const known = this.coins.get(key)
       const head = await this.watcher.current(signal)
-      const [now, before, pending] = await this.read(() =>
-        Promise.all([
-          this.config.provider.getTransactionCount(address, head),
-          spacing > 0 && head >= spacing
-            ? this.config.provider.getTransactionCount(address, head - spacing)
-            : Promise.resolve(undefined),
-          this.config.provider.getTransactionCount(address, 'pending'),
-        ]),
+      const [now, before, pending] = await this.read(
+        () =>
+          Promise.all([
+            this.config.provider
+              .getTransactionCount(address, head)
+              .catch(() =>
+                this.config.provider.getTransactionCount(address, 'latest'),
+              ),
+            spacing > 0 && head >= spacing
+              ? this.config.provider
+                  .getTransactionCount(address, head - spacing)
+                  .catch(() => undefined)
+              : Promise.resolve(undefined),
+            this.config.provider.getTransactionCount(address, 'pending'),
+          ]),
         signal,
       )
       // Something of this account is in the mempool: no coin until it is mined.
@@ -517,13 +528,19 @@ export class EvmStampPayer {
       const [balance, nonce, pending, before, matured] = await this.read(() =>
         Promise.all([
           provider.getBalance(address),
-          provider.getTransactionCount(address, head),
+          provider
+            .getTransactionCount(address, head)
+            .catch(() => provider.getTransactionCount(address, 'latest')),
           provider.getTransactionCount(address, 'pending'),
           spacing > 0 && head >= spacing
-            ? provider.getTransactionCount(address, head - spacing)
+            ? provider
+                .getTransactionCount(address, head - spacing)
+                .catch(() => undefined)
             : Promise.resolve(undefined),
           spacing > 0 && head >= spacing + 1
-            ? provider.getBalance(address, head - spacing - 1)
+            ? provider
+                .getBalance(address, head - spacing - 1)
+                .catch(() => undefined)
             : Promise.resolve(undefined),
         ]),
       )

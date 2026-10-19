@@ -564,4 +564,43 @@ describe('read-only stamp affordability', () => {
     ).toBe('insufficient')
     pending.watcher.stop()
   })
+
+  it('tolerates load-balanced RPC replica block skew and pruned historical block tags without throwing UNKNOWN_ERROR', async () => {
+    const blockNotFound = Object.assign(
+      new Error('Block requested not found'),
+      { code: 'UNKNOWN_ERROR' },
+    )
+    const { stampPayer, watcher } = payer(
+      { [at(main)]: MON },
+      {
+        spendSpacingBlocks: 3,
+        provider: {
+          getTransactionCount: async (_address, block) => {
+            if (typeof block === 'number') throw blockNotFound
+            return 0
+          },
+          getBalance: async (_address, block) => {
+            if (typeof block === 'number') throw blockNotFound
+            return MON
+          },
+        },
+      },
+    )
+    const quote = await stampPayer.quote({ stampValueWei: MON / 100n })
+    expect(quote).toEqual({
+      status: 'available',
+      stampValueWei: MON / 100n,
+      maximumFeeWei: RESERVE,
+      capacityWei: MON - RESERVE,
+    })
+    const claim = await stampPayer.claim({
+      holder: 'skewed-replica',
+      stampValueWei: MON / 100n,
+      sources: ['main'],
+    })
+    expect(claim.accounts).toHaveLength(1)
+    stampPayer.release('skewed-replica')
+    watcher.stop()
+  })
 })
+

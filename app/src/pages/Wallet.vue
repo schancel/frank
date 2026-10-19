@@ -249,32 +249,16 @@
                       {{ $t('walletPanel.walletUnsupported') }}
                     </q-banner>
                   </q-card-section>
-                  <q-card-section v-else>
-                    <div
-                      class="row justify-center items-center"
-                      style="min-height: 300px"
-                      data-testid="wallet-qr-container"
-                    >
-                      <qrcode-vue
-                        v-if="displayAddress"
-                        style="margin-left: auto; margin-right: auto"
-                        :value="displayAddress"
-                        :size="300"
-                        level="H"
-                        data-testid="wallet-qr"
-                      />
-                      <q-skeleton
-                        v-else
-                        size="300px"
-                        square
-                        data-testid="wallet-qr-skeleton"
-                      />
-                    </div>
-                    <div class="row q-mt-md">
+                  <q-card-section v-else class="q-py-sm">
+                    <div class="row">
                       <q-input
                         class="fit"
+                        dense
                         filled
-                        auto-grow
+                        spellcheck="false"
+                        autocomplete="off"
+                        autocorrect="off"
+                        autocapitalize="off"
                         :loading="addressAvailability === 'loading'"
                         v-model="displayAddress"
                         readonly
@@ -284,6 +268,18 @@
                             dense
                             color="primary"
                             flat
+                            round
+                            icon="qr_code_2"
+                            :aria-label="$t('contactBookDialog.myQrCode')"
+                            :disable="!displayAddress"
+                            data-testid="wallet-toggle-qr"
+                            @click="showReceiveQr = !showReceiveQr"
+                          />
+                          <q-btn
+                            dense
+                            color="primary"
+                            flat
+                            round
                             icon="content_copy"
                             :aria-label="$t('a11y.copyAddress')"
                             :disable="!displayAddress"
@@ -292,6 +288,30 @@
                           />
                         </template>
                       </q-input>
+                    </div>
+                    <div
+                      v-show="showReceiveQr"
+                      class="row justify-center items-center q-mt-sm"
+                      data-testid="wallet-qr-container"
+                    >
+                      <div
+                        class="q-pa-sm bg-white rounded-borders shadow-1 text-center"
+                      >
+                        <qrcode-vue
+                          v-if="displayAddress"
+                          style="margin-left: auto; margin-right: auto"
+                          :value="displayAddress"
+                          :size="180"
+                          level="H"
+                          data-testid="wallet-qr"
+                        />
+                        <q-skeleton
+                          v-else
+                          size="180px"
+                          square
+                          data-testid="wallet-qr-skeleton"
+                        />
+                      </div>
                     </div>
                     <div
                       v-if="
@@ -1130,6 +1150,7 @@ export default defineComponent({
       renameWalletConfig,
       openRenameDialog,
       saveWalletName,
+      showReceiveQr: ref(false),
       openAvuDetails: () => openPage(router, '/avu'),
       async copyAddress() {
         if (!displayAddress.value) return

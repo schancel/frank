@@ -548,22 +548,25 @@ export function installEvmStampFundAheadCoordinator(
       let fundingPrivateKey = mainAccount.privateKey;
       const mainHeld = sourceIsHeld(wallet, mainAccount.address);
       try {
+        const coinNeedWei =
+          input.stampValueWei +
+          BigInt(2 * STAMP_PAIR_TRANSFERS) * defaultGasReserveWei;
         const mainBal = mainHeld
           ? 0n
           : await provider.getBalance(mainAccount.address);
         if (
-          mainBal === 0n &&
+          mainBal < coinNeedWei &&
           identity.address.raw.toLowerCase() !==
             mainAccount.address.toLowerCase()
         ) {
           const identBal = await provider.getBalance(identity.address.raw);
-          if (identBal > 0n && !sourceIsHeld(wallet, identity.address.raw)) {
+          if (
+            identBal > mainBal &&
+            !sourceIsHeld(wallet, identity.address.raw)
+          ) {
             fundingPrivateKey = identity.toPrivateKeyHex();
           }
         }
-        const coinNeedWei =
-          input.stampValueWei +
-          BigInt(2 * STAMP_PAIR_TRANSFERS) * defaultGasReserveWei;
         if (
           mainBal < coinNeedWei &&
           fundingPrivateKey === mainAccount.privateKey

@@ -11,39 +11,48 @@
             }}
           </div>
         </q-card-section>
-        <q-card-section>
-          <q-input
-            class="text-bold text-h6"
-            v-model="address"
-            filled
-            dense
-            :placeholder="inputPlaceholder"
-            :aria-busy="lookupPending"
-            ref="address"
-            data-test="address-input"
-            @keydown.enter.prevent="onEnter()"
-          >
-            <template v-if="selectedExistingAddress" #append>
-              <q-btn
-                round
-                dense
-                flat
-                icon="close"
-                size="sm"
-                :title="$t('newContactDialog.clearContact')"
-                data-test="clear-contact-btn"
-                @click="clearSelectedContact"
-              />
-            </template>
-          </q-input>
-
-          <q-btn
-            flat
-            icon="qr_code_scanner"
-            :label="$t('qrScanner.open')"
-            data-test="add-contact-scan"
-            @click="showScanner = true"
-          />
+        <q-card-section class="q-pt-none">
+          <div class="row items-center no-wrap q-gutter-x-xs">
+            <q-input
+              class="col text-weight-medium"
+              v-model="address"
+              filled
+              dense
+              spellcheck="false"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              :placeholder="inputPlaceholder"
+              :aria-busy="lookupPending"
+              ref="address"
+              data-test="address-input"
+              @keydown.enter.prevent="onEnter()"
+            >
+              <template v-if="selectedExistingAddress" #append>
+                <q-btn
+                  round
+                  dense
+                  flat
+                  icon="close"
+                  size="sm"
+                  :title="$t('newContactDialog.clearContact')"
+                  data-test="clear-contact-btn"
+                  @click="clearSelectedContact"
+                />
+              </template>
+            </q-input>
+            <q-btn
+              flat
+              round
+              dense
+              color="primary"
+              icon="qr_code_scanner"
+              :aria-label="$t('qrScanner.open')"
+              :title="$t('qrScanner.open')"
+              data-test="add-contact-scan"
+              @click="showScanner = true"
+            />
+          </div>
 
           <!-- Existing contact suggestions dropdown / list -->
           <div
@@ -308,7 +317,7 @@
         :validate-address="validateScannedAddress"
         @scan="address = $event"
       />
-      <identity-qr-dialog v-model="showMyQrDialog" />
+      <identity-qr-dialog v-model="showMyQrDialog" @scan="address = $event" />
     </q-page>
   </q-page-container>
 </template>
@@ -508,7 +517,12 @@ export default defineComponent({
     },
   },
   watch: {
-    address(newAddress: string) {
+    '$route.query.to'(newTo: unknown) {
+      if (typeof newTo === 'string' && newTo.trim() && newTo !== this.address) {
+        this.address = newTo
+      }
+    },
+    'address'(newAddress: string) {
       const generation = ++this.lookupGeneration
       const busy =
         this.lookupPending ||

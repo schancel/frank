@@ -260,7 +260,7 @@
         </q-item>
       </q-list>
     </q-scroll-area>
-    <identity-qr-dialog v-model="showMyQrDialog" />
+    <identity-qr-dialog v-model="showMyQrDialog" @scan="onQrScanned" />
     <q-dialog
       :model-value="!!deleteTarget"
       persistent
@@ -654,6 +654,23 @@ export default defineComponent({
       openPage(router, target)
     }
 
+    function onQrScanned(scanned: string) {
+      const trimmed = scanned.trim()
+      if (!trimmed) return
+      const from =
+        router.currentRoute?.value?.fullPath ||
+        router.currentRoute?.value?.path ||
+        ''
+      const params = new URLSearchParams({ to: trimmed })
+      if (from) {
+        params.set('from', from)
+      }
+      openPage(router, `/add-contact?${params.toString()}`)
+      if (isNarrow()) {
+        emit('closeDrawer')
+      }
+    }
+
     return {
       search,
       filteredContacts,
@@ -668,6 +685,7 @@ export default defineComponent({
       addAndStartChat,
       addAndOpenProfile,
       openAddContact,
+      onQrScanned,
       deleteTarget,
       showMyQrDialog,
       contactDisplayName,

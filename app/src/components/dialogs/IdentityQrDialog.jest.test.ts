@@ -165,4 +165,17 @@ describe('IdentityQrDialog', () => {
     expect(wrapper.emitted('go-to-wallet')).toBeTruthy()
     expect(mockRouterPush).toHaveBeenCalledWith('/wallet')
   })
+
+  it('renders both the live camera QR scanner and own QR code on the same screen', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="identity-qr-scanner"]').exists()).toBe(
+      true,
+    )
+    expect(
+      wrapper.find('[data-test="identity-qr-scanner-video"]').exists(),
+    ).toBe(true)
+    expect(wrapper.find('[data-test="identity-qr-code"]').exists()).toBe(true)
+  })
 })

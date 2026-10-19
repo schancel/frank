@@ -15,6 +15,15 @@
           <q-btn
             dense
             flat
+            icon="qr_code_scanner"
+            :aria-label="$t('contactBookDialog.myQrCode')"
+            data-testid="chat-list-qr-btn"
+            data-test="chat-list-qr-btn"
+            @click="showIdentityQrDialog = true"
+          />
+          <q-btn
+            dense
+            flat
             icon="add"
             :aria-label="$t('newContactDialog.startConversation')"
             data-testid="start-conversation-btn"
@@ -165,6 +174,7 @@
         </q-item>
       </q-list>
     </q-scroll-area>
+    <identity-qr-dialog v-model="showIdentityQrDialog" @scan="onQrScanned" />
   </div>
 </template>
 
@@ -173,6 +183,7 @@ import { computed, defineComponent, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
+import IdentityQrDialog from '../dialogs/IdentityQrDialog.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
 import { useContactStore } from '../../stores/contacts'
 
@@ -205,6 +216,7 @@ export default defineComponent({
     const searchQuery = ref('')
     const activeFilter = ref<'all' | 'screener'>('all')
     const searchInputRef = ref<HTMLInputElement | null>(null)
+    const showIdentityQrDialog = ref(false)
     const searchIndex = new ChatSearchIndex()
 
     const isContactFn = (address: string): boolean =>
@@ -292,6 +304,7 @@ export default defineComponent({
       activeFilter,
       screenerSummary,
       searchInputRef,
+      showIdentityQrDialog,
       clearSearch() {
         searchQuery.value = ''
       },
@@ -313,6 +326,22 @@ export default defineComponent({
           ? `/new-conversation?from=${encodeURIComponent(from)}`
           : '/new-conversation'
         openPage(router, target)
+      },
+      onQrScanned(scanned: string) {
+        const trimmed = scanned.trim()
+        if (!trimmed) return
+        const from =
+          router.currentRoute?.value?.fullPath ||
+          router.currentRoute?.value?.path ||
+          ''
+        const params = new URLSearchParams({ to: trimmed })
+        if (from.startsWith('/chat')) {
+          params.set('from', from)
+        }
+        openPage(router, `/new-conversation?${params.toString()}`)
+        if (isNarrowWidth($q.screen.width)) {
+          emit('closeDrawer')
+        }
       },
       selectConversation(item: Conversation | string) {
         const target = typeof item === 'string' ? item : item.id
@@ -365,6 +394,7 @@ export default defineComponent({
   },
   components: {
     ChatListItem,
+    IdentityQrDialog,
   },
 })
 </script>

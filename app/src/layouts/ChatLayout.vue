@@ -114,6 +114,26 @@
           </q-toolbar-title>
           <q-space />
           <q-btn
+            class="q-px-xs"
+            flat
+            round
+            dense
+            icon="call"
+            data-testid="webrtc-audio-call-btn"
+            :aria-label="$t('webrtcCall.mediaMode.audio')"
+            @click="startWebRtcCall(false)"
+          />
+          <q-btn
+            class="q-px-xs"
+            flat
+            round
+            dense
+            icon="videocam"
+            data-testid="webrtc-video-call-btn"
+            :aria-label="$t('webrtcCall.mediaMode.video')"
+            @click="startWebRtcCall(true)"
+          />
+          <q-btn
             class="q-px-sm"
             flat
             dense
@@ -307,6 +327,11 @@ export default defineComponent({
   provide() {
     return {
       chatSelectMode: computed(() => this.selectMode),
+      registerWebRtcCallHandler: (
+        handler: ((options: { withVideo: boolean }) => void) | null,
+      ) => {
+        this.webrtcCallHandler = handler
+      },
     }
   },
   setup() {
@@ -352,6 +377,9 @@ export default defineComponent({
       selectMode: false,
       confirmClearOpen: false,
       confirmDeleteOpen: false,
+      webrtcCallHandler: null as
+        | ((options: { withVideo: boolean }) => void)
+        | null,
     }
   },
   watch: {
@@ -373,6 +401,9 @@ export default defineComponent({
     this.selectMode = false
   },
   methods: {
+    startWebRtcCall(withVideo: boolean) {
+      this.webrtcCallHandler?.({ withVideo })
+    },
     openSubjectEditor() {
       const conversation = this.activeConversation
       if (!conversation) return

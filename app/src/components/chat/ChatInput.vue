@@ -243,31 +243,11 @@
         </q-menu>
       </q-btn>
 
-      <q-btn
-        dense
-        flat
-        round
-        icon="call"
-        data-testid="webrtc-audio-call-btn"
-        :aria-label="$t('webrtcCall.mediaMode.audio')"
-        :disable="disable"
-        @click="emitAndClose('webrtcCallClicked', { withVideo: false })"
-      />
-      <q-btn
-        dense
-        flat
-        round
-        icon="videocam"
-        data-testid="webrtc-video-call-btn"
-        :aria-label="$t('webrtcCall.mediaMode.video')"
-        :disable="disable"
-        @click="emitAndClose('webrtcCallClicked', { withVideo: true })"
-      />
-
       <div class="col chat-input-container row no-wrap items-center">
         <q-input
           ref="inputBox"
           class="col chat-input-field"
+          :class="{ 'chat-input-field--empty': !innerMessage }"
           dense
           borderless
           autogrow
@@ -977,6 +957,7 @@ export default defineComponent({
   min-height: 64px;
   padding: 8px 14px;
   overflow: visible;
+  container-type: inline-size;
 }
 
 .chat-attach-btn {
@@ -1012,6 +993,8 @@ export default defineComponent({
 }
 
 .chat-input-field {
+  flex: 1 1 0%;
+  min-width: 84px;
   font-size: 14px;
   line-height: 1.4;
 
@@ -1021,8 +1004,20 @@ export default defineComponent({
   }
 }
 
+.chat-input-field--empty {
+  .q-field__native {
+    height: 32px !important;
+    min-height: 32px !important;
+    max-height: 32px !important;
+    overflow: hidden !important;
+    white-space: nowrap !important;
+    text-overflow: ellipsis !important;
+  }
+}
+
 .chat-stamp-btn {
   flex-shrink: 0;
+  max-width: 46%;
   height: 28px;
   padding: 0 8px;
   border-radius: 14px;
@@ -1042,6 +1037,8 @@ export default defineComponent({
   font-family: inherit;
   opacity: 0.9;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Secondary to the amount; the first thing to go when the composer is narrow. */
@@ -1050,8 +1047,18 @@ export default defineComponent({
   opacity: 0.8;
   white-space: nowrap;
 
-  @media (max-width: 480px) {
+  @media (max-width: 540px) {
     display: none;
+  }
+}
+
+@container (max-width: 480px) {
+  .chat-stamp-pill-multiple {
+    display: none;
+  }
+
+  .chat-stamp-btn {
+    padding: 0 6px;
   }
 }
 

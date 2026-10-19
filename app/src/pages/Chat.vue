@@ -471,6 +471,11 @@ export default defineComponent({
     ForwardMessageDialog,
     ChatBannerStack,
   },
+  inject: {
+    registerWebRtcCallHandler: {
+      default: null,
+    },
+  },
   beforeRouteUpdate(to: RouteLocationNormalized) {
     const nextAddress = (to?.params?.address as string) || ''
     this.messagesToShow = 30
@@ -479,6 +484,17 @@ export default defineComponent({
     }
   },
   beforeUnmount() {
+    if (
+      typeof (
+        this as unknown as {
+          registerWebRtcCallHandler?: ((fn: null) => void) | null
+        }
+      ).registerWebRtcCallHandler === 'function'
+    ) {
+      ;(
+        this as unknown as { registerWebRtcCallHandler: (fn: null) => void }
+      ).registerWebRtcCallHandler(null)
+    }
     this.unsubscribeActiveCalls?.()
     this.unsubscribeActiveCalls = null
     this.cancelBlackjackPreparation()
@@ -578,6 +594,25 @@ export default defineComponent({
   },
   emits: ['giveLotusClicked'],
   mounted() {
+    if (
+      typeof (
+        this as unknown as {
+          registerWebRtcCallHandler?:
+            | ((fn: (options: { withVideo: boolean }) => void) => void)
+            | null
+        }
+      ).registerWebRtcCallHandler === 'function'
+    ) {
+      ;(
+        this as unknown as {
+          registerWebRtcCallHandler: (
+            fn: (options: { withVideo: boolean }) => void,
+          ) => void
+        }
+      ).registerWebRtcCallHandler((options: { withVideo: boolean }) => {
+        void this.sendWebRtcCallInvite(options)
+      })
+    }
     this.unsubscribeActiveCalls = subscribeActiveCallControllers(() => {
       this.activeCallRegistryTick += 1
     })

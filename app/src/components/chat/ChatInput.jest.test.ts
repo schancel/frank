@@ -642,3 +642,47 @@ describe('converged stamp suggestion and per-message override indicators (#820)'
   })
 })
 
+describe('WebRTC call actions live in the menu and do not crowd the mobile input bar', () => {
+  it('places audio and video call actions in the attachment menu without inline toolbar buttons, and marks empty input with chat-input-field--empty', async () => {
+    const wrapper = mount(ChatInput, {
+      props: { message: '' },
+      global: globalOptions,
+    })
+
+    expect(wrapper.find('[data-testid="webrtc-audio-call-btn"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="webrtc-video-call-btn"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-icon="call"]').exists()).toBe(false)
+    expect(wrapper.find('[data-icon="videocam"]').exists()).toBe(false)
+
+    const inputField = wrapper.find('.chat-input-field')
+    expect(inputField.classes()).toContain('chat-input-field--empty')
+
+    await wrapper.setProps({ message: 'Hi' })
+    expect(wrapper.find('.chat-input-field').classes()).not.toContain(
+      'chat-input-field--empty',
+    )
+
+    const audioMenu = wrapper.find('[data-testid="webrtc-call-menu-item"]')
+    const videoMenu = wrapper.find(
+      '[data-testid="webrtc-video-call-menu-item"]',
+    )
+    expect(audioMenu.exists()).toBe(true)
+    expect(videoMenu.exists()).toBe(true)
+
+    await audioMenu.trigger('click')
+    expect(wrapper.emitted('webrtcCallClicked')?.[0]).toEqual([
+      { withVideo: false },
+    ])
+
+    await videoMenu.trigger('click')
+    expect(wrapper.emitted('webrtcCallClicked')?.[1]).toEqual([
+      { withVideo: true },
+    ])
+    wrapper.unmount()
+  })
+})
+

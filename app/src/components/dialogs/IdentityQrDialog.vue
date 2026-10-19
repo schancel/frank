@@ -470,4 +470,3 @@ export default defineComponent({
   backdrop-filter: blur(4px);
 }
 </style>
-

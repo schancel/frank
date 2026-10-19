@@ -535,6 +535,108 @@ describe('dApp Bridge (#1708, #1709, #1710)', () => {
       expect(sweepCalls).toHaveLength(1)
       expect(sweepCalls[0].chainId).toBe(10143n)
     })
+
+    it('reports virtual aggregated pool balance to connected dApps (eth_getBalance, Multicall3 eth_call, and stateOverrides) with optional per-origin privacy mask while sweeping real shortfall on send', async () => {
+      const keyring = new DappPersonaKeyring({
+        masterSeedOrMnemonic: TEST_MNEMONIC,
+      })
+      const poolBalanceWei = 12_500_000_000_000_000_000n // 12.5 MON across sub-account pool EOAs
+      const observedStateOverrides: Array<Record<string, { balance: string }> | undefined> = []
+      const sweepCalls: Array<{ shortfallWei: bigint; recipient: string }> = []
+
+      const router = new FrankDappBridgeRouter({
+        keyring,
+        initialChainId: 10143n,
+        virtualBalancePrivacyMask: true,
+        rpcBackend: {
+          getBalanceWei: async () => 0n, // Ephemeral persona EOA has 0 on-chain balance before JIT sweep
+          getSpendablePoolBalanceWei: async () => poolBalanceWei,
+          getTransactionCount: async () => 0,
+          getMaxFeePerGasWei: async () => 1_000_000_000n,
+          estimateGas: async (_tx, _chainId, stateOverride) => {
+            observedStateOverrides.push(stateOverride)
+            return 21_000n
+          },
+          sweepFromPool: async (shortfallWei, recipient) => {
+            sweepCalls.push({ shortfallWei, recipient })
+            return {
+              sweepTxHashes: ['0x' + 'd'.repeat(64)],
+              fundedWei: shortfallWei,
+            }
+          },
+        },
+      })
+
+      const siteA = 'https://app.uniswap.org'
+      const siteB = 'https://opensea.io'
+
+      const pA = router.handleRequest(siteA, { method: 'eth_requestAccounts' })
+      await router.approveRequest(router.listPendingApprovals()[0].id, { burner: true })
+      const [personaA] = (await pA) as string[]
+
+      const pB = router.handleRequest(siteB, { method: 'eth_requestAccounts' })
+      await router.approveRequest(router.listPendingApprovals()[0].id, { burner: true })
+      const [personaB] = (await pB) as string[]
+
+      // 1. Both sites see ~12.5 MON even though their ephemeral persona EOAs hold 0 on-chain!
+      const balHexA = (await router.handleRequest(siteA, {
+        method: 'eth_getBalance',
+        params: [personaA, 'latest'],
+      })) as string
+      const balHexB = (await router.handleRequest(siteB, {
+        method: 'eth_getBalance',
+        params: [personaB, 'latest'],
+      })) as string
+
+      const balWeiA = BigInt(balHexA)
+      const balWeiB = BigInt(balHexB)
+
+      expect(balWeiA).toBeGreaterThan(12_499_999_000_000_000_000n)
+      expect(balWeiA).toBeLessThanOrEqual(poolBalanceWei)
+      expect(balWeiB).toBeGreaterThan(12_499_999_000_000_000_000n)
+      expect(balWeiB).toBeLessThanOrEqual(poolBalanceWei)
+      // Per-origin privacy mask ensures two colluding websites do not see the exact same 18-digit wei tail
+      expect(balWeiA).not.toBe(balWeiB)
+
+      // 2. Multicall3.getEthBalance(personaA) (0x4d2301cc) also returns the virtual balance
+      const multicallData = `0x4d2301cc000000000000000000000000${personaA.slice(2).toLowerCase()}`
+      const multicallRes = (await router.handleRequest(siteA, {
+        method: 'eth_call',
+        params: [
+          {
+            to: '0xcA11bde05977b3631167028862bE2a173976CA11',
+            data: multicallData,
+          },
+          'latest',
+        ],
+      })) as string
+      expect(BigInt(multicallRes)).toBe(balWeiA)
+
+      // 3. eth_estimateGas passes stateOverride so node gas estimation doesn't revert with 'insufficient funds'
+      await router.handleRequest(siteA, {
+        method: 'eth_estimateGas',
+        params: [{ from: personaA, to: personaB, value: '0xde0b6b3a7640000' }],
+      })
+      expect(observedStateOverrides).toHaveLength(1)
+      expect(observedStateOverrides[0]?.[personaA]?.balance).toBe(balHexA)
+
+      // 4. When eth_sendTransaction is actually triggered, JIT sweep still uses real 0n on-chain balance!
+      const txPromise = router.handleRequest(siteA, {
+        method: 'eth_sendTransaction',
+        params: [
+          {
+            from: personaA,
+            to: '0x3333333333333333333333333333333333333333',
+            value: '0xde0b6b3a7640000', // 1 MON
+          },
+        ],
+      })
+      await router.approveRequest(router.listPendingApprovals()[0].id)
+      await txPromise
+      expect(sweepCalls).toHaveLength(1)
+      expect(sweepCalls[0].recipient).toBe(personaA)
+      expect(sweepCalls[0].shortfallWei).toBe(1_000_021_000_000_000_000n)
+    })
   })
 })
 

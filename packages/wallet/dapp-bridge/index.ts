@@ -813,12 +813,31 @@ export interface Eip1193RequestArguments {
   readonly params?: readonly unknown[] | object
 }
 
+export type EvmBalanceStateOverride = Record<string, { balance: string }>
+
 export interface FrankDappRpcBackend {
   getBalanceWei?: (address: string, chainId: bigint) => Promise<bigint>
+  /**
+   * Returns the net spendable balance (after sweep gas reserve) across Frank's
+   * sub-account/stealth EOA pool on `chainId`. When provided on a pool-enabled chain,
+   * `eth_getBalance`, `eth_estimateGas`, and `eth_call` report the combined
+   * `personaBalanceWei + spendablePoolBalanceWei` to connected dApps even before
+   * the JIT sweep executes on `eth_sendTransaction`.
+   */
+  getSpendablePoolBalanceWei?: (chainId: bigint) => Promise<bigint>
   getTransactionCount?: (address: string, chainId: bigint) => Promise<number>
-  estimateGas?: (tx: Record<string, unknown>, chainId: bigint) => Promise<bigint>
+  estimateGas?: (
+    tx: Record<string, unknown>,
+    chainId: bigint,
+    stateOverride?: EvmBalanceStateOverride,
+  ) => Promise<bigint>
   getMaxFeePerGasWei?: (chainId: bigint) => Promise<bigint>
-  ethCall?: (tx: Record<string, unknown>, blockTag: string, chainId: bigint) => Promise<string>
+  ethCall?: (
+    tx: Record<string, unknown>,
+    blockTag: string,
+    chainId: bigint,
+    stateOverride?: EvmBalanceStateOverride,
+  ) => Promise<string>
   getBlockNumber?: (chainId: bigint) => Promise<bigint>
   getTransactionReceipt?: (txHash: string, chainId: bigint) => Promise<unknown>
   broadcastSignedTransaction?: (
@@ -855,7 +874,31 @@ export interface FrankDappBridgeRouterOptions {
   supportedChainIds?: Iterable<bigint | number>
   rpcBackend?: FrankDappRpcBackend
   defaultBurnerForNewOrigins?: boolean
+  /**
+   * When true, subtracts a tiny deterministic per-origin sub-micro-unit dust offset
+   * (`< 10^12 wei` = `< 0.000001` token) from the virtual pool balance reported to
+   * each website so two colluding dApps cannot correlate a user across burner personas
+   * by matching all 18 decimal digits of their exact wei balance.
+   */
+  virtualBalancePrivacyMask?: boolean
   nowMs?: () => number
+}
+
+/**
+ * Computes a deterministic per-origin dust offset in `[1, 999_999_999_999]` wei (`< 0.000001` token)
+ * so two websites querying `eth_getBalance` at the same instant never see the exact same 18-digit
+ * wei tail across different burner Persona EOAs.
+ */
+export function computeOriginVirtualBalanceMaskOffsetWei(
+  origin: string,
+  personaAddress: string,
+): bigint {
+  const normalizedOrigin = normalizeDappOrigin(origin)
+  const digestHex = keccak256(
+    toUtf8Bytes(`frank-virtual-balance-mask-v1:${normalizedOrigin}:${personaAddress.toLowerCase()}`),
+  )
+  const raw64 = BigInt(digestHex.slice(0, 18))
+  return (raw64 % 999_999_999_999n) + 1n
 }
 
 interface InternalPendingApproval {
@@ -906,6 +949,7 @@ export class FrankDappBridgeRouter {
   private readonly customChains = new Map<bigint, DappCustomChainMetadata>()
   private readonly rpcBackend: FrankDappRpcBackend
   private readonly defaultBurnerForNewOrigins: boolean
+  private readonly virtualBalancePrivacyMask: boolean
   private readonly nowMs: () => number
   private readonly pendingApprovals = new Map<string, InternalPendingApproval>()
   private approvalSeq = 0
@@ -945,6 +989,7 @@ export class FrankDappBridgeRouter {
     )
     this.rpcBackend = options.rpcBackend ?? {}
     this.defaultBurnerForNewOrigins = options.defaultBurnerForNewOrigins ?? false
+    this.virtualBalancePrivacyMask = options.virtualBalancePrivacyMask ?? false
     this.nowMs = options.nowMs ?? (() => Date.now())
   }
 
@@ -964,6 +1009,59 @@ export class FrankDappBridgeRouter {
 
   isPoolSweepEnabledForChain(chainId: bigint | number): boolean {
     return this.poolEnabledChainIds.has(BigInt(chainId))
+  }
+
+  private async resolveVirtualPersonaBalanceWei(
+    origin: string,
+    personaAddress: string,
+    chainId: bigint,
+  ): Promise<{
+    onChainBalanceWei: bigint
+    virtualBalanceWei: bigint
+    stateOverride?: EvmBalanceStateOverride
+  }> {
+    const onChainBalanceWei = this.rpcBackend.getBalanceWei
+      ? await this.rpcBackend.getBalanceWei(personaAddress, chainId)
+      : 0n
+
+    if (
+      !this.isPoolSweepEnabledForChain(chainId) ||
+      !this.rpcBackend.getSpendablePoolBalanceWei
+    ) {
+      return {
+        onChainBalanceWei,
+        virtualBalanceWei: onChainBalanceWei,
+      }
+    }
+
+    const rawPoolWei = await this.rpcBackend.getSpendablePoolBalanceWei(chainId)
+    if (rawPoolWei <= 0n) {
+      return {
+        onChainBalanceWei,
+        virtualBalanceWei: onChainBalanceWei,
+      }
+    }
+
+    let adjustedPoolWei = rawPoolWei
+    if (this.virtualBalancePrivacyMask && rawPoolWei > 1_000_000_000_000_000n) {
+      const offset = computeOriginVirtualBalanceMaskOffsetWei(origin, personaAddress)
+      if (rawPoolWei > offset) {
+        adjustedPoolWei = rawPoolWei - offset
+      }
+    }
+
+    const virtualBalanceWei = onChainBalanceWei + adjustedPoolWei
+    const stateOverride: EvmBalanceStateOverride = {
+      [personaAddress]: {
+        balance: `0x${virtualBalanceWei.toString(16)}`,
+      },
+    }
+
+    return {
+      onChainBalanceWei,
+      virtualBalanceWei,
+      stateOverride,
+    }
   }
 
   getChainIdForOrigin(rawOrigin?: string): bigint {
@@ -1300,8 +1398,21 @@ export class FrankDappBridgeRouter {
             `Invalid address for eth_getBalance: ${address}`,
           )
         }
+        const checksummed = getAddress(address)
+        const connected = this.keyring.getConnectedPersonaForOrigin(origin)
+        if (
+          connected &&
+          connected.address.toLowerCase() === checksummed.toLowerCase()
+        ) {
+          const { virtualBalanceWei } = await this.resolveVirtualPersonaBalanceWei(
+            origin,
+            connected.address,
+            originChainId,
+          )
+          return `0x${virtualBalanceWei.toString(16)}`
+        }
         const balanceWei = this.rpcBackend.getBalanceWei
-          ? await this.rpcBackend.getBalanceWei(getAddress(address), originChainId)
+          ? await this.rpcBackend.getBalanceWei(checksummed, originChainId)
           : 0n
         return `0x${balanceWei.toString(16)}`
       }
@@ -1325,19 +1436,58 @@ export class FrankDappBridgeRouter {
 
       case 'eth_estimateGas': {
         const txObj = (paramsArray[0] ?? {}) as Record<string, unknown>
-        const gas = this.rpcBackend.estimateGas
-          ? await this.rpcBackend.estimateGas(txObj, originChainId)
-          : 21_000n
+        if (!this.rpcBackend.estimateGas) {
+          return `0x${(21_000n).toString(16)}`
+        }
+        const connected = this.keyring.getConnectedPersonaForOrigin(origin)
+        const stateOverride = connected
+          ? (
+              await this.resolveVirtualPersonaBalanceWei(
+                origin,
+                connected.address,
+                originChainId,
+              )
+            ).stateOverride
+          : undefined
+        const gas = await this.rpcBackend.estimateGas(txObj, originChainId, stateOverride)
         return `0x${gas.toString(16)}`
       }
 
       case 'eth_call': {
         const txObj = (paramsArray[0] ?? {}) as Record<string, unknown>
         const blockTag = typeof paramsArray[1] === 'string' ? paramsArray[1] : 'latest'
+        const connected = this.keyring.getConnectedPersonaForOrigin(origin)
+
+        if (connected) {
+          const callData = typeof txObj.data === 'string' ? txObj.data.toLowerCase() : ''
+          // Intercept Multicall3.getEthBalance(address) selector 0x4d2301cc when querying the connected persona
+          if (
+            callData.startsWith('0x4d2301cc') &&
+            callData.length === 10 + 64 &&
+            callData.slice(34) === connected.address.slice(2).toLowerCase()
+          ) {
+            const { virtualBalanceWei } = await this.resolveVirtualPersonaBalanceWei(
+              origin,
+              connected.address,
+              originChainId,
+            )
+            return `0x${virtualBalanceWei.toString(16).padStart(64, '0')}`
+          }
+        }
+
         if (!this.rpcBackend.ethCall) {
           return '0x'
         }
-        return await this.rpcBackend.ethCall(txObj, blockTag, originChainId)
+        const stateOverride = connected
+          ? (
+              await this.resolveVirtualPersonaBalanceWei(
+                origin,
+                connected.address,
+                originChainId,
+              )
+            ).stateOverride
+          : undefined
+        return await this.rpcBackend.ethCall(txObj, blockTag, originChainId, stateOverride)
       }
 
       case 'eth_getTransactionReceipt': {

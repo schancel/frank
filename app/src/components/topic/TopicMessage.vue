@@ -71,13 +71,13 @@
           target="_blank"
           v-if="entry.url && !getAnnouncement(entry)"
           class="post-title"
-          >{{ entry.title?.trim() || entry.url }}</a
+          >{{ displayTitle(entry.title) || entry.url }}</a
         >
         <div
           v-if="entry.url && getAnnouncement(entry)"
           class="post-title text-weight-bold"
         >
-          {{ entry.title || getAnnouncement(entry)?.gameName }}
+          {{ displayTitle(entry.title) || getAnnouncement(entry)?.gameName }}
         </div>
         <span class="mdstyle" v-html="markedMessage(entry.message)" />
         <game-announcement-card
@@ -89,8 +89,8 @@
         v-else-if="entry.kind === 'game'"
         class="q-ma-none q-pa-none col-grow q-ml-lg"
       >
-        <div v-if="entry.title" class="post-title text-weight-bold">
-          {{ entry.title }}
+        <div v-if="displayTitle(entry.title)" class="post-title text-weight-bold">
+          {{ displayTitle(entry.title) }}
         </div>
         <span
           v-if="entry.message"
@@ -210,6 +210,11 @@ export default defineComponent({
   methods: {
     getAnnouncement(entry?: any) {
       return parseGameAnnouncement(entry, this.message)
+    },
+    displayTitle(title?: string): string {
+      const t = String(title ?? '').trim()
+      if (!t || t.toLowerCase() === 'untitled') return ''
+      return t
     },
     markedMessage(text?: string) {
       const cleaned = (text ?? '').replace(

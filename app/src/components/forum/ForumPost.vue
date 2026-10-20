@@ -59,7 +59,7 @@
         :key="index"
       >
         <div
-          v-if="entry.kind === 'post' && (entry.title?.trim() || entry.url)"
+          v-if="entry.kind === 'post' && (displayTitle(entry.title) || entry.url)"
           class="row items-center justify-between q-px-md q-pt-xs q-pb-xs"
         >
           <div class="col-grow post-title-wrap">
@@ -68,13 +68,13 @@
               target="_blank"
               v-if="entry.url"
               class="post-title text-subtitle1 text-weight-bold"
-              >{{ entry.title?.trim() || entry.url }}</a
+              >{{ displayTitle(entry.title) || entry.url }}</a
             >
             <router-link
-              v-if="!entry.url && entry.title?.trim()"
+              v-if="!entry.url && displayTitle(entry.title)"
               :to="`/forum/${message.payloadDigest}`"
               class="post-title text-subtitle1 text-weight-bold"
-              >{{ entry.title }}</router-link
+              >{{ displayTitle(entry.title) }}</router-link
             >
           </div>
         </div>
@@ -353,6 +353,11 @@ export default defineComponent({
     },
     getAnnouncement(entry?: any) {
       return parseGameAnnouncement(entry, this.message)
+    },
+    displayTitle(title?: string): string {
+      const t = String(title ?? '').trim()
+      if (!t || t.toLowerCase() === 'untitled') return ''
+      return t
     },
     markedMessage(text?: string, title?: string) {
       let cleaned = (text ?? '').replace(

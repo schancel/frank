@@ -252,6 +252,9 @@ describe.each([ForumMessage, ForumPost])(
       )
       expect(wrapper.find('.post-title-wrap').exists()).toBe(false)
       expect(wrapper.text()).not.toContain('untitled')
+      expect((wrapper.vm as any).displayTitle('untitled')).toBe('')
+      expect((wrapper.vm as any).displayTitle('Untitled')).toBe('')
+      expect((wrapper.vm as any).displayTitle('Real Title')).toBe('Real Title')
 
       const htmlWithDupTitle = (wrapper.vm as any).markedMessage(
         'Breaking Headline\n\nBody paragraph here.',

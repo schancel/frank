@@ -720,6 +720,12 @@ export default defineComponent({
   min-height: 0 !important;
 }
 
+@media (max-width: 899px) {
+  .q-notifications__list--bottom {
+    bottom: calc(64px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+}
+
 .frank-mobile-bottom-nav {
   position: fixed;
   left: 0;

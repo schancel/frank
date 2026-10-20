@@ -1,13 +1,19 @@
 <template>
-  <div class="full-height column">
+  <div class="full-height column profile-component-root">
     <q-splitter
       v-model="splitterSize"
       unit="px"
       disable
-      class="col full-height"
+      :horizontal="!($q?.screen?.gt?.xs ?? true)"
+      class="col full-height profile-splitter"
     >
       <template #before>
-        <q-tabs v-model="tab" vertical class="text-primary full-height">
+        <q-tabs
+          v-model="tab"
+          :vertical="$q?.screen?.gt?.xs ?? true"
+          dense
+          class="text-primary full-height profile-tabs"
+        >
           <q-tab
             name="profile"
             icon="person"
@@ -31,8 +37,8 @@
           class="full-height bg-transparent"
         >
           <q-tab-panel name="profile" class="q-pa-md">
-            <div class="row">
-              <div class="col">
+            <div class="row profile-edit-row">
+              <div class="col-12 col-sm-8 profile-fields-col">
                 <div class="row q-pa-md">
                   <q-input
                     outlined
@@ -183,7 +189,7 @@
                   </div>
                 </div>
               </div>
-              <div class="col-4 q-pa-md">
+              <div class="col-12 col-sm-4 q-pa-md profile-avatar-col">
                 <q-toolbar
                   class="bg-primary text-white shadow-2"
                   style="border-radius: 10px 10px 0px 0px"
@@ -721,5 +727,16 @@ export default defineComponent({
 
 .identity-explainer-text {
   min-width: 0;
+}
+
+@media (max-width: 600px) {
+  .profile-splitter :deep(> .q-splitter__before) {
+    height: auto !important;
+    width: 100% !important;
+  }
+  .profile-avatar-col {
+    max-width: 280px;
+    margin: 0 auto;
+  }
 }
 </style>

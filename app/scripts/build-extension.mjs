@@ -191,11 +191,18 @@ export function buildExtensions(argv = process.argv.slice(2)) {
 
   const pwaDist = path.join(appDir, 'dist', 'pwa')
   const spaDist = path.join(appDir, 'dist', 'spa')
-  const staticSourceDir = fs.existsSync(pwaDist)
-    ? pwaDist
-    : fs.existsSync(spaDist)
-    ? spaDist
-    : null
+  const pwaMtime = fs.existsSync(path.join(pwaDist, 'index.html'))
+    ? fs.statSync(path.join(pwaDist, 'index.html')).mtimeMs
+    : -1
+  const spaMtime = fs.existsSync(path.join(spaDist, 'index.html'))
+    ? fs.statSync(path.join(spaDist, 'index.html')).mtimeMs
+    : -1
+  const staticSourceDir =
+    pwaMtime >= spaMtime && pwaMtime > 0
+      ? pwaDist
+      : spaMtime > 0
+      ? spaDist
+      : null
 
   const builtTargets = []
   for (const target of targets) {

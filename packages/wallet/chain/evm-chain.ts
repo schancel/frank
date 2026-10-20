@@ -2057,28 +2057,35 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           destroyHttpClient = () => httpClient.destroy();
           // The coin list: one-time accounts money arrived at, with their keys, in one durable
           // store. It is the only record of them: nothing is kept in memory alone.
-          coins =
-            storageLocation === undefined
-              ? new MemoryRecordStore<EvmCoin>()
-              : await LevelRecordStore.open<EvmCoin>(
+          if (storageLocation === undefined) {
+            coins = new MemoryRecordStore<EvmCoin>();
+            preparations = new MemoryRecordStore<EvmStealthPreparation>();
+            contactPayments = new MemoryRecordStore<ContactPayment>();
+            coinListState = new MemoryRecordStore<{
+              complete: boolean;
+              sinceMs: number;
+            }>();
+          } else {
+            [coins, preparations, contactPayments, coinListState] =
+              await Promise.all([
+                LevelRecordStore.open<EvmCoin>(
                   storageLocation,
                   EVM_COIN_NAMESPACE
-                );
-          preparations = storageLocation === undefined ? new MemoryRecordStore<EvmStealthPreparation>() : await LevelRecordStore.open<EvmStealthPreparation>(storageLocation, EVM_STEALTH_PREPARATION_NAMESPACE);
-          contactPayments =
-            storageLocation === undefined
-              ? new MemoryRecordStore<ContactPayment>()
-              : await LevelRecordStore.open<ContactPayment>(
+                ),
+                LevelRecordStore.open<EvmStealthPreparation>(
+                  storageLocation,
+                  EVM_STEALTH_PREPARATION_NAMESPACE
+                ),
+                LevelRecordStore.open<ContactPayment>(
                   storageLocation,
                   CONTACT_PAYMENT_NAMESPACE
-                );
-          coinListState =
-            storageLocation === undefined
-              ? new MemoryRecordStore<{ complete: boolean; sinceMs: number }>()
-              : await LevelRecordStore.open<{ complete: boolean; sinceMs: number }>(
+                ),
+                LevelRecordStore.open<{ complete: boolean; sinceMs: number }>(
                   storageLocation,
                   "received-coins-mailbox-scan"
-                );
+                ),
+              ]);
+          }
           const scanState = coinListState;
           const coinStore = coins;
           const paymentStore = contactPayments;

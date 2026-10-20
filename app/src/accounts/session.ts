@@ -1623,7 +1623,23 @@ export const accountSession = createAccountSession({
     ) {
       return
     }
-    const { restoreOwnProfileWithRelay } = await import('../utils/own-profile')
+    const { claimProfileStore, restoreOwnProfileWithRelay } = await import(
+      '../utils/own-profile'
+    )
+    const isExtensionPopup =
+      typeof window !== 'undefined' &&
+      typeof window.location?.search === 'string' &&
+      window.location.search.includes('extMode=popup')
+    if (isExtensionPopup && store) {
+      claimProfileStore(store, wallet.identity.address.raw)
+      store.restoredAccountId = accountId
+      void restoreOwnProfileWithRelay({
+        identity: wallet.identity as MonadIdentity,
+        relayBaseUrl: getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl(),
+        isCancelled,
+      }).catch(() => undefined)
+      return
+    }
     const outcome = await restoreOwnProfileWithRelay({
       identity: wallet.identity as MonadIdentity,
       relayBaseUrl: getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl(),

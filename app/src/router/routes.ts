@@ -1,12 +1,15 @@
 import type { RouteRecordRaw } from 'vue-router'
 import { accountStatus } from '../accounts/session'
+import { resolveSavedExtensionRoute } from './extension-route-persistence'
 
 export function createRoutes(): RouteRecordRaw[] {
   const routes: RouteRecordRaw[] = [
     {
       path: '/',
       redirect: () =>
-        accountStatus.status === 'ready' ? '/forum' : '/welcome',
+        accountStatus.status === 'ready'
+          ? resolveSavedExtensionRoute() ?? '/forum'
+          : '/welcome',
       component: () => import('layouts/MainLayout.vue'),
       children: [
         {

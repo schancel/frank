@@ -107,11 +107,14 @@ export default () => {
       to.path.startsWith('/forum') ||
       to.path.startsWith('/topic')
     ) {
-      if (to.path === '/') {
+      if (
+        to.path === '/' ||
+        (to.path === '/welcome' && to.redirectedFrom?.path === '/')
+      ) {
         if (accountStatus.status === 'ready') {
           return resolveSavedExtensionRoute() ?? '/forum'
         }
-        return '/welcome'
+        return to.path === '/welcome' ? undefined : '/welcome'
       }
       return
     }

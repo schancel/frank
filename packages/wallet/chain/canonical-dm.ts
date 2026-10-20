@@ -1865,9 +1865,7 @@ async function send(
     }
     // Fresh snapshots after any wait: the message is sealed to the Current pair in force.
     const senderCurrent = await directory.selfCurrent()
-    const recipient = claimWaited
-      ? await directory.peerCurrent({ subject: peer.subject })
-      : peer
+    const recipient = await directory.peerCurrent({ subject: peer.subject })
     if (!recipient)
       throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
     const roles = owner.roles.create(directory.network, senderCurrent)
@@ -2486,19 +2484,6 @@ async function readMailbox(
         { cause: truncated },
       )
   }
-  const peerLookupCache = new Map<
-    string,
-    Promise<Awaited<ReturnType<typeof directory.peerCurrent>>>
-  >()
-  const lookupPeerCurrent = (subject: string) => {
-    const key = subject.toLowerCase()
-    let pending = peerLookupCache.get(key)
-    if (!pending) {
-      pending = directory.peerCurrent({ subject })
-      peerLookupCache.set(key, pending)
-    }
-    return pending
-  }
   const batchYielder = createCooperativeBatchYielder()
   let startedDecoding = false
   for (const page of pages) {
@@ -2534,7 +2519,7 @@ async function readMailbox(
       // Any peer with a published entry that verifies is shown; no peer list is consulted.
       let peer
       try {
-        peer = await lookupPeerCurrent(peerSubjectHex)
+        peer = await directory.peerCurrent({ subject: peerSubjectHex })
       } catch (error) {
         const code = (error as { code?: string } | null)?.code
         if (code === 'invalid' || code === 'fork') {

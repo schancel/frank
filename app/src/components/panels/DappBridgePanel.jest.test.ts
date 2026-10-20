@@ -222,4 +222,67 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     )
     wrapper.unmount()
   })
+
+  it('automatically discovers used burner personas on-chain and provides a dropdown selector', async () => {
+    const {
+      discoverUsedPersonasOnChain,
+      deriveAccountPersonaAddress,
+    } = await import('./DappBridgePanel.vue')
+
+    const rootAddress = '0x71C00000000000000000000000000000000089A2'
+    const burner2Address = deriveAccountPersonaAddress(rootAddress, 2).toLowerCase()
+
+    const mockFetch = jest.fn(async (_url: string, init?: RequestInit) => {
+      const batch = JSON.parse(String(init?.body ?? '[]')) as Array<{
+        id: string
+        method: string
+        params: [string, string]
+      }>
+      const response = batch.map(item => {
+        const addr = item.params[0].toLowerCase()
+        if (addr === burner2Address && item.method === 'eth_getBalance') {
+          // 2.5 MON in hex wei (2_500_000_000_000_000_000 = 0x22b1c8c1227a0000)
+          return { jsonrpc: '2.0', id: item.id, result: '0x22b1c8c1227a0000' }
+        }
+        if (addr === burner2Address && item.method === 'eth_getTransactionCount') {
+          return { jsonrpc: '2.0', id: item.id, result: '0x3' }
+        }
+        return { jsonrpc: '2.0', id: item.id, result: '0x0' }
+      })
+      return {
+        ok: true,
+        json: async () => response,
+      } as unknown as Response
+    })
+
+    const discovered = await discoverUsedPersonasOnChain(rootAddress, {
+      fetchImpl: mockFetch as unknown as typeof fetch,
+      gapLimit: 3,
+      maxScan: 10,
+    })
+
+    const burner2Entry = discovered.find(item => item.index === 2)
+    expect(burner2Entry).toBeDefined()
+    expect(burner2Entry?.used).toBe(true)
+    expect(burner2Entry?.balanceMon).toBeCloseTo(2.5, 2)
+    expect(burner2Entry?.txCount).toBe(3)
+
+    const wrapper = mountPanel({
+      initialPersonaBalanceMon: 5,
+      initialPoolBalanceMon: 50,
+    })
+    await wrapper.find('[data-testid="dapp-create-burner-btn"]').trigger('click')
+    await wrapper.find('[data-testid="dapp-create-burner-btn"]').trigger('click')
+
+    const dropdown = wrapper.find('[data-testid="dapp-persona-dropdown"]')
+    expect(dropdown.exists()).toBe(true)
+    expect(dropdown.findAll('option')).toHaveLength(3)
+
+    await dropdown.setValue('1')
+    expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
+      "m/44'/60'/1'/0/1",
+    )
+    wrapper.unmount()
+  })
 })
+

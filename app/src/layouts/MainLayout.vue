@@ -171,6 +171,7 @@ import {
 } from '../utils/mobile-viewport-scale'
 import {
   getExtensionRuntime,
+  isBrowserExtensionRuntime,
   openCompanionPanel,
   openExtensionInWindow,
   sendRuntimeMessage,
@@ -605,23 +606,36 @@ export default defineComponent({
           | Record<string, unknown>
           | undefined
       )?.extMode
-      if (routeQueryMode === 'popup') {
+      if (routeQueryMode === 'popup' || routeQueryMode === 'sidepanel' || routeQueryMode === 'sidebar') {
         return true
       }
-      if (
-        typeof document !== 'undefined' &&
-        document.documentElement?.getAttribute('data-ext-mode') === 'popup'
-      ) {
+      if (routeQueryMode === 'window' || routeQueryMode === 'tab') {
+        return false
+      }
+      const docMode =
+        typeof document !== 'undefined'
+          ? document.documentElement?.getAttribute('data-ext-mode')
+          : null
+      if (docMode === 'popup' || docMode === 'sidepanel' || docMode === 'sidebar') {
         return true
       }
-      if (
-        typeof window !== 'undefined' &&
-        typeof window.location?.search === 'string' &&
-        window.location.search.includes('extMode=popup')
-      ) {
-        return true
+      if (docMode === 'window' || docMode === 'tab') {
+        return false
       }
-      return false
+      if (typeof window !== 'undefined') {
+        const search = window.location?.search ?? ''
+        if (
+          search.includes('extMode=popup') ||
+          search.includes('extMode=sidepanel') ||
+          search.includes('extMode=sidebar')
+        ) {
+          return true
+        }
+        if (search.includes('extMode=window') || search.includes('extMode=tab')) {
+          return false
+        }
+      }
+      return isBrowserExtensionRuntime()
     },
     extOpenSidePanelLabel(): string {
       return 'Open in Side Panel'
@@ -630,7 +644,14 @@ export default defineComponent({
       return 'Pop Out Window'
     },
     supportsSidePanel(): boolean {
-      return getExtensionRuntime().kind !== 'safari-extension'
+      if (getExtensionRuntime().kind === 'safari-extension') return false
+      if (typeof window !== 'undefined') {
+        const search = window.location?.search ?? ''
+        if (search.includes('extMode=sidepanel') || search.includes('extMode=sidebar')) {
+          return false
+        }
+      }
+      return true
     },
     showMobileBottomNav(): boolean {
       const setup = Boolean(
@@ -682,19 +703,22 @@ export default defineComponent({
 <style lang="scss">
 .frank-ext-popup-utility-bar {
   position: fixed;
-  top: 8px;
+  top: 7px;
   right: 8px;
-  z-index: 1200;
+  z-index: 2100;
   padding: 2px 4px;
   border-radius: 999px;
-  background: rgba(250, 246, 243, 0.92);
-  border: 1px solid rgba(128, 128, 128, 0.22);
+  background: rgba(250, 246, 243, 0.94);
+  color: #1f2937;
+  border: 1px solid rgba(128, 128, 128, 0.28);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
   backdrop-filter: blur(6px);
 }
 
 body.body--dark .frank-ext-popup-utility-bar {
-  background: rgba(24, 24, 24, 0.92);
-  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(24, 24, 24, 0.94);
+  color: #f3f4f6;
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .q-layout.frank-is-extension-popup .q-header .q-toolbar {

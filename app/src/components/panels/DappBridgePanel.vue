@@ -36,22 +36,39 @@
 
         <div
           v-if="personaOptionItems.length > 1"
-          class="row items-center q-gutter-xs q-mt-sm"
+          class="q-mt-sm"
           data-testid="dapp-persona-selector"
         >
-          <q-btn
-            v-for="item in personaOptionItems"
-            :key="item.index"
-            :unelevated="item.index === personaIndex"
-            :outline="item.index !== personaIndex"
-            dense
-            no-caps
-            size="sm"
-            :color="item.index === personaIndex ? 'primary' : 'grey-7'"
-            :data-testid="item.testId"
-            :label="item.label"
-            @click="selectPersona(item.index)"
-          />
+          <select
+            class="dapp-persona-dropdown full-width q-mb-xs"
+            data-testid="dapp-persona-dropdown"
+            :aria-label="ui.selectPersonaAriaLabel"
+            :value="personaIndex"
+            @change="onPersonaDropdownChange"
+          >
+            <option
+              v-for="item in personaOptionItems"
+              :key="`opt-${item.index}`"
+              :value="item.index"
+            >
+              {{ item.dropdownLabel }}
+            </option>
+          </select>
+          <div class="row items-center q-gutter-xs">
+            <q-btn
+              v-for="item in personaOptionItems"
+              :key="item.index"
+              :unelevated="item.index === personaIndex"
+              :outline="item.index !== personaIndex"
+              dense
+              no-caps
+              size="sm"
+              :color="item.index === personaIndex ? 'primary' : 'grey-7'"
+              :data-testid="item.testId"
+              :label="item.label"
+              @click="selectPersona(item.index)"
+            />
+          </div>
         </div>
       </q-card-section>
 
@@ -220,6 +237,7 @@
 <script lang="ts">
 import { computed, defineComponent, onMounted, PropType, ref, watch } from 'vue'
 import { formatUnits, getAddress, keccak256, toUtf8Bytes } from 'ethers'
+import { activeChain } from '@frank/wallet/chain'
 import {
   getExtensionRuntime,
   RuntimeEnvironmentKind,
@@ -244,6 +262,14 @@ export interface DappApprovalItem {
   summary?: string
 }
 
+export interface DiscoveredPersonaActivity {
+  index: number
+  address: string
+  balanceMon: number
+  txCount: number
+  used: boolean
+}
+
 const FALLBACK_PERSONA_ADDRESSES = [
   '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
   '0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7',
@@ -251,7 +277,7 @@ const FALLBACK_PERSONA_ADDRESSES = [
   '0x78731D3Ca6b7E34aC0F824c42a7cC18A495cabaB',
 ]
 
-function deriveAccountPersonaAddress(
+export function deriveAccountPersonaAddress(
   identityAddress: string | null | undefined,
   index: number,
 ): string {
@@ -273,6 +299,131 @@ function deriveAccountPersonaAddress(
     FALLBACK_PERSONA_ADDRESSES[index % FALLBACK_PERSONA_ADDRESSES.length] ??
     FALLBACK_PERSONA_ADDRESSES[0]
   )
+}
+
+function shortHexAddress(addr: string): string {
+  if (!addr || addr.length < 12) return addr
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`
+}
+
+function resolveDefaultPersonaRpcUrl(): string {
+  const relayBase = (activeChain.relayBaseUrl || 'https://relay.signet.mx').replace(
+    /\/+$/,
+    '',
+  )
+  const chainId = activeChain.chainIdentifier || 'monad-testnet'
+  return `${relayBase}/chain-rpc/${chainId}/rpc`
+}
+
+export async function discoverUsedPersonasOnChain(
+  rootAddress: string,
+  options?: {
+    rpcUrl?: string
+    maxScan?: number
+    gapLimit?: number
+    knownMaxIndex?: number
+    fetchImpl?: typeof fetch
+  },
+): Promise<DiscoveredPersonaActivity[]> {
+  const clean = typeof rootAddress === 'string' ? rootAddress.trim() : ''
+  if (!/^0x[0-9a-fA-F]{40}$/.test(clean)) return []
+  const fetchFn =
+    options?.fetchImpl ??
+    (typeof globalThis.fetch === 'function'
+      ? globalThis.fetch.bind(globalThis)
+      : undefined)
+  if (!fetchFn) return []
+
+  const rpcUrl = options?.rpcUrl || resolveDefaultPersonaRpcUrl()
+  const maxScan = Math.max(options?.maxScan ?? 10, options?.knownMaxIndex ?? 0)
+  const gapLimit = options?.gapLimit ?? 5
+  const discovered: DiscoveredPersonaActivity[] = []
+
+  try {
+    const batchPayload: Array<{
+      jsonrpc: '2.0'
+      id: number
+      method: string
+      params: unknown[]
+    }> = []
+    for (let i = 1; i <= maxScan; i += 1) {
+      const addr = deriveAccountPersonaAddress(clean, i)
+      batchPayload.push({
+        jsonrpc: '2.0',
+        id: i * 2,
+        method: 'eth_getBalance',
+        params: [addr, 'latest'],
+      })
+      batchPayload.push({
+        jsonrpc: '2.0',
+        id: i * 2 + 1,
+        method: 'eth_getTransactionCount',
+        params: [addr, 'latest'],
+      })
+    }
+
+    const res = await fetchFn(rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(batchPayload),
+    })
+    if (!res.ok) return []
+    const json = await res.json()
+    if (!Array.isArray(json)) return []
+
+    const byId = new Map<number, string>()
+    for (const entry of json) {
+      if (
+        entry &&
+        typeof entry === 'object' &&
+        typeof entry.id === 'number' &&
+        typeof entry.result === 'string'
+      ) {
+        byId.set(entry.id, entry.result)
+      }
+    }
+
+    let consecutiveUnused = 0
+    for (let i = 1; i <= maxScan; i += 1) {
+      const balHex = byId.get(i * 2) ?? '0x0'
+      const txHex = byId.get(i * 2 + 1) ?? '0x0'
+      let balWei = 0n
+      let txCount = 0
+      try {
+        balWei = BigInt(balHex)
+      } catch {
+        balWei = 0n
+      }
+      try {
+        txCount = Number.parseInt(txHex, 16) || 0
+      } catch {
+        txCount = 0
+      }
+      const used = balWei > 0n || txCount > 0
+      if (used || i <= (options?.knownMaxIndex ?? 0)) {
+        const balanceMon = Number.parseFloat(formatUnits(balWei, 18))
+        discovered.push({
+          index: i,
+          address: deriveAccountPersonaAddress(clean, i),
+          balanceMon: Number.isFinite(balanceMon) ? balanceMon : 0,
+          txCount,
+          used,
+        })
+      }
+      if (used) {
+        consecutiveUnused = 0
+      } else {
+        consecutiveUnused += 1
+        if (consecutiveUnused >= gapLimit && i >= (options?.knownMaxIndex ?? 0)) {
+          break
+        }
+      }
+    }
+  } catch {
+    // Ignore transient RPC discovery errors
+  }
+
+  return discovered
 }
 
 export default defineComponent({
@@ -319,6 +470,7 @@ export default defineComponent({
     const personaBalancesByIndex = ref<Record<number, number>>({
       0: props.initialPersonaBalanceMon,
     })
+    const usedPersonasByIndex = ref<Record<number, boolean>>({})
 
     const personaBalanceMon = computed({
       get: () => personaBalancesByIndex.value[personaIndex.value] ?? 0,
@@ -340,6 +492,90 @@ export default defineComponent({
     const sasCode = ref(props.initialSasCode)
     const syncTriggered = ref(false)
 
+    const resolvedRootAddress = computed(
+      () => ownCanonicalAddress.value || bridgeDefaultAddress.value || '',
+    )
+
+    function personaStorageKey(rootAddr: string): string {
+      return `frank:dapp-personas:${rootAddr.toLowerCase()}`
+    }
+
+    function persistPersonaMetadata() {
+      const root = resolvedRootAddress.value
+      if (!root || typeof window === 'undefined' || !window.localStorage) return
+      try {
+        window.localStorage.setItem(
+          personaStorageKey(root),
+          JSON.stringify({
+            maxPersonaIndex: maxPersonaIndex.value,
+            selectedIndex: personaIndex.value,
+            usedByIndex: usedPersonasByIndex.value,
+          }),
+        )
+      } catch {
+        // Ignore storage errors
+      }
+    }
+
+    function restorePersonaMetadata(root: string) {
+      if (!root || typeof window === 'undefined' || !window.localStorage) return
+      try {
+        const raw = window.localStorage.getItem(personaStorageKey(root))
+        if (!raw) return
+        const parsed = JSON.parse(raw)
+        if (
+          typeof parsed?.maxPersonaIndex === 'number' &&
+          parsed.maxPersonaIndex > maxPersonaIndex.value
+        ) {
+          maxPersonaIndex.value = parsed.maxPersonaIndex
+        }
+        if (
+          typeof parsed?.selectedIndex === 'number' &&
+          parsed.selectedIndex >= 0 &&
+          parsed.selectedIndex <= maxPersonaIndex.value
+        ) {
+          personaIndex.value = parsed.selectedIndex
+        }
+        if (parsed?.usedByIndex && typeof parsed.usedByIndex === 'object') {
+          usedPersonasByIndex.value = {
+            ...usedPersonasByIndex.value,
+            ...parsed.usedByIndex,
+          }
+        }
+      } catch {
+        // Ignore storage errors
+      }
+    }
+
+    async function runAutomaticPersonaDiscovery(root: string) {
+      if (!root || !/^0x[0-9a-fA-F]{40}$/.test(root)) return
+      restorePersonaMetadata(root)
+      const results = await discoverUsedPersonasOnChain(root, {
+        knownMaxIndex: maxPersonaIndex.value,
+      })
+      if (results.length === 0) return
+      const nextBalances = { ...personaBalancesByIndex.value }
+      const nextUsed = { ...usedPersonasByIndex.value }
+      let highestIdx = maxPersonaIndex.value
+      for (const item of results) {
+        if (item.used || item.index <= maxPersonaIndex.value) {
+          nextBalances[item.index] = item.balanceMon
+          if (item.used) {
+            nextUsed[item.index] = true
+          }
+          if (item.index > highestIdx) {
+            highestIdx = item.index
+          }
+        }
+      }
+      personaBalancesByIndex.value = nextBalances
+      usedPersonasByIndex.value = nextUsed
+      if (highestIdx > maxPersonaIndex.value) {
+        maxPersonaIndex.value = highestIdx
+      }
+      persistPersonaMetadata()
+    }
+
     const poolBalanceMon = computed(() => {
       if (explicitPoolBalanceMon.value !== undefined) {
         return Math.max(
@@ -357,16 +593,32 @@ export default defineComponent({
       const items: Array<{
         index: number
         label: string
+        dropdownLabel: string
         testId: string
       }> = []
+      const root = resolvedRootAddress.value
       for (let i = 0; i <= maxPersonaIndex.value; i += 1) {
         const bal = personaBalancesByIndex.value[i] ?? 0
+        const used = Boolean(usedPersonasByIndex.value[i]) || bal > 0
+        const addr = deriveAccountPersonaAddress(root, i)
         const name = i === 0 ? 'Default #0' : `Burner #${i}`
         const label =
-          bal > 0 ? `${name} (${bal.toFixed(2)} MON)` : name
+          bal > 0
+            ? `${name} (${bal.toFixed(2)} MON)`
+            : i > 0 && used
+            ? `${name} (used)`
+            : name
+        const statusSuffix =
+          i === 0
+            ? `${bal.toFixed(2)} MON`
+            : used
+            ? `${bal.toFixed(2)} MON · used`
+            : `${bal.toFixed(2)} MON`
+        const dropdownLabel = `${name} — ${shortHexAddress(addr)} (${statusSuffix})`
         items.push({
           index: i,
           label,
+          dropdownLabel,
           testId: `dapp-select-persona-${i}`,
         })
       }
@@ -376,6 +628,7 @@ export default defineComponent({
     const ui = Object.freeze({
       panelAriaLabel: 'Frank dApp Bridge Companion Panel',
       headerTitle: 'dApp Bridge & Persona Companion',
+      selectPersonaAriaLabel: 'Select active dApp persona',
       personaBalanceLabel: 'Persona Balance',
       poolBalanceLabel: 'Frank Pool Balance',
       createBurnerBtn: 'Create Burner Persona',
@@ -426,7 +679,7 @@ export default defineComponent({
 
     const activePersonaAddress = computed(() =>
       deriveAccountPersonaAddress(
-        ownCanonicalAddress.value || bridgeDefaultAddress.value,
+        resolvedRootAddress.value,
         personaIndex.value,
       ),
     )
@@ -502,6 +755,16 @@ export default defineComponent({
       { immediate: true },
     )
 
+    watch(
+      resolvedRootAddress,
+      newRoot => {
+        if (newRoot) {
+          void runAutomaticPersonaDiscovery(newRoot)
+        }
+      },
+      { immediate: true },
+    )
+
     onMounted(async () => {
       if (!isExtensionRuntime.value) return
       try {
@@ -548,11 +811,20 @@ export default defineComponent({
     function selectPersona(index: number) {
       if (index < 0 || index > maxPersonaIndex.value) return
       personaIndex.value = index
+      persistPersonaMetadata()
       emit('select-persona', {
         index: personaIndex.value,
         path: activeDerivationPath.value,
         address: activePersonaAddress.value,
       })
+    }
+
+    function onPersonaDropdownChange(event: Event) {
+      const target = event.target as HTMLSelectElement | null
+      const parsed = Number.parseInt(target?.value ?? '0', 10)
+      if (!Number.isNaN(parsed)) {
+        selectPersona(parsed)
+      }
     }
 
     function createBurnerPersona() {
@@ -565,6 +837,7 @@ export default defineComponent({
         }
       }
       personaIndex.value = nextIndex
+      persistPersonaMetadata()
       const payload = {
         index: personaIndex.value,
         path: activeDerivationPath.value,
@@ -709,6 +982,7 @@ export default defineComponent({
       pairedWcStatusText,
       sasDisplayText,
       selectPersona,
+      onPersonaDropdownChange,
       createBurnerPersona,
       topUpFromPool,
       sweepBackToPool,
@@ -720,3 +994,17 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.dapp-persona-dropdown {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: rgba(128, 128, 128, 0.08);
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+</style>
+

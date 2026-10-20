@@ -10,7 +10,7 @@
       class="q-pa-sm identity-qr-card identity-qr-card--inline"
       data-test="identity-qr-card"
     >
-      <q-card-section class="row items-center q-py-xs q-px-sm">
+      <q-card-section class="row items-center q-py-xs q-px-sm identity-qr-inline-header">
         <q-avatar size="32px" class="q-mr-sm shadow-1">
           <img v-if="avatarSrc" :src="avatarSrc" />
           <q-icon v-else name="person" size="20px" color="primary" />
@@ -30,16 +30,6 @@
             <username-handle :username="displayUsername" />
           </div>
         </div>
-        <q-space />
-        <q-btn
-          icon="close"
-          flat
-          round
-          dense
-          :aria-label="$t('close')"
-          data-test="identity-qr-close"
-          @click="closeDialog"
-        />
       </q-card-section>
 
       <!-- QR Camera Scanner (Collapsed by default in inline/extension mode) -->
@@ -255,6 +245,7 @@
 
         <!-- 1-Click Web App (signet.mx) <-> Browser Extension Account Sync -->
         <div
+          v-if="Boolean(runtimeKindOverride)"
           class="q-mt-sm q-pa-sm identity-qr-panel"
           data-test="identity-qr-sync-section"
         >
@@ -565,6 +556,7 @@
 
         <!-- 1-Click Web App (signet.mx) <-> Browser Extension Account Sync -->
         <div
+          v-if="Boolean(runtimeKindOverride)"
           class="q-mt-sm q-pa-sm identity-qr-panel"
           data-test="identity-qr-sync-section"
         >

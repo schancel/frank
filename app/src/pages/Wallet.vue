@@ -602,6 +602,11 @@
                       </p>
                     </q-card>
                   </div>
+
+                  <!-- dApp Persona EOA & Extension Bridge Card -->
+                  <div v-if="isPrimaryStampChain" class="q-px-md q-pt-md">
+                    <dapp-bridge-panel />
+                  </div>
                 </q-tab-panel>
 
                 <q-tab-panel
@@ -700,6 +705,7 @@ import { MAIN_WALLET_ID, WALLET_CONFIGS } from 'src/utils/wallet-configs'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 import WalletHistory from 'src/components/wallet/WalletHistory.vue'
 import TempoPathUsdPanel from 'src/components/wallet/TempoPathUsdPanel.vue'
+import DappBridgePanel from 'src/components/panels/DappBridgePanel.vue'
 import type { WalletHistoryRow } from 'src/components/wallet/wallet-history'
 import { walletSupport } from 'src/utils/wallet-support'
 import { openUtxoWallet } from 'src/accounts/utxo-wallets'
@@ -719,6 +725,7 @@ export default defineComponent({
     BalanceBreakdown,
     WalletHistory,
     TempoPathUsdPanel,
+    DappBridgePanel,
   },
   emits: ['toggleMyDrawerOpen'],
   setup() {

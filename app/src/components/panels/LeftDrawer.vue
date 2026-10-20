@@ -133,7 +133,7 @@
         v-bind="panelAttrs('wallet')"
       >
         <wallet-panel
-          v-if="tab == 'wallet' && $status.setup"
+          v-if="$status.setup && (!isExtensionPopup || tab == 'wallet')"
           :shown="tab == 'wallet'"
         />
       </div>
@@ -732,6 +732,12 @@ export default defineComponent({
     },
   },
   computed: {
+    isExtensionPopup(): boolean {
+      return (
+        typeof window !== 'undefined' &&
+        Boolean(window.location?.search?.includes('extMode=popup'))
+      )
+    },
     relayConnected(): boolean {
       if (!this.legacyRelayEnabled) return true
       return Boolean(

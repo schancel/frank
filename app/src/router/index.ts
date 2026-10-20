@@ -87,6 +87,7 @@ export default () => {
       to.path !== '/setup' &&
       to.path !== '/changelog' &&
       to.path !== '/about' &&
+      to.path !== '/avu' &&
       to.path !== '/docs' &&
       !to.path.startsWith('/docs/')
     ) {
@@ -100,6 +101,7 @@ export default () => {
       to.path.startsWith('/claim=') ||
       to.path === '/changelog' ||
       to.path === '/about' ||
+      to.path === '/avu' ||
       to.path === '/welcome' ||
       to.path === '/docs' ||
       to.path.startsWith('/docs/') ||
@@ -152,7 +154,28 @@ export default () => {
   })
   Router.beforeEach(redirectIfNoProfile)
   // A navigation that ended in an error (the page's code could not be loaded) is over too.
-  Router.onError(() => notePendingChatRoute(null))
+  Router.onError((error, to) => {
+    notePendingChatRoute(null)
+    const msg = error instanceof Error ? error.message : String(error ?? '')
+    if (
+      typeof window !== 'undefined' &&
+      to?.fullPath &&
+      /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module|Unable to preload CSS/i.test(
+        msg,
+      )
+    ) {
+      try {
+        const reloadKey = `frank:chunk-reload:${to.fullPath}`
+        if (!window.sessionStorage?.getItem(reloadKey)) {
+          window.sessionStorage?.setItem(reloadKey, '1')
+          window.location.hash = `#${to.fullPath}`
+          window.location.reload()
+        }
+      } catch {
+        // Ignore storage/reload errors in restricted contexts
+      }
+    }
+  })
   if (interrupted) {
     void Router.isReady()
       .then(() => {

@@ -1,6 +1,7 @@
 import type { RouteRecordRaw } from 'vue-router'
 import { accountStatus } from '../accounts/session'
 import { resolveSavedExtensionRoute } from './extension-route-persistence'
+import AvuDetails from '../pages/AvuDetails.vue'
 
 export function createRoutes(): RouteRecordRaw[] {
   const routes: RouteRecordRaw[] = [
@@ -49,7 +50,10 @@ export function createRoutes(): RouteRecordRaw[] {
         { path: 'changelog', component: () => import('pages/Changelog.vue') },
         { path: 'docs', component: () => import('pages/DocsView.vue') },
         { path: 'about', component: () => import('pages/About.vue') },
-        { path: 'avu', component: () => import('pages/AvuDetails.vue') },
+        {
+          path: 'avu',
+          component: () => Promise.resolve({ default: AvuDetails }),
+        },
         {
           path: 'chat',
           component: () => import('layouts/ChatLayout.vue'),

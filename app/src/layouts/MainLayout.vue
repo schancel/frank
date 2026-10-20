@@ -1,7 +1,10 @@
 <template>
   <q-layout
     view="lHr lpr lFr"
-    :class="{ 'frank-has-mobile-bottom-nav': showMobileBottomNav }"
+    :class="{
+      'frank-has-mobile-bottom-nav': showMobileBottomNav,
+      'frank-is-extension-popup': isExtensionPopup,
+    }"
   >
     <q-drawer
       v-model="myDrawerOpen"
@@ -692,6 +695,10 @@ export default defineComponent({
 body.body--dark .frank-ext-popup-utility-bar {
   background: rgba(24, 24, 24, 0.92);
   border-color: rgba(255, 255, 255, 0.16);
+}
+
+.q-layout.frank-is-extension-popup .q-header .q-toolbar {
+  padding-right: 76px;
 }
 .q-layout {
   width: var(--frank-vw, 100%);

@@ -213,7 +213,9 @@
                       @keydown.space.prevent="openAvuDetails"
                       @click="openAvuDetails"
                     >
-                      <span>{{ currentUnitRateAvu }}</span>
+                      <span>{{
+                        currentUnitRateAvu || $t('walletPanel.aboutAvu')
+                      }}</span>
                       <q-icon name="help_outline" size="14px" />
                       <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
                     </div>

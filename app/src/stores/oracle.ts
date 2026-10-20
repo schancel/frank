@@ -495,19 +495,19 @@ export const useOracleStore = defineStore('oracle', {
               schedule.rangesInFlight.delete(key)
               const feed = answer && 'feed' in answer ? answer.feed : answer
               if (!feed) return
-              const merged = mergeFeed(
-                this.cache,
-                feed,
-                Math.floor(Date.now() / 1000),
-              )
+              const mergedNow = Math.floor(Date.now() / 1000)
+              const merged = mergeFeed(this.cache, feed, mergedNow)
               this.$patch({
                 cache: {
                   ...merged,
                   coverage: retainedCoverage(
                     coverRange(merged.coverage, range.since, range.until, step),
-                    Math.floor(Date.now() / 1000),
+                    mergedNow,
                   ),
                 },
+                ...(this.current.avuHash
+                  ? {}
+                  : { current: ratesAt(merged, mergedNow) }),
               })
               // The active view may use unthinned detail; persistence remains bounded.
               return feed

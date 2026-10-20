@@ -237,7 +237,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   useSafeOracleStore,
   formatAge,
@@ -257,6 +257,11 @@ import { viewportPageStyle } from '../utils/layout'
 
 const pageStyle = viewportPageStyle
 const oracle = useSafeOracleStore()
+onMounted(() => {
+  if (!oracle.current?.avuHash) {
+    void oracle.refreshDue?.()
+  }
+})
 const t = useTranslate()
 const DAY = 86400
 const ranges = {
@@ -571,6 +576,7 @@ useOracleHistory(() =>
   height: 100%;
   min-height: 0 !important;
   overflow-y: auto;
+  padding-bottom: calc(var(--frank-bottom-nav-offset, 0px) + 24px);
 }
 .avu-details-card {
   width: 100%;

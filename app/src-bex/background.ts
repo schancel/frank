@@ -494,6 +494,31 @@ export function installBackgroundBridge(
             // Ignore storage errors
           }
         }
+        if (
+          extApi?.tabs &&
+          typeof extApi.tabs.query === 'function' &&
+          typeof extApi.tabs.sendMessage === 'function'
+        ) {
+          try {
+            const tabs = await extApi.tabs.query({})
+            if (Array.isArray(tabs)) {
+              for (const tab of tabs) {
+                if (tab && typeof tab.id === 'number') {
+                  void Promise.resolve(
+                    extApi.tabs.sendMessage(tab.id, {
+                      channel: FRANK_DAPP_BRIDGE_CHANNEL,
+                      type: 'provider-event',
+                      event: 'accountsChanged',
+                      payload: [state.activePersonaAddress],
+                    }),
+                  ).catch(() => {})
+                }
+              }
+            }
+          } catch {
+            // Ignore tab broadcast errors
+          }
+        }
       }
       return {
         result: {

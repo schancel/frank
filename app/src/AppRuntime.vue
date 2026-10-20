@@ -80,12 +80,15 @@ import {
   savePendingExtensionSyncPayload,
 } from 'src/utils/extension-account-sync'
 
-function syncActivePersonaToExtension() {
+async function syncActivePersonaToExtension() {
   if (!isBrowserExtensionRuntime()) return
   try {
-    const wallet = accountSession.getWallet() as any
+    const wallet = (await accountSession.getWallet()) as any
     const rawAddress =
-      wallet?.mainAccount?.address || wallet?.identity?.address?.raw || ''
+      wallet?.mainAccount?.address ||
+      wallet?.identity?.address?.raw ||
+      wallet?.identity?.displayAddress ||
+      ''
     const address = String(rawAddress).trim()
     if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return
     void sendRuntimeMessage({

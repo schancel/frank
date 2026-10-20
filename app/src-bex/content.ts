@@ -265,6 +265,19 @@ export function installContentScriptBridge(
   const api = getRawExtensionApi(runtimeScope)
   const storageListener = (changes: Record<string, any>, areaName?: string) => {
     if (areaName && areaName !== 'local') return
+    const nextPersona = changes?.frankActivePersonaAddress?.newValue
+    if (typeof nextPersona === 'string' && /^0x[a-fA-F0-9]{40}$/.test(nextPersona)) {
+      win.postMessage(
+        {
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          direction: 'to-inpage',
+          type: 'provider-event',
+          event: 'accountsChanged',
+          payload: [nextPersona],
+        },
+        '*',
+      )
+    }
     const nextSynced = changes?.frankSyncedState?.newValue
     if (
       nextSynced &&

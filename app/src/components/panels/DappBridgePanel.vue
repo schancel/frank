@@ -228,7 +228,7 @@ import {
 import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../../src-bex/content'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../../src-bex/inpage'
 import { useBalance } from 'src/composables/useBalance'
-import { accountStatus } from 'src/accounts/session'
+import { useReactiveOwnCanonicalAddress } from 'src/utils/own-address'
 
 export interface DappApprovalItem {
   id: string
@@ -256,8 +256,11 @@ function deriveAccountPersonaAddress(
   index: number,
 ): string {
   const clean = typeof identityAddress === 'string' ? identityAddress.trim() : ''
-  if (clean) {
+  if (clean && /^0x[0-9a-fA-F]{40}$/.test(clean)) {
     try {
+      if (index === 0) {
+        return getAddress(clean)
+      }
       const digest = keccak256(
         toUtf8Bytes(`frank-dapp-persona-v1:${clean.toLowerCase()}:${index}`),
       )
@@ -308,6 +311,8 @@ export default defineComponent({
   ],
   setup(props, { emit }) {
     const { total: liveWalletBalanceWei } = useBalance()
+    const ownCanonicalAddress = useReactiveOwnCanonicalAddress()
+    const bridgeDefaultAddress = ref('')
 
     const personaIndex = ref(0)
     const maxPersonaIndex = ref(0)
@@ -421,7 +426,7 @@ export default defineComponent({
 
     const activePersonaAddress = computed(() =>
       deriveAccountPersonaAddress(
-        accountStatus.identityAddress,
+        ownCanonicalAddress.value || bridgeDefaultAddress.value,
         personaIndex.value,
       ),
     )
@@ -503,6 +508,7 @@ export default defineComponent({
         const res = await sendRuntimeMessage<{
           result?: {
             ok?: boolean
+            activePersonaAddress?: string
             pendingApprovals?: Array<{
               id: string
               origin: string
@@ -514,6 +520,14 @@ export default defineComponent({
           channel: FRANK_DAPP_BRIDGE_CHANNEL,
           type: 'get-bridge-state',
         })
+        const bgAddr = res?.result?.activePersonaAddress
+        if (
+          typeof bgAddr === 'string' &&
+          /^0x[0-9a-fA-F]{40}$/.test(bgAddr) &&
+          bgAddr.toLowerCase() !== FALLBACK_PERSONA_ADDRESSES[0].toLowerCase()
+        ) {
+          bridgeDefaultAddress.value = bgAddr
+        }
         const pendingList = res?.result?.pendingApprovals
         if (
           Array.isArray(pendingList) &&

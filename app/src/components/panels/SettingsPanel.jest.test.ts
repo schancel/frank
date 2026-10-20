@@ -154,4 +154,28 @@ describe('SettingsPanel wallet-action split (#399)', () => {
     ).toBe(false)
     wrapper.unmount()
   })
+
+  it('renders Download Browser Extension item in settings sidebar and toggles browser targets', async () => {
+    const { wrapper } = mountPanel()
+    const extBtn = wrapper.find(
+      '[data-test="settings-panel-download-extension"]',
+    )
+    expect(extBtn.exists()).toBe(true)
+    expect(extBtn.text()).toContain('Download Browser Extension')
+
+    await extBtn.trigger('click')
+    expect(
+      wrapper.find('[data-test="settings-panel-extension-targets"]').exists(),
+    ).toBe(true)
+    expect(
+      wrapper.find('[data-test="settings-panel-download-chrome"]').exists(),
+    ).toBe(true)
+    expect(
+      wrapper.find('[data-test="settings-panel-download-firefox"]').exists(),
+    ).toBe(true)
+    expect(
+      wrapper.find('[data-test="settings-panel-download-safari"]').exists(),
+    ).toBe(true)
+    wrapper.unmount()
+  })
 })

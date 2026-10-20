@@ -689,13 +689,19 @@ export default configure(ctx => {
           // The update notice explicitly sends SKIP_WAITING when the user accepts.
           skipWaiting: false,
           // Cache only shipped application assets, never source maps, static docs, or live API responses.
-          globIgnores: [...options.globIgnores, '**/*.map', 'docs/**'],
-          // Gateway portals and static docs must reach ingress rather than the cached app shell.
+          globIgnores: [
+            ...options.globIgnores,
+            '**/*.map',
+            'docs/**',
+            'downloads/**',
+          ],
+          // Gateway portals, extension downloads, and static docs must reach ingress rather than the cached app shell.
           navigateFallbackDenylist: [
             ...(options.navigateFallbackDenylist ?? []),
             /^\/(?:pay|secure)\//,
             /^\/onboard\/claim\//,
             /^\/docs(?:\/|$)/,
+            /^\/downloads(?:\/|$)/,
           ],
           clientsClaim: true,
           cleanupOutdatedCaches: true,

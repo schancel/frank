@@ -36,10 +36,14 @@ const passthroughArgs = []
 let cliBrand = undefined
 let allBrands = false
 
+let skipExtensions = false
+
 for (let i = 0; i < rawArgs.length; i++) {
   const arg = rawArgs[i]
   if (arg === '--all-brands') {
     allBrands = true
+  } else if (arg === '--skip-extensions') {
+    skipExtensions = true
   } else if (arg === '--brand' && rawArgs[i + 1]) {
     cliBrand = rawArgs[++i]
   } else if (arg.startsWith('--brand=')) {
@@ -72,6 +76,20 @@ function buildBrandTarget(brandSlug, customDistDir) {
   )
   if ((res.status ?? 0) !== 0) {
     process.exit(res.status ?? 1)
+  }
+  if (!skipExtensions) {
+    const extRes = spawnSync(
+      process.execPath,
+      [path.join(__dirname, 'build-extension.mjs'), '--skip-pwa-build'],
+      {
+        cwd: appDir,
+        stdio: 'inherit',
+        env,
+      },
+    )
+    if ((extRes.status ?? 0) !== 0) {
+      process.exit(extRes.status ?? 1)
+    }
   }
 }
 

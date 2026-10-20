@@ -127,6 +127,9 @@ for (const path of [
   '/docs',
   '/docs/',
   '/docs/guide/introduction.html',
+  '/downloads/frank-extension-chrome.zip',
+  '/downloads/frank-extension-firefox.zip',
+  '/downloads/frank-extension-safari.zip',
   '/sw.js',
   '/workbox-12345678.js',
 ]) {
@@ -155,6 +158,10 @@ assert(urls.has('index.html'))
 for (const url of urls) {
   assert(!url.endsWith('.map'), `Source map in precache: ${url}`)
   assert(!url.startsWith('docs/'), `Static docs file in precache: ${url}`)
+  assert(
+    !url.startsWith('downloads/'),
+    `Extension download archive in precache: ${url}`,
+  )
   assert(!/^https?:/.test(url), `Remote response in precache: ${url}`)
   assert(existsSync(new URL(url, output)), `Missing precached file: ${url}`)
 }

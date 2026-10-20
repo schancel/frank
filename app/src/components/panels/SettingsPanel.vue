@@ -49,6 +49,57 @@
             {{ $t('accountRecovery.backup_account_codex32') }}
           </q-item-section>
         </q-item>
+
+        <q-item
+          v-if="!isExtensionRuntime"
+          clickable
+          v-ripple
+          data-test="settings-panel-download-extension"
+          @click="handlePrimaryExtensionDownload"
+        >
+          <q-item-section avatar>
+            <q-icon name="extension" />
+          </q-item-section>
+
+          <q-item-section>
+            <q-item-label>{{ extensionSidebarUi.title }}</q-item-label>
+            <q-item-label caption>{{
+              selectedExtensionInfo.shortLabel
+            }}</q-item-label>
+          </q-item-section>
+        </q-item>
+
+        <div
+          v-if="!isExtensionRuntime && showExtensionTargets"
+          class="q-px-md q-pb-sm"
+          data-test="settings-panel-extension-targets"
+        >
+          <div class="row q-gutter-xs q-mb-xs">
+            <q-btn
+              v-for="targetItem in allExtensionTargets"
+              :key="targetItem.target"
+              dense
+              outline
+              no-caps
+              size="sm"
+              :color="
+                selectedExtensionTarget === targetItem.target
+                  ? 'primary'
+                  : 'grey-7'
+              "
+              icon="download"
+              :label="targetItem.shortLabel"
+              :href="targetItem.url"
+              :download="targetItem.filename"
+              :data-test="`settings-panel-download-${targetItem.target}`"
+              @click="selectAndDownloadExtension(targetItem.target)"
+            />
+          </div>
+          <div class="text-caption text-grey-7">
+            {{ selectedExtensionInfo.installHint }}
+          </div>
+        </div>
+
         <q-separator />
 
         <q-item clickable v-ripple @click="openChangelog">
@@ -105,6 +156,14 @@ import { useProfileStore } from 'src/stores/my-profile'
 import { storeToRefs } from 'pinia'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { isNarrowWidth } from '../../utils/layout'
+import { isBrowserExtensionRuntime } from '../../../src-bex/runtime-adapter'
+import {
+  detectPreferredExtensionTarget,
+  EXTENSION_DOWNLOAD_TARGETS,
+  type ExtensionTargetBrowser,
+  getExtensionDownloadInfo,
+  triggerExtensionDownload,
+} from '../../utils/extension-download'
 
 export default defineComponent({
   components: {
@@ -128,6 +187,22 @@ export default defineComponent({
     const router = useRouter()
     const $q = useQuasar()
     const instance = getCurrentInstance()
+    const isExtensionRuntime = computed(() => isBrowserExtensionRuntime())
+    const selectedExtensionTarget = ref<ExtensionTargetBrowser>(
+      detectPreferredExtensionTarget(),
+    )
+    const showExtensionTargets = ref(false)
+    const selectedExtensionInfo = computed(() =>
+      getExtensionDownloadInfo(selectedExtensionTarget.value),
+    )
+    const allExtensionTargets = [
+      EXTENSION_DOWNLOAD_TARGETS.chrome,
+      EXTENSION_DOWNLOAD_TARGETS.firefox,
+      EXTENSION_DOWNLOAD_TARGETS.safari,
+    ]
+    const extensionSidebarUi = {
+      title: 'Download Browser Extension',
+    }
 
     function getRouter() {
       return router || (instance?.proxy as any)?.$router
@@ -187,6 +262,15 @@ export default defineComponent({
       }
     }
 
+    function handlePrimaryExtensionDownload() {
+      showExtensionTargets.value = !showExtensionTargets.value
+      triggerExtensionDownload(selectedExtensionTarget.value)
+    }
+
+    function selectAndDownloadExtension(target: ExtensionTargetBrowser) {
+      selectedExtensionTarget.value = target
+    }
+
     onMounted(async () => {
       try {
         myAddress.value = (await useActiveWallet()).identity.displayAddress
@@ -204,6 +288,14 @@ export default defineComponent({
       profile,
       inbox,
       myAddress,
+      isExtensionRuntime,
+      selectedExtensionTarget,
+      selectedExtensionInfo,
+      allExtensionTargets,
+      showExtensionTargets,
+      extensionSidebarUi,
+      handlePrimaryExtensionDownload,
+      selectAndDownloadExtension,
       openSettings,
       openBackup,
       openBackupDialog: openBackup,

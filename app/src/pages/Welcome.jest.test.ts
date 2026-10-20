@@ -112,4 +112,27 @@ describe('Welcome: landing page for visitors without an account', () => {
     await menuBtn.trigger('click')
     expect(wrapper.emitted('toggleMyDrawerOpen')).toBeTruthy()
   })
+
+  it('renders bundled Browser Extension download card under Create Account on the web', async () => {
+    const wrapper = mountWelcome(enUS)
+    const section = wrapper.find(
+      '[data-test="welcome-download-extension-section"]',
+    )
+    expect(section.exists()).toBe(true)
+
+    const primaryBtn = wrapper.find('[data-test="btn-download-extension"]')
+    expect(primaryBtn.exists()).toBe(true)
+    expect(primaryBtn.attributes('href')).toBe(
+      '/downloads/frank-extension-chrome.zip',
+    )
+
+    const firefoxBtn = wrapper.find(
+      '[data-test="btn-download-extension-firefox"]',
+    )
+    expect(firefoxBtn.exists()).toBe(true)
+    await firefoxBtn.trigger('click')
+    expect(primaryBtn.attributes('href')).toBe(
+      '/downloads/frank-extension-firefox.zip',
+    )
+  })
 })

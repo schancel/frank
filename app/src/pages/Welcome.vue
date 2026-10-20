@@ -95,6 +95,52 @@
             />
           </div>
 
+          <!-- Bundled Browser Extension Download Card (when viewing on web/PWA) -->
+          <div
+            v-if="!isExtensionRuntime"
+            class="welcome-extension-download q-mt-md q-pa-sm rounded-borders"
+            data-test="welcome-download-extension-section"
+          >
+            <div class="row items-center justify-center q-gutter-xs">
+              <q-btn
+                color="primary"
+                flat
+                dense
+                no-caps
+                icon="download"
+                :label="selectedExtensionInfo.label"
+                :href="selectedExtensionInfo.url"
+                :download="selectedExtensionInfo.filename"
+                data-test="btn-download-extension"
+                @click="selectExtensionTarget(selectedExtensionTarget)"
+              />
+              <q-btn
+                v-for="targetItem in allExtensionTargets"
+                :key="targetItem.target"
+                flat
+                dense
+                no-caps
+                size="sm"
+                :color="
+                  selectedExtensionTarget === targetItem.target
+                    ? 'primary'
+                    : 'grey-7'
+                "
+                :label="targetItem.shortLabel"
+                :href="targetItem.url"
+                :download="targetItem.filename"
+                :data-test="`btn-download-extension-${targetItem.target}`"
+                @click="selectExtensionTarget(targetItem.target)"
+              />
+            </div>
+            <div
+              class="text-caption text-grey-7 q-mt-xs"
+              data-test="welcome-extension-install-hint"
+            >
+              {{ selectedExtensionInfo.installHint }}
+            </div>
+          </div>
+
           <div
             v-if="extensionSyncStatusText"
             class="text-caption text-positive q-mt-sm"
@@ -244,6 +290,12 @@ import {
   restoreAccountFromExtensionBundle,
   savePendingExtensionSyncPayload,
 } from '../utils/extension-account-sync'
+import {
+  detectPreferredExtensionTarget,
+  EXTENSION_DOWNLOAD_TARGETS,
+  type ExtensionTargetBrowser,
+  getExtensionDownloadInfo,
+} from '../utils/extension-download'
 
 export default defineComponent({
   name: 'WelcomePage',
@@ -252,6 +304,18 @@ export default defineComponent({
     const instance = getCurrentInstance()
     const syncedAddress = ref('')
     const syncedSasCode = ref('')
+    const selectedExtensionTarget = ref<ExtensionTargetBrowser>(
+      detectPreferredExtensionTarget(),
+    )
+    const isExtensionRuntime = computed(() => isBrowserExtensionRuntime())
+    const selectedExtensionInfo = computed(() =>
+      getExtensionDownloadInfo(selectedExtensionTarget.value),
+    )
+    const allExtensionTargets = [
+      EXTENSION_DOWNLOAD_TARGETS.chrome,
+      EXTENSION_DOWNLOAD_TARGETS.firefox,
+      EXTENSION_DOWNLOAD_TARGETS.safari,
+    ]
 
     const extensionUi = {
       connectExtensionBtn: 'Connect Browser Extension',
@@ -331,6 +395,13 @@ export default defineComponent({
       myDrawerOpen: useMyDrawerOpen(),
       extensionUi,
       extensionSyncStatusText,
+      isExtensionRuntime,
+      selectedExtensionTarget,
+      selectedExtensionInfo,
+      allExtensionTargets,
+      selectExtensionTarget(target: ExtensionTargetBrowser) {
+        selectedExtensionTarget.value = target
+      },
       pageStyle(offset: number, viewportHeight: number) {
         const height = `${Math.max(0, viewportHeight - offset)}px`
         return { height, minHeight: height }
@@ -402,6 +473,11 @@ export default defineComponent({
   justify-content: center;
   gap: 12px;
   max-width: 100%;
+}
+.welcome-extension-download {
+  max-width: 38rem;
+  margin-inline: auto;
+  border: 1px dashed rgba(128, 128, 128, 0.35);
 }
 .welcome-action,
 .welcome-docs {

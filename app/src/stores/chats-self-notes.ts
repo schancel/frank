@@ -171,10 +171,17 @@ export function errorDetail(error: unknown): string {
 }
 
 export function isNoResponseError(error: unknown): boolean {
-  const candidate = error as { isAxiosError?: boolean; response?: unknown }
+  const candidate = error as {
+    isAxiosError?: boolean
+    response?: unknown
+    name?: unknown
+    code?: unknown
+  }
   return (
     (candidate?.isAxiosError === true && candidate.response === undefined) ||
-    (error instanceof Error && error.name === 'MonadMailboxRetryableError')
+    (error instanceof Error && error.name === 'MonadMailboxRetryableError') ||
+    (candidate?.name === 'OpenDirectoryError' &&
+      candidate.code === 'unreachable')
   )
 }
 
@@ -217,7 +224,10 @@ export function classifySendFailure(
   if (
     error instanceof CanonicalRecipientNotPublishedError ||
     (error instanceof Error &&
-      error.name === 'CanonicalRecipientNotPublishedError')
+      error.name === 'CanonicalRecipientNotPublishedError') ||
+    ((error as { name?: unknown; code?: unknown })?.name ===
+      'OpenDirectoryError' &&
+      (error as { code?: unknown }).code === 'not-published')
   ) {
     return { reason: 'recipient-unregistered' }
   }

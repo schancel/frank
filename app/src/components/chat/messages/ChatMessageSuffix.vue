@@ -27,10 +27,18 @@
         class="outgoing-status outgoing-status--failed"
         data-testid="outgoing-failed"
       >
-        <q-icon name="error" color="negative" />
-        <span>{{ $t('chatMessage.failedToSend') }}</span>
-        <span v-if="failureText" data-testid="outgoing-failure-reason">
-          {{ failureText }}
+        <q-icon
+          name="error"
+          :color="inline && outbound ? undefined : 'negative'"
+        />
+        <span class="outgoing-status-text">
+          <span>{{ $t('chatMessage.failedToSend') }}</span>
+          <template v-if="failureText">
+            {{ ' — '
+            }}<span data-testid="outgoing-failure-reason">{{
+              failureText
+            }}</span>
+          </template>
         </span>
       </span>
       <span
@@ -274,7 +282,6 @@ export default defineComponent({
         interrupted: 'outgoing.reasonInterrupted',
         unverified: 'outgoing.reasonUnverified',
         recovered: 'outgoing.reasonRecovered',
-        error: 'outgoing.reasonError',
       }
       keys['insufficient-funds'] = 'outgoing.reasonInsufficientFunds'
       keys['recipient-unregistered'] = 'outgoing.reasonRecipientUnregistered'

@@ -517,3 +517,48 @@ test('directory installation starts independent feature lifetime and stop retain
   await cleanup
   expect(closed).toBe(true)
 })
+
+test('startMessaging becomes ready without waiting for a slow registerProfile call', async () => {
+  const alice = await wallet(0, 'profile-owner')
+  const d = device(alice)
+  let finishProfile!: () => void
+  d.deps.registerProfile = jest.fn(
+    () =>
+      new Promise<void>(resolve => {
+        finishProfile = resolve
+      }),
+  )
+  await configureMessagingForTest(d.deps)
+  mockStatus.status = 'ready'
+  await initializeMonadIdentity()
+  await until(
+    () => messagingState.status === 'ready',
+    'messaging ready before registerProfile resolves',
+  )
+  expect(messagingState.status).toBe('ready')
+  expect(d.deps.registerProfile).toHaveBeenCalledTimes(1)
+  finishProfile()
+})
+
+test('startMessaging clears stale pin using identity.address.raw and immediately retries on entry-refused', async () => {
+  const alice = await wallet(0, 'stale-pin-owner')
+  const d = device(alice)
+  const addr = alice.identity.address.raw.toLowerCase()
+  await d.deps.directory.pins.save(
+    `monad-testnet:${addr}`,
+    JSON.stringify({
+      subject: '02' + '11'.repeat(32),
+      revision: 99,
+      updatedAt: 9999999999,
+    }),
+  )
+  await configureMessagingForTest(d.deps)
+  mockStatus.status = 'ready'
+  await initializeMonadIdentity()
+  await until(
+    () => messagingState.status === 'ready',
+    'recovered from stale pin on first startMessaging call',
+  )
+  expect(messagingState.status).toBe('ready')
+  expect(messagingState.reason).toBeNull()
+})

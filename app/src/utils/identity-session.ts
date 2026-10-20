@@ -428,11 +428,53 @@ function reasonOf(error: unknown): MessagingReason {
   }
 }
 
+let publishingTask: Promise<void> | undefined
+
+/**
+ * Waits for an in-flight `startMessaging()` call (or triggers one if the account is ready
+ * and messaging has not yet been installed) up to `timeoutMs`.
+ */
+export async function waitForMessagingReady(
+  timeoutMs = 5_000,
+): Promise<boolean> {
+  if (state.status === 'ready' && live) return true
+  let d: MessagingDeps
+  try {
+    d = dependencies()
+  } catch {
+    return false
+  }
+  if (d.session.state.status !== 'ready') return false
+  const task = publishingTask ?? startMessaging()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      task,
+      new Promise<void>(resolve => {
+        timer = setTimeout(resolve, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+  return state.status === 'ready' && live !== undefined
+}
+
 /**
  * Publish (or adopt) this account's entry and turn messaging on. Runs by itself whenever an
  * account becomes ready, and again with backoff after a failure.
  */
 export async function startMessaging(): Promise<void> {
+  const run = startMessagingInternal()
+  publishingTask = run
+  try {
+    await run
+  } finally {
+    if (publishingTask === run) publishingTask = undefined
+  }
+}
+
+async function startMessagingInternal(): Promise<void> {
   let d: MessagingDeps
   try {
     d = dependencies()
@@ -474,56 +516,68 @@ export async function startMessaging(): Promise<void> {
     // installed as soon as the wallet is at hand, before the relay is asked anything, and
     // stays through every messaging restart: it belongs to the account, not to the connection.
     setConversationIdSalt(conversationIdSaltOf(wallet))
-    if (d.registerProfile) {
-      await d.registerProfile({ relayBaseUrl: d.relayBaseUrl, wallet })
-    }
     const owner = wallet
     const descriptor = {
       networkTag: d.networkTag,
       network: networkOf(d.networkTag),
       chainId: d.chainId,
     }
-    directory = openDirectory({
-      network: descriptor.network,
-      relayBaseUrl: d.relayBaseUrl,
-      ...d.directory,
-      self: {
-        subject: toHex(
-          (
-            owner as unknown as {
-              identity: { compressedPubKey: Uint8Array }
-            }
-          ).identity.compressedPubKey,
-        ),
-        signRevisionZero: input =>
-          prepareMonadRevisionZeroExport(owner, { ...descriptor, ...input })
-            .attestation,
-        signNextRevision: input =>
-          prepareMonadNextRevisionExport(owner, { ...descriptor, ...input })
-            .attestation,
-      },
-    })
-    await directory.publish()
+    const createDirectory = () =>
+      openDirectory({
+        network: descriptor.network,
+        relayBaseUrl: d.relayBaseUrl,
+        ...d.directory,
+        self: {
+          subject: toHex(
+            (
+              owner as unknown as {
+                identity: { compressedPubKey: Uint8Array }
+              }
+            ).identity.compressedPubKey,
+          ),
+          signRevisionZero: input =>
+            prepareMonadRevisionZeroExport(owner, { ...descriptor, ...input })
+              .attestation,
+          signNextRevision: input =>
+            prepareMonadNextRevisionExport(owner, { ...descriptor, ...input })
+              .attestation,
+        },
+      })
+    directory = createDirectory()
+    try {
+      await directory.publish()
+    } catch (publishErr) {
+      if (reasonOf(publishErr) === 'entry-refused') {
+        const identity = (
+          wallet as unknown as {
+            identity?: { address?: string | { raw?: string } }
+          }
+        )?.identity
+        const rawAddr =
+          typeof identity?.address === 'string'
+            ? identity.address
+            : identity?.address?.raw
+        const addr = rawAddr?.toLowerCase()
+        if (addr) {
+          const network = networkOf(d.networkTag)
+          await Promise.all([
+            d.directory.pins.save(`${network}:${addr}`, ''),
+            d.directory.pins.save(`pending:${network}:${addr}`, ''),
+            d.directory.pins.save(`resigned:${network}:${addr}`, ''),
+          ]).catch(() => undefined)
+          await directory.close().catch(() => undefined)
+          directory = createDirectory()
+          await directory.publish()
+        } else {
+          throw publishErr
+        }
+      } else {
+        throw publishErr
+      }
+    }
   } catch (error) {
     console.error('[startMessaging] directory.publish failed:', error)
     failure = reasonOf(error)
-    if (failure === 'entry-refused') {
-      try {
-        const identity = (
-          wallet as unknown as { identity?: { address?: string } }
-        )?.identity
-        if (identity?.address) {
-          const network = networkOf(d.networkTag)
-          void d.directory.pins.save(`${network}:${identity.address}`, '')
-          void d.directory.pins.save(
-            `pending:${network}:${identity.address}`,
-            '',
-          )
-        }
-      } catch {
-        // ignore
-      }
-    }
   }
   if (!failure && directory && wallet && sameAccount()) {
     try {
@@ -558,6 +612,13 @@ export async function startMessaging(): Promise<void> {
       state.status = 'ready'
       state.reason = null
       d.resumeLegacy?.()
+      if (d.registerProfile) {
+        void Promise.resolve(
+          d.registerProfile({ relayBaseUrl: d.relayBaseUrl, wallet }),
+        ).catch(err => {
+          console.warn('[startMessaging] registerProfile failed:', err)
+        })
+      }
       void d.claimUsername?.({
         relayBaseUrl: d.relayBaseUrl,
         network: networkOf(d.networkTag),

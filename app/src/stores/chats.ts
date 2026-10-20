@@ -30,6 +30,7 @@ import { sendsWaitingBlocks } from '../utils/outgoing-payments'
 import { messageItems } from '../utils/message-items'
 
 import {
+  CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
   ContactPaymentReleasedError,
   DirectMessageAlreadyAttemptedError,
@@ -48,7 +49,10 @@ import {
   MonadStampTerminalError,
 } from '@frank/wallet/evm-stamp-client'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/mailbox-client'
-import { messagingWallet } from '../utils/identity-session'
+import {
+  messagingWallet,
+  waitForMessagingReady,
+} from '../utils/identity-session'
 import type {
   Message,
   MessageWrapper,
@@ -3323,13 +3327,41 @@ export const useChatStore = defineStore('chats', {
             return { state: 'payment-pending' }
           }
 
+          const isPendingMessaging =
+            (typeof CanonicalMessagingPendingError === 'function' &&
+              error instanceof CanonicalMessagingPendingError) ||
+            (error instanceof Error &&
+              (error.name === 'CanonicalMessagingPendingError' ||
+                error.name === 'CanonicalMessageItemsNotInstalledError'))
+          if (
+            isPendingMessaging &&
+            ownDigest === undefined &&
+            sendAttempt < maxSendAttempts &&
+            stillCurrent()
+          ) {
+            const ready =
+              typeof waitForMessagingReady === 'function'
+                ? await waitForMessagingReady(5_000)
+                : false
+            if (!ready) {
+              await new Promise(r => setTimeout(r, sendAttempt * 500))
+            }
+            continue
+          }
+
           const errorStr =
             String(error) +
             (error instanceof Error ? ' ' + error.message : '') +
             (typeof error === 'object' && error !== null && 'info' in error
               ? ' ' + JSON.stringify((error as any).info)
               : '')
+          const isDirectoryUnreachable =
+            typeof error === 'object' &&
+            error !== null &&
+            (error as { name?: unknown }).name === 'OpenDirectoryError' &&
+            (error as { code?: unknown }).code === 'unreachable'
           const isTransientRpc =
+            isDirectoryUnreachable ||
             errorStr.includes('502') ||
             errorStr.includes('503') ||
             errorStr.includes('504') ||

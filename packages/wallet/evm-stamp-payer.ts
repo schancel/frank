@@ -801,15 +801,48 @@ export class EvmStampPayer {
                     ]),
                   input.signal,
                 )
-                if (pending === latest)
+                if (pending === latest) {
+                  let liveCapacity = account.capacityWei
+                  if (
+                    (latest > 0 ||
+                      (matured !== undefined &&
+                        matured < account.capacityWei + feeReserveWei)) &&
+                    typeof provider.getBalance === 'function'
+                  ) {
+                    const liveBalance = await this.read(
+                      () => provider.getBalance(account.address),
+                      input.signal,
+                    )
+                    if (liveBalance <= feeReserveWei) {
+                      pool.updateCapacityCache(
+                        account.index,
+                        0n,
+                        Date.now(),
+                        liveBalance,
+                      )
+                      if (latest > 0) pool.setStatus(account.index, 'retired')
+                      continue
+                    }
+                    if (liveBalance < account.capacityWei + feeReserveWei) {
+                      liveCapacity = liveBalance - feeReserveWei
+                      account.capacityWei = liveCapacity
+                      pool.updateCapacityCache(
+                        account.index,
+                        liveCapacity,
+                        Date.now(),
+                        liveBalance,
+                      )
+                    }
+                  }
                   current.set(account.index, {
                     nonce: latest,
                     generation,
                     matured,
                     mature:
                       matured === undefined ||
-                      matured >= account.capacityWei + feeReserveWei,
+                      matured >= liveCapacity + feeReserveWei,
                   })
+                }
               }
             },
           )

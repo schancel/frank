@@ -2764,4 +2764,60 @@ describe('persisted application message handoff', () => {
       restore()
     }
   })
+
+  it('retries when CanonicalMessagingPendingError is thrown during popup directory startup and succeeds once ready', async () => {
+    ;(await durable()).clear()
+    setActivePinia(createPinia())
+    jest.restoreAllMocks()
+    const chats = useChatStore()
+    let calls = 0
+    jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockImplementation(async () => {
+        calls++
+        if (calls === 1) {
+          const pendingErr = new Error(
+            'Messaging cannot be used until the account directory entry is published',
+          )
+          pendingErr.name = 'CanonicalMessagingPendingError'
+          throw pendingErr
+        }
+        return okResult(HASH)
+      })
+    const outcome = await chats.sendMessage({
+      wallet,
+      address: PEER,
+      items: TEXT,
+      stampValue: 0n,
+    })
+    expect(outcome.state).toBe('sent')
+    expect(calls).toBe(2)
+    expect(only(chats)[0].status).toBe('confirmed')
+  })
+
+  it('classifies OpenDirectoryError(unreachable) as unreachable rather than generic error', async () => {
+    ;(await durable()).clear()
+    setActivePinia(createPinia())
+    jest.restoreAllMocks()
+    const chats = useChatStore()
+    jest.spyOn(activeChain.directMessages, 'send').mockImplementation(() => {
+      const err = Object.assign(
+        new Error('The relay could not be reached for a directory entry.'),
+        {
+          name: 'OpenDirectoryError',
+          code: 'unreachable',
+        },
+      )
+      return Promise.reject(err)
+    })
+    const outcome = await chats.sendMessage({
+      wallet,
+      address: PEER,
+      items: TEXT,
+      stampValue: 0n,
+    })
+    expect(outcome.state).toBe('failed')
+    expect(only(chats)[0].status).toBe('error')
+    expect(only(chats)[0].delivery?.failureReason).toBe('unreachable')
+  })
 })

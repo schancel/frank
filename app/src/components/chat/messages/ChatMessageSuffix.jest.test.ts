@@ -223,11 +223,14 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(failed.text()).not.toContain('stamp-account')
   })
 
-  it('keeps a localized generic fallback for unclassified failures', () => {
+  it('does not render a duplicate generic fallback reason when failureReason is error or empty', () => {
     const failed = mountSuffix({ status: 'error', failureReason: 'error' })
-    expect(failed.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
-      'The message could not be sent.',
+    expect(failed.get('[data-testid="outgoing-failed"]').text()).toBe(
+      'Failed to send',
     )
+    expect(
+      failed.find('[data-testid="outgoing-failure-reason"]').exists(),
+    ).toBe(false)
   })
 
   it.each([
@@ -440,5 +443,35 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
           .find('[data-testid="outgoing-payment-summary"]')
           .exists(),
       ).toBe(false)
+  })
+
+  it('omits negative icon color on inline outbound failed bubbles while keeping it on standalone stamps', () => {
+    const inlineSent = mountSuffix({
+      status: 'error',
+      inline: true,
+      outbound: true,
+    })
+    const icon = inlineSent.get('[data-testid="outgoing-failed"] i')
+    expect(icon.attributes('color')).toBeUndefined()
+    expect(
+      inlineSent
+        .find('[data-testid="outgoing-failed"] .outgoing-status-text')
+        .exists(),
+    ).toBe(true)
+
+    const standalone = mountSuffix({
+      status: 'error',
+      inline: false,
+      outbound: true,
+      failureReason: 'unreachable',
+    })
+    expect(
+      standalone.get('[data-testid="outgoing-failed"] i').attributes('color'),
+    ).toBe('negative')
+    expect(
+      standalone
+        .get('[data-testid="outgoing-failed"] .outgoing-status-text')
+        .text(),
+    ).toBe("Failed to send — Can't reach the server.")
   })
 })

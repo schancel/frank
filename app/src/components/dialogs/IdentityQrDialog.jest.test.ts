@@ -234,7 +234,43 @@ describe('IdentityQrDialog', () => {
     expect(wrapper.find('[data-test="identity-qr-sync-status"]').text()).toContain(
       'Synced to signet.mx',
     )
+
+    expect(wrapper.find('.identity-qr-view-grid').exists()).toBe(true)
+    expect(wrapper.find('.identity-qr-action-grid').exists()).toBe(true)
+    expect(wrapper.find('.identity-qr-sync-grid').exists()).toBe(true)
+  })
+
+  it('persists and consumes pending extension sync bundles via extension-account-sync helper', async () => {
+    const {
+      clearPendingExtensionSyncPayload,
+      extractValidBackupShares,
+      peekPendingExtensionSyncPayload,
+      savePendingExtensionSyncPayload,
+    } = await import('../../utils/extension-account-sync')
+
+    clearPendingExtensionSyncPayload()
+    expect(peekPendingExtensionSyncPayload()).toBeNull()
+
+    const payload = {
+      sasCode: '482910',
+      deviceSyncBundle: {
+        version: 1,
+        accountAddress: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3',
+        displayName: 'Shammah',
+        backupShares: ['ms1share1', 'ms1share2'],
+      },
+    }
+    savePendingExtensionSyncPayload(payload)
+    expect(peekPendingExtensionSyncPayload()).toEqual(payload)
+    expect(extractValidBackupShares(payload.deviceSyncBundle)).toEqual([
+      'ms1share1',
+      'ms1share2',
+    ])
+
+    clearPendingExtensionSyncPayload()
+    expect(peekPendingExtensionSyncPayload()).toBeNull()
   })
 })
+
 
 

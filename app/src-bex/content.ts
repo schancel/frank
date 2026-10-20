@@ -67,6 +67,14 @@ export function installContentScriptBridge(
     return () => {}
   }
 
+  if (typeof win.__FRANK_CONTENT_BRIDGE_CLEANUP__ === 'function') {
+    try {
+      win.__FRANK_CONTENT_BRIDGE_CLEANUP__()
+    } catch {
+      // Ignore cleanup errors from prior injection
+    }
+  }
+
   ensureSafariFallbackInpageScript(win, runtimeScope)
 
   if (win.location && isAllowedSyncOrigin(win.location)) {
@@ -214,7 +222,7 @@ export function installContentScriptBridge(
         },
         '*',
       )
-      return
+      return { ok: true }
     }
 
     if (
@@ -233,7 +241,9 @@ export function installContentScriptBridge(
         },
         '*',
       )
+      return { ok: true }
     }
+    return undefined
   }, runtimeScope)
 
   const api = getRawExtensionApi(runtimeScope)
@@ -261,13 +271,18 @@ export function installContentScriptBridge(
     api.storage.onChanged.addListener(storageListener)
   }
 
-  return () => {
+  const cleanup = () => {
     win.removeEventListener('message', handleWindowMessage)
     unsubscribeRuntime()
     if (typeof api?.storage?.onChanged?.removeListener === 'function') {
       api.storage.onChanged.removeListener(storageListener)
     }
+    if (win.__FRANK_CONTENT_BRIDGE_CLEANUP__ === cleanup) {
+      delete win.__FRANK_CONTENT_BRIDGE_CLEANUP__
+    }
   }
+  win.__FRANK_CONTENT_BRIDGE_CLEANUP__ = cleanup
+  return cleanup
 }
 
 if (typeof window !== 'undefined' && isBrowserExtensionRuntime()) {

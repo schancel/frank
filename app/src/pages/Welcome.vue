@@ -234,10 +234,20 @@ import {
 } from 'vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/content'
+import {
+  isBrowserExtensionRuntime,
+  sendRuntimeMessage,
+} from '../../src-bex/runtime-adapter'
+import {
+  extractValidBackupShares,
+  peekPendingExtensionSyncPayload,
+  restoreAccountFromExtensionBundle,
+  savePendingExtensionSyncPayload,
+} from '../utils/extension-account-sync'
 
 export default defineComponent({
   name: 'WelcomePage',
-  emits: ['toggleMyDrawerOpen'],
+  emits: ['toggleMyDrawerOpen', 'setupCompleted'],
   setup(_, { emit }) {
     const instance = getCurrentInstance()
     const syncedAddress = ref('')
@@ -254,6 +264,40 @@ export default defineComponent({
         : `Extension Connected: ${syncedAddress.value}`
     })
 
+    const applyIncomingSyncPayload = async (
+      payload: Record<string, any> | null | undefined,
+    ) => {
+      const bundle = payload?.deviceSyncBundle
+      if (!bundle || typeof bundle !== 'object') return
+      syncedAddress.value = String(
+        bundle.accountAddress || bundle.activePersonaAddress || '',
+      )
+      syncedSasCode.value = String(payload?.sasCode || '')
+      savePendingExtensionSyncPayload({
+        sasCode: syncedSasCode.value,
+        deviceSyncBundle: bundle,
+      })
+      const router = (
+        instance?.proxy as
+          | { $router?: { push: (path: string) => void } }
+          | undefined
+      )?.$router
+      const shares = extractValidBackupShares(bundle)
+      if (shares.length >= 2) {
+        const restored = await restoreAccountFromExtensionBundle(bundle, {
+          onActivated: () => {
+            emit('setupCompleted')
+            if (router) {
+              void router.push('/forum')
+            }
+          },
+        })
+        if (!restored && router) {
+          void router.push('/onboard')
+        }
+      }
+    }
+
     const onExtensionMessage = (event: MessageEvent) => {
       const data = event?.data
       if (!data || typeof data !== 'object') return
@@ -263,27 +307,17 @@ export default defineComponent({
         (data.type === 'extension-sync-push' || data.type === 'sync-response')
       ) {
         const payload = data.payload ?? data.result?.syncedState ?? data.result
-        const bundle = payload?.deviceSyncBundle
-        if (bundle && typeof bundle === 'object') {
-          syncedAddress.value = String(
-            bundle.accountAddress || bundle.activePersonaAddress || '',
-          )
-          syncedSasCode.value = String(payload?.sasCode || '')
-          const router = (
-            instance?.proxy as
-              | { $router?: { push: (path: string) => void } }
-              | undefined
-          )?.$router
-          if (router && Array.isArray(bundle.backupShares) && bundle.backupShares.length >= 2) {
-            void router.push('/onboard')
-          }
-        }
+        void applyIncomingSyncPayload(payload)
       }
     }
 
     onMounted(() => {
       if (typeof window !== 'undefined') {
         window.addEventListener('message', onExtensionMessage)
+      }
+      const pending = peekPendingExtensionSyncPayload()
+      if (pending?.deviceSyncBundle) {
+        void applyIncomingSyncPayload(pending)
       }
     })
 
@@ -304,7 +338,7 @@ export default defineComponent({
       toggleSettingsDrawerOpen() {
         emit('toggleMyDrawerOpen')
       },
-      connectBrowserExtension() {
+      async connectBrowserExtension() {
         if (
           typeof window !== 'undefined' &&
           typeof window.postMessage === 'function'
@@ -318,6 +352,23 @@ export default defineComponent({
             },
             '*',
           )
+        }
+        if (isBrowserExtensionRuntime()) {
+          try {
+            const response = await sendRuntimeMessage<Record<string, any>, any>(
+              {
+                channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+                type: 'get-synced-state',
+              },
+            )
+            const payload =
+              response?.result?.syncedState ?? response?.result ?? response
+            if (payload?.deviceSyncBundle) {
+              await applyIncomingSyncPayload(payload)
+            }
+          } catch {
+            // Ignore extension runtime query errors
+          }
         }
       },
     }

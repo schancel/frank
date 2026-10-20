@@ -331,23 +331,66 @@ export function installBackgroundBridge(
       if (
         message.type === 'extension-push-sync-to-tab' &&
         extApi?.tabs &&
-        typeof extApi.tabs.query === 'function' &&
-        typeof extApi.tabs.sendMessage === 'function'
+        typeof extApi.tabs.query === 'function'
       ) {
         try {
-          const tabs = await extApi.tabs.query({ currentWindow: true })
+          let tabs = await extApi.tabs.query({})
+          if (!Array.isArray(tabs) || tabs.length === 0) {
+            tabs = await extApi.tabs.query({ currentWindow: true })
+          }
           if (Array.isArray(tabs)) {
             for (const tab of tabs) {
               if (tab && typeof tab.id === 'number') {
-                try {
-                  await extApi.tabs.sendMessage(tab.id, {
-                    channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-                    type: 'extension-sync-push',
-                    payload: state.syncedState,
-                  })
+                let sendMessageSucceeded = false
+                let contentAcked = false
+                if (typeof extApi.tabs.sendMessage === 'function') {
+                  try {
+                    const res = await extApi.tabs.sendMessage(tab.id, {
+                      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+                      type: 'extension-sync-push',
+                      payload: state.syncedState,
+                    })
+                    sendMessageSucceeded = true
+                    if (res && typeof res === 'object' && res.ok) {
+                      contentAcked = true
+                    }
+                  } catch {
+                    // Tab may have been opened before extension reload (no content script listening yet)
+                  }
+                }
+                let scriptInjected = false
+                if (
+                  !contentAcked &&
+                  typeof extApi?.scripting?.executeScript === 'function'
+                ) {
+                  try {
+                    await Promise.resolve(
+                      extApi.scripting.executeScript({
+                        target: { tabId: tab.id },
+                        files: ['content.js'],
+                      }),
+                    ).catch(() => {})
+                    await extApi.scripting.executeScript({
+                      target: { tabId: tab.id },
+                      func: (msg: unknown) => {
+                        window.postMessage(msg, '*')
+                      },
+                      args: [
+                        {
+                          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+                          direction: 'to-pwa',
+                          type: 'extension-sync-push',
+                          payload: state.syncedState,
+                        },
+                      ],
+                    })
+                    scriptInjected = true
+                  } catch {
+                    // Scripting not permitted on restricted URLs (e.g. chrome://)
+                  }
+                }
+                if (contentAcked || scriptInjected || sendMessageSucceeded) {
                   pushedToTabCount += 1
-                } catch {
-                  // Tab may not have content script loaded
                 }
               }
             }

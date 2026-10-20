@@ -4,13 +4,13 @@
       v-model="splitterSize"
       unit="px"
       disable
-      :horizontal="!($q?.screen?.gt?.xs ?? true)"
+      :horizontal="!isDesktopLayout"
       class="col full-height profile-splitter"
     >
       <template #before>
         <q-tabs
           v-model="tab"
-          :vertical="$q?.screen?.gt?.xs ?? true"
+          :vertical="isDesktopLayout"
           dense
           class="text-primary full-height profile-tabs"
         >
@@ -200,8 +200,9 @@
                   <q-file
                     ref="filePicker"
                     v-model="avatarPath"
+                    accept="image/*"
                     filled
-                    style="display: none"
+                    class="q-sr-only"
                   />
                   <q-btn
                     type="file"
@@ -214,7 +215,12 @@
                   />
                 </q-toolbar>
                 <div>
-                  <q-img :src="internalAvatar" spinner-color="white" />
+                  <q-img
+                    :src="internalAvatar"
+                    spinner-color="white"
+                    class="cursor-pointer"
+                    @click="chooseAvatar"
+                  />
                   <div class="text-center">
                     <q-btn
                       flat
@@ -361,6 +367,8 @@ import { resizeAndCompressImage, compressAvatarFile } from '../utils/avatar'
 import { validateProfileUsername } from '@frank/wallet/evm-identity'
 import { getOwnCanonicalAddress } from '../utils/own-address'
 import { addressCopiedNotify, errorNotify } from '../utils/notifications'
+import { isNarrowWidth } from '../utils/layout'
+import { getEffectiveScreenWidth } from '../utils/mobile-viewport-scale'
 
 export type ProfileLinkItem = {
   type: string
@@ -461,6 +469,15 @@ export default defineComponent({
     }
   },
   computed: {
+    isDesktopLayout(): boolean {
+      const rawWidth =
+        this.$q?.screen?.width ??
+        (typeof window !== 'undefined' ? window.innerWidth : 1024)
+      return (
+        !isNarrowWidth(getEffectiveScreenWidth(rawWidth)) &&
+        Boolean(this.$q?.screen?.gt?.xs ?? true)
+      )
+    },
     /** Under the username field: what the account holds on the relay, when that differs from
      * what is typed. A held name cannot be given up, only replaced by claiming another. */
     usernameHint(): string {
@@ -693,6 +710,19 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.profile-component-root,
+.profile-splitter,
+.profile-component-root :deep(.q-tab-panels) {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 0;
+}
+
+.profile-component-root :deep(.q-tab-panels .q-panel) {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
 .identity-layout {
   display: flex;
   flex-wrap: wrap;
@@ -729,14 +759,23 @@ export default defineComponent({
   min-width: 0;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 800px) {
   .profile-splitter :deep(> .q-splitter__before) {
     height: auto !important;
     width: 100% !important;
   }
+  .profile-edit-row {
+    flex-direction: column;
+  }
   .profile-avatar-col {
-    max-width: 280px;
+    order: -1;
+    width: 100%;
+    max-width: 360px;
     margin: 0 auto;
+  }
+  .profile-fields-col {
+    width: 100%;
+    max-width: 100%;
   }
 }
 </style>

@@ -59,239 +59,9 @@
     >
       {{ stampUnavailable }}
     </div>
-    <q-toolbar class="chat-input-toolbar full-width items-center">
-      <q-btn
-        dense
-        flat
-        round
-        icon="unfold_more"
-        class="chat-attach-btn"
-        :aria-label="$t('a11y.attachmentOptions')"
-        aria-haspopup="menu"
-        :disable="disable"
-      >
-        <q-menu
-          ref="attachMenu"
-          anchor="top left"
-          self="bottom left"
-          max-height="80vh"
-        >
-          <q-list dense style="min-width: 220px" class="q-py-xs">
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="attach-image-menu-item"
-              @click="pickImages"
-            >
-              <q-item-section avatar side>
-                <q-icon name="image" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.attachImage') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="attach-calendar-vcard-menu-item"
-              @click="pickImages"
-            >
-              <q-item-section avatar side>
-                <q-icon name="attach_file" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.attachFile') }}
-              </q-item-section>
-            </q-item>
-
-            <!-- Send Stealth: encrypted transfer inside direct message payload -->
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="send-stealth-menu-item"
-              @click="sendStealthClicked"
-            >
-              <q-item-section avatar side>
-                <q-icon name="visibility_off" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.sendStealth') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="webrtc-call-menu-item"
-              @click="emitAndClose('webrtcCallClicked', { withVideo: false })"
-            >
-              <q-item-section avatar side>
-                <q-icon name="call" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.phoneCall') }}
-              </q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-close-popup
-              data-testid="webrtc-video-call-menu-item"
-              @click="emitAndClose('webrtcCallClicked', { withVideo: true })"
-            >
-              <q-item-section avatar side>
-                <q-icon name="videocam" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('webrtcCall.mediaMode.video') }}
-              </q-item-section>
-            </q-item>
-
-            <div class="chat-menu-divider q-my-xs" role="separator" />
-
-            <!-- Submenu: Payments & Docs (Invoices, Swaps, Articles) -->
-            <q-item
-              clickable
-              data-testid="more-actions-submenu-item"
-            >
-              <q-item-section avatar side>
-                <q-icon name="apps" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.moreActionsSubmenu') }}
-              </q-item-section>
-              <q-item-section side>
-                <q-icon name="keyboard_arrow_right" />
-              </q-item-section>
-              <q-menu anchor="top end" self="top start">
-                <q-list dense style="min-width: 210px" class="q-py-xs">
-                  <q-item
-                    clickable
-                    v-close-popup
-                    data-testid="invoice-menu-item"
-                    @click="closeMenuAndEmit('invoiceClicked')"
-                  >
-                    <q-item-section avatar side>
-                      <q-icon name="receipt_long" />
-                    </q-item-section>
-                    <q-item-section>
-                      {{ $t('chatInput.createInvoice') }}
-                    </q-item-section>
-                  </q-item>
-
-                  <q-item
-                    clickable
-                    v-close-popup
-                    data-testid="swap-menu-item"
-                    @click="closeMenuAndEmit('swapClicked')"
-                  >
-                    <q-item-section avatar side>
-                      <q-icon name="swap_horiz" />
-                    </q-item-section>
-                    <q-item-section>
-                      {{ $t('signedSwap.title') }}
-                    </q-item-section>
-                  </q-item>
-
-                  <q-item
-                    clickable
-                    v-close-popup
-                    data-testid="article-menu-item"
-                    @click="closeMenuAndEmit('articleClicked')"
-                  >
-                    <q-item-section avatar side>
-                      <q-icon name="article" />
-                    </q-item-section>
-                    <q-item-section>
-                      {{ $t('chatInput.writeArticle') }}
-                    </q-item-section>
-                  </q-item>
-                </q-list>
-              </q-menu>
-            </q-item>
-
-            <!-- Submenu: Games (Blackjack, Satoshi Dice, Rock-Paper-Scissors, Heads-Up Poker) -->
-            <q-item
-              clickable
-              data-testid="games-submenu-item"
-            >
-              <q-item-section avatar side>
-                <q-icon name="sports_esports" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.gamesSubmenu') }}
-              </q-item-section>
-              <q-item-section side>
-                <q-icon name="keyboard_arrow_right" />
-              </q-item-section>
-              <q-menu anchor="top end" self="top start">
-                <q-list dense style="min-width: 220px" class="q-py-xs">
-                  <!-- A blackjack challenge is one more message type, offered in every chat. -->
-                  <q-item
-                    clickable
-                    v-close-popup
-                    data-testid="blackjack-menu-item"
-                    @click="blackjackClicked"
-                  >
-                    <q-item-section avatar side>
-                      <q-icon name="casino" />
-                    </q-item-section>
-                    <q-item-section>
-                      {{ $t('chatInput.blackjackChallenge') }}
-                    </q-item-section>
-                  </q-item>
-
-                  <q-item
-                    clickable
-                    v-close-popup
-                    data-testid="dice-menu-item"
-                    @click="diceClicked"
-                  >
-                    <q-item-section avatar side>
-                      <q-icon name="casino" />
-                    </q-item-section>
-                    <q-item-section>
-                      {{ $t('chatInput.diceChallenge') }}
-                    </q-item-section>
-                  </q-item>
-
-                  <q-item
-                    clickable
-                    v-close-popup
-                    data-testid="rps-menu-item"
-                    @click="rpsClicked"
-                  >
-                    <q-item-section avatar side>
-                      <q-icon name="sports_esports" />
-                    </q-item-section>
-                    <q-item-section>
-                      {{ $t('chatInput.rpsChallenge') }}
-                    </q-item-section>
-                  </q-item>
-
-                  <q-item
-                    clickable
-                    v-close-popup
-                    data-testid="mental-poker-menu-item"
-                    @click="closeMenuAndEmit('mentalPokerClicked')"
-                  >
-                    <q-item-section avatar side>
-                      <q-icon name="style" />
-                    </q-item-section>
-                    <q-item-section>
-                      {{ $t('chatInput.mentalPokerChallenge') }}
-                    </q-item-section>
-                  </q-item>
-                </q-list>
-              </q-menu>
-            </q-item>
-          </q-list>
-        </q-menu>
-      </q-btn>
-
+    <q-toolbar class="chat-input-toolbar full-width items-center column">
       <div
-        class="col chat-input-container row no-wrap items-center"
+        class="col chat-input-container full-width row no-wrap items-center"
         :class="{ 'chat-input-container--focused': isInputFocused }"
         @focusin="isInputFocused = true"
         @focusout="onContainerFocusout"
@@ -313,188 +83,428 @@
           v-model="innerMessage"
           :placeholder="$t('chatInput.placeHolder')"
         />
+      </div>
 
-        <q-btn
-          dense
-          flat
-          rounded
-          no-caps
-          icon="local_post_office"
-          class="chat-stamp-btn q-mr-xs"
-          :aria-label="$t('a11y.stampPayment')"
-          aria-haspopup="menu"
-          :disable="disable"
-        >
-          <!-- What the message will carry, in the compact form: the chip is a tight place. -->
-          <span class="chat-stamp-pill-text q-ml-xs">{{ stampPillText }}</span>
-          <span
-            v-if="defaultStampMode && suggestedIncrease"
-            class="chat-stamp-pill-increase q-ml-xs text-warning text-weight-bold"
-            data-testid="stamp-pill-increase"
-            aria-hidden="true"
-            >↑</span
+      <div
+        class="chat-input-bottom-bar full-width row no-wrap items-center justify-between"
+        data-testid="chat-input-bottom-bar"
+      >
+        <div class="row no-wrap items-center q-gutter-x-xs min-w-0">
+          <q-btn
+            dense
+            flat
+            round
+            icon="unfold_more"
+            class="chat-attach-btn"
+            :aria-label="$t('a11y.attachmentOptions')"
+            aria-haspopup="menu"
+            :disable="disable"
           >
-          <span
-            v-if="stampMultiplier && stampMultiplier !== '1'"
-            class="chat-stamp-pill-multiple q-ml-xs"
-            data-testid="stamp-pill-multiple"
-            >{{ stampMultiplier }}×</span
+            <q-menu
+              ref="attachMenu"
+              anchor="top left"
+              self="bottom left"
+              max-height="80vh"
+            >
+              <q-list dense style="min-width: 220px" class="q-py-xs">
+                <q-item
+                  clickable
+                  v-close-popup
+                  data-testid="attach-image-menu-item"
+                  @click="pickImages"
+                >
+                  <q-item-section avatar side>
+                    <q-icon name="image" />
+                  </q-item-section>
+                  <q-item-section>
+                    {{ $t('chatInput.attachImage') }}
+                  </q-item-section>
+                </q-item>
+
+                <q-item
+                  clickable
+                  v-close-popup
+                  data-testid="attach-calendar-vcard-menu-item"
+                  @click="pickImages"
+                >
+                  <q-item-section avatar side>
+                    <q-icon name="attach_file" />
+                  </q-item-section>
+                  <q-item-section>
+                    {{ $t('chatInput.attachFile') }}
+                  </q-item-section>
+                </q-item>
+
+                <!-- Send Stealth: encrypted transfer inside direct message payload -->
+                <q-item
+                  clickable
+                  v-close-popup
+                  data-testid="send-stealth-menu-item"
+                  @click="sendStealthClicked"
+                >
+                  <q-item-section avatar side>
+                    <q-icon name="visibility_off" />
+                  </q-item-section>
+                  <q-item-section>
+                    {{ $t('chatInput.sendStealth') }}
+                  </q-item-section>
+                </q-item>
+
+                <q-item
+                  clickable
+                  v-close-popup
+                  data-testid="webrtc-call-menu-item"
+                  @click="emitAndClose('webrtcCallClicked', { withVideo: false })"
+                >
+                  <q-item-section avatar side>
+                    <q-icon name="call" />
+                  </q-item-section>
+                  <q-item-section>
+                    {{ $t('chatInput.phoneCall') }}
+                  </q-item-section>
+                </q-item>
+
+                <q-item
+                  clickable
+                  v-close-popup
+                  data-testid="webrtc-video-call-menu-item"
+                  @click="emitAndClose('webrtcCallClicked', { withVideo: true })"
+                >
+                  <q-item-section avatar side>
+                    <q-icon name="videocam" />
+                  </q-item-section>
+                  <q-item-section>
+                    {{ $t('webrtcCall.mediaMode.video') }}
+                  </q-item-section>
+                </q-item>
+
+                <div class="chat-menu-divider q-my-xs" role="separator" />
+
+                <!-- Submenu: Payments & Docs (Invoices, Swaps, Articles) -->
+                <q-item
+                  clickable
+                  data-testid="more-actions-submenu-item"
+                >
+                  <q-item-section avatar side>
+                    <q-icon name="apps" />
+                  </q-item-section>
+                  <q-item-section>
+                    {{ $t('chatInput.moreActionsSubmenu') }}
+                  </q-item-section>
+                  <q-item-section side>
+                    <q-icon name="keyboard_arrow_right" />
+                  </q-item-section>
+                  <q-menu anchor="top end" self="top start">
+                    <q-list dense style="min-width: 210px" class="q-py-xs">
+                      <q-item
+                        clickable
+                        v-close-popup
+                        data-testid="invoice-menu-item"
+                        @click="closeMenuAndEmit('invoiceClicked')"
+                      >
+                        <q-item-section avatar side>
+                          <q-icon name="receipt_long" />
+                        </q-item-section>
+                        <q-item-section>
+                          {{ $t('chatInput.createInvoice') }}
+                        </q-item-section>
+                      </q-item>
+
+                      <q-item
+                        clickable
+                        v-close-popup
+                        data-testid="swap-menu-item"
+                        @click="closeMenuAndEmit('swapClicked')"
+                      >
+                        <q-item-section avatar side>
+                          <q-icon name="swap_horiz" />
+                        </q-item-section>
+                        <q-item-section>
+                          {{ $t('signedSwap.title') }}
+                        </q-item-section>
+                      </q-item>
+
+                      <q-item
+                        clickable
+                        v-close-popup
+                        data-testid="article-menu-item"
+                        @click="closeMenuAndEmit('articleClicked')"
+                      >
+                        <q-item-section avatar side>
+                          <q-icon name="article" />
+                        </q-item-section>
+                        <q-item-section>
+                          {{ $t('chatInput.writeArticle') }}
+                        </q-item-section>
+                      </q-item>
+                    </q-list>
+                  </q-menu>
+                </q-item>
+
+                <!-- Submenu: Games (Blackjack, Satoshi Dice, Rock-Paper-Scissors, Heads-Up Poker) -->
+                <q-item
+                  clickable
+                  data-testid="games-submenu-item"
+                >
+                  <q-item-section avatar side>
+                    <q-icon name="sports_esports" />
+                  </q-item-section>
+                  <q-item-section>
+                    {{ $t('chatInput.gamesSubmenu') }}
+                  </q-item-section>
+                  <q-item-section side>
+                    <q-icon name="keyboard_arrow_right" />
+                  </q-item-section>
+                  <q-menu anchor="top end" self="top start">
+                    <q-list dense style="min-width: 220px" class="q-py-xs">
+                      <!-- A blackjack challenge is one more message type, offered in every chat. -->
+                      <q-item
+                        clickable
+                        v-close-popup
+                        data-testid="blackjack-menu-item"
+                        @click="blackjackClicked"
+                      >
+                        <q-item-section avatar side>
+                          <q-icon name="casino" />
+                        </q-item-section>
+                        <q-item-section>
+                          {{ $t('chatInput.blackjackChallenge') }}
+                        </q-item-section>
+                      </q-item>
+
+                      <q-item
+                        clickable
+                        v-close-popup
+                        data-testid="dice-menu-item"
+                        @click="diceClicked"
+                      >
+                        <q-item-section avatar side>
+                          <q-icon name="casino" />
+                        </q-item-section>
+                        <q-item-section>
+                          {{ $t('chatInput.diceChallenge') }}
+                        </q-item-section>
+                      </q-item>
+
+                      <q-item
+                        clickable
+                        v-close-popup
+                        data-testid="rps-menu-item"
+                        @click="rpsClicked"
+                      >
+                        <q-item-section avatar side>
+                          <q-icon name="sports_esports" />
+                        </q-item-section>
+                        <q-item-section>
+                          {{ $t('chatInput.rpsChallenge') }}
+                        </q-item-section>
+                      </q-item>
+
+                      <q-item
+                        clickable
+                        v-close-popup
+                        data-testid="mental-poker-menu-item"
+                        @click="closeMenuAndEmit('mentalPokerClicked')"
+                      >
+                        <q-item-section avatar side>
+                          <q-icon name="style" />
+                        </q-item-section>
+                        <q-item-section>
+                          {{ $t('chatInput.mentalPokerChallenge') }}
+                        </q-item-section>
+                      </q-item>
+                    </q-list>
+                  </q-menu>
+                </q-item>
+              </q-list>
+            </q-menu>
+          </q-btn>
+
+          <q-btn
+            dense
+            flat
+            rounded
+            no-caps
+            icon="local_post_office"
+            class="chat-stamp-btn"
+            :aria-label="$t('a11y.stampPayment')"
+            aria-haspopup="menu"
+            :disable="disable"
           >
-          <q-tooltip max-width="280px">
-            <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
-            <div
+            <!-- What the message will carry, in the compact form: the chip is a tight place. -->
+            <span class="chat-stamp-pill-text q-ml-xs">{{ stampPillText }}</span>
+            <span
               v-if="defaultStampMode && suggestedIncrease"
-              data-testid="stamp-tooltip-increase"
+              class="chat-stamp-pill-increase q-ml-xs text-warning text-weight-bold"
+              data-testid="stamp-pill-increase"
+              aria-hidden="true"
+              >↑</span
             >
-              {{ $t('chatInput.stampSuggestedIncreaseNotice') }}
-            </div>
-            <div>{{ $t('chatInput.stampWhat') }}</div>
-            <div
-              v-if="defaultStampMode && stampBasisNote"
-              data-testid="stamp-basis-note"
+            <span
+              v-if="stampMultiplier && stampMultiplier !== '1'"
+              class="chat-stamp-pill-multiple q-ml-xs"
+              data-testid="stamp-pill-multiple"
+              >{{ stampMultiplier }}×</span
             >
-              {{ stampBasisNote }}
-            </div>
-          </q-tooltip>
-          <q-menu anchor="top middle" self="bottom middle">
-            <div class="q-pa-md" style="min-width: 320px">
-              <div class="row items-center justify-between q-mb-xs">
-                <div class="text-subtitle2 text-weight-medium">
-                  {{ $t('chatInput.stampPayment') }}
+            <q-tooltip max-width="280px">
+              <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
+              <div
+                v-if="defaultStampMode && suggestedIncrease"
+                data-testid="stamp-tooltip-increase"
+              >
+                {{ $t('chatInput.stampSuggestedIncreaseNotice') }}
+              </div>
+              <div>{{ $t('chatInput.stampWhat') }}</div>
+              <div
+                v-if="defaultStampMode && stampBasisNote"
+                data-testid="stamp-basis-note"
+              >
+                {{ stampBasisNote }}
+              </div>
+            </q-tooltip>
+            <q-menu anchor="top left" self="bottom left">
+              <div
+                class="q-pa-md"
+                style="min-width: min(300px, 88vw); max-width: calc(100vw - 24px)"
+              >
+                <div class="row items-center justify-between q-mb-xs">
+                  <div class="text-subtitle2 text-weight-medium">
+                    {{ $t('chatInput.stampPayment') }}
+                  </div>
+                  <q-badge
+                    outline
+                    :color="isDefaultStamp ? 'primary' : 'amber-8'"
+                    data-testid="stamp-mode-status"
+                  >
+                    {{
+                      isDefaultStamp
+                        ? $t('chatInput.stampSuggestedMode')
+                        : $t('chatInput.stampOverriddenMode')
+                    }}
+                  </q-badge>
                 </div>
-                <q-badge
-                  outline
-                  :color="isDefaultStamp ? 'primary' : 'amber-8'"
-                  data-testid="stamp-mode-status"
-                >
-                  {{
-                    isDefaultStamp
-                      ? $t('chatInput.stampSuggestedMode')
-                      : $t('chatInput.stampOverriddenMode')
-                  }}
-                </q-badge>
-              </div>
 
-              <div
-                v-if="lastPeerStampText"
-                class="text-caption text-grey-7 q-mb-xs"
-                data-testid="stamp-last-peer-paid"
-              >
-                {{
-                  $t('chatInput.stampPeerLastPaid', {
-                    amount: lastPeerStampText,
-                  })
-                }}
-              </div>
-
-              <div
-                v-if="isDefaultStamp && suggestedIncrease"
-                class="text-caption text-warning text-weight-medium q-mb-xs"
-                data-testid="stamp-suggested-increase"
-              >
-                ↑ {{ $t('chatInput.stampSuggestedIncreaseNotice') }}
-              </div>
-
-              <div
-                class="text-caption chat-stamp-explanation q-mb-sm"
-                data-testid="stamp-explanation"
-              >
-                <div>{{ $t('chatInput.stampWhat') }}</div>
                 <div
-                  v-if="defaultStampMode && stampBasisNote"
-                  data-testid="stamp-basis-note"
+                  v-if="lastPeerStampText"
+                  class="text-caption text-grey-7 q-mb-xs"
+                  data-testid="stamp-last-peer-paid"
                 >
-                  {{ stampBasisNote }}
-                </div>
-                <div class="q-mt-xs">{{ $t('chatInput.stampWhy') }}</div>
-              </div>
-
-              <q-input
-                v-model="innerStampAmount"
-                dense
-                autofocus
-                type="number"
-                min="0"
-                step="any"
-                data-testid="chat-input-stamp-amount"
-                :suffix="chainUnit"
-                :label="$t('chatInput.stampPayment')"
-              />
-              <q-btn
-                flat
-                dense
-                no-caps
-                color="primary"
-                data-testid="chat-input-stamp-free"
-                :label="$t('chatInput.stampFree')"
-                :disable="disable"
-                @click="chooseFreeStamp"
-              />
-              <!-- Multipliers use the current quote or network static fallback. -->
-              <div class="q-mt-sm q-px-md">
-                <q-slider
-                  v-model="decadeIndex"
-                  class="q-mt-md"
-                  :min="0"
-                  :max="multiplierSteps.length - 1"
-                  :disable="disable"
-                  :step="1"
-                  label
-                  label-always
-                  :label-value="stampMultiplier ? `${stampMultiplier}×` : ''"
-                  markers
-                  :marker-labels="decadeMarkerLabels"
-                  data-testid="chat-input-stamp-slider"
-                />
-              </div>
-              <div
-                class="text-caption q-mt-sm"
-                style="overflow-wrap: anywhere"
-                data-testid="chat-input-stamp-selection"
-              >
-                {{ sliderLabelValue }}
-              </div>
-              <div class="text-caption text-grey-7 q-mt-sm">
-                {{ $t('chatInput.stampQuickSelection') }}
-              </div>
-
-              <div
-                v-if="!isDefaultStamp"
-                class="row items-center justify-between q-mt-sm"
-              >
-                <div class="text-caption text-grey-7">
                   {{
-                    $t('chatInput.defaultStamp', { amount: defaultStampText })
+                    $t('chatInput.stampPeerLastPaid', {
+                      amount: lastPeerStampText,
+                    })
                   }}
                 </div>
+
+                <div
+                  v-if="isDefaultStamp && suggestedIncrease"
+                  class="text-caption text-warning text-weight-medium q-mb-xs"
+                  data-testid="stamp-suggested-increase"
+                >
+                  ↑ {{ $t('chatInput.stampSuggestedIncreaseNotice') }}
+                </div>
+
+                <div
+                  class="text-caption chat-stamp-explanation q-mb-sm"
+                  data-testid="stamp-explanation"
+                >
+                  <div>{{ $t('chatInput.stampWhat') }}</div>
+                  <div
+                    v-if="defaultStampMode && stampBasisNote"
+                    data-testid="stamp-basis-note"
+                  >
+                    {{ stampBasisNote }}
+                  </div>
+                  <div class="q-mt-xs">{{ $t('chatInput.stampWhy') }}</div>
+                </div>
+
+                <q-input
+                  v-model="innerStampAmount"
+                  dense
+                  autofocus
+                  type="number"
+                  min="0"
+                  step="any"
+                  data-testid="chat-input-stamp-amount"
+                  :suffix="chainUnit"
+                  :label="$t('chatInput.stampPayment')"
+                />
                 <q-btn
                   flat
                   dense
                   no-caps
-                  size="sm"
                   color="primary"
-                  icon="restart_alt"
-                  class="q-px-xs"
-                  data-testid="chat-input-reset-default"
-                  :label="$t('chatInput.resetToDefault')"
-                  @click="resetToDefault"
+                  data-testid="chat-input-stamp-free"
+                  :label="$t('chatInput.stampFree')"
+                  :disable="disable"
+                  @click="chooseFreeStamp"
                 />
-              </div>
-            </div>
-          </q-menu>
-        </q-btn>
-      </div>
+                <!-- Multipliers use the current quote or network static fallback. -->
+                <div class="q-mt-sm q-px-md">
+                  <q-slider
+                    v-model="decadeIndex"
+                    class="q-mt-md"
+                    :min="0"
+                    :max="multiplierSteps.length - 1"
+                    :disable="disable"
+                    :step="1"
+                    label
+                    label-always
+                    :label-value="stampMultiplier ? `${stampMultiplier}×` : ''"
+                    markers
+                    :marker-labels="decadeMarkerLabels"
+                    data-testid="chat-input-stamp-slider"
+                  />
+                </div>
+                <div
+                  class="text-caption q-mt-sm"
+                  style="overflow-wrap: anywhere"
+                  data-testid="chat-input-stamp-selection"
+                >
+                  {{ sliderLabelValue }}
+                </div>
+                <div class="text-caption text-grey-7 q-mt-sm">
+                  {{ $t('chatInput.stampQuickSelection') }}
+                </div>
 
-      <q-btn
-        unelevated
-        color="primary"
-        icon="send"
-        class="chat-send-btn q-btn"
-        :aria-label="$t('a11y.sendMessage')"
-        :disable="disable || Boolean(stampUnavailable)"
-        :loading="disable"
-        @mousedown.prevent="sendMessage"
-      />
+                <div
+                  v-if="!isDefaultStamp"
+                  class="row items-center justify-between q-mt-sm"
+                >
+                  <div class="text-caption text-grey-7">
+                    {{
+                      $t('chatInput.defaultStamp', { amount: defaultStampText })
+                    }}
+                  </div>
+                  <q-btn
+                    flat
+                    dense
+                    no-caps
+                    size="sm"
+                    color="primary"
+                    icon="restart_alt"
+                    class="q-px-xs"
+                    data-testid="chat-input-reset-default"
+                    :label="$t('chatInput.resetToDefault')"
+                    @click="resetToDefault"
+                  />
+                </div>
+              </div>
+            </q-menu>
+          </q-btn>
+        </div>
+
+        <q-btn
+          unelevated
+          color="primary"
+          icon="send"
+          class="chat-send-btn q-btn"
+          :aria-label="$t('a11y.sendMessage')"
+          :disable="disable || Boolean(stampUnavailable)"
+          :loading="disable"
+          @mousedown.prevent="sendMessage"
+        />
+      </div>
     </q-toolbar>
     <input
       ref="filePicker"
@@ -1072,14 +1082,22 @@ export default defineComponent({
 <style lang="scss" scoped>
 .chat-input-toolbar {
   display: flex;
+  flex-direction: column;
   align-items: center;
+  gap: 6px;
   min-height: 64px;
+  padding: 8px 14px;
   padding-top: 8px;
   padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
   padding-left: max(14px, env(safe-area-inset-left, 0px));
   padding-right: max(14px, env(safe-area-inset-right, 0px));
   overflow: visible;
   container-type: inline-size;
+}
+
+.chat-input-bottom-bar {
+  min-height: 38px;
+  gap: 8px;
 }
 
 .chat-attach-btn {
@@ -1098,11 +1116,12 @@ export default defineComponent({
 
 .chat-input-container {
   flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
   min-height: 40px;
-  margin: 0 8px;
-  border-radius: 20px;
-  padding: 0 4px 0 14px;
+  margin: 0;
+  border-radius: 16px;
+  padding: 0 12px;
   background-color: var(--q-chat-input-bg, rgba(0, 0, 0, 0.04));
   border: 1px solid var(--q-chat-input-border, rgba(0, 0, 0, 0.12));
   transition: border-color 0.2s ease, box-shadow 0.2s ease,
@@ -1117,11 +1136,13 @@ export default defineComponent({
 
 .chat-input-field {
   flex: 1 1 0%;
-  min-width: 84px;
-  font-size: 14px;
+  min-width: 0;
+  font-size: 16px;
   line-height: 1.4;
 
-  :deep(.q-field__native) {
+  :deep(.q-field__native),
+  :deep(.q-field__input) {
+    font-size: 16px;
     padding: 6px 0;
     max-height: 140px;
   }
@@ -1139,9 +1160,10 @@ export default defineComponent({
 }
 
 .chat-stamp-btn {
-  flex-shrink: 0;
-  max-width: 48%;
-  min-height: 28px;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 30px;
   height: auto;
   padding: 2px 10px;
   border-radius: 999px;
@@ -1179,18 +1201,18 @@ export default defineComponent({
   white-space: nowrap;
   flex-shrink: 0;
 
-  @media (max-width: 540px) {
+  @media (max-width: 360px) {
     display: none;
   }
 }
 
-@container (max-width: 480px) {
+@container (max-width: 340px) {
   .chat-stamp-pill-multiple {
     display: none;
   }
 
   .chat-stamp-btn {
-    padding: 2px 6px;
+    padding: 2px 8px;
   }
 }
 

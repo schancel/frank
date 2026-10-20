@@ -31,7 +31,10 @@
         class="q-ma-none q-pa-none column no-wrap col full-height overflow-hidden"
         :style-fn="pageStyle"
       >
-        <q-card flat class="col column full-width full-height bg-transparent">
+        <q-card
+          flat
+          class="profile-card col column full-width full-height bg-transparent"
+        >
           <profile
             v-model:name="name"
             v-model:username="username"
@@ -44,10 +47,13 @@
             v-model:acceptancePrice="acceptancePrice"
             v-model:accountType="accountType"
             v-model:botRole="botRole"
-            class="col full-height"
+            class="profile-body col full-height"
           />
           <q-separator />
-          <q-card-actions align="right" class="q-pa-md bg-transparent">
+          <q-card-actions
+            align="right"
+            class="profile-actions q-pa-md bg-transparent"
+          >
             <q-btn
               :label="$t('profileDialog.cancel')"
               color="negative"
@@ -427,3 +433,22 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.profile-container {
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.profile-card,
+.profile-body {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 0;
+}
+.profile-actions {
+  flex-shrink: 0;
+}
+</style>
+

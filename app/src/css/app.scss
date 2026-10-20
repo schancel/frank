@@ -600,3 +600,22 @@ body.body--dark {
   }
 }
 
+// Prevent iOS Safari & mobile WebKit from auto-zooming the viewport (>100% width)
+// when focusing inputs or textareas with font-size < 16px.
+@media (max-width: 800px), (hover: none) and (pointer: coarse) {
+  html,
+  body,
+  #q-app {
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
+  input,
+  textarea,
+  select,
+  .q-field__native,
+  .q-field__input {
+    font-size: 16px !important;
+  }
+}
+

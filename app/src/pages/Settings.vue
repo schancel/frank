@@ -26,6 +26,78 @@
           class="settings-content col column full-width full-height bg-transparent"
         >
           <div
+            class="settings-quick-nav row items-center q-gutter-xs q-px-sm q-py-xs col-auto"
+            data-test="settings-quick-nav"
+          >
+            <q-btn
+              outline
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              icon="face"
+              :label="$t('SettingPanel.profile')"
+              data-test="settings-quick-profile"
+              @click="$router.push('/profile')"
+            />
+            <q-btn
+              outline
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              icon="qr_code_2"
+              :label="$t('profileDialog.identityQr')"
+              data-test="settings-quick-qr"
+              @click="$router.push('/qr')"
+            />
+            <q-btn
+              outline
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              icon="security"
+              :label="$t('accountRecovery.backup_account_codex32')"
+              data-test="settings-quick-backup"
+              @click="$router.push('/backup')"
+            />
+            <q-btn
+              outline
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              icon="menu_book"
+              :label="$t('docs.title')"
+              data-test="settings-quick-docs"
+              @click="$router.push('/docs')"
+            />
+            <q-btn
+              outline
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              icon="change_history"
+              :label="$t('SettingPanel.changeLog')"
+              data-test="settings-quick-changelog"
+              @click="$router.push('/changelog')"
+            />
+            <q-btn
+              outline
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              icon="info"
+              :label="$t('about.menu')"
+              data-test="settings-quick-about"
+              @click="$router.push('/about')"
+            />
+          </div>
+          <q-separator />
+          <div
             class="settings-body col full-height overflow-hidden"
             :class="$q?.screen?.gt?.xs || false ? 'row' : 'column'"
           >
@@ -1080,6 +1152,11 @@ export default defineComponent({
   min-width: 0;
   max-width: 100%;
   min-height: 0;
+}
+.settings-quick-nav {
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
 }
 .settings-tabs {
   max-width: 100%;

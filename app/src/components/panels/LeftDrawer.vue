@@ -552,6 +552,8 @@ export default defineComponent({
           tab.value = 'wallet'
         } else if (
           path.startsWith('/settings') ||
+          path.startsWith('/profile') ||
+          path.startsWith('/backup') ||
           path.startsWith('/docs') ||
           path.startsWith('/about') ||
           path.startsWith('/changelog')

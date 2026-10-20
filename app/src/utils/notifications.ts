@@ -102,6 +102,29 @@ export function sentTransactionNotify(txId?: string, customMessage?: string) {
     actions,
   })
 }
+const activeNotifications = new Map<string, Notification>()
+const notificationCallbacksByTag = new Map<string, () => void>()
+let lastNotificationCallback: (() => void) | null = null
+let untaggedNotificationCounter = 0
+
+export function invokeNotificationClickCallback(tag?: string): boolean {
+  if (tag && notificationCallbacksByTag.has(tag)) {
+    const cb = notificationCallbacksByTag.get(tag)
+    notificationCallbacksByTag.delete(tag)
+    if (cb) {
+      cb()
+      return true
+    }
+  }
+  if (lastNotificationCallback) {
+    const cb = lastNotificationCallback
+    lastNotificationCallback = null
+    cb()
+    return true
+  }
+  return false
+}
+
 export function desktopNotify(
   title: string,
   body: string,
@@ -111,24 +134,77 @@ export function desktopNotify(
   // same message never shows twice on a device even when two tabs or windows each notify for it.
   tag?: string,
 ) {
-  // A notification shows text as it is: the message's words, without its Markdown syntax.
-  const notify = new Notification(title, {
-    body: markdownPlainText(body),
-    icon,
-    ...(tag === undefined ? {} : { tag }),
-  })
+  const plainBody = markdownPlainText(body)
+  lastNotificationCallback = callback
+  if (tag) {
+    if (notificationCallbacksByTag.size >= 100) {
+      const oldestKey = notificationCallbacksByTag.keys().next().value
+      if (oldestKey !== undefined) notificationCallbacksByTag.delete(oldestKey)
+    }
+    notificationCallbacksByTag.set(tag, callback)
+  }
 
-  notify.onclick = () => {
-    try {
-      notify.close?.()
-    } catch {
-      // Ignored
+  // A notification shows text as it is: the message's words, without its Markdown syntax.
+  try {
+    if (typeof Notification === 'function') {
+      const notify = new Notification(title, {
+        body: plainBody,
+        icon,
+        ...(tag === undefined ? {} : { tag }),
+      })
+      const retentionKey = tag ?? `__untagged_${++untaggedNotificationCounter}`
+      if (activeNotifications.size >= 50) {
+        const oldestKey = activeNotifications.keys().next().value
+        if (oldestKey !== undefined) activeNotifications.delete(oldestKey)
+      }
+      activeNotifications.set(retentionKey, notify)
+
+      notify.onclose = () => {
+        activeNotifications.delete(retentionKey)
+      }
+
+      notify.onclick = () => {
+        activeNotifications.delete(retentionKey)
+        if (tag) {
+          notificationCallbacksByTag.delete(tag)
+        }
+        try {
+          notify.close?.()
+        } catch {
+          // Ignored
+        }
+        try {
+          window.focus()
+        } catch {
+          // Ignored: window.focus may be restricted in some browser contexts
+        }
+        callback()
+      }
+      return
     }
-    try {
-      window.focus()
-    } catch {
-      // Ignored: window.focus may be restricted in some browser contexts
-    }
-    callback()
+  } catch {
+    // Mobile browsers (e.g. Android Chrome) throw TypeError: Illegal constructor on
+    // `new Notification(...)` and require ServiceWorkerRegistration.showNotification().
+  }
+
+  if (
+    typeof navigator !== 'undefined' &&
+    'serviceWorker' in navigator &&
+    typeof navigator.serviceWorker?.getRegistration === 'function'
+  ) {
+    void navigator.serviceWorker
+      .getRegistration()
+      .then(reg => {
+        if (reg && typeof reg.showNotification === 'function') {
+          return reg.showNotification(title, {
+            body: plainBody,
+            icon,
+            ...(tag === undefined ? {} : { tag, data: { tag } }),
+          })
+        }
+        return undefined
+      })
+      .catch(() => undefined)
   }
 }
+

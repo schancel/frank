@@ -474,6 +474,35 @@ describe('App exact conversation route authority (#1237)', () => {
       await settleNavigation()
       expect(router.currentRoute.value.path).toBe('/forum')
       expect(chats.activeConversationId).toBeNull()
+
+      // Even if activeConversationId is already set (e.g. restored from storage while on /forum)
+      // or when a mobile Service Worker notificationclick dispatches frank:blind-wakeup-sync,
+      // clicking the notification navigates to the target conversation.
+      chats.activeConversationId = second.id
+      await desktopNotify.mock.calls.at(-1)[3]()
+      await settleNavigation()
+      expect(router.currentRoute.value.path).toBe(`/chat/${second.id}`)
+      expect(router.currentRoute.value.params.address).toBe(second.id)
+
+      await router.push('/forum')
+      await settleNavigation()
+      expect(router.currentRoute.value.path).toBe('/forum')
+
+      window.dispatchEvent(
+        new CustomEvent('frank:blind-wakeup-sync', {
+          detail: {
+            type: 'FRANK_BLIND_WAKEUP_SYNC',
+            payload: {
+              type: 'sync',
+              notificationClick: true,
+              tag: 'notification-receipt',
+            },
+          },
+        }),
+      )
+      await settleNavigation()
+      expect(router.currentRoute.value.path).toBe(`/chat/${second.id}`)
+      expect(chats.activeConversationId).toBe(second.id)
     } finally {
       wrapper.unmount()
     }

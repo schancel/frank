@@ -16,6 +16,7 @@ import {
   errorNotify,
   infoNotify,
   insufficientStampNotify,
+  invokeNotificationClickCallback,
   seedCopiedNotify,
   sentTransactionNotify,
 } from './notifications'
@@ -275,6 +276,42 @@ describe('desktopNotify', () => {
       expect(callback).toHaveBeenCalledTimes(1)
     } finally {
       focusSpy.mockRestore()
+    }
+  })
+
+  it('falls back to ServiceWorkerRegistration.showNotification on mobile browsers where new Notification throws Illegal constructor and routes via invokeNotificationClickCallback', async () => {
+    ;(global as { Notification?: unknown }).Notification = function () {
+      throw new TypeError(
+        "Failed to construct 'Notification': Illegal constructor. Use ServiceWorkerRegistration.showNotification() instead.",
+      )
+    }
+    const showNotification = jest.fn(async () => undefined)
+    const originalServiceWorker = navigator.serviceWorker
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        getRegistration: jest.fn(async () => ({
+          showNotification,
+        })),
+      },
+    })
+    const callback = jest.fn()
+    try {
+      desktopNotify('Alice', '**Hello** mobile', 'avatar.png', callback, 'msg-99')
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(showNotification).toHaveBeenCalledWith('Alice', {
+        body: 'Hello mobile',
+        icon: 'avatar.png',
+        tag: 'msg-99',
+        data: { tag: 'msg-99' },
+      })
+      expect(invokeNotificationClickCallback('msg-99')).toBe(true)
+      expect(callback).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(navigator, 'serviceWorker', {
+        configurable: true,
+        value: originalServiceWorker,
+      })
     }
   })
 })

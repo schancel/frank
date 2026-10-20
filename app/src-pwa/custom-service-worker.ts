@@ -180,6 +180,15 @@ export function registerBlindWakeupServiceWorkerListeners(
     if (event?.notification && typeof event.notification.close === 'function') {
       event.notification.close()
     }
+    const tag =
+      typeof event?.notification?.tag === 'string' && event.notification.tag
+        ? event.notification.tag
+        : undefined
+    const dataConversationId =
+      typeof event?.notification?.data?.conversationId === 'string' &&
+      event.notification.data.conversationId
+        ? event.notification.data.conversationId
+        : undefined
     const focusOrOpen = (async () => {
       const clients =
         (await sw.clients?.matchAll({
@@ -189,7 +198,14 @@ export function registerBlindWakeupServiceWorkerListeners(
       for (const client of clients) {
         client.postMessage({
           type: BLIND_WAKEUP_MESSAGE_TYPE,
-          payload: { type: 'sync' },
+          payload: {
+            type: 'sync',
+            notificationClick: true,
+            ...(tag ? { tag } : {}),
+            ...(dataConversationId
+              ? { conversationId: dataConversationId }
+              : {}),
+          },
           timestampMs: Date.now(),
         })
         if (typeof client.focus === 'function') {
@@ -198,7 +214,10 @@ export function registerBlindWakeupServiceWorkerListeners(
         }
       }
       if (typeof sw.clients?.openWindow === 'function') {
-        await sw.clients.openWindow('/')
+        const targetUrl = dataConversationId
+          ? `/#/chat/${encodeURIComponent(dataConversationId)}`
+          : '/?notificationClick=1'
+        await sw.clients.openWindow(targetUrl)
       }
     })()
 

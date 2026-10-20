@@ -136,6 +136,21 @@
     ) {
       event.notification.close()
     }
+    var tag =
+      event &&
+      event.notification &&
+      typeof event.notification.tag === 'string' &&
+      event.notification.tag
+        ? event.notification.tag
+        : undefined
+    var dataConversationId =
+      event &&
+      event.notification &&
+      event.notification.data &&
+      typeof event.notification.data.conversationId === 'string' &&
+      event.notification.data.conversationId
+        ? event.notification.data.conversationId
+        : undefined
     var focusOrOpen = (async function () {
       var clients =
         sw.clients && typeof sw.clients.matchAll === 'function'
@@ -149,7 +164,14 @@
         try {
           client.postMessage({
             type: BLIND_WAKEUP_MESSAGE_TYPE,
-            payload: { type: 'sync' },
+            payload: {
+              type: 'sync',
+              notificationClick: true,
+              ...(tag ? { tag: tag } : {}),
+              ...(dataConversationId
+                ? { conversationId: dataConversationId }
+                : {}),
+            },
             timestampMs: Date.now(),
           })
         } catch (_err) {
@@ -161,7 +183,10 @@
         }
       }
       if (sw.clients && typeof sw.clients.openWindow === 'function') {
-        await sw.clients.openWindow('/')
+        var targetUrl = dataConversationId
+          ? '/#/chat/' + encodeURIComponent(dataConversationId)
+          : '/?notificationClick=1'
+        await sw.clients.openWindow(targetUrl)
       }
     })()
 

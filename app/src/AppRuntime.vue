@@ -54,6 +54,7 @@ import { useSettingsStore } from 'src/stores/settings'
 import { usePersistentStorageStore } from 'src/stores/persistent-storage'
 import { applyTheme } from 'src/utils/theme'
 import { applyViewportScaleAndMetrics } from 'src/utils/mobile-viewport-scale'
+import { invokeNotificationClickCallback } from 'src/utils/notifications'
 import { openChat } from 'src/utils/routes'
 import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 
@@ -221,6 +222,107 @@ export default defineComponent({
       }
     })
 
+    // When a notification click invokes `setActiveConversation(id, { requestFocus: true })`,
+    // `activeConversationId` may already equal `id` (e.g. restored from storage while viewing
+    // `/forum` or `/wallet`, or a second message in the same thread). Watching
+    // `composeFocusRequest.nonce` ensures notification clicks always navigate to the chat.
+    watch(
+      () => chatStore.composeFocusRequest?.nonce,
+      nonce => {
+        if (!nonce) return
+        const conversationId =
+          chatStore.composeFocusRequest?.conversationId ||
+          activeConversationId.value
+        if (!conversationId) return
+        const currentRoute = router.currentRoute.value
+        const routeAddress = currentRoute.params.address
+        const routedDefault =
+          typeof routeAddress === 'string' && isChainAddress(routeAddress)
+            ? chatStore.chats[toChainDisplayAddress(routeAddress)]
+            : undefined
+        const isAlreadyOnChatView =
+          currentRoute.path.startsWith('/chat/') &&
+          currentRoute.query.info !== 'true' &&
+          (routeAddress === conversationId ||
+            routedDefault?.id === conversationId)
+        if (!isAlreadyOnChatView) {
+          void openChat(router, conversationId)
+        }
+      },
+    )
+
+    let pendingNotificationClickUntilMs = 0
+
+    const routeToNewestNotificationConversation = (): boolean => {
+      const sorted = Array.isArray(chatStore.getSortedChatOrder)
+        ? chatStore.getSortedChatOrder
+        : Object.values(chatStore.conversations ?? {})
+      const unreadConv = sorted.find(
+        (conv: any) => conv && (conv.totalUnreadMessages ?? 0) > 0 && conv.id,
+      )
+      const targetId = unreadConv?.id || sorted[0]?.id
+      if (targetId && typeof chatStore.setActiveConversation === 'function') {
+        chatStore.setActiveConversation(targetId, { requestFocus: true })
+        void openChat(router, targetId)
+        return true
+      }
+      return false
+    }
+
+    watch(lastReceived, () => {
+      if (
+        pendingNotificationClickUntilMs > 0 &&
+        Date.now() <= pendingNotificationClickUntilMs
+      ) {
+        if (routeToNewestNotificationConversation()) {
+          pendingNotificationClickUntilMs = 0
+        }
+      }
+    })
+
+    const handleBlindWakeupSyncEvent = (event: Event) => {
+      const detail = (event as CustomEvent)?.detail
+      const payload = detail?.payload
+      if (!payload || !payload.notificationClick) return
+
+      const tag = typeof payload.tag === 'string' ? payload.tag : undefined
+      const explicitConvId =
+        typeof payload.conversationId === 'string' && payload.conversationId
+          ? payload.conversationId
+          : tag && tag !== 'frank-blind-wakeup-sync'
+          ? chatStore.messages?.[tag]?.conversationId
+          : undefined
+
+      if (
+        tag &&
+        tag !== 'frank-blind-wakeup-sync' &&
+        typeof invokeNotificationClickCallback === 'function' &&
+        invokeNotificationClickCallback(tag)
+      ) {
+        return
+      }
+
+      if (
+        explicitConvId &&
+        typeof chatStore.setActiveConversation === 'function'
+      ) {
+        chatStore.setActiveConversation(explicitConvId, { requestFocus: true })
+        void openChat(router, explicitConvId)
+        return
+      }
+
+      pendingNotificationClickUntilMs = Date.now() + 15_000
+      routeToNewestNotificationConversation()
+    }
+
+    const consumeInitialNotificationClickParam = () => {
+      if (typeof window === 'undefined') return
+      if (window.location?.search?.includes('notificationClick=1')) {
+        pendingNotificationClickUntilMs = Date.now() + 15_000
+        routeToNewestNotificationConversation()
+      }
+    }
+
     const contactClicked = (newAddress: string) => {
       openChat(router, newAddress)
     }
@@ -319,6 +421,8 @@ export default defineComponent({
       getRelayData: myProfile,
       tabCoordinator,
       takeoverHere,
+      handleBlindWakeupSyncEvent,
+      consumeInitialNotificationClickParam,
       shortcutKeyListener(e: KeyboardEvent) {
         if (
           !(e.metaKey || e.ctrlKey) ||
@@ -435,12 +539,21 @@ export default defineComponent({
         'message',
         this.handleGlobalExtensionSyncMessage,
       )
+      window.removeEventListener(
+        'frank:blind-wakeup-sync',
+        this.handleBlindWakeupSyncEvent,
+      )
     }
   },
   mounted() {
     document.addEventListener('keydown', this.shortcutKeyListener)
     if (typeof window !== 'undefined') {
       window.addEventListener('message', this.handleGlobalExtensionSyncMessage)
+      window.addEventListener(
+        'frank:blind-wakeup-sync',
+        this.handleBlindWakeupSyncEvent,
+      )
+      this.consumeInitialNotificationClickParam()
     }
     // Ticket #370: a returning user's stored seed should survive browser storage cleanup. Fails
     // soft (never throws) and does nothing without an account.

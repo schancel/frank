@@ -207,18 +207,52 @@ function secondaryChainIdentifier(chain: string): string | undefined {
     ? entry.id
     : undefined
 }
-function secondaryRows(): string[] {
+let multichainListConsumers = 0
+let secondaryBatchGeneration = 0
+
+function isExtensionPopup(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    Boolean(window.location?.search?.includes('extMode=popup'))
+  )
+}
+
+function secondaryRows(includeAllConfigs = true): string[] {
   return [
     ...new Set([
-      ...WALLET_CONFIGS.map(wallet => wallet.id),
+      ...(includeAllConfigs ? WALLET_CONFIGS.map(wallet => wallet.id) : []),
       ...[...requestedChains].map(chain => chain.value),
     ]),
   ].filter(id => secondaryChainIdentifier(id) !== undefined)
 }
 
 function fetchSecondaryBalances(force: boolean) {
-  for (const chain of secondaryRows()) void fetchChainBalance(chain, force)
-  void fetchChainBalance('solana', force)
+  const batchGen = ++secondaryBatchGeneration
+  const requested = [...new Set([...requestedChains].map(c => c.value))]
+  for (const chain of requested) {
+    if (!isPrimaryChain(chain)) {
+      void fetchChainBalance(chain, force)
+    }
+  }
+  if (isExtensionPopup() || multichainListConsumers === 0) {
+    return
+  }
+  if (!requested.some(c => isSolanaChain(c))) {
+    void fetchChainBalance('solana', force)
+  }
+  const rows = secondaryRows(true).filter(chain => !requested.includes(chain))
+  void (async () => {
+    for (const chain of rows) {
+      if (
+        batchGen !== secondaryBatchGeneration ||
+        multichainConsumers === 0 ||
+        multichainListConsumers === 0
+      ) {
+        break
+      }
+      await fetchChainBalance(chain, force)
+    }
+  })()
 }
 
 const solanaState = ref<ChainBalanceState>({
@@ -370,12 +404,12 @@ export async function fetchChainBalance(
       if (!isCurrent()) return
       const routeMissing = err instanceof RelayWalletRouteUnavailableError
       if (isChainUnreachableError(err)) {
-        console.warn(
+        console.debug(
           `Failed to fetch ${chainIdentifier} balance (chain unreachable)`,
           err,
         )
       } else if (!routeMissing) {
-        console.error(`Failed to fetch ${chainIdentifier} balance`, err)
+        console.debug(`Failed to fetch ${chainIdentifier} balance`, err)
       }
       const previous = secondaryState(chain)
       const known = previous.loaded && previous.balance !== null
@@ -469,7 +503,7 @@ export async function fetchChainBalance(
           },
           err => {
             if (!isCurrent()) return
-            console.error('Failed to fetch Solana balance', err)
+            console.debug('Failed to fetch Solana balance', err)
             solanaState.value = {
               ...solanaState.value,
               hasError: true,
@@ -484,7 +518,7 @@ export async function fetchChainBalance(
           },
           err => {
             if (!isCurrent()) return
-            console.error('Failed to fetch Solana token accounts', err)
+            console.debug('Failed to fetch Solana token accounts', err)
             solanaTokenObservation.value = { status: 'unavailable', lastKnown }
           },
         ),
@@ -492,7 +526,7 @@ export async function fetchChainBalance(
     } catch (err) {
       if (!isCurrent()) return
       if (!(err instanceof RelayWalletRouteUnavailableError)) {
-        console.error('Failed to acquire Solana balance address', err)
+        console.debug('Failed to acquire Solana balance address', err)
       }
       solanaState.value = {
         ...solanaState.value,
@@ -555,6 +589,7 @@ function acquireMultichain() {
 function releaseMultichain() {
   multichainConsumers = Math.max(0, multichainConsumers - 1)
   if (multichainConsumers > 0) return
+  secondaryBatchGeneration++
   clearPollingTimer()
   stopStatusWatch?.()
   stopStatusWatch = undefined
@@ -698,8 +733,14 @@ export function useMultichainBalance() {
   const monad = useBalance()
 
   if (getCurrentInstance()) {
-    onMounted(acquireMultichain)
-    onUnmounted(releaseMultichain)
+    onMounted(() => {
+      multichainListConsumers++
+      acquireMultichain()
+    })
+    onUnmounted(() => {
+      multichainListConsumers = Math.max(0, multichainListConsumers - 1)
+      releaseMultichain()
+    })
   }
 
   return {
@@ -739,11 +780,10 @@ export function useMultichainBalance() {
       return secondaryState(chain).hasError
     },
     refreshAll: async () => {
-      await Promise.all([
-        monad.refresh(),
-        ...secondaryRows().map(chain => fetchChainBalance(chain, true)),
-        fetchChainBalance('solana', true),
-      ])
+      await Promise.all([monad.refresh(), fetchChainBalance('solana', true)])
+      for (const chain of secondaryRows()) {
+        await fetchChainBalance(chain, true)
+      }
     },
   }
 }

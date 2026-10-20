@@ -126,12 +126,17 @@
         @closeDrawer="$emit('closeDrawer')"
       />
 
-      <wallet-panel
+      <div
         v-if="$status.setup"
         v-show="tab == 'wallet'"
-        :shown="tab == 'wallet'"
+        class="full-width column col"
         v-bind="panelAttrs('wallet')"
-      />
+      >
+        <wallet-panel
+          v-if="tab == 'wallet' && $status.setup"
+          :shown="tab == 'wallet'"
+        />
+      </div>
 
       <!-- Real user-reported gap (ticket #61's own follow-up comment admitted this was a stopgap:
       "there's no forum-specific content this drawer could show instead"): clicking "forum" used

@@ -338,9 +338,13 @@ export const useForumStore = defineStore('forum', {
         isCurrent,
       )
       if (!discovered) return []
+      const activeDiscovered = discovered
+        .filter(entry => entry.postCount !== '0')
+        .map(entry => entry.topic)
       const known = [
-        ...DEFAULT_TOPIC_NAMES,
-        ...discovered.map(entry => entry.topic),
+        ...(activeDiscovered.length > 0
+          ? activeDiscovered
+          : DEFAULT_TOPIC_NAMES),
         ...this.topics,
       ]
       const wanted = selected
@@ -403,6 +407,14 @@ export const useForumStore = defineStore('forum', {
               ...entries,
             ]
             succeeded++
+            if (
+              entries.length > 0 &&
+              this.messages.length === 0 &&
+              names.length > 1
+            ) {
+              this.setEntries(nextMessages)
+              this.hasFetchedOnce = true
+            }
           } catch (error) {
             if (!current()) return
             failures++
@@ -589,11 +601,30 @@ export const useForumStore = defineStore('forum', {
         //
       }
       const deserializedForum = JSON.parse(forum) as State
+      const rawMessages = Array.isArray(deserializedForum.messages)
+        ? deserializedForum.messages
+        : []
+      const isCanonicalRestoredRow = (row: unknown): row is ForumMessage => {
+        if (!row || typeof row !== 'object') return false
+        const r = row as Record<string, unknown>
+        return (
+          !('satoshis' in r) &&
+          typeof r.payloadDigest === 'string' &&
+          r.payloadDigest.length > 0 &&
+          typeof r.topic === 'string' &&
+          r.topic.length > 0 &&
+          typeof r.poster === 'string' &&
+          typeof r.voteWeightWei === 'string' &&
+          /^(0|[1-9][0-9]*)$/.test(r.voteWeightWei) &&
+          Array.isArray(r.entries)
+        )
+      }
+      const snapshot = forumSnapshot(rawMessages.filter(isCanonicalRestoredRow))
       return {
         ...deserializedForum,
-        // Cached observations are unverified after restart, especially old number rows.
-        messages: [],
-        index: {},
+        // Restore canonical string-backed rows for instant stale-while-revalidate display while excluding legacy number-backed rows.
+        messages: snapshot.messages,
+        index: snapshot.index,
         voteThreshold:
           typeof deserializedForum.voteThreshold === 'string'
             ? deserializedForum.voteThreshold
@@ -607,7 +638,7 @@ export const useForumStore = defineStore('forum', {
           typeof deserializedForum.voteAmountDisplay === 'string'
             ? deserializedForum.voteAmountDisplay
             : '',
-        hasFetchedOnce: false,
+        hasFetchedOnce: snapshot.messages.length > 0,
         outageStatus: 'ok',
         isRefreshing: false,
         stampPreparationStatus: null,

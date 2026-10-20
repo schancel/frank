@@ -2005,7 +2005,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             store: nativeAttemptStore,
           };
 
+          const initialPoolCount = pool.records().length;
           pool.ensureUnfundedSize(config.subAccountPoolSize);
+          let poolModified = pool.records().length !== initialPoolCount;
           // Classification is deliberately irrelevant here: every old obligation pins its lease.
           const pendingLeaseIndices = new Set([
             ...topicOwner
@@ -2042,9 +2044,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // relay broadcast is possible in that window, but the account is conservatively
               // retired rather than silently reused with an uncertain locally-signed nonce.
               pool.setStatus(record.index, "retired");
+              poolModified = true;
             }
           }
-          await pool.flush();
+          if (poolModified) {
+            await pool.flush();
+          }
           const rpcUrl = `${config.relayBaseUrl.replace(
             /\/$/,
             ""

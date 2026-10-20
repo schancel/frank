@@ -827,6 +827,47 @@ it('excludes unverified number-backed cache on actual persistence restore', asyn
   })
 })
 
+it('restores valid canonical ForumMessage rows with hasFetchedOnce: true for instant stale-while-revalidate display', async () => {
+  let storageOptions:
+    | { restore(storage: unknown): Promise<unknown> }
+    | undefined
+  const pinia = createPinia()
+  pinia.use(({ options }) => {
+    storageOptions = options.storage as typeof storageOptions
+  })
+  createApp({}).use(pinia)
+  setActivePinia(pinia)
+  useForumStore()
+  const canonicalRow = makeMessage({
+    payloadDigest: 'canonical-1',
+    topic: 'memes',
+    voteWeightWei: '10000000',
+  })
+  const restored = (await storageOptions!.restore({
+    get: async () =>
+      JSON.stringify({
+        messages: [
+          canonicalRow,
+          { satoshis: 9007199254740992, payloadDigest: 'legacy-row' },
+        ],
+        index: {},
+        voteThreshold: '5',
+        isRefreshing: true,
+        hasFetchedOnce: false,
+      }),
+  })) as {
+    messages: MessageWithReplies[]
+    index: Record<string, MessageWithReplies>
+    hasFetchedOnce: boolean
+    isRefreshing: boolean
+  }
+  expect(restored.hasFetchedOnce).toBe(true)
+  expect(restored.isRefreshing).toBe(false)
+  expect(restored.messages).toHaveLength(1)
+  expect(restored.messages[0].payloadDigest).toBe('canonical-1')
+  expect(restored.index['canonical-1']?.topic).toBe('memes')
+})
+
 it('normal status refresh reconciles retained operations without creating paid intent', async () => {
   const store = useForumStore()
   await store.refreshOperationStatus({ wallet: testWallet })

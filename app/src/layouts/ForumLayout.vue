@@ -162,7 +162,12 @@ export default defineComponent({
       try {
         let wallet
         try {
-          wallet = await useActiveWallet()
+          wallet = await Promise.race([
+            useActiveWallet(),
+            new Promise<undefined>(resolve =>
+              setTimeout(() => resolve(undefined), 5),
+            ),
+          ])
         } catch {
           // Public reading requires no active wallet
         }

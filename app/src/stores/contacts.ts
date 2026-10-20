@@ -1406,6 +1406,7 @@ export const useContactStore = defineStore('contacts', {
         switch (k) {
           // Restore pubKey binary string to Uint8Array
           case 'pubKey': {
+            if (!v) return null
             // pubKey will be an object if not processed via JSON.stringify replacer function
             const buf =
               typeof v != 'string'

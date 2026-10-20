@@ -87,6 +87,24 @@ import {
 } from '../message-item-plugins/wire'
 export { applyWalletSyncItem } from '../sync-dispatcher'
 import {
+  DEFAULT_DECODE_BATCH_SIZE,
+  DEFAULT_YIELD_BUDGET_MS,
+  createCooperativeBatchYielder,
+  setEventLoopYieldForTesting,
+  yieldToEventLoop,
+  type CooperativeBatchYielder,
+  type EventLoopYieldFn,
+} from './event-loop-yield'
+export {
+  DEFAULT_DECODE_BATCH_SIZE,
+  DEFAULT_YIELD_BUDGET_MS,
+  createCooperativeBatchYielder,
+  setEventLoopYieldForTesting,
+  yieldToEventLoop,
+  type CooperativeBatchYielder,
+  type EventLoopYieldFn,
+}
+import {
   DirectMessageAlreadyAttemptedError,
   DirectMessageArgumentError,
   DirectMessageAttemptUnlinkedError,
@@ -2481,6 +2499,8 @@ async function readMailbox(
     }
     return pending
   }
+  const batchYielder = createCooperativeBatchYielder()
+  let startedDecoding = false
   for (const page of pages) {
     // A record this client cannot decode is never a message, never paid and never a received
     // stamp. It is reported as terminal, under the relay's own identity for it, so the host's
@@ -2494,6 +2514,11 @@ async function readMailbox(
     }
     for (const record of page.records) {
       if (!eligible(record.timestampMs)) continue
+      if (startedDecoding) {
+        await batchYielder.maybeYield()
+      } else {
+        startedDecoding = true
+      }
       const delivery = parseFrame(record.delivery)
       if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1) continue
       const deliveryTyped = delivery.typed

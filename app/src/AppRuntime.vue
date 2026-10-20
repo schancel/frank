@@ -148,23 +148,35 @@ export default defineComponent({
       () => accountStatus.status,
       status => {
         if (status === 'ready') {
-          fetchCuratedDefaultContacts({
-            relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
-          })
-            .then(async curated => {
-              contacts.replaceCuratedDefaults(curated)
-              for (const contact of curated) {
-                await contacts.addDefaultContact(contact)
-              }
-              await contacts.refreshContacts()
+          const runCuratedSync = () => {
+            fetchCuratedDefaultContacts({
+              relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
             })
-            .catch(err => {
-              contacts.clearCuratedDefaults()
-              console.error(err)
-            })
+              .then(async curated => {
+                contacts.replaceCuratedDefaults(curated)
+                for (const contact of curated) {
+                  await contacts.addDefaultContact(contact)
+                }
+                await contacts.refreshContacts()
+              })
+              .catch(err => {
+                contacts.clearCuratedDefaults()
+                console.error(err)
+              })
+          }
+          if (
+            typeof window !== 'undefined' &&
+            window.location?.search?.includes('extMode=popup') &&
+            contacts.contactList.length > 0
+          ) {
+            setTimeout(() => {
+              if (accountStatus.status === 'ready') runCuratedSync()
+            }, 5_000)
+          } else {
+            runCuratedSync()
+          }
         }
       },
-      { immediate: true },
     )
 
     let gatewayDiscoveryWasActive = false
@@ -201,6 +213,7 @@ export default defineComponent({
       refreshContacts: contacts.refreshContacts,
       replaceCuratedDefaults: contacts.replaceCuratedDefaults,
       clearCuratedDefaults: contacts.clearCuratedDefaults,
+      hasExistingContacts: () => contacts.contactList.length > 0,
       // FIXME: Some kind of race condition here where if this is computed,
       // it won't be set yet by the time the setupConnections function is called
       // after signing up or logging in.
@@ -261,7 +274,19 @@ export default defineComponent({
     },
     setupConnections() {
       this.$status.setup = accountStatus.status === 'ready'
-      if (this.$status.setup) this.loadCuratedDefaults()
+      if (this.$status.setup) {
+        if (
+          typeof window !== 'undefined' &&
+          window.location?.search?.includes('extMode=popup') &&
+          this.hasExistingContacts()
+        ) {
+          setTimeout(() => {
+            if (accountStatus.status === 'ready') this.loadCuratedDefaults()
+          }, 5_000)
+        } else {
+          this.loadCuratedDefaults()
+        }
+      }
     },
     handleGlobalExtensionSyncMessage(event: MessageEvent) {
       const data = event?.data

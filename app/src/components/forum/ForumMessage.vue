@@ -683,7 +683,7 @@ export default defineComponent({
       return this.message?.parentDigest
     },
     parentMessage() {
-      return this.getMessage(this.parentDigest)
+      return this.parentDigest ? this.getMessage(this.parentDigest) : null
     },
     messages() {
       return this.storeMessages.filter((message: MessageWithReplies) =>

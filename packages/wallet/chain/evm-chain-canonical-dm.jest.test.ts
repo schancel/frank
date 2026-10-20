@@ -8,6 +8,7 @@ import { DefaultStampUnavailableError } from '../oracle/stamp-policy'
 import { ChainUnreachableError } from '../evm-block-watcher'
 import { EvmStampPayer } from '../evm-stamp-payer'
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
+import { setEventLoopYieldForTesting } from './event-loop-yield'
 import * as canonicalOpen from "@frank/cashweb/relay/canonical-dm";
 import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
 import * as legacyEnvelope from "@frank/cashweb/relay/message-envelope";
@@ -3008,6 +3009,26 @@ describe('two typed wallets on the open directory', () => {
       await f.bob.close!()
       finish({ records: [] })
       await expect(pending).rejects.toThrow()
+    })
+    it('cooperatively yields to the event loop between sub-batches when decoding a batch of mailbox records', async () => {
+      await sent()
+      let yieldCount = 0
+      setEventLoopYieldForTesting(async () => {
+        yieldCount += 1
+      })
+      try {
+        mailboxPage.mockResolvedValueOnce({
+          records: Array.from({ length: 10 }, (_, idx) =>
+            inboxRecord(0, 10 + idx),
+          ),
+        })
+        const read = await scan()
+        expect(read.records).toHaveLength(10)
+        // With batchSize = 4, 10 records yield at least twice (after 4th and 8th records).
+        expect(yieldCount).toBeGreaterThanOrEqual(2)
+      } finally {
+        setEventLoopYieldForTesting(null)
+      }
     })
   })
 

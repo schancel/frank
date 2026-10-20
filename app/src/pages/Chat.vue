@@ -102,6 +102,16 @@
                 :key="msg.payloadDigest"
               >
                 <chat-message-component
+                  v-memo="[
+                    msg,
+                    msg.status,
+                    msg.delivery?.failureReason,
+                    msg.delivery?.live,
+                    msg.delivery?.attemptDigest,
+                    attributions[index],
+                    chatWidth,
+                    recipientAddress,
+                  ]"
                   :index="index"
                   :message="msg"
                   :address="recipientAddress"
@@ -1868,6 +1878,9 @@ export default defineComponent({
     },
     /** The name of whoever sent this message: this user, or the message's own sender. */
     messageSenderName(msg: ChatMessage, index: number): string {
+      if (this.chunkedMessages[index] === msg) {
+        return this.chunkedMessageSenderNames[index] ?? 'unknown'
+      }
       if (msg.outbound) return this.getProfile.profile?.name ?? 'unknown'
       return (
         this.attributions[index]?.sender.label ??
@@ -2234,6 +2247,32 @@ export default defineComponent({
     attributions(): Array<BubbleAttribution | undefined> {
       if (!this.isGroup) return []
       return attributeMessages(this.chunkedMessages, this.senders)
+    },
+    /** Precomputed sender display names per shown message so keystrokes in Chat.vue do not re-run contact lookups for every message row. */
+    chunkedMessageSenderNames(): string[] {
+      const ownName = this.getProfile.profile?.name ?? 'unknown'
+      const names = new Array<string>(this.chunkedMessages.length)
+      const bySender = new Map<string, string>()
+      for (let i = 0; i < this.chunkedMessages.length; i++) {
+        const msg = this.chunkedMessages[i]
+        if (msg.outbound) {
+          names[i] = ownName
+          continue
+        }
+        const attributed = this.attributions[i]?.sender.label
+        if (attributed) {
+          names[i] = attributed
+          continue
+        }
+        const addr = msg.senderAddress
+        let cached = bySender.get(addr)
+        if (cached === undefined) {
+          cached = this.getContactVuex(addr)?.profile?.name ?? 'unknown'
+          bySender.set(addr, cached)
+        }
+        names[i] = cached
+      }
+      return names
     },
     /** These are this user's own notes: what is sent from here goes to nobody else. */
     recipientIsSelf(): boolean {

@@ -28,7 +28,7 @@ import {
 import { mapObjIndexed } from 'ramda'
 import assert from 'assert'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
-import { markRaw } from 'vue'
+import { markRaw, toRaw } from 'vue'
 import { inferCuratedBotAttributes } from '../utils/curated-bots'
 import { setOutboundWakeupTokenProvider } from '@frank/cashweb/relay/canonical-dm-transport'
 import { syncRelayNotificationPolicy } from '../utils/webpush-sync'
@@ -338,6 +338,7 @@ export async function rehydrateContacts(
 }
 
 const inFlightRefreshes = new Map<string, Promise<void>>()
+const inFlightRefreshAll = new WeakMap<object, Promise<void>>()
 
 export const useContactStore = defineStore('contacts', {
   state: (): State => freshContactsState(),
@@ -1170,19 +1171,34 @@ export const useContactStore = defineStore('contacts', {
       }
     },
     async refreshContacts() {
-      const addresses = Object.keys(this.contacts)
-      const CONCURRENCY_LIMIT = 6
-      for (let i = 0; i < addresses.length; i += CONCURRENCY_LIMIT) {
-        const chunk = addresses.slice(i, i + CONCURRENCY_LIMIT)
-        await Promise.all(
-          chunk.map(async address => {
-            try {
-              await this.refresh(address)
-            } catch (err) {
-              console.error(`Failed to refresh contact ${address}:`, err)
-            }
-          }),
-        )
+      const stateKey = toRaw(this.$state)
+      const existing = inFlightRefreshAll.get(stateKey)
+      if (existing) return existing
+
+      const run = (async () => {
+        const addresses = Object.keys(this.contacts)
+        const CONCURRENCY_LIMIT = 6
+        for (let i = 0; i < addresses.length; i += CONCURRENCY_LIMIT) {
+          const chunk = addresses.slice(i, i + CONCURRENCY_LIMIT)
+          await Promise.all(
+            chunk.map(async address => {
+              try {
+                await this.refresh(address)
+              } catch (err) {
+                console.error(`Failed to refresh contact ${address}:`, err)
+              }
+            }),
+          )
+        }
+      })()
+
+      inFlightRefreshAll.set(stateKey, run)
+      try {
+        await run
+      } finally {
+        if (inFlightRefreshAll.get(stateKey) === run) {
+          inFlightRefreshAll.delete(stateKey)
+        }
       }
     },
     async refresh(address: string) {
@@ -1213,10 +1229,8 @@ export const useContactStore = defineStore('contacts', {
           oldContactInfo.profile.signedName === undefined
         if (isFresh && !botUnknown && !signedNameUnknown) {
           // Short circuit if we already updated this contact recently.
-          console.log('skipping contact update, checked recently')
           return
         }
-        console.log('Updating contact', address)
 
         try {
           const chainAddress = activeChain.parseAddress(address)

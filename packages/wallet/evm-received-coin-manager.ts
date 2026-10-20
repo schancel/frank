@@ -45,6 +45,7 @@ import {
 import {
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
+  createCooperativeBatchYielder,
   installedMessageItemRegistry,
   projectOutboxMessageRecord,
 } from "./chain/canonical-dm";
@@ -234,6 +235,15 @@ export async function recordEvmReceivedCoins(
   const owner = evmWalletInternals(wallet).receivedCoinOwner;
   if (owner === undefined) return;
   const own = wallet.identity.address.raw.toLowerCase();
+  const batchYielder = createCooperativeBatchYielder();
+  let started = false;
+  const yieldIfNeeded = async () => {
+    if (started) {
+      await batchYielder.maybeYield();
+    } else {
+      started = true;
+    }
+  };
   for (const message of messages) {
     if (
       message.senderAddress.raw.toLowerCase() !== own ||
@@ -243,6 +253,7 @@ export async function recordEvmReceivedCoins(
     }
     for (const item of message.items) {
       if (item.type === "received-coin") {
+        await yieldIfNeeded();
         await applyWalletSyncItem(wallet, item).catch((error) => {
           if (!(error instanceof WalletSyncItemRejectedError)) throw error;
         });
@@ -258,6 +269,7 @@ export async function recordEvmReceivedCoins(
     }
     for (const item of message.items) {
       if (item.type === "stealth") {
+        await yieldIfNeeded();
         await owner.recordStealthItem(item, {
           payloadDigest: message.payloadDigest,
           timestampMs: message.receivedTime ?? Date.now(),
@@ -266,7 +278,12 @@ export async function recordEvmReceivedCoins(
     }
   }
   for (const message of messages) {
-    if (message.outbound !== true) await owner.recordStampPayments(message);
+    if (message.outbound !== true) {
+      if ((message.stampPayments?.length ?? 0) > 0) {
+        await yieldIfNeeded();
+      }
+      await owner.recordStampPayments(message);
+    }
   }
 }
 

@@ -866,6 +866,9 @@ it('restores valid canonical ForumMessage rows with hasFetchedOnce: true for ins
   expect(restored.messages).toHaveLength(1)
   expect(restored.messages[0].payloadDigest).toBe('canonical-1')
   expect(restored.index['canonical-1']?.topic).toBe('memes')
+  const store = useForumStore()
+  expect(() => store.$patch(restored)).not.toThrow()
+  expect(store.getMessage('canonical-1')?.topic).toBe('memes')
 })
 
 it('normal status refresh reconciles retained operations without creating paid intent', async () => {

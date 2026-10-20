@@ -620,11 +620,21 @@ export const useForumStore = defineStore('forum', {
         )
       }
       const snapshot = forumSnapshot(rawMessages.filter(isCanonicalRestoredRow))
+      const restoredIndex: Record<string, MessageWithReplies> = {}
+      for (const [digest, entry] of Object.entries(snapshot.index)) {
+        if (digest in Object.prototype) continue
+        Object.defineProperty(restoredIndex, digest, {
+          value: entry,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        })
+      }
       return {
         ...deserializedForum,
         // Restore canonical string-backed rows for instant stale-while-revalidate display while excluding legacy number-backed rows.
         messages: snapshot.messages,
-        index: snapshot.index,
+        index: restoredIndex,
         voteThreshold:
           typeof deserializedForum.voteThreshold === 'string'
             ? deserializedForum.voteThreshold

@@ -16,62 +16,6 @@
       />
     </div>
 
-    <!-- Extension Display Mode Bar (Side Panel / Pop Out / Full Tab) -->
-    <q-card
-      v-if="isExtensionRuntime"
-      flat
-      bordered
-      data-testid="extension-view-bar"
-    >
-      <q-card-section class="row items-center justify-between q-py-xs q-px-sm">
-        <div class="text-caption text-weight-medium text-grey-8">
-          {{ ui.extViewLabel }}
-        </div>
-        <div class="row items-center q-gutter-xs">
-          <q-btn
-            flat
-            dense
-            no-caps
-            size="sm"
-            color="primary"
-            data-testid="ext-open-sidepanel-btn"
-            :label="ui.extSidePanelBtn"
-            @click="openInSidePanel"
-          />
-          <q-btn
-            flat
-            dense
-            no-caps
-            size="sm"
-            color="primary"
-            data-testid="ext-open-popout-btn"
-            :label="ui.extPopOutBtn"
-            @click="openInPopoutWindow"
-          />
-          <q-btn
-            flat
-            dense
-            no-caps
-            size="sm"
-            color="primary"
-            data-testid="ext-open-tab-btn"
-            :label="ui.extFullTabBtn"
-            @click="openInFullTab"
-          />
-          <q-btn
-            flat
-            dense
-            no-caps
-            size="sm"
-            :color="alwaysOpenInSidePanel ? 'positive' : 'grey-7'"
-            data-testid="ext-toggle-sidepanel-default-btn"
-            :label="alwaysSidePanelBtnLabel"
-            @click="toggleAlwaysOpenSidePanel"
-          />
-        </div>
-      </q-card-section>
-    </q-card>
-
     <!-- Active dApp Persona EOA Card (#1708) -->
     <q-card flat bordered data-testid="dapp-persona-card">
       <q-card-section class="q-pb-xs">
@@ -254,18 +198,17 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, PropType, ref } from 'vue'
+import { computed, defineComponent, onMounted, PropType, ref, watch } from 'vue'
+import { formatUnits, getAddress, keccak256, toUtf8Bytes } from 'ethers'
 import {
   getExtensionRuntime,
-  openCompanionPanel,
-  openExtensionTab,
-  openExtensionWindow,
   RuntimeEnvironmentKind,
   sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
 import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../../src-bex/content'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../../src-bex/inpage'
-
+import { useBalance } from 'src/composables/useBalance'
+import { accountStatus } from 'src/accounts/session'
 
 export interface DappApprovalItem {
   id: string
@@ -281,35 +224,48 @@ export interface DappApprovalItem {
   summary?: string
 }
 
-const PERSONA_ADDRESSES = [
+const FALLBACK_PERSONA_ADDRESSES = [
   '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
   '0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7',
   '0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db',
   '0x78731D3Ca6b7E34aC0F824c42a7cC18A495cabaB',
 ]
 
+function deriveAccountPersonaAddress(
+  identityAddress: string | null | undefined,
+  index: number,
+): string {
+  const clean = typeof identityAddress === 'string' ? identityAddress.trim() : ''
+  if (clean) {
+    try {
+      const digest = keccak256(
+        toUtf8Bytes(`frank-dapp-persona-v1:${clean.toLowerCase()}:${index}`),
+      )
+      return getAddress('0x' + digest.slice(-40))
+    } catch {
+      // Fall back below
+    }
+  }
+  return (
+    FALLBACK_PERSONA_ADDRESSES[index % FALLBACK_PERSONA_ADDRESSES.length] ??
+    FALLBACK_PERSONA_ADDRESSES[0]
+  )
+}
+
 export default defineComponent({
   name: 'DappBridgePanel',
   props: {
     initialPersonaBalanceMon: {
       type: Number,
-      default: 5,
+      default: 0,
     },
     initialPoolBalanceMon: {
-      type: Number,
-      default: 120,
+      type: Number as PropType<number | undefined>,
+      default: undefined,
     },
     initialApprovals: {
       type: Array as PropType<DappApprovalItem[]>,
-      default: () => [
-        {
-          id: 'req-default-1',
-          origin: 'https://app.uniswap.org',
-          method: 'eth_sendTransaction',
-          requiredAmountMon: 15,
-          summary: 'Swap 15 MON for USDC',
-        },
-      ],
+      default: () => [],
     },
     runtimeKindOverride: {
       type: String as PropType<RuntimeEnvironmentKind | ''>,
@@ -330,15 +286,32 @@ export default defineComponent({
     'extension-sync',
   ],
   setup(props, { emit }) {
+    const { total: liveWalletBalanceWei } = useBalance()
+
     const personaIndex = ref(0)
     const personaBalanceMon = ref(props.initialPersonaBalanceMon)
-    const poolBalanceMon = ref(props.initialPoolBalanceMon)
+    const explicitPoolBalanceMon = ref<number | undefined>(
+      props.initialPoolBalanceMon,
+    )
+    const poolTransferDeltaMon = ref(0)
     const approvals = ref<DappApprovalItem[]>([...props.initialApprovals])
     const wcUriInput = ref('')
     const pairedWcUri = ref('')
     const sasCode = ref(props.initialSasCode)
     const syncTriggered = ref(false)
-    const alwaysOpenInSidePanel = ref(false)
+
+    const poolBalanceMon = computed(() => {
+      if (explicitPoolBalanceMon.value !== undefined) {
+        return Math.max(
+          0,
+          explicitPoolBalanceMon.value + poolTransferDeltaMon.value,
+        )
+      }
+      const wei = liveWalletBalanceWei.value ?? 0n
+      const liveMon = Number.parseFloat(formatUnits(wei, 18))
+      const base = Number.isFinite(liveMon) ? liveMon : 0
+      return Math.max(0, base + poolTransferDeltaMon.value)
+    })
 
     const ui = Object.freeze({
       panelAriaLabel: 'Frank dApp Bridge Companion Panel',
@@ -357,10 +330,6 @@ export default defineComponent({
       wcConnectBtn: 'Pair URI',
       syncExtensionBtn: 'Sync with Browser Extension',
       syncToWebTabBtn: 'Sync Account to signet.mx Tab',
-      extViewLabel: 'Extension Display Mode:',
-      extSidePanelBtn: 'Side Panel',
-      extPopOutBtn: 'Pop Out Window',
-      extFullTabBtn: 'Full Tab',
     })
 
     const detectedRuntimeKind = computed<RuntimeEnvironmentKind>(() => {
@@ -372,12 +341,6 @@ export default defineComponent({
 
     const isExtensionRuntime = computed(
       () => detectedRuntimeKind.value !== 'pwa',
-    )
-
-    const alwaysSidePanelBtnLabel = computed(() =>
-      alwaysOpenInSidePanel.value
-        ? 'Toolbar: Side Panel'
-        : 'Toolbar: Popup',
     )
 
     const syncExtensionBtnLabel = computed(() =>
@@ -401,10 +364,11 @@ export default defineComponent({
       () => `m/44'/60'/1'/0/${personaIndex.value}`,
     )
 
-    const activePersonaAddress = computed(
-      () =>
-        PERSONA_ADDRESSES[personaIndex.value % PERSONA_ADDRESSES.length] ??
-        PERSONA_ADDRESSES[0],
+    const activePersonaAddress = computed(() =>
+      deriveAccountPersonaAddress(
+        accountStatus.identityAddress,
+        personaIndex.value,
+      ),
     )
 
     const personaTitleText = computed(() =>
@@ -455,6 +419,63 @@ export default defineComponent({
         : `SAS Code: ${sasCode.value}`,
     )
 
+    async function syncActivePersonaToBackground(address: string) {
+      if (!isExtensionRuntime.value) return
+      try {
+        await sendRuntimeMessage({
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'set-active-persona',
+          address,
+        })
+      } catch {
+        // Ignore in non-extension contexts
+      }
+    }
+
+    watch(
+      activePersonaAddress,
+      newAddress => {
+        if (newAddress) {
+          void syncActivePersonaToBackground(newAddress)
+        }
+      },
+      { immediate: true },
+    )
+
+    onMounted(async () => {
+      if (!isExtensionRuntime.value) return
+      try {
+        const res = await sendRuntimeMessage<{
+          result?: {
+            ok?: boolean
+            pendingApprovals?: Array<{
+              id: string
+              origin: string
+              method: string
+              params?: unknown
+            }>
+          }
+        }>({
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'get-bridge-state',
+        })
+        const pendingList = res?.result?.pendingApprovals
+        if (
+          Array.isArray(pendingList) &&
+          pendingList.length > 0 &&
+          props.initialApprovals.length === 0
+        ) {
+          approvals.value = pendingList.map(item => ({
+            id: item.id,
+            origin: item.origin,
+            method: item.method,
+          }))
+        }
+      } catch {
+        // Ignore runtime bridge query failure
+      }
+    })
+
     function createBurnerPersona() {
       personaIndex.value += 1
       personaBalanceMon.value = 0
@@ -469,7 +490,7 @@ export default defineComponent({
     function topUpFromPool() {
       const amount = Math.min(10, poolBalanceMon.value)
       if (amount <= 0) return
-      poolBalanceMon.value -= amount
+      poolTransferDeltaMon.value -= amount
       personaBalanceMon.value += amount
       emit('topup-persona', {
         amountMon: amount,
@@ -482,7 +503,7 @@ export default defineComponent({
       const swept = personaBalanceMon.value
       if (swept <= 0) return
       personaBalanceMon.value = 0
-      poolBalanceMon.value += swept
+      poolTransferDeltaMon.value += swept
       emit('sweep-to-pool', {
         sweptMon: swept,
         personaBalanceMon: personaBalanceMon.value,
@@ -490,28 +511,44 @@ export default defineComponent({
       })
     }
 
-    function approveCurrentRequest() {
+    async function approveCurrentRequest() {
       const req = currentApproval.value
       if (!req) return
       const shortfall = currentApprovalShortfall.value
       if (shortfall > 0 && poolBalanceMon.value >= shortfall) {
-        poolBalanceMon.value -= shortfall
+        poolTransferDeltaMon.value -= shortfall
         personaBalanceMon.value += shortfall
       }
       if (req.requiredAmountMon && personaBalanceMon.value >= req.requiredAmountMon) {
         personaBalanceMon.value -= req.requiredAmountMon
       }
       approvals.value.shift()
+      if (isExtensionRuntime.value) {
+        void sendRuntimeMessage({
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'companion-resolve-approval',
+          requestId: req.id,
+          approved: true,
+        }).catch(() => {})
+      }
       emit('approve-request', {
         request: req,
         jitSweptMon: shortfall,
       })
     }
 
-    function rejectCurrentRequest() {
+    async function rejectCurrentRequest() {
       const req = currentApproval.value
       if (!req) return
       approvals.value.shift()
+      if (isExtensionRuntime.value) {
+        void sendRuntimeMessage({
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'companion-resolve-approval',
+          requestId: req.id,
+          approved: false,
+        }).catch(() => {})
+      }
       emit('reject-request', {
         request: req,
       })
@@ -529,28 +566,6 @@ export default defineComponent({
       })
       emit('wc-connect', { uri: trimmed })
       wcUriInput.value = ''
-    }
-
-    async function openInSidePanel() {
-      await openCompanionPanel()
-    }
-
-    async function openInPopoutWindow() {
-      await openExtensionWindow()
-    }
-
-    async function openInFullTab() {
-      await openExtensionTab()
-    }
-
-    async function toggleAlwaysOpenSidePanel() {
-      const nextVal = !alwaysOpenInSidePanel.value
-      alwaysOpenInSidePanel.value = nextVal
-      await sendRuntimeMessage({
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'set-sidepanel-behavior',
-        openPanelOnActionClick: nextVal,
-      })
     }
 
     async function triggerExtensionSync() {
@@ -591,8 +606,6 @@ export default defineComponent({
       wcUriInput,
       pairedWcUri,
       isExtensionRuntime,
-      alwaysOpenInSidePanel,
-      alwaysSidePanelBtnLabel,
       syncExtensionBtnLabel,
       runtimeBadgeLabel,
       activeDerivationPath,
@@ -612,10 +625,6 @@ export default defineComponent({
       approveCurrentRequest,
       rejectCurrentRequest,
       connectWalletConnectUri,
-      openInSidePanel,
-      openInPopoutWindow,
-      openInFullTab,
-      toggleAlwaysOpenSidePanel,
       triggerExtensionSync,
     }
   },

@@ -410,6 +410,23 @@ export function installBackgroundBridge(
 
     if (
       message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+      message.type === 'get-bridge-state'
+    ) {
+      return {
+        result: {
+          ok: true,
+          chainIdHex: state.chainIdHex,
+          activePersonaAddress: state.activePersonaAddress,
+          approvedOrigins: Array.from(state.approvedOrigins),
+          pendingApprovals: Array.from(state.pendingApprovals.values()),
+          launchMode: state.launchMode,
+          openPanelOnActionClick: state.openPanelOnActionClick,
+        },
+      }
+    }
+
+    if (
+      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
       message.type === 'set-active-persona'
     ) {
       const nextAddr = String(message.address ?? '').trim()

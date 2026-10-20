@@ -66,7 +66,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     wrapper.unmount()
   })
 
-  it('renders Browser Extension mode badge and Extension View bar when running inside Chrome Side Panel', async () => {
+  it('renders Browser Extension mode badge without hardcoded demo balances or duplicate view bar', () => {
     const wrapper = mountPanel({
       runtimeKindOverride: 'chrome-extension',
     })
@@ -74,28 +74,17 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       'Browser Extension (Chrome Side Panel)',
     )
     expect(wrapper.find('[data-testid="extension-view-bar"]').exists()).toBe(
-      true,
+      false,
     )
     expect(
-      wrapper.find('[data-testid="ext-open-sidepanel-btn"]').exists(),
-    ).toBe(true)
-    expect(wrapper.find('[data-testid="ext-open-popout-btn"]').exists()).toBe(
-      true,
+      wrapper.find('[data-testid="dapp-persona-balance"]').text(),
+    ).toContain('0.00 MON')
+    expect(wrapper.find('[data-testid="dapp-pool-balance"]').text()).toContain(
+      '0.00 MON',
     )
-    expect(wrapper.find('[data-testid="ext-open-tab-btn"]').exists()).toBe(true)
-    expect(
-      wrapper
-        .find('[data-testid="ext-toggle-sidepanel-default-btn"]')
-        .text(),
-    ).toContain('Toolbar: Popup')
-    await wrapper
-      .find('[data-testid="ext-toggle-sidepanel-default-btn"]')
-      .trigger('click')
-    expect(
-      wrapper
-        .find('[data-testid="ext-toggle-sidepanel-default-btn"]')
-        .text(),
-    ).toContain('Toolbar: Side Panel')
+    expect(wrapper.find('[data-testid="dapp-approval-card"]').exists()).toBe(
+      false,
+    )
     wrapper.unmount()
   })
 

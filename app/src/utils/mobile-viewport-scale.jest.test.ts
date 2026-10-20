@@ -168,4 +168,50 @@ describe('mobile-viewport-scale', () => {
       '480px',
     )
   })
+
+  it('omits interactive-widget=resizes-content on Safari while adding it on Chromium', () => {
+    const meta = document.createElement('meta')
+    meta.setAttribute('name', 'viewport')
+    meta.setAttribute(
+      'content',
+      'width=device-width, initial-scale=1, viewport-fit=cover',
+    )
+    document.head.appendChild(meta)
+    try {
+      const safariWin = {
+        innerWidth: 1280,
+        innerHeight: 800,
+        screen: { width: 1440, height: 900 },
+        navigator: {
+          maxTouchPoints: 0,
+          userAgent:
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15',
+        },
+        document,
+      } as unknown as Window
+      applyViewportScaleAndMetrics('auto', safariWin)
+      expect(meta.getAttribute('content')).not.toContain('interactive-widget=')
+
+      const chromeWin = {
+        innerWidth: 384,
+        innerHeight: 832,
+        screen: { width: 384, height: 832 },
+        navigator: {
+          maxTouchPoints: 5,
+          userAgent:
+            'Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+        },
+        document,
+      } as unknown as Window
+      applyViewportScaleAndMetrics('auto', chromeWin)
+      expect(meta.getAttribute('content')).toContain(
+        'interactive-widget=resizes-content',
+      )
+
+      applyViewportScaleAndMetrics('auto', safariWin)
+      expect(meta.getAttribute('content')).not.toContain('interactive-widget=')
+    } finally {
+      meta.remove()
+    }
+  })
 })

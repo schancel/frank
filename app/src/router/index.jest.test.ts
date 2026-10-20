@@ -111,3 +111,34 @@ test.each(['/setup', '/docs', '/docs/guide', '/about', '/changelog'])(
     ).toBeUndefined()
   },
 )
+
+test('reopens extension popup/sidepanel/window to the last visited route when account is ready', async () => {
+  mockStatus.status = 'ready'
+  const store = new Map<string, string>([
+    ['frank:ext-last-route', '/chat/0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
+  ])
+  const prevWin = (globalThis as any).window
+  ;(globalThis as any).window = {
+    location: {
+      search: '?extMode=popup',
+      protocol: 'chrome-extension:',
+    },
+    localStorage: {
+      getItem: (k: string) => store.get(k) ?? null,
+    },
+  }
+  try {
+    expect(await mockGuard({ path: '/', fullPath: '/', params: {} }, {})).toBe(
+      '/chat/0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+    )
+
+    // Non-persistable routes (e.g. /setup or /welcome) fall back to /forum
+    store.set('frank:ext-last-route', '/setup')
+    expect(await mockGuard({ path: '/', fullPath: '/', params: {} }, {})).toBe(
+      '/forum',
+    )
+  } finally {
+    ;(globalThis as any).window = prevWin
+  }
+})
+

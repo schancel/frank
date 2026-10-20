@@ -17,6 +17,19 @@ import { isChainAddress } from 'src/utils/chain-address'
 import { accountSession, accountStatus } from '../accounts/session'
 import { notePendingChatRoute, takeInterruptedChatRoute } from './pending-chat'
 import { checkDebouncedAppUpdate } from 'src/utils/pwa'
+import {
+  EXT_LAST_ROUTE_STORAGE_KEY,
+  isExtensionContext,
+  isPersistableExtensionRoute,
+  resolveSavedExtensionRoute,
+} from './extension-route-persistence'
+
+export {
+  EXT_LAST_ROUTE_STORAGE_KEY,
+  isExtensionContext,
+  isPersistableExtensionRoute,
+  resolveSavedExtensionRoute,
+}
 
 async function ensureChatState(
   address: string | undefined,
@@ -95,7 +108,10 @@ export default () => {
       to.path.startsWith('/topic')
     ) {
       if (to.path === '/') {
-        return accountStatus.status === 'ready' ? '/forum' : '/welcome'
+        if (accountStatus.status === 'ready') {
+          return resolveSavedExtensionRoute() ?? '/forum'
+        }
+        return '/welcome'
       }
       return
     }
@@ -148,6 +164,16 @@ export default () => {
     // pending. One that a later navigation replaced ends without touching the later one's note.
     if (to === latest) notePendingChatRoute(null)
     checkDebouncedAppUpdate()
+    if (!failure && isExtensionContext() && isPersistableExtensionRoute(to.path)) {
+      try {
+        localStorage.setItem(
+          EXT_LAST_ROUTE_STORAGE_KEY,
+          to.fullPath || to.path,
+        )
+      } catch {
+        // ignore storage errors
+      }
+    }
     // Only a committed route owns selection/read state. Publishing from beforeEach lets
     // selection observers replace in-flight query navigation or mark canceled targets read.
     if (failure || startupRestoration.value.phase !== 'restored') return

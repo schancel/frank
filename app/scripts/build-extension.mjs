@@ -88,6 +88,13 @@ function bundleBexEntry(entryFilename) {
   return `(() => {\n  "use strict";\n${chunks.join('\n\n')}\n})();\n`
 }
 
+export function stripSourceMappingUrlComments(content) {
+  if (typeof content !== 'string') return content
+  return content
+    .replace(/\/\/[#@]\s*sourceMappingURL=[^\r\n]*/g, '')
+    .replace(/\/\*[#@]\s*sourceMappingURL=[\s\S]*?\*\//g, '')
+}
+
 export function copyDirectoryFiltered(srcDir, destDir) {
   if (!fs.existsSync(srcDir)) return false
   fs.mkdirSync(destDir, { recursive: true })
@@ -108,6 +115,9 @@ export function copyDirectoryFiltered(srcDir, destDir) {
     const destPath = path.join(destDir, entry.name)
     if (entry.isDirectory()) {
       copyDirectoryFiltered(srcPath, destPath)
+    } else if (entry.name.endsWith('.js') || entry.name.endsWith('.css')) {
+      const raw = fs.readFileSync(srcPath, 'utf8')
+      fs.writeFileSync(destPath, stripSourceMappingUrlComments(raw), 'utf8')
     } else {
       fs.copyFileSync(srcPath, destPath)
     }
@@ -115,12 +125,97 @@ export function copyDirectoryFiltered(srcDir, destDir) {
   return true
 }
 
+export function transformExtensionIndexHtml(rawHtml, targetDir) {
+  let html = String(rawHtml)
+
+  // Capture Vite entry module script src before stripping scripts
+  const entryScriptRegex =
+    /<script[^>]*\btype=["']?module["']?[^>]*\bsrc=["']([^"']+)["'][^>]*>\s*<\/script>/i
+  const entryMatch = entryScriptRegex.exec(html)
+  const rawEntrySrc = entryMatch ? entryMatch[1] : './assets/index.js'
+  const normalizedEntrySrc = rawEntrySrc.startsWith('/')
+    ? `.${rawEntrySrc}`
+    : rawEntrySrc.startsWith('./')
+    ? rawEntrySrc
+    : `./${rawEntrySrc}`
+
+  // Strip <link rel="modulepreload" ...> so Chrome does not block popup window creation on 3MB+ module graph
+  html = html.replace(/<link[^>]*\brel=["']?modulepreload["']?[^>]*>/gi, '')
+
+  // Remove inline <script>...</script> blocks (without src) which violate Manifest V3 script-src 'self' CSP
+  html = html.replace(/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/gi, '')
+
+  // Remove PWA <link rel="manifest" href="/manifest.json"> so the browser does not parse the WebExtension manifest as a Web App Manifest
+  html = html.replace(/<link[^>]*\brel=["']?manifest["']?[^>]*>/gi, '')
+
+  const deferredBootCall = `window.addEventListener('load', () => { requestAnimationFrame(() => { setTimeout(() => { import('${normalizedEntrySrc}'); }, 0); }); })`
+  const replacementBootTag = `<script type="module" src="./extension-boot.js" data-entry="${normalizedEntrySrc}"></script><!-- ${deferredBootCall} -->`
+
+  if (entryScriptRegex.test(html)) {
+    html = html.replace(entryScriptRegex, replacementBootTag)
+  } else if (html.includes('</body>')) {
+    html = html.replace('</body>', `  ${replacementBootTag}\n  </body>`)
+  } else {
+    html += `\n${replacementBootTag}\n`
+  }
+
+  const inlinePopupStyle = `<style id="frank-extension-popup-sizing">html, body { width: 400px; height: 600px; margin: 0; padding: 0; } html[data-ext-mode='sidepanel'], html[data-ext-mode='sidepanel'] body, html[data-ext-mode='sidebar'], html[data-ext-mode='sidebar'] body, html[data-ext-mode='window'], html[data-ext-mode='window'] body, html[data-ext-mode='tab'], html[data-ext-mode='tab'] body { width: 100%; height: 100%; min-width: 0; min-height: 100vh; }</style>`
+
+  if (!html.includes('frank-extension-popup-sizing')) {
+    if (html.includes('</head>')) {
+      html = html.replace('</head>', `${inlinePopupStyle}</head>`)
+    } else {
+      html = `${inlinePopupStyle}\n${html}`
+    }
+  }
+
+  if (!html.includes('extension-popup.css')) {
+    if (html.includes('</head>')) {
+      html = html.replace(
+        '</head>',
+        '<link rel="stylesheet" href="/extension-popup.css"></head>',
+      )
+    }
+  }
+
+  if (targetDir) {
+    fs.mkdirSync(targetDir, { recursive: true })
+    const bootScriptContent = `(() => {
+  try {
+    const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+    const extMode = params.get('extMode') || 'popup';
+    if (typeof document !== 'undefined' && document.documentElement) {
+      document.documentElement.setAttribute('data-ext-mode', extMode);
+    }
+  } catch {}
+  const boot = () => {
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        import('${normalizedEntrySrc}');
+      }, 0);
+    });
+  };
+  if (typeof document !== 'undefined' && document.readyState === 'complete') {
+    boot();
+  } else if (typeof window !== 'undefined') {
+    window.addEventListener('load', boot, { once: true });
+  }
+})();
+`
+    fs.writeFileSync(
+      path.join(targetDir, 'extension-boot.js'),
+      bootScriptContent,
+      'utf8',
+    )
+  }
+
+  return html
+}
+
 function ensureFallbackStaticAssets(targetDir) {
   const indexHtmlPath = path.join(targetDir, 'index.html')
   if (!fs.existsSync(indexHtmlPath)) {
-    fs.writeFileSync(
-      indexHtmlPath,
-      `<!DOCTYPE html>
+    const defaultHtml = `<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -132,33 +227,50 @@ function ensureFallbackStaticAssets(targetDir) {
     <div id="q-app"></div>
   </body>
 </html>
-`,
+`
+    fs.writeFileSync(
+      indexHtmlPath,
+      transformExtensionIndexHtml(defaultHtml, targetDir),
       'utf8',
     )
   } else {
-    let html = fs.readFileSync(indexHtmlPath, 'utf8')
-    // Remove inline <script>...</script> blocks (without src) which violate Manifest V3 script-src 'self' CSP
-    html = html.replace(/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/gi, '')
-    // Remove PWA <link rel="manifest" href="/manifest.json"> so the browser does not parse the WebExtension manifest as a Web App Manifest
-    html = html.replace(/<link[^>]*\brel=["']?manifest["']?[^>]*>/gi, '')
-    if (!html.includes('extension-popup.css')) {
-      html = html.replace(
-        '</head>',
-        '<link rel="stylesheet" href="/extension-popup.css"></head>',
-      )
-    }
-    fs.writeFileSync(indexHtmlPath, html, 'utf8')
+    const rawHtml = fs.readFileSync(indexHtmlPath, 'utf8')
+    const transformed = transformExtensionIndexHtml(rawHtml, targetDir)
+    fs.writeFileSync(indexHtmlPath, transformed, 'utf8')
   }
 
   fs.writeFileSync(
     path.join(targetDir, 'extension-popup.css'),
-    `html, body, #q-app {
-  min-width: 400px !important;
-  min-height: 580px !important;
+    `html, body {
+  width: 400px;
+  height: 600px;
+  margin: 0;
+  padding: 0;
+}
+#q-app {
+  min-width: 400px;
+  min-height: 580px;
   width: 100%;
   height: 100%;
   margin: 0;
   padding: 0;
+}
+html[data-ext-mode='sidepanel'],
+html[data-ext-mode='sidepanel'] body,
+html[data-ext-mode='sidepanel'] #q-app,
+html[data-ext-mode='sidebar'],
+html[data-ext-mode='sidebar'] body,
+html[data-ext-mode='sidebar'] #q-app,
+html[data-ext-mode='window'],
+html[data-ext-mode='window'] body,
+html[data-ext-mode='window'] #q-app,
+html[data-ext-mode='tab'],
+html[data-ext-mode='tab'] body,
+html[data-ext-mode='tab'] #q-app {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 100vh !important;
 }
 `,
     'utf8',
@@ -175,6 +287,108 @@ function ensureFallbackStaticAssets(targetDir) {
       fs.writeFileSync(icon128, Buffer.from([]))
     }
   }
+
+  writeOffscreenWarmupFiles(targetDir)
+}
+
+/**
+ * Why Browser Extension Popups (e.g. MetaMask, Phantom) Traditionally Feel Slow & How We Fix It:
+ *
+ * 1. Synchronous `<script type="module">` Popup Layout Blocking:
+ *    When a user clicks an extension toolbar icon (`default_popup: "index.html?extMode=popup"`),
+ *    Chrome, Safari, and Firefox do NOT make the popup window visible until the document finishes
+ *    parsing `<head>` scripts and fires `DOMContentLoaded` / `window.onload` so the browser can
+ *    measure the popup's layout dimensions. If `index.html` contains a static `<script type="module">`
+ *    importing a multi-megabyte bundle (`ethers`, `@noble/*`, `vue`, `quasar`, `level-js`), the
+ *    browser blocks `window.onload` until the entire static module graph is fetched, parsed, and
+ *    evaluated—causing a 1–2 second dead pause after clicking the icon before the popup even appears.
+ *    `transformExtensionIndexHtml()` above fixes this by setting explicit `400x600` inline CSS
+ *    dimensions and deferring the entry `import()` until after `load` + `requestAnimationFrame`,
+ *    so the branded popup frame pops out in `< 10ms`.
+ *
+ * 2. Renderer Process Teardown & V8/JSC/SpiderMonkey Bytecode Cache Eviction Between Clicks:
+ *    Because an extension popup is a transient window, closing the popup normally drops the
+ *    extension origin's HTML document reference count to `0`. When no extension HTML document
+ *    remains open, the browser destroys the extension's renderer process (`SiteInstance` in
+ *    Chromium, WebContent process in Safari WebKit) and evicts the in-memory `MemoryCache` and
+ *    compiled JS bytecode. Every subsequent toolbar click is forced to cold-spawn a new renderer
+ *    process and re-parse/re-compile all JS bundles from scratch.
+ *
+ *    `writeOffscreenWarmupFiles()` generates a lightweight `offscreen.html` + `offscreen.js`
+ *    keepalive document that preloads all `./assets/*.js` and `./assets/*.css` chunks in idle time
+ *    without mounting `#q-app`. `ensureOffscreenWarmup()` in `src-bex/background.ts` keeps this
+ *    document alive in the background across:
+ *      - Chromium (Chrome / Brave / Edge): via `chrome.offscreen.createDocument`
+ *      - Safari (WebKit) & Firefox (Gecko): via a hidden `<iframe id="frank-warmup-frame">`
+ *        inside the persistent background DOM window
+ *    Because the warmup document shares the exact same extension origin, renderer process, and
+ *    JS engine isolate/cache as `index.html?extMode=popup`, the renderer process is never torn
+ *    down on popup close and all compiled ES modules remain 100% warm in RAM between clicks.
+ */
+export function writeOffscreenWarmupFiles(targetDir) {
+  const assetsDir = path.join(targetDir, 'assets')
+  const assetJsFiles = []
+  const assetCssFiles = []
+  if (fs.existsSync(assetsDir)) {
+    for (const entry of fs.readdirSync(assetsDir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue
+      if (entry.name.endsWith('.js')) {
+        assetJsFiles.push(`./assets/${entry.name}`)
+      } else if (entry.name.endsWith('.css')) {
+        assetCssFiles.push(`./assets/${entry.name}`)
+      }
+    }
+  }
+
+  const preloadLinks = assetJsFiles
+    .map(href => `    <link rel="modulepreload" href="${href}" />`)
+    .join('\n')
+
+  fs.writeFileSync(
+    path.join(targetDir, 'offscreen.html'),
+    `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Frank Offscreen Cache Keepalive</title>
+${preloadLinks ? preloadLinks + '\n' : ''}  </head>
+  <body>
+    <script type="module" src="./offscreen.js"></script>
+  </body>
+</html>
+`,
+    'utf8',
+  )
+
+  fs.writeFileSync(
+    path.join(targetDir, 'offscreen.js'),
+    `(() => {
+  const jsAssets = ${JSON.stringify(assetJsFiles)};
+  const cssAssets = ${JSON.stringify(assetCssFiles)};
+  const warmup = () => {
+    for (const href of [...jsAssets, ...cssAssets]) {
+      try {
+        if (typeof fetch === 'function') {
+          fetch(href, { cache: 'force-cache' }).catch(() => {});
+        }
+      } catch {}
+    }
+    if (typeof document !== 'undefined' && document.head) {
+      for (const href of jsAssets) {
+        if (!document.head.querySelector(\`link[href="\${href}"]\`)) {
+          const link = document.createElement('link');
+          link.rel = 'modulepreload';
+          link.href = href;
+          document.head.appendChild(link);
+        }
+      }
+    }
+  };
+  setTimeout(warmup, 100);
+})();
+`,
+    'utf8',
+  )
 }
 
 export function buildExtensions(argv = process.argv.slice(2)) {

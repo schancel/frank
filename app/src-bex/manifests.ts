@@ -74,7 +74,13 @@ export function buildExtensionManifest(
   if (target === 'chrome') {
     return {
       ...baseManifest,
-      permissions: ['storage', 'sidePanel', 'activeTab', 'scripting'],
+      permissions: [
+        'storage',
+        'sidePanel',
+        'activeTab',
+        'scripting',
+        'offscreen',
+      ],
       background: {
         service_worker: 'background.js',
         type: 'module',

@@ -2,10 +2,12 @@
 
 import { buildExtensionManifest } from './manifests'
 import {
+  FRANK_EXT_LAUNCH_MODE_KEY,
   getExtensionRuntime,
   isBrowserExtensionRuntime,
   onRuntimeMessage,
   openCompanionPanel,
+  openExtensionInWindow,
   sendRuntimeMessage,
 } from './runtime-adapter'
 import {
@@ -21,6 +23,7 @@ import {
 } from './content'
 import {
   createBackgroundBridgeState,
+  ensureOffscreenWarmup,
   installBackgroundBridge,
 } from './background'
 
@@ -33,6 +36,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       'sidePanel',
       'activeTab',
       'scripting',
+      'offscreen',
     ])
     expect(manifest.background).toEqual({
       service_worker: 'background.js',
@@ -364,7 +368,10 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       fs.mkdirSync(path.join(srcDir, 'js'), { recursive: true })
       fs.writeFileSync(path.join(srcDir, 'index.html'), '<html></html>')
       fs.writeFileSync(path.join(srcDir, 'sw.js'), '// sw')
-      fs.writeFileSync(path.join(srcDir, 'js', 'app.js'), 'console.log(1)')
+      fs.writeFileSync(
+        path.join(srcDir, 'js', 'app.js'),
+        'console.log(1)\n//# sourceMappingURL=app.js.map\n',
+      )
       fs.writeFileSync(path.join(srcDir, 'js', 'app.js.map'), '{}')
       fs.writeFileSync(path.join(srcDir, 'js', 'vendor.js.map'), '{}')
 
@@ -384,6 +391,9 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
 
       expect(fs.existsSync(path.join(destDir, 'index.html'))).toBe(true)
       expect(fs.existsSync(path.join(destDir, 'js', 'app.js'))).toBe(true)
+      expect(
+        fs.readFileSync(path.join(destDir, 'js', 'app.js'), 'utf8'),
+      ).not.toContain('sourceMappingURL=')
       expect(fs.existsSync(path.join(destDir, 'sw.js'))).toBe(false)
       expect(fs.existsSync(path.join(destDir, 'js', 'app.js.map'))).toBe(false)
       expect(fs.existsSync(path.join(destDir, 'js', 'vendor.js.map'))).toBe(
@@ -393,5 +403,313 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       fs.rmSync(tmpRoot, { recursive: true, force: true })
     }
   })
+
+  it('transforms extension index.html to strip modulepreload, set 400x600 popup CSS, and defer entry module import until after load + requestAnimationFrame', async () => {
+    const { execFileSync } = await import('node:child_process')
+    const fs = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const { pathToFileURL } = await import('node:url')
+    const scriptUrl = pathToFileURL(
+      path.resolve(__dirname, '../scripts/build-extension.mjs'),
+    ).href
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'frank-bex-html-'))
+    try {
+      const sampleViteHtml = `<!DOCTYPE html>
+<html>
+  <head>
+    <title>Frank</title>
+    <link rel="manifest" href="manifest.json" />
+    <script type="module" crossorigin src="/assets/index-AbCd1234.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-vue-1111.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-ethers-2222.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-9999.css">
+  </head>
+  <body>
+    <div id="q-app"></div>
+  </body>
+</html>`
+
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `import fs from 'node:fs'; import path from 'node:path'; import { transformExtensionIndexHtml } from ${JSON.stringify(
+            scriptUrl,
+          )}; const out = transformExtensionIndexHtml(${JSON.stringify(
+            sampleViteHtml,
+          )}, ${JSON.stringify(
+            tmpDir,
+          )}); fs.writeFileSync(path.join(${JSON.stringify(
+            tmpDir,
+          )}, 'index.html'), out, 'utf8');`,
+        ],
+        { stdio: 'pipe' },
+      )
+
+      const transformedHtml = fs.readFileSync(
+        path.join(tmpDir, 'index.html'),
+        'utf8',
+      )
+      const bootScript = fs.readFileSync(
+        path.join(tmpDir, 'extension-boot.js'),
+        'utf8',
+      )
+
+      expect(transformedHtml).not.toContain('rel="modulepreload"')
+      expect(transformedHtml).not.toContain('rel="manifest"')
+      expect(transformedHtml).not.toContain('src="/assets/index-AbCd1234.js"')
+      expect(transformedHtml).toContain(
+        'html, body { width: 400px; height: 600px; margin: 0; padding: 0; }',
+      )
+      expect(transformedHtml).toContain('requestAnimationFrame')
+      expect(transformedHtml).toContain("import('./assets/index-AbCd1234.js')")
+      expect(bootScript).toContain("window.addEventListener('load'")
+      expect(bootScript).toContain('requestAnimationFrame')
+      expect(bootScript).toContain("import('./assets/index-AbCd1234.js')")
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('opens persistent standalone extension window (with tab fallback) and persists launch mode preference', async () => {
+    const windowsCreate = jest.fn().mockResolvedValue({ id: 99 })
+    const storageSet = jest.fn().mockResolvedValue(undefined)
+    const setPanelBehavior = jest.fn().mockResolvedValue(undefined)
+    const sidePanelOpen = jest.fn().mockResolvedValue(undefined)
+
+    const chromeScope = {
+      chrome: {
+        runtime: {
+          id: 'frank-ext',
+          getURL: (p: string) => `chrome-extension://frank-ext/${p}`,
+        },
+        windows: {
+          create: windowsCreate,
+          getCurrent: jest.fn().mockResolvedValue({ id: 42 }),
+        },
+        sidePanel: {
+          open: sidePanelOpen,
+          setPanelBehavior,
+        },
+        storage: {
+          local: {
+            set: storageSet,
+          },
+        },
+      },
+    }
+
+    const winRes = await openExtensionInWindow({}, chromeScope)
+    expect(winRes).toEqual({
+      opened: true,
+      mode: 'window',
+      url: 'chrome-extension://frank-ext/index.html?extMode=window',
+    })
+    expect(windowsCreate).toHaveBeenCalledWith({
+      url: 'chrome-extension://frank-ext/index.html?extMode=window',
+      type: 'popup',
+      width: 440,
+      height: 740,
+    })
+    expect(storageSet).toHaveBeenCalledWith({
+      [FRANK_EXT_LAUNCH_MODE_KEY]: 'window',
+    })
+
+    // SidePanel open persists sidepanel launch mode and enables openPanelOnActionClick
+    const panelRes = await openCompanionPanel({}, chromeScope)
+    expect(panelRes).toEqual({
+      opened: true,
+      mode: 'sidePanel',
+    })
+    expect(setPanelBehavior).toHaveBeenCalledWith({
+      openPanelOnActionClick: true,
+    })
+    expect(sidePanelOpen).toHaveBeenCalledWith({ windowId: 42 })
+    expect(storageSet).toHaveBeenCalledWith({
+      [FRANK_EXT_LAUNCH_MODE_KEY]: 'sidepanel',
+      frankOpenPanelOnActionClick: true,
+    })
+
+    // Fallback to chrome.tabs.create when chrome.windows.create is unavailable
+    const tabsCreate = jest.fn().mockResolvedValue({ id: 101 })
+    const tabFallbackScope = {
+      chrome: {
+        runtime: {
+          id: 'frank-ext',
+          getURL: (p: string) => `chrome-extension://frank-ext/${p}`,
+        },
+        tabs: {
+          create: tabsCreate,
+        },
+      },
+    }
+    const tabRes = await openExtensionInWindow({}, tabFallbackScope)
+    expect(tabRes).toEqual({
+      opened: true,
+      mode: 'tab',
+      url: 'chrome-extension://frank-ext/index.html?extMode=tab',
+    })
+    expect(tabsCreate).toHaveBeenCalledWith({
+      url: 'chrome-extension://frank-ext/index.html?extMode=tab',
+    })
+  })
+
+  it('splits large vendor dependencies into parallel-parseable chunks via resolveManualChunk', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resolveManualChunk } = require('../config/manual-chunks.cjs')
+    expect(
+      resolveManualChunk('/repo/node_modules/vue/dist/vue.runtime.esm-bundler.js'),
+    ).toBe('vendor-vue')
+    expect(
+      resolveManualChunk('/repo/node_modules/pinia/dist/pinia.mjs'),
+    ).toBe('vendor-vue')
+    expect(
+      resolveManualChunk('/repo/node_modules/quasar/src/components/btn/QBtn.js'),
+    ).toBe('vendor-quasar')
+    expect(
+      resolveManualChunk('/repo/node_modules/ethers/lib.esm/index.js'),
+    ).toBe('vendor-ethers')
+    expect(
+      resolveManualChunk('/repo/node_modules/@noble/curves/secp256k1.js'),
+    ).toBe('vendor-noble')
+    expect(
+      resolveManualChunk('/repo/node_modules/level-js/index.js'),
+    ).toBe('vendor-storage')
+    expect(
+      resolveManualChunk('/repo/node_modules/@solana/web3.js/lib/index.browser.esm.js'),
+    ).toBe('vendor-solana')
+    expect(
+      resolveManualChunk('/repo/packages/bitcore-lib-xpi/index.js'),
+    ).toBe('vendor-utxo')
+    expect(resolveManualChunk('/repo/app/src/pages/Chat.vue')).toBeUndefined()
+  })
+
+  it('exposes ext-open-sidepanel-btn and ext-popout-window-btn in MainLayout.vue when running in extMode=popup', async () => {
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const mainLayoutSource = fs.readFileSync(
+      path.resolve(__dirname, '../src/layouts/MainLayout.vue'),
+      'utf8',
+    )
+    expect(mainLayoutSource).toContain('data-testid="ext-open-sidepanel-btn"')
+    expect(mainLayoutSource).toContain('data-testid="ext-popout-window-btn"')
+    expect(mainLayoutSource).toContain('openExtensionSidePanel')
+    expect(mainLayoutSource).toContain('popOutExtensionWindow')
+  })
+
+  it('keeps extension renderer process and JS module cache warm via chrome.offscreen (Chromium) and hidden #frank-warmup-frame iframe (Safari/Firefox)', async () => {
+    const hasDocument = jest
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    const createDocument = jest.fn().mockResolvedValue(undefined)
+    const chromeScope = {
+      chrome: {
+        runtime: {
+          id: 'frank-ext',
+        },
+        offscreen: {
+          hasDocument,
+          createDocument,
+        },
+      },
+    }
+
+    expect(await ensureOffscreenWarmup(chromeScope)).toBe(true)
+    expect(createDocument).toHaveBeenCalledWith({
+      url: 'offscreen.html',
+      reasons: ['DOM_PARSER'],
+      justification:
+        'Keep extension renderer process and V8 module cache warm for instant popup open',
+    })
+
+    // Second call when document already exists is a no-op
+    expect(await ensureOffscreenWarmup(chromeScope)).toBe(true)
+    expect(createDocument).toHaveBeenCalledTimes(1)
+
+    // Safari / Firefox background DOM page fallback (no chrome.offscreen, uses hidden iframe)
+    document.getElementById('frank-warmup-frame')?.remove()
+    const safariDomScope = {
+      browser: {
+        runtime: {
+          id: 'safari-ext',
+          getURL: (p: string) => `safari-web-extension://safari-ext/${p}`,
+        },
+      },
+      document,
+    }
+    try {
+      expect(await ensureOffscreenWarmup(safariDomScope)).toBe(true)
+      const frame = document.getElementById(
+        'frank-warmup-frame',
+      ) as HTMLIFrameElement | null
+      expect(frame).not.toBeNull()
+      expect(frame?.src).toBe(
+        'safari-web-extension://safari-ext/offscreen.html',
+      )
+      expect(frame?.getAttribute('aria-hidden')).toBe('true')
+
+      // Idempotent on second call
+      expect(await ensureOffscreenWarmup(safariDomScope)).toBe(true)
+      expect(document.querySelectorAll('#frank-warmup-frame').length).toBe(1)
+    } finally {
+      document.getElementById('frank-warmup-frame')?.remove()
+    }
+  })
+
+  it('persists and restores the last visited route when reopening the extension', async () => {
+    const {
+      EXT_LAST_ROUTE_STORAGE_KEY,
+      isExtensionContext,
+      isPersistableExtensionRoute,
+      resolveSavedExtensionRoute,
+    } = await import('../src/router/extension-route-persistence')
+
+    expect(
+      isExtensionContext({
+        location: { search: '?extMode=popup', protocol: 'https:' },
+      } as unknown as Window),
+    ).toBe(true)
+    expect(
+      isExtensionContext({
+        location: { search: '', protocol: 'chrome-extension:' },
+      } as unknown as Window),
+    ).toBe(true)
+    expect(
+      isExtensionContext({
+        location: { search: '', protocol: 'safari-web-extension:' },
+      } as unknown as Window),
+    ).toBe(true)
+    expect(
+      isExtensionContext({
+        location: { search: '', protocol: 'https:' },
+      } as unknown as Window),
+    ).toBe(false)
+
+    expect(isPersistableExtensionRoute('/wallet')).toBe(true)
+    expect(isPersistableExtensionRoute('/chat/0x1234')).toBe(true)
+    expect(isPersistableExtensionRoute('/settings')).toBe(true)
+    expect(isPersistableExtensionRoute('/')).toBe(false)
+    expect(isPersistableExtensionRoute('/welcome')).toBe(false)
+    expect(isPersistableExtensionRoute('/setup')).toBe(false)
+    expect(isPersistableExtensionRoute('/onboard/claim/abc')).toBe(false)
+
+    localStorage.setItem(EXT_LAST_ROUTE_STORAGE_KEY, '/wallet?tab=pool')
+    const extWin = {
+      location: { search: '?extMode=popup', protocol: 'chrome-extension:' },
+    } as unknown as Window
+    const webWin = {
+      location: { search: '', protocol: 'https:' },
+    } as unknown as Window
+    try {
+      expect(resolveSavedExtensionRoute(extWin)).toBe('/wallet?tab=pool')
+      expect(resolveSavedExtensionRoute(webWin)).toBeNull()
+    } finally {
+      localStorage.removeItem(EXT_LAST_ROUTE_STORAGE_KEY)
+    }
+  })
 })
+
 

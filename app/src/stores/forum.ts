@@ -14,6 +14,7 @@ import { DEFAULT_TOPIC_NAMES } from 'src/stores/default-topics'
 import { accountStatus } from 'src/accounts/session'
 import { SortMode } from 'src/utils/sorting'
 import { notifyOwnAddressesChanged } from 'src/utils/own-address'
+import { prefetchAuthorDisplayProfiles } from 'src/utils/author-display-profile'
 
 export type MessageWithReplies = ForumMessage & {
   replies: MessageWithReplies[]
@@ -94,6 +95,32 @@ export function forumSnapshot(rows: ForumMessage[]): {
       index[row.parentDigest].replies.push(row)
   }
   return { messages, index }
+}
+
+function collectPosterAddresses(
+  messages: ReadonlyArray<{ poster?: string; replies?: unknown[] }>,
+): string[] {
+  const posters: string[] = []
+  const visit = (
+    rows: ReadonlyArray<{ poster?: string; replies?: unknown[] }>,
+  ) => {
+    for (const row of rows) {
+      if (!row) continue
+      if (typeof row.poster === 'string' && row.poster.trim()) {
+        posters.push(row.poster.trim())
+      }
+      if (Array.isArray(row.replies) && row.replies.length > 0) {
+        visit(
+          row.replies as ReadonlyArray<{
+            poster?: string
+            replies?: unknown[]
+          }>,
+        )
+      }
+    }
+  }
+  visit(messages)
+  return posters
 }
 
 // All app Forum queries share one staging slot, including overlapping refresh generations.
@@ -275,6 +302,9 @@ export const useForumStore = defineStore('forum', {
 
     setEntries(messages: ForumMessage[]) {
       const snapshot = forumSnapshot(messages)
+      void prefetchAuthorDisplayProfiles(
+        collectPosterAddresses(snapshot.messages),
+      )
 
       const currentMessages = this.messages
       if (

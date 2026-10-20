@@ -6,8 +6,11 @@
     data-testid="dapp-bridge-panel"
   >
     <div class="row items-center justify-between">
-      <div class="text-subtitle1 text-weight-bold">
-        {{ ui.headerTitle }}
+      <div class="row items-center q-gutter-x-xs">
+        <q-icon :name="plugIcon" size="18px" color="primary" />
+        <div class="text-subtitle1 text-weight-bold">
+          {{ ui.headerTitle }}
+        </div>
       </div>
       <q-badge
         color="primary"
@@ -15,6 +18,60 @@
         :label="runtimeBadgeLabel"
       />
     </div>
+
+    <!-- Install Browser Extension Card (shown in Standalone PWA) -->
+    <q-card
+      v-if="!isExtensionRuntime"
+      flat
+      bordered
+      data-testid="dapp-extension-download-card"
+    >
+      <q-card-section>
+        <div class="row items-center justify-between q-mb-xs">
+          <div class="row items-center q-gutter-x-sm">
+            <q-icon :name="plugIcon" size="20px" color="primary" />
+            <div class="text-subtitle2 text-weight-bold">
+              {{ ui.installExtensionTitle }}
+            </div>
+          </div>
+          <q-badge
+            outline
+            color="primary"
+            :label="selectedExtensionInfo.shortLabel"
+          />
+        </div>
+        <div class="text-caption text-grey-7 q-mb-sm">
+          {{ ui.installExtensionSubtitle }}
+        </div>
+        <div class="row items-center q-gutter-sm">
+          <q-btn
+            v-for="targetItem in allExtensionTargets"
+            :key="targetItem.target"
+            :unelevated="selectedExtensionTarget === targetItem.target"
+            :outline="selectedExtensionTarget !== targetItem.target"
+            no-caps
+            size="sm"
+            icon="download"
+            :color="
+              selectedExtensionTarget === targetItem.target
+                ? 'primary'
+                : 'grey-7'
+            "
+            :label="targetItem.label"
+            :href="targetItem.url"
+            :download="targetItem.filename"
+            :data-testid="`dapp-download-${targetItem.target}-btn`"
+            @click="selectExtensionTarget(targetItem.target)"
+          />
+        </div>
+        <div
+          class="text-caption text-grey-7 q-mt-sm"
+          data-testid="dapp-extension-install-hint"
+        >
+          {{ selectedExtensionInfo.installHint }}
+        </div>
+      </q-card-section>
+    </q-card>
 
     <!-- Active dApp Persona EOA Card (#1708) -->
     <q-card flat bordered data-testid="dapp-persona-card">
@@ -427,6 +484,13 @@ import {
 } from '../../../src-bex/background'
 import { useBalance } from 'src/composables/useBalance'
 import { useReactiveOwnCanonicalAddress } from 'src/utils/own-address'
+import {
+  detectPreferredExtensionTarget,
+  EXTENSION_DOWNLOAD_TARGETS,
+  type ExtensionTargetBrowser,
+  FA_PLUG_CIRCLE_PLUS_ICON,
+  getExtensionDownloadInfo,
+} from 'src/utils/extension-download'
 
 export interface DappApprovalItem {
   id: string
@@ -842,6 +906,9 @@ export default defineComponent({
     const ui = Object.freeze({
       panelAriaLabel: 'Frank dApp Bridge Companion Panel',
       headerTitle: 'dApp Bridge & Persona Companion',
+      installExtensionTitle: 'Install Frank Browser Extension',
+      installExtensionSubtitle:
+        'Connect Frank to Ethereum, Solana, Bitcoin, eCash, and Lotus v2 web apps with per-site anti-supercookie personas.',
       selectPersonaAriaLabel: 'Select active dApp persona',
       personaBalanceLabel: 'Persona Balance',
       poolBalanceLabel: 'Frank Pool Balance',
@@ -872,6 +939,22 @@ export default defineComponent({
       syncExtensionBtn: 'Sync with Browser Extension',
       syncToWebTabBtn: 'Sync Account to signet.mx Tab',
     })
+
+    const plugIcon = FA_PLUG_CIRCLE_PLUS_ICON
+    const selectedExtensionTarget = ref<ExtensionTargetBrowser>(
+      detectPreferredExtensionTarget(),
+    )
+    const selectedExtensionInfo = computed(() =>
+      getExtensionDownloadInfo(selectedExtensionTarget.value),
+    )
+    const allExtensionTargets = [
+      EXTENSION_DOWNLOAD_TARGETS.chrome,
+      EXTENSION_DOWNLOAD_TARGETS.firefox,
+      EXTENSION_DOWNLOAD_TARGETS.safari,
+    ]
+    function selectExtensionTarget(target: ExtensionTargetBrowser) {
+      selectedExtensionTarget.value = target
+    }
 
     const detectedRuntimeKind = computed<RuntimeEnvironmentKind>(() => {
       if (props.runtimeKindOverride) {
@@ -1591,6 +1674,11 @@ export default defineComponent({
 
     return {
       ui,
+      plugIcon,
+      selectedExtensionTarget,
+      selectedExtensionInfo,
+      allExtensionTargets,
+      selectExtensionTarget,
       personaIndex,
       personaOptionItems,
       useBurnerForConnect,

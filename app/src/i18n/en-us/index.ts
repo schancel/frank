@@ -521,6 +521,7 @@ export const rawEnUS = {
     contacts: 'Contacts',
     forum: 'Forum',
     wallet: 'Wallet',
+    dappBridge: 'dApp Connect',
     railLabel: 'Sidebar sections',
     chatsUnreadOne: 'Direct Messages, {count} unread message',
     chatsUnreadOther: 'Direct Messages, {count} unread messages',

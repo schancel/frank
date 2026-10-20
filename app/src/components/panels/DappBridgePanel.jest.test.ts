@@ -9,6 +9,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       props,
       global: {
         stubs: {
+          QIcon: true,
           QBadge: {
             props: ['label'],
             template: '<span v-bind="$attrs">{{ label }}<slot /></span>',
@@ -42,7 +43,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     })
   }
 
-  it('renders Standalone PWA mode badge and default Persona EOA card', () => {
+  it('renders Standalone PWA mode badge, extension download card, and default Persona EOA card', async () => {
     const wrapper = mountPanel({
       initialPersonaBalanceMon: 5,
       initialPoolBalanceMon: 120,
@@ -54,6 +55,27 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     expect(wrapper.find('[data-testid="dapp-runtime-mode"]').text()).toContain(
       'Standalone PWA',
     )
+    const downloadCard = wrapper.find(
+      '[data-testid="dapp-extension-download-card"]',
+    )
+    expect(downloadCard.exists()).toBe(true)
+    expect(downloadCard.text()).toContain('Install Frank Browser Extension')
+    expect(
+      wrapper.find('[data-testid="dapp-download-chrome-btn"]').exists(),
+    ).toBe(true)
+    expect(
+      wrapper.find('[data-testid="dapp-download-firefox-btn"]').exists(),
+    ).toBe(true)
+    expect(
+      wrapper.find('[data-testid="dapp-download-safari-btn"]').exists(),
+    ).toBe(true)
+    await wrapper
+      .find('[data-testid="dapp-download-firefox-btn"]')
+      .trigger('click')
+    expect(
+      wrapper.find('[data-testid="dapp-extension-install-hint"]').text(),
+    ).toContain('about:debugging')
+
     expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
       "m/44'/60'/1'/0/0",
     )
@@ -73,6 +95,9 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     expect(wrapper.find('[data-testid="dapp-runtime-mode"]').text()).toContain(
       'Browser Extension (Chrome Side Panel)',
     )
+    expect(
+      wrapper.find('[data-testid="dapp-extension-download-card"]').exists(),
+    ).toBe(false)
     expect(wrapper.find('[data-testid="extension-view-bar"]').exists()).toBe(
       false,
     )

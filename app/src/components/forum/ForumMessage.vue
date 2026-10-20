@@ -243,7 +243,11 @@ import { renderMarkdown } from '../../utils/markdown'
 import AMessageReplies from './ForumMessageReplies.vue'
 import GameAnnouncementCard from 'components/topic/GameAnnouncementCard.vue'
 import AccountBadge from 'src/components/contacts/AccountBadge.vue'
-import { authorDisplayProfile } from 'src/utils/author-display-profile'
+import {
+  authorDisplayProfile,
+  getCachedAuthorDisplayProfile,
+  prefetchAuthorDisplayProfiles,
+} from 'src/utils/author-display-profile'
 import { parseGameAnnouncement } from 'src/utils/game-announcement'
 
 import { MessageWithReplies, useForumStore } from 'src/stores/forum'
@@ -349,6 +353,17 @@ export default defineComponent({
     }
   },
   emits: ['set-topic'],
+  mounted() {
+    this.prefetchMessageAuthorProfiles()
+  },
+  watch: {
+    'message.poster'() {
+      this.prefetchMessageAuthorProfiles()
+    },
+    'message.replies'() {
+      this.prefetchMessageAuthorProfiles()
+    },
+  },
   unmounted() {
     this.voteActive = false
     this.activeVoteDirection = 0
@@ -366,6 +381,22 @@ export default defineComponent({
     }
   },
   methods: {
+    prefetchMessageAuthorProfiles() {
+      const posters: string[] = []
+      if (this.message?.poster && !this.isAuthorMe(this.message)) {
+        posters.push(this.message.poster)
+      }
+      if (Array.isArray(this.message?.replies)) {
+        for (const reply of this.message.replies) {
+          if (reply?.poster && !this.isAuthorMe(reply)) {
+            posters.push(reply.poster)
+          }
+        }
+      }
+      if (posters.length > 0) {
+        void prefetchAuthorDisplayProfiles(posters)
+      }
+    },
     formatVoteWeight(value: string) {
       return formatCompactAmount(activeChain, value)
     },
@@ -459,13 +490,14 @@ export default defineComponent({
         const profile = authorDisplayProfile(this.myProfile?.profile)
         return profile.name || profile?.username || 'You'
       }
-      if (msg.poster && this.haveContact(msg.poster)) {
-        const contactProfile = authorDisplayProfile(
-          this.getContactProfile(msg.poster),
-        )
-        if (contactProfile?.name) {
-          return contactProfile.name
-        }
+      const profile = this.authorProfile(msg)
+      if (profile?.name && profile.name !== 'Loading...') {
+        return profile.name
+      }
+      if (profile?.username) {
+        return profile.username.startsWith('@')
+          ? profile.username
+          : `@${profile.username}`
       }
       if (msg.poster) {
         return this.formatAddress(msg.poster)
@@ -486,10 +518,10 @@ export default defineComponent({
     isAuthorAddress(message?: MessageWithReplies): boolean {
       const msg = message ?? this.message
       if (!msg || this.isAuthorMe(msg)) return false
+      const profile = this.authorProfile(msg)
       if (
-        msg.poster &&
-        this.haveContact(msg.poster) &&
-        authorDisplayProfile(this.getContactProfile(msg.poster)).name
+        (profile?.name && profile.name !== 'Loading...') ||
+        profile?.username
       ) {
         return false
       }
@@ -515,10 +547,46 @@ export default defineComponent({
       if (this.isAuthorMe(msg)) {
         return authorDisplayProfile(this.myProfile?.profile)
       }
-      if (msg?.poster && this.haveContact(msg.poster)) {
-        return authorDisplayProfile(this.getContactProfile(msg.poster))
+      if (!msg?.poster) {
+        return undefined
       }
-      return undefined
+      const contactProfile = this.haveContact(msg.poster)
+        ? authorDisplayProfile(this.getContactProfile(msg.poster))
+        : undefined
+      const cachedProfile = getCachedAuthorDisplayProfile(msg.poster)
+      if (!contactProfile && !cachedProfile) {
+        return undefined
+      }
+      const contactName =
+        contactProfile?.name && contactProfile.name !== 'Loading...'
+          ? contactProfile.name
+          : undefined
+      const cachedName =
+        cachedProfile?.name && cachedProfile.name !== 'Loading...'
+          ? cachedProfile.name
+          : undefined
+      const name = contactName || cachedName
+      const username = contactProfile?.username || cachedProfile?.username
+      const accountType =
+        contactProfile?.accountType ?? cachedProfile?.accountType
+      const botRole = contactProfile?.botRole ?? cachedProfile?.botRole
+      const isBot = contactProfile?.isBot ?? cachedProfile?.isBot
+      if (
+        !name &&
+        !username &&
+        accountType === undefined &&
+        botRole === undefined &&
+        isBot === undefined
+      ) {
+        return undefined
+      }
+      return {
+        ...(name ? { name } : {}),
+        ...(username ? { username } : {}),
+        ...(accountType !== undefined ? { accountType } : {}),
+        ...(botRole !== undefined ? { botRole } : {}),
+        ...(isBot !== undefined ? { isBot } : {}),
+      }
     },
     resolveVoteUnitValue(): bigint {
       const customDisplay = String(

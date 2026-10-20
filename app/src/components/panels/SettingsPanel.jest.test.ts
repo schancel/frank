@@ -155,27 +155,19 @@ describe('SettingsPanel wallet-action split (#399)', () => {
     wrapper.unmount()
   })
 
-  it('renders Download Browser Extension item in settings sidebar and toggles browser targets', async () => {
+  it('renders Download Browser Extension item with plug icon and navigates to /dapp-bridge in the main content area', async () => {
     const { wrapper } = mountPanel()
     const extBtn = wrapper.find(
       '[data-test="settings-panel-download-extension"]',
     )
     expect(extBtn.exists()).toBe(true)
     expect(extBtn.text()).toContain('Download Browser Extension')
-
-    await extBtn.trigger('click')
     expect(
       wrapper.find('[data-test="settings-panel-extension-targets"]').exists(),
-    ).toBe(true)
-    expect(
-      wrapper.find('[data-test="settings-panel-download-chrome"]').exists(),
-    ).toBe(true)
-    expect(
-      wrapper.find('[data-test="settings-panel-download-firefox"]').exists(),
-    ).toBe(true)
-    expect(
-      wrapper.find('[data-test="settings-panel-download-safari"]').exists(),
-    ).toBe(true)
+    ).toBe(false)
+
+    await extBtn.trigger('click')
+    expect(mockRouterPush).toHaveBeenCalledWith('/dapp-bridge')
     wrapper.unmount()
   })
 })

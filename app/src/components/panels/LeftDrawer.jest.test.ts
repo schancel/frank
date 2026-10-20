@@ -160,8 +160,17 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
       html.indexOf('rail-tab-wallet'),
     )
     expect(html.indexOf('rail-tab-wallet')).toBeLessThan(
+      html.indexOf('rail-tab-dapp-bridge'),
+    )
+    expect(html.indexOf('rail-tab-dapp-bridge')).toBeLessThan(
       html.indexOf('rail-tab-settings'),
     )
+    const dappBridge = wrapper.get('#rail-tab-dapp-bridge')
+    expect(dappBridge.attributes('aria-controls')).toBe('rail-panel-dapp-bridge')
+    expect(wrapper.get('#rail-panel-dapp-bridge').attributes()).toMatchObject({
+      'role': 'tabpanel',
+      'aria-labelledby': 'rail-tab-dapp-bridge',
+    })
   })
 
   it('forces the rail highlight onto the picked page on navigation (#570)', () => {
@@ -170,6 +179,8 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
 
     mockRoute.path = '/wallet'
     expect(vm(mountDrawer()).tab).toBe('wallet')
+    mockRoute.path = '/dapp-bridge'
+    expect(vm(mountDrawer()).tab).toBe('dapp-bridge')
     mockRoute.path = '/forum'
     expect(vm(mountDrawer()).tab).toBe('forum')
     // Other routes never override the highlight (a later direct click must win).

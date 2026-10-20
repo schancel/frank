@@ -82,6 +82,18 @@
         </q-tab>
 
         <q-tab
+          name="dapp-bridge"
+          id="rail-tab-dapp-bridge"
+          aria-controls="rail-panel-dapp-bridge"
+          :icon="plugIcon"
+          class="dapp-bridge-rail-tab"
+          :aria-label="$t('leftDrawer.dappBridge')"
+          @click="openDappBridgeTab"
+        >
+          <q-tooltip>{{ $t('leftDrawer.dappBridge') }}</q-tooltip>
+        </q-tab>
+
+        <q-tab
           name="settings"
           id="rail-tab-settings"
           aria-controls="rail-panel-settings"
@@ -95,7 +107,7 @@
       </q-tabs>
     </div>
 
-    <!-- List column: whatever the active rail icon selects (settings, chats, contacts, wallet or forum) -->
+    <!-- List column: whatever the active rail icon selects (settings, chats, contacts, wallet, dapp-bridge or forum) -->
     <div class="column full-height col list-column">
       <settings-panel
         v-if="$status.setup"
@@ -136,6 +148,65 @@
           v-if="$status.setup && (!isExtensionPopup || tab == 'wallet')"
           :shown="tab == 'wallet'"
         />
+      </div>
+
+      <div
+        v-if="$status.setup"
+        v-show="tab == 'dapp-bridge'"
+        class="full-width column col"
+        v-bind="panelAttrs('dapp-bridge')"
+      >
+        <q-scroll-area
+          class="q-px-none col full-width"
+          :content-style="{ width: '100%', minWidth: '100%' }"
+          :content-active-style="{ width: '100%', minWidth: '100%' }"
+        >
+          <q-list class="full-width">
+            <q-separator />
+            <q-item>
+              <q-item-section
+                class="cursor-pointer"
+                @click="openDappBridgeMainPage"
+              >
+                <q-item-label>{{ $t('leftDrawer.dappBridge') }}</q-item-label>
+              </q-item-section>
+            </q-item>
+            <q-separator />
+            <q-item
+              clickable
+              :active="isDappBridgeActive"
+              active-class="active-topic-item active-chat-list-item"
+              class="topic-list-item"
+              data-test="drawer-open-dapp-bridge"
+              @click="openDappBridgeMainPage"
+            >
+              <q-item-section avatar class="topic-avatar-section">
+                <q-icon :name="plugIcon" size="18px" />
+              </q-item-section>
+              <q-item-section class="topic-name-section">
+                <q-item-label>{{
+                  dappBridgeDrawerUi.openBridgeTitle
+                }}</q-item-label>
+                <q-item-label caption>{{
+                  dappBridgeDrawerUi.openBridgeCaption
+                }}</q-item-label>
+              </q-item-section>
+            </q-item>
+            <q-item
+              clickable
+              class="topic-list-item"
+              data-test="drawer-open-wallet-from-bridge"
+              @click="openReceive"
+            >
+              <q-item-section avatar class="topic-avatar-section">
+                <q-icon name="account_balance_wallet" size="18px" />
+              </q-item-section>
+              <q-item-section class="topic-name-section">{{
+                $t('leftDrawer.wallet')
+              }}</q-item-section>
+            </q-item>
+          </q-list>
+        </q-scroll-area>
       </div>
 
       <!-- Real user-reported gap (ticket #61's own follow-up comment admitted this was a stopgap:
@@ -347,6 +418,7 @@ import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 import { accountStatus } from '../../accounts/session'
 import { useWalletStore } from 'src/stores/wallet'
 import { isAccountBackedUp } from '../../accounts/backup-status'
+import { FA_PLUG_CIRCLE_PLUS_ICON } from '../../utils/extension-download'
 
 const compactCutoff = 325
 
@@ -363,6 +435,11 @@ export default defineComponent({
     const { totalUnread } = storeToRefs(chats)
     const route = useRoute()
     const router = useRouter()
+    const plugIcon = FA_PLUG_CIRCLE_PLUS_ICON
+    const dappBridgeDrawerUi = {
+      openBridgeTitle: 'Browser Extension & dApp Connect',
+      openBridgeCaption: 'Install extension & manage per-site personas',
+    }
 
     // "Contacts" tab's click target -- opens the currently active chat if there is one, else the
     // most recently active one from the sorted chat list, so this tab actually navigates
@@ -407,6 +484,18 @@ export default defineComponent({
       if (!route?.path?.startsWith('/wallet')) {
         return router.push('/wallet')
       }
+    }
+    function openDappBridgeTab() {
+      markRailNavigation()
+      if (!route?.path?.startsWith('/dapp-bridge')) {
+        return router.push('/dapp-bridge')
+      }
+    }
+    function openDappBridgeMainPage() {
+      if (isNarrow.value) {
+        emit('closeDrawer')
+      }
+      openPage(router, '/dapp-bridge')
     }
     function openActiveOrRecentChat() {
       const target =
@@ -495,9 +584,9 @@ export default defineComponent({
     // Composition API's own, more direct seam onto routing state (vs. the Options API
     // string-path watcher an earlier attempt used, which didn't reliably fire in at least one
     // real session).
-    const tab = ref<'chats' | 'contacts' | 'wallet' | 'settings' | 'forum'>(
-      'chats',
-    )
+    const tab = ref<
+      'chats' | 'contacts' | 'wallet' | 'dapp-bridge' | 'settings' | 'forum'
+    >('chats')
     const chatListRef = ref<{ focusSearchInput(): void } | null>(null)
     const shortcut = inject(CHAT_SEARCH_SHORTCUT, null)
     const revealDrawer = inject(REVEAL_CHAT_DRAWER, null)
@@ -550,6 +639,8 @@ export default defineComponent({
           maybeRefreshTopics()
         } else if (path.startsWith('/wallet')) {
           tab.value = 'wallet'
+        } else if (path.startsWith('/dapp-bridge')) {
+          tab.value = 'dapp-bridge'
         } else if (
           path.startsWith('/settings') ||
           path.startsWith('/profile') ||
@@ -580,6 +671,9 @@ export default defineComponent({
     )
 
     const isWelcomeActive = computed(() => route?.path === '/welcome')
+    const isDappBridgeActive = computed(() =>
+      Boolean(route?.path?.startsWith('/dapp-bridge')),
+    )
     function openWelcome() {
       if (route?.path !== '/welcome') {
         void router.push('/welcome')
@@ -623,12 +717,17 @@ export default defineComponent({
     return {
       chatListRef,
       tab,
+      plugIcon,
+      dappBridgeDrawerUi,
       isWelcomeActive,
+      isDappBridgeActive,
       openWelcome,
       openActiveOrRecentChat,
       openForumTab,
       openSettingsTab,
       openWalletTab,
+      openDappBridgeTab,
+      openDappBridgeMainPage,
       discoveredTopicNames,
       selectedForumTopic,
       browseForumTopic,
@@ -700,7 +799,15 @@ export default defineComponent({
     },
     // Tabpanel wiring for the rail (see the tablist comment in the template). Without the rail
     // (signed-out: no tabs rendered) the list is just content, so no dangling aria-labelledby.
-    panelAttrs(name: 'settings' | 'chats' | 'contacts' | 'wallet' | 'forum') {
+    panelAttrs(
+      name:
+        | 'settings'
+        | 'chats'
+        | 'contacts'
+        | 'wallet'
+        | 'dapp-bridge'
+        | 'forum',
+    ) {
       if (!this.$status.setup) return {}
       return {
         'id': `rail-panel-${name}`,

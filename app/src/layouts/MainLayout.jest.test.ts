@@ -366,6 +366,7 @@ describe('LeftDrawer icon rail accessible names', () => {
       'Forum',
       'Contacts',
       'Wallet',
+      'dApp Connect',
       'Settings',
     ])
     for (const [i, name] of [
@@ -373,6 +374,7 @@ describe('LeftDrawer icon rail accessible names', () => {
       'Forum',
       'Contacts',
       'Wallet',
+      'dApp Connect',
       'Settings',
     ].entries()) {
       expect(tabs(wrapper)[i].find('[data-testid="tooltip"]').text()).toBe(name)

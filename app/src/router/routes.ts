@@ -96,7 +96,7 @@ export function createRoutes(): RouteRecordRaw[] {
         { path: 'onboard', component: () => import('pages/Onboard.vue') },
         {
           path: 'dapp-bridge',
-          component: () => import('components/panels/DappBridgePanel.vue'),
+          component: () => import('pages/DappBridge.vue'),
         },
         {
           path: 'claim=:token(.*)',

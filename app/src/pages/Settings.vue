@@ -68,6 +68,17 @@
               no-caps
               size="sm"
               color="primary"
+              :icon="plugIcon"
+              :label="$t('leftDrawer.dappBridge')"
+              data-test="settings-quick-dapp-bridge"
+              @click="$router.push('/dapp-bridge')"
+            />
+            <q-btn
+              outline
+              dense
+              no-caps
+              size="sm"
+              color="primary"
               icon="menu_book"
               :label="$t('docs.title')"
               data-test="settings-quick-docs"
@@ -642,6 +653,7 @@ import {
   sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../src-bex/inpage'
+import { FA_PLUG_CIRCLE_PLUS_ICON } from 'src/utils/extension-download'
 const msToMinutes = 60000
 
 const UI_SCALE_OPTIONS: readonly {
@@ -929,6 +941,7 @@ export default defineComponent({
       themeOptions,
       uiScale,
       uiScaleOptions: UI_SCALE_OPTIONS,
+      plugIcon: FA_PLUG_CIRCLE_PLUS_ICON,
       isExtensionMode,
       supportsSidePanel,
       extensionLaunchMode,

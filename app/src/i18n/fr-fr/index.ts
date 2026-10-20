@@ -536,6 +536,7 @@ export const rawFrFR = {
     contacts: 'Contacts',
     forum: 'Forum',
     wallet: 'Portefeuille',
+    dappBridge: 'Connexion dApp',
     railLabel: 'Sections de la barre latérale',
     chatsUnreadOne: 'Messages directs, {count} message non lu',
     chatsUnreadOther: 'Messages directs, {count} messages non lus',

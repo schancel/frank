@@ -226,6 +226,7 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
       'Forum',
       'Contacts',
       'Wallet',
+      'dApp Connect',
       'Settings',
     ])
     for (const tab of tabs) {
@@ -240,13 +241,14 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
       'false',
       'false',
       'false',
+      'false',
     ])
     const shown = tabs.map(
       t =>
         document.getElementById(t.getAttribute('aria-controls')!)!.style
           .display !== 'none',
     )
-    expect(shown).toEqual([true, false, false, false, false])
+    expect(shown).toEqual([true, false, false, false, false, false])
     wrapper.unmount()
   })
 
@@ -281,6 +283,7 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
       'false',
       'true',
       'false',
+      'false',
     ])
     expect(
       document.getElementById('rail-panel-wallet')!.style.display,
@@ -301,6 +304,7 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
     expect(tabs.map(t => t.getAttribute('aria-selected'))).toEqual([
       'false',
       'true',
+      'false',
       'false',
       'false',
       'false',

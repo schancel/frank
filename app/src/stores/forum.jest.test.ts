@@ -10,6 +10,10 @@ import { ForumMessage } from '@frank/wallet/forum-model'
 import { WalletHandle } from '@frank/wallet/chain'
 import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
 import { sortPostsByMode } from 'src/utils/sorting'
+import {
+  clearAuthorDisplayProfileCache,
+  getCachedAuthorDisplayProfile,
+} from 'src/utils/author-display-profile'
 
 jest.mock('src/accounts/session', () => ({
   accountStatus: { revision: 1, status: 'ready' },
@@ -64,6 +68,7 @@ function makeMessage(overrides: Partial<ForumMessage> = {}): ForumMessage {
 beforeEach(() => {
   setActivePinia(createPinia())
   jest.clearAllMocks()
+  clearAuthorDisplayProfileCache()
   mockedDiscoverTopics.mockResolvedValue([])
 })
 
@@ -968,5 +973,50 @@ describe('useForumStore: setEntries snapshot diffing', () => {
     expect(store.messages).toHaveLength(2)
 
     patchSpy.mockRestore()
+  })
+
+  it('proactively prefetches and caches author display profiles for unique posters in setEntries', async () => {
+    const store = useForumStore()
+    const mockFetchProfile = jest.fn().mockImplementation(async addr => ({
+      name: `Profile for ${addr.raw}`,
+      bot: false,
+    }))
+    activeChain.fetchProfile = mockFetchProfile
+
+    try {
+      const msg1 = makeMessage({
+        payloadDigest: 'digest-1',
+        poster: '0xAAAA111122223333444455556666777788889999',
+      })
+      const msg2 = makeMessage({
+        payloadDigest: 'digest-2',
+        poster: '0xaaaa111122223333444455556666777788889999',
+      })
+      const msg3 = makeMessage({
+        payloadDigest: 'digest-3',
+        parentDigest: 'digest-1',
+        poster: '0xBBBB111122223333444455556666777788889999',
+      })
+      store.setEntries([msg1, msg2, msg3])
+      await flushPromises()
+
+      expect(mockFetchProfile).toHaveBeenCalledTimes(2)
+      expect(
+        getCachedAuthorDisplayProfile(
+          '0xAAAA111122223333444455556666777788889999',
+        ),
+      ).toMatchObject({
+        name: 'Profile for 0xaaaa111122223333444455556666777788889999',
+      })
+      expect(
+        getCachedAuthorDisplayProfile(
+          '0xBBBB111122223333444455556666777788889999',
+        ),
+      ).toMatchObject({
+        name: 'Profile for 0xbbbb111122223333444455556666777788889999',
+      })
+    } finally {
+      delete activeChain.fetchProfile
+    }
   })
 })

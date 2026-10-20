@@ -7,6 +7,11 @@ import { shallowMount } from '@vue/test-utils'
 import ForumMessage from './ForumMessage.vue'
 import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
+import {
+  clearAuthorDisplayProfileCache,
+  getCachedAuthorDisplayProfile,
+} from 'src/utils/author-display-profile'
+import * as contactUsernameModule from 'src/utils/contact-username'
 
 const mockAddOffering = jest.fn()
 const mockSetStampPreparationStatus = jest.fn()
@@ -189,6 +194,7 @@ async function vote(wrapper: ReturnType<typeof mountCard>) {
 jest.setTimeout(10_000)
 beforeEach(() => {
   jest.clearAllMocks()
+  clearAuthorDisplayProfileCache()
   for (const key of Object.keys(mockIndexedMessages)) {
     delete mockIndexedMessages[key]
   }
@@ -523,5 +529,105 @@ describe('ForumMessage author resolution and display (#1046)', () => {
     // restore
     mockProfile.profile.name = 'Alice Local'
     mockOwnPostDigests.length = 0
+  })
+
+  it('proactively loads and displays relay profile name and bot badge for non-contact forum authors', async () => {
+    mockOwnAddress.value = null
+    const chain = jest.requireMock('@frank/wallet/chain').activeChain
+    const mockFetchProfile = jest.fn().mockResolvedValue({
+      name: 'Qwen Assistant',
+      bot: true,
+    })
+    chain.fetchProfile = mockFetchProfile
+    const relayHandleSpy = jest
+      .spyOn(contactUsernameModule, 'relayHandleOf')
+      .mockResolvedValue({ username: 'qwen', reassigned: false })
+
+    try {
+      const posterAddr = '0x9999999999999999999999999999999999999999'
+      const wrapper = mountCard({ poster: posterAddr })
+
+      await new Promise(resolve => setTimeout(resolve, 25))
+      await wrapper.vm.$nextTick()
+
+      expect(mockFetchProfile).toHaveBeenCalledTimes(1)
+      expect(wrapper.find('.author-btn').text()).toBe('Qwen Assistant')
+      expect(wrapper.find('.author-btn .font-mono').exists()).toBe(false)
+      expect(getCachedAuthorDisplayProfile(posterAddr)).toMatchObject({
+        name: 'Qwen Assistant',
+        username: 'qwen',
+        isBot: true,
+      })
+      const badge = wrapper.findComponent({ name: 'AccountBadge' })
+      expect(badge.exists()).toBe(true)
+      expect(badge.props('isBot')).toBe(true)
+    } finally {
+      delete chain.fetchProfile
+      relayHandleSpy.mockRestore()
+    }
+  })
+
+  it('falls back to @username when a non-contact forum author has a relay handle but no display name', async () => {
+    mockOwnAddress.value = null
+    const chain = jest.requireMock('@frank/wallet/chain').activeChain
+    chain.fetchProfile = jest.fn().mockResolvedValue({ name: '' })
+    const relayHandleSpy = jest
+      .spyOn(contactUsernameModule, 'relayHandleOf')
+      .mockResolvedValue({ username: 'satoshi', reassigned: false })
+
+    try {
+      const posterAddr = '0x8888888888888888888888888888888888888888'
+      const wrapper = mountCard({ poster: posterAddr })
+
+      await new Promise(resolve => setTimeout(resolve, 25))
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.find('.author-btn').text()).toBe('@satoshi')
+      expect(wrapper.find('.author-btn .font-mono').exists()).toBe(false)
+    } finally {
+      delete chain.fetchProfile
+      relayHandleSpy.mockRestore()
+    }
+  })
+
+  it('deduplicates in-flight profile lookups across multiple posts by the same non-contact author', async () => {
+    mockOwnAddress.value = null
+    const chain = jest.requireMock('@frank/wallet/chain').activeChain
+    let resolveProfile!: (val: { name: string }) => void
+    const mockFetchProfile = jest.fn().mockImplementation(
+      () =>
+        new Promise(resolve => {
+          resolveProfile = resolve
+        }),
+    )
+    chain.fetchProfile = mockFetchProfile
+    const relayHandleSpy = jest
+      .spyOn(contactUsernameModule, 'relayHandleOf')
+      .mockResolvedValue(undefined)
+
+    try {
+      const posterAddr = '0x7777777777777777777777777777777777777777'
+      const card1 = mountCard({
+        poster: posterAddr,
+        payloadDigest: 'digest-a',
+      })
+      const card2 = mountCard({
+        poster: posterAddr.toUpperCase(),
+        payloadDigest: 'digest-b',
+      })
+
+      expect(mockFetchProfile).toHaveBeenCalledTimes(1)
+
+      resolveProfile({ name: 'Bob Builder' })
+      await new Promise(resolve => setTimeout(resolve, 25))
+      await card1.vm.$nextTick()
+      await card2.vm.$nextTick()
+
+      expect(card1.find('.author-btn').text()).toBe('Bob Builder')
+      expect(card2.find('.author-btn').text()).toBe('Bob Builder')
+    } finally {
+      delete chain.fetchProfile
+      relayHandleSpy.mockRestore()
+    }
   })
 })

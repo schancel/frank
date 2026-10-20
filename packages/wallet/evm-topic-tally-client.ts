@@ -20,6 +20,7 @@ import {
   type DiscoveredTopic,
 } from './forum-model'
 export type { DiscoveredTopic } from './forum-model'
+import { createCooperativeBatchYielder } from './chain/event-loop-yield'
 
 const RESPONSE_BYTES = 4 * 1024 * 1024,
   STAGING_BYTES = 64 * 1024 * 1024,
@@ -345,9 +346,16 @@ async function traverse(
           const rows = page.type === 13 ? page.rows : page.entries
           if (rows.length > 128 || (rows.length === 0 && page.nextCursor))
             throw new Error('Invalid page row count')
+          const batchYielder = createCooperativeBatchYielder()
+          let startedRowDecoding = false
           for (const row of rows) {
             let key: string, projected: ForumMessage | DiscoveredTopic
             if (page.type === 13) {
+              if (startedRowDecoding) {
+                await batchYielder.maybeYield()
+              } else {
+                startedRowDecoding = true
+              }
               const viewFrame = row as (typeof page.rows)[number]
               const view = viewFrame.typed
               if (view?.type !== 12) throw new Error('Expected Forum view')

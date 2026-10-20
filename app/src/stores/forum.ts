@@ -137,7 +137,6 @@ export const useForumStore = defineStore('forum', {
   getters: {
     getMessage(state) {
       return (messageDigest?: string) => {
-        console.log('messageDigest', messageDigest)
         if (
           !messageDigest ||
           !Object.prototype.hasOwnProperty.call(state.index, messageDigest)
@@ -380,9 +379,12 @@ export const useForumStore = defineStore('forum', {
         const names = await this.topicsToFetch(topic, current)
         if (!current()) return
         // Sequential query staging bounds aggregate memory instead of allocating one full
-        // 64 MiB client snapshot per discovered topic. Each query publishes atomically.
+        // 64 MiB client snapshot per discovered topic. Accumulate across topics and publish
+        // once so mounted forum posts do not re-index and re-render N times per refresh.
         let failures = 0
+        let succeeded = 0
         let firstError: unknown
+        let nextMessages = [...this.messages]
         for (const name of names) {
           try {
             const entries = await stageForumQuery(
@@ -396,10 +398,11 @@ export const useForumStore = defineStore('forum', {
             )
             if (!current()) return
             if (!entries) throw new Error('Incomplete Forum query')
-            this.setEntries([
-              ...this.messages.filter(message => message.topic !== name),
+            nextMessages = [
+              ...nextMessages.filter(message => message.topic !== name),
               ...entries,
-            ])
+            ]
+            succeeded++
           } catch (error) {
             if (!current()) return
             failures++
@@ -407,6 +410,9 @@ export const useForumStore = defineStore('forum', {
           }
         }
         if (!current()) return
+        if (succeeded > 0 || names.length === 0) {
+          this.setEntries(nextMessages)
+        }
         this.hasFetchedOnce = true
         this.outageStatus =
           failures === 0

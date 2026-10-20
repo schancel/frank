@@ -26,6 +26,7 @@ import {
   sendsWaitingForPreviousPayment,
 } from '../utils/outgoing-waiting'
 import { activeChain } from '@frank/wallet/chain'
+import { createCooperativeBatchYielder } from '@frank/wallet/chain/event-loop-yield'
 import { sendsWaitingBlocks } from '../utils/outgoing-payments'
 import { messageItems } from '../utils/message-items'
 
@@ -4801,12 +4802,19 @@ export const useChatStore = defineStore('chats', {
         wrapper => !coveredEchoes.has(wrapper.index),
       )
 
+      const persistYielder = createCooperativeBatchYielder()
+      let persistStarted = false
       for (const wrapper of deliverableWrappers) {
         // An index this call did not claim belongs to an overlapping receive.
         // Do not persist it: if the claimer fails before storing, a later poll
         // must still be able to notify.
         if (!toNotify.has(wrapper.index) && !(wrapper.index in this.messages)) {
           continue
+        }
+        if (persistStarted) {
+          await persistYielder.maybeYield()
+        } else {
+          persistStarted = true
         }
         const loopback = outboundMatches.get(wrapper.index)
         const persisted: MessageWrapper = {
@@ -4918,6 +4926,7 @@ export const useChatStore = defineStore('chats', {
           recordLogicalMessage(this.logicalMessages, replacement, chat.id)
         }
       }
+      const dirtyConversations = new Set<Conversation>()
       for (const wrapper of deliverableWrappers) {
         const {
           copartyAddress,
@@ -5036,7 +5045,6 @@ export const useChatStore = defineStore('chats', {
           if (!conv.messages.some(m => m.payloadDigest === index)) {
             conv.messages.push(this.messages[index]!)
           }
-          conv.messages.sort(byRelayTime)
           if (emailItem && speaks) {
             conv.kind = 'email'
             if (!conv.name && emailItem.subject) {
@@ -5058,7 +5066,7 @@ export const useChatStore = defineStore('chats', {
           ) {
             conv.lastRead = Math.max(conv.lastRead, existingMessage.serverTime)
           }
-          recomputeChatAccounting(conv, this.activeConversationId)
+          dirtyConversations.add(conv)
           recordLogicalMessage(this.logicalMessages, existingMessage, conv.id)
           // We should already have created the chat if we have the message. Continue so one
           // replayed item cannot hide later, genuinely new messages from this same poll batch.
@@ -5107,7 +5115,6 @@ export const useChatStore = defineStore('chats', {
         this.messages[index] = message
         if (!conv.messages.some(m => m.payloadDigest === index)) {
           conv.messages.push(message)
-          conv.messages.sort(byRelayTime)
         }
         if (!message.outbound) {
           const key = wrapper.copartyPubKey?.toBuffer?.()
@@ -5137,8 +5144,12 @@ export const useChatStore = defineStore('chats', {
           // navigating elsewhere and reloading cannot reconstruct it as unread.
           conv.lastRead = Math.max(conv.lastRead, message.serverTime)
         }
-        recomputeChatAccounting(conv, this.activeConversationId)
+        dirtyConversations.add(conv)
         this.lastReceived = Math.max(this.lastReceived ?? 0, message.serverTime)
+      }
+      for (const conv of dirtyConversations) {
+        conv.messages.sort(byRelayTime)
+        recomputeChatAccounting(conv, this.activeConversationId)
       }
       // A thread opened here and never used yields to the peer's own conversation once that
       // is the peer's thread: it is dropped rather than left as a second, empty thread, and

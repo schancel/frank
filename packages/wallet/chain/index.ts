@@ -284,4 +284,14 @@ export {
 } from '../evm-block-watcher'
 
 export * from "./chain-adapter";
+export {
+  DEFAULT_DECODE_BATCH_SIZE,
+  DEFAULT_YIELD_BUDGET_MS,
+  createCooperativeBatchYielder,
+  setEventLoopYieldForTesting,
+  yieldToEventLoop,
+  type CooperativeBatchYielder,
+  type EventLoopYieldFn,
+} from "./event-loop-yield";
+
 

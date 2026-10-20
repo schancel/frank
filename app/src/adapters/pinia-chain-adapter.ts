@@ -34,6 +34,7 @@
  */
 import { refreshOutgoingPaymentSummaries } from '../utils/outgoing-payments'
 import { activeChain } from '@frank/wallet/chain'
+import { createCooperativeBatchYielder } from '@frank/wallet/chain/event-loop-yield'
 import { applyWalletSyncItem } from '@frank/wallet/sync-dispatcher'
 import { accountSession } from '../accounts/session'
 import {
@@ -353,7 +354,15 @@ export function startDirectMessagePolling({
         group.records += 1
         group.quarantined += 1
       }
+      const wrapperYielder = createCooperativeBatchYielder()
+      let wrapperStarted = false
       for (const record of received) {
+        if (wrapperStarted) {
+          await wrapperYielder.maybeYield()
+          if (stopped) return
+        } else {
+          wrapperStarted = true
+        }
         const receivedTime: unknown = record.receivedTime
         if (!isSafeRelayTimestamp(receivedTime)) {
           console.error(

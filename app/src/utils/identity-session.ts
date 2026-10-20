@@ -220,19 +220,76 @@ function productionDeps(): MessagingDeps {
         throw error
       }
     },
-    startNegotiation: startAppNegotiationRecovery,
-    startSwapExecution: startAppSwapExecution,
+    startNegotiation: options => {
+      if (
+        typeof window !== 'undefined' &&
+        window.location?.search?.includes('extMode=popup')
+      ) {
+        let inner: { stop(): Promise<void> } | undefined
+        let stopped = false
+        const timer = setTimeout(() => {
+          if (stopped) return
+          inner = startAppNegotiationRecovery(options)
+        }, 4_000)
+        return {
+          async stop() {
+            stopped = true
+            clearTimeout(timer)
+            await inner?.stop()
+          },
+        }
+      }
+      return startAppNegotiationRecovery(options)
+    },
+    startSwapExecution: options => {
+      if (
+        typeof window !== 'undefined' &&
+        window.location?.search?.includes('extMode=popup')
+      ) {
+        let inner: { stop(): Promise<void> } | undefined
+        let stopped = false
+        const timer = setTimeout(() => {
+          if (stopped) return
+          try {
+            inner = startAppSwapExecution(options)
+          } catch (swapErr) {
+            console.warn(
+              '[startMessaging] swapExecution start failed:',
+              swapErr,
+            )
+          }
+        }, 4_000)
+        return {
+          async stop() {
+            stopped = true
+            clearTimeout(timer)
+            await inner?.stop()
+          },
+        }
+      }
+      return startAppSwapExecution(options)
+    },
     startPolling: startDirectMessagePolling,
     startReconcile: startOutgoingReconciliation,
-    resumeLegacy: () =>
-      void import('../composables/useSolanaSwap')
-        .then(swaps => swaps.resumeSolanaSwaps())
-        .catch(error =>
-          console.warn(
-            '[startMessaging] could not resume Solana swaps:',
-            error,
-          ),
-        ),
+    resumeLegacy: () => {
+      const runResume = () =>
+        void import('../composables/useSolanaSwap')
+          .then(swaps => swaps.resumeSolanaSwaps())
+          .catch(error =>
+            console.warn(
+              '[startMessaging] could not resume Solana swaps:',
+              error,
+            ),
+          )
+      if (
+        typeof window !== 'undefined' &&
+        window.location?.search?.includes('extMode=popup')
+      ) {
+        setTimeout(runResume, 5_000)
+        return
+      }
+      runResume()
+    },
     // 5 s, 10 s, 20 s ... capped at 5 minutes.
     retryDelayMs: attempt => Math.min(5_000 * 2 ** (attempt - 1), 300_000),
     // The account's profile is the relay's to hold: adopt what it has, and publish only what

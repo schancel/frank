@@ -475,7 +475,6 @@ export const useTopicStore = defineStore('topics', {
       try {
         const topics = await storage.get('topics')
         const deserializedTopics = JSON.parse(topics) as Partial<ReducedState>
-        console.log('loaded topics', deserializedTopics)
         return processSerializedTopics(deserializedTopics)
       } catch (err) {
         console.log('Unable to load topics store', err)

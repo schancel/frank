@@ -1030,9 +1030,13 @@ export default defineComponent({
         return this.message
       },
       set(val: string) {
+        if (!val.includes(':')) {
+          this.$emit('update:message', val)
+          return
+        }
         const replacer = (match: string) => emoji.emojify(match)
         // TODO: Remove emojify
-        const emojifiedValue = val.replace(/(:.*:)/g, replacer)
+        const emojifiedValue = val.replace(/(:[a-zA-Z0-9_+-]+:)/g, replacer)
         this.$emit('update:message', emojifiedValue)
       },
     },

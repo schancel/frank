@@ -79,6 +79,16 @@ export function fitsOneMessage(
   text: string,
   attachments: readonly PostAttachment[],
 ): boolean {
+  const attachmentBytes = attachments.reduce(
+    (sum, a) => sum + a.dataUrl.length + SENT_ITEM_ALLOWANCE_BYTES,
+    0,
+  )
+  if (
+    attachmentBytes + text.length * 3 + SENT_ITEM_ALLOWANCE_BYTES <=
+    MAX_SENT_MESSAGE_BYTES
+  ) {
+    return true
+  }
   return sentMessageBytes(text, attachments) <= MAX_SENT_MESSAGE_BYTES
 }
 

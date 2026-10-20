@@ -206,6 +206,7 @@ import {
   CanonicalRecipientNotPublishedError,
   LevelOutgoingMessageStore,
   MemoryOutgoingMessageStore,
+  createCooperativeBatchYielder,
   noticeOldLinkState,
   restoreOutgoingClaims,
   canonicalDirectMessages,
@@ -1355,6 +1356,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               (latest, message) => Math.max(latest, message.receivedTime ?? 0),
               scannedUntil
             );
+            if (scannedUntil > scan.sinceMs) {
+              await coinOwner.recordMailboxScan({
+                complete: false,
+                sinceMs: scannedUntil,
+              });
+            }
           }
           const earlierComplete = !truncated;
           canonicalReceived = await canonical.fetchSince({
@@ -1377,7 +1384,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               : scannedUntil,
           });
         }
+        const noteYielder = createCooperativeBatchYielder();
+        let noteStarted = false;
         for (const msg of canonicalReceived) {
+          if (noteStarted) {
+            await noteYielder.maybeYield();
+          } else {
+            noteStarted = true;
+          }
           const taken = await consumeSelfNotes(wallet, msg, params.onForeignWalletSync);
           if (taken.kind === "none") received.push(msg);
           else if (taken.kind === "retry")

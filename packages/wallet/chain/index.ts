@@ -159,6 +159,7 @@ export {
   TopicPostOutcomeUnknownError,
 } from "./active-chain";
 export {
+  CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
   CanonicalRelayCannotForwardError,
 } from "./canonical-dm";

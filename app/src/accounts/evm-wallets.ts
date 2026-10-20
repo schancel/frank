@@ -346,7 +346,12 @@ export async function recoverSecondaryEvmWallets(
   if (!primary?.chainIdentifier) return
   const isPopup =
     typeof window !== 'undefined' &&
-    Boolean(window.location?.search?.includes('extMode=popup'))
+    Boolean(
+      window.location?.search?.includes('extMode=') ||
+        /^(chrome-extension|moz-extension|safari-web-extension):$/i.test(
+          window.location?.protocol || '',
+        ),
+    )
   const home = getChainRegistryEntry(primary.chainIdentifier)
   const isTestnet =
     home?.isTestnet ??

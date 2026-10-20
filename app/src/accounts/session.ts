@@ -1626,11 +1626,14 @@ export const accountSession = createAccountSession({
     const { claimProfileStore, restoreOwnProfileWithRelay } = await import(
       '../utils/own-profile'
     )
-    const isExtensionPopup =
+    const isExtensionSurface =
       typeof window !== 'undefined' &&
-      typeof window.location?.search === 'string' &&
-      window.location.search.includes('extMode=popup')
-    if (isExtensionPopup && store) {
+      ((typeof window.location?.search === 'string' &&
+        window.location.search.includes('extMode=')) ||
+        /^(chrome-extension|moz-extension|safari-web-extension):$/i.test(
+          window.location?.protocol || '',
+        ))
+    if (isExtensionSurface && store) {
       claimProfileStore(store, wallet.identity.address.raw)
       store.restoredAccountId = accountId
       void restoreOwnProfileWithRelay({

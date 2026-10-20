@@ -635,17 +635,18 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(resolveManualChunk('/repo/app/src/pages/Chat.vue')).toBeUndefined()
   })
 
-  it('exposes ext-open-sidepanel-btn and ext-popout-window-btn in MainLayout.vue when running in extMode=popup', async () => {
+  it('exposes ext-popout-window-btn in ExtensionPopoutBtn.vue across extension toolbars', async () => {
     const fs = await import('node:fs')
     const path = await import('node:path')
-    const mainLayoutSource = fs.readFileSync(
-      path.resolve(__dirname, '../src/layouts/MainLayout.vue'),
+    const popoutBtnSource = fs.readFileSync(
+      path.resolve(
+        __dirname,
+        '../src/components/navigation/ExtensionPopoutBtn.vue',
+      ),
       'utf8',
     )
-    expect(mainLayoutSource).toContain('data-testid="ext-open-sidepanel-btn"')
-    expect(mainLayoutSource).toContain('data-testid="ext-popout-window-btn"')
-    expect(mainLayoutSource).toContain('openExtensionSidePanel')
-    expect(mainLayoutSource).toContain('popOutExtensionWindow')
+    expect(popoutBtnSource).toContain('data-testid="ext-popout-window-btn"')
+    expect(popoutBtnSource).toContain('popOutExtensionWindow')
   })
 
   it('keeps extension renderer process and JS module cache warm via chrome.offscreen (Chromium) and hidden #frank-warmup-frame iframe (Safari/Firefox)', async () => {
@@ -705,6 +706,91 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       expect(document.querySelectorAll('#frank-warmup-frame').length).toBe(1)
     } finally {
       document.getElementById('frank-warmup-frame')?.remove()
+    }
+  })
+
+  it('advertises Monad Testnet (0x279f) in wallet_getCapabilities and reports spendable Frank Pool balance when persona EOA balance is 0 on Monad', async () => {
+    const listeners: Array<
+      (msg: any, sender: any, sendResponse: (res: any) => void) => any
+    > = []
+    const mockScope = {
+      chrome: {
+        runtime: {
+          id: 'frank-test-ext',
+          sendMessage: (msg: any, cb?: (res: any) => void) => {
+            for (const fn of listeners) {
+              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+                if (cb) cb(res)
+              })
+            }
+          },
+          onMessage: {
+            addListener: (fn: any) => listeners.push(fn),
+            removeListener: (fn: any) => {
+              const idx = listeners.indexOf(fn)
+              if (idx >= 0) listeners.splice(idx, 1)
+            },
+          },
+        },
+      },
+    }
+    const state = createBackgroundBridgeState()
+    installBackgroundBridge(mockScope, state)
+
+    const personaAddr = '0x1111111111111111111111111111111111111111'
+    await sendRuntimeMessage(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'set-active-persona',
+        address: personaAddr,
+        poolBalanceWeiHex: '0x4d8c55aefb8c05b5c0', // ~89.38 MON
+        chainIdHex: '0x279f',
+      },
+      mockScope,
+    )
+
+    const capsRes = await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'dapp-rpc-request',
+        origin: 'https://app.uniswap.org',
+        payload: {
+          method: 'wallet_getCapabilities',
+          params: [personaAddr],
+        },
+      },
+      mockScope,
+    )
+    expect(
+      (capsRes.result as Record<string, unknown>)?.['0x279f'],
+    ).toBeDefined()
+
+    const origFetch = globalThis.fetch
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        jsonrpc: '2.0',
+        id: 1,
+        result: '0x0',
+      }),
+    }) as unknown as typeof fetch
+
+    try {
+      const balRes = await sendRuntimeMessage<any, any>(
+        {
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'dapp-rpc-request',
+          origin: 'https://app.uniswap.org',
+          payload: {
+            method: 'eth_getBalance',
+            params: [personaAddr, 'latest'],
+          },
+        },
+        mockScope,
+      )
+      expect(balRes.result).toBe('0x4d8c55aefb8c05b5c0')
+    } finally {
+      globalThis.fetch = origFetch
     }
   })
 

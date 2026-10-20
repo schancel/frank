@@ -223,7 +223,10 @@ function productionDeps(): MessagingDeps {
     startNegotiation: options => {
       if (
         typeof window !== 'undefined' &&
-        window.location?.search?.includes('extMode=popup')
+        (window.location?.search?.includes('extMode=') ||
+          /^(chrome-extension|moz-extension|safari-web-extension):$/i.test(
+            window.location?.protocol || '',
+          ))
       ) {
         let inner: { stop(): Promise<void> } | undefined
         let stopped = false
@@ -244,7 +247,10 @@ function productionDeps(): MessagingDeps {
     startSwapExecution: options => {
       if (
         typeof window !== 'undefined' &&
-        window.location?.search?.includes('extMode=popup')
+        (window.location?.search?.includes('extMode=') ||
+          /^(chrome-extension|moz-extension|safari-web-extension):$/i.test(
+            window.location?.protocol || '',
+          ))
       ) {
         let inner: { stop(): Promise<void> } | undefined
         let stopped = false
@@ -283,7 +289,10 @@ function productionDeps(): MessagingDeps {
           )
       if (
         typeof window !== 'undefined' &&
-        window.location?.search?.includes('extMode=popup')
+        (window.location?.search?.includes('extMode=') ||
+          /^(chrome-extension|moz-extension|safari-web-extension):$/i.test(
+            window.location?.protocol || '',
+          ))
       ) {
         setTimeout(runResume, 5_000)
         return

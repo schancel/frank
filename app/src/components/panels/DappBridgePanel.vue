@@ -236,8 +236,16 @@
 
 <script lang="ts">
 import { computed, defineComponent, onMounted, PropType, ref, watch } from 'vue'
-import { formatUnits, getAddress, keccak256, toUtf8Bytes } from 'ethers'
+import {
+  computeAddress,
+  formatUnits,
+  keccak256,
+  parseUnits,
+  toUtf8Bytes,
+  Wallet,
+} from 'ethers'
 import { activeChain } from '@frank/wallet/chain'
+import { accountSession, accountStatus } from 'src/accounts/session'
 import {
   getExtensionRuntime,
   RuntimeEnvironmentKind,
@@ -277,20 +285,27 @@ const FALLBACK_PERSONA_ADDRESSES = [
   '0x78731D3Ca6b7E34aC0F824c42a7cC18A495cabaB',
 ]
 
+export function deriveAccountPersonaPrivateKey(
+  seedOrAddress: string | null | undefined,
+  index: number,
+): string | null {
+  const clean = typeof seedOrAddress === 'string' ? seedOrAddress.trim() : ''
+  if (clean && /^0x[0-9a-fA-F]{40,64}$/.test(clean)) {
+    return keccak256(
+      toUtf8Bytes(`frank-dapp-persona-v1:${clean.toLowerCase()}:${index}`),
+    )
+  }
+  return null
+}
+
 export function deriveAccountPersonaAddress(
   identityAddress: string | null | undefined,
   index: number,
 ): string {
-  const clean = typeof identityAddress === 'string' ? identityAddress.trim() : ''
-  if (clean && /^0x[0-9a-fA-F]{40}$/.test(clean)) {
+  const privKey = deriveAccountPersonaPrivateKey(identityAddress, index)
+  if (privKey) {
     try {
-      if (index === 0) {
-        return getAddress(clean)
-      }
-      const digest = keccak256(
-        toUtf8Bytes(`frank-dapp-persona-v1:${clean.toLowerCase()}:${index}`),
-      )
-      return getAddress('0x' + digest.slice(-40))
+      return computeAddress(privKey)
     } catch {
       // Fall back below
     }
@@ -307,12 +322,12 @@ function shortHexAddress(addr: string): string {
 }
 
 function resolveDefaultPersonaRpcUrl(): string {
-  const relayBase = (activeChain.relayBaseUrl || 'https://relay.signet.mx').replace(
-    /\/+$/,
-    '',
-  )
-  const chainId = activeChain.chainIdentifier || 'monad-testnet'
-  return `${relayBase}/chain-rpc/${chainId}/rpc`
+  const relayBase = (activeChain.relayBaseUrl || '').replace(/\/+$/, '')
+  if (relayBase && !relayBase.includes('relay.signet.mx')) {
+    const chainId = activeChain.chainIdentifier || 'monad-testnet'
+    return `${relayBase}/chain-rpc/${chainId}/rpc`
+  }
+  return 'https://testnet-rpc.monad.xyz'
 }
 
 export async function discoverUsedPersonasOnChain(
@@ -326,7 +341,7 @@ export async function discoverUsedPersonasOnChain(
   },
 ): Promise<DiscoveredPersonaActivity[]> {
   const clean = typeof rootAddress === 'string' ? rootAddress.trim() : ''
-  if (!/^0x[0-9a-fA-F]{40}$/.test(clean)) return []
+  if (!/^0x[0-9a-fA-F]{40,64}$/.test(clean)) return []
   const fetchFn =
     options?.fetchImpl ??
     (typeof globalThis.fetch === 'function'
@@ -346,17 +361,17 @@ export async function discoverUsedPersonasOnChain(
       method: string
       params: unknown[]
     }> = []
-    for (let i = 1; i <= maxScan; i += 1) {
+    for (let i = 0; i <= maxScan; i += 1) {
       const addr = deriveAccountPersonaAddress(clean, i)
       batchPayload.push({
         jsonrpc: '2.0',
-        id: i * 2,
+        id: i * 2 + 2,
         method: 'eth_getBalance',
         params: [addr, 'latest'],
       })
       batchPayload.push({
         jsonrpc: '2.0',
-        id: i * 2 + 1,
+        id: i * 2 + 3,
         method: 'eth_getTransactionCount',
         params: [addr, 'latest'],
       })
@@ -384,9 +399,9 @@ export async function discoverUsedPersonasOnChain(
     }
 
     let consecutiveUnused = 0
-    for (let i = 1; i <= maxScan; i += 1) {
-      const balHex = byId.get(i * 2) ?? '0x0'
-      const txHex = byId.get(i * 2 + 1) ?? '0x0'
+    for (let i = 0; i <= maxScan; i += 1) {
+      const balHex = byId.get(i * 2 + 2) ?? '0x0'
+      const txHex = byId.get(i * 2 + 3) ?? '0x0'
       let balWei = 0n
       let txCount = 0
       try {
@@ -400,7 +415,7 @@ export async function discoverUsedPersonasOnChain(
         txCount = 0
       }
       const used = balWei > 0n || txCount > 0
-      if (used || i <= (options?.knownMaxIndex ?? 0)) {
+      if (i === 0 || used || i <= (options?.knownMaxIndex ?? 0)) {
         const balanceMon = Number.parseFloat(formatUnits(balWei, 18))
         discovered.push({
           index: i,
@@ -410,12 +425,17 @@ export async function discoverUsedPersonasOnChain(
           used,
         })
       }
-      if (used) {
-        consecutiveUnused = 0
-      } else {
-        consecutiveUnused += 1
-        if (consecutiveUnused >= gapLimit && i >= (options?.knownMaxIndex ?? 0)) {
-          break
+      if (i > 0) {
+        if (used) {
+          consecutiveUnused = 0
+        } else {
+          consecutiveUnused += 1
+          if (
+            consecutiveUnused >= gapLimit &&
+            i >= (options?.knownMaxIndex ?? 0)
+          ) {
+            break
+          }
         }
       }
     }
@@ -548,7 +568,7 @@ export default defineComponent({
     }
 
     async function runAutomaticPersonaDiscovery(root: string) {
-      if (!root || !/^0x[0-9a-fA-F]{40}$/.test(root)) return
+      if (!root || !/^0x[0-9a-fA-F]{40,64}$/.test(root)) return
       restorePersonaMetadata(root)
       const results = await discoverUsedPersonasOnChain(root, {
         knownMaxIndex: maxPersonaIndex.value,
@@ -558,12 +578,13 @@ export default defineComponent({
       const nextUsed = { ...usedPersonasByIndex.value }
       let highestIdx = maxPersonaIndex.value
       for (const item of results) {
-        if (item.used || item.index <= maxPersonaIndex.value) {
-          nextBalances[item.index] = item.balanceMon
-          if (item.used) {
+        if (item.index === 0 || item.used || item.index <= maxPersonaIndex.value) {
+          const prevBal = nextBalances[item.index] ?? 0
+          nextBalances[item.index] = Math.max(prevBal, item.balanceMon)
+          if (item.used && item.index > 0) {
             nextUsed[item.index] = true
           }
-          if (item.index > highestIdx) {
+          if (item.index > highestIdx && (item.used || item.index <= maxPersonaIndex.value)) {
             highestIdx = item.index
           }
         }
@@ -735,10 +756,17 @@ export default defineComponent({
     async function syncActivePersonaToBackground(address: string) {
       if (!isExtensionRuntime.value) return
       try {
+        const totalSpendableMon = Math.max(
+          0,
+          personaBalanceMon.value + poolBalanceMon.value,
+        )
+        const totalWei = parseUnits(totalSpendableMon.toFixed(6), 18)
         await sendRuntimeMessage({
           channel: FRANK_DAPP_BRIDGE_CHANNEL,
           type: 'set-active-persona',
           address,
+          poolBalanceWeiHex: '0x' + totalWei.toString(16),
+          chainIdHex: '0x279f',
         })
       } catch {
         // Ignore in non-extension contexts
@@ -746,8 +774,8 @@ export default defineComponent({
     }
 
     watch(
-      activePersonaAddress,
-      newAddress => {
+      [activePersonaAddress, personaBalanceMon, poolBalanceMon],
+      ([newAddress]) => {
         if (newAddress) {
           void syncActivePersonaToBackground(newAddress)
         }
@@ -849,25 +877,126 @@ export default defineComponent({
     function topUpFromPool() {
       const amount = Math.min(10, poolBalanceMon.value)
       if (amount <= 0) return
+      const targetIdx = personaIndex.value
+      const targetAddress = activePersonaAddress.value
       poolTransferDeltaMon.value -= amount
       personaBalanceMon.value += amount
+      usedPersonasByIndex.value = {
+        ...usedPersonasByIndex.value,
+        [targetIdx]: true,
+      }
+      persistPersonaMetadata()
       emit('topup-persona', {
         amountMon: amount,
         personaBalanceMon: personaBalanceMon.value,
         poolBalanceMon: poolBalanceMon.value,
       })
+      if (accountStatus.status === 'ready') {
+        void (async () => {
+          try {
+            const wallet = await accountSession.getWallet()
+            const valueWei = parseUnits(amount.toFixed(6), 18)
+            await activeChain.nativeTransfers?.send?.({
+              wallet,
+              recipient: { raw: targetAddress },
+              value: valueWei,
+            })
+          } catch {
+            // Best-effort on-chain transfer; virtual pool fallback remains active
+          }
+        })()
+      }
     }
 
     function sweepBackToPool() {
       const swept = personaBalanceMon.value
       if (swept <= 0) return
+      const sourceIdx = personaIndex.value
+      const root = resolvedRootAddress.value
       personaBalanceMon.value = 0
       poolTransferDeltaMon.value += swept
+      persistPersonaMetadata()
       emit('sweep-to-pool', {
         sweptMon: swept,
         personaBalanceMon: personaBalanceMon.value,
         poolBalanceMon: poolBalanceMon.value,
       })
+      if (accountStatus.status === 'ready' && root) {
+        void (async () => {
+          try {
+            const privKey = deriveAccountPersonaPrivateKey(root, sourceIdx)
+            if (!privKey || typeof fetch !== 'function') return
+            const wallet = await accountSession.getWallet()
+            const receiveAddr = (await wallet.getReceiveAddress?.())?.raw
+            if (!receiveAddr) return
+            const rpcUrl = resolveDefaultPersonaRpcUrl()
+            const signer = new Wallet(privKey)
+            const batchRes = await fetch(rpcUrl, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify([
+                {
+                  jsonrpc: '2.0',
+                  id: 1,
+                  method: 'eth_getBalance',
+                  params: [signer.address, 'latest'],
+                },
+                {
+                  jsonrpc: '2.0',
+                  id: 2,
+                  method: 'eth_getTransactionCount',
+                  params: [signer.address, 'latest'],
+                },
+                {
+                  jsonrpc: '2.0',
+                  id: 3,
+                  method: 'eth_gasPrice',
+                  params: [],
+                },
+              ]),
+            })
+            if (!batchRes.ok) return
+            const rpcItems = (await batchRes.json()) as Array<{
+              id: number
+              result?: string
+            }>
+            const balHex =
+              rpcItems.find(x => x.id === 1)?.result ?? '0x0'
+            const nonceHex =
+              rpcItems.find(x => x.id === 2)?.result ?? '0x0'
+            const gasPriceHex =
+              rpcItems.find(x => x.id === 3)?.result ?? '0xba43b7400'
+            const balWei = BigInt(balHex)
+            const gasLimit = 21_000n
+            const gasPrice = BigInt(gasPriceHex)
+            const feeWei = gasLimit * gasPrice
+            if (balWei <= feeWei) return
+            const signedTx = await signer.signTransaction({
+              type: 2,
+              chainId: 10143n,
+              to: receiveAddr,
+              value: balWei - feeWei,
+              nonce: Number.parseInt(nonceHex, 16) || 0,
+              gasLimit,
+              maxFeePerGas: gasPrice,
+              maxPriorityFeePerGas:
+                gasPrice > 2_000_000_000n ? 2_000_000_000n : gasPrice,
+            })
+            await fetch(rpcUrl, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                jsonrpc: '2.0',
+                id: 4,
+                method: 'eth_sendRawTransaction',
+                params: [signedTx],
+              }),
+            })
+          } catch {
+            // Ignore sweep errors when offline or in unit tests
+          }
+        })()
+      }
     }
 
     async function approveCurrentRequest() {

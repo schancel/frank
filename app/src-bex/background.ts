@@ -30,6 +30,7 @@ export interface SyncedExtensionState {
 export interface BackgroundBridgeState {
   chainIdHex: string
   activePersonaAddress: string
+  poolBalanceWeiHex?: string
   approvedOrigins: Set<string>
   pendingApprovals: Map<string, PendingDappApproval>
   syncedState: SyncedExtensionState | null
@@ -111,10 +112,72 @@ function getReadOnlyRpcFallback(method: string): unknown {
   }
 }
 
+function applySpendablePoolFallback(
+  chainIdHex: string,
+  method: string,
+  params: unknown,
+  rpcResult: unknown,
+  state?: BackgroundBridgeState,
+): unknown {
+  if (!state) return rpcResult
+  const normChain = chainIdHex.toLowerCase()
+  if (normChain !== '0x279f' && normChain !== '0x8f') {
+    return rpcResult
+  }
+  const activeAddr = (state.activePersonaAddress || '').toLowerCase()
+  if (!/^0x[0-9a-f]{40}$/.test(activeAddr)) {
+    return rpcResult
+  }
+  let poolWei = 0n
+  try {
+    if (state.poolBalanceWeiHex && /^0x[0-9a-fA-F]+$/.test(state.poolBalanceWeiHex)) {
+      poolWei = BigInt(state.poolBalanceWeiHex)
+    }
+  } catch {
+    poolWei = 0n
+  }
+  if (poolWei <= 0n) return rpcResult
+
+  if (method === 'eth_getBalance') {
+    const queriedAddr = Array.isArray(params)
+      ? String(params[0] ?? '').toLowerCase()
+      : ''
+    if (queriedAddr === activeAddr) {
+      let onChainWei = 0n
+      try {
+        if (typeof rpcResult === 'string' && /^0x[0-9a-fA-F]+$/.test(rpcResult)) {
+          onChainWei = BigInt(rpcResult)
+        }
+      } catch {
+        onChainWei = 0n
+      }
+      if (onChainWei === 0n) {
+        return '0x' + poolWei.toString(16)
+      }
+    }
+  } else if (method === 'eth_call') {
+    const callObj = (Array.isArray(params) ? params[0] : params) as
+      | Record<string, unknown>
+      | undefined
+    const callData = String(callObj?.data ?? callObj?.input ?? '').toLowerCase()
+    const addrNoPrefix = activeAddr.slice(2)
+    // Multicall3.getEthBalance(address) selector is 0x4d2301cc
+    if (
+      callData.startsWith('0x4d2301cc') &&
+      callData.includes(addrNoPrefix) &&
+      (typeof rpcResult !== 'string' || /^0x0*$/.test(rpcResult))
+    ) {
+      return '0x' + poolWei.toString(16).padStart(64, '0')
+    }
+  }
+  return rpcResult
+}
+
 async function forwardReadOnlyRpc(
   chainIdHex: string,
   method: string,
   params: unknown,
+  state?: BackgroundBridgeState,
 ): Promise<{ result?: unknown; error?: { code: number; message: string; data?: unknown } }> {
   const rpcUrl =
     CHAIN_RPC_URLS[chainIdHex.toLowerCase()] ?? CHAIN_RPC_URLS['0x279f']
@@ -134,7 +197,15 @@ async function forwardReadOnlyRpc(
         const json = await response.json()
         if (json && typeof json === 'object') {
           if ('result' in json) {
-            return { result: json.result }
+            return {
+              result: applySpendablePoolFallback(
+                chainIdHex,
+                method,
+                params,
+                json.result,
+                state,
+              ),
+            }
           }
           if (json.error && typeof json.error === 'object') {
             return {
@@ -154,7 +225,15 @@ async function forwardReadOnlyRpc(
       // Fall back to safe offline response below
     }
   }
-  return { result: getReadOnlyRpcFallback(method) }
+  return {
+    result: applySpendablePoolFallback(
+      chainIdHex,
+      method,
+      params,
+      getReadOnlyRpcFallback(method),
+      state,
+    ),
+  }
 }
 
 export function createBackgroundBridgeState(
@@ -168,6 +247,7 @@ export function createBackgroundBridgeState(
     activePersonaAddress:
       overrides.activePersonaAddress ??
       '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+    poolBalanceWeiHex: overrides.poolBalanceWeiHex ?? '0x0',
     approvedOrigins: overrides.approvedOrigins ?? new Set<string>(),
     pendingApprovals:
       overrides.pendingApprovals ?? new Map<string, PendingDappApproval>(),
@@ -386,6 +466,7 @@ export function installBackgroundBridge(
         FRANK_EXT_LAUNCH_MODE_KEY,
         'frankSyncedState',
         'frankActivePersonaAddress',
+        'frankPoolBalanceWeiHex',
         'frankApprovedOrigins',
         'frankChainIdHex',
       ])
@@ -434,6 +515,12 @@ export function installBackgroundBridge(
             ) {
               state.activePersonaAddress = stored.frankActivePersonaAddress
             }
+            if (
+              typeof stored.frankPoolBalanceWeiHex === 'string' &&
+              /^0x[0-9a-fA-F]+$/.test(stored.frankPoolBalanceWeiHex)
+            ) {
+              state.poolBalanceWeiHex = stored.frankPoolBalanceWeiHex
+            }
             if (Array.isArray(stored.frankApprovedOrigins)) {
               for (const orig of stored.frankApprovedOrigins) {
                 if (typeof orig === 'string' && orig) {
@@ -455,6 +542,37 @@ export function installBackgroundBridge(
     }
   }
 
+  function broadcastProviderEventToTabs(event: string, payload: unknown) {
+    const extApi = getRawExtensionApi(runtimeScope)
+    if (
+      extApi?.tabs &&
+      typeof extApi.tabs.query === 'function' &&
+      typeof extApi.tabs.sendMessage === 'function'
+    ) {
+      try {
+        void Promise.resolve(extApi.tabs.query({}))
+          .then(tabs => {
+            if (!Array.isArray(tabs)) return
+            for (const tab of tabs) {
+              if (tab && typeof tab.id === 'number') {
+                void Promise.resolve(
+                  extApi.tabs.sendMessage(tab.id, {
+                    channel: FRANK_DAPP_BRIDGE_CHANNEL,
+                    type: 'provider-event',
+                    event,
+                    payload,
+                  }),
+                ).catch(() => {})
+              }
+            }
+          })
+          .catch(() => {})
+      } catch {
+        // Ignore tab broadcast errors
+      }
+    }
+  }
+
   const unsubscribe = onRuntimeMessage(async (message: any, sender: any) => {
     if (!message || typeof message !== 'object') {
       return undefined
@@ -469,6 +587,7 @@ export function installBackgroundBridge(
           ok: true,
           chainIdHex: state.chainIdHex,
           activePersonaAddress: state.activePersonaAddress,
+          poolBalanceWeiHex: state.poolBalanceWeiHex ?? '0x0',
           approvedOrigins: Array.from(state.approvedOrigins),
           pendingApprovals: Array.from(state.pendingApprovals.values()),
           launchMode: state.launchMode,
@@ -482,41 +601,38 @@ export function installBackgroundBridge(
       message.type === 'set-active-persona'
     ) {
       const nextAddr = String(message.address ?? '').trim()
+      const nextPoolHex = String(message.poolBalanceWeiHex ?? '').trim()
+      const nextChainHex = String(message.chainIdHex ?? '').trim()
+      const storageUpdates: Record<string, unknown> = {}
+
       if (/^0x[a-fA-F0-9]{40}$/.test(nextAddr)) {
         state.activePersonaAddress = nextAddr
+        storageUpdates.frankActivePersonaAddress = nextAddr
+        broadcastProviderEventToTabs('accountsChanged', [
+          state.activePersonaAddress,
+        ])
+      }
+      if (/^0x[0-9a-fA-F]+$/.test(nextPoolHex)) {
+        state.poolBalanceWeiHex = nextPoolHex.toLowerCase()
+        storageUpdates.frankPoolBalanceWeiHex = state.poolBalanceWeiHex
+      }
+      if (/^0x[0-9a-fA-F]+$/.test(nextChainHex)) {
+        const normalizedChain =
+          '0x' + parseInt(nextChainHex, 16).toString(16)
+        if (state.chainIdHex !== normalizedChain) {
+          state.chainIdHex = normalizedChain
+          storageUpdates.frankChainIdHex = normalizedChain
+          broadcastProviderEventToTabs('chainChanged', normalizedChain)
+        }
+      }
+
+      if (Object.keys(storageUpdates).length > 0) {
         const extApi = getRawExtensionApi(runtimeScope)
         if (extApi?.storage?.local?.set) {
           try {
-            await extApi.storage.local.set({
-              frankActivePersonaAddress: nextAddr,
-            })
+            await extApi.storage.local.set(storageUpdates)
           } catch {
             // Ignore storage errors
-          }
-        }
-        if (
-          extApi?.tabs &&
-          typeof extApi.tabs.query === 'function' &&
-          typeof extApi.tabs.sendMessage === 'function'
-        ) {
-          try {
-            const tabs = await extApi.tabs.query({})
-            if (Array.isArray(tabs)) {
-              for (const tab of tabs) {
-                if (tab && typeof tab.id === 'number') {
-                  void Promise.resolve(
-                    extApi.tabs.sendMessage(tab.id, {
-                      channel: FRANK_DAPP_BRIDGE_CHANNEL,
-                      type: 'provider-event',
-                      event: 'accountsChanged',
-                      payload: [state.activePersonaAddress],
-                    }),
-                  ).catch(() => {})
-                }
-              }
-            }
-          } catch {
-            // Ignore tab broadcast errors
           }
         }
       }
@@ -524,6 +640,34 @@ export function installBackgroundBridge(
         result: {
           ok: true,
           activePersonaAddress: state.activePersonaAddress,
+          poolBalanceWeiHex: state.poolBalanceWeiHex ?? '0x0',
+          chainIdHex: state.chainIdHex,
+        },
+      }
+    }
+
+    if (
+      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+      message.type === 'set-dapp-chain'
+    ) {
+      const rawChain = String(message.chainIdHex ?? '').trim()
+      if (/^0x[0-9a-fA-F]+$/.test(rawChain)) {
+        const normalized = '0x' + parseInt(rawChain, 16).toString(16)
+        state.chainIdHex = normalized
+        const extApi = getRawExtensionApi(runtimeScope)
+        if (extApi?.storage?.local?.set) {
+          try {
+            await extApi.storage.local.set({ frankChainIdHex: normalized })
+          } catch {
+            // Ignore storage errors
+          }
+        }
+        broadcastProviderEventToTabs('chainChanged', normalized)
+      }
+      return {
+        result: {
+          ok: true,
+          chainIdHex: state.chainIdHex,
         },
       }
     }
@@ -766,6 +910,7 @@ export function installBackgroundBridge(
               // Ignore storage errors
             }
           }
+          broadcastProviderEventToTabs('chainChanged', normalized)
           return { result: null }
         }
         return {
@@ -776,12 +921,23 @@ export function installBackgroundBridge(
         }
       }
 
+      if (method === 'wallet_getCapabilities') {
+        return {
+          result: {
+            '0x279f': { atomicBatch: { supported: false } },
+            '0x8f': { atomicBatch: { supported: false } },
+            '0x1': { atomicBatch: { supported: false } },
+            '0xaa36a7': { atomicBatch: { supported: false } },
+          },
+        }
+      }
+
       if (method === 'wallet_watchAsset') {
         return { result: true }
       }
 
       if (READONLY_RPC_METHODS.has(method)) {
-        return await forwardReadOnlyRpc(state.chainIdHex, method, params)
+        return await forwardReadOnlyRpc(state.chainIdHex, method, params, state)
       }
 
       if (

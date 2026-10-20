@@ -80,6 +80,37 @@ import {
   savePendingExtensionSyncPayload,
 } from 'src/utils/extension-account-sync'
 
+import { computeAddress, keccak256, toUtf8Bytes } from 'ethers'
+
+function isExtensionSurface(): boolean {
+  if (typeof window === 'undefined') return false
+  if (window.location?.search?.includes('extMode=')) return true
+  const protocol = window.location?.protocol || ''
+  return (
+    protocol === 'chrome-extension:' ||
+    protocol === 'moz-extension:' ||
+    protocol === 'safari-web-extension:'
+  )
+}
+
+function deriveDefaultPersonaAddress(seed: string): string {
+  try {
+    let privKeyHex = keccak256(
+      toUtf8Bytes(`frank-dapp-persona-privkey-v1:${seed.toLowerCase()}:0`),
+    )
+    if (
+      privKeyHex ===
+      '0x0000000000000000000000000000000000000000000000000000000000000000'
+    ) {
+      privKeyHex =
+        '0x0000000000000000000000000000000000000000000000000000000000000001'
+    }
+    return computeAddress(privKeyHex)
+  } catch {
+    return seed
+  }
+}
+
 async function syncActivePersonaToExtension() {
   if (!isBrowserExtensionRuntime()) return
   try {
@@ -89,17 +120,43 @@ async function syncActivePersonaToExtension() {
       wallet?.identity?.address?.raw ||
       wallet?.identity?.displayAddress ||
       ''
-    const address = String(rawAddress).trim()
-    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return
+    const seed = String(rawAddress).trim()
+    if (!/^0x[a-fA-F0-9]{40}$/.test(seed)) return
+    const address = deriveDefaultPersonaAddress(seed)
+
+    let poolBalanceWeiHex = '0x0'
+    try {
+      if (typeof wallet?.getBalanceObservation === 'function') {
+        const obs = await wallet.getBalanceObservation()
+        const val = obs?.value
+        if (typeof val === 'bigint' && val >= 0n) {
+          poolBalanceWeiHex = `0x${val.toString(16)}`
+        }
+      } else if (typeof wallet?.getBalance === 'function') {
+        const val = await wallet.getBalance()
+        if (typeof val === 'bigint' && val >= 0n) {
+          poolBalanceWeiHex = `0x${val.toString(16)}`
+        }
+      }
+    } catch {
+      // Ignore balance observation failure during initial boot
+    }
+
     void sendRuntimeMessage({
       channel: FRANK_DAPP_BRIDGE_CHANNEL,
       type: 'set-active-persona',
       address,
+      poolBalanceWeiHex,
+      chainIdHex: '0x279f',
     })
     const extApi = getRawExtensionApi()
     if (extApi?.storage?.local?.set) {
       void Promise.resolve(
-        extApi.storage.local.set({ frankActivePersonaAddress: address }),
+        extApi.storage.local.set({
+          frankActivePersonaAddress: address,
+          frankPoolBalanceWeiHex: poolBalanceWeiHex,
+          frankChainIdHex: '0x279f',
+        }),
       ).catch(() => {})
     }
   } catch {
@@ -181,7 +238,7 @@ export default defineComponent({
       () => accountStatus.status,
       status => {
         if (status === 'ready') {
-          syncActivePersonaToExtension()
+          void syncActivePersonaToExtension()
           const runCuratedSync = () => {
             fetchCuratedDefaultContacts({
               relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
@@ -199,8 +256,7 @@ export default defineComponent({
               })
           }
           if (
-            typeof window !== 'undefined' &&
-            window.location?.search?.includes('extMode=popup') &&
+            isExtensionSurface() &&
             Object.keys(contacts.contacts ?? {}).length > 0
           ) {
             setTimeout(() => {
@@ -211,6 +267,7 @@ export default defineComponent({
           }
         }
       },
+      { immediate: true },
     )
 
     let gatewayDiscoveryWasActive = false
@@ -310,12 +367,8 @@ export default defineComponent({
     setupConnections() {
       this.$status.setup = accountStatus.status === 'ready'
       if (this.$status.setup) {
-        syncActivePersonaToExtension()
-        if (
-          typeof window !== 'undefined' &&
-          window.location?.search?.includes('extMode=popup') &&
-          this.hasExistingContacts()
-        ) {
+        void syncActivePersonaToExtension()
+        if (isExtensionSurface() && this.hasExistingContacts()) {
           setTimeout(() => {
             if (accountStatus.status === 'ready') this.loadCuratedDefaults()
           }, 5_000)

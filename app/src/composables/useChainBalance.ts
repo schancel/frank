@@ -213,7 +213,12 @@ let secondaryBatchGeneration = 0
 function isExtensionPopup(): boolean {
   return (
     typeof window !== 'undefined' &&
-    Boolean(window.location?.search?.includes('extMode=popup'))
+    Boolean(
+      window.location?.search?.includes('extMode=') ||
+        /^(chrome-extension|moz-extension|safari-web-extension):$/i.test(
+          window.location?.protocol || '',
+        ),
+    )
   )
 }
 

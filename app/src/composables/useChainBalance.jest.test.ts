@@ -650,6 +650,42 @@ describe('useChainBalance', () => {
     const solanaBalance = useChainBalance('solana')
     expect(solanaBalance.hasError.value).toBe(true)
   })
+
+  it('logs secondary chain balance errors via console.debug without polluting console.error and skips background storm in extMode=popup', async () => {
+    const errorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
+    const debugSpy = jest
+      .spyOn(console, 'debug')
+      .mockImplementation(() => undefined)
+    const originalUrl = window.location.href
+    window.history.replaceState({}, '', '/?extMode=popup#/forum')
+    mockOpenUtxoWallet.mockClear()
+    mockOpenEvmWallet.mockClear()
+    try {
+      const wrapper = shallowMount({
+        setup() {
+          return useMultichainBalance()
+        },
+        template: '<div />',
+      })
+      await flushPromises()
+      expect(mockOpenUtxoWallet).not.toHaveBeenCalled()
+      expect(mockOpenEvmWallet).not.toHaveBeenCalled()
+      wrapper.unmount()
+
+      mockUtxoBalances['btc-testnet'].mockRejectedValueOnce(
+        new Error('DOMException'),
+      )
+      await fetchChainBalance('bitcoin', true)
+      expect(errorSpy).not.toHaveBeenCalled()
+      expect(debugSpy).toHaveBeenCalled()
+    } finally {
+      window.history.replaceState({}, '', originalUrl)
+      errorSpy.mockRestore()
+      debugSpy.mockRestore()
+    }
+  })
 })
 
 describe('independent Solana observations', () => {

@@ -344,6 +344,9 @@ export async function recoverSecondaryEvmWallets(
   primary: NativeWalletHandle,
 ): Promise<void> {
   if (!primary?.chainIdentifier) return
+  const isPopup =
+    typeof window !== 'undefined' &&
+    Boolean(window.location?.search?.includes('extMode=popup'))
   const home = getChainRegistryEntry(primary.chainIdentifier)
   const isTestnet =
     home?.isTestnet ??
@@ -371,45 +374,43 @@ export async function recoverSecondaryEvmWallets(
   } catch {
     hostRelayBaseUrl = ''
   }
-  const results = await Promise.allSettled(
-    peers.map(async peer => {
-      try {
-        if (hostRelayBaseUrl && typeof fetch === 'function') {
-          try {
-            await requireRelayWalletRoute(hostRelayBaseUrl, peer.id)
-          } catch (routeErr) {
-            if (routeErr instanceof RelayWalletRouteUnavailableError) {
-              return
-            }
+  const errors: string[] = []
+  for (const peer of peers) {
+    if (isPopup && !opened.has(peer.id)) continue
+    try {
+      if (hostRelayBaseUrl && typeof fetch === 'function') {
+        try {
+          await requireRelayWalletRoute(hostRelayBaseUrl, peer.id)
+        } catch (routeErr) {
+          if (routeErr instanceof RelayWalletRouteUnavailableError) {
+            continue
           }
         }
-        const opened = await openEvmWallet(peer.id)
-        if (
-          accountSession.peekWallet() !== primary ||
-          opened.wallet.chainIdentifier !== peer.id
-        )
-          throw new Error(`EVM recovery owner changed for ${peer.id}`)
-        await opened.wallet.reobserveNativeOperations?.()
-        const remaining = await opened.wallet.flushNativeSync?.()
-        if (remaining?.length)
-          throw new Error(
-            `Wallet sync remains pending for ${peer.id}: ${remaining.join(
-              ', ',
-            )}`,
-          )
-      } catch (error) {
-        if (
-          (typeof isChainUnreachableError === 'function' &&
-            isChainUnreachableError(error)) ||
-          isSecondaryRecoveryNonFatal(error)
-        ) {
-          console.debug(`Secondary EVM recovery skipped for ${peer.id}:`, error)
-          return
-        }
-        throw error
       }
-    }),
-  )
+      const openedWallet = await openEvmWallet(peer.id)
+      if (
+        accountSession.peekWallet() !== primary ||
+        openedWallet.wallet.chainIdentifier !== peer.id
+      )
+        throw new Error(`EVM recovery owner changed for ${peer.id}`)
+      await openedWallet.wallet.reobserveNativeOperations?.()
+      const remaining = await openedWallet.wallet.flushNativeSync?.()
+      if (remaining?.length)
+        throw new Error(
+          `Wallet sync remains pending for ${peer.id}: ${remaining.join(', ')}`,
+        )
+    } catch (error) {
+      if (
+        (typeof isChainUnreachableError === 'function' &&
+          isChainUnreachableError(error)) ||
+        isSecondaryRecoveryNonFatal(error)
+      ) {
+        console.debug(`Secondary EVM recovery skipped for ${peer.id}:`, error)
+        continue
+      }
+      errors.push(`${peer.id}: ${String(error)}`)
+    }
+  }
   try {
     const activeWallets = typeof getWallets === 'function' ? getWallets() : []
     if (activeWallets.length > 0) {
@@ -424,11 +425,6 @@ export async function recoverSecondaryEvmWallets(
   } catch (err) {
     console.debug('Wallet recovery loop warning:', err)
   }
-  const errors = results.flatMap((result, index) =>
-    result.status === 'rejected'
-      ? [`${peers[index]!.id}: ${String(result.reason)}`]
-      : [],
-  )
   if (errors.length)
     throw new Error(`Secondary EVM recovery incomplete: ${errors.join('; ')}`)
 }

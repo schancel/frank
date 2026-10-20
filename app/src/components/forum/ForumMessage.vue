@@ -5,228 +5,230 @@
     flat
     bordered
   >
-    <q-card-section class="row no-wrap q-pa-none" horizontal>
+    <q-card-section class="column q-pa-none post-main-content">
       <div
-        class="vote-column column items-center justify-start q-py-sm q-px-xs"
+        class="post-meta-header q-px-md q-pt-sm q-pb-xs row items-center justify-between wrap"
+        style="gap: 4px"
       >
-        <q-btn
-          flat
-          dense
-          round
-          size="sm"
-          icon="arrow_drop_up"
-          padding="0"
-          :aria-label="$t('a11y.voteUp')"
-          :disable="isVoting"
-          :loading="isVoting && activeVoteDirection === 1"
-          @click="addVotes(1)"
-          data-test="forum-vote-up"
-          class="vote-btn upvote-btn"
-        />
         <div
-          class="vote-weight-pill text-caption text-weight-bold text-center q-my-xs"
-          :title="formatExactVoteWeight(displayedVoteWeight)"
+          class="row items-center wrap text-caption text-grey-7 author-pill"
+          style="gap: 4px"
         >
-          {{ formatVoteWeight(displayedVoteWeight) }}
-        </div>
-        <q-btn
-          flat
-          dense
-          round
-          size="sm"
-          icon="arrow_drop_down"
-          padding="0"
-          :aria-label="$t('a11y.voteDown')"
-          :disable="isVoting"
-          :loading="isVoting && activeVoteDirection === -1"
-          @click="addVotes(-1)"
-          data-test="forum-vote-down"
-          class="vote-btn downvote-btn"
-        />
-      </div>
-      <div class="col column q-pa-none post-main-content">
-        <template
-          v-for="(entry, index) in message.entries.filter(
-            entry => entry.kind === 'post' || entry.kind === 'game',
-          )"
-          :key="index"
-        >
-          <div
-            v-if="entry.kind === 'post'"
-            class="row items-center no-wrap justify-between q-px-md q-pt-sm q-pb-xs"
-          >
-            <div class="col-grow post-title-wrap">
-              <q-icon
-                name="link"
-                v-if="entry.url"
-                class="text-subtitle1 q-mr-xs"
-              />
-              <a
-                :href="entry.url"
-                target="_blank"
-                v-if="entry.url"
-                class="text-subtitle1 text-weight-bold post-title"
-                >{{ entry.title || 'untitled' }}</a
-              >
-              <span v-if="!entry.url" class="text-subtitle1 text-weight-bold">
-                {{ entry.title || 'untitled' }}
-              </span>
-            </div>
-            <q-chip
-              v-if="message.topic"
-              outline
-              dense
-              size="sm"
-              color="primary"
-              class="topic-chip cursor-pointer q-ml-sm"
-              clickable
-              @click.prevent="$emit('set-topic', message.topic)"
-            >
-              #{{ message.topic }}
-            </q-chip>
-          </div>
-          <div
-            class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
-            v-if="entry.kind === 'post' && renderBody"
+          <q-icon name="person" size="14px" color="primary" />
+          <span>by</span>
+          <q-btn
+            no-caps
+            flat
+            dense
+            size="sm"
+            :to="authorRoute(message)"
+            :disable="!authorRoute(message)"
+            class="author-btn q-px-xs"
           >
             <div
-              class="mdstyle text-body2"
-              v-html="markedMessage(entry.message)"
-            />
-            <game-announcement-card
-              v-if="getAnnouncement(entry)"
-              :announcement="getAnnouncement(entry)!"
-            />
-          </div>
-
-          <div
-            v-if="entry.kind === 'game'"
-            class="row items-center no-wrap justify-between q-px-md q-pt-sm q-pb-xs"
-          >
-            <div class="col-grow post-title-wrap">
-              <span class="text-subtitle1 text-weight-bold">
-                {{
-                  entry.title ||
-                  getAnnouncement(entry)?.gameName ||
-                  'Game Table'
-                }}
-              </span>
+              class="text-weight-bold"
+              :class="{ 'font-mono': isAuthorAddress(message) }"
+            >
+              {{ authorName(message) }}
             </div>
-            <q-chip
-              v-if="message.topic"
-              outline
-              dense
-              size="sm"
-              color="primary"
-              class="topic-chip cursor-pointer q-ml-sm"
-              clickable
-              @click.prevent="$emit('set-topic', message.topic)"
-            >
-              #{{ message.topic }}
-            </q-chip>
-          </div>
-          <div
-            class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
-            v-if="entry.kind === 'game' && renderBody"
-          >
-            <div
-              v-if="entry.message"
-              class="mdstyle text-body2"
-              v-html="markedMessage(entry.message)"
-            />
-            <game-announcement-card
-              v-if="getAnnouncement(entry)"
-              :announcement="getAnnouncement(entry)!"
-            />
-          </div>
-        </template>
-        <q-separator class="q-my-none" style="opacity: 0.15" />
-        <q-card-actions
-          class="post-footer q-px-md q-py-xs row items-center no-wrap"
-        >
-          <div
-            class="row items-center q-gutter-x-xs text-caption text-grey-7 author-pill"
-          >
-            <q-icon name="person" size="14px" color="primary" />
-            <span>by</span>
-            <q-btn
-              no-caps
-              flat
-              dense
-              size="sm"
-              :to="authorRoute(message)"
-              :disable="!authorRoute(message)"
-              class="author-btn q-px-xs"
-            >
-              <div
-                class="text-weight-bold"
-                :class="{ 'font-mono': isAuthorAddress(message) }"
-              >
-                {{ authorName(message) }}
-              </div>
-            </q-btn>
-            <account-badge
-              v-if="authorAddress(message)"
-              :address="authorAddress(message)"
-              :account-type="authorProfile(message)?.accountType"
-              :bot-role="authorProfile(message)?.botRole"
-              :is-bot="authorProfile(message)?.isBot"
-            />
-          </div>
-          <div
-            v-if="voteStatus"
-            class="text-caption text-italic q-ml-sm row items-center"
-            role="status"
-            data-test="vote-status"
-          >
-            <q-spinner-dots size="1.2em" color="primary" class="q-mr-xs" />
-            <span>{{ voteStatus }}</span>
-          </div>
-          <q-space />
-          <div class="row items-center q-gutter-x-xs">
-            <span class="text-caption text-grey-6 row items-center q-mr-sm">
-              <q-icon name="schedule" size="14px" class="q-mr-xs" />
-              <span>{{ timestamp }}</span>
-              <q-tooltip>{{ fullTimestamp }}</q-tooltip>
-            </span>
-            <q-btn
-              flat
-              dense
-              size="sm"
-              no-caps
-              icon="chat_bubble_outline"
-              class="comments-btn text-caption q-px-xs"
-              :label="`${message.replies.length} replies`"
-              :to="`/forum/${message.payloadDigest}`"
-            />
-            <q-btn
-              flat
-              dense
-              size="sm"
-              no-caps
-              icon="reply"
-              label="Reply"
-              class="reply-btn text-caption q-px-xs text-primary"
-              :to="`/new-post/${message.payloadDigest}`"
-            />
-          </div>
-        </q-card-actions>
-        <a-message-replies :messages="message.replies" v-if="showReplies" />
-        <q-separator v-if="showParent && parentDigest && parentMessage" />
-        <q-card-section
-          v-if="showParent && parentDigest && parentMessage"
-          class="q-pa-none"
-        >
-          <q-card-section class="q-pa-sm">In reply to:</q-card-section>
-          <forum-message
-            v-bind="$attrs"
-            class="q-ma-none"
-            :message="parentMessage"
-            :show-replies="false"
-            :render-body="false"
+          </q-btn>
+          <account-badge
+            v-if="authorAddress(message)"
+            :address="authorAddress(message)"
+            :account-type="authorProfile(message)?.accountType"
+            :bot-role="authorProfile(message)?.botRole"
+            :is-bot="authorProfile(message)?.isBot"
           />
-        </q-card-section>
+          <span class="text-caption text-grey-6 row items-center q-ml-xs">
+            <q-icon name="schedule" size="13px" class="q-mr-xs" />
+            <span>{{ timestamp }}</span>
+            <q-tooltip>{{ fullTimestamp }}</q-tooltip>
+          </span>
+        </div>
+        <q-chip
+          v-if="message.topic"
+          outline
+          dense
+          size="sm"
+          color="primary"
+          class="topic-chip cursor-pointer q-ma-none"
+          clickable
+          @click.prevent="$emit('set-topic', message.topic)"
+        >
+          #{{ message.topic }}
+        </q-chip>
       </div>
+
+      <template
+        v-for="(entry, index) in message.entries.filter(
+          entry => entry.kind === 'post' || entry.kind === 'game',
+        )"
+        :key="index"
+      >
+        <div
+          v-if="entry.kind === 'post'"
+          class="row items-center justify-between q-px-md q-pt-xs q-pb-xs"
+        >
+          <div class="col-grow post-title-wrap">
+            <q-icon
+              name="link"
+              v-if="entry.url"
+              class="text-subtitle1 q-mr-xs"
+            />
+            <a
+              :href="entry.url"
+              target="_blank"
+              v-if="entry.url"
+              class="text-subtitle1 text-weight-bold post-title"
+              >{{ entry.title || 'untitled' }}</a
+            >
+            <span
+              v-if="!entry.url"
+              class="text-subtitle1 text-weight-bold post-title-text"
+            >
+              {{ entry.title || 'untitled' }}
+            </span>
+          </div>
+        </div>
+        <div
+          class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
+          v-if="entry.kind === 'post' && renderBody"
+        >
+          <div
+            class="mdstyle text-body2"
+            v-html="markedMessage(entry.message)"
+          />
+          <game-announcement-card
+            v-if="getAnnouncement(entry)"
+            :announcement="getAnnouncement(entry)!"
+          />
+        </div>
+
+        <div
+          v-if="entry.kind === 'game'"
+          class="row items-center justify-between q-px-md q-pt-xs q-pb-xs"
+        >
+          <div class="col-grow post-title-wrap">
+            <span class="text-subtitle1 text-weight-bold post-title-text">
+              {{
+                entry.title ||
+                getAnnouncement(entry)?.gameName ||
+                'Game Table'
+              }}
+            </span>
+          </div>
+        </div>
+        <div
+          class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
+          v-if="entry.kind === 'game' && renderBody"
+        >
+          <div
+            v-if="entry.message"
+            class="mdstyle text-body2"
+            v-html="markedMessage(entry.message)"
+          />
+          <game-announcement-card
+            v-if="getAnnouncement(entry)"
+            :announcement="getAnnouncement(entry)!"
+          />
+        </div>
+      </template>
+
+      <q-card-actions
+        class="post-footer q-px-md q-py-sm row items-center wrap"
+        style="gap: 8px"
+      >
+        <div
+          class="forum-vote-pill row items-center no-wrap"
+          data-test="forum-vote-pill"
+        >
+          <q-btn
+            flat
+            dense
+            round
+            size="sm"
+            icon="arrow_upward"
+            :aria-label="$t('a11y.voteUp')"
+            :disable="isVoting"
+            :loading="isVoting && activeVoteDirection === 1"
+            @click="addVotes(1)"
+            data-test="forum-vote-up"
+            class="vote-btn upvote-btn"
+          />
+          <div
+            class="vote-weight-pill text-caption text-weight-bold text-center q-px-xs"
+            :title="formatExactVoteWeight(displayedVoteWeight)"
+          >
+            {{ formatVoteWeight(displayedVoteWeight) }}
+          </div>
+          <q-btn
+            flat
+            dense
+            round
+            size="sm"
+            icon="arrow_downward"
+            :aria-label="$t('a11y.voteDown')"
+            :disable="isVoting"
+            :loading="isVoting && activeVoteDirection === -1"
+            @click="addVotes(-1)"
+            data-test="forum-vote-down"
+            class="vote-btn downvote-btn"
+          />
+        </div>
+
+        <q-btn
+          unelevated
+          rounded
+          dense
+          size="sm"
+          no-caps
+          icon="chat_bubble_outline"
+          class="forum-action-pill comments-btn text-caption q-px-sm"
+          :label="String(message.replies.length)"
+          :aria-label="`${message.replies.length} replies`"
+          :to="`/forum/${message.payloadDigest}`"
+        >
+          <q-tooltip>{{ `${message.replies.length} replies` }}</q-tooltip>
+        </q-btn>
+
+        <q-btn
+          unelevated
+          rounded
+          dense
+          size="sm"
+          no-caps
+          icon="reply"
+          label="Reply"
+          class="forum-action-pill reply-btn text-caption q-px-sm"
+          :to="`/new-post/${message.payloadDigest}`"
+        />
+
+        <div
+          v-if="voteStatus"
+          class="text-caption text-italic row items-center"
+          role="status"
+          data-test="vote-status"
+        >
+          <q-spinner-dots size="1.2em" color="primary" class="q-mr-xs" />
+          <span>{{ voteStatus }}</span>
+        </div>
+      </q-card-actions>
+
+      <a-message-replies :messages="message.replies" v-if="showReplies" />
+      <q-separator v-if="showParent && parentDigest && parentMessage" />
+      <q-card-section
+        v-if="showParent && parentDigest && parentMessage"
+        class="q-pa-none"
+      >
+        <q-card-section class="q-pa-sm">In reply to:</q-card-section>
+        <forum-message
+          v-bind="$attrs"
+          class="q-ma-none"
+          :message="parentMessage"
+          :show-replies="false"
+          :render-body="false"
+        />
+      </q-card-section>
     </q-card-section>
   </q-card>
 </template>
@@ -737,20 +739,31 @@ export default defineComponent({
   }
 }
 
-.vote-column {
-  min-width: 52px;
-  background: rgba(0, 0, 0, 0.02);
-  border-right: 1px solid rgba(0, 0, 0, 0.05);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  padding: 8px 4px;
+.forum-vote-pill {
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 2px 6px;
 }
 
-:global(body.body--dark) .vote-column {
-  background: rgba(255, 255, 255, 0.03);
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
+:global(body.body--dark) .forum-vote-pill {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.forum-action-pill {
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.05);
+  color: inherit;
+  transition: background 0.15s ease, color 0.15s ease;
+  &:hover:not(:disabled) {
+    background: rgba(0, 0, 0, 0.1);
+  }
+}
+
+:global(body.body--dark) .forum-action-pill {
+  background: rgba(255, 255, 255, 0.08);
+  &:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.14);
+  }
 }
 
 .vote-btn {

@@ -247,8 +247,11 @@ export function parseEmailCardsFromMessages(params: {
         isOutbound: msg.outbound,
         isUnread,
         status: msg.status,
-        ...(msg.delivery?.failureReason
-          ? { failureReason: msg.delivery.failureReason }
+        ...(msg.delivery?.failureReason || (msg as any).failureReason
+          ? {
+              failureReason:
+                msg.delivery?.failureReason || (msg as any).failureReason,
+            }
           : {}),
         attachments: emailItem.attachments,
         rawEmail: emailItem,
@@ -281,8 +284,11 @@ export function parseEmailCardsFromMessages(params: {
         isOutbound: msg.outbound,
         isUnread,
         status: msg.status,
-        ...(msg.delivery?.failureReason
-          ? { failureReason: msg.delivery.failureReason }
+        ...(msg.delivery?.failureReason || (msg as any).failureReason
+          ? {
+              failureReason:
+                msg.delivery?.failureReason || (msg as any).failureReason,
+            }
           : {}),
       })
     }

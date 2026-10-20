@@ -1510,6 +1510,208 @@ describe('EmailThreadView', () => {
         expect(contentActiveStyle).toEqual(contentStyle)
         expect(contentStyle).not.toHaveProperty('padding')
       })
+
+      it('shows insufficient balance warning, emits resetStampDefault on 1-click reset, and blocks handleSend without losing draft', async () => {
+        const notifications = await import('src/utils/notifications')
+        const errorSpy = jest
+          .spyOn(notifications, 'errorNotify')
+          .mockImplementation(() => {})
+        const wrapper = mountView({
+          stampAmount: '20.6019',
+          defaultStampWei: 468_700_000_000_000_000n,
+          availableBalanceWei: 9_621_800_000_000_000_000n,
+          defaultStampMode: false,
+        })
+        const vm = wrapper.vm as any
+        vm.replyText = 'Draft that must not be lost'
+        await wrapper.vm.$nextTick()
+
+        const warning = wrapper.find(
+          '[data-testid="email-insufficient-balance-warning"]',
+        )
+        expect(warning.exists()).toBe(true)
+        expect(warning.text()).toContain('Not enough')
+
+        const resetBtn = wrapper.find('[data-testid="email-reset-fee-btn"]')
+        expect(resetBtn.exists()).toBe(true)
+        await resetBtn.trigger('click')
+        expect(wrapper.emitted('resetStampDefault')).toBeTruthy()
+
+        await vm.handleSend()
+        expect(errorSpy).toHaveBeenCalled()
+        expect(wrapper.emitted('sendReply')).toBeFalsy()
+        expect(vm.replyText).toBe('Draft that must not be lost')
+        errorSpy.mockRestore()
+      })
+
+      it('renders specific insufficient-funds badge and supports Retry, Discard, and Cancel on outbound cards', async () => {
+        const { useChatStore } = await import('src/stores/chats')
+        const chatStore = useChatStore()
+        const retrySpy = jest
+          .spyOn(chatStore, 'retryOutgoing')
+          .mockResolvedValue({ state: 'sent' } as any)
+        const deleteSpy = jest
+          .spyOn(chatStore, 'deleteMessage')
+          .mockResolvedValue(undefined as any)
+
+        const failedOutboundMsg: ChatMessage = {
+          outbound: true,
+          status: 'error',
+          delivery: { failureReason: 'insufficient-funds' } as any,
+          receivedTime: 3000,
+          serverTime: 3000,
+          items: [
+            {
+              type: 'email',
+              messageId: '<frank_3000_deadbeef@frank.org>',
+              from: { address: 'me@frank.org', name: 'Me' },
+              to: [{ address: 'bob@example.com', name: 'Bob Jones' }],
+              subject: 'Re: Project Kickoff',
+              textBody: 'Failed reply text',
+            } as EmailItem,
+          ],
+          outpoints: [],
+          senderAddress: '0x1111111111111111111111111111111111111111',
+          payloadDigest: 'digest-failed-outbound',
+        }
+
+        const pendingOutboundMsg: ChatMessage = {
+          outbound: true,
+          status: 'pending',
+          receivedTime: 4000,
+          serverTime: 4000,
+          items: [
+            {
+              type: 'email',
+              messageId: '<frank_4000_cafebabe@frank.org>',
+              from: { address: 'me@frank.org', name: 'Me' },
+              to: [{ address: 'bob@example.com', name: 'Bob Jones' }],
+              subject: 'Re: Project Kickoff',
+              textBody: 'Pending reply text to restore',
+            } as EmailItem,
+          ],
+          outpoints: [],
+          senderAddress: '0x1111111111111111111111111111111111111111',
+          payloadDigest: 'digest-pending-outbound',
+        }
+
+        const threadMessages = [
+          ...messages,
+          failedOutboundMsg,
+          pendingOutboundMsg,
+        ]
+        const wrapper = mountView({
+          messages: threadMessages,
+          conversation: { ...conversation, messages: threadMessages },
+        })
+        const vm = wrapper.vm as any
+        await wrapper.vm.$nextTick()
+
+        const failedCard = vm.parsedEmails.find(
+          (c: any) => c.payloadDigest === 'digest-failed-outbound',
+        )
+        const pendingCard = vm.parsedEmails.find(
+          (c: any) => c.payloadDigest === 'digest-pending-outbound',
+        )
+        expect(vm.cardDeliveryBadge(failedCard)?.label).toBe(
+          'Not enough MONT — failed to send',
+        )
+
+        expect(
+          wrapper.find('[data-testid="email-card-retry-btn"]').exists(),
+        ).toBe(true)
+        expect(
+          wrapper.find('[data-testid="email-card-discard-btn"]').exists(),
+        ).toBe(true)
+        expect(
+          wrapper.find('[data-testid="email-card-cancel-btn"]').exists(),
+        ).toBe(true)
+
+        await vm.retryFailedCard(failedCard)
+        expect(retrySpy).toHaveBeenCalledWith('digest-failed-outbound')
+
+        vm.replyText = ''
+        await vm.cancelOrDiscardCard(pendingCard)
+        expect(vm.replyText).toBe('Pending reply text to restore')
+        expect(deleteSpy).toHaveBeenCalledWith({
+          address: conversation.id,
+          payloadDigest: 'digest-pending-outbound',
+        })
+      })
+
+      it('anchors In-Reply-To and References to inbound Gmail Message-IDs and ignores failed outbound cards', async () => {
+        const gmailInbound: EmailItem = {
+          type: 'email',
+          messageId: '<CABc123xyz@mail.gmail.com>',
+          from: { address: 'sender@gmail.com', name: 'Gmail Sender' },
+          to: [{ address: 'me@signet.mx', name: 'Me' }],
+          subject: 'Thread in Gmail',
+          textBody: 'Please reply in this thread.',
+          references: ['<CABc000root@mail.gmail.com>'],
+        }
+        const failedOutbound: EmailItem = {
+          type: 'email',
+          messageId: '<frank_9999_failed@frank.org>',
+          from: { address: 'me@signet.mx', name: 'Me' },
+          to: [{ address: 'sender@gmail.com', name: 'Gmail Sender' }],
+          subject: 'Re: Thread in Gmail',
+          textBody: 'Failed reply that never reached Gmail',
+          inReplyTo: '<CABc123xyz@mail.gmail.com>',
+          references: [
+            '<CABc000root@mail.gmail.com>',
+            '<CABc123xyz@mail.gmail.com>',
+          ],
+        }
+        const gmailMessages: ChatMessage[] = [
+          {
+            outbound: false,
+            status: 'confirmed',
+            receivedTime: 1000,
+            serverTime: 1000,
+            items: [gmailInbound],
+            outpoints: [],
+            senderAddress: '0x3333333333333333333333333333333333333333',
+            payloadDigest: 'digest-gmail-in',
+          },
+          {
+            outbound: true,
+            status: 'error',
+            delivery: { failureReason: 'insufficient-funds' } as any,
+            receivedTime: 2000,
+            serverTime: 2000,
+            items: [failedOutbound],
+            outpoints: [],
+            senderAddress: '0x1111111111111111111111111111111111111111',
+            payloadDigest: 'digest-failed-out',
+          },
+        ]
+
+        const wrapper = mountView({
+          messages: gmailMessages,
+          conversation: { ...conversation, messages: gmailMessages },
+        })
+        const vm = wrapper.vm as any
+        await wrapper.vm.$nextTick()
+
+        expect(vm.isOutboundFollowUp).toBe(false)
+        expect(vm.toList).toEqual(['sender@gmail.com'])
+
+        vm.replyText = 'Replying properly into the Gmail thread'
+        await vm.handleSend()
+
+        expect(wrapper.emitted('sendReply')).toBeTruthy()
+        const payload = wrapper.emitted('sendReply')![0][0] as { items: any[] }
+        const sentEmail = payload.items.find(i => i.type === 'email')
+        expect(sentEmail.inReplyTo).toBe('<CABc123xyz@mail.gmail.com>')
+        expect(sentEmail.references).toEqual([
+          '<CABc000root@mail.gmail.com>',
+          '<CABc123xyz@mail.gmail.com>',
+        ])
+        expect(sentEmail.references).not.toContain(
+          '<frank_9999_failed@frank.org>',
+        )
+      })
     })
   })
 })
+

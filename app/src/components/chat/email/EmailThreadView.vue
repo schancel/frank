@@ -233,6 +233,48 @@
                         />
                         {{ cardDeliveryBadge(card)!.label }}
                       </q-badge>
+                      <q-btn
+                        v-if="isCardCancelable(card)"
+                        flat
+                        dense
+                        no-caps
+                        size="xs"
+                        color="negative"
+                        icon="close"
+                        class="q-ml-xs q-px-xs"
+                        :label="cancelSendLabel"
+                        :aria-label="cancelSendLabel"
+                        data-testid="email-card-cancel-btn"
+                        @click.stop="cancelOrDiscardCard(card)"
+                      />
+                      <template v-else-if="isCardFailed(card)">
+                        <q-btn
+                          flat
+                          dense
+                          no-caps
+                          size="xs"
+                          color="primary"
+                          icon="refresh"
+                          class="q-ml-xs q-px-xs"
+                          :label="retrySendLabel"
+                          :aria-label="retrySendLabel"
+                          data-testid="email-card-retry-btn"
+                          @click.stop="retryFailedCard(card)"
+                        />
+                        <q-btn
+                          flat
+                          dense
+                          no-caps
+                          size="xs"
+                          color="negative"
+                          icon="delete_outline"
+                          class="q-ml-xs q-px-xs"
+                          :label="discardCardLabel"
+                          :aria-label="discardCardLabel"
+                          data-testid="email-card-discard-btn"
+                          @click.stop="cancelOrDiscardCard(card)"
+                        />
+                      </template>
                     </div>
                     <div class="text-caption text-grey-6 text-no-wrap q-ml-sm">
                       {{ card.formattedDate }}
@@ -393,6 +435,48 @@
                     :class="{ 'bg-grey-10': $q.dark.isActive }"
                   >
                     <q-btn
+                      v-if="isCardCancelable(card)"
+                      unelevated
+                      no-caps
+                      dense
+                      size="sm"
+                      color="negative"
+                      icon="close"
+                      class="q-px-sm"
+                      :label="cancelSendLabel"
+                      :aria-label="cancelSendLabel"
+                      data-testid="email-card-footer-cancel-btn"
+                      @click.stop="cancelOrDiscardCard(card)"
+                    />
+                    <template v-else-if="isCardFailed(card)">
+                      <q-btn
+                        unelevated
+                        no-caps
+                        dense
+                        size="sm"
+                        color="primary"
+                        icon="refresh"
+                        class="frank-tonal-btn q-px-sm"
+                        :label="retrySendLabel"
+                        :aria-label="retrySendLabel"
+                        data-testid="email-card-footer-retry-btn"
+                        @click.stop="retryFailedCard(card)"
+                      />
+                      <q-btn
+                        unelevated
+                        no-caps
+                        dense
+                        size="sm"
+                        color="negative"
+                        icon="delete_outline"
+                        class="q-px-sm"
+                        :label="discardCardLabel"
+                        :aria-label="discardCardLabel"
+                        data-testid="email-card-footer-discard-btn"
+                        @click.stop="cancelOrDiscardCard(card)"
+                      />
+                    </template>
+                    <q-btn
                       unelevated
                       no-caps
                       dense
@@ -491,6 +575,32 @@
       >
         <q-icon name="info_outline" size="15px" class="q-mr-xs col-auto" />
         <span class="col">{{ stampStatus }}</span>
+      </div>
+
+      <!-- Pre-Send Insufficient Stamp Balance Banner -->
+      <div
+        v-if="insufficientStampBalanceReason"
+        class="row items-center justify-between no-wrap q-px-sm q-py-xs q-mb-xs rounded-borders bg-negative text-white text-caption"
+        role="alert"
+        data-testid="email-insufficient-balance-warning"
+      >
+        <div class="row items-center no-wrap col ellipsis">
+          <q-icon name="warning" size="14px" class="q-mr-xs" />
+          <span class="ellipsis">{{ insufficientStampBalanceReason }}</span>
+        </div>
+        <q-btn
+          v-if="!defaultStampMode"
+          flat
+          dense
+          no-caps
+          size="xs"
+          color="white"
+          class="q-ml-sm col-auto"
+          :label="resetFeeButtonLabel"
+          :aria-label="resetFeeButtonLabel"
+          data-testid="email-reset-fee-btn"
+          @click="resetToDefaultStamp"
+        />
       </div>
 
       <!-- Composer Controls Header -->
@@ -1071,7 +1181,7 @@
 
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
-import type { Conversation, ChatMessage } from 'src/stores/chats'
+import { useChatStore, type Conversation, type ChatMessage } from 'src/stores/chats'
 import type { EmailItem, MessageItem } from '@frank/cashweb/types/messages'
 import type { EmailParty, EmailAttachment } from '@frank/codec'
 import {
@@ -1088,6 +1198,7 @@ import {
 } from 'src/utils/post-editor'
 import { useSettingsStore } from 'src/stores/settings'
 import { useProfileStore } from 'src/stores/my-profile'
+import { errorNotify } from 'src/utils/notifications'
 import { isChainAddress } from 'src/utils/chain-address'
 import {
   getOwnCanonicalAddress,
@@ -1159,6 +1270,10 @@ export default defineComponent({
     },
     defaultStampWei: {
       type: BigInt as unknown as PropType<bigint>,
+      default: undefined,
+    },
+    availableBalanceWei: {
+      type: BigInt as unknown as PropType<bigint | undefined>,
       default: undefined,
     },
     stampBasisNote: { type: String, default: '' },
@@ -1600,8 +1715,38 @@ export default defineComponent({
       }
       return purify(renderMarkdown(this.replyText, this.$q.dark.isActive))
     },
+    insufficientStampBalanceReason(): string | null {
+      if (
+        this.stampWei !== undefined &&
+        this.stampWei > 0n &&
+        this.availableBalanceWei !== undefined &&
+        this.stampWei > this.availableBalanceWei
+      ) {
+        return `Not enough ${this.chainUnit}: need ${activeChain.toDisplayAmount(
+          this.stampWei,
+        )} ${this.chainUnit}, have ${activeChain.toDisplayAmount(
+          this.availableBalanceWei,
+        )} ${this.chainUnit}`
+      }
+      return null
+    },
+    resetFeeButtonLabel(): string {
+      return this.$t('emailThread.resetFeeToDefault', 'Reset fee to default')
+    },
+    cancelSendLabel(): string {
+      return this.$t('chatMessage.cancelSend', 'Cancel')
+    },
+    retrySendLabel(): string {
+      return this.$t('chatMessage.retrySend', 'Retry')
+    },
+    discardCardLabel(): string {
+      return this.$t('chatMessage.discardSend', 'Discard')
+    },
     latestEmail(): ParsedEmailCard | undefined {
-      return this.parsedEmails[this.parsedEmails.length - 1]
+      return (
+        this.findDefaultReplyTargetCard(this.parsedEmails) ??
+        this.parsedEmails[this.parsedEmails.length - 1]
+      )
     },
   },
   watch: {
@@ -1623,10 +1768,20 @@ export default defineComponent({
         }
         // This component is keyed by conversation ID. Initialize once; empty fields do not
         // imply an untouched draft or permission to replace an explicitly selected parent.
+        const defaultTarget = this.findDefaultReplyTargetCard(cards)
         if (!this.composerInitialized) {
           this.composerInitialized = true
-          if (cards.length) this.setupComposerDefaults(cards[cards.length - 1])
+          if (defaultTarget) this.setupComposerDefaults(defaultTarget)
           else this.setupNewDraftDefaults()
+        } else if (
+          this.activeReplyCard &&
+          defaultTarget &&
+          (this.activeReplyCard.status === 'error' ||
+            this.activeReplyCard.status === 'pending' ||
+            this.activeReplyCard.status === 'payment-pending' ||
+            !cards.some(c => c.id === this.activeReplyCard?.id))
+        ) {
+          this.setupComposerDefaults(defaultTarget)
         }
       },
     },
@@ -1979,6 +2134,26 @@ export default defineComponent({
     } | null {
       if (!card.isOutbound) return null
       if (card.status === 'error') {
+        if (card.failureReason === 'insufficient-funds') {
+          return {
+            color: 'negative',
+            icon: 'error_outline',
+            label: this.$t(
+              'chatMessage.insufficientFunds',
+              `Not enough ${this.chainUnit} — failed to send`,
+            ),
+          }
+        }
+        if (card.failureReason === 'stamp-below-fee') {
+          return {
+            color: 'negative',
+            icon: 'error_outline',
+            label: this.$t(
+              'chatMessage.stampBelowFee',
+              'Stamp below minimum fee',
+            ),
+          }
+        }
         return {
           color: 'negative',
           icon: 'error_outline',
@@ -2021,6 +2196,153 @@ export default defineComponent({
       }
       return null
     },
+    isCardCancelable(card: ParsedEmailCard): boolean {
+      return Boolean(
+        card.isOutbound &&
+          card.payloadDigest &&
+          (card.status === 'pending' || card.status === 'payment-pending'),
+      )
+    },
+    isCardFailed(card: ParsedEmailCard): boolean {
+      return Boolean(
+        card.isOutbound && card.payloadDigest && card.status === 'error',
+      )
+    },
+    cancelOrDiscardCard(card: ParsedEmailCard) {
+      if (!card.payloadDigest) return
+      if (
+        (card.status === 'pending' || card.status === 'payment-pending') &&
+        !this.replyText.trim() &&
+        card.mainBody
+      ) {
+        this.replyText = card.mainBody
+      }
+      const address = this.conversation?.id || this.recipientAddress
+      if (!address) return
+      try {
+        useChatStore().deleteMessage({
+          address,
+          payloadDigest: card.payloadDigest,
+        })
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+      }
+    },
+    async retryFailedCard(card: ParsedEmailCard) {
+      if (!card.payloadDigest) return
+      try {
+        await useChatStore().retryOutgoing(card.payloadDigest)
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+      }
+    },
+    findDefaultReplyTargetCard(
+      cards: ParsedEmailCard[],
+    ): ParsedEmailCard | undefined {
+      if (!cards || cards.length === 0) return undefined
+      for (let i = cards.length - 1; i >= 0; i--) {
+        if (!cards[i].isOutbound) {
+          return cards[i]
+        }
+      }
+      for (let i = cards.length - 1; i >= 0; i--) {
+        const status = cards[i].status
+        if (
+          status !== 'error' &&
+          status !== 'pending' &&
+          status !== 'payment-pending'
+        ) {
+          return cards[i]
+        }
+      }
+      return cards[cards.length - 1]
+    },
+    buildThreadReplyHeaders(targetCard?: ParsedEmailCard): {
+      inReplyTo?: string
+      references?: string[]
+    } {
+      const cards = this.parsedEmails || []
+      const effectiveCard =
+        targetCard ??
+        this.activeReplyCard ??
+        this.findDefaultReplyTargetCard(cards)
+      if (!effectiveCard) {
+        return { inReplyTo: undefined, references: undefined }
+      }
+      const isValidMessageId = (id: string | undefined): id is string =>
+        Boolean(
+          id &&
+            typeof id === 'string' &&
+            /^<[^<>@\s]+@[^<>@\s]+>$/.test(id.trim()),
+        )
+
+      let inReplyTo: string | undefined
+      if (
+        !effectiveCard.isOutbound &&
+        isValidMessageId(effectiveCard.rawEmail?.messageId)
+      ) {
+        inReplyTo = effectiveCard.rawEmail!.messageId.trim()
+      } else {
+        for (let i = cards.length - 1; i >= 0; i--) {
+          const c = cards[i]
+          if (!c.isOutbound && isValidMessageId(c.rawEmail?.messageId)) {
+            inReplyTo = c.rawEmail!.messageId.trim()
+            break
+          }
+        }
+        if (
+          !inReplyTo &&
+          effectiveCard.status !== 'error' &&
+          effectiveCard.status !== 'pending' &&
+          effectiveCard.status !== 'payment-pending' &&
+          isValidMessageId(effectiveCard.rawEmail?.messageId)
+        ) {
+          inReplyTo = effectiveCard.rawEmail!.messageId.trim()
+        }
+      }
+
+      const refs: string[] = []
+      const addRef = (id: string | undefined) => {
+        if (!isValidMessageId(id)) return
+        const trimmed = id.trim()
+        if (!refs.includes(trimmed)) {
+          refs.push(trimmed)
+        }
+      }
+
+      const hasAnyInbound = cards.some(c => !c.isOutbound)
+      const explicitIdx = cards.findIndex(c => c.id === effectiveCard.id)
+      const stopIdx =
+        !effectiveCard.isOutbound && explicitIdx >= 0
+          ? explicitIdx
+          : cards.length - 1
+
+      for (let i = 0; i <= stopIdx; i++) {
+        const c = cards[i]
+        if (!c) continue
+        const includeCard =
+          !c.isOutbound ||
+          (!hasAnyInbound &&
+            c.status !== 'error' &&
+            c.status !== 'pending' &&
+            c.status !== 'payment-pending')
+        if (!includeCard) continue
+        for (const r of c.rawEmail?.references ?? []) {
+          addRef(r)
+        }
+        addRef(c.rawEmail?.inReplyTo)
+        addRef(c.rawEmail?.messageId)
+      }
+
+      if (inReplyTo) {
+        addRef(inReplyTo)
+      }
+
+      return {
+        inReplyTo,
+        references: refs.length > 0 ? refs : undefined,
+      }
+    },
     canReplyAll(card: ParsedEmailCard): boolean {
       if (card.isOutbound) return false
       const recipientCount = (card.to?.length || 0) + (card.cc?.length || 0)
@@ -2038,12 +2360,9 @@ export default defineComponent({
         subj = `Re: ${subj}`
       }
       this.subject = subj
-      this.activeInReplyTo = card.rawEmail?.messageId
-      this.activeReferences = card.rawEmail?.references
-        ? [...card.rawEmail.references, card.rawEmail.messageId]
-        : card.rawEmail?.messageId
-        ? [card.rawEmail.messageId]
-        : undefined
+      const headers = this.buildThreadReplyHeaders(card)
+      this.activeInReplyTo = headers.inReplyTo
+      this.activeReferences = headers.references
     },
     populateRecipientsForCard(
       card: ParsedEmailCard,
@@ -2145,12 +2464,9 @@ export default defineComponent({
         subj = `Re: ${subj}`
       }
       this.subject = subj
-      this.activeInReplyTo = card.rawEmail?.messageId
-      this.activeReferences = card.rawEmail?.references
-        ? [...card.rawEmail.references, card.rawEmail.messageId]
-        : card.rawEmail?.messageId
-        ? [card.rawEmail.messageId]
-        : undefined
+      const headers = this.buildThreadReplyHeaders(card)
+      this.activeInReplyTo = headers.inReplyTo
+      this.activeReferences = headers.references
 
       // Standard email convention: insert bottom quote with cursor at top
       this.insertOriginalQuote(card)
@@ -2321,6 +2637,10 @@ export default defineComponent({
         this.preparingSend
       )
         return
+      if (this.insufficientStampBalanceReason) {
+        errorNotify(new Error(this.insufficientStampBalanceReason))
+        return
+      }
       if (this.newToInput.trim()) this.addToRecipient()
       if (this.newCcInput.trim()) this.addCcRecipient()
       if (this.newBccInput.trim()) this.addBccRecipient()
@@ -2418,6 +2738,13 @@ export default defineComponent({
       const emailSubject =
         this.subject || (this.isDraft ? 'No Subject' : this.threadSubject)
       const body = this.replyText
+      const replyHeaders = this.buildThreadReplyHeaders(
+        this.activeReplyCard ?? undefined,
+      )
+      const resolvedInReplyTo = replyHeaders.inReplyTo ?? this.activeInReplyTo
+      const resolvedReferences =
+        replyHeaders.references ??
+        (this.activeReferences ? [...this.activeReferences] : undefined)
       const emailItem: EmailItem = {
         type: 'email',
         messageId: `<frank_${Date.now()}_${Math.random()
@@ -2433,10 +2760,8 @@ export default defineComponent({
           : undefined,
         subject: emailSubject,
         textBody: body,
-        inReplyTo: this.activeInReplyTo,
-        references: this.activeReferences
-          ? [...this.activeReferences]
-          : undefined,
+        inReplyTo: resolvedInReplyTo,
+        references: resolvedReferences,
       }
       const targetAddress =
         !this.isVerifiedGateway && this.replyRouting === 'gateway'
@@ -2469,7 +2794,7 @@ export default defineComponent({
           fallbackText,
           targetAddress,
         })
-        if (!this.stampUnavailable) {
+        if (!this.stampUnavailable && !this.insufficientStampBalanceReason) {
           // File reads leave authoring enabled. Clear only what this send actually captured.
           if (this.replyText === body) {
             this.replyText = ''

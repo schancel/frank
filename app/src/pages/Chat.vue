@@ -68,6 +68,7 @@
         v-model:stamp-amount="stampAmount"
         :minimum-stamp-wei="minimumStampWei"
         :default-stamp-wei="defaultStampWei"
+        :available-balance-wei="availableBalanceWei"
         :stamp-basis-note="defaultStampBasisNote"
         :default-stamp-mode="isDefaultStampMode"
         :stamp-unavailable="stampUnavailable"
@@ -1100,6 +1101,21 @@ export default defineComponent({
       if (target)
         this.chatStore?.setStampWei?.({ address: target, stampWei: undefined })
     },
+    sanitizeStaleEmailStampOverride() {
+      if (!this.isEmailThread) return
+      const target = this.conversation?.id || this.recipientAddress
+      const explicit = target ? this.chatStore?.getStampWei?.(target) : undefined
+      if (explicit === undefined || explicit <= 0n) return
+      const available = this.availableBalanceWei
+      const base = this.defaultStampWei ?? 0n
+      if (
+        available !== undefined &&
+        explicit > available &&
+        explicit > base * 10n
+      ) {
+        this.resetStampDefault?.()
+      }
+    },
     async sendMessage(message: string) {
       if (this.stampUnavailable) {
         errorNotify(new Error(this.stampUnavailable))
@@ -1108,6 +1124,22 @@ export default defineComponent({
       const wallet = useMonadWallet()
       const recipient = this.recipientAddress || this.address
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      if (
+        this.availableBalanceWei !== undefined &&
+        stampValue > 0n &&
+        stampValue > this.availableBalanceWei
+      ) {
+        errorNotify(
+          new Error(
+            `Not enough ${activeChain.unit}: need ${activeChain.toDisplayAmount(
+              stampValue,
+            )} ${activeChain.unit}, have ${activeChain.toDisplayAmount(
+              this.availableBalanceWei,
+            )} ${activeChain.unit}`,
+          ),
+        )
+        return
+      }
       const rawPrice = this.getAcceptancePrice(recipient)
       const acceptancePrice =
         typeof rawPrice === 'number' && Number.isFinite(rawPrice)
@@ -1227,6 +1259,27 @@ export default defineComponent({
         )
         return
       }
+      if (this.stampUnavailable) {
+        errorNotify(new Error(this.stampUnavailable))
+        return
+      }
+      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      if (
+        this.availableBalanceWei !== undefined &&
+        stampValue > 0n &&
+        stampValue > this.availableBalanceWei
+      ) {
+        errorNotify(
+          new Error(
+            `Not enough ${activeChain.unit}: need ${activeChain.toDisplayAmount(
+              stampValue,
+            )} ${activeChain.unit}, have ${activeChain.toDisplayAmount(
+              this.availableBalanceWei,
+            )} ${activeChain.unit}`,
+          ),
+        )
+        return
+      }
       this.activeSendCount = (this.activeSendCount || 0) + 1
       this.sendingMessage = true
       let releasedSending = false
@@ -1237,6 +1290,9 @@ export default defineComponent({
         if (this.activeSendCount === 0) {
           this.sendingMessage = false
         }
+      }
+      if (!this.isDefaultStampMode) {
+        this.resetStampDefault?.()
       }
       let renamedDraft = false
       const applyDraftSubjectRename = () => {
@@ -1260,10 +1316,8 @@ export default defineComponent({
         }
       }
       try {
-        if (this.stampUnavailable) throw new Error(this.stampUnavailable)
         const wallet = useMonadWallet()
-        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
-        await this.sendDirectMessage({
+        const outcome = await this.sendDirectMessage({
           wallet,
           address: recipient,
           conversationId: conversation.id,
@@ -1280,7 +1334,20 @@ export default defineComponent({
             }
           },
         })
-        applyDraftSubjectRename()
+        if (outcome && (outcome as any).state === 'failed') {
+          const reason = (outcome as any).reason
+          errorNotify(
+            new Error(
+              reason === 'insufficient-funds'
+                ? `Not enough ${activeChain.unit} to cover the stamp fee`
+                : reason === 'stamp-below-fee'
+                ? 'Stamp amount is below the minimum relay fee'
+                : 'Failed to send email',
+            ),
+          )
+        } else {
+          applyDraftSubjectRename()
+        }
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))
       } finally {
@@ -2320,8 +2387,22 @@ export default defineComponent({
       }
       return null
     },
+    availableBalanceWei(): bigint | undefined {
+      if (
+        this.balanceUnavailable ||
+        this.activeWalletBalance?.total === undefined
+      ) {
+        return undefined
+      }
+      try {
+        return BigInt(this.activeWalletBalance.total)
+      } catch {
+        return undefined
+      }
+    },
     peerStampSuggestion(): PeerStampSuggestionResult | undefined {
-      if (this.defaultStampWei === undefined) return undefined
+      if (this.isEmailThread || this.defaultStampWei === undefined)
+        return undefined
       return computePeerStampSuggestion({
         messages: this.peerMessages ?? [],
         defaultStampWei: this.defaultStampWei,
@@ -2368,18 +2449,30 @@ export default defineComponent({
         const chosen =
           explicit ??
           this.suggestedStampWei ??
-          (this.defaultStampWei !== undefined
+          (!this.isEmailThread && this.defaultStampWei !== undefined
             ? computePeerStampSuggestion({
                 messages: this.peerMessages ?? [],
                 defaultStampWei: this.defaultStampWei,
                 minimumStampWei: this.minimumStampWei ?? 0n,
               }).suggestedStampWei
-            : undefined)
+            : this.defaultStampWei)
         return chosen === undefined ? '' : activeChain.toDisplayAmount(chosen)
       },
     },
   },
   watch: {
+    'availableBalanceWei': {
+      immediate: true,
+      handler() {
+        this.sanitizeStaleEmailStampOverride()
+      },
+    },
+    'defaultStampWei'() {
+      this.sanitizeStaleEmailStampOverride()
+    },
+    'conversation.id'() {
+      this.sanitizeStaleEmailStampOverride()
+    },
     'messagingState.status'() {
       void this.refreshMinimumStamp()
     },

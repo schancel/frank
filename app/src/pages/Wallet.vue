@@ -52,6 +52,7 @@
         >
           <q-tooltip>{{ $t('walletPanel.aboutAvu') }}</q-tooltip>
         </q-btn>
+        <wallet-network-switcher :selected-wallet="selectedWallet" />
         <extension-popout-btn />
         <q-btn
           flat
@@ -708,6 +709,7 @@ import WalletHistory from 'src/components/wallet/WalletHistory.vue'
 import TempoPathUsdPanel from 'src/components/wallet/TempoPathUsdPanel.vue'
 import DappBridgePanel from 'src/components/panels/DappBridgePanel.vue'
 import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
+import WalletNetworkSwitcher from 'src/components/wallet/WalletNetworkSwitcher.vue'
 import type { WalletHistoryRow } from 'src/components/wallet/wallet-history'
 import { walletSupport } from 'src/utils/wallet-support'
 import { openUtxoWallet } from 'src/accounts/utxo-wallets'
@@ -729,6 +731,7 @@ export default defineComponent({
     TempoPathUsdPanel,
     DappBridgePanel,
     ExtensionPopoutBtn,
+    WalletNetworkSwitcher,
   },
   emits: ['toggleMyDrawerOpen'],
   setup() {

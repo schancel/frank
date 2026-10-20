@@ -546,6 +546,41 @@
                 />
               </div>
 
+              <div
+                v-if="!isExtensionRuntime"
+                class="setup-extension-download q-mt-lg q-pa-md rounded-borders"
+                data-test="setup-download-extension-section"
+              >
+                <div class="row items-center q-gutter-sm">
+                  <a
+                    class="setup-extension-link setup-extension-link--primary"
+                    :href="selectedExtensionInfo.url"
+                    :download="selectedExtensionInfo.filename"
+                    data-test="setup-download-extension"
+                    @click="selectExtensionTarget(selectedExtensionTarget)"
+                  >
+                    {{ selectedExtensionInfo.label }}
+                  </a>
+                  <a
+                    v-for="targetItem in allExtensionTargets"
+                    :key="targetItem.target"
+                    class="setup-extension-link setup-extension-link--secondary"
+                    :href="targetItem.url"
+                    :download="targetItem.filename"
+                    :data-test="`setup-download-extension-${targetItem.target}`"
+                    @click="selectExtensionTarget(targetItem.target)"
+                  >
+                    {{ targetItem.shortLabel }}
+                  </a>
+                </div>
+                <div
+                  class="text-caption text-grey-7 q-mt-xs"
+                  data-test="setup-extension-install-hint"
+                >
+                  {{ selectedExtensionInfo.installHint }}
+                </div>
+              </div>
+
               <q-btn
                 v-if="account.status === 'ready'"
                 class="q-mt-md"
@@ -973,6 +1008,13 @@ import {
   activeChain,
   onActiveChainChange,
 } from '@frank/wallet/chain'
+import { isBrowserExtensionRuntime } from '../../src-bex/runtime-adapter'
+import {
+  detectPreferredExtensionTarget,
+  EXTENSION_DOWNLOAD_TARGETS,
+  type ExtensionTargetBrowser,
+  getExtensionDownloadInfo,
+} from '../utils/extension-download'
 
 defineProps<{ myDrawerOpen?: boolean }>()
 const emit = defineEmits([
@@ -987,6 +1029,21 @@ const ceremony = createAccountCeremony()
 const passkeysSupported = supportsMeraPasskeys()
 const tabCoordinator = useTabCoordinatorStore()
 const showManualTabHint = ref(false)
+const isExtensionRuntime = computed(() => isBrowserExtensionRuntime())
+const selectedExtensionTarget = ref<ExtensionTargetBrowser>(
+  detectPreferredExtensionTarget(),
+)
+const selectedExtensionInfo = computed(() =>
+  getExtensionDownloadInfo(selectedExtensionTarget.value),
+)
+const allExtensionTargets = [
+  EXTENSION_DOWNLOAD_TARGETS.chrome,
+  EXTENSION_DOWNLOAD_TARGETS.firefox,
+  EXTENSION_DOWNLOAD_TARGETS.safari,
+]
+function selectExtensionTarget(target: ExtensionTargetBrowser) {
+  selectedExtensionTarget.value = target
+}
 
 const defaultRelayUrl = getDefaultRelayBaseUrl()
 const customRelayUrl = ref(getCustomRelayBaseUrl() ?? defaultRelayUrl)
@@ -1594,5 +1651,28 @@ onBeforeUnmount(() => {
   vertical-align: middle;
   flex-shrink: 0;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+.setup-extension-download {
+  border: 1px dashed rgba(128, 128, 128, 0.35);
+  background: rgba(128, 128, 128, 0.04);
+}
+.setup-extension-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.setup-extension-link--primary {
+  color: var(--q-primary, #1976d2);
+  border: 1px solid var(--q-primary, #1976d2);
+}
+.setup-extension-link--secondary {
+  color: inherit;
+  opacity: 0.8;
+  font-size: 0.8125rem;
+  padding: 4px 8px;
 }
 </style>

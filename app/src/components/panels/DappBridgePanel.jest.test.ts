@@ -115,12 +115,34 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     expect(wrapper.emitted('sweep-to-pool')).toHaveLength(1)
 
     await wrapper
+      .find('[data-testid="dapp-topup-persona-btn"]')
+      .trigger('click')
+    expect(
+      wrapper.find('[data-testid="dapp-persona-balance"]').text(),
+    ).toContain('10.00 MON')
+
+    await wrapper
       .find('[data-testid="dapp-create-burner-btn"]')
       .trigger('click')
     expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
       "m/44'/60'/1'/0/1",
     )
+    expect(
+      wrapper.find('[data-testid="dapp-persona-balance"]').text(),
+    ).toContain('0.00 MON')
     expect(wrapper.emitted('create-burner')).toHaveLength(1)
+
+    // Switch back to Default #0 and verify its 10.00 MON balance is preserved
+    await wrapper
+      .find('[data-testid="dapp-select-persona-0"]')
+      .trigger('click')
+    expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
+      "m/44'/60'/1'/0/0",
+    )
+    expect(
+      wrapper.find('[data-testid="dapp-persona-balance"]').text(),
+    ).toContain('10.00 MON')
+    expect(wrapper.emitted('select-persona')).toHaveLength(1)
     wrapper.unmount()
   })
 

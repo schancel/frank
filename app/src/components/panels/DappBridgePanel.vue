@@ -33,6 +33,26 @@
         >
           {{ activePersonaAddress }}
         </div>
+
+        <div
+          v-if="personaOptionItems.length > 1"
+          class="row items-center q-gutter-xs q-mt-sm"
+          data-testid="dapp-persona-selector"
+        >
+          <q-btn
+            v-for="item in personaOptionItems"
+            :key="item.index"
+            :unelevated="item.index === personaIndex"
+            :outline="item.index !== personaIndex"
+            dense
+            no-caps
+            size="sm"
+            :color="item.index === personaIndex ? 'primary' : 'grey-7'"
+            :data-testid="item.testId"
+            :label="item.label"
+            @click="selectPersona(item.index)"
+          />
+        </div>
       </q-card-section>
 
       <q-card-section class="row q-col-gutter-sm q-pt-xs">
@@ -278,6 +298,7 @@ export default defineComponent({
   },
   emits: [
     'create-burner',
+    'select-persona',
     'topup-persona',
     'sweep-to-pool',
     'approve-request',
@@ -289,7 +310,21 @@ export default defineComponent({
     const { total: liveWalletBalanceWei } = useBalance()
 
     const personaIndex = ref(0)
-    const personaBalanceMon = ref(props.initialPersonaBalanceMon)
+    const maxPersonaIndex = ref(0)
+    const personaBalancesByIndex = ref<Record<number, number>>({
+      0: props.initialPersonaBalanceMon,
+    })
+
+    const personaBalanceMon = computed({
+      get: () => personaBalancesByIndex.value[personaIndex.value] ?? 0,
+      set: (val: number) => {
+        personaBalancesByIndex.value = {
+          ...personaBalancesByIndex.value,
+          [personaIndex.value]: Math.max(0, val),
+        }
+      },
+    })
+
     const explicitPoolBalanceMon = ref<number | undefined>(
       props.initialPoolBalanceMon,
     )
@@ -311,6 +346,26 @@ export default defineComponent({
       const liveMon = Number.parseFloat(formatUnits(wei, 18))
       const base = Number.isFinite(liveMon) ? liveMon : 0
       return Math.max(0, base + poolTransferDeltaMon.value)
+    })
+
+    const personaOptionItems = computed(() => {
+      const items: Array<{
+        index: number
+        label: string
+        testId: string
+      }> = []
+      for (let i = 0; i <= maxPersonaIndex.value; i += 1) {
+        const bal = personaBalancesByIndex.value[i] ?? 0
+        const name = i === 0 ? 'Default #0' : `Burner #${i}`
+        const label =
+          bal > 0 ? `${name} (${bal.toFixed(2)} MON)` : name
+        items.push({
+          index: i,
+          label,
+          testId: `dapp-select-persona-${i}`,
+        })
+      }
+      return items
     })
 
     const ui = Object.freeze({
@@ -476,9 +531,26 @@ export default defineComponent({
       }
     })
 
+    function selectPersona(index: number) {
+      if (index < 0 || index > maxPersonaIndex.value) return
+      personaIndex.value = index
+      emit('select-persona', {
+        index: personaIndex.value,
+        path: activeDerivationPath.value,
+        address: activePersonaAddress.value,
+      })
+    }
+
     function createBurnerPersona() {
-      personaIndex.value += 1
-      personaBalanceMon.value = 0
+      const nextIndex = maxPersonaIndex.value + 1
+      maxPersonaIndex.value = nextIndex
+      if (personaBalancesByIndex.value[nextIndex] === undefined) {
+        personaBalancesByIndex.value = {
+          ...personaBalancesByIndex.value,
+          [nextIndex]: 0,
+        }
+      }
+      personaIndex.value = nextIndex
       const payload = {
         index: personaIndex.value,
         path: activeDerivationPath.value,
@@ -593,6 +665,7 @@ export default defineComponent({
             direction: 'to-extension',
             type: 'pwa-sync-handshake',
             id: `sync-${Date.now()}`,
+            idempotencyKey: `sync-${Date.now()}`,
             payload: syncPayload,
           },
           '*',
@@ -603,6 +676,8 @@ export default defineComponent({
 
     return {
       ui,
+      personaIndex,
+      personaOptionItems,
       wcUriInput,
       pairedWcUri,
       isExtensionRuntime,
@@ -619,6 +694,7 @@ export default defineComponent({
       jitSweepNoticeText,
       pairedWcStatusText,
       sasDisplayText,
+      selectPersona,
       createBurnerPersona,
       topUpFromPool,
       sweepBackToPool,

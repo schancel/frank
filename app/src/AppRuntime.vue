@@ -167,7 +167,7 @@ export default defineComponent({
           if (
             typeof window !== 'undefined' &&
             window.location?.search?.includes('extMode=popup') &&
-            contacts.contactList.length > 0
+            Object.keys(contacts.contacts ?? {}).length > 0
           ) {
             setTimeout(() => {
               if (accountStatus.status === 'ready') runCuratedSync()
@@ -213,7 +213,8 @@ export default defineComponent({
       refreshContacts: contacts.refreshContacts,
       replaceCuratedDefaults: contacts.replaceCuratedDefaults,
       clearCuratedDefaults: contacts.clearCuratedDefaults,
-      hasExistingContacts: () => contacts.contactList.length > 0,
+      hasExistingContacts: () =>
+        Object.keys(contacts.contacts ?? {}).length > 0,
       // FIXME: Some kind of race condition here where if this is computed,
       // it won't be set yet by the time the setupConnections function is called
       // after signing up or logging in.

@@ -589,4 +589,34 @@ describe('App exact conversation route authority (#1237)', () => {
       wrapper.unmount()
     }
   })
+
+  it.each([
+    ['empty contacts map', {}],
+    [
+      'existing contacts map',
+      { [PEER]: { notify: true, profile: { name: 'Peer' } } },
+    ],
+  ])(
+    'mounts AppRuntime in extMode=popup with ready account (%s) without throwing in created()',
+    async (_label, contactsRecord) => {
+      const contactStore = useContactStore() as unknown as {
+        contacts?: Record<string, unknown>
+      }
+      const prevContacts = contactStore.contacts
+      window.history.replaceState({}, '', '/?extMode=popup#/forum')
+      contactStore.contacts = contactsRecord
+      let wrapper: Awaited<ReturnType<typeof mountedApp>>['wrapper'] | undefined
+      try {
+        const mounted = await mountedApp()
+        wrapper = mounted.wrapper
+        const runtime = wrapper.getComponent(AppRuntime)
+        expect(runtime.exists()).toBe(true)
+        expect(() => runtime.vm.setupConnections()).not.toThrow()
+      } finally {
+        wrapper?.unmount()
+        contactStore.contacts = prevContacts
+        window.history.replaceState({}, '', '/')
+      }
+    },
+  )
 })

@@ -380,23 +380,15 @@ describe('Settings Signet Theme Live Preview and Persistence (#1041)', () => {
 })
 
 describe('Settings header (ticket #369)', () => {
-  it('has a title and a labelled Back control that leaves Settings like Cancel does', async () => {
+  it('has a title and a left-aligned labelled menu control that asks the layout to toggle the drawer without a redundant back button', async () => {
     const router = await openDirectly('#/settings')
     const wrapper = mountSettings(router)
 
     expect(wrapper.find('q-toolbar-title').text()).toBe('settings.title')
-    const back = wrapper.find('[data-test="settings-back"]')
-    expect(back.attributes('aria-label')).toBe('settings.back')
+    expect(wrapper.find('[data-test="settings-back"]').exists()).toBe(false)
 
-    await back.trigger('click')
-
-    expect(await waitForPath(router, '/')).toBe('/')
-  })
-
-  it('has a labelled menu control that asks the layout to toggle the drawer', async () => {
-    const router = await openDirectly('#/settings')
-    const wrapper = mountSettings(router)
     const menu = wrapper.find('[data-test="settings-menu"]')
+    expect(menu.exists()).toBe(true)
     expect(menu.attributes('aria-label')).toBe('settings.openMenu')
 
     await menu.trigger('click')
@@ -415,7 +407,7 @@ it('has no directory installation controls and retains storage controls', async 
   expect(wrapper.find('notification-permission-panel-stub').exists()).toBe(true)
   expect(wrapper.find('directory-provisioning-panel-stub').exists()).toBe(false)
   expect(wrapper.html()).not.toMatch(/directory/i)
-  expect(wrapper.find('[data-test="settings-back"]').exists()).toBe(true)
+  expect(wrapper.find('[data-test="settings-menu"]').exists()).toBe(true)
 })
 
 it('does not contain account recovery tab, backup button, or descriptor', async () => {

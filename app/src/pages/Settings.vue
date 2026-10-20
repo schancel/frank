@@ -6,21 +6,12 @@
           flat
           dense
           class="q-px-sm"
-          icon="arrow_back"
-          :aria-label="$t('settings.back')"
-          data-test="settings-back"
-          @click="cancel"
-        />
-        <q-toolbar-title class="h6">{{ $t('settings.title') }}</q-toolbar-title>
-        <q-btn
-          flat
-          dense
-          class="q-px-sm"
           icon="menu"
           :aria-label="$t('settings.openMenu')"
           data-test="settings-menu"
           @click="$emit('toggleMyDrawerOpen')"
         />
+        <q-toolbar-title class="h6">{{ $t('settings.title') }}</q-toolbar-title>
       </q-toolbar>
     </q-header>
     <q-page-container class="col full-height overflow-hidden">
@@ -33,15 +24,16 @@
           class="settings-content col column full-width full-height bg-transparent"
         >
           <div
-            class="col full-height overflow-hidden"
+            class="settings-body col full-height overflow-hidden"
             :class="$q?.screen?.gt?.xs || false ? 'row' : 'column'"
           >
             <q-tabs
               v-model="tab"
               :vertical="$q?.screen?.gt?.xs || false"
-              class="text-primary col-auto"
+              dense
               outside-arrows
               mobile-arrows
+              class="text-primary col-auto settings-tabs"
             >
               <q-tab
                 name="networking"
@@ -76,7 +68,7 @@
               animated
               swipeable
               :vertical="$q?.screen?.gt?.xs || false"
-              class="col"
+              class="col bg-transparent settings-tab-panels"
               transition-prev="jump-up"
               transition-next="jump-up"
             >
@@ -98,8 +90,8 @@
                 </div>
                 <!-- Shown, on and locked: the app runs on testnet only for now. A future
                   unlock belongs in the settings store's `networkMode`, not in a global swap. -->
-                <div class="row items-center justify-between q-mb-sm">
-                  <div>
+                <div class="row items-center justify-between no-wrap q-mb-sm">
+                  <div class="col q-pr-sm" style="min-width: 0">
                     <div class="text-body2 text-weight-medium">
                       {{ $t('settings.testnetMode') }}
                     </div>
@@ -121,7 +113,7 @@
                   v-if="isTestnetMode"
                   dense
                   rounded
-                  class="bg-amber-1 text-amber-10 q-mb-md"
+                  class="bg-amber-1 text-amber-10 q-mb-md settings-mode-banner"
                 >
                   <template #avatar>
                     <q-icon name="info" color="amber-9" />
@@ -132,7 +124,7 @@
                   v-else
                   dense
                   rounded
-                  class="bg-blue-1 text-blue-10 q-mb-md"
+                  class="bg-blue-1 text-blue-10 q-mb-md settings-mode-banner"
                 >
                   <template #avatar>
                     <q-icon name="verified" color="primary" />
@@ -435,7 +427,10 @@
             </q-tab-panels>
           </div>
           <q-separator />
-          <q-card-actions align="right" class="q-pa-md bg-transparent">
+          <q-card-actions
+            align="right"
+            class="q-px-md q-py-sm bg-transparent settings-actions"
+          >
             <q-btn
               @click="cancel"
               :label="$t('settings.cancelSettings')"
@@ -858,17 +853,64 @@ export default defineComponent({
 
 <style scoped>
 .settings-container {
+  width: 100%;
+  max-width: 100%;
   height: 100%;
   min-height: 0;
 }
 .settings-page {
+  width: 100%;
+  max-width: 100%;
   height: 100%;
   min-height: 0 !important;
 }
 .settings-content,
+.settings-body,
 .settings-content :deep(.q-tab-panels) {
   min-width: 0;
   max-width: 100%;
+  min-height: 0;
+}
+.settings-tabs {
+  max-width: 100%;
+  min-width: 0;
+}
+.settings-tabs :deep(.q-tab) {
+  padding: 0 8px;
+  min-height: 52px;
+}
+.settings-tabs :deep(.q-tab__label) {
+  font-size: 0.72rem;
+  line-height: 1.15;
+}
+.settings-tab-panels {
+  display: flex;
+  flex-direction: column;
+}
+.settings-tab-panels :deep(.q-panel) {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.settings-tab-panels :deep(.q-tab-panel) {
+  height: auto !important;
+  min-height: 100%;
+  overflow-x: hidden;
+  padding-bottom: 24px;
+}
+.settings-mode-banner {
+  max-width: 100%;
+  overflow: hidden;
+}
+.settings-mode-banner :deep(.q-banner__content) {
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.settings-actions {
+  flex-shrink: 0;
 }
 
 @media (max-width: 600px) {

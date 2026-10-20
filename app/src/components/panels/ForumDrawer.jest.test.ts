@@ -211,4 +211,102 @@ describe('ForumDrawer.vue thread navigation', () => {
     expect(vm.sliderPercentile).toBe(75)
     expect(vm.percentileLabel).toBe('Top 25%')
   })
+
+  it('keeps selected percentile static when timeframe/messages change and recalculates voteThreshold', async () => {
+    const forum = useForumStore()
+    forum.setSelectedTopic('crypto')
+    forum.messages = [
+      {
+        topic: 'crypto',
+        voteWeightWei: '10',
+        payloadDigest: '0x1',
+        replies: [],
+      } as any,
+      {
+        topic: 'crypto',
+        voteWeightWei: '20',
+        payloadDigest: '0x2',
+        replies: [],
+      } as any,
+      {
+        topic: 'crypto',
+        voteWeightWei: '30',
+        payloadDigest: '0x3',
+        replies: [],
+      } as any,
+      {
+        topic: 'crypto',
+        voteWeightWei: '40',
+        payloadDigest: '0x4',
+        replies: [],
+      } as any,
+    ]
+
+    const wrapper = mountDrawer()
+    const vm = wrapper.vm as any
+
+    // User selects Top 25% (75th percentile)
+    vm.onSelectPercentile(75)
+    await wrapper.vm.$nextTick()
+    expect(forum.votePercentile).toBe(75)
+    expect(forum.voteThreshold).toBe('40')
+    expect(vm.currentPercentile).toBe(75)
+    expect(vm.percentileLabel).toBe('Top 25%')
+
+    // User switches timeframe -> messages update with a different weight distribution
+    forum.messages = [
+      {
+        topic: 'crypto',
+        voteWeightWei: '100',
+        payloadDigest: '0x10',
+        replies: [],
+      } as any,
+      {
+        topic: 'crypto',
+        voteWeightWei: '200',
+        payloadDigest: '0x20',
+        replies: [],
+      } as any,
+      {
+        topic: 'crypto',
+        voteWeightWei: '500',
+        payloadDigest: '0x30',
+        replies: [],
+      } as any,
+      {
+        topic: 'crypto',
+        voteWeightWei: '900',
+        payloadDigest: '0x40',
+        replies: [],
+      } as any,
+    ]
+    await wrapper.vm.$nextTick()
+
+    // Percentile remains locked at 75 (Top 25%) and voteThreshold recalculates to '900'
+    expect(forum.votePercentile).toBe(75)
+    expect(vm.currentPercentile).toBe(75)
+    expect(vm.sliderPercentile).toBe(75)
+    expect(vm.percentileLabel).toBe('Top 25%')
+    expect(forum.voteThreshold).toBe('900')
+  })
+
+  it('configures custom vote amount via input and presets and omits redundant topic input/list', async () => {
+    const forum = useForumStore()
+    const wrapper = mountDrawer()
+    const vm = wrapper.vm as any
+
+    expect(wrapper.find('[data-test="forum-topic"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Browse Topics')
+
+    const voteInput = wrapper.find('[data-testid="forum-vote-amount-input"]')
+    expect(voteInput.exists()).toBe(true)
+
+    vm.onSelectVoteAmount('500')
+    await wrapper.vm.$nextTick()
+    expect(forum.voteAmountDisplay).toBe('500')
+
+    vm.onSelectVoteAmount('')
+    await wrapper.vm.$nextTick()
+    expect(forum.voteAmountDisplay).toBe('')
+  })
 })

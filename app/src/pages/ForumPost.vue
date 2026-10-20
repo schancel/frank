@@ -1,13 +1,5 @@
 <template>
   <div>
-    <div
-      v-if="stampPreparationStatus"
-      class="full-width text-caption text-center bg-accent text-white q-py-xs q-mb-sm"
-      role="status"
-      data-testid="stamp-preparation-status"
-    >
-      {{ stampPreparationStatus }}
-    </div>
     <a-message
       v-bind="$attrs"
       :message="message"

@@ -3,20 +3,6 @@
     <q-scroll-area class="col">
       <q-list>
         <q-item>
-          <q-input
-            filled
-            class="q-mx-sm q-pa-none"
-            v-model="selectedTopic"
-            data-test="forum-topic"
-            label="Topic"
-            style="width: 250px"
-            @keyup.enter.prevent="refreshContent"
-            clearable
-            @clear="onTopicClear"
-          />
-        </q-item>
-
-        <q-item>
           <q-select
             class="q-mx-sm q-pa-none"
             v-model="sortMode"
@@ -89,43 +75,43 @@
         </q-item>
 
         <q-item>
+          <div style="width: 250px" class="q-mx-sm">
+            <q-input
+              class="q-pa-none"
+              v-model="voteAmount"
+              data-test="forum-vote-amount"
+              data-testid="forum-vote-amount-input"
+              :label="voteAmountLabel"
+              :placeholder="defaultVoteAmountPlaceholder"
+              clearable
+              use-input
+            />
+            <div class="row q-gutter-xs q-mt-xs justify-between">
+              <q-btn
+                v-for="preset in voteAmountPresets"
+                :key="preset.label"
+                size="xs"
+                dense
+                flat
+                no-caps
+                :color="
+                  isVoteAmountPresetActive(preset.value) ? 'primary' : 'grey-7'
+                "
+                :label="preset.label"
+                :data-test="`forum-vote-amount-preset-${preset.value || 'default'}`"
+                @click="onSelectVoteAmount(preset.value)"
+              />
+            </div>
+          </div>
+        </q-item>
+
+        <q-item>
           <q-btn
             color="primary"
             class="q-mx-sm q-pa-sm"
             label="Create Post"
             to="/new-post"
           />
-        </q-item>
-
-        <!-- Ticket #72 built a real backend index of discovered topic names (post count +
-        last-activity) plus a store action to fetch it (`useTopicStore().refreshDiscoveredTopics`,
-        wired into `ForumLayout.vue`'s `mounted()`) -- but nothing in the actual visible UI ever
-        read the result. The "Topic" field above was the only way to switch topics, and it's a
-        free-text input: you had to already know a topic's exact name to type it in. This list
-        surfaces that already-built, already-fetched discovery data as something genuinely
-        clickable. -->
-        <q-separator class="q-my-sm" />
-        <q-item-label header>Browse Topics</q-item-label>
-        <q-item
-          v-for="name in discoveredTopicNames"
-          :key="name"
-          clickable
-          :active="name === selectedTopic"
-          active-class="text-primary"
-          @click="setTopic(name)"
-        >
-          <q-item-section>{{ name }}</q-item-section>
-          <q-item-section side v-if="discoveredTopics[name]">
-            <span data-test="forum-topic-count" :data-topic="name">{{
-              discoveredTopics[name].postCount
-            }}</span>
-            <span class="text-caption">{{ $t('forum.postsLabel') }}</span>
-          </q-item-section>
-        </q-item>
-        <q-item v-if="discoveredTopicNames.length === 0">
-          <q-item-section class="text-grey"
-            >No topics discovered yet.</q-item-section
-          >
         </q-item>
       </q-list>
     </q-scroll-area>
@@ -156,6 +142,13 @@ const PERCENTILE_PRESETS = [
   { label: '5%', value: 95 },
 ]
 
+const VOTE_AMOUNT_PRESETS = [
+  { label: 'Default', value: '' },
+  { label: '0.01', value: '0.01' },
+  { label: '0.1', value: '0.1' },
+  { label: '1', value: '1' },
+]
+
 export default defineComponent({
   setup() {
     const forum = useForumStore()
@@ -165,13 +158,11 @@ export default defineComponent({
       sortMode,
       duration,
       voteThreshold,
+      votePercentile,
+      voteAmountDisplay,
       messages,
     } = storeToRefs(forum)
 
-    // Ticket #72's discovery index + `refreshDiscoveredTopics` action already exist on
-    // `useTopicStore` (a separate, older store from `useForumStore` above -- see this file's
-    // template comment) -- fetch it here too, alongside `ForumLayout.vue`'s own call on mount, so
-    // this drawer's list is fresh whenever it's actually opened, not just once at layout mount.
     const topicStore = useTopicStore()
     onMounted(() => {
       topicStore.refreshDiscoveredTopics()
@@ -208,12 +199,16 @@ export default defineComponent({
       storeSortMode: sortMode,
       storeDuration: duration,
       storeVoteThreshold: voteThreshold,
+      storeVotePercentile: votePercentile,
+      storeVoteAmountDisplay: voteAmountDisplay,
       topicWeights,
       refreshMessages: forum.refreshMessages,
       setSelectedTopic: forum.setSelectedTopic,
       setSortMode: forum.setSortMode,
       setDuration: forum.setDuration,
       setVoteThreshold: forum.setVoteThreshold,
+      setVotePercentile: forum.setVotePercentile,
+      setVoteAmountDisplay: forum.setVoteAmountDisplay,
     }
   },
   components: {},
@@ -222,6 +217,7 @@ export default defineComponent({
       sortModes: sortModes,
       durations: DURATIONS,
       percentilePresets: PERCENTILE_PRESETS,
+      voteAmountPresets: VOTE_AMOUNT_PRESETS,
       sliderPercentile: 0,
       // Ticket #61: the field itself now interprets this in the active chain's display unit
       // (chain/evm-chain.ts's fromDisplayAmount, MON) -- labeling it so a Monad user doesn't
@@ -234,6 +230,16 @@ export default defineComponent({
       immediate: true,
       handler(newVal: number) {
         this.sliderPercentile = newVal
+      },
+    },
+    topicWeights: {
+      handler() {
+        if (
+          this.storeVotePercentile !== null &&
+          this.storeVotePercentile !== undefined
+        ) {
+          this.applyPercentileCutoff(this.storeVotePercentile)
+        }
       },
     },
   },
@@ -265,17 +271,21 @@ export default defineComponent({
     },
     onSliderChange(val: number | null) {
       if (val === null || val === undefined) return
-      this.sliderPercentile = val
-      this.applyPercentileCutoff(val)
+      const p = Math.min(100, Math.max(0, Math.round(val)))
+      this.sliderPercentile = p
+      this.setVotePercentile?.(p)
+      this.applyPercentileCutoff(p)
     },
     onSelectPercentile(val: number) {
-      this.sliderPercentile = val
-      this.applyPercentileCutoff(val)
+      const p = Math.min(100, Math.max(0, Math.round(val)))
+      this.sliderPercentile = p
+      this.setVotePercentile?.(p)
+      this.applyPercentileCutoff(p)
     },
     applyPercentileCutoff(percentile: number) {
       const p = Math.min(100, Math.max(0, percentile))
       if (p === 0 || !this.topicWeights || this.topicWeights.length === 0) {
-        this.threshold = '0'
+        this.setVoteThreshold('0')
         return
       }
       const index = Math.min(
@@ -284,7 +294,7 @@ export default defineComponent({
       )
       const wei = this.topicWeights[index]
       if (wei === 0n) {
-        this.threshold = '0'
+        this.setVoteThreshold('0')
         return
       }
       try {
@@ -292,14 +302,42 @@ export default defineComponent({
           typeof (activeChain as any).toDisplayAmount === 'function'
             ? activeChain.toDisplayAmount(wei)
             : String(wei)
-        this.threshold = display
+        this.setVoteThreshold(display)
       } catch {
-        this.threshold = '0'
+        this.setVoteThreshold('0')
       }
+    },
+    onSelectVoteAmount(val: string) {
+      this.voteAmount = val
+    },
+    isVoteAmountPresetActive(val: string): boolean {
+      return (this.storeVoteAmountDisplay ?? '') === val
     },
   },
   computed: {
+    voteAmountLabel(): string {
+      return `Vote Amount (${this.chainUnit})`
+    },
+    defaultVoteAmountPlaceholder(): string {
+      try {
+        if (
+          typeof (activeChain as any).toDisplayAmount === 'function' &&
+          activeChain.defaultTopicVoteValue !== undefined
+        ) {
+          return activeChain.toDisplayAmount(activeChain.defaultTopicVoteValue)
+        }
+      } catch {
+        // Fallback below
+      }
+      return '0.01'
+    },
     currentPercentile(): number {
+      if (
+        this.storeVotePercentile !== null &&
+        this.storeVotePercentile !== undefined
+      ) {
+        return this.storeVotePercentile
+      }
       const current = this.storeVoteThreshold
       if (!current || current === '0') return 0
       if (!this.topicWeights || this.topicWeights.length === 0) return 0
@@ -355,6 +393,7 @@ export default defineComponent({
     },
     threshold: {
       set(newVal?: string) {
+        this.setVotePercentile?.(null)
         const value = String(newVal ?? '0')
         try {
           activeChain.fromDisplayAmount(value)
@@ -365,6 +404,28 @@ export default defineComponent({
       },
       get(): string {
         return this.storeVoteThreshold.toString()
+      },
+    },
+    voteAmount: {
+      set(newVal?: string | null) {
+        const trimmed = String(newVal ?? '').trim()
+        if (!trimmed) {
+          this.setVoteAmountDisplay?.('')
+          return
+        }
+        try {
+          const parsed = activeChain.fromDisplayAmount(trimmed)
+          if (parsed > 0n) {
+            this.setVoteAmountDisplay?.(trimmed)
+          } else {
+            this.setVoteAmountDisplay?.('')
+          }
+        } catch {
+          this.setVoteAmountDisplay?.('')
+        }
+      },
+      get(): string {
+        return (this.storeVoteAmountDisplay ?? '').toString()
       },
     },
   },

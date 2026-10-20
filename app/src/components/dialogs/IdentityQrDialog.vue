@@ -193,7 +193,7 @@
       <!-- Own QR Code Below Scanner -->
       <q-card-section class="row justify-center items-center q-py-xs q-px-sm">
         <div
-          class="q-pa-sm bg-white rounded-borders shadow-1 text-center"
+          class="q-pa-sm bg-white rounded-borders shadow-1 text-center identity-qr-frame"
           data-test="identity-qr-container"
         >
           <qrcode-vue
@@ -571,7 +571,7 @@
       <!-- Own QR Code Below Scanner -->
       <q-card-section class="row justify-center items-center q-py-xs q-px-sm">
         <div
-          class="q-pa-sm bg-white rounded-borders shadow-1 text-center"
+          class="q-pa-sm bg-white rounded-borders shadow-1 text-center identity-qr-frame"
           data-test="identity-qr-container"
         >
           <qrcode-vue
@@ -1403,8 +1403,25 @@ export default defineComponent({
 
 .identity-qr-scanner-box {
   background: #0f172a;
-  height: clamp(168px, 28vh, 224px);
+  width: 204px;
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  margin: 0 auto;
+  border-radius: 12px;
+  overflow: hidden;
   display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.identity-qr-frame {
+  width: 204px;
+  max-width: 100%;
+  margin: 0 auto;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
 }

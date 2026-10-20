@@ -75,8 +75,12 @@
         widening the whole page past a phone's screen. -->
         <q-scroll-area
           class="absolute-full"
-          :content-style="{ width: '100%', minWidth: '100%' }"
-          :content-active-style="{ width: '100%', minWidth: '100%' }"
+          :content-style="{ width: '100%', minWidth: '100%', maxWidth: '100%' }"
+          :content-active-style="{
+            width: '100%',
+            minWidth: '100%',
+            maxWidth: '100%',
+          }"
         >
           <div class="wallet-scroll-content">
             <q-card
@@ -1235,20 +1239,61 @@ export default defineComponent({
   flex-shrink: 0;
 }
 
+.wallet-container {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
 .wallet-scroll-content {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 16px 20px 32px;
+  padding: 16px 16px 32px;
   box-sizing: border-box;
+  overflow-x: hidden;
 }
 
 .wallet-content-card {
   width: 100%;
-  max-width: 680px;
+  max-width: min(680px, 100%);
+  min-width: 0;
   margin: 0 auto;
+  overflow-x: hidden;
+}
+
+.wallet-tabs {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.wallet-tabs :deep(.q-tabs__content) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.wallet-tabs :deep(.q-tab) {
+  flex: 1 1 0%;
+  min-width: 0;
+  padding: 0 6px;
+}
+
+.wallet-tabs :deep(.q-tab__content) {
+  min-width: 0;
+  width: 100%;
+}
+
+.wallet-tabs :deep(.q-tab__label) {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The bracket wraps whole under the total instead of breaking in the middle. */
@@ -1272,19 +1317,11 @@ export default defineComponent({
     margin-left: 4px !important;
   }
 
-  .wallet-tabs :deep(.q-tabs__content) {
-    width: 100%;
-  }
-
   .wallet-tabs :deep(.q-tab) {
-    flex: 1 1 0%;
-    min-width: 0;
     padding: 0 4px;
   }
 
   .wallet-tabs :deep(.q-tab__content) {
-    min-width: 0;
-    width: 100%;
     padding: 4px 0;
   }
 
@@ -1295,10 +1332,6 @@ export default defineComponent({
   .wallet-tabs :deep(.q-tab__label) {
     font-size: 11px;
     line-height: 1.2;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 }
 </style>

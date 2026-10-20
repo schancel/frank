@@ -309,6 +309,9 @@ body,
 // its height to the viewport and scroll vertically so bottom buttons are never clipped in
 // 600px browser extension popups or short mobile viewports.
 .q-page-container {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   max-height: 100vh;
   max-height: var(--frank-vh, 100dvh);
   min-height: 0;

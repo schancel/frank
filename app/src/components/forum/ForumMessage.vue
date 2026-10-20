@@ -505,6 +505,22 @@ export default defineComponent({
       }
       return undefined
     },
+    resolveVoteUnitValue(): bigint {
+      const customDisplay = String(
+        this.forumStore?.voteAmountDisplay ?? '',
+      ).trim()
+      if (customDisplay) {
+        try {
+          const parsed = activeChain.fromDisplayAmount(customDisplay)
+          if (parsed > 0n) {
+            return parsed
+          }
+        } catch {
+          // Fall back to defaultTopicVoteValue
+        }
+      }
+      return activeChain.defaultTopicVoteValue
+    },
     addVotes(direction: number) {
       if (
         this.voteTarget !== this.message.payloadDigest ||
@@ -524,7 +540,7 @@ export default defineComponent({
       this.voteOwnerRevision = accountStatus.revision
       this.voteOwnerStatus = accountStatus.status
 
-      const delta = BigInt(direction) * activeChain.defaultTopicVoteValue
+      const delta = BigInt(direction) * this.resolveVoteUnitValue()
       this.voteAmount += delta
       this.localVoteDelta += delta
       if (this.message?.payloadDigest) {

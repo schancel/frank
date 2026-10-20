@@ -30,6 +30,8 @@ export interface State {
   sortMode: SortMode
   duration: number
   voteThreshold: string
+  votePercentile: number | null
+  voteAmountDisplay: string
   /** Ticket #61: distinguishes "still fetching" from "fetched, genuinely no posts" -- Forum.vue's
    * own perpetual loading spinner (found live) couldn't tell the two apart before this existed. */
   hasFetchedOnce: boolean
@@ -124,6 +126,8 @@ export const useForumStore = defineStore('forum', {
     // 1 week
     duration: 1000 * 60 * 60 * 24 * 7,
     voteThreshold: '0',
+    votePercentile: null,
+    voteAmountDisplay: '',
     hasFetchedOnce: false,
     outageStatus: 'ok',
     isRefreshing: false,
@@ -232,6 +236,17 @@ export const useForumStore = defineStore('forum', {
     },
     setVoteThreshold(voteThreshold: string) {
       this.voteThreshold = String(voteThreshold)
+    },
+    setVotePercentile(votePercentile: number | null) {
+      if (votePercentile === null || votePercentile === undefined) {
+        this.votePercentile = null
+        return
+      }
+      const clamped = Math.min(100, Math.max(0, Math.round(votePercentile)))
+      this.votePercentile = Number.isFinite(clamped) ? clamped : null
+    },
+    setVoteAmountDisplay(voteAmountDisplay: string) {
+      this.voteAmountDisplay = String(voteAmountDisplay ?? '').trim()
     },
     recordOwnPost(payloadDigest: string) {
       if (!this.ownPostDigests) {
@@ -577,6 +592,15 @@ export const useForumStore = defineStore('forum', {
           typeof deserializedForum.voteThreshold === 'string'
             ? deserializedForum.voteThreshold
             : '0',
+        votePercentile:
+          typeof deserializedForum.votePercentile === 'number' &&
+          Number.isFinite(deserializedForum.votePercentile)
+            ? Math.min(100, Math.max(0, Math.round(deserializedForum.votePercentile)))
+            : null,
+        voteAmountDisplay:
+          typeof deserializedForum.voteAmountDisplay === 'string'
+            ? deserializedForum.voteAmountDisplay
+            : '',
         hasFetchedOnce: false,
         outageStatus: 'ok',
         isRefreshing: false,

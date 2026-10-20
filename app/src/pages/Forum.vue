@@ -1,14 +1,6 @@
 <template>
   <div class="forum-feed-container">
     <div
-      v-if="stampPreparationStatus"
-      class="full-width text-caption text-center bg-accent text-white q-py-xs q-mb-sm rounded-borders"
-      role="status"
-      data-testid="stamp-preparation-status"
-    >
-      {{ stampPreparationStatus }}
-    </div>
-    <div
       v-if="selectedTopic"
       class="row items-center q-px-sm q-py-xs q-mb-md active-topic-banner rounded-borders"
       data-test="forum-active-topic-banner"

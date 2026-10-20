@@ -333,6 +333,11 @@ import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 import { submitPost } from 'src/utils/submit-post'
 import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
+import {
+  clearForumPostDraft,
+  loadForumPostDraft,
+  saveForumPostDraft,
+} from 'src/utils/draft-storage'
 
 function validateTopic(value: unknown): true | string {
   if (typeof value !== 'string' || !/^[a-z0-9.-]+$/.test(value)) {
@@ -381,18 +386,27 @@ export default defineComponent({
     const routeParent = this.$route.params.parentDigest
     const parentDigest =
       typeof routeParent === 'string' ? routeParent : undefined
-    const topLevelTopic = forum.selectedTopic
+    const destinationKey = parentDigest ? `reply:${parentDigest}` : 'top-level'
+    const savedDraft = loadForumPostDraft(destinationKey)
+    const topLevelTopic =
+      !parentDigest && savedDraft?.topLevelTopicWasEdited && savedDraft.topic
+        ? savedDraft.topic
+        : forum.selectedTopic
     return {
-      offering: activeChain.toDisplayAmount(activeChain.defaultTopicVoteValue),
+      offering:
+        savedDraft?.offering ||
+        activeChain.toDisplayAmount(activeChain.defaultTopicVoteValue),
       topic: parentDigest
         ? forum.getMessage(parentDigest)?.topic ?? ''
         : topLevelTopic,
       topLevelTopic,
-      topLevelTopicWasEdited: false,
+      topLevelTopicWasEdited: Boolean(
+        !parentDigest && savedDraft?.topLevelTopicWasEdited,
+      ),
       topics: [] as string[],
-      title: '',
-      url: null,
-      message: '',
+      title: savedDraft?.title ?? '',
+      url: savedDraft?.url ?? null,
+      message: savedDraft?.message ?? '',
       parentDigest,
       chainUnit: activeChain.unit,
       posting: false,
@@ -410,7 +424,7 @@ export default defineComponent({
       nextParentFocusHandoffId: 0,
       parentFocusHandoffId: null as number | null,
       activeWallet: null as WalletHandle | null,
-      attachments: [] as PostAttachment[],
+      attachments: savedDraft?.attachments ?? ([] as PostAttachment[]),
     }
   },
   mounted() {
@@ -536,8 +550,41 @@ export default defineComponent({
         void this.syncSubmissionUi(this.parentDigest)
       }
     },
+    'title'() {
+      this.persistDraft()
+    },
+    'url'() {
+      this.persistDraft()
+    },
+    'topic'() {
+      this.persistDraft()
+    },
+    'offering'() {
+      this.persistDraft()
+    },
+    'message'() {
+      this.persistDraft()
+    },
+    'attachments': {
+      deep: true,
+      handler() {
+        this.persistDraft()
+      },
+    },
   },
   methods: {
+    persistDraft() {
+      const dest = this.submissionDestination(this.parentDigest)
+      saveForumPostDraft(dest, {
+        title: this.title,
+        url: this.url,
+        topic: this.topic,
+        topLevelTopicWasEdited: this.topLevelTopicWasEdited,
+        offering: String(this.offering ?? ''),
+        message: this.message,
+        attachments: this.attachments,
+      })
+    },
     async refreshPostStatus() {
       if (this.refreshingStatus) return
       const routeEpoch = this.routeEpoch
@@ -620,15 +667,28 @@ export default defineComponent({
       }
     },
     syncParentDigest(parentDigest: string | undefined) {
+      this.persistDraft()
       this.refreshingStatus = false
       this.routeEpoch += 1
       this.parentRouteEpoch += 1
       this.parentFocusHandoffId = null
       this.parentDigest = parentDigest
+      const savedDraft = loadForumPostDraft(
+        this.submissionDestination(parentDigest),
+      )
+      if (savedDraft) {
+        this.title = savedDraft.title
+        this.url = savedDraft.url
+        this.message = savedDraft.message
+        this.attachments = savedDraft.attachments
+      }
       if (parentDigest) {
         this.topic = this.getMessage(parentDigest)?.topic ?? ''
       } else {
-        if (!this.topLevelTopicWasEdited) {
+        if (savedDraft?.topLevelTopicWasEdited && savedDraft.topic) {
+          this.topLevelTopicWasEdited = true
+          this.topLevelTopic = savedDraft.topic
+        } else if (!this.topLevelTopicWasEdited) {
           this.topLevelTopic = this.selectedTopic
         }
         this.topic = this.topLevelTopic
@@ -880,7 +940,9 @@ export default defineComponent({
           infoNotify,
           onOutcome: outcome => {
             retainReservation = outcome === 'unknown-outcome'
-            if (outcome === 'unknown-outcome') {
+            if (outcome === 'submitted') {
+              clearForumPostDraft(submittedDestination)
+            } else if (outcome === 'unknown-outcome') {
               // The paid call may have landed: keep the reservation but mark it
               // so every mounted instance of this destination renders the
               // terminal unknown state instead of a false ongoing post.

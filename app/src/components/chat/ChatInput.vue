@@ -1074,7 +1074,10 @@ export default defineComponent({
   display: flex;
   align-items: center;
   min-height: 64px;
-  padding: 8px 14px;
+  padding-top: 8px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(14px, env(safe-area-inset-left, 0px));
+  padding-right: max(14px, env(safe-area-inset-right, 0px));
   overflow: visible;
   container-type: inline-size;
 }

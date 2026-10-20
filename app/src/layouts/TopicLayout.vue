@@ -68,12 +68,17 @@ import {
   notifyBurnFailure,
 } from 'src/utils/burn-refresh-error'
 import { DRAWER_BREAKPOINT } from 'src/utils/layout'
+import { loadTopicDraft, saveTopicDraft } from 'src/utils/draft-storage'
 import assert from 'assert'
 
 export default defineComponent({
   data() {
+    const initialTopic =
+      typeof this.$route?.params?.topic === 'string'
+        ? this.$route.params.topic
+        : ''
     return {
-      message: '',
+      message: loadTopicDraft(initialTopic),
       sendingMessage: false,
       drawerBreakpoint: DRAWER_BREAKPOINT,
     }
@@ -103,8 +108,18 @@ export default defineComponent({
     }
   },
   emits: ['toggleMyDrawerOpen'],
+  watch: {
+    message(nextMessage: string) {
+      saveTopicDraft(this.topic, nextMessage)
+    },
+  },
   beforeRouteUpdate(to: RouteLocationNormalized) {
-    this.topic = (to?.params?.topic as string) || ''
+    const nextTopic = (to?.params?.topic as string) || ''
+    if (nextTopic !== this.topic) {
+      saveTopicDraft(this.topic, this.message)
+      this.topic = nextTopic
+      this.message = loadTopicDraft(nextTopic)
+    }
   },
   methods: {
     async sendMessage(message: string) {
@@ -114,8 +129,12 @@ export default defineComponent({
       }
 
       const submittedMessage = message
+      const submittedTopic = this.topic
       this.sendingMessage = true
-      if (this.message === submittedMessage) this.message = ''
+      if (this.message === submittedMessage) {
+        this.message = ''
+        saveTopicDraft(submittedTopic, '')
+      }
 
       const entry = {
         kind: 'post' as const,
@@ -145,6 +164,7 @@ export default defineComponent({
           this.message = this.message
             ? `${submittedMessage}\n${this.message}`
             : submittedMessage
+          saveTopicDraft(submittedTopic, this.message)
         }
         return
       } finally {

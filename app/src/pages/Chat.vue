@@ -437,6 +437,11 @@ import { formatDisplayNumber } from '../utils/chain-amount'
 import { nextFollowBottom } from '../utils/follow-bottom'
 import { composeChatItems, fitsOneMessage } from '../utils/chat-attachments'
 import type { PostAttachment } from '../utils/post-editor'
+import {
+  clearChatDraft,
+  loadChatDraft,
+  saveChatDraft,
+} from '../utils/draft-storage'
 import type {
   ApplicationMessageItem,
   MessageItem,
@@ -520,8 +525,11 @@ export default defineComponent({
     this.stampQuoteSequence++
   },
   data() {
+    const initialAddress = (this.$route.params.address as string) || ''
+    const initialDraft = loadChatDraft(initialAddress)
     return {
-      address: this.$route.params.address as string,
+      address: initialAddress,
+      restoringDraft: false,
       lastHandledFocusNonce: 0,
       composeFocusTimers: [] as ReturnType<typeof setTimeout>[],
       expectingWindowFocusUntil: 0,
@@ -535,12 +543,12 @@ export default defineComponent({
       followBottom: true,
       lastScrollPosition: 0,
       messagesToShow: 30,
-      replyDigest: null as string | null,
+      replyDigest: (initialDraft?.replyDigest ?? null) as string | null,
       scrollDigest: null as string | null,
       chatWidth: 0,
-      message: '',
+      message: initialDraft?.message ?? '',
       // Pictures held by the composer for the next message (see utils/chat-attachments.ts).
-      attachments: [] as PostAttachment[],
+      attachments: (initialDraft?.attachments ?? []) as PostAttachment[],
       stampPreparationStatus: null as string | null,
       // The smallest stamp the wallet sends right now, read from it (`refreshMinimumStamp`).
       // Until a fresh quote arrives, the default remains unavailable.
@@ -1171,9 +1179,15 @@ export default defineComponent({
           this.sendingMessage = false
         }
       }
+      this.restoringDraft = true
       this.message = ''
       this.attachments = []
       this.replyDigest = null
+      this.restoringDraft = false
+      clearChatDraft(this.address)
+      if (this.conversation?.id && this.conversation.id !== this.address) {
+        clearChatDraft(this.conversation.id)
+      }
       if (!this.isDefaultStampMode) {
         this.resetStampDefault?.()
       }
@@ -2517,7 +2531,20 @@ export default defineComponent({
         this.scheduleComposeFocus(force)
       }
     },
-    'address'(newAddr: string) {
+    'address'(newAddr: string, oldAddr: string) {
+      if (oldAddr && oldAddr !== newAddr && !this.restoringDraft) {
+        saveChatDraft(oldAddr, {
+          message: this.message,
+          attachments: this.attachments,
+          replyDigest: this.replyDigest,
+        })
+      }
+      const nextDraft = loadChatDraft(newAddr)
+      this.restoringDraft = true
+      this.message = nextDraft?.message ?? ''
+      this.attachments = nextDraft?.attachments ?? []
+      this.replyDigest = nextDraft?.replyDigest ?? null
+      this.restoringDraft = false
       if (
         newAddr &&
         typeof this.chatStore?.setActiveConversation === 'function'
@@ -2546,6 +2573,33 @@ export default defineComponent({
       }
       this.focusComposeOnOpen(force)
       void this.runBlackjackDealer()
+    },
+    'message'() {
+      if (this.restoringDraft) return
+      saveChatDraft(this.address, {
+        message: this.message,
+        attachments: this.attachments,
+        replyDigest: this.replyDigest,
+      })
+    },
+    'replyDigest'() {
+      if (this.restoringDraft) return
+      saveChatDraft(this.address, {
+        message: this.message,
+        attachments: this.attachments,
+        replyDigest: this.replyDigest,
+      })
+    },
+    'attachments': {
+      deep: true,
+      handler() {
+        if (this.restoringDraft) return
+        saveChatDraft(this.address, {
+          message: this.message,
+          attachments: this.attachments,
+          replyDigest: this.replyDigest,
+        })
+      },
     },
     'messages.length'(newLen: number, oldLen: number) {
       // Scroll to bottom if user was already there.
@@ -2632,7 +2686,10 @@ export default defineComponent({
 
 :deep(.chat-input-toolbar) {
   min-height: 64px;
-  padding: 8px 14px;
+  padding-top: 8px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(14px, env(safe-area-inset-left, 0px));
+  padding-right: max(14px, env(safe-area-inset-right, 0px));
   align-items: center;
   overflow: visible;
 }

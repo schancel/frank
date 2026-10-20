@@ -700,13 +700,15 @@ export default defineComponent({
 }
 
 .q-layout.frank-has-mobile-bottom-nav {
-  --frank-bottom-nav-offset: calc(56px + env(safe-area-inset-bottom, 0px));
+  --frank-bottom-nav-offset: calc(
+    56px + max(8px, env(safe-area-inset-bottom, 0px))
+  );
 }
 
 .q-layout.frank-has-mobile-bottom-nav .q-page-container {
   padding-bottom: var(
     --frank-bottom-nav-offset,
-    calc(56px + env(safe-area-inset-bottom, 0px))
+    calc(56px + max(8px, env(safe-area-inset-bottom, 0px)))
   ) !important;
 }
 
@@ -723,14 +725,18 @@ export default defineComponent({
   left: 0;
   right: 0;
   bottom: 0;
-  height: calc(56px + env(safe-area-inset-bottom, 0px));
-  min-height: 56px;
-  max-height: calc(56px + env(safe-area-inset-bottom, 0px));
-  padding: 0 2px env(safe-area-inset-bottom, 0px);
+  height: calc(56px + max(8px, env(safe-area-inset-bottom, 0px)));
+  min-height: 64px;
+  max-height: calc(56px + max(8px, env(safe-area-inset-bottom, 0px)));
+  padding-top: 0;
+  padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(14px, env(safe-area-inset-left, 0px));
+  padding-right: max(14px, env(safe-area-inset-right, 0px));
   background: var(--q-color-bg-surface, #fff);
   border-top: 1px solid rgba(128, 128, 128, 0.2);
   z-index: 1000;
   overflow: hidden;
+  box-sizing: border-box;
 
   .q-btn {
     flex: 1 1 0%;

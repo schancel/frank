@@ -369,6 +369,7 @@ const status = (w: ReturnType<typeof mountPage>['wrapper']) =>
   w.find('[data-test="post-status"]')
 
 beforeEach(() => {
+  window.localStorage.clear()
   jest.clearAllMocks()
   jest
     .mocked(useActiveWallet)

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -391,6 +392,26 @@ ${preloadLinks ? preloadLinks + '\n' : ''}  </head>
   )
 }
 
+function getNewestMtimeMs(dirPath) {
+  if (!fs.existsSync(dirPath)) return 0
+  let newest = 0
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+  for (const entry of entries) {
+    if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name.startsWith('.')) {
+      continue
+    }
+    const full = path.join(dirPath, entry.name)
+    if (entry.isDirectory()) {
+      const sub = getNewestMtimeMs(full)
+      if (sub > newest) newest = sub
+    } else if (entry.isFile() && !entry.name.endsWith('.test.ts')) {
+      const mtime = fs.statSync(full).mtimeMs
+      if (mtime > newest) newest = mtime
+    }
+  }
+  return newest
+}
+
 export function buildExtensions(argv = process.argv.slice(2)) {
   const targets = parseTargetArg(argv)
   const pkgJson = JSON.parse(
@@ -405,12 +426,36 @@ export function buildExtensions(argv = process.argv.slice(2)) {
 
   const pwaDist = path.join(appDir, 'dist', 'pwa')
   const spaDist = path.join(appDir, 'dist', 'spa')
-  const pwaMtime = fs.existsSync(path.join(pwaDist, 'index.html'))
+  let pwaMtime = fs.existsSync(path.join(pwaDist, 'index.html'))
     ? fs.statSync(path.join(pwaDist, 'index.html')).mtimeMs
     : -1
   const spaMtime = fs.existsSync(path.join(spaDist, 'index.html'))
     ? fs.statSync(path.join(spaDist, 'index.html')).mtimeMs
     : -1
+
+  const newestSrcMtime = getNewestMtimeMs(path.join(appDir, 'src'))
+  if (
+    !argv.includes('--skip-pwa-build') &&
+    !process.env.JEST_WORKER_ID &&
+    pwaMtime > 0 &&
+    newestSrcMtime > pwaMtime
+  ) {
+    console.log(
+      '[build:extension] Detected source changes newer than dist/pwa; rebuilding dist/pwa first...',
+    )
+    const res = spawnSync(
+      process.execPath,
+      [path.join(__dirname, 'build-pwa.mjs')],
+      { cwd: appDir, stdio: 'inherit' },
+    )
+    if ((res.status ?? 0) !== 0) {
+      process.exit(res.status ?? 1)
+    }
+    pwaMtime = fs.existsSync(path.join(pwaDist, 'index.html'))
+      ? fs.statSync(path.join(pwaDist, 'index.html')).mtimeMs
+      : pwaMtime
+  }
+
   const staticSourceDir =
     pwaMtime >= spaMtime && pwaMtime > 0
       ? pwaDist

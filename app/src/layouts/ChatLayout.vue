@@ -404,6 +404,7 @@ export default defineComponent({
   watch: {
     '$route.fullPath'() {
       this.cancelSubjectEditor()
+      this.address = (this.$route?.params?.address as string) || ''
     },
     '$route.query.info'(val: string | undefined) {
       this.infoOpen = val === 'true'

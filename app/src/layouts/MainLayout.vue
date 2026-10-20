@@ -80,7 +80,7 @@
         :aria-label="$t('chatList.directMessages')"
         :color="currentRoutePath.startsWith('/chat') ? 'primary' : undefined"
         data-testid="mobile-nav-chats"
-        @click="$router.push('/chat')"
+        @click="openMobileChatsTab"
       />
       <q-btn
         flat
@@ -177,6 +177,7 @@ import {
   sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../src-bex/inpage'
+import { useChatStore } from 'src/stores/chats'
 
 import LeftDrawer from '../components/panels/LeftDrawer.vue'
 
@@ -584,6 +585,26 @@ export default defineComponent({
           // Ignore window.close errors in restricted contexts
         }
       }
+    },
+    openMobileChatsTab() {
+      try {
+        const chats = useChatStore()
+        const target =
+          chats.activeConversationId ??
+          chats.activeChatAddr ??
+          chats.getSortedChatOrder?.[0]?.id ??
+          chats.getSortedChatOrder?.[0]?.address
+        if (target) {
+          if (typeof chats.setActiveConversation === 'function') {
+            chats.setActiveConversation(target)
+          }
+          void this.$router.push(`/chat/${target}`)
+          return
+        }
+      } catch {
+        // Fallback to /chat when store is unavailable
+      }
+      void this.$router.push('/chat')
     },
   },
   computed: {

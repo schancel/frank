@@ -103,16 +103,6 @@
                 :key="msg.payloadDigest"
               >
                 <chat-message-component
-                  v-memo="[
-                    msg,
-                    msg.status,
-                    msg.delivery?.failureReason,
-                    msg.delivery?.live,
-                    msg.delivery?.attemptDigest,
-                    attributions[index],
-                    chatWidth,
-                    recipientAddress,
-                  ]"
                   :index="index"
                   :message="msg"
                   :address="recipientAddress"
@@ -735,7 +725,11 @@ export default defineComponent({
           storeConv.id !== this.conversation.id
         )
           return false
-        if (storeConv.address && this.matchesConversation(storeConv.address))
+        if (
+          storeConv.address &&
+          storeConv.address !== idOrAddress &&
+          this.matchesConversation(storeConv.address)
+        )
           return true
       }
       if (this.recipientAddress && this.recipientAddress === idOrAddress)
@@ -2256,7 +2250,15 @@ export default defineComponent({
         )
         return nonSelf || this.conversation.participants[0]
       }
-      if (this.isEmailThread) {
+      const isEmailWithoutAddress =
+        this.conversation?.kind === 'email' ||
+        this.messages.some(
+          m =>
+            (m.outbound ||
+              sameCanonicalAddress(m.senderAddress, this.address)) &&
+            m.items?.some(i => i.type === 'email'),
+        )
+      if (isEmailWithoutAddress) {
         try {
           const settingsStore = useSettingsStore()
           return settingsStore.emailGatewayAddress

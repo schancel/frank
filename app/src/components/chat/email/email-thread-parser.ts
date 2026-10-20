@@ -10,6 +10,7 @@ export const GATEWAY_USERNAME_LOCAL_RE = /^[a-z0-9][a-z0-9_-]{2,31}$/i
 
 export interface ParsedEmailCard {
   id: string
+  payloadDigest?: string
   fromAddress: string
   fromName?: string
   to: EmailParty[]
@@ -24,6 +25,8 @@ export interface ParsedEmailCard {
   timestamp: number
   isOutbound: boolean
   isUnread: boolean
+  status?: ChatMessage['status']
+  failureReason?: string
   attachments?: EmailAttachment[]
   rawEmail?: EmailItem
   isDkimVerified?: boolean
@@ -229,6 +232,7 @@ export function parseEmailCardsFromMessages(params: {
 
       cards.push({
         id: emailItem.messageId || msg.payloadDigest,
+        payloadDigest: msg.payloadDigest,
         fromAddress: fromAddr,
         fromName,
         to: emailItem.to || [],
@@ -242,6 +246,10 @@ export function parseEmailCardsFromMessages(params: {
         timestamp,
         isOutbound: msg.outbound,
         isUnread,
+        status: msg.status,
+        ...(msg.delivery?.failureReason
+          ? { failureReason: msg.delivery.failureReason }
+          : {}),
         attachments: emailItem.attachments,
         rawEmail: emailItem,
         isDkimVerified: Boolean(
@@ -260,6 +268,7 @@ export function parseEmailCardsFromMessages(params: {
 
       cards.push({
         id: msg.payloadDigest,
+        payloadDigest: msg.payloadDigest,
         fromAddress: msg.senderAddress,
         to: [{ address: msg.destinationAddress || recipientAddress }],
         subject: threadSubject,
@@ -271,6 +280,10 @@ export function parseEmailCardsFromMessages(params: {
         timestamp,
         isOutbound: msg.outbound,
         isUnread,
+        status: msg.status,
+        ...(msg.delivery?.failureReason
+          ? { failureReason: msg.delivery.failureReason }
+          : {}),
       })
     }
   }

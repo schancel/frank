@@ -1126,6 +1126,15 @@ export default defineComponent({
       const replyDigestToSend = this.replyDigest
       this.activeSendCount = (this.activeSendCount || 0) + 1
       this.sendingMessage = true
+      let releasedSending = false
+      const releaseSending = () => {
+        if (releasedSending) return
+        releasedSending = true
+        this.activeSendCount = Math.max(0, (this.activeSendCount || 1) - 1)
+        if (this.activeSendCount === 0) {
+          this.sendingMessage = false
+        }
+      }
       this.message = ''
       this.attachments = []
       this.replyDigest = null
@@ -1147,7 +1156,15 @@ export default defineComponent({
           conversationId: this.conversation?.id,
           items,
           stampValue,
-          onPreparationProgress: this.showStampPreparation,
+          onPreparationProgress: (progress: DirectMessagePreparationProgress) => {
+            this.showStampPreparation(progress)
+            if (
+              progress.stage === 'waiting-for-chain' ||
+              progress.stage === 'waiting-for-payment'
+            ) {
+              releaseSending()
+            }
+          },
         })
       } catch (err) {
         // Send failures do not throw: the message stays in the conversation, marked failed with a
@@ -1156,7 +1173,7 @@ export default defineComponent({
         errorNotify(err instanceof Error ? err : new Error(String(err)))
         return
       } finally {
-        this.activeSendCount = Math.max(0, (this.activeSendCount || 1) - 1)
+        releaseSending()
         if (this.activeSendCount === 0) {
           this.stampPreparationStatus = null
           this.sendingMessage = false
@@ -1200,19 +1217,20 @@ export default defineComponent({
         )
         return
       }
+      this.activeSendCount = (this.activeSendCount || 0) + 1
       this.sendingMessage = true
-      try {
-        if (this.stampUnavailable) throw new Error(this.stampUnavailable)
-        const wallet = useMonadWallet()
-        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
-        await this.sendDirectMessage({
-          wallet,
-          address: recipient,
-          conversationId: conversation.id,
-          items: payload.items,
-          stampValue,
-          onPreparationProgress: this.showStampPreparation,
-        })
+      let releasedSending = false
+      const releaseSending = () => {
+        if (releasedSending) return
+        releasedSending = true
+        this.activeSendCount = Math.max(0, (this.activeSendCount || 1) - 1)
+        if (this.activeSendCount === 0) {
+          this.sendingMessage = false
+        }
+      }
+      let renamedDraft = false
+      const applyDraftSubjectRename = () => {
+        if (renamedDraft) return
         const emailItem = payload.items.find(it => it.type === 'email') as
           | EmailItem
           | undefined
@@ -1227,13 +1245,40 @@ export default defineComponent({
             originalName === 'New Email' ||
             originalName.startsWith('Draft to'))
         ) {
+          renamedDraft = true
           this.chatStore.renameConversation(conversation.id, emailItem.subject)
         }
+      }
+      try {
+        if (this.stampUnavailable) throw new Error(this.stampUnavailable)
+        const wallet = useMonadWallet()
+        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+        await this.sendDirectMessage({
+          wallet,
+          address: recipient,
+          conversationId: conversation.id,
+          items: payload.items,
+          stampValue,
+          onPreparationProgress: (progress: DirectMessagePreparationProgress) => {
+            this.showStampPreparation(progress)
+            if (
+              progress.stage === 'waiting-for-chain' ||
+              progress.stage === 'waiting-for-payment'
+            ) {
+              applyDraftSubjectRename()
+              releaseSending()
+            }
+          },
+        })
+        applyDraftSubjectRename()
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))
       } finally {
-        this.stampPreparationStatus = null
-        this.sendingMessage = false
+        releaseSending()
+        if (this.activeSendCount === 0) {
+          this.stampPreparationStatus = null
+          this.sendingMessage = false
+        }
       }
     },
     async openStealthDialog() {

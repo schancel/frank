@@ -8,6 +8,8 @@ export interface State {
   /** The identity address of the account this copy belongs to, lowercase. A copy is never
    * shown as, or published for, another account. */
   owner?: string
+  /** The accountId whose initial post-activation profile restoration has completed. */
+  restoredAccountId?: string
   /** The user edited the profile here and the relay does not have the edit yet. Only such an
    * edit is published over what the relay holds. */
   unpublished?: boolean
@@ -34,6 +36,7 @@ export interface State {
 export const useProfileStore = defineStore('myProfile', {
   state: (): State => ({
     owner: undefined,
+    restoredAccountId: undefined,
     unpublished: false,
     profile: {},
     inbox: {},

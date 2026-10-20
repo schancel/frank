@@ -1,14 +1,23 @@
 import { onUnmounted, watch, type Ref } from 'vue'
 import { Notify } from 'quasar'
 import { translateMessage as t } from 'src/i18n'
-import { useNotificationPermission } from './useNotificationPermission'
+import {
+  NOTIFICATION_PROMPT_DISMISSED_KEY,
+  NOTIFICATIONS_ENABLED_KEY,
+  useNotificationPermission,
+} from './useNotificationPermission'
 
 // This is a device UI preference, not a stored permission or an account record.
-// Read-only mounting never writes it; only an explicit dismissal does.
+// Read-only mounting never writes it; only an explicit user action on the offer does.
 const DISMISSED_KEY = 'frank.notification-offer-dismissed.v1'
 function isDismissed(): boolean {
   try {
-    return globalThis.localStorage?.getItem(DISMISSED_KEY) === '1'
+    return (
+      globalThis.localStorage?.getItem(DISMISSED_KEY) === '1' ||
+      globalThis.localStorage?.getItem(NOTIFICATION_PROMPT_DISMISSED_KEY) ===
+        '1' ||
+      globalThis.localStorage?.getItem(NOTIFICATIONS_ENABLED_KEY) === '1'
+    )
   } catch {
     return false
   }
@@ -16,8 +25,17 @@ function isDismissed(): boolean {
 function rememberDismissal() {
   try {
     globalThis.localStorage?.setItem(DISMISSED_KEY, '1')
+    globalThis.localStorage?.setItem(NOTIFICATION_PROMPT_DISMISSED_KEY, '1')
   } catch {
     // Storage may be blocked; the in-memory offer guard still prevents remount spam.
+  }
+}
+function clearDismissal() {
+  try {
+    globalThis.localStorage?.removeItem(DISMISSED_KEY)
+    globalThis.localStorage?.removeItem(NOTIFICATION_PROMPT_DISMISSED_KEY)
+  } catch {
+    // Ignore storage removal errors.
   }
 }
 
@@ -47,13 +65,15 @@ export function useNotificationPermissionOffer(ready: Readonly<Ref<boolean>>) {
           {
             label: t('notificationPermission.enable'),
             handler: () => {
-              void enable().catch(() =>
+              rememberDismissal()
+              void enable().catch(() => {
+                clearDismissal()
                 Notify.create({
                   type: 'negative',
                   message: t('notificationPermission.failed'),
                   html: false,
-                }),
-              )
+                })
+              })
             },
           },
           {

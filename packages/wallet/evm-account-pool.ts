@@ -263,6 +263,10 @@ export class EvmSubAccountPool {
   private stampPreparationAuthorized = false;
   private compactionCursor = -1;
   readonly capacityCache = new Map<number, SubAccountCapacityCacheEntry>();
+  private readonly displayBalanceCache = new Map<
+    number,
+    { status: SubAccountStatus; balanceWei: bigint; checkedAtMs: number }
+  >();
   private walletOperationGate?: <T>(
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
     admission?: MonadWalletOperationAdmission
@@ -2027,11 +2031,32 @@ export class EvmSubAccountPool {
     const balances = await Promise.all(
       candidates.map(async (record) => {
         const cached = this.capacityCache.get(record.index);
-        const balance =
+        if (
           cached?.balanceWei !== undefined &&
           now - cached.checkedAtMs < maxCacheAgeMs
+        ) {
+          return record.status === "available" ||
+            cached.balanceWei > TERMINAL_SPENDABLE_THRESHOLD_WEI
             ? cached.balanceWei
-            : await provider.getBalance(record.address);
+            : BigInt(0);
+        }
+        const displayCached = this.displayBalanceCache.get(record.index);
+        if (
+          displayCached !== undefined &&
+          displayCached.status === record.status &&
+          now - displayCached.checkedAtMs < maxCacheAgeMs
+        ) {
+          return record.status === "available" ||
+            displayCached.balanceWei > TERMINAL_SPENDABLE_THRESHOLD_WEI
+            ? displayCached.balanceWei
+            : BigInt(0);
+        }
+        const balance = await provider.getBalance(record.address);
+        this.displayBalanceCache.set(record.index, {
+          status: record.status,
+          balanceWei: balance,
+          checkedAtMs: Date.now(),
+        });
         return record.status === "available" ||
           balance > TERMINAL_SPENDABLE_THRESHOLD_WEI
           ? balance
@@ -2427,8 +2452,19 @@ export class EvmSubAccountPool {
   invalidateCapacityCache(index?: number): void {
     if (index !== undefined) {
       this.capacityCache.delete(index);
+      this.displayBalanceCache.delete(index);
     } else {
       this.capacityCache.clear();
+      this.displayBalanceCache.clear();
+    }
+  }
+
+  /** Invalidates cached display-only sub-account balances without clearing payment capacities. */
+  invalidateDisplayBalanceCache(index?: number): void {
+    if (index !== undefined) {
+      this.displayBalanceCache.delete(index);
+    } else {
+      this.displayBalanceCache.clear();
     }
   }
 

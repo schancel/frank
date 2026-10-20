@@ -74,6 +74,16 @@
               data-test="btn-create-account"
             />
             <q-btn
+              color="secondary"
+              outline
+              no-caps
+              class="welcome-action"
+              icon="extension"
+              :label="extensionUi.connectExtensionBtn"
+              data-test="btn-connect-extension"
+              @click="connectBrowserExtension"
+            />
+            <q-btn
               color="primary"
               outline
               no-caps
@@ -83,6 +93,14 @@
               to="/forum"
               data-test="btn-browse-forum"
             />
+          </div>
+
+          <div
+            v-if="extensionSyncStatusText"
+            class="text-caption text-positive q-mt-sm"
+            data-test="welcome-extension-sync-status"
+          >
+            {{ extensionSyncStatusText }}
           </div>
 
           <div class="q-mt-md">
@@ -206,21 +224,101 @@
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue'
+import {
+  computed,
+  defineComponent,
+  getCurrentInstance,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+} from 'vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
+import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/content'
 
 export default defineComponent({
   name: 'WelcomePage',
   emits: ['toggleMyDrawerOpen'],
   setup(_, { emit }) {
+    const instance = getCurrentInstance()
+    const syncedAddress = ref('')
+    const syncedSasCode = ref('')
+
+    const extensionUi = {
+      connectExtensionBtn: 'Connect Browser Extension',
+    }
+
+    const extensionSyncStatusText = computed(() => {
+      if (!syncedAddress.value) return ''
+      return syncedSasCode.value
+        ? `Extension Connected: ${syncedAddress.value} (SAS: ${syncedSasCode.value})`
+        : `Extension Connected: ${syncedAddress.value}`
+    })
+
+    const onExtensionMessage = (event: MessageEvent) => {
+      const data = event?.data
+      if (!data || typeof data !== 'object') return
+      if (
+        data.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
+        data.direction === 'to-pwa' &&
+        (data.type === 'extension-sync-push' || data.type === 'sync-response')
+      ) {
+        const payload = data.payload ?? data.result?.syncedState ?? data.result
+        const bundle = payload?.deviceSyncBundle
+        if (bundle && typeof bundle === 'object') {
+          syncedAddress.value = String(
+            bundle.accountAddress || bundle.activePersonaAddress || '',
+          )
+          syncedSasCode.value = String(payload?.sasCode || '')
+          const router = (
+            instance?.proxy as
+              | { $router?: { push: (path: string) => void } }
+              | undefined
+          )?.$router
+          if (router && Array.isArray(bundle.backupShares) && bundle.backupShares.length >= 2) {
+            void router.push('/onboard')
+          }
+        }
+      }
+    }
+
+    onMounted(() => {
+      if (typeof window !== 'undefined') {
+        window.addEventListener('message', onExtensionMessage)
+      }
+    })
+
+    onBeforeUnmount(() => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('message', onExtensionMessage)
+      }
+    })
+
     return {
       myDrawerOpen: useMyDrawerOpen(),
+      extensionUi,
+      extensionSyncStatusText,
       pageStyle(offset: number, viewportHeight: number) {
         const height = `${Math.max(0, viewportHeight - offset)}px`
         return { height, minHeight: height }
       },
       toggleSettingsDrawerOpen() {
         emit('toggleMyDrawerOpen')
+      },
+      connectBrowserExtension() {
+        if (
+          typeof window !== 'undefined' &&
+          typeof window.postMessage === 'function'
+        ) {
+          window.postMessage(
+            {
+              channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+              direction: 'to-extension',
+              type: 'pwa-request-sync',
+              id: `welcome-sync-${Date.now()}`,
+            },
+            '*',
+          )
+        }
       },
     }
   },

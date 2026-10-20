@@ -403,7 +403,7 @@ export async function recoverSecondaryEvmWallets(
             isChainUnreachableError(error)) ||
           isSecondaryRecoveryNonFatal(error)
         ) {
-          console.warn(`Secondary EVM recovery skipped for ${peer.id}:`, error)
+          console.debug(`Secondary EVM recovery skipped for ${peer.id}:`, error)
           return
         }
         throw error
@@ -415,14 +415,14 @@ export async function recoverSecondaryEvmWallets(
     if (activeWallets.length > 0) {
       const recovery = await recoverAllWallets(activeWallets)
       for (const failure of recovery.failed) {
-        console.warn(
+        console.debug(
           `Wallet recovery skipped for ${failure.walletId}:`,
           failure.error,
         )
       }
     }
   } catch (err) {
-    console.warn('Wallet recovery loop warning:', err)
+    console.debug('Wallet recovery loop warning:', err)
   }
   const errors = results.flatMap((result, index) =>
     result.status === 'rejected'

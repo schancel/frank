@@ -85,6 +85,7 @@ let unloadListenerAttached = false
 let focusRequestId: string | null = null
 let focusRequestTimer: ReturnType<typeof setTimeout> | null = null
 let takeoverResolver: (() => void) | null = null
+let pingResolver: (() => void) | null = null
 
 export const useTabCoordinatorStore = defineStore('tabCoordinator', {
   state: (): TabCoordinatorState => ({
@@ -156,8 +157,20 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
           type: 'TAB_PING',
           tabId: this.tabId,
         })
-        const timeoutMs = options?.pingTimeoutMs ?? 60
-        await new Promise(resolve => setTimeout(resolve, timeoutMs))
+        if (this.otherTabActive) return
+        const timeoutMs = options?.pingTimeoutMs ?? 20
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(() => {
+            if (pingResolver === done) pingResolver = null
+            resolve()
+          }, timeoutMs)
+          const done = () => {
+            clearTimeout(timer)
+            if (pingResolver === done) pingResolver = null
+            resolve()
+          }
+          pingResolver = done
+        })
       }
     },
 
@@ -196,6 +209,11 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
             if (msg.hasCustody) {
               this.otherTabActive = true
               this.activeTabId = msg.tabId
+              if (pingResolver) {
+                const resolve = pingResolver
+                pingResolver = null
+                resolve()
+              }
             }
           }
           break
@@ -205,6 +223,11 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
           if (msg.tabId && msg.tabId !== this.tabId) {
             this.otherTabActive = true
             this.activeTabId = msg.tabId
+            if (pingResolver) {
+              const resolve = pingResolver
+              pingResolver = null
+              resolve()
+            }
             // If this tab was also holding custody, yield to the new claimer
             if (accountStatus.status === 'ready' && !this.isYielded) {
               this.isYielded = true
@@ -413,6 +436,7 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
       this.isTakingOver = false
       this.wasAutoReleased = false
       takeoverResolver = null
+      pingResolver = null
       if (focusRequestTimer) clearTimeout(focusRequestTimer)
       focusRequestTimer = null
       focusRequestId = null

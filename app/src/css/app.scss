@@ -303,6 +303,126 @@ body,
   overflow: hidden !important;
 }
 
+// Standalone pages (Setup, Onboard, AddContact, IdentityQrPage, Send, SendContact, Receive,
+// AddTopic, ChatPlaceholder, ChatInfoView) do not place `.overflow-hidden` on their
+// `<q-page-container>`. Because `.q-layout` clamps overflow, `.q-page-container` must bound
+// its height to the viewport and scroll vertically so bottom buttons are never clipped in
+// 600px browser extension popups or short mobile viewports.
+.q-page-container {
+  max-height: 100vh;
+  max-height: var(--frank-vh, 100dvh);
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.q-page-container:not(.overflow-hidden) {
+  height: 100vh;
+  height: var(--frank-vh, 100dvh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.column > .q-page-container:not(.overflow-hidden) {
+  flex: 1 1 0%;
+  height: auto;
+  max-height: 100%;
+}
+
+.q-page-container:not(.overflow-hidden) > .q-page {
+  min-height: 100% !important;
+  box-sizing: border-box;
+}
+
+// Ensure flex column cards (e.g. Settings.vue, Profile.vue) shrink their tab-panel body
+// so bottom <q-card-actions> (Cancel / Save) are never pushed off-screen.
+.q-card.column > .col.full-height {
+  height: auto !important;
+  min-height: 0 !important;
+}
+
+// Reserve space for the fixed mobile/extension bottom navigation bar so it never covers
+// page content or bottom action buttons.
+.q-layout.frank-has-mobile-bottom-nav {
+  --frank-bottom-nav-offset: calc(56px + env(safe-area-inset-bottom, 0px));
+}
+
+.q-layout.frank-has-mobile-bottom-nav .q-page-container {
+  padding-bottom: var(
+    --frank-bottom-nav-offset,
+    calc(56px + env(safe-area-inset-bottom, 0px))
+  ) !important;
+}
+
+.q-layout.frank-has-mobile-bottom-nav
+  .q-page-container.overflow-hidden
+  > .q-page {
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+}
+
+// Account Setup & Confirm Identity visual hierarchy in extension popups and narrow viewports.
+.account-setup {
+  padding-bottom: 24px;
+
+  [data-test='account-status'] {
+    font-size: 0.8125rem;
+    color: var(--q-color-text-muted, #616161);
+    margin: 0 0 8px;
+  }
+
+  [data-test='account-error'] {
+    background: rgba(193, 0, 21, 0.08);
+    border-left: 3px solid var(--q-negative, #c10015);
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin: 0 0 12px;
+    font-size: 0.875rem;
+  }
+
+  [data-test='account-found'] {
+    margin: 12px 0 8px;
+    font-weight: 700;
+  }
+
+  [data-test='pending-identity'] {
+    background: rgba(128, 128, 128, 0.05);
+    border: 1px solid rgba(128, 128, 128, 0.18);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-top: 8px;
+
+    [data-test='pending-identity-address'] {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+        monospace;
+      font-size: 0.8125rem;
+      line-height: 1.4;
+      background: rgba(128, 128, 128, 0.08);
+      padding: 6px 10px;
+      border-radius: 6px;
+      margin: 6px 0 10px;
+      word-break: break-all;
+    }
+
+    [data-test='pending-display-name'],
+    [data-test='pending-username'] {
+      margin: 4px 0;
+      font-weight: 500;
+    }
+
+    > p.text-negative {
+      margin: 10px 0 0;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: rgba(193, 0, 21, 0.06);
+      font-size: 0.8125rem;
+      line-height: 1.35;
+    }
+  }
+}
+
+
 // ============================================================================
 // Unified Frank Button, Pill & Composer Control Design System
 // Prevents Quasar Material Design 2 defaults (ALL-CAPS text-transform, wrapping

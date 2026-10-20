@@ -219,6 +219,20 @@
                         />
                         DKIM
                       </q-badge>
+                      <q-badge
+                        v-if="cardDeliveryBadge(card)"
+                        :color="cardDeliveryBadge(card)!.color"
+                        outline
+                        class="text-caption q-px-xs q-ml-xs"
+                        data-testid="email-delivery-badge"
+                      >
+                        <q-icon
+                          :name="cardDeliveryBadge(card)!.icon"
+                          size="12px"
+                          class="q-mr-xs"
+                        />
+                        {{ cardDeliveryBadge(card)!.label }}
+                      </q-badge>
                     </div>
                     <div class="text-caption text-grey-6 text-no-wrap q-ml-sm">
                       {{ card.formattedDate }}
@@ -1080,6 +1094,10 @@ import {
   sameCanonicalAddress,
   useReactiveOwnCanonicalAddress,
 } from 'src/utils/own-address'
+import {
+  sendsWaitingForChain,
+  sendsWaitingForPreviousPayment,
+} from 'src/utils/outgoing-waiting'
 import {
   THREAD_REPLY_ALIAS_LOCAL_RE,
   GATEWAY_USERNAME_LOCAL_RE,
@@ -1954,6 +1972,55 @@ export default defineComponent({
     formatBytes(bytes: number | undefined): string {
       return formatAttachmentBytes(bytes)
     },
+    cardDeliveryBadge(card: ParsedEmailCard): {
+      color: string
+      icon: string
+      label: string
+    } | null {
+      if (!card.isOutbound) return null
+      if (card.status === 'error') {
+        return {
+          color: 'negative',
+          icon: 'error_outline',
+          label: this.$t('chatMessage.failedToSend', 'Failed to send'),
+        }
+      }
+      if (card.payloadDigest && sendsWaitingForChain.has(card.payloadDigest)) {
+        return {
+          color: 'warning',
+          icon: 'schedule',
+          label: this.$t('outgoing.waitingForChain', 'Waiting for network…'),
+        }
+      }
+      if (
+        card.payloadDigest &&
+        sendsWaitingForPreviousPayment.has(card.payloadDigest)
+      ) {
+        return {
+          color: 'warning',
+          icon: 'schedule',
+          label: this.$t(
+            'outgoing.waitingForPreviousPayment',
+            'Waiting for previous payment…',
+          ),
+        }
+      }
+      if (card.status === 'payment-pending') {
+        return {
+          color: 'warning',
+          icon: 'schedule',
+          label: this.$t('outgoing.paymentPending', 'Payment pending…'),
+        }
+      }
+      if (card.status === 'pending') {
+        return {
+          color: 'grey-7',
+          icon: 'schedule',
+          label: this.$t('outgoing.sending', 'Sending…'),
+        }
+      }
+      return null
+    },
     canReplyAll(card: ParsedEmailCard): boolean {
       if (card.isOutbound) return false
       const recipientCount = (card.to?.length || 0) + (card.cc?.length || 0)
@@ -2402,14 +2469,16 @@ export default defineComponent({
           fallbackText,
           targetAddress,
         })
-        // File reads leave authoring enabled. Clear only what this send actually captured.
-        if (this.replyText === body) {
-          this.replyText = ''
-          this.isPreviewMode = false
+        if (!this.stampUnavailable) {
+          // File reads leave authoring enabled. Clear only what this send actually captured.
+          if (this.replyText === body) {
+            this.replyText = ''
+            this.isPreviewMode = false
+          }
+          this.stagedFiles = this.stagedFiles.filter(
+            file => !files.includes(file),
+          )
         }
-        this.stagedFiles = this.stagedFiles.filter(
-          file => !files.includes(file),
-        )
       } finally {
         this.preparingSend = false
       }

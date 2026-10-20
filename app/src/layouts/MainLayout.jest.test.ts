@@ -761,3 +761,47 @@ describe('MainLayout root window scroll lock (Safari floating toolbar defense)',
     }
   })
 })
+
+describe('MainLayout mobile/extension bottom navigation bar', () => {
+  it('adds frank-has-mobile-bottom-nav on narrow viewports when bottom nav is shown and omits it when locked or on desktop', async () => {
+    const { wrapper } = await mountLayout(390)
+    await flushPromises()
+
+    expect(wrapper.classes()).toContain('frank-has-mobile-bottom-nav')
+    const nav = wrapper.find('[data-testid="mobile-bottom-nav"]')
+    expect(nav.exists()).toBe(true)
+    const buttons = nav.findAll('button.frank-mobile-bottom-nav-btn')
+    expect(buttons).toHaveLength(6)
+    expect(buttons.map(btn => btn.attributes('aria-label'))).toEqual([
+      'Direct Messages',
+      'Forum',
+      'Contacts',
+      'Wallet',
+      'My Identity QR Code',
+      'Settings',
+    ])
+
+    ;(
+      wrapper.vm as unknown as {
+        setSetupNavigationLocked(locked: boolean): void
+      }
+    ).setSetupNavigationLocked(true)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="mobile-bottom-nav"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.classes()).not.toContain('frank-has-mobile-bottom-nav')
+    wrapper.unmount()
+
+    const desktop = await mountLayout(1024)
+    expect(
+      desktop.wrapper.find('[data-testid="mobile-bottom-nav"]').exists(),
+    ).toBe(false)
+    expect(desktop.wrapper.classes()).not.toContain(
+      'frank-has-mobile-bottom-nav',
+    )
+    desktop.wrapper.unmount()
+  })
+})
+
+

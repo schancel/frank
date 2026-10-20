@@ -153,3 +153,27 @@ test('account readiness gates the offer without writing storage or requesting pe
   expect(request).not.toHaveBeenCalled()
   app.wrapper.unmount()
 })
+
+test('Enable in an extension popup persists dismissal and enabled state even if Notification.permission stays default across popup opens', async () => {
+  ;(globalThis as Record<string, any>).chrome = { runtime: { id: 'ext-123' } }
+  try {
+    // Simulate transient extension popup where requestPermission resolves to 'default'
+    request.mockImplementation(async () => 'default')
+    const firstPopup = boot()
+    expect(firstPopup.offer).toHaveBeenCalledTimes(1)
+    firstPopup.offer.mock.calls[0][0].actions[0].handler()
+    await firstPopup.flushPromises()
+    expect(localStorage.getItem('frank:notifications-enabled')).toBe('1')
+    expect(localStorage.getItem('frank:notification-prompt-dismissed')).toBe(
+      '1',
+    )
+    firstPopup.wrapper.unmount()
+
+    // Reopening the extension popup (fresh module graph, Notification.permission still 'default')
+    const secondPopup = boot()
+    expect(secondPopup.offer).not.toHaveBeenCalled()
+    secondPopup.wrapper.unmount()
+  } finally {
+    delete (globalThis as Record<string, any>).chrome
+  }
+})

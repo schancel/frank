@@ -1,5 +1,6 @@
 import {
   getExtensionResourceUrl,
+  getRawExtensionApi,
   isBrowserExtensionRuntime,
   onRuntimeMessage,
   sendRuntimeMessage,
@@ -67,6 +68,17 @@ export function installContentScriptBridge(
   }
 
   ensureSafariFallbackInpageScript(win, runtimeScope)
+
+  if (win.location && isAllowedSyncOrigin(win.location)) {
+    win.__FRANK_EXTENSION_BRIDGE_READY__ = true
+    if (typeof win.dispatchEvent === 'function' && typeof Event === 'function') {
+      try {
+        win.dispatchEvent(new Event('frank:extension-bridge-ready'))
+      } catch {
+        // Ignore event dispatch errors
+      }
+    }
+  }
 
   const handleWindowMessage = async (event: MessageEvent) => {
     if (event.source !== null && event.source !== win) return
@@ -202,15 +214,63 @@ export function installContentScriptBridge(
         },
         '*',
       )
+      return
+    }
+
+    if (
+      message &&
+      message.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
+      message.type === 'extension-sync-push' &&
+      win.location &&
+      isAllowedSyncOrigin(win.location)
+    ) {
+      win.postMessage(
+        {
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          direction: 'to-pwa',
+          type: 'extension-sync-push',
+          payload: message.payload,
+        },
+        '*',
+      )
     }
   }, runtimeScope)
+
+  const api = getRawExtensionApi(runtimeScope)
+  const storageListener = (changes: Record<string, any>, areaName?: string) => {
+    if (areaName && areaName !== 'local') return
+    const nextSynced = changes?.frankSyncedState?.newValue
+    if (
+      nextSynced &&
+      nextSynced.syncedFromOrigin === 'frank-extension' &&
+      win.location &&
+      isAllowedSyncOrigin(win.location)
+    ) {
+      win.postMessage(
+        {
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          direction: 'to-pwa',
+          type: 'extension-sync-push',
+          payload: nextSynced,
+        },
+        '*',
+      )
+    }
+  }
+  if (typeof api?.storage?.onChanged?.addListener === 'function') {
+    api.storage.onChanged.addListener(storageListener)
+  }
 
   return () => {
     win.removeEventListener('message', handleWindowMessage)
     unsubscribeRuntime()
+    if (typeof api?.storage?.onChanged?.removeListener === 'function') {
+      api.storage.onChanged.removeListener(storageListener)
+    }
   }
 }
 
 if (typeof window !== 'undefined' && isBrowserExtensionRuntime()) {
   installContentScriptBridge(window as Window & Record<string, any>)
 }
+

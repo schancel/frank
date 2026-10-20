@@ -59,6 +59,7 @@ import {
 import { profilePubKeyFromBytes } from '../utils/profile-pubkey'
 import { useChatStore, walletOwnsMessage } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
+import { useProfileStore } from '../stores/my-profile'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import type { MonadIdentity } from '@frank/wallet/evm-identity'
 import { syncOwnProfileWithRelay } from '../utils/own-profile'
@@ -174,15 +175,17 @@ export interface DirectMessagePolling {
  * account's profile is brought in line with the relay again. A relay that has no profile for the
  * account is given this device's copy; one that has a profile keeps it (`../utils/own-profile`).
  */
+export const OWN_PROFILE_STEADY_SYNC_INTERVAL_MS = 60_000
+
 export async function autoRecoverProfile(
   wallet: WalletHandle,
   isCancelled?: () => boolean,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<boolean> {
   const identity = (wallet as unknown as { identity?: MonadIdentity }).identity
-  if (!identity) return
+  if (!identity) return true
   try {
-    await syncOwnProfileWithRelay({
+    const outcome = await syncOwnProfileWithRelay({
       relayBaseUrl:
         (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
         loadMonadChainConfigFromEnv().relayBaseUrl,
@@ -191,8 +194,10 @@ export async function autoRecoverProfile(
       signal,
       network: loadMonadChainConfigFromEnv().rpcChain,
     })
+    return outcome !== 'unreachable'
   } catch (err) {
     console.warn('own profile sync failed', err)
+    return false
   }
 }
 
@@ -218,6 +223,8 @@ export function startDirectMessagePolling({
   let otherFailures = 0
   let lastErrorKey: string | undefined
   let profileRefresh: Promise<void> | undefined
+  let profileSynced = false
+  let lastProfileSyncAt = 0
   const profileAbort = new AbortController()
 
   // Polls are chained (next one is scheduled when this one settles), never overlapping, so the
@@ -283,14 +290,33 @@ export function startDirectMessagePolling({
       mailboxStatus.setOk()
       // Profile publication belongs to the relay. Refresh even when the mailbox is empty,
       // and retry a failed startup read on the next poll without delaying message delivery.
-      if (!profileRefresh) {
+      let hasUnpublishedProfile = false
+      try {
+        hasUnpublishedProfile = Boolean(useProfileStore().unpublished)
+      } catch {
+        hasUnpublishedProfile = false
+      }
+      const needsProfileRefresh =
+        !profileSynced ||
+        hasUnpublishedProfile ||
+        Date.now() - lastProfileSyncAt >= OWN_PROFILE_STEADY_SYNC_INTERVAL_MS
+      if (!profileRefresh && needsProfileRefresh) {
         profileRefresh = autoRecoverProfile(
           wallet,
           () => stopped,
           profileAbort.signal,
-        ).finally(() => {
-          profileRefresh = undefined
-        })
+        )
+          .then(synced => {
+            if (synced && !stopped) {
+              profileSynced = true
+              lastProfileSyncAt = Date.now()
+            } else {
+              profileSynced = false
+            }
+          })
+          .finally(() => {
+            profileRefresh = undefined
+          })
       }
       // The relay answers: what this device has to note to the account's other devices about
       // its conversations (a deletion or a read mark not sent yet) goes out now. Free, and not waited for.
@@ -388,6 +414,7 @@ export function startDirectMessagePolling({
       // stop() cannot cancel an in-flight request: a poll that fails after stop() must not put a
       // problem back on screen after stop() cleared it.
       if (stopped) return
+      profileSynced = false
       const isChallengeCapacity =
         err instanceof MonadMailboxChallengeCapacityError ||
         (err as { code?: string })?.code === 'mailbox_challenge_capacity' ||

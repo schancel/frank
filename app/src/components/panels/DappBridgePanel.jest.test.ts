@@ -66,13 +66,36 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     wrapper.unmount()
   })
 
-  it('renders Browser Extension mode badge when running inside Chrome Side Panel', () => {
+  it('renders Browser Extension mode badge and Extension View bar when running inside Chrome Side Panel', async () => {
     const wrapper = mountPanel({
       runtimeKindOverride: 'chrome-extension',
     })
     expect(wrapper.find('[data-testid="dapp-runtime-mode"]').text()).toContain(
       'Browser Extension (Chrome Side Panel)',
     )
+    expect(wrapper.find('[data-testid="extension-view-bar"]').exists()).toBe(
+      true,
+    )
+    expect(
+      wrapper.find('[data-testid="ext-open-sidepanel-btn"]').exists(),
+    ).toBe(true)
+    expect(wrapper.find('[data-testid="ext-open-popout-btn"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-testid="ext-open-tab-btn"]').exists()).toBe(true)
+    expect(
+      wrapper
+        .find('[data-testid="ext-toggle-sidepanel-default-btn"]')
+        .text(),
+    ).toContain('Toolbar: Popup')
+    await wrapper
+      .find('[data-testid="ext-toggle-sidepanel-default-btn"]')
+      .trigger('click')
+    expect(
+      wrapper
+        .find('[data-testid="ext-toggle-sidepanel-default-btn"]')
+        .text(),
+    ).toContain('Toolbar: Side Panel')
     wrapper.unmount()
   })
 

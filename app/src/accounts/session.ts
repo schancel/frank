@@ -311,28 +311,41 @@ export function createAccountSession(deps: {
       check(token)
     }
     publish(snapshot)
-    state.pendingReady = false
-    state.pendingIdentityAddress = null
-    state.pendingError = null
     if (snapshot.pending) {
+      let nextPendingReady = false
+      let nextPendingIdentityAddress: string | null = null
+      let nextPendingError: typeof state.pendingError = null
       try {
         const attemptId = snapshot.pending.account.receipt.operationId
         const result = await custody.reconcile(attemptId)
+        check(token)
         if (result === 'ready') {
           // Ready means the user can be shown whose account this is before activating it.
-          const address = await pendingIdentityAddress(custody, attemptId)
+          nextPendingIdentityAddress = await pendingIdentityAddress(
+            custody,
+            attemptId,
+          )
           check(token)
-          state.pendingIdentityAddress = address
+          nextPendingReady = true
         }
-        state.pendingReady = result === 'ready'
       } catch (error) {
-        state.pendingError =
+        if (closed || token !== generation) throw error
+        nextPendingError =
           error instanceof CustodyError ? error.code : 'unavailable'
       }
       check(token)
       snapshot = await custody.snapshot()
       check(token)
       publish(snapshot)
+      state.pendingReady = snapshot.pending ? nextPendingReady : false
+      state.pendingIdentityAddress = snapshot.pending
+        ? nextPendingIdentityAddress
+        : null
+      state.pendingError = snapshot.pending ? nextPendingError : null
+    } else {
+      state.pendingReady = false
+      state.pendingIdentityAddress = null
+      state.pendingError = null
     }
     if (!snapshot.active) {
       await release()
@@ -1385,6 +1398,12 @@ export function createAccountSession(deps: {
           check(token)
           const activated = await custody.activate(attemptId, wanted)
           check(token)
+          try {
+            const { useProfileStore } = await import('../stores/my-profile')
+            useProfileStore().restoredAccountId = undefined
+          } catch {
+            // Standalone session environments without Pinia
+          }
           publish(activated)
         } finally {
           deps.notify?.()
@@ -1585,7 +1604,25 @@ export const accountSession = createAccountSession({
   },
   createWallet: roots => activeChain.createWallet(roots),
   async restoreApplicationState({ wallet, account, isCancelled }) {
-    if (account.displayName) return
+    if (account.displayName || !wallet.identity) return
+    const accountId = account.receipt.context.accountId
+    const ownerAddress = wallet.identity.address.raw.toLowerCase()
+    let store: import('../stores/my-profile').State | undefined
+    try {
+      const { useProfileStore } = await import('../stores/my-profile')
+      const profileStore = useProfileStore()
+      await profileStore.restored
+      store = profileStore
+    } catch {
+      store = undefined
+    }
+    if (
+      store &&
+      store.restoredAccountId === accountId &&
+      store.owner?.toLowerCase() === ownerAddress
+    ) {
+      return
+    }
     const { restoreOwnProfileWithRelay } = await import('../utils/own-profile')
     const outcome = await restoreOwnProfileWithRelay({
       identity: wallet.identity as MonadIdentity,
@@ -1593,6 +1630,9 @@ export const accountSession = createAccountSession({
       isCancelled,
     })
     if (outcome === 'unreachable') throw new CustodyError('profile-unreachable')
+    if (store && store.owner?.toLowerCase() === ownerAddress) {
+      store.restoredAccountId = accountId
+    }
   },
 })
 export const accountStatus = accountSession.state
@@ -1605,7 +1645,8 @@ export async function stageBip39Recovery(
 ): Promise<void> {
   if (typeof phrase !== 'string' || phrase.length > 512)
     throw new CustodyError('invalid-input')
-  const expectedActive = {
+  const wasLoading = session.state.status === 'loading'
+  const initialExpected = {
     revision: session.state.revision,
     accountId: session.state.account?.receipt.context.accountId ?? null,
   }
@@ -1617,14 +1658,30 @@ export async function stageBip39Recovery(
   const seed = mnemonicToSeedSync(normalized)
   const attemptId = crypto.randomUUID()
   try {
-    const snapshot = await session.snapshot()
+    let snapshot = await session.snapshot()
     if (
-      snapshot.pending ||
-      snapshot.revision !== expectedActive.revision ||
+      !wasLoading &&
       (snapshot.active?.receipt.context.accountId ?? null) !==
-        expectedActive.accountId
+        initialExpected.accountId
     )
       throw new CustodyError('conflict')
+    if (snapshot.pending) {
+      await session.cancelPending(snapshot.pending.account.receipt.operationId)
+      snapshot = await session.snapshot()
+    } else if (!wasLoading && snapshot.revision !== initialExpected.revision) {
+      throw new CustodyError('conflict')
+    }
+    if (
+      snapshot.pending ||
+      (!wasLoading &&
+        (snapshot.active?.receipt.context.accountId ?? null) !==
+          initialExpected.accountId)
+    )
+      throw new CustodyError('conflict')
+    const expectedActive = {
+      revision: snapshot.revision,
+      accountId: snapshot.active?.receipt.context.accountId ?? null,
+    }
     await assertLegacyUnchanged(legacyRevision)
     if (isCancelled()) throw new CustodyError('conflict')
     await session.stage({

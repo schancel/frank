@@ -403,3 +403,45 @@ test('BIP39 recovery still offers existing-account retry with a truthful network
   expect(mockSession.reset).not.toHaveBeenCalled()
   view.unmount()
 })
+
+test('renders loading indicator when account status is loading and hides choice screen during activation', async () => {
+  Object.assign(mockAccount, {
+    status: 'loading',
+    pending: null,
+  })
+  const loadingView = render()
+  expect(loadingView.find('[data-test="account-loading"]').exists()).toBe(true)
+  expect(loadingView.find('[data-test="new-account"]').exists()).toBe(false)
+  loadingView.unmount()
+
+  let finishActivate!: () => void
+  jest.spyOn(mockSession, 'activatePending').mockImplementation(
+    () =>
+      new Promise<void>(resolve => {
+        // Simulate custody.activate clearing pending while refresh is still in flight
+        mockAccount.status = 'loading'
+        mockAccount.pending = null
+        finishActivate = () => {
+          mockAccount.status = 'ready'
+          mockAccount.revision = 1
+          resolve()
+        }
+      }),
+  )
+  Object.assign(mockAccount, {
+    status: 'pending',
+    pending,
+    pendingReady: true,
+    pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
+  })
+  const view = render()
+  await view.get('[data-test="activate-account"]').trigger('click')
+  await flushPromises()
+  expect(view.find('[data-test="account-loading"]').exists()).toBe(true)
+  expect(view.find('[data-test="new-account"]').exists()).toBe(false)
+  finishActivate()
+  await flushPromises()
+  expect(mockPush).toHaveBeenCalledWith('/wallet')
+  view.unmount()
+})
+

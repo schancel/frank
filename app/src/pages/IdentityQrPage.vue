@@ -1,6 +1,10 @@
 <template>
-  <q-page-container>
-    <q-page class="q-ma-none q-pa-sm identity-qr-page">
+  <q-page-container class="col full-height overflow-hidden">
+    <q-page
+      class="q-ma-none q-pa-sm identity-qr-page"
+      :style-fn="pageStyle"
+      data-test="identity-qr-page"
+    >
       <identity-qr-dialog
         :model-value="true"
         inline
@@ -15,11 +19,17 @@
 import { defineComponent } from 'vue'
 import IdentityQrDialog from '../components/dialogs/IdentityQrDialog.vue'
 import { openPage } from '../utils/routes'
+import { viewportPageStyle } from '../utils/layout'
 
 export default defineComponent({
   name: 'IdentityQrPage',
   components: {
     IdentityQrDialog,
+  },
+  setup() {
+    return {
+      pageStyle: viewportPageStyle,
+    }
   },
   methods: {
     onClose(val: boolean) {
@@ -46,5 +56,9 @@ export default defineComponent({
 .identity-qr-page {
   max-width: 100%;
   overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
 }
 </style>
+

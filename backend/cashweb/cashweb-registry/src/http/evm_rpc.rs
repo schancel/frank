@@ -640,86 +640,114 @@ impl EvmRpcRuntime {
         Ok(Some(runtime))
     }
 
+    async fn verify_single_upstream(
+        &self,
+        chain: &EvmChainRuntime,
+        upstream_url: &Url,
+    ) -> Result<(), EvmRpcStartError> {
+        let response = tokio::time::timeout(
+            self.timeout,
+            self.client
+                .post(upstream_url.clone())
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}"#)
+                .send(),
+        )
+        .await
+        .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?
+        .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
+        if !response.status().is_success() {
+            return Err(EvmRpcStartError::UpstreamUnavailable(chain.id.clone()));
+        }
+        let bytes = tokio::time::timeout(
+            self.timeout,
+            read_startup_response(response, MAX_STARTUP_RESPONSE_BYTES, &chain.id),
+        )
+        .await
+        .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))??;
+        let result = super::json_rpc::startup_result(
+            &bytes,
+            super::json_rpc::JsonRpcVersion::V2,
+            &json!(1),
+        )
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .and_then(|value| u64::from_str_radix(value.strip_prefix("0x")?, 16).ok())
+        .ok_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
+        if result != chain.expected_chain_id {
+            return Err(EvmRpcStartError::ChainMismatch {
+                id: chain.id.clone(),
+                expected: chain.expected_chain_id,
+                actual: result,
+            });
+        }
+        if let Some((block_number, expected_hash)) = &chain.checkpoint {
+            let body = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "eth_getBlockByNumber",
+                "params": [format!("0x{block_number:x}"), false]
+            });
+            let response = tokio::time::timeout(
+                self.timeout,
+                self.client
+                    .post(upstream_url.clone())
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(serde_json::to_vec(&body).expect("JSON value serializes"))
+                    .send(),
+            )
+            .await
+            .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?
+            .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
+            if !response.status().is_success() {
+                return Err(EvmRpcStartError::UpstreamUnavailable(chain.id.clone()));
+            }
+            let bytes = tokio::time::timeout(
+                self.timeout,
+                read_startup_response(response, MAX_STARTUP_RESPONSE_BYTES, &chain.id),
+            )
+            .await
+            .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))??;
+            let actual = super::json_rpc::startup_result(
+                &bytes,
+                super::json_rpc::JsonRpcVersion::V2,
+                &json!(1),
+            )
+            .and_then(|value| value.get("hash")?.as_str().map(str::to_owned))
+            .ok_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
+            if !actual.eq_ignore_ascii_case(expected_hash) {
+                return Err(EvmRpcStartError::CheckpointMismatch(chain.id.clone()));
+            }
+        }
+        Ok(())
+    }
+
     async fn verify_chain_identity(&self, chain: &EvmChainRuntime) -> Result<(), EvmRpcStartError> {
-        {
-            for upstream_url in &chain.upstream_urls {
-                let response = tokio::time::timeout(
-                    self.timeout,
-                    self.client
-                        .post(upstream_url.clone())
-                        .header(reqwest::header::CONTENT_TYPE, "application/json")
-                        .body(r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}"#)
-                        .send(),
-                )
-                .await
-                .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?
-                .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
-                if !response.status().is_success() {
-                    return Err(EvmRpcStartError::UpstreamUnavailable(chain.id.clone()));
+        let mut verified_any = false;
+        let mut last_unavailable = None;
+        for upstream_url in &chain.upstream_urls {
+            match self.verify_single_upstream(chain, upstream_url).await {
+                Ok(()) => {
+                    self.cooldowns.mark_success(upstream_url);
+                    verified_any = true;
                 }
-                let bytes = tokio::time::timeout(
-                    self.timeout,
-                    read_startup_response(response, MAX_STARTUP_RESPONSE_BYTES, &chain.id),
-                )
-                .await
-                .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))??;
-                let result = super::json_rpc::startup_result(
-                    &bytes,
-                    super::json_rpc::JsonRpcVersion::V2,
-                    &json!(1),
-                )
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .and_then(|value| u64::from_str_radix(value.strip_prefix("0x")?, 16).ok())
-                .ok_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
-                if result != chain.expected_chain_id {
-                    return Err(EvmRpcStartError::ChainMismatch {
-                        id: chain.id.clone(),
-                        expected: chain.expected_chain_id,
-                        actual: result,
-                    });
+                Err(
+                    err @ (EvmRpcStartError::ChainMismatch { .. }
+                    | EvmRpcStartError::CheckpointMismatch(_)),
+                ) => {
+                    return Err(err);
                 }
-                if let Some((block_number, expected_hash)) = &chain.checkpoint {
-                    let body = json!({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "eth_getBlockByNumber",
-                        "params": [format!("0x{block_number:x}"), false]
-                    });
-                    let response = tokio::time::timeout(
-                        self.timeout,
-                        self.client
-                            .post(upstream_url.clone())
-                            .header(reqwest::header::CONTENT_TYPE, "application/json")
-                            .body(serde_json::to_vec(&body).expect("JSON value serializes"))
-                            .send(),
-                    )
-                    .await
-                    .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?
-                    .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
-                    if !response.status().is_success() {
-                        return Err(EvmRpcStartError::UpstreamUnavailable(chain.id.clone()));
-                    }
-                    let bytes = tokio::time::timeout(
-                        self.timeout,
-                        read_startup_response(response, MAX_STARTUP_RESPONSE_BYTES, &chain.id),
-                    )
-                    .await
-                    .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))??;
-                    let actual = super::json_rpc::startup_result(
-                        &bytes,
-                        super::json_rpc::JsonRpcVersion::V2,
-                        &json!(1),
-                    )
-                    .and_then(|value| value.get("hash")?.as_str().map(str::to_owned))
-                    .ok_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
-                    if !actual.eq_ignore_ascii_case(expected_hash) {
-                        return Err(EvmRpcStartError::CheckpointMismatch(chain.id.clone()));
-                    }
+                Err(err) => {
+                    self.cooldowns.mark_failure(upstream_url);
+                    last_unavailable = Some(err);
                 }
             }
-            if let Some(url) = &chain.upstream_ws_url {
-                self.verify_ws_identity(chain, url).await?;
-            }
+        }
+        if !verified_any {
+            return Err(last_unavailable
+                .unwrap_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone())));
+        }
+        if let Some(url) = &chain.upstream_ws_url {
+            self.verify_ws_identity(chain, url).await?;
         }
         Ok(())
     }
@@ -4410,6 +4438,114 @@ mod tests {
         .unwrap();
 
         assert_eq!(runtime.chains["monad-testnet"].upstream_urls.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn multi_upstream_serves_chain_when_secondary_upstream_rate_limits_startup_probe() {
+        let primary_calls = Arc::new(AtomicUsize::new(0));
+        let secondary_calls = Arc::new(AtomicUsize::new(0));
+
+        let primary_calls_clone = Arc::clone(&primary_calls);
+        let upstream_primary = Router::new().route(
+            "/rpc",
+            routing::post(move |body: Bytes| {
+                let calls = Arc::clone(&primary_calls_clone);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    let request: Value = serde_json::from_slice(&body).unwrap();
+                    if request["method"] == "eth_chainId" {
+                        return Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x279f"}))
+                            .into_response();
+                    }
+                    if let Some(response) = checkpoint_response(&request) {
+                        return Json(response).into_response();
+                    }
+                    Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x2a"}))
+                        .into_response()
+                }
+            }),
+        );
+
+        let secondary_calls_clone = Arc::clone(&secondary_calls);
+        let upstream_secondary = Router::new().route(
+            "/rpc",
+            routing::post(move |body: Bytes| {
+                let calls = Arc::clone(&secondary_calls_clone);
+                async move {
+                    let count = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                    let request: Value = serde_json::from_slice(&body).unwrap();
+                    if count == 1 && request["method"] == "eth_chainId" {
+                        return Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x279f"}))
+                            .into_response();
+                    }
+                    (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(json!({"message":"rate limited"})),
+                    )
+                        .into_response()
+                }
+            }),
+        );
+
+        let listener_1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener_1.set_nonblocking(true).unwrap();
+        let addr_1 = listener_1.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(listener_1)
+                .unwrap()
+                .serve(upstream_primary.into_make_service()),
+        );
+
+        let listener_2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener_2.set_nonblocking(true).unwrap();
+        let addr_2 = listener_2.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(listener_2)
+                .unwrap()
+                .serve(upstream_secondary.into_make_service()),
+        );
+
+        let conf = EvmRpcConf {
+            enabled: true,
+            chains: vec![cashweb_config::EvmRpcChainConf {
+                id: "monad-testnet".to_string(),
+                expected_chain_id: 10_143,
+                upstream_env: "TEST_UPSTREAMS".to_string(),
+                upstream_envs: vec![],
+                upstream_ws_env: None,
+                checkpoint_block_number: Some(0),
+                checkpoint_block_hash: Some(
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+                        .to_string(),
+                ),
+                max_get_logs_range: 10,
+            }],
+            ..EvmRpcConf::default()
+        };
+        let combined = format!("http://{addr_1}/rpc, http://{addr_2}/rpc");
+        let runtime = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |name| {
+            (name == "TEST_UPSTREAMS").then(|| combined.clone())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(runtime.chains["monad-testnet"]
+            .verified
+            .load(Ordering::Relaxed));
+        let (_tempdir, server) = registered_server(runtime);
+        let router = server.into_router();
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}"#;
+        let response = router
+            .clone()
+            .oneshot(request_with_proof(&router, body, customer_address()).await)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await,
+            json!({"jsonrpc":"2.0","id":1,"result":"0x2a"})
+        );
     }
 
     #[tokio::test]

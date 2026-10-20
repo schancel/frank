@@ -1,5 +1,8 @@
 <template>
-  <q-layout view="lHr lpr lFr">
+  <q-layout
+    view="lHr lpr lFr"
+    :class="{ 'frank-has-mobile-bottom-nav': showMobileBottomNav }"
+  >
     <q-drawer
       v-model="myDrawerOpen"
       class="frank-main-drawer"
@@ -35,8 +38,10 @@
         dense
         no-caps
         stack
+        class="frank-mobile-bottom-nav-btn col"
         icon="forum"
-        :label="$t('chatList.directMessages')"
+        :label="mobileNavChatsLabel"
+        :aria-label="$t('chatList.directMessages')"
         :color="currentRoutePath.startsWith('/chat') ? 'primary' : undefined"
         data-testid="mobile-nav-chats"
         @click="$router.push('/chat')"
@@ -46,8 +51,10 @@
         dense
         no-caps
         stack
+        class="frank-mobile-bottom-nav-btn col"
         icon="dynamic_feed"
         :label="$t('leftDrawer.forum')"
+        :aria-label="$t('leftDrawer.forum')"
         :color="currentRoutePath.startsWith('/forum') ? 'primary' : undefined"
         data-testid="mobile-nav-forum"
         @click="$router.push('/forum')"
@@ -57,8 +64,10 @@
         dense
         no-caps
         stack
+        class="frank-mobile-bottom-nav-btn col"
         icon="contacts"
         :label="$t('contactBookDialog.contacts')"
+        :aria-label="$t('contactBookDialog.contacts')"
         :color="
           currentRoutePath.startsWith('/add-contact') ||
           currentRoutePath.startsWith('/contacts')
@@ -73,8 +82,10 @@
         dense
         no-caps
         stack
+        class="frank-mobile-bottom-nav-btn col"
         icon="account_balance_wallet"
         :label="$t('leftDrawer.wallet')"
+        :aria-label="$t('leftDrawer.wallet')"
         :color="currentRoutePath.startsWith('/wallet') ? 'primary' : undefined"
         data-testid="mobile-nav-wallet"
         @click="$router.push('/wallet')"
@@ -84,8 +95,10 @@
         dense
         no-caps
         stack
+        class="frank-mobile-bottom-nav-btn col"
         icon="qr_code_scanner"
-        :label="$t('contactBookDialog.myQrCode')"
+        :label="mobileNavQrLabel"
+        :aria-label="$t('contactBookDialog.myQrCode')"
         :color="currentRoutePath.startsWith('/qr') ? 'primary' : undefined"
         data-testid="mobile-nav-qr"
         @click="$router.push('/qr')"
@@ -95,8 +108,10 @@
         dense
         no-caps
         stack
+        class="frank-mobile-bottom-nav-btn col"
         icon="settings"
         :label="$t('leftDrawer.settings')"
+        :aria-label="$t('leftDrawer.settings')"
         :color="
           currentRoutePath.startsWith('/settings') ? 'primary' : undefined
         "
@@ -504,6 +519,12 @@ export default defineComponent({
       const path = this.currentRoutePath
       return !path.startsWith('/chat/') && !path.startsWith('/setup')
     },
+    mobileNavChatsLabel(): string {
+      return 'Messages'
+    },
+    mobileNavQrLabel(): string {
+      return 'QR'
+    },
     drawerWidth(): number {
       if (isNarrowWidth(this.screenWidth)) {
         return compactCutoff
@@ -547,16 +568,79 @@ export default defineComponent({
   overflow: hidden;
 }
 
+.q-layout.frank-has-mobile-bottom-nav {
+  --frank-bottom-nav-offset: calc(56px + env(safe-area-inset-bottom, 0px));
+}
+
+.q-layout.frank-has-mobile-bottom-nav .q-page-container {
+  padding-bottom: var(
+    --frank-bottom-nav-offset,
+    calc(56px + env(safe-area-inset-bottom, 0px))
+  ) !important;
+}
+
+.q-layout.frank-has-mobile-bottom-nav
+  .q-page-container.overflow-hidden
+  > .q-page {
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+}
+
 .frank-mobile-bottom-nav {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
+  height: calc(56px + env(safe-area-inset-bottom, 0px));
   min-height: 56px;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  max-height: calc(56px + env(safe-area-inset-bottom, 0px));
+  padding: 0 2px env(safe-area-inset-bottom, 0px);
   background: var(--q-color-bg-surface, #fff);
   border-top: 1px solid rgba(128, 128, 128, 0.2);
   z-index: 1000;
+  overflow: hidden;
+
+  .q-btn {
+    flex: 1 1 0%;
+    min-width: 0;
+    max-width: 100%;
+    height: 54px;
+    min-height: 54px;
+    max-height: 54px;
+    padding: 4px 2px !important;
+    border-radius: 8px;
+    font-size: 10px;
+    line-height: 1.15;
+  }
+
+  .q-btn__content {
+    flex-direction: column !important;
+    flex-wrap: nowrap !important;
+    justify-content: center;
+    align-items: center;
+    gap: 2px;
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+
+    .q-icon {
+      font-size: 20px;
+      margin: 0 !important;
+    }
+
+    .block {
+      display: block;
+      width: 100%;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: center;
+      font-size: 10px;
+      line-height: 1.2;
+    }
+  }
 }
 
 // Long page content can grow q-layout beyond the viewport; Quasar's standard drawer is

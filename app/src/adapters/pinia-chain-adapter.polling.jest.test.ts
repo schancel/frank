@@ -206,6 +206,28 @@ describe('direct-message polling: cadence, backoff and status', () => {
     await Promise.resolve()
   })
 
+  it('throttles steady-state own-profile relay sync after initial success unless a local edit is unpublished', async () => {
+    const sync = jest.mocked(syncOwnProfileWithRelay)
+    sync.mockClear()
+    sync.mockResolvedValue('unchanged')
+    const { wallet, mailbox } = setup()
+    const polling = startDirectMessagePolling({ wallet })
+    await jest.advanceTimersByTimeAsync(1_000)
+    expect(sync).toHaveBeenCalledTimes(1)
+
+    // Subsequent 7 s polls within the 60 s window do not re-fetch /metadata/:addr
+    await jest.advanceTimersByTimeAsync(21_000)
+    expect(mailbox.count).toBe(4)
+    expect(sync).toHaveBeenCalledTimes(1)
+
+    // Marking an edit unpublished triggers an immediate sync on the next poll
+    const { useProfileStore } = await import('../stores/my-profile')
+    useProfileStore().unpublished = true
+    await jest.advanceTimersByTimeAsync(7_000)
+    expect(sync).toHaveBeenCalledTimes(2)
+    polling.stop()
+  })
+
   it('steady state at the default 7 s cadence reads once per poll, about nine times a minute', async () => {
     const { mailbox, wallet } = setup()
     const polling = startDirectMessagePolling({ wallet })

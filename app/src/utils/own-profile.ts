@@ -107,6 +107,7 @@ export function claimProfileStore(
   store.inbox = {}
   store.emailBridgeGatewayAddress = undefined
   store.unpublished = false
+  store.restoredAccountId = undefined
   store.owner = address.toLowerCase()
 }
 

@@ -261,7 +261,7 @@ async function fetchBalance(force: boolean) {
 
       if (isTransientRpc) {
         if (isCurrent()) chainUnreachable.value = true
-        console.warn('balance refresh transient rpc issue (will retry)', err)
+        console.debug('balance refresh transient rpc issue (will retry)', err)
       } else {
         console.error('balance refresh failed', err)
       }

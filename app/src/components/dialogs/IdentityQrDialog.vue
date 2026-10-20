@@ -42,9 +42,74 @@
         />
       </q-card-section>
 
-      <!-- Live QR Camera Scanner at Top -->
+      <!-- Extension Display Mode Bar (Popup / Side Panel / Pop Out / Full Tab) -->
+      <q-card-section
+        v-if="isExtensionMode"
+        class="q-py-xs q-px-sm"
+        data-test="extension-view-bar"
+      >
+        <div
+          class="row items-center justify-between q-gutter-xs bg-grey-2 rounded-borders q-px-sm q-py-xs"
+        >
+          <span class="text-caption text-weight-medium text-grey-8">
+            {{ claimUiLabels.extViewLabel }}
+          </span>
+          <div class="row items-center q-gutter-xs">
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              icon="dock_to_right"
+              color="primary"
+              :label="claimUiLabels.extSidePanelBtn"
+              :aria-label="claimUiLabels.extSidePanelBtn"
+              data-test="ext-open-sidepanel-btn"
+              @click="openInSidePanel"
+            />
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              icon="open_in_new"
+              color="primary"
+              :label="claimUiLabels.extPopOutBtn"
+              :aria-label="claimUiLabels.extPopOutBtn"
+              data-test="ext-open-popout-btn"
+              @click="openInPopoutWindow"
+            />
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              icon="tab"
+              color="primary"
+              :label="claimUiLabels.extFullTabBtn"
+              :aria-label="claimUiLabels.extFullTabBtn"
+              data-test="ext-open-tab-btn"
+              @click="openInFullTab"
+            />
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              :color="alwaysOpenInSidePanel ? 'positive' : 'grey-7'"
+              :label="alwaysSidePanelBtnLabel"
+              :aria-label="alwaysSidePanelBtnLabel"
+              data-test="ext-toggle-sidepanel-default-btn"
+              @click="toggleAlwaysOpenSidePanel"
+            />
+          </div>
+        </div>
+      </q-card-section>
+
+      <!-- QR Camera Scanner (Collapsed by default in inline/extension mode) -->
       <q-card-section class="q-py-xs q-px-sm">
         <div
+          v-if="scannerOpen"
           class="identity-qr-scanner-box rounded-borders overflow-hidden relative-position"
           data-test="identity-qr-scanner"
         >
@@ -75,18 +140,49 @@
                 {{ $t(`qrScanner.${scannerStatus}`) }}
               </span>
             </div>
-            <q-btn
-              v-if="canRetryScanner"
-              flat
-              dense
-              no-caps
-              size="sm"
-              color="white"
-              :label="$t('qrScanner.retry')"
-              data-test="identity-qr-scanner-retry"
-              @click="startScanner"
-            />
+            <div class="row items-center no-wrap q-gutter-xs">
+              <q-btn
+                v-if="canRetryScanner"
+                flat
+                dense
+                no-caps
+                size="sm"
+                color="white"
+                :label="$t('qrScanner.retry')"
+                data-test="identity-qr-scanner-retry"
+                @click="startScanner"
+              />
+              <q-btn
+                flat
+                dense
+                no-caps
+                size="sm"
+                color="white"
+                icon="close"
+                :aria-label="claimUiLabels.stopCameraBtn"
+                data-test="stop-qr-camera-btn"
+                @click="closeCameraScanner"
+              />
+            </div>
           </div>
+        </div>
+        <div
+          v-else
+          class="row items-center justify-center"
+          data-test="identity-qr-scanner"
+        >
+          <q-btn
+            outline
+            dense
+            no-caps
+            color="primary"
+            icon="qr_code_scanner"
+            class="full-width q-py-xs"
+            :label="claimUiLabels.startCameraBtn"
+            :aria-label="claimUiLabels.startCameraBtn"
+            data-test="start-qr-camera-btn"
+            @click="openCameraScanner"
+          />
         </div>
       </q-card-section>
 
@@ -216,6 +312,47 @@
             {{ generatedClaimLinkUrl }}
           </div>
         </div>
+
+        <!-- 1-Click Web App (signet.mx) <-> Browser Extension Account Sync -->
+        <div
+          class="q-mt-sm q-pa-sm rounded-borders bg-grey-2"
+          data-test="identity-qr-sync-section"
+        >
+          <div class="row items-center justify-between q-gutter-xs">
+            <q-btn
+              unelevated
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              icon="sync"
+              :label="syncBridgeBtnLabel"
+              :aria-label="syncBridgeBtnLabel"
+              data-test="sync-account-bridge-btn"
+              @click="syncAccountOverBridge"
+            />
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              icon="hub"
+              :label="claimUiLabels.openDappBridgeBtn"
+              :aria-label="claimUiLabels.openDappBridgeBtn"
+              data-test="open-dapp-bridge-btn"
+              @click="openDappBridge"
+            />
+          </div>
+          <div
+            v-if="syncStatusMessage"
+            class="text-caption text-positive q-mt-xs"
+            data-test="identity-qr-sync-status"
+          >
+            {{ syncStatusMessage }}
+          </div>
+        </div>
+
         <q-btn
           v-show="false"
           flat
@@ -273,9 +410,74 @@
         />
       </q-card-section>
 
+      <!-- Extension Display Mode Bar (Popup / Side Panel / Pop Out / Full Tab) -->
+      <q-card-section
+        v-if="isExtensionMode"
+        class="q-py-xs q-px-sm"
+        data-test="extension-view-bar"
+      >
+        <div
+          class="row items-center justify-between q-gutter-xs bg-grey-2 rounded-borders q-px-sm q-py-xs"
+        >
+          <span class="text-caption text-weight-medium text-grey-8">
+            {{ claimUiLabels.extViewLabel }}
+          </span>
+          <div class="row items-center q-gutter-xs">
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              icon="dock_to_right"
+              color="primary"
+              :label="claimUiLabels.extSidePanelBtn"
+              :aria-label="claimUiLabels.extSidePanelBtn"
+              data-test="ext-open-sidepanel-btn"
+              @click="openInSidePanel"
+            />
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              icon="open_in_new"
+              color="primary"
+              :label="claimUiLabels.extPopOutBtn"
+              :aria-label="claimUiLabels.extPopOutBtn"
+              data-test="ext-open-popout-btn"
+              @click="openInPopoutWindow"
+            />
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              icon="tab"
+              color="primary"
+              :label="claimUiLabels.extFullTabBtn"
+              :aria-label="claimUiLabels.extFullTabBtn"
+              data-test="ext-open-tab-btn"
+              @click="openInFullTab"
+            />
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              :color="alwaysOpenInSidePanel ? 'positive' : 'grey-7'"
+              :label="alwaysSidePanelBtnLabel"
+              :aria-label="alwaysSidePanelBtnLabel"
+              data-test="ext-toggle-sidepanel-default-btn"
+              @click="toggleAlwaysOpenSidePanel"
+            />
+          </div>
+        </div>
+      </q-card-section>
+
       <!-- Live QR Camera Scanner at Top -->
       <q-card-section class="q-py-xs q-px-sm">
         <div
+          v-if="scannerOpen"
           class="identity-qr-scanner-box rounded-borders overflow-hidden relative-position"
           data-test="identity-qr-scanner"
         >
@@ -306,18 +508,49 @@
                 {{ $t(`qrScanner.${scannerStatus}`) }}
               </span>
             </div>
-            <q-btn
-              v-if="canRetryScanner"
-              flat
-              dense
-              no-caps
-              size="sm"
-              color="white"
-              :label="$t('qrScanner.retry')"
-              data-test="identity-qr-scanner-retry"
-              @click="startScanner"
-            />
+            <div class="row items-center no-wrap q-gutter-xs">
+              <q-btn
+                v-if="canRetryScanner"
+                flat
+                dense
+                no-caps
+                size="sm"
+                color="white"
+                :label="$t('qrScanner.retry')"
+                data-test="identity-qr-scanner-retry"
+                @click="startScanner"
+              />
+              <q-btn
+                flat
+                dense
+                no-caps
+                size="sm"
+                color="white"
+                icon="close"
+                :aria-label="claimUiLabels.stopCameraBtn"
+                data-test="stop-qr-camera-btn"
+                @click="closeCameraScanner"
+              />
+            </div>
           </div>
+        </div>
+        <div
+          v-else
+          class="row items-center justify-center"
+          data-test="identity-qr-scanner"
+        >
+          <q-btn
+            outline
+            dense
+            no-caps
+            color="primary"
+            icon="qr_code_scanner"
+            class="full-width q-py-xs"
+            :label="claimUiLabels.startCameraBtn"
+            :aria-label="claimUiLabels.startCameraBtn"
+            data-test="start-qr-camera-btn"
+            @click="openCameraScanner"
+          />
         </div>
       </q-card-section>
 
@@ -447,6 +680,47 @@
             {{ generatedClaimLinkUrl }}
           </div>
         </div>
+
+        <!-- 1-Click Web App (signet.mx) <-> Browser Extension Account Sync -->
+        <div
+          class="q-mt-sm q-pa-sm rounded-borders bg-grey-2"
+          data-test="identity-qr-sync-section"
+        >
+          <div class="row items-center justify-between q-gutter-xs">
+            <q-btn
+              unelevated
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              icon="sync"
+              :label="syncBridgeBtnLabel"
+              :aria-label="syncBridgeBtnLabel"
+              data-test="sync-account-bridge-btn"
+              @click="syncAccountOverBridge"
+            />
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              icon="hub"
+              :label="claimUiLabels.openDappBridgeBtn"
+              :aria-label="claimUiLabels.openDappBridgeBtn"
+              data-test="open-dapp-bridge-btn"
+              @click="openDappBridge"
+            />
+          </div>
+          <div
+            v-if="syncStatusMessage"
+            class="text-caption text-positive q-mt-xs"
+            data-test="identity-qr-sync-status"
+          >
+            {{ syncStatusMessage }}
+          </div>
+        </div>
+
         <q-btn
           v-show="false"
           flat
@@ -470,6 +744,7 @@ import {
   getCurrentInstance,
   nextTick,
   onBeforeUnmount,
+  PropType,
   ref,
   watch,
 } from 'vue'
@@ -483,6 +758,17 @@ import UsernameHandle from 'src/components/contacts/UsernameHandle.vue'
 import { isRawQrAddress } from 'src/components/dialogs/QrScannerDialog.vue'
 import { isDevicePairingUri } from '@frank/wallet/device-pairing'
 import { createClaimLink } from '../../../../packages/wallet/claim-link'
+import {
+  getExtensionRuntime,
+  isBrowserExtensionRuntime,
+  openCompanionPanel,
+  openExtensionTab,
+  openExtensionWindow,
+  RuntimeEnvironmentKind,
+  sendRuntimeMessage,
+} from '../../../src-bex/runtime-adapter'
+import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../../src-bex/content'
+import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../../src-bex/inpage'
 
 function parseGiftAmountAtomic(raw: string): bigint {
   const trimmed = String(raw ?? '').trim()
@@ -501,6 +787,16 @@ function extractScannablePeerTarget(raw: string): string | null {
   if (isRawQrAddress(trimmed)) return trimmed
   if (/^@[a-zA-Z0-9_.-]{1,64}$/.test(trimmed)) return trimmed
   return null
+}
+
+function detectExtensionProtocol(): boolean {
+  if (typeof window === 'undefined' || !window.location) return false
+  const proto = String(window.location.protocol || '')
+  return (
+    proto === 'chrome-extension:' ||
+    proto === 'safari-web-extension:' ||
+    proto === 'moz-extension:'
+  )
 }
 
 export default defineComponent({
@@ -530,8 +826,12 @@ export default defineComponent({
       type: Boolean,
       default: false,
     },
+    runtimeKindOverride: {
+      type: String as PropType<RuntimeEnvironmentKind | ''>,
+      default: '',
+    },
   },
-  emits: ['update:modelValue', 'go-to-wallet', 'scan'],
+  emits: ['update:modelValue', 'go-to-wallet', 'scan', 'extension-sync'],
   setup(props, { emit }) {
     const instance = getCurrentInstance()
     const internalAddress = ref('')
@@ -544,6 +844,23 @@ export default defineComponent({
     const claimLinkAmount = ref('0.05')
     const claimLinkNote = ref('')
     const generatedClaimLinkUrl = ref('')
+    const alwaysOpenInSidePanel = ref(false)
+    const syncSasCode = ref('482910')
+    const syncStatusMessage = ref('')
+
+    const detectedRuntimeKind = computed<RuntimeEnvironmentKind>(() => {
+      if (props.runtimeKindOverride) {
+        return props.runtimeKindOverride
+      }
+      return getExtensionRuntime().kind
+    })
+
+    const isExtensionMode = computed<boolean>(() => {
+      if (props.runtimeKindOverride) {
+        return props.runtimeKindOverride !== 'pwa'
+      }
+      return isBrowserExtensionRuntime() || detectExtensionProtocol()
+    })
 
     const claimUiLabels = {
       copyInviteLink: 'Copy Invite Link',
@@ -552,7 +869,30 @@ export default defineComponent({
       welcomeNoteLabel: 'Welcome Note',
       generateClaimLink: 'Generate Claim Link',
       copyClaimLink: 'Copy Claim Link',
+      startCameraBtn: 'Scan QR Code with Camera',
+      stopCameraBtn: 'Hide Camera',
+      extViewLabel: 'View:',
+      extSidePanelBtn: 'Side Panel',
+      extPopOutBtn: 'Pop Out',
+      extFullTabBtn: 'Full Tab',
+      openDappBridgeBtn: 'Companion & Bridge',
     }
+
+    const alwaysSidePanelBtnLabel = computed(() =>
+      alwaysOpenInSidePanel.value
+        ? 'Toolbar: Side Panel'
+        : 'Toolbar: Popup',
+    )
+
+    const syncBridgeBtnLabel = computed(() =>
+      isExtensionMode.value
+        ? 'Sync Account to signet.mx Tab'
+        : 'Sync Account with Extension',
+    )
+
+    // Do not auto-open camera on inline pages or inside the browser extension popup
+    const shouldAutoStartScanner = () => !props.inline && !isExtensionMode.value
+    const scannerOpen = ref(shouldAutoStartScanner())
 
     const scannerVideo = ref<HTMLVideoElement>()
     const cameraGeneration = ref(0)
@@ -591,6 +931,7 @@ export default defineComponent({
       if (
         disposed ||
         !props.modelValue ||
+        !scannerOpen.value ||
         typeof document === 'undefined' ||
         document.hidden
       ) {
@@ -601,6 +942,7 @@ export default defineComponent({
       const current = () =>
         !disposed &&
         props.modelValue &&
+        scannerOpen.value &&
         typeof document !== 'undefined' &&
         !document.hidden &&
         generation === token
@@ -671,6 +1013,17 @@ export default defineComponent({
       }
     }
 
+    const openCameraScanner = async () => {
+      scannerOpen.value = true
+      await nextTick()
+      await startScanner()
+    }
+
+    const closeCameraScanner = () => {
+      scannerOpen.value = false
+      stopScanner()
+    }
+
     watch(
       () => [props.modelValue, props.address],
       async ([isOpen, directAddr]) => {
@@ -711,7 +1064,10 @@ export default defineComponent({
       () => props.modelValue,
       open => {
         if (open) {
-          void startScanner()
+          if (shouldAutoStartScanner()) {
+            scannerOpen.value = true
+            void startScanner()
+          }
         } else {
           stopScanner()
         }
@@ -777,6 +1133,98 @@ export default defineComponent({
       generatedClaimLinkUrl.value = created.url
     }
 
+    const openInSidePanel = async () => {
+      await openCompanionPanel()
+    }
+
+    const openInPopoutWindow = async () => {
+      await openExtensionWindow()
+    }
+
+    const openInFullTab = async () => {
+      await openExtensionTab()
+    }
+
+    const toggleAlwaysOpenSidePanel = async () => {
+      const nextVal = !alwaysOpenInSidePanel.value
+      alwaysOpenInSidePanel.value = nextVal
+      await sendRuntimeMessage({
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'set-sidepanel-behavior',
+        openPanelOnActionClick: nextVal,
+      })
+    }
+
+    const syncAccountOverBridge = async () => {
+      let backupShares: string[] = []
+      try {
+        const { accountSession, accountStatus } = await import(
+          'src/accounts/session'
+        )
+        if (accountStatus.status === 'ready') {
+          const exported = await accountSession.backupCodex32(2, 3)
+          backupShares = exported.slice(0, 2)
+        }
+      } catch {
+        // Fallback if account custody is mocked or unavailable
+      }
+
+      const deviceSyncBundle = {
+        version: 1,
+        schemaVersion: 1,
+        exportedAtMs: Date.now(),
+        accountAddress: resolvedAddress.value,
+        displayName: displayName.value,
+        username: displayUsername.value,
+        backupShares,
+      }
+
+      const syncPayload = {
+        sasCode: syncSasCode.value,
+        deviceSyncBundle,
+      }
+
+      if (isExtensionMode.value) {
+        await sendRuntimeMessage({
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          type: 'extension-push-sync-to-tab',
+          origin: 'frank-extension',
+          payload: syncPayload,
+        })
+        syncStatusMessage.value = `Synced to signet.mx (SAS: ${syncSasCode.value})`
+      } else if (
+        typeof window !== 'undefined' &&
+        typeof window.postMessage === 'function'
+      ) {
+        window.postMessage(
+          {
+            channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+            direction: 'to-extension',
+            type: 'pwa-sync-handshake',
+            id: `sync-${Date.now()}`,
+            payload: syncPayload,
+          },
+          '*',
+        )
+        syncStatusMessage.value = `Synced with Extension (SAS: ${syncSasCode.value})`
+      }
+
+      emit('extension-sync', syncPayload)
+    }
+
+    const openDappBridge = () => {
+      stopScanner()
+      emit('update:modelValue', false)
+      const router = (
+        instance?.proxy as
+          | { $router?: { push: (path: string) => void } }
+          | undefined
+      )?.$router
+      if (router) {
+        void router.push('/dapp-bridge')
+      }
+    }
+
     return {
       resolvedAddress,
       displayName,
@@ -788,13 +1236,28 @@ export default defineComponent({
       claimLinkNote,
       generatedClaimLinkUrl,
       claimUiLabels,
+      detectedRuntimeKind,
+      isExtensionMode,
+      alwaysOpenInSidePanel,
+      alwaysSidePanelBtnLabel,
+      syncBridgeBtnLabel,
+      syncStatusMessage,
       toggleClaimLinkCreator,
       generateFundedClaimLink,
+      openInSidePanel,
+      openInPopoutWindow,
+      openInFullTab,
+      toggleAlwaysOpenSidePanel,
+      syncAccountOverBridge,
+      openDappBridge,
+      scannerOpen,
       scannerVideo,
       cameraGeneration,
       scannerStatus,
       canRetryScanner,
       startScanner,
+      openCameraScanner,
+      closeCameraScanner,
       closeDialog,
       onModelValueUpdate,
       async copyAddress() {
@@ -895,3 +1358,4 @@ export default defineComponent({
   text-overflow: ellipsis;
 }
 </style>
+

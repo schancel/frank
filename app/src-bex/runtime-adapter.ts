@@ -223,3 +223,83 @@ export function getExtensionResourceUrl(
   }
   return String(api.runtime.getURL(resourcePath))
 }
+
+export async function openExtensionWindow(
+  options: { path?: string; width?: number; height?: number } = {},
+  globalScope: Record<string, any> = typeof globalThis !== 'undefined'
+    ? (globalThis as Record<string, any>)
+    : {},
+): Promise<{
+  opened: boolean
+  mode: 'window' | 'noop'
+  url: string
+}> {
+  const path = options.path ?? 'index.html?extMode=window'
+  const width = options.width ?? 420
+  const height = options.height ?? 720
+  const url = getExtensionResourceUrl(path, globalScope) ?? path
+  const api = getRawExtensionApi(globalScope)
+
+  if (api?.windows && typeof api.windows.create === 'function') {
+    await api.windows.create({
+      url,
+      type: 'popup',
+      width,
+      height,
+    })
+    return { opened: true, mode: 'window', url }
+  }
+
+  const winOpen =
+    typeof globalScope.open === 'function'
+      ? globalScope.open.bind(globalScope)
+      : typeof globalScope.window?.open === 'function'
+        ? globalScope.window.open.bind(globalScope.window)
+        : typeof window !== 'undefined' && typeof window.open === 'function'
+          ? window.open.bind(window)
+          : null
+
+  if (winOpen) {
+    winOpen(url, '_blank', `popup=yes,width=${width},height=${height}`)
+    return { opened: true, mode: 'window', url }
+  }
+
+  return { opened: false, mode: 'noop', url }
+}
+
+export async function openExtensionTab(
+  options: { path?: string } = {},
+  globalScope: Record<string, any> = typeof globalThis !== 'undefined'
+    ? (globalThis as Record<string, any>)
+    : {},
+): Promise<{
+  opened: boolean
+  mode: 'tab' | 'noop'
+  url: string
+}> {
+  const path = options.path ?? 'index.html?extMode=tab'
+  const url = getExtensionResourceUrl(path, globalScope) ?? path
+  const api = getRawExtensionApi(globalScope)
+
+  if (api?.tabs && typeof api.tabs.create === 'function') {
+    await api.tabs.create({ url })
+    return { opened: true, mode: 'tab', url }
+  }
+
+  const winOpen =
+    typeof globalScope.open === 'function'
+      ? globalScope.open.bind(globalScope)
+      : typeof globalScope.window?.open === 'function'
+        ? globalScope.window.open.bind(globalScope.window)
+        : typeof window !== 'undefined' && typeof window.open === 'function'
+          ? window.open.bind(window)
+          : null
+
+  if (winOpen) {
+    winOpen(url, '_blank')
+    return { opened: true, mode: 'tab', url }
+  }
+
+  return { opened: false, mode: 'noop', url }
+}
+

@@ -12,7 +12,7 @@
           data-test="wallet-menu-btn"
           @click="$emit('toggleMyDrawerOpen')"
         />
-        <q-toolbar-title class="q-py-xs">
+        <q-toolbar-title class="q-py-xs wallet-toolbar-title">
           <div class="row items-center no-wrap" data-testid="wallet-name">
             <span
               class="text-weight-bold ellipsis"
@@ -92,12 +92,11 @@
                 v-model="activeTab"
                 dense
                 no-caps
-                class="text-grey-7"
+                class="text-grey-7 wallet-tabs"
                 active-color="primary"
                 indicator-color="primary"
                 align="justify"
                 narrow-indicator
-                outside-arrows
                 data-testid="wallet-tabs"
               >
                 <q-tab
@@ -229,7 +228,7 @@
                       <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
                     </div>
                     <div
-                      v-if="currentWalletHasError"
+                      v-if="currentWalletHasError && balanceObservation"
                       class="text-negative text-caption text-center"
                       data-testid="wallet-balance-error"
                     >
@@ -1261,6 +1260,45 @@ export default defineComponent({
 @media (max-width: 600px) {
   .wallet-scroll-content {
     padding: 8px 10px 24px;
+  }
+
+  .wallet-toolbar-title {
+    padding: 0 4px;
+    font-size: 1rem;
+  }
+
+  .wallet-header-unit {
+    font-size: 0.8125rem;
+    margin-left: 4px !important;
+  }
+
+  .wallet-tabs :deep(.q-tabs__content) {
+    width: 100%;
+  }
+
+  .wallet-tabs :deep(.q-tab) {
+    flex: 1 1 0%;
+    min-width: 0;
+    padding: 0 4px;
+  }
+
+  .wallet-tabs :deep(.q-tab__content) {
+    min-width: 0;
+    width: 100%;
+    padding: 4px 0;
+  }
+
+  .wallet-tabs :deep(.q-tab__icon) {
+    font-size: 18px;
+  }
+
+  .wallet-tabs :deep(.q-tab__label) {
+    font-size: 11px;
+    line-height: 1.2;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 </style>

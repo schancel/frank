@@ -30,6 +30,7 @@ export interface BackgroundBridgeState {
   approvedOrigins: Set<string>
   pendingApprovals: Map<string, PendingDappApproval>
   syncedState: SyncedExtensionState | null
+  openPanelOnActionClick: boolean
 }
 
 const APPROVAL_REQUIRED_METHODS = new Set([
@@ -54,11 +55,13 @@ export function createBackgroundBridgeState(
     pendingApprovals:
       overrides.pendingApprovals ?? new Map<string, PendingDappApproval>(),
     syncedState: overrides.syncedState ?? null,
+    openPanelOnActionClick: overrides.openPanelOnActionClick ?? false,
   }
 }
 
 export function configureSidePanelBehavior(
   runtimeScope?: Record<string, any>,
+  openPanelOnActionClick = false,
 ): boolean {
   const api = getRawExtensionApi(runtimeScope)
   if (
@@ -68,7 +71,7 @@ export function configureSidePanelBehavior(
   ) {
     try {
       const maybePromise = api.sidePanel.setPanelBehavior({
-        openPanelOnActionClick: false,
+        openPanelOnActionClick: Boolean(openPanelOnActionClick),
       })
       if (maybePromise && typeof maybePromise.catch === 'function') {
         maybePromise.catch(() => {})
@@ -88,11 +91,80 @@ export function installBackgroundBridge(
   state: BackgroundBridgeState
   dispose: () => void
 } {
-  configureSidePanelBehavior(runtimeScope)
+  configureSidePanelBehavior(runtimeScope, state.openPanelOnActionClick)
+
+  const api = getRawExtensionApi(runtimeScope)
+  if (api?.storage?.local?.get) {
+    try {
+      const maybeStored = api.storage.local.get([
+        'frankOpenPanelOnActionClick',
+        'frankSyncedState',
+      ])
+      if (maybeStored && typeof maybeStored.then === 'function') {
+        maybeStored
+          .then((stored: Record<string, any> | undefined) => {
+            if (
+              stored &&
+              typeof stored.frankOpenPanelOnActionClick === 'boolean'
+            ) {
+              state.openPanelOnActionClick = stored.frankOpenPanelOnActionClick
+              configureSidePanelBehavior(
+                runtimeScope,
+                state.openPanelOnActionClick,
+              )
+            }
+            if (stored?.frankSyncedState && !state.syncedState) {
+              state.syncedState = stored.frankSyncedState
+            }
+          })
+          .catch(() => {})
+      }
+    } catch {
+      // Ignore storage read errors in restricted environments
+    }
+  }
 
   const unsubscribe = onRuntimeMessage(async (message: any, sender: any) => {
     if (!message || typeof message !== 'object') {
       return undefined
+    }
+
+    if (
+      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+      message.type === 'set-sidepanel-behavior'
+    ) {
+      const enabled = Boolean(message.openPanelOnActionClick)
+      state.openPanelOnActionClick = enabled
+      const configured = configureSidePanelBehavior(runtimeScope, enabled)
+      const extApi = getRawExtensionApi(runtimeScope)
+      if (extApi?.storage?.local?.set) {
+        try {
+          await extApi.storage.local.set({
+            frankOpenPanelOnActionClick: enabled,
+          })
+        } catch {
+          // Ignore storage errors
+        }
+      }
+      return {
+        result: {
+          ok: true,
+          configured,
+          openPanelOnActionClick: enabled,
+        },
+      }
+    }
+
+    if (
+      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+      message.type === 'get-sidepanel-behavior'
+    ) {
+      return {
+        result: {
+          ok: true,
+          openPanelOnActionClick: state.openPanelOnActionClick,
+        },
+      }
     }
 
     if (
@@ -205,8 +277,39 @@ export function installBackgroundBridge(
     }
 
     if (message.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL) {
+      const extApi = getRawExtensionApi(runtimeScope)
+
+      if (
+        message.type === 'get-synced-state' ||
+        message.type === 'pwa-request-sync'
+      ) {
+        if (!state.syncedState && extApi?.storage?.local?.get) {
+          try {
+            const stored = await extApi.storage.local.get('frankSyncedState')
+            if (stored?.frankSyncedState) {
+              state.syncedState = stored.frankSyncedState
+            }
+          } catch {
+            // Ignore storage errors
+          }
+        }
+        return {
+          result: {
+            ok: Boolean(state.syncedState),
+            syncedState: state.syncedState,
+            sasCode: state.syncedState?.sasCode ?? null,
+            deviceSyncBundle: state.syncedState?.deviceSyncBundle ?? null,
+          },
+        }
+      }
+
       const sasCode = String(message.payload?.sasCode ?? '482910')
-      const origin = String(message.origin ?? 'https://signet.mx')
+      const origin = String(
+        message.origin ??
+          (message.type === 'extension-push-sync-to-tab'
+            ? 'frank-extension'
+            : 'https://signet.mx'),
+      )
       state.syncedState = {
         sasCode,
         deviceSyncBundle: message.payload?.deviceSyncBundle,
@@ -214,14 +317,43 @@ export function installBackgroundBridge(
         syncedAt: Date.now(),
       }
 
-      const api = getRawExtensionApi(runtimeScope)
-      if (api?.storage?.local?.set) {
+      if (extApi?.storage?.local?.set) {
         try {
-          await api.storage.local.set({
+          await extApi.storage.local.set({
             frankSyncedState: state.syncedState,
           })
         } catch {
           // Ignore storage errors in ephemeral environments
+        }
+      }
+
+      let pushedToTabCount = 0
+      if (
+        message.type === 'extension-push-sync-to-tab' &&
+        extApi?.tabs &&
+        typeof extApi.tabs.query === 'function' &&
+        typeof extApi.tabs.sendMessage === 'function'
+      ) {
+        try {
+          const tabs = await extApi.tabs.query({ currentWindow: true })
+          if (Array.isArray(tabs)) {
+            for (const tab of tabs) {
+              if (tab && typeof tab.id === 'number') {
+                try {
+                  await extApi.tabs.sendMessage(tab.id, {
+                    channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+                    type: 'extension-sync-push',
+                    payload: state.syncedState,
+                  })
+                  pushedToTabCount += 1
+                } catch {
+                  // Tab may not have content script loaded
+                }
+              }
+            }
+          }
+        } catch {
+          // Ignore tab query errors
         }
       }
 
@@ -231,6 +363,8 @@ export function installBackgroundBridge(
           sasCode,
           syncedFromOrigin: origin,
           syncedAt: state.syncedState.syncedAt,
+          syncedState: state.syncedState,
+          pushedToTabCount,
         },
       }
     }
@@ -247,3 +381,4 @@ export function installBackgroundBridge(
 if (typeof globalThis !== 'undefined' && isBrowserExtensionRuntime()) {
   installBackgroundBridge(globalThis as Record<string, any>)
 }
+

@@ -35,7 +35,7 @@ import { toHex } from '@frank/codec'
 import { probeDirectoryRelay } from '@frank/cashweb/relay'
 import { accountSession } from './session'
 import { assertLegacyUnchanged, legacyStatus } from './legacy'
-import type { ExpectedActive } from './custody'
+import { CustodyError, type ExpectedActive } from './custody'
 import { bip39Descriptor } from './custody/bip39'
 import { markAccountBackedUp } from './backup-status'
 
@@ -73,21 +73,36 @@ export function createAccountCeremony() {
   }
   async function capture() {
     const token = ++epoch
-    const expected = {
+    const wasLoading =
+      (accountSession.state as { status?: string }).status === 'loading'
+    const initialExpected = {
       revision: accountSession.state.revision,
       accountId:
         accountSession.state.account?.receipt.context.accountId ?? null,
     }
     const legacyRevision = legacyStatus.revision
-    const snapshot = await accountSession.snapshot()
+    let snapshot = await accountSession.snapshot()
     if (token !== epoch) throw new Error('Ceremony cancelled')
     if (
-      snapshot.revision !== expected.revision ||
+      !wasLoading &&
       (snapshot.active?.receipt.context.accountId ?? null) !==
-        expected.accountId
+        initialExpected.accountId
     )
-      throw new Error('Existing account changed; review it again')
-    if (snapshot.pending) throw new Error('Resolve the pending account first')
+      throw new CustodyError('conflict')
+    if (snapshot.pending) {
+      await accountSession.cancelPending(
+        snapshot.pending.account.receipt.operationId,
+      )
+      snapshot = await accountSession.snapshot()
+      if (token !== epoch) throw new Error('Ceremony cancelled')
+    } else if (!wasLoading && snapshot.revision !== initialExpected.revision) {
+      throw new CustodyError('conflict')
+    }
+    if (snapshot.pending) throw new CustodyError('conflict')
+    const expected = {
+      revision: snapshot.revision,
+      accountId: snapshot.active?.receipt.context.accountId ?? null,
+    }
     attempt = {
       attemptId: crypto.randomUUID(),
       accountId: crypto.randomUUID(),
@@ -445,6 +460,19 @@ export function recoveryErrorMessage(error: unknown): string {
     'wrong-recovery-format': 'This backup uses an unsupported recovery format.',
     'conflict':
       'The account state changed. Review the current account before starting again.',
+    'invalid-input':
+      'The recovery phrase or input is invalid. Check your words and try again.',
+    'locked':
+      'Account storage is locked. Retry opening the account and try again.',
+    'unavailable':
+      'Account storage is currently unavailable. Check browser storage permissions and try again.',
+    'storage-failed':
+      'Account storage could not save the changes. Try again.',
+    'capacity': 'Browser storage is full. Free up space and try again.',
+    'outdated-attempt':
+      'This pending attempt is outdated. Cancel it and start again.',
+    'closed':
+      'The account session was closed before the operation completed. Try again.',
   }
   if (code === 'too-many-shares') {
     const most = (error as { maxShares?: number })?.maxShares

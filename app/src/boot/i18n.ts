@@ -66,13 +66,37 @@ function cspSafeMessageCompiler(message: unknown) {
 }
 
 // Active locale strings may fall back; the default catalog owns the message schema.
-const i18n = createI18n<[(typeof messages)[typeof defaultLocale]], string>({
-  locale: defaultLocale,
-  fallbackLocale: defaultLocale,
-  globalInjection: true,
-  messageCompiler: cspSafeMessageCompiler as never,
-  messages,
-})
+function createAppI18n() {
+  const origWarn = typeof console !== 'undefined' ? console.warn : undefined
+  if (typeof console !== 'undefined' && typeof origWarn === 'function') {
+    console.warn = (...args: unknown[]) => {
+      if (
+        typeof args[0] === 'string' &&
+        args[0].includes('Custom Message Compiler')
+      ) {
+        return
+      }
+      origWarn.apply(console, args)
+    }
+  }
+  try {
+    return createI18n<[(typeof messages)[typeof defaultLocale]], string>({
+      locale: defaultLocale,
+      fallbackLocale: defaultLocale,
+      globalInjection: true,
+      missingWarn: false,
+      fallbackWarn: false,
+      messageCompiler: cspSafeMessageCompiler as never,
+      messages,
+    })
+  } finally {
+    if (typeof console !== 'undefined' && typeof origWarn === 'function') {
+      console.warn = origWarn
+    }
+  }
+}
+
+const i18n = createAppI18n()
 
 export default boot(({ app }) => {
   // Set i18n instance on app

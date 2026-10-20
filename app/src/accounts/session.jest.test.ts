@@ -896,6 +896,37 @@ test('BIP39 public import rejects a different identity path before any custody e
   }
 })
 
+test('refresh preserves pendingReady and pendingIdentityAddress while async reconciliation is in flight', async () => {
+  const f = fixture()
+  f.set({
+    schema: 1,
+    revision: 0,
+    active: null,
+    pending: {
+      status: 'staging',
+      account: f.account,
+      expectedActive: { revision: 0, accountId: null },
+    },
+  })
+  await f.session.initialize()
+  expect(f.session.state.pendingReady).toBe(true)
+  const initialAddress = f.session.state.pendingIdentityAddress
+  expect(initialAddress).toBeTruthy()
+
+  const gate = deferred<'ready'>()
+  f.custody.reconcile.mockReturnValueOnce(gate.promise)
+  const refreshing = f.session.snapshot()
+  for (let i = 0; i < 5; i++) await Promise.resolve()
+  // While reconcile is awaiting, pendingReady and pendingIdentityAddress must not flicker to false/null
+  expect(f.session.state.pendingReady).toBe(true)
+  expect(f.session.state.pendingIdentityAddress).toBe(initialAddress)
+  gate.resolve('ready')
+  await refreshing
+  expect(f.session.state.pendingReady).toBe(true)
+  expect(f.session.state.pendingIdentityAddress).toBe(initialAddress)
+})
+
+
 async function replaceAccount(
   f: ReturnType<typeof fixture>,
   invalidate = false,

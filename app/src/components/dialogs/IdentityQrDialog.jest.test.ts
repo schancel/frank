@@ -179,7 +179,7 @@ describe('IdentityQrDialog', () => {
     expect(wrapper.find('[data-test="identity-qr-code"]').exists()).toBe(true)
   })
 
-  it('renders inline without a modal dialog wrapper when inline is true', async () => {
+  it('renders inline without a modal dialog wrapper when inline is true and does not auto-open camera until requested', async () => {
     const wrapper = mountDialog({ inline: true })
     await flushPromises()
 
@@ -188,7 +188,53 @@ describe('IdentityQrDialog', () => {
     expect(wrapper.find('[data-test="identity-qr-scanner"]').exists()).toBe(
       true,
     )
+    expect(
+      wrapper.find('[data-test="identity-qr-scanner-video"]').exists(),
+    ).toBe(false)
+    expect(wrapper.find('[data-test="start-qr-camera-btn"]').exists()).toBe(
+      true,
+    )
     expect(wrapper.find('[data-test="identity-qr-code"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="start-qr-camera-btn"]').trigger('click')
+    await flushPromises()
+    expect(
+      wrapper.find('[data-test="identity-qr-scanner-video"]').exists(),
+    ).toBe(true)
+
+    await wrapper.find('[data-test="stop-qr-camera-btn"]').trigger('click')
+    await flushPromises()
+    expect(
+      wrapper.find('[data-test="identity-qr-scanner-video"]').exists(),
+    ).toBe(false)
+  })
+
+  it('renders Extension View bar (Side Panel, Pop Out, Full Tab, Toolbar toggle) and 1-click account sync when in extension mode', async () => {
+    const wrapper = mountDialog({
+      inline: true,
+      runtimeKindOverride: 'chrome-extension',
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="extension-view-bar"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="ext-open-sidepanel-btn"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-test="ext-open-popout-btn"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-test="ext-open-tab-btn"]').exists()).toBe(true)
+    expect(
+      wrapper.find('[data-test="ext-toggle-sidepanel-default-btn"]').exists(),
+    ).toBe(true)
+
+    await wrapper.find('[data-test="sync-account-bridge-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('extension-sync')).toHaveLength(1)
+    expect(wrapper.find('[data-test="identity-qr-sync-status"]').text()).toContain(
+      'Synced to signet.mx',
+    )
   })
 })
+
 

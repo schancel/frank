@@ -574,13 +574,20 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
-  it('shows loading until the balance loads, and an inline error on failure', async () => {
+  it('shows loading until the balance loads, and an inline error on failure without duplicating unavailable text', async () => {
     balance.loaded.value = false
     balance.hasError.value = false
     const wrapper = mountWallet()
     await nextTick()
     const region = wrapper.get('[data-testid="wallet-balance"]')
     expect(region.text()).toBe('walletPanel.balanceLoading')
+    balance.hasError.value = true
+    await nextTick()
+    expect(region.text()).toBe('walletPanel.balanceUnavailable')
+    expect(wrapper.find('[data-testid="wallet-balance-error"]').exists()).toBe(
+      false,
+    )
+    balance.hasError.value = false
     balance.loaded.value = true
     await nextTick()
     expect(region.text()).toBe('1 MON') // a real zero or value is shown as such

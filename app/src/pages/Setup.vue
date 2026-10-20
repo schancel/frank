@@ -223,7 +223,9 @@
               />
             </div>
           </template>
-          <template v-else-if="account.pending && mode !== 'legacy'">
+          <template
+            v-else-if="account.pending && mode !== 'legacy' && !activating"
+          >
             <p
               v-if="account.pendingError === 'outdated-attempt'"
               role="status"
@@ -251,33 +253,49 @@
               :disable="busy"
               @click="retry"
             />
-            <p>
+            <p class="text-body2 text-grey-8 q-mb-sm">
               {{ $t('accountRecovery.a_saved_account_attempt_is_pending_it') }}
             </p>
-            <h2 class="text-h6" data-test="account-found">
+            <h2 class="text-h6 q-mt-sm q-mb-sm" data-test="account-found">
               {{ $t('accountRecovery.account_found') }}
             </h2>
             <div
               v-if="account.pendingIdentityAddress"
               role="status"
+              class="pending-identity-card q-pa-md q-my-sm rounded-borders"
               data-test="pending-identity"
             >
-              <p class="q-mb-xs">
+              <p class="text-caption text-grey-8 q-mb-xs">
                 {{ $t('accountRecovery.pending_identity_address') }}
               </p>
-              <p class="recovery-text" data-test="pending-identity-address">
+              <p
+                class="recovery-text pending-address-code q-pa-sm q-mb-sm rounded-borders"
+                data-test="pending-identity-address"
+              >
                 {{ account.pendingIdentityAddress }}
               </p>
-              <p v-if="pendingProfile?.name" data-test="pending-display-name">
+              <p
+                v-if="pendingProfile?.name"
+                class="text-body1 text-weight-medium q-mb-xs"
+                data-test="pending-display-name"
+              >
                 {{ $t('accountRecovery.display_name') }}:
                 {{ pendingProfile.name }}
               </p>
-              <p v-if="pendingProfile?.username" data-test="pending-username">
+              <p
+                v-if="pendingProfile?.username"
+                class="text-body2 text-grey-8 q-mb-sm"
+                data-test="pending-username"
+              >
                 {{ $t('accountRecovery.pending_username') }}: @{{
                   pendingProfile.username
                 }}
               </p>
-              <p v-if="pendingProfileStatus === 'loading'" role="status">
+              <p
+                v-if="pendingProfileStatus === 'loading'"
+                class="text-caption text-grey-7 q-mb-sm"
+                role="status"
+              >
                 {{ $t('accountRecovery.pending_profile_loading') }}
               </p>
               <div
@@ -286,9 +304,10 @@
                   pendingProfileStatus === 'unverified'
                 "
                 role="alert"
+                class="q-mb-sm"
                 data-test="pending-profile-error"
               >
-                <p>
+                <p class="q-mb-xs">
                   {{
                     pendingProfileStatus === 'unverified'
                       ? $t('accountRecovery.pending_profile_unverified')
@@ -304,7 +323,7 @@
                   @click="pendingProfileRetry++"
                 />
               </div>
-              <p class="text-negative">
+              <p class="text-negative text-caption q-mb-none q-mt-sm">
                 {{ $t('accountRecovery.pending_identity_stop_if_unexpected') }}
               </p>
             </div>
@@ -410,7 +429,7 @@
               @click="$router.push('/wallet')"
             />
           </template>
-          <template v-else-if="account.status !== 'loading'">
+          <template v-else-if="account.status !== 'loading' && !activating">
             <template v-if="mode === 'choice'">
               <p>
                 {{
@@ -888,6 +907,16 @@
               </div>
             </q-form>
           </template>
+          <template v-else>
+            <div
+              class="q-my-md"
+              role="status"
+              aria-live="polite"
+              data-test="account-loading"
+            >
+              <div class="account-loading-bar rounded-borders" />
+            </div>
+          </template>
           <p class="q-mt-lg text-caption">
             {{
               $t(
@@ -1066,6 +1095,7 @@ const mode = ref<Mode>('choice')
 const passkeyChoicesOpen = ref(false)
 const heading = ref<HTMLElement>()
 const busy = ref(false)
+const activating = ref(false)
 const error = ref('')
 const profileRecoveryFailed = ref(false)
 const threshold = ref<2 | 3>(2)
@@ -1388,6 +1418,7 @@ async function activateStagedAccount(expectedAttemptId?: string) {
   try {
     const pending = account.pending
     if (!pending) return
+    activating.value = true
     const cleanedRelay = customRelayUrl.value?.trim()
     if (cleanedRelay && cleanedRelay !== defaultRelayUrl) {
       setCustomRelayBaseUrl(cleanedRelay)
@@ -1420,6 +1451,7 @@ async function activateStagedAccount(expectedAttemptId?: string) {
     emit('setupCompleted')
     await router.push('/wallet')
   } finally {
+    activating.value = false
     stopChain()
   }
 }
@@ -1451,7 +1483,14 @@ async function completeProfileRecovery(isCurrent: () => boolean = () => true) {
 }
 
 function retryProfileRecovery() {
-  return run(async () => completeProfileRecovery())
+  return run(async () => {
+    activating.value = true
+    try {
+      await completeProfileRecovery()
+    } finally {
+      activating.value = false
+    }
+  })
 }
 function cancelPending() {
   return run(async () => {
@@ -1509,6 +1548,39 @@ onBeforeUnmount(() => {
 }
 .recovery-text {
   overflow-wrap: anywhere;
+}
+.pending-identity-card {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(0, 0, 0, 0.02);
+}
+.pending-address-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9rem;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+.account-loading-bar {
+  height: 4px;
+  width: 100%;
+  background: rgba(25, 118, 210, 0.2);
+  overflow: hidden;
+  position: relative;
+}
+.account-loading-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: var(--q-primary, #1976d2);
+  animation: account-loading-slide 1.2s infinite ease-in-out;
+}
+@keyframes account-loading-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
 }
 .mera-continue-btn {
   font-weight: 600;

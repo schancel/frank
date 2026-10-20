@@ -396,3 +396,62 @@ test('createDirect stages new account root immediately without backup shares', a
     ceremony.cancel()
   }
 })
+
+test('recoveryErrorMessage maps custody and input error codes without falling back to Codex32 share message', () => {
+  expect(recoveryErrorMessage({ code: 'invalid-input' })).toBe(
+    'The recovery phrase or input is invalid. Check your words and try again.',
+  )
+  expect(recoveryErrorMessage({ code: 'locked' })).toContain(
+    'Account storage is locked',
+  )
+  expect(recoveryErrorMessage({ code: 'unavailable' })).toContain(
+    'Account storage is currently unavailable',
+  )
+  expect(recoveryErrorMessage({ code: 'outdated-attempt' })).toContain(
+    'outdated',
+  )
+})
+
+test('capture cancels a stale pending attempt before staging a new ceremony', async () => {
+  jest
+    .mocked(accountSession.snapshot)
+    .mockResolvedValueOnce({
+      schema: 1,
+      revision: 0,
+      active: null,
+      pending: {
+        status: 'staging',
+        account: {
+          displayName: '',
+          descriptor: 'stale',
+          fingerprint: '00',
+          receipt: {
+            operationId: 'stale-attempt',
+            context: {
+              accountId: 'stale-account',
+              custodyEpoch: 1,
+              recoveryFormat: 'codex32-root32-v1',
+              registry: 'frank-bip85-bip32-v1',
+              purposes: [],
+            },
+          },
+        },
+        expectedActive: { revision: 0, accountId: null },
+      },
+    })
+    .mockResolvedValueOnce({
+      schema: 1,
+      revision: 0,
+      active: null,
+      pending: null,
+    })
+  const ceremony = createAccountCeremony()
+  try {
+    await ceremony.createDirect('Alice')
+    expect(accountSession.cancelPending).toHaveBeenCalledWith('stale-attempt')
+    expect(accountSession.stage).toHaveBeenCalledTimes(1)
+  } finally {
+    ceremony.cancel()
+  }
+})
+

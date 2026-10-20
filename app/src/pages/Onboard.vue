@@ -152,6 +152,17 @@
                 data-test="onboard-display-name"
                 :disable="busy"
               />
+              <q-banner
+                v-if="extensionSyncedAddress"
+                dense
+                rounded
+                class="bg-positive text-white q-pa-sm q-mt-sm"
+                data-test="onboard-extension-sync-banner"
+              >
+                <div class="text-caption">
+                  {{ extensionSyncBannerText }}
+                </div>
+              </q-banner>
             </q-card-section>
 
             <q-card-actions vertical class="q-px-md q-pb-md q-gutter-y-sm">
@@ -177,6 +188,18 @@
                 :loading="busy"
                 :disable="busy"
                 @click="createPasskeyAndOpenChat"
+              />
+              <q-btn
+                outline
+                color="secondary"
+                no-caps
+                icon="extension"
+                class="full-width q-py-sm text-weight-medium"
+                :label="bearerClaimUi.connectExtensionBtn"
+                data-test="onboard-connect-extension"
+                :loading="busy"
+                :disable="busy"
+                @click="connectBrowserExtension"
               />
             </q-card-actions>
           </template>
@@ -221,6 +244,7 @@ import {
   parseClaimLink,
   type ParsedClaimLink,
 } from '../../../packages/wallet/claim-link'
+import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/content'
 
 defineProps<{ myDrawerOpen?: boolean }>()
 const emit = defineEmits(['toggleMyDrawerOpen', 'setupCompleted'])
@@ -236,10 +260,19 @@ const bearerClaimUi = {
   amountLabel: 'Gift Amount (wei): ',
   bearerAccountLabel: 'Bearer EOA: ',
   noteLabel: 'Welcome Note: ',
+  connectExtensionBtn: 'Connect Browser Extension',
 }
 
 const windowHash = ref(typeof window !== 'undefined' ? window.location.hash : '')
 const redeemedClaimIds = ref<string[]>([])
+const extensionSyncedAddress = ref('')
+const extensionSyncedSasCode = ref('')
+
+const extensionSyncBannerText = computed(() =>
+  extensionSyncedSasCode.value
+    ? `Synced from Frank Extension: ${extensionSyncedAddress.value} (SAS: ${extensionSyncedSasCode.value})`
+    : `Synced from Frank Extension: ${extensionSyncedAddress.value}`,
+)
 
 function onWindowHashChange() {
   if (typeof window !== 'undefined') {
@@ -247,12 +280,81 @@ function onWindowHashChange() {
   }
 }
 
+async function handleIncomingExtensionBundle(
+  bundle: Record<string, any> | undefined,
+  sasCode?: string,
+) {
+  if (!bundle || typeof bundle !== 'object') return
+  const addr = String(
+    bundle.accountAddress || bundle.activePersonaAddress || '',
+  ).trim()
+  if (addr) {
+    extensionSyncedAddress.value = addr
+  }
+  if (sasCode) {
+    extensionSyncedSasCode.value = String(sasCode)
+  }
+  if (bundle.displayName && typeof bundle.displayName === 'string') {
+    displayName.value = bundle.displayName
+  }
+  const shares = Array.isArray(bundle.backupShares)
+    ? bundle.backupShares.filter((s: unknown) => typeof s === 'string' && s.trim())
+    : []
+  if (
+    shares.length >= 2 &&
+    account.status !== 'ready' &&
+    typeof (ceremony as any).beginRestore === 'function' &&
+    typeof (ceremony as any).confirm === 'function'
+  ) {
+    await runOnboardAction(async () => {
+      await (ceremony as any).beginRestore()
+      const outcome = await (ceremony as any).confirm(
+        shares,
+        displayName.value.trim() || 'Frank User',
+      )
+      if (!alive) return
+      await activateStagedAndMigrate(outcome)
+    })
+  }
+}
+
+function onExtensionBridgeMessage(event: MessageEvent) {
+  const data = event?.data
+  if (!data || typeof data !== 'object') return
+  if (
+    data.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
+    data.direction === 'to-pwa' &&
+    (data.type === 'extension-sync-push' || data.type === 'sync-response')
+  ) {
+    const payload = data.payload ?? data.result?.syncedState ?? data.result
+    const bundle = payload?.deviceSyncBundle
+    const sas = payload?.sasCode
+    void handleIncomingExtensionBundle(bundle, sas)
+  }
+}
+
+function connectBrowserExtension() {
+  if (typeof window !== 'undefined' && typeof window.postMessage === 'function') {
+    window.postMessage(
+      {
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        direction: 'to-extension',
+        type: 'pwa-request-sync',
+        id: `onboard-sync-${Date.now()}`,
+      },
+      '*',
+    )
+  }
+}
+
 onMounted(() => {
   if (typeof window !== 'undefined') {
     windowHash.value = window.location.hash
     window.addEventListener('hashchange', onWindowHashChange)
+    window.addEventListener('message', onExtensionBridgeMessage)
   }
 })
+
 
 function extractBearerClaimFromCandidate(
   candidate?: string | null,
@@ -655,6 +757,7 @@ onBeforeUnmount(() => {
   alive = false
   if (typeof window !== 'undefined') {
     window.removeEventListener('hashchange', onWindowHashChange)
+    window.removeEventListener('message', onExtensionBridgeMessage)
   }
   ceremony.cancel()
 })
@@ -662,6 +765,7 @@ onBeforeUnmount(() => {
 defineExpose({
   bearerClaim,
   redeemedClaimIds,
+  extensionSyncedAddress,
 })
 </script>
 

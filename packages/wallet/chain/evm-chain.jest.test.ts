@@ -478,6 +478,36 @@ describe("custom relay configuration", () => {
     expect(getCustomRelayBaseUrl()).toBeUndefined();
   });
 
+  it("normalizes https://signet.mx to https://relay.signet.mx in default and custom relay URLs", () => {
+    const before = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const configured = process.env.MONAD_RELAY_BASE_URL;
+    delete process.env.MONAD_RELAY_BASE_URL;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        location: {
+          origin: "https://signet.mx",
+          protocol: "https:",
+          hostname: "signet.mx",
+          port: "",
+        },
+      },
+    });
+    try {
+      expect(getDefaultRelayBaseUrl()).toBe("https://relay.signet.mx");
+      process.env.MONAD_RELAY_BASE_URL = "https://signet.mx/";
+      expect(getDefaultRelayBaseUrl()).toBe("https://relay.signet.mx");
+      setCustomRelayBaseUrl("https://signet.mx/");
+      expect(getCustomRelayBaseUrl()).toBe("https://relay.signet.mx");
+    } finally {
+      setCustomRelayBaseUrl(undefined);
+      if (before) Object.defineProperty(globalThis, "window", before);
+      else Reflect.deleteProperty(globalThis, "window");
+      if (configured === undefined) delete process.env.MONAD_RELAY_BASE_URL;
+      else process.env.MONAD_RELAY_BASE_URL = configured;
+    }
+  });
+
   it("loadMonadChainConfigFromEnv dynamically reflects custom relay base URL", () => {
     const config = loadMonadChainConfigFromEnv();
     const defaultRelay = getDefaultRelayBaseUrl();

@@ -88,7 +88,7 @@ function bundleBexEntry(entryFilename) {
   return `(() => {\n  "use strict";\n${chunks.join('\n\n')}\n})();\n`
 }
 
-function copyDirectoryFiltered(srcDir, destDir) {
+export function copyDirectoryFiltered(srcDir, destDir) {
   if (!fs.existsSync(srcDir)) return false
   fs.mkdirSync(destDir, { recursive: true })
   for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
@@ -99,7 +99,8 @@ function copyDirectoryFiltered(srcDir, destDir) {
       entry.name === 'push-sw.js' ||
       entry.name === 'register-service-worker.js' ||
       entry.name === 'manifest.json' ||
-      entry.name.startsWith('workbox-')
+      entry.name.startsWith('workbox-') ||
+      entry.name.endsWith('.map')
     ) {
       continue
     }
@@ -199,6 +200,7 @@ export function buildExtensions(argv = process.argv.slice(2)) {
   const builtTargets = []
   for (const target of targets) {
     const targetDir = path.join(distExtensionsDir, target)
+    fs.rmSync(targetDir, { recursive: true, force: true })
     fs.mkdirSync(targetDir, { recursive: true })
 
     if (staticSourceDir) {

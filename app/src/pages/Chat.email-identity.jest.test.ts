@@ -547,3 +547,77 @@ it('keeps an initially empty root draft independent of arriving mail until expli
     app.root.unmount()
   }
 })
+
+it('releases sendingMessage spinner and shows queued delivery status when email send enters waiting-for-chain', async () => {
+  const { sendsWaitingForChain } = require('../utils/outgoing-waiting')
+  const app = await mountedEmails()
+  try {
+    await app.select(app.roots[2].id)
+    const pendingSend = deferred<void>()
+    app.page().sendDirectMessage = jest.fn(
+      async (params: {
+        onPreparationProgress?: (p: { stage: string }) => void
+      }) => {
+        app.roots[2].messages.push({
+          payloadDigest: 'pending:email-queued-1',
+          conversationId: app.roots[2].id,
+          senderAddress: PEER,
+          destinationAddress: PEER,
+          outbound: true,
+          status: 'pending',
+          receivedTime: 10,
+          serverTime: 10,
+          items: [
+            {
+              type: 'email',
+              messageId: '<queued-1@frank.org>',
+              from: { address: 'micropresident@signet.mx', name: 'Shammah' },
+              to: [{ address: 'fresh@example.com' }],
+              subject: 'Queued Subject',
+              textBody: 'Not much. How are you?',
+            },
+          ],
+        })
+        sendsWaitingForChain.add('pending:email-queued-1')
+        params.onPreparationProgress?.({ stage: 'waiting-for-chain' })
+        await pendingSend.promise
+      },
+    )
+
+    const sendPromise = app.page().sendEmailReply({
+      conversationId: app.roots[2].id,
+      items: [
+        {
+          type: 'email',
+          messageId: '<queued-1@frank.org>',
+          from: { address: 'micropresident@signet.mx', name: 'Shammah' },
+          to: [{ address: 'fresh@example.com' }],
+          subject: 'Queued Subject',
+          textBody: 'Not much. How are you?',
+        },
+      ],
+      fallbackText: 'Not much. How are you?',
+    })
+
+    await settle()
+    expect(app.page().sendingMessage).toBe(false)
+    expect(app.page().stampPreparationStatus).toBe('chat.chainUnreachable')
+    expect(app.roots[2].name).toBe('Queued Subject')
+    expect(
+      (app.root.get('textarea').element as HTMLTextAreaElement).disabled,
+    ).toBe(false)
+    const badge = app.root.find('[data-testid="email-delivery-badge"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('outgoing.waitingForChain')
+
+    sendsWaitingForChain.delete('pending:email-queued-1')
+    pendingSend.resolve()
+    await sendPromise
+    expect(app.page().sendingMessage).toBe(false)
+    expect(app.page().stampPreparationStatus).toBeNull()
+  } finally {
+    sendsWaitingForChain.delete('pending:email-queued-1')
+    app.root.unmount()
+  }
+})
+

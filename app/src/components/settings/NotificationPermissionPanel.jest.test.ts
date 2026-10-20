@@ -24,6 +24,7 @@ const options = {
   },
 }
 beforeEach(() => {
+  localStorage.clear()
   browserPermission = 'default'
   requestPermission = jest.fn(async () => {
     browserPermission = 'granted'

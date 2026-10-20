@@ -16,6 +16,62 @@
       />
     </div>
 
+    <!-- Extension Display Mode Bar (Side Panel / Pop Out / Full Tab) -->
+    <q-card
+      v-if="isExtensionRuntime"
+      flat
+      bordered
+      data-testid="extension-view-bar"
+    >
+      <q-card-section class="row items-center justify-between q-py-xs q-px-sm">
+        <div class="text-caption text-weight-medium text-grey-8">
+          {{ ui.extViewLabel }}
+        </div>
+        <div class="row items-center q-gutter-xs">
+          <q-btn
+            flat
+            dense
+            no-caps
+            size="sm"
+            color="primary"
+            data-testid="ext-open-sidepanel-btn"
+            :label="ui.extSidePanelBtn"
+            @click="openInSidePanel"
+          />
+          <q-btn
+            flat
+            dense
+            no-caps
+            size="sm"
+            color="primary"
+            data-testid="ext-open-popout-btn"
+            :label="ui.extPopOutBtn"
+            @click="openInPopoutWindow"
+          />
+          <q-btn
+            flat
+            dense
+            no-caps
+            size="sm"
+            color="primary"
+            data-testid="ext-open-tab-btn"
+            :label="ui.extFullTabBtn"
+            @click="openInFullTab"
+          />
+          <q-btn
+            flat
+            dense
+            no-caps
+            size="sm"
+            :color="alwaysOpenInSidePanel ? 'positive' : 'grey-7'"
+            data-testid="ext-toggle-sidepanel-default-btn"
+            :label="alwaysSidePanelBtnLabel"
+            @click="toggleAlwaysOpenSidePanel"
+          />
+        </div>
+      </q-card-section>
+    </q-card>
+
     <!-- Active dApp Persona EOA Card (#1708) -->
     <q-card flat bordered data-testid="dapp-persona-card">
       <q-card-section class="q-pb-xs">
@@ -182,7 +238,7 @@
             outline
             color="primary"
             data-testid="dapp-extension-sync-btn"
-            :label="ui.syncExtensionBtn"
+            :label="syncExtensionBtnLabel"
             @click="triggerExtensionSync"
           />
           <div
@@ -201,9 +257,15 @@
 import { computed, defineComponent, PropType, ref } from 'vue'
 import {
   getExtensionRuntime,
+  openCompanionPanel,
+  openExtensionTab,
+  openExtensionWindow,
   RuntimeEnvironmentKind,
+  sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
 import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../../src-bex/content'
+import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../../src-bex/inpage'
+
 
 export interface DappApprovalItem {
   id: string
@@ -276,6 +338,7 @@ export default defineComponent({
     const pairedWcUri = ref('')
     const sasCode = ref(props.initialSasCode)
     const syncTriggered = ref(false)
+    const alwaysOpenInSidePanel = ref(false)
 
     const ui = Object.freeze({
       panelAriaLabel: 'Frank dApp Bridge Companion Panel',
@@ -293,6 +356,11 @@ export default defineComponent({
       wcInputPlaceholder: 'wc:00e46b69-d0cc-4b3e-b6a2-...',
       wcConnectBtn: 'Pair URI',
       syncExtensionBtn: 'Sync with Browser Extension',
+      syncToWebTabBtn: 'Sync Account to signet.mx Tab',
+      extViewLabel: 'Extension Display Mode:',
+      extSidePanelBtn: 'Side Panel',
+      extPopOutBtn: 'Pop Out Window',
+      extFullTabBtn: 'Full Tab',
     })
 
     const detectedRuntimeKind = computed<RuntimeEnvironmentKind>(() => {
@@ -301,6 +369,20 @@ export default defineComponent({
       }
       return getExtensionRuntime().kind
     })
+
+    const isExtensionRuntime = computed(
+      () => detectedRuntimeKind.value !== 'pwa',
+    )
+
+    const alwaysSidePanelBtnLabel = computed(() =>
+      alwaysOpenInSidePanel.value
+        ? 'Toolbar: Side Panel'
+        : 'Toolbar: Popup',
+    )
+
+    const syncExtensionBtnLabel = computed(() =>
+      isExtensionRuntime.value ? ui.syncToWebTabBtn : ui.syncExtensionBtn,
+    )
 
     const runtimeBadgeLabel = computed(() => {
       switch (detectedRuntimeKind.value) {
@@ -449,7 +531,29 @@ export default defineComponent({
       wcUriInput.value = ''
     }
 
-    function triggerExtensionSync() {
+    async function openInSidePanel() {
+      await openCompanionPanel()
+    }
+
+    async function openInPopoutWindow() {
+      await openExtensionWindow()
+    }
+
+    async function openInFullTab() {
+      await openExtensionTab()
+    }
+
+    async function toggleAlwaysOpenSidePanel() {
+      const nextVal = !alwaysOpenInSidePanel.value
+      alwaysOpenInSidePanel.value = nextVal
+      await sendRuntimeMessage({
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'set-sidepanel-behavior',
+        openPanelOnActionClick: nextVal,
+      })
+    }
+
+    async function triggerExtensionSync() {
       syncTriggered.value = true
       const syncPayload = {
         sasCode: sasCode.value,
@@ -458,6 +562,14 @@ export default defineComponent({
           activePersonaPath: activeDerivationPath.value,
           activePersonaAddress: activePersonaAddress.value,
         },
+      }
+      if (isExtensionRuntime.value) {
+        await sendRuntimeMessage({
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          type: 'extension-push-sync-to-tab',
+          origin: 'frank-extension',
+          payload: syncPayload,
+        })
       }
       if (typeof window !== 'undefined' && typeof window.postMessage === 'function') {
         window.postMessage(
@@ -478,6 +590,10 @@ export default defineComponent({
       ui,
       wcUriInput,
       pairedWcUri,
+      isExtensionRuntime,
+      alwaysOpenInSidePanel,
+      alwaysSidePanelBtnLabel,
+      syncExtensionBtnLabel,
       runtimeBadgeLabel,
       activeDerivationPath,
       activePersonaAddress,
@@ -496,6 +612,10 @@ export default defineComponent({
       approveCurrentRequest,
       rejectCurrentRequest,
       connectWalletConnectUri,
+      openInSidePanel,
+      openInPopoutWindow,
+      openInFullTab,
+      toggleAlwaysOpenSidePanel,
       triggerExtensionSync,
     }
   },

@@ -284,6 +284,22 @@ function getLocalStorage(): Storage | null {
   return null;
 }
 
+function normalizeSignetRelayUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (
+      (parsed.protocol === "https:" || parsed.protocol === "http:") &&
+      parsed.hostname.toLowerCase() === "signet.mx" &&
+      (!parsed.pathname || parsed.pathname === "/")
+    ) {
+      return "https://relay.signet.mx";
+    }
+  } catch {
+    // ignore invalid URL
+  }
+  return url;
+}
+
 /**
  * Returns the custom relay server URL persisted in localStorage, if one was configured by the user.
  */
@@ -295,23 +311,28 @@ export function getCustomRelayBaseUrl(): string | undefined {
       if (stored) {
         const parsed = new URL(stored);
         if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-          return stored.replace(/\/+$/, "");
+          return normalizeSignetRelayUrl(stored.replace(/\/+$/, ""));
         }
       }
     } catch {
       // ignore invalid URL or storage error
     }
-    return memoryCustomRelayUrl;
+    return memoryCustomRelayUrl
+      ? normalizeSignetRelayUrl(memoryCustomRelayUrl)
+      : undefined;
   }
-  return memoryCustomRelayUrl;
+  return memoryCustomRelayUrl
+    ? normalizeSignetRelayUrl(memoryCustomRelayUrl)
+    : undefined;
 }
 
 /**
  * Persists or clears a custom relay server URL in localStorage.
  */
 export function setCustomRelayBaseUrl(url: string | undefined): void {
-  const cleaned =
+  const rawCleaned =
     url && url.trim().length > 0 ? url.trim().replace(/\/+$/, "") : undefined;
+  const cleaned = rawCleaned ? normalizeSignetRelayUrl(rawCleaned) : undefined;
   const storage = getLocalStorage();
   if (storage) {
     try {
@@ -362,15 +383,17 @@ export function getDefaultRelayBaseUrl(): string {
       }
       return `http://127.0.0.1:${port}`;
     }
-    if (!configured) return window.location.origin;
+    const originFallback = normalizeSignetRelayUrl(window.location.origin);
+    if (!configured) return originFallback;
     try {
       const parsed = new URL(configured);
       if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
-        return window.location.origin;
+        return originFallback;
       }
     } catch {
       // keep configured
     }
+    return normalizeSignetRelayUrl(configured);
   }
   if (
     !configured &&
@@ -382,7 +405,9 @@ export function getDefaultRelayBaseUrl(): string {
   ) {
     return "https://relay.signet.mx";
   }
-  return configured ?? "http://127.0.0.1:8098";
+  return configured
+    ? normalizeSignetRelayUrl(configured)
+    : "http://127.0.0.1:8098";
 }
 
 /** Reads `EvmChainConfig` from the environment (see `readEnv` just above for exactly where
@@ -2126,6 +2151,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             balanceReadGeneration++;
             primaryBalanceCache = undefined;
             balancePartsRefresh = undefined;
+            pool.invalidateDisplayBalanceCache();
           };
 
           const coinAndContactManager = createEvmReceivedCoinAndContactManager({

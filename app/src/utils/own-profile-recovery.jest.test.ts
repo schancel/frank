@@ -87,3 +87,16 @@ test('late profile recovery cannot replace another account copy', async () => {
   expect(await recovering).toBe('unreachable')
   expect(store.profile.name).toBe('Another account')
 })
+
+test('claimProfileStore preserves restoredAccountId for the same owner and clears it on owner switch', async () => {
+  const { claimProfileStore } = await import('./own-profile')
+  const store = useProfileStore()
+  store.owner = identity.address.raw.toLowerCase()
+  store.restoredAccountId = 'account-1'
+  claimProfileStore(store, identity.address.raw)
+  expect(store.restoredAccountId).toBe('account-1')
+
+  claimProfileStore(store, '0x' + '22'.repeat(20))
+  expect(store.restoredAccountId).toBeUndefined()
+})
+

@@ -318,7 +318,80 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(bgState.syncedState?.sasCode).toBe('918273')
     expect(storageSet).toHaveBeenCalled()
 
+    // Test pulling synced state via pwa-request-sync
+    const pulled = await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        type: 'pwa-request-sync',
+      },
+      mockExtensionScope,
+    )
+    expect(pulled.result.ok).toBe(true)
+    expect(pulled.result.sasCode).toBe('918273')
+
+    // Test toggling sidePanel action click behavior
+    const toggleSidePanelRes = await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'set-sidepanel-behavior',
+        openPanelOnActionClick: true,
+      },
+      mockExtensionScope,
+    )
+    expect(toggleSidePanelRes.result.ok).toBe(true)
+    expect(toggleSidePanelRes.result.openPanelOnActionClick).toBe(true)
+    expect(setPanelBehavior).toHaveBeenLastCalledWith({
+      openPanelOnActionClick: true,
+    })
+
     cleanupContent()
     bg.dispose()
   })
+
+  it('copyDirectoryFiltered excludes .map source maps and service workers from extension bundles', async () => {
+    const { execFileSync } = await import('node:child_process')
+    const fs = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const { pathToFileURL } = await import('node:url')
+    const scriptUrl = pathToFileURL(
+      path.resolve(__dirname, '../scripts/build-extension.mjs'),
+    ).href
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'frank-bex-copy-'))
+    const srcDir = path.join(tmpRoot, 'src')
+    const destDir = path.join(tmpRoot, 'dest')
+    try {
+      fs.mkdirSync(path.join(srcDir, 'js'), { recursive: true })
+      fs.writeFileSync(path.join(srcDir, 'index.html'), '<html></html>')
+      fs.writeFileSync(path.join(srcDir, 'sw.js'), '// sw')
+      fs.writeFileSync(path.join(srcDir, 'js', 'app.js'), 'console.log(1)')
+      fs.writeFileSync(path.join(srcDir, 'js', 'app.js.map'), '{}')
+      fs.writeFileSync(path.join(srcDir, 'js', 'vendor.js.map'), '{}')
+
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `import { copyDirectoryFiltered } from ${JSON.stringify(
+            scriptUrl,
+          )}; copyDirectoryFiltered(${JSON.stringify(srcDir)}, ${JSON.stringify(
+            destDir,
+          )});`,
+        ],
+        { stdio: 'pipe' },
+      )
+
+      expect(fs.existsSync(path.join(destDir, 'index.html'))).toBe(true)
+      expect(fs.existsSync(path.join(destDir, 'js', 'app.js'))).toBe(true)
+      expect(fs.existsSync(path.join(destDir, 'sw.js'))).toBe(false)
+      expect(fs.existsSync(path.join(destDir, 'js', 'app.js.map'))).toBe(false)
+      expect(fs.existsSync(path.join(destDir, 'js', 'vendor.js.map'))).toBe(
+        false,
+      )
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true })
+    }
+  })
 })
+

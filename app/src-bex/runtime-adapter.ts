@@ -1,3 +1,6 @@
+export const FRANK_DAPP_BRIDGE_CHANNEL = 'frank-dapp-bridge-v1'
+export const FRANK_PWA_EXTENSION_SYNC_CHANNEL = 'frank-pwa-extension-sync-v1'
+
 export type RuntimeEnvironmentKind =
   | 'pwa'
   | 'chrome-extension'

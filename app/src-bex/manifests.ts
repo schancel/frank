@@ -20,11 +20,6 @@ export function buildContentScripts(
     return [
       {
         matches: [...EXTENSION_CONTENT_MATCHES],
-        js: ['inpage.js'],
-        run_at: 'document_start',
-      },
-      {
-        matches: [...EXTENSION_CONTENT_MATCHES],
         js: ['content.js'],
         run_at: 'document_start',
       },

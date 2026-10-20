@@ -21,6 +21,8 @@ describe('mobile-viewport-scale', () => {
     document.documentElement.style.removeProperty('--frank-ui-zoom')
     document.documentElement.style.removeProperty('--frank-vw')
     document.documentElement.style.removeProperty('--frank-vh')
+    document.documentElement.style.removeProperty('--frank-kb-offset')
+    document.documentElement.classList.remove('frank-keyboard-open')
   })
 
   it('normalizes and persists UiScaleSetting values safely', () => {
@@ -143,17 +145,19 @@ describe('mobile-viewport-scale', () => {
     }
   })
 
-  it('updates --frank-vh when soft keyboard shrinks visualViewport on normal mobile scale', () => {
+  it('updates --frank-vh, --frank-kb-offset, and frank-keyboard-open when soft keyboard shrinks visualViewport on iPhone and clears them when closed', () => {
+    const visualViewport = {
+      width: 393,
+      height: 440,
+      offsetTop: 0,
+    }
     const fakeWin = {
-      innerWidth: 384,
-      innerHeight: 832,
-      visualViewport: {
-        width: 384,
-        height: 480,
-      },
+      innerWidth: 393,
+      innerHeight: 780,
+      visualViewport,
       screen: {
-        width: 384,
-        height: 832,
+        width: 393,
+        height: 852,
       },
       navigator: {
         maxTouchPoints: 5,
@@ -163,10 +167,30 @@ describe('mobile-viewport-scale', () => {
 
     const result = applyViewportScaleAndMetrics(100, fakeWin)
     expect(result.scale).toBe(1)
-    expect(result.effectiveHeight).toBe(480)
+    expect(result.effectiveHeight).toBe(440)
     expect(document.documentElement.style.getPropertyValue('--frank-vh')).toBe(
-      '480px',
+      '440px',
     )
+    expect(
+      document.documentElement.style.getPropertyValue('--frank-kb-offset'),
+    ).toBe('340px')
+    expect(
+      document.documentElement.classList.contains('frank-keyboard-open'),
+    ).toBe(true)
+
+    // Keyboard closes
+    visualViewport.height = 780
+    const closedResult = applyViewportScaleAndMetrics(100, fakeWin)
+    expect(closedResult.effectiveHeight).toBe(780)
+    expect(document.documentElement.style.getPropertyValue('--frank-vh')).toBe(
+      '',
+    )
+    expect(
+      document.documentElement.style.getPropertyValue('--frank-kb-offset'),
+    ).toBe('')
+    expect(
+      document.documentElement.classList.contains('frank-keyboard-open'),
+    ).toBe(false)
   })
 
   it('omits interactive-widget=resizes-content on Safari while adding it on Chromium', () => {

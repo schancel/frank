@@ -516,6 +516,10 @@ export default defineComponent({
     this.unsubscribeActiveCalls = null
     this.cancelBlackjackPreparation()
     window.removeEventListener('resize', this.resizeHandler)
+    window.visualViewport?.removeEventListener(
+      'resize',
+      this.onVisualViewportResize,
+    )
     window.removeEventListener('focus', this.onWindowFocus)
     window.removeEventListener('frank:blind-wakeup-sync', this.onWindowFocus)
     document.removeEventListener('visibilitychange', this.onVisibilityChange)
@@ -661,6 +665,11 @@ export default defineComponent({
     this.resizeHandler()
     // Adjust the chat width when window resizes
     window.addEventListener('resize', debounce(this.resizeHandler, 50))
+    window.visualViewport?.addEventListener(
+      'resize',
+      this.onVisualViewportResize,
+      { passive: true },
+    )
     window.addEventListener('focus', this.onWindowFocus)
     window.addEventListener('frank:blind-wakeup-sync', this.onWindowFocus)
     document.addEventListener('visibilitychange', this.onVisibilityChange)
@@ -895,6 +904,15 @@ export default defineComponent({
         return
       }
       this.chatWidth = chatScroll.$el.scrollWidth
+    },
+    onVisualViewportResize() {
+      this.resizeHandler()
+      if (this.bottom || this.followBottom || this.hasComposeFocus()) {
+        this.pinScrollToBottom()
+        this.$nextTick(() => {
+          this.pinScrollToBottom()
+        })
+      }
     },
     scrollHandler(details: {
       verticalSize: number
@@ -2669,6 +2687,7 @@ export default defineComponent({
 .chat-input-bar {
   min-height: 64px;
   box-sizing: border-box;
+  bottom: var(--frank-kb-offset, 0px) !important;
 }
 
 .chat-inline-sheet {
@@ -2692,6 +2711,18 @@ export default defineComponent({
   padding-right: max(14px, env(safe-area-inset-right, 0px));
   align-items: center;
   overflow: visible;
+}
+
+:global(html.frank-keyboard-open) {
+  .chat-footer,
+  .chat-input-bar {
+    min-height: 52px;
+  }
+
+  :deep(.chat-input-toolbar) {
+    min-height: 52px;
+    padding-bottom: 6px !important;
+  }
 }
 
 :deep(.chat-send-btn) {

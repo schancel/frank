@@ -1,13 +1,14 @@
 import {
+  FRANK_DAPP_BRIDGE_CHANNEL,
+  FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   getExtensionResourceUrl,
   getRawExtensionApi,
   isBrowserExtensionRuntime,
   onRuntimeMessage,
   sendRuntimeMessage,
 } from './runtime-adapter'
-import { FRANK_DAPP_BRIDGE_CHANNEL } from './inpage'
 
-export const FRANK_PWA_EXTENSION_SYNC_CHANNEL = 'frank-pwa-extension-sync-v1'
+export { FRANK_DAPP_BRIDGE_CHANNEL, FRANK_PWA_EXTENSION_SYNC_CHANNEL }
 
 const ALLOWED_SYNC_HOSTS = new Set(['signet.mx', 'localhost', '127.0.0.1'])
 
@@ -40,7 +41,7 @@ export function ensureSafariFallbackInpageScript(
   if (!scriptUrl || !scriptUrl.startsWith('safari-web-extension://')) {
     return null
   }
-  const existing = win.document.querySelector(
+  const existing = win.document.querySelector?.(
     'script[data-frank-safari-inpage="true"]',
   )
   if (existing) {
@@ -50,9 +51,23 @@ export function ensureSafariFallbackInpageScript(
   script.src = scriptUrl
   script.async = false
   script.setAttribute('data-frank-safari-inpage', 'true')
-  const container = win.document.head || win.document.documentElement
-  if (container) {
-    container.appendChild(script)
+  const mountScript = (): boolean => {
+    const container = win.document.head || win.document.documentElement
+    if (!container) return false
+    if (!script.parentNode) {
+      container.appendChild(script)
+    }
+    return true
+  }
+  if (!mountScript() && typeof win.document.addEventListener === 'function') {
+    const onReady = () => {
+      if (mountScript()) {
+        win.document.removeEventListener?.('readystatechange', onReady)
+        win.removeEventListener?.('DOMContentLoaded', onReady)
+      }
+    }
+    win.document.addEventListener('readystatechange', onReady)
+    win.addEventListener?.('DOMContentLoaded', onReady, { once: true })
   }
   return script
 }

@@ -14,6 +14,7 @@ import { useTopicStore } from '../stores/topics'
 import { useChatStore } from '../stores/chats'
 import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import { accountSession, accountStatus } from '../accounts/session'
+import { preloadAppRuntime } from '../App.vue'
 
 export default boot(async ({ app }) => {
   const status = reactive({ loaded: false, setup: false })
@@ -60,6 +61,9 @@ export default boot(async ({ app }) => {
     return
   }
   setStartupRestoration({ phase: 'restored' })
+  if (typeof process === 'undefined' || !process.env?.JEST_WORKER_ID) {
+    void preloadAppRuntime().catch(() => undefined)
+  }
   watch(
     () => accountStatus.status,
     value => {
@@ -81,6 +85,17 @@ export default boot(async ({ app }) => {
         /^(chrome-extension|moz-extension|safari-web-extension):$/i.test(
           window.location?.protocol || '',
         ))
+    if (
+      isExtensionSurface &&
+      (typeof process === 'undefined' || !process.env?.JEST_WORKER_ID)
+    ) {
+      void import('../layouts/MainLayout.vue').catch(() => undefined)
+      void import('../layouts/ForumLayout.vue').catch(() => undefined)
+      void import('../pages/Forum.vue').catch(() => undefined)
+      void import('../pages/Wallet.vue').catch(() => undefined)
+      void import('../pages/Welcome.vue').catch(() => undefined)
+      void import('../pages/Setup.vue').catch(() => undefined)
+    }
     await tabCoordinator.init(
       isExtensionSurface ? { pingTimeoutMs: 4 } : undefined,
     )

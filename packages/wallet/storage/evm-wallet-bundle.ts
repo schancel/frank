@@ -614,6 +614,14 @@ export async function openExistingPoolMonadTopicOwner(params: {
         getAll: () => memory.getAll(),
         referencesLeaseIndex: index => memory.referencesLeaseIndex(index),
       }
+      if (params.nativeBinding) {
+        nativeJournal = new EvmNativeOperationJournal({
+          binding: params.nativeBinding,
+          location: undefined,
+          testOnlyEphemeral: true,
+        })
+        await nativeJournal.Open()
+      }
     } else {
       manifestClaim = claimManifest(params.location)
       try {
@@ -624,28 +632,46 @@ export async function openExistingPoolMonadTopicOwner(params: {
       }
       await params.loadExistingState?.()
       database = level(join(params.location, 'wallet-manifest'))
-      await openDurableLevel(database!, params.location, 'wallet-manifest')
-      topicJournal = new LevelTopicOperationJournal(
+      const levelTopicJournal = new LevelTopicOperationJournal(
         database!,
         assertJournalMutation,
       )
-      await (topicJournal as LevelTopicOperationJournal).Open()
-    }
-    if (params.nativeBinding) {
-      nativeJournal = new EvmNativeOperationJournal({
-        binding: params.nativeBinding,
-        location: params.location,
-        testOnlyEphemeral: params.location === undefined,
-      })
-      await nativeJournal.Open()
+      topicJournal = levelTopicJournal
+      if (params.nativeBinding) {
+        nativeJournal = new EvmNativeOperationJournal({
+          binding: params.nativeBinding,
+          location: params.location,
+          testOnlyEphemeral: false,
+        })
+      }
+      if (
+        params.canonicalBinding !== undefined ||
+        params.nativeBinding !== undefined
+      ) {
+        canonicalJournal = new LevelCanonicalStampAttemptJournal(
+          params.location,
+        )
+      }
+      const journalOpens = await Promise.allSettled([
+        openDurableLevel(database!, params.location, 'wallet-manifest').then(
+          () => levelTopicJournal.Open(),
+        ),
+        nativeJournal?.Open(),
+        canonicalJournal?.Open(),
+      ])
+      const journalFailure = journalOpens.find(
+        result => result.status === 'rejected',
+      )
+      if (journalFailure?.status === 'rejected') {
+        throw journalFailure.reason
+      }
     }
     if (
       (params.canonicalBinding !== undefined ||
         params.nativeBinding !== undefined) &&
-      params.location !== undefined
+      params.location !== undefined &&
+      canonicalJournal !== undefined
     ) {
-      canonicalJournal = new LevelCanonicalStampAttemptJournal(params.location)
-      await canonicalJournal.Open()
       try {
         // First bind persists the tuple; an equal tuple is a no-op. Both conflict outcomes (a
         // different bound tuple, or unbound retained rows) are decided before any write.

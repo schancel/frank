@@ -1,14 +1,14 @@
 import {
   ExtensionLaunchMode,
+  FRANK_DAPP_BRIDGE_CHANNEL,
   FRANK_EXT_LAUNCH_MODE_KEY,
+  FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   getRawExtensionApi,
   isBrowserExtensionRuntime,
   onRuntimeMessage,
   openCompanionPanel,
   openExtensionInWindow,
 } from './runtime-adapter'
-import { FRANK_DAPP_BRIDGE_CHANNEL } from './inpage'
-import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from './content'
 
 export interface PendingDappApproval {
   id: string

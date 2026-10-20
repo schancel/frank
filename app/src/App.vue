@@ -22,10 +22,17 @@
 import { defineAsyncComponent, defineComponent } from 'vue'
 import { startupRestoration } from './boot/startup-state'
 
+let appRuntimePromise: Promise<typeof import('./AppRuntime.vue')> | undefined
+
+export function preloadAppRuntime() {
+  appRuntimePromise ??= import('./AppRuntime.vue')
+  return appRuntimePromise
+}
+
 export default defineComponent({
   components: {
     // Do not even import runtime stores/lifecycle dependencies until restoration succeeds.
-    AppRuntime: defineAsyncComponent(() => import('./AppRuntime.vue')),
+    AppRuntime: defineAsyncComponent(() => preloadAppRuntime()),
   },
   setup() {
     return { startup: startupRestoration }

@@ -249,6 +249,22 @@ export function createFrankSolanaStandardWallet(
   }
 }
 
+export function isIsolatedExtensionWorld(
+  scope: Record<string, any> = typeof globalThis !== 'undefined'
+    ? (globalThis as Record<string, any>)
+    : {},
+): boolean {
+  const browserId = scope?.browser?.runtime?.id
+  if (typeof browserId === 'string' && browserId.length > 0) {
+    return true
+  }
+  const chromeId = scope?.chrome?.runtime?.id
+  if (typeof chromeId === 'string' && chromeId.length > 0) {
+    return true
+  }
+  return false
+}
+
 export function announceEip6963Provider(
   win: Window,
   provider: FrankInpageProvider,
@@ -257,6 +273,9 @@ export function announceEip6963Provider(
     info: Object.freeze({ ...FRANK_EIP6963_INFO }),
     provider,
   })
+  if (isIsolatedExtensionWorld(win as Window & Record<string, any>)) {
+    return detail
+  }
   win.dispatchEvent(
     new CustomEvent('eip6963:announceProvider', {
       detail,
@@ -269,6 +288,9 @@ export function announceSolanaWalletStandard(
   win: Window,
   wallet: FrankSolanaStandardWallet,
 ): void {
+  if (isIsolatedExtensionWorld(win as Window & Record<string, any>)) {
+    return
+  }
   const registerPayload = {
     register: (...callbacks: Array<(w: FrankSolanaStandardWallet) => void>) => {
       for (const cb of callbacks) {
@@ -306,6 +328,35 @@ export function installInpageProvider(
     return null
   }
 
+  // Never install the inpage provider or dispatch EIP-6963 CustomEvents inside
+  // an isolated WebExtension content-script world: in Safari/WebKit, CustomEvent
+  // detail objects containing isolated-world provider instances are sanitized to
+  // null when crossing into the main page world, crashing EIP-6963 consumers
+  // (e.g. Uniswap/wagmi evaluating event.detail.info).
+  if (isIsolatedExtensionWorld(win)) {
+    const api = win.browser?.runtime?.id ? win.browser : win.chrome
+    const scriptUrl =
+      typeof api?.runtime?.getURL === 'function'
+        ? String(api.runtime.getURL('inpage.js'))
+        : ''
+    if (scriptUrl && win.document) {
+      const existing = win.document.querySelector?.(
+        'script[data-frank-safari-inpage="true"]',
+      )
+      if (!existing && typeof win.document.createElement === 'function') {
+        const script = win.document.createElement('script')
+        script.src = scriptUrl
+        script.async = false
+        script.setAttribute('data-frank-safari-inpage', 'true')
+        const container = win.document.head || win.document.documentElement
+        if (container) {
+          container.appendChild(script)
+        }
+      }
+    }
+    return null
+  }
+
   if (win.__FRANK_INPAGE_PROVIDER_INSTALLED__ && win.frankEthereum) {
     try {
       Object.setPrototypeOf(win.frankEthereum, FrankInpageProvider.prototype)
@@ -338,3 +389,4 @@ export function installInpageProvider(
 if (typeof window !== 'undefined') {
   installInpageProvider(window as Window & Record<string, any>)
 }
+

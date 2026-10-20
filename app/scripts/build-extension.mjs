@@ -191,13 +191,18 @@ export function transformExtensionIndexHtml(rawHtml, targetDir) {
       document.documentElement.setAttribute('data-ext-mode', extMode);
     }
   } catch {}
+  let booted = false;
+  const startEntry = () => {
+    if (booted) return;
+    booted = true;
+    import('${normalizedEntrySrc}');
+  };
   const boot = () => {
     requestAnimationFrame(() => {
-      setTimeout(() => {
-        import('${normalizedEntrySrc}');
-      }, 0);
+      startEntry();
     });
   };
+  queueMicrotask(startEntry);
   if (typeof document !== 'undefined' && document.readyState === 'complete') {
     boot();
   } else if (typeof window !== 'undefined') {
@@ -384,10 +389,13 @@ ${preloadLinks ? preloadLinks + '\n' : ''}  </head>
           link.href = href;
           document.head.appendChild(link);
         }
+        if (href.includes('/vendor-')) {
+          import(href).catch(() => {});
+        }
       }
     }
   };
-  setTimeout(warmup, 100);
+  setTimeout(warmup, 50);
 })();
 `,
     'utf8',

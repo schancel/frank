@@ -184,6 +184,10 @@ export function applyViewportScaleAndMetrics(
 
   const root = doc?.documentElement
   if (root?.style) {
+    const keyboardShrunkViewport =
+      metrics.visualHeight !== undefined &&
+      metrics.innerHeight > 0 &&
+      metrics.innerHeight - metrics.visualHeight > 40
     if (result.scale !== 1) {
       root.style.setProperty('zoom', String(result.scale))
       ;(root.style as unknown as Record<string, string>).zoom = String(
@@ -197,15 +201,28 @@ export function applyViewportScaleAndMetrics(
       ;(root.style as unknown as Record<string, string>).zoom = ''
       root.style.setProperty('--frank-ui-zoom', '1')
       root.style.removeProperty('--frank-vw')
-      const keyboardShrunkViewport =
-        metrics.visualHeight !== undefined &&
-        metrics.innerHeight > 0 &&
-        metrics.innerHeight - metrics.visualHeight > 40
       if (keyboardShrunkViewport) {
         root.style.setProperty('--frank-vh', `${result.effectiveHeight}px`)
       } else {
         root.style.removeProperty('--frank-vh')
       }
+    }
+    if (keyboardShrunkViewport && metrics.visualHeight !== undefined) {
+      const rawKbOffset = Math.max(
+        0,
+        metrics.innerHeight -
+          metrics.visualHeight -
+          (w?.visualViewport?.offsetTop ?? 0),
+      )
+      const effectiveKbOffset =
+        result.scale > 0 && result.scale !== 1
+          ? Math.round(rawKbOffset / result.scale)
+          : Math.round(rawKbOffset)
+      root.style.setProperty('--frank-kb-offset', `${effectiveKbOffset}px`)
+      root.classList?.add('frank-keyboard-open')
+    } else {
+      root.style.removeProperty('--frank-kb-offset')
+      root.classList?.remove('frank-keyboard-open')
     }
   }
 

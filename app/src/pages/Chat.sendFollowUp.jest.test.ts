@@ -1371,4 +1371,20 @@ describe("Chat.vue: the conversation's stamp is the user's own choice", () => {
     })
     expect(self.sendDirectMessage.mock.calls[0][0].stampValue).toBe(0n)
   })
+
+  it('pins chat scroll to bottom when visualViewport resizes while near bottom or focusing composer', () => {
+    const pinScrollToBottom = jest.fn()
+    const resizeHandler = jest.fn()
+    const self = fakeThis({
+      bottom: false,
+      followBottom: false,
+      hasComposeFocus: () => true,
+      pinScrollToBottom,
+      resizeHandler,
+      $nextTick: (cb: () => void) => cb(),
+    })
+    methods.onVisualViewportResize.call(self)
+    expect(resizeHandler).toHaveBeenCalledTimes(1)
+    expect(pinScrollToBottom).toHaveBeenCalledTimes(2)
+  })
 })

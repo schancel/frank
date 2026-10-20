@@ -96,6 +96,13 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(manifest.content_security_policy).toEqual({
       extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
     })
+    expect(manifest.content_scripts).toEqual([
+      {
+        matches: ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*'],
+        js: ['content.js'],
+        run_at: 'document_start',
+      },
+    ])
     expect(manifest.web_accessible_resources).toEqual([
       {
         resources: ['inpage.js'],
@@ -845,6 +852,77 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       localStorage.removeItem(EXT_LAST_ROUTE_STORAGE_KEY)
     }
   })
+
+  it('prevents isolated extension content-script world from dispatching null-detail EIP-6963 events on Safari and mounts main-world inpage.js', () => {
+    document
+      .querySelectorAll('script[data-frank-safari-inpage="true"]')
+      .forEach(el => el.remove())
+
+    const announced: CustomEvent[] = []
+    const isolatedWin: any = {
+      browser: {
+        runtime: {
+          id: 'safari-ext-id',
+          getURL: (p: string) => `safari-web-extension://safari-ext-id/${p}`,
+        },
+      },
+      document,
+      addEventListener: jest.fn(),
+      dispatchEvent: jest.fn((ev: CustomEvent) => {
+        announced.push(ev)
+        return true
+      }),
+    }
+
+    const res = installInpageProvider(isolatedWin)
+    expect(res).toBeNull()
+    expect(isolatedWin.__FRANK_INPAGE_PROVIDER_INSTALLED__).toBeUndefined()
+    expect(announced).toHaveLength(0)
+
+    const injected = document.querySelector(
+      'script[data-frank-safari-inpage="true"]',
+    ) as HTMLScriptElement | null
+    expect(injected).not.toBeNull()
+    expect(injected?.src).toBe(
+      'safari-web-extension://safari-ext-id/inpage.js',
+    )
+    injected?.remove()
+
+    // Also verify deferred mount when document.head and document.documentElement are initially null at document_start
+    const docListeners: Record<string, Array<() => void>> = {}
+    const container = document.createElement('head')
+    const earlyDoc: any = {
+      head: null,
+      documentElement: null,
+      querySelector: () => null,
+      createElement: (tag: string) => document.createElement(tag),
+      addEventListener: (type: string, cb: () => void) => {
+        docListeners[type] = docListeners[type] || []
+        docListeners[type].push(cb)
+      },
+      removeEventListener: jest.fn(),
+    }
+    const earlyWin: any = {
+      document: earlyDoc,
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+    }
+    const scriptEl = ensureSafariFallbackInpageScript(earlyWin, {
+      browser: {
+        runtime: {
+          id: 'safari-ext-id',
+          getURL: (p: string) => `safari-web-extension://safari-ext-id/${p}`,
+        },
+      },
+    })
+    expect(scriptEl).not.toBeNull()
+    expect(container.contains(scriptEl)).toBe(false)
+
+    earlyDoc.documentElement = container
+    docListeners.readystatechange?.[0]?.()
+    expect(container.contains(scriptEl)).toBe(true)
+  })
 })
+
 
 

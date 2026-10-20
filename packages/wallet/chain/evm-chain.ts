@@ -2933,12 +2933,23 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             });
             // State of the earlier send code is never silently ignored: named once, with how
             // to reset it. Nothing is migrated or deleted.
-            if (storageLocation !== undefined)
-              await noticeOldLinkState(storageLocation);
-            const messages =
-              storageLocation !== undefined
-                ? await LevelOutgoingMessageStore.open(storageLocation)
-                : new MemoryOutgoingMessageStore();
+            let messages: OutgoingMessageStore;
+            if (storageLocation !== undefined) {
+              const [oldLinkResult, outgoingResult] = await Promise.allSettled([
+                noticeOldLinkState(storageLocation),
+                LevelOutgoingMessageStore.open(storageLocation),
+              ]);
+              if (outgoingResult.status === "fulfilled") {
+                canonicalLinks = outgoingResult.value;
+              }
+              if (oldLinkResult.status === "rejected")
+                throw oldLinkResult.reason;
+              if (outgoingResult.status === "rejected")
+                throw outgoingResult.reason;
+              messages = outgoingResult.value;
+            } else {
+              messages = new MemoryOutgoingMessageStore();
+            }
             canonicalLinks = messages;
             const messagingOwner: CanonicalMessagingOwner = {
               installedNetworkTag,

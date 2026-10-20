@@ -1095,6 +1095,11 @@ export default defineComponent({
   container-type: inline-size;
 }
 
+:global(html.frank-keyboard-open) .chat-input-toolbar {
+  min-height: 52px;
+  padding-bottom: 6px !important;
+}
+
 .chat-input-bottom-bar {
   min-height: 38px;
   gap: 8px;

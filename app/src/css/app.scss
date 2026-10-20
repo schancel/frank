@@ -303,6 +303,18 @@ body,
   overflow: hidden !important;
 }
 
+.q-layout .q-footer {
+  bottom: var(--frank-kb-offset, 0px) !important;
+}
+
+html.frank-keyboard-open {
+  .q-layout .q-footer .chat-input-toolbar,
+  .chat-input-toolbar {
+    min-height: 52px;
+    padding-bottom: 6px !important;
+  }
+}
+
 // Standalone pages (Setup, Onboard, AddContact, IdentityQrPage, Send, SendContact, Receive,
 // AddTopic, ChatPlaceholder, ChatInfoView) do not place `.overflow-hidden` on their
 // `<q-page-container>`. Because `.q-layout` clamps overflow, `.q-page-container` must bound

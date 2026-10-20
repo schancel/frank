@@ -496,6 +496,7 @@ export default defineComponent({
       this.isDragging = val
     },
     syncMobileViewport() {
+      this.onWindowScroll()
       applyViewportScaleAndMetrics()
       this.onWindowScroll()
     },
@@ -697,6 +698,15 @@ export default defineComponent({
   max-height: 100vh;
   max-height: var(--frank-vh, 100dvh);
   overflow: hidden;
+}
+
+.q-layout .q-footer {
+  bottom: var(--frank-kb-offset, 0px) !important;
+}
+
+html.frank-keyboard-open .q-layout .q-footer .chat-input-toolbar {
+  min-height: 52px;
+  padding-bottom: 6px !important;
 }
 
 .q-layout.frank-has-mobile-bottom-nav {

@@ -1,8 +1,11 @@
 import {
+  ExtensionLaunchMode,
+  FRANK_EXT_LAUNCH_MODE_KEY,
   getRawExtensionApi,
   isBrowserExtensionRuntime,
   onRuntimeMessage,
   openCompanionPanel,
+  openExtensionInWindow,
 } from './runtime-adapter'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from './inpage'
 import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from './content'
@@ -31,6 +34,7 @@ export interface BackgroundBridgeState {
   pendingApprovals: Map<string, PendingDappApproval>
   syncedState: SyncedExtensionState | null
   openPanelOnActionClick: boolean
+  launchMode: ExtensionLaunchMode
 }
 
 const APPROVAL_REQUIRED_METHODS = new Set([
@@ -46,6 +50,9 @@ const APPROVAL_REQUIRED_METHODS = new Set([
 export function createBackgroundBridgeState(
   overrides: Partial<BackgroundBridgeState> = {},
 ): BackgroundBridgeState {
+  const launchMode: ExtensionLaunchMode =
+    overrides.launchMode ??
+    (overrides.openPanelOnActionClick ? 'sidepanel' : 'popup')
   return {
     chainIdHex: overrides.chainIdHex ?? '0x279f',
     activePersonaAddress:
@@ -55,7 +62,9 @@ export function createBackgroundBridgeState(
     pendingApprovals:
       overrides.pendingApprovals ?? new Map<string, PendingDappApproval>(),
     syncedState: overrides.syncedState ?? null,
-    openPanelOnActionClick: overrides.openPanelOnActionClick ?? false,
+    openPanelOnActionClick:
+      overrides.openPanelOnActionClick ?? launchMode === 'sidepanel',
+    launchMode,
   }
 }
 
@@ -84,6 +93,119 @@ export function configureSidePanelBehavior(
   return false
 }
 
+/**
+ * Cross-Browser Extension Renderer Process & JS Bytecode Cache Keepalive
+ *
+ * Why extension popups (such as MetaMask or Phantom) traditionally suffer from 1–2s open latency:
+ * 1. When the user closes an extension popup (`index.html?extMode=popup`) and no other HTML
+ *    document from the extension origin is open, the browser's reference count for the extension
+ *    renderer process drops to `0`. Chromium immediately terminates the `chrome-extension://<id>`
+ *    renderer process (`SiteInstance`) and discards its `Blink::MemoryCache` and V8 Isolate;
+ *    Safari (WebKit) and Firefox (Gecko) similarly evict transient popup documents and their
+ *    compiled script caches. On the next toolbar click, the browser has to cold-spawn a renderer
+ *    process and re-parse/re-compile several megabytes of JS from scratch.
+ * 2. In addition, synchronous `<script type="module">` tags in `<head>` block `window.onload`
+ *    until the entire static import graph finishes evaluating, preventing the browser from even
+ *    painting the popup rectangle until JS execution completes.
+ *
+ * How we keep popup opens instantaneous across Chrome, Safari, and Firefox:
+ * - `build-extension.mjs` transforms `index.html` so the 400x600 popup shell paints in `< 10ms`
+ *   and defers the entry `import()` until after `window.onload` + `requestAnimationFrame`.
+ * - `ensureOffscreenWarmup()` pins a lightweight `offscreen.html` document (which preloads all
+ *   split `./assets/*.js` and `./assets/*.css` chunks without mounting `#q-app`) in the shared
+ *   extension renderer process:
+ *     a) Chromium (Chrome / Brave / Edge): `background.js` runs in a Service Worker without a DOM,
+ *        so we use `chrome.offscreen.createDocument({ url: 'offscreen.html', ... })` to keep an
+ *        offscreen document alive in the exact same `SiteInstance`, V8 Isolate, and `MemoryCache`
+ *        as the popup.
+ *     b) Safari (WebKit / JavaScriptCore) & Firefox (Gecko / SpiderMonkey): when `chrome.offscreen`
+ *        is unavailable and a background DOM document exists (`_generated_background_page.html`),
+ *        we append a hidden `<iframe id="frank-warmup-frame" src="offscreen.html">` into
+ *        `document.body`. Because the background page shares the `safari-web-extension://<id>` /
+ *        `moz-extension://<id>` WebContent process, preloading `offscreen.html` inside it keeps
+ *        all parsed ES modules and JSC/SpiderMonkey bytecode warm in RAM between popup clicks.
+ */
+export async function ensureOffscreenWarmup(
+  runtimeScope?: Record<string, any>,
+): Promise<boolean> {
+  const scope =
+    runtimeScope ??
+    (typeof globalThis !== 'undefined'
+      ? (globalThis as Record<string, any>)
+      : {})
+  const api = getRawExtensionApi(scope)
+
+  // 1. Chromium MV3 Offscreen Document API (Service Worker background context)
+  if (
+    api &&
+    api.offscreen &&
+    typeof api.offscreen.createDocument === 'function'
+  ) {
+    try {
+      if (typeof api.offscreen.hasDocument === 'function') {
+        const exists = await api.offscreen.hasDocument()
+        if (exists) {
+          return true
+        }
+      }
+      await api.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['DOM_PARSER'],
+        justification:
+          'Keep extension renderer process and V8 module cache warm for instant popup open',
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // 2. Safari (WebKit) & Firefox (Gecko) background DOM window fallback (<iframe id="frank-warmup-frame">)
+  const doc =
+    scope.document ??
+    (typeof document !== 'undefined' ? document : undefined)
+  if (doc && typeof doc.createElement === 'function') {
+    const container = doc.body ?? doc.documentElement
+    if (container && typeof container.appendChild === 'function') {
+      try {
+        const existing =
+          typeof doc.getElementById === 'function'
+            ? doc.getElementById('frank-warmup-frame')
+            : null
+        if (existing) {
+          return true
+        }
+        const iframe = doc.createElement('iframe')
+        iframe.id = 'frank-warmup-frame'
+        const warmupUrl =
+          api && typeof api.runtime?.getURL === 'function'
+            ? String(api.runtime.getURL('offscreen.html'))
+            : 'offscreen.html'
+        iframe.src = warmupUrl
+        if (iframe.style) {
+          iframe.style.display = 'none'
+          iframe.style.width = '0'
+          iframe.style.height = '0'
+          iframe.style.border = '0'
+        }
+        if (typeof iframe.setAttribute === 'function') {
+          iframe.setAttribute(
+            'style',
+            'display:none;width:0;height:0;border:0',
+          )
+          iframe.setAttribute('aria-hidden', 'true')
+        }
+        container.appendChild(iframe)
+        return true
+      } catch {
+        return false
+      }
+    }
+  }
+
+  return false
+}
+
 export function installBackgroundBridge(
   runtimeScope?: Record<string, any>,
   state: BackgroundBridgeState = createBackgroundBridgeState(),
@@ -92,28 +214,42 @@ export function installBackgroundBridge(
   dispose: () => void
 } {
   configureSidePanelBehavior(runtimeScope, state.openPanelOnActionClick)
+  void ensureOffscreenWarmup(runtimeScope)
 
   const api = getRawExtensionApi(runtimeScope)
   if (api?.storage?.local?.get) {
     try {
       const maybeStored = api.storage.local.get([
         'frankOpenPanelOnActionClick',
+        FRANK_EXT_LAUNCH_MODE_KEY,
         'frankSyncedState',
       ])
       if (maybeStored && typeof maybeStored.then === 'function') {
         maybeStored
           .then((stored: Record<string, any> | undefined) => {
+            if (!stored) return
+            const storedMode = stored[FRANK_EXT_LAUNCH_MODE_KEY]
             if (
-              stored &&
-              typeof stored.frankOpenPanelOnActionClick === 'boolean'
+              storedMode === 'popup' ||
+              storedMode === 'sidepanel' ||
+              storedMode === 'window'
             ) {
+              state.launchMode = storedMode
+            }
+            if (typeof stored.frankOpenPanelOnActionClick === 'boolean') {
               state.openPanelOnActionClick = stored.frankOpenPanelOnActionClick
+              if (stored.frankOpenPanelOnActionClick && !storedMode) {
+                state.launchMode = 'sidepanel'
+              }
               configureSidePanelBehavior(
                 runtimeScope,
                 state.openPanelOnActionClick,
               )
+            } else if (storedMode === 'sidepanel') {
+              state.openPanelOnActionClick = true
+              configureSidePanelBehavior(runtimeScope, true)
             }
-            if (stored?.frankSyncedState && !state.syncedState) {
+            if (stored.frankSyncedState && !state.syncedState) {
               state.syncedState = stored.frankSyncedState
             }
           })
@@ -135,12 +271,14 @@ export function installBackgroundBridge(
     ) {
       const enabled = Boolean(message.openPanelOnActionClick)
       state.openPanelOnActionClick = enabled
+      state.launchMode = enabled ? 'sidepanel' : 'popup'
       const configured = configureSidePanelBehavior(runtimeScope, enabled)
       const extApi = getRawExtensionApi(runtimeScope)
       if (extApi?.storage?.local?.set) {
         try {
           await extApi.storage.local.set({
             frankOpenPanelOnActionClick: enabled,
+            [FRANK_EXT_LAUNCH_MODE_KEY]: state.launchMode,
           })
         } catch {
           // Ignore storage errors
@@ -151,6 +289,7 @@ export function installBackgroundBridge(
           ok: true,
           configured,
           openPanelOnActionClick: enabled,
+          launchMode: state.launchMode,
         },
       }
     }
@@ -163,6 +302,73 @@ export function installBackgroundBridge(
         result: {
           ok: true,
           openPanelOnActionClick: state.openPanelOnActionClick,
+          launchMode: state.launchMode,
+        },
+      }
+    }
+
+    if (
+      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+      message.type === 'set-launch-mode'
+    ) {
+      const mode: ExtensionLaunchMode =
+        message.launchMode === 'sidepanel' || message.launchMode === 'window'
+          ? message.launchMode
+          : 'popup'
+      state.launchMode = mode
+      state.openPanelOnActionClick = mode === 'sidepanel'
+      const configured = configureSidePanelBehavior(
+        runtimeScope,
+        state.openPanelOnActionClick,
+      )
+      const extApi = getRawExtensionApi(runtimeScope)
+      if (extApi?.storage?.local?.set) {
+        try {
+          await extApi.storage.local.set({
+            [FRANK_EXT_LAUNCH_MODE_KEY]: mode,
+            frankOpenPanelOnActionClick: state.openPanelOnActionClick,
+          })
+        } catch {
+          // Ignore storage errors
+        }
+      }
+      if (message.openNow) {
+        if (mode === 'sidepanel') {
+          await openCompanionPanel(
+            {
+              windowId: message.windowId ?? sender?.tab?.windowId,
+              tabId: message.tabId ?? sender?.tab?.id,
+            },
+            runtimeScope,
+          )
+        } else if (mode === 'window') {
+          await openExtensionInWindow(message.options ?? {}, runtimeScope)
+        }
+      }
+      return {
+        result: {
+          ok: true,
+          configured,
+          launchMode: state.launchMode,
+          openPanelOnActionClick: state.openPanelOnActionClick,
+        },
+      }
+    }
+
+    if (
+      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+      message.type === 'open-extension-window'
+    ) {
+      state.launchMode = 'window'
+      const res = await openExtensionInWindow(
+        message.options ?? {},
+        runtimeScope,
+      )
+      return {
+        result: {
+          ok: res.opened,
+          ...res,
+          launchMode: state.launchMode,
         },
       }
     }

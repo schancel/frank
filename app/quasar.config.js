@@ -19,11 +19,13 @@ import stdLibBrowser from 'node-stdlib-browser'
 import publicClientEnv from './config/public-client-env.cjs'
 import relayDevProxyConfig from './config/relay-dev-proxy.cjs'
 import brandConfig from './config/brand.cjs'
+import manualChunksConfig from './config/manual-chunks.cjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const { filterPublicClientEnv } = publicClientEnv
 const { relayDevProxy } = relayDevProxyConfig
 const { resolveAppBrand } = brandConfig
+const { resolveManualChunk, stripSourceMappingUrlComments } = manualChunksConfig
 const activeBrand = resolveAppBrand(process.env)
 process.env.QCLI_APP_BRAND = activeBrand.id
 process.env.QCLI_APP_BRAND_NAME = activeBrand.productName
@@ -396,6 +398,38 @@ export default configure(ctx => {
         protobufCjsInterop(),
         serveDocsPlugin(),
         brandPublicIconsPlugin(activeBrand),
+        {
+          name: 'frank:strip-dangling-sourcemaps',
+          transform(code) {
+            if (typeof code !== 'string' || !code.includes('sourceMappingURL=')) {
+              return null
+            }
+            return {
+              code: stripSourceMappingUrlComments(code),
+              map: null,
+            }
+          },
+          generateBundle(_options, bundle) {
+            if (ctx.dev) return
+            for (const [fileName, item] of Object.entries(bundle)) {
+              if (fileName.endsWith('.map')) {
+                delete bundle[fileName]
+                continue
+              }
+              if (item && item.type === 'chunk' && typeof item.code === 'string') {
+                item.code = stripSourceMappingUrlComments(item.code)
+                item.map = null
+              } else if (
+                item &&
+                item.type === 'asset' &&
+                typeof item.source === 'string' &&
+                (fileName.endsWith('.js') || fileName.endsWith('.css'))
+              ) {
+                item.source = stripSourceMappingUrlComments(item.source)
+              }
+            }
+          },
+        },
       ],
 
       // Vite equivalent of webpack's `extendWebpack`'s `cfg.resolve.modules` directory-prepend
@@ -551,6 +585,24 @@ export default configure(ctx => {
           'vcf',
           'vue-i18n',
         )
+
+        viteConf.build = viteConf.build || {}
+        viteConf.build.sourcemap = Boolean(ctx.dev)
+        viteConf.build.rollupOptions = viteConf.build.rollupOptions || {}
+        const prevOutput = viteConf.build.rollupOptions.output
+        if (Array.isArray(prevOutput)) {
+          viteConf.build.rollupOptions.output = prevOutput.map(out => ({
+            ...out,
+            sourcemap: Boolean(ctx.dev),
+            manualChunks: out.manualChunks || resolveManualChunk,
+          }))
+        } else {
+          viteConf.build.rollupOptions.output = {
+            ...(prevOutput || {}),
+            sourcemap: Boolean(ctx.dev),
+            manualChunks: prevOutput?.manualChunks || resolveManualChunk,
+          }
+        }
       },
     },
 

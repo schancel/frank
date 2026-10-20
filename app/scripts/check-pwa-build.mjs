@@ -40,8 +40,8 @@ assert(
   'Built index.html must link manifest.json',
 )
 assert(
-  indexHtml.includes('interactive-widget=resizes-content'),
-  'Built index.html viewport must include interactive-widget=resizes-content for Android soft-keyboard layout resize',
+  !indexHtml.includes('interactive-widget='),
+  'Built index.html viewport must not include interactive-widget in static HTML (prevents Safari unrecognized viewport key error)',
 )
 assert(
   !indexHtml.includes('name="theme-color"'),

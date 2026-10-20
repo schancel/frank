@@ -29,6 +29,38 @@
       @setupCompleted="$emit('setupCompleted')"
     />
     <div
+      v-if="isExtensionPopup"
+      class="frank-ext-popup-utility-bar row items-center no-wrap q-gutter-xs"
+      data-testid="ext-popup-utility-bar"
+    >
+      <q-btn
+        flat
+        dense
+        round
+        size="sm"
+        icon="view_sidebar"
+        :aria-label="extOpenSidePanelLabel"
+        :title="extOpenSidePanelLabel"
+        data-testid="ext-open-sidepanel-btn"
+        @click="openExtensionSidePanel"
+      >
+        <q-tooltip>{{ extOpenSidePanelLabel }}</q-tooltip>
+      </q-btn>
+      <q-btn
+        flat
+        dense
+        round
+        size="sm"
+        icon="open_in_new"
+        :aria-label="extPopoutWindowLabel"
+        :title="extPopoutWindowLabel"
+        data-testid="ext-popout-window-btn"
+        @click="popOutExtensionWindow"
+      >
+        <q-tooltip>{{ extPopoutWindowLabel }}</q-tooltip>
+      </q-btn>
+    </div>
+    <div
       v-if="showMobileBottomNav"
       class="frank-mobile-bottom-nav row items-center justify-around no-wrap"
       data-testid="mobile-bottom-nav"
@@ -133,6 +165,12 @@ import {
   applyViewportScaleAndMetrics,
   getEffectiveScreenWidth,
 } from '../utils/mobile-viewport-scale'
+import {
+  openCompanionPanel,
+  openExtensionInWindow,
+  sendRuntimeMessage,
+} from '../../src-bex/runtime-adapter'
+import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../src-bex/inpage'
 
 import LeftDrawer from '../components/panels/LeftDrawer.vue'
 
@@ -495,6 +533,52 @@ export default defineComponent({
         window.scrollTo(0, 0)
       }
     },
+    async openExtensionSidePanel() {
+      const res = await openCompanionPanel()
+      try {
+        await sendRuntimeMessage({
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'set-sidepanel-behavior',
+          openPanelOnActionClick: true,
+        })
+      } catch {
+        // Ignore runtime message errors outside extension runtime
+      }
+      if (
+        res.opened &&
+        typeof window !== 'undefined' &&
+        typeof window.close === 'function'
+      ) {
+        try {
+          window.close()
+        } catch {
+          // Ignore window.close errors in restricted contexts
+        }
+      }
+    },
+    async popOutExtensionWindow() {
+      const res = await openExtensionInWindow()
+      try {
+        await sendRuntimeMessage({
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'set-launch-mode',
+          launchMode: 'window',
+        })
+      } catch {
+        // Ignore runtime message errors outside extension runtime
+      }
+      if (
+        res.opened &&
+        typeof window !== 'undefined' &&
+        typeof window.close === 'function'
+      ) {
+        try {
+          window.close()
+        } catch {
+          // Ignore window.close errors in restricted contexts
+        }
+      }
+    },
   },
   computed: {
     screenWidth(): number {
@@ -509,6 +593,36 @@ export default defineComponent({
     },
     currentRoutePath(): string {
       return this.$router?.currentRoute?.value?.path ?? ''
+    },
+    isExtensionPopup(): boolean {
+      const routeQueryMode = (
+        this.$router?.currentRoute?.value?.query as
+          | Record<string, unknown>
+          | undefined
+      )?.extMode
+      if (routeQueryMode === 'popup') {
+        return true
+      }
+      if (
+        typeof document !== 'undefined' &&
+        document.documentElement?.getAttribute('data-ext-mode') === 'popup'
+      ) {
+        return true
+      }
+      if (
+        typeof window !== 'undefined' &&
+        typeof window.location?.search === 'string' &&
+        window.location.search.includes('extMode=popup')
+      ) {
+        return true
+      }
+      return false
+    },
+    extOpenSidePanelLabel(): string {
+      return 'Open in Side Panel'
+    },
+    extPopoutWindowLabel(): string {
+      return 'Pop Out Window'
     },
     showMobileBottomNav(): boolean {
       const setup = Boolean(
@@ -558,6 +672,22 @@ export default defineComponent({
 </script>
 
 <style lang="scss">
+.frank-ext-popup-utility-bar {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  z-index: 1200;
+  padding: 2px 4px;
+  border-radius: 999px;
+  background: rgba(250, 246, 243, 0.92);
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  backdrop-filter: blur(6px);
+}
+
+body.body--dark .frank-ext-popup-utility-bar {
+  background: rgba(24, 24, 24, 0.92);
+  border-color: rgba(255, 255, 255, 0.16);
+}
 .q-layout {
   width: var(--frank-vw, 100%);
   height: 100vh;

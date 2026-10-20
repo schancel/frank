@@ -83,8 +83,16 @@ export function isBrowserExtensionRuntime(
   return getExtensionRuntime(globalScope).isExtension
 }
 
+export type ExtensionLaunchMode = 'popup' | 'sidepanel' | 'window'
+
+export const FRANK_EXT_LAUNCH_MODE_KEY = 'frank_ext_launch_mode'
+
 export async function openCompanionPanel(
-  options: { windowId?: number; tabId?: number } = {},
+  options: {
+    windowId?: number
+    tabId?: number
+    persistSidePanelOnActionClick?: boolean
+  } = {},
   globalScope?: Record<string, any>,
 ): Promise<{
   opened: boolean
@@ -96,8 +104,48 @@ export async function openCompanionPanel(
   }
 
   if (api.sidePanel && typeof api.sidePanel.open === 'function') {
+    if (options.persistSidePanelOnActionClick !== false) {
+      if (typeof api.sidePanel.setPanelBehavior === 'function') {
+        try {
+          await Promise.resolve(
+            api.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }),
+          ).catch(() => {})
+        } catch {
+          // Ignore sidePanel behavior errors
+        }
+      }
+      if (typeof api.storage?.local?.set === 'function') {
+        try {
+          await Promise.resolve(
+            api.storage.local.set({
+              [FRANK_EXT_LAUNCH_MODE_KEY]: 'sidepanel',
+              frankOpenPanelOnActionClick: true,
+            }),
+          ).catch(() => {})
+        } catch {
+          // Ignore storage errors
+        }
+      }
+    }
+
+    let resolvedWindowId = options.windowId
+    if (
+      resolvedWindowId === undefined &&
+      options.tabId === undefined &&
+      typeof api.windows?.getCurrent === 'function'
+    ) {
+      try {
+        const currentWin = await api.windows.getCurrent()
+        if (currentWin && typeof currentWin.id === 'number') {
+          resolvedWindowId = currentWin.id
+        }
+      } catch {
+        // Ignore window lookup errors
+      }
+    }
+
     await api.sidePanel.open({
-      ...(options.windowId !== undefined ? { windowId: options.windowId } : {}),
+      ...(resolvedWindowId !== undefined ? { windowId: resolvedWindowId } : {}),
       ...(options.tabId !== undefined ? { tabId: options.tabId } : {}),
     })
     return { opened: true, mode: 'sidePanel' }
@@ -224,21 +272,33 @@ export function getExtensionResourceUrl(
   return String(api.runtime.getURL(resourcePath))
 }
 
-export async function openExtensionWindow(
+export async function openExtensionInWindow(
   options: { path?: string; width?: number; height?: number } = {},
   globalScope: Record<string, any> = typeof globalThis !== 'undefined'
     ? (globalThis as Record<string, any>)
     : {},
 ): Promise<{
   opened: boolean
-  mode: 'window' | 'noop'
+  mode: 'window' | 'tab' | 'noop'
   url: string
 }> {
   const path = options.path ?? 'index.html?extMode=window'
-  const width = options.width ?? 420
-  const height = options.height ?? 720
+  const width = options.width ?? 440
+  const height = options.height ?? 740
   const url = getExtensionResourceUrl(path, globalScope) ?? path
   const api = getRawExtensionApi(globalScope)
+
+  if (typeof api?.storage?.local?.set === 'function') {
+    try {
+      await Promise.resolve(
+        api.storage.local.set({
+          [FRANK_EXT_LAUNCH_MODE_KEY]: 'window',
+        }),
+      ).catch(() => {})
+    } catch {
+      // Ignore storage errors
+    }
+  }
 
   if (api?.windows && typeof api.windows.create === 'function') {
     await api.windows.create({
@@ -248,6 +308,13 @@ export async function openExtensionWindow(
       height,
     })
     return { opened: true, mode: 'window', url }
+  }
+
+  if (api?.tabs && typeof api.tabs.create === 'function') {
+    const tabPath = options.path ?? 'index.html?extMode=tab'
+    const tabUrl = getExtensionResourceUrl(tabPath, globalScope) ?? tabPath
+    await api.tabs.create({ url: tabUrl })
+    return { opened: true, mode: 'tab', url: tabUrl }
   }
 
   const winOpen =
@@ -265,6 +332,19 @@ export async function openExtensionWindow(
   }
 
   return { opened: false, mode: 'noop', url }
+}
+
+export async function openExtensionWindow(
+  options: { path?: string; width?: number; height?: number } = {},
+  globalScope: Record<string, any> = typeof globalThis !== 'undefined'
+    ? (globalThis as Record<string, any>)
+    : {},
+): Promise<{
+  opened: boolean
+  mode: 'window' | 'tab' | 'noop'
+  url: string
+}> {
+  return openExtensionInWindow(options, globalScope)
 }
 
 export async function openExtensionTab(
@@ -302,4 +382,5 @@ export async function openExtensionTab(
 
   return { opened: false, mode: 'noop', url }
 }
+
 

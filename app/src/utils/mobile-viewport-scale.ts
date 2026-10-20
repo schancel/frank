@@ -152,6 +152,36 @@ export function applyViewportScaleAndMetrics(
 
   const w = win ?? (typeof window !== 'undefined' ? window : undefined)
   const doc = w?.document ?? (typeof document !== 'undefined' ? document : null)
+  const nav =
+    (w?.navigator as Navigator | undefined) ??
+    (typeof navigator !== 'undefined' ? navigator : undefined)
+  const ua = typeof nav?.userAgent === 'string' ? nav.userAgent : ''
+  const isChromiumBrowser =
+    /(Chrome|Chromium|Edg|Brave)/i.test(ua) && !/CriOS|FxiOS/i.test(ua)
+  const viewportMeta = doc?.querySelector?.(
+    'meta[name="viewport"]',
+  ) as HTMLMetaElement | null
+  if (viewportMeta) {
+    const currentContent = viewportMeta.getAttribute('content') || ''
+    if (isChromiumBrowser) {
+      if (!currentContent.includes('interactive-widget=')) {
+        viewportMeta.setAttribute(
+          'content',
+          currentContent
+            ? `${currentContent}, interactive-widget=resizes-content`
+            : 'width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content',
+        )
+      }
+    } else if (currentContent.includes('interactive-widget=')) {
+      const cleaned = currentContent
+        .split(',')
+        .map(part => part.trim())
+        .filter(part => part && !part.startsWith('interactive-widget='))
+        .join(', ')
+      viewportMeta.setAttribute('content', cleaned)
+    }
+  }
+
   const root = doc?.documentElement
   if (root?.style) {
     if (result.scale !== 1) {

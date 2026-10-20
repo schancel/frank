@@ -9,7 +9,7 @@
     <meta name="msapplication-tap-highlight" content="no" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, interactive-widget=resizes-content, viewport-fit=cover"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
 
     <link
@@ -134,9 +134,10 @@
     <style>
       html[data-ext-mode='popup'],
       html[data-ext-mode='popup'] body {
-        width: 390px;
-        min-height: 600px;
+        width: 400px;
+        height: 600px;
         margin: 0;
+        padding: 0;
       }
       #q-app:empty {
         display: flex;
@@ -146,10 +147,16 @@
         min-height: 100vh;
         width: 100%;
         box-sizing: border-box;
-        background: var(--q-color-background, #faf6f3);
+        background-color: var(--q-color-background, #faf6f3);
+        background-image: linear-gradient(
+          to bottom,
+          #c8431e 0px,
+          #c8431e 48px,
+          transparent 48px
+        );
       }
       body.body--dark #q-app:empty {
-        background: var(--q-color-background, #121212);
+        background-color: var(--q-color-background, #121212);
       }
       #q-app:empty::before {
         content: '';

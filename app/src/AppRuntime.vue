@@ -59,7 +59,7 @@ import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
 import { useTabCoordinatorStore } from 'src/stores/tab-coordinator'
-import { accountStatus } from './accounts/session'
+import { accountSession, accountStatus } from './accounts/session'
 import { messagingState, messagingWallet } from 'src/utils/identity-session'
 import { activeChain } from '@frank/wallet/chain'
 import {
@@ -68,11 +68,41 @@ import {
 } from './composables/useChatSearchShortcut'
 import { useAppOracleFeed } from 'src/composables/useOracleFeed'
 import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../src-bex/content'
+import { FRANK_DAPP_BRIDGE_CHANNEL } from '../src-bex/inpage'
+import {
+  getRawExtensionApi,
+  isBrowserExtensionRuntime,
+  sendRuntimeMessage,
+} from '../src-bex/runtime-adapter'
 import {
   extractValidBackupShares,
   restoreAccountFromExtensionBundle,
   savePendingExtensionSyncPayload,
 } from 'src/utils/extension-account-sync'
+
+function syncActivePersonaToExtension() {
+  if (!isBrowserExtensionRuntime()) return
+  try {
+    const wallet = accountSession.getWallet() as any
+    const rawAddress =
+      wallet?.mainAccount?.address || wallet?.identity?.address?.raw || ''
+    const address = String(rawAddress).trim()
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return
+    void sendRuntimeMessage({
+      channel: FRANK_DAPP_BRIDGE_CHANNEL,
+      type: 'set-active-persona',
+      address,
+    })
+    const extApi = getRawExtensionApi()
+    if (extApi?.storage?.local?.set) {
+      void Promise.resolve(
+        extApi.storage.local.set({ frankActivePersonaAddress: address }),
+      ).catch(() => {})
+    }
+  } catch {
+    // Wallet not unlocked or mocked in unit tests
+  }
+}
 
 export default defineComponent({
   components: {
@@ -148,6 +178,7 @@ export default defineComponent({
       () => accountStatus.status,
       status => {
         if (status === 'ready') {
+          syncActivePersonaToExtension()
           const runCuratedSync = () => {
             fetchCuratedDefaultContacts({
               relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
@@ -276,6 +307,7 @@ export default defineComponent({
     setupConnections() {
       this.$status.setup = accountStatus.status === 'ready'
       if (this.$status.setup) {
+        syncActivePersonaToExtension()
         if (
           typeof window !== 'undefined' &&
           window.location?.search?.includes('extMode=popup') &&

@@ -29,6 +29,9 @@ export const FRANK_EIP6963_INFO: Eip6963ProviderInfo = {
 export class FrankInpageProvider {
   public readonly isFrank = true
   public readonly isMetaMask = false
+  public selectedAddress: string | null = null
+  public chainId: string | null = '0x279f'
+  public networkVersion: string | null = '10143'
   private listeners = new Map<string, Set<ProviderEventListener>>()
   private pending = new Map<
     string,
@@ -40,6 +43,10 @@ export class FrankInpageProvider {
   constructor(win: Window) {
     this.win = win
     this.win.addEventListener('message', this.handleWindowMessage)
+  }
+
+  public isConnected(): boolean {
+    return true
   }
 
   private handleWindowMessage = (event: MessageEvent) => {
@@ -73,6 +80,16 @@ export class FrankInpageProvider {
     }
 
     if (data.type === 'provider-event' && typeof data.event === 'string') {
+      if (data.event === 'accountsChanged' && Array.isArray(data.payload)) {
+        this.selectedAddress =
+          typeof data.payload[0] === 'string' ? data.payload[0] : null
+      } else if (
+        data.event === 'chainChanged' &&
+        typeof data.payload === 'string'
+      ) {
+        this.chainId = data.payload
+        this.networkVersion = String(parseInt(data.payload, 16))
+      }
       this.emit(data.event, data.payload)
     }
   }
@@ -87,7 +104,7 @@ export class FrankInpageProvider {
     }
 
     const id = `frank-rpc-${++this.requestCounter}-${Date.now()}`
-    return await new Promise<T>((resolve, reject) => {
+    const result = await new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve, reject })
       this.win.postMessage(
         {
@@ -103,6 +120,42 @@ export class FrankInpageProvider {
         '*',
       )
     })
+
+    if (
+      (args.method === 'eth_requestAccounts' ||
+        args.method === 'eth_accounts') &&
+      Array.isArray(result)
+    ) {
+      const prevAddress = this.selectedAddress
+      this.selectedAddress = typeof result[0] === 'string' ? result[0] : null
+      if (args.method === 'eth_requestAccounts' && this.selectedAddress) {
+        this.emit('connect', { chainId: this.chainId ?? '0x279f' })
+        if (prevAddress !== this.selectedAddress) {
+          this.emit('accountsChanged', result)
+        }
+      }
+    } else if (args.method === 'eth_chainId' && typeof result === 'string') {
+      this.chainId = result
+      this.networkVersion = String(parseInt(result, 16))
+    } else if (
+      args.method === 'wallet_switchEthereumChain' ||
+      args.method === 'wallet_addEthereumChain'
+    ) {
+      const rawChainId = Array.isArray(args.params)
+        ? (args.params[0] as any)?.chainId
+        : (args.params as any)?.chainId
+      if (
+        typeof rawChainId === 'string' &&
+        /^0x[0-9a-fA-F]+$/.test(rawChainId.trim())
+      ) {
+        const normalized = '0x' + parseInt(rawChainId.trim(), 16).toString(16)
+        this.chainId = normalized
+        this.networkVersion = String(parseInt(normalized, 16))
+        this.emit('chainChanged', normalized)
+      }
+    }
+
+    return result
   }
 
   public on(event: string, listener: ProviderEventListener): this {

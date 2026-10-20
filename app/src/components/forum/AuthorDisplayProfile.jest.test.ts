@@ -207,3 +207,60 @@ describe.each(components)('author display in $name', component => {
     wrapper.unmount()
   })
 })
+
+describe.each([ForumMessage, ForumPost])(
+  'Forum header & title rendering in $name',
+  component => {
+    it('renders "<time ago> submitted by <name>", strips duplicate leading title from body, and hides "untitled" when title is empty', () => {
+      const wrapper = shallowMount(component, {
+        props: {
+          message: {
+            ...message(ADDRESS),
+            entries: [{ kind: 'post', title: '', message: 'Reply body only' }],
+          },
+          topic: 'help',
+        },
+        global: {
+          renderStubDefaultSlot: true,
+          stubs: {
+            AccountBadge: false,
+            QBtn: true,
+            QCard: true,
+            QCardSection: true,
+            QCardActions: true,
+            QIcon: true,
+            QSeparator: true,
+            QChip: true,
+            QSpace: true,
+            QTooltip: true,
+            QBadge: true,
+            QSpinnerDots: true,
+            RouterLink: true,
+          },
+          mocks: {
+            $q: { dark: { isActive: false } },
+            $t: (key: string) => key,
+          },
+        },
+      })
+      mountedCards.push(wrapper)
+
+      const pillText = wrapper.get('.author-pill').text()
+      expect(pillText).toContain('submitted by')
+      expect(pillText.indexOf('ago')).toBeLessThan(
+        pillText.indexOf('submitted by'),
+      )
+      expect(wrapper.find('.post-title-wrap').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('untitled')
+
+      const htmlWithDupTitle = (wrapper.vm as any).markedMessage(
+        'Breaking Headline\n\nBody paragraph here.',
+        'Breaking Headline',
+      )
+      expect(htmlWithDupTitle).not.toContain('Breaking Headline')
+      expect(htmlWithDupTitle).toContain('Body paragraph here.')
+      wrapper.unmount()
+    })
+  },
+)
+

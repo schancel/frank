@@ -209,33 +209,24 @@ describe('IdentityQrDialog', () => {
     ).toBe(false)
   })
 
-  it('renders Extension View bar (Side Panel, Pop Out, Full Tab, Toolbar toggle) and 1-click account sync when in extension mode', async () => {
+  it('renders 1-click account sync without cluttered Extension View bar when in extension mode', async () => {
     const wrapper = mountDialog({
       inline: true,
       runtimeKindOverride: 'chrome-extension',
     })
     await flushPromises()
 
-    expect(wrapper.find('[data-test="extension-view-bar"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="ext-open-sidepanel-btn"]').exists()).toBe(
-      true,
+    expect(wrapper.find('[data-test="extension-view-bar"]').exists()).toBe(
+      false,
     )
-    expect(wrapper.find('[data-test="ext-open-popout-btn"]').exists()).toBe(
-      true,
-    )
-    expect(wrapper.find('[data-test="ext-open-tab-btn"]').exists()).toBe(true)
-    expect(
-      wrapper.find('[data-test="ext-toggle-sidepanel-default-btn"]').exists(),
-    ).toBe(true)
 
     await wrapper.find('[data-test="sync-account-bridge-btn"]').trigger('click')
     await flushPromises()
     expect(wrapper.emitted('extension-sync')).toHaveLength(1)
-    expect(wrapper.find('[data-test="identity-qr-sync-status"]').text()).toContain(
-      'Synced to signet.mx',
-    )
+    expect(
+      wrapper.find('[data-test="identity-qr-sync-status"]').text(),
+    ).toContain('Synced to signet.mx')
 
-    expect(wrapper.find('.identity-qr-view-grid').exists()).toBe(true)
     expect(wrapper.find('.identity-qr-action-grid').exists()).toBe(true)
     expect(wrapper.find('.identity-qr-sync-grid').exists()).toBe(true)
   })

@@ -71,7 +71,7 @@
           target="_blank"
           v-if="entry.url && !getAnnouncement(entry)"
           class="post-title"
-          >{{ entry.title || 'untitled' }}</a
+          >{{ entry.title?.trim() || entry.url }}</a
         >
         <div
           v-if="entry.url && getAnnouncement(entry)"

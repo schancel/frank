@@ -9,8 +9,11 @@
           class="row items-center wrap text-caption text-grey-7 author-pill"
           style="gap: 4px"
         >
-          <q-icon name="person" size="14px" color="primary" />
-          <span>by</span>
+          <span class="text-caption text-grey-6 row items-center">
+            <span>{{ timestamp }}</span>
+            <q-tooltip>{{ fullTimestamp }}</q-tooltip>
+          </span>
+          <span>{{ submittedByLabel }}</span>
           <q-btn
             no-caps
             flat
@@ -34,11 +37,6 @@
             :bot-role="authorProfile(message)?.botRole"
             :is-bot="authorProfile(message)?.isBot"
           />
-          <span class="text-caption text-grey-6 row items-center q-ml-xs">
-            <q-icon name="schedule" size="13px" class="q-mr-xs" />
-            <span>{{ timestamp }}</span>
-            <q-tooltip>{{ fullTimestamp }}</q-tooltip>
-          </span>
         </div>
         <q-chip
           v-if="message.topic"
@@ -61,7 +59,7 @@
         :key="index"
       >
         <div
-          v-if="entry.kind === 'post'"
+          v-if="entry.kind === 'post' && (entry.title?.trim() || entry.url)"
           class="row items-center justify-between q-px-md q-pt-xs q-pb-xs"
         >
           <div class="col-grow post-title-wrap">
@@ -70,13 +68,13 @@
               target="_blank"
               v-if="entry.url"
               class="post-title text-subtitle1 text-weight-bold"
-              >{{ entry.title || 'untitled' }}</a
+              >{{ entry.title?.trim() || entry.url }}</a
             >
             <router-link
-              v-if="!entry.url"
+              v-if="!entry.url && entry.title?.trim()"
               :to="`/forum/${message.payloadDigest}`"
               class="post-title text-subtitle1 text-weight-bold"
-              >{{ entry.title || 'untitled' }}</router-link
+              >{{ entry.title }}</router-link
             >
           </div>
         </div>
@@ -87,7 +85,7 @@
         >
           <div
             class="mdstyle text-body2"
-            v-html="markedMessage(entry.message)"
+            v-html="markedMessage(entry.message, entry.title)"
           />
           <game-announcement-card
             v-if="getAnnouncement(entry)"
@@ -119,7 +117,7 @@
           <div
             v-if="entry.message"
             class="mdstyle text-body2"
-            v-html="markedMessage(entry.message)"
+            v-html="markedMessage(entry.message, entry.title)"
           />
           <game-announcement-card
             v-if="getAnnouncement(entry)"
@@ -356,11 +354,21 @@ export default defineComponent({
     getAnnouncement(entry?: any) {
       return parseGameAnnouncement(entry, this.message)
     },
-    markedMessage(text?: string) {
-      const cleaned = (text ?? '').replace(
+    markedMessage(text?: string, title?: string) {
+      let cleaned = (text ?? '').replace(
         /<!--\s*GAME_ANNOUNCEMENT:.*?-->/gs,
         '',
       )
+      const trimmedTitle = String(title ?? '').trim()
+      if (trimmedTitle) {
+        const leadingTrimmed = cleaned.trimStart()
+        if (leadingTrimmed.startsWith(trimmedTitle)) {
+          const rest = leadingTrimmed.slice(trimmedTitle.length)
+          if (rest.startsWith('\n') || rest.startsWith('\r\n')) {
+            cleaned = rest.replace(/^(\r?\n)+/, '')
+          }
+        }
+      }
       return renderMarkdown(cleaned, this.$q.dark.isActive)
     },
     formatAddress(address?: string): string {
@@ -637,6 +645,9 @@ export default defineComponent({
     },
   },
   computed: {
+    submittedByLabel(): string {
+      return 'submitted by'
+    },
     displayedVoteWeight(): string {
       const storeMessage = this.message?.payloadDigest
         ? this.getMessage(this.message.payloadDigest)
@@ -658,18 +669,10 @@ export default defineComponent({
       return null
     },
     timestamp() {
-      if (!this.message) {
+      if (!this.message || !this.message.timestamp) {
         return ''
       }
-      const howLongAgo = moment(this.message?.timestamp)
-      return howLongAgo.calendar(null, {
-        sameDay: 'HH:mm:ss',
-        nextDay: '[Tomorrow] HH:mm:ss',
-        nextWeek: 'dddd',
-        lastDay: 'HH:mm:ss',
-        lastWeek: '[Last] dddd',
-        sameElse: 'DD/MM/YYYY',
-      })
+      return moment(this.message.timestamp).fromNow()
     },
     fullTimestamp() {
       return this.message

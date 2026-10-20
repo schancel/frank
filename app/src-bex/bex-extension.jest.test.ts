@@ -249,11 +249,47 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     const chainId = await p1!.request({ method: 'eth_chainId' })
     expect(chainId).toBe('0x279f')
 
-    // Request requiring approval queues in background and opens companion panel
-    const connectRes = await p1!.request<any>({
+    // EIP-1193 eth_requestAccounts resolves directly to string[] for Uniswap/wagmi compatibility
+    const connectEvents: any[] = []
+    const accountsChangedEvents: any[] = []
+    p1!.on('connect', (info: any) => connectEvents.push(info))
+    p1!.on('accountsChanged', (accs: any) => accountsChangedEvents.push(accs))
+
+    const accounts = await p1!.request<string[]>({
       method: 'eth_requestAccounts',
     })
-    expect(connectRes.status).toBe('pending_approval')
+    expect(accounts).toEqual(['0x71C7656EC7ab88b098defB751B7401B5f6d8976F'])
+    expect(p1!.selectedAddress).toBe(
+      '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+    )
+    expect(connectEvents).toEqual([{ chainId: '0x279f' }])
+    expect(accountsChangedEvents).toEqual([
+      ['0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
+    ])
+
+    // Subsequent eth_accounts returns the approved account list
+    const ethAccounts = await p1!.request<string[]>({ method: 'eth_accounts' })
+    expect(ethAccounts).toEqual([
+      '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+    ])
+
+    // wallet_switchEthereumChain and read-only RPC methods succeed for dApp compatibility
+    const switchRes = await p1!.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: '0x1' }],
+    })
+    expect(switchRes).toBeNull()
+    expect(p1!.chainId).toBe('0x1')
+
+    const perms = await p1!.request<any[]>({ method: 'wallet_getPermissions' })
+    expect(perms[0]?.parentCapability).toBe('eth_accounts')
+
+    // Signing requests queue in background and open companion panel
+    const signRes = await p1!.request<any>({
+      method: 'personal_sign',
+      params: ['0x48656c6c6f', '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
+    })
+    expect(signRes.status).toBe('pending_approval')
     expect(sidePanelOpen).toHaveBeenCalled()
     expect(bgState.pendingApprovals.size).toBe(1)
 
@@ -262,7 +298,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       {
         channel: FRANK_DAPP_BRIDGE_CHANNEL,
         type: 'companion-resolve-approval',
-        requestId: connectRes.requestId,
+        requestId: signRes.requestId,
         approved: true,
       },
       mockExtensionScope,
@@ -271,6 +307,19 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(resolved.result.accounts).toEqual([
       '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
     ])
+
+    // Updating active persona from logged-in Frank wallet updates eth_requestAccounts
+    await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'set-active-persona',
+        address: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3',
+      },
+      mockExtensionScope,
+    )
+    expect(bgState.activePersonaAddress).toBe(
+      '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3',
+    )
 
     // Test Safari fallback script injection when provider not yet installed
     const safariScope = {

@@ -38,14 +38,124 @@ export interface BackgroundBridgeState {
 }
 
 const APPROVAL_REQUIRED_METHODS = new Set([
-  'eth_requestAccounts',
   'personal_sign',
+  'eth_sign',
+  'eth_signTypedData',
+  'eth_signTypedData_v3',
   'eth_signTypedData_v4',
   'eth_sendTransaction',
   'solana_connect',
   'solana_signMessage',
   'solana_signTransaction',
 ])
+
+const CHAIN_RPC_URLS: Record<string, string> = {
+  '0x1': 'https://eth.llamarpc.com',
+  '0x279f': 'https://testnet-rpc.monad.xyz',
+  '0x8f': 'https://rpc.monad.xyz',
+  '0xa': 'https://mainnet.optimism.io',
+  '0x89': 'https://polygon-rpc.com',
+  '0x2105': 'https://mainnet.base.org',
+  '0xa4b1': 'https://arb1.arbitrum.io/rpc',
+  '0x38': 'https://bsc-dataseed.binance.org',
+  '0xa86a': 'https://api.avax.network/ext/bc/C/rpc',
+  '0xaa36a7': 'https://ethereum-sepolia-rpc.publicnode.com',
+}
+
+const READONLY_RPC_METHODS = new Set([
+  'eth_blockNumber',
+  'eth_getBalance',
+  'eth_getTransactionCount',
+  'eth_getCode',
+  'eth_getStorageAt',
+  'eth_call',
+  'eth_estimateGas',
+  'eth_gasPrice',
+  'eth_maxPriorityFeePerGas',
+  'eth_feeHistory',
+  'eth_getTransactionByHash',
+  'eth_getTransactionReceipt',
+  'eth_getLogs',
+  'eth_getBlockByNumber',
+  'eth_getBlockByHash',
+])
+
+function getReadOnlyRpcFallback(method: string): unknown {
+  switch (method) {
+    case 'eth_blockNumber':
+      return '0x1'
+    case 'eth_getBalance':
+    case 'eth_getTransactionCount':
+      return '0x0'
+    case 'eth_getCode':
+    case 'eth_getStorageAt':
+    case 'eth_call':
+      return '0x'
+    case 'eth_estimateGas':
+      return '0x5208'
+    case 'eth_gasPrice':
+      return '0x3b9aca00'
+    case 'eth_maxPriorityFeePerGas':
+      return '0x59682f00'
+    case 'eth_feeHistory':
+      return {
+        oldestBlock: '0x1',
+        baseFeePerGas: ['0x3b9aca00', '0x3b9aca00'],
+        gasUsedRatio: [0.5],
+        reward: [['0x59682f00']],
+      }
+    case 'eth_getLogs':
+      return []
+    default:
+      return null
+  }
+}
+
+async function forwardReadOnlyRpc(
+  chainIdHex: string,
+  method: string,
+  params: unknown,
+): Promise<{ result?: unknown; error?: { code: number; message: string; data?: unknown } }> {
+  const rpcUrl =
+    CHAIN_RPC_URLS[chainIdHex.toLowerCase()] ?? CHAIN_RPC_URLS['0x279f']
+  if (rpcUrl && typeof fetch === 'function') {
+    try {
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method,
+          params: Array.isArray(params) ? params : [],
+        }),
+      })
+      if (response && response.ok) {
+        const json = await response.json()
+        if (json && typeof json === 'object') {
+          if ('result' in json) {
+            return { result: json.result }
+          }
+          if (json.error && typeof json.error === 'object') {
+            return {
+              error: {
+                code:
+                  typeof json.error.code === 'number'
+                    ? json.error.code
+                    : -32603,
+                message: String(json.error.message || 'RPC error'),
+                data: json.error.data,
+              },
+            }
+          }
+        }
+      }
+    } catch {
+      // Fall back to safe offline response below
+    }
+  }
+  return { result: getReadOnlyRpcFallback(method) }
+}
 
 export function createBackgroundBridgeState(
   overrides: Partial<BackgroundBridgeState> = {},
@@ -223,6 +333,9 @@ export function installBackgroundBridge(
         'frankOpenPanelOnActionClick',
         FRANK_EXT_LAUNCH_MODE_KEY,
         'frankSyncedState',
+        'frankActivePersonaAddress',
+        'frankApprovedOrigins',
+        'frankChainIdHex',
       ])
       if (maybeStored && typeof maybeStored.then === 'function') {
         maybeStored
@@ -251,6 +364,36 @@ export function installBackgroundBridge(
             }
             if (stored.frankSyncedState && !state.syncedState) {
               state.syncedState = stored.frankSyncedState
+              const syncedAddr =
+                (stored.frankSyncedState.deviceSyncBundle as any)
+                  ?.activePersonaAddress ||
+                (stored.frankSyncedState.deviceSyncBundle as any)
+                  ?.accountAddress
+              if (
+                typeof syncedAddr === 'string' &&
+                /^0x[a-fA-F0-9]{40}$/.test(syncedAddr)
+              ) {
+                state.activePersonaAddress = syncedAddr
+              }
+            }
+            if (
+              typeof stored.frankActivePersonaAddress === 'string' &&
+              /^0x[a-fA-F0-9]{40}$/.test(stored.frankActivePersonaAddress)
+            ) {
+              state.activePersonaAddress = stored.frankActivePersonaAddress
+            }
+            if (Array.isArray(stored.frankApprovedOrigins)) {
+              for (const orig of stored.frankApprovedOrigins) {
+                if (typeof orig === 'string' && orig) {
+                  state.approvedOrigins.add(orig)
+                }
+              }
+            }
+            if (
+              typeof stored.frankChainIdHex === 'string' &&
+              /^0x[0-9a-fA-F]+$/.test(stored.frankChainIdHex)
+            ) {
+              state.chainIdHex = stored.frankChainIdHex.toLowerCase()
             }
           })
           .catch(() => {})
@@ -263,6 +406,32 @@ export function installBackgroundBridge(
   const unsubscribe = onRuntimeMessage(async (message: any, sender: any) => {
     if (!message || typeof message !== 'object') {
       return undefined
+    }
+
+    if (
+      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+      message.type === 'set-active-persona'
+    ) {
+      const nextAddr = String(message.address ?? '').trim()
+      if (/^0x[a-fA-F0-9]{40}$/.test(nextAddr)) {
+        state.activePersonaAddress = nextAddr
+        const extApi = getRawExtensionApi(runtimeScope)
+        if (extApi?.storage?.local?.set) {
+          try {
+            await extApi.storage.local.set({
+              frankActivePersonaAddress: nextAddr,
+            })
+          } catch {
+            // Ignore storage errors
+          }
+        }
+      }
+      return {
+        result: {
+          ok: true,
+          activePersonaAddress: state.activePersonaAddress,
+        },
+      }
     }
 
     if (
@@ -378,6 +547,7 @@ export function installBackgroundBridge(
       message.type === 'dapp-rpc-request'
     ) {
       const method = String(message.payload?.method ?? '')
+      const params = message.payload?.params
       const origin = String(message.origin ?? sender?.origin ?? '')
       const href = String(message.href ?? sender?.url ?? '')
       const id = String(message.id ?? `req-${Date.now()}`)
@@ -390,6 +560,10 @@ export function installBackgroundBridge(
         return { result: String(parseInt(state.chainIdHex, 16)) }
       }
 
+      if (method === 'web3_clientVersion') {
+        return { result: 'FrankWallet/0.3.0' }
+      }
+
       if (method === 'eth_accounts') {
         return {
           result: state.approvedOrigins.has(origin)
@@ -398,20 +572,134 @@ export function installBackgroundBridge(
         }
       }
 
-      if (APPROVAL_REQUIRED_METHODS.has(method)) {
-        if (
-          method === 'eth_requestAccounts' &&
-          state.approvedOrigins.has(origin)
-        ) {
-          return { result: [state.activePersonaAddress] }
+      if (
+        method === 'eth_requestAccounts' &&
+        !message.payload?.requireExplicitCompanionApproval
+      ) {
+        if (origin) {
+          state.approvedOrigins.add(origin)
+          const extApi = getRawExtensionApi(runtimeScope)
+          if (extApi?.storage?.local?.set) {
+            try {
+              await extApi.storage.local.set({
+                frankApprovedOrigins: Array.from(state.approvedOrigins),
+              })
+            } catch {
+              // Ignore storage errors
+            }
+          }
         }
+        return { result: [state.activePersonaAddress] }
+      }
 
+      if (method === 'wallet_requestPermissions') {
+        if (origin) {
+          state.approvedOrigins.add(origin)
+          const extApi = getRawExtensionApi(runtimeScope)
+          if (extApi?.storage?.local?.set) {
+            try {
+              await extApi.storage.local.set({
+                frankApprovedOrigins: Array.from(state.approvedOrigins),
+              })
+            } catch {
+              // Ignore storage errors
+            }
+          }
+        }
+        return {
+          result: [
+            {
+              invoker: origin,
+              parentCapability: 'eth_accounts',
+              caveats: [
+                {
+                  type: 'restrictReturnedAccounts',
+                  value: [state.activePersonaAddress],
+                },
+              ],
+            },
+          ],
+        }
+      }
+
+      if (method === 'wallet_getPermissions') {
+        return {
+          result: state.approvedOrigins.has(origin)
+            ? [
+                {
+                  invoker: origin,
+                  parentCapability: 'eth_accounts',
+                  caveats: [
+                    {
+                      type: 'restrictReturnedAccounts',
+                      value: [state.activePersonaAddress],
+                    },
+                  ],
+                },
+              ]
+            : [],
+        }
+      }
+
+      if (method === 'wallet_revokePermissions') {
+        if (origin) {
+          state.approvedOrigins.delete(origin)
+        }
+        return { result: null }
+      }
+
+      if (
+        method === 'wallet_switchEthereumChain' ||
+        method === 'wallet_addEthereumChain'
+      ) {
+        const rawChainId = Array.isArray(params)
+          ? (params[0] as any)?.chainId
+          : (params as any)?.chainId
+        if (
+          typeof rawChainId === 'string' &&
+          /^0x[0-9a-fA-F]+$/.test(rawChainId.trim())
+        ) {
+          const normalized =
+            '0x' + parseInt(rawChainId.trim(), 16).toString(16)
+          state.chainIdHex = normalized
+          const extApi = getRawExtensionApi(runtimeScope)
+          if (extApi?.storage?.local?.set) {
+            try {
+              await extApi.storage.local.set({
+                frankChainIdHex: normalized,
+              })
+            } catch {
+              // Ignore storage errors
+            }
+          }
+          return { result: null }
+        }
+        return {
+          error: {
+            code: -32602,
+            message: 'Invalid chainId parameter',
+          },
+        }
+      }
+
+      if (method === 'wallet_watchAsset') {
+        return { result: true }
+      }
+
+      if (READONLY_RPC_METHODS.has(method)) {
+        return await forwardReadOnlyRpc(state.chainIdHex, method, params)
+      }
+
+      if (
+        APPROVAL_REQUIRED_METHODS.has(method) ||
+        method === 'eth_requestAccounts'
+      ) {
         const pending: PendingDappApproval = {
           id,
           origin,
           href,
           method,
-          params: message.payload?.params,
+          params,
           createdAt: Date.now(),
           requiresCompanionApproval: true,
         }

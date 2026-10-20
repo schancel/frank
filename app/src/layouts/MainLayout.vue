@@ -34,6 +34,7 @@
       data-testid="ext-popup-utility-bar"
     >
       <q-btn
+        v-if="supportsSidePanel"
         flat
         dense
         round
@@ -166,6 +167,7 @@ import {
   getEffectiveScreenWidth,
 } from '../utils/mobile-viewport-scale'
 import {
+  getExtensionRuntime,
   openCompanionPanel,
   openExtensionInWindow,
   sendRuntimeMessage,
@@ -623,6 +625,9 @@ export default defineComponent({
     },
     extPopoutWindowLabel(): string {
       return 'Pop Out Window'
+    },
+    supportsSidePanel(): boolean {
+      return getExtensionRuntime().kind !== 'safari-extension'
     },
     showMobileBottomNav(): boolean {
       const setup = Boolean(

@@ -293,6 +293,79 @@
                     {{ $t('settings.uiScaleHint') }}
                   </div>
                 </div>
+                <div
+                  v-if="isExtensionMode"
+                  class="q-mb-lg"
+                  data-test="extension-view-settings-section"
+                >
+                  <div class="text-subtitle2 q-mb-xs">
+                    {{ extViewLabels.sectionTitle }}
+                  </div>
+                  <div class="text-caption text-grey q-mb-sm">
+                    {{ extViewLabels.sectionSubtitle }}
+                  </div>
+                  <div class="row q-gutter-sm">
+                    <q-chip
+                      clickable
+                      outline
+                      icon="web_asset"
+                      :selected="extensionLaunchMode === 'popup'"
+                      :color="extensionLaunchMode === 'popup' ? 'primary' : ''"
+                      class="cursor-pointer"
+                      data-test="ext-mode-chip-popup"
+                      @click="selectExtensionLaunchMode('popup')"
+                    >
+                      <span>{{ extViewLabels.popupMode }}</span>
+                    </q-chip>
+                    <q-chip
+                      v-if="supportsSidePanel"
+                      clickable
+                      outline
+                      icon="view_sidebar"
+                      :selected="extensionLaunchMode === 'sidepanel'"
+                      :color="
+                        extensionLaunchMode === 'sidepanel' ? 'primary' : ''
+                      "
+                      class="cursor-pointer"
+                      data-test="ext-mode-chip-sidepanel"
+                      @click="selectExtensionLaunchMode('sidepanel')"
+                    >
+                      <span>{{ extViewLabels.sidepanelMode }}</span>
+                    </q-chip>
+                    <q-chip
+                      clickable
+                      outline
+                      icon="open_in_new"
+                      :selected="extensionLaunchMode === 'window'"
+                      :color="extensionLaunchMode === 'window' ? 'primary' : ''"
+                      class="cursor-pointer"
+                      data-test="ext-mode-chip-window"
+                      @click="selectExtensionLaunchMode('window')"
+                    >
+                      <span>{{ extViewLabels.windowMode }}</span>
+                    </q-chip>
+                  </div>
+                  <div
+                    class="text-caption text-grey q-mt-xs"
+                    data-test="ext-mode-description"
+                  >
+                    {{ extLaunchModeDescription }}
+                  </div>
+                  <div class="row items-center q-mt-sm">
+                    <q-btn
+                      outline
+                      dense
+                      no-caps
+                      size="sm"
+                      icon="tab"
+                      color="primary"
+                      :label="extViewLabels.openFullTabBtn"
+                      :aria-label="extViewLabels.openFullTabBtn"
+                      data-test="ext-open-full-tab-btn"
+                      @click="openInFullBrowserTab"
+                    />
+                  </div>
+                </div>
                 <div class="row">
                   <q-select
                     v-model="locale"
@@ -485,6 +558,14 @@ import PersistentStoragePanel from 'src/components/settings/PersistentStoragePan
 import { activeChain } from '@frank/wallet/chain'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
 import { walletSupport } from 'src/utils/wallet-support'
+import {
+  ExtensionLaunchMode,
+  getExtensionRuntime,
+  isBrowserExtensionRuntime,
+  openExtensionTab,
+  sendRuntimeMessage,
+} from '../../src-bex/runtime-adapter'
+import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../src-bex/inpage'
 const msToMinutes = 60000
 
 const UI_SCALE_OPTIONS: readonly {
@@ -498,6 +579,40 @@ const UI_SCALE_OPTIONS: readonly {
   { value: 130, labelKey: 'settings.uiScale130' },
   { value: 150, labelKey: 'settings.uiScale150' },
 ]
+
+const EXT_VIEW_LABELS = Object.freeze({
+  sectionTitle: 'Extension Toolbar Click Behavior',
+  sectionSubtitle:
+    'Choose how Frank opens when you click its icon in the browser toolbar.',
+  popupMode: 'Popup (400×600)',
+  sidepanelMode: 'Side Panel',
+  windowMode: 'Pop Out Window',
+  openFullTabBtn: 'Open in Full Browser Tab',
+  descPopup:
+    'Clicking the Frank toolbar icon opens the compact 400×600 popup.',
+  descSidepanel:
+    'Clicking the Frank toolbar icon opens the persistent browser Side Panel.',
+  descWindow:
+    'Opens Frank in a standalone 440×740 pop-out window that stays open when clicking away.',
+})
+
+function detectExtensionEnvironment(): boolean {
+  if (isBrowserExtensionRuntime()) return true
+  if (typeof window !== 'undefined' && window.location) {
+    const proto = String(window.location.protocol || '')
+    if (
+      proto === 'chrome-extension:' ||
+      proto === 'safari-web-extension:' ||
+      proto === 'moz-extension:'
+    ) {
+      return true
+    }
+    if (String(window.location.search || '').includes('extMode=')) {
+      return true
+    }
+  }
+  return false
+}
 
 export default defineComponent({
   components: { PersistentStoragePanel, NotificationPermissionPanel },
@@ -528,6 +643,56 @@ export default defineComponent({
         DEFAULT_UI_SCALE,
     )
     const themeOptions = Object.values(SIGNET_THEMES)
+    const isExtensionMode = ref(detectExtensionEnvironment())
+    const supportsSidePanel = computed(
+      () => getExtensionRuntime().kind !== 'safari-extension',
+    )
+    const extensionLaunchMode = ref<ExtensionLaunchMode>('popup')
+    const extLaunchModeDescription = computed(() => {
+      if (extensionLaunchMode.value === 'sidepanel') {
+        return EXT_VIEW_LABELS.descSidepanel
+      }
+      if (extensionLaunchMode.value === 'window') {
+        return EXT_VIEW_LABELS.descWindow
+      }
+      return EXT_VIEW_LABELS.descPopup
+    })
+
+    if (isExtensionMode.value) {
+      void sendRuntimeMessage<Record<string, any>, any>({
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'get-sidepanel-behavior',
+      })
+        .then(res => {
+          const mode = res?.result?.launchMode
+          if (
+            mode === 'popup' ||
+            mode === 'sidepanel' ||
+            mode === 'window'
+          ) {
+            extensionLaunchMode.value = mode
+          }
+        })
+        .catch(() => {})
+    }
+
+    async function selectExtensionLaunchMode(mode: ExtensionLaunchMode) {
+      extensionLaunchMode.value = mode
+      try {
+        await sendRuntimeMessage({
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'set-launch-mode',
+          launchMode: mode,
+          openNow: mode !== 'popup',
+        })
+      } catch {
+        // Ignore outside extension runtime
+      }
+    }
+
+    async function openInFullBrowserTab() {
+      await openExtensionTab()
+    }
 
     onUnmounted(() => {
       if (!isSaved.value) {
@@ -677,6 +842,13 @@ export default defineComponent({
       themeOptions,
       uiScale,
       uiScaleOptions: UI_SCALE_OPTIONS,
+      isExtensionMode,
+      supportsSidePanel,
+      extensionLaunchMode,
+      extViewLabels: EXT_VIEW_LABELS,
+      extLaunchModeDescription,
+      selectExtensionLaunchMode,
+      openInFullBrowserTab,
       updateInterval: ref(storeUpdateInterval.value / msToMinutes),
       // A local draft, not bound to vue-i18n's own global locale -- ticket #156: selecting an
       // option must never affect the app until Save, the same as darkMode/updateInterval above.

@@ -245,6 +245,15 @@ import {
   type ParsedClaimLink,
 } from '../../../packages/wallet/claim-link'
 import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/content'
+import {
+  isBrowserExtensionRuntime,
+  sendRuntimeMessage,
+} from '../../src-bex/runtime-adapter'
+import {
+  clearPendingExtensionSyncPayload,
+  peekPendingExtensionSyncPayload,
+  savePendingExtensionSyncPayload,
+} from '../utils/extension-account-sync'
 
 defineProps<{ myDrawerOpen?: boolean }>()
 const emit = defineEmits(['toggleMyDrawerOpen', 'setupCompleted'])
@@ -297,6 +306,10 @@ async function handleIncomingExtensionBundle(
   if (bundle.displayName && typeof bundle.displayName === 'string') {
     displayName.value = bundle.displayName
   }
+  savePendingExtensionSyncPayload({
+    sasCode: extensionSyncedSasCode.value || undefined,
+    deviceSyncBundle: bundle,
+  })
   const shares = Array.isArray(bundle.backupShares)
     ? bundle.backupShares.filter((s: unknown) => typeof s === 'string' && s.trim())
     : []
@@ -313,6 +326,7 @@ async function handleIncomingExtensionBundle(
         displayName.value.trim() || 'Frank User',
       )
       if (!alive) return
+      clearPendingExtensionSyncPayload()
       await activateStagedAndMigrate(outcome)
     })
   }
@@ -333,7 +347,7 @@ function onExtensionBridgeMessage(event: MessageEvent) {
   }
 }
 
-function connectBrowserExtension() {
+async function connectBrowserExtension() {
   if (typeof window !== 'undefined' && typeof window.postMessage === 'function') {
     window.postMessage(
       {
@@ -345,6 +359,24 @@ function connectBrowserExtension() {
       '*',
     )
   }
+  if (isBrowserExtensionRuntime()) {
+    try {
+      const response = await sendRuntimeMessage<Record<string, any>, any>({
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        type: 'get-synced-state',
+      })
+      const payload =
+        response?.result?.syncedState ?? response?.result ?? response
+      if (payload?.deviceSyncBundle) {
+        await handleIncomingExtensionBundle(
+          payload.deviceSyncBundle,
+          payload.sasCode,
+        )
+      }
+    } catch {
+      // Ignore runtime query errors
+    }
+  }
 }
 
 onMounted(() => {
@@ -352,6 +384,13 @@ onMounted(() => {
     windowHash.value = window.location.hash
     window.addEventListener('hashchange', onWindowHashChange)
     window.addEventListener('message', onExtensionBridgeMessage)
+  }
+  const pending = peekPendingExtensionSyncPayload()
+  if (pending?.deviceSyncBundle) {
+    void handleIncomingExtensionBundle(
+      pending.deviceSyncBundle,
+      pending.sasCode,
+    )
   }
 })
 

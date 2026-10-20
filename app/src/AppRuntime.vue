@@ -67,6 +67,12 @@ import {
   createChatSearchShortcut,
 } from './composables/useChatSearchShortcut'
 import { useAppOracleFeed } from 'src/composables/useOracleFeed'
+import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../src-bex/content'
+import {
+  extractValidBackupShares,
+  restoreAccountFromExtensionBundle,
+  savePendingExtensionSyncPayload,
+} from 'src/utils/extension-account-sync'
 
 export default defineComponent({
   components: {
@@ -257,6 +263,39 @@ export default defineComponent({
       this.$status.setup = accountStatus.status === 'ready'
       if (this.$status.setup) this.loadCuratedDefaults()
     },
+    handleGlobalExtensionSyncMessage(event: MessageEvent) {
+      const data = event?.data
+      if (!data || typeof data !== 'object') return
+      if (
+        data.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
+        data.direction === 'to-pwa' &&
+        (data.type === 'extension-sync-push' || data.type === 'sync-response')
+      ) {
+        const payload = data.payload ?? data.result?.syncedState ?? data.result
+        const bundle = payload?.deviceSyncBundle
+        if (!bundle || typeof bundle !== 'object') return
+        savePendingExtensionSyncPayload({
+          sasCode: String(payload?.sasCode || ''),
+          deviceSyncBundle: bundle,
+        })
+        const currentPath = this.$route?.path || ''
+        if (currentPath === '/onboard') {
+          // Onboard.vue handles restoration and peer/claim migration directly
+          return
+        }
+        const shares = extractValidBackupShares(bundle)
+        if (shares.length >= 2 && accountStatus.status !== 'ready') {
+          void restoreAccountFromExtensionBundle(bundle, {
+            onActivated: () => {
+              this.setupConnections()
+              if (this.$router) {
+                void this.$router.push('/forum')
+              }
+            },
+          })
+        }
+      }
+    },
   },
   created() {
     this.$q.dark.set(this.darkMode)
@@ -277,9 +316,18 @@ export default defineComponent({
   },
   beforeUnmount() {
     document.removeEventListener('keydown', this.shortcutKeyListener)
+    if (typeof window !== 'undefined') {
+      window.removeEventListener(
+        'message',
+        this.handleGlobalExtensionSyncMessage,
+      )
+    }
   },
   mounted() {
     document.addEventListener('keydown', this.shortcutKeyListener)
+    if (typeof window !== 'undefined') {
+      window.addEventListener('message', this.handleGlobalExtensionSyncMessage)
+    }
     // Ticket #370: a returning user's stored seed should survive browser storage cleanup. Fails
     // soft (never throws) and does nothing without an account.
     void usePersistentStorageStore().ensureForAccount()

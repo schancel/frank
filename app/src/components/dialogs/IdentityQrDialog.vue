@@ -48,55 +48,59 @@
         class="q-py-xs q-px-sm"
         data-test="extension-view-bar"
       >
-        <div
-          class="row items-center justify-between q-gutter-xs bg-grey-2 rounded-borders q-px-sm q-py-xs"
-        >
-          <span class="text-caption text-weight-medium text-grey-8">
-            {{ claimUiLabels.extViewLabel }}
-          </span>
-          <div class="row items-center q-gutter-xs">
+        <div class="identity-qr-panel q-pa-xs">
+          <div class="row items-center justify-between q-px-xs q-mb-xs">
+            <span class="text-caption text-weight-bold text-grey-8">
+              {{ claimUiLabels.extViewLabel }}
+            </span>
+          </div>
+          <div class="identity-qr-view-grid">
             <q-btn
-              flat
+              outline
               dense
               no-caps
               size="sm"
               icon="dock_to_right"
               color="primary"
+              class="identity-qr-view-btn"
               :label="claimUiLabels.extSidePanelBtn"
               :aria-label="claimUiLabels.extSidePanelBtn"
               data-test="ext-open-sidepanel-btn"
               @click="openInSidePanel"
             />
             <q-btn
-              flat
+              outline
               dense
               no-caps
               size="sm"
               icon="open_in_new"
               color="primary"
+              class="identity-qr-view-btn"
               :label="claimUiLabels.extPopOutBtn"
               :aria-label="claimUiLabels.extPopOutBtn"
               data-test="ext-open-popout-btn"
               @click="openInPopoutWindow"
             />
             <q-btn
-              flat
+              outline
               dense
               no-caps
               size="sm"
               icon="tab"
               color="primary"
+              class="identity-qr-view-btn"
               :label="claimUiLabels.extFullTabBtn"
               :aria-label="claimUiLabels.extFullTabBtn"
               data-test="ext-open-tab-btn"
               @click="openInFullTab"
             />
             <q-btn
-              flat
+              outline
               dense
               no-caps
               size="sm"
-              :color="alwaysOpenInSidePanel ? 'positive' : 'grey-7'"
+              :color="alwaysOpenInSidePanel ? 'positive' : 'primary'"
+              class="identity-qr-view-btn"
               :label="alwaysSidePanelBtnLabel"
               :aria-label="alwaysSidePanelBtnLabel"
               data-test="ext-toggle-sidepanel-default-btn"
@@ -177,7 +181,7 @@
             no-caps
             color="primary"
             icon="qr_code_scanner"
-            class="full-width q-py-xs"
+            class="full-width identity-qr-secondary-btn"
             :label="claimUiLabels.startCameraBtn"
             :aria-label="claimUiLabels.startCameraBtn"
             data-test="start-qr-camera-btn"
@@ -229,14 +233,15 @@
             />
           </template>
         </q-input>
-        <div class="row q-gutter-xs q-mt-xs">
+        <div class="identity-qr-action-grid q-mt-sm">
           <q-btn
-            flat
+            outline
             dense
             no-caps
             size="sm"
             icon="share"
             color="primary"
+            class="identity-qr-secondary-btn"
             :label="claimUiLabels.copyInviteLink"
             :aria-label="claimUiLabels.copyInviteLink"
             :disable="!resolvedAddress"
@@ -244,12 +249,13 @@
             @click="copyInviteLink"
           />
           <q-btn
-            flat
+            outline
             dense
             no-caps
             size="sm"
             icon="card_giftcard"
             color="primary"
+            class="identity-qr-secondary-btn"
             :label="claimUiLabels.toggleClaimCreator"
             :aria-label="claimUiLabels.toggleClaimCreator"
             :disable="!resolvedAddress"
@@ -259,7 +265,7 @@
         </div>
         <div
           v-if="showClaimLinkCreator"
-          class="q-mt-sm q-pa-sm rounded-borders bg-grey-1"
+          class="q-mt-sm q-pa-sm identity-qr-panel"
           data-test="claim-link-creator-panel"
         >
           <q-input
@@ -278,13 +284,14 @@
             class="q-mb-xs"
             data-test="claim-link-note-input"
           />
-          <div class="row items-center q-gutter-xs">
+          <div class="identity-qr-action-grid q-mt-xs">
             <q-btn
               unelevated
               dense
               no-caps
               size="sm"
               color="primary"
+              class="identity-qr-primary-btn"
               :label="claimUiLabels.generateClaimLink"
               :disable="!resolvedAddress"
               data-test="generate-claim-link-btn"
@@ -292,12 +299,13 @@
             />
             <q-btn
               v-if="generatedClaimLinkUrl"
-              flat
+              outline
               dense
               no-caps
               size="sm"
               icon="content_copy"
               color="primary"
+              class="identity-qr-secondary-btn"
               :label="claimUiLabels.copyClaimLink"
               data-test="copy-claim-link-btn"
               @click="copyGeneratedClaimLink"
@@ -315,10 +323,10 @@
 
         <!-- 1-Click Web App (signet.mx) <-> Browser Extension Account Sync -->
         <div
-          class="q-mt-sm q-pa-sm rounded-borders bg-grey-2"
+          class="q-mt-sm q-pa-sm identity-qr-panel"
           data-test="identity-qr-sync-section"
         >
-          <div class="row items-center justify-between q-gutter-xs">
+          <div class="identity-qr-sync-grid">
             <q-btn
               unelevated
               dense
@@ -326,18 +334,20 @@
               size="sm"
               color="primary"
               icon="sync"
+              class="identity-qr-primary-btn"
               :label="syncBridgeBtnLabel"
               :aria-label="syncBridgeBtnLabel"
               data-test="sync-account-bridge-btn"
               @click="syncAccountOverBridge"
             />
             <q-btn
-              flat
+              outline
               dense
               no-caps
               size="sm"
               color="primary"
               icon="hub"
+              class="identity-qr-secondary-btn"
               :label="claimUiLabels.openDappBridgeBtn"
               :aria-label="claimUiLabels.openDappBridgeBtn"
               data-test="open-dapp-bridge-btn"
@@ -346,7 +356,7 @@
           </div>
           <div
             v-if="syncStatusMessage"
-            class="text-caption text-positive q-mt-xs"
+            class="text-caption text-positive text-weight-medium q-mt-xs"
             data-test="identity-qr-sync-status"
           >
             {{ syncStatusMessage }}
@@ -416,55 +426,59 @@
         class="q-py-xs q-px-sm"
         data-test="extension-view-bar"
       >
-        <div
-          class="row items-center justify-between q-gutter-xs bg-grey-2 rounded-borders q-px-sm q-py-xs"
-        >
-          <span class="text-caption text-weight-medium text-grey-8">
-            {{ claimUiLabels.extViewLabel }}
-          </span>
-          <div class="row items-center q-gutter-xs">
+        <div class="identity-qr-panel q-pa-xs">
+          <div class="row items-center justify-between q-px-xs q-mb-xs">
+            <span class="text-caption text-weight-bold text-grey-8">
+              {{ claimUiLabels.extViewLabel }}
+            </span>
+          </div>
+          <div class="identity-qr-view-grid">
             <q-btn
-              flat
+              outline
               dense
               no-caps
               size="sm"
               icon="dock_to_right"
               color="primary"
+              class="identity-qr-view-btn"
               :label="claimUiLabels.extSidePanelBtn"
               :aria-label="claimUiLabels.extSidePanelBtn"
               data-test="ext-open-sidepanel-btn"
               @click="openInSidePanel"
             />
             <q-btn
-              flat
+              outline
               dense
               no-caps
               size="sm"
               icon="open_in_new"
               color="primary"
+              class="identity-qr-view-btn"
               :label="claimUiLabels.extPopOutBtn"
               :aria-label="claimUiLabels.extPopOutBtn"
               data-test="ext-open-popout-btn"
               @click="openInPopoutWindow"
             />
             <q-btn
-              flat
+              outline
               dense
               no-caps
               size="sm"
               icon="tab"
               color="primary"
+              class="identity-qr-view-btn"
               :label="claimUiLabels.extFullTabBtn"
               :aria-label="claimUiLabels.extFullTabBtn"
               data-test="ext-open-tab-btn"
               @click="openInFullTab"
             />
             <q-btn
-              flat
+              outline
               dense
               no-caps
               size="sm"
-              :color="alwaysOpenInSidePanel ? 'positive' : 'grey-7'"
+              :color="alwaysOpenInSidePanel ? 'positive' : 'primary'"
+              class="identity-qr-view-btn"
               :label="alwaysSidePanelBtnLabel"
               :aria-label="alwaysSidePanelBtnLabel"
               data-test="ext-toggle-sidepanel-default-btn"
@@ -545,7 +559,7 @@
             no-caps
             color="primary"
             icon="qr_code_scanner"
-            class="full-width q-py-xs"
+            class="full-width identity-qr-secondary-btn"
             :label="claimUiLabels.startCameraBtn"
             :aria-label="claimUiLabels.startCameraBtn"
             data-test="start-qr-camera-btn"
@@ -597,14 +611,15 @@
             />
           </template>
         </q-input>
-        <div class="row q-gutter-xs q-mt-xs">
+        <div class="identity-qr-action-grid q-mt-sm">
           <q-btn
-            flat
+            outline
             dense
             no-caps
             size="sm"
             icon="share"
             color="primary"
+            class="identity-qr-secondary-btn"
             :label="claimUiLabels.copyInviteLink"
             :aria-label="claimUiLabels.copyInviteLink"
             :disable="!resolvedAddress"
@@ -612,12 +627,13 @@
             @click="copyInviteLink"
           />
           <q-btn
-            flat
+            outline
             dense
             no-caps
             size="sm"
             icon="card_giftcard"
             color="primary"
+            class="identity-qr-secondary-btn"
             :label="claimUiLabels.toggleClaimCreator"
             :aria-label="claimUiLabels.toggleClaimCreator"
             :disable="!resolvedAddress"
@@ -627,7 +643,7 @@
         </div>
         <div
           v-if="showClaimLinkCreator"
-          class="q-mt-sm q-pa-sm rounded-borders bg-grey-1"
+          class="q-mt-sm q-pa-sm identity-qr-panel"
           data-test="claim-link-creator-panel"
         >
           <q-input
@@ -646,13 +662,14 @@
             class="q-mb-xs"
             data-test="claim-link-note-input"
           />
-          <div class="row items-center q-gutter-xs">
+          <div class="identity-qr-action-grid q-mt-xs">
             <q-btn
               unelevated
               dense
               no-caps
               size="sm"
               color="primary"
+              class="identity-qr-primary-btn"
               :label="claimUiLabels.generateClaimLink"
               :disable="!resolvedAddress"
               data-test="generate-claim-link-btn"
@@ -660,12 +677,13 @@
             />
             <q-btn
               v-if="generatedClaimLinkUrl"
-              flat
+              outline
               dense
               no-caps
               size="sm"
               icon="content_copy"
               color="primary"
+              class="identity-qr-secondary-btn"
               :label="claimUiLabels.copyClaimLink"
               data-test="copy-claim-link-btn"
               @click="copyGeneratedClaimLink"
@@ -683,10 +701,10 @@
 
         <!-- 1-Click Web App (signet.mx) <-> Browser Extension Account Sync -->
         <div
-          class="q-mt-sm q-pa-sm rounded-borders bg-grey-2"
+          class="q-mt-sm q-pa-sm identity-qr-panel"
           data-test="identity-qr-sync-section"
         >
-          <div class="row items-center justify-between q-gutter-xs">
+          <div class="identity-qr-sync-grid">
             <q-btn
               unelevated
               dense
@@ -694,18 +712,20 @@
               size="sm"
               color="primary"
               icon="sync"
+              class="identity-qr-primary-btn"
               :label="syncBridgeBtnLabel"
               :aria-label="syncBridgeBtnLabel"
               data-test="sync-account-bridge-btn"
               @click="syncAccountOverBridge"
             />
             <q-btn
-              flat
+              outline
               dense
               no-caps
               size="sm"
               color="primary"
               icon="hub"
+              class="identity-qr-secondary-btn"
               :label="claimUiLabels.openDappBridgeBtn"
               :aria-label="claimUiLabels.openDappBridgeBtn"
               data-test="open-dapp-bridge-btn"
@@ -714,7 +734,7 @@
           </div>
           <div
             v-if="syncStatusMessage"
-            class="text-caption text-positive q-mt-xs"
+            class="text-caption text-positive text-weight-medium q-mt-xs"
             data-test="identity-qr-sync-status"
           >
             {{ syncStatusMessage }}
@@ -1161,6 +1181,9 @@ export default defineComponent({
         const { accountSession, accountStatus } = await import(
           'src/accounts/session'
         )
+        if (accountStatus.status !== 'ready') {
+          await accountSession.initialize().catch(() => {})
+        }
         if (accountStatus.status === 'ready') {
           const exported = await accountSession.backupCodex32(2, 3)
           backupShares = exported.slice(0, 2)
@@ -1328,6 +1351,56 @@ export default defineComponent({
   max-width: 500px;
 }
 
+.identity-qr-panel {
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+:global(body.body--dark) .identity-qr-panel {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.identity-qr-view-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.identity-qr-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.identity-qr-sync-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(156px, 1fr));
+  gap: 8px;
+}
+
+.identity-qr-view-btn,
+.identity-qr-secondary-btn,
+.identity-qr-primary-btn {
+  width: 100%;
+  min-height: 34px;
+  padding: 4px 10px !important;
+  border-radius: 8px !important;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.identity-qr-view-btn,
+.identity-qr-secondary-btn {
+  background: rgba(234, 88, 12, 0.06);
+}
+
+:global(body.body--dark) .identity-qr-view-btn,
+:global(body.body--dark) .identity-qr-secondary-btn {
+  background: rgba(234, 88, 12, 0.12);
+}
+
 .identity-qr-scanner-box {
   background: #0f172a;
   height: clamp(168px, 28vh, 224px);
@@ -1358,4 +1431,5 @@ export default defineComponent({
   text-overflow: ellipsis;
 }
 </style>
+
 

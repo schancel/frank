@@ -440,7 +440,11 @@ body,
 }
 
 .q-btn:not(.q-btn--round):not(.q-btn--rounded) {
-  border-radius: 10px;
+  border-radius: 8px;
+
+  &::before {
+    border-radius: inherit;
+  }
 }
 
 .q-btn--rounded {

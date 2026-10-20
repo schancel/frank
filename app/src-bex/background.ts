@@ -316,6 +316,57 @@ export async function ensureOffscreenWarmup(
   return false
 }
 
+export async function reinjectContentScriptsIntoOpenTabs(
+  runtimeScope?: Record<string, any>,
+): Promise<number> {
+  const api = getRawExtensionApi(runtimeScope)
+  if (
+    !api?.tabs ||
+    typeof api.tabs.query !== 'function' ||
+    typeof api?.scripting?.executeScript !== 'function'
+  ) {
+    return 0
+  }
+  let reinjectedCount = 0
+  try {
+    const tabs = await api.tabs.query({})
+    if (!Array.isArray(tabs)) return 0
+    for (const tab of tabs) {
+      if (!tab || typeof tab.id !== 'number') continue
+      const url = typeof tab.url === 'string' ? tab.url : ''
+      if (
+        url &&
+        !url.startsWith('https://') &&
+        !url.startsWith('http://localhost') &&
+        !url.startsWith('http://127.0.0.1')
+      ) {
+        continue
+      }
+      try {
+        await Promise.resolve(
+          api.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ['content.js'],
+          }),
+        ).catch(() => {})
+        await Promise.resolve(
+          api.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ['inpage.js'],
+            world: 'MAIN',
+          }),
+        ).catch(() => {})
+        reinjectedCount += 1
+      } catch {
+        // Ignore tabs where scripting is restricted
+      }
+    }
+  } catch {
+    // Ignore tab query errors
+  }
+  return reinjectedCount
+}
+
 export function installBackgroundBridge(
   runtimeScope?: Record<string, any>,
   state: BackgroundBridgeState = createBackgroundBridgeState(),
@@ -325,6 +376,7 @@ export function installBackgroundBridge(
 } {
   configureSidePanelBehavior(runtimeScope, state.openPanelOnActionClick)
   void ensureOffscreenWarmup(runtimeScope)
+  void reinjectContentScriptsIntoOpenTabs(runtimeScope)
 
   const api = getRawExtensionApi(runtimeScope)
   if (api?.storage?.local?.get) {

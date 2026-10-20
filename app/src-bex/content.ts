@@ -93,6 +93,14 @@ export function installContentScriptBridge(
     const data = event.data
     if (!data || typeof data !== 'object') return
 
+    // If this content script belongs to a reloaded/invalidated extension context,
+    // detach immediately so the newly injected content script handles the request.
+    const activeApi = getRawExtensionApi(runtimeScope)
+    if (!activeApi?.runtime?.id) {
+      win.removeEventListener('message', handleWindowMessage)
+      return
+    }
+
     // 1. Standard dApp EIP-1193 / Solana bridge
     if (
       data.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
@@ -124,6 +132,14 @@ export function installContentScriptBridge(
           '*',
         )
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (
+          msg.includes('Extension context invalidated') ||
+          !getRawExtensionApi(runtimeScope)?.runtime?.id
+        ) {
+          win.removeEventListener('message', handleWindowMessage)
+          return
+        }
         win.postMessage(
           {
             channel: FRANK_DAPP_BRIDGE_CHANNEL,
@@ -132,7 +148,7 @@ export function installContentScriptBridge(
             id: data.id,
             error: {
               code: -32603,
-              message: err instanceof Error ? err.message : String(err),
+              message: msg,
             },
           },
           '*',

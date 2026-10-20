@@ -307,6 +307,12 @@ export function installInpageProvider(
   }
 
   if (win.__FRANK_INPAGE_PROVIDER_INSTALLED__ && win.frankEthereum) {
+    try {
+      Object.setPrototypeOf(win.frankEthereum, FrankInpageProvider.prototype)
+      announceEip6963Provider(win, win.frankEthereum as FrankInpageProvider)
+    } catch {
+      // Ignore prototype upgrade errors
+    }
     return win.frankEthereum as FrankInpageProvider
   }
 

@@ -68,6 +68,7 @@ export function buildExtensionManifest(
     content_security_policy: {
       extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
     },
+    host_permissions: [...EXTENSION_CONTENT_MATCHES],
     content_scripts: buildContentScripts(target),
   }
 

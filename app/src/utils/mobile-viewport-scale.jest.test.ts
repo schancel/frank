@@ -145,11 +145,11 @@ describe('mobile-viewport-scale', () => {
     }
   })
 
-  it('updates --frank-vh, --frank-kb-offset, and frank-keyboard-open when soft keyboard shrinks visualViewport on iPhone and clears them when closed', () => {
+  it('updates --frank-vh, --frank-kb-offset, and frank-keyboard-open when soft keyboard shrinks visualViewport on iPhone (even when WebKit sets offsetTop > 0) and clears them when closed', () => {
     const visualViewport = {
       width: 393,
       height: 440,
-      offsetTop: 0,
+      offsetTop: 340,
     }
     const fakeWin = {
       innerWidth: 393,
@@ -180,6 +180,7 @@ describe('mobile-viewport-scale', () => {
 
     // Keyboard closes
     visualViewport.height = 780
+    visualViewport.offsetTop = 0
     const closedResult = applyViewportScaleAndMetrics(100, fakeWin)
     expect(closedResult.effectiveHeight).toBe(780)
     expect(document.documentElement.style.getPropertyValue('--frank-vh')).toBe(

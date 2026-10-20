@@ -2661,8 +2661,28 @@ export default defineComponent({
   background-color: var(--q-message-color-sent);
 }
 .chat-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0%;
+  width: 100%;
   height: 100%;
   max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-container > :deep(.q-page-container) {
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  height: auto !important;
+  max-height: 100% !important;
+  padding-bottom: 0 !important;
+}
+
+.chat-container > :deep(.q-page-container > .q-page) {
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
 }
 
 .chat-banner-overlay {
@@ -2685,9 +2705,17 @@ export default defineComponent({
 
 .chat-footer,
 .chat-input-bar {
+  position: relative !important;
+  top: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  right: auto !important;
+  flex: 0 0 auto !important;
+  width: 100% !important;
   min-height: 64px;
+  padding-left: var(--frank-drawer-offset, 0px);
   box-sizing: border-box;
-  bottom: var(--frank-kb-offset, 0px) !important;
+  transform: none !important;
 }
 
 .chat-inline-sheet {

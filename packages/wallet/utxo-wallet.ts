@@ -38,6 +38,11 @@ import {
   signingKey,
   transactionId,
   cryptoBackend,
+  parsePsbt,
+  signPsbt,
+  psbtToHex,
+  psbtToBase64,
+  extractPsbtTransaction,
   SIGHASH_ALL,
   SIGHASH_FORKID,
   BTC_MAINNET,
@@ -54,6 +59,7 @@ import type {
   Destination,
   HdPrivateNode,
   InternalHash,
+  PsbtToSignInput,
   Transaction,
   SigningKey,
 } from "@frank/nakamoto";
@@ -2273,6 +2279,114 @@ export class UtxoWallet implements NativeWalletHandle {
       "Txid failed"
     );
     return { raw: hex(raw), txid: hex(Uint8Array.from(id).reverse()) };
+  }
+
+  /**
+   * Signs matching inputs in a BIP-174 PSBT (hex or base64) using the wallet's derived
+   * receive, change, and stealth keys (plus any provided persona keys).
+   */
+  signPsbt(
+    psbtHexOrBase64: string,
+    options?: {
+      autoFinalized?: boolean;
+      toSignInputs?: ReadonlyArray<PsbtToSignInput>;
+      extraSigners?: readonly SigningKey[];
+    }
+  ): {
+    psbtHex: string;
+    psbtBase64: string;
+    signedInputIndices: number[];
+    extractedTxHex?: string;
+  } {
+    this.reload();
+    const parsed = parsePsbt(psbtHexOrBase64);
+    const signersByPubkey = new Map<string, SigningKey>();
+    const addSigner = (signer: SigningKey) => {
+      signersByPubkey.set(hex(signer.publicKey), signer);
+    };
+
+    const addPrivKey = (privBytes: Uint8Array) => {
+      const priv = privateKeyFromBytes(privBytes, true);
+      if (!priv.ok) return;
+      const derived = signingKey("ecdsa", priv.value);
+      if (derived.ok) addSigner(derived.value);
+    };
+
+    const receiveLimit = this.state.receiveIndex + ADDRESS_GAP;
+    for (let index = 0; index <= receiveLimit; index += 1) {
+      addPrivKey(this.nodeAt(0, index).privateKey.bytes);
+    }
+    const changeLimit = Math.max(this.state.changeIndex, 1) + ADDRESS_GAP;
+    for (let index = 0; index <= changeLimit; index += 1) {
+      addPrivKey(this.nodeAt(1, index).privateKey.bytes);
+    }
+    for (const coin of this.coinList) {
+      if (coin.signer) addSigner(coin.signer);
+      else if (coin.privKey) addPrivKey(coin.privKey);
+    }
+    for (const extra of options?.extraSigners ?? []) {
+      addSigner(extra);
+    }
+
+    const signers = Array.from(signersByPubkey.values());
+    const unfinalizedSigned = signPsbt(parsed, signers, {
+      chain: this.network.descriptor,
+      toSignInputs: options?.toSignInputs,
+      autoFinalized: false,
+    });
+
+    const signedInputIndices: number[] = [];
+    for (let index = 0; index < parsed.inputs.length; index += 1) {
+      const before = parsed.inputs[index]!;
+      const after = unfinalizedSigned.inputs[index]!;
+      const changed =
+        after.partialSigs.length > before.partialSigs.length ||
+        after.partialSigs.some(([pub, sig], sigIdx) => {
+          const prev = before.partialSigs[sigIdx];
+          return (
+            !prev || hex(prev[0]) !== hex(pub) || hex(prev[1]) !== hex(sig)
+          );
+        });
+      if (changed) {
+        signedInputIndices.push(index);
+      }
+    }
+
+    const resultPsbt =
+      options?.autoFinalized === true
+        ? signPsbt(parsed, signers, {
+            chain: this.network.descriptor,
+            toSignInputs: options?.toSignInputs,
+            autoFinalized: true,
+          })
+        : unfinalizedSigned;
+
+    let extractedTxHex: string | undefined;
+    if (
+      options?.autoFinalized === true &&
+      resultPsbt.inputs.length > 0 &&
+      resultPsbt.inputs.every(
+        (input) =>
+          input.finalScriptSig !== undefined ||
+          input.finalScriptWitness !== undefined
+      )
+    ) {
+      const extracted = extractPsbtTransaction(resultPsbt);
+      const serialized = serializeTransaction(
+        extracted,
+        this.network.descriptor
+      );
+      if (serialized.ok) {
+        extractedTxHex = hex(serialized.value);
+      }
+    }
+
+    return {
+      psbtHex: psbtToHex(resultPsbt),
+      psbtBase64: psbtToBase64(resultPsbt),
+      signedInputIndices,
+      ...(extractedTxHex !== undefined ? { extractedTxHex } : {}),
+    };
   }
 }
 

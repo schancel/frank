@@ -85,17 +85,36 @@ describe("direct protocol registry projection", () => {
     ).toThrow("unknown client extension field");
   });
 
-  it("rejects duplicate protocol rows and unknown supported references", () => {
+  it("rejects duplicate protocol rows, duplicate CAIP-2 IDs, and unknown supported references", () => {
     const duplicate = fixture();
     duplicate.chains.push(duplicate.chains[0]);
     expect(() => projectProtocolChains(duplicate, extensions)).toThrow(
       "duplicate canonical ID"
+    );
+    const duplicateCaip2 = fixture();
+    row(duplicateCaip2, "monad-mainnet").caip2 = row(
+      duplicateCaip2,
+      "monad-testnet"
+    ).caip2;
+    expect(() => projectProtocolChains(duplicateCaip2, extensions)).toThrow(
+      "duplicate CAIP-2 ID"
     );
     expect(() =>
       projectProtocolChains(source, {
         "client-only-network": extensions["monad-testnet"],
       })
     ).toThrow("unsupported client reference");
+  });
+
+  it("populates a unique non-empty CAIP-2 identifier for all 37 chains in v1.json", () => {
+    expect(source.chains).toHaveLength(37);
+    const seen = new Set<string>();
+    for (const chain of source.chains) {
+      expect(typeof chain.caip2).toBe("string");
+      expect(chain.caip2).toMatch(/^[-a-z0-9]{3,8}:[-_a-zA-Z0-9]{1,32}$/);
+      expect(seen.has(chain.caip2)).toBe(false);
+      seen.add(chain.caip2);
+    }
   });
 
   it.each([
@@ -124,9 +143,15 @@ describe("direct protocol registry projection", () => {
       },
     ],
     [
-      "CAIP-2",
+      "empty CAIP-2",
       (doc: typeof source) => {
         row(doc).caip2 = "";
+      },
+    ],
+    [
+      "null CAIP-2",
+      (doc: typeof source) => {
+        (row(doc) as { caip2: string | null }).caip2 = null;
       },
     ],
     [

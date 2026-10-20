@@ -23,7 +23,7 @@ export interface ProtocolChainFacts {
   readonly family: ProtocolChainFamily;
   readonly network: ProtocolNetwork;
   readonly isTestnet: boolean;
-  readonly caip2?: string;
+  readonly caip2: string;
   readonly nativeChainId?: string | number;
   readonly allowedProxyCapabilities: readonly ProxyCapability[];
   readonly identityProbes: readonly ChainIdentityProbe[];
@@ -124,7 +124,7 @@ function protocolFacts(value: unknown): ProtocolChainFacts {
     invalid("unknown family");
   if (!["mainnet", "testnet", "regtest"].includes(row.network as string))
     invalid("unknown network");
-  if (row.caip2 !== null) text(row.caip2);
+  const caip2 = text(row.caip2);
   const native =
     row.native_chain_id === null ? undefined : decimal(row.native_chain_id);
   if (
@@ -152,7 +152,7 @@ function protocolFacts(value: unknown): ProtocolChainFacts {
     family: row.family as ProtocolChainFamily,
     network: row.network as ProtocolNetwork,
     isTestnet: row.network !== "mainnet",
-    ...(row.caip2 === null ? {} : { caip2: row.caip2 as string }),
+    caip2,
     ...(native === undefined
       ? {}
       : {
@@ -175,10 +175,13 @@ export function projectProtocolChains<T extends object>(
   if (source.schema_version !== 1 || !Array.isArray(source.chains))
     invalid("unsupported schema");
   const facts = new Map<string, ProtocolChainFacts>();
+  const caip2Ids = new Set<string>();
   for (const value of source.chains) {
     const row = protocolFacts(value);
     if (facts.has(row.id)) invalid(`duplicate canonical ID ${row.id}`);
+    if (caip2Ids.has(row.caip2)) invalid(`duplicate CAIP-2 ID ${row.caip2}`);
     facts.set(row.id, row);
+    caip2Ids.add(row.caip2);
   }
   const entries: Record<string, T & ProtocolChainFacts> = Object.create(null);
   for (const [id, extension] of Object.entries(extensions)) {

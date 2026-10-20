@@ -284,5 +284,78 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     )
     wrapper.unmount()
   })
+
+  it('allows switching between Per-Site Burner Persona and Shared Primary Persona on connect approval and updates privacy controls', async () => {
+    const wrapper = mountPanel({
+      initialApprovals: [
+        {
+          id: 'connect-1',
+          origin: 'https://app.uniswap.org',
+          method: 'eth_requestAccounts',
+          kind: 'connect',
+          summary: 'Connect https://app.uniswap.org to your Frank dApp Persona',
+        },
+      ],
+    })
+
+    const modeSelector = wrapper.find(
+      '[data-testid="dapp-connect-persona-choice"]',
+    )
+    expect(modeSelector.exists()).toBe(true)
+
+    const burnerAddrPreview = wrapper
+      .find('[data-testid="dapp-connect-preview-address"]')
+      .text()
+      .trim()
+    expect(burnerAddrPreview).toMatch(/^0x[0-9a-fA-F]{40}$/)
+
+    // Switch to Shared Primary Persona and verify preview address changes to primary persona #0
+    await wrapper
+      .find('[data-testid="dapp-connect-mode-primary"]')
+      .trigger('click')
+    const primaryAddrPreview = wrapper
+      .find('[data-testid="dapp-connect-preview-address"]')
+      .text()
+      .trim()
+    expect(primaryAddrPreview).toMatch(/^0x[0-9a-fA-F]{40}$/)
+    expect(primaryAddrPreview.toLowerCase()).not.toBe(
+      burnerAddrPreview.toLowerCase(),
+    )
+
+    // Switch back to Per-Site Burner Persona and approve
+    await wrapper
+      .find('[data-testid="dapp-connect-mode-burner"]')
+      .trigger('click')
+    await wrapper.find('[data-testid="dapp-approve-btn"]').trigger('click')
+
+    // Verify site now appears in Connected Sites list with its isolated burner persona badge
+    const connectedList = wrapper.find(
+      '[data-testid="dapp-connected-sites-list"]',
+    )
+    expect(connectedList.exists()).toBe(true)
+    expect(connectedList.text()).toContain('https://app.uniswap.org')
+
+    // Disconnect site from Connected Sites list
+    await wrapper
+      .find('[data-testid="dapp-disconnect-origin-btn"]')
+      .trigger('click')
+    expect(
+      wrapper.find('[data-testid="dapp-connected-sites-list"]').exists(),
+    ).toBe(false)
+
+    // Toggle EIP-6963 provider visibility mode (always -> stealth -> connected-only)
+    expect(wrapper.find('[data-testid="dapp-privacy-card"]').exists()).toBe(
+      true,
+    )
+    await wrapper
+      .find('[data-testid="dapp-announce-mode-stealth"]')
+      .trigger('click')
+    await wrapper
+      .find('[data-testid="dapp-announce-mode-connected-only"]')
+      .trigger('click')
+
+    wrapper.unmount()
+  })
 })
+
 

@@ -251,20 +251,45 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
 
     window.dispatchEvent(new Event('eip6963:requestProvider'))
     expect(announced.length).toBeGreaterThanOrEqual(1)
-    expect(announced[0].info).toEqual(FRANK_EIP6963_INFO)
+    expect(announced[0].info).toEqual({
+      ...FRANK_EIP6963_INFO,
+      uuid: expect.any(String),
+    })
 
     const chainId = await p1!.request({ method: 'eth_chainId' })
     expect(chainId).toBe('0x279f')
 
-    // EIP-1193 eth_requestAccounts resolves directly to string[] for Uniswap/wagmi compatibility
+    // Before approval, eth_accounts strictly returns []
+    const preAccounts = await p1!.request<string[]>({ method: 'eth_accounts' })
+    expect(preAccounts).toEqual([])
+
+    // EIP-1193 eth_requestAccounts queues interactive approval and holds RPC promise open
     const connectEvents: any[] = []
     const accountsChangedEvents: any[] = []
     p1!.on('connect', (info: any) => connectEvents.push(info))
     p1!.on('accountsChanged', (accs: any) => accountsChangedEvents.push(accs))
 
-    const accounts = await p1!.request<string[]>({
+    const connectPromise = p1!.request<string[]>({
       method: 'eth_requestAccounts',
     })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(sidePanelOpen).toHaveBeenCalled()
+    expect(bgState.pendingApprovals.size).toBe(1)
+    const connectApproval = Array.from(bgState.pendingApprovals.values())[0]!
+    expect(connectApproval.kind).toBe('connect')
+
+    await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'companion-resolve-approval',
+        requestId: connectApproval.id,
+        approved: true,
+        useBurnerPersona: false,
+      },
+      mockExtensionScope,
+    )
+
+    const accounts = await connectPromise
     expect(accounts).toEqual(['0x71C7656EC7ab88b098defB751B7401B5f6d8976F'])
     expect(p1!.selectedAddress).toBe(
       '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
@@ -291,22 +316,23 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     const perms = await p1!.request<any[]>({ method: 'wallet_getPermissions' })
     expect(perms[0]?.parentCapability).toBe('eth_accounts')
 
-    // Signing requests queue in background and open companion panel
-    const signRes = await p1!.request<any>({
+    // Signing requests hold RPC Promise open until companion approval resolves with hex signature
+    const signPromise = p1!.request<string>({
       method: 'personal_sign',
       params: ['0x48656c6c6f', '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
     })
-    expect(signRes.status).toBe('pending_approval')
-    expect(sidePanelOpen).toHaveBeenCalled()
+    await new Promise(resolve => setTimeout(resolve, 10))
     expect(bgState.pendingApprovals.size).toBe(1)
+    const signApproval = Array.from(bgState.pendingApprovals.values())[0]!
 
-    // Approve request via companion message
+    // Approve request via companion message with signature result
     const resolved = await sendRuntimeMessage<any, any>(
       {
         channel: FRANK_DAPP_BRIDGE_CHANNEL,
         type: 'companion-resolve-approval',
-        requestId: signRes.requestId,
+        requestId: signApproval.id,
         approved: true,
+        result: '0xdeadbeefcafebabe1b',
       },
       mockExtensionScope,
     )
@@ -314,6 +340,8 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(resolved.result.accounts).toEqual([
       '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
     ])
+    const signRes = await signPromise
+    expect(signRes).toBe('0xdeadbeefcafebabe1b')
 
     // Updating active persona from logged-in Frank wallet updates eth_requestAccounts
     await sendRuntimeMessage<any, any>(
@@ -922,7 +950,371 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     docListeners.readystatechange?.[0]?.()
     expect(container.contains(scriptEl)).toBe(true)
   })
+
+  it('isolates origins with deterministic per-origin burner personas by default and rejects with 4001 on user denial', async () => {
+    const { Wallet, computeAddress } = await import('ethers')
+    const {
+      deriveDeterministicOriginBurnerAddress,
+      deriveDeterministicOriginBurnerPrivateKey,
+    } = await import('./persona-derivation')
+
+    const rootAddr = '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'
+    const uniswapPrivKey = deriveDeterministicOriginBurnerPrivateKey(
+      rootAddr,
+      'https://app.uniswap.org',
+    )
+    const uniswapBurner = deriveDeterministicOriginBurnerAddress(
+      rootAddr,
+      'https://app.uniswap.org',
+    )
+    const openseaBurner = deriveDeterministicOriginBurnerAddress(
+      rootAddr,
+      'https://opensea.io',
+    )
+
+    // Verify pure-TS secp256k1 + Keccak256 address derivation matches ethers.computeAddress 100%
+    expect(uniswapBurner).toBe(computeAddress(uniswapPrivKey))
+    expect( new Wallet(uniswapPrivKey).address).toBe(uniswapBurner)
+    // Anti-supercookie guarantee: Site A, Site B, and Primary Persona all have distinct addresses
+    expect(uniswapBurner.toLowerCase()).not.toBe(openseaBurner.toLowerCase())
+    expect(uniswapBurner.toLowerCase()).not.toBe(rootAddr.toLowerCase())
+    expect(openseaBurner.toLowerCase()).not.toBe(rootAddr.toLowerCase())
+
+    const listeners: Array<
+      (msg: any, sender: any, sendResponse: (res: any) => void) => any
+    > = []
+    const mockScope = {
+      chrome: {
+        runtime: {
+          id: 'frank-test-ext',
+          sendMessage: (msg: any, cb?: (res: any) => void) => {
+            for (const fn of listeners) {
+              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+                if (cb) cb(res)
+              })
+            }
+          },
+          onMessage: {
+            addListener: (fn: any) => listeners.push(fn),
+            removeListener: (fn: any) => {
+              const idx = listeners.indexOf(fn)
+              if (idx >= 0) listeners.splice(idx, 1)
+            },
+          },
+        },
+      },
+    }
+    const state = createBackgroundBridgeState({
+      activePersonaAddress: rootAddr,
+    })
+    installBackgroundBridge(mockScope, state)
+
+    // Site A connects with default per-origin burner persona (useBurnerPersona: true)
+    const siteAConnectPromise = sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'dapp-rpc-request',
+        origin: 'https://app.uniswap.org',
+        payload: { method: 'eth_requestAccounts' },
+      },
+      mockScope,
+    )
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const siteAApproval = Array.from(state.pendingApprovals.values())[0]!
+    expect(siteAApproval.personaAddress).toBe(uniswapBurner)
+
+    await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'companion-resolve-approval',
+        requestId: siteAApproval.id,
+        approved: true,
+        useBurnerPersona: true,
+      },
+      mockScope,
+    )
+    const siteARes = await siteAConnectPromise
+    expect(siteARes.result).toEqual([uniswapBurner])
+
+    // Site B connects with default per-origin burner persona -> gets completely distinct EOA
+    const siteBConnectPromise = sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'dapp-rpc-request',
+        origin: 'https://opensea.io',
+        payload: { method: 'eth_requestAccounts' },
+      },
+      mockScope,
+    )
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const siteBApproval = Array.from(state.pendingApprovals.values())[0]!
+    await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'companion-resolve-approval',
+        requestId: siteBApproval.id,
+        approved: true,
+      },
+      mockScope,
+    )
+    const siteBRes = await siteBConnectPromise
+    expect(siteBRes.result).toEqual([openseaBurner])
+
+    // Unapproved Site C continues to receive [] from eth_accounts
+    const siteCAccounts = await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'dapp-rpc-request',
+        origin: 'https://tracker.example.com',
+        payload: { method: 'eth_accounts' },
+      },
+      mockScope,
+    )
+    expect(siteCAccounts.result).toEqual([])
+
+    // Site C requests accounts and user REJECTS -> returns EIP-1193 4001 error
+    const siteCConnectPromise = sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'dapp-rpc-request',
+        origin: 'https://tracker.example.com',
+        payload: { method: 'eth_requestAccounts' },
+      },
+      mockScope,
+    )
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const siteCApproval = Array.from(state.pendingApprovals.values())[0]!
+    await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'companion-resolve-approval',
+        requestId: siteCApproval.id,
+        approved: false,
+      },
+      mockScope,
+    )
+    const siteCRes = await siteCConnectPromise
+    expect(siteCRes.error).toEqual({
+      code: 4001,
+      message: 'User rejected the request.',
+    })
+
+    // Disconnect Site A -> subsequent eth_accounts for Site A returns []
+    await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'disconnect-origin',
+        origin: 'https://app.uniswap.org',
+      },
+      mockScope,
+    )
+    const siteAAfterDisconnect = await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'dapp-rpc-request',
+        origin: 'https://app.uniswap.org',
+        payload: { method: 'eth_accounts' },
+      },
+      mockScope,
+    )
+    expect(siteAAfterDisconnect.result).toEqual([])
+  })
+
+  it('enforces EIP-6963 announceMode privacy controls and generates ephemeral UUIDv4 per page load', async () => {
+    const { shouldAnnounceEip6963Provider } = await import('./inpage')
+
+    expect(shouldAnnounceEip6963Provider('always', false)).toBe(true)
+    expect(shouldAnnounceEip6963Provider('always', true)).toBe(true)
+    expect(shouldAnnounceEip6963Provider('connected-only', false)).toBe(false)
+    expect(shouldAnnounceEip6963Provider('connected-only', true)).toBe(true)
+    expect(shouldAnnounceEip6963Provider('stealth', false)).toBe(false)
+    expect(shouldAnnounceEip6963Provider('stealth', true)).toBe(false)
+
+    // Verify ephemeral UUIDv4 per page load (not a static cross-site fingerprint UUID)
+    const makeFakeWin = (privacyConfig?: {
+      announceMode: 'always' | 'connected-only' | 'stealth'
+      originApproved: boolean
+    }) => {
+      const announced: any[] = []
+      const win: any = {
+        __FRANK_PRIVACY_CONFIG__: privacyConfig,
+        addEventListener: jest.fn(),
+        postMessage: jest.fn(),
+        dispatchEvent: jest.fn((ev: Event) => {
+          if (ev.type === 'eip6963:announceProvider') {
+            announced.push((ev as CustomEvent).detail)
+          }
+          return true
+        }),
+      }
+      return { win, announced }
+    }
+
+    const page1 = makeFakeWin({ announceMode: 'always', originApproved: false })
+    const page2 = makeFakeWin({ announceMode: 'always', originApproved: false })
+    installInpageProvider(page1.win)
+    installInpageProvider(page2.win)
+
+    expect(page1.announced).toHaveLength(1)
+    expect(page2.announced).toHaveLength(1)
+    expect(page1.announced[0].info.uuid).not.toBe(page2.announced[0].info.uuid)
+
+    // Stealth mode suppresses EIP-6963 announcement completely
+    const stealthPage = makeFakeWin({
+      announceMode: 'stealth',
+      originApproved: true,
+    })
+    installInpageProvider(stealthPage.win)
+    expect(stealthPage.announced).toHaveLength(0)
+
+    // Connected-only mode suppresses announcement on unapproved origins, allows on approved origins
+    const unapprovedConnectedOnly = makeFakeWin({
+      announceMode: 'connected-only',
+      originApproved: false,
+    })
+    installInpageProvider(unapprovedConnectedOnly.win)
+    expect(unapprovedConnectedOnly.announced).toHaveLength(0)
+
+    const approvedConnectedOnly = makeFakeWin({
+      announceMode: 'connected-only',
+      originApproved: true,
+    })
+    installInpageProvider(approvedConnectedOnly.win)
+    expect(approvedConnectedOnly.announced).toHaveLength(1)
+  })
+
+  it('registers Solana Wallet Standard, Bitcoin (FrankBitcoin/unisat/WBIP004), and eCash Cashtab shims with interactive approval', async () => {
+    const {
+      createFrankSolanaWalletStandard,
+      createFrankBitcoinProvider,
+    } = await import('./inpage')
+
+    const listeners: Array<
+      (msg: any, sender: any, sendResponse: (res: any) => void) => any
+    > = []
+    const mockScope = {
+      chrome: {
+        runtime: {
+          id: 'frank-test-ext',
+          sendMessage: (msg: any, cb?: (res: any) => void) => {
+            for (const fn of listeners) {
+              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+                if (cb) cb(res)
+              })
+            }
+          },
+          onMessage: {
+            addListener: (fn: any) => listeners.push(fn),
+            removeListener: (fn: any) => {
+              const idx = listeners.indexOf(fn)
+              if (idx >= 0) listeners.splice(idx, 1)
+            },
+          },
+        },
+      },
+    }
+    const bgState = createBackgroundBridgeState({
+      activePersonaAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+    })
+    const bg = installBackgroundBridge(mockScope, bgState)
+    const cleanupContent = installContentScriptBridge(window as any, mockScope)
+
+    const provider = installInpageProvider(window as any)!
+    const solanaWallet = createFrankSolanaWalletStandard(provider)
+    const btcProvider = createFrankBitcoinProvider(provider)
+
+    // 1. Solana silent connect before approval returns empty accounts without prompting
+    const silentRes = await solanaWallet.features['standard:connect'].connect({
+      silent: true,
+    })
+    expect(silentRes.accounts).toEqual([])
+    expect(bgState.pendingApprovals.size).toBe(0)
+
+    // Interactive Solana connect queues approval and returns base58 publicKey + Uint8Array(32)
+    const solConnectPromise =
+      solanaWallet.features['standard:connect'].connect()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(bgState.pendingApprovals.size).toBe(1)
+    const solApproval = Array.from(bgState.pendingApprovals.values())[0]!
+    expect(solApproval.chainFamily).toBe('solana')
+
+    await sendRuntimeMessage(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'companion-resolve-approval',
+        requestId: solApproval.id,
+        approved: true,
+      },
+      mockScope,
+    )
+    const solConnected = await solConnectPromise
+    expect(solConnected.accounts).toHaveLength(1)
+    expect(solConnected.accounts[0]?.publicKey).toBeInstanceOf(Uint8Array)
+    expect(solConnected.accounts[0]?.publicKey.length).toBe(32)
+
+    await solanaWallet.features['standard:disconnect'].disconnect()
+
+    // 2. Bitcoin requestAccounts queues approval and returns deterministic bc1q address
+    const btcConnectPromise = btcProvider.requestAccounts()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const btcApproval = Array.from(bgState.pendingApprovals.values())[0]!
+    expect(btcApproval.chainFamily).toBe('bitcoin')
+
+    await sendRuntimeMessage(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'companion-resolve-approval',
+        requestId: btcApproval.id,
+        approved: true,
+      },
+      mockScope,
+    )
+    const btcAccounts = await btcConnectPromise
+    expect(btcAccounts[0]).toMatch(/^bc1q/)
+
+    await solanaWallet.features['standard:disconnect'].disconnect()
+
+    // 3. eCash Cashtab postMessage bridge (FROM_PAGE -> xec_cashtabRequest -> FROM_CASHTAB)
+    const cashtabResponses: any[] = []
+    const cashtabListener = (ev: MessageEvent) => {
+      if (ev.data?.type === 'FROM_CASHTAB') {
+        cashtabResponses.push(ev.data)
+      }
+    }
+    window.addEventListener('message', cashtabListener)
+
+    window.postMessage(
+      {
+        type: 'FROM_PAGE',
+        text: 'Cashtab',
+        addressRequest: true,
+      },
+      '*',
+    )
+    await new Promise(resolve => setTimeout(resolve, 15))
+    expect(bgState.pendingApprovals.size).toBe(1)
+    const xecApproval = Array.from(bgState.pendingApprovals.values())[0]!
+    expect(xecApproval.chainFamily).toBe('ecash')
+
+    await sendRuntimeMessage(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'companion-resolve-approval',
+        requestId: xecApproval.id,
+        approved: true,
+      },
+      mockScope,
+    )
+    await new Promise(resolve => setTimeout(resolve, 15))
+    expect(cashtabResponses.length).toBeGreaterThanOrEqual(1)
+    expect(cashtabResponses[0]?.address).toMatch(/^ecash:q/)
+
+    window.removeEventListener('message', cashtabListener)
+    cleanupContent()
+    bg.dispose()
+  })
 })
+
 
 
 

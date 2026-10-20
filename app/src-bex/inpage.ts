@@ -79,10 +79,30 @@ export class FrankInpageProvider {
       return
     }
 
+    if (data.type === 'provider-privacy-config') {
+      const w = this.win as Window & Record<string, any>
+      if (
+        data.announceMode === 'always' ||
+        data.announceMode === 'connected-only' ||
+        data.announceMode === 'stealth'
+      ) {
+        w.__FRANK_ANNOUNCE_MODE__ = data.announceMode
+      }
+      if (typeof data.isOriginApproved === 'boolean') {
+        w.__FRANK_ORIGIN_APPROVED__ = data.isOriginApproved
+      }
+      if (data.triggerAnnounce && shouldAnnounceEip6963Provider(w)) {
+        announceEip6963Provider(this.win, this)
+      }
+      return
+    }
+
     if (data.type === 'provider-event' && typeof data.event === 'string') {
       if (data.event === 'accountsChanged' && Array.isArray(data.payload)) {
         this.selectedAddress =
           typeof data.payload[0] === 'string' ? data.payload[0] : null
+        ;(this.win as Window & Record<string, any>).__FRANK_ORIGIN_APPROVED__ =
+          Boolean(this.selectedAddress)
       } else if (
         data.event === 'chainChanged' &&
         typeof data.payload === 'string'
@@ -128,6 +148,8 @@ export class FrankInpageProvider {
     ) {
       const prevAddress = this.selectedAddress
       this.selectedAddress = typeof result[0] === 'string' ? result[0] : null
+      ;(this.win as Window & Record<string, any>).__FRANK_ORIGIN_APPROVED__ =
+        Boolean(this.selectedAddress)
       if (args.method === 'eth_requestAccounts' && this.selectedAddress) {
         this.emit('connect', { chainId: this.chainId ?? '0x279f' })
         if (prevAddress !== this.selectedAddress) {
@@ -196,19 +218,54 @@ export class FrankInpageProvider {
   }
 }
 
+export interface FrankSolanaStandardAccount {
+  readonly address: string
+  readonly publicKey: Uint8Array
+  readonly chains: readonly ['solana:mainnet', 'solana:devnet']
+  readonly features: readonly [
+    'solana:signMessage',
+    'solana:signTransaction',
+    'solana:signAndSendTransaction',
+    'solana:signIn',
+  ]
+}
+
 export interface FrankSolanaStandardWallet {
   readonly version: '1.0.0'
   readonly name: 'Frank'
   readonly icon: string
   readonly chains: readonly ['solana:mainnet', 'solana:devnet']
-  readonly features: Record<string, unknown>
-  readonly accounts: readonly unknown[]
+  readonly features: Record<string, any>
+  accounts: readonly FrankSolanaStandardAccount[]
+}
+
+function addressToSolanaStandardAccount(
+  addr: string,
+): FrankSolanaStandardAccount {
+  const pubKey = new Uint8Array(32)
+  const clean = addr.replace(/^0x/i, '')
+  for (let i = 0; i < 32; i += 1) {
+    const hexPair = clean.slice((i * 2) % Math.max(2, clean.length), ((i * 2) % Math.max(2, clean.length)) + 2)
+    const parsed = Number.parseInt(hexPair || '00', 16)
+    pubKey[i] = Number.isNaN(parsed) ? (i * 17 + 3) & 0xff : parsed
+  }
+  return Object.freeze({
+    address: addr,
+    publicKey: pubKey,
+    chains: ['solana:mainnet', 'solana:devnet'] as const,
+    features: [
+      'solana:signMessage',
+      'solana:signTransaction',
+      'solana:signAndSendTransaction',
+      'solana:signIn',
+    ] as const,
+  })
 }
 
 export function createFrankSolanaStandardWallet(
   provider: FrankInpageProvider,
 ): FrankSolanaStandardWallet {
-  return {
+  const wallet: FrankSolanaStandardWallet = {
     version: '1.0.0',
     name: 'Frank',
     icon: FRANK_EIP6963_INFO.icon,
@@ -217,17 +274,38 @@ export function createFrankSolanaStandardWallet(
     features: {
       'standard:connect': {
         version: '1.0.0',
-        connect: async () =>
-          await provider.request({
+        connect: async (input?: { silent?: boolean }) => {
+          const res = await provider.request<unknown>({
             method: 'solana_connect',
-          }),
+            params: input ? [input] : [],
+          })
+          const rawList = Array.isArray(res)
+            ? res
+            : Array.isArray((res as any)?.accounts)
+            ? (res as any).accounts
+            : []
+          const accounts: FrankSolanaStandardAccount[] = rawList
+            .filter((item: unknown) => typeof item === 'string' && item.length > 0)
+            .map((addr: string) => addressToSolanaStandardAccount(addr))
+          wallet.accounts = accounts
+          return { accounts }
+        },
       },
       'standard:disconnect': {
         version: '1.0.0',
-        disconnect: async () =>
-          await provider.request({
+        disconnect: async () => {
+          wallet.accounts = []
+          return await provider.request({
             method: 'solana_disconnect',
-          }),
+          })
+        },
+      },
+      'standard:events': {
+        version: '1.0.0',
+        on: (event: string, listener: ProviderEventListener) => {
+          provider.on(`solana:${event}`, listener)
+          return () => provider.off(`solana:${event}`, listener)
+        },
       },
       'solana:signMessage': {
         version: '1.0.0',
@@ -239,13 +317,91 @@ export function createFrankSolanaStandardWallet(
       },
       'solana:signTransaction': {
         version: '1.0.0',
+        supportedTransactionVersions: ['legacy', 0],
         signTransaction: async (input: unknown) =>
           await provider.request({
             method: 'solana_signTransaction',
             params: [input],
           }),
       },
+      'solana:signAndSendTransaction': {
+        version: '1.0.0',
+        supportedTransactionVersions: ['legacy', 0],
+        signAndSendTransaction: async (...inputs: unknown[]) =>
+          await provider.request({
+            method: 'solana_signAndSendTransaction',
+            params: inputs,
+          }),
+      },
+      'solana:signIn': {
+        version: '1.0.0',
+        signIn: async (...inputs: unknown[]) =>
+          await provider.request({
+            method: 'solana_signIn',
+            params: inputs,
+          }),
+      },
     },
+  }
+  return wallet
+}
+
+export interface FrankBitcoinProvider {
+  readonly isFrank: true
+  requestAccounts: () => Promise<string[]>
+  getAccounts: () => Promise<string[]>
+  getPublicKey: () => Promise<string>
+  getNetwork: () => Promise<string>
+  signMessage: (message: string, type?: string) => Promise<string>
+  signPsbt: (psbtHex: string, options?: unknown) => Promise<string>
+  signPsbts: (psbtHexs: string[], options?: unknown[]) => Promise<string[]>
+  on: (event: string, listener: ProviderEventListener) => FrankInpageProvider
+  removeListener: (
+    event: string,
+    listener: ProviderEventListener,
+  ) => FrankInpageProvider
+}
+
+export function createFrankBitcoinProvider(
+  provider: FrankInpageProvider,
+): FrankBitcoinProvider {
+  return {
+    isFrank: true,
+    requestAccounts: async () =>
+      await provider.request<string[]>({
+        method: 'btc_requestAccounts',
+      }),
+    getAccounts: async () =>
+      await provider.request<string[]>({
+        method: 'btc_getAccounts',
+      }),
+    getPublicKey: async () =>
+      await provider.request<string>({
+        method: 'btc_getPublicKey',
+      }),
+    getNetwork: async () =>
+      await provider.request<string>({
+        method: 'btc_getNetwork',
+      }),
+    signMessage: async (message: string, type?: string) =>
+      await provider.request<string>({
+        method: 'btc_signMessage',
+        params: [message, type ?? 'ecdsa'],
+      }),
+    signPsbt: async (psbtHex: string, options?: unknown) =>
+      await provider.request<string>({
+        method: 'btc_signPsbt',
+        params: [psbtHex, options],
+      }),
+    signPsbts: async (psbtHexs: string[], options?: unknown[]) =>
+      await provider.request<string[]>({
+        method: 'btc_signPsbts',
+        params: [psbtHexs, options],
+      }),
+    on: (event: string, listener: ProviderEventListener) =>
+      provider.on(event, listener),
+    removeListener: (event: string, listener: ProviderEventListener) =>
+      provider.removeListener(event, listener),
   }
 }
 
@@ -265,15 +421,84 @@ export function isIsolatedExtensionWorld(
   return false
 }
 
+export type DappProviderAnnounceMode = 'always' | 'connected-only' | 'stealth'
+
+export function generateEphemeralUuidV4(win?: Record<string, any>): string {
+  const randUuidFn =
+    typeof win?.crypto?.randomUUID === 'function'
+      ? win.crypto.randomUUID.bind(win.crypto)
+      : typeof globalThis !== 'undefined' &&
+        typeof (globalThis as any).crypto?.randomUUID === 'function'
+      ? (globalThis as any).crypto.randomUUID.bind((globalThis as any).crypto)
+      : null
+  if (randUuidFn) {
+    try {
+      return randUuidFn()
+    } catch {
+      // Fall through to math random fallback
+    }
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, ch => {
+    const r = (Math.random() * 16) | 0
+    const v = ch === 'x' ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
+}
+
+export function shouldAnnounceEip6963Provider(
+  winOrMode: (Window & Record<string, any>) | DappProviderAnnounceMode,
+  explicitOriginApproved?: boolean,
+): boolean {
+  let mode: DappProviderAnnounceMode = 'always'
+  let originApproved = Boolean(explicitOriginApproved)
+  if (typeof winOrMode === 'string') {
+    mode = winOrMode
+  } else if (winOrMode && typeof winOrMode === 'object') {
+    mode =
+      winOrMode.__FRANK_ANNOUNCE_MODE__ ??
+      winOrMode.__FRANK_PRIVACY_CONFIG__?.announceMode ??
+      'always'
+    originApproved = Boolean(
+      winOrMode.__FRANK_ORIGIN_APPROVED__ ??
+        winOrMode.__FRANK_PRIVACY_CONFIG__?.originApproved ??
+        explicitOriginApproved,
+    )
+  }
+  if (mode === 'always') return true
+  if (mode === 'connected-only') {
+    return originApproved
+  }
+  if (mode === 'stealth') {
+    return false
+  }
+  return true
+}
+
+export const createFrankSolanaWalletStandard = createFrankSolanaStandardWallet
+
 export function announceEip6963Provider(
   win: Window,
   provider: FrankInpageProvider,
+  uuidOverride?: string,
 ): Eip6963ProviderDetail {
+  const w = win as Window & Record<string, any>
+  const resolvedUuid =
+    uuidOverride ||
+    (typeof w?.__FRANK_EIP6963_INSTANCE_UUID__ === 'string' &&
+    w.__FRANK_EIP6963_INSTANCE_UUID__
+      ? w.__FRANK_EIP6963_INSTANCE_UUID__
+      : FRANK_EIP6963_INFO.uuid)
   const detail: Eip6963ProviderDetail = Object.freeze({
-    info: Object.freeze({ ...FRANK_EIP6963_INFO }),
+    info: Object.freeze({
+      ...FRANK_EIP6963_INFO,
+      uuid: resolvedUuid,
+    }),
     provider,
   })
-  if (isIsolatedExtensionWorld(win as Window & Record<string, any>)) {
+  if (isIsolatedExtensionWorld(w)) {
+    return detail
+  }
+  if (!shouldAnnounceEip6963Provider(w)) {
     return detail
   }
   win.dispatchEvent(
@@ -288,7 +513,8 @@ export function announceSolanaWalletStandard(
   win: Window,
   wallet: FrankSolanaStandardWallet,
 ): void {
-  if (isIsolatedExtensionWorld(win as Window & Record<string, any>)) {
+  const w = win as Window & Record<string, any>
+  if (isIsolatedExtensionWorld(w) || !shouldAnnounceEip6963Provider(w)) {
     return
   }
   const registerPayload = {
@@ -301,6 +527,15 @@ export function announceSolanaWalletStandard(
 
   try {
     win.dispatchEvent(
+      new CustomEvent('wallet-standard:register-wallet', {
+        detail: (api: { register?: (w: FrankSolanaStandardWallet) => void }) => {
+          if (api && typeof api.register === 'function') {
+            api.register(wallet)
+          }
+        },
+      }),
+    )
+    win.dispatchEvent(
       new CustomEvent('wallet-standard:app-ready', {
         detail: registerPayload,
       }),
@@ -309,7 +544,16 @@ export function announceSolanaWalletStandard(
     // Ignore environments restricting custom event dispatch
   }
 
+  win.addEventListener('wallet-standard:app-ready', (event: Event) => {
+    if (!shouldAnnounceEip6963Provider(w)) return
+    const customEvent = event as CustomEvent
+    if (typeof customEvent.detail?.register === 'function') {
+      customEvent.detail.register(wallet)
+    }
+  })
+
   win.addEventListener('wallet-standard:register-wallet', (event: Event) => {
+    if (!shouldAnnounceEip6963Provider(w)) return
     const customEvent = event as CustomEvent
     if (typeof customEvent.detail === 'function') {
       customEvent.detail({
@@ -357,10 +601,21 @@ export function installInpageProvider(
     return null
   }
 
+  const instanceUuid =
+    typeof win.__FRANK_EIP6963_INSTANCE_UUID__ === 'string' &&
+    win.__FRANK_EIP6963_INSTANCE_UUID__
+      ? win.__FRANK_EIP6963_INSTANCE_UUID__
+      : generateEphemeralUuidV4(win)
+  win.__FRANK_EIP6963_INSTANCE_UUID__ = instanceUuid
+
   if (win.__FRANK_INPAGE_PROVIDER_INSTALLED__ && win.frankEthereum) {
     try {
       Object.setPrototypeOf(win.frankEthereum, FrankInpageProvider.prototype)
-      announceEip6963Provider(win, win.frankEthereum as FrankInpageProvider)
+      announceEip6963Provider(
+        win,
+        win.frankEthereum as FrankInpageProvider,
+        instanceUuid,
+      )
     } catch {
       // Ignore prototype upgrade errors
     }
@@ -369,17 +624,43 @@ export function installInpageProvider(
 
   const provider = new FrankInpageProvider(win)
   const solanaWallet = createFrankSolanaStandardWallet(provider)
+  const btcProvider = createFrankBitcoinProvider(provider)
 
   win.__FRANK_INPAGE_PROVIDER_INSTALLED__ = true
   win.frankEthereum = provider
   win.frankSolana = solanaWallet
+  win.frankBitcoin = btcProvider
   if (!win.ethereum) {
     win.ethereum = provider
   }
+  if (!win.unisat) {
+    win.unisat = btcProvider
+  }
+  if (!Array.isArray(win.wbip_providers)) {
+    win.wbip_providers = []
+  }
+  if (!win.wbip_providers.some((p: any) => p?.id === FRANK_EIP6963_INFO.rdns)) {
+    win.wbip_providers.push({
+      id: FRANK_EIP6963_INFO.rdns,
+      name: FRANK_EIP6963_INFO.name,
+      icon: FRANK_EIP6963_INFO.icon,
+      webUrl: 'https://signet.mx',
+      methods: [
+        'getAccounts',
+        'requestAccounts',
+        'getPublicKey',
+        'getNetwork',
+        'signMessage',
+        'signPsbt',
+        'signPsbts',
+      ],
+      provider: btcProvider,
+    })
+  }
 
-  announceEip6963Provider(win, provider)
+  announceEip6963Provider(win, provider, instanceUuid)
   win.addEventListener('eip6963:requestProvider', () => {
-    announceEip6963Provider(win, provider)
+    announceEip6963Provider(win, provider, instanceUuid)
   })
 
   announceSolanaWalletStandard(win, solanaWallet)
@@ -389,4 +670,5 @@ export function installInpageProvider(
 if (typeof window !== 'undefined') {
   installInpageProvider(window as Window & Record<string, any>)
 }
+
 

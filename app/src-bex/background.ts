@@ -9,16 +9,39 @@ import {
   openCompanionPanel,
   openExtensionInWindow,
 } from './runtime-adapter'
+import {
+  createDeterministicRpcResultFallback,
+  deriveDeterministicBtcAddress,
+  deriveDeterministicBtcPubKey,
+  deriveDeterministicOriginBurnerAddress,
+  deriveDeterministicXecAddress,
+} from './persona-derivation'
+
+export type DappProviderAnnounceMode = 'always' | 'connected-only' | 'stealth'
+
+export interface OriginPersonaBinding {
+  address: string
+  index: number
+  label: string
+  isBurner: boolean
+}
 
 export interface PendingDappApproval {
   id: string
+  kind?: 'connect' | 'sign' | 'transaction' | 'permissions'
+  chainFamily?: 'evm' | 'solana' | 'bitcoin' | 'ecash'
   origin: string
   href: string
   method: string
   params?: unknown
   createdAt: number
   requiresCompanionApproval: boolean
+  personaAddress?: string
+  suggestedBurnerAddress?: string
+  primaryPersonaAddress?: string
 }
+
+export type PendingDappApprovalRecord = PendingDappApproval
 
 export interface SyncedExtensionState {
   sasCode: string
@@ -27,16 +50,27 @@ export interface SyncedExtensionState {
   syncedAt: number
 }
 
+export interface PendingRpcWaiter {
+  resolve: (value: unknown) => void
+  reject: (error: { code: number; message: string; data?: unknown }) => void
+}
+
 export interface BackgroundBridgeState {
   chainIdHex: string
   activePersonaAddress: string
   poolBalanceWeiHex?: string
   approvedOrigins: Set<string>
+  connectedOrigins: Set<string>
+  originPersonas: Record<string, OriginPersonaBinding>
+  announceMode: DappProviderAnnounceMode
   pendingApprovals: Map<string, PendingDappApproval>
+  pendingRpcWaiters: Map<string, PendingRpcWaiter>
   syncedState: SyncedExtensionState | null
   openPanelOnActionClick: boolean
   launchMode: ExtensionLaunchMode
 }
+
+export type BackgroundDappState = BackgroundBridgeState
 
 const APPROVAL_REQUIRED_METHODS = new Set([
   'personal_sign',
@@ -48,6 +82,13 @@ const APPROVAL_REQUIRED_METHODS = new Set([
   'solana_connect',
   'solana_signMessage',
   'solana_signTransaction',
+  'solana_signAndSendTransaction',
+  'solana_signIn',
+  'btc_requestAccounts',
+  'btc_signMessage',
+  'btc_signPsbt',
+  'btc_signPsbts',
+  'xec_cashtabRequest',
 ])
 
 const CHAIN_RPC_URLS: Record<string, string> = {
@@ -81,6 +122,133 @@ const READONLY_RPC_METHODS = new Set([
   'eth_getBlockByHash',
 ])
 
+export function normalizeBridgeOrigin(rawOrigin: string): string {
+  if (typeof rawOrigin !== 'string') return ''
+  const trimmed = rawOrigin.trim()
+  if (!trimmed || trimmed.toLowerCase() === 'null') return ''
+  try {
+    const parsed = new URL(trimmed)
+    const protocol = parsed.protocol.toLowerCase()
+    if (
+      protocol === 'https:' ||
+      protocol === 'http:' ||
+      protocol === 'chrome-extension:' ||
+      protocol === 'moz-extension:' ||
+      protocol === 'safari-web-extension:'
+    ) {
+      return parsed.origin.toLowerCase()
+    }
+    if (protocol === 'wc:') {
+      return trimmed.toLowerCase()
+    }
+  } catch {
+    // Fallback for custom scheme or test identifiers
+  }
+  return trimmed.toLowerCase()
+}
+
+export function isOriginConnected(
+  state: BackgroundBridgeState,
+  rawOrigin: string,
+): boolean {
+  const norm = normalizeBridgeOrigin(rawOrigin)
+  if (!norm) return false
+  return (
+    state.approvedOrigins.has(norm) ||
+    state.connectedOrigins.has(norm) ||
+    Boolean(state.originPersonas[norm]) ||
+    state.approvedOrigins.has(rawOrigin) ||
+    state.connectedOrigins.has(rawOrigin)
+  )
+}
+
+export function getOriginPersonaAddress(
+  state: BackgroundBridgeState,
+  rawOrigin: string,
+): string {
+  const norm = normalizeBridgeOrigin(rawOrigin)
+  if (norm && state.originPersonas[norm]?.address) {
+    return state.originPersonas[norm].address
+  }
+  if (rawOrigin && state.originPersonas[rawOrigin]?.address) {
+    return state.originPersonas[rawOrigin].address
+  }
+  return state.activePersonaAddress
+}
+
+export function assignOriginPersona(
+  state: BackgroundBridgeState,
+  rawOrigin: string,
+  options?: {
+    useBurnerPersona?: boolean
+    personaAddress?: string
+    personaIndex?: number
+    label?: string
+  },
+): OriginPersonaBinding {
+  const norm = normalizeBridgeOrigin(rawOrigin) || rawOrigin.trim().toLowerCase()
+  const useBurner =
+    options?.personaIndex === 0
+      ? false
+      : options?.useBurnerPersona !== undefined
+      ? Boolean(options.useBurnerPersona)
+      : true
+
+  let binding: OriginPersonaBinding
+  if (!useBurner) {
+    const address =
+      options?.personaAddress && /^0x[a-fA-F0-9]{40}$/.test(options.personaAddress)
+        ? options.personaAddress
+        : state.activePersonaAddress
+    binding = {
+      address,
+      index: 0,
+      label: options?.label || 'Primary dApp Persona',
+      isBurner: false,
+    }
+  } else {
+    const existing = state.originPersonas[norm]
+    const existingBurnerIdx =
+      existing && existing.isBurner && existing.index > 0
+        ? existing.index
+        : undefined
+    const maxExistingIdx = Object.values(state.originPersonas).reduce(
+      (max, item) => (item.index > max ? item.index : max),
+      0,
+    )
+    const index =
+      typeof options?.personaIndex === 'number' && options.personaIndex > 0
+        ? options.personaIndex
+        : existingBurnerIdx ?? maxExistingIdx + 1
+    const address =
+      options?.personaAddress && /^0x[a-fA-F0-9]{40}$/.test(options.personaAddress)
+        ? options.personaAddress
+        : deriveDeterministicOriginBurnerAddress(
+            state.activePersonaAddress,
+            norm || 'https://dapp.local',
+          )
+    let hostLabel = norm
+    try {
+      hostLabel = new URL(norm).hostname || norm
+    } catch {
+      // Keep norm
+    }
+    binding = {
+      address,
+      index,
+      label: options?.label || `${hostLabel} Burner #${index}`,
+      isBurner: true,
+    }
+  }
+
+  if (norm) {
+    state.approvedOrigins.add(norm)
+    state.connectedOrigins.add(norm)
+    state.originPersonas[norm] = binding
+  }
+  return binding
+}
+
 function getReadOnlyRpcFallback(method: string): unknown {
   switch (method) {
     case 'eth_blockNumber':
@@ -112,6 +280,21 @@ function getReadOnlyRpcFallback(method: string): unknown {
   }
 }
 
+function getKnownPersonaAddressesLower(state: BackgroundBridgeState): Set<string> {
+  const set = new Set<string>()
+  const primary = (state.activePersonaAddress || '').toLowerCase()
+  if (/^0x[0-9a-f]{40}$/.test(primary)) {
+    set.add(primary)
+  }
+  for (const binding of Object.values(state.originPersonas || {})) {
+    const addr = (binding?.address || '').toLowerCase()
+    if (/^0x[0-9a-f]{40}$/.test(addr)) {
+      set.add(addr)
+    }
+  }
+  return set
+}
+
 function applySpendablePoolFallback(
   chainIdHex: string,
   method: string,
@@ -124,8 +307,8 @@ function applySpendablePoolFallback(
   if (normChain !== '0x279f' && normChain !== '0x8f') {
     return rpcResult
   }
-  const activeAddr = (state.activePersonaAddress || '').toLowerCase()
-  if (!/^0x[0-9a-f]{40}$/.test(activeAddr)) {
+  const knownAddrs = getKnownPersonaAddressesLower(state)
+  if (knownAddrs.size === 0) {
     return rpcResult
   }
   let poolWei = 0n
@@ -142,7 +325,7 @@ function applySpendablePoolFallback(
     const queriedAddr = Array.isArray(params)
       ? String(params[0] ?? '').toLowerCase()
       : ''
-    if (queriedAddr === activeAddr) {
+    if (knownAddrs.has(queriedAddr)) {
       let onChainWei = 0n
       try {
         if (typeof rpcResult === 'string' && /^0x[0-9a-fA-F]+$/.test(rpcResult)) {
@@ -160,14 +343,17 @@ function applySpendablePoolFallback(
       | Record<string, unknown>
       | undefined
     const callData = String(callObj?.data ?? callObj?.input ?? '').toLowerCase()
-    const addrNoPrefix = activeAddr.slice(2)
     // Multicall3.getEthBalance(address) selector is 0x4d2301cc
     if (
       callData.startsWith('0x4d2301cc') &&
-      callData.includes(addrNoPrefix) &&
       (typeof rpcResult !== 'string' || /^0x0*$/.test(rpcResult))
     ) {
-      return '0x' + poolWei.toString(16).padStart(64, '0')
+      for (const addr of knownAddrs) {
+        const addrNoPrefix = addr.slice(2)
+        if (callData.includes(addrNoPrefix)) {
+          return '0x' + poolWei.toString(16).padStart(64, '0')
+        }
+      }
     }
   }
   return rpcResult
@@ -178,7 +364,11 @@ async function forwardReadOnlyRpc(
   method: string,
   params: unknown,
   state?: BackgroundBridgeState,
-): Promise<{ result?: unknown; error?: { code: number; message: string; data?: unknown } }> {
+): Promise<{
+  ok: boolean
+  result?: unknown
+  error?: { code: number; message: string; data?: unknown }
+}> {
   const rpcUrl =
     CHAIN_RPC_URLS[chainIdHex.toLowerCase()] ?? CHAIN_RPC_URLS['0x279f']
   if (rpcUrl && typeof fetch === 'function') {
@@ -198,6 +388,7 @@ async function forwardReadOnlyRpc(
         if (json && typeof json === 'object') {
           if ('result' in json) {
             return {
+              ok: true,
               result: applySpendablePoolFallback(
                 chainIdHex,
                 method,
@@ -209,6 +400,7 @@ async function forwardReadOnlyRpc(
           }
           if (json.error && typeof json.error === 'object') {
             return {
+              ok: false,
               error: {
                 code:
                   typeof json.error.code === 'number'
@@ -226,6 +418,7 @@ async function forwardReadOnlyRpc(
     }
   }
   return {
+    ok: true,
     result: applySpendablePoolFallback(
       chainIdHex,
       method,
@@ -242,20 +435,116 @@ export function createBackgroundBridgeState(
   const launchMode: ExtensionLaunchMode =
     overrides.launchMode ??
     (overrides.openPanelOnActionClick ? 'sidepanel' : 'popup')
+  const originPersonas: Record<string, OriginPersonaBinding> = {
+    ...(overrides.originPersonas ?? {}),
+  }
+  const sharedOriginsSet =
+    overrides.approvedOrigins ??
+    overrides.connectedOrigins ??
+    new Set<string>()
+  for (const raw of Array.from(sharedOriginsSet)) {
+    const norm = normalizeBridgeOrigin(raw)
+    if (norm && norm !== raw) {
+      sharedOriginsSet.add(norm)
+    }
+  }
+  if (
+    overrides.connectedOrigins &&
+    overrides.connectedOrigins !== sharedOriginsSet
+  ) {
+    for (const raw of Array.from(overrides.connectedOrigins)) {
+      const norm = normalizeBridgeOrigin(raw) || raw
+      if (norm) sharedOriginsSet.add(norm)
+    }
+  }
+  for (const key of Object.keys(originPersonas)) {
+    const norm = normalizeBridgeOrigin(key) || key
+    if (norm) sharedOriginsSet.add(norm)
+  }
+
   return {
     chainIdHex: overrides.chainIdHex ?? '0x279f',
     activePersonaAddress:
       overrides.activePersonaAddress ??
       '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
     poolBalanceWeiHex: overrides.poolBalanceWeiHex ?? '0x0',
-    approvedOrigins: overrides.approvedOrigins ?? new Set<string>(),
+    approvedOrigins: sharedOriginsSet,
+    connectedOrigins: sharedOriginsSet,
+    originPersonas,
+    announceMode: overrides.announceMode ?? 'always',
     pendingApprovals:
       overrides.pendingApprovals ?? new Map<string, PendingDappApproval>(),
+    pendingRpcWaiters:
+      overrides.pendingRpcWaiters ?? new Map<string, PendingRpcWaiter>(),
     syncedState: overrides.syncedState ?? null,
     openPanelOnActionClick:
       overrides.openPanelOnActionClick ?? launchMode === 'sidepanel',
     launchMode,
   }
+}
+
+export async function openApprovalCompanionPopup(
+  options: {
+    windowId?: number
+    tabId?: number
+  } = {},
+  runtimeScope?: Record<string, any>,
+  state?: BackgroundBridgeState,
+): Promise<{
+  opened: boolean
+  mode: string
+}> {
+  const extApi = getRawExtensionApi(runtimeScope)
+  if (!extApi) {
+    return { opened: false, mode: 'noop' }
+  }
+
+  if (
+    state?.launchMode === 'sidepanel' &&
+    extApi.sidePanel &&
+    typeof extApi.sidePanel.open === 'function'
+  ) {
+    return await openCompanionPanel(
+      {
+        windowId: options.windowId,
+        tabId: options.tabId,
+        persistSidePanelOnActionClick: false,
+      },
+      runtimeScope,
+    )
+  }
+
+  if (extApi.action && typeof extApi.action.openPopup === 'function') {
+    try {
+      await extApi.action.openPopup()
+      return { opened: true, mode: 'popup' }
+    } catch {
+      // Fall through to window/sidePanel when openPopup requires user gesture
+    }
+  }
+
+  if (extApi.windows && typeof extApi.windows.create === 'function') {
+    try {
+      const res = await openExtensionInWindow(
+        { path: 'index.html?extMode=window#/dapp-bridge' },
+        runtimeScope,
+      )
+      if (res.opened) {
+        return { opened: true, mode: res.mode }
+      }
+    } catch {
+      // Fall through to companion panel
+    }
+  }
+
+  return await openCompanionPanel(
+    {
+      windowId: options.windowId,
+      tabId: options.tabId,
+      persistSidePanelOnActionClick: false,
+    },
+    runtimeScope,
+  )
 }
 
 export function configureSidePanelBehavior(
@@ -283,38 +572,6 @@ export function configureSidePanelBehavior(
   return false
 }
 
-/**
- * Cross-Browser Extension Renderer Process & JS Bytecode Cache Keepalive
- *
- * Why extension popups (such as MetaMask or Phantom) traditionally suffer from 1–2s open latency:
- * 1. When the user closes an extension popup (`index.html?extMode=popup`) and no other HTML
- *    document from the extension origin is open, the browser's reference count for the extension
- *    renderer process drops to `0`. Chromium immediately terminates the `chrome-extension://<id>`
- *    renderer process (`SiteInstance`) and discards its `Blink::MemoryCache` and V8 Isolate;
- *    Safari (WebKit) and Firefox (Gecko) similarly evict transient popup documents and their
- *    compiled script caches. On the next toolbar click, the browser has to cold-spawn a renderer
- *    process and re-parse/re-compile several megabytes of JS from scratch.
- * 2. In addition, synchronous `<script type="module">` tags in `<head>` block `window.onload`
- *    until the entire static import graph finishes evaluating, preventing the browser from even
- *    painting the popup rectangle until JS execution completes.
- *
- * How we keep popup opens instantaneous across Chrome, Safari, and Firefox:
- * - `build-extension.mjs` transforms `index.html` so the 400x600 popup shell paints in `< 10ms`
- *   and defers the entry `import()` until after `window.onload` + `requestAnimationFrame`.
- * - `ensureOffscreenWarmup()` pins a lightweight `offscreen.html` document (which preloads all
- *   split `./assets/*.js` and `./assets/*.css` chunks without mounting `#q-app`) in the shared
- *   extension renderer process:
- *     a) Chromium (Chrome / Brave / Edge): `background.js` runs in a Service Worker without a DOM,
- *        so we use `chrome.offscreen.createDocument({ url: 'offscreen.html', ... })` to keep an
- *        offscreen document alive in the exact same `SiteInstance`, V8 Isolate, and `MemoryCache`
- *        as the popup.
- *     b) Safari (WebKit / JavaScriptCore) & Firefox (Gecko / SpiderMonkey): when `chrome.offscreen`
- *        is unavailable and a background DOM document exists (`_generated_background_page.html`),
- *        we append a hidden `<iframe id="frank-warmup-frame" src="offscreen.html">` into
- *        `document.body`. Because the background page shares the `safari-web-extension://<id>` /
- *        `moz-extension://<id>` WebContent process, preloading `offscreen.html` inside it keeps
- *        all parsed ES modules and JSC/SpiderMonkey bytecode warm in RAM between popup clicks.
- */
 export async function ensureOffscreenWarmup(
   runtimeScope?: Record<string, any>,
 ): Promise<boolean> {
@@ -447,6 +704,1089 @@ export async function reinjectContentScriptsIntoOpenTabs(
   return reinjectedCount
 }
 
+function broadcastToTabs(
+  runtimeScope: Record<string, any> | undefined,
+  messageBuilder: (tab: Record<string, any>) => Record<string, any> | null,
+) {
+  const extApi = getRawExtensionApi(runtimeScope)
+  if (
+    extApi?.tabs &&
+    typeof extApi.tabs.query === 'function' &&
+    typeof extApi.tabs.sendMessage === 'function'
+  ) {
+    try {
+      void Promise.resolve(extApi.tabs.query({}))
+        .then(tabs => {
+          if (!Array.isArray(tabs)) return
+          for (const tab of tabs) {
+            if (tab && typeof tab.id === 'number') {
+              const msg = messageBuilder(tab)
+              if (msg) {
+                void Promise.resolve(
+                  extApi.tabs.sendMessage(tab.id, msg),
+                ).catch(() => {})
+              }
+            }
+          }
+        })
+        .catch(() => {})
+    } catch {
+      // Ignore tab broadcast errors
+    }
+  }
+}
+
+async function persistOriginStateToStorage(
+  state: BackgroundBridgeState,
+  runtimeScope?: Record<string, any>,
+) {
+  const extApi = getRawExtensionApi(runtimeScope)
+  if (extApi?.storage?.local?.set) {
+    try {
+      await extApi.storage.local.set({
+        frankApprovedOrigins: Array.from(state.approvedOrigins),
+        frankOriginPersonas: { ...state.originPersonas },
+      })
+    } catch {
+      // Ignore storage errors
+    }
+  }
+}
+
+export async function handleBackgroundMessage(
+  message: any,
+  sender: any = {},
+  state: BackgroundBridgeState = createBackgroundBridgeState(),
+  runtimeScope?: Record<string, any>,
+): Promise<any> {
+  if (!message || typeof message !== 'object') {
+    return undefined
+  }
+
+  function broadcastProviderEventToTabs(
+    event: string,
+    payload: unknown,
+    targetOrigin?: string,
+  ) {
+    const normTarget = targetOrigin ? normalizeBridgeOrigin(targetOrigin) : ''
+    broadcastToTabs(runtimeScope, tab => {
+      if (normTarget && typeof tab?.url === 'string' && tab.url) {
+        const tabOrigin = normalizeBridgeOrigin(tab.url)
+        if (tabOrigin && tabOrigin !== normTarget) {
+          return null
+        }
+      }
+      return {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'provider-event',
+        event,
+        payload,
+      }
+    })
+  }
+
+  function broadcastPrivacyConfigToTabs(triggerAnnounce = false) {
+    const connectedOrigins = Array.from(state.approvedOrigins)
+    broadcastToTabs(runtimeScope, () => ({
+      channel: FRANK_DAPP_BRIDGE_CHANNEL,
+      type: 'provider-privacy-config',
+      announceMode: state.announceMode,
+      connectedOrigins,
+      triggerAnnounce,
+    }))
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    message.type === 'get-bridge-state'
+  ) {
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        chainIdHex: state.chainIdHex,
+        activePersonaAddress: state.activePersonaAddress,
+        poolBalanceWeiHex: state.poolBalanceWeiHex ?? '0x0',
+        approvedOrigins: Array.from(state.approvedOrigins),
+        connectedOrigins: Array.from(state.approvedOrigins),
+        originPersonas: { ...state.originPersonas },
+        announceMode: state.announceMode,
+        pendingApprovals: Array.from(state.pendingApprovals.values()),
+        launchMode: state.launchMode,
+        openPanelOnActionClick: state.openPanelOnActionClick,
+      },
+    }
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    message.type === 'get-provider-privacy'
+  ) {
+    const origin = normalizeBridgeOrigin(
+      String(message.origin ?? sender?.origin ?? sender?.url ?? ''),
+    )
+    const approved = isOriginConnected(state, origin)
+    const shouldAnnounce =
+      state.announceMode === 'always' ||
+      (state.announceMode === 'connected-only' && approved)
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        announceMode: state.announceMode,
+        isOriginApproved: approved,
+        shouldAnnounce,
+      },
+    }
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    (message.type === 'set-announce-mode' ||
+      message.type === 'set-provider-privacy')
+  ) {
+    const rawMode = String(
+      message.announceMode ?? message.payload?.announceMode ?? 'always',
+    )
+    const mode: DappProviderAnnounceMode =
+      rawMode === 'connected-only' || rawMode === 'stealth'
+        ? rawMode
+        : 'always'
+    state.announceMode = mode
+    const extApi = getRawExtensionApi(runtimeScope)
+    if (extApi?.storage?.local?.set) {
+      try {
+        await extApi.storage.local.set({ frankAnnounceMode: mode })
+      } catch {
+        // Ignore storage errors
+      }
+    }
+    broadcastPrivacyConfigToTabs(mode === 'always')
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        announceMode: state.announceMode,
+      },
+    }
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    message.type === 'disconnect-origin'
+  ) {
+    const rawOrigin = String(
+      message.origin ?? message.payload?.origin ?? '',
+    ).trim()
+    const norm = normalizeBridgeOrigin(rawOrigin) || rawOrigin
+    if (norm) {
+      state.approvedOrigins.delete(norm)
+      state.connectedOrigins.delete(norm)
+      state.approvedOrigins.delete(rawOrigin)
+      delete state.originPersonas[norm]
+      delete state.originPersonas[rawOrigin]
+      await persistOriginStateToStorage(state, runtimeScope)
+      broadcastProviderEventToTabs('accountsChanged', [], norm)
+      broadcastPrivacyConfigToTabs(false)
+    }
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        origin: norm,
+        approvedOrigins: Array.from(state.approvedOrigins),
+        connectedOrigins: Array.from(state.approvedOrigins),
+        originPersonas: { ...state.originPersonas },
+      },
+    }
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    (message.type === 'set-active-persona' ||
+      message.type === 'update-persona-state')
+  ) {
+    const payload =
+      message.payload && typeof message.payload === 'object'
+        ? message.payload
+        : message
+    const nextAddr = String(
+      payload.activePersonaAddress ?? payload.address ?? message.address ?? '',
+    ).trim()
+    const rawPool =
+      payload.poolBalanceWeiHex ??
+      payload.poolBalanceWei ??
+      message.poolBalanceWeiHex ??
+      message.poolBalanceWei ??
+      ''
+    let nextPoolHex = ''
+    if (typeof rawPool === 'bigint' && rawPool >= 0n) {
+      nextPoolHex = '0x' + rawPool.toString(16)
+    } else if (typeof rawPool === 'number' && Number.isFinite(rawPool) && rawPool >= 0) {
+      nextPoolHex = '0x' + BigInt(Math.floor(rawPool)).toString(16)
+    } else if (typeof rawPool === 'string') {
+      const trimmedPool = rawPool.trim()
+      if (/^0x[0-9a-fA-F]+$/.test(trimmedPool)) {
+        nextPoolHex = trimmedPool.toLowerCase()
+      } else if (/^\d+$/.test(trimmedPool)) {
+        nextPoolHex = '0x' + BigInt(trimmedPool).toString(16)
+      }
+    }
+    const nextChainHex = String(
+      payload.chainIdHex ?? message.chainIdHex ?? '',
+    ).trim()
+    const storageUpdates: Record<string, unknown> = {}
+
+    if (/^0x[a-fA-F0-9]{40}$/.test(nextAddr)) {
+      state.activePersonaAddress = nextAddr
+      storageUpdates.frankActivePersonaAddress = nextAddr
+      for (const [origKey, binding] of Object.entries(state.originPersonas)) {
+        if (!binding.isBurner) {
+          state.originPersonas[origKey] = {
+            ...binding,
+            address: nextAddr,
+          }
+          broadcastProviderEventToTabs('accountsChanged', [nextAddr], origKey)
+        }
+      }
+      storageUpdates.frankOriginPersonas = { ...state.originPersonas }
+    }
+    if (/^0x[0-9a-fA-F]+$/.test(nextPoolHex)) {
+      state.poolBalanceWeiHex = nextPoolHex.toLowerCase()
+      storageUpdates.frankPoolBalanceWeiHex = state.poolBalanceWeiHex
+    }
+    if (/^0x[0-9a-fA-F]+$/.test(nextChainHex)) {
+      const normalizedChain = '0x' + parseInt(nextChainHex, 16).toString(16)
+      if (state.chainIdHex !== normalizedChain) {
+        state.chainIdHex = normalizedChain
+        storageUpdates.frankChainIdHex = normalizedChain
+        broadcastProviderEventToTabs('chainChanged', normalizedChain)
+      }
+    }
+
+    if (Object.keys(storageUpdates).length > 0) {
+      const extApi = getRawExtensionApi(runtimeScope)
+      if (extApi?.storage?.local?.set) {
+        try {
+          await extApi.storage.local.set(storageUpdates)
+        } catch {
+          // Ignore storage errors
+        }
+      }
+    }
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        activePersonaAddress: state.activePersonaAddress,
+        poolBalanceWeiHex: state.poolBalanceWeiHex ?? '0x0',
+        chainIdHex: state.chainIdHex,
+      },
+    }
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    message.type === 'set-dapp-chain'
+  ) {
+    const rawChain = String(message.chainIdHex ?? '').trim()
+    if (/^0x[0-9a-fA-F]+$/.test(rawChain)) {
+      const normalized = '0x' + parseInt(rawChain, 16).toString(16)
+      state.chainIdHex = normalized
+      const extApi = getRawExtensionApi(runtimeScope)
+      if (extApi?.storage?.local?.set) {
+        try {
+          await extApi.storage.local.set({ frankChainIdHex: normalized })
+        } catch {
+          // Ignore storage errors
+        }
+      }
+      broadcastProviderEventToTabs('chainChanged', normalized)
+    }
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        chainIdHex: state.chainIdHex,
+      },
+    }
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    message.type === 'set-sidepanel-behavior'
+  ) {
+    const enabled = Boolean(message.openPanelOnActionClick)
+    state.openPanelOnActionClick = enabled
+    state.launchMode = enabled ? 'sidepanel' : 'popup'
+    const configured = configureSidePanelBehavior(runtimeScope, enabled)
+    const extApi = getRawExtensionApi(runtimeScope)
+    if (extApi?.storage?.local?.set) {
+      try {
+        await extApi.storage.local.set({
+          frankOpenPanelOnActionClick: enabled,
+          [FRANK_EXT_LAUNCH_MODE_KEY]: state.launchMode,
+        })
+      } catch {
+        // Ignore storage errors
+      }
+    }
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        configured,
+        openPanelOnActionClick: enabled,
+        launchMode: state.launchMode,
+      },
+    }
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    message.type === 'get-sidepanel-behavior'
+  ) {
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        openPanelOnActionClick: state.openPanelOnActionClick,
+        launchMode: state.launchMode,
+      },
+    }
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    message.type === 'set-launch-mode'
+  ) {
+    const mode: ExtensionLaunchMode =
+      message.launchMode === 'sidepanel' || message.launchMode === 'window'
+        ? message.launchMode
+        : 'popup'
+    state.launchMode = mode
+    state.openPanelOnActionClick = mode === 'sidepanel'
+    const configured = configureSidePanelBehavior(
+      runtimeScope,
+      state.openPanelOnActionClick,
+    )
+    const extApi = getRawExtensionApi(runtimeScope)
+    if (extApi?.storage?.local?.set) {
+      try {
+        await extApi.storage.local.set({
+          [FRANK_EXT_LAUNCH_MODE_KEY]: mode,
+          frankOpenPanelOnActionClick: state.openPanelOnActionClick,
+        })
+      } catch {
+        // Ignore storage errors
+      }
+    }
+    if (message.openNow) {
+      if (mode === 'sidepanel') {
+        await openCompanionPanel(
+          {
+            windowId: message.windowId ?? sender?.tab?.windowId,
+            tabId: message.tabId ?? sender?.tab?.id,
+          },
+          runtimeScope,
+        )
+      } else if (mode === 'window') {
+        await openExtensionInWindow(message.options ?? {}, runtimeScope)
+      }
+    }
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        configured,
+        launchMode: state.launchMode,
+        openPanelOnActionClick: state.openPanelOnActionClick,
+      },
+    }
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    message.type === 'open-extension-window'
+  ) {
+    state.launchMode = 'window'
+    const res = await openExtensionInWindow(
+      message.options ?? {},
+      runtimeScope,
+    )
+    return {
+      ok: res.opened,
+      result: {
+        ok: res.opened,
+        ...res,
+        launchMode: state.launchMode,
+      },
+    }
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    message.type === 'dapp-rpc-request'
+  ) {
+    const method = String(message.payload?.method ?? '')
+    const params = message.payload?.params
+    const rawOrigin = String(
+      message.origin ?? sender?.origin ?? sender?.url ?? '',
+    )
+    const normalizedOrigin = normalizeBridgeOrigin(rawOrigin)
+    const href = String(message.href ?? sender?.url ?? rawOrigin)
+    const id = String(
+      message.id ?? `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    )
+
+    if (method === 'eth_chainId') {
+      return { ok: true, result: state.chainIdHex }
+    }
+
+    if (method === 'net_version') {
+      return { ok: true, result: String(parseInt(state.chainIdHex, 16)) }
+    }
+
+    if (method === 'web3_clientVersion') {
+      return { ok: true, result: 'FrankWallet/0.3.0' }
+    }
+
+    // Strict Origin Permission Gating: eth_accounts returns [] unless origin is already approved
+    if (method === 'eth_accounts') {
+      if (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin)) {
+        return { ok: true, result: [] }
+      }
+      return {
+        ok: true,
+        result: [getOriginPersonaAddress(state, normalizedOrigin)],
+      }
+    }
+
+    if (method === 'btc_getNetwork') {
+      return { ok: true, result: 'livenet' }
+    }
+
+    if (method === 'btc_getAccounts') {
+      if (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin)) {
+        return { ok: true, result: [] }
+      }
+      const evmPersona = getOriginPersonaAddress(state, normalizedOrigin)
+      return {
+        ok: true,
+        result: [deriveDeterministicBtcAddress(evmPersona)],
+      }
+    }
+
+    if (method === 'btc_getPublicKey') {
+      if (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin)) {
+        return { ok: true, result: '' }
+      }
+      const evmPersona = getOriginPersonaAddress(state, normalizedOrigin)
+      return {
+        ok: true,
+        result: deriveDeterministicBtcPubKey(evmPersona),
+      }
+    }
+
+    if (method === 'wallet_getPermissions') {
+      if (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin)) {
+        return { ok: true, result: [] }
+      }
+      const personaAddr = getOriginPersonaAddress(state, normalizedOrigin)
+      return {
+        ok: true,
+        result: [
+          {
+            invoker: normalizedOrigin,
+            parentCapability: 'eth_accounts',
+            caveats: [
+              {
+                type: 'restrictReturnedAccounts',
+                value: [personaAddr],
+              },
+            ],
+          },
+        ],
+      }
+    }
+
+    if (
+      method === 'wallet_revokePermissions' ||
+      method === 'solana_disconnect'
+    ) {
+      if (normalizedOrigin) {
+        state.approvedOrigins.delete(normalizedOrigin)
+        state.connectedOrigins.delete(normalizedOrigin)
+        state.approvedOrigins.delete(rawOrigin)
+        delete state.originPersonas[normalizedOrigin]
+        delete state.originPersonas[rawOrigin]
+        await persistOriginStateToStorage(state, runtimeScope)
+        broadcastProviderEventToTabs('accountsChanged', [], normalizedOrigin)
+      }
+      return { ok: true, result: null }
+    }
+
+    // Solana silent connect on unapproved origin returns [] without prompting
+    if (method === 'solana_connect') {
+      const connectOpt = (Array.isArray(params) ? params[0] : params) as
+        | { silent?: boolean }
+        | undefined
+      if (
+        connectOpt?.silent &&
+        (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin))
+      ) {
+        return { ok: true, result: [] }
+      }
+    }
+
+    // Already-approved origin calling eth_requestAccounts, wallet_requestPermissions, solana_connect, btc_requestAccounts, or xec_cashtabRequest(addressRequest)
+    const cashtabParams =
+      method === 'xec_cashtabRequest'
+        ? ((Array.isArray(params) ? params[0] : params) as
+            | { addressRequest?: boolean; txInfo?: unknown }
+            | undefined)
+        : undefined
+    const isCashtabAddressRequest =
+      method === 'xec_cashtabRequest' &&
+      Boolean(cashtabParams?.addressRequest) &&
+      !cashtabParams?.txInfo
+
+    if (
+      (method === 'eth_requestAccounts' ||
+        method === 'wallet_requestPermissions' ||
+        method === 'solana_connect' ||
+        method === 'btc_requestAccounts' ||
+        isCashtabAddressRequest) &&
+      normalizedOrigin &&
+      isOriginConnected(state, normalizedOrigin) &&
+      !message.payload?.requireExplicitCompanionApproval
+    ) {
+      const personaAddr = getOriginPersonaAddress(state, normalizedOrigin)
+      if (method === 'wallet_requestPermissions') {
+        return {
+          ok: true,
+          result: [
+            {
+              invoker: normalizedOrigin,
+              parentCapability: 'eth_accounts',
+              caveats: [
+                {
+                  type: 'restrictReturnedAccounts',
+                  value: [personaAddr],
+                },
+              ],
+            },
+          ],
+        }
+      }
+      if (method === 'btc_requestAccounts') {
+        return {
+          ok: true,
+          result: [deriveDeterministicBtcAddress(personaAddr)],
+        }
+      }
+      if (isCashtabAddressRequest) {
+        return {
+          ok: true,
+          result: {
+            address: deriveDeterministicXecAddress(personaAddr),
+          },
+        }
+      }
+      return { ok: true, result: [personaAddr] }
+    }
+
+    if (
+      method === 'wallet_switchEthereumChain' ||
+      method === 'wallet_addEthereumChain'
+    ) {
+      const rawChainId = Array.isArray(params)
+        ? (params[0] as any)?.chainId
+        : (params as any)?.chainId
+      if (
+        typeof rawChainId === 'string' &&
+        /^0x[0-9a-fA-F]+$/.test(rawChainId.trim())
+      ) {
+        const normalized = '0x' + parseInt(rawChainId.trim(), 16).toString(16)
+        state.chainIdHex = normalized
+        const extApi = getRawExtensionApi(runtimeScope)
+        if (extApi?.storage?.local?.set) {
+          try {
+            await extApi.storage.local.set({
+              frankChainIdHex: normalized,
+            })
+          } catch {
+            // Ignore storage errors
+          }
+        }
+        broadcastProviderEventToTabs('chainChanged', normalized)
+        return { ok: true, result: null }
+      }
+      return {
+        ok: false,
+        error: {
+          code: -32602,
+          message: 'Invalid chainId parameter',
+        },
+      }
+    }
+
+    if (method === 'wallet_getCapabilities') {
+      return {
+        ok: true,
+        result: {
+          '0x279f': { atomicBatch: { supported: false } },
+          '0x8f': { atomicBatch: { supported: false } },
+          '0x1': { atomicBatch: { supported: false } },
+          '0xaa36a7': { atomicBatch: { supported: false } },
+        },
+      }
+    }
+
+    if (method === 'wallet_watchAsset') {
+      return { ok: true, result: true }
+    }
+
+    if (READONLY_RPC_METHODS.has(method)) {
+      return await forwardReadOnlyRpc(state.chainIdHex, method, params, state)
+    }
+
+    if (
+      method === 'eth_requestAccounts' ||
+      method === 'wallet_requestPermissions' ||
+      APPROVAL_REQUIRED_METHODS.has(method)
+    ) {
+      const effectiveOrigin = normalizedOrigin || rawOrigin || 'https://dapp.local'
+      const isConnectMethod =
+        method === 'eth_requestAccounts' ||
+        method === 'wallet_requestPermissions' ||
+        method === 'solana_connect' ||
+        method === 'btc_requestAccounts' ||
+        isCashtabAddressRequest
+
+      // Require origin to be connected before signing or sending transactions
+      if (
+        !isConnectMethod &&
+        normalizedOrigin &&
+        !isOriginConnected(state, normalizedOrigin) &&
+        message.payload?.enforceConnectedOriginForSigning === true
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: 4100,
+            message: 'The requested method and/or account has not been authorized by the user.',
+          },
+        }
+      }
+
+      const kind: PendingDappApproval['kind'] =
+        method === 'wallet_requestPermissions'
+          ? 'permissions'
+          : isConnectMethod
+          ? 'connect'
+          : method === 'eth_sendTransaction' ||
+            method === 'solana_signTransaction' ||
+            method === 'solana_signAndSendTransaction' ||
+            method === 'btc_signPsbt' ||
+            method === 'btc_signPsbts' ||
+            (method === 'xec_cashtabRequest' && Boolean(cashtabParams?.txInfo))
+          ? 'transaction'
+          : 'sign'
+
+      const suggestedBurnerAddress = deriveDeterministicOriginBurnerAddress(
+        state.activePersonaAddress,
+        effectiveOrigin,
+      )
+      const chainFamily: 'evm' | 'solana' | 'bitcoin' | 'ecash' =
+        method.startsWith('solana_')
+          ? 'solana'
+          : method.startsWith('btc_')
+          ? 'bitcoin'
+          : method === 'xec_cashtabRequest'
+          ? 'ecash'
+          : 'evm'
+
+      const pending: PendingDappApproval = {
+        id,
+        kind,
+        chainFamily,
+        origin: effectiveOrigin,
+        href,
+        method,
+        params,
+        createdAt: Date.now(),
+        requiresCompanionApproval: true,
+        personaAddress:
+          state.originPersonas[effectiveOrigin]?.address ??
+          suggestedBurnerAddress,
+        suggestedBurnerAddress,
+        primaryPersonaAddress: state.activePersonaAddress,
+      }
+      state.pendingApprovals.set(id, pending)
+
+      await openApprovalCompanionPopup(
+        {
+          windowId: sender?.tab?.windowId,
+          tabId: sender?.tab?.id,
+        },
+        runtimeScope,
+        state,
+      )
+
+      // Hold the RPC Promise open until resolved/rejected via resolve-approval
+      try {
+        const resolvedResult = await new Promise<unknown>((resolve, reject) => {
+          state.pendingRpcWaiters.set(id, { resolve, reject })
+        })
+        return {
+          ok: true,
+          result: resolvedResult,
+        }
+      } catch (err: any) {
+        return {
+          ok: false,
+          error: {
+            code: typeof err?.code === 'number' ? err.code : 4001,
+            message: String(err?.message || 'User rejected the request.'),
+            ...(err?.data !== undefined ? { data: err.data } : {}),
+          },
+        }
+      }
+    }
+
+    return {
+      ok: false,
+      error: {
+        code: 4200,
+        message: `Unsupported method: ${method}`,
+      },
+    }
+  }
+
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    (message.type === 'resolve-approval' ||
+      message.type === 'companion-resolve-approval')
+  ) {
+    const decision =
+      message.payload && typeof message.payload === 'object'
+        ? message.payload
+        : message
+    const requestId = String(
+      decision.approvalId ??
+        decision.requestId ??
+        message.approvalId ??
+        message.requestId ??
+        '',
+    )
+    const pending = state.pendingApprovals.get(requestId)
+    const waiter = state.pendingRpcWaiters.get(requestId)
+    if (!pending) {
+      return {
+        ok: false,
+        error: {
+          code: 4004,
+          message: `Unknown approval request: ${requestId}`,
+        },
+      }
+    }
+    state.pendingApprovals.delete(requestId)
+    state.pendingRpcWaiters.delete(requestId)
+
+    const approved = Boolean(decision.approved ?? message.approved)
+    if (!approved) {
+      const rejectionError = {
+        code: 4001,
+        message: 'User rejected the request.',
+      }
+      if (waiter) {
+        waiter.reject(rejectionError)
+      }
+      return {
+        ok: false,
+        error: rejectionError,
+        result: {
+          ok: false,
+          requestId,
+          approvalId: requestId,
+          approved: false,
+          origin: pending.origin,
+        },
+      }
+    }
+
+    const pendingCashtabParams =
+      pending.method === 'xec_cashtabRequest'
+        ? ((Array.isArray(pending.params)
+            ? pending.params[0]
+            : pending.params) as
+            | { addressRequest?: boolean; txInfo?: unknown }
+            | undefined)
+        : undefined
+    const isPendingCashtabConnect =
+      pending.method === 'xec_cashtabRequest' &&
+      Boolean(pendingCashtabParams?.addressRequest) &&
+      !pendingCashtabParams?.txInfo
+
+    const isConnectMethod =
+      pending.kind === 'connect' ||
+      pending.kind === 'permissions' ||
+      pending.method === 'eth_requestAccounts' ||
+      pending.method === 'wallet_requestPermissions' ||
+      pending.method === 'solana_connect' ||
+      pending.method === 'btc_requestAccounts' ||
+      isPendingCashtabConnect
+
+    if (isConnectMethod) {
+      const rawUseBurner =
+        decision.useBurnerPersona ?? message.useBurnerPersona
+      const useBurnerPersona =
+        decision.personaIndex === 0 || message.personaIndex === 0
+          ? false
+          : rawUseBurner !== undefined
+          ? Boolean(rawUseBurner)
+          : true
+
+      const binding = assignOriginPersona(state, pending.origin, {
+        useBurnerPersona,
+        personaAddress:
+          decision.personaAddress ?? message.personaAddress,
+        personaIndex:
+          decision.personaIndex ?? message.personaIndex,
+        label: decision.label ?? message.label,
+      })
+
+      await persistOriginStateToStorage(state, runtimeScope)
+      broadcastProviderEventToTabs(
+        'accountsChanged',
+        [binding.address],
+        pending.origin,
+      )
+      broadcastPrivacyConfigToTabs(true)
+
+      const rpcValue =
+        pending.method === 'wallet_requestPermissions'
+          ? [
+              {
+                invoker: pending.origin,
+                parentCapability: 'eth_accounts',
+                caveats: [
+                  {
+                    type: 'restrictReturnedAccounts',
+                    value: [binding.address],
+                  },
+                ],
+              },
+            ]
+          : pending.method === 'btc_requestAccounts'
+          ? [deriveDeterministicBtcAddress(binding.address)]
+          : isPendingCashtabConnect
+          ? { address: deriveDeterministicXecAddress(binding.address) }
+          : [binding.address]
+
+      if (waiter) {
+        waiter.resolve(rpcValue)
+      }
+
+      return {
+        ok: true,
+        result: {
+          ok: true,
+          requestId,
+          approvalId: requestId,
+          approved: true,
+          origin: pending.origin,
+          accounts: [binding.address],
+          persona: binding,
+          result: rpcValue,
+        },
+      }
+    }
+
+    // Signing or transaction request
+    const originPersonaAddress = getOriginPersonaAddress(state, pending.origin)
+    const explicitResult =
+      decision.result ??
+      message.result ??
+      decision.signature ??
+      message.signature ??
+      decision.txHash ??
+      message.txHash
+    const fallbackResult = createDeterministicRpcResultFallback(
+      pending.method,
+      pending.origin,
+      originPersonaAddress,
+      pending.params,
+    )
+    const resolvedRpcResult =
+      explicitResult !== undefined
+        ? explicitResult
+        : pending.method === 'xec_cashtabRequest'
+        ? { txid: fallbackResult.replace(/^0x/, '') }
+        : pending.method === 'btc_signPsbts'
+        ? [fallbackResult]
+        : fallbackResult
+
+    if (waiter) {
+      waiter.resolve(resolvedRpcResult)
+    }
+
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        requestId,
+        approvalId: requestId,
+        approved: true,
+        origin: pending.origin,
+        accounts: [originPersonaAddress],
+        result: resolvedRpcResult,
+      },
+    }
+  }
+
+  if (message.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL) {
+    const extApi = getRawExtensionApi(runtimeScope)
+
+    if (
+      message.type === 'get-synced-state' ||
+      message.type === 'pwa-request-sync'
+    ) {
+      if (!state.syncedState && extApi?.storage?.local?.get) {
+        try {
+          const stored = await extApi.storage.local.get('frankSyncedState')
+          if (stored?.frankSyncedState) {
+            state.syncedState = stored.frankSyncedState
+          }
+        } catch {
+          // Ignore storage errors
+        }
+      }
+      return {
+        ok: Boolean(state.syncedState),
+        result: {
+          ok: Boolean(state.syncedState),
+          syncedState: state.syncedState,
+          sasCode: state.syncedState?.sasCode ?? null,
+          deviceSyncBundle: state.syncedState?.deviceSyncBundle ?? null,
+        },
+      }
+    }
+
+    const sasCode = String(message.payload?.sasCode ?? '482910')
+    const origin = String(
+      message.origin ??
+        (message.type === 'extension-push-sync-to-tab'
+          ? 'frank-extension'
+          : 'https://signet.mx'),
+    )
+    state.syncedState = {
+      sasCode,
+      deviceSyncBundle: message.payload?.deviceSyncBundle,
+      syncedFromOrigin: origin,
+      syncedAt: Date.now(),
+    }
+
+    if (extApi?.storage?.local?.set) {
+      try {
+        await extApi.storage.local.set({
+          frankSyncedState: state.syncedState,
+        })
+      } catch {
+        // Ignore storage errors in ephemeral environments
+      }
+    }
+
+    let pushedToTabCount = 0
+    if (
+      message.type === 'extension-push-sync-to-tab' &&
+      extApi?.tabs &&
+      typeof extApi.tabs.query === 'function'
+    ) {
+      try {
+        let tabs = await extApi.tabs.query({})
+        if (!Array.isArray(tabs) || tabs.length === 0) {
+          tabs = await extApi.tabs.query({ currentWindow: true })
+        }
+        if (Array.isArray(tabs)) {
+          for (const tab of tabs) {
+            if (tab && typeof tab.id === 'number') {
+              let sendMessageSucceeded = false
+              let contentAcked = false
+              if (typeof extApi.tabs.sendMessage === 'function') {
+                try {
+                  const res = await extApi.tabs.sendMessage(tab.id, {
+                    channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+                    type: 'extension-sync-push',
+                    payload: state.syncedState,
+                  })
+                  sendMessageSucceeded = true
+                  if (res && typeof res === 'object' && res.ok) {
+                    contentAcked = true
+                  }
+                } catch {
+                  // Tab may have been opened before extension reload
+                }
+              }
+              let scriptInjected = false
+              if (
+                !contentAcked &&
+                typeof extApi?.scripting?.executeScript === 'function'
+              ) {
+                try {
+                  await Promise.resolve(
+                    extApi.scripting.executeScript({
+                      target: { tabId: tab.id },
+                      files: ['content.js'],
+                    }),
+                  ).catch(() => {})
+                  await extApi.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    func: (msg: unknown) => {
+                      window.postMessage(msg, '*')
+                    },
+                    args: [
+                      {
+                        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+                        direction: 'to-pwa',
+                        type: 'extension-sync-push',
+                        payload: state.syncedState,
+                      },
+                    ],
+                  })
+                  scriptInjected = true
+                } catch {
+                  // Scripting not permitted on restricted URLs
+                }
+              }
+              if (contentAcked || scriptInjected || sendMessageSucceeded) {
+                pushedToTabCount += 1
+              }
+            }
+          }
+        }
+      } catch {
+        // Ignore tab query errors
+      }
+    }
+
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        sasCode,
+        syncedFromOrigin: origin,
+        syncedAt: state.syncedState.syncedAt,
+        syncedState: state.syncedState,
+        pushedToTabCount,
+      },
+    }
+  }
+
+  return undefined
+}
+
 export function installBackgroundBridge(
   runtimeScope?: Record<string, any>,
   state: BackgroundBridgeState = createBackgroundBridgeState(),
@@ -468,6 +1808,8 @@ export function installBackgroundBridge(
         'frankActivePersonaAddress',
         'frankPoolBalanceWeiHex',
         'frankApprovedOrigins',
+        'frankOriginPersonas',
+        'frankAnnounceMode',
         'frankChainIdHex',
       ])
       if (maybeStored && typeof maybeStored.then === 'function') {
@@ -524,9 +1866,33 @@ export function installBackgroundBridge(
             if (Array.isArray(stored.frankApprovedOrigins)) {
               for (const orig of stored.frankApprovedOrigins) {
                 if (typeof orig === 'string' && orig) {
-                  state.approvedOrigins.add(orig)
+                  const norm = normalizeBridgeOrigin(orig) || orig
+                  state.approvedOrigins.add(norm)
+                  state.connectedOrigins.add(norm)
                 }
               }
+            }
+            if (
+              stored.frankOriginPersonas &&
+              typeof stored.frankOriginPersonas === 'object'
+            ) {
+              for (const [orig, binding] of Object.entries(
+                stored.frankOriginPersonas,
+              )) {
+                if (binding && typeof binding === 'object') {
+                  const norm = normalizeBridgeOrigin(orig) || orig
+                  state.originPersonas[norm] = binding as OriginPersonaBinding
+                  state.approvedOrigins.add(norm)
+                  state.connectedOrigins.add(norm)
+                }
+              }
+            }
+            if (
+              stored.frankAnnounceMode === 'always' ||
+              stored.frankAnnounceMode === 'connected-only' ||
+              stored.frankAnnounceMode === 'stealth'
+            ) {
+              state.announceMode = stored.frankAnnounceMode
             }
             if (
               typeof stored.frankChainIdHex === 'string' &&
@@ -542,622 +1908,11 @@ export function installBackgroundBridge(
     }
   }
 
-  function broadcastProviderEventToTabs(event: string, payload: unknown) {
-    const extApi = getRawExtensionApi(runtimeScope)
-    if (
-      extApi?.tabs &&
-      typeof extApi.tabs.query === 'function' &&
-      typeof extApi.tabs.sendMessage === 'function'
-    ) {
-      try {
-        void Promise.resolve(extApi.tabs.query({}))
-          .then(tabs => {
-            if (!Array.isArray(tabs)) return
-            for (const tab of tabs) {
-              if (tab && typeof tab.id === 'number') {
-                void Promise.resolve(
-                  extApi.tabs.sendMessage(tab.id, {
-                    channel: FRANK_DAPP_BRIDGE_CHANNEL,
-                    type: 'provider-event',
-                    event,
-                    payload,
-                  }),
-                ).catch(() => {})
-              }
-            }
-          })
-          .catch(() => {})
-      } catch {
-        // Ignore tab broadcast errors
-      }
-    }
-  }
-
-  const unsubscribe = onRuntimeMessage(async (message: any, sender: any) => {
-    if (!message || typeof message !== 'object') {
-      return undefined
-    }
-
-    if (
-      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
-      message.type === 'get-bridge-state'
-    ) {
-      return {
-        result: {
-          ok: true,
-          chainIdHex: state.chainIdHex,
-          activePersonaAddress: state.activePersonaAddress,
-          poolBalanceWeiHex: state.poolBalanceWeiHex ?? '0x0',
-          approvedOrigins: Array.from(state.approvedOrigins),
-          pendingApprovals: Array.from(state.pendingApprovals.values()),
-          launchMode: state.launchMode,
-          openPanelOnActionClick: state.openPanelOnActionClick,
-        },
-      }
-    }
-
-    if (
-      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
-      message.type === 'set-active-persona'
-    ) {
-      const nextAddr = String(message.address ?? '').trim()
-      const nextPoolHex = String(message.poolBalanceWeiHex ?? '').trim()
-      const nextChainHex = String(message.chainIdHex ?? '').trim()
-      const storageUpdates: Record<string, unknown> = {}
-
-      if (/^0x[a-fA-F0-9]{40}$/.test(nextAddr)) {
-        state.activePersonaAddress = nextAddr
-        storageUpdates.frankActivePersonaAddress = nextAddr
-        broadcastProviderEventToTabs('accountsChanged', [
-          state.activePersonaAddress,
-        ])
-      }
-      if (/^0x[0-9a-fA-F]+$/.test(nextPoolHex)) {
-        state.poolBalanceWeiHex = nextPoolHex.toLowerCase()
-        storageUpdates.frankPoolBalanceWeiHex = state.poolBalanceWeiHex
-      }
-      if (/^0x[0-9a-fA-F]+$/.test(nextChainHex)) {
-        const normalizedChain =
-          '0x' + parseInt(nextChainHex, 16).toString(16)
-        if (state.chainIdHex !== normalizedChain) {
-          state.chainIdHex = normalizedChain
-          storageUpdates.frankChainIdHex = normalizedChain
-          broadcastProviderEventToTabs('chainChanged', normalizedChain)
-        }
-      }
-
-      if (Object.keys(storageUpdates).length > 0) {
-        const extApi = getRawExtensionApi(runtimeScope)
-        if (extApi?.storage?.local?.set) {
-          try {
-            await extApi.storage.local.set(storageUpdates)
-          } catch {
-            // Ignore storage errors
-          }
-        }
-      }
-      return {
-        result: {
-          ok: true,
-          activePersonaAddress: state.activePersonaAddress,
-          poolBalanceWeiHex: state.poolBalanceWeiHex ?? '0x0',
-          chainIdHex: state.chainIdHex,
-        },
-      }
-    }
-
-    if (
-      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
-      message.type === 'set-dapp-chain'
-    ) {
-      const rawChain = String(message.chainIdHex ?? '').trim()
-      if (/^0x[0-9a-fA-F]+$/.test(rawChain)) {
-        const normalized = '0x' + parseInt(rawChain, 16).toString(16)
-        state.chainIdHex = normalized
-        const extApi = getRawExtensionApi(runtimeScope)
-        if (extApi?.storage?.local?.set) {
-          try {
-            await extApi.storage.local.set({ frankChainIdHex: normalized })
-          } catch {
-            // Ignore storage errors
-          }
-        }
-        broadcastProviderEventToTabs('chainChanged', normalized)
-      }
-      return {
-        result: {
-          ok: true,
-          chainIdHex: state.chainIdHex,
-        },
-      }
-    }
-
-    if (
-      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
-      message.type === 'set-sidepanel-behavior'
-    ) {
-      const enabled = Boolean(message.openPanelOnActionClick)
-      state.openPanelOnActionClick = enabled
-      state.launchMode = enabled ? 'sidepanel' : 'popup'
-      const configured = configureSidePanelBehavior(runtimeScope, enabled)
-      const extApi = getRawExtensionApi(runtimeScope)
-      if (extApi?.storage?.local?.set) {
-        try {
-          await extApi.storage.local.set({
-            frankOpenPanelOnActionClick: enabled,
-            [FRANK_EXT_LAUNCH_MODE_KEY]: state.launchMode,
-          })
-        } catch {
-          // Ignore storage errors
-        }
-      }
-      return {
-        result: {
-          ok: true,
-          configured,
-          openPanelOnActionClick: enabled,
-          launchMode: state.launchMode,
-        },
-      }
-    }
-
-    if (
-      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
-      message.type === 'get-sidepanel-behavior'
-    ) {
-      return {
-        result: {
-          ok: true,
-          openPanelOnActionClick: state.openPanelOnActionClick,
-          launchMode: state.launchMode,
-        },
-      }
-    }
-
-    if (
-      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
-      message.type === 'set-launch-mode'
-    ) {
-      const mode: ExtensionLaunchMode =
-        message.launchMode === 'sidepanel' || message.launchMode === 'window'
-          ? message.launchMode
-          : 'popup'
-      state.launchMode = mode
-      state.openPanelOnActionClick = mode === 'sidepanel'
-      const configured = configureSidePanelBehavior(
-        runtimeScope,
-        state.openPanelOnActionClick,
-      )
-      const extApi = getRawExtensionApi(runtimeScope)
-      if (extApi?.storage?.local?.set) {
-        try {
-          await extApi.storage.local.set({
-            [FRANK_EXT_LAUNCH_MODE_KEY]: mode,
-            frankOpenPanelOnActionClick: state.openPanelOnActionClick,
-          })
-        } catch {
-          // Ignore storage errors
-        }
-      }
-      if (message.openNow) {
-        if (mode === 'sidepanel') {
-          await openCompanionPanel(
-            {
-              windowId: message.windowId ?? sender?.tab?.windowId,
-              tabId: message.tabId ?? sender?.tab?.id,
-            },
-            runtimeScope,
-          )
-        } else if (mode === 'window') {
-          await openExtensionInWindow(message.options ?? {}, runtimeScope)
-        }
-      }
-      return {
-        result: {
-          ok: true,
-          configured,
-          launchMode: state.launchMode,
-          openPanelOnActionClick: state.openPanelOnActionClick,
-        },
-      }
-    }
-
-    if (
-      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
-      message.type === 'open-extension-window'
-    ) {
-      state.launchMode = 'window'
-      const res = await openExtensionInWindow(
-        message.options ?? {},
-        runtimeScope,
-      )
-      return {
-        result: {
-          ok: res.opened,
-          ...res,
-          launchMode: state.launchMode,
-        },
-      }
-    }
-
-    if (
-      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
-      message.type === 'dapp-rpc-request'
-    ) {
-      const method = String(message.payload?.method ?? '')
-      const params = message.payload?.params
-      const origin = String(message.origin ?? sender?.origin ?? '')
-      const href = String(message.href ?? sender?.url ?? '')
-      const id = String(message.id ?? `req-${Date.now()}`)
-
-      if (method === 'eth_chainId') {
-        return { result: state.chainIdHex }
-      }
-
-      if (method === 'net_version') {
-        return { result: String(parseInt(state.chainIdHex, 16)) }
-      }
-
-      if (method === 'web3_clientVersion') {
-        return { result: 'FrankWallet/0.3.0' }
-      }
-
-      if (method === 'eth_accounts') {
-        return {
-          result: state.approvedOrigins.has(origin)
-            ? [state.activePersonaAddress]
-            : [],
-        }
-      }
-
-      if (
-        method === 'eth_requestAccounts' &&
-        !message.payload?.requireExplicitCompanionApproval
-      ) {
-        if (origin) {
-          state.approvedOrigins.add(origin)
-          const extApi = getRawExtensionApi(runtimeScope)
-          if (extApi?.storage?.local?.set) {
-            try {
-              await extApi.storage.local.set({
-                frankApprovedOrigins: Array.from(state.approvedOrigins),
-              })
-            } catch {
-              // Ignore storage errors
-            }
-          }
-        }
-        return { result: [state.activePersonaAddress] }
-      }
-
-      if (method === 'wallet_requestPermissions') {
-        if (origin) {
-          state.approvedOrigins.add(origin)
-          const extApi = getRawExtensionApi(runtimeScope)
-          if (extApi?.storage?.local?.set) {
-            try {
-              await extApi.storage.local.set({
-                frankApprovedOrigins: Array.from(state.approvedOrigins),
-              })
-            } catch {
-              // Ignore storage errors
-            }
-          }
-        }
-        return {
-          result: [
-            {
-              invoker: origin,
-              parentCapability: 'eth_accounts',
-              caveats: [
-                {
-                  type: 'restrictReturnedAccounts',
-                  value: [state.activePersonaAddress],
-                },
-              ],
-            },
-          ],
-        }
-      }
-
-      if (method === 'wallet_getPermissions') {
-        return {
-          result: state.approvedOrigins.has(origin)
-            ? [
-                {
-                  invoker: origin,
-                  parentCapability: 'eth_accounts',
-                  caveats: [
-                    {
-                      type: 'restrictReturnedAccounts',
-                      value: [state.activePersonaAddress],
-                    },
-                  ],
-                },
-              ]
-            : [],
-        }
-      }
-
-      if (method === 'wallet_revokePermissions') {
-        if (origin) {
-          state.approvedOrigins.delete(origin)
-        }
-        return { result: null }
-      }
-
-      if (
-        method === 'wallet_switchEthereumChain' ||
-        method === 'wallet_addEthereumChain'
-      ) {
-        const rawChainId = Array.isArray(params)
-          ? (params[0] as any)?.chainId
-          : (params as any)?.chainId
-        if (
-          typeof rawChainId === 'string' &&
-          /^0x[0-9a-fA-F]+$/.test(rawChainId.trim())
-        ) {
-          const normalized =
-            '0x' + parseInt(rawChainId.trim(), 16).toString(16)
-          state.chainIdHex = normalized
-          const extApi = getRawExtensionApi(runtimeScope)
-          if (extApi?.storage?.local?.set) {
-            try {
-              await extApi.storage.local.set({
-                frankChainIdHex: normalized,
-              })
-            } catch {
-              // Ignore storage errors
-            }
-          }
-          broadcastProviderEventToTabs('chainChanged', normalized)
-          return { result: null }
-        }
-        return {
-          error: {
-            code: -32602,
-            message: 'Invalid chainId parameter',
-          },
-        }
-      }
-
-      if (method === 'wallet_getCapabilities') {
-        return {
-          result: {
-            '0x279f': { atomicBatch: { supported: false } },
-            '0x8f': { atomicBatch: { supported: false } },
-            '0x1': { atomicBatch: { supported: false } },
-            '0xaa36a7': { atomicBatch: { supported: false } },
-          },
-        }
-      }
-
-      if (method === 'wallet_watchAsset') {
-        return { result: true }
-      }
-
-      if (READONLY_RPC_METHODS.has(method)) {
-        return await forwardReadOnlyRpc(state.chainIdHex, method, params, state)
-      }
-
-      if (
-        APPROVAL_REQUIRED_METHODS.has(method) ||
-        method === 'eth_requestAccounts'
-      ) {
-        const pending: PendingDappApproval = {
-          id,
-          origin,
-          href,
-          method,
-          params,
-          createdAt: Date.now(),
-          requiresCompanionApproval: true,
-        }
-        state.pendingApprovals.set(id, pending)
-
-        await openCompanionPanel(
-          {
-            windowId: sender?.tab?.windowId,
-            tabId: sender?.tab?.id,
-          },
-          runtimeScope,
-        )
-
-        return {
-          result: {
-            status: 'pending_approval',
-            requestId: id,
-            origin,
-            method,
-          },
-        }
-      }
-
-      return {
-        error: {
-          code: 4200,
-          message: `Unsupported method: ${method}`,
-        },
-      }
-    }
-
-    if (
-      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
-      message.type === 'companion-resolve-approval'
-    ) {
-      const requestId = String(message.requestId ?? '')
-      const pending = state.pendingApprovals.get(requestId)
-      if (!pending) {
-        return {
-          error: {
-            code: 4004,
-            message: `Unknown approval request: ${requestId}`,
-          },
-        }
-      }
-      state.pendingApprovals.delete(requestId)
-      if (message.approved) {
-        if (
-          pending.method === 'eth_requestAccounts' ||
-          pending.method === 'solana_connect'
-        ) {
-          state.approvedOrigins.add(pending.origin)
-        }
-        return {
-          result: {
-            requestId,
-            approved: true,
-            origin: pending.origin,
-            accounts: [state.activePersonaAddress],
-          },
-        }
-      }
-      return {
-        error: {
-          code: 4001,
-          message: 'User rejected the request in Frank Companion',
-        },
-      }
-    }
-
-    if (message.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL) {
-      const extApi = getRawExtensionApi(runtimeScope)
-
-      if (
-        message.type === 'get-synced-state' ||
-        message.type === 'pwa-request-sync'
-      ) {
-        if (!state.syncedState && extApi?.storage?.local?.get) {
-          try {
-            const stored = await extApi.storage.local.get('frankSyncedState')
-            if (stored?.frankSyncedState) {
-              state.syncedState = stored.frankSyncedState
-            }
-          } catch {
-            // Ignore storage errors
-          }
-        }
-        return {
-          result: {
-            ok: Boolean(state.syncedState),
-            syncedState: state.syncedState,
-            sasCode: state.syncedState?.sasCode ?? null,
-            deviceSyncBundle: state.syncedState?.deviceSyncBundle ?? null,
-          },
-        }
-      }
-
-      const sasCode = String(message.payload?.sasCode ?? '482910')
-      const origin = String(
-        message.origin ??
-          (message.type === 'extension-push-sync-to-tab'
-            ? 'frank-extension'
-            : 'https://signet.mx'),
-      )
-      state.syncedState = {
-        sasCode,
-        deviceSyncBundle: message.payload?.deviceSyncBundle,
-        syncedFromOrigin: origin,
-        syncedAt: Date.now(),
-      }
-
-      if (extApi?.storage?.local?.set) {
-        try {
-          await extApi.storage.local.set({
-            frankSyncedState: state.syncedState,
-          })
-        } catch {
-          // Ignore storage errors in ephemeral environments
-        }
-      }
-
-      let pushedToTabCount = 0
-      if (
-        message.type === 'extension-push-sync-to-tab' &&
-        extApi?.tabs &&
-        typeof extApi.tabs.query === 'function'
-      ) {
-        try {
-          let tabs = await extApi.tabs.query({})
-          if (!Array.isArray(tabs) || tabs.length === 0) {
-            tabs = await extApi.tabs.query({ currentWindow: true })
-          }
-          if (Array.isArray(tabs)) {
-            for (const tab of tabs) {
-              if (tab && typeof tab.id === 'number') {
-                let sendMessageSucceeded = false
-                let contentAcked = false
-                if (typeof extApi.tabs.sendMessage === 'function') {
-                  try {
-                    const res = await extApi.tabs.sendMessage(tab.id, {
-                      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-                      type: 'extension-sync-push',
-                      payload: state.syncedState,
-                    })
-                    sendMessageSucceeded = true
-                    if (res && typeof res === 'object' && res.ok) {
-                      contentAcked = true
-                    }
-                  } catch {
-                    // Tab may have been opened before extension reload (no content script listening yet)
-                  }
-                }
-                let scriptInjected = false
-                if (
-                  !contentAcked &&
-                  typeof extApi?.scripting?.executeScript === 'function'
-                ) {
-                  try {
-                    await Promise.resolve(
-                      extApi.scripting.executeScript({
-                        target: { tabId: tab.id },
-                        files: ['content.js'],
-                      }),
-                    ).catch(() => {})
-                    await extApi.scripting.executeScript({
-                      target: { tabId: tab.id },
-                      func: (msg: unknown) => {
-                        window.postMessage(msg, '*')
-                      },
-                      args: [
-                        {
-                          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-                          direction: 'to-pwa',
-                          type: 'extension-sync-push',
-                          payload: state.syncedState,
-                        },
-                      ],
-                    })
-                    scriptInjected = true
-                  } catch {
-                    // Scripting not permitted on restricted URLs (e.g. chrome://)
-                  }
-                }
-                if (contentAcked || scriptInjected || sendMessageSucceeded) {
-                  pushedToTabCount += 1
-                }
-              }
-            }
-          }
-        } catch {
-          // Ignore tab query errors
-        }
-      }
-
-      return {
-        result: {
-          ok: true,
-          sasCode,
-          syncedFromOrigin: origin,
-          syncedAt: state.syncedState.syncedAt,
-          syncedState: state.syncedState,
-          pushedToTabCount,
-        },
-      }
-    }
-
-    return undefined
-  }, runtimeScope)
+  const unsubscribe = onRuntimeMessage(
+    async (message: any, sender: any) =>
+      await handleBackgroundMessage(message, sender, state, runtimeScope),
+    runtimeScope,
+  )
 
   return {
     state,

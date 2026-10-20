@@ -41,8 +41,8 @@ pub struct ProtocolChainDescriptor {
     pub family: ProtocolChainFamily,
     /// Human-readable network class.
     pub network: String,
-    /// Optional CAIP-2 alias when it identifies this network without ambiguity.
-    pub caip2: Option<String>,
+    /// Canonical CAIP-2 identifier for this network (e.g. `eip155:10143`, `bip122:...`, `solana:...`).
+    pub caip2: String,
     /// Optional native chain ID, represented as decimal text to avoid JSON integer limits.
     pub native_chain_id: Option<String>,
     /// Proxy capabilities this chain is permitted to expose.
@@ -146,12 +146,10 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
                 matches!(chain.network.as_str(), "mainnet" | "testnet" | "devnet" | "regtest"),
                 "unsupported protocol network"
             );
-            if let Some(alias) = &chain.caip2 {
-                assert!(
-                    !alias.is_empty() && aliases.insert(alias.as_str()),
-                    "empty or duplicate CAIP-2 alias"
-                );
-            }
+            assert!(
+                !chain.caip2.is_empty() && aliases.insert(chain.caip2.as_str()),
+                "empty or duplicate CAIP-2 alias"
+            );
             assert!(!chain.allowed_proxy_capabilities.is_empty());
             assert_eq!(
                 chain
@@ -192,10 +190,11 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
                         ProtocolIdentityProbe::EvmChainId { capability: ProtocolProxyCapability::JsonRpc, expected }
                             if expected == native_chain_id
                     )));
+                    assert!(chain.caip2.starts_with("eip155:"));
                     let expected_caip2 = format!("eip155:{native_chain_id}");
                     assert_eq!(
-                        chain.caip2.as_deref(),
-                        Some(expected_caip2.as_str()),
+                        chain.caip2.as_str(),
+                        expected_caip2.as_str(),
                         "EVM CAIP-2 alias contradicts native chain ID"
                     );
                     // A public network pins its checkpoint block here. A regtest network is
@@ -212,6 +211,7 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
                     }));
                 }
                 ProtocolChainFamily::Bitcoin => {
+                    assert!(chain.caip2.starts_with("bip122:"));
                     assert!(chain.allowed_proxy_capabilities.iter().all(|capability| chain
                         .identity_probes
                         .iter()
@@ -247,9 +247,7 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
                         ProtocolIdentityProbe::GenesisHash { capability: ProtocolProxyCapability::JsonRpc, expected }
                             if expected.len() >= 40 && expected.len() <= 45
                     )));
-                    if let Some(caip2) = &chain.caip2 {
-                        assert!(caip2.starts_with("solana:"));
-                    }
+                    assert!(chain.caip2.starts_with("solana:"));
                 }
             }
         }
@@ -280,7 +278,7 @@ pub fn protocol_chain_by_caip2(caip2: &str) -> Option<&'static ProtocolChainDesc
     protocol_chain_registry()
         .chains
         .iter()
-        .find(|chain| chain.caip2.as_deref() == Some(caip2))
+        .find(|chain| chain.caip2 == caip2)
 }
 
 impl ProtocolChainDescriptor {
@@ -1982,6 +1980,34 @@ continuity_file = "/var/lib/frank/continuity"
         let registry = protocol_chain_registry();
         assert_eq!(registry.schema_version, 1);
         assert_eq!(registry.chains.len(), 37);
+        assert_eq!(
+            super::protocol_chain_by_caip2("eip155:10143")
+                .unwrap()
+                .id
+                .as_str(),
+            "monad-testnet"
+        );
+        assert_eq!(
+            super::protocol_chain_by_caip2("bip122:00000000062c7f32591d883c99fc89eb")
+                .unwrap()
+                .id
+                .as_str(),
+            "xec-testnet"
+        );
+        assert_eq!(
+            super::protocol_chain_by_caip2("bip122:xec-regtest")
+                .unwrap()
+                .id
+                .as_str(),
+            "xec-regtest"
+        );
+        assert_eq!(
+            super::protocol_chain_by_caip2("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+                .unwrap()
+                .id
+                .as_str(),
+            "solana-devnet"
+        );
         assert_eq!(
             registry
                 .chains

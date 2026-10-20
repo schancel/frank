@@ -111,6 +111,7 @@ describe("chains-registry", () => {
       isTestnet: true,
       name: "eCash Testnet",
       unit: "tXEC",
+      caip2: "bip122:00000000062c7f32591d883c99fc89eb",
       addressPrefix: "ectest",
       networkTag: "XECT",
     });
@@ -125,6 +126,7 @@ describe("chains-registry", () => {
       isTestnet: false,
       name: "eCash",
       unit: "XEC",
+      caip2: "bip122:000000000000000004284c9d8b2c8ff7",
       addressPrefix: "ecash",
       networkTag: "XEC1",
     });
@@ -306,6 +308,7 @@ describe("chains-registry", () => {
       isTestnet: true,
       name: "Bitcoin Testnet4",
       unit: "tBTC",
+      caip2: "bip122:00000000da84f2bafbbc53dee25a72ae",
       networkTag: "BTC4",
     });
 
@@ -319,6 +322,7 @@ describe("chains-registry", () => {
       isTestnet: false,
       name: "Bitcoin Cash",
       unit: "BCH",
+      caip2: "bip122:000000000000000000651ef99cb9fcbe",
       addressPrefix: "bitcoincash",
       networkTag: "BCH1",
     });
@@ -333,6 +337,7 @@ describe("chains-registry", () => {
       isTestnet: true,
       name: "Bitcoin Cash Chipnet",
       unit: "tBCH",
+      caip2: "bip122:00000000000e38fef93ed9582a7df438",
       addressPrefix: "bchtest",
       networkTag: "BCHT",
     });
@@ -347,6 +352,7 @@ describe("chains-registry", () => {
       isTestnet: false,
       name: "Dogecoin",
       unit: "DOGE",
+      caip2: "bip122:1a91e3dace36e2be3bf030a65679fe82",
       networkTag: "DOGE",
     });
 
@@ -360,6 +366,7 @@ describe("chains-registry", () => {
       isTestnet: true,
       name: "Dogecoin Testnet",
       unit: "tDOGE",
+      caip2: "bip122:bb0a78264637406b6360aad926284d54",
       networkTag: "DOGT",
     });
   });
@@ -442,6 +449,36 @@ describe("chains-registry", () => {
     expect(
       getChainRegistryByCaip2("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")?.id
     ).toBe("solana-mainnet");
+    expect(
+      getChainRegistryByCaip2("bip122:00000000da84f2bafbbc53dee25a72ae")?.id
+    ).toBe("btc-testnet4");
+    expect(
+      getChainRegistryByCaip2("bip122:000000000000000000651ef99cb9fcbe")?.id
+    ).toBe("bch-mainnet");
+    expect(
+      getChainRegistryByCaip2("bip122:00000000000e38fef93ed9582a7df438")?.id
+    ).toBe("bch-testnet");
+    expect(
+      getChainRegistryByCaip2("bip122:000000000000000004284c9d8b2c8ff7")?.id
+    ).toBe("xec-mainnet");
+    expect(
+      getChainRegistryByCaip2("bip122:00000000062c7f32591d883c99fc89eb")?.id
+    ).toBe("xec-testnet");
+    expect(getChainRegistryByCaip2("bip122:xec-regtest")?.id).toBe(
+      "xec-regtest"
+    );
+    expect(
+      getChainRegistryByCaip2("bip122:1a91e3dace36e2be3bf030a65679fe82")?.id
+    ).toBe("doge-mainnet");
+    expect(
+      getChainRegistryByCaip2("bip122:bb0a78264637406b6360aad926284d54")?.id
+    ).toBe("doge-testnet");
+    expect(
+      getChainRegistryByCaip2("bip122:12a765e31ffd4059bada1e25190f6e98")?.id
+    ).toBe("litecoin-mainnet");
+    expect(
+      getChainRegistryByCaip2("bip122:4966625a4b2851d9fdee139e56211a0d")?.id
+    ).toBe("litecoin-testnet");
     expect(getChainRegistryByCaip2("invalid:caip2")).toBeUndefined();
   });
 
@@ -474,6 +511,18 @@ describe("chains-registry", () => {
     expect(resolveChainIdentifier("eip155:11155111")?.id).toBe(
       "ethereum-sepolia"
     );
+    expect(
+      resolveChainIdentifier("bip122:00000000062c7f32591d883c99fc89eb")?.id
+    ).toBe("xec-testnet");
+    expect(
+      resolveChainIdentifier("bip122:00000000000e38fef93ed9582a7df438")?.id
+    ).toBe("bch-testnet");
+    expect(
+      resolveChainIdentifier("bip122:bb0a78264637406b6360aad926284d54")?.id
+    ).toBe("doge-testnet");
+    expect(
+      resolveChainIdentifier("bip122:4966625a4b2851d9fdee139e56211a0d")?.id
+    ).toBe("litecoin-testnet");
     expect(resolveChainIdentifier("nonexistent")).toBeUndefined();
   });
 
@@ -589,7 +638,7 @@ describe("chains-registry", () => {
         id: string;
         family: string;
         network: string;
-        caip2: string | null;
+        caip2: string;
         native_chain_id: string | null;
         identity_probes: unknown[];
         allowed_proxy_capabilities: string[];
@@ -612,7 +661,7 @@ describe("chains-registry", () => {
         expect(entry.family).toBe(row.family);
         expect(entry.network).toBe(row.network);
         expect(entry.isTestnet).toBe(row.network !== "mainnet");
-        expect(entry.caip2).toBe(row.caip2 ?? undefined);
+        expect(entry.caip2).toBe(row.caip2);
         expect(
           entry.nativeChainId === undefined
             ? undefined

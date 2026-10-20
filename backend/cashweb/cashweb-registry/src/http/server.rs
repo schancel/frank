@@ -58,7 +58,7 @@ struct AdvertisedChain {
     id: String,
     family: cashweb_config::ProtocolChainFamily,
     network: String,
-    caip2: Option<String>,
+    caip2: String,
     native_chain_id: Option<String>,
     capabilities: Vec<cashweb_config::ProtocolProxyCapability>,
 }

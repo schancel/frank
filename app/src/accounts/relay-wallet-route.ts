@@ -24,7 +24,8 @@ function isDiscoveryRoute(value: unknown): value is Record<string, unknown> {
     ['evm', 'bitcoin', 'solana'].includes(route.family) &&
     typeof route.network === 'string' &&
     ['mainnet', 'testnet', 'regtest'].includes(route.network) &&
-    (route.caip2 === null || typeof route.caip2 === 'string') &&
+    (route.caip2 === null ||
+      (typeof route.caip2 === 'string' && route.caip2.length > 0)) &&
     (route.native_chain_id === null ||
       typeof route.native_chain_id === 'string') &&
     Array.isArray(route.capabilities) &&
@@ -88,7 +89,7 @@ export async function requireRelayWalletRoute(
     matches.length !== 1 ||
     route.family !== entry.family ||
     route.network !== entry.network ||
-    route.caip2 !== (entry.caip2 ?? null) ||
+    (route.caip2 !== null && route.caip2 !== entry.caip2) ||
     route.native_chain_id !==
       (entry.nativeChainId === undefined
         ? null

@@ -11,6 +11,11 @@ import {
   privateKeyFromBytes,
   publicFromPrivate,
   signEcdsa,
+  createPsbt,
+  parsePsbt,
+  psbtToBase64,
+  psbtToHex,
+  internalHashFromBytes,
 } from "@frank/nakamoto";
 import { stealthParentSecret } from "@frank/cashweb/relay/stealth-parent";
 import { utxoStealthPaymentManifest } from "./utxo-stealth-payment";
@@ -2517,3 +2522,113 @@ describe.each([BTC, BCH])(
     });
   }
 );
+
+describe("PSBT signing (UtxoWallet.signPsbt)", () => {
+  it("signs P2WPKH receive, change, and stealth inputs on Bitcoin testnet and extracts a valid transaction", async () => {
+    const backend = makeIndexer(BTC);
+    const custody = syntheticStealthCustody(BTC);
+    const { wallet } = await open(
+      BTC,
+      backend,
+      memoryUtxoWalletStore(),
+      ROOT,
+      custody.custody
+    );
+
+    const receiveAddr = (await wallet.getReceiveAddress()).raw;
+    fund(backend, BTC, receiveAddr, 80_000n, "1");
+    await wallet.getBalance();
+    // Create a change output by sending a small payment
+    await wallet.sendNative({
+      recipient: { raw: BTC_RECIPIENT },
+      value: 10_000n,
+    });
+    // Also receive a stealth payment
+    const sender = (
+      await open(BTC, backend, memoryUtxoWalletStore(), new Uint8Array(32).fill(55))
+    ).wallet;
+    fund(backend, BTC, sender.identity.address.raw, 50_000n, "2");
+    const destination = deriveUtxoStealthDestination({
+      network: BTC,
+      identityPublicKey: custody.custody.identityPublicKey,
+      ephemeralSecret: new Uint8Array(32).fill(19),
+    });
+    const preparedStealth = await sender.prepareNativePayment({
+      operationId: "psbt-stealth",
+      recipient: { raw: destination.address },
+      value: 20_000n,
+    });
+    await wallet.recordStealthPayment({
+      chainIdentifier: BTC.chainIdentifier,
+      ephemeralPubKey: hex(destination.derivation.ephemeralPubKey),
+      transactions: preparedStealth.transaction.rawTransactions,
+      claimedAmount: 20_000n,
+      payloadDigest: "9".repeat(64),
+      timestampMs: 200,
+    });
+    await sender.recordPaymentExposure({
+      operationId: "psbt-stealth",
+      payloadDigest: "9".repeat(64),
+    });
+    await sender.submitPreparedPayment("psbt-stealth");
+
+    // Fund the next receive address as well
+    const nextReceiveAddr = (await wallet.getReceiveAddress()).raw;
+    fund(backend, BTC, nextReceiveAddr, 40_000n, "3");
+    await wallet.getBalance();
+
+    const coins = wallet.coins().filter((c) => c.state === "unspent");
+    expect(coins.map((c) => c.origin).sort()).toEqual([
+      "change",
+      "receive",
+      "stealth",
+    ]);
+
+    const unsignedTx = {
+      version: 2,
+      inputs: coins.map((c) => {
+        const hash = internalHashFromBytes(unhex(c.txid).reverse());
+        if (!hash.ok) throw new Error("bad txid");
+        return {
+          prevout: { txid: hash.value, vout: c.vout },
+          scriptSig: new Uint8Array(0),
+          sequence: 0xffffffff,
+        };
+      }),
+      outputs: [
+        {
+          value: 100_000n,
+          scriptPubKey: unhex(scriptOf(BTC, BTC_RECIPIENT)),
+        },
+      ],
+      locktime: 0,
+    };
+
+    const psbt = createPsbt({
+      unsignedTx,
+      inputs: coins.map((c) => ({
+        witnessUtxo: { value: c.amount, script: c.scriptPubKey },
+      })),
+    });
+
+    // Test partial signing with toSignInputs filter first
+    const partial = wallet.signPsbt(psbtToBase64(psbt), {
+      toSignInputs: [{ index: 0, address: nextReceiveAddr }],
+      autoFinalized: false,
+    });
+    expect(partial.signedInputIndices).toEqual([0]);
+    expect(partial.extractedTxHex).toBeUndefined();
+    const parsedPartial = parsePsbt(partial.psbtHex);
+    expect(parsedPartial.inputs[0]?.partialSigs).toHaveLength(1);
+    expect(parsedPartial.inputs[1]?.partialSigs).toHaveLength(0);
+
+    // Now sign all inputs with autoFinalized: true
+    const full = wallet.signPsbt(psbtToHex(psbt), {
+      autoFinalized: true,
+    });
+    expect(full.signedInputIndices).toEqual([0, 1, 2]);
+    expect(full.extractedTxHex).toBeDefined();
+    expectValidSignatures(full.extractedTxHex!, BTC, coins);
+  });
+});
+

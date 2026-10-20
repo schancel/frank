@@ -120,9 +120,9 @@ impl MonadNetworkDescriptor {
         self.protocol_chain().network.as_str()
     }
 
-    /// Return the optional CAIP-2 identifier (e.g. `eip155:10143`) from the protocol chain registry.
-    pub fn caip2(&self) -> Option<&'static str> {
-        self.protocol_chain().caip2.as_deref()
+    /// Return the CAIP-2 identifier (e.g. `eip155:10143`) from the protocol chain registry.
+    pub fn caip2(&self) -> &'static str {
+        self.protocol_chain().caip2.as_str()
     }
 }
 

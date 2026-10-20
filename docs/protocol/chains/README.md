@@ -34,8 +34,9 @@ capability holder. Upstreams may be `tcp://`, `ssl://`, `ws://` or `wss://`.
 
 Forks can share genesis blocks and numeric IDs can be reused. For that reason a native ID or CAIP-2
 alias never substitutes for the required checkpoint probe. Public-network checkpoints are protocol
-data; only regtest checkpoints are operator data because those chains are created locally. CAIP-2 is omitted when the registry
-cannot name a network without creating a false uniqueness claim.
+data; only regtest checkpoints are operator data because those chains are created locally. Every
+row in `v1.json` carries a required non-null, unique `caip2` string (`eip155:<native_chain_id>` for
+EVM, `solana:<genesis_prefix>` for Solana, and `bip122:<reference>` for Bitcoin-family networks).
 
 ## Unified `ChainAdapter` and Configuration Ownership
 

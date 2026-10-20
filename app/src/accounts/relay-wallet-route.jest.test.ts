@@ -61,6 +61,7 @@ it('requires the wallet indexer, not just a permitted capability', async () => {
 })
 it.each([
   { ...route('base-sepolia'), native_chain_id: '8453' },
+  { ...route('base-sepolia'), caip2: 'eip155:8453' },
   { ...route('base-sepolia'), family: 'bitcoin' },
   { ...route('base-sepolia'), capabilities: ['chronik'] },
 ])(
@@ -94,6 +95,7 @@ it.each([
   null,
   {},
   { id: 'future-testnet', capabilities: [] },
+  { ...route('monad-testnet'), caip2: '' },
   { ...route('monad-testnet'), family: ['evm'] },
   { ...route('monad-testnet'), network: ['testnet'] },
 ])(
@@ -105,6 +107,12 @@ it.each([
     )
   },
 )
+it('tolerates null caip2 from a pre-upgrade relay during rolling upgrade', async () => {
+  const { relay } = fixture([{ ...route('xec-testnet'), caip2: null }])
+  await expect(
+    requireRelayWalletRoute(relay, 'xec-testnet'),
+  ).resolves.toBeUndefined()
+})
 it('ignores structurally valid future networks when checking the requested route', async () => {
   const { relay } = fixture([
     { ...route('base-sepolia'), id: 'future-testnet' },

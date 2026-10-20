@@ -82,6 +82,7 @@ import {
 } from 'src/utils/extension-account-sync'
 
 import { computeAddress, keccak256, toUtf8Bytes } from 'ethers'
+import { deriveDappPersonaKeypair } from '@frank/wallet/dapp-bridge'
 
 function isExtensionSurface(): boolean {
   if (typeof window === 'undefined') return false
@@ -94,10 +95,20 @@ function isExtensionSurface(): boolean {
   )
 }
 
-function deriveDefaultPersonaAddress(seed: string): string {
+function deriveDefaultPersonaAddress(
+  seedOrAddress: string,
+  masterSeedOrMnemonic?: Uint8Array | string | null,
+): string {
+  if (masterSeedOrMnemonic) {
+    try {
+      return deriveDappPersonaKeypair(masterSeedOrMnemonic, 0).address
+    } catch {
+      // Fall through to deterministic address-seeded derivation
+    }
+  }
   try {
     let privKeyHex = keccak256(
-      toUtf8Bytes(`frank-dapp-persona-privkey-v1:${seed.toLowerCase()}:0`),
+      toUtf8Bytes(`frank-dapp-persona-v1:${seedOrAddress.toLowerCase()}:0`),
     )
     if (
       privKeyHex ===
@@ -108,7 +119,7 @@ function deriveDefaultPersonaAddress(seed: string): string {
     }
     return computeAddress(privKeyHex)
   } catch {
-    return seed
+    return seedOrAddress
   }
 }
 
@@ -122,8 +133,14 @@ async function syncActivePersonaToExtension() {
       wallet?.identity?.displayAddress ||
       ''
     const seed = String(rawAddress).trim()
-    if (!/^0x[a-fA-F0-9]{40}$/.test(seed)) return
-    const address = deriveDefaultPersonaAddress(seed)
+    const masterSeedOrMnemonic =
+      wallet?.masterSeed ??
+      wallet?.mnemonic ??
+      wallet?.seedHex ??
+      wallet?.mainAccount?.privateKey ??
+      null
+    if (!/^0x[a-fA-F0-9]{40}$/.test(seed) && !masterSeedOrMnemonic) return
+    const address = deriveDefaultPersonaAddress(seed, masterSeedOrMnemonic)
 
     let poolBalanceWeiHex = '0x0'
     try {
@@ -145,10 +162,16 @@ async function syncActivePersonaToExtension() {
 
     void sendRuntimeMessage({
       channel: FRANK_DAPP_BRIDGE_CHANNEL,
-      type: 'set-active-persona',
+      type: 'update-persona-state',
       address,
       poolBalanceWeiHex,
       chainIdHex: '0x279f',
+      payload: {
+        activePersonaAddress: address,
+        poolBalanceWei: poolBalanceWeiHex,
+        poolBalanceWeiHex,
+        chainIdHex: '0x279f',
+      },
     })
     const extApi = getRawExtensionApi()
     if (extApi?.storage?.local?.set) {

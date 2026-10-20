@@ -302,3 +302,34 @@ export type {
   SharedPoint,
   SignatureInvalid,
 } from './curve.js'
+
+export {
+  PSBT_GLOBAL_UNSIGNED_TX,
+  PSBT_IN_BIP32_DERIVATION,
+  PSBT_IN_FINAL_SCRIPTSIG,
+  PSBT_IN_FINAL_SCRIPTWITNESS,
+  PSBT_IN_NON_WITNESS_UTXO,
+  PSBT_IN_PARTIAL_SIG,
+  PSBT_IN_REDEEM_SCRIPT,
+  PSBT_IN_SIGHASH_TYPE,
+  PSBT_IN_TAP_KEY_SIG,
+  PSBT_IN_WITNESS_SCRIPT,
+  PSBT_IN_WITNESS_UTXO,
+  createPsbt,
+  extractPsbtTransaction,
+  finalizePsbt,
+  parsePsbt,
+  psbtToBase64,
+  psbtToHex,
+  serializePsbt,
+  signPsbt,
+} from './psbt.js'
+export type {
+  Psbt,
+  PsbtInput,
+  PsbtKeyValue,
+  PsbtOutput,
+  PsbtToSignInput,
+  PsbtWitnessUtxo,
+  SignPsbtOptions,
+} from './psbt.js'

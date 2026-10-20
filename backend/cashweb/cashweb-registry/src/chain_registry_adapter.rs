@@ -103,9 +103,9 @@ impl RelayChainAdapter {
         self.descriptor.network.as_str()
     }
 
-    /// Optional CAIP-2 identifier (e.g. `eip155:10143`).
-    pub fn caip2(&self) -> Option<&'static str> {
-        self.descriptor.caip2.as_deref()
+    /// Canonical CAIP-2 identifier (e.g. `eip155:10143`, `bip122:...`, `solana:...`).
+    pub fn caip2(&self) -> &'static str {
+        self.descriptor.caip2.as_str()
     }
 
     /// Optional decimal native chain ID string.
@@ -644,7 +644,7 @@ mod tests {
         assert_eq!(monad_testnet.network(), "testnet");
         assert_eq!(monad_testnet.evm_chain_id(), Some(10_143));
         assert_eq!(monad_testnet.network_tag(), Some(b"MONT"));
-        assert_eq!(monad_testnet.caip2(), Some("eip155:10143"));
+        assert_eq!(monad_testnet.caip2(), "eip155:10143");
 
         assert_eq!(
             registry.adapter_by_tag(b"MONT").unwrap().chain_id(),

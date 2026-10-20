@@ -1972,3 +1972,6 @@ export function createExtensionOriginSyncHandshake(
     },
   }
 }
+
+export * from './multichain-providers'
+

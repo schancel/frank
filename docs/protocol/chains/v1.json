@@ -88,7 +88,7 @@
       "id": "btc-regtest",
       "family": "bitcoin",
       "network": "regtest",
-      "caip2": null,
+      "caip2": "bip122:btc-regtest",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -101,7 +101,7 @@
       "id": "bch-mainnet",
       "family": "bitcoin",
       "network": "mainnet",
-      "caip2": null,
+      "caip2": "bip122:000000000000000000651ef99cb9fcbe",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -114,7 +114,7 @@
       "id": "bch-testnet",
       "family": "bitcoin",
       "network": "testnet",
-      "caip2": null,
+      "caip2": "bip122:00000000000e38fef93ed9582a7df438",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -127,7 +127,7 @@
       "id": "bch-regtest",
       "family": "bitcoin",
       "network": "regtest",
-      "caip2": null,
+      "caip2": "bip122:bch-regtest",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -140,7 +140,7 @@
       "id": "xec-mainnet",
       "family": "bitcoin",
       "network": "mainnet",
-      "caip2": null,
+      "caip2": "bip122:000000000000000004284c9d8b2c8ff7",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -153,7 +153,7 @@
       "id": "xec-testnet",
       "family": "bitcoin",
       "network": "testnet",
-      "caip2": null,
+      "caip2": "bip122:00000000062c7f32591d883c99fc89eb",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -166,7 +166,7 @@
       "id": "xec-regtest",
       "family": "bitcoin",
       "network": "regtest",
-      "caip2": null,
+      "caip2": "bip122:xec-regtest",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -179,7 +179,7 @@
       "id": "xpi-mainnet",
       "family": "bitcoin",
       "network": "mainnet",
-      "caip2": null,
+      "caip2": "bip122:000000000abc0cde58ee7e919d3d4de1",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -192,7 +192,7 @@
       "id": "xpi-testnet",
       "family": "bitcoin",
       "network": "testnet",
-      "caip2": null,
+      "caip2": "bip122:00000000080a6c9633aae9d24b9acda1",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -205,7 +205,7 @@
       "id": "xpi-regtest",
       "family": "bitcoin",
       "network": "regtest",
-      "caip2": null,
+      "caip2": "bip122:xpi-regtest",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -353,7 +353,7 @@
       "id": "btc-testnet4",
       "family": "bitcoin",
       "network": "testnet",
-      "caip2": null,
+      "caip2": "bip122:00000000da84f2bafbbc53dee25a72ae",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -366,7 +366,7 @@
       "id": "doge-mainnet",
       "family": "bitcoin",
       "network": "mainnet",
-      "caip2": null,
+      "caip2": "bip122:1a91e3dace36e2be3bf030a65679fe82",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -379,7 +379,7 @@
       "id": "doge-testnet",
       "family": "bitcoin",
       "network": "testnet",
-      "caip2": null,
+      "caip2": "bip122:bb0a78264637406b6360aad926284d54",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -528,7 +528,7 @@
       "id": "litecoin-mainnet",
       "family": "bitcoin",
       "network": "mainnet",
-      "caip2": null,
+      "caip2": "bip122:12a765e31ffd4059bada1e25190f6e98",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
@@ -541,7 +541,7 @@
       "id": "litecoin-testnet",
       "family": "bitcoin",
       "network": "testnet",
-      "caip2": null,
+      "caip2": "bip122:4966625a4b2851d9fdee139e56211a0d",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [

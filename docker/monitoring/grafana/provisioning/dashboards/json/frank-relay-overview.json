@@ -99,8 +99,8 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
-      "description": "Rate of newly stored direct messages; retries are excluded. History starts after this instrumentation is deployed.",
-      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "description": "Newly stored direct messages over 5-minute windows; retries are excluded. History starts after this instrumentation is deployed.",
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "gridPos": { "h": 8, "w": 16, "x": 8, "y": 16 },
       "id": 5,
       "options": {
@@ -110,12 +110,12 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "sum(rate(frank_canonical_messages_stored_total[5m]))",
-          "legendFormat": "messages/sec",
+          "expr": "sum(increase(frank_canonical_messages_stored_total[5m]))",
+          "legendFormat": "messages / 5m",
           "refId": "A"
         }
       ],
-      "title": "New canonical direct messages per second",
+      "title": "New canonical direct messages (5m)",
       "type": "timeseries"
     },
     {

@@ -1,7 +1,10 @@
 /* eslint-env node */
 module.exports = {
   testTimeout: 20000,
-  testMatch: ['<rootDir>/**/*.jest.(spec|test).+(ts|js)'],
+  testMatch: [
+    '<rootDir>/**/*.jest.(spec|test).+(ts|js)',
+    '<rootDir>/test/psbt.test.ts',
+  ],
   moduleFileExtensions: ['js', 'json', 'ts'],
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',

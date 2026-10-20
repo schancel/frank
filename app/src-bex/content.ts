@@ -232,10 +232,108 @@ export function installContentScriptBridge(
           '*',
         )
       }
+      return
+    }
+
+    // 3. eCash Cashtab window.postMessage compatibility bridge
+    if (data.type === 'FROM_PAGE' && data.text === 'Cashtab') {
+      try {
+        const response = await sendRuntimeMessage<Record<string, any>, any>(
+          {
+            channel: FRANK_DAPP_BRIDGE_CHANNEL,
+            type: 'dapp-rpc-request',
+            id: data.id || `cashtab-${Date.now()}`,
+            origin: win.location?.origin ?? '',
+            href: win.location?.href ?? '',
+            payload: {
+              method: 'xec_cashtabRequest',
+              params: [
+                {
+                  addressRequest: Boolean(data.addressRequest),
+                  txInfo: data.txInfo,
+                },
+              ],
+            },
+          },
+          runtimeScope,
+        )
+        const resPayload = response?.result
+        if (response?.error) {
+          win.postMessage(
+            {
+              type: 'FROM_CASHTAB',
+              address: data.addressRequest
+                ? 'Address request denied by user'
+                : undefined,
+              error: response.error.message || 'User Rejected Request',
+            },
+            '*',
+          )
+        } else if (resPayload && typeof resPayload === 'object') {
+          win.postMessage(
+            {
+              type: 'FROM_CASHTAB',
+              ...(resPayload.address ? { address: resPayload.address } : {}),
+              ...(resPayload.txid ? { txid: resPayload.txid } : {}),
+            },
+            '*',
+          )
+        } else if (typeof resPayload === 'string') {
+          win.postMessage(
+            {
+              type: 'FROM_CASHTAB',
+              ...(data.addressRequest
+                ? { address: resPayload }
+                : { txid: resPayload }),
+            },
+            '*',
+          )
+        }
+      } catch (err) {
+        win.postMessage(
+          {
+            type: 'FROM_CASHTAB',
+            error: err instanceof Error ? err.message : String(err),
+          },
+          '*',
+        )
+      }
     }
   }
 
   win.addEventListener('message', handleWindowMessage)
+
+  const syncProviderPrivacyFromBackground = async (triggerAnnounce = false) => {
+    try {
+      const origin = win.location?.origin ?? ''
+      const res = await sendRuntimeMessage<Record<string, any>, any>(
+        {
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'get-provider-privacy',
+          origin,
+        },
+        runtimeScope,
+      )
+      const info = res?.result ?? res
+      if (info && typeof info === 'object' && info.announceMode) {
+        win.postMessage(
+          {
+            channel: FRANK_DAPP_BRIDGE_CHANNEL,
+            direction: 'to-inpage',
+            type: 'provider-privacy-config',
+            announceMode: info.announceMode,
+            isOriginApproved: Boolean(info.isOriginApproved),
+            triggerAnnounce,
+          },
+          '*',
+        )
+      }
+    } catch {
+      // Ignore privacy query errors in non-extension contexts
+    }
+  }
+
+  void syncProviderPrivacyFromBackground(false)
 
   const unsubscribeRuntime = onRuntimeMessage((message: any) => {
     if (
@@ -250,6 +348,33 @@ export function installContentScriptBridge(
           type: 'provider-event',
           event: message.event,
           payload: message.payload,
+        },
+        '*',
+      )
+      return { ok: true }
+    }
+
+    if (
+      message &&
+      message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+      message.type === 'provider-privacy-config'
+    ) {
+      const pageOrigin = (win.location?.origin ?? '').toLowerCase()
+      const approvedList = Array.isArray(message.connectedOrigins)
+        ? message.connectedOrigins.map((o: unknown) => String(o).toLowerCase())
+        : []
+      const isOriginApproved =
+        typeof message.isOriginApproved === 'boolean'
+          ? message.isOriginApproved
+          : Boolean(pageOrigin && approvedList.includes(pageOrigin))
+      win.postMessage(
+        {
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          direction: 'to-inpage',
+          type: 'provider-privacy-config',
+          announceMode: message.announceMode,
+          isOriginApproved,
+          triggerAnnounce: Boolean(message.triggerAnnounce),
         },
         '*',
       )
@@ -280,18 +405,13 @@ export function installContentScriptBridge(
   const api = getRawExtensionApi(runtimeScope)
   const storageListener = (changes: Record<string, any>, areaName?: string) => {
     if (areaName && areaName !== 'local') return
-    const nextPersona = changes?.frankActivePersonaAddress?.newValue
-    if (typeof nextPersona === 'string' && /^0x[a-fA-F0-9]{40}$/.test(nextPersona)) {
-      win.postMessage(
-        {
-          channel: FRANK_DAPP_BRIDGE_CHANNEL,
-          direction: 'to-inpage',
-          type: 'provider-event',
-          event: 'accountsChanged',
-          payload: [nextPersona],
-        },
-        '*',
-      )
+    const nextAnnounceMode = changes?.frankAnnounceMode?.newValue
+    if (
+      nextAnnounceMode === 'always' ||
+      nextAnnounceMode === 'connected-only' ||
+      nextAnnounceMode === 'stealth'
+    ) {
+      void syncProviderPrivacyFromBackground(nextAnnounceMode === 'always')
     }
     const nextSynced = changes?.frankSyncedState?.newValue
     if (

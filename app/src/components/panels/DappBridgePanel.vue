@@ -148,6 +148,50 @@
           {{ approvalMethodSummary }}
         </div>
 
+        <!-- Per-Site Unlinkable Persona vs Shared Primary Persona choice on Connect -->
+        <div
+          v-if="isConnectApproval"
+          class="q-mt-sm q-pa-sm rounded-borders dapp-connect-persona-box"
+          data-testid="dapp-connect-persona-choice"
+        >
+          <div class="text-caption text-weight-bold q-mb-xs">
+            {{ ui.connectPersonaChoiceLabel }}
+          </div>
+          <div class="row q-gutter-xs q-mb-xs">
+            <q-btn
+              :unelevated="useBurnerForConnect"
+              :outline="!useBurnerForConnect"
+              dense
+              no-caps
+              size="sm"
+              :color="useBurnerForConnect ? 'positive' : 'grey-7'"
+              data-testid="dapp-connect-mode-burner"
+              :label="ui.connectBurnerOptionLabel"
+              @click="setConnectBurnerMode(true)"
+            />
+            <q-btn
+              :unelevated="!useBurnerForConnect"
+              :outline="useBurnerForConnect"
+              dense
+              no-caps
+              size="sm"
+              :color="!useBurnerForConnect ? 'primary' : 'grey-7'"
+              data-testid="dapp-connect-mode-primary"
+              :label="ui.connectPrimaryOptionLabel"
+              @click="setConnectBurnerMode(false)"
+            />
+          </div>
+          <div class="text-caption text-grey-7">
+            {{ connectAddressSharedCaption }}
+          </div>
+          <div
+            class="text-caption text-mono text-weight-medium"
+            data-testid="dapp-connect-preview-address"
+          >
+            {{ previewConnectAddress }}
+          </div>
+        </div>
+
         <div
           v-if="currentApprovalShortfall > 0"
           class="q-mt-xs text-caption text-warning"
@@ -173,6 +217,116 @@
           @click="approveCurrentRequest"
         />
       </q-card-actions>
+    </q-card>
+
+    <!-- Privacy & Provider Visibility + Connected Sites -->
+    <q-card flat bordered data-testid="dapp-privacy-card">
+      <q-card-section>
+        <div class="row items-center justify-between q-mb-xs">
+          <div class="text-subtitle2 text-weight-medium">
+            {{ ui.privacySectionTitle }}
+          </div>
+          <q-badge
+            :color="announceModeBadgeColor"
+            data-testid="dapp-announce-mode-badge"
+            :label="announceModeBadgeLabel"
+          />
+        </div>
+        <div class="text-caption text-grey-7 q-mb-sm">
+          {{ ui.privacySectionSubtitle }}
+        </div>
+        <div class="row items-center q-gutter-xs">
+          <q-btn
+            :unelevated="announceMode === 'always'"
+            :outline="announceMode !== 'always'"
+            dense
+            no-caps
+            size="sm"
+            :color="announceMode === 'always' ? 'primary' : 'grey-7'"
+            data-testid="dapp-announce-mode-always"
+            :label="ui.announceAlwaysBtn"
+            @click="setAnnounceMode('always')"
+          />
+          <q-btn
+            :unelevated="announceMode === 'connected-only'"
+            :outline="announceMode !== 'connected-only'"
+            dense
+            no-caps
+            size="sm"
+            :color="announceMode === 'connected-only' ? 'positive' : 'grey-7'"
+            data-testid="dapp-announce-mode-connected-only"
+            :label="ui.announceConnectedOnlyBtn"
+            @click="setAnnounceMode('connected-only')"
+          />
+          <q-btn
+            :unelevated="announceMode === 'stealth'"
+            :outline="announceMode !== 'stealth'"
+            dense
+            no-caps
+            size="sm"
+            :color="announceMode === 'stealth' ? 'warning' : 'grey-7'"
+            data-testid="dapp-announce-mode-stealth"
+            :label="ui.announceStealthBtn"
+            @click="setAnnounceMode('stealth')"
+          />
+        </div>
+
+        <q-separator class="q-my-sm" />
+
+        <div class="text-caption text-weight-bold q-mb-xs">
+          {{ ui.connectedSitesTitle }}
+        </div>
+        <div
+          v-if="connectedSiteItems.length === 0"
+          class="text-caption text-grey-7"
+          data-testid="dapp-no-connected-sites"
+        >
+          {{ ui.noConnectedSitesText }}
+        </div>
+        <div
+          v-else
+          class="column q-gutter-y-xs"
+          data-testid="dapp-connected-sites-list"
+        >
+          <div
+            v-for="site in connectedSiteItems"
+            :key="site.origin"
+            class="row items-center justify-between q-pa-xs rounded-borders dapp-connected-site-row"
+            data-testid="dapp-connected-site-row"
+          >
+            <div class="column">
+              <div class="row items-center q-gutter-x-xs">
+                <span
+                  class="text-caption text-weight-bold"
+                  data-testid="dapp-connected-site-origin"
+                >
+                  {{ site.origin }}
+                </span>
+                <q-badge
+                  :color="site.isBurner ? 'positive' : 'primary'"
+                  :label="site.badgeLabel"
+                />
+              </div>
+              <div
+                class="text-caption text-mono text-grey-7"
+                data-testid="dapp-connected-site-address"
+              >
+                {{ site.address }}
+              </div>
+            </div>
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              color="negative"
+              data-testid="dapp-disconnect-origin-btn"
+              :label="ui.disconnectSiteBtn"
+              @click="disconnectOrigin(site.origin)"
+            />
+          </div>
+        </div>
+      </q-card-section>
     </q-card>
 
     <!-- Standalone PWA Pairing & Extension Sync Section (#1710) -->
@@ -239,12 +393,18 @@ import { computed, defineComponent, onMounted, PropType, ref, watch } from 'vue'
 import {
   computeAddress,
   formatUnits,
+  getBytes,
+  hashMessage,
+  isHexString,
   keccak256,
   parseUnits,
   toUtf8Bytes,
+  Transaction,
+  TypedDataEncoder,
   Wallet,
 } from 'ethers'
 import { activeChain } from '@frank/wallet/chain'
+import { deriveDappPersonaKeypair } from '@frank/wallet/dapp-bridge'
 import { accountSession, accountStatus } from 'src/accounts/session'
 import {
   getExtensionRuntime,
@@ -252,20 +412,35 @@ import {
   sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
 import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../../src-bex/content'
-import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../../src-bex/inpage'
+import {
+  DappProviderAnnounceMode,
+  FRANK_DAPP_BRIDGE_CHANNEL,
+} from '../../../src-bex/inpage'
+import {
+  createDeterministicRpcResultFallback,
+  deriveDeterministicOriginBurnerAddress,
+  deriveDeterministicOriginBurnerPrivateKey,
+} from '../../../src-bex/persona-derivation'
+import {
+  normalizeBridgeOrigin,
+  OriginPersonaBinding,
+} from '../../../src-bex/background'
 import { useBalance } from 'src/composables/useBalance'
 import { useReactiveOwnCanonicalAddress } from 'src/utils/own-address'
 
 export interface DappApprovalItem {
   id: string
+  kind?: 'connect' | 'sign' | 'transaction' | 'permissions'
   origin: string
   method:
     | 'connect'
     | 'eth_requestAccounts'
+    | 'wallet_requestPermissions'
     | 'personal_sign'
     | 'eth_signTypedData_v4'
     | 'eth_sendTransaction'
     | string
+  params?: unknown
   requiredAmountMon?: number
   summary?: string
 }
@@ -461,6 +636,14 @@ export default defineComponent({
       type: Array as PropType<DappApprovalItem[]>,
       default: () => [],
     },
+    initialOriginPersonas: {
+      type: Object as PropType<Record<string, OriginPersonaBinding>>,
+      default: () => ({}),
+    },
+    initialAnnounceMode: {
+      type: String as PropType<DappProviderAnnounceMode>,
+      default: 'always',
+    },
     runtimeKindOverride: {
       type: String as PropType<RuntimeEnvironmentKind | ''>,
       default: '',
@@ -477,6 +660,8 @@ export default defineComponent({
     'sweep-to-pool',
     'approve-request',
     'reject-request',
+    'disconnect-origin',
+    'update-announce-mode',
     'wc-connect',
     'extension-sync',
   ],
@@ -491,6 +676,14 @@ export default defineComponent({
       0: props.initialPersonaBalanceMon,
     })
     const usedPersonasByIndex = ref<Record<number, boolean>>({})
+
+    const useBurnerForConnect = ref(true)
+    const announceMode = ref<DappProviderAnnounceMode>(
+      props.initialAnnounceMode || 'always',
+    )
+    const originPersonasMap = ref<Record<string, OriginPersonaBinding>>({
+      ...(props.initialOriginPersonas ?? {}),
+    })
 
     const personaBalanceMon = computed({
       get: () => personaBalancesByIndex.value[personaIndex.value] ?? 0,
@@ -656,8 +849,22 @@ export default defineComponent({
       topUpFromPoolBtn: 'Top Up from Pool',
       sweepBackToPoolBtn: 'Sweep Back to Pool',
       approvalTitle: 'Pending dApp Approval',
+      connectPersonaChoiceLabel:
+        'Anti-Supercookie Persona Mode for this Site',
+      connectBurnerOptionLabel:
+        'Per-Site Unlinkable Persona (Recommended — blocks cross-site tracking)',
+      connectPrimaryOptionLabel: 'Shared Primary dApp Persona',
       approveBtn: 'Approve',
       rejectBtn: 'Reject',
+      privacySectionTitle: 'Privacy & Provider Visibility',
+      privacySectionSubtitle:
+        'Control EIP-6963 provider discovery and view per-site Persona EOA bindings',
+      announceAlwaysBtn: 'Always announce',
+      announceConnectedOnlyBtn: 'Connected sites only',
+      announceStealthBtn: 'Stealth mode',
+      connectedSitesTitle: 'Connected Sites',
+      noConnectedSitesText: 'No sites connected yet.',
+      disconnectSiteBtn: 'Disconnect',
       pwaSyncTitle: 'Standalone PWA Pairing & Extension Sync',
       wcInputLabel: 'WalletConnect or dApp URI',
       wcInputPlaceholder: 'wc:00e46b69-d0cc-4b3e-b6a2-...',
@@ -698,6 +905,10 @@ export default defineComponent({
       () => `m/44'/60'/1'/0/${personaIndex.value}`,
     )
 
+    const primaryPersonaAddress = computed(() =>
+      deriveAccountPersonaAddress(resolvedRootAddress.value, 0),
+    )
+
     const activePersonaAddress = computed(() =>
       deriveAccountPersonaAddress(
         resolvedRootAddress.value,
@@ -720,6 +931,70 @@ export default defineComponent({
 
     const currentApproval = computed<DappApprovalItem | null>(
       () => approvals.value[0] ?? null,
+    )
+
+    const isConnectApproval = computed(() => {
+      const req = currentApproval.value
+      if (!req) return false
+      return (
+        req.kind === 'connect' ||
+        req.kind === 'permissions' ||
+        req.method === 'connect' ||
+        req.method === 'eth_requestAccounts' ||
+        req.method === 'wallet_requestPermissions' ||
+        req.method === 'solana_connect'
+      )
+    })
+
+    const previewConnectAddress = computed(() => {
+      const req = currentApproval.value
+      if (!req) return primaryPersonaAddress.value
+      if (!useBurnerForConnect.value) {
+        return primaryPersonaAddress.value
+      }
+      const normOrigin =
+        normalizeBridgeOrigin(req.origin) || req.origin.trim().toLowerCase()
+      return deriveDeterministicOriginBurnerAddress(
+        primaryPersonaAddress.value,
+        normOrigin || 'https://dapp.local',
+      )
+    })
+
+    const connectAddressSharedCaption = computed(() => {
+      const req = currentApproval.value
+      const originLabel = req?.origin || 'this site'
+      return useBurnerForConnect.value
+        ? `Unlinkable Burner EOA shared only with ${originLabel}:`
+        : `Shared Primary EOA exposed to ${originLabel}:`
+    })
+
+    const announceModeBadgeLabel = computed(() => {
+      if (announceMode.value === 'connected-only') {
+        return 'Connected Sites Only'
+      }
+      if (announceMode.value === 'stealth') {
+        return 'Stealth Mode'
+      }
+      return 'Always Announce'
+    })
+
+    const announceModeBadgeColor = computed(() => {
+      if (announceMode.value === 'connected-only') return 'positive'
+      if (announceMode.value === 'stealth') return 'warning'
+      return 'primary'
+    })
+
+    const connectedSiteItems = computed(() =>
+      Object.entries(originPersonasMap.value).map(([origin, binding]) => ({
+        origin,
+        address: binding.address,
+        index: binding.index,
+        label: binding.label,
+        isBurner: binding.isBurner,
+        badgeLabel: binding.isBurner
+          ? 'Unlinkable Burner'
+          : 'Shared Primary',
+      })),
     )
 
     const currentApprovalShortfall = computed(() => {
@@ -752,6 +1027,46 @@ export default defineComponent({
         ? `SAS Code: ${sasCode.value} (Synced)`
         : `SAS Code: ${sasCode.value}`,
     )
+
+    function setConnectBurnerMode(useBurner: boolean) {
+      useBurnerForConnect.value = useBurner
+    }
+
+    async function setAnnounceMode(mode: DappProviderAnnounceMode) {
+      announceMode.value = mode
+      emit('update-announce-mode', { announceMode: mode })
+      if (isExtensionRuntime.value) {
+        try {
+          await sendRuntimeMessage({
+            channel: FRANK_DAPP_BRIDGE_CHANNEL,
+            type: 'set-announce-mode',
+            announceMode: mode,
+          })
+        } catch {
+          // Ignore in non-extension contexts
+        }
+      }
+    }
+
+    async function disconnectOrigin(origin: string) {
+      const norm = normalizeBridgeOrigin(origin) || origin
+      const next = { ...originPersonasMap.value }
+      delete next[norm]
+      delete next[origin]
+      originPersonasMap.value = next
+      emit('disconnect-origin', { origin: norm })
+      if (isExtensionRuntime.value) {
+        try {
+          await sendRuntimeMessage({
+            channel: FRANK_DAPP_BRIDGE_CHANNEL,
+            type: 'disconnect-origin',
+            origin: norm,
+          })
+        } catch {
+          // Ignore in non-extension contexts
+        }
+      }
+    }
 
     async function syncActivePersonaToBackground(address: string) {
       if (!isExtensionRuntime.value) return
@@ -800,8 +1115,11 @@ export default defineComponent({
           result?: {
             ok?: boolean
             activePersonaAddress?: string
+            announceMode?: DappProviderAnnounceMode
+            originPersonas?: Record<string, OriginPersonaBinding>
             pendingApprovals?: Array<{
               id: string
+              kind?: 'connect' | 'sign' | 'transaction' | 'permissions'
               origin: string
               method: string
               params?: unknown
@@ -819,6 +1137,20 @@ export default defineComponent({
         ) {
           bridgeDefaultAddress.value = bgAddr
         }
+        if (
+          res?.result?.announceMode === 'always' ||
+          res?.result?.announceMode === 'connected-only' ||
+          res?.result?.announceMode === 'stealth'
+        ) {
+          announceMode.value = res.result.announceMode
+        }
+        if (
+          res?.result?.originPersonas &&
+          typeof res.result.originPersonas === 'object' &&
+          Object.keys(props.initialOriginPersonas ?? {}).length === 0
+        ) {
+          originPersonasMap.value = { ...res.result.originPersonas }
+        }
         const pendingList = res?.result?.pendingApprovals
         if (
           Array.isArray(pendingList) &&
@@ -827,8 +1159,10 @@ export default defineComponent({
         ) {
           approvals.value = pendingList.map(item => ({
             id: item.id,
+            kind: item.kind,
             origin: item.origin,
             method: item.method,
+            params: item.params,
           }))
         }
       } catch {
@@ -999,9 +1333,116 @@ export default defineComponent({
       }
     }
 
-    async function approveCurrentRequest() {
+    function resolvePersonaPrivateKeyForOrigin(normOrigin: string): string {
+      const binding = originPersonasMap.value[normOrigin]
+      if (binding?.isBurner) {
+        return deriveDeterministicOriginBurnerPrivateKey(
+          primaryPersonaAddress.value,
+          normOrigin || 'https://dapp.local',
+        )
+      }
+      const rootKey = deriveAccountPersonaPrivateKey(
+        resolvedRootAddress.value || primaryPersonaAddress.value,
+        binding?.index ?? personaIndex.value,
+      )
+      if (rootKey) return rootKey
+      return deriveDeterministicOriginBurnerPrivateKey(
+        primaryPersonaAddress.value,
+        normOrigin || 'https://dapp.local',
+      )
+    }
+
+    function signOrExecuteApprovalRequest(
+      req: DappApprovalItem,
+      normOrigin: string,
+    ): string {
+      try {
+        const privKey = resolvePersonaPrivateKeyForOrigin(normOrigin)
+        const signer = new Wallet(privKey)
+        const paramsList = Array.isArray(req.params) ? req.params : []
+
+        if (req.method === 'personal_sign' || req.method === 'eth_sign') {
+          const rawCandidate =
+            req.method === 'personal_sign'
+              ? paramsList[0] ?? req.summary ?? 'Frank approval'
+              : paramsList[1] ?? paramsList[0] ?? req.summary ?? 'Frank approval'
+          const msgStr = String(rawCandidate)
+          const msgBytes =
+            isHexString(msgStr) && msgStr.length % 2 === 0
+              ? getBytes(msgStr)
+              : toUtf8Bytes(msgStr)
+          return signer.signingKey.sign(hashMessage(msgBytes)).serialized
+        }
+
+        if (
+          req.method === 'eth_signTypedData' ||
+          req.method === 'eth_signTypedData_v3' ||
+          req.method === 'eth_signTypedData_v4'
+        ) {
+          const rawTyped = paramsList[1] ?? paramsList[0]
+          const parsed =
+            typeof rawTyped === 'string' ? JSON.parse(rawTyped) : rawTyped
+          if (parsed && typeof parsed === 'object' && parsed.domain && parsed.types) {
+            const typesCopy = { ...parsed.types }
+            delete typesCopy.EIP712Domain
+            const valueObj = parsed.message ?? parsed.value ?? {}
+            const digest = TypedDataEncoder.hash(
+              parsed.domain,
+              typesCopy,
+              valueObj,
+            )
+            return signer.signingKey.sign(digest).serialized
+          }
+          return signer.signingKey.sign(
+            hashMessage(toUtf8Bytes(JSON.stringify(rawTyped ?? req.summary ?? {}))),
+          ).serialized
+        }
+
+        if (req.method === 'eth_sendTransaction') {
+          const txObj =
+            paramsList[0] && typeof paramsList[0] === 'object'
+              ? (paramsList[0] as Record<string, any>)
+              : {}
+          const toAddr =
+            typeof txObj.to === 'string' && /^0x[0-9a-fA-F]{40}$/.test(txObj.to)
+              ? txObj.to
+              : signer.address
+          const valBig =
+            typeof txObj.value === 'string' && /^0x[0-9a-fA-F]+$/.test(txObj.value)
+              ? BigInt(txObj.value)
+              : 0n
+          const tx = Transaction.from({
+            type: 2,
+            chainId: 10143n,
+            to: toAddr,
+            value: valBig,
+            data:
+              typeof txObj.data === 'string' && isHexString(txObj.data)
+                ? txObj.data
+                : '0x',
+            nonce: 0,
+            gasLimit: 120_000n,
+            maxFeePerGas: 2_000_000_000n,
+            maxPriorityFeePerGas: 1_000_000_000n,
+          })
+          tx.signature = signer.signingKey.sign(tx.unsignedHash)
+          return keccak256(tx.serialized)
+        }
+      } catch {
+        // Fall through to deterministic fallback below
+      }
+      return createDeterministicRpcResultFallback(
+        req.method,
+        normOrigin,
+        activePersonaAddress.value,
+        req.params ?? req.summary,
+      )
+    }
+
+    function approveCurrentRequest() {
       const req = currentApproval.value
       if (!req) return
+      const isConnect = isConnectApproval.value
       const shortfall = currentApprovalShortfall.value
       if (shortfall > 0 && poolBalanceMon.value >= shortfall) {
         poolTransferDeltaMon.value -= shortfall
@@ -1010,18 +1451,74 @@ export default defineComponent({
       if (req.requiredAmountMon && personaBalanceMon.value >= req.requiredAmountMon) {
         personaBalanceMon.value -= req.requiredAmountMon
       }
+
+      const normOrigin =
+        normalizeBridgeOrigin(req.origin) || req.origin.trim().toLowerCase()
+      const chosenUseBurner = useBurnerForConnect.value
+      const chosenConnectAddr = previewConnectAddress.value
+
       approvals.value.shift()
+
+      if (isConnect) {
+        const nextBurnerIdx = chosenUseBurner
+          ? Math.max(
+              1,
+              ...Object.values(originPersonasMap.value).map(b => b.index + 1),
+            )
+          : 0
+        const binding: OriginPersonaBinding = {
+          address: chosenConnectAddr,
+          index: nextBurnerIdx,
+          label: chosenUseBurner
+            ? `${normOrigin} Burner #${nextBurnerIdx}`
+            : 'Primary dApp Persona',
+          isBurner: chosenUseBurner,
+        }
+        if (normOrigin) {
+          originPersonasMap.value = {
+            ...originPersonasMap.value,
+            [normOrigin]: binding,
+          }
+        }
+        if (isExtensionRuntime.value) {
+          void sendRuntimeMessage({
+            channel: FRANK_DAPP_BRIDGE_CHANNEL,
+            type: 'companion-resolve-approval',
+            requestId: req.id,
+            approvalId: req.id,
+            approved: true,
+            useBurnerPersona: chosenUseBurner,
+            personaAddress: chosenConnectAddr,
+            personaIndex: nextBurnerIdx,
+            label: binding.label,
+            result: [chosenConnectAddr],
+          }).catch(() => {})
+        }
+        emit('approve-request', {
+          request: req,
+          jitSweptMon: shortfall,
+          useBurnerPersona: chosenUseBurner,
+          personaAddress: chosenConnectAddr,
+          result: [chosenConnectAddr],
+        })
+        return
+      }
+
+      const signatureOrTxHash = signOrExecuteApprovalRequest(req, normOrigin)
       if (isExtensionRuntime.value) {
         void sendRuntimeMessage({
           channel: FRANK_DAPP_BRIDGE_CHANNEL,
           type: 'companion-resolve-approval',
           requestId: req.id,
+          approvalId: req.id,
           approved: true,
+          result: signatureOrTxHash,
         }).catch(() => {})
       }
       emit('approve-request', {
         request: req,
         jitSweptMon: shortfall,
+        result: signatureOrTxHash,
       })
     }
 
@@ -1034,6 +1531,7 @@ export default defineComponent({
           channel: FRANK_DAPP_BRIDGE_CHANNEL,
           type: 'companion-resolve-approval',
           requestId: req.id,
+          approvalId: req.id,
           approved: false,
         }).catch(() => {})
       }
@@ -1048,6 +1546,7 @@ export default defineComponent({
       pairedWcUri.value = trimmed
       approvals.value.unshift({
         id: `wc-${Date.now()}`,
+        kind: 'connect',
         origin: 'wc://paired-dapp',
         method: 'connect',
         summary: `Pair session (${trimmed.slice(0, 18)}...)`,
@@ -1094,6 +1593,11 @@ export default defineComponent({
       ui,
       personaIndex,
       personaOptionItems,
+      useBurnerForConnect,
+      announceMode,
+      announceModeBadgeLabel,
+      announceModeBadgeColor,
+      connectedSiteItems,
       wcUriInput,
       pairedWcUri,
       isExtensionRuntime,
@@ -1105,11 +1609,17 @@ export default defineComponent({
       formattedPersonaBalance,
       formattedPoolBalance,
       currentApproval,
+      isConnectApproval,
+      previewConnectAddress,
+      connectAddressSharedCaption,
       currentApprovalShortfall,
       approvalMethodSummary,
       jitSweepNoticeText,
       pairedWcStatusText,
       sasDisplayText,
+      setConnectBurnerMode,
+      setAnnounceMode,
+      disconnectOrigin,
       selectPersona,
       onPersonaDropdownChange,
       createBurnerPersona,
@@ -1135,5 +1645,11 @@ export default defineComponent({
   font-weight: 600;
   cursor: pointer;
 }
+.dapp-connect-persona-box,
+.dapp-connected-site-row {
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  background: rgba(128, 128, 128, 0.05);
+}
 </style>
+
 

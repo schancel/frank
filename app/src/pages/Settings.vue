@@ -243,6 +243,8 @@
                   <q-toggle
                     :label="$t('settings.darkMode')"
                     v-model="darkMode"
+                    data-test="dark-mode-toggle"
+                    @update:model-value="selectDarkMode"
                   />
                 </div>
                 <div class="q-mb-lg">
@@ -261,7 +263,7 @@
                       class="cursor-pointer"
                     >
                       <q-avatar
-                        :style="{ backgroundColor: stone.stoneColor }"
+                        :style="stoneSwatchStyle(stone)"
                         size="18px"
                         class="q-mr-xs"
                       />
@@ -642,6 +644,7 @@ export default defineComponent({
     } = storeToRefs(appearanceStore)
 
     const isSaved = ref(false)
+    const darkMode = ref(Boolean(storeDarkMode?.value))
     const theme = ref<SignetStone>(
       (storeTheme && storeTheme.value) || DEFAULT_SIGNET_THEME,
     )
@@ -650,6 +653,10 @@ export default defineComponent({
         getSavedUiScaleSetting() ||
         DEFAULT_UI_SCALE,
     )
+    watch(darkMode, newVal => {
+      isSaved.value = false
+      applyTheme(theme.value, Boolean(newVal))
+    })
     const themeOptions = Object.values(SIGNET_THEMES)
     const isExtensionMode = ref(detectExtensionEnvironment())
     const supportsSidePanel = computed(
@@ -845,7 +852,7 @@ export default defineComponent({
       settingsStore,
       isSaved,
       isTestnetMode,
-      darkMode: ref(storeDarkMode.value),
+      darkMode,
       theme,
       themeOptions,
       uiScale,
@@ -859,7 +866,7 @@ export default defineComponent({
       openInFullBrowserTab,
       updateInterval: ref(storeUpdateInterval.value / msToMinutes),
       // A local draft, not bound to vue-i18n's own global locale -- ticket #156: selecting an
-      // option must never affect the app until Save, the same as darkMode/updateInterval above.
+      // option must never affect the app until Save, the same as updateInterval above.
       locale: ref(storeLocale.value),
       contactRefreshInterval: ref<QInput | null>(null),
       storeDarkMode,
@@ -909,9 +916,11 @@ export default defineComponent({
   },
   beforeRouteLeave() {
     if (!this.isSaved) {
+      const revertDark = Boolean(this.storeDarkMode)
+      this.$q?.dark?.set?.(revertDark)
       applyTheme(
         this.storeTheme || DEFAULT_SIGNET_THEME,
-        this.storeDarkMode || false,
+        revertDark,
       )
       applyViewportScaleAndMetrics(
         this.storeUiScale || getSavedUiScaleSetting() || DEFAULT_UI_SCALE,
@@ -920,9 +929,25 @@ export default defineComponent({
   },
   methods: {
     pageStyle: viewportPageStyle,
+    stoneSwatchStyle(stone: (typeof SIGNET_THEMES)[SignetStone]) {
+      const modeBg = this.darkMode
+        ? stone.dark.background
+        : stone.light.background
+      return {
+        background: `linear-gradient(135deg, ${stone.stoneColor} 55%, ${modeBg} 55%)`,
+        border: '1px solid rgba(128, 128, 128, 0.35)',
+      }
+    },
+    selectDarkMode(val: boolean) {
+      this.darkMode = Boolean(val)
+      this.isSaved = false
+      this.$q?.dark?.set?.(this.darkMode)
+      applyTheme(this.theme, this.darkMode)
+    },
     selectTheme(stoneId: SignetStone) {
       this.theme = stoneId
       this.isSaved = false
+      this.$q?.dark?.set?.(Boolean(this.darkMode))
       applyTheme(stoneId, this.darkMode)
     },
     onSelectTheme(stoneId: SignetStone) {
@@ -1008,15 +1033,20 @@ export default defineComponent({
         this.settingsStore?.notificationFeeThresholdAvu ?? 0
       this.allowContactNotificationBypass =
         this.settingsStore?.allowContactNotificationBypass ?? true
+      if (this.storeDarkMode !== undefined) {
+        this.darkMode = Boolean(this.storeDarkMode)
+      }
       if (this.storeTheme !== undefined) {
         this.theme = this.storeTheme
       }
       if (this.storeUiScale !== undefined) {
         this.uiScale = this.storeUiScale
       }
+      const revertDark = Boolean(this.storeDarkMode)
+      this.$q?.dark?.set?.(revertDark)
       applyTheme(
         this.storeTheme || DEFAULT_SIGNET_THEME,
-        this.storeDarkMode || false,
+        revertDark,
       )
       applyViewportScaleAndMetrics(
         this.storeUiScale || getSavedUiScaleSetting() || DEFAULT_UI_SCALE,

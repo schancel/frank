@@ -1,4 +1,4 @@
-import { setCssVar } from 'quasar'
+import { Dark, setCssVar } from 'quasar'
 
 export type SignetStone =
   | 'carnelian'
@@ -215,7 +215,16 @@ export function applyTheme(
   isDark = false,
 ): void {
   const def = SIGNET_THEMES[themeName] || SIGNET_THEMES[DEFAULT_SIGNET_THEME]
+  const darkActive = Boolean(isDark)
   if (typeof document === 'undefined') return
+
+  try {
+    if (Dark && typeof Dark.set === 'function') {
+      Dark.set(darkActive)
+    }
+  } catch {
+    // safe fallback if Quasar Dark plugin is not initialized in unit tests
+  }
 
   if (typeof setCssVar === 'function') {
     try {
@@ -227,17 +236,23 @@ export function applyTheme(
     }
   }
 
-  const mode = isDark ? def.dark : def.light
+  const mode = darkActive ? def.dark : def.light
+  const surfaceBg = darkActive ? mode.messageReceived : '#ffffff'
   const body = document.body
   const root = document.documentElement
   if (body) {
+    body.classList.toggle('body--dark', darkActive)
+    body.classList.toggle('body--light', !darkActive)
     body.setAttribute('data-signet-theme', def.id)
+    body.setAttribute('data-theme-mode', darkActive ? 'dark' : 'light')
     body.style.setProperty('--q-primary', def.primary)
     body.style.setProperty('--q-secondary', def.secondary)
     body.style.setProperty('--q-accent', def.accent)
     body.style.setProperty('--q-color-background', mode.background)
+    body.style.setProperty('--q-color-bg-surface', surfaceBg)
     body.style.setProperty('--q-color-text', mode.text)
     body.style.setProperty('--q-color-bg-active', mode.bgActive)
+    body.style.setProperty('--q-color-active', mode.bgActive)
     body.style.setProperty('--q-message-color-sent', mode.messageSent)
     body.style.setProperty('--q-message-color', mode.messageReceived)
     body.style.setProperty('--q-message-meta-sent', mode.messageMetaSent)
@@ -250,5 +265,9 @@ export function applyTheme(
     root.style.setProperty('--q-primary', def.primary)
     root.style.setProperty('--q-secondary', def.secondary)
     root.style.setProperty('--q-accent', def.accent)
+    root.style.setProperty('--q-color-background', mode.background)
+    root.style.setProperty('--q-color-bg-surface', surfaceBg)
+    root.style.setProperty('--q-color-text', mode.text)
+    root.style.setProperty('--q-color-bg-active', mode.bgActive)
   }
 }

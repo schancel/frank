@@ -317,6 +317,20 @@ describe('Settings Signet Theme Live Preview and Persistence (#1041)', () => {
     expect(mockApplyTheme).toHaveBeenCalledWith('lapis', false)
   })
 
+  it('toggling darkMode applies live preview immediately with the selected theme stone', async () => {
+    const darkSetMock = jest.fn()
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router, { dark: { set: darkSetMock } })
+
+    ;(wrapper.vm as any).selectTheme('lapis')
+    mockApplyTheme.mockClear()
+
+    ;(wrapper.vm as any).selectDarkMode(true)
+    expect((wrapper.vm as any).darkMode).toBe(true)
+    expect(darkSetMock).toHaveBeenCalledWith(true)
+    expect(mockApplyTheme).toHaveBeenCalledWith('lapis', true)
+  })
+
   it('onSelectTheme also updates theme and applies live preview', async () => {
     const router = await openDirectly('#/settings')
     const wrapper = mountSettings(router)

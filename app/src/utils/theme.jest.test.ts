@@ -92,15 +92,21 @@ describe('Signet Stone Themes', () => {
     )
   })
 
-  it('switches between light and dark palettes', () => {
+  it('switches between light and dark palettes and syncs body--dark / body--light classes', () => {
     applyTheme('bloodstone', false)
     expect(document.body.style.getPropertyValue('--q-color-background')).toBe(
       SIGNET_THEMES.bloodstone.light.background,
     )
+    expect(document.body.classList.contains('body--light')).toBe(true)
+    expect(document.body.classList.contains('body--dark')).toBe(false)
+    expect(document.body.getAttribute('data-theme-mode')).toBe('light')
 
     applyTheme('bloodstone', true)
     expect(document.body.style.getPropertyValue('--q-color-background')).toBe(
       SIGNET_THEMES.bloodstone.dark.background,
     )
+    expect(document.body.classList.contains('body--dark')).toBe(true)
+    expect(document.body.classList.contains('body--light')).toBe(false)
+    expect(document.body.getAttribute('data-theme-mode')).toBe('dark')
   })
 })

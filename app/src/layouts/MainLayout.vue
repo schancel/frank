@@ -32,39 +32,6 @@
       @setupCompleted="$emit('setupCompleted')"
     />
     <div
-      v-if="isExtensionPopup"
-      class="frank-ext-popup-utility-bar row items-center no-wrap q-gutter-xs"
-      data-testid="ext-popup-utility-bar"
-    >
-      <q-btn
-        v-if="supportsSidePanel"
-        flat
-        dense
-        round
-        size="sm"
-        icon="view_sidebar"
-        :aria-label="extOpenSidePanelLabel"
-        :title="extOpenSidePanelLabel"
-        data-testid="ext-open-sidepanel-btn"
-        @click="openExtensionSidePanel"
-      >
-        <q-tooltip>{{ extOpenSidePanelLabel }}</q-tooltip>
-      </q-btn>
-      <q-btn
-        flat
-        dense
-        round
-        size="sm"
-        icon="open_in_new"
-        :aria-label="extPopoutWindowLabel"
-        :title="extPopoutWindowLabel"
-        data-testid="ext-popout-window-btn"
-        @click="popOutExtensionWindow"
-      >
-        <q-tooltip>{{ extPopoutWindowLabel }}</q-tooltip>
-      </q-btn>
-    </div>
-    <div
       v-if="showMobileBottomNav"
       class="frank-mobile-bottom-nav row items-center justify-around no-wrap"
       data-testid="mobile-bottom-nav"
@@ -722,29 +689,6 @@ export default defineComponent({
 </script>
 
 <style lang="scss">
-.frank-ext-popup-utility-bar {
-  position: fixed;
-  top: 7px;
-  right: 8px;
-  z-index: 2100;
-  padding: 2px 4px;
-  border-radius: 999px;
-  background: rgba(250, 246, 243, 0.94);
-  color: #1f2937;
-  border: 1px solid rgba(128, 128, 128, 0.28);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
-  backdrop-filter: blur(6px);
-}
-
-body.body--dark .frank-ext-popup-utility-bar {
-  background: rgba(24, 24, 24, 0.94);
-  color: #f3f4f6;
-  border-color: rgba(255, 255, 255, 0.2);
-}
-
-.q-layout.frank-is-extension-popup .q-header .q-toolbar {
-  padding-right: 76px;
-}
 .q-layout {
   width: var(--frank-vw, 100%);
   height: 100vh;

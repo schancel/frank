@@ -78,6 +78,7 @@
           to="/new-post"
           :aria-label="$t('a11y.newPost')"
         />
+        <extension-popout-btn />
         <q-btn
           icon="settings"
           flat
@@ -113,6 +114,7 @@ import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 import ForumDrawer from '../components/panels/ForumDrawer.vue'
+import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
 import { DRAWER_BREAKPOINT } from '../utils/layout'
 
 export default defineComponent({
@@ -145,7 +147,7 @@ export default defineComponent({
       isRefreshing,
     }
   },
-  components: { ForumDrawer },
+  components: { ForumDrawer, ExtensionPopoutBtn },
   emits: ['toggleMyDrawerOpen'],
   mounted() {
     void this.refreshContent()

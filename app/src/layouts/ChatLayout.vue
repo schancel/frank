@@ -16,6 +16,7 @@
           <q-toolbar-title class="h6 ellipsis" data-testid="info-header-name">{{
             targetProfile?.name || contactName
           }}</q-toolbar-title>
+          <extension-popout-btn />
           <q-btn
             flat
             round
@@ -41,6 +42,8 @@
           <q-toolbar-title class="h6">{{
             $t('chatLayout.selectMessagesTitle')
           }}</q-toolbar-title>
+          <q-space />
+          <extension-popout-btn />
         </template>
         <template v-else-if="!address">
           <q-btn
@@ -55,6 +58,8 @@
           <q-toolbar-title class="h6">{{
             $t('chatList.directMessages')
           }}</q-toolbar-title>
+          <q-space />
+          <extension-popout-btn />
         </template>
         <template v-else>
           <q-btn
@@ -133,6 +138,7 @@
             :aria-label="$t('webrtcCall.mediaMode.video')"
             @click="startWebRtcCall(true)"
           />
+          <extension-popout-btn />
           <q-btn
             class="q-px-sm"
             flat
@@ -312,6 +318,7 @@ import { openChat } from '../utils/routes'
 import ClearHistoryDialog from '../components/dialogs/ClearHistoryDialog.vue'
 import DeleteChatDialog from '../components/dialogs/DeleteChatDialog.vue'
 import AccountBadge from '../components/contacts/AccountBadge.vue'
+import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
 import { errorNotify } from '../utils/notifications'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { useContactStore } from 'src/stores/contacts'
@@ -337,6 +344,7 @@ export default defineComponent({
     ClearHistoryDialog,
     DeleteChatDialog,
     AccountBadge,
+    ExtensionPopoutBtn,
   },
   // `chatSelectMode`: read by ChatMessageSuffixButtons.vue (several component layers below,
   // reached through `<router-view>`'s Chat.vue/ChatMessage.vue/ChatMessageSuffix.vue -- provide/

@@ -30,6 +30,7 @@
             <username-handle :username="displayUsername" />
           </div>
         </div>
+        <extension-popout-btn />
       </q-card-section>
 
       <!-- QR Camera Scanner (Collapsed by default in inline/extension mode) -->
@@ -675,11 +676,14 @@ function detectExtensionProtocol(): boolean {
   )
 }
 
+import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
+
 export default defineComponent({
   name: 'IdentityQrDialog',
   components: {
     QrcodeVue,
     UsernameHandle,
+    ExtensionPopoutBtn,
   },
   props: {
     modelValue: {

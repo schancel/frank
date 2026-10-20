@@ -14,6 +14,7 @@
         <q-toolbar-title class="h6">
           {{ $t('accountRecovery.backup_account_codex32') }}
         </q-toolbar-title>
+        <extension-popout-btn />
         <q-btn
           flat
           dense
@@ -299,6 +300,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
+import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
 import { useCodex32Backup } from '../composables/useCodex32Backup'
 import { navigateBack } from '../utils/navigate-back'
 import { markAccountBackedUp } from '../accounts/backup-status'

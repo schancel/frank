@@ -14,6 +14,7 @@
         <q-toolbar-title class="h6">{{
           $t('profileDialog.profile')
         }}</q-toolbar-title>
+        <extension-popout-btn />
         <q-btn
           flat
           dense
@@ -155,10 +156,13 @@ type RelayData = {
   }
 }
 
+import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
+
 export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
   components: {
     Profile,
+    ExtensionPopoutBtn,
   },
   setup() {
     const myProfile = useProfileStore()

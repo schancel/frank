@@ -2,7 +2,7 @@
   <q-page-container>
     <q-page class="q-ma-none q-pa-sm">
       <q-card>
-        <q-card-section>
+        <q-card-section class="row items-center justify-between no-wrap">
           <div class="text-h6">
             {{
               isConversationMode
@@ -10,6 +10,7 @@
                 : $t('newContactDialog.newContact')
             }}
           </div>
+          <extension-popout-btn />
         </q-card-section>
         <q-card-section class="q-pt-none">
           <div class="row items-center no-wrap q-gutter-x-xs">
@@ -359,6 +360,7 @@ import { accountSession } from 'src/accounts/session'
 import QrScannerDialog from 'src/components/dialogs/QrScannerDialog.vue'
 import IdentityQrDialog from 'src/components/dialogs/IdentityQrDialog.vue'
 import UsernameHandle from 'src/components/contacts/UsernameHandle.vue'
+import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
 import {
   discoverFrankDomain,
   splitDomainHandle,
@@ -379,6 +381,7 @@ export default defineComponent({
     IdentityQrDialog,
     QrScannerDialog,
     UsernameHandle,
+    ExtensionPopoutBtn,
   },
   data() {
     return {

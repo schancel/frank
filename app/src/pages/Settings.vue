@@ -12,6 +12,8 @@
           @click="$emit('toggleMyDrawerOpen')"
         />
         <q-toolbar-title class="h6">{{ $t('settings.title') }}</q-toolbar-title>
+        <q-space />
+        <extension-popout-btn />
       </q-toolbar>
     </q-header>
     <q-page-container class="col full-height overflow-hidden">
@@ -614,8 +616,14 @@ function detectExtensionEnvironment(): boolean {
   return false
 }
 
+import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
+
 export default defineComponent({
-  components: { PersistentStoragePanel, NotificationPermissionPanel },
+  components: {
+    PersistentStoragePanel,
+    NotificationPermissionPanel,
+    ExtensionPopoutBtn,
+  },
   emits: [
     'toggleMyDrawerOpen',
     'toggleContactDrawerOpen',

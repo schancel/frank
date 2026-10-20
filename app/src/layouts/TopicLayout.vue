@@ -22,6 +22,7 @@
         />
         <q-toolbar-title class="h6">{{ topic }}</q-toolbar-title>
         <q-space />
+        <extension-popout-btn />
         <q-btn
           class="q-px-sm"
           flat
@@ -58,6 +59,7 @@ import { RouteLocationNormalized, useRouter } from 'vue-router'
 
 import TopicInput from 'src/components/topic/TopicInput.vue'
 import TopicDrawer from 'src/components/topic/TopicDrawer.vue'
+import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
 
 import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
@@ -80,6 +82,7 @@ export default defineComponent({
   components: {
     TopicInput,
     TopicDrawer,
+    ExtensionPopoutBtn,
   },
   setup() {
     const router = useRouter()

@@ -43,6 +43,9 @@ function levelJsBackend(database: any): any | undefined {
   return undefined
 }
 
+let verifiedStrictTransactionFn: unknown
+let verifiedStrictIndexedDB: unknown
+
 function requireStrictIndexedDbTransactions(database: LevelDB): void {
   const backend = levelJsBackend(database)
   if (backend === undefined) {
@@ -50,25 +53,43 @@ function requireStrictIndexedDbTransactions(database: LevelDB): void {
       'Persistent browser wallet storage requires an inspectable level-js backend',
     )
   }
-  let probe: any
-  try {
-    probe = backend.db.transaction([backend.location], 'readonly', {
-      durability: 'strict',
-    })
-  } catch {
-    throw new Error(
-      'Persistent browser wallet storage requires strict IndexedDB durability',
-    )
-  }
-  if (probe.durability !== 'strict') {
+  const globals = globalThis as any
+  const hasOwnTransaction =
+    backend.db !== null &&
+    typeof backend.db === 'object' &&
+    Object.prototype.hasOwnProperty.call(backend.db, 'transaction')
+  const transactionFn = backend.db?.transaction
+  const canReuseVerifiedStrictProbe =
+    !hasOwnTransaction &&
+    typeof transactionFn === 'function' &&
+    transactionFn === verifiedStrictTransactionFn &&
+    globals.indexedDB !== undefined &&
+    globals.indexedDB === verifiedStrictIndexedDB
+  if (!canReuseVerifiedStrictProbe) {
+    let probe: any
     try {
-      probe.abort()
+      probe = backend.db.transaction([backend.location], 'readonly', {
+        durability: 'strict',
+      })
     } catch {
-      // The capability check below is authoritative; abort is best-effort cleanup only.
+      throw new Error(
+        'Persistent browser wallet storage requires strict IndexedDB durability',
+      )
     }
-    throw new Error(
-      'Persistent browser wallet storage requires strict IndexedDB durability',
-    )
+    if (probe.durability !== 'strict') {
+      try {
+        probe.abort()
+      } catch {
+        // The capability check below is authoritative; abort is best-effort cleanup only.
+      }
+      throw new Error(
+        'Persistent browser wallet storage requires strict IndexedDB durability',
+      )
+    }
+    if (!hasOwnTransaction && typeof transactionFn === 'function') {
+      verifiedStrictTransactionFn = transactionFn
+      verifiedStrictIndexedDB = globals.indexedDB
+    }
   }
 
   backend.store = function strictWalletStore(mode: string): any {

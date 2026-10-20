@@ -75,6 +75,13 @@ jest.mock('src/stores/appearance', () => ({
 jest.mock('src/stores/forum', () => ({ useForumStore: restoredStore }))
 jest.mock('src/stores/chats', () => ({ useChatStore: restoredStore }))
 jest.mock('src/stores/topics', () => ({ useTopicStore: restoredStore }))
+const mockTabCoordinatorInit = jest.fn(async () => undefined)
+jest.mock('../stores/tab-coordinator', () => ({
+  useTabCoordinatorStore: () => ({
+    init: mockTabCoordinatorInit,
+    otherTabActive: false,
+  }),
+}))
 
 import { Quasar } from 'quasar'
 import setupApis from './setup-apis'
@@ -83,6 +90,7 @@ import { startupRestoration } from './startup-state'
 
 describe('setup-apis in Monad mode', () => {
   beforeEach(() => {
+    mockTabCoordinatorInit.mockClear()
     // This browser boot fixture resolves Quasar's SSR build under Jest.
     jest.spyOn(Quasar.lang, 'set').mockImplementation(() => undefined)
   })
@@ -129,6 +137,26 @@ describe('setup-apis in Monad mode', () => {
     } finally {
       mockProfileName = 'Monad user'
       mockAccountStatus.status = 'ready'
+    }
+  })
+
+  it('uses a fast tab-coordinator ping timeout when booting in extension popup mode (extMode=popup)', async () => {
+    const originalUrl = window.location.href
+    window.history.replaceState({}, '', '/index.html?extMode=popup')
+    try {
+      const globalProperties: Record<string, unknown> = {}
+      await setupApis({
+        app: { config: { globalProperties } },
+      } as never)
+      expect(mockTabCoordinatorInit).toHaveBeenCalledWith({
+        pingTimeoutMs: 4,
+      })
+      expect(globalProperties.$status).toMatchObject({
+        loaded: true,
+        setup: true,
+      })
+    } finally {
+      window.history.replaceState({}, '', originalUrl)
     }
   })
 })

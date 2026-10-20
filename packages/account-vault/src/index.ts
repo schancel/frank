@@ -13,14 +13,80 @@ export function createVaultWriteIntent(input: {
   return validate(() => createIntent(input))
 }
 
+interface CapabilityRuntime {
+  readonly indexedDB: IDBFactory | undefined
+  readonly subtle: SubtleCrypto | undefined
+  readonly open: typeof IDBFactory.prototype.open | undefined
+  readonly transaction: typeof IDBDatabase.prototype.transaction | undefined
+  readonly put: typeof IDBObjectStore.prototype.put | undefined
+  readonly get: typeof IDBObjectStore.prototype.get | undefined
+  readonly generateKey: typeof SubtleCrypto.prototype.generateKey | undefined
+  readonly encrypt: typeof SubtleCrypto.prototype.encrypt | undefined
+  readonly decrypt: typeof SubtleCrypto.prototype.decrypt | undefined
+}
+
+function captureCapabilityRuntime(): CapabilityRuntime {
+  return {
+    indexedDB: globalThis.indexedDB,
+    subtle: globalThis.crypto?.subtle,
+    open: globalThis.IDBFactory?.prototype?.open,
+    transaction: globalThis.IDBDatabase?.prototype?.transaction,
+    put: globalThis.IDBObjectStore?.prototype?.put,
+    get: globalThis.IDBObjectStore?.prototype?.get,
+    generateKey: globalThis.SubtleCrypto?.prototype?.generateKey,
+    encrypt: globalThis.SubtleCrypto?.prototype?.encrypt,
+    decrypt: globalThis.SubtleCrypto?.prototype?.decrypt,
+  }
+}
+
+function sameCapabilityRuntime(a: CapabilityRuntime, b: CapabilityRuntime): boolean {
+  return (
+    Boolean(a.indexedDB) &&
+    a.indexedDB === b.indexedDB &&
+    a.subtle === b.subtle &&
+    a.open === b.open &&
+    a.transaction === b.transaction &&
+    a.put === b.put &&
+    a.get === b.get &&
+    a.generateKey === b.generateKey &&
+    a.encrypt === b.encrypt &&
+    a.decrypt === b.decrypt
+  )
+}
+
+const initialCapabilityRuntime = captureCapabilityRuntime()
+const verifiedCapabilities = new Map<string, CapabilityRuntime>()
+
 async function capability(name: string): Promise<void> {
+  const runtime = captureCapabilityRuntime()
+  const cached = verifiedCapabilities.get(name)
+  if (cached && sameCapabilityRuntime(cached, runtime)) return
+  const unpatched = sameCapabilityRuntime(initialCapabilityRuntime, runtime)
   let db: IDBDatabase | undefined
   let plain: Uint8Array | undefined
   try {
+    db = await database(name, true)
+    if (unpatched) {
+      const existing = await transaction<{ key: CryptoKey; iv: Uint8Array<ArrayBuffer>; ciphertext: ArrayBuffer } | undefined>(db, ['probe'], 'readonly', (tx, result) => {
+        const request = tx.objectStore('probe').get('capability')
+        request.onsuccess = () => result(request.result)
+      }).catch(() => undefined)
+      if (existing && validKey(existing.key) && existing.iv instanceof Uint8Array && existing.iv.length === 12 &&
+          existing.ciphertext instanceof ArrayBuffer && existing.ciphertext.byteLength === 19) {
+        const check = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: existing.iv, tagLength: 128 }, existing.key, existing.ciphertext))
+        try {
+          if (check.length === 3 && check[0] === 70 && check[1] === 86 && check[2] === 1) {
+            verifiedCapabilities.set(name, runtime)
+            return
+          }
+        } finally {
+          check.fill(0)
+        }
+      }
+    }
     const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
     const iv = crypto.getRandomValues(new Uint8Array(12))
     const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, tagLength: 128 }, key, Uint8Array.of(70, 86, 1))
-    db = await database(name, true)
     await transaction<void>(db, ['probe'], 'readwrite', (tx, result) => {
       tx.objectStore('probe').put({ key, iv, ciphertext }, 'capability'); result(undefined)
     })
@@ -34,6 +100,7 @@ async function capability(name: string): Promise<void> {
         !(stored.ciphertext instanceof ArrayBuffer) || stored.ciphertext.byteLength !== 19) throw 0
     plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: stored.iv, tagLength: 128 }, stored.key, stored.ciphertext))
     if (plain.length !== 3 || plain[0] !== 70 || plain[1] !== 86 || plain[2] !== 1) throw 0
+    if (unpatched) verifiedCapabilities.set(name, runtime)
   } catch { throw new VaultError('unavailable') } finally { plain?.fill(0); db?.close() }
 }
 

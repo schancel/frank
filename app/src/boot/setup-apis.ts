@@ -70,7 +70,13 @@ export default boot(async ({ app }) => {
   )
   try {
     const tabCoordinator = useTabCoordinatorStore()
-    await tabCoordinator.init()
+    const isExtensionPopup =
+      typeof window !== 'undefined' &&
+      typeof window.location?.search === 'string' &&
+      new URLSearchParams(window.location.search).get('extMode') === 'popup'
+    await tabCoordinator.init(
+      isExtensionPopup ? { pingTimeoutMs: 4 } : undefined,
+    )
     if (tabCoordinator.otherTabActive) {
       accountSession.setStandby?.()
     }

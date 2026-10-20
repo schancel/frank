@@ -8,7 +8,14 @@
     <h1 id="startup-failure-title">{{ $t('startupFailure.title') }}</h1>
     <p role="alert">{{ $t('startupFailure.message') }}</p>
   </main>
-  <main v-else :aria-label="$t('startupFailure.loading')" aria-busy="true" />
+  <main
+    v-else
+    class="startup-loading"
+    :aria-label="$t('startupFailure.loading')"
+    aria-busy="true"
+  >
+    <div class="startup-loading__spinner" aria-hidden="true" />
+  </main>
 </template>
 
 <script lang="ts">
@@ -35,5 +42,32 @@ export default defineComponent({
 .startup-failure h1 {
   font-size: clamp(1.5rem, 4vw, 2rem);
   line-height: 1.25;
+}
+.startup-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  width: 100%;
+  box-sizing: border-box;
+}
+.startup-loading__spinner {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(200, 67, 30, 0.2);
+  border-top-color: var(--q-primary, #c8431e);
+  animation: startup-loading-spin 0.75s linear infinite;
+}
+@keyframes startup-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .startup-loading__spinner {
+    animation: none;
+  }
 }
 </style>

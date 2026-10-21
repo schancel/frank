@@ -1434,7 +1434,8 @@ category, and an implementation MUST NOT continue to report a later failure.
         256 fails `resource` before that child's stage 2. The rule applies to any
         root and is labelled stage 8.4.
       - In an open field (a message item), a child of an assigned non-item type
-        (types 1 through 15) is `semantic`, checked after its stage 6
+        (types 1 through 15 and the type-25 forwarding envelope: every type whose
+        `open_item_field` is false in `../message-types/v1.json`) is `semantic`, checked after its stage 6
         like a required-type mismatch. Otherwise the child runs stages 2
         through 9 with V6 applied to it. Children open depth-first in array
         order, and the first failure wins. An unknown type, an unknown frame version, or a

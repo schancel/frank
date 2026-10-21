@@ -273,7 +273,7 @@
       "id": 25,
       "key": "forwarding-delivery-envelope",
       "family": "delivery",
-      "open_item_field": true,
+      "open_item_field": false,
       "status": "active",
       "owner": "@frank/codec",
       "name": "Relay forwarding delivery envelope",

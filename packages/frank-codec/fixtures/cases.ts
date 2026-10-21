@@ -64,6 +64,7 @@ import {
   DIRECTORY_STATEMENT,
   ENCRYPTED_MESSAGE_CONTENT,
   FORUM_SINGLE_VIEW,
+  FORWARDING_DELIVERY_ENVELOPE,
   KEY_TRANSITION,
   KEY_TRANSITION_STATEMENT,
   KEY_TYPE,
@@ -84,6 +85,7 @@ import {
   TYPE_ENCRYPTED_MESSAGE_CONTENT,
   TYPE_FORUM_OPERATION_STATUS,
   TYPE_FORUM_VIEW,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
   TYPE_KEY_TRANSITION_STATEMENT,
   TYPE_MAILBOX_CHECKPOINT,
   TYPE_MESSAGE_CONTENT_REVISION,
@@ -4141,6 +4143,23 @@ tpRej(
   'semantic',
   '8.4',
   ['V6.1', 'S8'],
+)
+// A relay forwarding envelope is a delivery frame, not a message item (S8).
+rej(
+  'forwarding-envelope-as-message-item',
+  'A type-8 revision whose item is a type-25 relay forwarding envelope: a delivery frame cannot ride in an open message-item field.',
+  fr(
+    TYPE_MESSAGE_CONTENT_REVISION,
+    revision8([
+      fr(
+        TYPE_FORWARDING_DELIVERY_ENVELOPE,
+        M([[FORWARDING_DELIVERY_ENVELOPE.network, 'frank-test']]),
+      ),
+    ]),
+  ),
+  'semantic',
+  '8.4',
+  ['S8'],
 )
 
 // R6 in the manifest, so the limits are interop vectors and not only per-codec unit tests.

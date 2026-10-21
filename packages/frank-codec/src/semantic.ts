@@ -5,25 +5,36 @@ import { utf8Encode } from './utf8'
 import { isCompressedPoint } from './point'
 import { contentHash } from './hash'
 import {
+  DIRECTORY_ATTESTATION,
+  DIRECTORY_STATEMENT,
+  DIRECT_MESSAGE_DELIVERY,
+  ENCRYPTED_MESSAGE_CONTENT,
+  FORWARDING_DELIVERY_ENVELOPE,
+  KEY_TYPE,
+  MAILBOX_CHECKPOINT,
   MAX_DIRECTORY_VALIDITY_NS,
+  PROFILE_ENTRY,
+  SIGNATURE_ALGORITHM,
+  TOKEN_TRANSFER,
+  TOPIC_POST_SUBMISSION,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_OPERATION_STATUS,
   TYPE_FORUM_TOPIC_PAGE,
   TYPE_FORUM_VIEW,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
+  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_MAILBOX_CHECKPOINT,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_TOPIC_POST,
-  TYPE_FORUM_DISCOVERY_PAGE,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
-  TYPE_DIRECT_MESSAGE_DELIVERY,
-  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
-  TYPE_DIRECTORY_STATEMENT,
-  TYPE_KEY_TRANSITION_STATEMENT,
-  TYPE_DIRECTORY_ATTESTATION,
-  TYPE_ENCRYPTED_MESSAGE_CONTENT,
-  TYPE_FORUM_OPERATION_STATUS,
-  TYPE_FORWARDING_DELIVERY_ENVELOPE,
-  TYPE_MAILBOX_CHECKPOINT,
 } from './constants'
 import { CANONICAL_USERNAME_REGEX } from './registration'
-import type { FeatureCodecDescriptor } from './schema-primitives'
+import { at, atItem, type FeatureCodecDescriptor } from './schema-primitives'
 import {
   ACCOUNT_TYPE_BOT,
   ACCOUNT_TYPE_SERVICE,
@@ -215,38 +226,45 @@ function typedOf<T extends FinalPayload['type']>(
  */
 export function checkTokenTransferSemantics(
   transfer: TokenTransfer,
-  path = 'root/payload.6',
+  path = at('root/payload', ENCRYPTED_MESSAGE_CONTENT.tokenTransfer),
 ): void {
+  const K = TOKEN_TRANSFER
   if (transfer.amount <= 0n) {
-    throw semantic('token transfer amount must be positive', `${path}.3`)
+    throw semantic('token transfer amount must be positive', at(path, K.amount))
   }
   if (
     !Number.isSafeInteger(transfer.decimals) ||
     transfer.decimals < 0 ||
     transfer.decimals > 255
   ) {
-    throw semantic('token transfer decimals must be in 0..255', `${path}.4`)
+    throw semantic(
+      'token transfer decimals must be in 0..255',
+      at(path, K.decimals),
+    )
   }
   if (transfer.chainNamespace.trim().length === 0) {
     throw semantic(
       'token transfer chain namespace cannot be empty',
-      `${path}.1`,
+      at(path, K.chainNamespace),
     )
   }
   if (transfer.contractAddress.trim().length === 0) {
     throw semantic(
       'token transfer contract address cannot be empty',
-      `${path}.2`,
+      at(path, K.contractAddress),
     )
   }
   if (transfer.symbol.trim().length === 0) {
-    throw semantic('token transfer symbol cannot be empty', `${path}.5`)
+    throw semantic('token transfer symbol cannot be empty', at(path, K.symbol))
   }
   if (
     transfer.rawTxOrPermit !== undefined &&
     transfer.rawTxOrPermit.length === 0
   ) {
-    throw semantic('token transfer rawTxOrPermit cannot be empty', `${path}.6`)
+    throw semantic(
+      'token transfer rawTxOrPermit cannot be empty',
+      at(path, K.rawTxOrPermit),
+    )
   }
 }
 
@@ -267,11 +285,15 @@ export function checkSemantics(
   switch (typed.type) {
     case TYPE_ENCRYPTED_MESSAGE_CONTENT: {
       if (typed.tokenTransfer) {
-        checkTokenTransferSemantics(typed.tokenTransfer, `${P}.6`)
+        checkTokenTransferSemantics(
+          typed.tokenTransfer,
+          at(P, ENCRYPTED_MESSAGE_CONTENT.tokenTransfer),
+        )
       }
       return
     }
     case TYPE_FORWARDING_DELIVERY_ENVELOPE: {
+      const K = FORWARDING_DELIVERY_ENVELOPE
       const child = typedOf(typed.payloadFrame, TYPE_DIRECT_MESSAGE_DELIVERY)
       const pays = typed.payments
       requireOrdered(
@@ -280,13 +302,13 @@ export function checkSemantics(
           cmpNum(a.childIndex, b.childIndex) ||
           compareBytes(a.transactionId, b.transactionId),
         'payment members',
-        `${P}.4`,
+        at(P, K.payments),
         false,
       )
       const seenIdx = new Set<number>()
       for (const p of pays) {
         if (seenIdx.has(p.childIndex))
-          throw semantic('duplicate child index', `${P}.4`)
+          throw semantic('duplicate child index', at(P, K.payments))
         seenIdx.add(p.childIndex)
       }
       requireUnique(
@@ -303,33 +325,37 @@ export function checkSemantics(
           return out
         }),
         'transaction id',
-        `${P}.4`,
+        at(P, K.payments),
       )
       if (typed.network !== child.network) {
         throw semantic(
           'forwarding network differs from the type-1 network',
-          `${P}.0`,
+          at(P, K.network),
         )
       }
-      if (typed.destination.keyType !== 1) {
-        throw semantic('destination account must be key type 1', `${P}.1`)
+      if (typed.destination.keyType !== KEY_TYPE.secp256k1) {
+        throw semantic(
+          'destination account must be key type 1',
+          at(P, K.destination),
+        )
       }
       requireUnique(
         pays.map(p => p.address),
         'payment address',
-        `${P}.4`,
+        at(P, K.payments),
       )
       pays.forEach((p, i) => {
         if (p.childIndex !== i) {
           throw semantic(
             'child indices must be exactly contiguous 0..n-1 (T3a.5)',
-            `${P}.4[${i}]`,
+            `${at(P, K.payments)}[${i}]`,
           )
         }
       })
       return
     }
     case TYPE_DIRECT_MESSAGE_DELIVERY: {
+      const K = DIRECT_MESSAGE_DELIVERY
       const child = typedOf(
         typed.payloadFrame,
         TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
@@ -341,13 +367,13 @@ export function checkSemantics(
           cmpNum(a.childIndex, b.childIndex) ||
           compareBytes(a.transactionId, b.transactionId),
         'payment members',
-        `${P}.4`,
+        at(P, K.payments),
         false,
       )
       const seenIdx = new Set<number>()
       for (const p of pays) {
         if (seenIdx.has(p.childIndex))
-          throw semantic('duplicate child index', `${P}.4`)
+          throw semantic('duplicate child index', at(P, K.payments))
         seenIdx.add(p.childIndex)
       }
       requireUnique(
@@ -364,18 +390,21 @@ export function checkSemantics(
           return out
         }),
         'transaction id',
-        `${P}.4`,
+        at(P, K.payments),
       )
       if (typed.network !== child.network) {
         throw semantic(
           'delivery network differs from the type-5 network (S8)',
-          `${P}.0`,
+          at(P, K.network),
         )
       }
       // The destination is the stamp key P' and is deliberately not compared with the type-5
       // recipient (S8): the routing identity and the payment key are independent.
-      if (typed.destination.keyType !== 1) {
-        throw semantic('destination account must be key type 1 (S9)', `${P}.1`)
+      if (typed.destination.keyType !== KEY_TYPE.secp256k1) {
+        throw semantic(
+          'destination account must be key type 1 (S9)',
+          at(P, K.destination),
+        )
       }
       if (
         (typed.recipient !== undefined && typed.dleqProof === undefined) ||
@@ -386,25 +415,32 @@ export function checkSemantics(
           P,
         )
       }
-      if (typed.recipient !== undefined && typed.recipient.keyType !== 1) {
-        throw semantic('recipient account must be key type 1', `${P}.5`)
+      if (
+        typed.recipient !== undefined &&
+        typed.recipient.keyType !== KEY_TYPE.secp256k1
+      ) {
+        throw semantic(
+          'recipient account must be key type 1',
+          at(P, K.recipient),
+        )
       }
       requireUnique(
         pays.map(p => p.address),
         'payment address',
-        `${P}.4`,
+        at(P, K.payments),
       )
       pays.forEach((p, i) => {
         if (p.childIndex !== i) {
           throw semantic(
             'child indices must be exactly contiguous 0..n-1 (T3a.5)',
-            `${P}.4[${i}]`,
+            `${at(P, K.payments)}[${i}]`,
           )
         }
       })
       return
     }
     case TYPE_DIRECTORY_ATTESTATION: {
+      const K = DIRECTORY_ATTESTATION
       const st = typedOf(typed.statementFrame, TYPE_DIRECTORY_STATEMENT)
       requireOrdered(
         typed.signatures,
@@ -412,23 +448,24 @@ export function checkSemantics(
           cmpNum(a.algorithm, b.algorithm) ||
           compareAccounts(a.signer, b.signer),
         'signatures',
-        `${P}.1`,
+        at(P, K.signatures),
         true,
       )
       if (!typed.signatures.some(s => accountsEqual(s.signer, st.subject))) {
         throw semantic(
           'no signature entry is signed by the statement subject',
-          `${P}.1`,
+          at(P, K.signatures),
         )
       }
       if (st.preview) {
         if (
           typed.signatures.length !== 1 ||
-          typed.signatures[0].algorithm !== 1
+          typed.signatures[0].algorithm !==
+            SIGNATURE_ALGORITHM.secp256k1EcdsaDer
         )
           throw semantic(
             'directory preview requires exactly one algorithm-1 subject signature',
-            `${P}.1`,
+            at(P, K.signatures),
           )
         return
       }
@@ -438,19 +475,20 @@ export function checkSemantics(
       return
     }
     case TYPE_MAILBOX_CHECKPOINT: {
+      const K = MAILBOX_CHECKPOINT
       requireOrdered(
         typed.facts,
         (a, b) =>
           compareTimestamps(a.timestamp, b.timestamp) ||
           compareBytes(a.factId, b.factId),
         'journal facts',
-        `${P}.4`,
+        at(P, K.facts),
         false,
       )
       requireUnique(
         typed.facts.map(f => f.factId),
         'fact_id',
-        `${P}.4`,
+        at(P, K.facts),
       )
       if (typed.sections) {
         requireOrdered(
@@ -459,13 +497,13 @@ export function checkSemantics(
             cmpNum(a.sectionType, b.sectionType) ||
             cmpNum(a.sectionSchemaVersion, b.sectionSchemaVersion),
           'opaque sections',
-          `${P}.5`,
+          at(P, K.sections),
           false,
         )
         const seen = new Set<number>()
         for (const s of typed.sections) {
           if (seen.has(s.sectionType))
-            throw semantic('duplicate section_type', `${P}.5`)
+            throw semantic('duplicate section_type', at(P, K.sections))
           seen.add(s.sectionType)
         }
       }
@@ -505,12 +543,13 @@ export function checkSemantics(
       if (typed.network !== child.network) {
         throw semantic(
           'submission network differs from the type-9 network (S11)',
-          `${P}.0`,
+          at(P, TOPIC_POST_SUBMISSION.network),
         )
       }
       return
     }
     case TYPE_DIRECTORY_STATEMENT: {
+      const K = DIRECTORY_STATEMENT
       if (typed.preview) checkPreviewStatement(typed)
       requireOrdered(
         typed.relays,
@@ -519,18 +558,21 @@ export function checkSemantics(
           // Endpoints are validated ASCII, so code-unit order equals UTF-8 byte order (S4).
           (a.endpoint < b.endpoint ? -1 : a.endpoint > b.endpoint ? 1 : 0),
         'relay bindings',
-        `${P}.4`,
+        at(P, K.relays),
         false,
       )
       requireUnique(
         typed.relays.map(r => r.relayId),
         'relay_id',
-        `${P}.4`,
+        at(P, K.relays),
       )
       // S10a.1: the stamp key is key type 1. Whether it is a curve point is not a statement
       // check (a bad point makes every delivery to it fail at T3a.6, stage 10).
-      if (typed.stampKey && typed.stampKey.keyType !== 1) {
-        throw semantic('stamp key must be key type 1 (S10a.1)', `${P}.8`)
+      if (typed.stampKey && typed.stampKey.keyType !== KEY_TYPE.secp256k1) {
+        throw semantic(
+          'stamp key must be key type 1 (S10a.1)',
+          at(P, K.stampKey),
+        )
       }
       if (typed.keyTransitions) {
         const stmts = typed.keyTransitions.map(t =>
@@ -542,7 +584,7 @@ export function checkSemantics(
             cmpNum(a.revision, b.revision) ||
             compareAccounts(a.newKey, b.newKey),
           'key transitions',
-          `${P}.5`,
+          at(P, K.keyTransitions),
           true,
         )
         // Two transitions with the same revision are invalid rather than tie-broken (S5).
@@ -550,7 +592,7 @@ export function checkSemantics(
           if (stmts[i - 1].revision === stmts[i].revision) {
             throw semantic(
               'two key transitions share a revision (S5)',
-              `${P}.5`,
+              at(P, K.keyTransitions),
             )
           }
         }
@@ -560,7 +602,7 @@ export function checkSemantics(
           typed.recoveryAuthorities,
           compareAccounts,
           'recovery authorities',
-          `${P}.7`,
+          at(P, K.recoveryAuthorities),
           true,
         )
       }
@@ -571,7 +613,7 @@ export function checkSemantics(
             headers,
             compareBytes,
             'profile-entry headers',
-            `${P}.9[${i}].1`,
+            at(atItem(P, K.profileEntries, i), PROFILE_ENTRY.headers),
             true,
           )
         })
@@ -580,7 +622,7 @@ export function checkSemantics(
         if (!CANONICAL_USERNAME_REGEX.test(typed.canonicalUsername)) {
           throw semantic(
             'canonical username must match ^[a-z0-9][a-z0-9_-]{2,31}$',
-            `${P}.14`,
+            at(P, K.username),
           )
         }
       }
@@ -589,7 +631,7 @@ export function checkSemantics(
           typed.spendKeys,
           compareAccounts,
           'spend keys',
-          `${P}.14`,
+          at(P, K.username),
           true,
         )
       }
@@ -600,7 +642,7 @@ export function checkSemantics(
       ) {
         throw semantic(
           'bot-role requires account-type to be bot (1) or service (2)',
-          `${P}.16`,
+          at(P, K.botRole),
         )
       }
       return
@@ -615,7 +657,11 @@ function checkPreviewStatement(st: DirectoryStatement<ParsedFrame>): void {
   if (!roles || !stampKey || !expiry)
     throw semantic('directory preview requires role fields and expiry')
   const keys = [st.subject, stampKey, roles.messageDhKey]
-  if (keys.some(k => k.keyType !== 1 || !isCompressedPoint(k.keyBytes)))
+  if (
+    keys.some(
+      k => k.keyType !== KEY_TYPE.secp256k1 || !isCompressedPoint(k.keyBytes),
+    )
+  )
     throw semantic(
       'directory preview requires valid compressed type-1 role points',
     )
@@ -638,7 +684,7 @@ function checkPreviewStatement(st: DirectoryStatement<ParsedFrame>): void {
     relay.endpoint.startsWith('http://localhost')
   if (
     (!isLoopback && !relay.endpoint.startsWith('https:')) ||
-    relay.identity.keyType !== 1 ||
+    relay.identity.keyType !== KEY_TYPE.secp256k1 ||
     !isCompressedPoint(relay.identity.keyBytes)
   )
     throw semantic(
@@ -680,7 +726,7 @@ function checkDirectoryUpdate(
   st: DirectoryStatement<ParsedFrame>,
   prior: DirectoryStatement<ParsedFrame> | null,
 ): void {
-  const P = 'root/payload.0'
+  const P = at('root/payload', DIRECTORY_ATTESTATION.statementFrame)
   const transitions = st.keyTransitions
   if (prior === null) {
     if (transitions)

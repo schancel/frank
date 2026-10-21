@@ -69,8 +69,7 @@ token-transfer = {
   4: uint, ; decimals
   5: tstr, ; symbol
   ? 6: bstr, ; optional raw tx or permit bytes
-  * uint => frank-value,
-}
+} ; closed: the TypeScript reader rejects an undeclared key (C12)
 
 conversation-name = tstr .size (1..512)
 

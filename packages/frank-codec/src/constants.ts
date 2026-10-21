@@ -49,6 +49,7 @@ export const I64_MAX = 9_223_372_036_854_775_807n
 export * from './message-types.generated'
 /** Map field keys and enumerated values, generated from docs/protocol/message-types/fields/. */
 export * from './message-fields.generated'
+import { ENCRYPTION_SUITE } from './message-fields.generated'
 
 export const MAX_BLACKJACK_FRAME_BYTES = 4096
 export const MAX_STEALTH_MESSAGE_ITEM_FRAME_BYTES = 65_536
@@ -66,6 +67,7 @@ export const MAX_PLUGIN_ITEM_TYPE_BYTES = 64
 /** A plugin's bytes can never exceed what one encrypted direct message holds (R2). */
 export const MAX_PLUGIN_ITEM_PAYLOAD_BYTES = MAX_CIPHERTEXT_BYTES
 
-export const ENCRYPTION_SUITE_PROOF = 65535
+/** Reserved for schema-1 opaque proof-vector ciphertext (S2c). */
+export const ENCRYPTION_SUITE_PROOF = ENCRYPTION_SUITE.proof
 /** Authenticated/deniable secp256k1 + HKDF-SHA256 + XChaCha20-Poly1305. */
-export const ENCRYPTION_SUITE_DM_AUTH_XCHACHA = 1
+export const ENCRYPTION_SUITE_DM_AUTH_XCHACHA = ENCRYPTION_SUITE.dmAuthXchacha

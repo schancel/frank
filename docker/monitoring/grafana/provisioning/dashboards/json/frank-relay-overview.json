@@ -30,31 +30,28 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
-      "description": "Current address-keyed profile rows in this relay's store; not unique users or signups.",
+      "description": "Largest currently scraped relay-local public profile row count at each point in time. One series across deployments; overlapping relay counts are not added. Separate stores can differ, so this is not a global unique-profile count or signup count.",
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "id": 2,
       "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single" }
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "frank_registry_stored_public_profile_records",
+          "expr": "max(frank_registry_stored_public_profile_records)",
+          "legendFormat": "stored profiles (largest relay)",
           "refId": "A"
         }
       ],
-      "title": "Stored public profile records",
-      "type": "stat"
+      "title": "Stored public profile records (largest relay)",
+      "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
-      "description": "Net change over the last six hours, including deletion or restoration effects.",
+      "description": "Rolling six-hour delta of the largest currently scraped relay-local profile count, aggregated before delta to join deployments. Earlier growth ages out of the window: a fall to zero does not mean profiles were deleted. Store differences, restoration, or target changes can also affect this estimate; it is not new signups.",
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
       "id": 3,
@@ -65,12 +62,12 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "delta(frank_registry_stored_public_profile_records[6h])",
-          "legendFormat": "6h net change",
+          "expr": "delta((max(frank_registry_stored_public_profile_records))[6h:1m])",
+          "legendFormat": "6h net change (largest relay)",
           "refId": "A"
         }
       ],
-      "title": "Net change in stored public profile records",
+      "title": "Stored public profile net change (rolling 6h)",
       "type": "timeseries"
     },
     {

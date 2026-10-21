@@ -172,6 +172,15 @@ def _doc(text: str) -> str:
     return " ".join(text.split())
 
 
+def _ts_list(label: str, items: list[str]) -> list[str]:
+    """`  label: [a, b],` laid out the way Prettier (printWidth 80) lays it out."""
+
+    line = f"  {label}: [" + ", ".join(items) + "],"
+    if len(line) <= 80:
+        return [line]
+    return [f"  {label}: [", *[f"    {i}," for i in items], "  ],"]
+
+
 def render_ts(structs: list[Struct], enums: list[Enum]) -> str:
     out = [*(f"// {h}" for h in HEADER), ""]
     out += [
@@ -193,8 +202,8 @@ def render_ts(structs: list[Struct], enums: list[Enum]) -> str:
             label = f" ({sh.cddl})" if sh.cddl else ""
             out.append(f"/** `{s.key}`{' ' + sh.name if sh.name else ''} map shape{label}. */")
             out.append(f"export const {shape_const(s, sh)}: MapShape = {{")
-            out.append("  required: [" + ", ".join(f"{const}.{camel(n)}" for n in sh.required) + "],")
-            out.append("  optional: [" + ", ".join(f"{const}.{camel(n)}" for n in sh.optional) + "],")
+            out += _ts_list("required", [f"{const}.{camel(n)}" for n in sh.required])
+            out += _ts_list("optional", [f"{const}.{camel(n)}" for n in sh.optional])
             out.append(f"  open: {'true' if sh.open else 'false'},")
             out.append("}")
         out.append("")

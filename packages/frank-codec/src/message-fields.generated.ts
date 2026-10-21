@@ -28,7 +28,11 @@ export const CHAIN_ALLOCATION = {
 } as const
 /** `chain-allocation` map shape (docs/protocol/cbor/direct-message.cddl#chain-allocation). */
 export const CHAIN_ALLOCATION_SHAPE: MapShape = {
-  required: [CHAIN_ALLOCATION.networkTag, CHAIN_ALLOCATION.token, CHAIN_ALLOCATION.balances],
+  required: [
+    CHAIN_ALLOCATION.networkTag,
+    CHAIN_ALLOCATION.token,
+    CHAIN_ALLOCATION.balances,
+  ],
   optional: [],
   open: false,
 }
@@ -45,7 +49,14 @@ export const CHANNEL_UPDATE_ITEM = {
 } as const
 /** `channel-update-item` map shape (docs/protocol/cbor/direct-message.cddl#channel-update-item). */
 export const CHANNEL_UPDATE_ITEM_SHAPE: MapShape = {
-  required: [CHANNEL_UPDATE_ITEM.channelId, CHANNEL_UPDATE_ITEM.appId, CHANNEL_UPDATE_ITEM.sequenceNumber, CHANNEL_UPDATE_ITEM.allocations, CHANNEL_UPDATE_ITEM.appState, CHANNEL_UPDATE_ITEM.signatures],
+  required: [
+    CHANNEL_UPDATE_ITEM.channelId,
+    CHANNEL_UPDATE_ITEM.appId,
+    CHANNEL_UPDATE_ITEM.sequenceNumber,
+    CHANNEL_UPDATE_ITEM.allocations,
+    CHANNEL_UPDATE_ITEM.appState,
+    CHANNEL_UPDATE_ITEM.signatures,
+  ],
   optional: [CHANNEL_UPDATE_ITEM.settlementRef],
   open: true,
 }
@@ -72,7 +83,12 @@ export const DICE_GAME_PAYLOAD = {
 } as const
 /** `dice-game-payload` map shape (docs/protocol/cbor/direct-message.cddl#dice-game-payload). */
 export const DICE_GAME_PAYLOAD_SHAPE: MapShape = {
-  required: [DICE_GAME_PAYLOAD.round, DICE_GAME_PAYLOAD.action, DICE_GAME_PAYLOAD.seedCommitment, DICE_GAME_PAYLOAD.wager],
+  required: [
+    DICE_GAME_PAYLOAD.round,
+    DICE_GAME_PAYLOAD.action,
+    DICE_GAME_PAYLOAD.seedCommitment,
+    DICE_GAME_PAYLOAD.wager,
+  ],
   optional: [DICE_GAME_PAYLOAD.revealSeed, DICE_GAME_PAYLOAD.targetRoll],
   open: true,
 }
@@ -89,14 +105,32 @@ export const DIRECT_MESSAGE_DELIVERY = {
 } as const
 /** `direct-message-delivery` v1 map shape. */
 export const DIRECT_MESSAGE_DELIVERY_V1_SHAPE: MapShape = {
-  required: [DIRECT_MESSAGE_DELIVERY.network, DIRECT_MESSAGE_DELIVERY.destination, DIRECT_MESSAGE_DELIVERY.payloadFrame, DIRECT_MESSAGE_DELIVERY.payloadDigest, DIRECT_MESSAGE_DELIVERY.payments],
-  optional: [DIRECT_MESSAGE_DELIVERY.recipient, DIRECT_MESSAGE_DELIVERY.dleqProof],
+  required: [
+    DIRECT_MESSAGE_DELIVERY.network,
+    DIRECT_MESSAGE_DELIVERY.destination,
+    DIRECT_MESSAGE_DELIVERY.payloadFrame,
+    DIRECT_MESSAGE_DELIVERY.payloadDigest,
+    DIRECT_MESSAGE_DELIVERY.payments,
+  ],
+  optional: [
+    DIRECT_MESSAGE_DELIVERY.recipient,
+    DIRECT_MESSAGE_DELIVERY.dleqProof,
+  ],
   open: true,
 }
 /** `direct-message-delivery` v2 map shape (docs/protocol/cbor/direct-message.cddl#direct-message-delivery). */
 export const DIRECT_MESSAGE_DELIVERY_V2_SHAPE: MapShape = {
-  required: [DIRECT_MESSAGE_DELIVERY.network, DIRECT_MESSAGE_DELIVERY.destination, DIRECT_MESSAGE_DELIVERY.payloadFrame, DIRECT_MESSAGE_DELIVERY.payloadDigest],
-  optional: [DIRECT_MESSAGE_DELIVERY.payments, DIRECT_MESSAGE_DELIVERY.recipient, DIRECT_MESSAGE_DELIVERY.dleqProof],
+  required: [
+    DIRECT_MESSAGE_DELIVERY.network,
+    DIRECT_MESSAGE_DELIVERY.destination,
+    DIRECT_MESSAGE_DELIVERY.payloadFrame,
+    DIRECT_MESSAGE_DELIVERY.payloadDigest,
+  ],
+  optional: [
+    DIRECT_MESSAGE_DELIVERY.payments,
+    DIRECT_MESSAGE_DELIVERY.recipient,
+    DIRECT_MESSAGE_DELIVERY.dleqProof,
+  ],
   open: true,
 }
 
@@ -107,7 +141,10 @@ export const DIRECTORY_ATTESTATION = {
 } as const
 /** `directory-attestation` map shape (docs/protocol/cbor/directory.cddl#directory-attestation). */
 export const DIRECTORY_ATTESTATION_SHAPE: MapShape = {
-  required: [DIRECTORY_ATTESTATION.statementFrame, DIRECTORY_ATTESTATION.signatures],
+  required: [
+    DIRECTORY_ATTESTATION.statementFrame,
+    DIRECTORY_ATTESTATION.signatures,
+  ],
   optional: [],
   open: true,
 }
@@ -133,7 +170,12 @@ export const DIRECTORY_PREVIEW_RELAY = {
 } as const
 /** `directory-preview-relay` map shape (docs/protocol/cbor/directory.cddl#directory-preview-relay). */
 export const DIRECTORY_PREVIEW_RELAY_SHAPE: MapShape = {
-  required: [DIRECTORY_PREVIEW_RELAY.relayId, DIRECTORY_PREVIEW_RELAY.endpoint, DIRECTORY_PREVIEW_RELAY.identity, DIRECTORY_PREVIEW_RELAY.expiry],
+  required: [
+    DIRECTORY_PREVIEW_RELAY.relayId,
+    DIRECTORY_PREVIEW_RELAY.endpoint,
+    DIRECTORY_PREVIEW_RELAY.identity,
+    DIRECTORY_PREVIEW_RELAY.expiry,
+  ],
   optional: [],
   open: true,
 }
@@ -160,26 +202,81 @@ export const DIRECTORY_STATEMENT = {
 } as const
 /** `directory-statement` v1 map shape (docs/protocol/cbor/directory.cddl#directory-statement-v1). */
 export const DIRECTORY_STATEMENT_V1_SHAPE: MapShape = {
-  required: [DIRECTORY_STATEMENT.network, DIRECTORY_STATEMENT.subject, DIRECTORY_STATEMENT.revision, DIRECTORY_STATEMENT.timestamp, DIRECTORY_STATEMENT.relays],
-  optional: [DIRECTORY_STATEMENT.keyTransitions, DIRECTORY_STATEMENT.expiry, DIRECTORY_STATEMENT.recoveryAuthorities],
+  required: [
+    DIRECTORY_STATEMENT.network,
+    DIRECTORY_STATEMENT.subject,
+    DIRECTORY_STATEMENT.revision,
+    DIRECTORY_STATEMENT.timestamp,
+    DIRECTORY_STATEMENT.relays,
+  ],
+  optional: [
+    DIRECTORY_STATEMENT.keyTransitions,
+    DIRECTORY_STATEMENT.expiry,
+    DIRECTORY_STATEMENT.recoveryAuthorities,
+  ],
   open: true,
 }
 /** `directory-statement` v2 map shape (docs/protocol/cbor/directory.cddl#directory-statement). */
 export const DIRECTORY_STATEMENT_V2_SHAPE: MapShape = {
-  required: [DIRECTORY_STATEMENT.network, DIRECTORY_STATEMENT.subject, DIRECTORY_STATEMENT.revision, DIRECTORY_STATEMENT.timestamp, DIRECTORY_STATEMENT.relays, DIRECTORY_STATEMENT.stampKey],
-  optional: [DIRECTORY_STATEMENT.keyTransitions, DIRECTORY_STATEMENT.expiry, DIRECTORY_STATEMENT.recoveryAuthorities, DIRECTORY_STATEMENT.username, DIRECTORY_STATEMENT.accountType, DIRECTORY_STATEMENT.botRole],
+  required: [
+    DIRECTORY_STATEMENT.network,
+    DIRECTORY_STATEMENT.subject,
+    DIRECTORY_STATEMENT.revision,
+    DIRECTORY_STATEMENT.timestamp,
+    DIRECTORY_STATEMENT.relays,
+    DIRECTORY_STATEMENT.stampKey,
+  ],
+  optional: [
+    DIRECTORY_STATEMENT.keyTransitions,
+    DIRECTORY_STATEMENT.expiry,
+    DIRECTORY_STATEMENT.recoveryAuthorities,
+    DIRECTORY_STATEMENT.username,
+    DIRECTORY_STATEMENT.accountType,
+    DIRECTORY_STATEMENT.botRole,
+  ],
   open: true,
 }
 /** `directory-statement` v3 map shape (docs/protocol/cbor/directory.cddl#directory-statement-v3). */
 export const DIRECTORY_STATEMENT_V3_SHAPE: MapShape = {
-  required: [DIRECTORY_STATEMENT.network, DIRECTORY_STATEMENT.subject, DIRECTORY_STATEMENT.revision, DIRECTORY_STATEMENT.timestamp, DIRECTORY_STATEMENT.relays, DIRECTORY_STATEMENT.stampKey],
-  optional: [DIRECTORY_STATEMENT.keyTransitions, DIRECTORY_STATEMENT.expiry, DIRECTORY_STATEMENT.recoveryAuthorities, DIRECTORY_STATEMENT.profileEntries, DIRECTORY_STATEMENT.username, DIRECTORY_STATEMENT.accountType, DIRECTORY_STATEMENT.botRole],
+  required: [
+    DIRECTORY_STATEMENT.network,
+    DIRECTORY_STATEMENT.subject,
+    DIRECTORY_STATEMENT.revision,
+    DIRECTORY_STATEMENT.timestamp,
+    DIRECTORY_STATEMENT.relays,
+    DIRECTORY_STATEMENT.stampKey,
+  ],
+  optional: [
+    DIRECTORY_STATEMENT.keyTransitions,
+    DIRECTORY_STATEMENT.expiry,
+    DIRECTORY_STATEMENT.recoveryAuthorities,
+    DIRECTORY_STATEMENT.profileEntries,
+    DIRECTORY_STATEMENT.username,
+    DIRECTORY_STATEMENT.accountType,
+    DIRECTORY_STATEMENT.botRole,
+  ],
   open: true,
 }
 /** `directory-statement` v4 map shape (docs/protocol/cbor/directory.cddl#directory-statement-v4). */
 export const DIRECTORY_STATEMENT_V4_SHAPE: MapShape = {
-  required: [DIRECTORY_STATEMENT.network, DIRECTORY_STATEMENT.subject, DIRECTORY_STATEMENT.revision, DIRECTORY_STATEMENT.timestamp, DIRECTORY_STATEMENT.relays, DIRECTORY_STATEMENT.expiry, DIRECTORY_STATEMENT.stampKey, DIRECTORY_STATEMENT.messageDhKey, DIRECTORY_STATEMENT.mailboxKeyGeneration, DIRECTORY_STATEMENT.stampKeyGeneration, DIRECTORY_STATEMENT.predecessorHash],
-  optional: [DIRECTORY_STATEMENT.username, DIRECTORY_STATEMENT.accountType, DIRECTORY_STATEMENT.botRole],
+  required: [
+    DIRECTORY_STATEMENT.network,
+    DIRECTORY_STATEMENT.subject,
+    DIRECTORY_STATEMENT.revision,
+    DIRECTORY_STATEMENT.timestamp,
+    DIRECTORY_STATEMENT.relays,
+    DIRECTORY_STATEMENT.expiry,
+    DIRECTORY_STATEMENT.stampKey,
+    DIRECTORY_STATEMENT.messageDhKey,
+    DIRECTORY_STATEMENT.mailboxKeyGeneration,
+    DIRECTORY_STATEMENT.stampKeyGeneration,
+    DIRECTORY_STATEMENT.predecessorHash,
+  ],
+  optional: [
+    DIRECTORY_STATEMENT.username,
+    DIRECTORY_STATEMENT.accountType,
+    DIRECTORY_STATEMENT.botRole,
+  ],
   open: true,
 }
 
@@ -204,7 +301,24 @@ export const DM_CRYPTO_CONTEXT_V1 = {
 } as const
 /** `dm-crypto-context-v1` map shape (docs/protocol/cbor/direct-message.cddl#dm-crypto-context-v1). */
 export const DM_CRYPTO_CONTEXT_V1_SHAPE: MapShape = {
-  required: [DM_CRYPTO_CONTEXT_V1.domain, DM_CRYPTO_CONTEXT_V1.network, DM_CRYPTO_CONTEXT_V1.sender, DM_CRYPTO_CONTEXT_V1.recipient, DM_CRYPTO_CONTEXT_V1.senderStatementHash, DM_CRYPTO_CONTEXT_V1.recipientStatementHash, DM_CRYPTO_CONTEXT_V1.senderMessageKey, DM_CRYPTO_CONTEXT_V1.recipientMessageKey, DM_CRYPTO_CONTEXT_V1.recipientStampKey, DM_CRYPTO_CONTEXT_V1.ephemeralPoint, DM_CRYPTO_CONTEXT_V1.sharedPoint, DM_CRYPTO_CONTEXT_V1.dleqProof, DM_CRYPTO_CONTEXT_V1.suite, DM_CRYPTO_CONTEXT_V1.objectType, DM_CRYPTO_CONTEXT_V1.schemaVersion, DM_CRYPTO_CONTEXT_V1.minReaderVersion],
+  required: [
+    DM_CRYPTO_CONTEXT_V1.domain,
+    DM_CRYPTO_CONTEXT_V1.network,
+    DM_CRYPTO_CONTEXT_V1.sender,
+    DM_CRYPTO_CONTEXT_V1.recipient,
+    DM_CRYPTO_CONTEXT_V1.senderStatementHash,
+    DM_CRYPTO_CONTEXT_V1.recipientStatementHash,
+    DM_CRYPTO_CONTEXT_V1.senderMessageKey,
+    DM_CRYPTO_CONTEXT_V1.recipientMessageKey,
+    DM_CRYPTO_CONTEXT_V1.recipientStampKey,
+    DM_CRYPTO_CONTEXT_V1.ephemeralPoint,
+    DM_CRYPTO_CONTEXT_V1.sharedPoint,
+    DM_CRYPTO_CONTEXT_V1.dleqProof,
+    DM_CRYPTO_CONTEXT_V1.suite,
+    DM_CRYPTO_CONTEXT_V1.objectType,
+    DM_CRYPTO_CONTEXT_V1.schemaVersion,
+    DM_CRYPTO_CONTEXT_V1.minReaderVersion,
+  ],
   optional: [],
   open: false,
 }
@@ -218,7 +332,11 @@ export const EMAIL_ATTACHMENT = {
 } as const
 /** `email-attachment` map shape (docs/protocol/cbor/direct-message.cddl#email-attachment). */
 export const EMAIL_ATTACHMENT_SHAPE: MapShape = {
-  required: [EMAIL_ATTACHMENT.filename, EMAIL_ATTACHMENT.contentType, EMAIL_ATTACHMENT.content],
+  required: [
+    EMAIL_ATTACHMENT.filename,
+    EMAIL_ATTACHMENT.contentType,
+    EMAIL_ATTACHMENT.content,
+  ],
   optional: [EMAIL_ATTACHMENT.contentId],
   open: true,
 }
@@ -239,8 +357,21 @@ export const EMAIL_MESSAGE_ITEM = {
 } as const
 /** `email-message-item` map shape (docs/protocol/cbor/direct-message.cddl#email-message-item). */
 export const EMAIL_MESSAGE_ITEM_SHAPE: MapShape = {
-  required: [EMAIL_MESSAGE_ITEM.messageId, EMAIL_MESSAGE_ITEM.from, EMAIL_MESSAGE_ITEM.to, EMAIL_MESSAGE_ITEM.subject, EMAIL_MESSAGE_ITEM.textBody],
-  optional: [EMAIL_MESSAGE_ITEM.cc, EMAIL_MESSAGE_ITEM.htmlBody, EMAIL_MESSAGE_ITEM.inReplyTo, EMAIL_MESSAGE_ITEM.references, EMAIL_MESSAGE_ITEM.attachments, EMAIL_MESSAGE_ITEM.replyTo],
+  required: [
+    EMAIL_MESSAGE_ITEM.messageId,
+    EMAIL_MESSAGE_ITEM.from,
+    EMAIL_MESSAGE_ITEM.to,
+    EMAIL_MESSAGE_ITEM.subject,
+    EMAIL_MESSAGE_ITEM.textBody,
+  ],
+  optional: [
+    EMAIL_MESSAGE_ITEM.cc,
+    EMAIL_MESSAGE_ITEM.htmlBody,
+    EMAIL_MESSAGE_ITEM.inReplyTo,
+    EMAIL_MESSAGE_ITEM.references,
+    EMAIL_MESSAGE_ITEM.attachments,
+    EMAIL_MESSAGE_ITEM.replyTo,
+  ],
   open: true,
 }
 
@@ -269,8 +400,17 @@ export const ENCRYPTED_MESSAGE_CONTENT = {
 } as const
 /** `encrypted-message-content` map shape (docs/protocol/cbor/direct-message.cddl#encrypted-message-content). */
 export const ENCRYPTED_MESSAGE_CONTENT_SHAPE: MapShape = {
-  required: [ENCRYPTED_MESSAGE_CONTENT.network, ENCRYPTED_MESSAGE_CONTENT.messageId, ENCRYPTED_MESSAGE_CONTENT.revisionFrame, ENCRYPTED_MESSAGE_CONTENT.contentDigest],
-  optional: [ENCRYPTED_MESSAGE_CONTENT.conversationId, ENCRYPTED_MESSAGE_CONTENT.conversationName, ENCRYPTED_MESSAGE_CONTENT.tokenTransfer],
+  required: [
+    ENCRYPTED_MESSAGE_CONTENT.network,
+    ENCRYPTED_MESSAGE_CONTENT.messageId,
+    ENCRYPTED_MESSAGE_CONTENT.revisionFrame,
+    ENCRYPTED_MESSAGE_CONTENT.contentDigest,
+  ],
+  optional: [
+    ENCRYPTED_MESSAGE_CONTENT.conversationId,
+    ENCRYPTED_MESSAGE_CONTENT.conversationName,
+    ENCRYPTED_MESSAGE_CONTENT.tokenTransfer,
+  ],
   open: true,
 }
 
@@ -321,7 +461,14 @@ export const FORUM_DISCOVERY_CURSOR = {
 } as const
 /** `forum-discovery-cursor` map shape (docs/protocol/cbor/topic.cddl#forum-discovery-cursor). */
 export const FORUM_DISCOVERY_CURSOR_SHAPE: MapShape = {
-  required: [FORUM_DISCOVERY_CURSOR.network, FORUM_DISCOVERY_CURSOR.family, FORUM_DISCOVERY_CURSOR.revision, FORUM_DISCOVERY_CURSOR.epoch, FORUM_DISCOVERY_CURSOR.topic, FORUM_DISCOVERY_CURSOR.incarnation],
+  required: [
+    FORUM_DISCOVERY_CURSOR.network,
+    FORUM_DISCOVERY_CURSOR.family,
+    FORUM_DISCOVERY_CURSOR.revision,
+    FORUM_DISCOVERY_CURSOR.epoch,
+    FORUM_DISCOVERY_CURSOR.topic,
+    FORUM_DISCOVERY_CURSOR.incarnation,
+  ],
   optional: [],
   open: false,
 }
@@ -334,7 +481,11 @@ export const FORUM_DISCOVERY_ENTRY = {
 } as const
 /** `forum-discovery-entry` map shape (docs/protocol/cbor/topic.cddl#forum-discovery-entry). */
 export const FORUM_DISCOVERY_ENTRY_SHAPE: MapShape = {
-  required: [FORUM_DISCOVERY_ENTRY.topic, FORUM_DISCOVERY_ENTRY.count, FORUM_DISCOVERY_ENTRY.lastActivity],
+  required: [
+    FORUM_DISCOVERY_ENTRY.topic,
+    FORUM_DISCOVERY_ENTRY.count,
+    FORUM_DISCOVERY_ENTRY.lastActivity,
+  ],
   optional: [],
   open: true,
 }
@@ -350,8 +501,16 @@ export const FORUM_DISCOVERY_PAGE = {
 } as const
 /** `forum-discovery-page` map shape (docs/protocol/cbor/topic.cddl#forum-discovery-page). */
 export const FORUM_DISCOVERY_PAGE_SHAPE: MapShape = {
-  required: [FORUM_DISCOVERY_PAGE.network, FORUM_DISCOVERY_PAGE.revision, FORUM_DISCOVERY_PAGE.entries, FORUM_DISCOVERY_PAGE.epoch],
-  optional: [FORUM_DISCOVERY_PAGE.nextCursor, FORUM_DISCOVERY_PAGE.previousCursor],
+  required: [
+    FORUM_DISCOVERY_PAGE.network,
+    FORUM_DISCOVERY_PAGE.revision,
+    FORUM_DISCOVERY_PAGE.entries,
+    FORUM_DISCOVERY_PAGE.epoch,
+  ],
+  optional: [
+    FORUM_DISCOVERY_PAGE.nextCursor,
+    FORUM_DISCOVERY_PAGE.previousCursor,
+  ],
   open: true,
 }
 
@@ -381,8 +540,20 @@ export const FORUM_GAME_ENTRY = {
 } as const
 /** `forum-game-entry` map shape (docs/protocol/cbor/topic.cddl#forum-game-entry). */
 export const FORUM_GAME_ENTRY_SHAPE: MapShape = {
-  required: [FORUM_GAME_ENTRY.kind, FORUM_GAME_ENTRY.gameType, FORUM_GAME_ENTRY.tableId, FORUM_GAME_ENTRY.hostAddress],
-  optional: [FORUM_GAME_ENTRY.buyInAmount, FORUM_GAME_ENTRY.currentPlayers, FORUM_GAME_ENTRY.maxPlayers, FORUM_GAME_ENTRY.botAddress, FORUM_GAME_ENTRY.title, FORUM_GAME_ENTRY.message],
+  required: [
+    FORUM_GAME_ENTRY.kind,
+    FORUM_GAME_ENTRY.gameType,
+    FORUM_GAME_ENTRY.tableId,
+    FORUM_GAME_ENTRY.hostAddress,
+  ],
+  optional: [
+    FORUM_GAME_ENTRY.buyInAmount,
+    FORUM_GAME_ENTRY.currentPlayers,
+    FORUM_GAME_ENTRY.maxPlayers,
+    FORUM_GAME_ENTRY.botAddress,
+    FORUM_GAME_ENTRY.title,
+    FORUM_GAME_ENTRY.message,
+  ],
   open: true,
 }
 
@@ -403,8 +574,22 @@ export const FORUM_OPERATION_STATUS = {
 } as const
 /** `forum-operation-status` map shape (docs/protocol/cbor/topic.cddl#forum-operation-status). */
 export const FORUM_OPERATION_STATUS_SHAPE: MapShape = {
-  required: [FORUM_OPERATION_STATUS.network, FORUM_OPERATION_STATUS.submittedFrame, FORUM_OPERATION_STATUS.targetHash, FORUM_OPERATION_STATUS.transactionHash, FORUM_OPERATION_STATUS.sender, FORUM_OPERATION_STATUS.direction, FORUM_OPERATION_STATUS.value, FORUM_OPERATION_STATUS.state, FORUM_OPERATION_STATUS.revision, FORUM_OPERATION_STATUS.epoch],
-  optional: [FORUM_OPERATION_STATUS.block, FORUM_OPERATION_STATUS.transactionIndex],
+  required: [
+    FORUM_OPERATION_STATUS.network,
+    FORUM_OPERATION_STATUS.submittedFrame,
+    FORUM_OPERATION_STATUS.targetHash,
+    FORUM_OPERATION_STATUS.transactionHash,
+    FORUM_OPERATION_STATUS.sender,
+    FORUM_OPERATION_STATUS.direction,
+    FORUM_OPERATION_STATUS.value,
+    FORUM_OPERATION_STATUS.state,
+    FORUM_OPERATION_STATUS.revision,
+    FORUM_OPERATION_STATUS.epoch,
+  ],
+  optional: [
+    FORUM_OPERATION_STATUS.block,
+    FORUM_OPERATION_STATUS.transactionIndex,
+  ],
   open: true,
 }
 
@@ -418,7 +603,11 @@ export const FORUM_POST_ENTRY = {
 /** `forum-post-entry` map shape (docs/protocol/cbor/topic.cddl#forum-post-entry). */
 export const FORUM_POST_ENTRY_SHAPE: MapShape = {
   required: [FORUM_POST_ENTRY.kind],
-  optional: [FORUM_POST_ENTRY.title, FORUM_POST_ENTRY.url, FORUM_POST_ENTRY.message],
+  optional: [
+    FORUM_POST_ENTRY.title,
+    FORUM_POST_ENTRY.url,
+    FORUM_POST_ENTRY.message,
+  ],
   open: true,
 }
 
@@ -438,7 +627,19 @@ export const FORUM_SINGLE_VIEW = {
 } as const
 /** `forum-single-view` map shape (docs/protocol/cbor/topic.cddl#forum-single-view). */
 export const FORUM_SINGLE_VIEW_SHAPE: MapShape = {
-  required: [FORUM_SINGLE_VIEW.network, FORUM_SINGLE_VIEW.postFrame, FORUM_SINGLE_VIEW.author, FORUM_SINGLE_VIEW.authorBurnTx, FORUM_SINGLE_VIEW.transactionHash, FORUM_SINGLE_VIEW.firstVisible, FORUM_SINGLE_VIEW.block, FORUM_SINGLE_VIEW.transactionIndex, FORUM_SINGLE_VIEW.aggregate, FORUM_SINGLE_VIEW.revision, FORUM_SINGLE_VIEW.epoch],
+  required: [
+    FORUM_SINGLE_VIEW.network,
+    FORUM_SINGLE_VIEW.postFrame,
+    FORUM_SINGLE_VIEW.author,
+    FORUM_SINGLE_VIEW.authorBurnTx,
+    FORUM_SINGLE_VIEW.transactionHash,
+    FORUM_SINGLE_VIEW.firstVisible,
+    FORUM_SINGLE_VIEW.block,
+    FORUM_SINGLE_VIEW.transactionIndex,
+    FORUM_SINGLE_VIEW.aggregate,
+    FORUM_SINGLE_VIEW.revision,
+    FORUM_SINGLE_VIEW.epoch,
+  ],
   optional: [],
   open: true,
 }
@@ -456,7 +657,16 @@ export const FORUM_TOPIC_CURSOR = {
 } as const
 /** `forum-topic-cursor` map shape (docs/protocol/cbor/topic.cddl#forum-topic-cursor). */
 export const FORUM_TOPIC_CURSOR_SHAPE: MapShape = {
-  required: [FORUM_TOPIC_CURSOR.network, FORUM_TOPIC_CURSOR.family, FORUM_TOPIC_CURSOR.revision, FORUM_TOPIC_CURSOR.epoch, FORUM_TOPIC_CURSOR.last, FORUM_TOPIC_CURSOR.topic, FORUM_TOPIC_CURSOR.since, FORUM_TOPIC_CURSOR.incarnation],
+  required: [
+    FORUM_TOPIC_CURSOR.network,
+    FORUM_TOPIC_CURSOR.family,
+    FORUM_TOPIC_CURSOR.revision,
+    FORUM_TOPIC_CURSOR.epoch,
+    FORUM_TOPIC_CURSOR.last,
+    FORUM_TOPIC_CURSOR.topic,
+    FORUM_TOPIC_CURSOR.since,
+    FORUM_TOPIC_CURSOR.incarnation,
+  ],
   optional: [],
   open: false,
 }
@@ -474,7 +684,14 @@ export const FORUM_TOPIC_PAGE = {
 } as const
 /** `forum-topic-page` map shape (docs/protocol/cbor/topic.cddl#forum-topic-page). */
 export const FORUM_TOPIC_PAGE_SHAPE: MapShape = {
-  required: [FORUM_TOPIC_PAGE.network, FORUM_TOPIC_PAGE.topic, FORUM_TOPIC_PAGE.since, FORUM_TOPIC_PAGE.revision, FORUM_TOPIC_PAGE.rows, FORUM_TOPIC_PAGE.epoch],
+  required: [
+    FORUM_TOPIC_PAGE.network,
+    FORUM_TOPIC_PAGE.topic,
+    FORUM_TOPIC_PAGE.since,
+    FORUM_TOPIC_PAGE.revision,
+    FORUM_TOPIC_PAGE.rows,
+    FORUM_TOPIC_PAGE.epoch,
+  ],
   optional: [FORUM_TOPIC_PAGE.nextCursor, FORUM_TOPIC_PAGE.previousCursor],
   open: true,
 }
@@ -491,8 +708,17 @@ export const FORWARDING_DELIVERY_ENVELOPE = {
 } as const
 /** `forwarding-delivery-envelope` map shape (docs/protocol/cbor/direct-message.cddl#forwarding-delivery-envelope). */
 export const FORWARDING_DELIVERY_ENVELOPE_SHAPE: MapShape = {
-  required: [FORWARDING_DELIVERY_ENVELOPE.network, FORWARDING_DELIVERY_ENVELOPE.destination, FORWARDING_DELIVERY_ENVELOPE.payloadFrame, FORWARDING_DELIVERY_ENVELOPE.payloadDigest, FORWARDING_DELIVERY_ENVELOPE.payments],
-  optional: [FORWARDING_DELIVERY_ENVELOPE.endpoint, FORWARDING_DELIVERY_ENVELOPE.expiresAt],
+  required: [
+    FORWARDING_DELIVERY_ENVELOPE.network,
+    FORWARDING_DELIVERY_ENVELOPE.destination,
+    FORWARDING_DELIVERY_ENVELOPE.payloadFrame,
+    FORWARDING_DELIVERY_ENVELOPE.payloadDigest,
+    FORWARDING_DELIVERY_ENVELOPE.payments,
+  ],
+  optional: [
+    FORWARDING_DELIVERY_ENVELOPE.endpoint,
+    FORWARDING_DELIVERY_ENVELOPE.expiresAt,
+  ],
   open: true,
 }
 
@@ -505,7 +731,12 @@ export const FRANK_ENVELOPE = {
 } as const
 /** `frank-envelope` map shape (docs/protocol/cbor/common.cddl#frank-envelope). */
 export const FRANK_ENVELOPE_SHAPE: MapShape = {
-  required: [FRANK_ENVELOPE.typeId, FRANK_ENVELOPE.schemaVersion, FRANK_ENVELOPE.minReaderVersion, FRANK_ENVELOPE.payload],
+  required: [
+    FRANK_ENVELOPE.typeId,
+    FRANK_ENVELOPE.schemaVersion,
+    FRANK_ENVELOPE.minReaderVersion,
+    FRANK_ENVELOPE.payload,
+  ],
   optional: [],
   open: false,
 }
@@ -519,7 +750,12 @@ export const JOURNAL_FACT = {
 } as const
 /** `journal-fact` map shape (docs/protocol/cbor/checkpoint.cddl#journal-fact). */
 export const JOURNAL_FACT_SHAPE: MapShape = {
-  required: [JOURNAL_FACT.timestamp, JOURNAL_FACT.factId, JOURNAL_FACT.kind, JOURNAL_FACT.payload],
+  required: [
+    JOURNAL_FACT.timestamp,
+    JOURNAL_FACT.factId,
+    JOURNAL_FACT.kind,
+    JOURNAL_FACT.payload,
+  ],
   optional: [],
   open: true,
 }
@@ -533,7 +769,12 @@ export const KEY_TRANSITION = {
 } as const
 /** `key-transition` map shape (docs/protocol/cbor/directory.cddl#key-transition). */
 export const KEY_TRANSITION_SHAPE: MapShape = {
-  required: [KEY_TRANSITION.statementFrame, KEY_TRANSITION.algorithm, KEY_TRANSITION.signer, KEY_TRANSITION.signature],
+  required: [
+    KEY_TRANSITION.statementFrame,
+    KEY_TRANSITION.algorithm,
+    KEY_TRANSITION.signer,
+    KEY_TRANSITION.signature,
+  ],
   optional: [],
   open: true,
 }
@@ -548,7 +789,13 @@ export const KEY_TRANSITION_STATEMENT = {
 } as const
 /** `key-transition-statement` map shape (docs/protocol/cbor/directory.cddl#key-transition-statement). */
 export const KEY_TRANSITION_STATEMENT_SHAPE: MapShape = {
-  required: [KEY_TRANSITION_STATEMENT.network, KEY_TRANSITION_STATEMENT.subject, KEY_TRANSITION_STATEMENT.priorAuthority, KEY_TRANSITION_STATEMENT.revision, KEY_TRANSITION_STATEMENT.newKey],
+  required: [
+    KEY_TRANSITION_STATEMENT.network,
+    KEY_TRANSITION_STATEMENT.subject,
+    KEY_TRANSITION_STATEMENT.priorAuthority,
+    KEY_TRANSITION_STATEMENT.revision,
+    KEY_TRANSITION_STATEMENT.newKey,
+  ],
   optional: [],
   open: true,
 }
@@ -564,7 +811,13 @@ export const MAILBOX_CHECKPOINT = {
 } as const
 /** `mailbox-checkpoint` map shape (docs/protocol/cbor/checkpoint.cddl#mailbox-checkpoint). */
 export const MAILBOX_CHECKPOINT_SHAPE: MapShape = {
-  required: [MAILBOX_CHECKPOINT.network, MAILBOX_CHECKPOINT.owner, MAILBOX_CHECKPOINT.checkpointId, MAILBOX_CHECKPOINT.timestamp, MAILBOX_CHECKPOINT.facts],
+  required: [
+    MAILBOX_CHECKPOINT.network,
+    MAILBOX_CHECKPOINT.owner,
+    MAILBOX_CHECKPOINT.checkpointId,
+    MAILBOX_CHECKPOINT.timestamp,
+    MAILBOX_CHECKPOINT.facts,
+  ],
   optional: [MAILBOX_CHECKPOINT.sections],
   open: true,
 }
@@ -589,7 +842,11 @@ export const OPAQUE_SECTION = {
 } as const
 /** `opaque-section` map shape (docs/protocol/cbor/checkpoint.cddl#opaque-section). */
 export const OPAQUE_SECTION_SHAPE: MapShape = {
-  required: [OPAQUE_SECTION.sectionType, OPAQUE_SECTION.sectionSchemaVersion, OPAQUE_SECTION.value],
+  required: [
+    OPAQUE_SECTION.sectionType,
+    OPAQUE_SECTION.sectionSchemaVersion,
+    OPAQUE_SECTION.value,
+  ],
   optional: [],
   open: false,
 }
@@ -618,7 +875,13 @@ export const PAYMENT_MEMBER = {
 } as const
 /** `payment-member` map shape (docs/protocol/cbor/direct-message.cddl#payment-member). */
 export const PAYMENT_MEMBER_SHAPE: MapShape = {
-  required: [PAYMENT_MEMBER.childIndex, PAYMENT_MEMBER.transactionId, PAYMENT_MEMBER.value, PAYMENT_MEMBER.address, PAYMENT_MEMBER.commitment],
+  required: [
+    PAYMENT_MEMBER.childIndex,
+    PAYMENT_MEMBER.transactionId,
+    PAYMENT_MEMBER.value,
+    PAYMENT_MEMBER.address,
+    PAYMENT_MEMBER.commitment,
+  ],
   optional: [PAYMENT_MEMBER.vout, PAYMENT_MEMBER.rawTx],
   open: false,
 }
@@ -637,8 +900,19 @@ export const PAYMENT_TRANSFER = {
 } as const
 /** `payment-transfer` map shape (docs/protocol/cbor/direct-message.cddl#payment-transfer). */
 export const PAYMENT_TRANSFER_SHAPE: MapShape = {
-  required: [PAYMENT_TRANSFER.networkTag, PAYMENT_TRANSFER.txId, PAYMENT_TRANSFER.destination, PAYMENT_TRANSFER.value],
-  optional: [PAYMENT_TRANSFER.vout, PAYMENT_TRANSFER.token, PAYMENT_TRANSFER.stealthMetadata, PAYMENT_TRANSFER.commitment, PAYMENT_TRANSFER.rawTx],
+  required: [
+    PAYMENT_TRANSFER.networkTag,
+    PAYMENT_TRANSFER.txId,
+    PAYMENT_TRANSFER.destination,
+    PAYMENT_TRANSFER.value,
+  ],
+  optional: [
+    PAYMENT_TRANSFER.vout,
+    PAYMENT_TRANSFER.token,
+    PAYMENT_TRANSFER.stealthMetadata,
+    PAYMENT_TRANSFER.commitment,
+    PAYMENT_TRANSFER.rawTx,
+  ],
   open: false,
 }
 
@@ -664,7 +938,11 @@ export const POKER_GAME_PAYLOAD = {
 } as const
 /** `poker-game-payload` map shape (docs/protocol/cbor/direct-message.cddl#poker-game-payload). */
 export const POKER_GAME_PAYLOAD_SHAPE: MapShape = {
-  required: [POKER_GAME_PAYLOAD.handId, POKER_GAME_PAYLOAD.phase, POKER_GAME_PAYLOAD.action],
+  required: [
+    POKER_GAME_PAYLOAD.handId,
+    POKER_GAME_PAYLOAD.phase,
+    POKER_GAME_PAYLOAD.action,
+  ],
   optional: [POKER_GAME_PAYLOAD.cardCommitments, POKER_GAME_PAYLOAD.keys],
   open: true,
 }
@@ -703,7 +981,11 @@ export const RAFFLE_PAYLOAD = {
 } as const
 /** `raffle-payload` map shape (docs/protocol/cbor/direct-message.cddl#raffle-payload). */
 export const RAFFLE_PAYLOAD_SHAPE: MapShape = {
-  required: [RAFFLE_PAYLOAD.raffleId, RAFFLE_PAYLOAD.ticketPrice, RAFFLE_PAYLOAD.ticketsSold],
+  required: [
+    RAFFLE_PAYLOAD.raffleId,
+    RAFFLE_PAYLOAD.ticketPrice,
+    RAFFLE_PAYLOAD.ticketsSold,
+  ],
   optional: [RAFFLE_PAYLOAD.winningHash],
   open: true,
 }
@@ -722,7 +1004,17 @@ export const RECIPIENT_ENCRYPTED_PAYLOAD_V1 = {
 } as const
 /** `recipient-encrypted-payload-v1` map shape (docs/protocol/cbor/direct-message.cddl#recipient-encrypted-payload-v1). */
 export const RECIPIENT_ENCRYPTED_PAYLOAD_V1_SHAPE: MapShape = {
-  required: [RECIPIENT_ENCRYPTED_PAYLOAD_V1.network, RECIPIENT_ENCRYPTED_PAYLOAD_V1.sender, RECIPIENT_ENCRYPTED_PAYLOAD_V1.recipient, RECIPIENT_ENCRYPTED_PAYLOAD_V1.suite, RECIPIENT_ENCRYPTED_PAYLOAD_V1.nonce, RECIPIENT_ENCRYPTED_PAYLOAD_V1.ciphertext, RECIPIENT_ENCRYPTED_PAYLOAD_V1.ephemeralPoint, RECIPIENT_ENCRYPTED_PAYLOAD_V1.sharedPoint, RECIPIENT_ENCRYPTED_PAYLOAD_V1.dleqProof],
+  required: [
+    RECIPIENT_ENCRYPTED_PAYLOAD_V1.network,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V1.sender,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V1.recipient,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V1.suite,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V1.nonce,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V1.ciphertext,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V1.ephemeralPoint,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V1.sharedPoint,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V1.dleqProof,
+  ],
   optional: [],
   open: true,
 }
@@ -740,7 +1032,16 @@ export const RECIPIENT_ENCRYPTED_PAYLOAD_V2 = {
 } as const
 /** `recipient-encrypted-payload-v2` map shape (docs/protocol/cbor/direct-message.cddl#recipient-encrypted-payload-v2). */
 export const RECIPIENT_ENCRYPTED_PAYLOAD_V2_SHAPE: MapShape = {
-  required: [RECIPIENT_ENCRYPTED_PAYLOAD_V2.network, RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender, RECIPIENT_ENCRYPTED_PAYLOAD_V2.recipient, RECIPIENT_ENCRYPTED_PAYLOAD_V2.suite, RECIPIENT_ENCRYPTED_PAYLOAD_V2.cryptoBoxEnvelope, RECIPIENT_ENCRYPTED_PAYLOAD_V2.ephemeralPoint, RECIPIENT_ENCRYPTED_PAYLOAD_V2.sharedPoint, RECIPIENT_ENCRYPTED_PAYLOAD_V2.dleqProof],
+  required: [
+    RECIPIENT_ENCRYPTED_PAYLOAD_V2.network,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V2.recipient,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V2.suite,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V2.cryptoBoxEnvelope,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V2.ephemeralPoint,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V2.sharedPoint,
+    RECIPIENT_ENCRYPTED_PAYLOAD_V2.dleqProof,
+  ],
   optional: [],
   open: true,
 }
@@ -754,7 +1055,12 @@ export const RELAY_BINDING = {
 } as const
 /** `relay-binding` map shape (docs/protocol/cbor/directory.cddl#relay-binding). */
 export const RELAY_BINDING_SHAPE: MapShape = {
-  required: [RELAY_BINDING.relayId, RELAY_BINDING.endpoint, RELAY_BINDING.identity, RELAY_BINDING.expiry],
+  required: [
+    RELAY_BINDING.relayId,
+    RELAY_BINDING.endpoint,
+    RELAY_BINDING.identity,
+    RELAY_BINDING.expiry,
+  ],
   optional: [],
   open: true,
 }
@@ -767,7 +1073,11 @@ export const SIGNATURE_ENTRY = {
 } as const
 /** `signature-entry` map shape (docs/protocol/cbor/common.cddl#signature-entry). */
 export const SIGNATURE_ENTRY_SHAPE: MapShape = {
-  required: [SIGNATURE_ENTRY.algorithm, SIGNATURE_ENTRY.signer, SIGNATURE_ENTRY.signature],
+  required: [
+    SIGNATURE_ENTRY.algorithm,
+    SIGNATURE_ENTRY.signer,
+    SIGNATURE_ENTRY.signature,
+  ],
   optional: [],
   open: false,
 }
@@ -794,8 +1104,15 @@ export const STEALTH_ASSET_TRANSFER = {
 } as const
 /** `stealth-asset-transfer` map shape (docs/protocol/cbor/direct-message.cddl#stealth-asset-transfer). */
 export const STEALTH_ASSET_TRANSFER_SHAPE: MapShape = {
-  required: [STEALTH_ASSET_TRANSFER.transfer, STEALTH_ASSET_TRANSFER.derivationScheme, STEALTH_ASSET_TRANSFER.recipientSpendKey],
-  optional: [STEALTH_ASSET_TRANSFER.tokenProgram, STEALTH_ASSET_TRANSFER.derivationContext],
+  required: [
+    STEALTH_ASSET_TRANSFER.transfer,
+    STEALTH_ASSET_TRANSFER.derivationScheme,
+    STEALTH_ASSET_TRANSFER.recipientSpendKey,
+  ],
+  optional: [
+    STEALTH_ASSET_TRANSFER.tokenProgram,
+    STEALTH_ASSET_TRANSFER.derivationContext,
+  ],
   open: false,
 }
 
@@ -809,7 +1126,12 @@ export const STEALTH_MESSAGE_ITEM = {
 } as const
 /** `stealth-message-item` map shape (docs/protocol/cbor/direct-message.cddl#stealth-message-item). */
 export const STEALTH_MESSAGE_ITEM_SHAPE: MapShape = {
-  required: [STEALTH_MESSAGE_ITEM.networkTag, STEALTH_MESSAGE_ITEM.ephemeralPubKey, STEALTH_MESSAGE_ITEM.transactions, STEALTH_MESSAGE_ITEM.amount],
+  required: [
+    STEALTH_MESSAGE_ITEM.networkTag,
+    STEALTH_MESSAGE_ITEM.ephemeralPubKey,
+    STEALTH_MESSAGE_ITEM.transactions,
+    STEALTH_MESSAGE_ITEM.amount,
+  ],
   optional: [STEALTH_MESSAGE_ITEM.memo],
   open: true,
 }
@@ -838,7 +1160,14 @@ export const SWAP_OFFER_PAYLOAD = {
 } as const
 /** `swap-offer-payload` map shape (docs/protocol/cbor/direct-message.cddl#swap-offer-payload). */
 export const SWAP_OFFER_PAYLOAD_SHAPE: MapShape = {
-  required: [SWAP_OFFER_PAYLOAD.swapId, SWAP_OFFER_PAYLOAD.makerAsset, SWAP_OFFER_PAYLOAD.makerAmount, SWAP_OFFER_PAYLOAD.takerAsset, SWAP_OFFER_PAYLOAD.takerAmount, SWAP_OFFER_PAYLOAD.expiration],
+  required: [
+    SWAP_OFFER_PAYLOAD.swapId,
+    SWAP_OFFER_PAYLOAD.makerAsset,
+    SWAP_OFFER_PAYLOAD.makerAmount,
+    SWAP_OFFER_PAYLOAD.takerAsset,
+    SWAP_OFFER_PAYLOAD.takerAmount,
+    SWAP_OFFER_PAYLOAD.expiration,
+  ],
   optional: [SWAP_OFFER_PAYLOAD.htlcHash],
   open: true,
 }
@@ -877,7 +1206,13 @@ export const TOKEN_TRANSFER = {
 } as const
 /** `token-transfer` map shape (docs/protocol/cbor/direct-message.cddl#token-transfer). */
 export const TOKEN_TRANSFER_SHAPE: MapShape = {
-  required: [TOKEN_TRANSFER.chainNamespace, TOKEN_TRANSFER.contractAddress, TOKEN_TRANSFER.amount, TOKEN_TRANSFER.decimals, TOKEN_TRANSFER.symbol],
+  required: [
+    TOKEN_TRANSFER.chainNamespace,
+    TOKEN_TRANSFER.contractAddress,
+    TOKEN_TRANSFER.amount,
+    TOKEN_TRANSFER.decimals,
+    TOKEN_TRANSFER.symbol,
+  ],
   optional: [TOKEN_TRANSFER.rawTxOrPermit],
   open: true,
 }
@@ -890,7 +1225,10 @@ export const TOMBSTONE_FACT_PAYLOAD = {
 } as const
 /** `tombstone-fact-payload` map shape (docs/protocol/cbor/checkpoint.cddl#tombstone-fact-payload). */
 export const TOMBSTONE_FACT_PAYLOAD_SHAPE: MapShape = {
-  required: [TOMBSTONE_FACT_PAYLOAD.objectFamily, TOMBSTONE_FACT_PAYLOAD.objectId],
+  required: [
+    TOMBSTONE_FACT_PAYLOAD.objectFamily,
+    TOMBSTONE_FACT_PAYLOAD.objectId,
+  ],
   optional: [TOMBSTONE_FACT_PAYLOAD.revisionDigest],
   open: true,
 }
@@ -919,7 +1257,11 @@ export const TOPIC_POST_SUBMISSION = {
 } as const
 /** `topic-post-submission` map shape (docs/protocol/cbor/topic.cddl#topic-post-submission). */
 export const TOPIC_POST_SUBMISSION_SHAPE: MapShape = {
-  required: [TOPIC_POST_SUBMISSION.network, TOPIC_POST_SUBMISSION.postFrame, TOPIC_POST_SUBMISSION.burnTx],
+  required: [
+    TOPIC_POST_SUBMISSION.network,
+    TOPIC_POST_SUBMISSION.postFrame,
+    TOPIC_POST_SUBMISSION.burnTx,
+  ],
   optional: [],
   open: true,
 }
@@ -932,7 +1274,11 @@ export const TOPIC_VOTE_SUBMISSION = {
 } as const
 /** `topic-vote-submission` map shape (docs/protocol/cbor/topic.cddl#topic-vote-submission). */
 export const TOPIC_VOTE_SUBMISSION_SHAPE: MapShape = {
-  required: [TOPIC_VOTE_SUBMISSION.network, TOPIC_VOTE_SUBMISSION.targetHash, TOPIC_VOTE_SUBMISSION.burnTx],
+  required: [
+    TOPIC_VOTE_SUBMISSION.network,
+    TOPIC_VOTE_SUBMISSION.targetHash,
+    TOPIC_VOTE_SUBMISSION.burnTx,
+  ],
   optional: [],
   open: true,
 }

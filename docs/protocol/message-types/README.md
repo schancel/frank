@@ -78,11 +78,23 @@ A **struct** names the keys of one map and lists its **shapes**:
 ```json
 {
   "key": "forwarding-delivery-envelope",
-  "fields": { "network": 0, "destination": 1, "payload-frame": 2, "payload-digest": 3, "payments": 4 },
+  "fields": {
+    "network": 0,
+    "destination": 1,
+    "payload-frame": 2,
+    "payload-digest": 3,
+    "payments": 4
+  },
   "shapes": [
     {
       "cddl": "docs/protocol/cbor/direct-message.cddl#forwarding-delivery-envelope",
-      "required": ["network", "destination", "payload-frame", "payload-digest", "payments"],
+      "required": [
+        "network",
+        "destination",
+        "payload-frame",
+        "payload-digest",
+        "payments"
+      ],
       "optional": [],
       "open": true
     }
@@ -100,10 +112,10 @@ spells out) is not compared.
 An **enum** names the integer values of one field (`account-type`, `bot-role`, blackjack action
 codes and so on). `rust_type` selects the Rust integer type (default `u32`).
 
-| Output                                                   | Contents                                                                                     |
-| -------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `packages/frank-codec/src/message-fields.generated.ts`   | `FORWARDING_DELIVERY_ENVELOPE.payloadFrame`, `FORWARDING_DELIVERY_ENVELOPE_SHAPE`, enums     |
-| `backend/cashweb/frank-cbor/src/message_fields.rs`       | `forwarding_delivery_envelope::PAYLOAD_FRAME`, `forwarding_delivery_envelope::SHAPE`, enums  |
+| Output                                                 | Contents                                                                                    |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `packages/frank-codec/src/message-fields.generated.ts` | `FORWARDING_DELIVERY_ENVELOPE.payloadFrame`, `FORWARDING_DELIVERY_ENVELOPE_SHAPE`, enums    |
+| `backend/cashweb/frank-cbor/src/message_fields.rs`     | `forwarding_delivery_envelope::PAYLOAD_FRAME`, `forwarding_delivery_envelope::SHAPE`, enums |
 
 Codecs read maps through a shape (`fields(payload, P, SHAPE, allow)` in TypeScript,
 `fields_of(Some(payload), path, &SHAPE, allow)` in Rust), read fields by name, write maps with the

@@ -14,6 +14,7 @@ use crate::limits::{
     MAX_FORUM_CURSOR_BYTES, MAX_FORUM_ENTRIES, MAX_FORUM_PAGE_BYTES, MAX_FORUM_ROWS,
     MAX_FORUM_VIEW_BYTES,
 };
+use crate::message_fields::MapShape;
 use crate::message_types::{
     TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_KEY_TRANSITION_STATEMENT,
     TYPE_STEALTH_MESSAGE_ITEM, TYPE_TEXT_MESSAGE_ITEM,
@@ -211,6 +212,28 @@ fn as_list<'a>(
 
 fn declared(key: u64, required: &[u64], optional: &[u64]) -> bool {
     required.contains(&key) || optional.contains(&key)
+}
+
+/// Error path of field `key` inside the map at `path` (README error locations).
+pub(crate) fn at(path: &str, key: u64) -> String {
+    format!("{path}.{key}")
+}
+
+/// Read a map through its registered shape (`docs/protocol/message-types/fields/`).
+pub(crate) fn shaped<'a>(
+    v: Option<&'a CborValue>,
+    path: &str,
+    shape: &MapShape,
+    allow_unknown: bool,
+) -> Result<MapFields<'a>, CodecError> {
+    fields(
+        v,
+        path,
+        shape.required,
+        shape.optional,
+        shape.open,
+        allow_unknown,
+    )
 }
 
 fn fields<'a>(

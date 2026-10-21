@@ -225,6 +225,10 @@ export class EvmStampPayer {
   private fee: { value: StampFee; atMs: number } | undefined
   private feeRead: Promise<StampFee> | undefined
   private poolIndexByAddress = new Map<string, number>()
+  /** Repeated insufficient quotes must not sweep the wallet on every composer change.
+   * Payment construction retains its own unthrottled final inventory read. */
+  private lastFullQuoteReadAt = -Infinity
+
   constructor(private readonly config: EvmStampPayerConfig) {
     this.watcher =
       config.watcher ?? new EvmBlockWatcher({ provider: config.provider })
@@ -480,9 +484,12 @@ export class EvmStampPayer {
         capacityWei: 0n,
       }
     const fee = await this.read(() => this.currentFee())
-    if (readAll) await this.read(() => this.config.sync.refresh({ all: true }))
-    else if (!this.config.sync.settled())
+    if (!this.config.sync.settled())
       await this.read(() => this.config.sync.refresh())
+    if (readAll && Date.now() - this.lastFullQuoteReadAt >= 5_000) {
+      await this.read(() => this.config.sync.refresh({ all: true }))
+      this.lastFullQuoteReadAt = Date.now()
+    }
     const reserve = STAMP_GAS_LIMIT * (fee.maxFeePerGas ?? fee.gasPrice)!
     const smallest = STAMP_GAS_LIMIT * fee.chargedPerGas
     const head = this.watcher.latest()

@@ -29,6 +29,30 @@ export interface CoinListSource {
 
 /** How many accounts one refresh reads at the same time. */
 const READS_AT_ONCE = 6
+const RATE_LIMIT_INITIAL_BACKOFF_MS = 5_000
+const RATE_LIMIT_MAX_BACKOFF_MS = 60_000
+
+/** ethers wraps JSON-RPC errors inside UNKNOWN_ERROR and HTTP failures inside SERVER_ERROR. */
+function isRateLimited(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== 'object' || error === null) return false
+  const value = error as {
+    code?: unknown
+    status?: unknown
+    statusCode?: unknown
+    error?: unknown
+    response?: unknown
+  }
+  return (
+    value.code === 429 ||
+    value.code === -32005 ||
+    value.code === -32007 ||
+    value.code === -32016 ||
+    value.status === 429 ||
+    value.statusCode === 429 ||
+    (value.error !== error && isRateLimited(value.error, depth + 1)) ||
+    (value.response !== error && isRateLimited(value.response, depth + 1))
+  )
+}
 
 export class EvmCoinListSync {
   /** Accounts to read again before the list trusts what it has of them. */
@@ -38,6 +62,8 @@ export class EvmCoinListSync {
   private running: Promise<void> | undefined
   private again = false
   private againAll = false
+  private rateLimit: { until: number; error: unknown } | undefined
+  private rateLimitBackoffMs = RATE_LIMIT_INITIAL_BACKOFF_MS
   /** Counts the times each account was marked dirty: a read that a later mark overtook does not
    * clear it (what that read saw may predate what the mark announced). */
   private readonly generations = new Map<string, number>()
@@ -87,6 +113,8 @@ export class EvmCoinListSync {
    * account, say).
    */
   refresh(options: { all?: boolean } = {}): Promise<void> {
+    if (this.rateLimit && Date.now() < this.rateLimit.until)
+      return Promise.reject(this.rateLimit.error)
     if (options.all === true) this.againAll = true
     if (this.running) {
       this.again = true
@@ -97,7 +125,21 @@ export class EvmCoinListSync {
         this.again = false
         const all = this.againAll
         this.againAll = false
-        await this.pass(all)
+        try {
+          await this.pass(all)
+        } catch (error) {
+          if (isRateLimited(error)) {
+            this.rateLimit = {
+              until: Date.now() + this.rateLimitBackoffMs,
+              error,
+            }
+            this.rateLimitBackoffMs = Math.min(
+              this.rateLimitBackoffMs * 2,
+              RATE_LIMIT_MAX_BACKOFF_MS,
+            )
+          }
+          throw error
+        }
       } while (this.again)
     })().finally(() => {
       this.running = undefined
@@ -112,7 +154,12 @@ export class EvmCoinListSync {
       const account = source.account.toLowerCase()
       if (this.dirty.has(account)) return true
       const coin = list.latestOf(account)
-      if (all) return coin === undefined || coin.state === 'unspent' || coin.state === 'spent'
+      if (all)
+        return (
+          coin === undefined ||
+          coin.state === 'unspent' ||
+          coin.state === 'spent'
+        )
       if (this.empty.has(account)) return false
       return coin === undefined
     })
@@ -123,13 +170,20 @@ export class EvmCoinListSync {
     if (due.length === 0) return
     const head = await this.config.watcher.current()
     let cursor = 0
+    let limited: { error: unknown } | undefined
     await Promise.all(
       Array.from({ length: Math.min(READS_AT_ONCE, due.length) }, async () => {
-        while (cursor < due.length) {
+        while (cursor < due.length && !limited) {
           const source = due[cursor++]!
           try {
-            await this.readOne(source, head)
+            await this.readOne(source, head, error => {
+              limited ??= { error }
+            })
           } catch (error) {
+            if (isRateLimited(error)) {
+              limited ??= { error }
+              continue
+            }
             // Nothing is known of it: it stays due, and is read on the next pass.
             if (!(error instanceof EvmCoinListError))
               console.warn(
@@ -140,34 +194,68 @@ export class EvmCoinListSync {
         }
       }),
     )
+    if (limited) throw limited.error
+    this.rateLimit = undefined
+    this.rateLimitBackoffMs = RATE_LIMIT_INITIAL_BACKOFF_MS
   }
 
-  private async readOne(source: CoinListSource, head: number): Promise<void> {
+  private async readOne(
+    source: CoinListSource,
+    head: number,
+    onRateLimit: (error: unknown) => void,
+  ): Promise<void> {
     const { list, provider } = this.config
     const account = source.account.toLowerCase()
     const generation = this.generations.get(account) ?? 0
     const spacing = this.config.spendSpacingBlocks ?? 0
     const lag = spacing + 1
-    const [latest, pending, balance, settledBalance, before] = await Promise.all([
+    const optionalHistoricalRead = (error: unknown): undefined => {
+      if (isRateLimited(error)) {
+        onRateLimit(error)
+        throw error
+      }
+      return undefined
+    }
+    const reads = [
       provider.getTransactionCount(account, 'latest'),
       provider.getTransactionCount(account, 'pending'),
       provider.getBalance(account),
       spacing > 0 && head >= lag
-        ? provider.getBalance(account, head - lag).catch(() => undefined)
+        ? provider.getBalance(account, head - lag).catch(optionalHistoricalRead)
         : Promise.resolve(undefined),
       spacing > 0 && head >= spacing
         ? provider
             .getTransactionCount(account, head - spacing)
-            .catch(() => undefined)
+            .catch(optionalHistoricalRead)
         : Promise.resolve(undefined),
-    ])
+    ] as const
+    const [latest, pending, balance, settledBalance, before] =
+      await Promise.all(reads).catch(async error => {
+        if (isRateLimited(error)) onRateLimit(error)
+        // Do not release a worker slot while its other RPCs are still in flight: early rejection
+        // otherwise multiplies the advertised concurrency and leaves requests running after refresh.
+        const settled = await Promise.allSettled(reads)
+        const rateFailure = settled.find(
+          result =>
+            result.status === 'rejected' && isRateLimited(result.reason),
+        )
+        if (rateFailure?.status === 'rejected') {
+          onRateLimit(rateFailure.reason)
+          throw rateFailure.reason
+        }
+        throw error
+      })
     // Marked dirty while these reads were out: they may predate what the mark announced.
     if ((this.generations.get(account) ?? 0) !== generation) return
     // Something of this account is in the mempool: no coin until it is mined.
     if (pending > latest) return
     const live = list.latestOf(account)
     // An operation holds the account's coin: settlement decides what became of it.
-    if (live !== undefined && live.state !== 'unspent' && live.state !== 'spent')
+    if (
+      live !== undefined &&
+      live.state !== 'unspent' &&
+      live.state !== 'spent'
+    )
       return
     // The node lags what the list already knows.
     if (

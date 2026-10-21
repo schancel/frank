@@ -59,9 +59,10 @@ jest.mock('@frank/wallet/chain', () => ({
     capabilities: { directMessages: true },
   },
 }))
-jest.mock('../../utils/messaging-state', () => ({
-  messagingState: { status: 'ready' },
-}))
+jest.mock('../../utils/messaging-state', () => {
+  const owner = jest.requireActual('vue').reactive({ status: 'ready' })
+  return { messagingState: owner, messagingStateOwner: owner }
+})
 jest.mock('../../stores/settings', () => ({ useSettingsStore: () => ({}) }))
 // Prices: 1 MON = 2 AVU, 1 SOL = 300 AVU; no price for anything else.
 jest.mock('src/utils/stamp-display', () => ({
@@ -164,7 +165,7 @@ describe('eager conversation profiles', () => {
     ])
     wrapper.unmount()
     mockAccountState.status = 'loading'
-    messagingStateOwner.status = 'pending'
+    messagingStateOwner.status = 'ready'
   })
 })
 

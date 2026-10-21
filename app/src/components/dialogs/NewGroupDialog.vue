@@ -190,16 +190,17 @@ export default defineComponent({
     const selectedAddresses = ref<string[]>([])
     const relayBaseUrl = ref('')
     const creating = ref(false)
+    let openingGeneration = 0
 
     watch(
       () => props.modelValue,
       open => {
         if (open) {
+          openingGeneration += 1
           groupName.value = ''
           memberFilter.value = ''
           selectedAddresses.value = [...new Set(props.initialMembers)]
           relayBaseUrl.value = chatStore.getGroupHomeRelay()
-          creating.value = false
         }
       },
     )
@@ -283,12 +284,14 @@ export default defineComponent({
     }
 
     const closeDialog = () => {
+      openingGeneration += 1
       emit('update:modelValue', false)
     }
 
     const submitCreateGroup = async () => {
       if (!canSubmit.value || creating.value) return
       creating.value = true
+      const submissionGeneration = openingGeneration
       try {
         const members = [...selectedAddresses.value]
         if (canAddTypedAddress.value) {
@@ -299,6 +302,9 @@ export default defineComponent({
           memberAddresses: members,
           relayUrl: relayBaseUrl.value.trim() || undefined,
         })
+        // A completed creation must not select a chat or close a newer draft.
+        if (!props.modelValue || submissionGeneration !== openingGeneration)
+          return
         emit('created', conv)
         emit('update:modelValue', false)
         if (router && conv?.id) {

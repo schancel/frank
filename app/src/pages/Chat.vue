@@ -23,13 +23,13 @@
           color="primary"
           :label="$t('groupChat.acceptInviteBtn')"
           data-testid="accept-group-invite"
-          @click="chatStore.approveGroupInvite(conversation.id)"
+          @click="decideGroupInvite(true)"
         />
         <q-btn
           flat
           :label="$t('groupChat.declineInviteBtn')"
           data-testid="decline-group-invite"
-          @click="chatStore.declineGroupInvite(conversation.id)"
+          @click="decideGroupInvite(false)"
         />
       </template>
     </q-banner>
@@ -2226,6 +2226,16 @@ export default defineComponent({
         await this.chatStore.syncGroupConversation(this.conversation.id)
       } catch (error) {
         errorNotify(error, { fallbackKey: 'groupChat.syncFailed' })
+      }
+    },
+    async decideGroupInvite(approve: boolean) {
+      if (!this.conversation) return
+      try {
+        if (approve)
+          await this.chatStore.approveGroupInvite(this.conversation.id)
+        else await this.chatStore.declineGroupInvite(this.conversation.id)
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
       }
     },
     approveScreenerThread() {

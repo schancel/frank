@@ -48,8 +48,10 @@ export type PendingDappApprovalRecord = PendingDappApproval
 
 /**
  * An account sync bundle the background is carrying between the extension and
- * the Frank web app. It holds backup shares, so it lives only in memory, is
- * handed out once, and expires after SYNC_TRANSFER_TTL_MS.
+ * the Frank web app. It holds backup shares, so it is kept only in memory
+ * (`storage.session` where the browser has it, so it outlives a stopped service
+ * worker; otherwise the background's own state), handed out once, and expires
+ * after SYNC_TRANSFER_TTL_MS.
  *  - 'to-extension': a Frank tab sent it; an extension page collects it.
  *  - 'to-pwa': an extension page sent it while no Frank tab took it; a Frank tab
  *    collects it.
@@ -61,6 +63,7 @@ export interface PendingSyncTransfer {
 }
 
 export const SYNC_TRANSFER_TTL_MS = 2 * 60_000
+const SYNC_TRANSFER_SESSION_KEY = 'frankPendingSyncTransfer'
 
 export interface PendingRpcWaiter {
   resolve: (value: unknown) => void
@@ -811,19 +814,66 @@ function urlOrigin(url: unknown): string {
   }
 }
 
+/**
+ * Memory-only extension storage that survives the MV3 service worker stopping.
+ * Chrome has it; where it is missing the bundle stays in the background state.
+ */
+function syncSessionStorage(
+  extApi: Record<string, any> | null,
+): Record<string, any> | null {
+  const session = extApi?.storage?.session
+  return typeof session?.get === 'function' &&
+    typeof session?.set === 'function' &&
+    typeof session?.remove === 'function'
+    ? session
+    : null
+}
+
+async function savePendingSyncTransfer(
+  state: BackgroundBridgeState,
+  extApi: Record<string, any> | null,
+  transfer: PendingSyncTransfer | null,
+): Promise<void> {
+  const session = syncSessionStorage(extApi)
+  if (!session) {
+    state.pendingSyncTransfer = transfer
+  } else if (transfer) {
+    await session.set({ [SYNC_TRANSFER_SESSION_KEY]: transfer })
+  } else {
+    await session.remove(SYNC_TRANSFER_SESSION_KEY)
+  }
+}
+
+// Takes run one at a time, so two requests cannot both receive the bundle.
+let syncTransferTakes: Promise<unknown> = Promise.resolve()
+
+/** Hands out the held bundle once, if it goes the asked direction and is not expired. */
 function takePendingSyncTransfer(
   state: BackgroundBridgeState,
+  extApi: Record<string, any> | null,
   direction: PendingSyncTransfer['direction'],
-): Record<string, unknown> | null {
-  const pending = state.pendingSyncTransfer
-  if (!pending || pending.direction !== direction) return null
-  state.pendingSyncTransfer = null
-  return pending.deviceSyncBundle
+): Promise<Record<string, unknown> | null> {
+  const take = syncTransferTakes.then(async () => {
+    const session = syncSessionStorage(extApi)
+    const pending: PendingSyncTransfer | null = session
+      ? (await session.get(SYNC_TRANSFER_SESSION_KEY))?.[
+          SYNC_TRANSFER_SESSION_KEY
+        ] ?? null
+      : state.pendingSyncTransfer
+    if (!pending) return null
+    const expired = Date.now() - pending.createdAt > SYNC_TRANSFER_TTL_MS
+    if (!expired && pending.direction !== direction) return null
+    await savePendingSyncTransfer(state, extApi, null)
+    return expired ? null : pending.deviceSyncBundle
+  })
+  syncTransferTakes = take.catch(() => null)
+  return take
 }
 
 /**
  * Sends the bundle to the content script of every Frank web app tab. Counts only
- * tabs whose content script acknowledged that it handed the bundle to the page.
+ * tabs whose page offered it to the user; a page that already has an account
+ * declines it.
  */
 async function pushSyncBundleToFrankTabs(
   extApi: Record<string, any> | null,
@@ -855,7 +905,7 @@ async function pushSyncBundleToFrankTabs(
         type: 'extension-sync-push',
         payload: { deviceSyncBundle },
       })
-      if (ack && typeof ack === 'object' && ack.ok === true) delivered += 1
+      if (ack && typeof ack === 'object' && ack.offered === true) delivered += 1
     } catch {
       // No content script in this tab
     }
@@ -878,10 +928,6 @@ async function handleAccountSyncMessage(
   const fromExtensionPage = isExtensionPageSender(sender, extApi)
   const fromFrankTab =
     !fromExtensionPage && isFrankWebAppOrigin(senderWebOrigin(sender))
-  const pending = state.pendingSyncTransfer
-  if (pending && Date.now() - pending.createdAt > SYNC_TRANSFER_TTL_MS) {
-    state.pendingSyncTransfer = null
-  }
   const bundle = message.payload?.deviceSyncBundle
   const hasBundle =
     Boolean(bundle) && typeof bundle === 'object' && !Array.isArray(bundle)
@@ -894,15 +940,15 @@ async function handleAccountSyncMessage(
     case 'pwa-sync-handshake':
       if (!fromFrankTab) return rejected('Sender is not the Frank web app')
       if (!hasBundle) return rejected('Missing sync bundle')
-      state.pendingSyncTransfer = {
+      await savePendingSyncTransfer(state, extApi, {
         direction: 'to-extension',
         deviceSyncBundle: bundle,
         createdAt: Date.now(),
-      }
+      })
       return { ok: true, result: { ok: true } }
     case 'get-synced-state': {
       if (!fromExtensionPage) return rejected('Sender is not an extension page')
-      const taken = takePendingSyncTransfer(state, 'to-extension')
+      const taken = await takePendingSyncTransfer(state, extApi, 'to-extension')
       return {
         ok: true,
         result: { ok: Boolean(taken), deviceSyncBundle: taken },
@@ -915,15 +961,18 @@ async function handleAccountSyncMessage(
         extApi,
         bundle,
       )
-      // No Frank tab took it: hold it briefly for a Frank tab to collect.
-      state.pendingSyncTransfer =
+      // No Frank tab offered it: hold it briefly for a Frank tab to collect.
+      await savePendingSyncTransfer(
+        state,
+        extApi,
         deliveredToTabCount > 0
           ? null
           : {
               direction: 'to-pwa',
               deviceSyncBundle: bundle,
               createdAt: Date.now(),
-            }
+            },
+      )
       return {
         ok: true,
         result: {
@@ -935,7 +984,7 @@ async function handleAccountSyncMessage(
     }
     case 'pwa-request-sync': {
       if (!fromFrankTab) return rejected('Sender is not the Frank web app')
-      const taken = takePendingSyncTransfer(state, 'to-pwa')
+      const taken = await takePendingSyncTransfer(state, extApi, 'to-pwa')
       return {
         ok: true,
         result: { ok: Boolean(taken), deviceSyncBundle: taken },
@@ -1866,6 +1915,18 @@ export function installBackgroundBridge(
   void reinjectContentScriptsIntoOpenTabs(runtimeScope)
 
   const api = getRawExtensionApi(runtimeScope)
+  // Only extension pages and the background may read a held sync bundle
+  // (this is the browser default; set it so nothing else can widen it).
+  const syncSession = syncSessionStorage(api)
+  if (typeof syncSession?.setAccessLevel === 'function') {
+    try {
+      void Promise.resolve(
+        syncSession.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
+      ).catch(() => undefined)
+    } catch {
+      // Ignore storage errors in restricted environments
+    }
+  }
   // Earlier builds kept the last sync bundle, backup shares included, here.
   if (typeof api?.storage?.local?.remove === 'function') {
     try {

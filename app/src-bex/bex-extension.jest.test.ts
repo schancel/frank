@@ -28,6 +28,7 @@ import {
   installBackgroundBridge,
   SYNC_TRANSFER_TTL_MS,
 } from './background'
+import { SYNC_OFFER_REPLY_TIMEOUT_MS } from './content'
 
 describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #1710)', () => {
   it('builds Chrome MV3 manifest with sidePanel, service_worker, and MAIN + ISOLATED content scripts', () => {
@@ -1471,7 +1472,7 @@ describe('Extension <-> web app account sync carries backup shares safely (A1, A
     const storageSet = jest.fn().mockResolvedValue(undefined)
     const executeScript = jest.fn().mockResolvedValue(undefined)
     const tabsSendMessage = jest.fn(async (tabId: number) =>
-      tabId === 2 ? { ok: true } : undefined,
+      tabId === 2 ? { ok: true, offered: true } : undefined,
     )
     // Returns every tab whatever the filter, so the background must check origins itself.
     const tabsQuery = jest.fn(async () => [
@@ -1692,13 +1693,17 @@ describe('Extension <-> web app account sync carries backup shares safely (A1, A
           ...data,
         },
       })
-    const fromBackground = (message: Record<string, unknown>) => {
-      const responses: unknown[] = []
-      for (const fn of runtimeListeners) {
-        fn(message, {}, (res: unknown) => responses.push(res))
-      }
-      return responses
-    }
+    // Resolves with the content script's responses once each has answered.
+    const fromBackground = (message: Record<string, unknown>) =>
+      Promise.all(
+        runtimeListeners.map(
+          fn =>
+            new Promise<unknown>(resolve => {
+              const async = fn(message, {}, resolve)
+              if (async !== true) resolve(undefined)
+            }),
+        ),
+      ).then(responses => responses.filter(r => r !== undefined))
     return { win, sendMessage, post, fromBackground, cleanup }
   }
 
@@ -1738,7 +1743,7 @@ describe('Extension <-> web app account sync carries backup shares safely (A1, A
       })
       expect(sendMessage).not.toHaveBeenCalled()
 
-      const acks = fromBackground({
+      const acks = await fromBackground({
         channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
         type: 'extension-sync-push',
         payload: { deviceSyncBundle: bundle() },
@@ -1751,16 +1756,143 @@ describe('Extension <-> web app account sync carries backup shares safely (A1, A
     }
   })
 
-  it('content script on the Frank origin acknowledges a pushed bundle and posts it only to its own origin', () => {
-    const { win, fromBackground, cleanup } = contentWindow('https://signet.mx')
-    const acks = fromBackground({
+  it('content script on the Frank origin acks a pushed bundle with whether the page offered it, posting only to its own origin', async () => {
+    const { win, post, fromBackground, cleanup } =
+      contentWindow('https://signet.mx')
+    const push = {
       channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
       type: 'extension-sync-push',
       payload: { deviceSyncBundle: bundle() },
-    })
-    expect(acks).toEqual([{ ok: true }])
-    expect(win.postMessage).toHaveBeenCalledTimes(1)
-    expect(win.postMessage.mock.calls[0][1]).toBe('https://signet.mx')
+    }
+    const pageReply = (offered: boolean, event = {}) => {
+      const sent = win.postMessage.mock.calls.at(-1)
+      expect(sent[1]).toBe('https://signet.mx')
+      return post({ type: 'sync-offer-result', id: sent[0].id, offered }, event)
+    }
+
+    const offered = fromBackground(push)
+    await pageReply(true)
+    expect(await offered).toEqual([{ ok: true, offered: true }])
+
+    // A signed-in page declines the bundle.
+    const declined = fromBackground(push)
+    await pageReply(false)
+    expect(await declined).toEqual([{ ok: true, offered: false }])
+
+    // A reply from another window does not count; no reply means not offered.
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'queueMicrotask'] })
+    try {
+      const silent = fromBackground(push)
+      await pageReply(true, { source: {} })
+      jest.advanceTimersByTime(SYNC_OFFER_REPLY_TIMEOUT_MS)
+      expect(await silent).toEqual([{ ok: true, offered: false }])
+    } finally {
+      jest.useRealTimers()
+    }
     cleanup()
+  })
+
+  it('keeps a bundle pending and reports no delivery when the Frank tab declines it', async () => {
+    const { scope, tabsSendMessage } = extensionScope()
+    tabsSendMessage.mockImplementation(async (tabId: number) =>
+      tabId === 2 ? { ok: true, offered: false } : undefined,
+    )
+    const state = createBackgroundBridgeState()
+    const res = await handleBackgroundMessage(
+      sync('extension-push-sync-to-tab', { deviceSyncBundle: bundle() }),
+      EXT_PAGE,
+      state,
+      scope,
+    )
+    expect(res.result).toMatchObject({
+      deliveredToTabCount: 0,
+      awaitingPickup: true,
+    })
+    expect(state.pendingSyncTransfer?.deviceSyncBundle).toEqual(bundle())
+  })
+
+  it('holds a bundle in storage.session where available, so it outlives the service worker, readable by trusted contexts only', async () => {
+    const held: Record<string, any> = {}
+    const session = {
+      get: jest.fn(async (key: string) => ({ [key]: held[key] })),
+      set: jest.fn(async (items: Record<string, unknown>) => {
+        Object.assign(held, items)
+      }),
+      remove: jest.fn(async (key: string) => {
+        delete held[key]
+      }),
+      setAccessLevel: jest.fn(async () => undefined),
+    }
+    const localSet = jest.fn()
+    const scope = {
+      chrome: {
+        runtime: {
+          id: 'frank-test-ext',
+          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
+          onMessage: { addListener: jest.fn(), removeListener: jest.fn() },
+        },
+        storage: { session, local: { set: localSet } },
+      },
+    }
+    installBackgroundBridge(scope, createBackgroundBridgeState()).dispose()
+    expect(session.setAccessLevel).toHaveBeenCalledWith({
+      accessLevel: 'TRUSTED_CONTEXTS',
+    })
+
+    const before = createBackgroundBridgeState()
+    await handleBackgroundMessage(
+      sync('pwa-sync-handshake', { deviceSyncBundle: bundle() }),
+      FRANK_TAB,
+      before,
+      scope,
+    )
+    expect(before.pendingSyncTransfer).toBeNull()
+    expect(localSet).not.toHaveBeenCalled()
+
+    // The service worker restarted: fresh background state, same session storage.
+    const after = createBackgroundBridgeState()
+    const taken = await handleBackgroundMessage(
+      sync('get-synced-state'),
+      EXT_PAGE,
+      after,
+      scope,
+    )
+    expect(taken.result.deviceSyncBundle.backupShares).toEqual(SHARES)
+    const again = await handleBackgroundMessage(
+      sync('get-synced-state'),
+      EXT_PAGE,
+      after,
+      scope,
+    )
+    expect(again.result.deviceSyncBundle).toBeNull()
+
+    // Two pickups at once: only one gets it.
+    await handleBackgroundMessage(
+      sync('pwa-sync-handshake', { deviceSyncBundle: bundle() }),
+      FRANK_TAB,
+      after,
+      scope,
+    )
+    const both = await Promise.all([
+      handleBackgroundMessage(sync('get-synced-state'), EXT_PAGE, after, scope),
+      handleBackgroundMessage(sync('get-synced-state'), EXT_PAGE, after, scope),
+    ])
+    expect(both.filter(r => r.result.deviceSyncBundle).length).toBe(1)
+
+    await handleBackgroundMessage(
+      sync('pwa-sync-handshake', { deviceSyncBundle: bundle() }),
+      FRANK_TAB,
+      after,
+      scope,
+    )
+    held.frankPendingSyncTransfer.createdAt -= SYNC_TRANSFER_TTL_MS + 1
+    const expired = await handleBackgroundMessage(
+      sync('get-synced-state'),
+      EXT_PAGE,
+      after,
+      scope,
+    )
+    expect(expired.result.deviceSyncBundle).toBeNull()
+    expect(held).toEqual({})
   })
 })

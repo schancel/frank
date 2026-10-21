@@ -1106,7 +1106,8 @@ export default defineComponent({
         } else if ((response.result.deliveredToTabCount ?? 0) > 0) {
           syncStatusMessage.value = `Sent to your ${FRANK_WEB_APP_ORIGIN} tab. Check code: ${checkCode}`
         } else {
-          syncStatusMessage.value = `Open ${FRANK_WEB_APP_ORIGIN} and choose Connect Browser Extension within 2 minutes. Check code: ${checkCode}`
+          // A tab that already has an account declines it, so say so plainly.
+          syncStatusMessage.value = `No ${FRANK_WEB_APP_ORIGIN} tab took the account (a tab that is already signed in does not). Open ${FRANK_WEB_APP_ORIGIN} without an account and choose Connect Browser Extension within 2 minutes. Check code: ${checkCode}`
         }
       } else if (
         typeof window !== 'undefined' &&

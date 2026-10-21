@@ -64,6 +64,7 @@ function receive(init: { source: unknown; origin: string }) {
       channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
       direction: 'to-pwa',
       type: 'extension-sync-push',
+      id: 'sync-push-1',
       payload: { deviceSyncBundle: syncBundle },
     },
   } as unknown as MessageEvent)
@@ -99,5 +100,31 @@ describe('AppRuntime account sync listener (A8)', () => {
     receive({ source: window, origin: window.location.origin })
     expect(pendingExtensionSyncOffer.value).toBeNull()
     expect(mockRestore).not.toHaveBeenCalled()
+  })
+
+  it('tells the extension whether the account was offered, so it never reports a false delivery', () => {
+    const postMessage = jest.spyOn(window, 'postMessage').mockImplementation()
+    try {
+      const replies = () =>
+        postMessage.mock.calls.map(([msg, target]) => [
+          (msg as { type: string; offered: boolean }).type,
+          (msg as { offered: boolean }).offered,
+          target,
+        ])
+
+      mockAccountStatus.status = 'ready'
+      receive({ source: window, origin: window.location.origin })
+      mockAccountStatus.status = 'fresh'
+      receive({ source: window, origin: window.location.origin })
+      // An unauthenticated message gets no reply at all.
+      receive({ source: null, origin: 'https://evil.example' })
+
+      expect(replies()).toEqual([
+        ['sync-offer-result', false, window.location.origin],
+        ['sync-offer-result', true, window.location.origin],
+      ])
+    } finally {
+      postMessage.mockRestore()
+    }
   })
 })

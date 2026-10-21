@@ -86,6 +86,7 @@ import {
 import {
   offerExtensionSyncBundle,
   readExtensionSyncWindowMessage,
+  replyExtensionSyncOffer,
 } from 'src/utils/extension-account-sync'
 
 import { computeAddress, keccak256, toUtf8Bytes } from 'ethers'
@@ -530,8 +531,12 @@ export default defineComponent({
       // An account bundle from the Frank extension, relayed by its content
       // script. It is only offered: Welcome and Onboard ask the user to confirm.
       const bundle = readExtensionSyncWindowMessage(event)
-      if (!bundle || accountStatus.status === 'ready') return
-      if (!offerExtensionSyncBundle(bundle)) return
+      if (!bundle) return
+      const offered =
+        accountStatus.status !== 'ready' &&
+        Boolean(offerExtensionSyncBundle(bundle))
+      replyExtensionSyncOffer(event, offered)
+      if (!offered) return
       const currentPath = this.$route?.path || ''
       if (currentPath !== '/welcome' && currentPath !== '/onboard') {
         void this.$router?.push('/welcome')

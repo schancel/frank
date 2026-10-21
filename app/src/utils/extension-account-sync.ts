@@ -80,6 +80,31 @@ export function readExtensionSyncWindowMessage(
   return bundle && typeof bundle === 'object' ? bundle : null
 }
 
+/**
+ * Tells the extension's content script whether a pushed bundle was offered to
+ * the user, so the extension does not report a delivery that did not happen.
+ */
+export function replyExtensionSyncOffer(
+  event: MessageEvent,
+  offered: boolean,
+  win: Window = window,
+): void {
+  const data = event.data
+  if (data?.type !== 'extension-sync-push' || typeof data.id !== 'string') {
+    return
+  }
+  win.postMessage(
+    {
+      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+      direction: 'to-extension',
+      type: 'sync-offer-result',
+      id: data.id,
+      offered,
+    },
+    win.location.origin,
+  )
+}
+
 export function extractValidBackupShares(
   bundle: Record<string, any> | null | undefined,
 ): string[] {

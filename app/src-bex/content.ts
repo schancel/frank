@@ -17,6 +17,9 @@ export function isAllowedSyncOrigin(locationObj: { origin?: string }): boolean {
   return isFrankWebAppOrigin(locationObj?.origin)
 }
 
+/** How long a pushed sync bundle waits for the page to say whether it offered it. */
+export const SYNC_OFFER_REPLY_TIMEOUT_MS = 3_000
+
 export function ensureSafariFallbackInpageScript(
   win: Window & Record<string, any>,
   runtimeScope?: Record<string, any>,
@@ -90,6 +93,10 @@ export function installContentScriptBridge(
     }
   }
 
+  // Pushed sync bundles waiting for the page's 'sync-offer-result', by id.
+  const offerReplies = new Map<string, (offered: boolean) => void>()
+  let offerReplySeq = 0
+
   const handleWindowMessage = async (event: MessageEvent) => {
     if (event.source !== null && event.source !== win) return
     const data = event.data
@@ -155,6 +162,24 @@ export function installContentScriptBridge(
           },
           '*',
         )
+      }
+      return
+    }
+
+    // The Frank page says whether it offered a pushed bundle to its user.
+    if (
+      data.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
+      data.direction === 'to-extension' &&
+      data.type === 'sync-offer-result'
+    ) {
+      const reply = offerReplies.get(data.id)
+      if (
+        reply &&
+        event.source === win &&
+        event.origin === win.location?.origin &&
+        isAllowedSyncOrigin(win.location)
+      ) {
+        reply(data.offered === true)
       }
       return
     }
@@ -366,18 +391,33 @@ export function installContentScriptBridge(
       message.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
       message.type === 'extension-sync-push'
     ) {
-      // Acknowledge only when this page is the Frank web app and got the bundle.
+      // Only the Frank web app gets the bundle. The ack says whether the page
+      // offered it to its user (a page that has an account declines it).
       if (!win.location || !isAllowedSyncOrigin(win.location)) return undefined
+      const id = `sync-push-${++offerReplySeq}`
+      const offered = new Promise<boolean>(resolve => {
+        const timer = setTimeout(
+          () => settle(false),
+          SYNC_OFFER_REPLY_TIMEOUT_MS,
+        )
+        const settle = (value: boolean) => {
+          clearTimeout(timer)
+          offerReplies.delete(id)
+          resolve(value)
+        }
+        offerReplies.set(id, settle)
+      })
       win.postMessage(
         {
           channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
           direction: 'to-pwa',
           type: 'extension-sync-push',
+          id,
           payload: message.payload,
         },
         win.location.origin,
       )
-      return { ok: true }
+      return offered.then(value => ({ ok: true, offered: value }))
     }
     return undefined
   }, runtimeScope)

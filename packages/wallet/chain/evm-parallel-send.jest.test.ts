@@ -1473,6 +1473,40 @@ describe('parallel paid messages', () => {
     },
   )
 
+  it('a sub-account\'s leftover coin (its next nonce) pays a stamp while a native send runs: never one nonce signed twice', async () => {
+    const [sub] = await fundAccounts(1, 3n * (STAMP + FEE_RESERVE))
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    const first = await send(1) // from the sub-account at nonce 0; the relay broadcasts it
+    expect(relayPayments()[0].from!.toLowerCase()).toBe(sub.address.toLowerCase())
+    for (let pass = 0; pass < 3; pass++) await tick([first.payloadDigest])
+    // The settled payment left a coin at the account's next nonce.
+    const list = evmWalletInternals(alice).coinList!
+    expect(list.get(sub.address, 1)).toMatchObject({ state: 'unspent' })
+    const [native, message] = await Promise.allSettled([
+      alice.sendNative({ recipient: { raw: '0x' + '77'.repeat(20) }, value: 5n }),
+      send(2),
+    ])
+    expect(native.status).toBe('fulfilled')
+    expect(message.status).toBe('fulfilled')
+    const signed = [
+      ...relayPayments().map(tx => tx.serialized),
+      ...offlineChain.walletBroadcasts,
+    ].map(raw => Transaction.from(raw))
+    const slots = new Map<string, Set<string>>()
+    for (const tx of signed) {
+      const slot = `${tx.from!.toLowerCase()}:${tx.nonce}`
+      slots.set(slot, (slots.get(slot) ?? new Set()).add(tx.hash!))
+    }
+    for (const [slot, hashes] of slots) expect([slot, hashes.size]).toEqual([slot, 1])
+    // The stamp was paid from the leftover coin, at nonce 1.
+    const stamp = relayPayments()[1]
+    expect([stamp.from!.toLowerCase(), stamp.nonce]).toEqual([
+      sub.address.toLowerCase(),
+      1,
+    ])
+  })
+
   it('a native send waiting out the chain spacing keeps the main account: a message waiting for it cannot let its claim go', async () => {
     // Seen on Monad testnet: while a native send that had claimed the main account waited
     // three blocks, a waiting message released that claim as a settled leftover, took the

@@ -42,6 +42,7 @@ import { TopicPostOutcomeUnknownError } from './active-chain'
 import { TopicBurnPreparationError, createEvmChain } from "./evm-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
+import { evmWalletInternals } from '../evm-wallet'
 import { DirectMessagePreparationProgress } from './active-chain'
 import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
 import type { MonadWalletPersistenceBundle } from '../storage/evm-wallet-bundle'
@@ -1330,6 +1331,34 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
       direction: 'up',
       voteWeightWei: WEIGHT,
     })
+  })
+
+  it('an account a funding run claimed under the main holder is let go once nothing it signed is undecided', async () => {
+    const chain = createEvmChain({
+      ...CONFIG,
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+    })
+    const wallet = (await chain.createWallet({
+      mnemonic: TEST_MNEMONIC,
+    })) as EvmChainWalletHandle
+    opened.push(wallet)
+    makeFakeChain(0n, wallet)
+    const holder = `${wallet.identity.address.raw.toLowerCase()}:main-account`
+    const funder = new Wallet('0x' + '78'.repeat(32)).address.toLowerCase()
+    const busy = new Wallet('0x' + '79'.repeat(32)).address.toLowerCase()
+    // As a topic burn's funding run leaves them: claimed under the main holder (not the main
+    // or identity account), one with a transfer the chain has not decided yet.
+    wallet.pool.restoreAccountClaim(holder, funder)
+    wallet.pool.restoreAccountClaim(holder, busy)
+    evmWalletInternals(wallet).unjournalledTransfers.set(busy, [
+      { txHash: '0x' + 'ab'.repeat(32), nonce: 0 },
+    ])
+    await wallet.reobserveNativeOperations!()
+    expect(wallet.pool.accountClaimedBy(funder)).toBeUndefined()
+    expect(wallet.pool.accountClaimedBy(busy)).toBe(holder)
+    evmWalletInternals(wallet).unjournalledTransfers.delete(busy)
+    await wallet.reobserveNativeOperations!()
+    expect(wallet.pool.accountClaimedBy(busy)).toBeUndefined()
   })
 
   it('aggregates multiple funding transactions when no single account covers the total required amount', async () => {

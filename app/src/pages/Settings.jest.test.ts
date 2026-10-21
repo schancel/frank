@@ -46,6 +46,8 @@ jest.mock('src/utils/theme', () => {
   }
 })
 jest.mock('pinia', () => ({
+  // The real settings module is loaded for its pure address helpers; its store is replaced below.
+  defineStore: () => () => undefined,
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
 }))
 const mockSetTheme = jest.fn((theme: string) => {
@@ -184,6 +186,8 @@ const mockSettingsStore = jest.requireActual('vue').reactive({
   resetColdVaultSweep: mockResetColdVaultSweep,
 })
 jest.mock('src/stores/settings', () => ({
+  externalVaultAddressChain: jest.requireActual('src/stores/settings')
+    .externalVaultAddressChain,
   useSettingsStore: () => mockSettingsStore,
 }))
 jest.mock('src/components/settings/PersistentStoragePanel.vue', () => ({
@@ -253,6 +257,11 @@ function mountSettings(
           emits: ['update:modelValue'],
           template:
             '<input type="checkbox" v-bind="$attrs" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
+        },
+        QDialog: {
+          props: ['modelValue'],
+          emits: ['update:modelValue'],
+          template: '<div v-if="modelValue" v-bind="$attrs"><slot /></div>',
         },
         QBtn: {
           props: ['label'],
@@ -826,16 +835,65 @@ describe('Cold-Wallet Auto-Sweep Vault Section (#1572)', () => {
     wrapper.unmount()
   })
 
-  it('saves a valid external vault address and hot-float ceiling', async () => {
-    const wrapper = await openNetworking()
-    const vaultAddr = '0x8888888888888888888888888888888888888888'
-
+  async function confirmAddress(
+    wrapper: ReturnType<typeof mountSettings>,
+    address: string,
+  ) {
     await wrapper
       .find('[data-test="cold-vault-address-input"]')
-      .setValue(vaultAddr)
-    await wrapper.find('[data-test="cold-vault-enabled-toggle"]').setValue(true)
-    await wait(650)
+      .setValue(address)
+    await wrapper
+      .find('[data-test="cold-vault-address-use-btn"]')
+      .trigger('click')
+    expect(
+      wrapper.find('[data-test="cold-vault-confirm-address"]').text(),
+    ).toBe(address)
+    await wrapper
+      .find('[data-test="cold-vault-confirm-accept"]')
+      .trigger('click')
+  }
 
+  it('saves a vault address only after the confirm dialog shows it back with its chain', async () => {
+    const wrapper = await openNetworking()
+    const vaultAddr = '0x8888888888888888888888888888888888888888'
+    const input = wrapper.find('[data-test="cold-vault-address-input"]')
+
+    await input.setValue(vaultAddr)
+    await input.trigger('blur')
+    await wait(650)
+    expect(mockSetColdVaultSweep).not.toHaveBeenCalled()
+    expect(
+      wrapper.find('[data-test="cold-vault-address-unconfirmed"]').exists(),
+    ).toBe(true)
+
+    await wrapper
+      .find('[data-test="cold-vault-address-use-btn"]')
+      .trigger('click')
+    expect(
+      wrapper.find('[data-test="cold-vault-confirm-address"]').text(),
+    ).toBe(vaultAddr)
+    expect(wrapper.find('[data-test="cold-vault-confirm-chain"]').text()).toBe(
+      'settings.coldVaultChainEvm',
+    )
+    expect(mockSetColdVaultSweep).not.toHaveBeenCalled()
+
+    await wrapper
+      .find('[data-test="cold-vault-confirm-accept"]')
+      .trigger('click')
+    expect(mockSetColdVaultSweep).toHaveBeenLastCalledWith({
+      externalVaultAddress: vaultAddr,
+    })
+    expect(mockSettingsStore.coldVaultSweep.externalVaultAddress).toBe(
+      vaultAddr,
+    )
+    expect(
+      wrapper.find('[data-test="cold-vault-confirm-dialog"]').exists(),
+    ).toBe(false)
+    expect(
+      wrapper.find('[data-test="cold-vault-address-use-btn"]').exists(),
+    ).toBe(false)
+
+    await wrapper.find('[data-test="cold-vault-enabled-toggle"]').setValue(true)
     expect(mockSetColdVaultSweep).toHaveBeenLastCalledWith({
       enabled: true,
       externalVaultAddress: vaultAddr,
@@ -846,7 +904,61 @@ describe('Cold-Wallet Auto-Sweep Vault Section (#1572)', () => {
     wrapper.unmount()
   })
 
-  it('the vault address and ceiling save on blur or leaving, never at a typing pause', async () => {
+  it('a half-pasted Solana address that is still well formed is never saved on blur or leaving', async () => {
+    // The 44-character USDC mint's 43-character prefix also decodes to 32 bytes.
+    const full = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+    const truncated = full.slice(0, 43)
+    const wrapper = await openNetworking()
+    const input = wrapper.find('[data-test="cold-vault-address-input"]')
+
+    await input.setValue(truncated)
+    await input.trigger('blur')
+    // Saving the ceiling meanwhile keeps the stored address and the typed one.
+    const ceiling = wrapper.find(
+      '[data-test="cold-vault-max-hot-balance-input"]',
+    )
+    await ceiling.setValue('1000')
+    await ceiling.trigger('blur')
+    expect(mockSettingsStore.coldVaultSweep).toEqual({
+      enabled: false,
+      externalVaultAddress: '',
+      maxHotBalanceDisplay: '1000',
+    })
+    expect((wrapper.vm as any).coldVaultAddressInput).toBe(truncated)
+
+    wrapper.unmount()
+    expect(mockSettingsStore.coldVaultSweep.externalVaultAddress).toBe('')
+    for (const call of mockSetColdVaultSweep.mock.calls as any[]) {
+      expect(call[0].externalVaultAddress ?? '').not.toBe(truncated)
+    }
+
+    // Next visit shows nothing was saved.
+    const again = await openNetworking()
+    expect((again.vm as any).coldVaultAddressInput).toBe('')
+    again.unmount()
+  })
+
+  it('the confirm dialog names a Solana address and cancelling saves nothing', async () => {
+    const full = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+    const wrapper = await openNetworking()
+    await wrapper.find('[data-test="cold-vault-address-input"]').setValue(full)
+    await wrapper
+      .find('[data-test="cold-vault-address-use-btn"]')
+      .trigger('click')
+    expect(wrapper.find('[data-test="cold-vault-confirm-chain"]').text()).toBe(
+      'settings.coldVaultChainSolana',
+    )
+    await wrapper
+      .find('[data-test="cold-vault-confirm-cancel"]')
+      .trigger('click')
+    expect(mockSetColdVaultSweep).not.toHaveBeenCalled()
+
+    await confirmAddress(wrapper, full)
+    expect(mockSettingsStore.coldVaultSweep.externalVaultAddress).toBe(full)
+    wrapper.unmount()
+  })
+
+  it('the vault ceiling saves on blur or leaving, never at a typing pause', async () => {
     const wrapper = await openNetworking()
     const ceiling = wrapper.find(
       '[data-test="cold-vault-max-hot-balance-input"]',
@@ -866,21 +978,50 @@ describe('Cold-Wallet Auto-Sweep Vault Section (#1572)', () => {
     expect(mockSettingsStore.coldVaultSweep.maxHotBalanceDisplay).toBe('2000')
   })
 
-  it('enabling without a valid external vault address shows the error and saves nothing', async () => {
+  it('an invalid address cannot be confirmed and enabling without a saved address shows an error', async () => {
     const wrapper = await openNetworking()
 
     await wrapper
       .find('[data-test="cold-vault-address-input"]')
       .setValue('not-an-address')
-    await wrapper.find('[data-test="cold-vault-enabled-toggle"]').setValue(true)
-
-    expect((wrapper.vm as any).coldVaultError).toContain(
-      'Invalid external vault address',
-    )
+    await wrapper
+      .find('[data-test="cold-vault-address-use-btn"]')
+      .trigger('click')
+    expect(
+      wrapper.find('[data-test="cold-vault-confirm-dialog"]').exists(),
+    ).toBe(false)
     expect(wrapper.find('[data-test="cold-vault-error"]').text()).toContain(
       'Invalid external vault address',
     )
+
+    await wrapper.find('[data-test="cold-vault-enabled-toggle"]').setValue(true)
+    expect((wrapper.vm as any).coldVaultError).toContain(
+      'External vault address is required',
+    )
     expect(mockSettingsStore.coldVaultSweep.enabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('on a wide layout switching section applies a pending edit and drops an unconfirmed address', async () => {
+    const router = await openAt('/settings/networking')
+    const wrapper = mountSettings(router, WIDE)
+    await wrapper
+      .find('[data-test="cold-vault-address-input"]')
+      .setValue('0x8888888888888888888888888888888888888888')
+    await wrapper
+      .find('[data-test="cold-vault-max-hot-balance-input"]')
+      .setValue('2500')
+
+    await router.replace('/settings/appearance')
+    await settle(router)
+    await wrapper.vm.$nextTick()
+
+    expect(mockSettingsStore.coldVaultSweep).toEqual({
+      enabled: false,
+      externalVaultAddress: '',
+      maxHotBalanceDisplay: '2500',
+    })
+    expect((wrapper.vm as any).coldVaultAddressInput).toBe('')
     wrapper.unmount()
   })
 

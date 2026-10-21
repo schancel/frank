@@ -1637,6 +1637,16 @@ export const rawFrFR = {
     coldVaultAddressLabel: 'Adresse du coffre externe (EVM / Solana)',
     coldVaultAddressHint:
       'Adresse de portefeuille matériel ou navigateur (0x... ou Solana base58) recevant les fonds excédentaires',
+    coldVaultUseAddress: 'Utiliser cette adresse',
+    coldVaultAddressUnconfirmed:
+      'Pas encore enregistrée : confirmez-la avec « Utiliser cette adresse ».',
+    coldVaultConfirmTitle: 'Envoyer les fonds balayés à cette adresse ?',
+    coldVaultConfirmBody:
+      'Vérifiez chaque caractère avec votre portefeuille coffre. Les fonds envoyés à une mauvaise adresse sont irrécupérables.',
+    coldVaultConfirmChain: 'Chaîne',
+    coldVaultChainEvm: 'EVM',
+    coldVaultChainSolana: 'Solana',
+    coldVaultConfirmCancel: 'Annuler',
     coldVaultMaxHotBalanceLabel: 'Plafond maximal du portefeuille chaud (MON)',
     coldVaultMaxHotBalanceHint:
       'Par défaut : 1 500 MON (~150 AVU, déclenchement avec hystérésis +20 % à 1 800 MON)',

@@ -45,18 +45,29 @@ function base58ByteLength(text: string): number | null {
   return length + leadingZeros
 }
 
-/** A Solana address is base58 for exactly 32 bytes (an ed25519 public key or PDA); a
- * well-formed but shorter prefix of one is not an address. */
+/**
+ * A Solana address is base58 for exactly 32 bytes (an ed25519 public key or PDA).
+ *
+ * This is a shape check only. It does NOT catch a truncated address: a 44-character address
+ * very often has a 43-character prefix that also decodes to 32 bytes (Solana has no checksum).
+ * Anything that stores an address the user typed or pasted must have them confirm it.
+ */
 export function isValidSolanaAddress(address: string): boolean {
-  return (
-    SOLANA_ADDRESS_REGEX.test(address) && base58ByteLength(address) === 32
-  )
+  return SOLANA_ADDRESS_REGEX.test(address) && base58ByteLength(address) === 32
 }
 
 export function isValidExternalVaultAddress(address: string): boolean {
+  return externalVaultAddressChain(address) !== null
+}
+
+/** The chain family an external vault address belongs to, or null when it is neither. */
+export function externalVaultAddressChain(
+  address: string,
+): 'evm' | 'solana' | null {
   const trimmed = (address || '').trim()
-  if (!trimmed) return false
-  return ETHEREUM_ADDRESS_REGEX.test(trimmed) || isValidSolanaAddress(trimmed)
+  if (ETHEREUM_ADDRESS_REGEX.test(trimmed)) return 'evm'
+  if (isValidSolanaAddress(trimmed)) return 'solana'
+  return null
 }
 
 type GatewayIdentity = Pick<AdvertisedEmailGateway, 'address'>

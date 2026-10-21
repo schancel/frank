@@ -38,6 +38,8 @@ const SAME_IN_FRENCH = new Set([
   'walletPanel.ecashTestnet',
   'walletPanel.solana',
   'walletPanel.solanaTestnet',
+  'settings.coldVaultChainEvm',
+  'settings.coldVaultChainSolana',
   'walletPanel.tempo',
   'walletPanel.tempoTestnet',
   'walletPanel.ethereum',

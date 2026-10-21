@@ -99,8 +99,12 @@ export function debouncedField(commit: () => void, delayMs = 600) {
 /**
  * A typed settings field that applies itself only when the user is done with it: on blur
  * (`commitNow()`) or on leaving the page (`flush()`, only if edited since the last commit).
- * For values whose prefixes are valid values themselves (an address, an amount), where saving
- * after a typing pause would store "1" on the way to "1000".
+ * For values whose prefixes are valid values themselves (an amount), where saving after a
+ * typing pause would store "1" on the way to "1000".
+ *
+ * Not for a payment destination: a half-pasted address can be well formed too (a Solana
+ * address has no checksum), and blur or leaving the page would save it. Addresses that funds
+ * are sent to need an explicit confirm step that shows the full address back.
  */
 export function blurField(commit: () => void) {
   let dirty = false

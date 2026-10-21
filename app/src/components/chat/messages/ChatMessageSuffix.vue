@@ -97,6 +97,9 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
+import { useChatStore } from '../../../stores/chats'
+import { blockingMessage } from '../../../stores/chats-self-notes'
+import { messageItems } from '../../../utils/message-items'
 
 import ChatMessageSuffixButtons from './ChatMessageSuffixButtons.vue'
 
@@ -174,6 +177,13 @@ export default defineComponent({
     },
     /** Why the message failed (`OutgoingFailureReason`), explained in the tooltip of "Failed". */
     failureReason: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    /** The failure's kept detail (`OutgoingDelivery.detail`): for `blocked`, the payload digest
+     * of the earlier message it waits for, which the tooltip names by its first words and time. */
+    failureDetail: {
       type: String,
       required: false,
       default: '',
@@ -303,7 +313,33 @@ export default defineComponent({
       keys['stamp-below-fee'] = 'outgoing.reasonStampBelowFee'
       keys.blocked = 'outgoing.reasonBlocked'
       const key = keys[this.failureReason]
-      return key === undefined ? '' : this.$t(key)
+      if (key === undefined) return ''
+      const blocking = this.blockingMessageText
+      return blocking ? `${this.$t(key)} ${blocking}` : this.$t(key)
+    },
+    /** For a send blocked by an earlier message: that message, by its first words and time. */
+    blockingMessageText(): string {
+      if (this.failureReason !== 'blocked' || !this.failureDetail) return ''
+      const chats = useChatStore()
+      const found = blockingMessage(
+        [
+          ...Object.values(chats.messages),
+          ...Object.values(chats.conversations).flatMap(
+            conversation => conversation?.messages ?? [],
+          ),
+        ],
+        this.failureDetail,
+      )
+      if (!found) return ''
+      const words = found.items
+        .map(item => messageItems.previewText(item))
+        .join(' ')
+        .trim()
+      const preview = words.length > 40 ? `${words.slice(0, 40)}…` : words
+      return this.$t('outgoing.blockedBy', {
+        preview,
+        time: new Date(found.serverTime || found.receivedTime).toLocaleString(),
+      })
     },
     suffixPlacement(): string {
       return this.outbound ? 'text-right' : 'text-left'

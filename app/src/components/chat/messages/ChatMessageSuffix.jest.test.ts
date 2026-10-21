@@ -6,16 +6,31 @@ import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import enUS from '../../../i18n/en-us'
 import frFR from '../../../i18n/fr-fr'
 
+/** The chat store as the blocked-send lookup reads it: messages by digest and conversations. */
+const mockChats: {
+  messages: Record<string, unknown>
+  conversations: Record<string, { messages: unknown[] }>
+} = { messages: {}, conversations: {} }
+jest.mock('../../../stores/chats', () => ({ useChatStore: () => mockChats }))
+
 jest.mock('quasar', () => ({
   useQuasar: () => ({ platform: { is: { mobile: false } } }),
 }))
 
 function translator(messages: unknown) {
-  return (key: string) => {
+  return (key: string, named: Record<string, string> = {}) => {
     const value = key
       .split('.')
       .reduce<unknown>((o, k) => (o as Record<string, unknown>)?.[k], messages)
-    return typeof value === 'string' ? value : key
+    // Only the blocked-send line is filled in: the other tests compare with the raw template.
+    return typeof value === 'string'
+      ? key === 'outgoing.blockedBy'
+        ? Object.entries(named).reduce(
+            (text, [name, part]) => text.replace(`{${name}}`, part),
+            value,
+          )
+        : value
+      : key
   }
 }
 
@@ -540,4 +555,41 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       )
     },
   )
+
+  it('a send blocked by an earlier message names that message by its first words and time', () => {
+    const digest = 'ab'.repeat(32)
+    const sentAt = Date.UTC(2026, 9, 20, 9, 30)
+    mockChats.conversations = {
+      c: {
+        messages: [
+          {
+            outbound: true,
+            payloadDigest: 'ef'.repeat(32),
+            delivery: { attemptDigest: digest },
+            serverTime: sentAt,
+            receivedTime: sentAt,
+            items: [{ type: 'text', text: 'Lunch on Thursday at the usual place?' }],
+          },
+        ],
+      },
+    }
+    const wrapper = mountSuffix({
+      status: 'error',
+      failureReason: 'blocked',
+      failureDetail: digest,
+    })
+    const details = wrapper.get('[data-testid="outgoing-failure-details"]').text()
+    expect(details).toContain(enUS.outgoing.reasonBlocked)
+    expect(details).toContain('Lunch on Thursday')
+    expect(details).toContain(new Date(sentAt).toLocaleString())
+    // An unknown digest: the reason alone.
+    const unknown = mountSuffix({
+      status: 'error',
+      failureReason: 'blocked',
+      failureDetail: 'cd'.repeat(32),
+    })
+    expect(
+      unknown.get('[data-testid="outgoing-failure-details"]').text(),
+    ).toBe(`Failed to send — ${enUS.outgoing.reasonBlocked}`)
+  })
 })

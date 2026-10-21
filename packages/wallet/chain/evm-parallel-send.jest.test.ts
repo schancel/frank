@@ -59,9 +59,12 @@ jest.mock('../evm-http', () =>
 jest.mock('@frank/cashweb/relay/mailbox-client', () =>
   require('./canonical-two-wallets.testutil').offlineMailboxModule(),
 )
-/** Fails the next durable write of a sent-message record, having written it or not. */
-const mockMessageWrite: { mode: 'ok' | 'dropped' | 'written-then-reported-failed' } =
-  { mode: 'ok' }
+/** Fails the next durable write of a sent-message record, having written it or not.
+ * `written`: every sent-message record written to disk, in order. */
+const mockMessageWrite: {
+  mode: 'ok' | 'dropped' | 'written-then-reported-failed'
+  written: string[]
+} = { mode: 'ok', written: [] }
 jest.mock('../storage/level-durability', () => {
   const actual = jest.requireActual<
     typeof import('../storage/level-durability')
@@ -74,8 +77,12 @@ jest.mock('../storage/level-durability', () => {
       const isMessage =
         typeof args[2] === 'string' &&
         args[2].includes('"consumerId":"frank-dm:')
-      if (!isMessage || mockMessageWrite.mode === 'ok')
-        return actual.durablePut(...args)
+      if (!isMessage) return actual.durablePut(...args)
+      if (mockMessageWrite.mode === 'ok') {
+        await actual.durablePut(...args)
+        mockMessageWrite.written.push(args[2] as string)
+        return
+      }
       const mode = mockMessageWrite.mode
       mockMessageWrite.mode = 'ok'
       if (mode === 'written-then-reported-failed')
@@ -118,6 +125,7 @@ describe('parallel paid messages', () => {
     mockFunded.length = 0
     mailboxes.clear()
     mockMessageWrite.mode = 'ok'
+    mockMessageWrite.written = []
     REPLACED_AFTER_MS.value = 60_000
     RESIGN_AFTER_MS.value = 3_000
     f = await fixture()
@@ -1359,11 +1367,176 @@ describe('parallel paid messages', () => {
     ])
     expect(outcome).toBeInstanceOf(StampBlockedError)
     expect((outcome as StampBlockedError).blockingPayloadDigest).toBe(digest)
+    // Nothing of the refused send was claimed, signed or stored.
+    expect(isDirectMessageNotAttempted(outcome)).toBe(true)
     // Nothing was released: the first message still holds the main account's coin.
     expect(alice.pool.accountClaimedBy(main)).toBeDefined()
     expect(
       f.chain.directMessages.paymentsOf?.({ wallet: alice, payloadDigest: digest }),
     ).toEqual(['pending'])
+  })
+
+  it('a send waiting on an earlier main-paid send that is between its record and the host binding waits for it, and is not refused as blocked', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    let entered!: () => void
+    const inBinding = new Promise<void>(resolve => (entered = resolve))
+    let bind!: () => void
+    const bound = new Promise<void>(resolve => (bind = resolve))
+    const first = f.chain.directMessages.send({
+      wallet: alice,
+      recipient: f.bob.identity.address,
+      items: [{ type: 'text', text: 'message 1' }],
+      stampValue: STAMP,
+      messageId: ID(1),
+      onEnvelopeDurable: async () => {
+        entered()
+        await bound
+      },
+    })
+    await inBinding
+    const second = send(2)
+    // Several looks of the chain while the first send's host binding is under way.
+    const early = await Promise.race([
+      second.then(
+        () => 'sent',
+        error => error,
+      ),
+      new Promise(resolve => setTimeout(() => resolve('still waiting'), 3_000)),
+    ])
+    expect(early).toBe('still waiting')
+    bind()
+    await expect(first).resolves.toMatchObject({ stampValueWei: STAMP })
+    await tick()
+    await expect(second).resolves.toMatchObject({ stampValueWei: STAMP })
+    expect(
+      relayPayments()
+        .filter(tx => tx.from!.toLowerCase() === main)
+        .map(tx => tx.nonce),
+    ).toEqual([0, 1])
+  })
+
+  it('a blocked holder does not refuse a send that another holder, settling, will free enough for', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    const identity = alice.identity.address.raw.toLowerCase()
+    mockBalances.set(main, 10n ** 18n)
+    // B: delivered, paid from main, its payment not on the chain yet.
+    offlineChain.relayBroadcasts = false
+    offlineChain.broadcastDown = true
+    await send(1)
+    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+    // A: paid from the identity account, its answer lost, every resend refused.
+    mockBalances.set(identity, 10n ** 18n)
+    installCanonicalDirectory(alice, {
+      ...directory,
+      fetch: async () => {
+        throw new Error('answer lost')
+      },
+    })
+    const blocked = await send(2).catch(error => error)
+    expect(blocked).toBeInstanceOf(MonadStampPendingAttemptError)
+    const blockedDigest = blocked.payloadHashes[0]
+    installCanonicalDirectory(alice, directory)
+    // The relay keeps refusing A's bytes (and only A's).
+    relay.answer = (identityOf, payments) =>
+      payments.some(tx => tx.from!.toLowerCase() === identity)
+        ? {
+            status: 200,
+            body: { version: 1, phase: 'dead', identity: identityOf, reason: 'insufficient_total' },
+          }
+        : undefined
+    await tick([blockedDigest])
+    expect(alice.pool.accountClaimedBy(identity)).toBeDefined()
+    // C: only one account's coin covers it; main comes back once B's payment lands.
+    const big = f.chain.directMessages
+      .send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'a large stamp' }],
+        stampValue: 4n * 10n ** 17n,
+        messageId: ID(3),
+      })
+      .catch(error => error)
+    const early = await Promise.race([
+      big,
+      new Promise(resolve => setTimeout(() => resolve('still waiting'), 3_000)),
+    ])
+    expect(early).toBe('still waiting')
+    offlineChain.broadcastDown = false
+    await tick()
+    await tick()
+    const outcome = await big
+    expect(outcome).toMatchObject({ stampValueWei: 4n * 10n ** 17n })
+    expect(
+      relayPayments()
+        .filter(tx => tx.value === 4n * 10n ** 17n)
+        .map(tx => tx.from!.toLowerCase()),
+    ).toEqual([main])
+    // The blocked message still holds its coin.
+    expect(alice.pool.accountClaimedBy(identity)).toBeDefined()
+  })
+
+  it('the unexposed mark is off the record on disk before the bytes reach the relay', async () => {
+    await fundAccounts(1)
+    const onDisk: (string | undefined)[] = []
+    const base = directory.fetch!
+    installCanonicalDirectory(alice, {
+      ...directory,
+      fetch: (url, init) => {
+        onDisk.push(mockMessageWrite.written.at(-1))
+        return base(url, init)
+      },
+    })
+    await send(1)
+    // The record was written with the mark, then without it, before the one request.
+    expect(mockMessageWrite.written.some(row => row.includes('"unexposed":true'))).toBe(true)
+    expect(onDisk).toHaveLength(1)
+    expect(onDisk[0]).toBeDefined()
+    expect(onDisk[0]).not.toContain('"unexposed"')
+    expect(onDisk[0]).toContain('"request"')
+  })
+
+  it('a later non-refusal answer clears the recorded refusal, so the message no longer names itself blocked', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 18n)
+    installCanonicalDirectory(alice, {
+      ...directory,
+      fetch: async () => {
+        throw new Error('answer lost')
+      },
+    })
+    const first = await send(1).catch(error => error)
+    const digest = first.payloadHashes[0]
+    installCanonicalDirectory(alice, directory)
+    relay.answer = identity => ({
+      status: 200,
+      body: { version: 1, phase: 'dead', identity, reason: 'insufficient_total' },
+    })
+    await tick([digest])
+    expect(mockMessageWrite.written.at(-1)).toContain('"reason":"insufficient_total"')
+    relay.answer = identity => ({
+      status: 202,
+      body: { version: 1, phase: 'retained', identity },
+    })
+    for (let pass = 0; pass < 4; pass++) await tick([digest])
+    expect(mockMessageWrite.written.at(-1)).not.toContain('"reason"')
+    // With the refusal gone, a send waiting for main waits instead of naming it.
+    const big = f.chain.directMessages
+      .send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'a large stamp' }],
+        stampValue: 4n * 10n ** 17n,
+        messageId: ID(2),
+      })
+      .catch(error => error)
+    const outcome = await Promise.race([
+      big,
+      new Promise(resolve => setTimeout(() => resolve('still waiting'), 3_000)),
+    ])
+    expect(outcome).toBe('still waiting')
+    await alice.close().catch(() => undefined)
+    await big
   })
 
   it('a payment the chain mined and reverted, of a delivered message, is made once more: same value, same address, recorded before it is broadcast, never a third time', async () => {

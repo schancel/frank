@@ -992,7 +992,13 @@ async function submitStored(
   // A relay's answer cannot prove an exposed signed payment unexecutable. Keep the complete
   // original request and its claims until delivery and chain reconciliation resolve them.
   if (accepted.phase !== 'delivered') {
-    if (accepted.phase !== 'dead') return { row }
+    if (accepted.phase !== 'dead') {
+      // A later answer replaces an earlier refusal: the relay no longer gives that reason.
+      if (row.reason === undefined) return { row }
+      const { reason: _reason, ...answered } = owner.messages.get(row.consumerId)!
+      await owner.messages.put(answered)
+      return { row: answered }
+    }
     const dead = accepted.reason
     const before =
       unexposed && REFUSED_BEFORE_EXPOSURE.has(dead)
@@ -1058,6 +1064,10 @@ function blockedBy(
   const pending = row.payments.filter(isPending)
   if (pending.length === 0) return undefined
   if (pending.some(payment => knownToNode.has(payment.rawTx))) return undefined
+  // A send or a look in flight for it (an earlier send between its record and the host's
+  // binding, the resend pass submitting it) can still finish it.
+  const work = works.get(owner.messages)?.get(row.consumerId)
+  if (work?.creating || work?.busy) return undefined
   if (row.exposurePending) return new StampBlockedError(row.digest)
   if (row.reason !== undefined) return new StampBlockedError(row.digest, row.reason)
   return undefined
@@ -1939,10 +1949,9 @@ async function send(
             // nothing was signed, the claim loop lets go, and close is not held up.
             owner.payer()
             await settleHolder(owner, busyHolder)
-            // A holder that cannot finish by itself is named, never waited for for ever.
-            const blocked = blockedBy(owner, busyHolder)
-            if (blocked) throw blocked
           },
+          // A holder that cannot finish by itself is named, never waited for for ever.
+          blockedBy: busyHolder => blockedBy(owner, busyHolder),
           onWaiting: blocksRemaining => {
             claimWaited = true
             params.onPreparationProgress?.({
@@ -2189,7 +2198,10 @@ async function send(
     // Nothing signed left the wallet and nothing is stored: the accounts are free at once.
     if (!recorded && claim !== undefined)
       await payer.release(claim).catch(() => undefined)
-    throw attempted ? possiblyAttempted(error) : notAttempted(error)
+    // A claim refused because an earlier message blocks it took, signed and stored nothing.
+    throw attempted && !(error instanceof StampBlockedError && !recorded)
+      ? possiblyAttempted(error)
+      : notAttempted(error)
   } finally {
     if (work.creating) {
       work.creating = undefined

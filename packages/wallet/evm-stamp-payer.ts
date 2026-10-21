@@ -554,6 +554,11 @@ export class EvmStampPayer {
     /** Limit the coins considered. Default: every source. */
     sources?: readonly StampCoinSource[]
     whileBusy?: (holder: string) => Promise<void>
+    /** Whether a holder's payment cannot finish by itself (asked after `whileBusy`): the error
+     * to end this claim with, or `undefined` while it can still finish. A blocked holder ends the
+     * claim only when its coins are needed (everything else that could come back does not cover
+     * the value) and it is still blocked at the next look. */
+    blockedBy?: (holder: string) => Error | undefined
     /** Called once when this payment starts waiting for an earlier one, and again with the
      * blocks still to pass when what it waits for is the chain's spacing. */
     onWaiting?: (blocksRemaining?: number) => void
@@ -577,6 +582,9 @@ export class EvmStampPayer {
     let readDue = false
     let readAll = false
     let waiting = false
+    // Consecutive looks at which a blocked holder's coins were needed: one is not enough (the
+    // holder may be between two steps of its own send), two end the claim.
+    let blockedLooks = 0
     for (;;) {
       if (input.signal?.aborted) throw new ChainWaitCancelledError()
       const head = this.watcher.latest()
@@ -710,6 +718,32 @@ export class EvmStampPayer {
         }),
       ])
       for (const holder of holders) await input.whileBusy?.(holder)
+      // A holder that cannot finish by itself is named, never waited for for ever: when, after
+      // the others settled, what everyone else holds or will get back does not cover the value.
+      const blocked = new Map<string, Error>()
+      for (const holder of holders) {
+        const error = input.blockedBy?.(holder)
+        if (error) blocked.set(holder, error)
+      }
+      if (blocked.size === 0) blockedLooks = 0
+      else {
+        const after = coins.all()
+        const claimant = (coin: EvmListCoin) =>
+          stampSourceOf(coin.origin) === 'pool'
+            ? pool.claimedBy(this.indexOf(coin.account) ?? -1)
+            : pool.accountClaimedBy(coin.account)
+        const comingBack = after.filter(coin => {
+          if (!comesBack(coin)) return false
+          if (coin.state === 'spend_pending' || coin.state === 'pending_receipt')
+            return coin.holder !== input.holder && !blocked.has(coin.holder!)
+          if (coin.state !== 'unspent' || free(coin)) return false
+          const by = claimant(coin)
+          return by !== undefined && !blocked.has(by)
+        })
+        const unblocked = after.filter(free).concat(comingBack)
+        if (sum(unblocked) >= input.stampValueWei) blockedLooks = 0
+        else if (++blockedLooks >= 2) throw blocked.values().next().value!
+      }
       // Woken when the list changes, or at the watcher's next look: one look of the chain per
       // interval for every waiter of the wallet together, no timer of its own.
       await this.untilChanged(input.signal)

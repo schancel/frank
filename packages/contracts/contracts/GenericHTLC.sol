@@ -277,6 +277,7 @@ contract GenericHTLC {
     /**
      * @notice Withdraws locked funds to recipient by revealing the secret preimage.
      * Can be invoked by anyone (or recipient), but payout is strictly sent to lock.recipient.
+     * Only before `expiresAt`; from then on the lock can only be refunded.
      * @param lockId Unique lock identifier.
      * @param preimage Secret bytes whose sha256 or keccak256 matches lock.hashLock.
      */
@@ -328,6 +329,7 @@ contract GenericHTLC {
             if (l.recipient != msg.sender) revert Unauthorized();
             if (l.withdrawn) revert AlreadyWithdrawn();
             if (l.refunded) revert AlreadyRefunded();
+            if (block.timestamp >= l.expiresAt) revert LockExpired();
             if (l.token != token) revert TokenMismatch();
 
             if (sha256(preimage) != l.hashLock && keccak256(preimage) != l.hashLock) {
@@ -391,6 +393,8 @@ contract GenericHTLC {
         if (l.sender == address(0)) revert LockNotFound();
         if (l.withdrawn) revert AlreadyWithdrawn();
         if (l.refunded) revert AlreadyRefunded();
+        // Withdraw and refund windows are disjoint: once refund is possible, withdraw is not.
+        if (block.timestamp >= l.expiresAt) revert LockExpired();
 
         // Support both sha256 and keccak256
         if (sha256(preimage) != l.hashLock && keccak256(preimage) != l.hashLock) {

@@ -32,6 +32,8 @@ pub enum HtlcError {
     AccountMismatch,
     #[error("Invalid PDA derivation or seeds")]
     InvalidPda,
+    #[error("Caller is not the recipient of every lock")]
+    Unauthorized,
 }
 
 impl From<HtlcError> for ProgramError {

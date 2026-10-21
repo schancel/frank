@@ -183,6 +183,11 @@ impl Processor {
         if *recipient_account.key != lock_state.recipient {
             return Err(HtlcError::AccountMismatch.into());
         }
+        // Withdraw and refund windows are disjoint: once refund is possible, withdraw is not.
+        let now = Clock::get()?.unix_timestamp;
+        if now >= lock_state.expires_at {
+            return Err(HtlcError::LockExpired.into());
+        }
 
         // Verify hashlock with sha256 or keccak256
         let sha_h = sha256_hash(&preimage).to_bytes();
@@ -242,7 +247,12 @@ impl Processor {
         }
 
         let account_info_iter = &mut accounts.iter();
-        let _caller = next_account_info(account_info_iter)?;
+        let caller = next_account_info(account_info_iter)?;
+        // The caller chooses who is paid, so knowing the (by then public) preimage is not
+        // enough: only the signing recipient of every lock may distribute.
+        if !caller.is_signer {
+            return Err(ProgramError::MissingRequiredSignature);
+        }
 
         // Find how many lock accounts vs payout accounts:
         // Next accounts are lock accounts until we reach accounts matching payouts[0].recipient
@@ -276,6 +286,7 @@ impl Processor {
         let sha_h = sha256_hash(&preimage).to_bytes();
         let keccak_h = keccak256_hash(&preimage).to_bytes();
 
+        let now = Clock::get()?.unix_timestamp;
         let mut total_pool: u64 = 0;
         let mut primary_refund_dest: Option<Pubkey> = None;
 
@@ -292,6 +303,12 @@ impl Processor {
             }
             if lock_state.refunded {
                 return Err(HtlcError::AlreadyRefunded.into());
+            }
+            if lock_state.recipient != *caller.key {
+                return Err(HtlcError::Unauthorized.into());
+            }
+            if now >= lock_state.expires_at {
+                return Err(HtlcError::LockExpired.into());
             }
 
             if sha_h != lock_state.hash_lock && keccak_h != lock_state.hash_lock {

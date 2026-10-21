@@ -24,7 +24,7 @@ pub enum HtlcInstruction {
         duration: i64,
     },
 
-    /// Withdraws locked funds to recipient by revealing preimage.
+    /// Withdraws locked funds to recipient by revealing preimage, strictly before `expires_at`.
     ///
     /// Accounts expected:
     /// 0. `[signer]` Caller
@@ -45,9 +45,10 @@ pub enum HtlcInstruction {
 
     /// Multi-winner group table pot distribution.
     /// Pools multiple locks and disburses to payouts list; remainder goes to locks[0].refund_address.
+    /// Only strictly before every lock's `expires_at`.
     ///
     /// Accounts expected:
-    /// 0. `[signer]` Caller
+    /// 0. `[signer]` Caller; must be the recipient of every lock
     /// 1..=N. `[writable]` Lock PDA accounts
     /// (N+1)..=(N+M). `[writable]` Payout recipient accounts
     /// Optional: `[writable]` Primary refund destination for remainder

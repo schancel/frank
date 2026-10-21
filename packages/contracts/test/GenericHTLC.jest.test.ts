@@ -233,6 +233,32 @@ describe('GenericHTLC on a local EVM node', () => {
       expect(await balance(htlcAddress)).toBe(held)
     })
 
+    it('is refused from the expiry on, when only a refund can pay out', async () => {
+      const early = await lockNative()
+      const late = await lockNative()
+      await anvil.advanceTime(ONE_HOUR - 60)
+      await mined(as(stranger).withdraw(early, preimage))
+
+      // Otherwise a recipient could reveal the preimage after the sender's leg refunded.
+      await anvil.advanceTime(60)
+      const held = await balance(htlcAddress)
+      await expectRevert(as(recipient).withdraw(late, preimage), 'LockExpired')
+      await expectRevert(as(recipient).batchWithdraw([late], preimage), 'LockExpired')
+      expect(await balance(htlcAddress)).toBe(held)
+      expect((await htlc.locks(late)).withdrawn).toBe(false)
+
+      const refundBefore = await balance(refundTo)
+      await mined(as(stranger).refund(late))
+      expect((await balance(refundTo)) - refundBefore).toBe(AMOUNT)
+    })
+
+    it('is refused long after the expiry (lock 1 h, withdraw 10 h later)', async () => {
+      const lockId = await lockNative()
+      await anvil.advanceTime(10 * ONE_HOUR)
+      await expectRevert(as(recipient).withdraw(lockId, preimage), 'LockExpired')
+      expect((await htlc.locks(lockId)).withdrawn).toBe(false)
+    })
+
     it('does not let a recipient contract take a second lock from inside its payment', async () => {
       const attacker = await deploy(testContract('ReentrantRecipient'), stranger, [htlcAddress])
       const attackerAddress = await attacker.getAddress()
@@ -425,6 +451,22 @@ describe('GenericHTLC on a local EVM node', () => {
       await expectRevert(as(arbiter).batchDistribute([native, spent], one, preimage), 'AlreadyWithdrawn')
       await expectRevert(as(arbiter).batchDistribute([native, erc20], one, preimage), 'TokenMismatch')
       expect((await htlc.locks(native)).withdrawn).toBe(false)
+    })
+
+    it('cannot distribute once a lock has expired', async () => {
+      const fresh = await lockNative({ duration: 10 * ONE_HOUR })
+      const expiring = await lockNative()
+      await anvil.advanceTime(ONE_HOUR)
+      await expectRevert(
+        as(arbiter).batchDistribute(
+          [fresh, expiring],
+          [{ recipient: arbiter.address, amount: AMOUNT * 2n }],
+          preimage,
+        ),
+        'LockExpired',
+      )
+      expect((await htlc.locks(fresh)).withdrawn).toBe(false)
+      expect((await htlc.locks(expiring)).withdrawn).toBe(false)
     })
 
     it('cannot distribute a refunded lock', async () => {

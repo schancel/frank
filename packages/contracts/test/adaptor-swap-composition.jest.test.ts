@@ -663,17 +663,27 @@ describe('experimental two-session StateChannel/XEC adaptor composition', () => 
       })
     ).toEqual({ ok: true, value: true })
   })
-  it('allows success after expiry until fallback settles; success-first blocks refund', async () => {
+  it('accepts success until just before expiry; success-first blocks refund', async () => {
     await open()
     await mined(as(b).startChallenge(id))
     const expiry = Number((await contract.channels(id)).challengeExpiresAt)
-    await node.provider.send('evm_setNextBlockTimestamp', [expiry + 1])
-    await node.provider.send('evm_mine', [])
+    await node.provider.send('evm_setNextBlockTimestamp', [expiry - 1])
     await mined(close())
     await expectRevert(
       as(relayer).closeAfterChallenge(id),
       'ChannelAlreadySettled'
     )
+  })
+  it('refuses success from expiry on; only the fallback settles', async () => {
+    await open()
+    await mined(as(b).startChallenge(id))
+    const expiry = Number((await contract.channels(id)).challengeExpiresAt)
+    await node.provider.send('evm_setNextBlockTimestamp', [expiry])
+    await node.provider.send('evm_mine', [])
+    await expectRevert(close(), 'ChallengeExpired')
+    const before = await balance(b.address)
+    await mined(as(relayer).closeAfterChallenge(id))
+    expect((await balance(b.address)) - before).toBe(M)
   })
   it('interprets independent XEC refund CLTV without any J handle', () => {
     const unlock = concat(

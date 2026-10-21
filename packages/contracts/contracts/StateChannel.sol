@@ -66,7 +66,7 @@ contract StateChannel {
     error ChannelAlreadyExists();
     error ChannelNotFound();
     error ChannelAlreadySettled();
-    error ChannelExpired();
+    error ChallengeExpired();
     error ChallengeNotExpired();
     error ChallengeNotActive();
     error ChallengeAlreadyActive();
@@ -212,6 +212,7 @@ contract StateChannel {
      * @notice Checkpoints the latest off-chain state on-chain without distributing funds.
      * Enforces monotonic sequence numbers (`seq > currentSeq`).
      * Prevents the "sore loser" attack: either party can lock in progress before going offline.
+     * Refused once a challenge window has expired.
      * @param channelId Unique channel identifier.
      * @param seq Monotonically increasing sequence number.
      * @param balances Current agreed balance distribution [balanceA, balanceB].
@@ -229,6 +230,7 @@ contract StateChannel {
         if (ch.participants[0] == address(0)) revert ChannelNotFound();
         if (ch.settled) revert ChannelAlreadySettled();
         if (seq <= ch.currentSeq) revert StaleSequence();
+        _requireChallengeOpen(ch);
 
         uint256 total = ch.balances[0] + ch.balances[1];
         if (balances[0] + balances[1] != total) revert InvalidBalanceSum();
@@ -248,7 +250,8 @@ contract StateChannel {
     /**
      * @notice Cooperatively settles and closes the channel immediately with zero challenge delay.
      * Payouts can be routed to arbitrary destination addresses (e.g. fresh DKSAP stealth addresses).
-     * Supports both native coin and ERC-20 channels.
+     * Supports both native coin and ERC-20 channels. Accepted while no challenge is running
+     * or while it is still open; refused once a challenge window has expired.
      * @param channelId Unique channel identifier.
      * @param seq Final sequence number (must be >= currentSeq).
      * @param balances Final agreed balance distribution [balanceA, balanceB].
@@ -270,6 +273,7 @@ contract StateChannel {
         if (ch.participants[0] == address(0)) revert ChannelNotFound();
         if (ch.settled) revert ChannelAlreadySettled();
         if (seq < ch.currentSeq) revert StaleSequence();
+        _requireChallengeOpen(ch);
 
         uint256 total = ch.balances[0] + ch.balances[1];
         if (balances[0] + balances[1] != total) revert InvalidBalanceSum();
@@ -321,6 +325,17 @@ contract StateChannel {
         bytes calldata sig1
     ) external {
         closeCooperative(channelId, seq, balances, address(0), address(0), sig0, sig1);
+    }
+
+    /**
+     * @dev Once a challenge window has expired the recorded balances are final: only
+     * `closeAfterChallenge` may settle the channel, so a late checkpoint or cooperative
+     * close cannot override (or restart) a dispute that has already been decided.
+     */
+    function _requireChallengeOpen(Channel storage ch) internal view {
+        if (ch.challengeExpiresAt != 0 && block.timestamp >= ch.challengeExpiresAt) {
+            revert ChallengeExpired();
+        }
     }
 
     /**

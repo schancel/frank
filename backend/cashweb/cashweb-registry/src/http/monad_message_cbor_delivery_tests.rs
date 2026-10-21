@@ -1573,3 +1573,54 @@ fn an_account_paying_twice_must_cover_both_payments_and_their_gas() {
     let held = HashSet::from([payments[0].tx_hash]);
     assert_eq!(judge_payments(&payments, &state(0), &held), None);
 }
+
+/// Nonce stacking (the wallet's coin list): an account pays one message at nonce n and, before
+/// that payment is mined, the next message at n + 1, or one message pays at n and n + 1. Neither
+/// is refused: the pending nonce counts only included transactions (as on Monad), so n + 1 is
+/// above it and a gap is the node's business; the `latest` balance is not yet debited by n, so
+/// each message is judged against the whole balance.
+#[test]
+fn a_payment_stacked_on_an_unmined_one_of_the_same_account_is_not_refused() {
+    use std::collections::{HashMap, HashSet};
+    let account = Address([0xbb; 20]);
+    let payment = |nonce: u64, byte: u8| crate::monad_evm_tx::DecodedSignedTransaction {
+        tx_hash: crate::monad_http::Hash32([byte; 32]),
+        chain_id: Some(CHAIN_ID),
+        sender: account,
+        nonce,
+        destination: Some(Address([byte; 20])),
+        value_wei: 100,
+        input: Vec::new(),
+        max_gas_cost_wei: 10,
+    };
+    let state = |pending_nonce, balance_wei| {
+        HashMap::from([(
+            account,
+            SenderState {
+                pending_nonce,
+                balance_wei,
+            },
+        )])
+    };
+    let none = HashSet::new();
+    // The account held 300 at nonce 7; the payment at 7 is out and not mined.
+    let unmined = state(7, 300);
+    // The first message, at 7.
+    assert_eq!(judge_payments(&[payment(7, 1)], &unmined, &none), None);
+    // The next message, stacked at 8, while 7 is unmined: neither stale nor short.
+    assert_eq!(judge_payments(&[payment(8, 2)], &unmined, &none), None);
+    // Two messages further up the stack, with the node still at 7.
+    assert_eq!(judge_payments(&[payment(9, 3)], &unmined, &none), None);
+    // One message paying at 7 and 8 (a bundle of one account): both fit the balance.
+    assert_eq!(
+        judge_payments(&[payment(7, 1), payment(8, 2)], &unmined, &none),
+        None
+    );
+    // Once 7 is mined: the node is at 8 and the balance debited; 8 still goes through.
+    assert_eq!(judge_payments(&[payment(8, 2)], &state(8, 190), &none), None);
+    // What stays refused: a nonce below the node's (the slot is taken).
+    assert_eq!(
+        judge_payments(&[payment(7, 1)], &state(8, 190), &none),
+        Some(DeadPayment::StaleNonce)
+    );
+}

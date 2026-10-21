@@ -8,6 +8,7 @@ import {
   EvmCoinList,
   EvmCoinListError,
   coinKey,
+  fillerHolder,
   type StoredEvmListCoin,
 } from './evm-coin-list'
 import { MemoryRecordStore } from './storage/evm-coin-store'
@@ -119,6 +120,59 @@ describe('the coin list', () => {
       list.select({ holder: 'other', amountWei: MON / 20n, feeReserveWei: FEE })!
         .map(p => p.coin.account),
     ).toEqual([parts[1]!.coin.account])
+  })
+
+  describe('a nonce released as provably unexposed', () => {
+    /** A signs at nonce 0 (its successor at 1 provisional); B, if asked, signs at 1 above it. */
+    async function stacked(withB: boolean) {
+      const { list, store } = await listWith([MON / 10n])
+      const [a] = list.select({ holder: 'A', amountWei: MON / 100n, feeReserveWei: FEE })!
+      await list.recordSigned('A', a!.coin, '0xa', MON / 20n)
+      if (withB) {
+        const [b] = list.select({ holder: 'B', amountWei: MON / 100n, feeReserveWei: FEE })!
+        expect(b!.coin.nonce).toBe(1)
+        await list.recordSigned('B', b!.coin, '0xb')
+      }
+      return { list, store, account: a!.coin.account }
+    }
+
+    it('with nothing above it: free again for the next send, its provisional successor gone', async () => {
+      const { list, account } = await stacked(false)
+      expect(await list.releaseUnexposed('A')).toEqual([])
+      expect(list.get(account, 0)!.state).toBe('unspent')
+      expect(list.get(account, 1)).toBeUndefined()
+    })
+
+    it('under a spend above it: passed to a filler in the same step, never selectable in between', async () => {
+      const { list, account } = await stacked(true)
+      const releasing = list.releaseUnexposed('A')
+      // Synchronously, before the release's write: the nonce is the filler's.
+      expect(list.get(account, 0)).toMatchObject({
+        state: 'spend_pending',
+        holder: fillerHolder({ account, nonce: 0 }),
+      })
+      expect(list.get(account, 0)!.spendingTx).toBeUndefined()
+      expect(
+        list.select({ holder: 'C', amountWei: MON / 100n, feeReserveWei: FEE }),
+      ).toBeUndefined()
+      expect((await releasing).map(coin => coin.nonce)).toEqual([0])
+      expect(list.unsignedFillers().map(coin => coin.nonce)).toEqual([0])
+      await list.recordFiller(fillerHolder({ account, nonce: 0 }), { account, nonce: 0 }, '0xfill')
+      expect(list.get(account, 0)).toMatchObject({ state: 'pending_receipt', spendingTx: '0xfill' })
+      expect(list.get(account, 1)).toMatchObject({ holder: 'B', spendingTx: '0xb' })
+    })
+
+    it('after a restart, a signed coin no record names under one that is named: its nonce goes to a filler', async () => {
+      const { store, account } = await stacked(true)
+      const reopened = await EvmCoinList.open(store)
+      await reopened.releaseUnreferenced((_account, nonce) => nonce === 1)
+      expect(reopened.get(account, 0)).toMatchObject({
+        state: 'spend_pending',
+        holder: fillerHolder({ account, nonce: 0 }),
+      })
+      expect(reopened.unsignedFillers()).toHaveLength(1)
+      expect(reopened.get(account, 1)).toMatchObject({ holder: 'B', state: 'pending_receipt' })
+    })
   })
 
   it('restart: a coin with a transaction out is still held; a build cut off is free again', async () => {

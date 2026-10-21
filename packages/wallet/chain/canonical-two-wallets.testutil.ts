@@ -127,8 +127,11 @@ export const offlineChain = {
     const to = tx.to.toLowerCase(),
       from = tx.from.toLowerCase()
     // One nonce, one transaction: a second transaction at a used nonce never lands.
-    if ([...this.mined.values()].filter(a => a === from).length > tx.nonce)
-      throw new Error('nonce too low')
+    const next = [...this.mined.values()].filter(a => a === from).length
+    if (next > tx.nonce) throw new Error('nonce too low')
+    // A nonce above the account's next is not taken (a strict node; the transaction is offered
+    // again once the one below is in).
+    if (next < tx.nonce) throw new Error('nonce too high')
     if (this.revertNext) {
       this.revertNext = false
       this.reverted.add(tx.hash)
@@ -328,6 +331,8 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
     // The stub node never mines on its own: a native send looks once and returns.
     nativeInclusionWaitMs: 0,
     walletStorageLocation: join(directory, 'wallet'),
+    // Payments are one transfer each unless a test asks for the change split.
+    changeSplit: false,
     ...overrides,
   }
   const chain = withDefaultMessageItems(createEvmChain(config))

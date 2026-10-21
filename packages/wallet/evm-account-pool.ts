@@ -677,6 +677,26 @@ export class EvmSubAccountPool {
     return this.store.getByIndex(index);
   }
 
+  /**
+   * A fresh sub-account a bundle's self-send (change) funds: derived, and its row records the
+   * exact signed funding transfer (`funding`, as a funding pass writes it) before the transfer can
+   * leave the wallet. Once the chain shows the transfer, the row becomes `available`
+   * (`setStatus`), and the coin list reads the account. The caller flushes.
+   */
+  stageSelfFunding(rawTx: string, txHash: string, index?: number): SubAccountRecord {
+    const row =
+      index === undefined ? this.deriveNextUnfunded() : this.store.getByIndex(index);
+    if (row === undefined || row.status !== "unfunded")
+      throw new Error(`Sub-account ${String(index)} is not a fresh account`);
+    const funding: SubAccountRecord = {
+      ...row,
+      status: "funding",
+      fundingAttempt: { rawTx, txHash },
+    };
+    this.write(funding);
+    return funding;
+  }
+
   /** Persistent derivation high-water mark; unlike scanning history, this remains O(1) after
    * compaction and for long-lived wallets. */
   nextUnusedIndex(): number {

@@ -471,6 +471,8 @@ export interface InstallEvmStampFundAheadCoordinatorParams {
   readonly spendSpacingBlocks?: number;
   readonly paymentPollIntervalMs?: number;
   readonly reserveBalanceWei?: bigint;
+  /** See `EvmChainConfig.changeSplit`. */
+  readonly changeSplit?: boolean;
   readonly stampFundingTargetWei?: bigint;
   readonly sourceIsHeld: (wallet: object, address: string) => boolean;
   readonly sourceHeldRefusalMessage: string;
@@ -512,6 +514,7 @@ export function installEvmStampFundAheadCoordinator(
     spendSpacingBlocks,
     paymentPollIntervalMs,
     reserveBalanceWei,
+    changeSplit,
     stampFundingTargetWei,
     sourceIsHeld,
     sourceHeldRefusalMessage,
@@ -738,6 +741,7 @@ export function installEvmStampFundAheadCoordinator(
     watcher: blockWatcher,
     spendSpacingBlocks,
     reserveBalanceWei,
+    ...(changeSplit === undefined ? {} : { changeSplit }),
     onPoolCoinsClaimed: () => {
       walletInternals.fundAheadBackoff = undefined;
     },

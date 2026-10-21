@@ -134,7 +134,7 @@ import {
   MonadStampTerminalError,
   StampBlockedError,
 } from '../evm-stamp-client'
-import type { EvmStampPayer, StampClaim, StampPayment } from '../evm-stamp-payer'
+import { FILLER_PREFIX, type EvmStampPayer, type StampBundle, type StampClaim, type StampPayment } from '../evm-stamp-payer'
 import { ChainUnreachableError } from '../evm-block-watcher'
 import { inspectCanonicalPreparedEnvelope } from '../evm-stamp-stealth'
 import type { MonadCanonicalRoleOwner } from '../evm-wallet-material'
@@ -266,6 +266,8 @@ export interface StoredPayment {
    *   handed the bytes to nothing else. Its coin is free again.
    */
   state: 'pending' | 'spent' | 'reverted' | 'failed' | 'unsent'
+  /** A self-send only: the pool row of the fresh account it funds. */
+  fundsIndex?: number
   /**
    * Set on a transfer made to finish a payment of this message that the chain mined and
    * REVERTED (a receipt with status 0; never one merely inferred to have failed): the position
@@ -317,6 +319,14 @@ export interface StoredMessage {
    * during one leaves the bytes possibly out), and set again only by such a refusal. Never set
    * for a recipient reached through forwarding. */
   unexposed?: true
+  /**
+   * The bundle's self-sends: transfers from the paying accounts to the wallet's own fresh
+   * accounts (change), signed with the payments from the same claim and recorded on their coins
+   * before the message is submitted. Never in the relay request. Broadcast with the payments,
+   * in nonce order per account, once the relay has stored the message; settled from the chain
+   * like payments. Not counted in what the message paid.
+   */
+  selfSends?: StoredPayment[]
   createdAt: number
 }
 
@@ -662,6 +672,7 @@ const isPending = (payment: StoredPayment) => payment.state === 'pending'
 const isUnresolved = (row: StoredMessage) =>
   row.outcome === undefined ||
   row.payments.some(isPending) ||
+  (row.selfSends ?? []).some(isPending) ||
   owedRepayments(row).length > 0
 /** The payments of a delivered message that the chain reverted and that have not been repeated
  * yet: positions in `payments`. The message arrived, so its payment is still owed. */
@@ -1040,15 +1051,18 @@ async function endRefusedUnexposed(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
 ): Promise<StoredMessage> {
-  const refused = row.payments.filter(isPending)
+  // The bundle's self-sends never left the wallet either: none was ever broadcast before the
+  // relay stored the message.
+  const refused = [...row.payments, ...(row.selfSends ?? [])].filter(isPending)
   const { request: _request, unexposed: _unexposed, ...kept } = row
+  const unsent = (payment: StoredPayment): StoredPayment =>
+    payment.state === 'pending'
+      ? { ...payment, rawTx: '', state: 'unsent' as const }
+      : payment
   const ended: StoredMessage = {
     ...kept,
-    payments: row.payments.map(payment =>
-      payment.state === 'pending'
-        ? { ...payment, rawTx: '', state: 'unsent' as const }
-        : payment,
-    ),
+    payments: row.payments.map(unsent),
+    ...(row.selfSends ? { selfSends: row.selfSends.map(unsent) } : {}),
     outcome: 'dead',
   }
   await owner.lifetime(() => owner.messages.put(ended))
@@ -1204,7 +1218,10 @@ async function resignRefused(
       (refusals.get(payment.rawTx)?.count ?? 0) < REFUSALS_BEFORE_RESIGN ||
       Date.now() - refusals.get(payment.rawTx)!.sinceMs < RESIGN_AFTER_MS.value ||
       // Only the newest transaction of a payment is signed again.
-      row.payments.some(other => other.replaces === index)
+      row.payments.some(other => other.replaces === index) ||
+      // A transaction of the same account below it is still out: the node refuses this one for
+      // its nonce, not its bytes. Signing it again would not help; it goes once that one is in.
+      payer.pendingBelow(payment.rawTx)
     )
       continue
     const slot = slotOf(row, index)
@@ -1254,54 +1271,84 @@ async function settlePayments(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
   broadcast: boolean,
+  /** Given: what the node does not know is added here for the caller to broadcast with the
+   * rest of its pass, in one ordered set. */
+  unseen?: string[],
 ): Promise<StoredMessage> {
   const payer = owner.payer()
   const holder = holderOf(owner, row.consumerId)
   const resubmit: string[] = []
-  const states = await Promise.all(
-    row.payments.map(async (payment): Promise<StoredPayment['state']> => {
-      if (payment.state !== 'pending') return payment.state
-      try {
-        const seen = await payer.observe(payment.rawTx)
-        if (seen.state === 'included') {
-          await payer.recordSpent(holder, payment, seen.block)
-          return seen.reverted ? 'reverted' : 'spent'
-        }
-        // The node knows neither the transaction nor a receipt and the nonce is consumed:
-        // read directly, in one look, so there is nothing to wait out.
-        if (seen.state === 'replaced') {
-          await payer.recordFailed(holder, payment)
-          return 'failed'
-        }
-        // Not known to the node at all: the same bytes are offered again (once the relay has
-        // the message). Known to the node, including a shallow revert: only look again.
-        const known = seen.where === 'mempool' || seen.where === 'included'
-        if (known) knownToNode.add(payment.rawTx)
-        else knownToNode.delete(payment.rawTx)
-        if (broadcast && !known) resubmit.push(payment.rawTx)
-      } catch {
-        // The chain could not be read or reached: nothing is known, so nothing changes.
+  // A self-send moves the wallet's own money: once the message may be out (its relay request
+  // was submitted), it is offered to the node whatever the relay said. It is what lets a payment
+  // stacked above it land, and with a dead message it is its own filler.
+  const selfBroadcast =
+    broadcast || (row.unexposed !== true && row.outcome !== 'dead')
+  const look = async (
+    payment: StoredPayment,
+    mayBroadcast: boolean,
+    self: boolean,
+  ): Promise<StoredPayment['state']> => {
+    if (payment.state !== 'pending') return payment.state
+    try {
+      const seen = await payer.observe(payment.rawTx)
+      if (seen.state === 'included') {
+        await payer.recordSpent(holder, payment, seen.block)
+        if (self && payment.fundsIndex !== undefined)
+          await payer.recordSelfSent({ rawTx: payment.rawTx, fundsIndex: payment.fundsIndex })
+        return seen.reverted ? 'reverted' : 'spent'
       }
-      return 'pending'
-    }),
-  )
-  // What the node did not know goes back to it as one set.
-  if (resubmit.length > 0)
+      // The node knows neither the transaction nor a receipt and the nonce is consumed:
+      // read directly, in one look, so there is nothing to wait out.
+      if (seen.state === 'replaced') {
+        await payer.recordFailed(holder, payment)
+        return 'failed'
+      }
+      // Not known to the node at all: the same bytes are offered again (once the relay has
+      // the message). Known to the node, including a shallow revert: only look again.
+      const known = seen.where === 'mempool' || seen.where === 'included'
+      if (known) knownToNode.add(payment.rawTx)
+      else knownToNode.delete(payment.rawTx)
+      if (mayBroadcast && !known) resubmit.push(payment.rawTx)
+    } catch {
+      // The chain could not be read or reached: nothing is known, so nothing changes.
+    }
+    return 'pending'
+  }
+  const selfSends = row.selfSends ?? []
+  const [states, selfStates] = await Promise.all([
+    Promise.all(row.payments.map(payment => look(payment, broadcast, false))),
+    Promise.all(selfSends.map(send => look(send, selfBroadcast, true))),
+  ])
+  // What the node did not know goes back to it as one set, in nonce order per account.
+  if (unseen) unseen.push(...resubmit)
+  else if (resubmit.length > 0)
     noteHandOver(await payer.submitPaymentSet(resubmit).catch(() => []))
-  if (states.every((state, i) => state === row.payments[i].state))
+  if (
+    states.every((state, i) => state === row.payments[i].state) &&
+    selfStates.every((state, i) => state === selfSends[i].state)
+  )
     return broadcast ? resignRefused(owner, row) : row
+  const current = owner.messages.get(row.consumerId)!
   const next: StoredMessage = {
-    ...owner.messages.get(row.consumerId)!,
+    ...current,
     payments: row.payments.map((payment, i) => ({
       ...payment,
       state: states[i],
     })),
+    ...(row.selfSends
+      ? {
+          selfSends: selfSends.map((send, i) => ({ ...send, state: selfStates[i] })),
+        }
+      : {}),
   }
   // The record first, the claim after: until the record says what became of a payment, its
   // claim is what keeps the coin from a second spender, across a crash too.
   await owner.messages.put(next)
   row.payments.forEach((payment, i) => {
     if (states[i] !== 'pending') payer.releasePayment(holder, payment)
+  })
+  selfSends.forEach((send, i) => {
+    if (selfStates[i] !== 'pending') payer.releasePayment(holder, send)
   })
   return next
 }
@@ -1381,9 +1428,16 @@ async function settleHolder(
     : undefined
   const row =
     consumerId === undefined ? undefined : owner.messages.get(consumerId)
+  // A gap filler's coin: one look at the fillers still out.
+  if (holder.startsWith(FILLER_PREFIX))
+    return void (await owner.payer().settleFillers(owner.chainId))
   if (consumerId === undefined || !row)
     return void (await owner.settleOtherHolder?.(holder))
-  if (row.exposurePending || !row.payments.some(isPending)) return
+  if (
+    row.exposurePending ||
+    ![...row.payments, ...(row.selfSends ?? [])].some(isPending)
+  )
+    return
   const work = workOf(owner, consumerId)
   if (work.creating) return
   if (work.busy) return void (await work.busy)
@@ -1514,6 +1568,8 @@ async function resend(
     ) => void | Promise<void>
   } = {},
 ): Promise<void> {
+  // Gap fillers are no message's: one look at each still out, every pass.
+  await owner.lifetime(() => owner.payer().settleFillers(owner.chainId)).catch(() => undefined)
   // Free originals are resumed only when explicitly named, never reconstructed from UI data.
   const freeResends = Promise.all(
     [...(options.digests ?? [])].map(async digest => {
@@ -1572,6 +1628,7 @@ async function resend(
       }
     }),
   )
+  const unseen: string[] = []
   const paidResends = Promise.all(
     owner.messages
       .all()
@@ -1613,13 +1670,14 @@ async function resend(
               work.chain = { passes: 0, next: 1, gap: 0 }
           }
           if (
-            row.payments.some(isPending) &&
+            [...row.payments, ...(row.selfSends ?? [])].some(isPending) &&
             due(work.chain, CHAIN_EVERY, now)
           ) {
             const settled = await settlePayments(
               owner,
               row,
               row.outcome === 'delivered',
+              unseen,
             )
             if (settled !== row) work.chain = { passes: 0, next: 1, gap: 0 }
           }
@@ -1642,6 +1700,28 @@ async function resend(
       }),
   )
   await Promise.all([freeResends, paidResends])
+  // What the node did not know, of every message, goes back to it as one set: by account, then
+  // nonce, so payments stacked across messages reach it in order (after a restart too).
+  if (unseen.length > 0)
+    noteHandOver(
+      await owner.lifetime(() => owner.payer().submitPaymentSet(unseen)).catch(() => []),
+    )
+}
+
+/** The self-sends of a bundle as the message's record keeps them. */
+function storedSelfSends(bundle: StampBundle): { selfSends?: StoredPayment[] } {
+  return bundle.selfSends.length === 0
+    ? {}
+    : {
+        selfSends: bundle.selfSends.map(send => ({
+          source: send.source,
+          ...(send.index === undefined ? {} : { index: send.index }),
+          address: send.address,
+          rawTx: send.rawTx,
+          state: 'pending' as const,
+          fundsIndex: send.fundsIndex,
+        })),
+      }
 }
 
 /** At open, before the wallet is handed out: the coins every stored message with a pending
@@ -1652,14 +1732,19 @@ export async function restoreOutgoingClaims(
 ): Promise<void> {
   const payer = owner.payer()
   for (const row of owner.messages.all()) {
-    // One claim per coin: a payment signed more than once at its nonce names its coin again.
-    const pending = row.payments
+    // One claim per coin, [account, nonce]: a payment signed more than once at its nonce names
+    // its coin again. Two nonces of one account
+    // (a stacked bundle) are two coins.
+    const nonceOf = (payment: StoredPayment) => Transaction.from(payment.rawTx).nonce
+    const pending = [...row.payments, ...(row.selfSends ?? [])]
       .filter(isPending)
       .filter(
         (payment, at, all) =>
           all.findIndex(
             other =>
-              other.address === payment.address && other.index === payment.index,
+              other.address === payment.address &&
+              other.index === payment.index &&
+              nonceOf(other) === nonceOf(payment),
           ) === at,
       )
     if (pending.length === 0) continue
@@ -2035,7 +2120,7 @@ async function send(
       keyBytes: new Uint8Array(recipient.current.stampKey.keyBytes),
     }
     const signFor = (claimed: StampClaim) =>
-      payer.sign(claimed, owner.chainId, childIndex =>
+      payer.signBundle(claimed, owner.chainId, childIndex =>
         hexlify(
           canonicalStampDestination({
             network: directory.network,
@@ -2045,13 +2130,14 @@ async function send(
           }).address,
         ),
       )
-    let signed = await signFor(claim)
+    let bundle = await signFor(claim)
+    let signed = [...bundle.payments]
     // Before the record (and so before any durable row from which these bytes could later be
     // submitted): the caller learns the digest of what is about to become sendable. If it
     // refuses, nothing signed leaves the wallet and the coins are free again.
     await params.onBeforeExposure?.(digest)
     // The signed bytes go onto their coins before the row that could send them is written.
-    await owner.lifetime(() => payer.recordSigned(holder, signed))
+    await owner.lifetime(() => payer.recordBundle(holder, bundle))
     const request = freezePaidMessage(
       directory.network,
       sealed,
@@ -2067,6 +2153,7 @@ async function send(
       recipientSubject: toHex(payload.typed.recipient.keyBytes),
       request: { body: toHex(request.body), contentType: request.contentType },
       payments: signed.map(payment => ({ ...payment, state: 'pending' })),
+      ...storedSelfSends(bundle),
       createdAt: Date.now(),
       ...(params.onEnvelopeDurable ? { exposurePending: true as const } : {}),
       ...(elsewhere ? {} : { unexposed: true as const }),
@@ -2111,16 +2198,17 @@ async function send(
         // ends the message as refused, with nothing paid.
         if (replans >= MAX_REFUSAL_REPLANS) break
         const again = await claimStamp(stampValueWei!)
-        let resigned: StampPayment[]
+        let resigned: StampBundle
         try {
           resigned = await signFor(again)
-          await owner.lifetime(() => payer.recordSigned(holder, resigned))
+          await owner.lifetime(() => payer.recordBundle(holder, resigned))
         } catch (error) {
           await payer.release(again).catch(() => undefined)
           throw error
         }
         claim = again
-        signed = resigned
+        bundle = resigned
+        signed = [...resigned.payments]
         const replanned = freezePaidMessage(
           directory.network,
           sealed,
@@ -2135,6 +2223,7 @@ async function send(
             contentType: replanned.contentType,
           },
           payments: signed.map(payment => ({ ...payment, state: 'pending' })),
+          ...storedSelfSends(bundle),
           unexposed: true,
         }
         try {
@@ -2173,8 +2262,12 @@ async function send(
       // The relay has the message. Now, and only now, this wallet broadcasts the payments
       // itself as well; the relay does the same, so the usual answer is "already known".
       // "Spent" is learned from the chain by the resend pass, never from either answer.
+      // With the bundle's self-sends: every account's transactions in nonce order.
       const handed = await owner.lifetime(() =>
-        payer.submitPaymentSet(signed.map(payment => payment.rawTx)),
+        payer.submitPaymentSet([
+          ...signed.map(payment => payment.rawTx),
+          ...bundle.selfSends.map(send => send.rawTx),
+        ]),
       )
       noteHandOver(handed)
       for (const one of handed)

@@ -43,6 +43,11 @@ export interface EvmChainConfig {
    * at or above it is never reverted by the rule, so it needs no spacing. Both facts come from
    * the network's registry row (`ChainRegistryEntry`). */
   reserveBalanceWei?: bigint;
+  /** Whether a stamp payment from an account holding far more than it pays also moves part of
+   * the rest to fresh accounts of the wallet in the same bundle (self-sends, radix split, nonces
+   * mixed at random). Default: on. Under a reserve rule (Monad) the account is never left below
+   * the reserve, so a wallet near the reserve never splits. */
+  changeSplit?: boolean;
   /** Client polling policy for waiting payments (the registry row's `paymentPollIntervalMs`). */
   paymentPollIntervalMs?: number;
   /** How long a native send watches the transfer it just broadcast for its block before it

@@ -9,6 +9,8 @@ import {
   isFrankWebAppOrigin,
   onRuntimeMessage,
   openCompanionPanel,
+  findMainExtensionWindow,
+  focusOrOpenMainExtensionWindow,
   openExtensionInWindow,
 } from './runtime-adapter'
 import {
@@ -520,6 +522,18 @@ export async function openApprovalCompanionPopup(
   const extApi = getRawExtensionApi(runtimeScope)
   if (!extApi) {
     return { opened: false, mode: 'noop' }
+  }
+
+  // An open main pop-out window already shows pending approvals: raise it instead of
+  // opening a second Frank view that would only find the account in use.
+  const mainWindowId = await findMainExtensionWindow(runtimeScope)
+  if (mainWindowId !== null && typeof extApi.windows?.update === 'function') {
+    try {
+      await extApi.windows.update(mainWindowId, { focused: true })
+      return { opened: true, mode: 'window' }
+    } catch {
+      // The window closed meanwhile; open a view below.
+    }
   }
 
   if (
@@ -1484,7 +1498,10 @@ export async function handleBackgroundMessage(
           runtimeScope,
         )
       } else if (mode === 'window') {
-        await openExtensionInWindow(message.options ?? {}, runtimeScope)
+        await focusOrOpenMainExtensionWindow(
+          message.options ?? {},
+          runtimeScope,
+        )
       }
     }
     return {
@@ -1503,7 +1520,7 @@ export async function handleBackgroundMessage(
     message.type === 'open-extension-window'
   ) {
     state.launchMode = 'window'
-    const res = await openExtensionInWindow(
+    const res = await focusOrOpenMainExtensionWindow(
       message.options ?? {},
       runtimeScope,
     )

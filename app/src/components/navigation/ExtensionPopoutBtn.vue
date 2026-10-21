@@ -19,7 +19,7 @@
 import { defineComponent } from 'vue'
 import {
   isBrowserExtensionRuntime,
-  openExtensionInWindow,
+  focusOrOpenMainExtensionWindow,
   sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../../src-bex/inpage'
@@ -81,7 +81,7 @@ export default defineComponent({
   },
   methods: {
     async popOutExtensionWindow() {
-      const res = await openExtensionInWindow()
+      const res = await focusOrOpenMainExtensionWindow()
       try {
         await sendRuntimeMessage({
           channel: FRANK_DAPP_BRIDGE_CHANNEL,

@@ -141,7 +141,7 @@ import {
   getExtensionRuntime,
   isBrowserExtensionRuntime,
   openCompanionPanel,
-  openExtensionInWindow,
+  focusOrOpenMainExtensionWindow,
   sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../src-bex/inpage'
@@ -568,7 +568,7 @@ export default defineComponent({
       }
     },
     async popOutExtensionWindow() {
-      const res = await openExtensionInWindow()
+      const res = await focusOrOpenMainExtensionWindow()
       try {
         await sendRuntimeMessage({
           channel: FRANK_DAPP_BRIDGE_CHANNEL,

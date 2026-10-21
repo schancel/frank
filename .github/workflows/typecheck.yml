@@ -30,6 +30,10 @@ jobs:
         run: |
           yarn --cwd packages/nakamoto tsc -p tsconfig.json --pretty false
           yarn --cwd packages/crypto-box tsc -p tsconfig.json --pretty false
+      # Every Frank-CBOR vector corpus is the output of `yarn vectors:generate`
+      # (docs/protocol/cbor/vectors/README.md); a hand edit or a stale corpus fails here.
+      - name: Check the CBOR test vectors match their generators
+        run: yarn vectors:check
       - name: Fast typecheck with native Go compiler (tsgo)
         run: yarn typecheck
       - name: Verify with standard TypeScript compiler (tsc)

@@ -541,6 +541,13 @@
                 >
                   {{ extLaunchModeDescription }}
                 </div>
+                <div
+                  v-if="extLaunchModeError"
+                  class="text-caption text-negative q-mt-xs"
+                  data-test="ext-mode-error"
+                >
+                  {{ extLaunchModeError }}
+                </div>
                 <div class="row items-center q-mt-sm">
                   <q-btn
                     outline
@@ -863,17 +870,28 @@ export default defineComponent({
         .catch(() => undefined)
     }
 
+    const extLaunchModeError = ref('')
+    // The one place that changes what the toolbar icon opens: the user's choice here.
     async function selectExtensionLaunchMode(mode: ExtensionLaunchMode) {
+      const previous = extensionLaunchMode.value
       extensionLaunchMode.value = mode
+      extLaunchModeError.value = ''
+      let res: any
       try {
-        await sendRuntimeMessage({
+        res = await sendRuntimeMessage<Record<string, any>, any>({
           channel: FRANK_DAPP_BRIDGE_CHANNEL,
           type: 'set-launch-mode',
           launchMode: mode,
           openNow: mode !== 'popup',
         })
-      } catch {
-        // Ignore outside extension runtime
+      } catch (err) {
+        res = { error: { message: String(err) } }
+      }
+      if (res?.result?.launchMode !== mode) {
+        extensionLaunchMode.value = previous
+        extLaunchModeError.value = `Could not save the toolbar click choice${
+          res?.error?.message ? `: ${res.error.message}` : ''
+        }`
       }
     }
 
@@ -1190,6 +1208,7 @@ export default defineComponent({
       extensionLaunchMode,
       extViewLabels: EXT_VIEW_LABELS,
       extLaunchModeDescription,
+      extLaunchModeError,
       selectExtensionLaunchMode,
       openInFullBrowserTab,
       updateInterval,

@@ -642,8 +642,14 @@ export async function handleToolbarClick(
       return
     }
     if (typeof api?.sidebarAction?.toggle === 'function') {
-      await api.sidebarAction.toggle()
-      return
+      // Called before any await: Firefox opens the sidebar only within the
+      // click's user gesture.
+      try {
+        await api.sidebarAction.toggle()
+        return
+      } catch {
+        // Fall back to the pop-out window
+      }
     }
   }
   await openExtensionInWindow({}, runtimeScope)
@@ -1484,7 +1490,18 @@ export async function handleBackgroundMessage(
     }
     const extApi = getRawExtensionApi(runtimeScope)
     if (typeof extApi?.storage?.local?.set === 'function') {
-      await extApi.storage.local.set({ [FRANK_EXT_LAUNCH_MODE_KEY]: mode })
+      try {
+        await extApi.storage.local.set({ [FRANK_EXT_LAUNCH_MODE_KEY]: mode })
+      } catch (err) {
+        // Not saved: keep the previous choice and say so to Settings.
+        return {
+          ok: false,
+          error: {
+            code: -32603,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        }
+      }
     }
     state.launchMode = mode
     applyToolbarClickBehavior(runtimeScope, mode)

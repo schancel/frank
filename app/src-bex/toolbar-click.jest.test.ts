@@ -13,8 +13,11 @@ import {
 } from './runtime-adapter'
 import {
   createBackgroundBridgeState,
+  handleToolbarClick,
   installBackgroundBridge,
 } from './background'
+import { execFileSync } from 'node:child_process'
+import path from 'node:path'
 
 type Listener = (...args: any[]) => any
 
@@ -167,5 +170,54 @@ describe('toolbar click choice', () => {
     expect(storage.set).not.toHaveBeenCalled()
     expect(chrome.sidePanel.setPanelBehavior).not.toHaveBeenCalled()
     expect(storage.data[FRANK_EXT_LAUNCH_MODE_KEY]).toBe('popup')
+  })
+
+  it('reports a failed save and keeps the previous choice', async () => {
+    const storage = makeStorage()
+    storage.data[FRANK_EXT_LAUNCH_MODE_KEY] = 'sidepanel'
+    const b = startBrowser(storage)
+    await settle()
+    storage.set.mockRejectedValueOnce(new Error('QUOTA_BYTES quota exceeded'))
+    const res = await b.send({ type: 'set-launch-mode', launchMode: 'window' })
+    expect(res.ok).toBe(false)
+    expect(res.error.message).toContain('quota')
+    const got = await b.send({ type: 'get-launch-mode' })
+    expect(got.result.launchMode).toBe('sidepanel')
+  })
+
+  it('opens the Firefox sidebar within the click, and a window if that fails', async () => {
+    const toggle = jest.fn(async () => undefined)
+    const create = jest.fn(async () => ({ id: 1 }))
+    const scope = {
+      browser: {
+        runtime: { id: 'frank@signet.mx', getURL: (p: string) => p },
+        sidebarAction: { toggle },
+        windows: { create },
+      },
+    }
+    const state = createBackgroundBridgeState({ launchMode: 'sidepanel' })
+    const pending = handleToolbarClick({ windowId: 1 }, state, scope)
+    // Synchronously, before any await, so the user gesture still holds.
+    expect(toggle).toHaveBeenCalledTimes(1)
+    await pending
+    expect(create).not.toHaveBeenCalled()
+
+    toggle.mockRejectedValueOnce(new Error('needs user input'))
+    await handleToolbarClick({ windowId: 1 }, state, scope)
+    expect(create).toHaveBeenCalledTimes(1)
+  })
+
+  it('only the Settings choice sends set-launch-mode', () => {
+    // Opening a window or panel must never change what the toolbar opens.
+    const appDir = path.resolve(__dirname, '..')
+    const hits = execFileSync(
+      'git',
+      ['grep', '-l', "type: 'set-launch-mode'", '--', 'src', 'src-bex'],
+      { cwd: appDir, encoding: 'utf8' },
+    )
+      .trim()
+      .split('\n')
+      .filter(f => !/\.test\.ts$/.test(f))
+    expect(hits).toEqual(['src/pages/Settings.vue'])
   })
 })

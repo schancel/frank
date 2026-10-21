@@ -20,9 +20,7 @@ import { defineComponent } from 'vue'
 import {
   isBrowserExtensionRuntime,
   openExtensionInWindow,
-  sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
-import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../../src-bex/inpage'
 
 export default defineComponent({
   name: 'ExtensionPopoutBtn',
@@ -82,15 +80,6 @@ export default defineComponent({
   methods: {
     async popOutExtensionWindow() {
       const res = await openExtensionInWindow()
-      try {
-        await sendRuntimeMessage({
-          channel: FRANK_DAPP_BRIDGE_CHANNEL,
-          type: 'set-launch-mode',
-          launchMode: 'window',
-        })
-      } catch {
-        // Ignore runtime message errors outside extension runtime
-      }
       if (
         res.opened &&
         typeof window !== 'undefined' &&

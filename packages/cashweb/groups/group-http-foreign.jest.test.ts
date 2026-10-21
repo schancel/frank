@@ -49,7 +49,9 @@ integration(
         payload: text,
         timestampMs: 1700000001234,
       })
-    await origin.sendGroupMessage(id, seal('Initial'))
+    const initialEnvelope = seal('Initial')
+    const initialReceipt = await origin.sendGroupMessage(id, initialEnvelope)
+    assert.deepEqual(await origin.sendGroupMessage(id, initialEnvelope), initialReceipt)
     assert.equal(
       (await homeA.fetchGroupMessages(id, created.epochKeys.readTokenHex))
         .messages.length,
@@ -60,6 +62,16 @@ integration(
         .messages.length,
       1,
     )
+    assert.deepEqual(await homeA.sendGroupMessage(id, initialEnvelope), initialReceipt)
+    assert.deepEqual(await homeB.sendGroupMessage(id, initialEnvelope), initialReceipt)
+    const repeatedProxyResponse = await fetch(`${homeUrl}/groups/${id}/messages`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Group-Upstream-Relay': originUrl! },
+      body: JSON.stringify({ group_id: id, ...initialEnvelope }),
+    })
+    assert.equal(repeatedProxyResponse.status, 200)
+    assert.equal(repeatedProxyResponse.headers.get('x-group-append-disposition'), 'existing')
+    assert.equal(JSON.stringify(await repeatedProxyResponse.json()), JSON.stringify(initialReceipt))
     // The second subscriber promotes the mirror. New upstream rows remain unread when a send is routed home.
     for (const text of ['Unread 2', 'Unread 3', 'Unread 4'])
       await origin.sendGroupMessage(id, seal(text))
@@ -99,6 +111,8 @@ integration(
       members: [{ ...alice, role: 'admin' }, bob],
       authorityPrivateKey: created.identity.groupSecretKey,
     })
+    // An accepted historical retry returns the original receipt, even after membership/key rotation.
+    assert.deepEqual(await homeA.sendGroupMessage(id, initialEnvelope), initialReceipt)
     // This is the app order: check latest certificate before polling the mailbox with the newly authorized secret.
     const latest = await homeA.getLatestEpoch(id)
     assert.equal(latest.epoch, 1)

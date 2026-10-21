@@ -10,6 +10,10 @@
 //!   subscribers) and local mirror promotion (`>= n` local subscribers) when
 //!   `X-Group-Upstream-Relay` is specified.
 
+mod live;
+#[cfg(test)]
+mod nats_tests;
+
 use axum::{
     body::Bytes,
     extract::{Path, Query},
@@ -27,6 +31,8 @@ use crate::{
     },
 };
 
+/// Ephemeral append disposition; never authority for a durable cursor or financial fact.
+pub const HEADER_GROUP_APPEND: &str = "x-group-append-disposition";
 /// Request header carrying the hex-encoded 32-byte Group Read Token $R_{G,e}$.
 pub const HEADER_GROUP_READ_TOKEN: &str = "x-group-read-token";
 /// Optional request header naming the foreign authoritative relay URL for a group.
@@ -318,6 +324,7 @@ async fn read_upstream_body_before(
 /// Build the `/groups/:group_id/*` router using the server's `Registry` group store.
 pub fn router() -> Router {
     Router::new()
+        .route("/groups/:group_id/live", routing::get(live::handle_live))
         .route(
             "/groups/:group_id/epochs",
             routing::put(handle_put_group_epoch).get(handle_get_group_epoch),
@@ -332,6 +339,10 @@ pub fn router() -> Router {
 pub fn router_with_store(store: GroupStore) -> Router {
     Router::new()
         .route(
+            "/groups/:group_id/live",
+            routing::get(live::handle_live_store),
+        )
+        .route(
             "/groups/:group_id/epochs",
             routing::put(handle_put_group_epoch_store).get(handle_get_group_epoch_store),
         )
@@ -340,6 +351,10 @@ pub fn router_with_store(store: GroupStore) -> Router {
             routing::put(handle_put_group_message_store).get(handle_get_group_messages_store),
         )
         .layer(Extension(store))
+        .layer(Extension(
+            std::sync::Arc::new(crate::events::StandaloneEventBus::new())
+                as std::sync::Arc<dyn crate::events::RelayEventBus>,
+        ))
 }
 
 /// The first group request opens the store on disk; that blocking open stays off the runtime.
@@ -356,20 +371,38 @@ async fn handle_put_group_epoch(
     Extension(server): Extension<RegistryServer>,
     body: Bytes,
 ) -> Response {
+    let bus = server.event_bus().clone();
     let store = match registry_group_store(&server).await {
         Ok(s) => s,
         Err(e) => return group_error_response(e),
     };
-    put_group_epoch_impl(store, group_id, headers, body).await
+    let response = put_group_epoch_impl(store, group_id.clone(), headers, body).await;
+    if response.status().is_success() {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            bus.publish_group_wakeup(&group_id.to_lowercase()),
+        )
+        .await;
+    }
+    response
 }
 
 async fn handle_put_group_epoch_store(
     Path(group_id): Path<String>,
     headers: HeaderMap,
     Extension(store): Extension<GroupStore>,
+    Extension(bus): Extension<std::sync::Arc<dyn crate::events::RelayEventBus>>,
     body: Bytes,
 ) -> Response {
-    put_group_epoch_impl(store, group_id, headers, body).await
+    let response = put_group_epoch_impl(store, group_id.clone(), headers, body).await;
+    if response.status().is_success() {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            bus.publish_group_wakeup(&group_id.to_lowercase()),
+        )
+        .await;
+    }
+    response
 }
 
 async fn put_group_epoch_impl(
@@ -590,20 +623,50 @@ async fn handle_put_group_message(
     Extension(server): Extension<RegistryServer>,
     body: Bytes,
 ) -> Response {
+    let bus = server.event_bus().clone();
     let store = match registry_group_store(&server).await {
         Ok(s) => s,
         Err(e) => return group_error_response(e),
     };
-    put_group_message_impl(store, group_id, headers, body).await
+    let response = put_group_message_impl(store, group_id.clone(), headers, body).await;
+    if response.status().is_success()
+        && response
+            .headers()
+            .get(HEADER_GROUP_APPEND)
+            .and_then(|v| v.to_str().ok())
+            == Some("appended")
+    {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            bus.publish_group_wakeup(&group_id.to_lowercase()),
+        )
+        .await;
+    }
+    response
 }
 
 async fn handle_put_group_message_store(
     Path(group_id): Path<String>,
     headers: HeaderMap,
     Extension(store): Extension<GroupStore>,
+    Extension(bus): Extension<std::sync::Arc<dyn crate::events::RelayEventBus>>,
     body: Bytes,
 ) -> Response {
-    put_group_message_impl(store, group_id, headers, body).await
+    let response = put_group_message_impl(store, group_id.clone(), headers, body).await;
+    if response.status().is_success()
+        && response
+            .headers()
+            .get(HEADER_GROUP_APPEND)
+            .and_then(|v| v.to_str().ok())
+            == Some("appended")
+    {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            bus.publish_group_wakeup(&group_id.to_lowercase()),
+        )
+        .await;
+    }
+    response
 }
 
 async fn put_group_message_impl(
@@ -646,6 +709,20 @@ async fn put_group_message_impl(
         };
         let status =
             StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let disposition = match resp
+            .headers()
+            .get(HEADER_GROUP_APPEND)
+            .and_then(|value| value.to_str().ok())
+        {
+            Some("appended") => "appended",
+            Some("existing") => "existing",
+            _ if status.is_success() => {
+                return group_error_response(GroupError::Storage(
+                    "upstream omitted valid append disposition".into(),
+                ))
+            }
+            _ => "existing",
+        };
         let resp_bytes = match read_upstream_body(resp, UPSTREAM_MESSAGE_BUDGET).await {
             Ok(body) => body,
             Err(error) => return group_error_response(error),
@@ -656,6 +733,10 @@ async fn put_group_message_impl(
         return (
             status,
             [
+                (
+                    header::HeaderName::from_static(HEADER_GROUP_APPEND),
+                    HeaderValue::from_static(disposition),
+                ),
                 (
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("application/json"),
@@ -671,13 +752,23 @@ async fn put_group_message_impl(
     }
 
     match store.put_message(&group_id, envelope) {
-        Ok(stored) => (
+        Ok(outcome) => (
             StatusCode::OK,
-            [(
-                header::HeaderName::from_static(HEADER_GROUP_RELAY_MODE),
-                HeaderValue::from_static("local"),
-            )],
-            Json(stored),
+            [
+                (
+                    header::HeaderName::from_static(HEADER_GROUP_RELAY_MODE),
+                    HeaderValue::from_static("local"),
+                ),
+                (
+                    header::HeaderName::from_static(HEADER_GROUP_APPEND),
+                    HeaderValue::from_static(if outcome.appended {
+                        "appended"
+                    } else {
+                        "existing"
+                    }),
+                ),
+            ],
+            Json(outcome.message),
         )
             .into_response(),
         Err(e) => group_error_response(e),
@@ -977,14 +1068,14 @@ mod tests {
         (sk, pk)
     }
 
-    fn sign_digest(sk: &SecretKey, digest: &[u8; 32]) -> String {
+    pub(super) fn sign_digest(sk: &SecretKey, digest: &[u8; 32]) -> String {
         let secp = Secp256k1::new();
         let msg = SecpMessage::from_slice(digest).unwrap();
         let sig = secp.sign(&msg, sk);
         hex::encode(sig.serialize_compact())
     }
 
-    fn signed_epoch(sk: &SecretKey, mut frame: GroupEpochFrame) -> GroupEpochFrame {
+    pub(super) fn signed_epoch(sk: &SecretKey, mut frame: GroupEpochFrame) -> GroupEpochFrame {
         frame.admin_sig = sign_digest(sk, &frame.compute_epoch_hash().unwrap());
         frame
     }
@@ -1521,6 +1612,7 @@ mod tests {
                     "--runInBand",
                     "--runTestsByPath",
                     "packages/cashweb/groups/group-http-foreign.jest.test.ts",
+                    "packages/cashweb/groups/group-live-http.jest.test.ts",
                 ])
                 .env("FRANK_GROUP_HTTP_ORIGIN_URL", origin)
                 .env("FRANK_GROUP_HTTP_HOME_URL", home)
@@ -1799,5 +1891,112 @@ mod tests {
                 .epoch,
             1
         );
+    }
+    #[tokio::test]
+    async fn json_cbor_retries_return_original_receipt_without_second_wakeup() {
+        use crate::events::{RelayEventBus, StandaloneEventBus};
+        use frank_cbor::{cbor_map, encode_canonical, CborValue};
+        let store = GroupStore::new_in_memory();
+        let (root, public) = keypair(7);
+        let (write, write_public) = keypair(42);
+        let id = hex::encode(derive_group_id(&public));
+        store
+            .put_epoch(
+                &id,
+                signed_epoch(
+                    &root,
+                    GroupEpochFrame {
+                        group_id: id.clone(),
+                        group_pubkey: hex::encode(public),
+                        epoch: 0,
+                        prev_epoch_hash: "00".repeat(32),
+                        write_pubkey: hex::encode(write_public),
+                        read_token_hash: hex::encode(Sha256::digest([0u8; 32])),
+                        encrypted_epoch_descriptor: hex::encode(b"roster"),
+                        admin_sig: String::new(),
+                        epoch_hash: String::new(),
+                    },
+                ),
+            )
+            .unwrap();
+        let bus = Arc::new(StandaloneEventBus::new());
+        let mut notifications = bus.subscribe_group(&id).await.unwrap();
+        let app = Router::new()
+            .route(
+                "/groups/:group_id/messages",
+                routing::put(handle_put_group_message_store),
+            )
+            .layer(Extension(store.clone()))
+            .layer(Extension(bus.clone() as Arc<dyn RelayEventBus>));
+        let mut envelope = GroupMessageEnvelope {
+            group_id: id.clone(),
+            epoch: 0,
+            nonce: hex::encode([0xabu8; 24]),
+            ciphertext: hex::encode(b"encrypted payload"),
+            write_sig: String::new(),
+        };
+        envelope.write_sig = sign_digest(&write, &envelope.signing_digest().unwrap());
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/groups/{id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&envelope).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(first.headers()[HEADER_GROUP_APPEND], "appended");
+        let receipt: StoredGroupMessage =
+            serde_json::from_slice(&hyper::body::to_bytes(first.into_body()).await.unwrap())
+                .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), notifications.recv())
+                .await
+                .is_ok()
+        );
+        let signature =
+            secp256k1_abc::Signature::from_compact(&hex::decode(envelope.write_sig).unwrap())
+                .unwrap();
+        let cbor = encode_canonical(&cbor_map(vec![
+            (0, CborValue::Text(id.clone())),
+            (1, CborValue::Int(0)),
+            (
+                2,
+                CborValue::Text(format!("0x{}", envelope.nonce.to_uppercase())),
+            ),
+            (
+                3,
+                CborValue::Bytes(hex::decode(envelope.ciphertext).unwrap()),
+            ),
+            (4, CborValue::Bytes(signature.serialize_der().to_vec())),
+        ]))
+        .unwrap();
+        let retry = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/groups/{id}/messages"))
+                    .header("content-type", "application/cbor")
+                    .body(Body::from(cbor))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.status(), StatusCode::OK);
+        assert_eq!(retry.headers()[HEADER_GROUP_APPEND], "existing");
+        let repeated: StoredGroupMessage =
+            serde_json::from_slice(&hyper::body::to_bytes(retry.into_body()).await.unwrap())
+                .unwrap();
+        assert_eq!(receipt, repeated);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), notifications.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(store.list_messages(&id, 0, 10).unwrap(), vec![receipt]);
     }
 }

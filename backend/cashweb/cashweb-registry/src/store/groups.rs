@@ -10,7 +10,7 @@
 use std::{
     collections::BTreeSet,
     path::PathBuf,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -415,7 +415,7 @@ impl GroupMessageEnvelope {
     }
 }
 
-/// Stored group message with relay-assigned `server_seq`, `server_time_ms`, and `versionstamp`.
+/// Stored group message with relay-assigned `server_seq` and `server_time_ms`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredGroupMessage {
     /// 64-character lowercase hex `group_id`.
@@ -424,8 +424,6 @@ pub struct StoredGroupMessage {
     pub server_seq: u64,
     /// Relay delivery timestamp in milliseconds.
     pub server_time_ms: u64,
-    /// 20-char hex 80-bit [`Versionstamp`] assigned at commit.
-    pub versionstamp: String,
     /// Epoch index $e$ under which this message was authenticated.
     pub epoch: u64,
     /// Hex-encoded AEAD nonce.
@@ -702,8 +700,7 @@ impl GroupStore {
     }
 
     /// Authenticate an inbound [`GroupMessageEnvelope`] against the group's current epoch
-    /// write public key $W_{G,e}$ and append it with a strictly monotonic `server_seq` and
-    /// 80-bit [`Versionstamp`].
+    /// write public key $W_{G,e}$ and append it with a strictly monotonic `server_seq`.
     pub fn put_message(
         &self,
         path_group_id: &str,
@@ -762,16 +759,10 @@ impl GroupStore {
                 .ok_or_else(|| GroupError::Storage("group sequence exhausted".into()))?,
                 None => 1,
             };
-            // Versionstamp allocation is metadata only. An unused stamp after contention does
-            // not append a message or advance the authoritative group sequence.
-            let (_, vs) =
-                self.kv
-                    .put_versionstamped(b"G_vs:", &group_id, &server_seq.to_be_bytes())?;
             let stored = StoredGroupMessage {
                 group_id: path_group_id.to_string(),
                 server_seq,
-                server_time_ms: vs.commit_version().max(now_ms()),
-                versionstamp: vs.to_hex(),
+                server_time_ms: now_ms(),
                 epoch: envelope.epoch,
                 nonce: envelope
                     .nonce
@@ -876,12 +867,24 @@ impl GroupStore {
         &self,
         group_id_hex: &str,
         upstream_relay: &str,
-        subscriber_tag: &str,
+        subscriber_tag: Option<&str>,
         authenticated_epoch: &GroupEpochFrame,
         read_token: &str,
     ) -> Result<GroupMirrorState, GroupError> {
         authenticated_epoch.verify_authority(group_id_hex)?;
         authenticated_epoch.verify_read_token(read_token)?;
+        // A subscriber without a blinded tag is counted by a hash of its capability; the
+        // read token itself is never stored.
+        let subscriber_tag = match subscriber_tag.map(str::trim).filter(|t| !t.is_empty()) {
+            Some(tag) => tag.to_string(),
+            None => hex::encode(Sha256::digest(
+                [
+                    b"frank-group-read-subscriber-v1:".as_slice(),
+                    read_token.trim().to_ascii_lowercase().as_bytes(),
+                ]
+                .concat(),
+            )),
+        };
         let group_id = parse_group_id_hex(group_id_hex)?;
         let m_key = mirror_key(&group_id);
         loop {
@@ -922,9 +925,7 @@ impl GroupStore {
                     "group upstream does not match established ownership".into(),
                 ));
             }
-            if !subscriber_tag.trim().is_empty() {
-                state.subscribers.insert(subscriber_tag.trim().to_string());
-            }
+            state.subscribers.insert(subscriber_tag.clone());
             if state.subscribers.len() >= self.mirror_threshold {
                 state.mirrored = true;
             }
@@ -1096,10 +1097,14 @@ impl GroupStore {
 }
 
 /// Lazy owner of the registry's durable [`GroupStore`], opened on first group request.
+///
+/// Opening is serialized by the mutex: concurrent first requests wait for the one open rather
+/// than each opening the RocksDB directory, which would fail on its `LOCK` for all but one.
+/// Opening blocks, so async callers reach this through `spawn_blocking`.
 #[derive(Debug)]
 pub struct Owner {
     path: PathBuf,
-    store: OnceLock<GroupStore>,
+    store: Mutex<Option<GroupStore>>,
     mirror_threshold: usize,
 }
 
@@ -1108,24 +1113,26 @@ impl Owner {
     pub fn new(registry_db: PathBuf) -> Self {
         Self {
             path: registry_db.with_extension(GROUP_STORE_EXTENSION),
-            store: OnceLock::new(),
+            store: Mutex::new(None),
             mirror_threshold: DEFAULT_GROUP_MIRROR_THRESHOLD,
         }
     }
 
     /// Access or initialize the [`GroupStore`].
-    pub fn get(&self) -> Result<&GroupStore, GroupError> {
-        if let Some(store) = self.store.get() {
-            return Ok(store);
+    pub fn get(&self) -> Result<GroupStore, GroupError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| GroupError::Storage("group store owner poisoned".into()))?;
+        if let Some(store) = store.as_ref() {
+            return Ok(store.clone());
         }
-        let kv = RocksDbKvStore::open(&self.path)?;
-        let _ = self.store.set(GroupStore::with_mirror_threshold(
-            Arc::new(kv),
+        let opened = GroupStore::with_mirror_threshold(
+            Arc::new(RocksDbKvStore::open(&self.path)?),
             self.mirror_threshold,
-        ));
-        self.store
-            .get()
-            .ok_or_else(|| GroupError::Storage("failed to initialize GroupStore".into()))
+        );
+        *store = Some(opened.clone());
+        Ok(opened)
     }
 }
 
@@ -1273,6 +1280,10 @@ mod tests {
             &self,
             ops: Vec<KvTransactionOp>,
         ) -> Result<Option<crate::store::kv_store::Versionstamp>, KvError> {
+            if self.pause.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                self.ready.wait();
+                self.resume.wait();
+            }
             self.backend.execute_transaction(ops)
         }
         fn put_versionstamped(
@@ -1281,10 +1292,6 @@ mod tests {
             suffix: &[u8],
             value: &[u8],
         ) -> Result<(Vec<u8>, crate::store::kv_store::Versionstamp), KvError> {
-            if self.pause.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                self.ready.wait();
-                self.resume.wait();
-            }
             self.backend.put_versionstamped(prefix, suffix, value)
         }
         fn scan_prefix_range(
@@ -1387,6 +1394,65 @@ mod tests {
     }
 
     #[test]
+    fn append_writes_only_the_sequence_and_message_rows() {
+        let kv = Arc::new(MemoryKvStore::new());
+        let store = GroupStore::new(kv.clone());
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        let (write_sk, _) = keypair(42);
+        store
+            .put_message(&id, message_for(&id, 0, 1, &write_sk))
+            .unwrap();
+        assert!(kv.scan_prefix_range(b"G_vs:", None, 10).unwrap().is_empty());
+        assert_eq!(store.list_messages(&id, 0, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn foreign_subscriber_without_a_tag_is_counted_by_a_hash_never_the_read_token() {
+        let store = GroupStore::new_in_memory();
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        let read_token = "00".repeat(32);
+        let state = store
+            .record_foreign_subscriber(&id, "https://relay.example", None, &initial, &read_token)
+            .unwrap();
+        assert_eq!(state.subscribers.len(), 1);
+        let stored = serde_json::to_string(&store.get_mirror_state(&id).unwrap()).unwrap();
+        assert!(!stored.contains(&read_token));
+        // The same capability without a tag is the same subscriber.
+        let again = store
+            .record_foreign_subscriber(&id, "https://relay.example", None, &initial, &read_token)
+            .unwrap();
+        assert_eq!(again.subscribers, state.subscribers);
+    }
+
+    #[test]
+    fn concurrent_first_requests_share_one_store_open() {
+        let dir = tempdir::TempDir::new("group-owner").unwrap();
+        let owner = Arc::new(Owner::new(dir.path().join("registry.db")));
+        let start = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let owner = owner.clone();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    owner.get().map(|_| ())
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap().unwrap();
+        }
+        let store = owner.get().unwrap();
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        assert!(owner.get().unwrap().get_current_epoch(&id).unwrap().is_some());
+    }
+
+    #[test]
     fn failed_atomic_append_does_not_publish_message_or_consume_sequence() {
         let kv = Arc::new(MemoryKvStore::new());
         let healthy = GroupStore::new(kv.clone());
@@ -1455,7 +1521,7 @@ mod tests {
             .record_foreign_subscriber(
                 &id,
                 "https://relay.example",
-                "member",
+                Some("member"),
                 &initial,
                 &"00".repeat(32),
             )
@@ -1486,7 +1552,7 @@ mod tests {
             .record_foreign_subscriber(
                 &id,
                 "https://relay.example",
-                "attacker",
+                Some("attacker"),
                 &initial,
                 &"01".repeat(32)
             )
@@ -1496,7 +1562,7 @@ mod tests {
             .record_foreign_subscriber(
                 &id,
                 "https://relay.example",
-                "member",
+                Some("member"),
                 &initial,
                 &"00".repeat(32),
             )
@@ -1505,7 +1571,7 @@ mod tests {
             .record_foreign_subscriber(
                 &id,
                 "https://attacker.example",
-                "attacker",
+                Some("attacker"),
                 &initial,
                 &"00".repeat(32)
             )
@@ -1522,7 +1588,7 @@ mod tests {
             .record_foreign_subscriber(
                 &id,
                 "https://relay.example",
-                "stale",
+                Some("stale"),
                 &initial,
                 &"00".repeat(32)
             )
@@ -1555,7 +1621,7 @@ mod tests {
             .record_foreign_subscriber(
                 &id,
                 "https://relay.example",
-                "member",
+                Some("member"),
                 &initial,
                 &"00".repeat(32)
             )

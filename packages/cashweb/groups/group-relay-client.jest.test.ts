@@ -96,7 +96,6 @@ function createMockGroupRelayAxios() {
             nonce: String(body.nonce),
             ciphertext: String(body.ciphertext),
             write_sig: String(body.write_sig),
-            versionstamp: serverSeq.toString(16).padStart(20, '0'),
             server_time_ms: 1700000000000 + serverSeq,
           }
           list.push(row)

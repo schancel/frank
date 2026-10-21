@@ -342,14 +342,22 @@ pub fn router_with_store(store: GroupStore) -> Router {
         .layer(Extension(store))
 }
 
+/// The first group request opens the store on disk; that blocking open stays off the runtime.
+async fn registry_group_store(server: &RegistryServer) -> Result<GroupStore, GroupError> {
+    let registry = server.registry.clone();
+    tokio::task::spawn_blocking(move || registry.groups())
+        .await
+        .map_err(|e| GroupError::Storage(e.to_string()))?
+}
+
 async fn handle_put_group_epoch(
     Path(group_id): Path<String>,
     headers: HeaderMap,
     Extension(server): Extension<RegistryServer>,
     body: Bytes,
 ) -> Response {
-    let store = match server.registry.groups() {
-        Ok(s) => s.clone(),
+    let store = match registry_group_store(&server).await {
+        Ok(s) => s,
         Err(e) => return group_error_response(e),
     };
     put_group_epoch_impl(store, group_id, headers, body).await
@@ -438,8 +446,8 @@ async fn handle_get_group_epoch(
     headers: HeaderMap,
     Extension(server): Extension<RegistryServer>,
 ) -> Response {
-    let store = match server.registry.groups() {
-        Ok(s) => s.clone(),
+    let store = match registry_group_store(&server).await {
+        Ok(s) => s,
         Err(e) => return group_error_response(e),
     };
     get_group_epoch_impl(store, group_id, query, headers).await
@@ -582,8 +590,8 @@ async fn handle_put_group_message(
     Extension(server): Extension<RegistryServer>,
     body: Bytes,
 ) -> Response {
-    let store = match server.registry.groups() {
-        Ok(s) => s.clone(),
+    let store = match registry_group_store(&server).await {
+        Ok(s) => s,
         Err(e) => return group_error_response(e),
     };
     put_group_message_impl(store, group_id, headers, body).await
@@ -682,8 +690,8 @@ async fn handle_get_group_messages(
     headers: HeaderMap,
     Extension(server): Extension<RegistryServer>,
 ) -> Response {
-    let store = match server.registry.groups() {
-        Ok(s) => s.clone(),
+    let store = match registry_group_store(&server).await {
+        Ok(s) => s,
         Err(e) => return group_error_response(e),
     };
     get_group_messages_impl(store, group_id, query, headers).await
@@ -785,12 +793,10 @@ async fn get_group_messages_impl(
                 "upstream response does not match authenticated group epoch".into(),
             ));
         }
-        let subscriber_tag =
-            header_str(&headers, HEADER_GROUP_SUBSCRIBER_TAG).unwrap_or(read_token);
         let mirror_state = match store.record_foreign_subscriber(
             &group_id,
             &upstream,
-            subscriber_tag,
+            header_str(&headers, HEADER_GROUP_SUBSCRIBER_TAG),
             &upstream_epoch,
             read_token,
         ) {

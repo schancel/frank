@@ -61,7 +61,6 @@ async function main() {
     })
     const acknowledgement = await client.sendGroupMessage(id, envelope)
     assert.equal(acknowledgement.server_seq, 1)
-    assert.match(acknowledgement.versionstamp, /^[0-9a-f]{20}$/)
     assert(Number.isSafeInteger(acknowledgement.server_time_ms))
     await assert.rejects(client.fetchGroupMessages(id, '00'.repeat(32)))
     const reopened = new GroupRelayClient(url)

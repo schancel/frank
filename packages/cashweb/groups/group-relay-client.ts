@@ -35,7 +35,6 @@ export interface StoredGroupMessageWire extends SealedGroupMessageEnvelope {
   group_id: string
   server_seq: number
   server_time_ms: number
-  versionstamp: string
 }
 export type SendGroupMessageResponse = StoredGroupMessageWire
 

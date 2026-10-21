@@ -302,7 +302,7 @@ impl Registry {
 
     pub(crate) fn groups(
         &self,
-    ) -> std::result::Result<&crate::store::groups::GroupStore, crate::store::groups::GroupError>
+    ) -> std::result::Result<crate::store::groups::GroupStore, crate::store::groups::GroupError>
     {
         self.groups.get()
     }

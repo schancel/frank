@@ -3060,12 +3060,19 @@ export const useChatStore = defineStore('chats', {
         }
         if (!stillCurrent()) return { state: 'busy' }
         const status = statuses[digest] ?? 'unknown'
-        if (status === 'delivered' && financial)
-          await financial
-            .submit()
-            .catch(error =>
-              console.warn('Financial submission remains pending', error),
-            )
+        if (status === 'delivered' && financial) {
+          try {
+            await financial.submit()
+          } catch (error) {
+            // Delivered, but its payment is not on chain yet: never shown as sent. The next
+            // reconciliation submits the same stored signed bytes again.
+            console.warn('Financial submission remains pending', error)
+            await this.setOutgoingState(address, id, 'payment-pending', {
+              attemptDigest: digest,
+            })
+            return { state: 'payment-pending' }
+          }
+        }
         const applied = await this.applyAttemptStatus({ address, id, status })
         if (applied === 'sent') {
           const confirmed = this.messages[digest]
@@ -3424,12 +3431,20 @@ export const useChatStore = defineStore('chats', {
         return { state: 'failed', reason: failure.reason }
       }
 
-      if (financial)
-        await financial
-          .submit()
-          .catch(error =>
-            console.warn('Financial submission remains pending', error),
-          )
+      if (financial) {
+        try {
+          await financial.submit()
+        } catch (error) {
+          // The message was delivered (the recipient is told of the payment), but the payment
+          // is not on chain yet. It stays payment-pending, and reconciliation submits the same
+          // stored signed bytes again; never a new payment.
+          console.warn('Financial submission remains pending', error)
+          await this.setOutgoingState(address, id, 'payment-pending', {
+            attemptDigest: result.payloadDigest,
+          })
+          return { state: 'payment-pending' }
+        }
+      }
       await this.confirmOutgoing({
         address,
         id,

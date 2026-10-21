@@ -41,6 +41,8 @@ import {
   openEvmWallet,
   recoverSecondaryEvmWallets,
 } from '../accounts/evm-wallets'
+import { peekOpenedUtxoWallets } from '../accounts/utxo-wallets'
+import { createFinancialOperationRecovery } from '../stealth-payments/recovery'
 import type {
   DirectMessageAttemptStatus,
   DirectMessageReceived,
@@ -647,6 +649,38 @@ export function startOutgoingReconciliation({
   let timer: ReturnType<typeof setTimeout> | undefined
   let delayMs = intervalMs
   let secondaryRecovery: Promise<void> | undefined
+  // Stealth payments of the already open Bitcoin-family wallets, whether or not a message row
+  // still points at them: once the messaging owner says the carrying message was delivered, the
+  // payment's stored signed bytes are submitted (again). This is also how an operation left
+  // `exposed` by a restart between delivery and submission is finished. Opens no wallet.
+  const messaging = activeChain.directMessages
+  const financialRecovery = createFinancialOperationRecovery({
+    async captureSession() {
+      const deliveryOf = messaging.deliveryOf
+      if (!deliveryOf || stopped) return undefined
+      const open = peekOpenedUtxoWallets()
+      const wallets = open.flatMap(({ wallet: owner }) => {
+        const payments = owner.stealthPayments
+        return payments
+          ? [{ chainIdentifier: owner.chainIdentifier, owner, payments }]
+          : []
+      })
+      if (wallets.length === 0) return undefined
+      return {
+        isCurrent: () => {
+          if (stopped) return false
+          const now = peekOpenedUtxoWallets()
+          return open.every(entry => now.includes(entry))
+        },
+        wallets,
+        deliveryOf: payloadDigest =>
+          deliveryOf.call(messaging, { wallet, payloadDigest }),
+      }
+    },
+    onError: failure =>
+      console.warn('Stealth payment submission remains pending', failure),
+  })
+  let financialRecoveryRun: Promise<void> | undefined
   let knownPending = new Set<string>()
 
   const pendingIds = () => {
@@ -812,6 +846,16 @@ export function startOutgoingReconciliation({
     // Not awaited, so a slow node never delays the next tick, and a handle without the method
     // has nothing to do.
     if (!stopped) reobserveNativeOperations(wallet)
+    if (!stopped && financialRecoveryRun === undefined) {
+      const run = financialRecovery.tick().catch(error => {
+        if (!stopped)
+          console.warn('Stealth payment submission remains pending', error)
+      })
+      financialRecoveryRun = run
+      void run.finally(() => {
+        if (financialRecoveryRun === run) financialRecoveryRun = undefined
+      })
+    }
     if (!stopped && secondaryRecovery === undefined) {
       const recovery = recoverSecondaryEvmWallets(wallet as NativeWalletHandle)
       secondaryRecovery = recovery

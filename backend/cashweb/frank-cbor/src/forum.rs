@@ -3,6 +3,7 @@ use crate::cbor::{cbor_map, decode_single_item, encode_canonical, CborValue, Cou
 use crate::error::{CodecError, Error, ErrorCategory, ErrorStage, UsageError};
 use crate::frame::{encode_frame, EnvelopeFields, FramePayload};
 use crate::limits::MAX_FORUM_CURSOR_BYTES;
+use crate::message_fields as mf;
 use crate::message_types::{
     TYPE_FORUM_DISCOVERY_PAGE, TYPE_FORUM_OPERATION_STATUS, TYPE_FORUM_TOPIC_PAGE, TYPE_FORUM_VIEW,
     TYPE_TOPIC_POST,
@@ -28,8 +29,11 @@ fn usage(error: UsageError) -> Error {
 }
 fn time(t: &Timestamp) -> CborValue {
     cbor_map(vec![
-        (0, CborValue::Int(t.seconds.into())),
-        (1, CborValue::Int(t.nanoseconds.into())),
+        (mf::timestamp::SECONDS, CborValue::Int(t.seconds.into())),
+        (
+            mf::timestamp::NANOSECONDS,
+            CborValue::Int(t.nanoseconds.into()),
+        ),
     ])
 }
 fn checked(frame: &[u8]) -> Result<ParsedFrame, Error> {
@@ -59,6 +63,8 @@ pub fn encode_signed_forum_post(
     from: Option<&TopicPostAuthor>,
     signature: Option<&[u8]>,
 ) -> Result<Vec<u8>, Error> {
+    use mf::forum_post_entry as entry_k;
+    use mf::topic_post as post;
     let mut encoded = Vec::new();
     for entry in entries {
         let ForumEntry::Post {
@@ -73,8 +79,15 @@ pub fn encode_signed_forum_post(
         if !unknown.is_empty() {
             return Err(failure("schema-2 writer has no extension keys").into());
         }
-        let mut fields = vec![(0, CborValue::Int(1))];
-        for (key, value) in [(1, title), (2, url), (3, message)] {
+        let mut fields = vec![(
+            entry_k::KIND,
+            CborValue::Int(mf::forum_entry_kind::POST.into()),
+        )];
+        for (key, value) in [
+            (entry_k::TITLE, title),
+            (entry_k::URL, url),
+            (entry_k::MESSAGE, message),
+        ] {
             if let Some(value) = value {
                 if !value.is_empty() {
                     fields.push((key, CborValue::Text(value.clone())));
@@ -84,30 +97,36 @@ pub fn encode_signed_forum_post(
         encoded.push(cbor_map(fields));
     }
     let content = encode_canonical(&cbor_map(vec![
-        (0, time(authored)),
-        (1, CborValue::Array(encoded)),
+        (mf::forum_content::AUTHORED, time(authored)),
+        (mf::forum_content::ENTRIES, CborValue::Array(encoded)),
     ]))
     .map_err(usage)?;
     let mut fields = vec![
-        (0, CborValue::Text(network.into())),
-        (1, CborValue::Text(topic.into())),
-        (3, CborValue::Bytes(content)),
+        (post::NETWORK, CborValue::Text(network.into())),
+        (post::TOPIC, CborValue::Text(topic.into())),
+        (post::BODY, CborValue::Bytes(content)),
     ];
     if let Some(parent) = parent_hash {
-        fields.push((2, CborValue::Bytes(parent.to_vec())));
+        fields.push((post::PARENT_HASH, CborValue::Bytes(parent.to_vec())));
     }
     if let Some(from) = from {
         let author_val = match from {
             TopicPostAuthor::Account(acc) => cbor_map(vec![
-                (0, CborValue::Int(acc.key_type.into())),
-                (1, CborValue::Bytes(acc.key_bytes.clone())),
+                (
+                    mf::account_ref::KEY_TYPE,
+                    CborValue::Int(acc.key_type.into()),
+                ),
+                (
+                    mf::account_ref::KEY_BYTES,
+                    CborValue::Bytes(acc.key_bytes.clone()),
+                ),
             ]),
             TopicPostAuthor::Bytes(b) => CborValue::Bytes(b.clone()),
         };
-        fields.push((4, author_val));
+        fields.push((post::AUTHOR, author_val));
     }
     if let Some(sig) = signature {
-        fields.push((5, CborValue::Bytes(sig.to_vec())));
+        fields.push((post::SIGNATURE, CborValue::Bytes(sig.to_vec())));
     }
     let frame = encode_frame(
         EnvelopeFields {
@@ -135,7 +154,7 @@ pub fn verify_topic_post_author(
         crate::hash::topic_post_signature_digest(network, topic, body, parent_hash).ok()?;
     match from {
         TopicPostAuthor::Account(acc) => {
-            if acc.key_type == 1 && acc.key_bytes.len() == 33 {
+            if acc.key_type == mf::key_type::SECP256K1 && acc.key_bytes.len() == 33 {
                 if crate::crypto::verify_algorithm_1(&digest, signature, &acc.key_bytes) {
                     return crate::registration::address_from_compressed_pubkey(&acc.key_bytes)
                         .ok();
@@ -191,11 +210,17 @@ pub fn decode_forum_cursor(bytes: &[u8]) -> Result<ForumCursor, CodecError> {
 }
 /// Re-encodes explicit cursor fields; use `bytes` for forwarding an existing cursor.
 pub fn encode_forum_cursor(cursor: &ForumCursor) -> Result<Vec<u8>, Error> {
+    use mf::forum_discovery_cursor as discovery;
+    use mf::forum_topic_cursor as topic_k;
+    // Fields both cursor families share; schema.rs asserts their keys agree.
     let mut fields = vec![
-        (0, CborValue::Text(cursor.network.clone())),
-        (2, CborValue::Int(cursor.revision.into())),
-        (3, CborValue::Bytes(cursor.epoch.clone())),
-        (7, CborValue::Int(cursor.incarnation.into())),
+        (topic_k::NETWORK, CborValue::Text(cursor.network.clone())),
+        (topic_k::REVISION, CborValue::Int(cursor.revision.into())),
+        (topic_k::EPOCH, CborValue::Bytes(cursor.epoch.clone())),
+        (
+            topic_k::INCARNATION,
+            CborValue::Int(cursor.incarnation.into()),
+        ),
     ];
     match &cursor.position {
         ForumCursorPosition::Topic {
@@ -204,20 +229,26 @@ pub fn encode_forum_cursor(cursor: &ForumCursor) -> Result<Vec<u8>, Error> {
             timestamp,
             hash,
         } => fields.extend([
-            (1, CborValue::Int(i128::from(TYPE_FORUM_TOPIC_PAGE))),
             (
-                4,
+                topic_k::FAMILY,
+                CborValue::Int(i128::from(TYPE_FORUM_TOPIC_PAGE)),
+            ),
+            (
+                topic_k::LAST,
                 cbor_map(vec![
-                    (0, time(timestamp)),
-                    (1, CborValue::Bytes(hash.clone())),
+                    (mf::forum_cursor_last::TIMESTAMP, time(timestamp)),
+                    (mf::forum_cursor_last::HASH, CborValue::Bytes(hash.clone())),
                 ]),
             ),
-            (5, CborValue::Text(topic.clone())),
-            (6, time(since)),
+            (topic_k::TOPIC, CborValue::Text(topic.clone())),
+            (topic_k::SINCE, time(since)),
         ]),
         ForumCursorPosition::Discovery { topic } => fields.extend([
-            (1, CborValue::Int(i128::from(TYPE_FORUM_DISCOVERY_PAGE))),
-            (4, CborValue::Text(topic.clone())),
+            (
+                discovery::FAMILY,
+                CborValue::Int(i128::from(TYPE_FORUM_DISCOVERY_PAGE)),
+            ),
+            (discovery::TOPIC, CborValue::Text(topic.clone())),
         ]),
     }
     let bytes = encode_canonical(&cbor_map(fields)).map_err(usage)?;

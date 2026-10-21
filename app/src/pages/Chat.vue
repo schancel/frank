@@ -58,6 +58,40 @@
       /></template>
     </q-banner>
     <q-banner
+      v-if="
+        conversation?.kind === 'group' &&
+        conversation.membershipStatus === 'joined' &&
+        conversation.groupState?.supersededMemberChange
+      "
+      class="q-pa-sm"
+      data-testid="group-member-change-superseded"
+      role="alert"
+    >
+      {{
+        $t(
+          conversation.groupState.supersededMemberChange.action === 'add-member'
+            ? 'groupChat.memberAddSuperseded'
+            : 'groupChat.memberRemoveSuperseded',
+          {
+            member: shortAddress(
+              conversation.groupState.supersededMemberChange.address,
+            ),
+          },
+        )
+      }}
+      <template #action
+        ><q-btn
+          flat
+          :label="$t('groupChat.retryMemberChange')"
+          data-testid="retry-group-member-change"
+          @click="retrySupersededMemberChange" /><q-btn
+          flat
+          :label="$t('groupChat.dismissMemberChange')"
+          data-testid="dismiss-group-member-change"
+          @click="dismissSupersededMemberChange"
+      /></template>
+    </q-banner>
+    <q-banner
       v-for="request in participantRequests"
       :key="request.senderAddress"
       data-testid="participant-request-banner"
@@ -2168,6 +2202,22 @@ export default defineComponent({
       }
       if (!this.bottom) {
         this.$nextTick(this.buttonScrollBottom)
+      }
+    },
+    async retrySupersededMemberChange() {
+      if (!this.conversation) return
+      try {
+        await this.chatStore.retrySupersededMemberChange(this.conversation.id)
+      } catch (error) {
+        errorNotify(error instanceof Error ? error : new Error(String(error)))
+      }
+    },
+    async dismissSupersededMemberChange() {
+      if (!this.conversation) return
+      try {
+        await this.chatStore.dismissSupersededMemberChange(this.conversation.id)
+      } catch (error) {
+        errorNotify(error instanceof Error ? error : new Error(String(error)))
       }
     },
     async retryGroupUpdates() {

@@ -1002,6 +1002,8 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       true,
     )
     expect(state.pendingEpoch).toBeUndefined()
+    // The user was told by the error; no banner repeats it.
+    expect(state.supersededMemberChange).toBeUndefined()
     // The losing roster's deliveries were never sent and are dropped with it.
     expect(state.pendingMemberDeliveries[CHARLIE]).toBeUndefined()
     expect(
@@ -1202,9 +1204,213 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     })
     expect(charlieGroup.groupState.lastSyncedSeq).toBe(2)
     expect(charlieGroup.messages).toHaveLength(1)
-    // The signed time is shown, so neither copy's relay time changes what members see.
+    // The first accepted row's relay time is used; the replayed copy changes nothing.
     expect(charlieGroup.messages[0].serverTime).toBe(original.serverTime)
     expect(bobGroup.messages[0].serverTime).toBe(original.serverTime)
+  })
+
+  it('orders and reads group messages by relay time, never by a member clock', async () => {
+    const client = createSharedMockGroupRelay()
+    const alice = useChatStore()
+    alice.setGroupRelayClient('https://relay.frank.test', client)
+    const group = await alice.createGroupConversation({
+      groupName: 'Clocks',
+      memberAddresses: [BOB, CHARLIE],
+      relayUrl: client.relayUrl,
+      relayClient: client,
+      creatorAddress: ALICE,
+    })
+    const { chats: bob } = await inviteBob(group, client)
+    bob.approveGroupInvite(group.id)
+    await bob.syncGroupConversation(group.id, {
+      relayClient: client,
+      ownAddress: BOB,
+    })
+    const keys = deriveEpochKeys(
+      hexToBytes(group.groupState!.epochSecretHex),
+      group.groupId!,
+      0,
+    )
+    const post = (sender: string, text: string, timestampMs: number) =>
+      client.sendGroupMessage(
+        group.groupId!,
+        sealGroupMessage({
+          epochKeys: keys,
+          senderIndex: group.groupState!.roster.find(
+            member => member.address === sender,
+          )!.index,
+          senderEpochKeyPair: groupTestSigningKey(sender, group.groupId!, 0),
+          payload: encodeGroupItems([{ type: 'text', text }]),
+          timestampMs,
+        }),
+      )
+    const now = Date.now()
+    // Charlie's clock runs a day fast. Bob has the group open when it arrives.
+    const fast = await post(CHARLIE, 'Fast clock', now + 86_400_000)
+    bob.activeConversationId = group.id
+    await bob.syncGroupConversation(group.id, {
+      relayClient: client,
+      ownAddress: BOB,
+    })
+    bob.activeConversationId = null
+    // Alice writes later, with an accurate clock, while Bob is elsewhere.
+    const later = await post(ALICE, 'Accurate clock', now)
+    await bob.syncGroupConversation(group.id, {
+      relayClient: client,
+      ownAddress: BOB,
+    })
+    const conv = bob.conversations[group.id]
+    expect(
+      conv.messages.map((message: any) => [
+        message.items[0].text,
+        message.serverTime,
+      ]),
+    ).toEqual([
+      ['Fast clock', fast.server_time_ms],
+      ['Accurate clock', later.server_time_ms],
+    ])
+    expect(conv.lastRead).toBe(fast.server_time_ms)
+    expect(conv.totalUnreadMessages).toBe(1)
+  })
+
+  it('gives our own group message the relay time in place of this device clock', async () => {
+    const { chats, group, client } = await makeGroup()
+    const sendRow = jest.spyOn(client, 'sendGroupMessage')
+    const now = Date.now()
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 86_400_000)
+    try {
+      await chats.sendGroupMessage({
+        conversationId: group.id,
+        items: [{ type: 'text', text: 'From a fast clock' }],
+        relayClient: client,
+        senderAddress: ALICE,
+      })
+    } finally {
+      clock.mockRestore()
+    }
+    const row = await sendRow.mock.results[0].value
+    const [message] = chats.conversations[group.id].messages
+    expect(message.localTime).toBe(false)
+    expect(message.serverTime).toBe(row.server_time_ms)
+    await chats.syncGroupConversation(group.id, {
+      relayClient: client,
+      ownAddress: ALICE,
+    })
+    expect(chats.conversations[group.id].messages).toHaveLength(1)
+    expect(chats.conversations[group.id].messages[0].serverTime).toBe(
+      row.server_time_ms,
+    )
+  })
+
+  /** The laptop's change times out unanswered while the phone, another device of the same
+   * administrator, publishes "add Charlie"; the laptop's next sync finds the phone won. */
+  async function supersededOnLaptop(change: 'add-member' | 'remove-member') {
+    const { chats: laptop, group, client } = await makeGroup()
+    const saved = JSON.parse(JSON.stringify(laptop.$state))
+    setActivePinia(createPinia())
+    const phone = useChatStore()
+    phone.$patch(saved)
+    jest.spyOn(client, 'publishEpoch').mockImplementationOnce(async () => {
+      await phone.inviteMemberToGroup({
+        conversationId: group.id,
+        memberAddress: CHARLIE,
+        relayClient: client,
+      })
+      throw new Error('timeout')
+    })
+    const latest = client.getLatestEpoch.bind(client)
+    jest
+      .spyOn(client, 'getLatestEpoch')
+      // Both rotations read the relay's epoch first; the laptop's reconciliation is offline.
+      .mockImplementationOnce(latest)
+      .mockImplementationOnce(latest)
+      .mockImplementationOnce(async () => {
+        throw new Error('temporarily offline')
+      })
+    const input = {
+      conversationId: group.id,
+      memberAddress: change === 'add-member' ? DAVE : BOB,
+      relayClient: client,
+    }
+    await (change === 'add-member'
+      ? laptop.inviteMemberToGroup(input)
+      : laptop.removeMemberFromGroup(input))
+    expect(laptop.conversations[group.id].groupState.pendingEpoch).toBeDefined()
+    await laptop.syncGroupConversation(group.id, {
+      relayClient: client,
+      ownAddress: ALICE,
+    })
+    const state = laptop.conversations[group.id].groupState
+    expect(state.pendingEpoch).toBeUndefined()
+    expect(state.epochFrame.epoch_hash).toBe(
+      phone.conversations[group.id].groupState.epochFrame.epoch_hash,
+    )
+    expect(state.supersededMemberChange.action).toBe(change)
+    expect(state.supersededMemberChange.address.toLowerCase()).toBe(
+      input.memberAddress,
+    )
+    return { laptop, phone, group, client }
+  }
+  const rosterOf = (chats: any, id: string) =>
+    chats.conversations[id].groupState.roster.map((member: any) =>
+      member.address.toLowerCase(),
+    )
+
+  it('shows a removal superseded after a timeout instead of dropping it, and the user retries it', async () => {
+    const { laptop, group, client } = await supersededOnLaptop('remove-member')
+    // Bob is still a member, and the user is told so; nothing retried it unasked.
+    expect(rosterOf(laptop, group.id)).toContain(BOB)
+    await laptop.retrySupersededMemberChange(group.id, client)
+    const retried = laptop.conversations[group.id].groupState
+    expect(retried.epoch).toBe(2)
+    expect(rosterOf(laptop, group.id)).not.toContain(BOB)
+    // The winning epoch's change is kept underneath the retried one.
+    expect(rosterOf(laptop, group.id)).toContain(CHARLIE)
+    expect(retried.supersededMemberChange).toBeUndefined()
+  })
+
+  it('does not re-add a member through a stale retry after another device added and removed them', async () => {
+    const { laptop, phone, group, client } = await supersededOnLaptop(
+      'add-member',
+    )
+    await phone.inviteMemberToGroup({
+      conversationId: group.id,
+      memberAddress: DAVE,
+      relayClient: client,
+    })
+    await phone.removeMemberFromGroup({
+      conversationId: group.id,
+      memberAddress: DAVE,
+      relayClient: client,
+    })
+    await laptop.retrySupersededMemberChange(group.id, client)
+    const state = laptop.conversations[group.id].groupState
+    expect(state.epoch).toBe(3)
+    expect(rosterOf(laptop, group.id)).not.toContain(DAVE)
+    expect(rosterOf(laptop, group.id)).toContain(CHARLIE)
+    expect(state.supersededMemberChange).toBeUndefined()
+  })
+
+  it('does not re-remove a member through a stale retry after another device removed and re-added them', async () => {
+    const { laptop, phone, group, client } = await supersededOnLaptop(
+      'remove-member',
+    )
+    await phone.removeMemberFromGroup({
+      conversationId: group.id,
+      memberAddress: BOB,
+      relayClient: client,
+    })
+    await phone.inviteMemberToGroup({
+      conversationId: group.id,
+      memberAddress: BOB,
+      relayClient: client,
+    })
+    await laptop.retrySupersededMemberChange(group.id, client)
+    const state = laptop.conversations[group.id].groupState
+    expect(state.epoch).toBe(3)
+    expect(rosterOf(laptop, group.id)).toContain(BOB)
+    expect(rosterOf(laptop, group.id)).toContain(CHARLIE)
+    expect(state.supersededMemberChange).toBeUndefined()
   })
 
   it('does not accept an older-epoch row after a row of a later epoch', async () => {

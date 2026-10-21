@@ -6,6 +6,7 @@ import { defineComponent, h } from 'vue'
 
 import enUS from 'src/i18n/en-us'
 import MainLayout from './MainLayout.vue'
+import * as extensionRuntime from '../../src-bex/runtime-adapter'
 
 // Stores are plain reactive objects; storeToRefs just needs to turn them into refs.
 jest.mock('pinia', () => ({
@@ -215,9 +216,10 @@ async function mountLayout(
   attachTo?: HTMLElement,
   setup = true,
   initialPath = '/',
+  mobile = false,
 ) {
   mockSetActiveConversation.mockClear()
-  const $q = { screen: { width } }
+  const $q = { screen: { width }, platform: { is: { mobile } } }
   const router = createFakeRouter()
   router.currentRoute.value = { path: initialPath }
   mockRouterRef.current = router
@@ -767,6 +769,45 @@ describe('MainLayout root window scroll lock (Safari floating toolbar defense)',
 })
 
 describe('MainLayout mobile/extension bottom navigation bar', () => {
+  it.each([
+    ['desktop browser', false, null, false, '0px'],
+    [
+      'phone browser/PWA',
+      true,
+      null,
+      false,
+      'max(8px, env(safe-area-inset-bottom, 0px))',
+    ],
+    ['extension popup', false, 'popup', true, '0px'],
+    ['extension side panel', false, 'sidepanel', true, '0px'],
+    ['phone extension popup', true, 'popup', true, '0px'],
+    ['phone extension window', true, 'window', true, '0px'],
+    ['phone extension tab', true, 'tab', true, '0px'],
+  ])(
+    'reserves bottom safe-area padding only for phones: %s',
+    async (_label, mobile, extensionMode, extension, inset) => {
+      const runtime = jest
+        .spyOn(extensionRuntime, 'isBrowserExtensionRuntime')
+        .mockReturnValue(extension)
+      if (extensionMode)
+        document.documentElement.setAttribute('data-ext-mode', extensionMode)
+      try {
+        // Identical widths must not turn a desktop extension into a phone.
+        const { wrapper } = await mountLayout(390, undefined, true, '/', mobile)
+        expect(wrapper.find('[data-testid="mobile-bottom-nav"]').exists()).toBe(
+          true,
+        )
+        expect(
+          wrapper.element.style.getPropertyValue('--frank-bottom-nav-inset'),
+        ).toBe(inset)
+        wrapper.unmount()
+      } finally {
+        document.documentElement.removeAttribute('data-ext-mode')
+        runtime.mockRestore()
+      }
+    },
+  )
+
   it('adds frank-has-mobile-bottom-nav on narrow viewports when bottom nav is shown and omits it when locked or on desktop', async () => {
     const { wrapper } = await mountLayout(390)
     await flushPromises()

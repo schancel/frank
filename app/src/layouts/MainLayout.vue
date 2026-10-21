@@ -559,8 +559,17 @@ export default defineComponent({
         this.myDrawerOpen && !isNarrowWidth(this.screenWidth)
           ? `${this.drawerWidth}px`
           : '0px'
+      // A narrow desktop extension is not a phone: only phone/browser shells
+      // reserve space below the buttons for the home indicator.
+      const phoneInsets =
+        this.$q.platform?.is.mobile &&
+        !this.isExtensionPopup &&
+        !isBrowserExtensionRuntime()
       return {
         '--frank-drawer-offset': offset,
+        '--frank-bottom-nav-inset': phoneInsets
+          ? 'max(8px, env(safe-area-inset-bottom, 0px))'
+          : '0px',
       }
     },
     overlayOpen(): boolean {
@@ -693,14 +702,14 @@ html.frank-keyboard-open .q-layout .q-footer .chat-input-toolbar {
 
 .q-layout.frank-has-mobile-bottom-nav {
   --frank-bottom-nav-offset: calc(
-    56px + max(8px, env(safe-area-inset-bottom, 0px))
+    56px + var(--frank-bottom-nav-inset, 0px)
   );
 }
 
 .q-layout.frank-has-mobile-bottom-nav .q-page-container {
   padding-bottom: var(
     --frank-bottom-nav-offset,
-    calc(56px + max(8px, env(safe-area-inset-bottom, 0px)))
+    calc(56px + var(--frank-bottom-nav-inset, 0px))
   ) !important;
 }
 
@@ -723,11 +732,11 @@ html.frank-keyboard-open .q-layout .q-footer .chat-input-toolbar {
   left: 0;
   right: 0;
   bottom: 0;
-  height: calc(56px + max(8px, env(safe-area-inset-bottom, 0px)));
-  min-height: 64px;
-  max-height: calc(56px + max(8px, env(safe-area-inset-bottom, 0px)));
+  height: calc(56px + var(--frank-bottom-nav-inset, 0px));
+  min-height: calc(56px + var(--frank-bottom-nav-inset, 0px));
+  max-height: calc(56px + var(--frank-bottom-nav-inset, 0px));
   padding-top: 0;
-  padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  padding-bottom: var(--frank-bottom-nav-inset, 0px);
   padding-left: max(14px, env(safe-area-inset-left, 0px));
   padding-right: max(14px, env(safe-area-inset-right, 0px));
   background: var(--q-color-bg-surface, #fff);

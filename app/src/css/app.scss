@@ -406,13 +406,13 @@ html.frank-keyboard-open {
 // Reserve space for the fixed mobile/extension bottom navigation bar so it never covers
 // page content or bottom action buttons.
 .q-layout.frank-has-mobile-bottom-nav {
-  --frank-bottom-nav-offset: calc(56px + env(safe-area-inset-bottom, 0px));
+  --frank-bottom-nav-offset: calc(56px + var(--frank-bottom-nav-inset, 0px));
 }
 
 .q-layout.frank-has-mobile-bottom-nav .q-page-container {
   padding-bottom: var(
     --frank-bottom-nav-offset,
-    calc(56px + env(safe-area-inset-bottom, 0px))
+    calc(56px + var(--frank-bottom-nav-inset, 0px))
   ) !important;
 }
 

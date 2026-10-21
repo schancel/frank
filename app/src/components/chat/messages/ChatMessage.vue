@@ -241,7 +241,8 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, PropType } from 'vue'
+import { defineComponent, onBeforeUnmount, PropType, ref } from 'vue'
+import { RECEIVED_PAYMENT_RECHECK_MS } from '../../../composables/useReceivedPayment'
 
 import { useChatStore } from '../../../stores/chats'
 import {
@@ -300,6 +301,38 @@ import {
 } from '../../../utils/chat-attachments'
 import type { PostAttachment } from '../../../utils/post-editor'
 
+/**
+ * Received stamps still waiting to settle, across every mounted bubble. One wallet read per
+ * tick serves them all: `refreshReceivedPayments` is the wallet's own pass, which keeps its
+ * backoff for coins long overdue, instead of a chain check per message. Each waiter then reads
+ * its message from memory and says whether it is done.
+ */
+const stampWaiters = new Set<() => boolean>()
+let stampTick: ReturnType<typeof setTimeout> | undefined
+function scheduleStampTick(): void {
+  if (stampTick !== undefined || stampWaiters.size === 0) return
+  stampTick = setTimeout(() => {
+    void (async () => {
+      try {
+        // Every bubble that waited may have gone meanwhile: then nothing is read.
+        if (stampWaiters.size > 0)
+          await useMonadWallet().refreshReceivedPayments?.()
+      } catch {
+        // No wallet or node now: read again on the next tick.
+      }
+      stampTick = undefined
+      for (const waiter of Array.from(stampWaiters))
+        if (waiter()) stampWaiters.delete(waiter)
+      scheduleStampTick()
+    })()
+  }, RECEIVED_PAYMENT_RECHECK_MS)
+  ;(stampTick as { unref?: () => void }).unref?.()
+}
+function waitForStamp(read: () => boolean): void {
+  stampWaiters.add(read)
+  scheduleStampTick()
+}
+
 export default defineComponent({
   name: 'ChatMessage',
   components: {
@@ -345,7 +378,33 @@ export default defineComponent({
         props.message.items.some(item => item.type === 'stealth'),
     )
     const chats = useChatStore()
+    // A received stamp is the payer's signed transfer; it is shown as claimed until the
+    // messaging wallet saw it arrive on chain. Read from memory now, then on the shared tick.
+    const stampSettled = ref(false)
+    const readStamp = (): boolean => {
+      const message = props.message
+      if (
+        message.outbound ||
+        !props.payloadDigest ||
+        !((message.stampValueWei ?? 0n) > 0n)
+      )
+        return true
+      let status: string | undefined
+      try {
+        status = useMonadWallet().getMessagePayment?.(
+          props.payloadDigest,
+        )?.stampStatus
+      } catch {
+        // No wallet now: the stamp stays claimed and is read again.
+      }
+      stampSettled.value = status === 'received'
+      // Settled, never landing, or no coin for it in this wallet: nothing more to wait for.
+      return status === 'received' || status === 'failed' || status === 'none'
+    }
+    if (!readStamp()) waitForStamp(readStamp)
+    onBeforeUnmount(() => stampWaiters.delete(readStamp))
     return {
+      stampSettled,
       applicationRenderer,
       sentContactPayments,
       deleteMessage: chats.deleteMessage,
@@ -676,7 +735,15 @@ export default defineComponent({
     },
     stampAmount() {
       if (this.message.stampValueWei !== undefined) {
-        return formatDisplayAmount(activeChain, this.message.stampValueWei)
+        const amount = formatDisplayAmount(
+          activeChain,
+          this.message.stampValueWei,
+        )
+        return !this.message.outbound &&
+          this.message.stampValueWei > 0n &&
+          !this.stampSettled
+          ? `${amount} (${this.$t('chatMessageStealth.claimedAmount')})`
+          : amount
       }
       if (!this.message || !this.message.outpoints) {
         return `0 ${activeChain.unit}`

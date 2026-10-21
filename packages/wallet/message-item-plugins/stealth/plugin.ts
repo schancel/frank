@@ -22,9 +22,8 @@ export function initStealthPlugin(
       }
       return 'Sent stealth payment'
     },
-    // Reads the item's own self-reported `amount`, not a chain-verified figure: a known,
-    // separately tracked gap (ticket #60). See `tallyValue` on the registry contract.
-    tallyValue: raw => raw.amount,
+    // No `tallyValue`: the item's `amount` is the sender's claim, never value received. What a
+    // stealth payment brought is what the wallet saw arrive on chain for the message.
     encode: encodeStealthItem,
     decode: decodeStealthItem,
   })

@@ -1,5 +1,9 @@
 import { getChainRegistryEntry } from '@frank/wallet/chain'
-import { ASSET_DECIMALS, type SupportedAsset } from '@frank/wallet/oracle'
+import {
+  ASSET_DECIMALS,
+  convertRawToAvu,
+  type SupportedAsset,
+} from '@frank/wallet/oracle'
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { formatAvu } from './avu-units'
 
@@ -24,6 +28,30 @@ function pricedAsset(chain: StampChain): SupportedAsset | undefined {
   } catch {
     return undefined
   }
+}
+
+/**
+ * What a native amount on a canonical chain is worth in AVU, at the oracle's price for the
+ * chain's coin. Undefined when there is no price (no rate yet, offline, a coin nobody prices) or
+ * the chain's base unit is not the priced asset's: an unknown value is not zero.
+ */
+export function nativeAmountAvu(
+  chainIdentifier: string,
+  baseUnits: bigint,
+): number | undefined {
+  const entry = getChainRegistryEntry(chainIdentifier)
+  const asset = entry?.kind
+  if (
+    !asset ||
+    !(asset in ASSET_DECIMALS) ||
+    entry.nativeDecimals !== ASSET_DECIMALS[asset as SupportedAsset]
+  )
+    return undefined
+  return convertRawToAvu(
+    baseUnits,
+    asset as SupportedAsset,
+    useSafeOracleStore().current.rates[asset as SupportedAsset],
+  )
 }
 
 /** What a stamp is worth in AVU, in the two forms the stamp pill shows it. */

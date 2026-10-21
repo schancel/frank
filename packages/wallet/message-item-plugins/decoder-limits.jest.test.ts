@@ -930,6 +930,7 @@ describe('tallyValue is never NaN', () => {
     } as MessageItem
     expect(registry.tallyValue([swap])).toBe(0)
     expect(registry.tallyValue([sync])).toBe(7)
+    // A stealth item's amount is the sender's claim: it never tallies.
     expect(
       registry.tallyValue([
         swap,
@@ -937,7 +938,7 @@ describe('tallyValue is never NaN', () => {
         { type: 'stealth', amount: NaN },
         { type: 'stealth', amount: 5 },
       ]),
-    ).toBe(12)
+    ).toBe(7)
   })
 
   it('such an amount never arrives: the decoder refuses it first', () => {

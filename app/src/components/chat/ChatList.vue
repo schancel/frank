@@ -117,7 +117,7 @@
                 conversation.createdAt
               "
               :chat-address="conversation.address || conversation.id"
-              :value-unread="formatAmount(conversation.totalUnreadValue)"
+              :value-unread="unreadValueText(conversation)"
               :num-unread="conversation.totalUnreadMessages"
               :screener-stamp="screenerStampFor(conversation)"
               :compact="compact"
@@ -180,11 +180,12 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref } from 'vue'
+import { computed, defineComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
+import { unreadValueAvu } from '../../stores/chats-domain'
 import { useContactStore } from '../../stores/contacts'
 
 import { openChat, openPage } from '../../utils/routes'
@@ -192,7 +193,9 @@ import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { isNarrowWidth } from '../../utils/layout'
 import { activeChain } from '@frank/wallet/chain'
-import { formatDisplayAmount } from 'src/utils/chain-amount'
+import { formatAvu } from 'src/utils/avu-units'
+import { nativeAmountAvu } from 'src/utils/stamp-display'
+import { verifiedReceiptsReader } from 'src/utils/message-receipts'
 import {
   ChatSearchIndex,
   type SearchSnippet,
@@ -204,6 +207,9 @@ import {
   rankScreenerConversations,
   summarizeScreenerQueue,
 } from '../../utils/screener-triage'
+
+/** How often the list reads again what the wallets saw arrive for unread messages. */
+const UNREAD_VALUE_REREAD_MS = 15_000
 
 export default defineComponent({
   emits: ['closeDrawer'],
@@ -293,9 +299,40 @@ export default defineComponent({
       return list
     })
 
+    // The wallets' view of what arrived is not reactive: read it again now and then.
+    const receiptsRead = ref(0)
+    let receiptsTimer: ReturnType<typeof setInterval> | undefined
+    onMounted(() => {
+      receiptsTimer = setInterval(() => {
+        receiptsRead.value += 1
+      }, UNREAD_VALUE_REREAD_MS)
+    })
+    onBeforeUnmount(() => clearInterval(receiptsTimer))
+    // One read of each wallet's coins per tick, shared by every row and message.
+    const verifiedReceipts = computed(() => {
+      void receiptsRead.value
+      return verifiedReceiptsReader()
+    })
+
     const router = useRouter()
     const $q = useQuasar()
     return {
+      /** What the unread received messages brought, in AVU: stamps plus payments the wallets
+       * saw arrive, each chain at its own price. Nothing when there is none, or when part of
+       * it has no price: never a claimed amount, never a made-up figure. */
+      unreadValueText(conversation: Conversation): string | undefined {
+        const avu = unreadValueAvu(
+          conversation,
+          chatStore.activeConversationId ?? null,
+          {
+            stampChainIdentifier: activeChain.chainIdentifier,
+            verifiedReceipts: verifiedReceipts.value,
+            toAvu: nativeAmountAvu,
+          },
+        )
+        const figure = avu === undefined ? '' : formatAvu(avu)
+        return figure ? `≈ ${figure}` : undefined
+      },
       getSortedChatOrder,
       displayedConversations,
       searchQuery,
@@ -376,12 +413,6 @@ export default defineComponent({
         item: Conversation | string,
       ) {
         return this.selectConversation(item)
-      },
-      formatAmount(amount?: number) {
-        if (amount === undefined) {
-          return
-        }
-        return formatDisplayAmount(activeChain, BigInt(Math.trunc(amount)))
       },
       screenerStampFor(conversation?: Partial<Conversation>): string {
         if (

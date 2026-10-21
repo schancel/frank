@@ -99,10 +99,10 @@ describe('stealth wire bytes and value', () => {
     )
   })
 
-  it('previews without a network and tallies the self-reported amount', () => {
+  it('previews without a network and never tallies the claimed amount', () => {
     expect(registry.previewText({ type: 'stealth', amount: 3 })).toBe(
       'Sent stealth payment',
     )
-    expect(registry.tallyValue([canonical, legacy])).toBe(1000042)
+    expect(registry.tallyValue([canonical, legacy])).toBe(0)
   })
 })

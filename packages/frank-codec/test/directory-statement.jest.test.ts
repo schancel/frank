@@ -10,7 +10,7 @@ import {
   isValidCanonicalUsername,
 } from '../src'
 import { M } from '../fixtures/builders'
-import { ACCOUNT_REF, DIRECTORY_ATTESTATION, DIRECTORY_STATEMENT, KEY_TYPE, SIGNATURE_ALGORITHM, SIGNATURE_ENTRY, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT } from '../src/constants'
+import { ACCOUNT_REF, DIRECTORY_ATTESTATION, DIRECTORY_STATEMENT, KEY_TYPE, RELAY_BINDING, SIGNATURE_ALGORITHM, SIGNATURE_ENTRY, TIMESTAMP, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT } from '../src/constants'
 
 describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)', () => {
   const secretKey = new Uint8Array(32).fill(0x2a)
@@ -18,56 +18,56 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
 
   const makeRawStatement = (field14Value?: unknown) => {
     const fields: Array<[number | bigint, unknown]> = [
-      [0, 'monad-testnet'],
+      [DIRECTORY_STATEMENT.network, 'monad-testnet'],
       [
-        1,
+        DIRECTORY_STATEMENT.subject,
         M([
-          [0, 1],
-          [1, secpKey],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, secpKey],
         ]),
       ],
-      [2, 42n],
+      [DIRECTORY_STATEMENT.revision, 42n],
       [
-        3,
+        DIRECTORY_STATEMENT.timestamp,
         M([
-          [0, 1700000000n],
-          [1, 0],
+          [TIMESTAMP.seconds, 1700000000n],
+          [TIMESTAMP.nanoseconds, 0],
         ]),
       ],
       [
-        4,
+        DIRECTORY_STATEMENT.relays,
         [
           M([
-            [0, new Uint8Array(16).fill(1)],
-            [1, 'https://relay1.example.com'],
+            [RELAY_BINDING.relayId, new Uint8Array(16).fill(1)],
+            [RELAY_BINDING.endpoint, 'https://relay1.example.com'],
             [
-              2,
+              RELAY_BINDING.identity,
               M([
-                [0, 1],
-                [1, secpKey],
+                [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                [ACCOUNT_REF.keyBytes, secpKey],
               ]),
             ],
             [
-              3,
+              RELAY_BINDING.expiry,
               M([
-                [0, 1700003600n],
-                [1, 0],
+                [TIMESTAMP.seconds, 1700003600n],
+                [TIMESTAMP.nanoseconds, 0],
               ]),
             ],
           ]),
         ],
       ],
       [
-        8,
+        DIRECTORY_STATEMENT.stampKey,
         M([
-          [0, 1],
-          [1, secpKey],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, secpKey],
         ]),
       ],
     ]
 
     if (field14Value !== undefined) {
-      fields.push([14, field14Value])
+      fields.push([DIRECTORY_STATEMENT.username, field14Value])
     }
 
     return encodeFrame(
@@ -266,10 +266,10 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
               M([
                 [SIGNATURE_ENTRY.algorithm, SIGNATURE_ALGORITHM.secp256k1EcdsaDer], // algorithm 1
                 [
-                  1,
+                  SIGNATURE_ENTRY.signer,
                   M([
-                    [0, 1],
-                    [1, secpKey],
+                    [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                    [ACCOUNT_REF.keyBytes, secpKey],
                   ]),
                 ],
                 [SIGNATURE_ENTRY.signature, sigDer],

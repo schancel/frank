@@ -27,14 +27,7 @@ import {
   type5Payload,
   unknownItem,
 } from '../fixtures/builders'
-import {
-  RECIPIENT_ENCRYPTED_PAYLOAD_V1,
-  TYPE_DIRECT_MESSAGE_DELIVERY,
-  TYPE_ENCRYPTED_MESSAGE_CONTENT,
-  TYPE_MESSAGE_CONTENT_REVISION,
-  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
-  TYPE_TEXT_MESSAGE_ITEM,
-} from '../src/constants'
+import { ENCRYPTED_MESSAGE_CONTENT, RECIPIENT_ENCRYPTED_PAYLOAD_V1, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM } from '../src/constants'
 
 function encrypted(suite = 1, schema = 2, min = 2): Uint8Array {
   return fr(
@@ -66,11 +59,11 @@ function root(extra?: Encodable): Uint8Array {
 }
 function content(extra?: Encodable, items = [unknownItem()]): Uint8Array {
   const payload = M([
-    [0, NET],
-    [1, bytesOf(16, 7)],
-    [2, rev8Frame(items)],
-    [3, bytesOf(32, 8)],
-    [4, bytesOf(16, 8)],
+    [ENCRYPTED_MESSAGE_CONTENT.network, NET],
+    [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 7)],
+    [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8Frame(items)],
+    [ENCRYPTED_MESSAGE_CONTENT.contentDigest, bytesOf(32, 8)],
+    [ENCRYPTED_MESSAGE_CONTENT.conversationId, bytesOf(16, 8)],
   ])
   if (extra !== undefined) payload.set(99, extra)
   return fr(

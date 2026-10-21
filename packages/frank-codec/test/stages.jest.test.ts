@@ -33,15 +33,7 @@ import {
   unknownItem,
   withLength,
 } from '../fixtures/builders'
-import {
-  DIRECT_MESSAGE_DELIVERY,
-  MESSAGE_CONTENT_REVISION,
-  TEXT_MESSAGE_ITEM,
-  TYPE_DIRECT_MESSAGE_DELIVERY,
-  TYPE_MESSAGE_CONTENT_REVISION,
-  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
-  TYPE_TEXT_MESSAGE_ITEM,
-} from '../src/constants'
+import { ACCOUNT_REF, DIRECT_MESSAGE_DELIVERY, MESSAGE_CONTENT_REVISION, TEXT_MESSAGE_ITEM, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM } from '../src/constants'
 
 function outcome(f: Uint8Array, ctx: Partial<ValidationContext> = {}): string {
   try {
@@ -154,8 +146,8 @@ describe('stage precedence', () => {
     const d = deliveryFrame({
       payloadFrame: textItem(),
       destination: M([
-        [0, 9],
-        [1, bytesOf(33, 1)],
+        [ACCOUNT_REF.keyType, 9],
+        [ACCOUNT_REF.keyBytes, bytesOf(33, 1)],
       ]),
     })
     expect(outcome(d)).toBe('unsupported@8.3')

@@ -26,11 +26,7 @@ import {
 import { CASES, PRE_TOPIC_SCHEMAS } from '../fixtures/cases'
 import { contextOf } from '../fixtures/manifest'
 import { buildTopicCommitments } from '../fixtures/topic-commitments'
-import {
-  TYPE_TOPIC_POST,
-  TYPE_TOPIC_POST_SUBMISSION,
-  TYPE_TOPIC_VOTE_SUBMISSION,
-} from '../src/constants'
+import { TOPIC_POST_SUBMISSION, TOPIC_VOTE_SUBMISSION, TYPE_TOPIC_POST, TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION } from '../src/constants'
 
 const COMMITMENTS_PATH = path.resolve(
   __dirname,
@@ -129,9 +125,9 @@ describe('R6 limits', () => {
       TYPE_TOPIC_POST_SUBMISSION,
       new Map([
         ...(M([
-          [0, 'frank-test'],
-          [1, big],
-          [2, burnTx()],
+          [TOPIC_POST_SUBMISSION.network, 'frank-test'],
+          [TOPIC_POST_SUBMISSION.postFrame, big],
+          [TOPIC_POST_SUBMISSION.burnTx, burnTx()],
         ]) as Map<number, unknown>),
         [9, new Uint8Array(1_048_576 - big.length)],
       ]) as never,
@@ -145,9 +141,9 @@ describe('R6 limits', () => {
       TYPE_TOPIC_VOTE_SUBMISSION,
       new Map([
         ...(M([
-          [0, 'frank-test'],
-          [1, bytesOf(32, 1)],
-          [2, burnTx()],
+          [TOPIC_VOTE_SUBMISSION.network, 'frank-test'],
+          [TOPIC_VOTE_SUBMISSION.targetHash, bytesOf(32, 1)],
+          [TOPIC_VOTE_SUBMISSION.burnTx, burnTx()],
         ]) as Map<number, unknown>),
         [9, new Uint8Array(65_536)],
       ]) as never,

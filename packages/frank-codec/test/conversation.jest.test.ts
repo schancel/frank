@@ -15,7 +15,7 @@ import {
   bytesOf,
   textItem,
 } from '../fixtures/builders'
-import { TYPE_ENCRYPTED_MESSAGE_CONTENT } from '../src/constants'
+import { ENCRYPTED_MESSAGE_CONTENT, TYPE_ENCRYPTED_MESSAGE_CONTENT } from '../src/constants'
 
 describe('ticket #818: conversation identifiers and names in encrypted message content', () => {
   it('parses conversation_id and optional conversation_name on type 6', () => {
@@ -49,10 +49,10 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
 
   it('parses type 6 without conversation_id (field 4), which a reader must accept', () => {
     const rawMap = new Map<number, unknown>([
-      [0, 'frank'],
-      [1, bytesOf(16, 1)],
-      [2, rev8Frame([textItem('test')])],
-      [3, messageContentDigest(rev8Frame([textItem('test')]))],
+      [ENCRYPTED_MESSAGE_CONTENT.network, 'frank'],
+      [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 1)],
+      [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8Frame([textItem('test')])],
+      [ENCRYPTED_MESSAGE_CONTENT.contentDigest, messageContentDigest(rev8Frame([textItem('test')]))],
     ])
     const frame = encodeFrame(
       {
@@ -92,11 +92,11 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
   it('rejects conversation_id with wrong byte length', () => {
     for (const len of [15, 17, 0, 32]) {
       const rawMap = new Map<number, unknown>([
-        [0, 'frank'],
-        [1, bytesOf(16, 1)],
-        [2, rev8Frame([textItem('test')])],
-        [3, bytesOf(32, 2)],
-        [4, bytesOf(len, 4)],
+        [ENCRYPTED_MESSAGE_CONTENT.network, 'frank'],
+        [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 1)],
+        [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8Frame([textItem('test')])],
+        [ENCRYPTED_MESSAGE_CONTENT.contentDigest, bytesOf(32, 2)],
+        [ENCRYPTED_MESSAGE_CONTENT.conversationId, bytesOf(len, 4)],
       ])
       const frame = encodeFrame(
         {

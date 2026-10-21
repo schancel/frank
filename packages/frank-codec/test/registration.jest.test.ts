@@ -1452,7 +1452,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
                 SIGNATURE_ALGORITHM.secp256k1EcdsaDer,
               ], // alg 1
               [
-                1,
+                SIGNATURE_ENTRY.signer,
                 M([
                   [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
                   [ACCOUNT_REF.keyBytes, pubKey],

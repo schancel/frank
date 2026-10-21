@@ -11,10 +11,7 @@ import {
   type5Payload,
   acct1,
 } from '../fixtures/builders'
-import {
-  TYPE_DIRECTORY_STATEMENT,
-  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
-} from '../src/constants'
+import { ENCRYPTION_SUITE, RECIPIENT_ENCRYPTED_PAYLOAD_V2, TYPE_DIRECTORY_STATEMENT, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD } from '../src/constants'
 
 const ctx = defaultContext()
 const outcome = (f: Uint8Array, c = ctx): string => {
@@ -103,14 +100,14 @@ describe('typed exposure of the stamp fields', () => {
 
   it('types production suite 1 only in type-5 schema 2', () => {
     const payload = M([
-      [0, 'monad-testnet'],
-      [1, acct1(9)],
-      [2, acct1(3)],
-      [3, 1],
-      [4, Uint8Array.of(0xa0)],
-      [5, T3C.ephemeral],
-      [6, T3C.shared],
-      [7, T3C.proof],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.network, 'monad-testnet'],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender, acct1(9)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.recipient, acct1(3)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.suite, ENCRYPTION_SUITE.dmAuthXchacha],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.cryptoBoxEnvelope, Uint8Array.of(0xa0)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.ephemeralPoint, T3C.ephemeral],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sharedPoint, T3C.shared],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.dleqProof, T3C.proof],
     ])
     const parsed = validateFrame(
       fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, payload, 2, 2),

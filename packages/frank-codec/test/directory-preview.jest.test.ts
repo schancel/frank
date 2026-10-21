@@ -18,6 +18,10 @@ import {
 } from '../src'
 import type { Encodable } from '../src'
 import {
+  DIRECTORY_ATTESTATION,
+  DIRECTORY_PREVIEW_RELAY,
+  DIRECTORY_STATEMENT,
+  TIMESTAMP,
   TYPE_DIRECTORY_ATTESTATION,
   TYPE_DIRECTORY_STATEMENT,
 } from '../src/constants'
@@ -145,6 +149,7 @@ describe('provisional directory codec, not directory admission', () => {
         s => s.typeId === TYPE_DIRECTORY_STATEMENT,
       )?.schemaVersion,
     ).toBe(3)
+    // raw-cbor-key: reader-version list, not a map entry
     for (const readerVersion of [1, 2, 3])
       for (const field of ['type4_hex', 'type2_hex'] as const) {
         expectError(
@@ -249,10 +254,21 @@ describe('provisional directory codec, not directory admission', () => {
       throw new Error('legacy prior')
     const p = bootstrap()
     // Use public fixture roles distinct from the legacy authority (scalar 2).
-    p.set(10n, p.get(1n) as Encodable)
-    p.set(1n, (oldPrior.payload as Map<bigint, Encodable>).get(1n) as Encodable)
-    p.set(2n, oldPrior.typed.revision)
-    p.set(13n, oldPrior.typed.revision === 0n ? null : new Uint8Array(32))
+    p.set(
+      BigInt(DIRECTORY_STATEMENT.messageDhKey),
+      p.get(BigInt(DIRECTORY_STATEMENT.subject)) as Encodable,
+    )
+    p.set(
+      BigInt(DIRECTORY_STATEMENT.subject),
+      (oldPrior.payload as Map<bigint, Encodable>).get(
+        BigInt(DIRECTORY_STATEMENT.subject),
+      ) as Encodable,
+    )
+    p.set(BigInt(DIRECTORY_STATEMENT.revision), oldPrior.typed.revision)
+    p.set(
+      BigInt(DIRECTORY_STATEMENT.predecessorHash),
+      oldPrior.typed.revision === 0n ? null : new Uint8Array(32),
+    )
     for (const operation of ['typed', 'full'] as const) {
       const ctx = {
         ...previewDirectoryContext(),
@@ -271,6 +287,7 @@ describe('provisional directory codec, not directory admission', () => {
       expect(control.typed.statementFrame.typed.subject.keyBytes).not.toEqual(
         oldPrior.typed.subject.keyBytes,
       )
+      // raw-cbor-key: schema-version list, not a map entry
       for (const schema of [4, 5]) {
         ctx.priorDirectoryStatementFrame = statement(p, schema)
         expect(
@@ -296,8 +313,10 @@ describe('provisional directory codec, not directory admission', () => {
       corpus.network,
     )
     expect(e.statementFrame.projection).toBe('newer-schema')
+    // raw-cbor-key: key 100 is an undeclared future field
     expect(e.statement.unknownFields.has(100n)).toBe(true)
     expect(contentHash(e.statementFrame)).toEqual(e.statementHash)
+    // raw-cbor-key: schema-version list, not a map entry
     for (const schema of [2, 3])
       expectError(
         () =>
@@ -308,7 +327,11 @@ describe('provisional directory codec, not directory admission', () => {
         'schema',
         '8.2',
       )
-    for (const field of [5n, 7n, 9n]) {
+    for (const field of [
+      DIRECTORY_STATEMENT.keyTransitions,
+      DIRECTORY_STATEMENT.recoveryAuthorities,
+      DIRECTORY_STATEMENT.profileEntries,
+    ].map(BigInt)) {
       const p = bootstrap()
       p.set(field, [])
       expectError(
@@ -320,7 +343,19 @@ describe('provisional directory codec, not directory admission', () => {
   })
 
   test('required-field shape, canonical and duplicate-map checks reuse the existing parser', () => {
-    for (const key of [0n, 1n, 2n, 3n, 4n, 6n, 8n, 10n, 11n, 12n, 13n]) {
+    for (const key of [
+      DIRECTORY_STATEMENT.network,
+      DIRECTORY_STATEMENT.subject,
+      DIRECTORY_STATEMENT.revision,
+      DIRECTORY_STATEMENT.timestamp,
+      DIRECTORY_STATEMENT.relays,
+      DIRECTORY_STATEMENT.expiry,
+      DIRECTORY_STATEMENT.stampKey,
+      DIRECTORY_STATEMENT.messageDhKey,
+      DIRECTORY_STATEMENT.mailboxKeyGeneration,
+      DIRECTORY_STATEMENT.stampKeyGeneration,
+      DIRECTORY_STATEMENT.predecessorHash,
+    ].map(BigInt)) {
       const p = bootstrap()
       p.delete(key)
       expectError(
@@ -330,7 +365,10 @@ describe('provisional directory codec, not directory admission', () => {
       )
     }
     const p = bootstrap()
-    p.set(11n, 18446744073709551616n)
+    p.set(
+      BigInt(DIRECTORY_STATEMENT.mailboxKeyGeneration),
+      18446744073709551616n,
+    )
     expect(() => statement(p)).toThrow()
     for (const payload of [
       fromHex('a200000000'),
@@ -353,12 +391,15 @@ describe('provisional directory codec, not directory admission', () => {
 
   test('bare v4 frame ceiling is inclusive and does not tighten old-schema limits', () => {
     const p = bootstrap()
+    // raw-cbor-key: key 100 is an undeclared future field (padding)
     p.set(100n, new Uint8Array(262_144))
     const excess = statement(p, 5).length - 262_144
+    // raw-cbor-key: key 100 is an undeclared future field (padding)
     p.set(100n, new Uint8Array(262_144 - excess))
     const exact = statement(p, 5)
     expect(exact.length).toBe(262_144)
     expect(validateFrame(exact, previewDirectoryContext()).kind).toBe('parsed')
+    // raw-cbor-key: key 100 is an undeclared future field (padding)
     p.set(100n, new Uint8Array(262_145 - excess))
     expectError(
       () => validateFrame(statement(p, 5), previewDirectoryContext()),
@@ -382,7 +423,7 @@ describe('provisional directory codec, not directory admission', () => {
       const p = new Map(
         parsed(record('bootstrap').type2_hex).payload as Map<bigint, Encodable>,
       )
-      p.set(0n, child)
+      p.set(BigInt(DIRECTORY_ATTESTATION.statementFrame), child)
       return encodeFrame(
         {
           typeId: TYPE_DIRECTORY_ATTESTATION,
@@ -402,8 +443,10 @@ describe('provisional directory codec, not directory admission', () => {
       '10.6',
     )
     const p = bootstrap()
+    // raw-cbor-key: key 100 is an undeclared future field (padding)
     p.set(100n, new Uint8Array(262_144))
     const overhead = wrap(statement(p, 5)).length - 262_144
+    // raw-cbor-key: key 100 is an undeclared future field (padding)
     p.set(100n, new Uint8Array(262_144 - overhead))
     const exact = wrap(statement(p, 5))
     expect(exact.length).toBe(262_144)
@@ -413,6 +456,7 @@ describe('provisional directory codec, not directory admission', () => {
       'cryptographic',
       '10.6',
     )
+    // raw-cbor-key: key 100 is an undeclared future field (padding)
     p.set(100n, new Uint8Array(262_145 - overhead))
     expectError(
       () => validateFrame(wrap(statement(p, 5)), previewDirectoryContext()),
@@ -423,10 +467,13 @@ describe('provisional directory codec, not directory admission', () => {
 
   test('uint64 generations and nanosecond validity boundaries stay exact', () => {
     const p = bootstrap()
-    p.set(2n, 18446744073709551615n)
-    p.set(11n, 18446744073709551615n)
-    p.set(12n, 18446744073709551615n)
-    p.set(13n, new Uint8Array(32))
+    p.set(BigInt(DIRECTORY_STATEMENT.revision), 18446744073709551615n)
+    p.set(
+      BigInt(DIRECTORY_STATEMENT.mailboxKeyGeneration),
+      18446744073709551615n,
+    )
+    p.set(BigInt(DIRECTORY_STATEMENT.stampKeyGeneration), 18446744073709551615n)
+    p.set(BigInt(DIRECTORY_STATEMENT.predecessorHash), new Uint8Array(32))
     const result = validateFrame(
       statement(p),
       previewDirectoryContext(),
@@ -439,29 +486,33 @@ describe('provisional directory codec, not directory admission', () => {
     expect(result.typed.preview?.stampKeyGeneration).toBe(18446744073709551615n)
     // Exactly 366 days is accepted; one nanosecond more is refused. The relay binding covers both,
     // so only the validity cap decides.
-    const issued = (p.get(3n) as Map<bigint, Encodable>).get(0n) as bigint
+    const issued = (
+      p.get(BigInt(DIRECTORY_STATEMENT.timestamp)) as Map<bigint, Encodable>
+    ).get(BigInt(TIMESTAMP.seconds)) as bigint
     const year = new Map<bigint, Encodable>([
-      [0n, issued + 31_622_400n],
-      [1n, 0n],
+      [BigInt(TIMESTAMP.seconds), issued + 31_622_400n],
+      [BigInt(TIMESTAMP.nanoseconds), 0n],
     ])
     const relay = new Map(
-      (p.get(4n) as Map<bigint, Encodable>[])[0] as Map<bigint, Encodable>,
+      (
+        p.get(BigInt(DIRECTORY_STATEMENT.relays)) as Map<bigint, Encodable>[]
+      )[0] as Map<bigint, Encodable>,
     )
     relay.set(
-      3n,
+      BigInt(DIRECTORY_PREVIEW_RELAY.expiry),
       new Map<bigint, Encodable>([
-        [0n, issued + 31_622_401n],
-        [1n, 0n],
+        [BigInt(TIMESTAMP.seconds), issued + 31_622_401n],
+        [BigInt(TIMESTAMP.nanoseconds), 0n],
       ]),
     )
-    p.set(4n, [relay])
-    p.set(6n, year)
+    p.set(BigInt(DIRECTORY_STATEMENT.relays), [relay])
+    p.set(BigInt(DIRECTORY_STATEMENT.expiry), year)
     expect(validateFrame(statement(p), previewDirectoryContext()).kind).toBe(
       'parsed',
     )
     const expiry = new Map(year)
-    expiry.set(1n, 1n)
-    p.set(6n, expiry)
+    expiry.set(BigInt(TIMESTAMP.nanoseconds), 1n)
+    p.set(BigInt(DIRECTORY_STATEMENT.expiry), expiry)
     expectError(
       () => validateFrame(statement(p), previewDirectoryContext()),
       'semantic',

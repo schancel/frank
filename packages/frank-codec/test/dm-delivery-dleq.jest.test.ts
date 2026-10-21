@@ -17,7 +17,7 @@ import {
   fr,
   NET,
 } from '../fixtures/builders'
-import { TYPE_DIRECT_MESSAGE_DELIVERY } from '../src/constants'
+import { ACCOUNT_REF, KEY_TYPE, TYPE_DIRECT_MESSAGE_DELIVERY } from '../src/constants'
 
 const ctx = defaultContext()
 
@@ -84,8 +84,8 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
 
     // Key type 3 (Schnorr)
     const badAcct3 = M([
-      [0, 3],
-      [1, bytesOf(32, 9)],
+      [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1XOnly],
+      [ACCOUNT_REF.keyBytes, bytesOf(32, 9)],
     ])
     const frame3 = deliveryFrame({
       recipient: badAcct3,
@@ -104,8 +104,8 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
 
   it('rejects recipient with keyType 1 but incorrect key length (requires 33 bytes)', () => {
     const badAcctLength = M([
-      [0, 1],
-      [1, bytesOf(32, 5)], // 32 bytes instead of 33
+      [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+      [ACCOUNT_REF.keyBytes, bytesOf(32, 5)], // 32 bytes instead of 33
     ])
     const frame = deliveryFrame({
       recipient: badAcctLength,

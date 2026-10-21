@@ -122,7 +122,9 @@ const frankBrowserCheckInstall = function () {
       })
       if (f.context?.topicSchema)
         context.supportedSchemas = context.supportedSchemas.map(s =>
-          s.typeId === 9 ? { ...s, schemaVersion: f.context.topicSchema } : s,
+          s.typeId === codec.TYPE_TOPIC_POST
+            ? { ...s, schemaVersion: f.context.topicSchema }
+            : s,
         )
       try {
         const r = codec.validateFrame(codec.fromHex(f.hex), context)
@@ -150,6 +152,7 @@ const frankBrowserCheckInstall = function () {
     const unknownItem = n =>
       codec.encodeFrame(
         { typeId: 0xffff0001, schemaVersion: 1, minReaderVersion: 1 },
+        // raw-cbor-key: an unregistered future item type has no registered field names
         new Map([[0, 'future item ' + n]]),
       )
     for (const id of interoperability.typescript_origin_ids) {
@@ -167,6 +170,7 @@ const frankBrowserCheckInstall = function () {
         codec.fromHex(tsAdditive.frame_hex),
         ctxOf(tsAdditive),
       )
+      // raw-cbor-key: field 1 is an additive future field, not a registered one
       if (r.kind !== 'parsed' || !r.payload.has(1n))
         fail(tsAdditive.id, 'additive field 1 was not retained')
     }
@@ -176,9 +180,9 @@ const frankBrowserCheckInstall = function () {
         fail(id, 'nested opaque future frame missing')
     }
     const rustExpected = [
-      [1, 'rust-additive-direct'],
-      [2, 'rust-additive-directory'],
-      [3, 'rust-additive-checkpoint'],
+      [codec.TYPE_DIRECT_MESSAGE_DELIVERY, 'rust-additive-direct'],
+      [codec.TYPE_DIRECTORY_ATTESTATION, 'rust-additive-directory'],
+      [codec.TYPE_MAILBOX_CHECKPOINT, 'rust-additive-checkpoint'],
     ]
     for (const [index, id] of interoperability.rust_origin_ids.entries()) {
       const c = byId(rustOrigin, id)
@@ -187,6 +191,7 @@ const frankBrowserCheckInstall = function () {
         continue
       }
       const r = codec.validateFrame(codec.fromHex(c.frame_hex), ctxOf(c))
+      // raw-cbor-key: field 100 is an additive future field, not a registered one
       if (r.kind !== 'parsed' || !r.payload.has(100n)) {
         fail(id, 'additive field 100 was not retained')
         continue
@@ -198,26 +203,29 @@ const frankBrowserCheckInstall = function () {
         fail(id, 'unexpected typed payload')
         continue
       }
+      // raw-cbor-key: field 100 is an additive future field, not a registered one
       if (r.typed.unknownFields.get(100n) !== expectedUnknown)
         fail(id, 'typed unknown field 100 differs')
-      if (r.typed.type === 1) {
+      if (r.typed.type === codec.TYPE_DIRECT_MESSAGE_DELIVERY) {
         const recipient = r.typed.payloadFrame.typed
         const encrypted =
-          recipient && recipient.type === 5
+          recipient && recipient.type === codec.TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
             ? codec.validateFrame(recipient.ciphertext, codec.defaultContext())
             : undefined
         const revision =
           encrypted &&
           encrypted.kind === 'parsed' &&
-          encrypted.typed?.type === 6
+          encrypted.typed?.type === codec.TYPE_ENCRYPTED_MESSAGE_CONTENT
             ? encrypted.typed.revisionFrame.typed
             : undefined
         const container =
-          revision && revision.type === 8 ? revision.items[1] : undefined
+          revision && revision.type === codec.TYPE_MESSAGE_CONTENT_REVISION
+            ? revision.items[1]
+            : undefined
         const opaque =
           container &&
           container.kind === 'parsed' &&
-          container.typed?.type === 16
+          container.typed?.type === codec.TYPE_CONTAINER_MESSAGE_ITEM
             ? container.typed.items[1]
             : undefined
         if (
@@ -227,7 +235,7 @@ const frankBrowserCheckInstall = function () {
         )
           fail(id, 'typed nested opaque child bytes differ')
       }
-      if (r.typed.type === 3) {
+      if (r.typed.type === codec.TYPE_MAILBOX_CHECKPOINT) {
         if (
           codec.toHex(r.typed.facts[1].payload) !== codec.toHex(unknownItem(2))
         )
@@ -322,23 +330,33 @@ const frankBrowserCheckInstall = function () {
 
     // Encoder: the README worked example, insertion order, and bigint.
     const hi = codec.encodeFrame(
-      { typeId: 17, schemaVersion: 1, minReaderVersion: 1 },
-      new Map([[0, 'hi']]),
+      {
+        typeId: codec.TYPE_TEXT_MESSAGE_ITEM,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
+      new Map([[codec.TEXT_MESSAGE_ITEM.text, 'hi']]),
     )
     if (codec.toHex(hi) !== '46524e4b010000000ea40011010102010345a100626869') {
       fail('encode', 'worked example bytes differ')
     }
     const a = codec.encodeCanonical(
       new Map([
+        // raw-cbor-key: generic canonical-order map, not a Frank message
         [2, 'b'],
+        // raw-cbor-key: generic canonical-order map, not a Frank message
         [0, 'a'],
+        // raw-cbor-key: generic canonical-order map, not a Frank message
         [1, 'c'],
       ]),
     )
     const b = codec.encodeCanonical(
       new Map([
+        // raw-cbor-key: generic canonical-order map, not a Frank message
         [0, 'a'],
+        // raw-cbor-key: generic canonical-order map, not a Frank message
         [1, 'c'],
+        // raw-cbor-key: generic canonical-order map, not a Frank message
         [2, 'b'],
       ]),
     )
@@ -436,25 +454,45 @@ const frankBrowserCheckInstall = function () {
         const attestationEnvelope = codec.decodeCanonical(
           codec.fromHex(corpusCase.frame_hex).subarray(9),
         )
-        const attestation = codec.decodeCanonical(attestationEnvelope.get(3n))
-        const statementFrame = attestation.get(0n)
+        const attestation = codec.decodeCanonical(
+          attestationEnvelope.get(BigInt(codec.FRANK_ENVELOPE.payload)),
+        )
+        const statementFrame = attestation.get(
+          BigInt(codec.DIRECTORY_ATTESTATION.statementFrame),
+        )
         const statementEnvelope = codec.decodeCanonical(
           statementFrame.subarray(9),
         )
-        const statement = codec.decodeCanonical(statementEnvelope.get(3n))
-        const transitions = statement.get(5n)
-        if (statement.get(0n) !== v.network)
+        const statement = codec.decodeCanonical(
+          statementEnvelope.get(BigInt(codec.FRANK_ENVELOPE.payload)),
+        )
+        const transitions = statement.get(
+          BigInt(codec.DIRECTORY_STATEMENT.keyTransitions),
+        )
+        if (
+          statement.get(BigInt(codec.DIRECTORY_STATEMENT.network)) !== v.network
+        )
           fail(v.id, 'linked network differs')
         if (!Array.isArray(transitions) || transitions.length !== 1) {
           fail(v.id, 'linked transition inventory differs')
         } else {
           const entry = transitions[0]
-          const signer = entry.get(2n)
-          if (codec.toHex(entry.get(0n)) !== v.transition_statement_frame_hex)
+          const signer = entry.get(BigInt(codec.KEY_TRANSITION.signer))
+          if (
+            codec.toHex(
+              entry.get(BigInt(codec.KEY_TRANSITION.statementFrame)),
+            ) !== v.transition_statement_frame_hex
+          )
             fail(v.id, 'linked transition statement differs')
-          if (codec.toHex(signer.get(1n)) !== v.signer_public_key_hex)
+          if (
+            codec.toHex(signer.get(BigInt(codec.ACCOUNT_REF.keyBytes))) !==
+            v.signer_public_key_hex
+          )
             fail(v.id, 'linked signer key differs')
-          if (codec.toHex(entry.get(3n)) !== v.signature_der_hex)
+          if (
+            codec.toHex(entry.get(BigInt(codec.KEY_TRANSITION.signature))) !==
+            v.signature_der_hex
+          )
             fail(v.id, 'linked signature differs')
         }
       }
@@ -568,6 +606,7 @@ const frankBrowserCheckInstall = function () {
       else if (f.field === 'serverSeedHash')
         Object.assign(item, {
           action: 'deal',
+          // raw-cbor-key: card list, not a map entry
           playerCards: [0, 1],
           dealerUpCard: 2,
         })

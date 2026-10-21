@@ -26,18 +26,7 @@ import {
   statementPayload,
   type5Payload,
 } from '../fixtures/builders'
-import {
-  DIRECTORY_STATEMENT,
-  MAILBOX_CHECKPOINT,
-  RECIPIENT_ENCRYPTED_PAYLOAD_V1,
-  TEXT_MESSAGE_ITEM,
-  TIMESTAMP,
-  TYPE_DIRECT_MESSAGE_DELIVERY,
-  TYPE_DIRECTORY_STATEMENT,
-  TYPE_MAILBOX_CHECKPOINT,
-  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
-  TYPE_TEXT_MESSAGE_ITEM,
-} from '../src/constants'
+import { DIRECTORY_STATEMENT, ENCRYPTION_SUITE, MAILBOX_CHECKPOINT, RECIPIENT_ENCRYPTED_PAYLOAD_V1, RECIPIENT_ENCRYPTED_PAYLOAD_V2, TEXT_MESSAGE_ITEM, TIMESTAMP, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_DIRECTORY_STATEMENT, TYPE_MAILBOX_CHECKPOINT, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM } from '../src/constants'
 
 function outcome(f: Uint8Array, ctx = {}): string {
   try {
@@ -233,14 +222,14 @@ describe('type-specific limits (R2-R4)', () => {
     )
 
     const production = new Map<number, Encodable>([
-      [0, NET],
-      [1, acct2(9)],
-      [2, acct1(3)],
-      [3, 1],
-      [4, new Uint8Array(524_377)],
-      [5, T3C.ephemeral],
-      [6, T3C.shared],
-      [7, T3C.proof],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.network, NET],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender, acct2(9)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.recipient, acct1(3)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.suite, ENCRYPTION_SUITE.dmAuthXchacha],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.cryptoBoxEnvelope, new Uint8Array(524_377)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.ephemeralPoint, T3C.ephemeral],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sharedPoint, T3C.shared],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.dleqProof, T3C.proof],
     ])
     expect(
       outcome(fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, production, 2, 2)),

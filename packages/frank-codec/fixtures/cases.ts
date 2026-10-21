@@ -3559,7 +3559,7 @@ rej(
     TYPE_DIRECTORY_ATTESTATION,
     M([
       [
-        0,
+        DIRECTORY_ATTESTATION.statementFrame,
         fr(
           TYPE_DIRECTORY_STATEMENT,
           statementPayload({

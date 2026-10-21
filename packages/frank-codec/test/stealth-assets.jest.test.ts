@@ -17,7 +17,14 @@ import type { CanonicalStealthAssetMessageItem } from '../src'
 import { readFileSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
 import { stealthAssetCorpus } from '../fixtures/stealth-assets'
-import { TYPE_STEALTH_MESSAGE_ITEM } from '../src/constants'
+import {
+  ACCOUNT_REF,
+  FRANK_ENVELOPE,
+  KEY_TYPE,
+  STEALTH_ASSET_MESSAGE_ITEM,
+  STEALTH_MESSAGE_ITEM,
+  TYPE_STEALTH_MESSAGE_ITEM,
+} from '../src/constants'
 
 const corpusPath = resolve(
   __dirname,
@@ -52,7 +59,9 @@ const entry = (): CanonicalStealthAssetMessageItem['transfers'][number] => ({
 
 function payloadOf(bytes: Uint8Array): Map<bigint, unknown> {
   const envelope = decodeCanonical(bytes.subarray(9)) as Map<bigint, unknown>
-  return decodeCanonical(envelope.get(3n) as Uint8Array) as Map<bigint, unknown>
+  return decodeCanonical(
+    envelope.get(BigInt(FRANK_ENVELOPE.payload)) as Uint8Array,
+  ) as Map<bigint, unknown>
 }
 
 describe('recipient asset payment type 19 schema 2', () => {
@@ -129,18 +138,20 @@ describe('recipient asset payment type 19 schema 2', () => {
     const payload = payloadOf(bytes)
     // Even an older implementation without the new per-type guard cannot parse field 0 as
     // its required native network string. No token field is silently ignored as native.
-    expect(Array.isArray(payload.get(0n))).toBe(true)
+    expect(
+      Array.isArray(payload.get(BigInt(STEALTH_ASSET_MESSAGE_ITEM.transfers))),
+    ).toBe(true)
     const oldShape = cborMap([
-      [0, []],
+      [STEALTH_MESSAGE_ITEM.networkTag, []],
       [
-        1,
+        STEALTH_MESSAGE_ITEM.ephemeralPubKey,
         cborMap([
-          [0, 1],
-          [1, ephemeral],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, ephemeral],
         ]),
       ],
-      [2, [new Uint8Array([1])]],
-      [3, 1n],
+      [STEALTH_MESSAGE_ITEM.transactions, [new Uint8Array([1])]],
+      [STEALTH_MESSAGE_ITEM.amount, 1n],
     ])
     expect(() =>
       parseFrame(
@@ -160,6 +171,7 @@ describe('recipient asset payment type 19 schema 2', () => {
     const transfer = entry()
     transfer.derivationScheme = 4294967295
     transfer.tokenProgram = new Uint8Array(32).fill(4)
+    // raw-cbor-key: opaque derivation-context bytes, not a map entry
     transfer.derivationContext = new Uint8Array([1, 2, 3])
     const parsed = parseFrame(
       encodeStealthAssetMessageItem({ transfers: [transfer] }),
@@ -224,11 +236,11 @@ describe('recipient asset payment type 19 schema 2', () => {
           {
             bytes: (
               decodeCanonical(good.subarray(9)) as Map<bigint, Uint8Array>
-            ).get(3n)!,
+            ).get(BigInt(FRANK_ENVELOPE.payload))!,
           },
         ),
       ),
     ).toThrow()
-    expect(payload.has(0n)).toBe(true)
+    expect(payload.has(BigInt(STEALTH_ASSET_MESSAGE_ITEM.transfers))).toBe(true)
   })
 })

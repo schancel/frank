@@ -6,7 +6,12 @@
     square
   >
     <q-list class="bg-transparent q-pa-none">
-      <q-item>
+      <q-item
+        clickable
+        v-ripple
+        data-test="contact-card-open-profile"
+        @click="openProfile()"
+      >
         <q-item-section>
           <q-avatar rounded>
             <img :src="profileAvatar(avatar, address)" />
@@ -14,7 +19,7 @@
         </q-item-section>
       </q-item>
 
-      <q-item>
+      <q-item clickable v-ripple @click="openProfile()">
         <q-item-section>
           <q-item-label class="text-weight-bold text-white" lines="1">{{
             name
@@ -31,7 +36,7 @@
             icon="file_copy"
             :aria-label="$t('a11y.copyAddress')"
             size="sm"
-            @click="copyAddress()"
+            @click.stop="copyAddress()"
           />
         </q-item-section>
       </q-item>
@@ -48,6 +53,7 @@ import { activeChain } from '@frank/wallet/chain'
 import { profileAvatar } from 'src/utils/avatar'
 
 export default defineComponent({
+  emits: ['open-profile'],
   setup() {
     return { profileAvatar }
   },
@@ -70,6 +76,12 @@ export default defineComponent({
     },
   },
   methods: {
+    openProfile() {
+      this.$emit('open-profile')
+      if (this.$router) {
+        void Promise.resolve(this.$router.push('/profile')).catch(() => {})
+      }
+    },
     copyAddress() {
       copyToClipboard(this.displayAddress)
         .then(() => {

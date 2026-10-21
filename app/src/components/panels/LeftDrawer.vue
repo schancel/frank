@@ -105,6 +105,18 @@
           <q-tooltip>{{ $t('leftDrawer.settings') }}</q-tooltip>
         </q-tab>
       </q-tabs>
+      <q-btn
+        flat
+        round
+        dense
+        icon="face"
+        class="profile-rail-btn q-my-xs"
+        data-test="rail-open-profile"
+        :aria-label="$t('SettingPanel.profile')"
+        @click="openProfileFromRail"
+      >
+        <q-tooltip>{{ $t('SettingPanel.profile') }}</q-tooltip>
+      </q-btn>
     </div>
 
     <!-- List column: whatever the active rail icon selects (settings, chats, contacts, wallet, dapp-bridge or forum) -->
@@ -706,6 +718,14 @@ export default defineComponent({
       openPage(router, '/backup')
     }
 
+    function openProfileFromRail() {
+      tab.value = 'settings'
+      if (isNarrow.value) {
+        emit('closeDrawer')
+      }
+      openPage(router, '/profile')
+    }
+
     function openReceive() {
       if (!accountBackedUp.value) {
         openBackupFlow()
@@ -728,6 +748,7 @@ export default defineComponent({
       openWalletTab,
       openDappBridgeTab,
       openDappBridgeMainPage,
+      openProfileFromRail,
       discoveredTopicNames,
       selectedForumTopic,
       browseForumTopic,

@@ -11,11 +11,15 @@
       data-test="identity-qr-card"
     >
       <q-card-section class="row items-center q-py-xs q-px-sm identity-qr-inline-header">
-        <q-avatar size="32px" class="q-mr-sm shadow-1">
+        <q-avatar
+          size="32px"
+          class="q-mr-sm shadow-1 cursor-pointer"
+          @click="openEditProfile"
+        >
           <img v-if="avatarSrc" :src="avatarSrc" />
           <q-icon v-else name="person" size="20px" color="primary" />
         </q-avatar>
-        <div class="col ellipsis">
+        <div class="col ellipsis cursor-pointer" @click="openEditProfile">
           <div
             class="text-subtitle2 text-weight-bold ellipsis"
             data-test="identity-qr-name"
@@ -30,6 +34,18 @@
             <username-handle :username="displayUsername" />
           </div>
         </div>
+        <q-btn
+          outline
+          dense
+          no-caps
+          size="sm"
+          color="primary"
+          icon="edit"
+          :label="$t('SettingPanel.profile')"
+          class="q-mr-xs"
+          data-test="qr-page-edit-profile-btn"
+          @click="openEditProfile"
+        />
         <extension-popout-btn />
       </q-card-section>
 
@@ -1108,6 +1124,21 @@ export default defineComponent({
       }
     }
 
+    const openEditProfile = () => {
+      stopScanner()
+      if (!props.inline) {
+        emit('update:modelValue', false)
+      }
+      const router = (
+        instance?.proxy as
+          | { $router?: { push: (path: string) => void } }
+          | undefined
+      )?.$router
+      if (router) {
+        void router.push('/profile')
+      }
+    }
+
     return {
       resolvedAddress,
       displayName,
@@ -1133,6 +1164,7 @@ export default defineComponent({
       toggleAlwaysOpenSidePanel,
       syncAccountOverBridge,
       openDappBridge,
+      openEditProfile,
       scannerOpen,
       scannerVideo,
       cameraGeneration,

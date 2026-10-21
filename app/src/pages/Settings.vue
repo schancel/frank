@@ -30,7 +30,7 @@
             data-test="settings-quick-nav"
           >
             <q-btn
-              outline
+              unelevated
               dense
               no-caps
               size="sm"

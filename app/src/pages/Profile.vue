@@ -47,7 +47,7 @@
             v-model:acceptancePrice="acceptancePrice"
             v-model:accountType="accountType"
             v-model:botRole="botRole"
-            class="profile-body col full-height"
+            class="profile-body col"
           />
           <q-separator />
           <q-card-actions
@@ -441,13 +441,21 @@ export default defineComponent({
   height: 100%;
   min-height: 0;
 }
-.profile-card,
+.profile-card {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
 .profile-body {
   min-width: 0;
   max-width: 100%;
   min-height: 0;
+  flex: 1 1 0%;
+  overflow: hidden;
 }
 .profile-actions {
+  flex: 0 0 auto;
   flex-shrink: 0;
 }
 </style>

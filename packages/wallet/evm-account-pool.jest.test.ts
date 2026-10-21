@@ -29,6 +29,7 @@ import {
   FUND_AHEAD_RECEIPT_POLL_MS,
   FUND_AHEAD_RECEIPT_WAIT_MS,
   MonadSubAccountPool,
+  INTER_TX_FUNDING_DELAY,
   SubAccountSpendRefusedError,
 } from "./evm-account-pool";
 import { selectStampAccounts } from "./evm-stamp-account-selection";
@@ -1009,6 +1010,31 @@ describe("MonadSubAccountPool", () => {
         });
         expect((await ahead(f, f.pool)).fundingTxHashes).toEqual([]);
         expect(f.httpClient.submitRawTransaction).toHaveBeenCalledTimes(2);
+      });
+
+      it("with the chain's spacing wait attached, the pair is funded without the fixed pause that held the main account; without it the pause stays", async () => {
+        const before = INTER_TX_FUNDING_DELAY.ms;
+        INTER_TX_FUNDING_DELAY.ms = 1_000;
+        try {
+          const spaced = setupPreparation();
+          const waits: string[] = [];
+          spaced.pool.attachFunderSpacing(async (address) => {
+            waits.push(address.toLowerCase());
+          });
+          let started = Date.now();
+          expect((await ahead(spaced, spaced.pool)).fundingTxHashes).toHaveLength(2);
+          expect(Date.now() - started).toBeLessThan(INTER_TX_FUNDING_DELAY.ms);
+          // The spacing wait, not a fixed pause, comes before each of the two transfers.
+          const main = spaced.mainAccountSigner.address.toLowerCase();
+          expect(waits).toEqual([main, main]);
+
+          const unspaced = setupPreparation();
+          started = Date.now();
+          expect((await ahead(unspaced, unspaced.pool)).fundingTxHashes).toHaveLength(2);
+          expect(Date.now() - started).toBeGreaterThanOrEqual(INTER_TX_FUNDING_DELAY.ms);
+        } finally {
+          INTER_TX_FUNDING_DELAY.ms = before;
+        }
       });
 
       it("two passes started together, and one racing a send's preparation, fund one pair at distinct nonces", async () => {

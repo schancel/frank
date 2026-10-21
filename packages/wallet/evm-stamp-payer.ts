@@ -123,6 +123,9 @@ export type StampAffordabilityQuote = {
 
 const STAMP_GAS_LIMIT = 21_000n
 const FEE_TTL_MS = 6_000
+/** How many times a payment that only accounts waiting to be read again could cover reads
+ * them, one look of the chain apart, before it is refused as not covered. */
+const MAX_UNREAD_LOOKS = 30
 /** At most this many coins pay one stamp. */
 const MAX_PARTS = 64
 /** Pool rows whose account the coin list may spend from: funded (`available`), or already spent
@@ -585,6 +588,8 @@ export class EvmStampPayer {
     // Consecutive looks at which a blocked holder's coins were needed: one is not enough (the
     // holder may be between two steps of its own send), two end the claim.
     let blockedLooks = 0
+    // Reads of accounts waiting to be read again, made because only they could cover the value.
+    let unreadLooks = 0
     for (;;) {
       if (input.signal?.aborted) throw new ChainWaitCancelledError()
       const head = this.watcher.latest()
@@ -686,6 +691,29 @@ export class EvmStampPayer {
       const could =
         sum(ready) + sum(notYet) + sum(heldByOthers) + sum(claimedOutside)
       if (could < input.stampValueWei) {
+        // Coins of accounts the list must read again before offering them: another spender of
+        // the account (a funding pass, a native send) has just let it go, and its last transfer
+        // may still be on its way into a block. That is not "no funds": the accounts are read
+        // again at each look of the chain until they are known, a bounded number of times.
+        const unread = all.filter(
+          coin =>
+            coin.state === 'unspent' &&
+            sync.isDirty(coin.account) &&
+            allowed(stampSourceOf(coin.origin)) &&
+            !this.config.accountHeld?.(coin.account) &&
+            !claimedOutside.includes(coin),
+        )
+        if (
+          unread.length > 0 &&
+          could + sum(unread) >= input.stampValueWei &&
+          unreadLooks < MAX_UNREAD_LOOKS
+        ) {
+          unreadLooks++
+          await this.read(() => sync.refresh(), input.signal)
+          if (unread.some(coin => sync.isDirty(coin.account)))
+            await this.untilChanged(input.signal)
+          continue
+        }
         if (seen.held && this.config.heldRefusal) throw this.config.heldRefusal()
         throw new InsufficientStampFundsError(
           `No funds cover a stamp of ${input.stampValueWei} wei plus its fee of up to ${feeReserveWei} wei`,

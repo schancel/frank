@@ -101,10 +101,20 @@ export type {
 export const DEFAULT_TOPUP_BUFFER_SIZE = 5;
 
 export const CAPACITY_CACHE_TTL_MS = 30_000;
-export const INTER_TX_FUNDING_DELAY_MS =
-  process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID !== undefined
-    ? 0
-    : 2000;
+/**
+ * A fixed pause between two funding transfers from one account, for a pool whose composition
+ * attached no spacing wait (`attachFunderSpacing`). It predates that wait. Where the wait is
+ * attached it is what keeps the second transfer valid under the chain's spacing rule (it reads
+ * the chain until the account's last transfer is far enough back), so the pause is skipped:
+ * on top of the wait it only held the main account two seconds longer while a send waited for
+ * it. Mutable for tests only (it is 0 under Jest).
+ */
+export const INTER_TX_FUNDING_DELAY = {
+  ms:
+    process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID !== undefined
+      ? 0
+      : 2000,
+};
 
 export interface SubAccountCapacityCacheEntry {
   capacityWei: bigint;
@@ -388,6 +398,13 @@ export class EvmSubAccountPool {
     wait: (address: string, spendValueWei?: bigint) => Promise<void>
   ): void {
     this.funderSpacing = wait;
+  }
+
+  /** Before the second and later funding transfers of one pass from one account: the fixed
+   * pause, only when no spacing wait is attached (see `INTER_TX_FUNDING_DELAY`). */
+  private async pauseBetweenFundingTransfers(): Promise<void> {
+    if (this.funderSpacing !== undefined || INTER_TX_FUNDING_DELAY.ms <= 0) return;
+    await new Promise((resolve) => setTimeout(resolve, INTER_TX_FUNDING_DELAY.ms));
   }
 
   /** True while sub-account `index` is not free for a new spender: an operation holds a claim on
@@ -1506,11 +1523,7 @@ export class EvmSubAccountPool {
     }
 
     for (const [offset, paymentCapacityWei] of capacities.entries()) {
-      if (offset > 0 && INTER_TX_FUNDING_DELAY_MS > 0) {
-        // Monad testnet pipelined execution requires a brief delay between consecutive
-        // funding transactions from the same account to avoid MIP-4 reserve balance violations.
-        await new Promise((resolve) => setTimeout(resolve, INTER_TX_FUNDING_DELAY_MS));
-      }
+      if (offset > 0) await this.pauseBetweenFundingTransfers();
       const target = unfunded[offset];
       const result = await this.fundAccount({
         target,
@@ -1826,9 +1839,7 @@ export class EvmSubAccountPool {
       }
 
       for (const [offset, funder] of params.funders.entries()) {
-        if (offset > 0 && INTER_TX_FUNDING_DELAY_MS > 0) {
-          await new Promise((resolve) => setTimeout(resolve, INTER_TX_FUNDING_DELAY_MS));
-        }
+        if (offset > 0) await this.pauseBetweenFundingTransfers();
         await this.funderSpacing?.(
           funder.signer.address,
           funder.amountWei + params.gasReserveWei
@@ -2487,11 +2498,7 @@ export class EvmSubAccountPool {
 
     const results: FanOutFundingResult[] = [];
     for (const [offset, target] of targets.entries()) {
-      if (offset > 0 && INTER_TX_FUNDING_DELAY_MS > 0) {
-        // Monad testnet pipelined execution requires a brief delay between consecutive
-        // funding transactions from the same account to avoid MIP-4 reserve balance violations.
-        await new Promise((resolve) => setTimeout(resolve, INTER_TX_FUNDING_DELAY_MS));
-      }
+      if (offset > 0) await this.pauseBetweenFundingTransfers();
       results.push(
         await this.fundAccount({
           target,

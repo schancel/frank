@@ -240,7 +240,10 @@ import {
   parseClaimLink,
   type ParsedClaimLink,
 } from '../../../packages/wallet/claim-link'
-import { extractValidBackupShares } from '../utils/extension-account-sync'
+import {
+  canReceiveSyncedAccount,
+  extractValidBackupShares,
+} from '../utils/extension-account-sync'
 import SyncPinEntry from '../components/SyncPinEntry.vue'
 
 defineProps<{ myDrawerOpen?: boolean }>()
@@ -272,7 +275,7 @@ function onWindowHashChange() {
 
 /** Restores the account received with the PIN the user typed. */
 function restoreSyncedAccount(bundle: Record<string, unknown>) {
-  if (account.status === 'ready') return
+  if (!canReceiveSyncedAccount()) return
   const shares = extractValidBackupShares(bundle)
   if (shares.length < 2) return
   // Use the sent account's own name, unless the user already chose one.

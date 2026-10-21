@@ -306,6 +306,15 @@
             >
               {{ syncPin }}
             </div>
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              :label="$t('accountSync.cancel')"
+              data-test="identity-qr-sync-cancel"
+              @click="cancelAccountSync"
+            />
           </div>
           <div
             v-if="syncStatusMessage"
@@ -630,6 +639,15 @@
             >
               {{ syncPin }}
             </div>
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              :label="$t('accountSync.cancel')"
+              data-test="identity-qr-sync-cancel"
+              @click="cancelAccountSync"
+            />
           </div>
           <div
             v-if="syncStatusMessage"
@@ -691,6 +709,7 @@ import {
   sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
 import {
+  cancelPageSyncSender,
   pageSyncSender,
   startPageSyncSender,
   type SyncSenderView,
@@ -1127,6 +1146,67 @@ export default defineComponent({
       if (extSyncExpiry) clearTimeout(extSyncExpiry)
     })
 
+    const showExtSyncSender = (
+      view: SyncSenderView | null,
+      expiresAt?: number,
+    ) => {
+      extSyncSender.value = view
+      if (extSyncExpiry) clearTimeout(extSyncExpiry)
+      extSyncExpiry = null
+      if (!view) return
+      extSyncExpiry = setTimeout(() => {
+        const status = extSyncSender.value?.status
+        if (status === 'waiting' || status === 'new-pin') {
+          extSyncSender.value = { pin: '', status: 'expired' }
+        }
+      }, Math.max(0, (expiresAt ?? Date.now() + SYNC_PAIRING_TTL_MS) - Date.now()))
+    }
+
+    // A popup that closed and reopened still shows the session's current PIN.
+    if (isExtensionMode.value) {
+      void sendRuntimeMessage<
+        Record<string, unknown>,
+        {
+          result?: {
+            ok?: boolean
+            pin?: string
+            status?: string
+            expiresAt?: number
+          }
+        }
+      >({
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        type: 'extension-sync-status',
+      })
+        .then(response => {
+          const current = response?.result
+          if (!current?.ok || typeof current.pin !== 'string') return
+          if (extSyncSender.value) return
+          showExtSyncSender(
+            {
+              pin: current.pin,
+              status: current.status === 'new-pin' ? 'new-pin' : 'waiting',
+            },
+            current.expiresAt,
+          )
+        })
+        .catch(() => undefined)
+    }
+
+    /** Ends this side's sending session now and wipes it. */
+    const cancelAccountSync = () => {
+      syncError.value = ''
+      if (isExtensionMode.value) {
+        showExtSyncSender(null)
+        void sendRuntimeMessage({
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          type: 'extension-sync-cancel',
+        }).catch(() => undefined)
+      } else {
+        cancelPageSyncSender()
+      }
+    }
+
     // Hands this account to the other Frank surface (extension or web app) by
     // PIN pairing: this side shows a PIN, the user types it in the other
     // window, and the account goes out only to the side that proves the PIN.
@@ -1165,7 +1245,7 @@ export default defineComponent({
         // The background holds the session so it outlives a closing popup.
         const response = await sendRuntimeMessage<
           Record<string, unknown>,
-          { result?: { ok?: boolean; pin?: string } }
+          { result?: { ok?: boolean; pin?: string; expiresAt?: number } }
         >({
           channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
           type: 'extension-sync-offer',
@@ -1173,18 +1253,11 @@ export default defineComponent({
         }).catch(() => null)
         const pin = response?.result?.pin
         if (!response?.result?.ok || typeof pin !== 'string') {
-          extSyncSender.value = null
+          showExtSyncSender(null)
           syncError.value = t('accountSync.failed')
           return
         }
-        extSyncSender.value = { pin, status: 'waiting' }
-        if (extSyncExpiry) clearTimeout(extSyncExpiry)
-        extSyncExpiry = setTimeout(() => {
-          const status = extSyncSender.value?.status
-          if (status === 'waiting' || status === 'new-pin') {
-            extSyncSender.value = { pin: '', status: 'expired' }
-          }
-        }, SYNC_PAIRING_TTL_MS)
+        showExtSyncSender({ pin, status: 'waiting' }, response.result.expiresAt)
       } else if (
         typeof window !== 'undefined' &&
         isFrankWebAppOrigin(window.location.origin)
@@ -1244,6 +1317,7 @@ export default defineComponent({
       syncStatusMessage,
       syncPin,
       syncPinPrompt,
+      cancelAccountSync,
       toggleClaimLinkCreator,
       generateFundedClaimLink,
       openInSidePanel,

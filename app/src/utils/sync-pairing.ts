@@ -62,6 +62,8 @@ export type SyncPairingFailure =
   | 'no-sender'
   | 'stale'
   | 'failed'
+  /** Receiver only: this side already has an account, so it takes none. */
+  | 'has-account'
 
 export type SyncHelloReply =
   | { ok: true; sid: string; Ya: string }

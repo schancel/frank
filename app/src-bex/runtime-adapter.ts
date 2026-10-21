@@ -9,12 +9,13 @@ export const FRANK_PWA_EXTENSION_SYNC_CHANNEL = 'frank-pwa-extension-sync-v1'
 export const FRANK_WEB_APP_ORIGIN = 'https://signet.mx'
 /**
  * Sync message types a Frank web page may send through the content script:
- * offer its account to the extension (no secret is sent), or run the PIN
- * pairing with the extension's sending session. Everything else on the sync
- * channel is dropped.
+ * offer its account to the extension (no secret is sent) or withdraw that
+ * offer, or run the PIN pairing with the extension's sending session.
+ * Everything else on the sync channel is dropped.
  */
 export const FRANK_SYNC_PAGE_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'pwa-sync-offer',
+  'pwa-sync-cancel',
   'pair-hello',
   'pair-confirm',
 ])

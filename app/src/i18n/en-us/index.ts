@@ -2093,6 +2093,9 @@ export const rawEnUS = {
     saveVcf: 'Save vCard (.vcf)',
   },
   accountSync: {
+    cancel: 'Cancel',
+    hasAccount:
+      'This device already has an account. Sync only into a device without one.',
     showPin: 'Type this PIN in the other window',
     newPinAfterMismatch:
       "The PIN didn't match. Type this new PIN in the other window",

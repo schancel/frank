@@ -75,6 +75,8 @@ export default defineComponent({
         } else if (result.reason === 'pin-mismatch') {
           pin.value = ''
           error.value = t('accountSync.pinMismatch')
+        } else if (result.reason === 'has-account') {
+          error.value = t('accountSync.hasAccount')
         } else if (
           result.reason === 'no-sender' ||
           result.reason === 'expired'

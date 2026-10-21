@@ -79,6 +79,26 @@ export function startPageSyncSender(
 }
 
 /**
+ * Ends the web app's sending session now: wipes the bundle and PIN from this
+ * page and withdraws the offer from the extension.
+ */
+export function cancelPageSyncSender(win: Window = window): void {
+  const hadSession = pageSenderState !== null
+  endPageSyncSender('ended')
+  pageSyncSender.value = null
+  if (!hadSession) return
+  win.postMessage(
+    {
+      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+      direction: 'to-extension',
+      type: 'pwa-sync-cancel',
+      id: `sync-cancel-${Date.now()}`,
+    },
+    win.location.origin,
+  )
+}
+
+/**
  * Answers the extension's pairing requests for the web app's sending session.
  * The extension's content script relays them; anything else is ignored.
  * Returns whether the event was such a request.
@@ -188,13 +208,28 @@ async function sendSyncPairMessage(
 }
 
 /**
+ * Whether this side may take an account from the other window: only when it
+ * has none at all. A locked, pending or unavailable account still exists, and
+ * restoring would replace it (or cancel the pending signup).
+ */
+export function canReceiveSyncedAccount(): boolean {
+  return (
+    accountStatus.status === 'fresh' &&
+    !accountStatus.account &&
+    !accountStatus.pending
+  )
+}
+
+/**
  * Receives the account the other Frank window is offering, using the PIN the
- * user typed. A missing reply means nothing is offering an account.
+ * user typed. A missing reply means nothing is offering an account. A side
+ * that already has an account does not pair at all.
  */
 export async function receiveAccountOverBridge(
   pin: string,
   win: Window = window,
 ): Promise<SyncReceiveResult> {
+  if (!canReceiveSyncedAccount()) return { ok: false, reason: 'has-account' }
   return receiveSyncBundle(
     pin,
     async (type, payload) =>
@@ -227,7 +262,7 @@ export async function restoreAccountFromExtensionBundle(
   if (shares.length < 2) {
     return false
   }
-  if (accountStatus.status === 'ready') {
+  if (!canReceiveSyncedAccount()) {
     return false
   }
   if (restoreInFlight) {

@@ -229,10 +229,11 @@ describe('IdentityQrDialog', () => {
     const runtimeListeners: Array<
       (msg: any, sender: any, respond: any) => any
     > = []
-    const sendMessage = jest.fn(async () => ({
-      ok: true,
-      result: { ok: true, pin: '123456' },
-    }))
+    const sendMessage = jest.fn(async (msg: { type: string }) =>
+      msg.type === 'extension-sync-offer'
+        ? { ok: true, result: { ok: true, pin: '123456' } }
+        : { ok: true, result: { ok: false } },
+    )
     const postMessage = jest.spyOn(window, 'postMessage')
     const g = globalThis as Record<string, unknown>
     g.chrome = {
@@ -261,8 +262,12 @@ describe('IdentityQrDialog', () => {
       await flushPromises()
 
       // The bundle goes only to this extension's own background.
-      expect(sendMessage).toHaveBeenCalledTimes(1)
-      const sent = (sendMessage.mock.calls[0] as unknown[])[0] as Record<
+      // On open it asks for a running session (none), then offers.
+      expect(sendMessage.mock.calls.map(c => c[0].type)).toEqual([
+        'extension-sync-status',
+        'extension-sync-offer',
+      ])
+      const sent = (sendMessage.mock.calls[1] as unknown[])[0] as Record<
         string,
         any
       >
@@ -316,6 +321,56 @@ describe('IdentityQrDialog', () => {
     } finally {
       delete g.chrome
       postMessage.mockRestore()
+    }
+  })
+
+  it('extension: a reopened popup shows the current PIN, and Cancel wipes the session', async () => {
+    const sendMessage = jest.fn(async (msg: { type: string }) =>
+      msg.type === 'extension-sync-status'
+        ? {
+            ok: true,
+            result: {
+              ok: true,
+              pin: '777777',
+              status: 'new-pin',
+              expiresAt: Date.now() + 60_000,
+            },
+          }
+        : { ok: true, result: { ok: true } },
+    )
+    const g = globalThis as Record<string, unknown>
+    g.chrome = {
+      runtime: {
+        id: 'frank-test-ext',
+        sendMessage,
+        onMessage: { addListener: jest.fn(), removeListener: jest.fn() },
+      },
+    }
+    try {
+      const wrapper = mountDialog({
+        inline: true,
+        runtimeKindOverride: 'chrome-extension',
+      })
+      await flushPromises()
+      expect(wrapper.get('[data-test="identity-qr-sync-pin"]').text()).toBe(
+        '777777',
+      )
+      expect(
+        wrapper.get('[data-test="identity-qr-sync-pin-block"]').text(),
+      ).toContain(enUS.accountSync.newPinAfterMismatch)
+
+      await wrapper
+        .get('[data-test="identity-qr-sync-cancel"]')
+        .trigger('click')
+      await flushPromises()
+      expect(sendMessage.mock.calls.at(-1)![0].type).toBe(
+        'extension-sync-cancel',
+      )
+      expect(wrapper.find('[data-test="identity-qr-sync-pin"]').exists()).toBe(
+        false,
+      )
+    } finally {
+      delete g.chrome
     }
   })
 
@@ -386,6 +441,23 @@ describe('IdentityQrDialog', () => {
       const onWindow = JSON.stringify(postMessage.mock.calls)
       expect(onWindow).not.toContain(SHARES[0])
       expect(onWindow).not.toContain(pin)
+    })
+
+    it('Cancel wipes the page session and withdraws the offer', async () => {
+      const wrapper = await startSync()
+      const pin = wrapper.get('[data-test="identity-qr-sync-pin"]').text()
+      await wrapper
+        .get('[data-test="identity-qr-sync-cancel"]')
+        .trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-test="identity-qr-sync-pin"]').exists()).toBe(
+        false,
+      )
+      expect((postMessage.mock.calls.at(-1)![0] as { type: string }).type).toBe(
+        'pwa-sync-cancel',
+      )
+      const receive = await extensionSide()
+      expect(await receive(pin)).toEqual({ ok: false, reason: 'no-sender' })
     })
 
     it('with a wrong PIN nothing derived from the shares is posted, and a new PIN is shown', async () => {

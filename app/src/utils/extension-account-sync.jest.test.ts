@@ -1,10 +1,18 @@
 /** @jest-environment jsdom */
 
+const mockAccountStatus: Record<string, unknown> = {
+  status: 'fresh',
+  account: null,
+  pending: null,
+}
 jest.mock('../accounts/session', () => ({
-  accountStatus: { status: 'empty' },
+  accountStatus: mockAccountStatus,
   accountSession: {},
 }))
-jest.mock('../accounts/ceremony', () => ({ createAccountCeremony: jest.fn() }))
+const mockCreateCeremony = jest.fn()
+jest.mock('../accounts/ceremony', () => ({
+  createAccountCeremony: () => mockCreateCeremony(),
+}))
 jest.mock('../stores/persistent-storage', () => ({
   usePersistentStorageStore: jest.fn(),
 }))
@@ -14,6 +22,8 @@ jest.mock('@frank/wallet/chain', () => ({ setCustomRelayBaseUrl: jest.fn() }))
 import {
   handlePageSyncPairingRequest,
   pageSyncSender,
+  receiveAccountOverBridge,
+  restoreAccountFromExtensionBundle,
   startPageSyncSender,
 } from './extension-account-sync'
 import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/runtime-adapter'
@@ -86,4 +96,43 @@ describe('web app account sync session (PIN pairing)', () => {
       Ya: expect.any(String),
     })
   })
+})
+
+describe('a device that already has an account takes none from sync', () => {
+  const ACCOUNT = { receipt: { context: { accountId: 'existing' } } }
+  const PENDING = { account: { receipt: { operationId: 'signup-1' } } }
+  afterEach(() => {
+    Object.assign(mockAccountStatus, {
+      status: 'fresh',
+      account: null,
+      pending: null,
+    })
+    mockCreateCeremony.mockReset()
+  })
+
+  it.each([
+    ['locked', { status: 'locked', account: ACCOUNT, pending: null }],
+    ['pending', { status: 'pending', account: null, pending: PENDING }],
+    ['unavailable', { status: 'unavailable', account: ACCOUNT, pending: null }],
+    ['ready', { status: 'ready', account: ACCOUNT, pending: null }],
+    ['loading', { status: 'loading', account: null, pending: null }],
+  ])(
+    '%s: neither pairs nor restores, so the existing account or signup survives',
+    async (_name, status) => {
+      Object.assign(mockAccountStatus, status)
+      const postMessage = jest.spyOn(window, 'postMessage').mockImplementation()
+      try {
+        expect(await receiveAccountOverBridge('123456')).toEqual({
+          ok: false,
+          reason: 'has-account',
+        })
+        expect(postMessage).not.toHaveBeenCalled()
+      } finally {
+        postMessage.mockRestore()
+      }
+      expect(await restoreAccountFromExtensionBundle(bundle())).toBe(false)
+      // No restore ceremony began, so nothing was staged or cancelled.
+      expect(mockCreateCeremony).not.toHaveBeenCalled()
+    },
+  )
 })

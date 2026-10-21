@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 
 jest.mock('../src/accounts/session', () => ({
-  accountStatus: { status: 'empty' },
+  accountStatus: { status: 'fresh', account: null, pending: null },
   accountSession: {},
 }))
 jest.mock('../src/accounts/ceremony', () => ({
@@ -23,6 +23,7 @@ import {
   installBackgroundBridge,
 } from './background'
 import {
+  cancelPageSyncSender,
   handlePageSyncPairingRequest,
   pageSyncSender,
   receiveAccountOverBridge,
@@ -90,9 +91,12 @@ function harness(options: { session?: boolean } = {}) {
   // Background -> extension pages (runtime.sendMessage never reaches content scripts).
   const toExtensionPages = jest.fn(async () => undefined)
   // Background -> Frank tab's content script.
-  const toTab = jest.fn(async (tabId: number, message: any) =>
+  const toTab = jest.fn(async (tabId: number, message: any, _options?: any) =>
     tabId === 2 ? deliverToContentScript(message) : undefined,
   )
+  const tabUrls: Record<number, string> = { 2: 'https://signet.mx/#/profile' }
+  const alarms: Array<(alarm: { name: string }) => void> = []
+  const alarmsCreate = jest.fn()
   const bgScope = {
     chrome: {
       runtime: {
@@ -101,9 +105,21 @@ function harness(options: { session?: boolean } = {}) {
         sendMessage: toExtensionPages,
       },
       storage: { local: { set: localSet }, ...(session ? { session } : {}) },
-      tabs: { sendMessage: toTab },
-      onMessage: { addListener: jest.fn(), removeListener: jest.fn() },
+      tabs: {
+        sendMessage: toTab,
+        get: jest.fn(async (tabId: number) => ({ id: tabId, url: tabUrls[tabId] })),
+      },
+      alarms: {
+        create: alarmsCreate,
+        onAlarm: { addListener: (fn: any) => alarms.push(fn) },
+      },
     },
+  }
+  const fireAlarms = async () => {
+    for (const [name] of alarmsCreate.mock.calls) {
+      for (const fn of alarms) fn({ name })
+    }
+    await new Promise(resolve => setTimeout(resolve, 0))
   }
 
   // The Frank web app window.
@@ -177,6 +193,9 @@ function harness(options: { session?: boolean } = {}) {
 
   return {
     state,
+    tabUrls,
+    fireAlarms,
+    alarmsCreate,
     bgScope,
     session,
     held,
@@ -251,16 +270,109 @@ describe('extension -> web app account sync by PIN pairing', () => {
     })
   })
 
-  it('refuses an expired session', async () => {
+  it('refuses an expired session, wiping it first', async () => {
     const h = harness()
     const pin = await offer(h)
     h.state.syncPairing.sender!.createdAt -= SYNC_PAIRING_TTL_MS + 1
     expect(await receiveAccountOverBridge(pin, h.win)).toEqual({
       ok: false,
-      reason: 'expired',
+      reason: 'no-sender',
     })
     expect(h.state.syncPairing.sender).toBeNull()
+    expect(h.toExtensionPages).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'sync-sender-update', status: 'expired' }),
+    )
     expect(h.observable()).not.toContain('ciphertext')
+  })
+
+  it('wipes an abandoned session from storage.session at expiry, with no further message', async () => {
+    const h = harness({ session: true })
+    installBackgroundBridge(h.bgScope, h.state).dispose()
+    await offer(h)
+    expect(h.alarmsCreate).toHaveBeenCalledWith(
+      'frank-sync-pairing-expiry',
+      expect.objectContaining({ when: expect.any(Number) }),
+    )
+    expect(h.held.frankSyncPairing.sender).toBeTruthy()
+    h.held.frankSyncPairing.sender.createdAt -= SYNC_PAIRING_TTL_MS + 1
+    await h.fireAlarms()
+    expect(h.held).toEqual({})
+  })
+
+  it('wipes an expired session when the background starts again', async () => {
+    const h = harness({ session: true })
+    await offer(h)
+    h.held.frankSyncPairing.sender.createdAt -= SYNC_PAIRING_TTL_MS + 1
+    installBackgroundBridge(h.bgScope, createBackgroundBridgeState()).dispose()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(h.held).toEqual({})
+  })
+
+  it('Cancel ends the session at once and wipes it', async () => {
+    const h = harness({ session: true })
+    const pin = await offer(h)
+    const cancel = (sender: unknown) =>
+      handleBackgroundMessage(
+        { channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL, type: 'extension-sync-cancel' },
+        sender,
+        h.state,
+        h.bgScope,
+      )
+    expect((await cancel(FRANK_TAB)).ok).toBe(false)
+    expect(h.held.frankSyncPairing.sender).toBeTruthy()
+    expect((await cancel(EXT_PAGE)).ok).toBe(true)
+    expect(h.held).toEqual({})
+    expect(await receiveAccountOverBridge(pin, h.win)).toEqual({
+      ok: false,
+      reason: 'no-sender',
+    })
+  })
+
+  it('tells a reopened extension page the current PIN after a wrong one', async () => {
+    const h = harness()
+    const pin = await offer(h)
+    await receiveAccountOverBridge(pin === '000000' ? '000001' : '000000', h.win)
+    const status = await handleBackgroundMessage(
+      { channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL, type: 'extension-sync-status' },
+      EXT_PAGE,
+      h.state,
+      h.bgScope,
+    )
+    expect(status.result).toMatchObject({ ok: true, status: 'new-pin' })
+    expect(status.result.pin).toBe(h.state.syncPairing.sender!.pin)
+    expect(status.result.pin).not.toBe(pin)
+    // A web page cannot read it.
+    const fromTab = await handleBackgroundMessage(
+      { channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL, type: 'extension-sync-status' },
+      FRANK_TAB,
+      h.state,
+      h.bgScope,
+    )
+    expect(JSON.stringify(fromTab)).not.toContain(status.result.pin)
+  })
+
+  it('lets only one of two concurrent confirms through the background queue', async () => {
+    const h = harness()
+    const pin = await offer(h)
+    const replies: any[] = []
+    const send: SyncPairingSend = async (type, payload) => {
+      const call = () =>
+        handleBackgroundMessage(
+          { channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL, type, payload },
+          FRANK_TAB,
+          h.state,
+          h.bgScope,
+        ).then(res => res?.result)
+      if (type === 'pair-hello') return call()
+      const both = await Promise.all([call(), call()])
+      replies.push(...both)
+      return both[0]
+    }
+    expect((await receiveSyncBundle(pin, send)).ok).toBe(true)
+    expect(replies.filter(r => r?.ok === true)).toHaveLength(1)
+    expect(replies.filter(r => r?.ok === false)).toEqual([
+      { ok: false, reason: 'no-sender' },
+    ])
   })
 
   it('answers pairing messages only from the Frank web app or an extension page', async () => {
@@ -386,6 +498,40 @@ describe('web app -> extension account sync by PIN pairing', () => {
     } finally {
       jest.useRealTimers()
     }
+  })
+
+  it('relays only to the top frame of the offering tab, and only while it is still on the Frank origin', async () => {
+    const h = harness()
+    const view = startPageSyncSender(bundle(), h.win)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await receiveSyncBundle(view.pin, h.fromExtensionPage)
+    for (const call of h.toTab.mock.calls) expect(call[2]).toEqual({ frameId: 0 })
+
+    const again = startPageSyncSender(bundle(), h.win)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    h.toTab.mockClear()
+    // The tab navigated away after offering.
+    h.tabUrls[2] = 'https://evil.example/'
+    expect(await receiveSyncBundle(again.pin, h.fromExtensionPage)).toEqual({
+      ok: false,
+      reason: 'no-sender',
+    })
+    expect(h.toTab).not.toHaveBeenCalled()
+  })
+
+  it('Cancel in the web app wipes its session and withdraws the offer', async () => {
+    const h = harness()
+    const view = startPageSyncSender(bundle(), h.win)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(h.state.syncPairing.offerTab).not.toBeNull()
+    cancelPageSyncSender(h.win)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(pageSyncSender.value).toBeNull()
+    expect(h.state.syncPairing.offerTab).toBeNull()
+    expect(await receiveSyncBundle(view.pin, h.fromExtensionPage)).toEqual({
+      ok: false,
+      reason: 'no-sender',
+    })
   })
 
   it('has nothing to relay when no Frank tab offered an account', async () => {

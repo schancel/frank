@@ -14,6 +14,7 @@ import {
 import {
   createSyncSender,
   syncSenderConfirm,
+  syncSenderExpired,
   syncSenderHello,
   SYNC_PAIRING_TTL_MS,
   type SyncSenderState,
@@ -836,19 +837,43 @@ function syncSessionStorage(
     : null
 }
 
+/** Drops an expired sending session or offer, so no seed outlives its PIN. */
+function pruneSyncPairing(
+  pairing: PendingSyncPairing,
+  now = Date.now(),
+): PendingSyncPairing {
+  return {
+    sender:
+      pairing.sender && !syncSenderExpired(pairing.sender, now)
+        ? pairing.sender
+        : null,
+    offerTab:
+      pairing.offerTab &&
+      now - pairing.offerTab.createdAt <= SYNC_PAIRING_TTL_MS
+        ? pairing.offerTab
+        : null,
+  }
+}
+
+/** The current pairing, with anything expired already wiped from storage. */
 async function loadSyncPairing(
   state: BackgroundBridgeState,
   extApi: Record<string, any> | null,
 ): Promise<PendingSyncPairing> {
   const session = syncSessionStorage(extApi)
-  if (!session) return state.syncPairing
-  const held = (await session.get(SYNC_PAIRING_SESSION_KEY))?.[
-    SYNC_PAIRING_SESSION_KEY
-  ]
-  return {
+  const held = session
+    ? (await session.get(SYNC_PAIRING_SESSION_KEY))?.[SYNC_PAIRING_SESSION_KEY]
+    : state.syncPairing
+  const loaded: PendingSyncPairing = {
     sender: held?.sender ?? null,
     offerTab: held?.offerTab ?? null,
   }
+  const pruned = pruneSyncPairing(loaded)
+  if (pruned.sender !== loaded.sender || pruned.offerTab !== loaded.offerTab) {
+    await saveSyncPairing(state, extApi, pruned)
+    if (loaded.sender && !pruned.sender) announceSyncSender(extApi, 'expired')
+  }
+  return pruned
 }
 
 async function saveSyncPairing(
@@ -883,6 +908,41 @@ function withSyncPairing<T>(
   return run
 }
 
+const SYNC_PAIRING_ALARM = 'frank-sync-pairing-expiry'
+
+/** Wipes whatever has expired. Runs at expiry and when the background starts. */
+function purgeExpiredSyncPairing(
+  state: BackgroundBridgeState,
+  extApi: Record<string, any> | null,
+): Promise<void> {
+  return withSyncPairing(state, extApi, async pairing => [pairing, undefined])
+}
+
+/**
+ * Wipes the session at `at` even if nothing else happens. The alarm survives a
+ * stopped service worker; the timer covers a browser without alarms.
+ */
+function scheduleSyncPairingPurge(
+  state: BackgroundBridgeState,
+  extApi: Record<string, any> | null,
+  at: number,
+): void {
+  try {
+    if (typeof extApi?.alarms?.create === 'function') {
+      void Promise.resolve(
+        extApi.alarms.create(SYNC_PAIRING_ALARM, { when: at + 1_000 }),
+      ).catch(() => undefined)
+    }
+  } catch {
+    // Fall back to the timer
+  }
+  const timer: any = setTimeout(
+    () => void purgeExpiredSyncPairing(state, extApi).catch(() => undefined),
+    Math.max(0, at - Date.now()) + 1_000,
+  )
+  timer?.unref?.()
+}
+
 /** Tells open extension pages how the extension's sending session is going. */
 function announceSyncSender(
   extApi: Record<string, any> | null,
@@ -911,21 +971,26 @@ async function relayPairingToOfferTab(
   type: 'pair-hello' | 'pair-confirm',
   payload: unknown,
 ): Promise<unknown> {
-  const pairing = await loadSyncPairing(state, extApi)
-  const offer = pairing.offerTab
+  const offer = (await loadSyncPairing(state, extApi)).offerTab
   if (
     !offer ||
-    Date.now() - offer.createdAt > SYNC_PAIRING_TTL_MS ||
-    typeof extApi?.tabs?.sendMessage !== 'function'
+    typeof extApi?.tabs?.get !== 'function' ||
+    typeof extApi.tabs.sendMessage !== 'function'
   ) {
     return { ok: false, reason: 'no-sender' }
   }
   try {
-    const reply = await extApi.tabs.sendMessage(offer.tabId, {
-      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-      type,
-      payload,
-    })
+    // The tab may have navigated since it offered: check its origin now, and
+    // talk only to its top frame.
+    const tab = await extApi.tabs.get(offer.tabId)
+    if (!isFrankWebAppOrigin(urlOrigin(tab?.url))) {
+      return { ok: false, reason: 'no-sender' }
+    }
+    const reply = await extApi.tabs.sendMessage(
+      offer.tabId,
+      { channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL, type, payload },
+      { frameId: 0 },
+    )
     return reply && typeof reply === 'object'
       ? reply
       : { ok: false, reason: 'no-sender' }
@@ -967,15 +1032,66 @@ async function handleAccountSyncMessage(
         { ...pairing, sender: created },
         null,
       ])
-      return { ok: true, result: { ok: true, pin: created.pin } }
+      scheduleSyncPairingPurge(
+        state,
+        extApi,
+        created.createdAt + SYNC_PAIRING_TTL_MS,
+      )
+      return {
+        ok: true,
+        result: {
+          ok: true,
+          pin: created.pin,
+          expiresAt: created.createdAt + SYNC_PAIRING_TTL_MS,
+        },
+      }
+    }
+    case 'extension-sync-status': {
+      // An extension page reopened: show the session's current PIN, if any.
+      if (!fromExtensionPage) return rejected('Sender is not an extension page')
+      const current = (await loadSyncPairing(state, extApi)).sender
+      return {
+        ok: true,
+        result: current
+          ? {
+              ok: true,
+              pin: current.pin,
+              status: current.failures > 0 ? 'new-pin' : 'waiting',
+              expiresAt: current.createdAt + SYNC_PAIRING_TTL_MS,
+            }
+          : { ok: false },
+      }
+    }
+    case 'extension-sync-cancel': {
+      if (!fromExtensionPage) return rejected('Sender is not an extension page')
+      await withSyncPairing(state, extApi, async pairing => [
+        { ...pairing, sender: null },
+        null,
+      ])
+      return { ok: true, result: { ok: true } }
     }
     case 'pwa-sync-offer': {
       const tabId = sender?.tab?.id
       if (!fromFrankTab || typeof tabId !== 'number') {
         return rejected('Sender is not the Frank web app')
       }
+      const createdAt = Date.now()
       await withSyncPairing(state, extApi, async pairing => [
-        { ...pairing, offerTab: { tabId, createdAt: Date.now() } },
+        { ...pairing, offerTab: { tabId, createdAt } },
+        null,
+      ])
+      scheduleSyncPairingPurge(state, extApi, createdAt + SYNC_PAIRING_TTL_MS)
+      return { ok: true, result: { ok: true } }
+    }
+    case 'pwa-sync-cancel': {
+      const tabId = sender?.tab?.id
+      if (!fromFrankTab || typeof tabId !== 'number') {
+        return rejected('Sender is not the Frank web app')
+      }
+      await withSyncPairing(state, extApi, async pairing => [
+        pairing.offerTab?.tabId === tabId
+          ? { ...pairing, offerTab: null }
+          : pairing,
         null,
       ])
       return { ok: true, result: { ok: true } }
@@ -1950,6 +2066,16 @@ export function installBackgroundBridge(
     } catch {
       // Ignore storage errors in restricted environments
     }
+  }
+  // Wipe an account-sync session that expired while the worker was stopped,
+  // and at each expiry alarm.
+  void purgeExpiredSyncPairing(state, api).catch(() => undefined)
+  if (typeof api?.alarms?.onAlarm?.addListener === 'function') {
+    api.alarms.onAlarm.addListener((alarm: { name?: string }) => {
+      if (alarm?.name === SYNC_PAIRING_ALARM) {
+        void purgeExpiredSyncPairing(state, api).catch(() => undefined)
+      }
+    })
   }
   // Earlier builds kept the last sync bundle, backup shares included, here.
   if (typeof api?.storage?.local?.remove === 'function') {

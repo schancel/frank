@@ -2156,6 +2156,9 @@ export const rawFrFR = {
     saveVcf: 'Enregistrer la vCard (.vcf)',
   },
   accountSync: {
+    cancel: 'Annuler',
+    hasAccount:
+      'Cet appareil a déjà un compte. Synchronisez uniquement vers un appareil sans compte.',
     showPin: 'Saisissez ce code PIN dans l’autre fenêtre',
     newPinAfterMismatch:
       'Le code PIN ne correspondait pas. Saisissez ce nouveau code PIN dans l’autre fenêtre',

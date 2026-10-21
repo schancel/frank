@@ -196,6 +196,18 @@ describe('Welcome: landing page for visitors without an account', () => {
       expect(mockRestore).not.toHaveBeenCalled()
     })
 
+    it('says this device already has an account and restores nothing', async () => {
+      const wrapper = mountWelcome(enUS)
+      await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
+      mockReceiveAccount.mockResolvedValueOnce({
+        ok: false,
+        reason: 'has-account',
+      })
+      await typePin(wrapper, '123456')
+      expect(text(wrapper, 'sync-pin-error')).toBe(enUS.accountSync.hasAccount)
+      expect(mockRestore).not.toHaveBeenCalled()
+    })
+
     it('does not try a PIN that is not six digits', async () => {
       const wrapper = mountWelcome(enUS)
       await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')

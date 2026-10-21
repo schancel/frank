@@ -167,4 +167,72 @@ describe('sync PIN pairing (CPace + XChaCha20-Poly1305)', () => {
       expect(a.Ya).not.toBe(b.Ya)
     }
   })
+
+  describe('attack probes (crypto review)', () => {
+    const T0 = '00'.repeat(64)
+    const hello = (state: SyncSenderState) => {
+      const next = syncSenderHello(state)
+      if (!next.reply.ok || !next.state) throw new Error('hello failed')
+      return { state: next.state, sid: next.reply.sid, Ya: next.reply.Ya }
+    }
+
+    it('a stale or swapped sid is not a guess and leaves the PIN unchanged', () => {
+      const h = hello(createSyncSender(bundle()))
+      for (const req of [
+        { sid: '11'.repeat(16), Yb: h.Ya, Tb: T0 },
+        { Yb: h.Ya, Tb: T0 },
+      ]) {
+        const next = syncSenderConfirm(h.state, req)
+        expect(next.outcome).toBe('stale')
+        expect(next.reply).toEqual({ ok: false, reason: 'stale' })
+        expect(next.state).toBe(h.state)
+        expect(next.state?.pin).toBe(h.state.pin)
+        expect(next.state?.failures).toBe(0)
+      }
+    })
+
+    it('the identity point as Yb counts as a wrong PIN', () => {
+      const h = hello(createSyncSender(bundle()))
+      const next = syncSenderConfirm(h.state, {
+        sid: h.sid,
+        Yb: '00'.repeat(32),
+        Tb: T0,
+      })
+      expect(next.outcome).toBe('new-pin')
+      expect(next.reply).toEqual({ ok: false, reason: 'pin-mismatch' })
+      expect(next.state?.failures).toBe(1)
+      expect(next.state?.attempt).toBeNull()
+    })
+
+    it('Ya reflected back as Yb counts as a wrong PIN', () => {
+      const h = hello(createSyncSender(bundle()))
+      const next = syncSenderConfirm(h.state, { sid: h.sid, Yb: h.Ya, Tb: T0 })
+      expect(next.outcome).toBe('new-pin')
+      expect(next.reply.ok).toBe(false)
+    })
+
+    it('a valid (Yb, Tb) for attempt N does not open attempt N+1', async () => {
+      let state = createSyncSender(bundle())
+      // An honest receiver with the right PIN; its confirm is captured, not delivered.
+      let captured: any
+      await receiveSyncBundle(state.pin, async (type, payload) => {
+        if (type === 'pair-hello') {
+          const n = syncSenderHello(state)
+          state = n.state!
+          return n.reply
+        }
+        captured = payload
+        return { ok: false, reason: 'failed' }
+      })
+      const next = hello(state)
+      const replayed = syncSenderConfirm(next.state, {
+        ...captured,
+        sid: next.sid,
+      })
+      expect(replayed.reply).toEqual({ ok: false, reason: 'pin-mismatch' })
+      expect(JSON.stringify(replayed.reply)).not.toContain('ciphertext')
+      // Under its own, superseded sid it is merely stale.
+      expect(syncSenderConfirm(next.state, captured).outcome).toBe('stale')
+    })
+  })
 })

@@ -37,6 +37,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       'activeTab',
       'scripting',
       'offscreen',
+      'alarms',
     ])
     expect(manifest.background).toEqual({
       service_worker: 'background.js',
@@ -83,7 +84,12 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
         strict_min_version: '128.0',
       },
     })
-    expect(manifest.permissions).toEqual(['storage', 'activeTab', 'scripting'])
+    expect(manifest.permissions).toEqual([
+      'storage',
+      'activeTab',
+      'scripting',
+      'alarms',
+    ])
     expect(manifest.background).toEqual({
       scripts: ['background.js'],
       type: 'module',
@@ -103,7 +109,12 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
   it('builds Safari MV3 manifest with service_worker background and web_accessible_resources for inpage.js fallback', () => {
     const manifest = buildExtensionManifest('safari', '0.3.0')
     expect(manifest.manifest_version).toBe(3)
-    expect(manifest.permissions).toEqual(['storage', 'activeTab', 'scripting'])
+    expect(manifest.permissions).toEqual([
+      'storage',
+      'activeTab',
+      'scripting',
+      'alarms',
+    ])
     expect(manifest.background).toEqual({
       service_worker: 'background.js',
     })

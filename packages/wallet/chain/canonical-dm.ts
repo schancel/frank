@@ -125,7 +125,7 @@ import {
   MonadStampPendingAttemptError,
   MonadStampTerminalError,
 } from '../evm-stamp-client'
-import type { EvmStampPayer, StampClaim } from '../evm-stamp-payer'
+import type { EvmStampPayer, StampClaim, StampPayment } from '../evm-stamp-payer'
 import { ChainUnreachableError } from '../evm-block-watcher'
 import { inspectCanonicalPreparedEnvelope } from '../evm-stamp-stealth'
 import type { MonadCanonicalRoleOwner } from '../evm-wallet-material'
@@ -252,9 +252,9 @@ export interface StoredPayment {
    * - `spent` / `reverted`: the chain shows it in a block (a revert consumes the nonce too).
    * - `failed`: the chain shows the account's nonce consumed by another transaction, so this
    *   payment can never land. It is never paid again.
-   * - `unsent`: a retained disposition whose signed bytes were dropped (`rawTx` is empty).
-   *   Current paid submissions do not create it on relay refusal. The recorded disposition
-   *   alone does not prove that previously exposed bytes cannot land.
+   * - `unsent`: signed, never exposed, and dropped (`rawTx` is empty): the relay refused the
+   *   message's first submission before storing or broadcasting anything, and this wallet had
+   *   handed the bytes to nothing else. Its coin is free again.
    */
   state: 'pending' | 'spent' | 'reverted' | 'failed' | 'unsent'
   /**
@@ -292,10 +292,10 @@ export interface StoredMessage {
    * removed after delivery is durably recorded. */
   request?: { body: string; contentType: string }
   payments: StoredPayment[]
-  /** `delivered`: the relay confirmed storing this exact message. Absent: delivery remains
-   * unresolved; current paid refusals update `reason` without setting an outcome. Retained
-   * historical `dead` outcomes remain readable and do not prove payment settlement or that
-   * signed payments cannot land. */
+  /** `delivered`: the relay confirmed storing this exact message. `dead`: the relay refused its
+   * first submission before exposing anything (`reason` says why) and every payment is `unsent`.
+   * Absent: delivery remains unresolved; any other refusal only updates `reason`, since it does
+   * not prove that signed payments cannot land. */
   outcome?: 'delivered' | 'dead'
   /** Latest relay refusal; with no outcome the original request remains unresolved. */
   reason?: string
@@ -914,6 +914,20 @@ function freezePaidMessage(
 }
 
 /**
+ * Relay refusals given before anything is stored, delivered or broadcast: the recipient's relay
+ * cannot be reached from here, or the node shows a payment can never land (its nonce used by
+ * another transaction, or its account short of value plus gas) and knows none of the set. On a
+ * message's first submission, which nothing else has seen, they prove its payments unexposed.
+ */
+const REFUSED_BEFORE_EXPOSURE: ReadonlySet<string> = new Set([
+  'undeliverable',
+  'stale_nonce',
+  'insufficient_total',
+])
+/** How often one send pays its message again from other coins after such a refusal. */
+const MAX_REFUSAL_REPLANS = 2
+
+/**
  * Hands one stored message to the relay, the same bytes every time, and saves the relay's
  * answer. Returns the row as it now stands. A request that fails or is not answered changes
  * nothing: the outcome is unknown and the message is submitted again later.
@@ -922,7 +936,7 @@ async function submitStored(
   owner: CanonicalMessagingOwner,
   directory: CanonicalDirectory,
   row: StoredMessage,
-): Promise<{ row: StoredMessage; error?: unknown }> {
+): Promise<{ row: StoredMessage; error?: unknown; dead?: string }> {
   if (
     row.exposurePending ||
     row.outcome !== undefined ||
@@ -947,15 +961,15 @@ async function submitStored(
   // A relay's answer cannot prove an exposed signed payment unexecutable. Keep the complete
   // original request and its claims until delivery and chain reconciliation resolve them.
   if (accepted.phase !== 'delivered') {
-    if (accepted.phase === 'dead' && row.reason !== accepted.reason) {
-      const refused = {
-        ...owner.messages.get(row.consumerId)!,
-        reason: accepted.reason,
-      }
-      await owner.messages.put(refused)
-      return { row: refused }
+    if (accepted.phase !== 'dead') return { row }
+    const dead = accepted.reason
+    if (row.reason === dead) return { row, dead }
+    const refused = {
+      ...owner.messages.get(row.consumerId)!,
+      reason: dead,
     }
-    return { row }
+    await owner.messages.put(refused)
+    return { row: refused, dead }
   }
   // Delivery resolves the relay obligation, independently of the payments' chain state.
   const { request: _request, reason: _reason, ...kept } =
@@ -1821,6 +1835,33 @@ async function send(
     // default is raised to that; an amount the caller chose is refused, not changed.
     let requestedWei = stampValueWei
     let claimWaited = false
+    // This message's own paying coins: claimed in one synchronous step, so no other
+    // message, topic or native send being built at this moment can be given them.
+    const claimStamp = (wanted: bigint) =>
+      owner.lifetime(() =>
+        payer.claim({
+          holder,
+          stampValueWei: wanted,
+          signal: params.signal,
+          allowBelowFee: params.settlement === true,
+          // The only coin that could pay is spent by an earlier payment: this send waits
+          // its turn, and meanwhile asks the chain about that one payment (never the relay).
+          whileBusy: busyHolder => {
+            claimWaited = true
+            // A wallet being closed ends the wait (`payer()` refuses a closed wallet):
+            // nothing was signed, the claim loop lets go, and close is not held up.
+            owner.payer()
+            return settleHolder(owner, busyHolder)
+          },
+          onWaiting: blocksRemaining => {
+            claimWaited = true
+            params.onPreparationProgress?.({
+              stage: 'waiting-for-payment',
+              ...(blocksRemaining === undefined ? {} : { blocksRemaining }),
+            })
+          },
+        }),
+      )
     // Explicit paid sends queue while the node is unreachable. A new implicit default instead
     // reports an unavailable fee before claiming or signing; free messages bypass this path.
     for (;;) {
@@ -1835,35 +1876,9 @@ async function send(
         if (stampValueWei < floorWei && params.settlement !== true) {
           throw new DirectMessageStampBelowFeeError(stampValueWei, floorWei)
         }
-        // This message's own paying coins: claimed in one synchronous step, so no other
-        // message, topic or native send being built at this moment can be given them.
         // Nothing is funded. From here a rejection is never labelled.
         attempted = true
-        const wanted = stampValueWei
-        claim = await owner.lifetime(() =>
-          payer.claim({
-            holder,
-            stampValueWei: wanted,
-            signal: params.signal,
-            allowBelowFee: params.settlement === true,
-            // The only coin that could pay is spent by an earlier payment: this send waits
-            // its turn, and meanwhile asks the chain about that one payment (never the relay).
-            whileBusy: busyHolder => {
-              claimWaited = true
-              // A wallet being closed ends the wait (`payer()` refuses a closed wallet):
-              // nothing was signed, the claim loop lets go, and close is not held up.
-              owner.payer()
-              return settleHolder(owner, busyHolder)
-            },
-            onWaiting: blocksRemaining => {
-              claimWaited = true
-              params.onPreparationProgress?.({
-                stage: 'waiting-for-payment',
-                ...(blocksRemaining === undefined ? {} : { blocksRemaining }),
-              })
-            },
-          }),
-        )
+        claim = await claimStamp(stampValueWei)
         break
       } catch (error) {
         if (!(error instanceof ChainUnreachableError)) throw error
@@ -1909,16 +1924,18 @@ async function send(
       keyType: 1,
       keyBytes: new Uint8Array(recipient.current.stampKey.keyBytes),
     }
-    const signed = await payer.sign(claim, owner.chainId, childIndex =>
-      hexlify(
-        canonicalStampDestination({
-          network: directory.network,
-          stampKey,
-          sharedPoint,
-          childIndex,
-        }).address,
-      ),
-    )
+    const signFor = (claimed: StampClaim) =>
+      payer.sign(claimed, owner.chainId, childIndex =>
+        hexlify(
+          canonicalStampDestination({
+            network: directory.network,
+            stampKey,
+            sharedPoint,
+            childIndex,
+          }).address,
+        ),
+      )
+    let signed = await signFor(claim)
     // Before the record (and so before any durable row from which these bytes could later be
     // submitted): the caller learns the digest of what is about to become sendable. If it
     // refuses, nothing signed leaves the wallet and the coins are free again.
@@ -1961,10 +1978,72 @@ async function send(
       if (params.onEnvelopeDurable)
         row = await authorizeEnvelope(owner, row, params.onEnvelopeDurable)
       await params.onAttemptCreated?.(digest)
-      const submitted = await owner.lifetime(() =>
-        submitStored(owner, directory, row),
-      )
-      row = submitted.row
+      let submitted
+      for (let replans = 0; ; replans++) {
+        submitted = await owner.lifetime(() =>
+          submitStored(owner, directory, row),
+        )
+        row = submitted.row
+        // These exact bytes went to the relay once, just now, and nowhere else: this wallet
+        // broadcasts only after delivery. A refusal the relay gives before storing, delivering
+        // or broadcasting anything (it does so only when the node knows none of the payments)
+        // means nothing of this payment set was ever exposed.
+        const dead = submitted.dead
+        if (dead === undefined || !REFUSED_BEFORE_EXPOSURE.has(dead)) break
+        const refused = signed
+        // The record first: these bytes are never sent again, and nothing names their coins.
+        row = {
+          ...row,
+          payments: refused.map(payment => ({
+            ...payment,
+            rawTx: '',
+            state: 'unsent' as const,
+          })),
+          outcome: 'dead',
+        }
+        delete row.request
+        await owner.lifetime(() => owner.messages.put(row))
+        await owner.lifetime(() => payer.releaseRefused(holder, refused))
+        if (dead === 'undeliverable') throw new CanonicalRecipientUndeliverableError()
+        // A coin spent elsewhere, or holding less than the list thought: its account is read
+        // again, and the same message is paid from what the wallet has now (same amount, same
+        // destinations, same digest). Bounded: a list that keeps disagreeing with the chain
+        // ends the message as refused, with nothing paid.
+        if (replans >= MAX_REFUSAL_REPLANS) break
+        const again = await claimStamp(stampValueWei!)
+        let resigned: StampPayment[]
+        try {
+          resigned = await signFor(again)
+          await owner.lifetime(() => payer.recordSigned(holder, resigned))
+        } catch (error) {
+          await payer.release(again).catch(() => undefined)
+          throw error
+        }
+        claim = again
+        signed = resigned
+        const replanned = freezePaidMessage(
+          directory.network,
+          sealed,
+          digestBytes,
+          signed.map(payment => payment.rawTx),
+        )
+        const { outcome: _outcome, reason: _reason, ...open } = row
+        row = {
+          ...open,
+          request: {
+            body: toHex(replanned.body),
+            contentType: replanned.contentType,
+          },
+          payments: signed.map(payment => ({ ...payment, state: 'pending' })),
+        }
+        try {
+          await owner.lifetime(() => owner.messages.put(row))
+        } catch (error) {
+          // As for the first record: not known to be on disk, so the new coins stay held.
+          work.unrecorded = true
+          throw error
+        }
+      }
       if (row.outcome === 'dead') {
         if (row.reason === 'undeliverable')
           throw new CanonicalRecipientUndeliverableError()

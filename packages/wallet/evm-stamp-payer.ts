@@ -852,6 +852,34 @@ export class EvmStampPayer {
   }
 
   /**
+   * The relay refused these signed payments before storing, delivering or broadcasting any of
+   * them, and the wallet never handed them to anything else: their coins are free again. The
+   * refusal may say a coin was spent elsewhere or holds less than the list thought, so each
+   * account is read from the chain before it is selected again. Call it only AFTER the
+   * message's own record no longer names these payments as pending.
+   */
+  async releaseRefused(
+    holder: string,
+    payments: readonly StampPayment[],
+  ): Promise<void> {
+    const { pool, coins, sync } = this.config
+    const refused = payments.map(payment => ({
+      payment,
+      nonce: Transaction.from(payment.rawTx).nonce,
+    }))
+    // Dirty before free: no selection in between can take a coin the chain has not confirmed.
+    for (const { payment } of refused) sync.markDirty(payment.address)
+    for (const { payment } of refused)
+      if (payment.index === undefined)
+        pool.releaseAccountClaim(holder, payment.address)
+      else pool.releaseClaim(holder, [payment.index])
+    await coins.releaseUnexposed(
+      holder,
+      refused.map(({ payment, nonce }) => ({ account: payment.address, nonce })),
+    )
+  }
+
+  /**
    * At open: the coins a stored, unsettled message of `holder` pays from are its again (the
    * newest transaction signed at each nonce is what it carries), and the pool's claims say so.
    * Returns the accounts another stored message already holds (two records naming one coin):

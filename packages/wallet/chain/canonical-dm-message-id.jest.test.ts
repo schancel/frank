@@ -799,23 +799,21 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       messageId: ID_A,
       onAttemptCreated: value => void (digest = value),
     })
-    // A relay refusal cannot prove signed payments were not exposed. Keep the original live.
-    expect(first.error).toBeInstanceOf(MonadStampPendingAttemptError)
+    // The relay refused the first submission before storing or broadcasting anything, and the
+    // wallet handed the bytes to nothing else: the message is ended, its payment never sent.
+    expect(first.error).toBeInstanceOf(CanonicalRecipientUndeliverableError)
     expect(first.labelled).toBe(false)
     expect(first.signed).toBe(1)
     expect(await rows()).toEqual([
       expect.objectContaining({
         consumerId: consumerOf(ID_A),
         digest,
+        outcome: 'dead',
         reason: 'undeliverable',
-        payments: [
-          expect.objectContaining({
-            state: 'pending',
-            rawTx: expect.stringMatching(/^0x/),
-          }),
-        ],
+        payments: [expect.objectContaining({ state: 'unsent', rawTx: '' })],
       }),
     ])
+    expect(claimed()).toEqual([])
 
     expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest!)
     await reopen()

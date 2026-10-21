@@ -88,7 +88,6 @@
           class="q-px-sm chat-list-triage-controls"
         >
           <div
-            v-if="screenerSummary.count > 0 || activeFilter === 'screener'"
             class="row items-center q-gutter-xs q-mt-xs"
             data-test="screener-filter-bar"
           >

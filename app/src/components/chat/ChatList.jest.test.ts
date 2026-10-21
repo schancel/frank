@@ -59,9 +59,10 @@ jest.mock('@frank/wallet/chain', () => ({
     capabilities: { directMessages: true },
   },
 }))
-jest.mock('../../utils/messaging-state', () => ({
-  messagingState: { status: 'ready' },
-}))
+jest.mock('../../utils/messaging-state', () => {
+  const owner = jest.requireActual('vue').reactive({ status: 'ready' })
+  return { messagingState: owner, messagingStateOwner: owner }
+})
 jest.mock('../../stores/settings', () => ({ useSettingsStore: () => ({}) }))
 // Prices: 1 MON = 2 AVU, 1 SOL = 300 AVU; no price for anything else.
 jest.mock('src/utils/stamp-display', () => ({
@@ -164,7 +165,7 @@ describe('eager conversation profiles', () => {
     ])
     wrapper.unmount()
     mockAccountState.status = 'loading'
-    messagingStateOwner.status = 'pending'
+    messagingStateOwner.status = 'ready'
   })
 })
 
@@ -339,6 +340,63 @@ describe('ChatList new conversation action', () => {
 })
 
 describe('ChatList toolbar', () => {
+  it.each([false, true])(
+    'keeps an empty Screener below the toolbar (known contact: %s)',
+    async hasContact => {
+      mockChatStore.getSortedChatOrder = hasContact
+        ? [
+            {
+              id: 'known-thread',
+              address: 'known-contact',
+              totalUnreadMessages: 0,
+            },
+          ]
+        : []
+      const wrapper = mount(ChatList, {
+        props: { compact: false },
+        global: {
+          components: {
+            QScrollArea: passthrough,
+            QList: passthrough,
+            QItem: passthrough,
+            QItemSection: passthrough,
+            QItemLabel: passthrough,
+            QSeparator: passthrough,
+            QSpace: passthrough,
+            QBtn: passthrough,
+            QTooltip: passthrough,
+          },
+          stubs: { NewGroupDialog: true },
+          mocks: { $status: { setup: true }, $t: (k: string) => k },
+        },
+      })
+      const bar = wrapper.get('[data-testid="chat-list-toolbar"]')
+      const filters = wrapper.get('[data-test="screener-filter-bar"]')
+      expect(
+        bar.element.compareDocumentPosition(filters.element) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy()
+      expect(wrapper.findAll('[data-testid="chat-item"]')).toHaveLength(
+        hasContact ? 1 : 0,
+      )
+      await filters.get('[data-test="screener-filter-chip"]').trigger('click')
+      expect(wrapper.findAll('[data-testid="chat-item"]')).toHaveLength(0)
+      expect(wrapper.get('[data-test="screener-empty"]').text()).toBe(
+        'chatList.screenerFilterEmpty',
+      )
+      await filters.get('[data-test="all-chats-filter-chip"]').trigger('click')
+      expect(wrapper.find('[data-test="screener-empty"]').exists()).toBe(false)
+      expect(wrapper.findAll('[data-testid="chat-item"]')).toHaveLength(
+        hasContact ? 1 : 0,
+      )
+      await wrapper.setProps({ compact: true })
+      expect(wrapper.find('[data-test="screener-filter-bar"]').exists()).toBe(
+        false,
+      )
+      wrapper.unmount()
+    },
+  )
+
   it('is one bar: search, new group, my QR code and new chat; the filter row stays below it', async () => {
     mockWidth = 390
     const wrapper = mount(ChatList, {

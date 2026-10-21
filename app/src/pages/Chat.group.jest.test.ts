@@ -2,7 +2,7 @@
 // Mounted Chat.vue with the real chat and contact stores: what each bubble is told about its
 // sender in closed direct conversations, and the actions offered for third-party references.
 import { flushPromises, mount } from '@vue/test-utils'
-import { createPinia, setActivePinia } from 'pinia'
+import { createPinia, setActivePinia, getActivePinia } from 'pinia'
 import * as quasar from 'quasar'
 import { defineComponent, h } from 'vue'
 
@@ -631,4 +631,87 @@ describe('thread navigation through the authoritative conversation order', () =>
     wrapper.vm.navigateThread(1)
     expect(push).not.toHaveBeenCalled()
   })
+})
+
+describe('group decision persistence in mounted UI', () => {
+  it.each(['accept', 'decline'])('reports a failed %s write', async action => {
+    const { wrapper, chats } = await openConversation()
+    const conv = chats.conversations[CONVERSATION]
+    conv.kind = 'group'
+    conv.membershipStatus = 'invited'
+    let reject!: (error: Error) => void
+    chats.flushPersistence = jest.fn(
+      () =>
+        new Promise<void>((_resolve, fail) => {
+          reject = fail
+        }),
+    )
+    const sync = jest.spyOn(chats, 'syncGroupConversation').mockResolvedValue(0)
+    const { errorNotify } = require('../utils/notifications')
+    errorNotify.mockClear()
+    await flushPromises()
+    await wrapper.get(`[data-testid="${action}-group-invite"]`).trigger('click')
+    expect(errorNotify).not.toHaveBeenCalled()
+    expect(sync).not.toHaveBeenCalled()
+    const error = new Error('decision write failed')
+    reject(error)
+    await flushPromises()
+    expect(errorNotify).toHaveBeenCalledWith(error)
+    expect(conv.membershipStatus).toBe(
+      action === 'accept' ? 'joined' : 'declined',
+    )
+    wrapper.unmount()
+  })
+
+  it.each([true, false])(
+    'only completes leave after a successful barrier (%s)',
+    async succeeds => {
+      const { wrapper: chat, chats } = await openConversation()
+      const conv = chats.conversations[CONVERSATION]
+      conv.kind = 'group'
+      conv.membershipStatus = 'joined'
+      let resolve!: () => void
+      let reject!: (error: Error) => void
+      chats.flushPersistence = jest.fn(
+        () =>
+          new Promise<void>((done, fail) => {
+            resolve = done
+            reject = fail
+          }),
+      )
+      const { errorNotify } = require('../utils/notifications')
+      errorNotify.mockClear()
+      const GroupInfoDialog =
+        require('../components/chat/GroupInfoDialog.vue').default
+      const wrapper = mount(GroupInfoDialog, {
+        props: { modelValue: true, conversationId: CONVERSATION },
+        global: {
+          plugins: [getActivePinia()!],
+          components: stubs,
+          mocks: { $t: translator(en) },
+        },
+      })
+      await wrapper.get('[data-test="leave-group-btn"]').trigger('click')
+      expect(conv.membershipStatus).toBe('left')
+      expect(chats.shouldPollGroupMailbox(CONVERSATION)).toBe(false)
+      expect(wrapper.emitted('left')).toBeUndefined()
+      expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+      const error = new Error('leave write failed')
+      if (succeeds) resolve()
+      else reject(error)
+      await flushPromises()
+      expect(conv.membershipStatus).toBe('left')
+      if (succeeds) {
+        expect(wrapper.emitted('left')).toEqual([[CONVERSATION]])
+        expect(wrapper.emitted('update:modelValue')).toEqual([[false]])
+        expect(errorNotify).not.toHaveBeenCalled()
+      } else {
+        expect(errorNotify).toHaveBeenCalledWith(error)
+        expect(wrapper.emitted('left')).toBeUndefined()
+        expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+      }
+      wrapper.unmount()
+      chat.unmount()
+    },
+  )
 })

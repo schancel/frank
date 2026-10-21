@@ -287,13 +287,6 @@ export function offlineMailboxModule() {
   return {
     ...jest.requireActual('@frank/cashweb/relay/mailbox-client'),
     fetchCanonicalInboxPage: jest.fn(getInbox),
-    fetchMonadMailboxInboxPage: jest.fn(getInbox),
-    fetchMonadMailboxInbox: jest.fn(async (params: any) => {
-      const records = (mailboxes.get(params.subject) ?? []).filter(
-        record => record.timestampMs > (params.sinceMs ?? 0),
-      )
-      return { messages: records }
-    }),
     fetchCanonicalRecoveryPage: jest.fn(async () => ({ records: [] })),
   }
 }

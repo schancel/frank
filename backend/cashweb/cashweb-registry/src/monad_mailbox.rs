@@ -532,7 +532,7 @@ impl EnabledMonadMailboxRuntime {
     }
 }
 
-pub(crate) const MAILBOX_AUTH_DOMAIN: &str = "frank:mailbox-http-auth:v2";
+pub(crate) const MAILBOX_AUTH_DOMAIN: &str = "frank:mailbox-http-auth:v3";
 const MAILBOX_EPOCH_HEADER: &str = "x-frank-mailbox-epoch";
 const MAILBOX_NONCE_HEADER: &str = "x-frank-mailbox-nonce";
 const MAILBOX_EXPIRY_HEADER: &str = "x-frank-mailbox-expires-at-ms";
@@ -541,15 +541,20 @@ const MAILBOX_TOKEN_HEADER: &str = "x-frank-mailbox-token";
 const MIN_ECDSA_DER_SIGNATURE_BYTES: usize = 8;
 const MAX_ECDSA_DER_SIGNATURE_BYTES: usize = 72;
 
-/// The bytes a mailbox owner signs to prove a private request is theirs.
+/// The bytes a mailbox owner signs to prove a private request is theirs. `relay_origin` is this
+/// relay's own configured public origin (the directory `endpoint`), so a signature the owner made
+/// for one relay cannot be replayed at another.
 pub(crate) fn mailbox_auth_preimage(
     challenge: MailboxChallenge,
     binding: &MailboxRequestBinding,
     network_tag: &[u8],
+    relay_origin: &str,
 ) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(224 + network_tag.len());
+    let mut bytes = Vec::with_capacity(228 + relay_origin.len() + network_tag.len());
     bytes.extend_from_slice(MAILBOX_AUTH_DOMAIN.as_bytes());
     bytes.push(0);
+    bytes.extend_from_slice(&(relay_origin.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(relay_origin.as_bytes());
     bytes.extend_from_slice(&challenge.epoch);
     bytes.extend_from_slice(&challenge.nonce);
     bytes.extend_from_slice(&challenge.expires_at_ms.to_be_bytes());
@@ -624,6 +629,36 @@ mod tests {
             limit: 50,
             max_bytes: 1024,
         }
+    }
+
+    /// The same bytes `packages/cashweb/relay/mailbox-client.jest.test.ts` pins for the client
+    /// (`RUST.inboxNoCursor`), so client and relay sign and verify one preimage.
+    #[test]
+    fn the_preimage_names_the_relay_origin_and_matches_the_client_vector() {
+        let challenge = MailboxChallenge {
+            epoch: [0x11; 32],
+            nonce: [0x22; 32],
+            expires_at_ms: 1_700_000_060_000,
+            token: [0x33; 32],
+        };
+        let request = MailboxRequestBinding {
+            resource: MailboxResource::Inbox,
+            recipient: Address([0xab; 20]),
+            since: 1_700_000_000_000,
+            cursor: None,
+            limit: 100,
+            max_bytes: 4_210_688,
+        };
+        let preimage =
+            mailbox_auth_preimage(challenge, &request, b"MONT", "https://relay.example.com");
+        assert_eq!(
+            hex::encode(&preimage),
+            "6672616e6b3a6d61696c626f782d687474702d617574683a7633000000001968747470733a2f2f72656c61792e6578616d706c652e636f6d111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000018bcfe652603333333333333333333333333333333333333333333333333333333333333333474554002f6d6573736167652f6d6f6e61642f696e626f782f01abababababababababababababababababababab0000018bcfe568000000000000000000640000000000404000000000044d4f4e54"
+        );
+        assert_ne!(
+            preimage,
+            mailbox_auth_preimage(challenge, &request, b"MONT", "https://relay.example.org")
+        );
     }
 
     #[test]

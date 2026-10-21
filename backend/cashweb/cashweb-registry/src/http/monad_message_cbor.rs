@@ -1118,9 +1118,20 @@ async fn authenticate(
         crate::monad_mailbox::parse_mailbox_authentication(headers, runtime, binding, now_ms())
             .ok_or(CanonicalError::Unauthorized)?;
     let point = admitted_subject(server, headers, binding.recipient).await?;
+    // The signature names the relay it was made for: this relay's configured public origin.
+    let directory = server
+        .registry
+        .canonical_dm()
+        .directory()
+        .ok_or(CanonicalError::Unavailable)?;
     let digest = Sha256::digest(
-        crate::monad_mailbox::mailbox_auth_preimage(challenge, binding, runtime.network_tag())
-            .into(),
+        crate::monad_mailbox::mailbox_auth_preimage(
+            challenge,
+            binding,
+            runtime.network_tag(),
+            &directory.info().binding.endpoint,
+        )
+        .into(),
     );
     let valid = server
         .registry

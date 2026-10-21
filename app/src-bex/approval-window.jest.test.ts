@@ -378,6 +378,127 @@ describe('dApp approval window lifecycle', () => {
 })
 
 describe('approval window page', () => {
+  it.each(['eth_requestAccounts', 'wallet_requestPermissions'])(
+    'opens Frank with actionable signed-out error for %s without queuing or approving the site',
+    async method => {
+      const { scope, windows } = createExtensionScope()
+      const state = createBackgroundBridgeState()
+      const [response] = await Promise.all([
+        rpc(state, scope, 'signed-out', method),
+        rpc(state, scope, 'signed-out-again', method),
+      ])
+      expect(windows.create).toHaveBeenCalledTimes(1)
+      expect(response.ok).toBe(false)
+      expect(response.error.code).toBe(4900)
+      expect(response.error.message).toContain('Sync or unlock Frank first')
+      expect(response.error.message).toContain(
+        'PWA login does not unlock the extension',
+      )
+      expect(windows.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: 'chrome-extension://frank-test-ext/approval.html?notice=account-required',
+        }),
+      )
+      expect(state.pendingApprovals.size).toBe(0)
+      expect(state.originPersonas['https://app.uniswap.org']).toBeUndefined()
+    },
+  )
+
+  it('tells the signed-out site to use the toolbar when Frank cannot open', async () => {
+    const { scope, windows } = createExtensionScope()
+    windows.create.mockRejectedValueOnce(new Error('Safari refused the window'))
+    const state = createBackgroundBridgeState()
+    const response = await rpc(
+      state,
+      scope,
+      'signed-out-refused',
+      'eth_requestAccounts',
+    )
+    expect(response.error.message).toContain('open it from the browser toolbar')
+    expect(state.pendingApprovals.size).toBe(0)
+  })
+
+  it('shows the signed-out notice visibly with Open Frank and never fetches or approves a request', async () => {
+    window.history.replaceState({}, '', '/?notice=account-required')
+    const { scope, windows } = createExtensionScope()
+    const state = createBackgroundBridgeState()
+    const bg = installBackgroundBridge(scope, state)
+    const root = document.createElement('main')
+    const closeWindow = jest.fn()
+    const page = mountApprovalPage(root, { globalScope: scope, closeWindow })
+    expect(root.textContent).toContain('Sync or unlock Frank first')
+    expect(root.textContent).toContain('then retry connecting from the website')
+    expect(root.querySelector('[data-testid="approval-approve"]')).toBeNull()
+    root
+      .querySelector<HTMLButtonElement>('[data-testid="approval-open-frank"]')!
+      .click()
+    await tick(5)
+    expect(windows.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: expect.stringContaining('index.html?extMode=window'),
+      }),
+    )
+    expect(closeWindow).not.toHaveBeenCalled()
+    expect(state.pendingApprovals.size).toBe(0)
+    expect(state.approvedOrigins.size).toBe(0)
+    page.dispose()
+    bg.dispose()
+    window.history.replaceState({}, '', '/')
+  })
+
+  it('reports approval-window failure to the site and removes the unanswered request', async () => {
+    const { scope, windows } = createExtensionScope()
+    windows.create.mockRejectedValueOnce(new Error('Safari refused the window'))
+    const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
+    const response = await rpc(
+      state,
+      scope,
+      'cannot-open',
+      'eth_requestAccounts',
+    )
+    expect(response).toEqual({
+      ok: false,
+      error: {
+        code: 4900,
+        message:
+          'Frank could not open the connection approval. Open the extension and try again.',
+      },
+    })
+    expect(state.pendingApprovals.size).toBe(0)
+    expect(state.pendingRpcWaiters.size).toBe(0)
+    expect(state.originPersonas['https://app.uniswap.org']).toBeUndefined()
+  })
+
+  it('shows approval decision failures instead of silently ignoring them', async () => {
+    const { scope } = createExtensionScope()
+    const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
+    const bg = installBackgroundBridge(scope, state)
+    const pending = rpc(state, scope, 'decision-error', 'eth_requestAccounts')
+    await tick()
+    const root = document.createElement('main')
+    const page = mountApprovalPage(root, {
+      globalScope: scope,
+      closeWindow: jest.fn(),
+    })
+    await tick(5)
+    // Exercise a stale view: custody has not provided its selected site address.
+    const approve = root.querySelector<HTMLButtonElement>(
+      '[data-testid="approval-approve"]',
+    )!
+    approve.disabled = false
+    approve.click()
+    await tick(5)
+    expect(root.querySelector('[role="alert"]')!.textContent).toContain(
+      'Sync or unlock Frank first',
+    )
+    expect(state.pendingApprovals.has('decision-error')).toBe(true)
+    expect(state.originPersonas['https://app.uniswap.org']).toBeUndefined()
+    await decide(state, scope, 'decision-error', false)
+    await pending
+    page.dispose()
+    bg.dispose()
+  })
+
   it('shows the request with its site and persona choice, and Connect resolves the dApp with the chosen persona', async () => {
     const { scope, windows } = createExtensionScope()
     const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
@@ -432,6 +553,15 @@ describe('approval window page', () => {
     const approve = () =>
       root.querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')!
     expect(root.textContent).toContain('Open Frank and unlock it')
+    root
+      .querySelector<HTMLButtonElement>('[data-testid="approval-open-frank"]')!
+      .click()
+    await tick(5)
+    expect(scope.chrome.windows.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: expect.stringContaining('index.html?extMode=window'),
+      }),
+    )
     expect(approve().disabled).toBe(true)
     const primary = root.querySelector<HTMLInputElement>(
       '[data-testid="approval-persona-primary"]',

@@ -92,6 +92,8 @@ export interface BackgroundBridgeState {
   launchMode: ExtensionLaunchMode
   /** The approval window; created on the first request needing a decision. */
   approvalWindow?: ApprovalWindow
+  /** Informational sync/unlock notice; never owns an approval request. */
+  accountRequiredWindow?: ApprovalWindow
 }
 
 export type BackgroundDappState = BackgroundBridgeState
@@ -191,7 +193,7 @@ export function isOriginConnected(
 export const DAPP_PERSONA_NOT_READY_ERROR = Object.freeze({
   code: 4900,
   message:
-    'Frank has not provided a dApp persona yet. Open Frank and unlock your account, then retry.',
+    'Sync or unlock Frank first. Your PWA login does not unlock the extension. Open Frank, sync or unlock your extension account, then retry connecting.',
 })
 
 function isPersonaAddress(value: unknown): value is string {
@@ -1646,6 +1648,31 @@ export async function handleBackgroundMessage(
       return { ok: true, result: 'FrankWallet/0.3.0' }
     }
 
+    // A website's connect action needs the extension's account, independently
+    // of the PWA login. Show an actionable notice before answering it.
+    if (
+      (method === 'eth_requestAccounts' || method === 'wallet_requestPermissions') &&
+      !isPersonaAddress(state.activePersonaAddress)
+    ) {
+      try {
+        state.accountRequiredWindow ??= createApprovalWindow({
+          api: getRawExtensionApi(runtimeScope),
+          pagePath: 'approval.html?notice=account-required',
+          onClosedByUser: () => undefined,
+        })
+        await state.accountRequiredWindow.show()
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: DAPP_PERSONA_NOT_READY_ERROR.code,
+            message: `${DAPP_PERSONA_NOT_READY_ERROR.message} Frank could not open automatically; open it from the browser toolbar.`,
+          },
+        }
+      }
+      return { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
+    }
+
     // A connected origin's persona requests need a provisioned persona address.
     if (
       PERSONA_ADDRESS_METHODS.has(method) &&
@@ -1853,7 +1880,18 @@ export async function handleBackgroundMessage(
       notifyExtensionViewsOfApprovals(runtimeScope)
       void approvalWindowFor(state, runtimeScope)
         .show()
-        .catch(() => undefined)
+        .catch(() => {
+          // A failed view must answer the RPC instead of stranding the site.
+          const waiter = state.pendingRpcWaiters.get(id)
+          if (!waiter) return
+          state.pendingApprovals.delete(id)
+          state.pendingRpcWaiters.delete(id)
+          waiter.reject({
+            code: 4900,
+            message: 'Frank could not open the connection approval. Open the extension and try again.',
+          })
+          notifyExtensionViewsOfApprovals(runtimeScope)
+        })
 
       try {
         const resolvedResult = await decision

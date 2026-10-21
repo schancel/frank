@@ -89,6 +89,67 @@ export function mountApprovalPage(
   let useBurner = true
   let shownId: string | null = null
   let busy = false
+  let errorMessage = ''
+
+  function showError(message: string) {
+    errorMessage = message
+    let alert = root.querySelector<HTMLElement>('[role="alert"]')
+    if (!alert) {
+      alert = el(doc, 'p', 'approval-text approval-unsupported')
+      alert.setAttribute('role', 'alert')
+      root.append(alert)
+    }
+    alert.textContent = message
+  }
+
+  function openFrankButton(): HTMLButtonElement {
+    const button = el(doc, 'button', 'approval-approve', 'Open Frank')
+    button.type = 'button'
+    button.dataset.testid = 'approval-open-frank'
+    button.addEventListener('click', () => {
+      void sendRuntimeMessage<unknown, { ok?: boolean }>(
+        {
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'open-extension-window',
+        },
+        globalScope,
+      )
+        .then(response => {
+          if (!response?.ok)
+            showError(
+              'Frank could not open. Open it from the browser toolbar, then return here.',
+            )
+        })
+        .catch(error =>
+          showError(
+            error instanceof Error ? error.message : 'Frank could not open.',
+          ),
+        )
+    })
+    return button
+  }
+
+  // A signed-out connection is rejected immediately. This notice explains how
+  // to retry; it is not an approval and does not retain or authorize a request.
+  if (
+    new URLSearchParams(doc.defaultView?.location.search ?? '').get(
+      'notice',
+    ) === 'account-required'
+  ) {
+    root.replaceChildren()
+    root.append(
+      el(doc, 'div', 'approval-brand', 'Frank'),
+      el(doc, 'h1', 'approval-title', 'Sync or unlock Frank first'),
+      el(
+        doc,
+        'p',
+        'approval-text',
+        'Your PWA login does not unlock the extension. Open Frank and sync or unlock your extension account, then retry connecting from the website.',
+      ),
+      openFrankButton(),
+    )
+    return { refresh: async () => undefined, dispose: () => undefined }
+  }
 
   async function fetchQueue(): Promise<PendingDappApproval[]> {
     const res = await sendRuntimeMessage<
@@ -109,7 +170,10 @@ export function mountApprovalPage(
     if (busy) return
     busy = true
     try {
-      await sendRuntimeMessage(
+      const response = await sendRuntimeMessage<
+        unknown,
+        { ok?: boolean; error?: { code?: number; message?: string } }
+      >(
         {
           channel: FRANK_DAPP_BRIDGE_CHANNEL,
           type: 'resolve-approval',
@@ -121,6 +185,21 @@ export function mountApprovalPage(
         },
         globalScope,
       )
+      if (!response?.ok && (approved || response?.error?.code !== 4001)) {
+        showError(
+          response?.error?.message ||
+            'Frank could not answer this request. Try again.',
+        )
+        return
+      }
+      errorMessage = ''
+    } catch (error) {
+      showError(
+        error instanceof Error
+          ? error.message
+          : 'Frank could not answer this request. Try again.',
+      )
+      return
     } finally {
       busy = false
     }
@@ -131,6 +210,7 @@ export function mountApprovalPage(
     if (shownId !== request.id) {
       shownId = request.id
       useBurner = true
+      errorMessage = ''
     }
     root.replaceChildren()
 
@@ -168,6 +248,17 @@ export function mountApprovalPage(
           'The site will see the address you choose and can ask you to sign or send from it.',
         ),
       )
+      if (!request.suggestedBurnerAddress || !request.primaryPersonaAddress) {
+        root.append(
+          el(
+            doc,
+            'p',
+            'approval-text',
+            'Open Frank to sync or unlock your extension account. Then return here and choose Connect. Signing in to the PWA does not unlock the extension.',
+          ),
+        )
+        root.append(openFrankButton())
+      }
       const choices = el(doc, 'fieldset', 'approval-personas')
       choices.append(
         el(doc, 'legend', undefined, 'Address shared with this site'),
@@ -252,6 +343,7 @@ export function mountApprovalPage(
     }
 
     root.append(actions)
+    if (errorMessage) showError(errorMessage)
   }
 
   async function refresh(): Promise<void> {
@@ -259,7 +351,11 @@ export function mountApprovalPage(
     try {
       queue = await fetchQueue()
     } catch {
-      queue = []
+      showError(
+        'Frank could not load the connection request. Open Frank and try connecting again.',
+      )
+      root.append(openFrankButton())
+      return
     }
     if (queue.length === 0) {
       // Nothing waits here (answered, or the background restarted).

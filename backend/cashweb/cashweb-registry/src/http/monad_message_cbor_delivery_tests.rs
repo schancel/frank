@@ -1323,7 +1323,34 @@ async fn a_delivered_message_is_read_back_over_http_and_a_login_works_once() {
         max_bytes: MAX_REQUEST_BYTES,
     };
     let root = relay.fixture.root.path();
-    let login = private_headers(&client, url, root, point, &binding(MailboxResource::Inbox)).await;
+    let origin = relay.fixture.directory.info().binding.endpoint.clone();
+    // A login the owner signed for another relay's origin is refused here.
+    let elsewhere = private_headers(
+        &client,
+        url,
+        root,
+        point,
+        &binding(MailboxResource::Inbox),
+        "https://other-relay.example",
+    )
+    .await;
+    assert_ne!(origin, "https://other-relay.example");
+    let response = client
+        .get(format!("{url}/message/inbox/{recipient}?{page}"))
+        .headers(elsewhere)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let login = private_headers(
+        &client,
+        url,
+        root,
+        point,
+        &binding(MailboxResource::Inbox),
+        &origin,
+    )
+    .await;
     let inbox = || {
         client
             .get(format!("{url}/message/inbox/{recipient}?{page}"))
@@ -1353,6 +1380,7 @@ async fn a_delivered_message_is_read_back_over_http_and_a_login_works_once() {
         root,
         point,
         &binding(MailboxResource::Mailbox),
+        &origin,
     )
     .await;
     let response = client

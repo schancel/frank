@@ -30,7 +30,7 @@ const CHALLENGE_TTL_MS = 60_000
 export const DEFAULT_MOCK_MAX_USED_CHALLENGES = 120
 const CURSOR_MAC_DOMAIN = Buffer.from('frank:mailbox-cursor-mac:v1\0')
 const CHALLENGE_MAC_DOMAIN = Buffer.from('frank:mailbox-challenge-mac:v1\0')
-const AUTH_DOMAIN = 'frank:mailbox-http-auth:v2'
+const AUTH_DOMAIN = 'frank:mailbox-http-auth:v3'
 
 export interface MockStoredMessage {
   recipient: string // lower-case 0x address
@@ -51,6 +51,8 @@ export interface MockRecovery {
 }
 
 export interface MockRelayOptions {
+  /** This relay's public origin; signatures are verified against it, as the relay does. */
+  origin: string
   /** `false` reproduces a relay with the mailbox disabled: no mailbox routes at all (404). */
   enabled?: boolean
   networkTag?: Buffer
@@ -77,6 +79,7 @@ const json = (status: number, body: unknown, headers = {}) => ({
 export class MockMailboxRelay {
   readonly enabled: boolean
   readonly networkTag: Buffer
+  readonly origin: string
   private readonly now: () => number
   private readonly maxUsedChallenges: number
   private readonly epoch = randomBytes(32)
@@ -100,7 +103,8 @@ export class MockMailboxRelay {
     status: number
   }> = []
 
-  constructor(options: MockRelayOptions = {}) {
+  constructor(options: MockRelayOptions) {
+    this.origin = options.origin
     this.enabled = options.enabled ?? true
     this.networkTag = options.networkTag ?? Buffer.from('MONT')
     this.now = options.now ?? (() => Date.now())
@@ -442,6 +446,8 @@ export class MockMailboxRelay {
     const preimage = Buffer.concat([
       Buffer.from(AUTH_DOMAIN),
       Buffer.from([0]),
+      u32(Buffer.byteLength(this.origin)),
+      Buffer.from(this.origin),
       epoch,
       nonce,
       i64(expires),

@@ -195,6 +195,8 @@ impl RelayInfo {
             || endpoint.fragment().is_some()
             || endpoint.path() != "/"
             || config.endpoint.ends_with('/')
+            // The endpoint is the exact serialized origin clients sign mailbox requests for.
+            || endpoint.origin().ascii_serialization() != config.endpoint
         {
             return Err(RuntimeError::Trust);
         }

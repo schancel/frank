@@ -14,7 +14,8 @@
  * 2. The client signs `SHA256(preimage)` with the identity key (DER ECDSA, the same scheme as the
  *    profile registration signature) where
  *    ```
- *    preimage = signing_domain (UTF-8) || 0x00 || epoch(32) || nonce(32) || expires_at_ms(i64 BE)
+ *    preimage = MAILBOX_AUTH_DOMAIN (UTF-8) || 0x00 || len(origin)(u32 BE) || origin (UTF-8)
+ *               || epoch(32) || nonce(32) || expires_at_ms(i64 BE)
  *               || token(32) || method || 0x00 || "/message/monad/" || path-tag || resource-tag(1)
  *               || recipient(20) || since(i64 BE) || cursor-flag(1) [|| len(u32 BE) || cursor UTF-8]
  *               || limit(u64 BE) || max_bytes(u64 BE)
@@ -23,6 +24,10 @@
  *    ```
  *    with (method, path-tag, resource-tag) = (GET, "inbox/", 1) | (GET, "recovery/", 2) |
  *    (POST, "recovery-ack/", 3). The cursor is the opaque token exactly as the relay returned it.
+ *    `origin` is the serialized origin of the relay the client connected to (`https://host[:port]`);
+ *    the relay checks it against its own configured public origin, so a signature made for one
+ *    relay is useless at another. The domain is a fixed constant, never taken from the challenge;
+ *    a challenge that does not echo exactly what the client asked for is refused before signing.
  * 3. The signed request goes out with `x-frank-mailbox-{epoch,nonce,expires-at-ms,token,signature}`
  *    headers (signature is hex DER). Pages return `x-frank-mailbox-next-cursor` while more rows
  *    remain; the next request must bind and send that cursor unchanged.
@@ -98,8 +103,8 @@ export {
   type StoredMonadMessageProto,
 };
 
-/** `MAILBOX_AUTH_DOMAIN` in `monad_message.rs`. */
-export const MAILBOX_AUTH_DOMAIN = "frank:mailbox-http-auth:v2";
+/** `MAILBOX_AUTH_DOMAIN` in `monad_mailbox.rs`. */
+export const MAILBOX_AUTH_DOMAIN = "frank:mailbox-http-auth:v3";
 /** `MAX_PRIVATE_MAILBOX_PAGE` in `monad_message.rs`. */
 export const MAILBOX_MAX_PAGE_LIMIT = 100;
 export const MAILBOX_NEXT_CURSOR_HEADER = "x-frank-mailbox-next-cursor";
@@ -295,11 +300,12 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
 }
 
 /** Exact bytes the relay's `mailbox_auth_preimage` produces (and the recipient must sign after
- * SHA-256). Built only from the challenge JSON, mirroring the Rust test helper
- * `client_mailbox_auth_preimage`. */
+ * SHA-256). `relayOrigin` is the origin of the relay the request goes to; the domain is the
+ * constant {@link MAILBOX_AUTH_DOMAIN}, never the challenge's. */
 export function buildMailboxAuthPreimage(
   challenge: MailboxChallenge,
-  recipient: string
+  recipient: string,
+  relayOrigin: string
 ): Uint8Array {
   const text = new TextEncoder();
   const [method, path, tag] = (
@@ -316,9 +322,12 @@ export function buildMailboxAuthPreimage(
       `unexpected mailbox resource ${String(challenge.resource)}`
     );
   }
+  const origin = text.encode(relayOrigin);
   const parts: Uint8Array[] = [
-    text.encode(challenge.signing_domain),
+    text.encode(MAILBOX_AUTH_DOMAIN),
     Uint8Array.of(0),
+    u32be(origin.length),
+    origin,
     hexToBytes(challenge.epoch, 32, "epoch"),
     hexToBytes(challenge.nonce, 32, "nonce"),
     i64be(challenge.expires_at_ms),
@@ -662,7 +671,11 @@ async function signedRequest(
       }
       validateChallenge(challenge, challengeRequest);
       const digest = mailboxAuthDigest(
-        buildMailboxAuthPreimage(challenge, auth.recipient)
+        buildMailboxAuthPreimage(
+          challenge,
+          auth.recipient,
+          new URL(base).origin
+        )
       );
       const signature = await auth.signDigest(digest);
       phase = "request";
@@ -1321,6 +1334,55 @@ async function canonicalSignedRequest(
     controller.abort();
   }
 }
+/** The relay's challenge, refused before anything is signed unless it is well formed, unexpired,
+ * for this network, and echoes exactly the request the client asked for. Every canonical signer
+ * (HTTP pages and the WebSocket stream) goes through here. */
+function canonicalChallenge(
+  response: MailboxHttpResponse,
+  request: ChallengeRequest,
+  descriptor: ReturnType<typeof canonicalNetworkDescriptor>
+): MailboxChallenge {
+  if (
+    (response.headers["content-type"] ?? "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase() !== "application/json"
+  )
+    canonicalProtocol("Canonical challenge JSON required");
+  const raw = canonicalObject(parseCanonicalJSON(bodyBytes(response.data)), [
+    "epoch",
+    "nonce",
+    "expires_at_ms",
+    "token",
+    "signing_domain",
+    "resource",
+    "since",
+    "cursor",
+    "limit",
+    "max_bytes",
+    "network_tag",
+  ]);
+  const challenge = raw as unknown as MailboxChallenge;
+  validateChallenge(challenge, request);
+  const challengeNow = Date.now();
+  if (
+    !canonicalHex32(challenge.epoch) ||
+    !canonicalHex32(challenge.nonce) ||
+    !canonicalHex32(challenge.token) ||
+    !Number.isSafeInteger(challenge.expires_at_ms) ||
+    challenge.expires_at_ms <= challengeNow ||
+    challenge.expires_at_ms >
+      challengeNow + MAX_CANONICAL_CHALLENGE_FUTURE_MS ||
+    (challenge.network_tag !==
+      bytesToHex(new TextEncoder().encode(descriptor.tag)) &&
+      challenge.network_tag !==
+        bytesToHex(new TextEncoder().encode(descriptor.network)))
+  )
+    canonicalProtocol(
+      "Malformed or foreign canonical challenge; refusing to sign"
+    );
+  return challenge;
+}
 async function canonicalSignedRequestWithin(
   auth: CanonicalMailboxAuthParams,
   request: ChallengeRequest,
@@ -1351,52 +1413,13 @@ async function canonicalSignedRequestWithin(
         CANONICAL_DM_MAX_STATUS_BYTES
       );
       if (response.status !== 200) return response;
-      if (
-        (response.headers["content-type"] ?? "")
-          .split(";")[0]
-          .trim()
-          .toLowerCase() !== "application/json"
-      )
-        canonicalProtocol("Canonical challenge JSON required");
-      const raw = canonicalObject(
-        parseCanonicalJSON(bodyBytes(response.data)),
-        [
-          "epoch",
-          "nonce",
-          "expires_at_ms",
-          "token",
-          "signing_domain",
-          "resource",
-          "since",
-          "cursor",
-          "limit",
-          "max_bytes",
-          "network_tag",
-        ]
-      );
-      const challenge = raw as unknown as MailboxChallenge;
-      validateChallenge(challenge, request);
-      const challengeNow = Date.now();
-      if (
-        !canonicalHex32(challenge.epoch) ||
-        !canonicalHex32(challenge.nonce) ||
-        !canonicalHex32(challenge.token) ||
-        !Number.isSafeInteger(challenge.expires_at_ms) ||
-        challenge.expires_at_ms <= challengeNow ||
-        challenge.expires_at_ms >
-          challengeNow + MAX_CANONICAL_CHALLENGE_FUTURE_MS ||
-        (challenge.network_tag !==
-          bytesToHex(new TextEncoder().encode(descriptor.tag)) &&
-          challenge.network_tag !==
-            bytesToHex(new TextEncoder().encode(descriptor.network)))
-      )
-        canonicalProtocol(
-          "Malformed or foreign canonical challenge; refusing to sign"
-        );
+      const challenge = canonicalChallenge(response, request, descriptor);
       canonicalCheckAbort(auth.signal);
       const signing = Promise.resolve(
         auth.signDigest(
-          mailboxAuthDigest(buildMailboxAuthPreimage(challenge, auth.recipient))
+          mailboxAuthDigest(
+            buildMailboxAuthPreimage(challenge, auth.recipient, origin)
+          )
         )
       );
       const signature = auth.signal
@@ -1624,15 +1647,17 @@ export async function connectCanonicalMailboxStream(
   params: CanonicalMailboxStreamParams
 ): Promise<CanonicalMailboxStreamHandle> {
   const origin = installedCanonicalOrigin(params.relayBaseUrl);
+  const descriptor = canonicalNetworkDescriptor(params.expectedNetworkTag);
   await canonicalCurrent(params, origin);
-  const challengeURL = `${origin}/message/auth/${
-    params.recipient
-  }?${canonicalQuery({
+  const request: ChallengeRequest = {
     resource: "mailbox_stream",
     since: 0,
     limit: 1,
     maxBytes: 0,
-  })}`;
+  };
+  const challengeURL = `${origin}/message/auth/${
+    params.recipient
+  }?${canonicalQuery(request)}`;
 
   const response = await canonicalRoundTrip(
     params,
@@ -1649,21 +1674,12 @@ export async function connectCanonicalMailboxStream(
       `challenge request failed with status ${response.status}`
     );
   }
-  const raw = canonicalObject(parseCanonicalJSON(bodyBytes(response.data)), [
-    "epoch",
-    "nonce",
-    "expires_at_ms",
-    "token",
-    "signing_domain",
-    "resource",
-    "since",
-    "cursor",
-    "limit",
-    "max_bytes",
-    "network_tag",
-  ]);
-  const challenge = raw as unknown as MailboxChallenge;
-  const preimage = buildMailboxAuthPreimage(challenge, params.recipient);
+  const challenge = canonicalChallenge(response, request, descriptor);
+  const preimage = buildMailboxAuthPreimage(
+    challenge,
+    params.recipient,
+    origin
+  );
   const signature = await params.signDigest(mailboxAuthDigest(preimage));
 
   const wsOrigin = origin.replace(/^http:/, "ws:").replace(/^https:/, "wss:");

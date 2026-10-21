@@ -4,11 +4,12 @@
  * mailbox contract (HMAC challenges/cursors, signature verification over an independently built
  * preimage, nonce cap, byte/limit budgets, stale cursors, disabled-mailbox 404s).
  *
- * The preimage vectors below were produced by running the Rust `mailbox_auth_preimage` itself
- * (`backend/cashweb/cashweb-registry/src/http/monad_message.rs`) in a throwaway `cargo test` over
- * fixed inputs (epoch=0x11.., nonce=0x22.., expires=1_700_000_060_000, token=0x33..,
- * recipient=0xab*20) -- so the TypeScript builder is pinned to the real relay bytes, not merely
- * to this repo's own re-derivation.
+ * The preimage vectors below come from the Rust `mailbox_auth_preimage`
+ * (`backend/cashweb/cashweb-registry/src/monad_mailbox.rs`) over fixed inputs (epoch=0x11..,
+ * nonce=0x22.., expires=1_700_000_060_000, token=0x33.., recipient=0xab*20, origin
+ * https://relay.example.com). `inboxNoCursor` is also asserted byte for byte by the Rust test
+ * `the_preimage_names_the_relay_origin_and_matches_the_client_vector`, so the TypeScript builder
+ * is pinned to the real relay bytes, not merely to this repo's own re-derivation.
  */
 import { createHash } from "crypto";
 
@@ -82,13 +83,13 @@ async function fetchMonadMessagesSince(
 const BASE = "https://relay.example.com";
 const RUST = {
   inboxNoCursor:
-    "6672616e6b3a6d61696c626f782d687474702d617574683a763200111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000018bcfe652603333333333333333333333333333333333333333333333333333333333333333474554002f6d6573736167652f6d6f6e61642f696e626f782f01abababababababababababababababababababab0000018bcfe568000000000000000000640000000000404000000000044d4f4e54",
+    "6672616e6b3a6d61696c626f782d687474702d617574683a7633000000001968747470733a2f2f72656c61792e6578616d706c652e636f6d111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000018bcfe652603333333333333333333333333333333333333333333333333333333333333333474554002f6d6573736167652f6d6f6e61642f696e626f782f01abababababababababababababababababababab0000018bcfe568000000000000000000640000000000404000000000044d4f4e54",
   inboxCursorNoTag:
-    "6672616e6b3a6d61696c626f782d687474702d617574683a763200111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000018bcfe652603333333333333333333333333333333333333333333333333333333333333333474554002f6d6573736167652f6d6f6e61642f696e626f782f01abababababababababababababababababababab000000000000000501000000bc30313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130320000000000000032000000000000040000000000",
+    "6672616e6b3a6d61696c626f782d687474702d617574683a7633000000001968747470733a2f2f72656c61792e6578616d706c652e636f6d111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000018bcfe652603333333333333333333333333333333333333333333333333333333333333333474554002f6d6573736167652f6d6f6e61642f696e626f782f01abababababababababababababababababababab000000000000000501000000bc30313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130323031303230313032303130320000000000000032000000000000040000000000",
   recoveryAck:
-    "6672616e6b3a6d61696c626f782d687474702d617574683a763200111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000018bcfe652603333333333333333333333333333333333333333333333333333333333333333504f5354002f6d6573736167652f6d6f6e61642f7265636f766572792d61636b2f03abababababababababababababababababababab0000000000000000000000000000000001000000000000000044444444444444444444444444444444444444444444444444444444444444445555555555555555555555555555555555555555555555555555555555555555000000044d4f4e54",
+    "6672616e6b3a6d61696c626f782d687474702d617574683a7633000000001968747470733a2f2f72656c61792e6578616d706c652e636f6d111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000018bcfe652603333333333333333333333333333333333333333333333333333333333333333504f5354002f6d6573736167652f6d6f6e61642f7265636f766572792d61636b2f03abababababababababababababababababababab0000000000000000000000000000000001000000000000000044444444444444444444444444444444444444444444444444444444444444445555555555555555555555555555555555555555555555555555555555555555000000044d4f4e54",
   recovery:
-    "6672616e6b3a6d61696c626f782d687474702d617574683a763200111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000018bcfe652603333333333333333333333333333333333333333333333333333333333333333474554002f6d6573736167652f6d6f6e61642f7265636f766572792f02abababababababababababababababababababab000000000000000000000000000000001400000000000003e8000000044d4f4e54",
+    "6672616e6b3a6d61696c626f782d687474702d617574683a7633000000001968747470733a2f2f72656c61792e6578616d706c652e636f6d111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000018bcfe652603333333333333333333333333333333333333333333333333333333333333333474554002f6d6573736167652f6d6f6e61642f7265636f766572792f02abababababababababababababababababababab000000000000000000000000000000001400000000000003e8000000044d4f4e54",
 };
 const RUST_CURSOR = "0102".repeat(47);
 
@@ -102,7 +103,7 @@ function challengeFor(
     nonce: "22".repeat(32),
     expires_at_ms: 1_700_000_060_000,
     token: "33".repeat(32),
-    signing_domain: "frank:mailbox-http-auth:v2",
+    signing_domain: MAILBOX_AUTH_DOMAIN,
     resource,
     since: 0,
     cursor: null,
@@ -123,7 +124,8 @@ describe("buildMailboxAuthPreimage (pinned to bytes from the Rust mailbox_auth_p
         limit: 100,
         max_bytes: 4_210_688,
       }),
-      RECIPIENT
+      RECIPIENT,
+      BASE
     );
     expect(bytesToHex(preimage)).toBe(RUST.inboxNoCursor);
   });
@@ -137,7 +139,8 @@ describe("buildMailboxAuthPreimage (pinned to bytes from the Rust mailbox_auth_p
         max_bytes: 1024,
         network_tag: "",
       }),
-      RECIPIENT
+      RECIPIENT,
+      BASE
     );
     expect(bytesToHex(preimage)).toBe(RUST.inboxCursorNoTag);
   });
@@ -150,7 +153,8 @@ describe("buildMailboxAuthPreimage (pinned to bytes from the Rust mailbox_auth_p
         recovery_payload_hash: "44".repeat(32),
         recovery_obligation_id: "55".repeat(32),
       }),
-      RECIPIENT
+      RECIPIENT,
+      BASE
     );
     expect(bytesToHex(preimage)).toBe(RUST.recoveryAck);
   });
@@ -158,9 +162,30 @@ describe("buildMailboxAuthPreimage (pinned to bytes from the Rust mailbox_auth_p
   it("recovery", () => {
     const preimage = buildMailboxAuthPreimage(
       challengeFor("recovery", { limit: 20, max_bytes: 1000 }),
-      RECIPIENT
+      RECIPIENT,
+      BASE
     );
     expect(bytesToHex(preimage)).toBe(RUST.recovery);
+  });
+
+  it("names the relay origin and never takes the domain from the challenge", () => {
+    const challenge = challengeFor("inbox", {});
+    const here = buildMailboxAuthPreimage(challenge, RECIPIENT, BASE);
+    expect(Buffer.from(here).includes(Buffer.from(BASE))).toBe(true);
+    expect(
+      buildMailboxAuthPreimage(
+        challenge,
+        RECIPIENT,
+        "https://relay.example.org"
+      )
+    ).not.toEqual(here);
+    expect(
+      buildMailboxAuthPreimage(
+        { ...challenge, signing_domain: "frank:something-else:v1" },
+        RECIPIENT,
+        BASE
+      )
+    ).toEqual(here);
   });
 
   it("hashes with plain SHA-256", () => {
@@ -175,7 +200,8 @@ describe("buildMailboxAuthPreimage (pinned to bytes from the Rust mailbox_auth_p
 
     const preimage = buildMailboxAuthPreimage(
       challengeFor("recovery", {}),
-      RECIPIENT
+      RECIPIENT,
+      BASE
     );
     expect(bytesToHex(preimage)).toBe(RUST.recovery);
     const digest = bytesToHex(mailboxAuthDigest(preimage));
@@ -189,13 +215,15 @@ describe("buildMailboxAuthPreimage (pinned to bytes from the Rust mailbox_auth_p
     expect(() =>
       buildMailboxAuthPreimage(
         challengeFor("inbox", { epoch: "zz" }),
-        RECIPIENT
+        RECIPIENT,
+        BASE
       )
     ).toThrow(MonadMailboxProtocolError);
     expect(() =>
       buildMailboxAuthPreimage(
         challengeFor("bogus" as MailboxChallenge["resource"], {}),
-        RECIPIENT
+        RECIPIENT,
+        BASE
       )
     ).toThrow(MonadMailboxProtocolError);
   });
@@ -249,6 +277,7 @@ function makeFixture(
       .digest("hex")
       .slice(0, 40);
   const relay = new MockMailboxRelay({
+    origin: BASE,
     enabled: options.enabled,
     maxUsedChallenges: options.maxUsedChallenges,
   });
@@ -423,7 +452,7 @@ describe("fetchMonadMailboxInbox / fetchMonadMessagesSince", () => {
       sinceMs: 0,
       limit: 1,
     });
-    const restarted = new MockMailboxRelay(); // new epoch + HMAC secret
+    const restarted = new MockMailboxRelay({ origin: BASE }); // new epoch + HMAC secret
     restarted.registerProfile(f.address, f.privateKey.toPublicKey().toBuffer());
     const error = await fetchMonadMailboxInboxPage({
       ...f.auth,
@@ -1250,11 +1279,13 @@ describe("canonical private mailbox", () => {
     expect(result.records[0].delivery).toEqual(canonicalDelivery());
     expect(result.records[0].context).toEqual(fromHex(canonicalWire.context));
     expect(auth.signDigest).toHaveBeenCalledWith(
-      mailboxAuthDigest(buildMailboxAuthPreimage(challenge, auth.recipient))
+      mailboxAuthDigest(
+        buildMailboxAuthPreimage(challenge, auth.recipient, auth.relayBaseUrl)
+      )
     );
     expect(
       new TextDecoder().decode(
-        buildMailboxAuthPreimage(challenge, auth.recipient)
+        buildMailboxAuthPreimage(challenge, auth.recipient, auth.relayBaseUrl)
       )
     ).toContain("/message/monad/inbox/");
     expect(
@@ -1298,7 +1329,9 @@ describe("canonical private mailbox", () => {
       ]);
       expect(challenge.resource).toBe("mailbox");
       expect(auth.signDigest).toHaveBeenCalledWith(
-        mailboxAuthDigest(buildMailboxAuthPreimage(challenge, auth.recipient))
+        mailboxAuthDigest(
+          buildMailboxAuthPreimage(challenge, auth.recipient, auth.relayBaseUrl)
+        )
       );
       expect(new URL(requests[1][0]).pathname).toBe(
         `/message/mailbox/${auth.recipient}`
@@ -1317,8 +1350,10 @@ describe("canonical private mailbox", () => {
       timestampMs: 1700000100005,
     };
     expect(
-      inspectCanonicalPair({ delivery: unpaid.delivery, context: unpaid.context })
-        .transaction_hashes
+      inspectCanonicalPair({
+        delivery: unpaid.delivery,
+        context: unpaid.context,
+      }).transaction_hashes
     ).toEqual([]);
     page = canonicalRecordsPage([{ ...unpaid, direction: "in" }]);
     const mailbox = await fetchCanonicalMailboxPage(auth);
@@ -1683,6 +1718,40 @@ describe("canonical private mailbox", () => {
     expect(mockWsInstances[0].url).toContain(
       "wss://preachy-bauble-onscreen.ngrok-free.dev/message/mailbox/"
     );
+    handle.close();
+  });
+  test.each([
+    { network_tag: "4d4f4e31" },
+    { resource: "inbox" as const },
+    { limit: 2 },
+    { max_bytes: 1 },
+    { since: 5 },
+    { signing_domain: "other" },
+    { epoch: "00" },
+    { expires_at_ms: 1 },
+  ])(
+    "connectCanonicalMailboxStream never signs a foreign/malformed challenge %j",
+    async (overrides) => {
+      mockWsInstances.length = 0;
+      challengeOverrides = overrides;
+      await expect(connectCanonicalMailboxStream(auth)).rejects.toThrow();
+      expect(auth.signDigest).not.toHaveBeenCalled();
+      expect(mockWsInstances).toHaveLength(0);
+    }
+  );
+  test("connectCanonicalMailboxStream signs a preimage bound to the origin it connects to", async () => {
+    mockWsInstances.length = 0;
+    const handle = await connectCanonicalMailboxStream(auth);
+    const origin = new URL(auth.relayBaseUrl).origin;
+    expect(challenge.resource).toBe("mailbox_stream");
+    expect(auth.signDigest).toHaveBeenCalledWith(
+      mailboxAuthDigest(
+        buildMailboxAuthPreimage(challenge, auth.recipient, origin)
+      )
+    );
+    expect(
+      mockWsInstances[0].url.startsWith(origin.replace(/^http/, "ws"))
+    ).toBe(true);
     handle.close();
   });
   test("connectCanonicalMailboxStream omits ngrok-skip-browser-warning on standard origins", async () => {

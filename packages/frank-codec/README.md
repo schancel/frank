@@ -147,7 +147,8 @@ TypeScript-aware bundler or transformer. `yarn build:browser` produces an IIFE b
 
 `docs/protocol/cbor/vectors/manifest.json` conforms to `vectors.schema.json`. It is generated
 from `fixtures/` (`builders.ts`, `cases.ts`, `manifest.ts`) and a Jest test fails when it is
-stale. Regenerate with `FRANK_UPDATE_VECTORS=1 yarn test`, which also rewrites
+stale. Regenerate every corpus with `yarn vectors:generate` (see
+`docs/protocol/cbor/vectors/README.md`); `FRANK_UPDATE_VECTORS=1 yarn test` also rewrites
 `docs/protocol/cbor/vectors/topic-commitments.json` (the T1 and T7 hashes of the topic events,
 recomputed by the Rust codec and by `scripts/crosscheck.py`). Cases without their own
 `supported` list run against the reader that predates the topic types, so the corpus written

@@ -212,7 +212,12 @@ export function applyViewportScaleAndMetrics(
       }
     }
     if (keyboardShrunkViewport && metrics.visualHeight !== undefined) {
-      const rawKbOffset = Math.max(0, metrics.innerHeight - metrics.visualHeight)
+      const rawKbOffset = Math.max(
+        0,
+        metrics.innerHeight -
+          metrics.visualHeight -
+          (w?.visualViewport?.offsetTop ?? 0),
+      )
       const effectiveKbOffset =
         result.scale > 0 && result.scale !== 1
           ? Math.round(rawKbOffset / result.scale)

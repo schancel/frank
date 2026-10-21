@@ -30,6 +30,100 @@ const MAX_ENVELOPE_KEY_BYTES: usize = 128;
 const MAX_RPC_ID_BYTES: usize = 256;
 const MAX_ENVELOPE_FIELDS: usize = 32;
 const MAX_JSON_DEPTH: usize = 128;
+/// How much of an upstream error message is read to classify it. Every recognised phrase sits
+/// near the start of the message.
+const MAX_CLASSIFIED_MESSAGE_BYTES: usize = 1024;
+/// Largest revert payload (`0x` plus hex) passed through with an `execution reverted` error.
+const MAX_REVERT_DATA_BYTES: usize = 64 * 1024;
+
+/// Upstream error reasons the wallet branches on. Anything else is redacted to
+/// `upstream RPC error`, because provider text may echo URLs or credentials.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UpstreamErrorReason {
+    AlreadyKnown,
+    NonceTooLow,
+    InsufficientFunds,
+    ReplacementUnderpriced,
+    ExecutionReverted,
+}
+
+impl UpstreamErrorReason {
+    /// Classify from the start of the upstream message (both the buffered and the streaming
+    /// path look at the same bounded prefix). A node that says it merely queued the
+    /// transaction is ambiguous and stays unclassified.
+    fn classify(message: &str) -> Option<Self> {
+        let prefix = &message.as_bytes()[..message.len().min(MAX_CLASSIFIED_MESSAGE_BYTES)];
+        let lower = String::from_utf8_lossy(prefix).to_ascii_lowercase();
+        // The same phrase lists the relay's own Monad client classifies by.
+        use crate::monad_http::{ALREADY_KNOWN_PHRASES, NONCE_TOO_LOW_PHRASES, QUEUED_PHRASE};
+        if ALREADY_KNOWN_PHRASES
+            .iter()
+            .any(|phrase| lower.contains(phrase))
+        {
+            Some(Self::AlreadyKnown)
+        } else if lower.contains(QUEUED_PHRASE) {
+            None
+        } else if NONCE_TOO_LOW_PHRASES
+            .iter()
+            .any(|phrase| lower.contains(phrase))
+        {
+            Some(Self::NonceTooLow)
+        } else if lower.contains("insufficient funds") {
+            Some(Self::InsufficientFunds)
+        } else if lower.contains("replacement transaction underpriced") {
+            Some(Self::ReplacementUnderpriced)
+        } else if lower.contains("execution reverted") {
+            Some(Self::ExecutionReverted)
+        } else {
+            None
+        }
+    }
+
+    /// The fixed message sent to clients. Each is the plain geth phrasing, which ethers and the
+    /// wallet's own matchers already recognise. (The sanitizer is shared with the Bitcoin
+    /// proxy, so the messages name no EVM-only fields.)
+    fn message(self) -> &'static str {
+        match self {
+            Self::AlreadyKnown => "already known",
+            Self::NonceTooLow => "nonce too low",
+            Self::InsufficientFunds => "insufficient funds",
+            Self::ReplacementUnderpriced => "replacement transaction underpriced",
+            Self::ExecutionReverted => "execution reverted",
+        }
+    }
+}
+
+/// Revert data is kept only as a bounded, even-length `0x` hex string.
+fn is_revert_data(data: &str) -> bool {
+    data.len() <= MAX_REVERT_DATA_BYTES
+        && data.strip_prefix("0x").is_some_and(|hex| {
+            hex.len() % 2 == 0 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+/// The error object a client receives: the upstream code, a fixed message, and revert data
+/// for `execution reverted` only.
+fn redacted_error(code: Option<Value>, message: &str, data: Option<&str>) -> Map<String, Value> {
+    let reason = UpstreamErrorReason::classify(message);
+    let mut redacted = Map::new();
+    if let Some(code) = code {
+        redacted.insert("code".to_string(), code);
+    }
+    redacted.insert(
+        "message".to_string(),
+        Value::String(
+            reason
+                .map_or("upstream RPC error", UpstreamErrorReason::message)
+                .to_string(),
+        ),
+    );
+    if reason == Some(UpstreamErrorReason::ExecutionReverted) {
+        if let Some(data) = data.filter(|data| is_revert_data(data)) {
+            redacted.insert("data".to_string(), Value::String(data.to_string()));
+        }
+    }
+    redacted
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StreamInspectError {
@@ -377,7 +471,9 @@ pub(crate) fn startup_result(
     value.get("result").cloned()
 }
 
-/// Replace provider-controlled JSON-RPC error details with a stable envelope.
+/// Replace provider-controlled JSON-RPC error details with a stable envelope. A fixed set of
+/// recognised reasons keeps a fixed message (see [`UpstreamErrorReason`]); everything else
+/// becomes `upstream RPC error`.
 ///
 /// Success results and envelope keys are deliberately untouched: they are
 /// protocol data and may legitimately contain short substrings that also occur
@@ -503,19 +599,19 @@ fn sanitize_response_error(value: &mut Value) {
         return;
     }
 
+    let error = error.as_object();
     let code = error
-        .as_object()
         .and_then(|error| error.get("code"))
         .filter(|code| code.is_number())
         .cloned();
-    let mut sanitized = Map::new();
-    if let Some(code) = code {
-        sanitized.insert("code".to_string(), code);
-    }
-    sanitized.insert(
-        "message".to_string(),
-        Value::String("upstream RPC error".to_string()),
-    );
+    let message = error
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let data = error
+        .and_then(|error| error.get("data"))
+        .and_then(Value::as_str);
+    let sanitized = redacted_error(code, message, data);
     response.insert("error".to_string(), Value::Object(sanitized));
 }
 
@@ -713,12 +809,18 @@ impl<R: BufRead> ResponseParser<R> {
                     if is_null {
                         self.lexer.skip_value(token, 0)?;
                     } else {
-                        let code = self.lexer.parse_error_object(token, 0)?;
+                        let error = self.lexer.parse_error_object(token, 0)?;
+                        let redacted = redacted_error(
+                            Some(Value::from(error.code)),
+                            &error.message_prefix,
+                            error.data.as_deref(),
+                        );
                         self.error_rewrites.push(ErrorRewrite {
                             range: start..self.lexer.offset,
-                            replacement: Bytes::from(format!(
-                                "{{\"code\":{code},\"message\":\"upstream RPC error\"}}"
-                            )),
+                            replacement: Bytes::from(
+                                serde_json::to_vec(&Value::Object(redacted))
+                                    .map_err(|_| StreamInspectError::Invalid)?,
+                            ),
                         });
                     }
                 }
@@ -770,6 +872,15 @@ enum TokenKind {
     True,
     False,
     Null,
+}
+
+/// What the streaming inspector keeps of an upstream error object: enough to classify it.
+struct UpstreamError {
+    code: i64,
+    /// The first bytes of the message, still JSON-escaped.
+    message_prefix: String,
+    /// A string `data` member short enough to pass through as revert data.
+    data: Option<String>,
 }
 
 struct Token {
@@ -899,22 +1010,56 @@ impl<R: BufRead> Lexer<R> {
 
     fn read_string(&mut self, capture: bool) -> Result<Option<String>, StreamInspectError> {
         let mut raw = capture.then(|| vec![b'"']);
-        loop {
-            let byte = self.read_byte()?.ok_or(StreamInspectError::Invalid)?;
+        self.scan_string(|byte| {
             if let Some(raw) = &mut raw {
-                if raw.len() >= MAX_RPC_ID_BYTES.max(MAX_ENVELOPE_KEY_BYTES) + 2 {
+                if raw.len() >= MAX_RPC_ID_BYTES.max(MAX_ENVELOPE_KEY_BYTES) + 1 {
                     return Err(StreamInspectError::TokenTooLarge);
                 }
                 raw.push(byte);
             }
+            Ok(())
+        })?;
+        if let Some(raw) = &mut raw {
+            raw.push(b'"');
+        }
+        raw.map(|raw| serde_json::from_slice(&raw).map_err(|_| StreamInspectError::Invalid))
+            .transpose()
+    }
+
+    /// Read a string whose opening quote is next, keeping at most `limit` of its raw (still
+    /// escaped) bytes. Longer strings are consumed and validated but not kept past the limit.
+    fn read_string_prefix(&mut self, limit: usize) -> Result<Vec<u8>, StreamInspectError> {
+        if self.peek_non_whitespace()? != Some(b'"') {
+            return Err(StreamInspectError::Invalid);
+        }
+        self.read_byte()?;
+        let mut kept = Vec::new();
+        self.scan_string(|byte| {
+            if kept.len() < limit {
+                kept.push(byte);
+            }
+            Ok(())
+        })?;
+        Ok(kept)
+    }
+
+    /// Validate the body of a JSON string after its opening quote, handing every raw byte
+    /// before the closing quote to `on_byte`.
+    fn scan_string(
+        &mut self,
+        mut on_byte: impl FnMut(u8) -> Result<(), StreamInspectError>,
+    ) -> Result<(), StreamInspectError> {
+        loop {
+            let byte = self.read_byte()?.ok_or(StreamInspectError::Invalid)?;
+            if byte == b'"' {
+                return Ok(());
+            }
+            on_byte(byte)?;
             match byte {
-                b'"' => break,
                 0x00..=0x1f => return Err(StreamInspectError::Invalid),
                 b'\\' => {
                     let escaped = self.read_byte()?.ok_or(StreamInspectError::Invalid)?;
-                    if let Some(raw) = &mut raw {
-                        raw.push(escaped);
-                    }
+                    on_byte(escaped)?;
                     match escaped {
                         b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
                         b'u' => {
@@ -923,9 +1068,7 @@ impl<R: BufRead> Lexer<R> {
                                 if !hex.is_ascii_hexdigit() {
                                     return Err(StreamInspectError::Invalid);
                                 }
-                                if let Some(raw) = &mut raw {
-                                    raw.push(hex);
-                                }
+                                on_byte(hex)?;
                             }
                         }
                         _ => return Err(StreamInspectError::Invalid),
@@ -934,8 +1077,6 @@ impl<R: BufRead> Lexer<R> {
                 _ => {}
             }
         }
-        raw.map(|raw| serde_json::from_slice(&raw).map_err(|_| StreamInspectError::Invalid))
-            .transpose()
     }
 
     fn read_number(
@@ -1005,7 +1146,7 @@ impl<R: BufRead> Lexer<R> {
         &mut self,
         token: Token,
         depth: usize,
-    ) -> Result<i64, StreamInspectError> {
+    ) -> Result<UpstreamError, StreamInspectError> {
         if !matches!(&token.kind, TokenKind::LeftBrace) {
             return Err(StreamInspectError::Invalid);
         }
@@ -1015,7 +1156,8 @@ impl<R: BufRead> Lexer<R> {
         }
         let mut fields = HashSet::new();
         let mut code = None;
-        let mut has_message = false;
+        let mut message_prefix = None;
+        let mut data = None;
         loop {
             let key = self.next_token(true)?;
             let TokenKind::String(Some(key)) = key.kind else {
@@ -1039,11 +1181,14 @@ impl<R: BufRead> Lexer<R> {
                 }
                 self.skip_value(value, depth + 1)?;
             } else if key == "message" {
-                let value = self.next_token(false)?;
-                if !matches!(value.kind, TokenKind::String(_)) {
-                    return Err(StreamInspectError::Invalid);
-                }
-                has_message = true;
+                let raw = self.read_string_prefix(MAX_CLASSIFIED_MESSAGE_BYTES)?;
+                message_prefix = Some(String::from_utf8_lossy(&raw).into_owned());
+            } else if key == "data" && self.peek_non_whitespace()? == Some(b'"') {
+                // One byte past the limit marks data too long to pass through.
+                let raw = self.read_string_prefix(MAX_REVERT_DATA_BYTES + 1)?;
+                data = (raw.len() <= MAX_REVERT_DATA_BYTES)
+                    .then(|| String::from_utf8(raw).ok())
+                    .flatten();
             } else {
                 let value = self.next_token(false)?;
                 self.skip_value(value, depth + 1)?;
@@ -1054,10 +1199,11 @@ impl<R: BufRead> Lexer<R> {
                 _ => return Err(StreamInspectError::Invalid),
             }
         }
-        if !has_message {
-            return Err(StreamInspectError::Invalid);
-        }
-        code.ok_or(StreamInspectError::Invalid)
+        Ok(UpstreamError {
+            code: code.ok_or(StreamInspectError::Invalid)?,
+            message_prefix: message_prefix.ok_or(StreamInspectError::Invalid)?,
+            data,
+        })
     }
 
     fn skip_value(&mut self, token: Token, depth: usize) -> Result<(), StreamInspectError> {
@@ -1247,6 +1393,118 @@ mod tests {
         assert_eq!(error["error"]["message"], "upstream RPC error");
         assert!(error["error"].get("data").is_none());
         assert!(!error.to_string().contains("secret"));
+    }
+
+    fn sanitized(error: Value) -> Value {
+        let mut response = json!({"jsonrpc": "2.0", "id": 1, "error": error});
+        sanitize_response_errors(&mut response);
+        response["error"].clone()
+    }
+
+    #[test]
+    fn passes_classified_reasons_through_with_stable_messages() {
+        let secret = "https://rpc.example/v2/SECRET-KEY";
+        for (upstream, stable) in [
+            ("already known", "already known"),
+            ("Known transaction: 0xabc", "already known"),
+            ("transaction already imported", "already known"),
+            ("Already Exists in the pool", "already known"),
+            ("nonce too low: next nonce 5, tx nonce 3", "nonce too low"),
+            ("Nonce is too low", "nonce too low"),
+            (
+                "err: insufficient funds for gas * price + value: have 0 want 1",
+                "insufficient funds",
+            ),
+            (
+                "replacement transaction underpriced",
+                "replacement transaction underpriced",
+            ),
+            ("execution reverted: Ownable: caller", "execution reverted"),
+        ] {
+            let error = sanitized(json!({
+                "code": -32000,
+                "message": format!("{upstream} via {secret}"),
+                "data": {"url": secret},
+            }));
+            assert_eq!(error["code"], -32000, "{upstream}");
+            assert_eq!(error["message"], stable, "{upstream}");
+            assert!(error.get("data").is_none(), "{upstream}");
+            assert!(!error.to_string().contains("SECRET"), "{upstream}");
+        }
+        // Unrecognised text, and "queued" (the node may hold it), stay redacted.
+        for upstream in [
+            "rate limited at https://rpc.example/SECRET",
+            "nonce too low, tx queued",
+        ] {
+            assert_eq!(
+                sanitized(json!({"code": -32000, "message": upstream}))["message"],
+                "upstream RPC error"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_revert_data_only_for_execution_reverted_hex() {
+        let error = sanitized(json!({
+            "code": 3,
+            "message": "execution reverted",
+            "data": "0x08c379a0",
+        }));
+        assert_eq!(
+            error,
+            json!({"code": 3, "message": "execution reverted", "data": "0x08c379a0"})
+        );
+        for data in [json!("0x08c379a"), json!("SECRET"), json!({"x": "0x00"})] {
+            let error =
+                sanitized(json!({"code": 3, "message": "execution reverted", "data": data}));
+            assert!(error.get("data").is_none(), "{data}");
+        }
+        let too_long = format!("0x{}", "00".repeat(MAX_REVERT_DATA_BYTES));
+        let error =
+            sanitized(json!({"code": 3, "message": "execution reverted", "data": too_long}));
+        assert!(error.get("data").is_none());
+        let error = sanitized(json!({"code": -32000, "message": "nonce too low", "data": "0x00"}));
+        assert!(error.get("data").is_none());
+    }
+
+    #[test]
+    fn streaming_inspector_classifies_errors_like_the_in_memory_path() {
+        let long_secret = "S".repeat(4 * MAX_CLASSIFIED_MESSAGE_BYTES);
+        let too_long = format!("0x{}", "00".repeat(MAX_REVERT_DATA_BYTES));
+        for (error, expected) in [
+            (
+                json!({"code": -32000, "message": format!("nonce too low {long_secret}")}),
+                json!({"code": -32000, "message": "nonce too low"}),
+            ),
+            (
+                json!({"code": -32000, "message": format!("{long_secret} already known")}),
+                json!({"code": -32000, "message": "upstream RPC error"}),
+            ),
+            (
+                json!({"data": "0xdeadbeef", "message": "execution reverted: \"x\"", "code": 3}),
+                json!({"code": 3, "message": "execution reverted", "data": "0xdeadbeef"}),
+            ),
+            (
+                json!({"code": 3, "message": "execution reverted", "data": too_long}),
+                json!({"code": 3, "message": "execution reverted"}),
+            ),
+            (
+                json!({"code": 3, "message": "execution reverted", "data": {"d": "0x00"}}),
+                json!({"code": 3, "message": "execution reverted"}),
+            ),
+            (
+                json!({"code": -1, "message": "replacement transaction underpriced", "data": "0x00"}),
+                json!({"code": -1, "message": "replacement transaction underpriced"}),
+            ),
+        ] {
+            let response = json!({"jsonrpc": "2.0", "id": 1, "error": error}).to_string();
+            let inspected = inspect(response.as_bytes(), &[json!(1)]).unwrap();
+            assert_eq!(inspected.error_rewrites.len(), 1);
+            let replacement: Value =
+                serde_json::from_slice(&inspected.error_rewrites[0].replacement).unwrap();
+            assert_eq!(replacement, expected, "{error}");
+            assert_eq!(sanitized(error.clone()), expected, "{error}");
+        }
     }
 
     #[test]

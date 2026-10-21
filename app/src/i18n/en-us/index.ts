@@ -1093,6 +1093,8 @@ export const rawEnUS = {
     acceptAndLock: 'Accept & Lock {amount} {asset}',
     claimFunds: 'Claim {amount} {asset}',
     refundDeposit: 'Refund Deposit',
+    executionTurnedOff:
+      'Swap deposits are turned off until swaps are rebuilt on safer escrow. A swap funded earlier can still be claimed or refunded.',
     activeOnOtherDevice: 'Active on {device}',
     takeOverActive: 'Use here',
     viewTx: 'View {chain} Tx',

@@ -141,13 +141,16 @@ describe('ChatInput offers Send Stealth in the message-type menu', () => {
   )
 })
 
-describe('ChatInput does not offer atomic swaps, which are not available yet', () => {
+describe('ChatInput does not offer atomic swaps, which are turned off until rebuilt on HTLC', () => {
   it.each([
     ['no extra props', {}],
     ['a chat that is being sent to', { disable: true }],
   ])('has no swap entry in the message menu for %s', (_n, props) => {
     const w = mount(ChatInput, { props, global: globalOptions })
-    expect(w.find('[data-testid="offer-swap-menu-item"]').exists()).toBe(false)
+    // The submenu renders (stubbed QMenu), so the absence below is not vacuous.
+    expect(w.find('[data-testid="invoice-menu-item"]').exists()).toBe(true)
+    expect(w.find('[data-testid="swap-menu-item"]').exists()).toBe(false)
+    expect(w.text()).not.toContain(enUS.signedSwap.title)
     expect(w.text()).not.toContain(enUS.chatInput.offerSwap)
   })
 })

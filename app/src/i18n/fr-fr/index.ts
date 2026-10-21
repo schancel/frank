@@ -1118,6 +1118,8 @@ export const rawFrFR = {
     acceptAndLock: 'Accepter et verrouiller {amount} {asset}',
     claimFunds: 'Réclamer {amount} {asset}',
     refundDeposit: 'Rembourser le dépôt',
+    executionTurnedOff:
+      'Les dépôts d’échange sont désactivés jusqu’à la reconstruction des échanges sur un séquestre plus sûr. Un échange financé auparavant peut encore être réclamé ou remboursé.',
     activeOnOtherDevice: 'Actif sur {device}',
     takeOverActive: 'Activer ici',
     viewTx: 'Voir Tx {chain}',

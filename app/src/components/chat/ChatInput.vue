@@ -211,19 +211,8 @@
                         </q-item-section>
                       </q-item>
 
-                      <q-item
-                        clickable
-                        v-close-popup
-                        data-testid="swap-menu-item"
-                        @click="closeMenuAndEmit('swapClicked')"
-                      >
-                        <q-item-section avatar side>
-                          <q-icon name="swap_horiz" />
-                        </q-item-section>
-                        <q-item-section>
-                          {{ $t('signedSwap.title') }}
-                        </q-item-section>
-                      </q-item>
+                      <!-- No swap entry: the live atomic swap is turned off until it is
+                           rebuilt on hash-locked escrow (either peer could sweep both legs). -->
 
                       <q-item
                         clickable

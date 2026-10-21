@@ -7,7 +7,10 @@ import ForumLayout from './ForumLayout.vue'
 import TopicLayout from './TopicLayout.vue'
 
 // A sentinel that differs from the real 800, so a leftover hard-coded literal cannot pass.
-jest.mock('src/utils/layout', () => ({ DRAWER_BREAKPOINT: 777 }))
+jest.mock('src/utils/layout', () => ({
+  DRAWER_BREAKPOINT: 777,
+  isNarrowWidth: (width: number) => width <= 777,
+}))
 jest.mock('pinia', () => ({
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
 }))

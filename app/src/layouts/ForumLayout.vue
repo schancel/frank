@@ -12,7 +12,7 @@
       <q-toolbar class="q-pl-sm">
         <q-btn
           v-if="isThreadRoute"
-          class="q-px-sm"
+          class="q-px-sm no-shrink"
           flat
           dense
           @click="navigateBack"
@@ -21,7 +21,7 @@
           data-test="forum-back"
         />
         <q-btn
-          class="q-px-sm"
+          class="q-px-sm no-shrink"
           flat
           dense
           @click="toggleSettingsDrawerOpen"
@@ -30,9 +30,23 @@
           :aria-expanded="myDrawerOpen"
           data-test="forum-menu"
         />
-        <q-toolbar-title class="h6">
+        <!-- Narrow: the title is just "#topic" and gives way (ellipsis) before any button does. -->
+        <q-toolbar-title class="h6 forum-toolbar-title">
           <div
-            v-if="isThreadRoute"
+            v-if="narrow"
+            class="ellipsis"
+            :class="{ 'cursor-pointer': isThreadRoute }"
+            data-test="forum-compact-title"
+            @click="isThreadRoute && navigateBack()"
+          >
+            <template v-if="selectedTopic">#{{ selectedTopic }}</template>
+            <template v-else-if="isThreadRoute">{{
+              $t('forum.thread')
+            }}</template>
+            <template v-else>{{ $t('leftDrawer.forum') }}</template>
+          </div>
+          <div
+            v-else-if="isThreadRoute"
             class="row items-center no-wrap cursor-pointer"
             @click="navigateBack"
             data-test="forum-breadcrumb"
@@ -62,29 +76,30 @@
           </div>
           <span v-else>{{ $t('leftDrawer.forum') }}</span>
         </q-toolbar-title>
-        <q-space />
+        <!-- Narrow: pull the list down to refresh instead of this button. -->
         <q-btn
+          v-if="!narrow"
           icon="refresh"
           :aria-label="$t('a11y.forumRefresh')"
           flat
-          class="q-mx-none q-pa-sm"
+          class="q-mx-none q-pa-sm no-shrink"
           :loading="isRefreshing"
           @click="refreshContent"
         />
         <q-btn
           flat
           icon="post_add"
-          class="q-mx-none q-pa-sm"
+          class="q-mx-none q-pa-sm no-shrink"
           to="/new-post"
           :aria-label="$t('a11y.newPost')"
         />
-        <extension-popout-btn />
+        <extension-popout-btn class="no-shrink" />
         <q-btn
           icon="settings"
           flat
           :aria-label="$t('a11y.forumSettings')"
           :aria-expanded="showForumDrawer"
-          class="q-mx-none q-pa-sm"
+          class="q-mx-none q-pa-sm no-shrink"
           @click="showForumDrawer = !showForumDrawer"
         />
       </q-toolbar>
@@ -96,7 +111,13 @@
           ref="chatScroll"
           class="q-px-sm absolute full-width full-height"
         >
-          <router-view @set-topic="setTopic" />
+          <q-pull-to-refresh
+            :disable="!narrow"
+            data-test="forum-pull-to-refresh"
+            @refresh="pullToRefresh"
+          >
+            <router-view @set-topic="setTopic" />
+          </q-pull-to-refresh>
         </q-scroll-area>
       </q-page>
     </q-page-container>
@@ -115,7 +136,8 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 import ForumDrawer from '../components/panels/ForumDrawer.vue'
 import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
-import { DRAWER_BREAKPOINT } from '../utils/layout'
+import { DRAWER_BREAKPOINT, isNarrowWidth } from '../utils/layout'
+import { getEffectiveScreenWidth } from '../utils/mobile-viewport-scale'
 
 export default defineComponent({
   data() {
@@ -160,6 +182,9 @@ export default defineComponent({
     toggleSettingsDrawerOpen() {
       this.$emit('toggleMyDrawerOpen')
     },
+    pullToRefresh(done: () => void) {
+      void this.refreshContent().finally(done)
+    },
     async refreshContent() {
       try {
         let wallet
@@ -194,6 +219,12 @@ export default defineComponent({
     },
   },
   computed: {
+    narrow(): boolean {
+      const raw =
+        this.$q?.screen?.width ??
+        (typeof window !== 'undefined' ? window.innerWidth : 1024)
+      return isNarrowWidth(getEffectiveScreenWidth(raw))
+    },
     isThreadRoute(): boolean {
       return (
         Boolean(this.$route?.params?.payloadDigest) ||
@@ -220,3 +251,9 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.forum-toolbar-title {
+  min-width: 0;
+}
+</style>

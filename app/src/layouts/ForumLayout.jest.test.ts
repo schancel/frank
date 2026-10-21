@@ -71,6 +71,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
   function mountLayout(options?: {
     route?: { path: string; params?: Record<string, string> }
     router?: { push: jest.Mock }
+    width?: number
   }) {
     const mockRoute = options?.route ?? { path: '/forum', params: {} }
     const mockRouter = options?.router ?? { push: jest.fn() }
@@ -80,6 +81,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
           $t: (key: string) => t(enUS, key),
           $route: mockRoute,
           $router: mockRouter,
+          $q: { screen: { width: options?.width ?? 1280 } },
         },
         stubs: {
           ForumDrawer: { template: '<div class="forum-drawer-stub" />' },
@@ -92,6 +94,12 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
           QPageContainer: { template: '<div><slot /></div>' },
           QPage: { template: '<div><slot /></div>' },
           QScrollArea: { template: '<div><slot /></div>' },
+          QPullToRefresh: {
+            props: ['disable'],
+            emits: ['refresh'],
+            template:
+              '<div data-test="forum-pull-to-refresh" :data-disable="String(disable)"><slot /></div>',
+          },
           QIcon: { template: '<i />' },
           QChip: {
             name: 'QChip',
@@ -275,5 +283,49 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
 
     await backBtn.trigger('click')
     expect(mockRouterPush).toHaveBeenCalledWith('/forum')
+  })
+
+  it('on a phone the title is only "#topic", the refresh button gives way to pull-to-refresh', async () => {
+    const store = useForumStore()
+    store.setSelectedTopic('memes')
+    const wrapper = mountLayout({ width: 375 })
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="forum-compact-title"]').text()).toBe(
+      '#memes',
+    )
+    expect(wrapper.find('[data-test="forum-breadcrumb-root"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('button[data-icon="refresh"]').exists()).toBe(false)
+    const pull = wrapper.getComponent('[data-test="forum-pull-to-refresh"]')
+    expect(pull.attributes('data-disable')).toBe('false')
+
+    mockFetchByTopic.mockClear()
+    const done = jest.fn()
+    pull.vm.$emit('refresh', done)
+    await flushPromises()
+    expect(mockFetchByTopic).toHaveBeenCalled()
+    expect(done).toHaveBeenCalled()
+  })
+
+  it('on desktop keeps the breadcrumb and the refresh button, with pull-to-refresh off', async () => {
+    const store = useForumStore()
+    store.setSelectedTopic('memes')
+    const wrapper = mountLayout({ width: 1280 })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="forum-compact-title"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.get('[data-test="forum-active-topic"]').text()).toBe(
+      '#memes',
+    )
+    expect(wrapper.find('button[data-icon="refresh"]').exists()).toBe(true)
+    expect(
+      wrapper
+        .get('[data-test="forum-pull-to-refresh"]')
+        .attributes('data-disable'),
+    ).toBe('true')
   })
 })

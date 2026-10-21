@@ -17,16 +17,26 @@ import {
 } from '../../../packages/wallet/claim-link'
 import IdentityQrDialog from '../components/dialogs/IdentityQrDialog.vue'
 import Onboard from './Onboard.vue'
+import {
+  clearExtensionSyncOffer,
+  offerExtensionSyncBundle,
+  syncTransferCheckCode,
+} from '../utils/extension-account-sync'
+import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/runtime-adapter'
 
 const mockCreateDirect = jest.fn()
 const mockBeginPasskey = jest.fn()
 const mockCancel = jest.fn()
+const mockBeginRestore = jest.fn(async () => '')
+const mockConfirmRestore = jest.fn(async () => ({ attemptId: 'restore-1' }))
 
 jest.mock('../accounts/ceremony', () => ({
   createAccountCeremony: () => ({
     cancel: mockCancel,
     createDirect: mockCreateDirect,
     beginPasskey: mockBeginPasskey,
+    beginRestore: mockBeginRestore,
+    confirm: mockConfirmRestore,
   }),
   recoveryErrorMessage: (err: unknown) =>
     err instanceof Error ? err.message : 'Account operation failed',
@@ -175,6 +185,9 @@ beforeEach(() => {
   mockCreateDirect.mockReset()
   mockBeginPasskey.mockReset()
   mockCancel.mockClear()
+  mockBeginRestore.mockClear()
+  mockConfirmRestore.mockClear()
+  clearExtensionSyncOffer()
   mockNameOwnProfile.mockClear()
   mockEnsureConversationIdSalt.mockClear()
 
@@ -674,6 +687,59 @@ describe('Onboard.vue & /onboard route', () => {
       expect(parsed?.note).toBe('Funded invite from IdentityQrDialog')
     } finally {
       dialog.unmount()
+    }
+  })
+
+  test('restores an account sent from the Frank extension only after the user confirms it (A8)', async () => {
+    const syncBundle = {
+      displayName: 'Ann',
+      backupShares: ['ms12frankshareone', 'ms12franksharetwo'],
+    }
+    const wrapper = renderOnboard()
+    try {
+      // A window message alone, from anywhere, restores nothing.
+      for (const init of [
+        { source: null, origin: 'https://evil.example' },
+        { source: window, origin: window.location.origin },
+      ]) {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            ...init,
+            data: {
+              channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+              direction: 'to-pwa',
+              type: 'extension-sync-push',
+              payload: { deviceSyncBundle: syncBundle },
+            },
+          }),
+        )
+        await flushPromises()
+      }
+      expect(mockBeginRestore).not.toHaveBeenCalled()
+      expect(mockSession.activatePending).not.toHaveBeenCalled()
+
+      offerExtensionSyncBundle(syncBundle)
+      await flushPromises()
+      expect(
+        wrapper.get('[data-test="onboard-extension-sync-code"]').text(),
+      ).toBe(syncTransferCheckCode(syncBundle))
+      expect(mockBeginRestore).not.toHaveBeenCalled()
+
+      await wrapper
+        .get('[data-test="onboard-restore-synced-account"]')
+        .trigger('click')
+      await flushPromises()
+      expect(mockBeginRestore).toHaveBeenCalledTimes(1)
+      expect(mockConfirmRestore).toHaveBeenCalledWith(
+        syncBundle.backupShares,
+        'Ann',
+      )
+      expect(mockSession.activatePending).toHaveBeenCalledTimes(1)
+      expect(
+        wrapper.find('[data-test="onboard-extension-sync-offer"]').exists(),
+      ).toBe(false)
+    } finally {
+      wrapper.unmount()
     }
   })
 })

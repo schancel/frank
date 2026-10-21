@@ -3,67 +3,81 @@ import { createAccountCeremony } from '../accounts/ceremony'
 import { usePersistentStorageStore } from '../stores/persistent-storage'
 import { nameOwnProfile } from './identity-session'
 import { setCustomRelayBaseUrl } from '@frank/wallet/chain'
+import { shallowRef } from 'vue'
+import { sha256 } from '@noble/hashes/sha256.js'
+import { utf8ToBytes } from '@noble/hashes/utils.js'
+import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/runtime-adapter'
 
-export const PENDING_EXTENSION_SYNC_STORAGE_KEY =
-  'frank:pending-extension-sync-v1'
-
-export interface ExtensionSyncPayload {
-  sasCode?: string
-  deviceSyncBundle?: Record<string, any>
-  syncedFromOrigin?: string
-  syncedAt?: number
+/**
+ * An account bundle another Frank surface (extension or web app) offered to this
+ * one. It carries backup shares, so it lives only in memory until the user
+ * restores it or dismisses it, and it is never restored without that click.
+ */
+export interface ExtensionSyncOffer {
+  deviceSyncBundle: Record<string, any>
+  /** Check code to compare with the one shown on the sending device. */
+  checkCode: string
 }
 
-let inMemoryPendingSync: ExtensionSyncPayload | null = null
+export const pendingExtensionSyncOffer = shallowRef<ExtensionSyncOffer | null>(
+  null,
+)
 let restoreInFlight: Promise<boolean> | null = null
 
-export function savePendingExtensionSyncPayload(
-  payload: ExtensionSyncPayload | null | undefined,
-): void {
-  if (!payload || typeof payload !== 'object') return
-  inMemoryPendingSync = payload
-  try {
-    if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.setItem(
-        PENDING_EXTENSION_SYNC_STORAGE_KEY,
-        JSON.stringify(payload),
-      )
-    }
-  } catch {
-    // Ignore sessionStorage errors in restricted contexts
-  }
+/** Holds a received bundle for the user to confirm. Ignores bundles without shares. */
+export function offerExtensionSyncBundle(
+  bundle: Record<string, any> | null | undefined,
+): ExtensionSyncOffer | null {
+  const checkCode = syncTransferCheckCode(bundle)
+  if (!bundle || !checkCode) return null
+  const offer = { deviceSyncBundle: bundle, checkCode }
+  pendingExtensionSyncOffer.value = offer
+  return offer
 }
 
-export function peekPendingExtensionSyncPayload(): ExtensionSyncPayload | null {
-  if (inMemoryPendingSync) {
-    return inMemoryPendingSync
-  }
-  try {
-    if (typeof sessionStorage !== 'undefined') {
-      const raw = sessionStorage.getItem(PENDING_EXTENSION_SYNC_STORAGE_KEY)
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        if (parsed && typeof parsed === 'object') {
-          inMemoryPendingSync = parsed as ExtensionSyncPayload
-          return inMemoryPendingSync
-        }
-      }
-    }
-  } catch {
-    // Ignore storage read errors
-  }
-  return null
+export function clearExtensionSyncOffer(): void {
+  pendingExtensionSyncOffer.value = null
 }
 
-export function clearPendingExtensionSyncPayload(): void {
-  inMemoryPendingSync = null
-  try {
-    if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.removeItem(PENDING_EXTENSION_SYNC_STORAGE_KEY)
-    }
-  } catch {
-    // Ignore storage remove errors
+/**
+ * Six digits derived from the backup shares in the bundle. The sending device
+ * shows the code of what it sent; the receiving device shows the code of what
+ * it got. Different codes mean the bundle is not the one the user sent.
+ */
+export function syncTransferCheckCode(
+  bundle: Record<string, any> | null | undefined,
+): string {
+  const shares = extractValidBackupShares(bundle)
+  if (shares.length < 2) return ''
+  const digest = sha256(
+    utf8ToBytes(`frank-sync-check-v1\n${shares.join('\n')}`),
+  )
+  const value =
+    ((digest[0] << 24) | (digest[1] << 16) | (digest[2] << 8) | digest[3]) >>> 0
+  return String(value % 1_000_000).padStart(6, '0')
+}
+
+/**
+ * The account-sync window message a listener may act on: same window, same
+ * origin, sync channel, addressed to the web app. Returns its bundle, if any.
+ */
+export function readExtensionSyncWindowMessage(
+  event: MessageEvent,
+  win: Window = window,
+): Record<string, any> | null {
+  if (event.source !== win || event.origin !== win.location.origin) return null
+  const data = event.data
+  if (
+    !data ||
+    typeof data !== 'object' ||
+    data.channel !== FRANK_PWA_EXTENSION_SYNC_CHANNEL ||
+    data.direction !== 'to-pwa' ||
+    (data.type !== 'extension-sync-push' && data.type !== 'sync-response')
+  ) {
+    return null
   }
+  const bundle = data.payload?.deviceSyncBundle ?? data.result?.deviceSyncBundle
+  return bundle && typeof bundle === 'object' ? bundle : null
 }
 
 export function extractValidBackupShares(
@@ -76,6 +90,7 @@ export function extractValidBackupShares(
   )
 }
 
+/** Restores and activates the bundle's account. Call only from the user's confirm click. */
 export async function restoreAccountFromExtensionBundle(
   bundle: Record<string, any> | null | undefined,
   options?: {
@@ -88,9 +103,8 @@ export async function restoreAccountFromExtensionBundle(
     return false
   }
   if (accountStatus.status === 'ready') {
-    clearPendingExtensionSyncPayload()
-    await options?.onActivated?.()
-    return true
+    clearExtensionSyncOffer()
+    return false
   }
   if (restoreInFlight) {
     return restoreInFlight
@@ -135,7 +149,7 @@ export async function restoreAccountFromExtensionBundle(
         return false
       }
 
-      clearPendingExtensionSyncPayload()
+      clearExtensionSyncOffer()
       try {
         void usePersistentStorageStore().afterActivation()
       } catch {

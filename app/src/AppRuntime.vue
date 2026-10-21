@@ -77,7 +77,6 @@ import {
   createChatSearchShortcut,
 } from './composables/useChatSearchShortcut'
 import { useAppOracleFeed } from 'src/composables/useOracleFeed'
-import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../src-bex/content'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../src-bex/inpage'
 import {
   getRawExtensionApi,
@@ -85,9 +84,8 @@ import {
   sendRuntimeMessage,
 } from '../src-bex/runtime-adapter'
 import {
-  extractValidBackupShares,
-  restoreAccountFromExtensionBundle,
-  savePendingExtensionSyncPayload,
+  offerExtensionSyncBundle,
+  readExtensionSyncWindowMessage,
 } from 'src/utils/extension-account-sync'
 
 import { computeAddress, keccak256, toUtf8Bytes } from 'ethers'
@@ -529,36 +527,14 @@ export default defineComponent({
       }
     },
     handleGlobalExtensionSyncMessage(event: MessageEvent) {
-      const data = event?.data
-      if (!data || typeof data !== 'object') return
-      if (
-        data.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
-        data.direction === 'to-pwa' &&
-        (data.type === 'extension-sync-push' || data.type === 'sync-response')
-      ) {
-        const payload = data.payload ?? data.result?.syncedState ?? data.result
-        const bundle = payload?.deviceSyncBundle
-        if (!bundle || typeof bundle !== 'object') return
-        savePendingExtensionSyncPayload({
-          sasCode: String(payload?.sasCode || ''),
-          deviceSyncBundle: bundle,
-        })
-        const currentPath = this.$route?.path || ''
-        if (currentPath === '/onboard') {
-          // Onboard.vue handles restoration and peer/claim migration directly
-          return
-        }
-        const shares = extractValidBackupShares(bundle)
-        if (shares.length >= 2 && accountStatus.status !== 'ready') {
-          void restoreAccountFromExtensionBundle(bundle, {
-            onActivated: () => {
-              this.setupConnections()
-              if (this.$router) {
-                void this.$router.push('/forum')
-              }
-            },
-          })
-        }
+      // An account bundle from the Frank extension, relayed by its content
+      // script. It is only offered: Welcome and Onboard ask the user to confirm.
+      const bundle = readExtensionSyncWindowMessage(event)
+      if (!bundle || accountStatus.status === 'ready') return
+      if (!offerExtensionSyncBundle(bundle)) return
+      const currentPath = this.$route?.path || ''
+      if (currentPath !== '/welcome' && currentPath !== '/onboard') {
+        void this.$router?.push('/welcome')
       }
     },
   },

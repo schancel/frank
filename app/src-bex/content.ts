@@ -1,33 +1,20 @@
 import {
   FRANK_DAPP_BRIDGE_CHANNEL,
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+  FRANK_SYNC_PAGE_MESSAGE_TYPES,
   getExtensionResourceUrl,
   getRawExtensionApi,
   isBrowserExtensionRuntime,
+  isFrankWebAppOrigin,
   onRuntimeMessage,
   sendRuntimeMessage,
 } from './runtime-adapter'
 
 export { FRANK_DAPP_BRIDGE_CHANNEL, FRANK_PWA_EXTENSION_SYNC_CHANNEL }
 
-const ALLOWED_SYNC_HOSTS = new Set(['signet.mx', 'localhost', '127.0.0.1'])
-
-export function isAllowedSyncOrigin(locationObj: {
-  protocol?: string
-  hostname?: string
-}): boolean {
-  const hostname = locationObj?.hostname ?? ''
-  const protocol = locationObj?.protocol ?? ''
-  if (hostname === 'signet.mx' && protocol === 'https:') {
-    return true
-  }
-  if (
-    (hostname === 'localhost' || hostname === '127.0.0.1') &&
-    (protocol === 'http:' || protocol === 'https:')
-  ) {
-    return true
-  }
-  return false
+/** Account sync runs only in the Frank web app's own origin (exact match). */
+export function isAllowedSyncOrigin(locationObj: { origin?: string }): boolean {
+  return isFrankWebAppOrigin(locationObj?.origin)
 }
 
 export function ensureSafariFallbackInpageScript(
@@ -172,25 +159,20 @@ export function installContentScriptBridge(
       return
     }
 
-    // 2. Standalone PWA <-> Browser Extension 1-click DeviceSyncBundle bridge (#1710)
+    // 2. Frank web app <-> extension account sync. The bundle carries backup
+    // shares: only the Frank origin's own window may use it, only for the listed
+    // message types, and replies go to that exact origin.
     if (
       data.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
       data.direction === 'to-extension'
     ) {
-      if (!isAllowedSyncOrigin(win.location)) {
-        win.postMessage(
-          {
-            channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-            direction: 'to-pwa',
-            type: 'sync-error',
-            id: data.id,
-            error: {
-              code: 4100,
-              message: `Origin ${win.location.origin} is not authorized for Frank PWA-Extension sync`,
-            },
-          },
-          '*',
-        )
+      const pageOrigin = win.location?.origin
+      if (
+        event.source !== win ||
+        event.origin !== pageOrigin ||
+        !isAllowedSyncOrigin(win.location) ||
+        !FRANK_SYNC_PAGE_MESSAGE_TYPES.has(data.type)
+      ) {
         return
       }
 
@@ -198,10 +180,8 @@ export function installContentScriptBridge(
         const response = await sendRuntimeMessage<Record<string, any>, any>(
           {
             channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-            type: data.type || 'pwa-sync-handshake',
+            type: data.type,
             id: data.id,
-            origin: win.location.origin,
-            href: win.location.href,
             payload: data.payload,
           },
           runtimeScope,
@@ -212,10 +192,10 @@ export function installContentScriptBridge(
             direction: 'to-pwa',
             type: 'sync-response',
             id: data.id,
-            result: response?.result ?? response,
+            result: response?.result,
             error: response?.error,
           },
-          '*',
+          pageOrigin,
         )
       } catch (err) {
         win.postMessage(
@@ -229,7 +209,7 @@ export function installContentScriptBridge(
               message: err instanceof Error ? err.message : String(err),
             },
           },
-          '*',
+          pageOrigin,
         )
       }
       return
@@ -384,10 +364,10 @@ export function installContentScriptBridge(
     if (
       message &&
       message.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
-      message.type === 'extension-sync-push' &&
-      win.location &&
-      isAllowedSyncOrigin(win.location)
+      message.type === 'extension-sync-push'
     ) {
+      // Acknowledge only when this page is the Frank web app and got the bundle.
+      if (!win.location || !isAllowedSyncOrigin(win.location)) return undefined
       win.postMessage(
         {
           channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
@@ -395,7 +375,7 @@ export function installContentScriptBridge(
           type: 'extension-sync-push',
           payload: message.payload,
         },
-        '*',
+        win.location.origin,
       )
       return { ok: true }
     }
@@ -412,23 +392,6 @@ export function installContentScriptBridge(
       nextAnnounceMode === 'stealth'
     ) {
       void syncProviderPrivacyFromBackground(nextAnnounceMode === 'always')
-    }
-    const nextSynced = changes?.frankSyncedState?.newValue
-    if (
-      nextSynced &&
-      nextSynced.syncedFromOrigin === 'frank-extension' &&
-      win.location &&
-      isAllowedSyncOrigin(win.location)
-    ) {
-      win.postMessage(
-        {
-          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-          direction: 'to-pwa',
-          type: 'extension-sync-push',
-          payload: nextSynced,
-        },
-        '*',
-      )
     }
   }
   if (typeof api?.storage?.onChanged?.addListener === 'function') {

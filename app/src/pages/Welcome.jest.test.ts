@@ -1,7 +1,20 @@
 /** @jest-environment jsdom */
 
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import Welcome from './Welcome.vue'
+import {
+  clearExtensionSyncOffer,
+  offerExtensionSyncBundle,
+  syncTransferCheckCode,
+} from 'src/utils/extension-account-sync'
+import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/runtime-adapter'
+
+const mockRestore = jest.fn(async () => true)
+jest.mock('src/utils/extension-account-sync', () => ({
+  ...jest.requireActual('src/utils/extension-account-sync'),
+  restoreAccountFromExtensionBundle: (...args: unknown[]) =>
+    mockRestore(...args),
+}))
 import enUS from 'src/i18n/en-us'
 import frFR from 'src/i18n/fr-fr'
 
@@ -134,5 +147,70 @@ describe('Welcome: landing page for visitors without an account', () => {
     expect(primaryBtn.attributes('href')).toBe(
       '/downloads/frank-extension-firefox.zip',
     )
+  })
+
+  describe('account sent from the Frank extension (A8)', () => {
+    const syncBundle = {
+      displayName: 'Ann',
+      backupShares: ['ms12frankshareone', 'ms12franksharetwo'],
+    }
+    afterEach(() => {
+      clearExtensionSyncOffer()
+      mockRestore.mockClear()
+    })
+
+    it('never restores an account straight from a window message', async () => {
+      const wrapper = mountWelcome(enUS)
+      for (const init of [
+        { source: null, origin: 'https://evil.example' },
+        { source: window, origin: window.location.origin },
+      ]) {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            ...init,
+            data: {
+              channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+              direction: 'to-pwa',
+              type: 'extension-sync-push',
+              payload: { deviceSyncBundle: syncBundle },
+            },
+          }),
+        )
+        await flushPromises()
+      }
+      expect(mockRestore).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it('restores an offered account only when the user confirms it', async () => {
+      offerExtensionSyncBundle(syncBundle)
+      const wrapper = mountWelcome(enUS)
+      await flushPromises()
+
+      expect(text(wrapper, 'welcome-extension-sync-code')).toBe(
+        syncTransferCheckCode(syncBundle),
+      )
+      expect(mockRestore).not.toHaveBeenCalled()
+
+      await wrapper
+        .find('[data-test="btn-restore-synced-account"]')
+        .trigger('click')
+      await flushPromises()
+      expect(mockRestore).toHaveBeenCalledTimes(1)
+      expect(mockRestore.mock.calls[0][0]).toEqual(syncBundle)
+    })
+
+    it('dismissing the offer drops the account without restoring it', async () => {
+      offerExtensionSyncBundle(syncBundle)
+      const wrapper = mountWelcome(enUS)
+      await wrapper
+        .find('[data-test="btn-dismiss-synced-account"]')
+        .trigger('click')
+      await flushPromises()
+      expect(
+        wrapper.find('[data-test="welcome-extension-sync-offer"]').exists(),
+      ).toBe(false)
+      expect(mockRestore).not.toHaveBeenCalled()
+    })
   })
 })

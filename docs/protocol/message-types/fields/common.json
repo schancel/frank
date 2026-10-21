@@ -93,7 +93,7 @@
     },
     {
       "key": "encryption-suite",
-      "description": "Type 5 field 3 (README S2c).",
+      "description": "Type 11 field 3 (README S2c).",
       "values": {
         "dm-auth-xchacha": 1,
         "proof": 65535

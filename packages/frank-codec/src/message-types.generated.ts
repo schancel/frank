@@ -3,64 +3,65 @@
 
 // Assigned Frank-CBOR type identifiers (docs/protocol/cbor/README.md E5).
 
-/** Recipient-specific direct-message delivery. */
-export const TYPE_DIRECT_MESSAGE_DELIVERY = 1 as const
+/** Directory statement signed by type 2. */
+export const TYPE_DIRECTORY_STATEMENT = 1 as const
 /** Signed directory attestation. */
 export const TYPE_DIRECTORY_ATTESTATION = 2 as const
-/** Mailbox checkpoint. */
-export const TYPE_MAILBOX_CHECKPOINT = 3 as const
-/** Directory statement signed by type 2. */
-export const TYPE_DIRECTORY_STATEMENT = 4 as const
-/** Recipient-encrypted payload, with stamp E/X. */
-export const TYPE_RECIPIENT_ENCRYPTED_PAYLOAD = 5 as const
-/** Decrypted message content. */
-export const TYPE_ENCRYPTED_MESSAGE_CONTENT = 6 as const
 /** Key-transition statement. */
-export const TYPE_KEY_TRANSITION_STATEMENT = 7 as const
-/** Plaintext message-content revision. */
-export const TYPE_MESSAGE_CONTENT_REVISION = 8 as const
-/** Topic post. */
-export const TYPE_TOPIC_POST = 9 as const
-/** Topic post submission (post plus its burn). */
-export const TYPE_TOPIC_POST_SUBMISSION = 10 as const
-/** Topic vote submission. */
-export const TYPE_TOPIC_VOTE_SUBMISSION = 11 as const
-/** Forum single-post observation. */
-export const TYPE_FORUM_VIEW = 12 as const
-/** Forum topic page. */
-export const TYPE_FORUM_TOPIC_PAGE = 13 as const
-/** Forum discovery page. */
-export const TYPE_FORUM_DISCOVERY_PAGE = 14 as const
-/** Forum operation status. */
-export const TYPE_FORUM_OPERATION_STATUS = 15 as const
-/** Container message item. */
-export const TYPE_CONTAINER_MESSAGE_ITEM = 16 as const
-/** UTF-8 text message item. */
-export const TYPE_TEXT_MESSAGE_ITEM = 17 as const
-/** Blackjack message item. */
-export const TYPE_BLACKJACK_MESSAGE_ITEM = 18 as const
-/** Stealth payment item. */
-export const TYPE_STEALTH_MESSAGE_ITEM = 19 as const
-/** Universal state channel update item. */
-export const TYPE_CHANNEL_UPDATE = 24 as const
+export const TYPE_KEY_TRANSITION_STATEMENT = 3 as const
+/** Recipient-specific direct-message delivery. */
+export const TYPE_DIRECT_MESSAGE_DELIVERY = 10 as const
+/** Recipient-encrypted payload, with stamp E/X. */
+export const TYPE_RECIPIENT_ENCRYPTED_PAYLOAD = 11 as const
+/** Decrypted message content. */
+export const TYPE_ENCRYPTED_MESSAGE_CONTENT = 12 as const
 /** Relay forwarding delivery envelope. */
-export const TYPE_FORWARDING_DELIVERY_ENVELOPE = 25 as const
+export const TYPE_FORWARDING_DELIVERY_ENVELOPE = 13 as const
+/** Mailbox checkpoint. */
+export const TYPE_MAILBOX_CHECKPOINT = 14 as const
+/** Plaintext message-content revision. */
+export const TYPE_MESSAGE_CONTENT_REVISION = 20 as const
+/** Container message item. */
+export const TYPE_CONTAINER_MESSAGE_ITEM = 21 as const
+/** UTF-8 text message item. */
+export const TYPE_TEXT_MESSAGE_ITEM = 22 as const
 /** Email bridge message item. */
-export const TYPE_EMAIL_MESSAGE_ITEM = 26 as const
+export const TYPE_EMAIL_MESSAGE_ITEM = 23 as const
+/** Stealth payment item. */
+export const TYPE_STEALTH_MESSAGE_ITEM = 24 as const
+/** Universal state channel update item. */
+export const TYPE_CHANNEL_UPDATE = 25 as const
+/** Blackjack message item. */
+export const TYPE_BLACKJACK_MESSAGE_ITEM = 26 as const
 /** Generic plugin message item. */
 export const TYPE_PLUGIN_MESSAGE_ITEM = 27 as const
+/** Topic post. */
+export const TYPE_TOPIC_POST = 40 as const
+/** Topic post submission (post plus its burn). */
+export const TYPE_TOPIC_POST_SUBMISSION = 41 as const
+/** Topic vote submission. */
+export const TYPE_TOPIC_VOTE_SUBMISSION = 42 as const
+/** Forum single-post observation. */
+export const TYPE_FORUM_VIEW = 43 as const
+/** Forum topic page. */
+export const TYPE_FORUM_TOPIC_PAGE = 44 as const
+/** Forum discovery page. */
+export const TYPE_FORUM_DISCOVERY_PAGE = 45 as const
+/** Forum operation status. */
+export const TYPE_FORUM_OPERATION_STATUS = 46 as const
 /** Proof-only unknown future message item (proof-only). */
 export const TYPE_PROOF_UNKNOWN_ITEM = 0xffff0001 as const
 
 /** Assigned types that an open message-item field cannot carry (S8). */
 export const OPEN_ITEM_FIELD_FORBIDDEN_TYPES: ReadonlySet<number> = new Set([
-  TYPE_DIRECT_MESSAGE_DELIVERY,
-  TYPE_DIRECTORY_ATTESTATION,
-  TYPE_MAILBOX_CHECKPOINT,
   TYPE_DIRECTORY_STATEMENT,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_ENCRYPTED_MESSAGE_CONTENT,
-  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
+  TYPE_MAILBOX_CHECKPOINT,
   TYPE_MESSAGE_CONTENT_REVISION,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
@@ -69,5 +70,4 @@ export const OPEN_ITEM_FIELD_FORBIDDEN_TYPES: ReadonlySet<number> = new Set([
   TYPE_FORUM_TOPIC_PAGE,
   TYPE_FORUM_DISCOVERY_PAGE,
   TYPE_FORUM_OPERATION_STATUS,
-  TYPE_FORWARDING_DELIVERY_ENVELOPE,
 ])

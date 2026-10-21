@@ -140,11 +140,7 @@ import {
 import {
   getExtensionRuntime,
   isBrowserExtensionRuntime,
-  openCompanionPanel,
-  openExtensionInWindow,
-  sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
-import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../src-bex/inpage'
 
 import LeftDrawer from '../components/panels/LeftDrawer.vue'
 
@@ -542,52 +538,6 @@ export default defineComponent({
         (window.scrollY !== 0 || window.scrollX !== 0)
       ) {
         window.scrollTo(0, 0)
-      }
-    },
-    async openExtensionSidePanel() {
-      const res = await openCompanionPanel()
-      try {
-        await sendRuntimeMessage({
-          channel: FRANK_DAPP_BRIDGE_CHANNEL,
-          type: 'set-sidepanel-behavior',
-          openPanelOnActionClick: true,
-        })
-      } catch {
-        // Ignore runtime message errors outside extension runtime
-      }
-      if (
-        res.opened &&
-        typeof window !== 'undefined' &&
-        typeof window.close === 'function'
-      ) {
-        try {
-          window.close()
-        } catch {
-          // Ignore window.close errors in restricted contexts
-        }
-      }
-    },
-    async popOutExtensionWindow() {
-      const res = await openExtensionInWindow()
-      try {
-        await sendRuntimeMessage({
-          channel: FRANK_DAPP_BRIDGE_CHANNEL,
-          type: 'set-launch-mode',
-          launchMode: 'window',
-        })
-      } catch {
-        // Ignore runtime message errors outside extension runtime
-      }
-      if (
-        res.opened &&
-        typeof window !== 'undefined' &&
-        typeof window.close === 'function'
-      ) {
-        try {
-          window.close()
-        } catch {
-          // Ignore window.close errors in restricted contexts
-        }
       }
     },
     // The Messages tab is the conversation list (Telegram/WhatsApp), never a jump into the last

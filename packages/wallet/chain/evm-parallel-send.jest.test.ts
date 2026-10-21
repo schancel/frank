@@ -595,6 +595,47 @@ describe('parallel paid messages', () => {
     expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(2)
   })
 
+  it('after an undelivered message holding [main, n], the next message signs [main, n+1] and goes out at once, in the same and in another conversation', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 18n)
+    f.setPhase('fail')
+    const stuck = await send(1).catch(error => error)
+    expect(stuck).toBeInstanceOf(MonadStampPendingAttemptError)
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    f.setPhase('delivered')
+    const stages: string[] = []
+    const sendIn = (n: number, conversationId?: string) =>
+      f.chain.directMessages.send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: `message ${n}` }],
+        stampValue: STAMP,
+        messageId: ID(n),
+        ...(conversationId === undefined ? {} : { conversationId }),
+        onPreparationProgress: progress => stages.push(progress.stage),
+      })
+    const started = Date.now()
+    const same = await sendIn(2)
+    const other = await sendIn(3, '77'.repeat(16))
+    expect(Date.now() - started).toBeLessThan(3_000)
+    // Never waiting for the undelivered message's payment.
+    expect(stages).not.toContain('waiting-for-payment')
+    const nonceOf = (sent: { stampPayments: { txHash: string }[] }) =>
+      relayPayments()
+        .filter(tx => tx.hash === sent.stampPayments[0]!.txHash)
+        .map(tx => [tx.from!.toLowerCase(), tx.nonce])[0]
+    expect(nonceOf(same)).toEqual([main, 1])
+    expect(nonceOf(other)).toEqual([main, 2])
+    expect(bobMailbox).toHaveLength(2)
+    // The undelivered message still holds its own nonce: nothing of it was broadcast.
+    expect(
+      f.chain.directMessages.paymentsOf?.({
+        wallet: alice,
+        payloadDigest: stuck.payloadHashes[0],
+      }),
+    ).toEqual(['pending'])
+  })
+
   it('the relay never has the message: the wallet broadcasts nothing, keeps the accounts, and broadcasts once a resend is confirmed', async () => {
     const [row] = await fundAccounts(1)
     f.setPhase('fail')
@@ -663,6 +704,61 @@ describe('parallel paid messages', () => {
     expect(statusOf(row.index)).toBe('available')
     await tick()
     expect(statusOf(row.index)).toBe('spent')
+  })
+
+  it('a paid send is answered once the relay has the message: its own broadcast and the main account\'s look run after the answer, and then free the account', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    let open!: () => void
+    const gate = new Promise<void>(resolve => (open = resolve))
+    const original = EvmStampPayer.prototype.submitPaymentSet
+    jest
+      .spyOn(EvmStampPayer.prototype, 'submitPaymentSet')
+      .mockImplementation(async function (this: EvmStampPayer, raws) {
+        await gate
+        return original.call(this, raws)
+      })
+    const sent = await Promise.race([
+      send(1),
+      new Promise<'held'>(resolve => setTimeout(() => resolve('held'), 2_000)),
+    ])
+    // Answered while its own broadcast is still held: nothing broadcast by the wallet yet, and
+    // the main account still held by the payment.
+    expect(sent).not.toBe('held')
+    if (sent === 'held') return
+    expect(bobMailbox).toHaveLength(1)
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+    open()
+    expect(await sent.afterDelivery).toEqual({ failures: [] })
+    // The relay's broadcast is in a block: the look after the answer saw it and let main go.
+    expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
+    expect(
+      f.chain.directMessages.paymentsOf?.({
+        wallet: alice,
+        payloadDigest: sent.payloadDigest,
+      }),
+    ).toEqual(['spent'])
+  })
+
+  it('a send reads the accounts its coin list must read at the same time as the fee, not after it', async () => {
+    await fundAccounts(1) // a new funded account: the list must read it before trusting it
+    let open!: () => void
+    const gate = new Promise<void>(resolve => (open = resolve))
+    const provider = alice.provider
+    const fee = provider.getFeeData.bind(provider)
+    jest.spyOn(provider, 'getFeeData').mockImplementation(async () => {
+      await gate
+      return fee()
+    })
+    providerRequests.length = 0
+    const sending = send(1)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    // The fee has not come back, and the account is already being read.
+    const readBeforeFee = providerRequests.includes('getBalance')
+    open()
+    await expect(sending).resolves.toMatchObject({ stampValueWei: STAMP })
+    expect(readBeforeFee).toBe(true)
   })
 
   it('neither broadcast lands while the node is down: the same bytes are broadcast again until included', async () => {
@@ -771,7 +867,9 @@ describe('parallel paid messages', () => {
     mockBalances.set(main, 10n ** 17n)
     offlineChain.relayBroadcasts = false
     offlineChain.broadcastDown = true
-    await send(1)
+    // Its own broadcast runs after the answer, and fails while the node is down.
+    const sent = await send(1)
+    expect((await sent.afterDelivery)?.failures).toHaveLength(1)
     offlineChain.broadcastDown = false
     await tick() // broadcasts the payment; it is now in a block
     mockMessageWrite.mode = 'dropped'
@@ -860,7 +958,9 @@ describe('parallel paid messages', () => {
     mockBalances.set(main, 10n ** 17n)
     offlineChain.relayBroadcasts = false
     offlineChain.broadcastDown = true
-    await send(1) // delivered, paid from main; the payment cannot land while the node is down
+    // Delivered, paid from main; the payment cannot land while the node is down. Its own
+    // broadcast and look run after the answer: the waiters below start once they have ended.
+    await (await send(1)).afterDelivery
     const waiting: Promise<unknown>[] = []
     providerRequests.length = 0
     for (let n = 2; n <= 6; n++) {

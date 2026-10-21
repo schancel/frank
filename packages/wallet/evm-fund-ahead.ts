@@ -21,7 +21,7 @@ import {
   STAMP_PAIR_TRANSFERS,
   type EvmSubAccountPool as MonadSubAccountPool,
 } from "./evm-account-pool";
-import { MonadAccountTxSigner } from "./evm-account-tx";
+import { MonadAccountTxSigner, type MonadTxOverrides } from "./evm-account-tx";
 import type { MonadHttpClient } from "./evm-http";
 import type { MonadIdentity } from "./evm-identity";
 import { MonadCanonicalStampClient } from "./evm-stamp-client";
@@ -543,6 +543,8 @@ export function installEvmStampFundAheadCoordinator(
   };
 
   const defaultGasReserveWei = BigInt(21_000) * BigInt(2_000_000_000);
+  /** Gas of one plain transfer to an account with no code. */
+  const FUNDING_TRANSFER_GAS = 21_000n;
   const stampPaymentFeeReserve = async (): Promise<bigint> => {
     try {
       const feeData = await provider.getFeeData();
@@ -720,6 +722,9 @@ export function installEvmStampFundAheadCoordinator(
       coinListSync.markDirty(change.record.address);
       return;
     }
+    // The payer's own hold on an account ends once its coins there are settled: the list
+    // already shows what the account holds.
+    if (change.holder === stampPayer.accountHolder) return;
     const ownedByHolder = coinList
       .all()
       .some(
@@ -816,6 +821,10 @@ export function installEvmStampFundAheadCoordinator(
         if (sourceIsHeld(wallet, mainAccount.address)) {
           return notFunded("source-held");
         }
+        // A send waiting for the main account goes first.
+        if (stampPayer.isWaitedFor(mainAccount.address)) {
+          return notFunded("yielded");
+        }
         if (!unresolved) {
           mainBalanceWei = await provider.getBalance(mainAccount.address);
         }
@@ -830,6 +839,34 @@ export function installEvmStampFundAheadCoordinator(
             provider,
             httpClient,
           });
+          // One fee read for the whole pass, made only once it has something to fund: the
+          // reserve each funded account keeps, the smallest payment worth funding, and the fee
+          // fields every transfer of the pass is signed with. A funding transfer is a plain
+          // transfer to a fresh account: 21,000 gas, nothing to estimate.
+          let quoted:
+            | Promise<{
+                capPerGas: bigint;
+                chargedPerGas: bigint;
+                overrides: MonadTxOverrides;
+              }>
+            | undefined;
+          const passFee = () =>
+            (quoted ??= provider.getFeeData().then((fee) => {
+              const capPerGas = fee.maxFeePerGas ?? fee.gasPrice;
+              const chargedPerGas = fee.gasPrice ?? fee.maxFeePerGas;
+              if (capPerGas == null || chargedPerGas == null)
+                throw new Error("The chain returned no fee to fund accounts with");
+              const overrides: MonadTxOverrides =
+                fee.maxFeePerGas != null
+                  ? {
+                      gasLimit: FUNDING_TRANSFER_GAS,
+                      maxFeePerGas: fee.maxFeePerGas,
+                      maxPriorityFeePerGas:
+                        fee.maxPriorityFeePerGas ?? fee.maxFeePerGas,
+                    }
+                  : { gasLimit: FUNDING_TRANSFER_GAS, gasPrice: chargedPerGas };
+              return { capPerGas, chargedPerGas, overrides };
+            }));
           const preparation = await runMainAccountExclusive(
             wallet,
             async () =>
@@ -837,9 +874,15 @@ export function installEvmStampFundAheadCoordinator(
                 mainAccountSigner,
                 provider,
                 stampValueWei: stampValueAhead,
-                gasReserveWei: stampPaymentFeeReserve,
+                gasReserveWei: async () =>
+                  FUNDING_TRANSFER_GAS * (await passFee()).capPerGas,
                 maxValueWei: maxValueAheadWei,
-                minimumPaymentWei: transferFeeNow,
+                minimumPaymentWei: async () =>
+                  FUNDING_TRANSFER_GAS * (await passFee()).chargedPerGas,
+                fundingOverrides: async () => (await passFee()).overrides,
+                // A send that comes to wait for the main account stops the pass before its
+                // next transfer.
+                yieldTo: (address) => stampPayer.isWaitedFor(address),
               }),
             { ...FUNDING_FROM_MAIN, addresses: [mainAccount.address] }
           );
@@ -858,7 +901,9 @@ export function installEvmStampFundAheadCoordinator(
             : String(error)
         );
       }
-      if (result.outcome !== "funded") {
+      // A pass that gave way to a send is not a failure to wait out: the send's own completion
+      // starts the next pass.
+      if (result.outcome !== "funded" && result.reason !== "yielded") {
         const last = walletInternals.fundAheadBackoff;
         walletInternals.fundAheadBackoff = {
           result,

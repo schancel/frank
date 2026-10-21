@@ -168,6 +168,13 @@ export interface DirectMessageSendResult {
   paymentTransfers?: PaymentTransfer[];
   /** Main-account transactions used to prepare sender inventory for this Send, if any. */
   preparationTxHashes: string[];
+  /**
+   * A paid send is answered as soon as the relay has the message. The wallet's own broadcast of
+   * the payments and, for a payment from the main or identity account, one look at the chain run
+   * after that answer; this resolves when they end, with what failed (each is also logged, and
+   * reconciliation repeats the step). Never rejects. Absent when nothing runs after the answer.
+   */
+  afterDelivery?: Promise<{ failures: unknown[] }>;
 }
 
 export type DirectMessagePreparationProgress =

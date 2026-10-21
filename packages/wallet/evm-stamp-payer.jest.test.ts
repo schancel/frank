@@ -208,7 +208,9 @@ describe('which coins pay a stamp', () => {
     expect(f.list.heldBy('message').map(coin => coin.account).sort()).toEqual(
       [...taken].sort(),
     )
-    for (const account of taken) expect(f.pool.accountClaimedBy(account)).toBe('message')
+    // The list holds each account against spenders outside it; the coin names the message.
+    for (const account of taken)
+      expect(f.pool.accountClaimedBy(account)).toBe(f.payer.accountHolder)
     // One signed transfer per coin, each from the key the coin carries.
     const signed = await f.payer.sign(claim, CHAIN_ID, () => DESTINATION)
     expect(signed.map(p => Transaction.from(p.rawTx).from!.toLowerCase())).toEqual(taken)
@@ -270,7 +272,7 @@ describe('what holds a coin, and what lets it go', () => {
       first.accounts.map(a => a.address).sort(),
     )
     for (const a of first.accounts)
-      expect(f.pool.accountClaimedBy(a.address)).toBe('m')
+      expect(f.pool.accountClaimedBy(a.address)).toBe(f.payer.accountHolder)
     for (const a of second.accounts)
       expect(f.pool.accountClaimedBy(a.address)).toBeUndefined()
   })
@@ -282,13 +284,10 @@ describe('what holds a coin, and what lets it go', () => {
     await signAndRecord(f, claim)
     f.payer.releasePayment('m', claim.accounts[0]!)
     expect(f.list.get(at(main), 0)?.state).toBe('pending_receipt')
-    await expect(
-      f.payer.claim({
-        holder: 'other',
-        stampValueWei: MON / 100n,
-        signal: AbortSignal.timeout(100),
-      }),
-    ).rejects.toThrow()
+    expect(f.pool.accountClaimedBy(at(main))).toBe(f.payer.accountHolder)
+    // The next payment takes the account's next nonce, not that coin.
+    const next = await f.payer.claim({ holder: 'other', stampValueWei: MON / 100n })
+    expect(next.accounts).toMatchObject([{ address: at(main), nonce: 1 }])
   })
 
   it('an account a contact payment holds is refused at once, not waited for', async () => {
@@ -317,6 +316,46 @@ describe('what holds a coin, and what lets it go', () => {
     expect(claim.accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
   })
 
+  it('a coin only the native journal\'s reservation keeps out is refused at once, not read again and again', async () => {
+    const f = await make({
+      canSelectAccount: (address, nonce) => !(address.toLowerCase() === at(main) && nonce === 0),
+    })
+    f.node.balances.set(at(main), MON)
+    await f.sync.refresh()
+    const reads = f.node.calls.length
+    const waited: unknown[] = []
+    await expect(
+      f.payer.claim({
+        holder: 'm',
+        stampValueWei: MON / 100n,
+        onWaiting: blocks => waited.push(blocks),
+      }),
+    ).rejects.toBeInstanceOf(InsufficientStampFundsError)
+    expect(
+      f.node.calls.slice(reads).filter(call => call === `balance:${at(main)}`).length,
+    ).toBeLessThanOrEqual(2)
+    expect(waited).toHaveLength(0)
+  })
+
+  it('a sub-account coin another operation claims, waiting to be read again, is refused at once: it never comes back', async () => {
+    const f = await make({ poolRows: 1 })
+    const row = f.pool.records()[0]!
+    const account = row.address.toLowerCase()
+    f.node.balances.set(account, MON / 50n)
+    await f.sync.refresh()
+    f.pool.restoreClaim('a', [row.index])
+    f.node.pending = new Map([[account, 1]])
+    f.sync.markDirty(account)
+    const started = Date.now()
+    await expect(
+      f.payer.claim({ holder: 'b', stampValueWei: MON / 100n, sources: ['pool'] }),
+    ).rejects.toBeInstanceOf(InsufficientStampFundsError)
+    expect(
+      f.node.calls.filter(call => call === `balance:${account}`).length,
+    ).toBeLessThanOrEqual(3)
+    expect(Date.now() - started).toBeLessThan(1_000)
+  })
+
   it('a sub-account another payment holds is not waited for: it never comes back', async () => {
     const f = await make({ poolRows: 1 })
     const row = f.pool.records()[0]!
@@ -329,28 +368,89 @@ describe('what holds a coin, and what lets it go', () => {
 })
 
 describe('settlement: the chain decides', () => {
-  it('a mined payment spends its coin and the account\'s next coin is listed at the next nonce; a payment waiting for the account then takes it', async () => {
+  it('the main account is marked waited for while a payment waits for the operation that holds it (a funding pass may give way), and not before or after', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    f.pool.restoreAccountClaim('fund-ahead', at(main))
+    expect(f.payer.isWaitedFor(at(main))).toBe(false)
+    const waiting = f.payer.claim({ holder: 'send', stampValueWei: MON / 100n })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(f.payer.isWaitedFor(at(main))).toBe(true)
+    expect(f.payer.isWaitedFor(main.address)).toBe(true)
+    f.pool.releaseAccountClaim('fund-ahead', at(main))
+    const made = await waiting
+    expect(made.accounts[0]).toMatchObject({ address: at(main) })
+    expect(f.payer.isWaitedFor(at(main))).toBe(false)
+  })
+
+  it('a signed payment lists the account\'s next coin at once: the next payment signs at the next nonce without waiting; the chain later shows the first mined', async () => {
     const f = await make()
     f.node.balances.set(at(main), MON)
     const first = await f.payer.claim({ holder: 'one', stampValueWei: MON / 100n })
     const [signed] = await signAndRecord(f, first)
+    const tx = Transaction.from(signed!.rawTx)
+    // What the account keeps: its value less the payment and the most the fee can be.
+    const left = MON - tx.value - tx.gasLimit * tx.maxFeePerGas!
+    expect(f.list.get(at(main), 1)).toMatchObject({ state: 'unspent', valueWei: left })
     const waits: (number | undefined)[] = []
-    const second = f.payer.claim({
+    f.node.calls.length = 0
+    const second = await f.payer.claim({
       holder: 'two',
       stampValueWei: MON / 100n,
       onWaiting: blocks => waits.push(blocks),
     })
-    await new Promise(resolve => setTimeout(resolve, 50))
-    expect(waits).toEqual([undefined])
+    expect(second.accounts).toMatchObject([{ address: at(main), nonce: 1 }])
+    expect(waits).toEqual([])
+    expect(f.node.calls.filter(call => call.startsWith('receipt'))).toEqual([])
+    const [next] = await signAndRecord(f, second)
+    expect(Transaction.from(next!.rawTx).nonce).toBe(1)
+    // The chain mines them in order.
     mine(f.node, signed!.rawTx, 1001)
-    const seen = await f.payer.observe(signed!.rawTx)
-    expect(seen).toEqual({ state: 'included', reverted: false, block: 1001 })
     await f.payer.recordSpent('one', signed!, 1001)
     f.payer.releasePayment('one', signed!)
-    const made = await second
-    expect(made.accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
     expect(f.list.get(at(main), 0)?.state).toBe('spent')
-    expect(f.list.get(at(main), 1)?.valueWei).toBe(f.node.balances.get(at(main)))
+    expect(f.list.get(at(main), 1)).toMatchObject({ state: 'pending_receipt', holder: 'two' })
+    expect(f.pool.accountClaimedBy(at(main))).toBe(f.payer.accountHolder)
+    mine(f.node, next!.rawTx, 1002)
+    await f.payer.recordSpent('two', next!, 1002)
+    f.payer.releasePayment('two', next!)
+    expect(f.list.get(at(main), 2)?.valueWei).toBe(f.node.balances.get(at(main)))
+    expect(f.pool.accountClaimedBy(at(main))).toBeUndefined()
+  })
+
+  it('the chain\'s spacing applies to a stacked coin only below the reserve: above it the next nonce is taken at once, below it the payment waits for the first to be mined', async () => {
+    const above = await make({ spendSpacingBlocks: 3, reserveBalanceWei: MON / 2n })
+    above.node.balances.set(at(main), MON)
+    await signAndRecord(above, await above.payer.claim({ holder: 'one', stampValueWei: MON / 100n }))
+    const taken = await above.payer.claim({ holder: 'two', stampValueWei: MON / 100n })
+    expect(taken.accounts).toMatchObject([{ address: at(main), nonce: 1 }])
+
+    const below = await make({ spendSpacingBlocks: 3, reserveBalanceWei: 2n * MON })
+    below.node.balances.set(at(main), MON)
+    await signAndRecord(below, await below.payer.claim({ holder: 'one', stampValueWei: MON / 100n }))
+    await expect(
+      below.payer.claim({
+        holder: 'two',
+        stampValueWei: MON / 100n,
+        signal: AbortSignal.timeout(200),
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('a payment whose message never left the wallet holds only its own nonce: the next one signs the next nonce at once, and when the first is let go the account\'s next coin is not counted twice', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    const first = await f.payer.claim({ holder: 'undelivered', stampValueWei: MON / 100n })
+    const [stuck] = await signAndRecord(f, first)
+    const second = await f.payer.claim({ holder: 'next', stampValueWei: MON / 100n })
+    expect(second.accounts).toMatchObject([{ address: at(main), nonce: 1 }])
+    // Let go before the next one signs: its stacked coin goes with it.
+    await f.payer.release(second)
+    expect(f.list.get(at(main), 1)?.state).toBe('unspent')
+    await f.payer.releaseRefused('undelivered', [stuck!])
+    expect(f.list.get(at(main), 0)).toMatchObject({ state: 'unspent', valueWei: MON })
+    expect(f.list.get(at(main), 1)).toBeUndefined()
+    expect(f.pool.accountClaimedBy(at(main))).toBeUndefined()
   })
 
   it('a payment is called replaced only when, read again after the nonce, it still has no receipt', async () => {
@@ -467,7 +567,12 @@ describe('what the list may be out of date about', () => {
     // so a read leaves the account waiting to be read again.
     f.node.pending = new Map([[at(main), 1]])
     f.sync.markDirty(at(main))
-    const claiming = f.payer.claim({ holder: 'm', stampValueWei: MON / 2n })
+    const waited: unknown[] = []
+    const claiming = f.payer.claim({
+      holder: 'm',
+      stampValueWei: MON / 2n,
+      onWaiting: blocks => waited.push(blocks),
+    })
     let settled = false
     void claiming.then(
       () => (settled = true),
@@ -475,6 +580,8 @@ describe('what the list may be out of date about', () => {
     )
     await new Promise(resolve => setTimeout(resolve, 60))
     expect(settled).toBe(false)
+    // The host is told the payment is waiting while the account is read again.
+    expect(waited).toHaveLength(1)
     // The transfer is mined: main is at nonce 1 with what is left.
     f.node.pending = undefined
     f.node.nonces.set(at(main), 1)
@@ -538,9 +645,11 @@ describe('settlement on a node that keeps only recent state', () => {
     f.node.balanceAt = () => {
       throw new Error('missing trie node')
     }
+    const stacked = f.list.get(at(main), 1)?.valueWei
     await f.payer.recordSpent('m', signed!, 1001)
     expect(f.list.get(at(main), 0)?.state).toBe('spent')
-    expect(f.list.get(at(main), 1)).toBeUndefined()
+    // No successor guessed from the chain: the one listed when it was signed stays until read.
+    expect(f.list.get(at(main), 1)?.valueWei).toBe(stacked)
     expect(f.sync.isDirty(at(main))).toBe(true)
     // The sync's read (at the head, not the old block) gives the account's coin.
     f.node.balanceAt = undefined
@@ -628,7 +737,7 @@ describe('restart and repeated sync', () => {
       holder: 'kept',
       spendingTx: stored!.rawTx,
     })
-    expect(after.pool.accountClaimedBy(at(main))).toBe('kept')
+    expect(after.pool.accountClaimedBy(at(main))).toBe(after.payer.accountHolder)
     expect(after.list.get(at(received[0]!), 0)?.state).toBe('unspent')
     // A second stored message naming the same coin does not stop the open: it is reported.
     expect(await after.payer.restore('other', [stored!])).toEqual([at(main)])

@@ -220,11 +220,44 @@ export interface EvmStampPayerConfig {
   heldRefusal?: () => Error
 }
 
+type ClaimInput = {
+  holder: string
+  stampValueWei: bigint
+  /** Limit the coins considered. Default: every source. */
+  sources?: readonly StampCoinSource[]
+  whileBusy?: (holder: string) => Promise<void>
+  /** Whether a holder's payment cannot finish by itself (asked after `whileBusy`): the error
+   * to end this claim with, or `undefined` while it can still finish. A blocked holder ends the
+   * claim only when its coins are needed (everything else that could come back does not cover
+   * the value) and it is still blocked at the next look. */
+  blockedBy?: (holder: string) => Error | undefined
+  /** Called once when this payment starts waiting for an earlier one, and again with the
+   * blocks still to pass when what it waits for is the chain's spacing. */
+  onWaiting?: (blocksRemaining?: number) => void
+  /** Ends the wait: the claim rejects with {@link ChainWaitCancelledError}, nothing taken. */
+  signal?: AbortSignal
+  /** The value is owed, not chosen: a payment smaller than its own transfer's fee is made
+   * all the same (a settlement, or the repeat of a reverted payment). */
+  allowBelowFee?: boolean
+}
+
+let payerCount = 0
+
 export class EvmStampPayer {
   readonly watcher: EvmBlockWatcher
   private fee: { value: StampFee; atMs: number } | undefined
   private feeRead: Promise<StampFee> | undefined
   private poolIndexByAddress = new Map<string, number>()
+  /** Accounts that claims waiting their turn need (held by another operation), with how many
+   * claims wait for each. */
+  private readonly waitedFor = new Map<string, number>()
+  /**
+   * The one holder under which the coin list holds the main and identity accounts against
+   * spenders outside it (native sends, funding), while any of its coins of the account is being
+   * paid from. Messages own their coins in the list (`coin.holder`), several at stacked nonces
+   * of one account, so the account's claim is not any one message's.
+   */
+  readonly accountHolder = `evm-stamp-payer:${++payerCount}`
   constructor(private readonly config: EvmStampPayerConfig) {
     this.watcher =
       config.watcher ?? new EvmBlockWatcher({ provider: config.provider })
@@ -334,7 +367,7 @@ export class EvmStampPayer {
       return !pool.isSpendReserved(index)
     }
     const claimant = pool.accountClaimedBy(coin.account)
-    if (claimant !== undefined) {
+    if (claimant !== undefined && claimant !== this.accountHolder) {
       seen?.claimedBy?.add(claimant)
       return false
     }
@@ -437,6 +470,18 @@ export class EvmStampPayer {
         this.feeRead = undefined
       })
     return this.feeRead
+  }
+
+  /**
+   * Starts reading the accounts the list must read before it can be trusted (new or marked to
+   * be read again), without waiting for it. A send calls this as it begins, so those reads go
+   * out together with its fee read instead of after it; a claim that needs them joins the read
+   * in flight. Nothing is taken. A failed read is left to the claim, which reads again.
+   */
+  readCoinsAhead(): void {
+    const { sync } = this.config
+    if (sync.settled()) return
+    void sync.refresh().catch(() => undefined)
   }
 
   /**
@@ -551,26 +596,24 @@ export class EvmStampPayer {
    * Rejects with {@link InsufficientStampFundsError} when nothing the wallet has covers the
    * value; then, and on any other rejection, nothing this call took stays taken.
    */
-  async claim(input: {
-    holder: string
-    stampValueWei: bigint
-    /** Limit the coins considered. Default: every source. */
-    sources?: readonly StampCoinSource[]
-    whileBusy?: (holder: string) => Promise<void>
-    /** Whether a holder's payment cannot finish by itself (asked after `whileBusy`): the error
-     * to end this claim with, or `undefined` while it can still finish. A blocked holder ends the
-     * claim only when its coins are needed (everything else that could come back does not cover
-     * the value) and it is still blocked at the next look. */
-    blockedBy?: (holder: string) => Error | undefined
-    /** Called once when this payment starts waiting for an earlier one, and again with the
-     * blocks still to pass when what it waits for is the chain's spacing. */
-    onWaiting?: (blocksRemaining?: number) => void
-    /** Ends the wait: the claim rejects with {@link ChainWaitCancelledError}, nothing taken. */
-    signal?: AbortSignal
-    /** The value is owed, not chosen: a payment smaller than its own transfer's fee is made
-     * all the same (a settlement, or the repeat of a reverted payment). */
-    allowBelowFee?: boolean
-  }): Promise<StampClaim> {
+  async claim(input: ClaimInput): Promise<StampClaim> {
+    // The accounts this claim has waited for stay marked wanted until it ends, taken or not.
+    const wanted = new Set<string>()
+    try {
+      return await this.claimWaiting(input, wanted)
+    } finally {
+      for (const account of wanted) {
+        const left = (this.waitedFor.get(account) ?? 1) - 1
+        if (left > 0) this.waitedFor.set(account, left)
+        else this.waitedFor.delete(account)
+      }
+    }
+  }
+
+  private async claimWaiting(
+    input: ClaimInput,
+    wanted: Set<string>,
+  ): Promise<StampClaim> {
     const { pool, coins, sync } = this.config
     const allowed = (source: StampCoinSource) =>
       input.sources === undefined || input.sources.includes(source)
@@ -631,7 +674,7 @@ export class EvmStampPayer {
           const source = stampSourceOf(coin.origin)
           const index = source === 'pool' ? this.indexOf(coin.account) : undefined
           if (index !== undefined) pool.restoreClaim(input.holder, [index])
-          else pool.restoreAccountClaim(input.holder, coin.account)
+          else pool.restoreAccountClaim(this.accountHolder, coin.account)
           return {
             source,
             ...(index === undefined ? {} : { index }),
@@ -695,13 +738,36 @@ export class EvmStampPayer {
         // the account (a funding pass, a native send) has just let it go, and its last transfer
         // may still be on its way into a block. That is not "no funds": the accounts are read
         // again at each look of the chain until they are known, a bounded number of times.
+        // Only coins this payment could take once read: not held for a contact payment, not
+        // reserved by the native journal at their nonce, and not claimed by another operation
+        // (those are counted above, or never come back).
+        const takeableOnceRead = (coin: EvmListCoin): boolean => {
+          if (claimedOutside.includes(coin)) return false
+          if (this.config.accountHeld?.(coin.account)) return false
+          if (this.config.canSelectAccount?.(coin.account, coin.nonce) === false)
+            return false
+          if (stampSourceOf(coin.origin) === 'pool') {
+            const index = this.indexOf(coin.account)
+            if (index === undefined) return false
+            const row = pool.getRecord(index)
+            const claimant = pool.claimedBy(index)
+            return (
+              row !== undefined &&
+              LISTED_ROW_STATUSES.has(row.status) &&
+              (coin.nonce !== 0 || row.status === 'available') &&
+              (claimant === undefined || claimant === input.holder) &&
+              !pool.isSpendReserved(index)
+            )
+          }
+          const claimant = pool.accountClaimedBy(coin.account)
+          return claimant === undefined || claimant === this.accountHolder
+        }
         const unread = all.filter(
           coin =>
             coin.state === 'unspent' &&
             sync.isDirty(coin.account) &&
             allowed(stampSourceOf(coin.origin)) &&
-            !this.config.accountHeld?.(coin.account) &&
-            !claimedOutside.includes(coin),
+            takeableOnceRead(coin),
         )
         if (
           unread.length > 0 &&
@@ -709,6 +775,11 @@ export class EvmStampPayer {
           unreadLooks < MAX_UNREAD_LOOKS
         ) {
           unreadLooks++
+          // The payment waits for the reads: the host shows it waiting, not stuck.
+          if (!waiting) {
+            waiting = true
+            input.onWaiting?.()
+          }
           await this.read(() => sync.refresh(), input.signal)
           if (unread.some(coin => sync.isDirty(coin.account)))
             await this.untilChanged(input.signal)
@@ -745,6 +816,11 @@ export class EvmStampPayer {
           return holder === undefined ? [] : [holder]
         }),
       ])
+      for (const coin of [...heldByOthers, ...claimedOutside])
+        if (!wanted.has(coin.account)) {
+          wanted.add(coin.account)
+          this.waitedFor.set(coin.account, (this.waitedFor.get(coin.account) ?? 0) + 1)
+        }
       for (const holder of holders) await input.whileBusy?.(holder)
       // A holder that cannot finish by itself is named, never waited for for ever: when, after
       // the others settled, what everyone else holds or will get back does not cover the value.
@@ -777,6 +853,12 @@ export class EvmStampPayer {
       await this.untilChanged(input.signal)
       readDue = false
     }
+  }
+
+  /** True while a payment waits for `address`, which another operation holds (a funding pass,
+   * say): that operation may give way. No request. */
+  isWaitedFor(address: string): boolean {
+    return (this.waitedFor.get(address.toLowerCase()) ?? 0) > 0
   }
 
   /** Resolves when the coin list next changes or the block watcher next looks. */
@@ -887,12 +969,71 @@ export class EvmStampPayer {
   ): Promise<void> {
     for (const payment of payments) {
       const tx = Transaction.from(payment.rawTx)
+      const coin = this.config.coins.get(payment.address, tx.nonce)
       await this.config.coins.recordSigned(
         holder,
         { account: payment.address, nonce: tx.nonce },
         payment.rawTx,
+        coin === undefined ? undefined : this.stackedSuccessor(coin, tx),
       )
     }
+  }
+
+  /**
+   * What the account keeps after `tx`, at the next nonce, for the next payment to sign at once:
+   * its value less the payment and the most the fee can be. Not for a funded sub-account (it
+   * pays once). Below the chain's reserve the spacing applies from the block that includes
+   * `tx`, which is not known yet: such a coin is spendable before then only by a payment that
+   * leaves the account at or above the reserve (`spendableNow`); settlement replaces it with
+   * what the chain shows.
+   */
+  private stackedSuccessor(
+    coin: EvmListCoin,
+    tx: Transaction,
+  ): { valueWei: bigint; spendableFromBlock?: number } | undefined {
+    if (coin.origin === 'deterministic') return undefined
+    const feePerGas = tx.maxFeePerGas ?? tx.gasPrice ?? 0n
+    const left = coin.valueWei - tx.value - tx.gasLimit * feePerGas
+    if (left <= 0n) return undefined
+    const spacing = this.config.spendSpacingBlocks ?? 0
+    return {
+      valueWei: left,
+      ...(spacing > 0 ? { spendableFromBlock: Number.MAX_SAFE_INTEGER } : {}),
+    }
+  }
+
+  /** Lets go of the coin list's hold on a main or identity account once none of its coins is
+   * being paid from. */
+  private releaseAccountIfIdle(address: string): void {
+    const account = address.toLowerCase()
+    const busy = this.config.coins
+      .all()
+      .some(
+        coin =>
+          coin.account === account &&
+          (coin.state === 'spend_pending' || coin.state === 'pending_receipt'),
+      )
+    if (!busy) this.config.pool.releaseAccountClaim(this.accountHolder, account)
+  }
+
+  /** The operations paying from the main or identity accounts the coin list holds: what a
+   * spender outside the list waiting for one of those accounts settles. */
+  accountCoinHolders(): string[] {
+    const { pool, coins } = this.config
+    return [
+      ...new Set(
+        coins
+          .all()
+          .filter(
+            coin =>
+              coin.origin !== 'deterministic' &&
+              coin.holder !== undefined &&
+              (coin.state === 'spend_pending' || coin.state === 'pending_receipt') &&
+              pool.accountClaimedBy(coin.account) === this.accountHolder,
+          )
+          .map(coin => coin.holder!),
+      ),
+    ]
   }
 
   /** Frees the coins of `claim`, signed or not, and nothing else its holder holds. Only for a
@@ -901,9 +1042,7 @@ export class EvmStampPayer {
     const { pool, coins } = this.config
     // The pool's claims first: their release is seen while the coins still name their holder.
     for (const account of claim.accounts)
-      if (account.index === undefined)
-        pool.releaseAccountClaim(claim.holder, account.address)
-      else pool.releaseClaim(claim.holder, [account.index])
+      if (account.index !== undefined) pool.releaseClaim(claim.holder, [account.index])
     await coins.releaseUnexposed(
       claim.holder,
       claim.accounts.map(account => ({
@@ -911,6 +1050,8 @@ export class EvmStampPayer {
         nonce: account.nonce,
       })),
     )
+    for (const account of claim.accounts)
+      if (account.index === undefined) this.releaseAccountIfIdle(account.address)
   }
 
   /**
@@ -932,13 +1073,13 @@ export class EvmStampPayer {
     // Dirty before free: no selection in between can take a coin the chain has not confirmed.
     for (const { payment } of refused) sync.markDirty(payment.address)
     for (const { payment } of refused)
-      if (payment.index === undefined)
-        pool.releaseAccountClaim(holder, payment.address)
-      else pool.releaseClaim(holder, [payment.index])
+      if (payment.index !== undefined) pool.releaseClaim(holder, [payment.index])
     await coins.releaseUnexposed(
       holder,
       refused.map(({ payment, nonce }) => ({ account: payment.address, nonce })),
     )
+    for (const { payment } of refused)
+      if (payment.index === undefined) this.releaseAccountIfIdle(payment.address)
   }
 
   /**
@@ -968,7 +1109,7 @@ export class EvmStampPayer {
       this.restored.add(`${account}:${tx.nonce}`)
       try {
         if (payment.index !== undefined) pool.restoreClaim(holder, [payment.index])
-        else pool.restoreAccountClaim(holder, account)
+        else pool.restoreAccountClaim(this.accountHolder, account)
       } catch {
         // Another stored message holds this account: it keeps it; the chain decides both.
         contested.push(payment.address)
@@ -1208,11 +1349,10 @@ export class EvmStampPayer {
     payment: Pick<StampPayment, 'index' | 'address'> & { nonce?: number },
   ): void {
     const { pool, coins } = this.config
-    if (payment.index === undefined)
-      pool.releaseAccountClaim(holder, payment.address)
-    else pool.releaseClaim(holder, [payment.index])
+    if (payment.index !== undefined) pool.releaseClaim(holder, [payment.index])
     if (payment.nonce !== undefined)
       coins.abandon(holder, [{ account: payment.address, nonce: payment.nonce }])
+    if (payment.index === undefined) this.releaseAccountIfIdle(payment.address)
   }
 }
 

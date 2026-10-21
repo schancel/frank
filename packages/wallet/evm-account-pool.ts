@@ -162,6 +162,9 @@ export const FUND_AHEAD_RECEIPT_WAIT_MS = 3_000;
  * - `insufficient-funds`: the main account cannot pay for what is missing (the whole pair, or the
  *   rest of one). A pass never settles for one account holding the whole stamp: that is a send's
  *   own last resort, and the money it needs is left where the send can use it.
+ * - `yielded`: a send is waiting for the funding account (`yieldTo`). The pass stops before its
+ *   next transfer, so the send is not held up behind the rest of the pass; what it funded stays
+ *   funded, and a later pass funds the rest.
  */
 export class FundAheadRefusedError extends Error {
   constructor(
@@ -169,7 +172,8 @@ export class FundAheadRefusedError extends Error {
       | "unresolved-funding"
       | "over-bound"
       | "uneconomic"
-      | "insufficient-funds",
+      | "insufficient-funds"
+      | "yielded",
     detail: string
   ) {
     super(`Funding ahead refused (${code}): ${detail}`);
@@ -1286,11 +1290,17 @@ export class EvmSubAccountPool {
      * pair (it refuses a payment below its own fee), so ONE account is funded with the whole
      * stamp instead. The split exists to hide amounts, which a floor-sized stamp cannot. */
     minimumPaymentWei?: () => Promise<bigint>;
-    fundingOverrides?: MonadTxOverrides;
+    /** The fee fields every transfer is signed with, or how to quote them once the pass knows
+     * it has something to fund. */
+    fundingOverrides?: MonadTxOverrides | (() => Promise<MonadTxOverrides>);
     /** The wait for this pass's own receipts. Default: `FUND_AHEAD_RECEIPT_WAIT_MS`. */
     receipt?: FundingReceiptOptions;
+    /** True while a send waits for `address`: asked before each transfer is signed (after the
+     * chain's spacing wait); the pass then stops with `FundAheadRefusedError("yielded")`. */
+    yieldTo?: (address: string) => boolean;
   }): Promise<StampInventoryPreparationResult> {
-    const { maxValueWei, gasReserveWei, ...rest } = params;
+    const { maxValueWei, gasReserveWei, fundingOverrides, yieldTo, ...rest } =
+      params;
     const run = this.preparationQueue.then(async () => {
       const resumedTxHashes = await this.resumeFundingAttempts({
         mainAccountSigner: params.mainAccountSigner,
@@ -1315,12 +1325,16 @@ export class EvmSubAccountPool {
             typeof gasReserveWei === "function"
               ? await gasReserveWei()
               : gasReserveWei,
+          fundingOverrides:
+            typeof fundingOverrides === "function"
+              ? await fundingOverrides()
+              : fundingOverrides,
           receipt: params.receipt ?? {
             intervalMs: FUND_AHEAD_RECEIPT_POLL_MS,
             maxAttempts: FUND_AHEAD_RECEIPT_WAIT_MS / FUND_AHEAD_RECEIPT_POLL_MS,
           },
         },
-        { maxValueWei, resumedTxHashes }
+        { maxValueWei, resumedTxHashes, yieldTo }
       );
     });
     this.preparationQueue = run.then(
@@ -1344,7 +1358,11 @@ export class EvmSubAccountPool {
     },
     /** Set for a pass that runs ahead of any message: see `fundStampInventoryAhead`, which has
      * already looked at every `funding` row and found none unresolved. */
-    ahead?: { maxValueWei: bigint; resumedTxHashes: string[] }
+    ahead?: {
+      maxValueWei: bigint;
+      resumedTxHashes: string[];
+      yieldTo?: (address: string) => boolean;
+    }
   ): Promise<StampInventoryPreparationResult> {
     const zero = BigInt(0);
     if (params.stampValueWei <= zero) {
@@ -1525,6 +1543,7 @@ export class EvmSubAccountPool {
     for (const [offset, paymentCapacityWei] of capacities.entries()) {
       if (offset > 0) await this.pauseBetweenFundingTransfers();
       const target = unfunded[offset];
+      const yieldTo = ahead?.yieldTo;
       const result = await this.fundAccount({
         target,
         paymentCapacityWei,
@@ -1533,6 +1552,19 @@ export class EvmSubAccountPool {
         overrides: params.fundingOverrides,
         receipt: params.receipt,
         refuseUneconomic: ahead !== undefined,
+        // A pass that runs ahead of any message gives way, after its spacing wait and before
+        // signing, to a send that has come to wait for its account.
+        ...(yieldTo === undefined
+          ? {}
+          : {
+              beforeSign: () => {
+                if (yieldTo(params.mainAccountSigner.address))
+                  throw new FundAheadRefusedError(
+                    "yielded",
+                    `a send is waiting for ${params.mainAccountSigner.address}; ${offset} of ${capacities.length} transfers made`
+                  );
+              },
+            }),
         onSigned: (signedTx) =>
           params.onProgress?.({
             stage: "funding",
@@ -2302,6 +2334,8 @@ export class EvmSubAccountPool {
     /** Refuse, before anything is written or submitted, a transfer whose maximum fee exceeds the
      * value it moves. The signature is discarded. */
     refuseUneconomic?: boolean;
+    /** Called after the spacing wait, before anything is signed: may throw to stop. */
+    beforeSign?: () => void;
     onSigned?: (signedTx: SignedMonadTx) => void;
   }): Promise<FanOutFundingResult> {
     const fundedValue = params.paymentCapacityWei + params.gasReserveWei;
@@ -2311,6 +2345,7 @@ export class EvmSubAccountPool {
       params.mainAccountSigner.address,
       fundedValue + params.gasReserveWei
     );
+    params.beforeSign?.();
     const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
       params.target.address,
       fundedValue,

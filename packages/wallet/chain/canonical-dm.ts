@@ -692,6 +692,9 @@ interface MessageWork {
   creating?: Promise<void>
   unrecorded?: boolean
   busy?: Promise<void>
+  /** Set while a just-delivered send's own broadcast and chain look run after its caller was
+   * answered (`busy` is set for as long). Reconciliation waits for it, then does its own step. */
+  afterDelivery?: Promise<void>
   submit: Pace
   chain: Pace
   repay: Pace
@@ -1375,6 +1378,12 @@ async function settleHolder(
   owner: CanonicalMessagingOwner,
   holder: string,
 ): Promise<void> {
+  // The coin list's hold on the main or identity account: each message paying from it.
+  const payer = owner.payer()
+  if (holder === payer.accountHolder) {
+    for (const each of payer.accountCoinHolders()) await settleHolder(owner, each)
+    return
+  }
   const prefix = `${owner.subject}:`
   const consumerId = holder.startsWith(prefix)
     ? holder.slice(prefix.length)
@@ -1579,6 +1588,9 @@ async function resend(
       .map(async stored => {
         const work = workOf(owner, stored.consumerId)
         if (work.creating) return
+        // A send just answered "delivered" is still broadcasting its payments and looking at
+        // the chain: that step is short and bounded, so the pass waits for it and goes on.
+        if (work.afterDelivery) await work.afterDelivery
         if (work.busy) {
           // A caller that asked about this message waits for the step in flight, so the status
           // it reads is the one that step leaves. Nobody else waits on it.
@@ -1972,6 +1984,8 @@ async function send(
           },
         }),
       )
+    // The accounts the coin list must read go out now, together with the fee read below.
+    payer.readCoinsAhead()
     // Explicit paid sends queue while the node is unreachable. A new implicit default instead
     // reports an unavailable fee before claiming or signing; free messages bypass this path.
     for (;;) {
@@ -2082,6 +2096,8 @@ async function send(
     }
     recorded = true
     let ended!: () => void
+    let afterDelivery: Promise<void> | undefined
+    const failures: unknown[] = []
     work.busy = new Promise<void>(resolve => (ended = resolve))
     work.creating = undefined
     created()
@@ -2170,28 +2186,48 @@ async function send(
           )
         throw new MonadStampPendingAttemptError([digest])
       }
-      // The relay has the message. Now, and only now, this wallet broadcasts the payments
-      // itself as well; the relay does the same, so the usual answer is "already known".
-      // "Spent" is learned from the chain by the resend pass, never from either answer.
-      const handed = await owner.lifetime(() =>
-        payer.submitPaymentSet(signed.map(payment => payment.rawTx)),
-      )
-      noteHandOver(handed)
-      for (const one of handed)
-        if (one.error !== undefined)
-          console.warn(
-            '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
-            one.error,
+      // The relay has the message: the caller is answered now. What follows runs after the
+      // answer, with `work.busy` set until it ends (a send waiting for this message's coin, and
+      // reconciliation, wait for it rather than make their own look). This wallet broadcasts the
+      // payments itself as well (the relay already did, so the usual answer is "already
+      // known"), and a payment from the main or identity account, which holds that account for
+      // the next payment, gets one look at the chain, so a block that already has it frees the
+      // account at once. A failure of either is reported here and the resend pass repeats the
+      // step: "spent" is learned from the chain, never from either answer.
+      const delivered = row
+      afterDelivery = owner
+        .lifetime(async () => {
+          const handed = await payer.submitPaymentSet(
+            signed.map(payment => payment.rawTx),
           )
-      // A payment from the main or identity account holds that account for the next payment:
-      // one look at the chain now, so a block that already has it frees the account at once.
-      if (signed.some(payment => payment.source !== 'pool'))
-        row = await owner
-          .lifetime(() => settlePayments(owner, row, true))
-          .catch(() => row)
+          noteHandOver(handed)
+          for (const one of handed)
+            if (one.error !== undefined) {
+              failures.push(one.error)
+              console.warn(
+                '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+                one.error,
+              )
+            }
+          if (signed.some(payment => payment.source !== 'pool'))
+            await settlePayments(owner, delivered, true)
+        })
+        .catch(error => {
+          failures.push(error)
+          console.warn(
+            '[monad-canonical-dm] after delivery, the payments could not be broadcast or looked at; the resend pass repeats it:',
+            error,
+          )
+        })
+      work.afterDelivery = afterDelivery
     } finally {
-      work.busy = undefined
-      ended()
+      const done = () => {
+        if (work.afterDelivery === afterDelivery) work.afterDelivery = undefined
+        work.busy = undefined
+        ended()
+      }
+      if (afterDelivery === undefined) done()
+      else void afterDelivery.then(done)
     }
     const transactions = signed.map(payment => getBytes(payment.rawTx))
     return {
@@ -2204,6 +2240,7 @@ async function send(
       }),
       // A send funds nothing: its stamp is paid from coins the wallet already has.
       preparationTxHashes: [],
+      afterDelivery: afterDelivery!.then(() => ({ failures })),
     }
   } catch (error) {
     // Nothing signed left the wallet and nothing is stored: the accounts are free at once.

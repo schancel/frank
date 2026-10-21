@@ -13,7 +13,9 @@ import {
 /** Approval decisions and persona provisioning come from extension pages; other messages from a site tab. */
 function mockSenderFor(msg: any): Record<string, unknown> {
   return String(msg?.type).includes('resolve-approval') ||
-    msg?.type === 'provision-site-personas'
+    msg?.type === 'provision-site-personas' ||
+    msg?.type === 'update-persona-state' ||
+    msg?.type === 'set-active-persona'
     ? { url: 'chrome-extension://frank-test-ext/approval.html' }
     : { tab: { id: 1, windowId: 2 } }
 }
@@ -261,7 +263,6 @@ describe('dApp approval window lifecycle', () => {
     ['personal_sign', ['0x68656c6c6f', PRIMARY]],
     ['eth_signTypedData_v4', [PRIMARY, '{}']],
     ['eth_sendTransaction', [{ from: PRIMARY, to: PRIMARY, value: '0x1' }]],
-    ['btc_signPsbt', [{}]],
   ])(
     'never resolves an approved %s with a signature or hash',
     async (method, params) => {
@@ -288,6 +289,32 @@ describe('dApp approval window lifecycle', () => {
       expect(answer.ok).toBe(false)
       expect(answer.error.code).toBe(4200)
       expect(JSON.stringify(answer)).not.toContain('deadbeef')
+    },
+  )
+
+  it.each([
+    'btc_requestAccounts',
+    'btc_getAccounts',
+    'btc_getPublicKey',
+    'btc_getNetwork',
+    'btc_signMessage',
+    'btc_signPsbt',
+    'btc_signPsbts',
+    'xec_cashtabRequest',
+  ])(
+    'answers %s as unsupported: Frank has no Bitcoin or eCash account for dApps',
+    async method => {
+      const { scope, windows } = createExtensionScope()
+      const state = createBackgroundBridgeState({
+        activePersonaAddress: PRIMARY,
+        approvedOrigins: new Set(['https://app.uniswap.org']),
+      })
+      expect(await rpc(state, scope, 'b1', method, undefined, [{}])).toEqual({
+        ok: false,
+        error: { code: 4200, message: `Unsupported method: ${method}` },
+      })
+      expect(state.pendingApprovals.size).toBe(0)
+      expect(windows.create).not.toHaveBeenCalled()
     },
   )
 

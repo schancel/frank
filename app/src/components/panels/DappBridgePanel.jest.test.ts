@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 
 import { flushPromises, shallowMount } from '@vue/test-utils'
-import { HDNodeWallet, keccak256, toUtf8Bytes, verifyMessage } from 'ethers'
+import { HDNodeWallet } from 'ethers'
 import {
   deriveDappPersona,
   type DappPersonaRef,
@@ -245,7 +245,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     wrapper.unmount()
   })
 
-  it('displays pending dApp approval with JIT pool sweep notice and handles Approve / Reject', async () => {
+  it('offers only Reject for signing and transaction requests: Frank has no website signer', async () => {
     const wrapper = mountPanel({
       initialPersonaBalanceMon: 5,
       initialPoolBalanceMon: 100,
@@ -254,7 +254,6 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
           id: 'tx-1',
           origin: 'https://app.uniswap.org',
           method: 'eth_sendTransaction',
-          requiredAmountMon: 20,
           summary: 'Swap 20 MON for USDC',
         },
         {
@@ -269,21 +268,21 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     const approvalCard = wrapper.find('[data-testid="dapp-approval-card"]')
     expect(approvalCard.exists()).toBe(true)
     expect(approvalCard.text()).toContain('https://app.uniswap.org')
-    expect(approvalCard.text()).toContain('+15.00 MON from Frank Pool')
+    expect(approvalCard.text()).not.toContain('Frank Pool')
 
-    await wrapper.find('[data-testid="dapp-approve-btn"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.emitted('approve-request')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="dapp-approve-btn"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="dapp-reject-btn"]').trigger('click')
     expect(wrapper.find('[data-testid="dapp-pool-balance"]').text()).toContain(
-      '85.00 MON',
+      '100.00 MON',
     )
 
     // Next approval in queue is now shown
     expect(
       wrapper.find('[data-testid="dapp-approval-card"]').text(),
     ).toContain('https://opensea.io')
+    expect(wrapper.find('[data-testid="dapp-approve-btn"]').exists()).toBe(false)
     await wrapper.find('[data-testid="dapp-reject-btn"]').trigger('click')
-    expect(wrapper.emitted('reject-request')).toHaveLength(1)
+    expect(wrapper.emitted('reject-request')).toHaveLength(2)
     expect(wrapper.find('[data-testid="dapp-approval-card"]').exists()).toBe(
       false,
     )
@@ -453,40 +452,6 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       .find('[data-testid="dapp-announce-mode-connected-only"]')
       .trigger('click')
 
-    wrapper.unmount()
-  })
-
-  it('signs for a site with its custody-derived persona key, never a key computable from public data', async () => {
-    const origin = 'https://opensea.io'
-    const site = deriveDappPersona(testMaster, { kind: 'site', origin })
-    const wrapper = mountPanel({
-      initialOriginPersonas: {
-        [origin]: {
-          address: site.address,
-          index: 1,
-          label: 'opensea.io',
-          isBurner: true,
-        },
-      },
-      initialApprovals: [
-        { id: 'sign-1', origin, method: 'personal_sign', params: ['hello'] },
-      ],
-    })
-    await flushPromises()
-    await wrapper.find('[data-testid="dapp-approve-btn"]').trigger('click')
-    await flushPromises()
-    const [[event]] = wrapper.emitted('approve-request') as any[][]
-    expect(verifyMessage('hello', event.result)).toBe(site.address)
-    // The removed public-input formula named a different key.
-    const oldKey = keccak256(
-      toUtf8Bytes(
-        `frank-dapp-origin-burner-v1:${deriveDappPersona(testMaster, {
-          kind: 'shared',
-          slot: 0,
-        }).address.toLowerCase()}:${origin}`,
-      ),
-    )
-    expect(oldKey).not.toBe(site.node.privateKey)
     wrapper.unmount()
   })
 })

@@ -263,14 +263,6 @@
             {{ previewConnectAddress }}
           </div>
         </div>
-
-        <div
-          v-if="currentApprovalShortfall > 0"
-          class="q-mt-xs text-caption text-warning"
-          data-testid="dapp-jit-sweep-notice"
-        >
-          {{ jitSweepNoticeText }}
-        </div>
       </q-card-section>
 
       <q-card-actions align="right" class="q-px-md q-pb-md">
@@ -284,6 +276,7 @@
         <q-btn
           unelevated
           color="positive"
+          v-if="isConnectApproval"
           data-testid="dapp-approve-btn"
           :label="ui.approveBtn"
           @click="approveCurrentRequest"
@@ -453,23 +446,9 @@ import {
   shallowRef,
   watch,
 } from 'vue'
-import {
-  formatUnits,
-  getBytes,
-  hashMessage,
-  isHexString,
-  keccak256,
-  parseUnits,
-  Signature,
-  toUtf8Bytes,
-  Transaction,
-  TypedDataEncoder,
-} from 'ethers'
+import { formatUnits, parseUnits, Signature, Transaction } from 'ethers'
 import { activeChain } from '@frank/wallet/chain'
-import {
-  DAPP_PERSONA_SHARED_BRANCH,
-  type DappPersonaRef,
-} from '@frank/wallet/dapp-bridge/persona-keys'
+import { DAPP_PERSONA_SHARED_BRANCH } from '@frank/wallet/dapp-bridge/persona-keys'
 import {
   accountSession,
   accountStatus,
@@ -486,7 +465,6 @@ import {
   DappProviderAnnounceMode,
   FRANK_DAPP_BRIDGE_CHANNEL,
 } from '../../../src-bex/inpage'
-import { createDeterministicRpcResultFallback } from '../../../src-bex/persona-derivation'
 import {
   normalizeBridgeOrigin,
   OriginPersonaBinding,
@@ -514,7 +492,6 @@ export interface DappApprovalItem {
     | 'eth_sendTransaction'
     | string
   params?: unknown
-  requiredAmountMon?: number
   summary?: string
 }
 
@@ -695,7 +672,6 @@ export default defineComponent({
     'select-persona',
     'topup-persona',
     'sweep-to-pool',
-    'approve-request',
     'reject-request',
     'disconnect-origin',
     'update-announce-mode',
@@ -1115,12 +1091,6 @@ export default defineComponent({
       })),
     )
 
-    const currentApprovalShortfall = computed(() => {
-      const req = currentApproval.value
-      if (!req || !req.requiredAmountMon) return 0
-      return Math.max(0, req.requiredAmountMon - personaBalanceMon.value)
-    })
-
     const approvalMethodSummary = computed(() => {
       const req = currentApproval.value
       if (!req) return ''
@@ -1128,13 +1098,6 @@ export default defineComponent({
         ? `${req.method} — ${req.summary}`
         : `Method: ${req.method}`
     })
-
-    const jitSweepNoticeText = computed(
-      () =>
-        `JIT Pool Sweep required: +${currentApprovalShortfall.value.toFixed(
-          2,
-        )} MON from Frank Pool`,
-    )
 
     const pairedWcStatusText = computed(
       () => `Paired dApp URI: ${pairedWcUri.value}`,
@@ -1446,181 +1409,45 @@ export default defineComponent({
       }
     }
 
-    /** Which custody persona signs for an origin: its site persona, or the shared slot it uses. */
-    function personaRefForOrigin(normOrigin: string): DappPersonaRef {
-      const binding = originPersonasMap.value[normOrigin]
-      if (binding?.isBurner) return { kind: 'site', origin: normOrigin }
-      const bound = binding?.address?.toLowerCase()
-      const slot = bound
-        ? Object.entries(personaAddressesBySlot.value).find(
-            ([, addr]) => addr.toLowerCase() === bound,
-          )?.[0]
-        : undefined
-      return {
-        kind: 'shared',
-        slot: slot !== undefined ? Number(slot) : personaIndex.value,
-      }
-    }
-
-    async function signOrExecuteApprovalRequest(
-      req: DappApprovalItem,
-      normOrigin: string,
-    ): Promise<string> {
-      try {
-        const personas = await requirePersonaSigner()
-        const ref = personaRefForOrigin(normOrigin)
-        const sign = (digest: string) => personas.signDigest(ref, digest)
-        const [personaAddress] = await personas.addresses([ref])
-        const paramsList = Array.isArray(req.params) ? req.params : []
-
-        if (req.method === 'personal_sign' || req.method === 'eth_sign') {
-          const rawCandidate =
-            req.method === 'personal_sign'
-              ? paramsList[0] ?? req.summary ?? 'Frank approval'
-              : paramsList[1] ?? paramsList[0] ?? req.summary ?? 'Frank approval'
-          const msgStr = String(rawCandidate)
-          const msgBytes =
-            isHexString(msgStr) && msgStr.length % 2 === 0
-              ? getBytes(msgStr)
-              : toUtf8Bytes(msgStr)
-          return await sign(hashMessage(msgBytes))
-        }
-
-        if (
-          req.method === 'eth_signTypedData' ||
-          req.method === 'eth_signTypedData_v3' ||
-          req.method === 'eth_signTypedData_v4'
-        ) {
-          const rawTyped = paramsList[1] ?? paramsList[0]
-          const parsed =
-            typeof rawTyped === 'string' ? JSON.parse(rawTyped) : rawTyped
-          if (parsed && typeof parsed === 'object' && parsed.domain && parsed.types) {
-            const typesCopy = { ...parsed.types }
-            delete typesCopy.EIP712Domain
-            const valueObj = parsed.message ?? parsed.value ?? {}
-            const digest = TypedDataEncoder.hash(
-              parsed.domain,
-              typesCopy,
-              valueObj,
-            )
-            return await sign(digest)
-          }
-          return await sign(
-            hashMessage(toUtf8Bytes(JSON.stringify(rawTyped ?? req.summary ?? {}))),
-          )
-        }
-
-        if (req.method === 'eth_sendTransaction') {
-          const txObj =
-            paramsList[0] && typeof paramsList[0] === 'object'
-              ? (paramsList[0] as Record<string, any>)
-              : {}
-          const toAddr =
-            typeof txObj.to === 'string' && /^0x[0-9a-fA-F]{40}$/.test(txObj.to)
-              ? txObj.to
-              : personaAddress
-          const valBig =
-            typeof txObj.value === 'string' && /^0x[0-9a-fA-F]+$/.test(txObj.value)
-              ? BigInt(txObj.value)
-              : 0n
-          const tx = Transaction.from({
-            type: 2,
-            chainId: 10143n,
-            to: toAddr,
-            value: valBig,
-            data:
-              typeof txObj.data === 'string' && isHexString(txObj.data)
-                ? txObj.data
-                : '0x',
-            nonce: 0,
-            gasLimit: 120_000n,
-            maxFeePerGas: 2_000_000_000n,
-            maxPriorityFeePerGas: 1_000_000_000n,
-          })
-          tx.signature = Signature.from(await sign(tx.unsignedHash))
-          return keccak256(tx.serialized)
-        }
-      } catch {
-        // Fall through to deterministic fallback below
-      }
-      return createDeterministicRpcResultFallback(
-        req.method,
-        normOrigin,
-        activePersonaAddress.value,
-        req.params ?? req.summary,
-      )
-    }
-
+    /** Only connections can be approved here; Frank has no signer for websites yet. */
     async function approveCurrentRequest() {
       const req = currentApproval.value
-      if (!req) return
-      const isConnect = isConnectApproval.value
+      if (!req || !isConnectApproval.value) return
       const normOrigin =
         normalizeBridgeOrigin(req.origin) || req.origin.trim().toLowerCase()
       const chosenUseBurner = useBurnerForConnect.value
+      // The connect address is a custody derivation; without one there is nothing to approve.
       let chosenConnectAddr = ''
-      if (isConnect) {
-        // The connect address is a custody derivation; without one there is nothing to approve.
-        try {
-          chosenConnectAddr = chosenUseBurner
-            ? await resolveSitePersonaAddress(normOrigin)
-            : (await loadSlotAddresses(personaIndex.value))[0] ?? ''
-        } catch {
-          chosenConnectAddr = ''
-        }
-        if (!chosenConnectAddr || currentApproval.value !== req) return
+      try {
+        chosenConnectAddr = chosenUseBurner
+          ? await resolveSitePersonaAddress(normOrigin)
+          : (await loadSlotAddresses(0))[0] ?? ''
+      } catch {
+        chosenConnectAddr = ''
       }
-      const shortfall = currentApprovalShortfall.value
-      if (shortfall > 0 && poolBalanceMon.value >= shortfall) {
-        poolTransferDeltaMon.value -= shortfall
-        personaBalanceMon.value += shortfall
-      }
-      if (req.requiredAmountMon && personaBalanceMon.value >= req.requiredAmountMon) {
-        personaBalanceMon.value -= req.requiredAmountMon
-      }
-
+      if (!chosenConnectAddr || currentApproval.value !== req) return
       approvals.value.shift()
 
-      if (isConnect) {
-        const nextBurnerIdx = chosenUseBurner
-          ? Math.max(
-              1,
-              ...Object.values(originPersonasMap.value).map(b => b.index + 1),
-            )
-          : 0
-        const binding: OriginPersonaBinding = {
-          address: chosenConnectAddr,
-          index: nextBurnerIdx,
-          label: chosenUseBurner
-            ? `${normOrigin} Burner #${nextBurnerIdx}`
-            : 'Primary dApp Persona',
-          isBurner: chosenUseBurner,
-        }
-        if (normOrigin) {
-          originPersonasMap.value = {
-            ...originPersonasMap.value,
-            [normOrigin]: binding,
-          }
-        }
-        emit('approve-request', {
-          request: req,
-          jitSweptMon: shortfall,
-          useBurnerPersona: chosenUseBurner,
-          personaAddress: chosenConnectAddr,
-          result: [chosenConnectAddr],
-        })
-        return
+      const nextBurnerIdx = chosenUseBurner
+        ? Math.max(
+            1,
+            ...Object.values(originPersonasMap.value).map(b => b.index + 1),
+          )
+        : 0
+      const binding: OriginPersonaBinding = {
+        address: chosenConnectAddr,
+        index: nextBurnerIdx,
+        label: chosenUseBurner
+          ? `${normOrigin} Burner #${nextBurnerIdx}`
+          : 'Primary dApp Persona',
+        isBurner: chosenUseBurner,
       }
-
-      const signatureOrTxHash = await signOrExecuteApprovalRequest(
-        req,
-        normOrigin,
-      )
-      emit('approve-request', {
-        request: req,
-        jitSweptMon: shortfall,
-        result: signatureOrTxHash,
-      })
+      if (normOrigin) {
+        originPersonasMap.value = {
+          ...originPersonasMap.value,
+          [normOrigin]: binding,
+        }
+      }
     }
 
     async function rejectCurrentRequest() {
@@ -1676,9 +1503,7 @@ export default defineComponent({
       dappRequestsWaiting,
       dappRequestsWaitingText,
       connectAddressSharedCaption,
-      currentApprovalShortfall,
       approvalMethodSummary,
-      jitSweepNoticeText,
       pairedWcStatusText,
       setConnectBurnerMode,
       setAnnounceMode,

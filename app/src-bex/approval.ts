@@ -20,17 +20,12 @@ const CONNECT_KINDS = new Set(['connect', 'permissions'])
 const METHOD_LABELS: Record<string, string> = {
   eth_requestAccounts: 'Connect to this site',
   wallet_requestPermissions: 'Connect to this site',
-  btc_requestAccounts: 'Connect your Bitcoin address',
-  xec_cashtabRequest: 'eCash request',
   personal_sign: 'Sign a message',
   eth_sign: 'Sign a message',
   eth_signTypedData: 'Sign typed data',
   eth_signTypedData_v3: 'Sign typed data',
   eth_signTypedData_v4: 'Sign typed data',
   eth_sendTransaction: 'Send a transaction',
-  btc_signMessage: 'Sign a message',
-  btc_signPsbt: 'Sign a Bitcoin transaction',
-  btc_signPsbts: 'Sign Bitcoin transactions',
 }
 
 export function isConnectRequest(request: PendingDappApproval): boolean {
@@ -38,11 +33,6 @@ export function isConnectRequest(request: PendingDappApproval): boolean {
 }
 
 export function describeApprovalMethod(request: PendingDappApproval): string {
-  if (request.method === 'xec_cashtabRequest') {
-    return isConnectRequest(request)
-      ? 'Connect your eCash address'
-      : 'Send an eCash transaction'
-  }
   return METHOD_LABELS[request.method] ?? request.method
 }
 

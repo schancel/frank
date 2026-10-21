@@ -30,7 +30,9 @@ import {
 /** Approval decisions and persona provisioning come from extension pages; other messages from a site tab. */
 function mockSenderFor(msg: any): Record<string, unknown> {
   return String(msg?.type).includes('resolve-approval') ||
-    msg?.type === 'provision-site-personas'
+    msg?.type === 'provision-site-personas' ||
+    msg?.type === 'update-persona-state' ||
+    msg?.type === 'set-active-persona'
     ? { url: 'chrome-extension://frank-test-ext/approval.html' }
     : { tab: { id: 1, windowId: 2 } }
 }
@@ -1381,8 +1383,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(approvedConnectedOnly.announced).toHaveLength(1)
   })
 
-  it('registers Bitcoin (FrankBitcoin/unisat/WBIP004) and eCash Cashtab shims with interactive approval', async () => {
-    const { createFrankBitcoinProvider } = await import('./inpage')
+  it('registers no Bitcoin or Cashtab wallet, which Frank cannot back with an account', async () => {
 
     const listeners: Array<
       (msg: any, sender: any, sendResponse: (res: any) => void) => any
@@ -1415,65 +1416,27 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     const bg = installBackgroundBridge(mockScope, bgState)
     const cleanupContent = installContentScriptBridge(window as any, mockScope)
 
-    const provider = installInpageProvider(window as any)!
-    const btcProvider = createFrankBitcoinProvider(provider)
+    const win = window as any
+    delete win.__FRANK_INPAGE_PROVIDER_INSTALLED__
+    delete win.frankEthereum
+    delete win.frankBitcoin
+    delete win.unisat
+    delete win.wbip_providers
+    installInpageProvider(win)
+    expect(win.frankBitcoin).toBeUndefined()
+    expect(win.unisat).toBeUndefined()
+    expect(win.wbip_providers).toBeUndefined()
 
-    // 1. Bitcoin requestAccounts queues approval and returns deterministic bc1q address
-    const btcConnectPromise = btcProvider.requestAccounts()
-    await new Promise(resolve => setTimeout(resolve, 10))
-    const btcApproval = Array.from(bgState.pendingApprovals.values())[0]!
-    expect(btcApproval.chainFamily).toBe('bitcoin')
-
-    await sendRuntimeMessage(
-      {
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'companion-resolve-approval',
-        requestId: btcApproval.id,
-        approved: true,
-        personaAddress: '0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359',
-      },
-      mockScope,
-    )
-    const btcAccounts = await btcConnectPromise
-    expect(btcAccounts[0]).toMatch(/^bc1q/)
-
-    await provider.request({ method: 'wallet_revokePermissions' })
-
-    // 2. eCash Cashtab postMessage bridge (FROM_PAGE -> xec_cashtabRequest -> FROM_CASHTAB)
+    // A Cashtab page request gets no answer and queues nothing.
     const cashtabResponses: any[] = []
     const cashtabListener = (ev: MessageEvent) => {
-      if (ev.data?.type === 'FROM_CASHTAB') {
-        cashtabResponses.push(ev.data)
-      }
+      if (ev.data?.type === 'FROM_CASHTAB') cashtabResponses.push(ev.data)
     }
     window.addEventListener('message', cashtabListener)
-
-    window.postMessage(
-      {
-        type: 'FROM_PAGE',
-        text: 'Cashtab',
-        addressRequest: true,
-      },
-      '*',
-    )
+    window.postMessage({ type: 'FROM_PAGE', text: 'Cashtab', addressRequest: true }, '*')
     await new Promise(resolve => setTimeout(resolve, 15))
-    expect(bgState.pendingApprovals.size).toBe(1)
-    const xecApproval = Array.from(bgState.pendingApprovals.values())[0]!
-    expect(xecApproval.chainFamily).toBe('ecash')
-
-    await sendRuntimeMessage(
-      {
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'companion-resolve-approval',
-        requestId: xecApproval.id,
-        approved: true,
-        personaAddress: '0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359',
-      },
-      mockScope,
-    )
-    await new Promise(resolve => setTimeout(resolve, 15))
-    expect(cashtabResponses.length).toBeGreaterThanOrEqual(1)
-    expect(cashtabResponses[0]?.address).toMatch(/^ecash:q/)
+    expect(cashtabResponses).toEqual([])
+    expect(bgState.pendingApprovals.size).toBe(0)
 
     window.removeEventListener('message', cashtabListener)
     cleanupContent()

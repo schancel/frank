@@ -218,65 +218,6 @@ export class FrankInpageProvider {
   }
 }
 
-export interface FrankBitcoinProvider {
-  readonly isFrank: true
-  requestAccounts: () => Promise<string[]>
-  getAccounts: () => Promise<string[]>
-  getPublicKey: () => Promise<string>
-  getNetwork: () => Promise<string>
-  signMessage: (message: string, type?: string) => Promise<string>
-  signPsbt: (psbtHex: string, options?: unknown) => Promise<string>
-  signPsbts: (psbtHexs: string[], options?: unknown[]) => Promise<string[]>
-  on: (event: string, listener: ProviderEventListener) => FrankInpageProvider
-  removeListener: (
-    event: string,
-    listener: ProviderEventListener,
-  ) => FrankInpageProvider
-}
-
-export function createFrankBitcoinProvider(
-  provider: FrankInpageProvider,
-): FrankBitcoinProvider {
-  return {
-    isFrank: true,
-    requestAccounts: async () =>
-      await provider.request<string[]>({
-        method: 'btc_requestAccounts',
-      }),
-    getAccounts: async () =>
-      await provider.request<string[]>({
-        method: 'btc_getAccounts',
-      }),
-    getPublicKey: async () =>
-      await provider.request<string>({
-        method: 'btc_getPublicKey',
-      }),
-    getNetwork: async () =>
-      await provider.request<string>({
-        method: 'btc_getNetwork',
-      }),
-    signMessage: async (message: string, type?: string) =>
-      await provider.request<string>({
-        method: 'btc_signMessage',
-        params: [message, type ?? 'ecdsa'],
-      }),
-    signPsbt: async (psbtHex: string, options?: unknown) =>
-      await provider.request<string>({
-        method: 'btc_signPsbt',
-        params: [psbtHex, options],
-      }),
-    signPsbts: async (psbtHexs: string[], options?: unknown[]) =>
-      await provider.request<string[]>({
-        method: 'btc_signPsbts',
-        params: [psbtHexs, options],
-      }),
-    on: (event: string, listener: ProviderEventListener) =>
-      provider.on(event, listener),
-    removeListener: (event: string, listener: ProviderEventListener) =>
-      provider.removeListener(event, listener),
-  }
-}
-
 export function isIsolatedExtensionWorld(
   scope: Record<string, any> = typeof globalThis !== 'undefined'
     ? (globalThis as Record<string, any>)
@@ -439,39 +380,12 @@ export function installInpageProvider(
   }
 
   const provider = new FrankInpageProvider(win)
-  const btcProvider = createFrankBitcoinProvider(provider)
 
   win.__FRANK_INPAGE_PROVIDER_INSTALLED__ = true
   win.frankEthereum = provider
-  win.frankBitcoin = btcProvider
   if (!win.ethereum) {
     win.ethereum = provider
   }
-  if (!win.unisat) {
-    win.unisat = btcProvider
-  }
-  if (!Array.isArray(win.wbip_providers)) {
-    win.wbip_providers = []
-  }
-  if (!win.wbip_providers.some((p: any) => p?.id === FRANK_EIP6963_INFO.rdns)) {
-    win.wbip_providers.push({
-      id: FRANK_EIP6963_INFO.rdns,
-      name: FRANK_EIP6963_INFO.name,
-      icon: FRANK_EIP6963_INFO.icon,
-      webUrl: 'https://signet.mx',
-      methods: [
-        'getAccounts',
-        'requestAccounts',
-        'getPublicKey',
-        'getNetwork',
-        'signMessage',
-        'signPsbt',
-        'signPsbts',
-      ],
-      provider: btcProvider,
-    })
-  }
-
   announceEip6963Provider(win, provider, instanceUuid)
   win.addEventListener('eip6963:requestProvider', () => {
     announceEip6963Provider(win, provider, instanceUuid)

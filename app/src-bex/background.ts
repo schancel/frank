@@ -22,11 +22,6 @@ import {
   SYNC_PAIRING_TTL_MS,
   type SyncSenderState,
 } from '../src/utils/sync-pairing'
-import {
-  deriveDeterministicBtcAddress,
-  deriveDeterministicBtcPubKey,
-  deriveDeterministicXecAddress,
-} from './persona-derivation'
 import { createApprovalWindow, type ApprovalWindow } from './approval-window'
 
 export type DappProviderAnnounceMode = 'always' | 'connected-only' | 'stealth'
@@ -41,7 +36,6 @@ export interface OriginPersonaBinding {
 export interface PendingDappApproval {
   id: string
   kind?: 'connect' | 'sign' | 'transaction' | 'permissions'
-  chainFamily?: 'evm' | 'bitcoin' | 'ecash'
   origin: string
   href: string
   method: string
@@ -108,10 +102,6 @@ const PERSONA_ADDRESS_METHODS = new Set([
   'eth_requestAccounts',
   'wallet_getPermissions',
   'wallet_requestPermissions',
-  'btc_getAccounts',
-  'btc_getPublicKey',
-  'btc_requestAccounts',
-  'xec_cashtabRequest',
 ])
 
 const APPROVAL_REQUIRED_METHODS = new Set([
@@ -121,11 +111,6 @@ const APPROVAL_REQUIRED_METHODS = new Set([
   'eth_signTypedData_v3',
   'eth_signTypedData_v4',
   'eth_sendTransaction',
-  'btc_requestAccounts',
-  'btc_signMessage',
-  'btc_signPsbt',
-  'btc_signPsbts',
-  'xec_cashtabRequest',
 ])
 
 const CHAIN_RPC_URLS: Record<string, string> = {
@@ -1432,6 +1417,13 @@ export async function handleBackgroundMessage(
     (message.type === 'set-active-persona' ||
       message.type === 'update-persona-state')
   ) {
+    // Only Frank's own pages set the shared persona; a web page never chooses it.
+    if (!isExtensionPageSender(sender, getRawExtensionApi(runtimeScope))) {
+      return {
+        ok: false,
+        error: { code: 4100, message: 'Unauthorized persona sender.' },
+      }
+    }
     const payload =
       message.payload && typeof message.payload === 'object'
         ? message.payload
@@ -1675,32 +1667,6 @@ export async function handleBackgroundMessage(
       }
     }
 
-    if (method === 'btc_getNetwork') {
-      return { ok: true, result: 'livenet' }
-    }
-
-    if (method === 'btc_getAccounts') {
-      if (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin)) {
-        return { ok: true, result: [] }
-      }
-      const evmPersona = getOriginPersonaAddress(state, normalizedOrigin)
-      return {
-        ok: true,
-        result: [deriveDeterministicBtcAddress(evmPersona)],
-      }
-    }
-
-    if (method === 'btc_getPublicKey') {
-      if (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin)) {
-        return { ok: true, result: '' }
-      }
-      const evmPersona = getOriginPersonaAddress(state, normalizedOrigin)
-      return {
-        ok: true,
-        result: deriveDeterministicBtcPubKey(evmPersona),
-      }
-    }
-
     if (method === 'wallet_getPermissions') {
       if (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin)) {
         return { ok: true, result: [] }
@@ -1736,23 +1702,11 @@ export async function handleBackgroundMessage(
       return { ok: true, result: null }
     }
 
-    // Already-approved origin calling eth_requestAccounts, wallet_requestPermissions, btc_requestAccounts, or xec_cashtabRequest(addressRequest)
-    const cashtabParams =
-      method === 'xec_cashtabRequest'
-        ? ((Array.isArray(params) ? params[0] : params) as
-            | { addressRequest?: boolean; txInfo?: unknown }
-            | undefined)
-        : undefined
-    const isCashtabAddressRequest =
-      method === 'xec_cashtabRequest' &&
-      Boolean(cashtabParams?.addressRequest) &&
-      !cashtabParams?.txInfo
-
+    // Already-approved origin calling eth_requestAccounts or wallet_requestPermissions.
+    // Frank has no Bitcoin or eCash account for dApps: btc_* and xec_* fall through to 4200.
     if (
       (method === 'eth_requestAccounts' ||
-        method === 'wallet_requestPermissions' ||
-        method === 'btc_requestAccounts' ||
-        isCashtabAddressRequest) &&
+        method === 'wallet_requestPermissions') &&
       normalizedOrigin &&
       isOriginConnected(state, normalizedOrigin) &&
       !message.payload?.requireExplicitCompanionApproval
@@ -1773,20 +1727,6 @@ export async function handleBackgroundMessage(
               ],
             },
           ],
-        }
-      }
-      if (method === 'btc_requestAccounts') {
-        return {
-          ok: true,
-          result: [deriveDeterministicBtcAddress(personaAddr)],
-        }
-      }
-      if (isCashtabAddressRequest) {
-        return {
-          ok: true,
-          result: {
-            address: deriveDeterministicXecAddress(personaAddr),
-          },
         }
       }
       return { ok: true, result: [personaAddr] }
@@ -1855,9 +1795,7 @@ export async function handleBackgroundMessage(
       const effectiveOrigin = normalizedOrigin || rawOrigin || 'https://dapp.local'
       const isConnectMethod =
         method === 'eth_requestAccounts' ||
-        method === 'wallet_requestPermissions' ||
-        method === 'btc_requestAccounts' ||
-        isCashtabAddressRequest
+        method === 'wallet_requestPermissions'
 
       // Require origin to be connected before signing or sending transactions
       if (
@@ -1880,10 +1818,7 @@ export async function handleBackgroundMessage(
           ? 'permissions'
           : isConnectMethod
           ? 'connect'
-          : method === 'eth_sendTransaction' ||
-            method === 'btc_signPsbt' ||
-            method === 'btc_signPsbts' ||
-            (method === 'xec_cashtabRequest' && Boolean(cashtabParams?.txInfo))
+          : method === 'eth_sendTransaction'
           ? 'transaction'
           : 'sign'
 
@@ -1891,17 +1826,10 @@ export async function handleBackgroundMessage(
       if (!isPersonaAddress(state.activePersonaAddress)) {
         return { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
       }
-      const chainFamily: 'evm' | 'bitcoin' | 'ecash' =
-        method.startsWith('btc_')
-          ? 'bitcoin'
-          : method === 'xec_cashtabRequest'
-          ? 'ecash'
-          : 'evm'
 
       const pending: PendingDappApproval = {
         id,
         kind,
-        chainFamily,
         origin: effectiveOrigin,
         href,
         method,
@@ -1989,26 +1917,11 @@ export async function handleBackgroundMessage(
       }
     }
     const approved = Boolean(decision.approved ?? message.approved)
-    const pendingCashtabParams =
-      pending.method === 'xec_cashtabRequest'
-        ? ((Array.isArray(pending.params)
-            ? pending.params[0]
-            : pending.params) as
-            | { addressRequest?: boolean; txInfo?: unknown }
-            | undefined)
-        : undefined
-    const isPendingCashtabConnect =
-      pending.method === 'xec_cashtabRequest' &&
-      Boolean(pendingCashtabParams?.addressRequest) &&
-      !pendingCashtabParams?.txInfo
-
     const isConnectMethod =
       pending.kind === 'connect' ||
       pending.kind === 'permissions' ||
       pending.method === 'eth_requestAccounts' ||
-      pending.method === 'wallet_requestPermissions' ||
-      pending.method === 'btc_requestAccounts' ||
-      isPendingCashtabConnect
+      pending.method === 'wallet_requestPermissions'
 
     const rawUseBurner = decision.useBurnerPersona ?? message.useBurnerPersona
     const useBurnerPersona =
@@ -2092,10 +2005,6 @@ export async function handleBackgroundMessage(
                 ],
               },
             ]
-          : pending.method === 'btc_requestAccounts'
-          ? [deriveDeterministicBtcAddress(binding.address)]
-          : isPendingCashtabConnect
-          ? { address: deriveDeterministicXecAddress(binding.address) }
           : [binding.address]
 
       if (waiter) {

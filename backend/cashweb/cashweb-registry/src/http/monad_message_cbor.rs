@@ -366,13 +366,16 @@ pub(crate) async fn ask_node<T: crate::monad_http::JsonRpcTransport>(
 /// whose payments the node already holds is delivered as before: it is a retry, and that
 /// payment's cost is already out of the balance.
 ///
-/// The balance check assumes a sender signs only from funds already in its `latest`
-/// balance: no nonce stacking (a second transaction from an account whose earlier one is not
-/// yet included), and no spending of unconfirmed incoming funds or change. Both the current
-/// wallet and the coin list hold to this. If either is ever added, this check must move to a
-/// pending balance or be softened, or it will refuse payments that would land. On Monad the
-/// `pending` tag behaves as `latest` (docs.monad.xyz/reference/rpc-differences), so asking for
-/// `pending` would not help there.
+/// The wallet stacks nonces: an account may pay a message at n + 1 (or a bundle at n and
+/// n + 1) while its payment at n is not yet included. That is not refused here: the pending
+/// nonce counts only included transactions (on Monad the `pending` tag behaves as `latest`,
+/// docs.monad.xyz/reference/rpc-differences), so a stacked nonce is above it and a gap is left
+/// to the node; and the `latest` balance is not yet debited by n, so each message's payments
+/// are judged against the whole balance, which is lenient. Each request is judged alone: the
+/// payments of other messages of the same account are not summed. Spending unconfirmed incoming
+/// funds is still not done by the wallet; if it ever is, this check must move to a pending
+/// balance or be softened, or it will refuse payments that would land. See
+/// `a_payment_stacked_on_an_unmined_one_of_the_same_account_is_not_refused`.
 pub(crate) fn judge_payments(
     payments: &[crate::monad_evm_tx::DecodedSignedTransaction],
     states: &std::collections::HashMap<Address, SenderState>,

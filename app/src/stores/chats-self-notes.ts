@@ -7,6 +7,7 @@ import {
   MonadStampRecoveredAttemptError,
   MonadStampRejectedError,
   MonadStampTerminalError,
+  StampBlockedError,
 } from '@frank/wallet/evm-stamp-client'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/mailbox-client'
 import type {
@@ -167,7 +168,30 @@ export function normalizeOutboxWrapper(
 }
 
 export function errorDetail(error: unknown): string {
+  // A send blocked by an earlier message keeps that message's payload digest, so the bubble can
+  // name it (`blockingMessage`).
+  if (error instanceof StampBlockedError) return error.blockingPayloadDigest
   return (error instanceof Error ? error.message : String(error)).slice(0, 300)
+}
+
+/** The sent message a blocked send waits for, found by the digest its failure kept: the
+ * message whose own payload digest or payment attempt it is. */
+export function blockingMessage<
+  M extends {
+    outbound: boolean
+    payloadDigest?: string
+    delivery?: { attemptDigest?: string }
+  },
+>(messages: Iterable<M | undefined>, digest: string): M | undefined {
+  if (!/^[0-9a-f]{64}$/.test(digest)) return undefined
+  for (const message of messages)
+    if (
+      message?.outbound &&
+      (message.payloadDigest === digest ||
+        message.delivery?.attemptDigest === digest)
+    )
+      return message
+  return undefined
 }
 
 export function isNoResponseError(error: unknown): boolean {
@@ -208,6 +232,13 @@ export function classifySendFailure(
 ): { reason: OutgoingFailureReason; keepDigest?: string } {
   if (error instanceof MonadStampRecoveredAttemptError) {
     return { reason: 'recovered' }
+  }
+  // Nothing was taken or signed for this message: it is not an attempt to keep.
+  if (
+    error instanceof StampBlockedError ||
+    (error instanceof Error && error.name === 'StampBlockedError')
+  ) {
+    return { reason: 'blocked' }
   }
   if (error instanceof MonadStampAbandonedError) {
     return { reason: 'unverified', keepDigest: error.payloadHashHex }

@@ -890,6 +890,10 @@ export type OutgoingFailureReason =
   | 'recipient-unregistered'
   /** The chain's fee rose above the stamp the composer showed; nothing was paid. */
   | 'stamp-below-fee'
+  /** The funds this message needs are held by an earlier message whose payment cannot finish by
+   * itself (`detail` names its payload digest). Nothing was paid for this one; retrying the
+   * earlier message (its same bytes) is what can free them. */
+  | 'blocked'
   | 'error'
 
 /** Delivery bookkeeping for an outgoing (`outbound`) direct message that is not yet confirmed. */

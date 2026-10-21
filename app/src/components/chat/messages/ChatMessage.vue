@@ -219,6 +219,7 @@
             :amount-exact="stampAmountExact"
             :outbound="message.outbound"
             :failure-reason="message.delivery?.failureReason ?? ''"
+            :failure-detail="message.delivery?.detail ?? ''"
             :payment-state="paymentState"
             :waiting-for-previous-payment="waitingForPreviousPayment"
             :waiting-for-chain="waitingForChain"

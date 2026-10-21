@@ -32,10 +32,11 @@ import {
   ChainWaitCancelledError,
   EvmBlockWatcher,
 } from './evm-block-watcher'
-import type {
-  EvmCoinList,
-  EvmCoinListOrigin,
-  EvmListCoin,
+import {
+  EvmCoinListError,
+  type EvmCoinList,
+  type EvmCoinListOrigin,
+  type EvmListCoin,
 } from './evm-coin-list'
 import type { EvmCoinListSync } from './evm-coin-list-sync'
 
@@ -453,7 +454,7 @@ export class EvmStampPayer {
     excludedAddresses?: readonly string[]
     /** A composed consumer's transaction-count admission limit. */
     maxPayments?: number
-  }): Promise<StampAffordabilityQuote> {
+  }, readAll = false): Promise<StampAffordabilityQuote> {
     if (
       typeof input.stampValueWei !== 'bigint' ||
       input.stampValueWei < 0n ||
@@ -476,7 +477,8 @@ export class EvmStampPayer {
         capacityWei: 0n,
       }
     const fee = await this.read(() => this.currentFee())
-    if (!this.config.sync.settled())
+    if (readAll) await this.read(() => this.config.sync.refresh({ all: true }))
+    else if (!this.config.sync.settled())
       await this.read(() => this.config.sync.refresh())
     const reserve = STAMP_GAS_LIMIT * (fee.maxFeePerGas ?? fee.gasPrice)!
     const smallest = STAMP_GAS_LIMIT * fee.chargedPerGas
@@ -519,6 +521,7 @@ export class EvmStampPayer {
       const whole = usable.find(
         account => account.capacityWei >= input.stampValueWei,
       )
+      if (whole === undefined && !readAll) return this.quote(input, true)
       return whole === undefined
         ? { ...result, status: 'insufficient' }
         : { ...result, status: 'available', maximumFeeWei: reserve }
@@ -567,7 +570,12 @@ export class EvmStampPayer {
     const fee = await this.read(() => this.currentFee(), input.signal)
     const feeReserveWei = STAMP_GAS_LIMIT * (fee.maxFeePerGas ?? fee.gasPrice)!
     const smallest = STAMP_GAS_LIMIT * fee.chargedPerGas
-    let refreshed = false
+    // What the list may be out of date about is read before falling back: first the accounts
+    // it does not know or was told changed (so a sub-account funded a moment ago is preferred
+    // to the main account), then, when still not covered, every account it holds a free coin of
+    // (money may have arrived that nothing announced).
+    let readDue = false
+    let readAll = false
     let waiting = false
     for (;;) {
       if (input.signal?.aborted) throw new ChainWaitCancelledError()
@@ -595,8 +603,13 @@ export class EvmStampPayer {
       // (the Stamp split over them); else one account that covers the stamp alone (a main or
       // identity account spends one nonce, not several); else several coins together.
       const isPool = (coin: EvmListCoin) => coin.origin === 'deterministic'
-      const parts =
-        selectFrom(coin => isPool(coin) && usable(coin), MAX_PARTS) ??
+      let parts = selectFrom(coin => isPool(coin) && usable(coin), MAX_PARTS)
+      if (parts === undefined && !readDue && !sync.settled()) {
+        readDue = true
+        await this.read(() => sync.refresh(), input.signal)
+        continue
+      }
+      parts ??=
         selectFrom(coin => !isPool(coin) && usable(coin), 1) ??
         selectFrom(usable, MAX_PARTS)
       if (parts !== undefined) {
@@ -618,10 +631,10 @@ export class EvmStampPayer {
           this.config.onPoolCoinsClaimed?.()
         return { holder: input.holder, fee, accounts }
       }
-      // Not covered by what the list knows: read what it may be out of date about, once.
-      if (!refreshed) {
-        refreshed = true
-        await this.read(() => sync.refresh({ empties: true }), input.signal)
+      // Not covered by what the list knows: read every account it holds a free coin of, once.
+      if (!readAll) {
+        readAll = readDue = true
+        await this.read(() => sync.refresh({ all: true }), input.signal)
         continue
       }
       // Would coins another operation holds, or coins not spendable yet, cover it?
@@ -700,7 +713,7 @@ export class EvmStampPayer {
       // Woken when the list changes, or at the watcher's next look: one look of the chain per
       // interval for every waiter of the wallet together, no timer of its own.
       await this.untilChanged(input.signal)
-      refreshed = false
+      readDue = false
     }
   }
 
@@ -851,32 +864,56 @@ export class EvmStampPayer {
   ): Promise<string[]> {
     const { pool, coins } = this.config
     const contested: string[] = []
+    const writes: Promise<void>[] = []
     for (const payment of payments) {
+      let tx: Transaction
       try {
-        const tx = Transaction.from(payment.rawTx)
-        const account = payment.address.toLowerCase()
-        const existing = coins.get(account, tx.nonce)
-        const privateKey =
-          existing?.privateKey ??
-          (payment.index !== undefined
-            ? pool.privateKeyOf(payment.index)
-            : this.config.sync.keyOf(account))
-        if (privateKey === undefined)
-          throw new Error(`No key for ${account}`)
-        await coins.restoreHeld(holder, {
-          account,
-          nonce: tx.nonce,
-          privateKey,
-          origin: existing?.origin ?? originOf(payment.source),
-          rawTx: payment.rawTx,
-        })
-        this.restored.add(`${account}:${tx.nonce}`)
+        tx = Transaction.from(payment.rawTx)
+      } catch {
+        contested.push(payment.address)
+        continue
+      }
+      const account = payment.address.toLowerCase()
+      // Named by a stored message whatever happens below: `finishRestore` never frees it.
+      this.restored.add(`${account}:${tx.nonce}`)
+      try {
         if (payment.index !== undefined) pool.restoreClaim(holder, [payment.index])
         else pool.restoreAccountClaim(holder, account)
       } catch {
+        // Another stored message holds this account: it keeps it; the chain decides both.
+        contested.push(payment.address)
+        continue
+      }
+      const existing = coins.get(account, tx.nonce)
+      const privateKey =
+        existing?.privateKey ??
+        (payment.index !== undefined
+          ? pool.privateKeyOf(payment.index)
+          : this.config.sync.keyOf(account))
+      // No key: not a coin the list can hold. The pool's claim above still holds the account.
+      if (privateKey === undefined) continue
+      try {
+        // Held in memory at once; the write follows.
+        writes.push(
+          coins.restoreHeld(holder, {
+            account,
+            nonce: tx.nonce,
+            privateKey,
+            origin: existing?.origin ?? originOf(payment.source),
+            rawTx: payment.rawTx,
+          }),
+        )
+      } catch (error) {
+        if (!(error instanceof EvmCoinListError)) throw error
         contested.push(payment.address)
       }
     }
+    // A write that fails leaves the coin held in memory (fail closed) and is not hidden: the
+    // wallet does not open over it.
+    const failed = (await Promise.allSettled(writes)).find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    )
+    if (failed !== undefined) throw failed.reason
     return contested
   }
 
@@ -981,33 +1018,42 @@ export class EvmStampPayer {
     )
   }
 
-  /** The chain shows the payment included at `block`: its coin is spent, and what its account
-   * holds now is the account's next coin. A sub-account's row records its first spend. The
-   * claim is NOT ended here (see `releasePayment`). Rejects, changing nothing, when what the
-   * account holds cannot be read: settlement looks again later. */
+  /** The chain shows the payment included at block `included`: its coin is spent, and what
+   * its account held at THAT block is the account's next coin (read at the block, not at
+   * `latest`: a node behind the block would answer with the balance before the payment, and a
+   * coin worth more than the account holds signs a transfer the node refuses). Money that
+   * arrives later is learned by reading the account again. A sub-account's row records its
+   * first spend. The claim is NOT ended here (see `releasePayment`). Rejects, changing nothing,
+   * when the balance cannot be read: settlement looks again later. Without `included` the coin
+   * is marked spent with no next coin, and the account is read again. */
   async recordSpent(
     holder: string,
     payment: StampPayment,
-    /** The block that included it; default: the newest block the watcher has seen. */
     included?: number,
   ): Promise<void> {
     const { pool, coins } = this.config
-    const block = included ?? this.watcher.latest() ?? 0
     const tx = Transaction.from(payment.rawTx)
     const account = payment.address.toLowerCase()
     const coin = coins.get(account, tx.nonce)
     if (coin !== undefined && coin.state !== 'spent') {
-      const balance = await this.read(() =>
-        this.config.provider.getBalance(account),
-      )
-      const spacing = this.config.spendSpacingBlocks ?? 0
-      await coins.recordMined(coin, {
-        block,
-        successor: {
-          valueWei: balance,
-          ...(spacing > 0 ? { spendableFromBlock: block + spacing - 1 } : {}),
-        },
-      })
+      if (included === undefined) {
+        await coins.recordMined(coin, { block: this.watcher.latest() ?? 0 })
+        this.config.sync.markDirty(account)
+      } else {
+        const balance = await this.read(() =>
+          this.config.provider.getBalance(account, included),
+        )
+        const spacing = this.config.spendSpacingBlocks ?? 0
+        await coins.recordMined(coin, {
+          block: included,
+          successor: {
+            valueWei: balance,
+            ...(spacing > 0
+              ? { spendableFromBlock: included + spacing - 1 }
+              : {}),
+          },
+        })
+      }
     }
     if (payment.index === undefined || tx.nonce !== 0) return
     const index = payment.index

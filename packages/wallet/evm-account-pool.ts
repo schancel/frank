@@ -489,6 +489,13 @@ export class EvmSubAccountPool {
     return this.accountGenerations.get(address.toLowerCase()) ?? 0;
   }
 
+  /** Every non-row account `holder` holds. */
+  accountsClaimedBy(holder: string): string[] {
+    return [...this.accountClaims]
+      .filter(([, claimant]) => claimant === holder)
+      .map(([address]) => address);
+  }
+
   /** The operation holding the main or identity account at `address`, if any. */
   accountClaimedBy(address: string): string | undefined {
     return this.accountClaims.get(address.toLowerCase());

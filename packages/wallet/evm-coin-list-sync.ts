@@ -37,7 +37,10 @@ export class EvmCoinListSync {
   private readonly empty = new Set<string>()
   private running: Promise<void> | undefined
   private again = false
-  private againEmpties = false
+  private againAll = false
+  /** Counts the times each account was marked dirty: a read that a later mark overtook does not
+   * clear it (what that read saw may predate what the mark announced). */
+  private readonly generations = new Map<string, number>()
 
   constructor(
     private readonly config: {
@@ -56,6 +59,7 @@ export class EvmCoinListSync {
     const key = account.toLowerCase()
     this.empty.delete(key)
     this.dirty.add(key)
+    this.generations.set(key, (this.generations.get(key) ?? 0) + 1)
   }
 
   /** The key of a wallet account the list may hold coins of, or undefined. */
@@ -77,12 +81,13 @@ export class EvmCoinListSync {
   }
 
   /**
-   * Reads every account that needs it, once; concurrent callers share the pass. With
-   * `empties`, the accounts last read empty are read again too: for a payment the list does not
-   * cover, money may have arrived that nothing announced.
+   * Reads every account that needs it, once; concurrent callers share the pass. With `all`,
+   * every account whose coin is not held is read again, empty or not: for a payment the list
+   * does not cover, money may have arrived that nothing announced (a deposit to the main
+   * account, say).
    */
-  refresh(options: { empties?: boolean } = {}): Promise<void> {
-    if (options.empties === true) this.againEmpties = true
+  refresh(options: { all?: boolean } = {}): Promise<void> {
+    if (options.all === true) this.againAll = true
     if (this.running) {
       this.again = true
       return this.running
@@ -90,9 +95,9 @@ export class EvmCoinListSync {
     const run = (async () => {
       do {
         this.again = false
-        const empties = this.againEmpties
-        this.againEmpties = false
-        await this.pass(empties)
+        const all = this.againAll
+        this.againAll = false
+        await this.pass(all)
       } while (this.again)
     })().finally(() => {
       this.running = undefined
@@ -101,18 +106,20 @@ export class EvmCoinListSync {
     return run
   }
 
-  private dueSources(empties = false): CoinListSource[] {
+  private dueSources(all = false): CoinListSource[] {
     const { list } = this.config
     return this.config.sources().filter(source => {
       const account = source.account.toLowerCase()
       if (this.dirty.has(account)) return true
-      if (this.empty.has(account)) return empties
-      return list.latestOf(account) === undefined
+      const coin = list.latestOf(account)
+      if (all) return coin === undefined || coin.state === 'unspent' || coin.state === 'spent'
+      if (this.empty.has(account)) return false
+      return coin === undefined
     })
   }
 
-  private async pass(empties: boolean): Promise<void> {
-    const due = this.dueSources(empties)
+  private async pass(all: boolean): Promise<void> {
+    const due = this.dueSources(all)
     if (due.length === 0) return
     const head = await this.config.watcher.current()
     let cursor = 0
@@ -138,6 +145,7 @@ export class EvmCoinListSync {
   private async readOne(source: CoinListSource, head: number): Promise<void> {
     const { list, provider } = this.config
     const account = source.account.toLowerCase()
+    const generation = this.generations.get(account) ?? 0
     const spacing = this.config.spendSpacingBlocks ?? 0
     const lag = spacing + 1
     const [latest, pending, balance, settledBalance, before] = await Promise.all([
@@ -153,6 +161,8 @@ export class EvmCoinListSync {
             .catch(() => undefined)
         : Promise.resolve(undefined),
     ])
+    // Marked dirty while these reads were out: they may predate what the mark announced.
+    if ((this.generations.get(account) ?? 0) !== generation) return
     // Something of this account is in the mempool: no coin until it is mined.
     if (pending > latest) return
     const live = list.latestOf(account)
@@ -176,6 +186,14 @@ export class EvmCoinListSync {
       spendableFromBlock = head + lag
     if (before !== undefined && before !== latest)
       spendableFromBlock = Math.max(spendableFromBlock ?? 0, head + spacing)
+    // A read never makes the same coin spendable sooner than the list already knew (settlement
+    // set it from the block that included the account's last spend).
+    if (
+      live?.nonce === latest &&
+      live.spendableFromBlock !== undefined &&
+      live.spendableFromBlock > (spendableFromBlock ?? 0)
+    )
+      spendableFromBlock = live.spendableFromBlock
     if (
       live?.state === 'unspent' &&
       live.nonce === latest &&

@@ -1222,6 +1222,9 @@ async function repayReverted(
       if (claim.accounts.length !== 1 || signed === undefined)
         throw new Error('A repeated payment is one transfer')
       await payer.recordSigned(holder, [signed])
+      // From the write on, the row may be on disk even when the write reports an error (as in
+      // `send`): the coin stays held for this session and the chain decides.
+      recorded = true
       await owner.messages.put({
         ...owner.messages.get(consumerId)!,
         payments: [
@@ -1229,7 +1232,6 @@ async function repayReverted(
           { ...signed, state: 'pending', repays: index },
         ],
       })
-      recorded = true
       noteHandOver(await payer.submitPaymentSet([signed.rawTx]))
     } catch (error) {
       // Nothing signed left the wallet unless the row has it; then the row keeps the claim.

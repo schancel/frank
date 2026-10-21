@@ -83,6 +83,10 @@ const DEV_KEY =
   '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
 // Above the fee floor of a transfer on the node (about 4e13 wei at 1.9 gwei).
 const STAMP = 10n ** 15n
+/** A stamp more than everything the spent sub-accounts still hold together (their successor
+ * coins are listed and spendable): only the main account covers it, so it pays from main and
+ * the main-account exclusivity below is exercised deliberately. */
+const MAIN_STAMP = 10n ** 17n
 const ID = (round: number, n: number) =>
   `00000000-0000-4000-8${round.toString(16).padStart(3, '0')}-${n
     .toString(16)
@@ -163,12 +167,12 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     node?.kill()
   })
 
-  const send = (round: number, n: number) =>
+  const send = (round: number, n: number, stampValue = STAMP) =>
     f.chain.directMessages.send({
       wallet: alice,
       recipient: f.bob.identity.address,
       items: [{ type: 'text', text: `round ${round} message ${n}` }],
-      stampValue: STAMP,
+      stampValue,
       messageId: ID(round, n),
     })
   /** Ticks the wallet until every payment of `digests` is in a block. */
@@ -347,8 +351,8 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     const nonce = await chain.getTransactionCount(main, 'latest')
     await automine(false)
     try {
-      // Every funded account is spent: this message is paid from the main account.
-      const first = await send(3, 0)
+      // Only the main account covers this stamp: this message is paid from it.
+      const first = await send(3, 0, MAIN_STAMP)
       expect(alice.pool.accountClaimedBy(main)).toBeDefined()
       expect(alice.pool.accountClaimedBy(main)).not.toMatch(NATIVE_HOLDER)
       expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 1)
@@ -370,7 +374,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
       // The send has returned and its transfer is not mined: the account is still held, and
       // the next message waits for it instead of signing at a third nonce.
       expect(alice.pool.accountClaimedBy(main)).toMatch(NATIVE_HOLDER)
-      const second = send(3, 1)
+      const second = send(3, 1, MAIN_STAMP)
       expect(await stillWaiting(second, 2_500)).toBe(true)
       expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 2)
       await mine()
@@ -396,7 +400,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     const nonce = await chain.getTransactionCount(main, 'latest')
     await automine(false)
     try {
-      const message = await send(4, 0)
+      const message = await send(4, 0, MAIN_STAMP)
       await expect(
         alice.sendNative({
           recipient: { raw: Wallet.createRandom().address },
@@ -426,7 +430,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
         gasLimit: 60_000n,
       })
       expect(alice.pool.accountClaimedBy(main)).toMatch(NATIVE_HOLDER)
-      const message = send(5, 0)
+      const message = send(5, 0, MAIN_STAMP)
       expect(await stillWaiting(message, 2_500)).toBe(true)
       expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 1)
       await mine()
@@ -453,7 +457,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
         }),
       ).rejects.toThrow('the caller could not record it')
       expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
-      const after = await send(5, 1)
+      const after = await send(5, 1, MAIN_STAMP)
       await settle([after.payloadDigest])
       expect(await chain.getTransactionCount(main, 'latest')).toBe(nonce + 3)
     } finally {

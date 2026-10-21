@@ -38,6 +38,8 @@ interface Node {
   pending?: Map<string, number>
   receipts: Map<string, { status: number; blockNumber: number; blockHash: string }>
   calls: string[]
+  /** While set, balance reads wait for it. */
+  gate?: Promise<void>
 }
 
 async function setup(
@@ -71,6 +73,7 @@ async function setup(
     },
     getBalance: async (address: string, tag?: number | string) => {
       node.calls.push(`balance:${address.toLowerCase()}`)
+      await node.gate
       const account = address.toLowerCase()
       const now = node.balances.get(account) ?? 0n
       if (typeof tag === 'number') return node.balanceAt?.(account, tag) ?? now
@@ -423,7 +426,84 @@ describe('settlement: the chain decides', () => {
   })
 })
 
+describe('what the list may be out of date about', () => {
+  it('a deposit to an account the list already holds a coin of is found when the list does not cover a payment', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON / 100n)
+    await f.sync.refresh()
+    expect(f.list.get(at(main), 0)?.valueWei).toBe(MON / 100n)
+    f.node.balances.set(at(main), MON) // nothing announced it
+    const claim = await f.payer.claim({ holder: 'm', stampValueWei: MON / 2n })
+    expect(claim.accounts).toEqual([
+      expect.objectContaining({ address: at(main), nonce: 0, paymentValueWei: MON / 2n }),
+    ])
+    // A quote that finds too little reads again too.
+    f.node.balances.set(at(received[0]!), 3n * MON)
+    expect((await f.payer.quote({ stampValueWei: 2n * MON })).status).toBe('available')
+  })
+
+  it('a read that a later mark overtook does not clear the mark, and lists nothing', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    let open!: () => void
+    f.node.gate = new Promise<void>(resolve => (open = resolve))
+    f.sync.markDirty(at(main))
+    const reading = f.sync.refresh()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    // Something spends from main while the read is out (an unjournalled transfer, say).
+    f.sync.markDirty(at(main))
+    open()
+    f.node.gate = undefined
+    await reading
+    expect(f.sync.isDirty(at(main))).toBe(true)
+    expect(f.list.get(at(main), 0)).toBeUndefined()
+  })
+
+  it('the next coin of a mined payment is what the account held at the block that included it, not what a lagging node says now', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    const claim = await f.payer.claim({ holder: 'm', stampValueWei: MON / 100n })
+    const [signed] = await signAndRecord(f, claim)
+    mine(f.node, signed!.rawTx, 1001)
+    const after = f.node.balances.get(at(main))!
+    // A replica behind block 1001 still says the balance before the payment.
+    f.node.balances.set(at(main), MON)
+    f.node.balanceAt = (account, block) =>
+      account === at(main) && block >= 1001 ? after : MON
+    await f.payer.recordSpent('m', signed!, 1001)
+    expect(f.list.get(at(main), 1)?.valueWei).toBe(after)
+  })
+})
+
 describe('restart and repeated sync', () => {
+  it('a coin whose write fails while it is restored stays held, and the open fails rather than freeing it', async () => {
+    const store = new MemoryRecordStore<StoredEvmListCoin>()
+    const node: Node = {
+      head: 1000,
+      balances: new Map([[at(main), MON]]),
+      nonces: new Map(),
+      receipts: new Map(),
+      calls: [],
+    }
+    const before = await make({ store, node })
+    const claim = await before.payer.claim({ holder: 'kept', stampValueWei: MON / 100n })
+    const [stored] = await signAndRecord(before, claim)
+    before.watcher.stop()
+    // The coin's row is lost (as after a store reset) and every write fails.
+    await store.delete(`${at(main)}:0`)
+    const after = await make({ store, node })
+    store.put = async () => {
+      throw new Error('disk full')
+    }
+    await expect(after.payer.restore('kept', [stored!])).rejects.toThrow('disk full')
+    expect(after.list.get(at(main), 0)).toMatchObject({
+      state: 'pending_receipt',
+      holder: 'kept',
+    })
+    await after.payer.finishRestore().catch(() => undefined)
+    expect(after.list.get(at(main), 0)?.state).toBe('pending_receipt')
+  })
+
   it('after a restart, a stored payment\'s coin is held again; a signed coin no record names is free', async () => {
     const store = new MemoryRecordStore<StoredEvmListCoin>()
     const node: Node = {

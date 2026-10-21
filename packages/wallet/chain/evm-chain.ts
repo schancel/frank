@@ -930,7 +930,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       if (last !== undefined && Date.now() - last < 1_000) look = false;
       else internals.lastOwnLookMs = Date.now();
     }
-    for (const address of mainAccountAddresses(wallet)) {
+    // The main and identity accounts, and any other account a funding run claimed under this
+    // holder (a received coin or the identity account paying a topic burn or fund-ahead).
+    const addresses = new Set([
+      ...mainAccountAddresses(wallet),
+      ...(typeof pool.accountsClaimedBy === "function"
+        ? pool.accountsClaimedBy(holder)
+        : []),
+    ]);
+    for (const address of addresses) {
       if (pool.accountClaimedBy(address) !== holder) continue;
       if (look) await lookAtOwnTransactions(wallet, address);
       // An operation is running under this holder right now: it lets go itself when it ends.

@@ -440,6 +440,18 @@ export class EvmStampPayer {
   }
 
   /**
+   * Starts reading the accounts the list must read before it can be trusted (new or marked to
+   * be read again), without waiting for it. A send calls this as it begins, so those reads go
+   * out together with its fee read instead of after it; a claim that needs them joins the read
+   * in flight. Nothing is taken. A failed read is left to the claim, which reads again.
+   */
+  readCoinsAhead(): void {
+    const { sync } = this.config
+    if (sync.settled()) return
+    void sync.refresh().catch(() => undefined)
+  }
+
+  /**
    * The smallest value worth paying in one stamp payment: what the chain charges to move it.
    * One plain transfer as this wallet builds it, 21,000 gas, at the node's current gas price
    * (a chain that charges the gas limit, as Monad does, charges exactly this). Read from the

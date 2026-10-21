@@ -700,6 +700,26 @@ describe('parallel paid messages', () => {
     ).toEqual(['spent'])
   })
 
+  it('a send reads the accounts its coin list must read at the same time as the fee, not after it', async () => {
+    await fundAccounts(1) // a new funded account: the list must read it before trusting it
+    let open!: () => void
+    const gate = new Promise<void>(resolve => (open = resolve))
+    const provider = alice.provider
+    const fee = provider.getFeeData.bind(provider)
+    jest.spyOn(provider, 'getFeeData').mockImplementation(async () => {
+      await gate
+      return fee()
+    })
+    providerRequests.length = 0
+    const sending = send(1)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    // The fee has not come back, and the account is already being read.
+    const readBeforeFee = providerRequests.includes('getBalance')
+    open()
+    await expect(sending).resolves.toMatchObject({ stampValueWei: STAMP })
+    expect(readBeforeFee).toBe(true)
+  })
+
   it('neither broadcast lands while the node is down: the same bytes are broadcast again until included', async () => {
     const [row] = await fundAccounts(1)
     offlineChain.relayBroadcasts = false

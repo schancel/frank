@@ -1978,6 +1978,8 @@ async function send(
           },
         }),
       )
+    // The accounts the coin list must read go out now, together with the fee read below.
+    payer.readCoinsAhead()
     // Explicit paid sends queue while the node is unreachable. A new implicit default instead
     // reports an unavailable fee before claiming or signing; free messages bypass this path.
     for (;;) {

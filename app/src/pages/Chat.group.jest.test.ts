@@ -17,7 +17,10 @@ jest.mock('../adapters/level-message-store', () => ({
   }),
 }))
 jest.mock('vue-router', () => ({ useRouter: () => ({ push: jest.fn() }) }))
-jest.mock('../utils/clients', () => ({ useMonadWallet: () => ({}) }))
+jest.mock('../utils/clients', () => {
+  const wallet = {}
+  return { useMonadWallet: () => wallet }
+})
 jest.mock('../composables/useBalance', () => ({
   useBalance: () => ({ refresh: jest.fn() }),
 }))
@@ -44,6 +47,10 @@ const { useChatStore, setConversationIdSalt } = require('../stores/chats')
 const { conversationIdSalt } = require('@frank/cashweb/relay/conversation-id')
 const { useContactStore } = require('../stores/contacts')
 const en = require('../i18n/en-us').default
+const {
+  encodeGroupItems,
+  decodeGroupItems,
+} = require('../utils/group-message-items')
 const fr = require('../i18n/fr-fr').default
 
 const ALICE = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'
@@ -473,6 +480,62 @@ describe('a shared group invitation', () => {
     await wrapper.get('[data-testid="decline-group-invite"]').trigger('click')
     expect(conversation.membershipStatus).toBe('declined')
     expect(chats.shouldPollGroupMailbox(CONVERSATION)).toBe(false)
+  })
+})
+
+describe('the group composer', () => {
+  it('sends calendar/vCard follow-ups and articles as stamp-free group messages', async () => {
+    const { wrapper, chats } = await openConversation()
+    const conversation = chats.conversations[CONVERSATION]
+    conversation.kind = 'group'
+    conversation.address = 'group:' + '11'.repeat(32)
+    conversation.membershipStatus = 'joined'
+    conversation.name = 'Protocol Team'
+    await flushPromises()
+    const { errorNotify } = require('../utils/notifications')
+    errorNotify.mockClear()
+    const sent: unknown[][] = []
+    jest
+      .spyOn(chats, 'sendGroupMessage')
+      .mockImplementation(async ({ items }: { items: unknown[] }) => {
+        // What the group send seals: every item must have a group codec.
+        decodeGroupItems(encodeGroupItems(items as never))
+        sent.push(items)
+        return { state: 'sent', payloadDigest: 'group-digest' }
+      })
+    const vm = wrapper.vm as any
+    // A direct-message stamp chosen earlier must not turn a group send into a payment.
+    vm.stampAmount = '0.5'
+    const card = {
+      type: 'contact-card',
+      uid: 'bob-example',
+      fullName: 'Bob Example',
+      emails: ['bob@example.com'],
+    }
+    const first = await vm.sendFollowUpItems({ items: [card] })
+    expect(errorNotify.mock.calls).toEqual([])
+    expect(first).toBe(true)
+    vm.articleDialog = true
+    await vm.sendArticle({
+      schemaVersion: 1,
+      articleId: 'group-article-1',
+      title: 'Notes',
+      markdownBody: 'Hello group',
+      publishedAtIso: '2026-10-20T00:00:00.000Z',
+    })
+    await flushPromises()
+    expect(errorNotify).not.toHaveBeenCalled()
+    expect(sent).toHaveLength(2)
+    expect((sent[0][0] as { type: string }).type).toBe('contact-card')
+    expect((sent[1][0] as { type: string }).type).toBe('application')
+    // A follow-up that is itself a payment is refused, never sent free.
+    await expect(
+      vm.sendFollowUpItems({ items: [card], stampValueWei: 5n }),
+    ).resolves.toBe(false)
+    expect(errorNotify).toHaveBeenCalledWith(
+      new Error('Group payments are unsupported'),
+    )
+    expect(sent).toHaveLength(2)
   })
 })
 

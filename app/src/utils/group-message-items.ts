@@ -20,8 +20,10 @@ import { initReplyPlugin } from '@frank/wallet/message-item-plugins/reply/plugin
 import { initCalendarInvitePlugin } from '@frank/wallet/message-item-plugins/calendar-invite/plugin'
 import { initCalendarRsvpPlugin } from '@frank/wallet/message-item-plugins/calendar-rsvp/plugin'
 import { initContactCardPlugin } from '@frank/wallet/message-item-plugins/contact-card/plugin'
+import { createArticlePlugin } from '@frank/wallet/message-item-plugins/article'
 
-// Groups currently support conversation content. Payment and game capabilities are not installed.
+// Groups currently support conversation content (including articles). Payment and game
+// capabilities are not installed.
 const messageItems = createMessageItemRegistry()
 for (const [type, init] of [
   ['text', initTextPlugin],
@@ -37,6 +39,7 @@ for (const [type, init] of [
     type,
     init,
   )
+messageItems.registerApplication(createArticlePlugin())
 
 /** Group content uses the same composed item codecs and limits as direct messages. */
 export function encodeGroupItems(items: MessageItem[]): Uint8Array {

@@ -1748,8 +1748,14 @@ export default defineComponent({
         const revision = accountStatus.revision
         const peer = this.recipientAddress || this.address
         const conversationId = this.conversation?.id
-        const stampValue =
-          stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
+        // A group message carries no stamp. A follow-up whose meaning is a payment (a purchase
+        // priced as its stamp) is refused rather than silently sent for free.
+        const groupConversation = this.conversation?.kind === 'group'
+        if (groupConversation && (stampValueWei ?? 0n) !== 0n)
+          throw new Error('Group payments are unsupported')
+        const stampValue = groupConversation
+          ? 0n
+          : stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
         const capturedItems = items.slice()
         const contextCurrent = () =>
           revision === accountStatus.revision &&

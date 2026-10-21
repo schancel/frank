@@ -71,7 +71,7 @@
             icon="arrow_back"
             :aria-label="$t('a11y.backToChats')"
             data-testid="chat-back"
-            @click="$router.push('/chat')"
+            @click="backToChats"
           />
           <q-btn
             class="q-px-sm"
@@ -442,6 +442,22 @@ export default defineComponent({
     this.selectMode = false
   },
   methods: {
+    // Like Settings' closeSection: when the chat list is the page we came from, go back to it
+    // (so back does not stack list → chat → list); otherwise (a deep link) replace with the list.
+    backToChats() {
+      const previous = (
+        typeof window !== 'undefined'
+          ? (window.history.state as { back?: unknown } | null)?.back
+          : null
+      ) as string | null | undefined
+      if (previous === '/chat') {
+        this.$router.back()
+      } else {
+        void Promise.resolve(this.$router.replace('/chat')).catch(
+          () => undefined,
+        )
+      }
+    },
     startWebRtcCall(withVideo: boolean) {
       this.webrtcCallHandler?.({ withVideo })
     },

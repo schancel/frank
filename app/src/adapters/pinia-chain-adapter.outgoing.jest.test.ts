@@ -15,6 +15,7 @@ import {
 } from './pinia-chain-adapter'
 import { useChatStore } from '../stores/chats'
 import { activeChain } from '@frank/wallet/chain'
+import { directMessageNotAttempted } from '@frank/wallet/chain/active-chain'
 import type { WalletHandle } from '@frank/wallet/chain'
 import { MonadStampPendingAttemptError } from '@frank/wallet/evm-stamp-client'
 import { setConversationIdSalt as installTestConversationIdSalt } from '../stores/chats'
@@ -151,6 +152,61 @@ describe('startOutgoingReconciliation (#270)', () => {
     ])
     expect(send).toHaveBeenCalledTimes(1)
     polling.stop()
+  })
+
+  it('backs off unattempted offline sends and resumes the original request online', async () => {
+    const offline = Object.assign(new Error('network unavailable'), {
+      [directMessageNotAttempted]: true,
+    })
+    const send = jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockRejectedValue(offline)
+    const chats = useChatStore()
+    const sending = chats.sendMessage({
+      wallet,
+      address: PEER,
+      items: [{ type: 'text', text: 'offline' }],
+      stampValue: 5n,
+    })
+    await jest.advanceTimersByTimeAsync(1500)
+    expect(await sending).toEqual({ state: 'payment-pending' })
+    const original = send.mock.calls[0][0]
+    const polling = startOutgoingReconciliation({ wallet })
+    try {
+      await jest.advanceTimersByTimeAsync(1500)
+      expect(send).toHaveBeenCalledTimes(6)
+      await jest.advanceTimersByTimeAsync(
+        2 * OUTGOING_RECONCILE_INTERVAL_MS - 1,
+      )
+      expect(send).toHaveBeenCalledTimes(6)
+      await jest.advanceTimersByTimeAsync(1501)
+      expect(send).toHaveBeenCalledTimes(9)
+      await jest.advanceTimersByTimeAsync(
+        4 * OUTGOING_RECONCILE_INTERVAL_MS - 1,
+      )
+      expect(send).toHaveBeenCalledTimes(9)
+      send.mockResolvedValue({
+        payloadDigest: HASH,
+        stampValueWei: 5n,
+        stampPayments: [],
+        preparationTxHashes: [],
+      })
+      await jest.advanceTimersByTimeAsync(1)
+      expect(send).toHaveBeenCalledTimes(10)
+      expect(send.mock.calls[9][0]).toEqual(
+        expect.objectContaining({
+          messageId: original.messageId,
+          recipient: original.recipient,
+          items: original.items,
+          stampValue: 5n,
+        }),
+      )
+      expect(chats.chats[PEER]?.messages).toEqual([
+        expect.objectContaining({ status: 'confirmed', payloadDigest: HASH }),
+      ])
+    } finally {
+      polling.stop()
+    }
   })
 
   it('stop() ends the loop', async () => {

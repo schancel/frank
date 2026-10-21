@@ -39,6 +39,7 @@ import {
   sendsWaitingForPreviousPayment,
 } from '../utils/outgoing-waiting'
 import { activeChain } from '@frank/wallet/chain'
+import { isDirectMessageNotAttempted } from '@frank/wallet/chain/active-chain'
 import { createCooperativeBatchYielder } from '@frank/wallet/chain/event-loop-yield'
 import { sendsWaitingBlocks } from '../utils/outgoing-payments'
 import { messageItems } from '../utils/message-items'
@@ -4069,11 +4070,19 @@ export const useChatStore = defineStore('chats', {
         if (minimum !== undefined && minimum > message.stampValueWei)
           message.stampValueWei = minimum
       }
-      await this.setOutgoingState(address, id, 'pending', {})
+      // Keep an already queued message queued while it retries: toggling through pending
+      // would reset the background backoff and make restart mistake it for a cut-off send.
+      await this.setOutgoingState(
+        address,
+        id,
+        message.status === 'payment-pending' ? 'payment-pending' : 'pending',
+        {},
+      )
       if (!stillCurrent()) return { state: 'busy' }
       let ownDigest: string | undefined
       let result: DirectMessageSendResult | undefined
       let lastSendError: unknown
+      let allCallsUnattempted = true
       const maxSendAttempts = 3
 
       for (let sendAttempt = 1; sendAttempt <= maxSendAttempts; sendAttempt++) {
@@ -4188,6 +4197,8 @@ export const useChatStore = defineStore('chats', {
           break
         } catch (error) {
           lastSendError = error
+          allCallsUnattempted &&=
+            ownDigest === undefined && isDirectMessageNotAttempted(error)
           cancellable.done()
           if (
             error instanceof DirectMessageAlreadyAttemptedError ||
@@ -4281,6 +4292,14 @@ export const useChatStore = defineStore('chats', {
             )
             await new Promise(r => setTimeout(r, sendAttempt * 500))
             continue
+          }
+
+          if (isTransientRpc && allCallsUnattempted && stillCurrent()) {
+            // Every rejected call explicitly did nothing. Retain this same message ID and
+            // request for the existing background reconciliation queue, including after restart.
+            // An absent digest alone never grants this authority.
+            await this.setOutgoingState(address, id, 'payment-pending', {})
+            return { state: 'payment-pending' }
           }
 
           console.error('[sendDirectMessage error]:', error)

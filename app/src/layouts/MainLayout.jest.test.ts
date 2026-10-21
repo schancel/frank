@@ -214,10 +214,12 @@ async function mountLayout(
   width: number,
   attachTo?: HTMLElement,
   setup = true,
+  initialPath = '/',
 ) {
   mockSetActiveConversation.mockClear()
   const $q = { screen: { width } }
   const router = createFakeRouter()
+  router.currentRoute.value = { path: initialPath }
   mockRouterRef.current = router
   const wrapper = mount(MainLayout, {
     attachTo,
@@ -782,7 +784,6 @@ describe('MainLayout mobile/extension bottom navigation bar', () => {
       'My Identity QR Code',
       'Settings',
     ])
-
     ;(
       wrapper.vm as unknown as {
         setSetupNavigationLocked(locked: boolean): void
@@ -806,4 +807,25 @@ describe('MainLayout mobile/extension bottom navigation bar', () => {
   })
 })
 
+describe('MainLayout bottom bar on the Messages tab (Telegram/WhatsApp)', () => {
+  it('the Messages tab opens the conversation list, not the last conversation', async () => {
+    const { wrapper, router } = await mountLayout(390)
+    await wrapper.find('[data-testid="mobile-nav-chats"]').trigger('click')
+    expect(router.push).toHaveBeenCalledWith('/chat')
+    expect(mockSetActiveConversation).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 
+  it.each([
+    ['/chat', true],
+    ['/forum', true],
+    ['/settings/appearance', true],
+    ['/chat/0x1111111111111111111111111111111111111111', false],
+  ])('on %s the bar is shown: %s', async (path, shown) => {
+    const { wrapper } = await mountLayout(390, undefined, true, path)
+    expect(wrapper.find('[data-testid="mobile-bottom-nav"]').exists()).toBe(
+      shown,
+    )
+    wrapper.unmount()
+  })
+})

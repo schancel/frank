@@ -186,8 +186,12 @@ export function applyViewportScaleAndMetrics(
   if (root?.style) {
     const keyboardShrunkViewport =
       metrics.visualHeight !== undefined &&
-      metrics.innerHeight > 0 &&
-      metrics.innerHeight - metrics.visualHeight > 40
+      metrics.visualHeight > 0 &&
+      ((metrics.innerHeight > 0 &&
+        metrics.innerHeight - metrics.visualHeight > 40) ||
+        (metrics.maxTouchPoints > 0 &&
+          metrics.screenHeight > 0 &&
+          metrics.screenHeight - metrics.visualHeight > 220))
     if (result.scale !== 1) {
       root.style.setProperty('zoom', String(result.scale))
       ;(root.style as unknown as Record<string, string>).zoom = String(

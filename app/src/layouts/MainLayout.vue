@@ -5,6 +5,7 @@
       'frank-has-mobile-bottom-nav': showMobileBottomNav,
       'frank-is-extension-popup': isExtensionPopup,
     }"
+    :style="layoutVarsStyle"
   >
     <q-drawer
       v-model="myDrawerOpen"
@@ -186,6 +187,7 @@ export default defineComponent({
       pendingRestoreTimer: undefined as
         | ReturnType<typeof setTimeout>
         | undefined,
+      viewportSyncTimers: [] as ReturnType<typeof setTimeout>[],
       ownedClose: false,
       // Background layout children this component marked `inert` for the open overlay; only these
       // are un-marked again, so an `inert` set by anything else is never touched (#277).
@@ -273,6 +275,12 @@ export default defineComponent({
       window.addEventListener('resize', this.syncMobileViewport, {
         passive: true,
       })
+      window.addEventListener('focusin', this.onViewportFocusChange, {
+        passive: true,
+      })
+      window.addEventListener('focusout', this.onViewportFocusChange, {
+        passive: true,
+      })
       window.visualViewport?.addEventListener(
         'resize',
         this.syncMobileViewport,
@@ -302,6 +310,8 @@ export default defineComponent({
     if (typeof window !== 'undefined') {
       window.removeEventListener('scroll', this.onWindowScroll)
       window.removeEventListener('resize', this.syncMobileViewport)
+      window.removeEventListener('focusin', this.onViewportFocusChange)
+      window.removeEventListener('focusout', this.onViewportFocusChange)
       window.visualViewport?.removeEventListener(
         'resize',
         this.syncMobileViewport,
@@ -311,6 +321,7 @@ export default defineComponent({
         this.syncMobileViewport,
       )
     }
+    this.clearViewportSyncTimers()
     this.setBackgroundInert(false)
     this.removeAfterEach?.()
     this.removeOnError?.()
@@ -500,6 +511,32 @@ export default defineComponent({
       applyViewportScaleAndMetrics()
       this.onWindowScroll()
     },
+    clearViewportSyncTimers() {
+      for (const timer of this.viewportSyncTimers) {
+        clearTimeout(timer)
+      }
+      this.viewportSyncTimers = []
+    },
+    onViewportFocusChange(e?: Event) {
+      const target = e?.target as HTMLElement | null | undefined
+      if (
+        target &&
+        target.tagName !== 'INPUT' &&
+        target.tagName !== 'TEXTAREA' &&
+        !target.isContentEditable
+      ) {
+        return
+      }
+      this.clearViewportSyncTimers()
+      this.syncMobileViewport()
+      for (const delayMs of [50, 150, 300, 450]) {
+        const timer = setTimeout(() => {
+          if (this.disposed) return
+          this.syncMobileViewport()
+        }, delayMs)
+        this.viewportSyncTimers.push(timer)
+      }
+    },
     onWindowScroll() {
       if (
         typeof window !== 'undefined' &&
@@ -582,6 +619,15 @@ export default defineComponent({
         q?.screen?.width ??
         (typeof window !== 'undefined' ? window.innerWidth : 1024)
       return getEffectiveScreenWidth(raw)
+    },
+    layoutVarsStyle(): Record<string, string> {
+      const offset =
+        this.myDrawerOpen && !isNarrowWidth(this.screenWidth)
+          ? `${this.drawerWidth}px`
+          : '0px'
+      return {
+        '--frank-drawer-offset': offset,
+      }
     },
     overlayOpen(): boolean {
       return this.myDrawerOpen && isNarrowWidth(this.screenWidth)

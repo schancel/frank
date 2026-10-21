@@ -663,6 +663,26 @@ export default defineComponent({
 </script>
 
 <style lang="scss" scoped>
+.chat-layout-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-layout-root > :deep(.chat-container) {
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .chat-header-title {
   line-height: 1.2;
 }

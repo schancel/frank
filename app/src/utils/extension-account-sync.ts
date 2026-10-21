@@ -7,6 +7,7 @@ import { shallowRef } from 'vue'
 import {
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   isBrowserExtensionRuntime,
+  isFrankWebAppOrigin,
   sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
 import {
@@ -19,6 +20,70 @@ import {
   type SyncReceiveResult,
   type SyncSenderState,
 } from './sync-pairing'
+
+/** Asks only for navigation in an existing ready web account; never sends account data. */
+export async function requestWebAccountSyncSender(): Promise<boolean> {
+  if (!isBrowserExtensionRuntime()) return false
+  try {
+    const response = await sendRuntimeMessage<
+      unknown,
+      { ok?: boolean; result?: { ok?: boolean } }
+    >({
+      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+      type: 'request-sync-sender',
+    })
+    return response?.ok === true && response.result?.ok === true
+  } catch {
+    return false
+  }
+}
+
+/** A content-bridge navigation hint, with no export or account mutation authority. */
+export async function handlePageSyncNavigationRequest(
+  event: MessageEvent,
+  navigate: () => boolean | Promise<boolean>,
+  win: Window = window,
+): Promise<boolean> {
+  const data = event.data
+  if (
+    event.source !== win ||
+    event.origin !== win.location.origin ||
+    !isFrankWebAppOrigin(win.location.origin) ||
+    win.top !== win ||
+    data?.channel !== FRANK_PWA_EXTENSION_SYNC_CHANNEL ||
+    data.direction !== 'to-pwa' ||
+    data.type !== 'open-sync-sender' ||
+    typeof data.id !== 'string' ||
+    !data.id ||
+    data.id.length > 128
+  )
+    return false
+  let ok = false
+  if (accountStatus.status === 'ready') {
+    try {
+      const revision = accountStatus.revision
+      const account = accountStatus.account
+      ok =
+        (await navigate()) === true &&
+        accountStatus.status === 'ready' &&
+        accountStatus.revision === revision &&
+        accountStatus.account === account
+    } catch {
+      /* The sender page did not open. */
+    }
+  }
+  win.postMessage(
+    {
+      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+      direction: 'to-extension',
+      type: 'sync-navigation-reply',
+      id: data.id,
+      result: { ok },
+    },
+    win.location.origin,
+  )
+  return true
+}
 
 /**
  * What the sending side shows while it waits for the PIN: the PIN itself, and
@@ -159,7 +224,9 @@ async function sendSyncPairMessage(
   type: 'pair-hello' | 'pair-confirm',
   payload: SyncConfirmRequest | undefined,
   win: Window,
+  signal?: AbortSignal,
 ): Promise<unknown> {
+  if (signal?.aborted) return null
   if (isBrowserExtensionRuntime()) {
     // The background relays it to the web app tab that offered an account.
     const response = await sendRuntimeMessage<Record<string, unknown>, any>({
@@ -167,7 +234,7 @@ async function sendSyncPairMessage(
       type,
       payload,
     }).catch(() => null)
-    return response?.result ?? null
+    return signal?.aborted ? null : response?.result ?? null
   }
   // The extension's content script relays it to the background, which holds
   // the extension's sending session.
@@ -176,8 +243,10 @@ async function sendSyncPairMessage(
     const done = (value: unknown) => {
       clearTimeout(timer)
       win.removeEventListener('message', onMessage)
+      signal?.removeEventListener('abort', onAbort)
       resolve(value)
     }
+    const onAbort = () => done(null)
     const onMessage = (event: MessageEvent) => {
       const data = event.data
       if (
@@ -194,6 +263,7 @@ async function sendSyncPairMessage(
     }
     const timer = setTimeout(() => done(null), SYNC_PAIR_REPLY_TIMEOUT_MS)
     win.addEventListener('message', onMessage)
+    signal?.addEventListener('abort', onAbort, { once: true })
     win.postMessage(
       {
         channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
@@ -228,12 +298,13 @@ export function canReceiveSyncedAccount(): boolean {
 export async function receiveAccountOverBridge(
   pin: string,
   win: Window = window,
+  options: { signal?: AbortSignal } = {},
 ): Promise<SyncReceiveResult> {
   if (!canReceiveSyncedAccount()) return { ok: false, reason: 'has-account' }
   return receiveSyncBundle(
     pin,
     async (type, payload) =>
-      (await sendSyncPairMessage(type, payload, win)) ?? {
+      (await sendSyncPairMessage(type, payload, win, options.signal)) ?? {
         ok: false,
         reason: 'no-sender',
       },

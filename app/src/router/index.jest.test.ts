@@ -28,6 +28,7 @@ jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({ fetchAndAddContact: jest.fn() }),
 }))
 import router from './index'
+import { isPersistableExtensionRoute } from './extension-route-persistence'
 import { setStartupRestoration } from '../boot/startup-state'
 beforeEach(() => {
   setStartupRestoration({ phase: 'restored' })
@@ -115,7 +116,10 @@ test.each(['/setup', '/docs', '/docs/guide', '/about', '/changelog'])(
 test('reopens extension popup/sidepanel/window to the last visited route when account is ready', async () => {
   mockStatus.status = 'ready'
   const store = new Map<string, string>([
-    ['frank:ext-last-route', '/chat/0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
+    [
+      'frank:ext-last-route',
+      '/chat/0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+    ],
   ])
   const prevWin = (globalThis as any).window
   ;(globalThis as any).window = {
@@ -142,3 +146,22 @@ test('reopens extension popup/sidepanel/window to the last visited route when ac
   }
 })
 
+test('fresh devices can open only the receiving sync route, and sending still requires ready custody', async () => {
+  mockStatus.status = 'fresh'
+  expect(
+    await mockGuard({ path: '/account-sync/receive', params: {} }, {}),
+  ).toBeUndefined()
+  expect(await mockGuard({ path: '/account-sync/send', params: {} }, {})).toBe(
+    '/setup',
+  )
+  mockStatus.status = 'ready'
+  expect(
+    await mockGuard({ path: '/account-sync/send', params: {} }, {}),
+  ).toBeUndefined()
+})
+
+test('temporary pairing pages cannot become the extension landing page', () => {
+  expect(isPersistableExtensionRoute('/account-sync/send')).toBe(false)
+  expect(isPersistableExtensionRoute('/account-sync/receive')).toBe(false)
+  expect(isPersistableExtensionRoute('/profile')).toBe(true)
+})

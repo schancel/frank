@@ -116,7 +116,7 @@ describe('IdentityQrDialog', () => {
         wrapper
           .get('[data-test="sync-account-bridge-btn"]')
           .attributes('label'),
-      ).toBe('Sync Account with Extension')
+      ).toBe(enUS.accountSync.send)
       expect(wrapper.find('[data-test="identity-qr-sync-pin"]').exists()).toBe(
         false,
       )
@@ -124,6 +124,21 @@ describe('IdentityQrDialog', () => {
       wrapper.unmount()
     },
   )
+
+  it('routes QR sync actions to the sender without exporting or showing a PIN', async () => {
+    const push = jest.fn()
+    const wrapper = mountDialog(
+      { inline: true },
+      { mocks: { $t: translator(enUS), $router: { push } } },
+    )
+    await wrapper.get('[data-test="sync-account-bridge-btn"]').trigger('click')
+    expect(push).toHaveBeenCalledWith('/account-sync/send')
+    expect(mockBackupCodex32).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="identity-qr-sync-pin"]').exists()).toBe(
+      false,
+    )
+    wrapper.unmount()
+  })
 
   it('shows no username when the relay has not confirmed one, whatever the profile has saved', async () => {
     setOwnUsername(null)
@@ -241,276 +256,5 @@ describe('IdentityQrDialog', () => {
     expect(
       wrapper.find('[data-test="identity-qr-scanner-video"]').exists(),
     ).toBe(false)
-  })
-
-  it('extension: shows the PIN from its background session, follows PIN changes, and puts no account on any web channel', async () => {
-    const runtimeListeners: Array<
-      (msg: any, sender: any, respond: any) => any
-    > = []
-    const sendMessage = jest.fn(async (msg: { type: string }) =>
-      msg.type === 'extension-sync-offer'
-        ? { ok: true, result: { ok: true, pin: '123456' } }
-        : { ok: true, result: { ok: false } },
-    )
-    const postMessage = jest.spyOn(window, 'postMessage')
-    const g = globalThis as Record<string, unknown>
-    g.chrome = {
-      runtime: {
-        id: 'frank-test-ext',
-        sendMessage,
-        onMessage: {
-          addListener: (fn: any) => runtimeListeners.push(fn),
-          removeListener: jest.fn(),
-        },
-      },
-    }
-    try {
-      const wrapper = mountDialog({
-        inline: true,
-        runtimeKindOverride: 'chrome-extension',
-      })
-      await flushPromises()
-      expect(wrapper.find('[data-test="extension-view-bar"]').exists()).toBe(
-        false,
-      )
-
-      await wrapper
-        .find('[data-test="sync-account-bridge-btn"]')
-        .trigger('click')
-      await flushPromises()
-
-      // The bundle goes only to this extension's own background.
-      // On open it asks for a running session (none), then offers.
-      expect(sendMessage.mock.calls.map(c => c[0].type)).toEqual([
-        'extension-sync-status',
-        'extension-sync-offer',
-      ])
-      const sent = (sendMessage.mock.calls[1] as unknown[])[0] as Record<
-        string,
-        any
-      >
-      expect(sent.type).toBe('extension-sync-offer')
-      expect(sent.payload.deviceSyncBundle.backupShares).toEqual([
-        'ms12frankshareone',
-        'ms12franksharetwo',
-      ])
-      expect(JSON.stringify(postMessage.mock.calls)).not.toContain(
-        'ms12frankshare',
-      )
-      expect(wrapper.get('[data-test="identity-qr-sync-pin"]').text()).toBe(
-        '123456',
-      )
-      expect(
-        wrapper.get('[data-test="identity-qr-sync-pin-block"]').text(),
-      ).toContain(enUS.accountSync.showPin)
-      expect(wrapper.text()).not.toContain('Check code')
-
-      const update = async (msg: Record<string, unknown>) => {
-        for (const fn of runtimeListeners) {
-          fn(
-            {
-              channel: 'frank-pwa-extension-sync-v1',
-              type: 'sync-sender-update',
-              ...msg,
-            },
-            {},
-            jest.fn(),
-          )
-        }
-        await flushPromises()
-      }
-      await update({ status: 'new-pin', pin: '654321' })
-      expect(wrapper.get('[data-test="identity-qr-sync-pin"]').text()).toBe(
-        '654321',
-      )
-      expect(
-        wrapper.get('[data-test="identity-qr-sync-pin-block"]').text(),
-      ).toContain(enUS.accountSync.newPinAfterMismatch)
-
-      await update({ status: 'sent' })
-      expect(wrapper.find('[data-test="identity-qr-sync-pin"]').exists()).toBe(
-        false,
-      )
-      expect(wrapper.get('[data-test="identity-qr-sync-status"]').text()).toBe(
-        enUS.accountSync.sent,
-      )
-      expect(wrapper.find('.identity-qr-action-grid').exists()).toBe(true)
-      expect(wrapper.find('.identity-qr-sync-grid').exists()).toBe(true)
-    } finally {
-      delete g.chrome
-      postMessage.mockRestore()
-    }
-  })
-
-  it('extension: a reopened popup shows the current PIN, and Cancel wipes the session', async () => {
-    const sendMessage = jest.fn(async (msg: { type: string }) =>
-      msg.type === 'extension-sync-status'
-        ? {
-            ok: true,
-            result: {
-              ok: true,
-              pin: '777777',
-              status: 'new-pin',
-              expiresAt: Date.now() + 60_000,
-            },
-          }
-        : { ok: true, result: { ok: true } },
-    )
-    const g = globalThis as Record<string, unknown>
-    g.chrome = {
-      runtime: {
-        id: 'frank-test-ext',
-        sendMessage,
-        onMessage: { addListener: jest.fn(), removeListener: jest.fn() },
-      },
-    }
-    try {
-      const wrapper = mountDialog({
-        inline: true,
-        runtimeKindOverride: 'chrome-extension',
-      })
-      await flushPromises()
-      expect(wrapper.get('[data-test="identity-qr-sync-pin"]').text()).toBe(
-        '777777',
-      )
-      expect(
-        wrapper.get('[data-test="identity-qr-sync-pin-block"]').text(),
-      ).toContain(enUS.accountSync.newPinAfterMismatch)
-
-      await wrapper
-        .get('[data-test="identity-qr-sync-cancel"]')
-        .trigger('click')
-      await flushPromises()
-      expect(sendMessage.mock.calls.at(-1)![0].type).toBe(
-        'extension-sync-cancel',
-      )
-      expect(wrapper.find('[data-test="identity-qr-sync-pin"]').exists()).toBe(
-        false,
-      )
-    } finally {
-      delete g.chrome
-    }
-  })
-
-  describe('web app (https://signet.mx) handing its account to the extension', () => {
-    const SHARES = ['ms12frankshareone', 'ms12franksharetwo']
-    let postMessage: jest.SpyInstance
-
-    beforeEach(() => {
-      postMessage = jest.spyOn(window, 'postMessage').mockImplementation()
-    })
-    afterEach(async () => {
-      postMessage.mockRestore()
-      const { pageSyncSender } = await import(
-        '../../utils/extension-account-sync'
-      )
-      pageSyncSender.value = null
-    })
-
-    /** The extension's side: its content script delivers pairing messages to the page. */
-    async function extensionSide() {
-      const { handlePageSyncPairingRequest } = await import(
-        '../../utils/extension-account-sync'
-      )
-      const { receiveSyncBundle } = await import('../../utils/sync-pairing')
-      const send = async (type: string, payload?: unknown) => {
-        handlePageSyncPairingRequest({
-          source: window,
-          origin: window.location.origin,
-          data: {
-            channel: 'frank-pwa-extension-sync-v1',
-            direction: 'to-pwa',
-            type,
-            id: `pair-${type}`,
-            payload,
-          },
-        } as unknown as MessageEvent)
-        return (postMessage.mock.calls.at(-1)![0] as { result: unknown }).result
-      }
-      return (pin: string) => receiveSyncBundle(pin, send as any)
-    }
-
-    async function startSync(
-      props: Record<string, unknown> = { inline: true },
-    ) {
-      const wrapper = mountDialog(props)
-      await flushPromises()
-      await wrapper
-        .find('[data-test="sync-account-bridge-btn"]')
-        .trigger('click')
-      await flushPromises()
-      return wrapper
-    }
-
-    it('compact profile sender shows its PIN without starting the QR scanner', async () => {
-      const wrapper = await startSync({ syncOnly: true })
-      expect(
-        wrapper.get('[data-test="account-sync-sender-dialog"]').exists(),
-      ).toBe(true)
-      expect(wrapper.get('[data-test="identity-qr-sync-pin"]').text()).toMatch(
-        /^\d{6}$/,
-      )
-      expect(wrapper.find('[data-test="identity-qr-scanner"]').exists()).toBe(
-        false,
-      )
-      wrapper.unmount()
-    })
-
-    it('with the right PIN the extension gets the account; the page window only ever carries ciphertext', async () => {
-      const wrapper = await startSync()
-      const pin = wrapper.get('[data-test="identity-qr-sync-pin"]').text()
-      expect(pin).toMatch(/^\d{6}$/)
-      expect(
-        wrapper.get('[data-test="identity-qr-sync-pin-block"]').text(),
-      ).toContain(enUS.accountSync.showPin)
-
-      const receive = await extensionSide()
-      const result = await receive(pin)
-      expect(result.ok).toBe(true)
-      expect(result.ok && result.bundle.backupShares).toEqual(SHARES)
-      await flushPromises()
-      expect(wrapper.get('[data-test="identity-qr-sync-status"]').text()).toBe(
-        enUS.accountSync.sent,
-      )
-      const onWindow = JSON.stringify(postMessage.mock.calls)
-      expect(onWindow).not.toContain(SHARES[0])
-      expect(onWindow).not.toContain(pin)
-    })
-
-    it('Cancel wipes the page session and withdraws the offer', async () => {
-      const wrapper = await startSync()
-      const pin = wrapper.get('[data-test="identity-qr-sync-pin"]').text()
-      await wrapper
-        .get('[data-test="identity-qr-sync-cancel"]')
-        .trigger('click')
-      await flushPromises()
-      expect(wrapper.find('[data-test="identity-qr-sync-pin"]').exists()).toBe(
-        false,
-      )
-      expect((postMessage.mock.calls.at(-1)![0] as { type: string }).type).toBe(
-        'pwa-sync-cancel',
-      )
-      const receive = await extensionSide()
-      expect(await receive(pin)).toEqual({ ok: false, reason: 'no-sender' })
-    })
-
-    it('with a wrong PIN nothing derived from the shares is posted, and a new PIN is shown', async () => {
-      const wrapper = await startSync()
-      const pin = wrapper.get('[data-test="identity-qr-sync-pin"]').text()
-      const receive = await extensionSide()
-      const result = await receive(pin === '000000' ? '000001' : '000000')
-      expect(result).toEqual({ ok: false, reason: 'pin-mismatch' })
-      await flushPromises()
-
-      const onWindow = JSON.stringify(postMessage.mock.calls)
-      expect(onWindow).not.toContain(SHARES[0])
-      expect(onWindow).not.toContain('ciphertext')
-      expect(
-        wrapper.get('[data-test="identity-qr-sync-pin-block"]').text(),
-      ).toContain(enUS.accountSync.newPinAfterMismatch)
-      const newPin = wrapper.get('[data-test="identity-qr-sync-pin"]').text()
-      expect(newPin).toMatch(/^\d{6}$/)
-      expect((await receive(newPin)).ok).toBe(true)
-    })
   })
 })

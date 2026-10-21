@@ -403,10 +403,20 @@
         >
           To copy your account between this browser's extension and
           {{ frankWebAppOrigin }}, open Profile in the window with your account
-          and choose Sync this account. In the other window, choose Sync existing
-          account on the welcome screen and enter the PIN. The receiving window
-          must not already have an account.
+          and choose Sync this account, then Show PIN. In the other window,
+          choose Sync existing account on the welcome screen and enter the PIN.
+          The receiving window must not already have an account.
         </p>
+        <q-btn
+          unelevated
+          no-caps
+          color="primary"
+          icon="sync"
+          class="q-mt-md"
+          :label="$t('accountSync.send')"
+          to="/account-sync/send"
+          data-testid="dapp-sync-account-btn"
+        />
         <div class="text-subtitle2 text-weight-medium q-mt-md">
           WalletConnect
         </div>
@@ -720,7 +730,7 @@ export default defineComponent({
         if (!personaAddressesBySlot.value[slot]) missing.push(slot)
       if (missing.length > 0) {
         const derived = await signer.addresses(
-          missing.map(slot => ({ kind: 'shared', slot }) as const),
+          missing.map(slot => ({ kind: 'shared', slot } as const)),
         )
         const next = { ...personaAddressesBySlot.value }
         missing.forEach((slot, i) => {
@@ -808,13 +818,20 @@ export default defineComponent({
       const nextUsed = { ...usedPersonasByIndex.value }
       let highestIdx = maxPersonaIndex.value
       for (const item of results) {
-        if (item.index === 0 || item.used || item.index <= maxPersonaIndex.value) {
+        if (
+          item.index === 0 ||
+          item.used ||
+          item.index <= maxPersonaIndex.value
+        ) {
           const prevBal = nextBalances[item.index] ?? 0
           nextBalances[item.index] = Math.max(prevBal, item.balanceMon)
           if (item.used && item.index > 0) {
             nextUsed[item.index] = true
           }
-          if (item.index > highestIdx && (item.used || item.index <= maxPersonaIndex.value)) {
+          if (
+            item.index > highestIdx &&
+            (item.used || item.index <= maxPersonaIndex.value)
+          ) {
             highestIdx = item.index
           }
         }
@@ -864,7 +881,9 @@ export default defineComponent({
             : used
             ? `${bal.toFixed(2)} MON · used`
             : `${bal.toFixed(2)} MON`
-        const dropdownLabel = `${name} — ${shortHexAddress(addr)} (${statusSuffix})`
+        const dropdownLabel = `${name} — ${shortHexAddress(
+          addr,
+        )} (${statusSuffix})`
         items.push({
           index: i,
           label,
@@ -888,8 +907,7 @@ export default defineComponent({
       topUpFromPoolBtn: 'Top Up from Pool',
       sweepBackToPoolBtn: 'Sweep Back to Pool',
       approvalTitle: 'Pending dApp Approval',
-      connectPersonaChoiceLabel:
-        'Anti-Supercookie Persona Mode for this Site',
+      connectPersonaChoiceLabel: 'Anti-Supercookie Persona Mode for this Site',
       connectBurnerOptionLabel:
         'Per-Site Unlinkable Persona (Recommended — blocks cross-site tracking)',
       connectPrimaryOptionLabel: 'Shared Primary dApp Persona',
@@ -904,7 +922,6 @@ export default defineComponent({
       connectedSitesTitle: 'Connected Sites',
       noConnectedSitesText: 'No sites connected yet.',
       disconnectSiteBtn: 'Disconnect',
-
     })
 
     const plugIcon = FA_PLUG_CIRCLE_PLUS_ICON
@@ -1067,9 +1084,7 @@ export default defineComponent({
         index: binding.index,
         label: binding.label,
         isBurner: binding.isBurner,
-        badgeLabel: binding.isBurner
-          ? 'Unlinkable Burner'
-          : 'Shared Primary',
+        badgeLabel: binding.isBurner ? 'Unlinkable Burner' : 'Shared Primary',
       })),
     )
 
@@ -1341,10 +1356,8 @@ export default defineComponent({
               id: number
               result?: string
             }>
-            const balHex =
-              rpcItems.find(x => x.id === 1)?.result ?? '0x0'
-            const nonceHex =
-              rpcItems.find(x => x.id === 2)?.result ?? '0x0'
+            const balHex = rpcItems.find(x => x.id === 1)?.result ?? '0x0'
+            const nonceHex = rpcItems.find(x => x.id === 2)?.result ?? '0x0'
             const gasPriceHex =
               rpcItems.find(x => x.id === 3)?.result ?? '0xba43b7400'
             const balWei = BigInt(balHex)
@@ -1498,5 +1511,3 @@ export default defineComponent({
   background: rgba(128, 128, 128, 0.05);
 }
 </style>
-
-

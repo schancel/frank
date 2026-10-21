@@ -1,16 +1,8 @@
 /** @jest-environment jsdom */
 
-import { flushPromises, mount } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
 import Welcome from './Welcome.vue'
 
-const mockRestore = jest.fn(async () => true)
-const mockReceiveAccount = jest.fn()
-jest.mock('src/utils/extension-account-sync', () => ({
-  ...jest.requireActual('src/utils/extension-account-sync'),
-  restoreAccountFromExtensionBundle: (...args: unknown[]) =>
-    mockRestore(...args),
-  receiveAccountOverBridge: (...args: unknown[]) => mockReceiveAccount(...args),
-}))
 import enUS from 'src/i18n/en-us'
 import frFR from 'src/i18n/fr-fr'
 
@@ -95,6 +87,17 @@ describe('Welcome: landing page for visitors without an account', () => {
     expect(docsBtn.text()).toContain('Read Documentation')
   })
 
+  it('opens dedicated receiver route instead of revealing inline pairing', async () => {
+    const wrapper = mountWelcome(enUS)
+    const action = wrapper.get('[data-test="btn-connect-extension"]')
+    expect(action.attributes('to') || action.attributes('data-to')).toBe(
+      '/account-sync/receive',
+    )
+    await action.trigger('click')
+    expect(wrapper.find('[data-test="sync-pin-entry"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('renders the core architectural pillars explaining how Frank works', () => {
     const wrapper = mountWelcome(enUS)
     const features = text(wrapper, 'welcome-features')
@@ -148,81 +151,5 @@ describe('Welcome: landing page for visitors without an account', () => {
     expect(primaryBtn.attributes('href')).toBe(
       '/downloads/frank-extension-firefox.zip',
     )
-  })
-
-  describe('account sent from the other Frank window (PIN pairing)', () => {
-    const syncBundle = {
-      displayName: 'Ann',
-      backupShares: ['ms12frankshareone', 'ms12franksharetwo'],
-    }
-    afterEach(() => {
-      mockRestore.mockClear()
-      mockReceiveAccount.mockReset()
-    })
-
-    async function typePin(
-      wrapper: ReturnType<typeof mountWelcome>,
-      pin: string,
-    ) {
-      await wrapper.get('[data-test="sync-pin-input"]').setValue(pin)
-      await wrapper.get('[data-test="sync-pin-entry"]').trigger('submit')
-      await flushPromises()
-    }
-
-    it('asks for the PIN, and restores the account once it pairs', async () => {
-      const wrapper = mountWelcome(enUS)
-      expect(wrapper.find('[data-test="sync-pin-entry"]').exists()).toBe(false)
-      await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
-      expect(text(wrapper, 'sync-pin-entry')).toContain(
-        enUS.accountSync.sourceStep,
-      )
-
-      mockReceiveAccount.mockResolvedValueOnce({ ok: true, bundle: syncBundle })
-      await typePin(wrapper, '123456')
-      expect(mockReceiveAccount).toHaveBeenCalledWith('123456')
-      expect(mockRestore).toHaveBeenCalledTimes(1)
-      expect(mockRestore.mock.calls[0][0]).toEqual(syncBundle)
-    })
-
-    it('shows a visible failure when the pairing bridge rejects', async () => {
-      const wrapper = mountWelcome(enUS)
-      await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
-      mockReceiveAccount.mockRejectedValueOnce(new Error('bridge unavailable'))
-      await typePin(wrapper, '123456')
-      expect(text(wrapper, 'sync-pin-error')).toBe(enUS.accountSync.failed)
-      expect(mockRestore).not.toHaveBeenCalled()
-      wrapper.unmount()
-    })
-
-    it('says the PIN did not match and restores nothing', async () => {
-      const wrapper = mountWelcome(frFR)
-      await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
-      mockReceiveAccount.mockResolvedValueOnce({
-        ok: false,
-        reason: 'pin-mismatch',
-      })
-      await typePin(wrapper, '123456')
-      expect(text(wrapper, 'sync-pin-error')).toBe(frFR.accountSync.pinMismatch)
-      expect(mockRestore).not.toHaveBeenCalled()
-    })
-
-    it('says this device already has an account and restores nothing', async () => {
-      const wrapper = mountWelcome(enUS)
-      await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
-      mockReceiveAccount.mockResolvedValueOnce({
-        ok: false,
-        reason: 'has-account',
-      })
-      await typePin(wrapper, '123456')
-      expect(text(wrapper, 'sync-pin-error')).toBe(enUS.accountSync.hasAccount)
-      expect(mockRestore).not.toHaveBeenCalled()
-    })
-
-    it('does not try a PIN that is not six digits', async () => {
-      const wrapper = mountWelcome(enUS)
-      await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
-      await typePin(wrapper, '12345')
-      expect(mockReceiveAccount).not.toHaveBeenCalled()
-    })
   })
 })

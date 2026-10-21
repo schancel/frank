@@ -85,7 +85,10 @@ import {
   sendRuntimeMessage,
 } from '../src-bex/runtime-adapter'
 import type { PendingDappApproval } from '../src-bex/background'
-import { handlePageSyncPairingRequest } from 'src/utils/extension-account-sync'
+import {
+  handlePageSyncNavigationRequest,
+  handlePageSyncPairingRequest,
+} from 'src/utils/extension-account-sync'
 
 function isExtensionSurface(): boolean {
   if (typeof window === 'undefined') return false
@@ -529,6 +532,18 @@ export default defineComponent({
       // The extension pairing with the account this web app offered (Sync
       // account in the profile dialog). The PIN pairing itself decides.
       handlePageSyncPairingRequest(event)
+      void handlePageSyncNavigationRequest(event, async () => {
+        const revision = accountStatus.revision
+        const account = accountStatus.account
+        if (this.$route.path !== '/account-sync/send')
+          await this.$router.push('/account-sync/send')
+        return (
+          this.$route.path === '/account-sync/send' &&
+          accountStatus.status === 'ready' &&
+          accountStatus.revision === revision &&
+          accountStatus.account === account
+        )
+      })
     },
   },
   created() {

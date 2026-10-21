@@ -1,5 +1,10 @@
 export const FRANK_DAPP_BRIDGE_CHANNEL = 'frank-dapp-bridge-v1'
 export const FRANK_PWA_EXTENSION_SYNC_CHANNEL = 'frank-pwa-extension-sync-v1'
+export const FRANK_SYNC_NAVIGATION_TIMEOUT_MS = 5_000
+export interface SyncSenderNavigationResult {
+  ok: boolean
+  reason?: 'no-tab' | 'not-ready' | 'timeout' | 'unavailable'
+}
 /**
  * The one web origin that may take part in extension <-> web app account sync.
  * The extension relays pairing messages only to and from pages whose origin
@@ -81,12 +86,16 @@ export function getExtensionRuntime(
     }
   }
 
-  const hasSidePanel = Boolean(api.sidePanel && typeof api.sidePanel.open === 'function')
+  const hasSidePanel = Boolean(
+    api.sidePanel && typeof api.sidePanel.open === 'function',
+  )
   const hasSidebarAction = Boolean(
     api.sidebarAction && typeof api.sidebarAction.open === 'function',
   )
   const runtimeUrl =
-    typeof api.runtime?.getURL === 'function' ? String(api.runtime.getURL('')) : ''
+    typeof api.runtime?.getURL === 'function'
+      ? String(api.runtime.getURL(''))
+      : ''
   const userAgent =
     typeof globalScope.navigator?.userAgent === 'string'
       ? globalScope.navigator.userAgent
@@ -338,10 +347,10 @@ async function createExtensionWindow(
     typeof globalScope.open === 'function'
       ? globalScope.open.bind(globalScope)
       : typeof globalScope.window?.open === 'function'
-        ? globalScope.window.open.bind(globalScope.window)
-        : typeof window !== 'undefined' && typeof window.open === 'function'
-          ? window.open.bind(window)
-          : null
+      ? globalScope.window.open.bind(globalScope.window)
+      : typeof window !== 'undefined' && typeof window.open === 'function'
+      ? window.open.bind(window)
+      : null
 
   if (winOpen) {
     winOpen(url, '_blank', `popup=yes,width=${width},height=${height}`)
@@ -605,10 +614,10 @@ export async function openExtensionTab(
     typeof globalScope.open === 'function'
       ? globalScope.open.bind(globalScope)
       : typeof globalScope.window?.open === 'function'
-        ? globalScope.window.open.bind(globalScope.window)
-        : typeof window !== 'undefined' && typeof window.open === 'function'
-          ? window.open.bind(window)
-          : null
+      ? globalScope.window.open.bind(globalScope.window)
+      : typeof window !== 'undefined' && typeof window.open === 'function'
+      ? window.open.bind(window)
+      : null
 
   if (winOpen) {
     winOpen(url, '_blank')
@@ -617,5 +626,3 @@ export async function openExtensionTab(
 
   return { opened: false, mode: 'noop', url }
 }
-
-

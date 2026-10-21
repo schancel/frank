@@ -107,16 +107,21 @@ jest.mock(
     },
 )
 const mockInitialize = jest.fn(async () => undefined)
-jest.mock('./accounts/session', () => ({
-  accountStatus: { status: 'fresh' },
-  accountSession: {
-    initialize: (...args: unknown[]) => mockInitialize(...args),
-    getWallet: async () => {
-      await mockInitialize()
-      throw new Error('custody must stay closed')
+jest.mock('./accounts/session', () => {
+  // Profile refresh captures the same stable session state as the startup view.
+  const state = { status: 'fresh', revision: 0, account: null }
+  return {
+    accountStatus: state,
+    accountSession: {
+      state,
+      initialize: (...args: unknown[]) => mockInitialize(...args),
+      getWallet: async () => {
+        await mockInitialize()
+        throw new Error('custody must stay closed')
+      },
     },
-  },
-}))
+  }
+})
 const mockIdentity = jest.fn(async () => undefined)
 jest.mock('./utils/identity-session', () => ({
   initializeMonadIdentity: () => mockIdentity(),

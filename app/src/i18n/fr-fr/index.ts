@@ -2170,11 +2170,29 @@ export const rawFrFR = {
       'Copiez ce compte vers votre extension ou application web. Dans l’autre fenêtre, choisissez Synchroniser un compte existant, puis saisissez le code affiché ici.',
     receive: 'Synchroniser un compte existant',
     sourceStep:
-      'Dans la fenêtre qui contient déjà votre compte, ouvrez Profil et choisissez Synchroniser ce compte.',
+      'Dans la fenêtre qui contient déjà votre compte, ouvrez Profil, choisissez Synchroniser ce compte, puis Afficher le code PIN.',
     pinStep:
-      'Saisissez ci-dessous le code à six chiffres affiché. Aucune demande n’est envoyée automatiquement à l’autre fenêtre.',
+      'Saisissez le code à six chiffres affiché dans l’autre fenêtre. Le compte n’est partagé qu’après la saisie de ce code.',
     close: 'Fermer',
-
+    back: 'Retour',
+    done: 'Terminé',
+    showPinAction: 'Afficher le code PIN',
+    openingPersistentView:
+      'Ouverture de la synchronisation dans un onglet Frank qui reste ouvert quand vous changez de fenêtre.',
+    continueInTab:
+      'Continuez dans le nouvel onglet Frank et choisissez Afficher le code PIN.',
+    openPersistentView: 'Ouvrir dans un onglet',
+    promotionFailed:
+      'Impossible d’ouvrir un onglet Frank. Réessayez ou ouvrez Frank dans un onglet complet avant de synchroniser. Aucun code PIN n’a été créé.',
+    senderIntro:
+      'Dans l’autre fenêtre Frank, choisissez Synchroniser un compte existant. Quand vous êtes prêt, affichez un code PIN ici et saisissez-le là-bas. Gardez cette page ouverte jusqu’à l’envoi du compte.',
+    pinPrivate:
+      'Ce code PIN expire après deux minutes. Partagez-le uniquement avec la fenêtre Frank à synchroniser.',
+    received: 'Compte synchronisé',
+    senderOpened:
+      'La page de synchronisation est ouverte dans votre onglet Frank connecté. Choisissez Afficher le code PIN, puis saisissez-le ici.',
+    openSource:
+      'Ouvrez la fenêtre Frank contenant votre compte. Choisissez Profil → Synchroniser ce compte → Afficher le code PIN, puis saisissez le code ici.',
     cancel: 'Annuler',
     hasAccount:
       'Cet appareil a déjà un compte. Synchronisez uniquement vers un appareil sans compte.',
@@ -2183,18 +2201,20 @@ export const rawFrFR = {
       'Le code PIN ne correspondait pas. Saisissez ce nouveau code PIN dans l’autre fenêtre',
     sent: 'Compte envoyé à l’autre fenêtre.',
     ended:
-      'Trop de codes PIN erronés. Choisissez Synchroniser le compte pour recommencer.',
+      'Trop de codes PIN erronés. Choisissez Afficher le code PIN pour recommencer.',
     expired:
-      'Le code PIN a expiré. Choisissez Synchroniser le compte pour recommencer.',
+      'Le code PIN a expiré. Choisissez Afficher le code PIN pour recommencer.',
     noAccount: 'Aucun compte à synchroniser pour l’instant.',
     failed: 'La synchronisation a échoué.',
+    cancelFailed:
+      'Impossible d’annuler la synchronisation. Gardez cette page ouverte et réessayez Annuler. Le code PIN expirera automatiquement.',
     unsupported: 'La synchronisation du compte ne fonctionne que sur {origin}.',
     enterPin: 'Saisissez le code PIN affiché dans votre autre fenêtre Frank',
     pinLabel: 'Code PIN',
     connect: 'Connecter',
     pinMismatch: 'Le code PIN ne correspond pas, réessayez.',
     noSender:
-      'Aucun compte en attente. Choisissez d’abord Synchroniser le compte dans l’autre fenêtre.',
+      'Aucun compte en attente. Choisissez d’abord Afficher le code PIN dans l’autre fenêtre.',
     restoreFailed:
       'Impossible de restaurer le compte. Relancez la synchronisation.',
   },

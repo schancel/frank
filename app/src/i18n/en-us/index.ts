@@ -2107,11 +2107,28 @@ export const rawEnUS = {
       'Copy this account to your browser extension or web app. In the other window, choose Sync existing account, then enter the PIN shown here.',
     receive: 'Sync existing account',
     sourceStep:
-      'In the window that already has your account, open Profile and choose Sync this account.',
+      'In the window that already has your account, open Profile, choose Sync this account, then Show PIN.',
     pinStep:
-      'Enter the six-digit PIN it shows below. No request is sent to the other window automatically.',
+      'Enter the six-digit PIN shown in the other window. That account is shared only after you enter its PIN.',
     close: 'Close',
-
+    back: 'Back',
+    done: 'Done',
+    showPinAction: 'Show PIN',
+    openingPersistentView:
+      'Opening sync in a Frank tab that stays open while you switch windows.',
+    continueInTab: 'Continue in the new Frank tab and choose Show PIN there.',
+    openPersistentView: 'Open sync in a tab',
+    promotionFailed:
+      'Could not open a Frank tab. Try again, or open Frank in a full tab before syncing. No PIN has been created.',
+    senderIntro:
+      'In the other Frank window, choose Sync existing account. When you are ready, show a PIN here and enter it there. Keep this page open until the account is sent.',
+    pinPrivate:
+      'This PIN expires in two minutes. Share it only with the Frank window you are syncing.',
+    received: 'Account synced',
+    senderOpened:
+      'The sync page is open in your signed-in Frank tab. Choose Show PIN there, then enter it here.',
+    openSource:
+      'Open the Frank window that already has your account. Choose Profile → Sync this account → Show PIN, then enter its PIN here.',
     cancel: 'Cancel',
     hasAccount:
       'This device already has an account. Sync only into a device without one.',
@@ -2119,17 +2136,19 @@ export const rawEnUS = {
     newPinAfterMismatch:
       "The PIN didn't match. Type this new PIN in the other window",
     sent: 'Account sent to the other window.',
-    ended: 'Too many wrong PINs. Choose Sync account to start again.',
-    expired: 'The PIN expired. Choose Sync account to start again.',
+    ended: 'Too many wrong PINs. Choose Show PIN to start again.',
+    expired: 'The PIN expired. Choose Show PIN to start again.',
     noAccount: 'No account to sync yet.',
     failed: 'Sync failed.',
+    cancelFailed:
+      'Could not cancel sync. Keep this page open and try Cancel again. The PIN will expire automatically.',
     unsupported: 'Account sync works only on {origin}.',
     enterPin: 'Type the PIN shown in your other Frank window',
     pinLabel: 'PIN',
     connect: 'Connect',
     pinMismatch: "PIN didn't match, try again.",
     noSender:
-      'No account is waiting. Choose Sync account in the other window first.',
+      'No account is waiting. Choose Show PIN in the other window first.',
     restoreFailed: 'Could not restore the account. Try syncing again.',
   },
   onboard: {

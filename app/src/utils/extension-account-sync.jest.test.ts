@@ -160,3 +160,107 @@ describe('restoring a synced account never cancels a pending signup', () => {
     expect(ceremony.confirm).not.toHaveBeenCalled()
   })
 })
+
+describe('navigation-only account sync request', () => {
+  const navigate = jest.fn(async () => true)
+  const good = (win: Window, changes: Record<string, unknown> = {}) =>
+    ({
+      source: win,
+      origin: 'https://signet.mx',
+      data: {
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        direction: 'to-pwa',
+        type: 'open-sync-sender',
+        id: 'navigation-only-1',
+      },
+      ...changes,
+    } as unknown as MessageEvent)
+  const webWindow = () => {
+    const win = {
+      location: { origin: 'https://signet.mx' },
+      postMessage: jest.fn(),
+    } as unknown as Window
+    Object.assign(win, { top: win })
+    return win
+  }
+  beforeEach(() => {
+    navigate.mockClear()
+    mockAccountStatus.status = 'ready'
+  })
+  it('navigates only a ready top-level Frank page and acknowledges no account payload', async () => {
+    const { handlePageSyncNavigationRequest } = await import(
+      './extension-account-sync'
+    )
+    const win = webWindow()
+    expect(
+      await handlePageSyncNavigationRequest(good(win), navigate, win),
+    ).toBe(true)
+    expect(navigate).toHaveBeenCalledTimes(1)
+    expect(win.postMessage).toHaveBeenCalledWith(
+      {
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        direction: 'to-extension',
+        type: 'sync-navigation-reply',
+        id: 'navigation-only-1',
+        result: { ok: true },
+      },
+      'https://signet.mx',
+    )
+    expect(pageSyncSender.value).toBeNull()
+  })
+  it.each(['fresh', 'locked', 'standby', 'pending'])(
+    'does not navigate or export an account in %s state',
+    async status => {
+      const { handlePageSyncNavigationRequest } = await import(
+        './extension-account-sync'
+      )
+      mockAccountStatus.status = status
+      const win = webWindow()
+      await handlePageSyncNavigationRequest(good(win), navigate, win)
+      expect(navigate).not.toHaveBeenCalled()
+      expect(win.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ result: { ok: false } }),
+        'https://signet.mx',
+      )
+    },
+  )
+  it('does not acknowledge a refused or redirected navigation as opened', async () => {
+    const { handlePageSyncNavigationRequest } = await import(
+      './extension-account-sync'
+    )
+    const win = webWindow()
+    await handlePageSyncNavigationRequest(good(win), async () => false, win)
+    expect(win.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ result: { ok: false } }),
+      'https://signet.mx',
+    )
+  })
+  it('ignores another origin, another window, subframes and malformed messages', async () => {
+    const { handlePageSyncNavigationRequest } = await import(
+      './extension-account-sync'
+    )
+    const win = webWindow()
+    for (const event of [
+      good(win, { origin: 'https://evil.example' }),
+      good(win, { source: {} }),
+      good(win, {
+        data: {
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          direction: 'to-pwa',
+          type: 'open-sync-sender',
+          id: 7,
+        },
+      }),
+    ]) {
+      expect(await handlePageSyncNavigationRequest(event, navigate, win)).toBe(
+        false,
+      )
+    }
+    Object.assign(win, { top: {} })
+    expect(
+      await handlePageSyncNavigationRequest(good(win), navigate, win),
+    ).toBe(false)
+    expect(navigate).not.toHaveBeenCalled()
+    expect(win.postMessage).not.toHaveBeenCalled()
+  })
+})

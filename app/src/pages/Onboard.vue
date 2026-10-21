@@ -152,13 +152,6 @@
                 data-test="onboard-display-name"
                 :disable="busy"
               />
-              <div
-                v-if="syncPinEntryOpen"
-                class="q-mt-sm"
-                data-test="onboard-extension-sync"
-              >
-                <SyncPinEntry :busy="busy" @received="restoreSyncedAccount" />
-              </div>
             </q-card-section>
 
             <q-card-actions vertical class="q-px-md q-pb-md q-gutter-y-sm">
@@ -195,7 +188,13 @@
                 data-test="onboard-connect-extension"
                 :loading="busy"
                 :disable="busy"
-                @click="connectBrowserExtension"
+                :to="{
+                  path: '/account-sync/receive',
+                  query: {
+                    returnTo: route.fullPath,
+                    displayName: displayName.trim(),
+                  },
+                }"
               />
             </q-card-actions>
           </template>
@@ -240,11 +239,6 @@ import {
   parseClaimLink,
   type ParsedClaimLink,
 } from '../../../packages/wallet/claim-link'
-import {
-  canReceiveSyncedAccount,
-  extractValidBackupShares,
-} from '../utils/extension-account-sync'
-import SyncPinEntry from '../components/SyncPinEntry.vue'
 
 defineProps<{ myDrawerOpen?: boolean }>()
 const emit = defineEmits(['toggleMyDrawerOpen', 'setupCompleted'])
@@ -262,45 +256,15 @@ const bearerClaimUi = {
   noteLabel: 'Welcome Note: ',
 }
 
-const windowHash = ref(typeof window !== 'undefined' ? window.location.hash : '')
+const windowHash = ref(
+  typeof window !== 'undefined' ? window.location.hash : '',
+)
 const redeemedClaimIds = ref<string[]>([])
-const syncPinEntryOpen = ref(false)
 
 function onWindowHashChange() {
   if (typeof window !== 'undefined') {
     windowHash.value = window.location.hash
   }
-}
-
-/** Restores the account received with the PIN the user typed. */
-function restoreSyncedAccount(bundle: Record<string, unknown>) {
-  if (!canReceiveSyncedAccount()) return
-  const shares = extractValidBackupShares(bundle)
-  if (shares.length < 2) return
-  // Use the sent account's own name, unless the user already chose one.
-  const sentName =
-    typeof bundle.displayName === 'string' ? bundle.displayName.trim() : ''
-  if (
-    sentName &&
-    (!displayName.value.trim() || displayName.value === 'Frank User')
-  ) {
-    displayName.value = sentName
-  }
-  return runOnboardAction(async () => {
-    // Never cancel a signup another tab may have started meanwhile.
-    await ceremony.beginRestore(undefined, { keepPending: true })
-    const outcome = await ceremony.confirm(
-      shares,
-      displayName.value.trim() || 'Frank User',
-    )
-    if (!alive) return
-    await activateStagedAndMigrate(outcome)
-  })
-}
-
-function connectBrowserExtension() {
-  // The other window shows a PIN after Sync account; type it here.
-  syncPinEntryOpen.value = true
 }
 
 onMounted(() => {
@@ -309,7 +273,6 @@ onMounted(() => {
     window.addEventListener('hashchange', onWindowHashChange)
   }
 })
-
 
 function extractBearerClaimFromCandidate(
   candidate?: string | null,
@@ -574,8 +537,8 @@ async function completeOnboardingMigration() {
           (activeBearerClaim
             ? `onboard-bearer-claim-${activeBearerClaim.bearerAccount.claimIdHex}`
             : claimParam.value
-              ? `onboard-claim-${claimParam.value}`
-              : `onboard-import-${resolvedConvId || canonicalPeer.toLowerCase()}`)
+            ? `onboard-claim-${claimParam.value}`
+            : `onboard-import-${resolvedConvId || canonicalPeer.toLowerCase()}`)
         ).trim()
 
         const alreadyExists =
@@ -588,9 +551,9 @@ async function completeOnboardingMigration() {
             Number.isFinite(claimData.timestamp)
               ? claimData.timestamp
               : typeof activeBearerClaim?.createdAtMs === 'number' &&
-                  Number.isFinite(activeBearerClaim.createdAtMs)
-                ? activeBearerClaim.createdAtMs
-                : Date.now()
+                Number.isFinite(activeBearerClaim.createdAtMs)
+              ? activeBearerClaim.createdAtMs
+              : Date.now()
           const ownAddress = await getOwnCanonicalAddress().catch(() => null)
           const isOutbound = claimData?.direction === 'inbound'
           const importedMessage: ChatMessage = {

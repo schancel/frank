@@ -49,7 +49,16 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, nextTick, onMounted, ref } from 'vue'
+import {
+  computed,
+  defineComponent,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
+import { accountStatus } from '../accounts/session'
 import { useTranslate } from 'src/composables/useTranslate'
 import { receiveAccountOverBridge } from 'src/utils/extension-account-sync'
 import { normalizeSyncPin, SYNC_PIN_DIGITS } from 'src/utils/sync-pairing'
@@ -71,6 +80,26 @@ export default defineComponent({
       await nextTick()
       form.value?.scrollIntoView?.({ block: 'nearest' })
     })
+    const controller = new AbortController()
+    const abortPairing = () => controller.abort()
+    window.addEventListener('pagehide', abortPairing)
+    onBeforeUnmount(() => {
+      abortPairing()
+      window.removeEventListener('pagehide', abortPairing)
+    })
+    watch(
+      () => [
+        accountStatus.status,
+        accountStatus.revision,
+        accountStatus.account,
+        accountStatus.pending,
+      ],
+      () => {
+        controller.abort()
+        pin.value = ''
+      },
+      { flush: 'sync' },
+    )
     const pin = ref('')
     const pending = ref(false)
     const error = ref('')
@@ -82,7 +111,10 @@ export default defineComponent({
       pending.value = true
       error.value = ''
       try {
-        const result = await receiveAccountOverBridge(normalized)
+        const result = await receiveAccountOverBridge(normalized, window, {
+          signal: controller.signal,
+        })
+        if (controller.signal.aborted) return
         if (result.ok) {
           pin.value = ''
           emit('received', result.bundle)

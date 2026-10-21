@@ -2,7 +2,7 @@
   <div class="forum-feed-container">
     <div
       v-if="selectedTopic"
-      class="row items-center q-px-sm q-py-xs q-mb-md active-topic-banner rounded-borders"
+      class="row items-center q-px-sm q-py-xs q-mx-sm q-mb-md active-topic-banner rounded-borders"
       data-test="forum-active-topic-banner"
     >
       <q-icon name="filter_alt" size="18px" class="q-mr-xs text-grey-6" />
@@ -35,7 +35,7 @@
     </div>
     <div
       v-if="voteFilterActive"
-      class="row items-center q-px-sm q-py-xs q-mb-md active-topic-banner rounded-borders"
+      class="row items-center q-px-sm q-py-xs q-mx-sm q-mb-md active-topic-banner rounded-borders"
       data-test="forum-vote-filter-banner"
     >
       <q-icon name="filter_list" size="18px" class="q-mr-xs text-grey-6" />
@@ -128,7 +128,6 @@
           v-show="showMessage(message.topic)"
           @set-topic="(...args) => $emit('set-topic', ...args)"
           :message="message"
-          :show-parent="true"
           :show-replies="false"
         />
       </template>

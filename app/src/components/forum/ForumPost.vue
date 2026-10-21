@@ -301,10 +301,6 @@ export default defineComponent({
       }),
       type: Object as PropType<MessageWithReplies>,
     },
-    showParent: {
-      default: false,
-      type: Boolean,
-    },
     showReplies: {
       default: true,
       type: Boolean,

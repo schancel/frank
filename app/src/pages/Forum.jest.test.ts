@@ -102,7 +102,7 @@ describe('Forum.vue outage and degraded states (#533)', () => {
         stubs: {
           ForumPost: {
             name: 'ForumPost',
-            props: ['message', 'showParent', 'showReplies'],
+            props: ['message', 'showReplies'],
             template:
               '<div class="forum-post-stub" :data-digest="message.payloadDigest">{{ message.entries[0]?.message }}</div>',
           },

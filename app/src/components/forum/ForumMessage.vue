@@ -221,20 +221,6 @@
       </q-card-actions>
 
       <a-message-replies :messages="message.replies" v-if="showReplies" />
-      <q-separator v-if="showParent && parentDigest && parentMessage" />
-      <q-card-section
-        v-if="showParent && parentDigest && parentMessage"
-        class="q-pa-none"
-      >
-        <q-card-section class="q-pa-sm">In reply to:</q-card-section>
-        <forum-message
-          v-bind="$attrs"
-          class="q-ma-none"
-          :message="parentMessage"
-          :show-replies="false"
-          :render-body="false"
-        />
-      </q-card-section>
     </q-card-section>
   </q-card>
 </template>
@@ -325,10 +311,6 @@ export default defineComponent({
         topic: '',
       }),
       type: Object as PropType<MessageWithReplies>,
-    },
-    showParent: {
-      default: false,
-      type: Boolean,
     },
     // Nested replies sit inside their parent's card, so they skip the "reply to" link.
     showParentLink: {

@@ -297,7 +297,12 @@
 
   <q-card class="q-ma-sm" v-if="parentMessage">
     <q-card-section>Replying to:</q-card-section>
-    <a-message :message="parentMessage" :show-replies="false" :compact="true" />
+    <a-message
+      :message="parentMessage"
+      :show-replies="false"
+      :show-parent-link="false"
+      :compact="true"
+    />
   </q-card>
 </template>
 

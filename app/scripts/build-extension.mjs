@@ -187,6 +187,12 @@ export function transformExtensionIndexHtml(rawHtml, targetDir) {
   try {
     const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
     const extMode = params.get('extMode') || 'popup';
+    if (!params.get('extMode') && typeof history !== 'undefined' && typeof location !== 'undefined') {
+      // The manifest popup is bare index.html (Safari will not load a popup path with a query).
+      // App code reads the surface from location.search, so record it before the app boots.
+      params.set('extMode', extMode);
+      history.replaceState(history.state, '', location.pathname + '?' + params.toString() + location.hash);
+    }
     if (typeof document !== 'undefined' && document.documentElement) {
       document.documentElement.setAttribute('data-ext-mode', extMode);
     }
@@ -300,10 +306,34 @@ html[data-ext-mode='tab'] #q-app {
 }
 
 /**
+ * Every icon the manifest names must exist. The transparent extension icons come
+ * from the brand's `publicIcons` (config/brands.json); a brand that publishes none
+ * falls back to its 128px app icon rather than shipping a manifest with missing files.
+ */
+export function ensureManifestIcons(targetDir, manifest) {
+  const iconPaths = new Set([
+    ...Object.values(manifest.icons ?? {}),
+    ...Object.values(manifest.action?.default_icon ?? {}),
+    ...Object.values(manifest.sidebar_action?.default_icon ?? {}),
+  ])
+  const fallback = path.join(targetDir, 'icons', 'icon-128x128.png')
+  for (const rel of iconPaths) {
+    const dest = path.join(targetDir, rel)
+    if (fs.existsSync(dest)) continue
+    if (!fs.existsSync(fallback)) {
+      throw new Error(`[build:extension] Missing manifest icon ${rel} and no fallback icon`)
+    }
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    fs.copyFileSync(fallback, dest)
+    console.warn(`[build:extension] ${rel} not published by the brand; using icons/icon-128x128.png`)
+  }
+}
+
+/**
  * Why Browser Extension Popups (e.g. MetaMask, Phantom) Traditionally Feel Slow & How We Fix It:
  *
  * 1. Synchronous `<script type="module">` Popup Layout Blocking:
- *    When a user clicks an extension toolbar icon (`default_popup: "index.html?extMode=popup"`),
+ *    When a user clicks an extension toolbar icon (`default_popup: "index.html"`, mode `popup`),
  *    Chrome, Safari, and Firefox do NOT make the popup window visible until the document finishes
  *    parsing `<head>` scripts and fires `DOMContentLoaded` / `window.onload` so the browser can
  *    measure the popup's layout dimensions. If `index.html` contains a static `<script type="module">`
@@ -611,6 +641,7 @@ export function buildExtensions(argv = process.argv.slice(2)) {
     )
 
     const manifest = buildExtensionManifest(target, version)
+    ensureManifestIcons(targetDir, manifest)
     fs.writeFileSync(
       path.join(targetDir, 'manifest.json'),
       JSON.stringify(manifest, null, 2) + '\n',

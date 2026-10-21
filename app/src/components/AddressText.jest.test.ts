@@ -17,8 +17,20 @@ const address = '0x1234567890abcdef1234567890abcdef12345678'
 let resize: ResizeObserverCallback
 const disconnect = jest.fn()
 const originalObserver = global.ResizeObserver
+let frames: FrameRequestCallback[] = []
+function runFrames() {
+  const pending = frames
+  frames = []
+  for (const cb of pending) cb(0)
+}
 beforeEach(() => {
   jest.clearAllMocks()
+  frames = []
+  jest.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => {
+    frames.push(cb)
+    return frames.length
+  })
+  jest.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
   global.ResizeObserver = jest.fn().mockImplementation(callback => {
     resize = callback
     return { observe: jest.fn(), disconnect }
@@ -53,7 +65,12 @@ function mountAddress() {
     async setWidth(value: number) {
       width = value
       resize([], {} as ResizeObserver)
+      runFrames()
       await nextTick()
+    },
+    notifyResize(value: number) {
+      width = value
+      resize([], {} as ResizeObserver)
     },
   }
 }
@@ -75,6 +92,22 @@ it('shows the complete address when it fits, preserves both ends when narrowed, 
   expect(wrapper.get('[data-test="address-text"]').text()).toBe(address)
   wrapper.unmount()
   expect(disconnect).toHaveBeenCalledTimes(1)
+})
+
+it('refits on the next frame, not inside the ResizeObserver callback', async () => {
+  const { wrapper, notifyResize } = mountAddress()
+  notifyResize(112)
+  await nextTick()
+  // Changing the text inside the callback resizes the observed box again in the
+  // same frame, which the browser reports as a ResizeObserver loop error.
+  expect(wrapper.get('[data-test="address-text"]').text()).toBe(address)
+  expect(frames).toHaveLength(1)
+  notifyResize(112)
+  expect(frames).toHaveLength(1)
+  runFrames()
+  await nextTick()
+  expect(wrapper.get('[data-test="address-text"]').text()).toContain('…')
+  wrapper.unmount()
 })
 
 it('copies the full current address even when displayed in shortened form', async () => {

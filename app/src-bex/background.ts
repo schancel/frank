@@ -1,5 +1,6 @@
 import {
   ExtensionLaunchMode,
+  FRANK_DAPP_APPROVALS_CHANGED,
   FRANK_DAPP_BRIDGE_CHANNEL,
   FRANK_EXT_LAUNCH_MODE_KEY,
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
@@ -736,6 +737,24 @@ function broadcastToTabs(
   }
 }
 
+function notifyExtensionViewsOfApprovals(
+  runtimeScope: Record<string, any> | undefined,
+) {
+  const extApi = getRawExtensionApi(runtimeScope)
+  if (typeof extApi?.runtime?.sendMessage !== 'function') return
+  try {
+    // Rejects with "Receiving end does not exist" when no view is open.
+    void Promise.resolve(
+      extApi.runtime.sendMessage({
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: FRANK_DAPP_APPROVALS_CHANGED,
+      }),
+    ).catch(() => undefined)
+  } catch {
+    // No open extension view
+  }
+}
+
 async function persistOriginStateToStorage(
   state: BackgroundBridgeState,
   runtimeScope?: Record<string, any>,
@@ -1424,21 +1443,28 @@ export async function handleBackgroundMessage(
         primaryPersonaAddress: state.activePersonaAddress,
       }
       state.pendingApprovals.set(id, pending)
+      // Hold the RPC Promise open until resolved/rejected via resolve-approval.
+      // The waiter is registered before any UI work so a fast decision, or a
+      // failure to open a view, cannot strand the dApp's request.
+      const decision = new Promise<unknown>((resolve, reject) => {
+        state.pendingRpcWaiters.set(id, { resolve, reject })
+      })
 
-      await openApprovalCompanionPopup(
+      // An already-open popup/side panel/window learns about the request here;
+      // opening a view is best effort (sidePanel.open and action.openPopup
+      // need a user gesture the dApp's click does not carry to the background).
+      notifyExtensionViewsOfApprovals(runtimeScope)
+      void openApprovalCompanionPopup(
         {
           windowId: sender?.tab?.windowId,
           tabId: sender?.tab?.id,
         },
         runtimeScope,
         state,
-      )
+      ).catch(() => undefined)
 
-      // Hold the RPC Promise open until resolved/rejected via resolve-approval
       try {
-        const resolvedResult = await new Promise<unknown>((resolve, reject) => {
-          state.pendingRpcWaiters.set(id, { resolve, reject })
-        })
+        const resolvedResult = await decision
         return {
           ok: true,
           result: resolvedResult,
@@ -1493,6 +1519,7 @@ export async function handleBackgroundMessage(
     }
     state.pendingApprovals.delete(requestId)
     state.pendingRpcWaiters.delete(requestId)
+    notifyExtensionViewsOfApprovals(runtimeScope)
 
     const approved = Boolean(decision.approved ?? message.approved)
     if (!approved) {

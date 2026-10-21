@@ -584,7 +584,11 @@ export default defineComponent({
           | Record<string, unknown>
           | undefined
       )?.extMode
-      if (routeQueryMode === 'popup' || routeQueryMode === 'sidepanel' || routeQueryMode === 'sidebar') {
+      if (
+        routeQueryMode === 'popup' ||
+        routeQueryMode === 'sidepanel' ||
+        routeQueryMode === 'sidebar'
+      ) {
         return true
       }
       if (routeQueryMode === 'window' || routeQueryMode === 'tab') {
@@ -594,7 +598,11 @@ export default defineComponent({
         typeof document !== 'undefined'
           ? document.documentElement?.getAttribute('data-ext-mode')
           : null
-      if (docMode === 'popup' || docMode === 'sidepanel' || docMode === 'sidebar') {
+      if (
+        docMode === 'popup' ||
+        docMode === 'sidepanel' ||
+        docMode === 'sidebar'
+      ) {
         return true
       }
       if (docMode === 'window' || docMode === 'tab') {
@@ -609,7 +617,10 @@ export default defineComponent({
         ) {
           return true
         }
-        if (search.includes('extMode=window') || search.includes('extMode=tab')) {
+        if (
+          search.includes('extMode=window') ||
+          search.includes('extMode=tab')
+        ) {
           return false
         }
       }
@@ -625,7 +636,10 @@ export default defineComponent({
       if (getExtensionRuntime().kind === 'safari-extension') return false
       if (typeof window !== 'undefined') {
         const search = window.location?.search ?? ''
-        if (search.includes('extMode=sidepanel') || search.includes('extMode=sidebar')) {
+        if (
+          search.includes('extMode=sidepanel') ||
+          search.includes('extMode=sidebar')
+        ) {
           return false
         }
       }
@@ -701,9 +715,7 @@ html.frank-keyboard-open .q-layout .q-footer .chat-input-toolbar {
 }
 
 .q-layout.frank-has-mobile-bottom-nav {
-  --frank-bottom-nav-offset: calc(
-    56px + var(--frank-bottom-nav-inset, 0px)
-  );
+  --frank-bottom-nav-offset: calc(56px + var(--frank-bottom-nav-inset, 0px));
 }
 
 .q-layout.frank-has-mobile-bottom-nav .q-page-container {

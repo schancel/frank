@@ -8,20 +8,10 @@
         icon="sync"
         :label="$t('accountSync.send')"
         data-test="profile-sync-account"
-        @click="openAccountSync"
+        to="/account-sync/send"
       />
       <div class="text-caption q-mt-xs">{{ $t('accountSync.sendHint') }}</div>
     </div>
-    <IdentityQrDialog
-      v-if="syncDialogOpen"
-      ref="syncDialog"
-      sync-only
-      :model-value="true"
-      :address="resolvedIdentityAddress"
-      :name="internalName"
-      :avatar="internalAvatar"
-      @update:model-value="syncDialogOpen = $event"
-    />
     <q-splitter
       v-model="splitterSize"
       unit="px"
@@ -379,8 +369,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, nextTick, ref, type PropType } from 'vue'
-import IdentityQrDialog from './dialogs/IdentityQrDialog.vue'
+import { defineComponent, ref, type PropType } from 'vue'
 import QrcodeVue from 'qrcode.vue'
 import { copyToClipboard, type QFile } from 'quasar'
 
@@ -405,27 +394,14 @@ function profileTabFromQuery(tab: unknown): 'profile' | 'identity' {
 
 export default defineComponent({
   components: {
-    IdentityQrDialog,
     QrcodeVue,
   },
   setup() {
-    const syncDialogOpen = ref(false)
-    const syncDialog = ref<{
-      syncAccountOverBridge: () => Promise<void>
-    } | null>(null)
-    const openAccountSync = async () => {
-      syncDialogOpen.value = true
-      await nextTick()
-      await syncDialog.value?.syncAccountOverBridge()
-    }
     const filePicker = ref<QFile | null>(null)
     const chooseAvatar = (event: Event) => filePicker.value?.pickFiles(event)
     return {
       filePicker,
       chooseAvatar,
-      syncDialogOpen,
-      syncDialog,
-      openAccountSync,
     }
   },
   props: {
@@ -663,47 +639,47 @@ export default defineComponent({
     '$route.query.tab'(value: unknown) {
       this.tab = profileTabFromQuery(value)
     },
-    internalName(value: string) {
+    'internalName'(value: string) {
       this.$emit('update:name', normalizedProfileName(value))
     },
-    internalUsername(value: string) {
+    'internalUsername'(value: string) {
       const res = validateProfileUsername(value)
       this.$emit('update:username', res.normalized ?? value.trim())
     },
-    internalLocation(value: string) {
+    'internalLocation'(value: string) {
       this.$emit('update:location', value)
     },
-    internalBio(value: string) {
+    'internalBio'(value: string) {
       this.$emit('update:bio', value)
     },
-    internalAvatar(value) {
+    'internalAvatar'(value) {
       this.$emit('update:avatar', value)
     },
-    internalAcceptancePrice(value) {
+    'internalAcceptancePrice'(value) {
       this.$emit('update:acceptancePrice', value)
     },
-    internalLinks: {
+    'internalLinks': {
       handler(value) {
         this.$emit('update:links', value)
       },
       deep: true,
     },
-    name(val: string) {
+    'name'(val: string) {
       if (val !== this.internalName) this.internalName = val
     },
-    username(val: string) {
+    'username'(val: string) {
       if (val !== this.internalUsername) this.internalUsername = val
     },
-    location(val: string) {
+    'location'(val: string) {
       if (val !== this.internalLocation) this.internalLocation = val
     },
-    bio(val: string) {
+    'bio'(val: string) {
       if (val !== this.internalBio) this.internalBio = val
     },
-    avatar(val: string) {
+    'avatar'(val: string) {
       if (val !== this.internalAvatar) this.internalAvatar = val
     },
-    links: {
+    'links': {
       handler(val: ProfileLinkItem[] | undefined) {
         if (JSON.stringify(val ?? []) !== JSON.stringify(this.internalLinks)) {
           this.internalLinks = val ? JSON.parse(JSON.stringify(val)) : []
@@ -711,22 +687,22 @@ export default defineComponent({
       },
       deep: true,
     },
-    internalAccountType(newVal: number) {
+    'internalAccountType'(newVal: number) {
       this.$emit('update:accountType', newVal)
       if (newVal !== 1 && newVal !== 2) {
         this.internalBotRole = undefined
         this.$emit('update:botRole', undefined)
       }
     },
-    internalBotRole(newVal: number | undefined) {
+    'internalBotRole'(newVal: number | undefined) {
       this.$emit('update:botRole', newVal)
     },
-    accountType(newVal: number) {
+    'accountType'(newVal: number) {
       if (newVal !== this.internalAccountType) {
         this.internalAccountType = newVal ?? 0
       }
     },
-    botRole(newVal: number | undefined) {
+    'botRole'(newVal: number | undefined) {
       if (newVal !== this.internalBotRole) {
         this.internalBotRole = newVal
       }

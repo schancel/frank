@@ -1,60 +1,6 @@
 <template>
-  <q-dialog
-    v-if="syncOnly"
-    aria-labelledby="account-sync-title"
-    :model-value="modelValue"
-    @update:model-value="$emit('update:modelValue', $event)"
-  >
-    <q-card
-      class="q-pa-md"
-      style="width: 400px; max-width: 100%"
-      data-test="account-sync-sender-dialog"
-    >
-      <div id="account-sync-title" class="text-h6">{{ $t('accountSync.send') }}</div>
-      <p class="text-body2 q-mt-sm">{{ $t('accountSync.sendHint') }}</p>
-      <div v-if="syncPin" data-test="identity-qr-sync-pin-block">
-        <div>{{ syncPinPrompt }}</div>
-        <div
-          class="text-h4 text-weight-bold q-my-sm"
-          data-test="identity-qr-sync-pin"
-        >
-          {{ syncPin }}
-        </div>
-        <q-btn
-          flat
-          no-caps
-          :label="$t('accountSync.cancel')"
-          data-test="identity-qr-sync-cancel"
-          @click="cancelAccountSync"
-        />
-      </div>
-      <div
-        v-if="syncStatusMessage"
-        role="status"
-        class="q-my-sm"
-        data-test="identity-qr-sync-status"
-      >
-        {{ syncStatusMessage }}
-      </div>
-      <q-btn
-        v-if="!syncPin"
-        unelevated
-        color="primary"
-        no-caps
-        :label="$t('accountSync.send')"
-        data-test="sync-account-bridge-btn"
-        @click="syncAccountOverBridge"
-      />
-      <q-btn
-        flat
-        no-caps
-        :label="$t('accountSync.close')"
-        @click="$emit('update:modelValue', false)"
-      />
-    </q-card>
-  </q-dialog>
   <div
-    v-else-if="inline && modelValue"
+    v-if="inline && modelValue"
     class="identity-qr-inline-wrapper full-width"
     data-test="identity-qr-dialog"
   >
@@ -64,7 +10,9 @@
       class="q-pa-sm identity-qr-card identity-qr-card--inline"
       data-test="identity-qr-card"
     >
-      <q-card-section class="row items-center q-py-xs q-px-sm identity-qr-inline-header">
+      <q-card-section
+        class="row items-center q-py-xs q-px-sm identity-qr-inline-header"
+      >
         <q-avatar
           size="32px"
           class="q-mr-sm shadow-1 cursor-pointer"
@@ -328,10 +276,10 @@
               color="primary"
               icon="sync"
               class="identity-qr-primary-btn"
-              :label="syncBridgeBtnLabel"
-              :aria-label="syncBridgeBtnLabel"
+              :label="$t('accountSync.send')"
+              :aria-label="$t('accountSync.send')"
               data-test="sync-account-bridge-btn"
-              @click="syncAccountOverBridge"
+              @click="openAccountSync"
             />
             <q-btn
               outline
@@ -346,35 +294,6 @@
               data-test="open-dapp-bridge-btn"
               @click="openDappBridge"
             />
-          </div>
-          <div
-            v-if="syncPin"
-            class="q-mt-xs"
-            data-test="identity-qr-sync-pin-block"
-          >
-            <div class="text-caption">{{ syncPinPrompt }}</div>
-            <div
-              class="text-h5 text-weight-bold identity-qr-sync-pin"
-              data-test="identity-qr-sync-pin"
-            >
-              {{ syncPin }}
-            </div>
-            <q-btn
-              flat
-              dense
-              no-caps
-              size="sm"
-              :label="$t('accountSync.cancel')"
-              data-test="identity-qr-sync-cancel"
-              @click="cancelAccountSync"
-            />
-          </div>
-          <div
-            v-if="syncStatusMessage"
-            class="text-caption text-positive text-weight-medium q-mt-xs"
-            data-test="identity-qr-sync-status"
-          >
-            {{ syncStatusMessage }}
           </div>
         </div>
 
@@ -398,10 +317,7 @@
     data-test="identity-qr-dialog"
     @update:model-value="onModelValueUpdate"
   >
-    <q-card
-      class="q-pa-sm identity-qr-card"
-      data-test="identity-qr-card"
-    >
+    <q-card class="q-pa-sm identity-qr-card" data-test="identity-qr-card">
       <q-card-section class="row items-center q-py-xs q-px-sm">
         <q-avatar size="32px" class="q-mr-sm shadow-1">
           <img v-if="avatarSrc" :src="avatarSrc" />
@@ -660,10 +576,10 @@
               color="primary"
               icon="sync"
               class="identity-qr-primary-btn"
-              :label="syncBridgeBtnLabel"
-              :aria-label="syncBridgeBtnLabel"
+              :label="$t('accountSync.send')"
+              :aria-label="$t('accountSync.send')"
               data-test="sync-account-bridge-btn"
-              @click="syncAccountOverBridge"
+              @click="openAccountSync"
             />
             <q-btn
               outline
@@ -678,35 +594,6 @@
               data-test="open-dapp-bridge-btn"
               @click="openDappBridge"
             />
-          </div>
-          <div
-            v-if="syncPin"
-            class="q-mt-xs"
-            data-test="identity-qr-sync-pin-block"
-          >
-            <div class="text-caption">{{ syncPinPrompt }}</div>
-            <div
-              class="text-h5 text-weight-bold identity-qr-sync-pin"
-              data-test="identity-qr-sync-pin"
-            >
-              {{ syncPin }}
-            </div>
-            <q-btn
-              flat
-              dense
-              no-caps
-              size="sm"
-              :label="$t('accountSync.cancel')"
-              data-test="identity-qr-sync-cancel"
-              @click="cancelAccountSync"
-            />
-          </div>
-          <div
-            v-if="syncStatusMessage"
-            class="text-caption text-positive text-weight-medium q-mt-xs"
-            data-test="identity-qr-sync-status"
-          >
-            {{ syncStatusMessage }}
           </div>
         </div>
 
@@ -753,22 +640,8 @@ import {
   openCompanionPanel,
   openExtensionTab,
   focusOrOpenMainExtensionWindow,
-  FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-  FRANK_WEB_APP_ORIGIN,
-  isFrankWebAppOrigin,
-  onRuntimeMessage,
   RuntimeEnvironmentKind,
-  sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
-import {
-  cancelPageSyncSender,
-  pageSyncSender,
-  startPageSyncSender,
-  type SyncSenderView,
-} from 'src/utils/extension-account-sync'
-import { SYNC_PAIRING_TTL_MS } from 'src/utils/sync-pairing'
-import { useTranslate } from 'src/composables/useTranslate'
-import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../../src-bex/inpage'
 
 function parseGiftAmountAtomic(raw: string): bigint {
   const trimmed = String(raw ?? '').trim()
@@ -829,10 +702,6 @@ export default defineComponent({
       type: Boolean,
       default: false,
     },
-    syncOnly: {
-      type: Boolean,
-      default: false,
-    },
     runtimeKindOverride: {
       type: String as PropType<RuntimeEnvironmentKind | ''>,
       default: '',
@@ -851,12 +720,6 @@ export default defineComponent({
     const claimLinkAmount = ref('0.05')
     const claimLinkNote = ref('')
     const generatedClaimLinkUrl = ref('')
-    const t = useTranslate()
-    const syncError = ref('')
-    // The extension's sending session lives in its background; this is what
-    // the background last told this page about it.
-    const extSyncSender = ref<SyncSenderView | null>(null)
-    let extSyncExpiry: ReturnType<typeof setTimeout> | null = null
 
     const detectedRuntimeKind = computed<RuntimeEnvironmentKind>(() => {
       if (props.runtimeKindOverride) {
@@ -888,15 +751,8 @@ export default defineComponent({
       openDappBridgeBtn: 'Companion & Bridge',
     }
 
-    const syncBridgeBtnLabel = computed(() =>
-      isExtensionMode.value
-        ? 'Sync Account to signet.mx Tab'
-        : 'Sync Account with Extension',
-    )
-
     // Do not auto-open camera on inline pages or inside the browser extension popup
-    const shouldAutoStartScanner = () =>
-      !props.syncOnly && !props.inline && !isExtensionMode.value
+    const shouldAutoStartScanner = () => !props.inline && !isExtensionMode.value
     const scannerOpen = ref(shouldAutoStartScanner())
 
     const scannerVideo = ref<HTMLVideoElement>()
@@ -1150,171 +1006,15 @@ export default defineComponent({
       await openExtensionTab()
     }
 
-    const syncSenderView = computed(() =>
-      isExtensionMode.value ? extSyncSender.value : pageSyncSender.value,
-    )
-    const syncPin = computed(() => syncSenderView.value?.pin ?? '')
-    const syncPinPrompt = computed(() =>
-      syncSenderView.value?.status === 'new-pin'
-        ? t('accountSync.newPinAfterMismatch')
-        : t('accountSync.showPin'),
-    )
-    const syncStatusMessage = computed(() => {
-      if (syncError.value) return syncError.value
-      const status = syncSenderView.value?.status
-      return status === 'sent' || status === 'ended' || status === 'expired'
-        ? t(`accountSync.${status}`)
-        : ''
-    })
-
-    const stopSyncSenderUpdates = onRuntimeMessage(
-      (message: {
-        channel?: unknown
-        type?: unknown
-        status: SyncSenderView['status']
-        pin?: unknown
-      }) => {
-        if (
-          message?.channel !== FRANK_PWA_EXTENSION_SYNC_CHANNEL ||
-          message.type !== 'sync-sender-update' ||
-          !extSyncSender.value
-        ) {
-          return undefined
-        }
-        extSyncSender.value = {
-          pin: message.status === 'new-pin' ? String(message.pin ?? '') : '',
-          status: message.status,
-        }
-        return undefined
-      },
-    )
-    onBeforeUnmount(() => {
-      stopSyncSenderUpdates()
-      if (extSyncExpiry) clearTimeout(extSyncExpiry)
-    })
-
-    const showExtSyncSender = (
-      view: SyncSenderView | null,
-      expiresAt?: number,
-    ) => {
-      extSyncSender.value = view
-      if (extSyncExpiry) clearTimeout(extSyncExpiry)
-      extSyncExpiry = null
-      if (!view) return
-      extSyncExpiry = setTimeout(() => {
-        const status = extSyncSender.value?.status
-        if (status === 'waiting' || status === 'new-pin') {
-          extSyncSender.value = { pin: '', status: 'expired' }
-        }
-      }, Math.max(0, (expiresAt ?? Date.now() + SYNC_PAIRING_TTL_MS) - Date.now()))
-    }
-
-    // A popup that closed and reopened still shows the session's current PIN.
-    if (isExtensionMode.value) {
-      void sendRuntimeMessage<
-        Record<string, unknown>,
-        {
-          result?: {
-            ok?: boolean
-            pin?: string
-            status?: string
-            expiresAt?: number
-          }
-        }
-      >({
-        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-        type: 'extension-sync-status',
-      })
-        .then(response => {
-          const current = response?.result
-          if (!current?.ok || typeof current.pin !== 'string') return
-          if (extSyncSender.value) return
-          showExtSyncSender(
-            {
-              pin: current.pin,
-              status: current.status === 'new-pin' ? 'new-pin' : 'waiting',
-            },
-            current.expiresAt,
-          )
-        })
-        .catch(() => undefined)
-    }
-
-    /** Ends this side's sending session now and wipes it. */
-    const cancelAccountSync = () => {
-      syncError.value = ''
-      if (isExtensionMode.value) {
-        showExtSyncSender(null)
-        void sendRuntimeMessage({
-          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-          type: 'extension-sync-cancel',
-        }).catch(() => undefined)
-      } else {
-        cancelPageSyncSender()
-      }
-    }
-
-    // Hands this account to the other Frank surface (extension or web app) by
-    // PIN pairing: this side shows a PIN, the user types it in the other
-    // window, and the account goes out only to the side that proves the PIN.
-    const syncAccountOverBridge = async () => {
-      syncError.value = ''
-      let backupShares: string[] = []
-      try {
-        const { accountSession, accountStatus } = await import(
-          'src/accounts/session'
-        )
-        if (accountStatus.status !== 'ready') {
-          await accountSession.initialize().catch(() => {})
-        }
-        if (accountStatus.status === 'ready') {
-          const exported = await accountSession.backupCodex32(2, 3)
-          backupShares = exported.slice(0, 2)
-        }
-      } catch {
-        // No account custody available
-      }
-      if (backupShares.length < 2) {
-        syncError.value = t('accountSync.noAccount')
-        return
-      }
-
-      const deviceSyncBundle = {
-        version: 1,
-        exportedAtMs: Date.now(),
-        accountAddress: resolvedAddress.value,
-        displayName: displayName.value,
-        username: displayUsername.value,
-        backupShares,
-      }
-
-      if (isExtensionMode.value) {
-        // The background holds the session so it outlives a closing popup.
-        const response = await sendRuntimeMessage<
-          Record<string, unknown>,
-          { result?: { ok?: boolean; pin?: string; expiresAt?: number } }
-        >({
-          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-          type: 'extension-sync-offer',
-          payload: { deviceSyncBundle },
-        }).catch(() => null)
-        const pin = response?.result?.pin
-        if (!response?.result?.ok || typeof pin !== 'string') {
-          showExtSyncSender(null)
-          syncError.value = t('accountSync.failed')
-          return
-        }
-        showExtSyncSender({ pin, status: 'waiting' }, response.result.expiresAt)
-      } else if (
-        typeof window !== 'undefined' &&
-        isFrankWebAppOrigin(window.location.origin)
-      ) {
-        startPageSyncSender(deviceSyncBundle)
-      } else {
-        syncError.value = t('accountSync.unsupported', {
-          origin: FRANK_WEB_APP_ORIGIN,
-        })
-      }
+    const openAccountSync = () => {
+      stopScanner()
+      emit('update:modelValue', false)
+      const router = (
+        instance?.proxy as
+          | { $router?: { push: (path: string) => unknown } }
+          | undefined
+      )?.$router
+      if (router) void router.push('/account-sync/send')
     }
 
     const openDappBridge = () => {
@@ -1358,17 +1058,12 @@ export default defineComponent({
       claimUiLabels,
       detectedRuntimeKind,
       isExtensionMode,
-      syncBridgeBtnLabel,
-      syncStatusMessage,
-      syncPin,
-      syncPinPrompt,
-      cancelAccountSync,
       toggleClaimLinkCreator,
       generateFundedClaimLink,
       openInSidePanel,
       openInPopoutWindow,
       openInFullTab,
-      syncAccountOverBridge,
+      openAccountSync,
       openDappBridge,
       openEditProfile,
       scannerOpen,
@@ -1550,5 +1245,3 @@ body.body--dark .identity-qr-secondary-btn {
   text-overflow: ellipsis;
 }
 </style>
-
-

@@ -81,7 +81,7 @@
               icon="extension"
               :label="$t('accountSync.receive')"
               data-test="btn-connect-extension"
-              @click="connectBrowserExtension"
+              to="/account-sync/receive"
             />
             <q-btn
               color="primary"
@@ -93,24 +93,6 @@
               to="/forum"
               data-test="btn-browse-forum"
             />
-          </div>
-
-          <div
-            v-if="syncPinEntryOpen"
-            class="welcome-sync q-mt-sm q-pa-sm rounded-borders"
-            data-test="welcome-extension-sync"
-          >
-            <SyncPinEntry
-              :busy="syncRestoring"
-              @received="restoreSyncedAccount"
-            />
-            <div
-              v-if="syncRestoreFailed"
-              class="text-caption text-negative q-mt-xs"
-              data-test="welcome-extension-sync-failed"
-            >
-              {{ $t('accountSync.restoreFailed') }}
-            </div>
           </div>
 
           <!-- Bundled Browser Extension Download Card (when viewing on web/PWA) -->
@@ -280,11 +262,9 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, getCurrentInstance, ref } from 'vue'
+import { computed, defineComponent, ref } from 'vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { isBrowserExtensionRuntime } from '../../src-bex/runtime-adapter'
-import { restoreAccountFromExtensionBundle } from '../utils/extension-account-sync'
-import SyncPinEntry from '../components/SyncPinEntry.vue'
 import {
   detectPreferredExtensionTarget,
   EXTENSION_DOWNLOAD_TARGETS,
@@ -294,12 +274,8 @@ import {
 
 export default defineComponent({
   name: 'WelcomePage',
-  components: { SyncPinEntry },
   emits: ['toggleMyDrawerOpen', 'setupCompleted'],
   setup(_, { emit }) {
-    const instance = getCurrentInstance()
-    const syncRestoring = ref(false)
-    const syncRestoreFailed = ref(false)
     const selectedExtensionTarget = ref<ExtensionTargetBrowser>(
       detectPreferredExtensionTarget(),
     )
@@ -313,39 +289,8 @@ export default defineComponent({
       EXTENSION_DOWNLOAD_TARGETS.safari,
     ]
 
-    const syncPinEntryOpen = ref(false)
-
-    // The user typed the PIN, so the received account is restored right away.
-    const restoreSyncedAccount = async (bundle: Record<string, unknown>) => {
-      if (syncRestoring.value) return
-      syncRestoring.value = true
-      syncRestoreFailed.value = false
-      const router = (
-        instance?.proxy as
-          | { $router?: { push: (path: string) => void } }
-          | undefined
-      )?.$router
-      try {
-        const restored = await restoreAccountFromExtensionBundle(bundle, {
-          onActivated: () => {
-            emit('setupCompleted')
-            if (router) {
-              void router.push('/forum')
-            }
-          },
-        })
-        syncRestoreFailed.value = !restored
-      } finally {
-        syncRestoring.value = false
-      }
-    }
-
     return {
       myDrawerOpen: useMyDrawerOpen(),
-      syncPinEntryOpen,
-      syncRestoring,
-      syncRestoreFailed,
-      restoreSyncedAccount,
       isExtensionRuntime,
       selectedExtensionTarget,
       selectedExtensionInfo,
@@ -359,11 +304,6 @@ export default defineComponent({
       },
       toggleSettingsDrawerOpen() {
         emit('toggleMyDrawerOpen')
-      },
-      connectBrowserExtension() {
-        // The other window shows a PIN after Sync account; type it here.
-        syncRestoreFailed.value = false
-        syncPinEntryOpen.value = true
       },
     }
   },

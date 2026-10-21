@@ -21,6 +21,8 @@ export function isPersistableExtensionRoute(path: string): boolean {
   if (
     path === '/' ||
     path === '/welcome' ||
+    path === '/account-sync' ||
+    path.startsWith('/account-sync/') ||
     path === '/setup' ||
     path === '/onboard' ||
     path.startsWith('/onboard/') ||

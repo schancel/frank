@@ -35,6 +35,10 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     return shallowMount(DappBridgePanel, {
       props,
       global: {
+        mocks: {
+          $t: (key: string) =>
+            key === 'accountSync.send' ? 'Sync this account' : key,
+        },
         stubs: {
           QIcon: true,
           QBadge: {
@@ -150,8 +154,18 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
             ok: true,
             result: {
               pendingApprovals: [
-                { id: 'r1', kind: 'connect', origin: 'https://app.uniswap.org', method: 'eth_requestAccounts' },
-                { id: 'r2', kind: 'sign', origin: 'https://app.uniswap.org', method: 'personal_sign' },
+                {
+                  id: 'r1',
+                  kind: 'connect',
+                  origin: 'https://app.uniswap.org',
+                  method: 'eth_requestAccounts',
+                },
+                {
+                  id: 'r2',
+                  kind: 'sign',
+                  origin: 'https://app.uniswap.org',
+                  method: 'personal_sign',
+                },
               ],
             },
           }
@@ -232,9 +246,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     expect(wrapper.emitted('create-burner')).toHaveLength(1)
 
     // Switch back to Default #0 and verify its 10.00 MON balance is preserved
-    await wrapper
-      .find('[data-testid="dapp-select-persona-0"]')
-      .trigger('click')
+    await wrapper.find('[data-testid="dapp-select-persona-0"]').trigger('click')
     expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
       "m/1785'/60'/0'/0'",
     )
@@ -270,17 +282,21 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     expect(approvalCard.text()).toContain('https://app.uniswap.org')
     expect(approvalCard.text()).not.toContain('Frank Pool')
 
-    expect(wrapper.find('[data-testid="dapp-approve-btn"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="dapp-approve-btn"]').exists()).toBe(
+      false,
+    )
     await wrapper.find('[data-testid="dapp-reject-btn"]').trigger('click')
     expect(wrapper.find('[data-testid="dapp-pool-balance"]').text()).toContain(
       '100.00 MON',
     )
 
     // Next approval in queue is now shown
-    expect(
-      wrapper.find('[data-testid="dapp-approval-card"]').text(),
-    ).toContain('https://opensea.io')
-    expect(wrapper.find('[data-testid="dapp-approve-btn"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="dapp-approval-card"]').text()).toContain(
+      'https://opensea.io',
+    )
+    expect(wrapper.find('[data-testid="dapp-approve-btn"]').exists()).toBe(
+      false,
+    )
     await wrapper.find('[data-testid="dapp-reject-btn"]').trigger('click')
     expect(wrapper.emitted('reject-request')).toHaveLength(2)
     expect(wrapper.find('[data-testid="dapp-approval-card"]').exists()).toBe(
@@ -306,16 +322,22 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     expect(wrapper.find('[data-testid="dapp-approval-card"]').exists()).toBe(
       false,
     )
+    expect(
+      wrapper.get('[data-testid="dapp-sync-account-btn"]').attributes('to'),
+    ).toBe('/account-sync/send')
     expect(wrapper.emitted('wc-connect')).toBeUndefined()
     wrapper.unmount()
   })
 
   it('automatically discovers used burner personas on-chain and provides a dropdown selector', async () => {
-    const { discoverUsedPersonasOnChain } = await import('./DappBridgePanel.vue')
+    const { discoverUsedPersonasOnChain } = await import(
+      './DappBridgePanel.vue'
+    )
 
     const slotAddresses = Array.from(
       { length: 11 },
-      (_, slot) => deriveDappPersona(testMaster, { kind: 'shared', slot }).address,
+      (_, slot) =>
+        deriveDappPersona(testMaster, { kind: 'shared', slot }).address,
     )
     const burner2Address = slotAddresses[2].toLowerCase()
 
@@ -331,7 +353,10 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
           // 2.5 MON in hex wei (2_500_000_000_000_000_000 = 0x22b1c8c1227a0000)
           return { jsonrpc: '2.0', id: item.id, result: '0x22b1c8c1227a0000' }
         }
-        if (addr === burner2Address && item.method === 'eth_getTransactionCount') {
+        if (
+          addr === burner2Address &&
+          item.method === 'eth_getTransactionCount'
+        ) {
           return { jsonrpc: '2.0', id: item.id, result: '0x3' }
         }
         return { jsonrpc: '2.0', id: item.id, result: '0x0' }
@@ -357,8 +382,12 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       initialPersonaBalanceMon: 5,
       initialPoolBalanceMon: 50,
     })
-    await wrapper.find('[data-testid="dapp-create-burner-btn"]').trigger('click')
-    await wrapper.find('[data-testid="dapp-create-burner-btn"]').trigger('click')
+    await wrapper
+      .find('[data-testid="dapp-create-burner-btn"]')
+      .trigger('click')
+    await wrapper
+      .find('[data-testid="dapp-create-burner-btn"]')
+      .trigger('click')
 
     const dropdown = wrapper.find('[data-testid="dapp-persona-dropdown"]')
     expect(dropdown.exists()).toBe(true)

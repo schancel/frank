@@ -82,31 +82,17 @@ describe('Profile.vue component avatar handling', () => {
     window.Image = originalImage
   })
 
-  it('starts the existing account sender from the visible profile action', async () => {
-    const startSync = jest.fn(async () => undefined)
+  it('navigates to the sender page without opening a sync dialog', async () => {
     const wrapper = mount(ProfileComponent, {
-      global: {
-        mocks: { $t: (key: string) => key },
-        stubs: {
-          ...defaultStubs,
-          IdentityQrDialog: {
-            props: { syncOnly: Boolean },
-            template:
-              '<div data-test="profile-sync-dialog" :data-sync-only="syncOnly" />',
-            methods: { syncAccountOverBridge: startSync },
-          },
-        },
-      },
+      global: { mocks: { $t: (key: string) => key }, stubs: defaultStubs },
     })
-    expect(startSync).not.toHaveBeenCalled()
-    await wrapper.get('[data-test="profile-sync-account"]').trigger('click')
-    await flushPromises()
     expect(
-      wrapper
-        .get('[data-test="profile-sync-dialog"]')
-        .attributes('data-sync-only'),
-    ).toBe('true')
-    expect(startSync).toHaveBeenCalledTimes(1)
+      wrapper.get('[data-test="profile-sync-account"]').attributes('to'),
+    ).toBe('/account-sync/send')
+    await wrapper.get('[data-test="profile-sync-account"]').trigger('click')
+    expect(wrapper.find('[data-test="profile-sync-dialog"]').exists()).toBe(
+      false,
+    )
     wrapper.unmount()
   })
 

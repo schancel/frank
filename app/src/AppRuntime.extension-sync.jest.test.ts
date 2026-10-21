@@ -1,4 +1,8 @@
-/** @jest-environment jsdom */
+/**
+ * @jest-environment jsdom
+ * @jest-environment-options {"url": "https://signet.mx/"}
+ */
+import { flushPromises } from '@vue/test-utils'
 import { TextDecoder, TextEncoder } from 'util'
 
 Object.assign(globalThis, { TextEncoder, TextDecoder })
@@ -33,6 +37,7 @@ const AppRuntime = require('./AppRuntime.vue').default
 const {
   pageSyncSender,
   startPageSyncSender,
+  cancelPageSyncSender,
 } = require('src/utils/extension-account-sync')
 const {
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
@@ -67,7 +72,7 @@ describe('AppRuntime account sync listener (PIN pairing)', () => {
   })
   afterEach(() => {
     postMessage.mockRestore()
-    pageSyncSender.value = null
+    cancelPageSyncSender()
   })
 
   it('ignores pairing messages from another window or origin', () => {
@@ -78,6 +83,43 @@ describe('AppRuntime account sync listener (PIN pairing)', () => {
     receive({ source: window, origin: 'https://evil.example' })
     expect(postMessage).not.toHaveBeenCalled()
   })
+
+  it.each([true, false])(
+    'acknowledges only an actually opened sender route (opened=%s)',
+    async opened => {
+      mockAccountStatus.status = 'ready'
+      const context = {
+        $route: { path: '/forum' },
+        $router: {
+          push: jest.fn(async (path: string) => {
+            context.$route.path = opened ? path : '/setup'
+          }),
+        },
+      }
+      postMessage.mockClear()
+      AppRuntime.methods.handleGlobalExtensionSyncMessage.call(context, {
+        source: window,
+        origin: window.location.origin,
+        data: {
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          direction: 'to-pwa',
+          type: 'open-sync-sender',
+          id: 'navigation-only',
+        },
+      } as unknown as MessageEvent)
+      await flushPromises()
+      expect(context.$router.push).toHaveBeenCalledWith('/account-sync/send')
+      expect(postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'sync-navigation-reply',
+          result: { ok: opened },
+        }),
+        window.location.origin,
+      )
+      expect(pageSyncSender.value).toBeNull()
+      mockAccountStatus.status = 'fresh'
+    },
+  )
 
   it('answers the extension for the account this web app offers, without the account', () => {
     startPageSyncSender({ backupShares: [...SHARES] })

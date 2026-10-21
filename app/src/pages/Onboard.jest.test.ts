@@ -17,6 +17,7 @@ import {
 } from '../../../packages/wallet/claim-link'
 import IdentityQrDialog from '../components/dialogs/IdentityQrDialog.vue'
 import Onboard from './Onboard.vue'
+import AccountSyncReceive from './AccountSyncReceive.vue'
 
 const mockReceiveAccount = jest.fn()
 jest.mock('../utils/extension-account-sync', () => ({
@@ -97,6 +98,7 @@ let capturedBeforeEachGuards: Array<
 
 jest.mock('vue-router', () => ({
   useRouter: () => ({ push: mockPush }),
+  onBeforeRouteLeave: jest.fn(),
   useRoute: () => mockRoute,
   createRouter: () => ({
     beforeEach: (
@@ -641,7 +643,8 @@ describe('Onboard.vue & /onboard route', () => {
           QSkeleton: { template: '<div />' },
           QBtn: {
             props: ['label', 'disable'],
-            template: '<button :disabled="disable">{{ label }}<slot /></button>',
+            template:
+              '<button :disabled="disable">{{ label }}<slot /></button>',
           },
           QInput: {
             props: ['modelValue', 'disable', 'label'],
@@ -690,46 +693,99 @@ describe('Onboard.vue & /onboard route', () => {
     }
   })
 
-  test('restores an account from the other Frank window once the typed PIN pairs, and nothing on a wrong PIN', async () => {
+  test('routes pairing through the receiver and preserves thread invitation facts for the existing import flow', async () => {
     const syncBundle = {
       displayName: 'Ann',
       backupShares: ['ms12frankshareone', 'ms12franksharetwo'],
     }
-    const wrapper = renderOnboard()
-    try {
-      await wrapper
-        .get('[data-test="onboard-connect-extension"]')
-        .trigger('click')
-      const typePin = async (pin: string) => {
-        await wrapper.get('[data-test="sync-pin-input"]').setValue(pin)
-        await wrapper.get('[data-test="sync-pin-entry"]').trigger('submit')
-        await flushPromises()
-      }
-
-      mockReceiveAccount.mockResolvedValueOnce({
-        ok: false,
-        reason: 'pin-mismatch',
-      })
-      await typePin('111111')
-      expect(mockReceiveAccount).toHaveBeenLastCalledWith('111111')
-      expect(wrapper.get('[data-test="sync-pin-error"]').text()).toBe(
-        'accountSync.pinMismatch',
-      )
-      expect(mockBeginRestore).not.toHaveBeenCalled()
-
-      mockReceiveAccount.mockResolvedValueOnce({ ok: true, bundle: syncBundle })
-      await typePin('222222')
-      expect(mockBeginRestore).toHaveBeenCalledTimes(1)
-      expect(mockBeginRestore).toHaveBeenCalledWith(undefined, {
-        keepPending: true,
-      })
-      expect(mockConfirmRestore).toHaveBeenCalledWith(
-        syncBundle.backupShares,
-        'Ann',
-      )
-      expect(mockSession.activatePending).toHaveBeenCalledTimes(1)
-    } finally {
-      wrapper.unmount()
+    const invitation = {
+      peer: PEER_ADDRESS,
+      conversationId: 'thread-2',
+      subject: 'Invoice #42',
+      textBody: 'Invoice body',
+      gateway: 'https://signet.mx',
     }
+    mockRoute.query = invitation
+    mockRoute.fullPath =
+      '/onboard?' + new URLSearchParams(invitation).toString()
+    const sourcePath = mockRoute.fullPath
+    const onboard = renderOnboard()
+    await onboard
+      .get('[data-test="onboard-display-name"]')
+      .setValue('Chosen name')
+    // Route props preserve the complete invitation URL, rather than rebuilding only its peer.
+    const action = onboard.findComponent(
+      '[data-test="onboard-connect-extension"]',
+    )
+    const receiverRoute = action.vm.$attrs.to as {
+      path: string
+      query: Record<string, string>
+    }
+    expect(receiverRoute.path).toBe('/account-sync/receive')
+    expect(receiverRoute.query.returnTo).toBe(sourcePath)
+    expect(receiverRoute.query.displayName).toBe('Chosen name')
+    expect(onboard.find('[data-test="sync-pin-entry"]').exists()).toBe(false)
+    onboard.unmount()
+    mockRoute.path = '/account-sync/receive'
+    mockRoute.query = receiverRoute.query
+    const receiver = mount(AccountSyncReceive, {
+      global: {
+        mocks: { $t: (key: string) => key },
+        stubs: {
+          QPageContainer: { template: '<main><slot /></main>' },
+          QPage: { template: '<section><slot /></section>' },
+          QIcon: true,
+          QBtn: { props: ['label'], template: '<button>{{ label }}</button>' },
+          QInput: {
+            props: ['modelValue'],
+            template:
+              '<input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+          },
+        },
+      },
+    })
+    mockReceiveAccount.mockResolvedValueOnce({
+      ok: false,
+      reason: 'pin-mismatch',
+    })
+    await receiver.get('[data-test="sync-pin-input"]').setValue('111111')
+    await receiver.get('form').trigger('submit')
+    await flushPromises()
+    expect(receiver.get('[data-test="sync-pin-error"]').text()).toBe(
+      'accountSync.pinMismatch',
+    )
+    expect(mockBeginRestore).not.toHaveBeenCalled()
+    mockReceiveAccount.mockResolvedValueOnce({ ok: true, bundle: syncBundle })
+    await receiver.get('[data-test="sync-pin-input"]').setValue('222222')
+    await receiver.get('form').trigger('submit')
+    await flushPromises()
+    expect(mockBeginRestore).toHaveBeenCalledWith(undefined, {
+      keepPending: true,
+    })
+    expect(mockConfirmRestore).toHaveBeenCalledWith(
+      syncBundle.backupShares,
+      'Chosen name',
+    )
+    expect(mockSession.activatePending).toHaveBeenCalledTimes(1)
+    expect(receiver.get('[data-test="sync-done"]').attributes('to')).toBe(
+      sourcePath,
+    )
+    expect(mockPush).not.toHaveBeenCalled()
+    receiver.unmount()
+    mockRoute.path = '/onboard'
+    mockRoute.fullPath = sourcePath
+    mockRoute.query = invitation
+    const continued = renderOnboard()
+    const contacts = useContactStore()
+    jest
+      .spyOn(contacts, 'fetchAndAddContact')
+      .mockResolvedValue(undefined as never)
+    await continued
+      .get('[data-test="onboard-import-existing"]')
+      .trigger('click')
+    await flushPromises()
+    expect(mockPush).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
+    expect(mockCreateDirect).not.toHaveBeenCalled()
+    continued.unmount()
   })
 })

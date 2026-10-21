@@ -18,6 +18,14 @@ export function createRoutes(): RouteRecordRaw[] {
           component: () => import('pages/Welcome.vue'),
         },
         {
+          path: 'account-sync/send',
+          component: () => import('pages/AccountSyncSend.vue'),
+        },
+        {
+          path: 'account-sync/receive',
+          component: () => import('pages/AccountSyncReceive.vue'),
+        },
+        {
           path: 'forum',
           component: () => import('layouts/ForumLayout.vue'),
           children: [

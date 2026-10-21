@@ -103,6 +103,7 @@ export default () => {
       to.path === '/about' ||
       to.path === '/avu' ||
       to.path === '/welcome' ||
+      to.path === '/account-sync/receive' ||
       to.path === '/docs' ||
       to.path.startsWith('/docs/') ||
       to.path === '/' ||
@@ -190,12 +191,13 @@ export default () => {
     // pending. One that a later navigation replaced ends without touching the later one's note.
     if (to === latest) notePendingChatRoute(null)
     checkDebouncedAppUpdate()
-    if (!failure && isExtensionContext() && isPersistableExtensionRoute(to.path)) {
+    if (
+      !failure &&
+      isExtensionContext() &&
+      isPersistableExtensionRoute(to.path)
+    ) {
       try {
-        localStorage.setItem(
-          EXT_LAST_ROUTE_STORAGE_KEY,
-          to.fullPath || to.path,
-        )
+        localStorage.setItem(EXT_LAST_ROUTE_STORAGE_KEY, to.fullPath || to.path)
       } catch {
         // ignore storage errors
       }

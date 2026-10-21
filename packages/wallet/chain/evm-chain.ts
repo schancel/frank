@@ -38,6 +38,11 @@ import {
 } from "./evm-stealth-payments";
 import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
 import {
+  EVM_COIN_LIST_NAMESPACE,
+  EvmCoinList,
+  type StoredEvmListCoin,
+} from "../evm-coin-list";
+import {
   FUND_AHEAD_BACKOFF_MAX_MS,
   FUND_AHEAD_BACKOFF_MIN_MS,
   MainAccountBusyError,
@@ -925,7 +930,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       if (last !== undefined && Date.now() - last < 1_000) look = false;
       else internals.lastOwnLookMs = Date.now();
     }
-    for (const address of mainAccountAddresses(wallet)) {
+    // The main and identity accounts, and any other account a funding run claimed under this
+    // holder (a received coin or the identity account paying a topic burn or fund-ahead).
+    const addresses = new Set([
+      ...mainAccountAddresses(wallet),
+      ...(typeof pool.accountsClaimedBy === "function"
+        ? pool.accountsClaimedBy(holder)
+        : []),
+    ]);
+    for (const address of addresses) {
       if (pool.accountClaimedBy(address) !== holder) continue;
       if (look) await lookAtOwnTransactions(wallet, address);
       // An operation is running under this holder right now: it lets go itself when it ends.
@@ -1123,6 +1136,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       creatorBurnAddress: (w) => creatorForumPolicy(w).burnAddress,
       sourceIsHeld,
       sourceHeldRefusalMessage: SOURCE_HELD_FOR_CONTACT_PAYMENT,
+      mainAccountHolder,
       runMainAccountExclusive,
     });
   const consumeSelfNotes = consumeEvmSelfNotes;
@@ -1884,6 +1898,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             coins?.close(),
             contactPayments?.close(),
             coinListState?.close(),
+            evmCoinListStore?.close(),
           ]);
         const pool = new EvmSubAccountPool({
           keyring,
@@ -1903,6 +1918,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         let coinListState:
           | RecordStore<{ complete: boolean; sinceMs: number }>
           | undefined;
+        let evmCoinListStore: RecordStore<StoredEvmListCoin> | undefined;
         let topicOwnerWallet: EvmChainWalletHandle | undefined;
         let destroyProvider: (() => void) | undefined;
         let destroyHttpClient: (() => void) | undefined;
@@ -2084,8 +2100,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               complete: boolean;
               sinceMs: number;
             }>();
+            evmCoinListStore = new MemoryRecordStore<StoredEvmListCoin>();
           } else {
-            [coins, preparations, contactPayments, coinListState] =
+            [coins, preparations, contactPayments, coinListState, evmCoinListStore] =
               await Promise.all([
                 LevelRecordStore.open<EvmCoin>(
                   storageLocation,
@@ -2103,9 +2120,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   storageLocation,
                   "received-coins-mailbox-scan"
                 ),
+                LevelRecordStore.open<StoredEvmListCoin>(
+                  storageLocation,
+                  EVM_COIN_LIST_NAMESPACE
+                ),
               ]);
           }
           const scanState = coinListState;
+          const coinList = await EvmCoinList.open(evmCoinListStore);
           const coinStore = coins;
           const paymentStore = contactPayments;
           const spendPool = new EvmSpendPool({
@@ -2919,6 +2941,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               provider,
               httpClient,
               coinStore,
+              coinList,
               readCoins: coinAndContactManager.readCoins,
               invalidateCoinsRead: coinAndContactManager.invalidateCoinsRead,
               spendSpacingBlocks: config.spendSpacingBlocks,
@@ -2975,7 +2998,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             };
             // Before the wallet is handed out: every stored message with a payment the chain
             // has not answered for holds its accounts again. No request is made.
-            restoreOutgoingClaims(messagingOwner);
+            await restoreOutgoingClaims(messagingOwner);
             walletInternals.canonicalMessaging =
               canonicalDirectMessages(messagingOwner, async (minimumStamp) => {
                 const context = { chainIdentifier: contractChainIdentifier(), minimumStamp };

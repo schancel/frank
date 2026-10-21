@@ -6,10 +6,11 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { Transaction, hexlify } from 'ethers'
+import { SigningKey, Transaction, hexlify } from 'ethers'
 import { toHex } from '@frank/codec'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
+import { evmWalletInternals } from '../evm-wallet'
 import {
   DirectMessageAlreadyAttemptedError,
   DirectMessageAttemptUnlinkedError,
@@ -33,8 +34,12 @@ import {
   type CanonicalDirectory,
 } from './evm-chain'
 import { EvmStampPayer, InsufficientStampFundsError } from '../evm-stamp-payer'
-import { MonadStampPendingAttemptError } from '../evm-stamp-client'
 import {
+  MonadStampPendingAttemptError,
+  MonadStampTerminalError,
+} from '../evm-stamp-client'
+import {
+  CanonicalRecipientUndeliverableError,
   REPLACED_AFTER_MS,
   RESIGN_AFTER_MS,
   LevelOutgoingMessageStore,
@@ -94,8 +99,12 @@ describe('parallel paid messages', () => {
     delayMs: number
     bodies: { body: Uint8Array; contentType: string }[]
     /** Set to answer the next message requests yourself: an HTTP status and a JSON body built
-     * from the request's own identity. The relay stand-in then stores and broadcasts nothing. */
-    answer?: (identity: unknown) => { status: number; body: unknown }
+     * from the request's own identity (and its signed payments). The relay stand-in then stores
+     * and broadcasts nothing. Returning undefined lets the request through. */
+    answer?: (
+      identity: unknown,
+      payments: Transaction[],
+    ) => { status: number; body: unknown } | undefined
   }
 
   beforeEach(async () => {
@@ -125,10 +134,15 @@ describe('parallel paid messages', () => {
             body: new Uint8Array(init.body!),
             contentType: init.headers['Content-Type'],
           }
-          if (relay.answer) {
-            const { status, body } = relay.answer(
-              restoreCanonicalRequest(request).identity,
-            )
+          const restored = restoreCanonicalRequest(request)
+          const answered = relay.answer?.(
+            restored.identity,
+            restored.parts.transactions.map(raw =>
+              Transaction.from(hexlify(raw)),
+            ),
+          )
+          if (answered) {
+            const { status, body } = answered
             const bytes = new TextEncoder().encode(JSON.stringify(body))
             let read = false
             return {
@@ -213,6 +227,8 @@ describe('parallel paid messages', () => {
     422,
     409,
     'undeliverable',
+    'stale_nonce',
+    'insufficient_total',
     'sender_unpublished',
     'expired',
   ] as const)(
@@ -754,21 +770,38 @@ describe('parallel paid messages', () => {
     expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
   })
 
-  it('two stored messages naming one coin do not stop the wallet from opening', async () => {
+  it('a coin whose payment is out is held across a restart until the chain shows it; the next message pays from what the account holds after it', async () => {
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     mockBalances.set(main, 10n ** 17n)
     offlineChain.relayBroadcasts = false
     offlineChain.broadcastDown = true
-    await send(1)
-    // A second record on the same coin, as a crash between release and write once left.
+    const first = await send(1)
     const holder = alice.pool.accountClaimedBy(main)!
+    // Letting go of the pool's claim does not free the coin: the coin list holds it.
     alice.pool.releaseAccountClaim(holder, main)
-    await send(2)
-    offlineChain.broadcastDown = false
+    const second = send(2)
+    let secondDone = false
+    void second.then(() => (secondDone = true), () => (secondDone = true))
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(secondDone).toBe(false)
     await reopen()
+    await second.catch(() => undefined)
     expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+    offlineChain.broadcastDown = false
+    for (
+      let pass = 0;
+      pass < 20 && alice.pool.accountClaimedBy(main) !== undefined;
+      pass++
+    )
+      await tick()
+    expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
+    const third = await send(3)
     for (let pass = 0; pass < 20; pass++) await tick()
-    expect(bobMailbox).toHaveLength(2)
+    const nonces = relayPayments()
+      .filter(tx => tx.from!.toLowerCase() === main)
+      .map(tx => tx.nonce)
+    expect(new Set(nonces).size).toBe(nonces.length)
+    expect(first.stampPayments[0].txHash).not.toBe(third.stampPayments[0].txHash)
   })
 
   it('a send waiting for the main account asks the chain about the one payment in its way, never the relay', async () => {
@@ -992,7 +1025,6 @@ describe('parallel paid messages', () => {
     413,
     422,
     409,
-    'undeliverable',
     'sender_unpublished',
     'expired',
   ] as const)(
@@ -1046,6 +1078,155 @@ describe('parallel paid messages', () => {
     },
   )
 
+  /** Spends `coin` outside the list (another device of the account): its nonce is used. */
+  function spendElsewhere(coin: { index: number; address: string }) {
+    const tx = Transaction.from({
+      type: 2,
+      chainId: 10143n,
+      nonce: 0,
+      to: '0x' + '42'.repeat(20),
+      value: STAMP,
+      gasLimit: 21_000n,
+      maxFeePerGas: 3n,
+      maxPriorityFeePerGas: 1n,
+    })
+    tx.signature = new SigningKey(alice.pool.privateKeyOf(coin.index)).sign(
+      tx.unsignedHash,
+    )
+    expect(tx.from!.toLowerCase()).toBe(coin.address.toLowerCase())
+    offlineChain.mine(tx.serialized)
+  }
+  /** The relay refuses the next `times` message requests before storing or broadcasting. */
+  function refuseBeforeExposure(reason: string, times = Infinity) {
+    let left = times
+    relay.answer = identity => {
+      if (--left <= 0) relay.answer = undefined
+      return {
+        status: 200,
+        body: { version: 1, phase: 'dead', identity, reason },
+      }
+    }
+  }
+
+  /** The relay's own check before it stores anything (#1732): a payment whose nonce another
+   * transaction already used, and that the node does not know, makes the message dead. */
+  function precheckLikeTheRelay() {
+    relay.answer = (identity, payments) =>
+      payments.some(
+        tx =>
+          !offlineChain.mined.has(tx.hash!) &&
+          [...offlineChain.mined.values()].filter(
+            from => from === tx.from!.toLowerCase(),
+          ).length > tx.nonce,
+      )
+        ? {
+            status: 200,
+            body: { version: 1, phase: 'dead', identity, reason: 'stale_nonce' },
+          }
+        : undefined
+  }
+
+  it('a first submission refused before exposure (stale_nonce): the coin is read again and the same message is paid from another coin', async () => {
+    // The smaller coin is the one the list offers first.
+    const [held] = await fundAccounts(1)
+    const [other] = await fundAccounts(1, STAMP + FEE_RESERVE + 1_000n)
+    await evmWalletInternals(alice).coinListSync!.refresh()
+    // Then spent on another device: the list here still lists it, at the nonce it had.
+    spendElsewhere(held)
+    const releaseRefused = jest.spyOn(EvmStampPayer.prototype, 'releaseRefused')
+    precheckLikeTheRelay()
+    const sent = await send(1)
+    // The refused set paid from the coin spent elsewhere; nothing of it was broadcast.
+    expect(releaseRefused).toHaveBeenCalledTimes(1)
+    expect(
+      releaseRefused.mock.calls[0][1].map(payment => payment.address.toLowerCase()),
+    ).toEqual([held.address.toLowerCase()])
+    // The same message (one digest), now paid from the other coin, delivered and broadcast.
+    expect(relayPayments().map(payment => payment.from!.toLowerCase())).toEqual([
+      other.address.toLowerCase(),
+    ])
+    expect(bobMailbox).toHaveLength(1)
+    expect(
+      offlineChain.walletBroadcasts.map(raw =>
+        Transaction.from(raw).from!.toLowerCase(),
+      ),
+    ).not.toContain(held.address.toLowerCase())
+    expect(alice.pool.claimedBy(held.index)).toBeUndefined()
+    for (let pass = 0; pass < 4; pass++) await tick([sent.payloadDigest])
+    expect((await tick([sent.payloadDigest]))[sent.payloadDigest]).toBe('delivered')
+    expect(
+      f.chain.directMessages.paymentsOf?.({
+        wallet: alice,
+        payloadDigest: sent.payloadDigest,
+      }),
+    ).toEqual(['spent'])
+    await expect(send(1)).rejects.toBeInstanceOf(
+      DirectMessageAlreadyAttemptedError,
+    )
+  })
+
+  it('a first submission refused before exposure with no other coin ends the message as unpaid: insufficient funds, nothing held', async () => {
+    const [held] = await fundAccounts(1)
+    await evmWalletInternals(alice).coinListSync!.refresh()
+    spendElsewhere(held)
+    const releaseRefused = jest.spyOn(EvmStampPayer.prototype, 'releaseRefused')
+    precheckLikeTheRelay()
+    await expect(send(1)).rejects.toBeInstanceOf(InsufficientStampFundsError)
+    expect(releaseRefused).toHaveBeenCalledTimes(1)
+    expect(alice.pool.claimedBy(held.index)).toBeUndefined()
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    expect(relay.bodies).toHaveLength(0)
+  })
+
+  it('a relay that refuses every first submission before exposure ends the message after bounded re-plans, with nothing paid or held', async () => {
+    const coins = await fundAccounts(4)
+    const releaseRefused = jest.spyOn(EvmStampPayer.prototype, 'releaseRefused')
+    const sign = jest.spyOn(EvmStampPayer.prototype, 'sign')
+    refuseBeforeExposure('stale_nonce')
+    const refused = await send(1).catch(error => error)
+    expect(refused).toBeInstanceOf(MonadStampTerminalError)
+    expect(refused.detail).toBe('stale_nonce')
+    // The first set and two re-plans.
+    expect(sign).toHaveBeenCalledTimes(3)
+    expect(releaseRefused).toHaveBeenCalledTimes(3)
+    for (const coin of coins) expect(alice.pool.claimedBy(coin.index)).toBeUndefined()
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    const digest = (refused as { payloadHashes?: string[] }).payloadHashes?.[0]
+    if (digest !== undefined)
+      expect(
+        f.chain.directMessages.paymentsOf?.({ wallet: alice, payloadDigest: digest }),
+      ).toEqual(['unsent'])
+    // Across a restart too: no stored message names these coins.
+    await reopen()
+    for (const coin of coins) expect(alice.pool.claimedBy(coin.index)).toBeUndefined()
+    relay.answer = undefined
+    await send(2)
+    expect(relayPayments()).toHaveLength(1)
+  })
+
+  it('a first submission refused as undeliverable before exposure frees its coin at once and across restart', async () => {
+    const [held] = await fundAccounts(1)
+    refuseBeforeExposure('undeliverable')
+    const releaseRefused = jest.spyOn(EvmStampPayer.prototype, 'releaseRefused')
+    await expect(send(1)).rejects.toBeInstanceOf(
+      CanonicalRecipientUndeliverableError,
+    )
+    expect(releaseRefused).toHaveBeenCalledTimes(1)
+    expect(alice.pool.claimedBy(held.index)).toBeUndefined()
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    await reopen()
+    expect(alice.pool.claimedBy(held.index)).toBeUndefined()
+    relay.answer = undefined
+    // The coin pays the next message (once the chain was read again).
+    await send(2)
+    expect(relayPayments().map(payment => payment.from!.toLowerCase())).toEqual([
+      held.address.toLowerCase(),
+    ])
+    await expect(send(1)).rejects.toBeInstanceOf(
+      DirectMessageAlreadyAttemptedError,
+    )
+  })
+
   it('a payment the chain mined and reverted, of a delivered message, is made once more: same value, same address, recorded before it is broadcast, never a third time', async () => {
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     mockBalances.set(main, 10n ** 17n)
@@ -1089,6 +1270,38 @@ describe('parallel paid messages', () => {
       [...offlineChain.mined.values()].filter(from => from === main),
     ).toHaveLength(2)
     expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
+  })
+
+  it('a repeat of a reverted payment that fails before it is recorded lets go of its own coin only, never the holder\'s other claims', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    offlineChain.revertNext = true
+    await send(1)
+    const release = jest.spyOn(EvmStampPayer.prototype, 'release')
+    const releasePayment = jest.spyOn(EvmStampPayer.prototype, 'releasePayment')
+    const sign = EvmStampPayer.prototype.sign
+    let failed = 0
+    const failing = jest
+      .spyOn(EvmStampPayer.prototype, 'sign')
+      .mockImplementation(async function (this: EvmStampPayer, ...args) {
+        if (failed++ === 0) throw new Error('signing failed')
+        return sign.apply(this, args)
+      })
+    try {
+      jest.spyOn(alice.provider, 'getBlockNumber').mockResolvedValue(3)
+      for (let i = 0; i < 3 && failed === 0; i++) await tick()
+      expect(failed).toBeGreaterThan(0)
+      // Not the holder-wide release: only the account this repeat claimed.
+      expect(release).not.toHaveBeenCalled()
+      expect(releasePayment).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ address: main }),
+      )
+    } finally {
+      failing.mockRestore()
+      release.mockRestore()
+      releasePayment.mockRestore()
+    }
   })
 
   it('a repeated payment that itself reverts is not repeated; a payment only inferred to have failed is never repeated', async () => {
@@ -1259,6 +1472,40 @@ describe('parallel paid messages', () => {
       expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(2)
     },
   )
+
+  it('a sub-account\'s leftover coin (its next nonce) pays a stamp while a native send runs: never one nonce signed twice', async () => {
+    const [sub] = await fundAccounts(1, 3n * (STAMP + FEE_RESERVE))
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    const first = await send(1) // from the sub-account at nonce 0; the relay broadcasts it
+    expect(relayPayments()[0].from!.toLowerCase()).toBe(sub.address.toLowerCase())
+    for (let pass = 0; pass < 3; pass++) await tick([first.payloadDigest])
+    // The settled payment left a coin at the account's next nonce.
+    const list = evmWalletInternals(alice).coinList!
+    expect(list.get(sub.address, 1)).toMatchObject({ state: 'unspent' })
+    const [native, message] = await Promise.allSettled([
+      alice.sendNative({ recipient: { raw: '0x' + '77'.repeat(20) }, value: 5n }),
+      send(2),
+    ])
+    expect(native.status).toBe('fulfilled')
+    expect(message.status).toBe('fulfilled')
+    const signed = [
+      ...relayPayments().map(tx => tx.serialized),
+      ...offlineChain.walletBroadcasts,
+    ].map(raw => Transaction.from(raw))
+    const slots = new Map<string, Set<string>>()
+    for (const tx of signed) {
+      const slot = `${tx.from!.toLowerCase()}:${tx.nonce}`
+      slots.set(slot, (slots.get(slot) ?? new Set()).add(tx.hash!))
+    }
+    for (const [slot, hashes] of slots) expect([slot, hashes.size]).toEqual([slot, 1])
+    // The stamp was paid from the leftover coin, at nonce 1.
+    const stamp = relayPayments()[1]
+    expect([stamp.from!.toLowerCase(), stamp.nonce]).toEqual([
+      sub.address.toLowerCase(),
+      1,
+    ])
+  })
 
   it('a native send waiting out the chain spacing keeps the main account: a message waiting for it cannot let its claim go', async () => {
     // Seen on Monad testnet: while a native send that had claimed the main account waited

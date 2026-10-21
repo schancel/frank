@@ -42,6 +42,7 @@ import { TopicPostOutcomeUnknownError } from './active-chain'
 import { TopicBurnPreparationError, createEvmChain } from "./evm-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
+import { evmWalletInternals } from '../evm-wallet'
 import { DirectMessagePreparationProgress } from './active-chain'
 import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
 import type { MonadWalletPersistenceBundle } from '../storage/evm-wallet-bundle'
@@ -1302,7 +1303,9 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
     expect(await wallet.provider.getBalance(main)).toBe(0n)
     expect(await wallet.provider.getBalance(coinAddress)).toBe(10n ** 18n)
 
-    // 1. topics.post succeeds using the coin to fund the burn account
+    // 1. topics.post succeeds using the coin to fund the burn account. The coin's account is
+    // claimed while it signs the funding, so no stamp payment signs from it at the same nonce.
+    const claims = jest.spyOn(wallet.pool, 'restoreAccountClaim')
     const postResult = await chain.topics.post({
       wallet,
       topic: 'memes',
@@ -1316,6 +1319,9 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
     // The funding transaction came from coinAddress, NOT main
     const postFunding = fake.rpcSubmissions[0]
     expect(postFunding.from!.toLowerCase()).toBe(coinAddress)
+    expect(claims.mock.calls.map(([, address]) => address.toLowerCase())).toContain(
+      coinAddress,
+    )
     expect(puts.length).toBeGreaterThanOrEqual(1)
 
     // 2. topics.vote also succeeds
@@ -1325,6 +1331,34 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
       direction: 'up',
       voteWeightWei: WEIGHT,
     })
+  })
+
+  it('an account a funding run claimed under the main holder is let go once nothing it signed is undecided', async () => {
+    const chain = createEvmChain({
+      ...CONFIG,
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+    })
+    const wallet = (await chain.createWallet({
+      mnemonic: TEST_MNEMONIC,
+    })) as EvmChainWalletHandle
+    opened.push(wallet)
+    makeFakeChain(0n, wallet)
+    const holder = `${wallet.identity.address.raw.toLowerCase()}:main-account`
+    const funder = new Wallet('0x' + '78'.repeat(32)).address.toLowerCase()
+    const busy = new Wallet('0x' + '79'.repeat(32)).address.toLowerCase()
+    // As a topic burn's funding run leaves them: claimed under the main holder (not the main
+    // or identity account), one with a transfer the chain has not decided yet.
+    wallet.pool.restoreAccountClaim(holder, funder)
+    wallet.pool.restoreAccountClaim(holder, busy)
+    evmWalletInternals(wallet).unjournalledTransfers.set(busy, [
+      { txHash: '0x' + 'ab'.repeat(32), nonce: 0 },
+    ])
+    await wallet.reobserveNativeOperations!()
+    expect(wallet.pool.accountClaimedBy(funder)).toBeUndefined()
+    expect(wallet.pool.accountClaimedBy(busy)).toBe(holder)
+    evmWalletInternals(wallet).unjournalledTransfers.delete(busy)
+    await wallet.reobserveNativeOperations!()
+    expect(wallet.pool.accountClaimedBy(busy)).toBeUndefined()
   })
 
   it('aggregates multiple funding transactions when no single account covers the total required amount', async () => {

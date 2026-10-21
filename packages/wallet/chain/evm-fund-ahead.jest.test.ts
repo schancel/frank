@@ -309,10 +309,10 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     expect(mockFunded).toHaveLength(2);
     expect(atRelay!.chainHttp).toEqual([]);
     expect(atRelay!.rpc.filter((name) => name === "estimateGas")).toEqual([]);
-    // Each funded account's latest/pending nonce is checked before and under its claim.
-    // These admission reads prevent restored accounts from signing stale nonce zero;
-    // they are not inline funding or a gas-estimation/consolidation workflow.
-    expect(atRelay!.rpc.filter((name) => name === "getTransactionCount")).toHaveLength(8);
+    // Each funded account is read once into the coin list: its latest and pending nonce and
+    // its nonce a spacing ago (three counts each). Not inline funding or a gas-estimation /
+    // consolidation workflow.
+    expect(atRelay!.rpc.filter((name) => name === "getTransactionCount")).toHaveLength(6);
     expect(sent.stampPayments.reduce((sum, p) => sum + p.valueWei, 0n)).toBe(
       STAMP
     );
@@ -326,9 +326,10 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     await tick();
     expect(rows("available")).toEqual([]);
     expect(rows("spent")).toHaveLength(2);
-    // Before exposure the send quotes its fee and validates the funded pair's current nonce.
+    // Before exposure the send quotes its fee and reads the freshly funded pair into the coin
+    // list once (its nonce and what it holds): no funding request.
     expect(new Set(atRelay!.rpc)).toEqual(
-      new Set(["getBlock", "getGasPrice", "getPriorityFee", "getBlockNumber", "getTransactionCount"])
+      new Set(["getBlock", "getGasPrice", "getPriorityFee", "getBlockNumber", "getTransactionCount", "getBalance"])
     );
   });
 

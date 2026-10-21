@@ -83,6 +83,7 @@ import {
 } from "@frank/cashweb/relay/canonical-dm-transport";
 import { installCanonicalDirectory } from "@frank/wallet/chain/evm-chain";
 import { EvmStampPayer } from "@frank/wallet/evm-stamp-payer";
+import { evmWalletInternals } from "@frank/wallet/evm-wallet";
 import {
   startRealStack,
   type RealStack,
@@ -1233,17 +1234,17 @@ async function main() {
       const carol = await stack.openWallet("carol", { stampValueWei: floorNow });
       const carolTap = intercept(carol);
       const payer = EvmStampPayer.prototype as unknown as {
-        untilFundsSettled(...args: unknown[]): Promise<void>;
+        spendableNow(...args: unknown[]): boolean;
       };
-      const settledWait = payer.untilFundsSettled;
-      payer.untilFundsSettled = async () => undefined;
+      const settledWait = payer.spendableNow;
+      payer.spendableNow = () => true;
       let sent: Sent;
       const started = Date.now();
       try {
         await stack.fund(carol.mainAccount, 3n * perMessage);
         sent = await sendPaid(carol, bob.address, `n refused ${started}`);
       } finally {
-        payer.untilFundsSettled = settledWait;
+        payer.spendableNow = settledWait;
       }
       const deliveredMs = Date.now() - started;
       const first = carolTap.of(sent.digest)[0]?.rawTransactions[0];
@@ -1419,15 +1420,15 @@ async function main() {
       const main = alice.mainAccount.toLowerCase();
       // THE BYPASS, in this check only: the wallet is told its main coin is at the nonce after
       // the check's own transfer and may be spent now. Restored below.
-      const payer = EvmStampPayer.prototype as unknown as {
-        coinOf(address: string, signal?: AbortSignal): Promise<{ nonce: number; notBeforeBlock: number }>;
-      };
-      const realCoinOf = payer.coinOf;
-      payer.coinOf = async function (this: unknown, address, signal) {
-        if (address.toLowerCase() !== main) return realCoinOf.call(this, address, signal);
-        payer.coinOf = realCoinOf;
-        return { nonce: nonce0 + 1, notBeforeBlock: 0 };
-      };
+      const coinList = evmWalletInternals(alice.handle).coinList;
+      if (!coinList) throw new Error("the sender's coin list is not available to the check");
+      await coinList.put({
+        account: main,
+        nonce: nonce0 + 1,
+        privateKey: mainKey,
+        valueWei: await provider.getBalance(main),
+        origin: "root",
+      });
       let ownTransfer: string | undefined;
       // The check's own transfer (nonce n) is handed to the node first, then the message with
       // the stamp at nonce n+1 goes to the relay: both are mined inside the window.
@@ -1450,7 +1451,7 @@ async function main() {
       try {
         sent = await sendPaid(alice, bob.address, `r reverted ${Date.now()}`);
       } finally {
-        payer.coinOf = realCoinOf;
+        // Nothing to restore: the coin the check listed is the wallet's own from here.
       }
       const original = tap.of(sent.digest)[0]?.rawTransactions[0];
       const states = () =>

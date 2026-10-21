@@ -29,6 +29,8 @@ import type { StealthItem } from "@frank/cashweb/types/messages";
 import type { ContactPayment } from "./storage/evm-coin-store";
 import type { EvmLegacyConsolidator } from "./chain/evm-legacy-consolidator";
 import type { EvmBlockWatcher } from "./evm-block-watcher";
+import type { EvmCoinListSync } from "./evm-coin-list-sync";
+import type { EvmCoinList } from "./evm-coin-list";
 import type { StealthPaymentReceiptCapability } from "./stealth-payment";
 
 export type CanonicalInventoryFunder = (input: {
@@ -141,6 +143,9 @@ export class EvmWalletInternals {
   nativeOperationOwner?: EvmLegacyConsolidator;
   runningMainTasks = 0;
   blockWatcher?: EvmBlockWatcher;
+  /** The wallet's coin list for this chain, and what keeps it in step with the chain. */
+  coinList?: EvmCoinList;
+  coinListSync?: EvmCoinListSync;
   lastOwnLookMs?: number;
   readonly unjournalledTransfers = new Map<
     string,

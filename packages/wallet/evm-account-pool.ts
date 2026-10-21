@@ -239,6 +239,12 @@ export type SubAccountSpendApplier = (
   chainIdentifier: string
 ) => Promise<SubAccountSpendApplication>;
 
+/** What `EvmSubAccountPool.onChange` reports. */
+export type PoolChange =
+  | { kind: "record"; record: SubAccountRecord }
+  | { kind: "released"; address: string; holder: string };
+
+/** `store`, telling `written` of every row put through it. */
 /**
  * @deprecated Use `MonadAddressInventory` (`./monad-address-inventory.ts`, Ticket #924), which
  * unifies spend and change addresses under a single dynamic inventory without rigid promotion
@@ -280,6 +286,7 @@ export class EvmSubAccountPool {
   private readonly accountWaiters = new Map<string, Array<() => void>>();
   private spendApplier?: SubAccountSpendApplier;
   private mainAccountAddress?: string;
+  private readonly changeListeners = new Set<(event: PoolChange) => void>();
 
   constructor(params: {
     keyring: MonadHdKeyring;
@@ -292,6 +299,47 @@ export class EvmSubAccountPool {
     this.requireStampReconciliationPreflight =
       params.requireStampReconciliationPreflight ?? false;
     this.mainAccountAddress = params.mainAccountAddress;
+  }
+
+  /**
+   * Tells `listener` what changed: a row was written (`record`), or a claim on an account was
+   * ended (`released`). The wallet's coin list follows the pool through this: a row that became
+   * `available` has money to list, and an account another operation let go may have spent.
+   * Returns the unsubscribe.
+   */
+  onChange(listener: (event: PoolChange) => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  private emit(event: PoolChange): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.warn("[evm-account-pool] change listener failed:", error);
+      }
+    }
+  }
+  /** Every row write goes through here, so `onChange` listeners see it. */
+  private write(record: SubAccountRecord): void {
+    this.store.put(record);
+    this.emit({ kind: "record", record });
+  }
+
+  private writeMany(records: readonly SubAccountRecord[]): void {
+    this.store.putMany(records);
+    for (const record of records) this.emit({ kind: "record", record });
+  }
+
+
+  /** The private key of sub-account `index`, derived from the keyring. For the coin list, which
+   * keeps it on the account's coin; nothing signs with a key looked up here. */
+  privateKeyOf(index: number): string {
+    if (this.store.getByIndex(index) === undefined) {
+      throw new Error(`No sub-account at index ${index} in the pool`);
+    }
+    return this.keyring.deriveSubAccount(index).privateKey;
   }
 
   setMainAccountAddress(address: string): void {
@@ -407,8 +455,10 @@ export class EvmSubAccountPool {
       if (claimant === holder && (indices === undefined || indices.includes(index))) {
         this.claims.delete(index);
         const address = this.store.getByIndex(index)?.address.toLowerCase();
-        if (address !== undefined)
+        if (address !== undefined) {
           this.accountGenerations.set(address, (this.accountGenerations.get(address) ?? 0) + 1);
+          this.emit({ kind: "released", address, holder });
+        }
       }
     if (indices === undefined)
       for (const [address, claimant] of [...this.accountClaims])
@@ -439,6 +489,13 @@ export class EvmSubAccountPool {
     return this.accountGenerations.get(address.toLowerCase()) ?? 0;
   }
 
+  /** Every non-row account `holder` holds. */
+  accountsClaimedBy(holder: string): string[] {
+    return [...this.accountClaims]
+      .filter(([, claimant]) => claimant === holder)
+      .map(([address]) => address);
+  }
+
   /** The operation holding the main or identity account at `address`, if any. */
   accountClaimedBy(address: string): string | undefined {
     return this.accountClaims.get(address.toLowerCase());
@@ -459,6 +516,7 @@ export class EvmSubAccountPool {
     if (this.accountClaims.get(key) !== holder) return;
     this.accountClaims.delete(key);
     this.accountGenerations.set(key, (this.accountGenerations.get(key) ?? 0) + 1);
+    this.emit({ kind: "released", address: key, holder });
     const waiting = this.accountWaiters.get(key);
     this.accountWaiters.delete(key);
     for (const wake of waiting ?? []) wake();
@@ -578,7 +636,7 @@ export class EvmSubAccountPool {
     for (let index = 0; index < size; index++) {
       if (this.store.getByIndex(index) === undefined) {
         const derived = this.keyring.deriveSubAccount(index);
-        this.store.put({
+        this.write({
           index: derived.index,
           address: derived.address,
           status: initialStatus,
@@ -595,7 +653,7 @@ export class EvmSubAccountPool {
 
   /** Wallet-recovery boundary: applies a fully prevalidated set in one component-store batch. */
   applyPrevalidatedRecoveryRecords(records: readonly SubAccountRecord[]): void {
-    this.store.putMany(records);
+    this.writeMany(records);
   }
 
   getRecord(index: number): SubAccountRecord | undefined {
@@ -616,7 +674,7 @@ export class EvmSubAccountPool {
       address: derived.address,
       status: "unfunded",
     };
-    this.store.put(record);
+    this.write(record);
     return record;
   }
 
@@ -631,7 +689,7 @@ export class EvmSubAccountPool {
       address: derived.address,
       status: "in-use",
     };
-    this.store.put(record);
+    this.write(record);
     return record;
   }
 
@@ -652,7 +710,7 @@ export class EvmSubAccountPool {
     ) {
       throw new Error("Recovered sender evidence belongs to a different seed");
     }
-    this.store.put(record);
+    this.write(record);
   }
 
   /** Directly persists a status transition for sub-account `index` — the mechanism ticket #18's
@@ -672,7 +730,7 @@ export class EvmSubAccountPool {
     this.capacityCache.delete(index);
     const { fundingAttempt: _fundingAttempt, ...base } = existing;
     const updated: SubAccountRecord = { ...base, status };
-    this.store.put(updated);
+    this.write(updated);
     return updated;
   }
 
@@ -685,7 +743,7 @@ export class EvmSubAccountPool {
     if (existing === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`);
     }
-    this.store.put({
+    this.write({
       ...existing,
       lifecycle: { ...existing.lifecycle, funding: { ...transaction } },
     });
@@ -701,7 +759,7 @@ export class EvmSubAccountPool {
       throw new Error(`No sub-account at index ${index} in the pool`);
     }
     this.capacityCache.delete(index);
-    this.store.put({
+    this.write({
       ...existing,
       lifecycle: { ...existing.lifecycle, spend: { ...transaction } },
     });
@@ -745,7 +803,7 @@ export class EvmSubAccountPool {
     classified: ClassifiedSubAccountSpend
   ): SubAccountSpendOutcome {
     if (classified.candidate !== undefined) {
-      this.store.put(classified.candidate);
+      this.write(classified.candidate);
       this.capacityCache.delete(index);
     }
     return classified.outcome;
@@ -1061,7 +1119,7 @@ export class EvmSubAccountPool {
     if (existing === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`);
     }
-    this.store.put({
+    this.write({
       ...existing,
       lifecycle: { ...existing.lifecycle, recovery: { ...recovery } },
     });
@@ -1388,7 +1446,7 @@ export class EvmSubAccountPool {
         address: derived.address,
         status: "unfunded",
       };
-      this.store.put(record);
+      this.write(record);
       unfunded.push(record);
     }
     if (holder !== undefined) {
@@ -1585,7 +1643,7 @@ export class EvmSubAccountPool {
             return;
           if (transactionCount > 0 || balance <= params.gasReserveWei) {
             const { fundingAttempt: _fundingAttempt, ...base } = record;
-            this.store.put({ ...base, status: "retired" });
+            this.write({ ...base, status: "retired" });
             this.capacityCache.delete(record.index);
           } else {
             this.capacityCache.set(record.index, {
@@ -1734,7 +1792,7 @@ export class EvmSubAccountPool {
         address: this.keyring.deriveSubAccount(index).address,
         status: "unfunded",
       };
-      this.store.put(target);
+      this.write(target);
       if (holder !== undefined) this.claim(holder, () => [index]);
       await this.store.flush();
     }
@@ -1781,7 +1839,7 @@ export class EvmSubAccountPool {
           params.fundingOverrides
         );
         const currentTarget = this.store.getByIndex(target.index) as SubAccountRecord;
-        this.store.put({
+        this.write({
           ...currentTarget,
           status: "funding",
           fundingAttempt: { rawTx: signedTx.rawTx, txHash: signedTx.txHash },
@@ -2126,7 +2184,7 @@ export class EvmSubAccountPool {
         `Sub-account ${index} no longer records funding transaction ${attempt.txHash}`
       );
     }
-    this.store.put(current);
+    this.write(current);
     await this.store.flush();
   }
 
@@ -2189,7 +2247,7 @@ export class EvmSubAccountPool {
       } catch {}
       const { fundingAttempt: _fundingAttempt, ...base } = record;
       if (balance !== undefined && balance > 0n) {
-        this.store.put({ ...base, status: "available" });
+        this.write({ ...base, status: "available" });
         await this.store.flush();
         return attempt.txHash;
       }
@@ -2202,7 +2260,7 @@ export class EvmSubAccountPool {
       // lagged the nonce: read it once more, and let a receipt that has arrived decide below.
       status = await signer.getStatus(attempt.txHash);
       if (status === "pending") {
-        this.store.put({ ...base, status: "retired" });
+        this.write({ ...base, status: "retired" });
         this.capacityCache.delete(record.index);
         await this.store.flush();
         throw new Error(
@@ -2212,13 +2270,13 @@ export class EvmSubAccountPool {
     }
     if (status === "failed") {
       const { fundingAttempt: _fundingAttempt, ...base } = record;
-      this.store.put({ ...base, status: "retired" });
+      this.write({ ...base, status: "retired" });
       this.capacityCache.delete(record.index);
       await this.store.flush();
       throw new Error(`Funding transaction ${attempt.txHash} failed`);
     }
     const { fundingAttempt: _fundingAttempt, ...base } = record;
-    this.store.put({ ...base, status: "available" });
+    this.write({ ...base, status: "available" });
     await this.store.flush();
     return attempt.txHash;
   }
@@ -2261,7 +2319,7 @@ export class EvmSubAccountPool {
         );
       }
     }
-    this.store.put({
+    this.write({
       ...params.target,
       status: "funding",
       fundingAttempt: { rawTx: signedTx.rawTx, txHash: signedTx.txHash },
@@ -2422,7 +2480,7 @@ export class EvmSubAccountPool {
         address: derived.address,
         status: "unfunded",
       };
-      this.store.put(target);
+      this.write(target);
       targets.push(target);
     }
     await this.store.flush();

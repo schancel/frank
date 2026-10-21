@@ -288,7 +288,8 @@ function restoreSyncedAccount(bundle: Record<string, unknown>) {
     displayName.value = sentName
   }
   return runOnboardAction(async () => {
-    await ceremony.beginRestore()
+    // Never cancel a signup another tab may have started meanwhile.
+    await ceremony.beginRestore(undefined, { keepPending: true })
     const outcome = await ceremony.confirm(
       shares,
       displayName.value.trim() || 'Frank User',

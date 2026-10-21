@@ -855,25 +855,25 @@ function pruneSyncPairing(
   }
 }
 
-/** The current pairing, with anything expired already wiped from storage. */
-async function loadSyncPairing(
+/**
+ * Reads the pairing and drops anything expired. It never writes: only
+ * `withSyncPairing` saves, under its lock, so a read cannot write back a
+ * sender that a concurrent confirm has just consumed.
+ */
+async function readSyncPairing(
   state: BackgroundBridgeState,
   extApi: Record<string, any> | null,
-): Promise<PendingSyncPairing> {
+): Promise<{ pairing: PendingSyncPairing; senderExpired: boolean }> {
   const session = syncSessionStorage(extApi)
   const held = session
     ? (await session.get(SYNC_PAIRING_SESSION_KEY))?.[SYNC_PAIRING_SESSION_KEY]
     : state.syncPairing
-  const loaded: PendingSyncPairing = {
-    sender: held?.sender ?? null,
+  const sender = held?.sender ?? null
+  const pairing = pruneSyncPairing({
+    sender,
     offerTab: held?.offerTab ?? null,
-  }
-  const pruned = pruneSyncPairing(loaded)
-  if (pruned.sender !== loaded.sender || pruned.offerTab !== loaded.offerTab) {
-    await saveSyncPairing(state, extApi, pruned)
-    if (loaded.sender && !pruned.sender) announceSyncSender(extApi, 'expired')
-  }
-  return pruned
+  })
+  return { pairing, senderExpired: !!sender && !pairing.sender }
 }
 
 async function saveSyncPairing(
@@ -900,12 +900,23 @@ function withSyncPairing<T>(
   step: (pairing: PendingSyncPairing) => Promise<[PendingSyncPairing, T]>,
 ): Promise<T> {
   const run = syncPairingSteps.then(async () => {
-    const [next, result] = await step(await loadSyncPairing(state, extApi))
+    const { pairing, senderExpired } = await readSyncPairing(state, extApi)
+    if (senderExpired) announceSyncSender(extApi, 'expired')
+    // Whatever the step returns is saved, so expired entries are wiped here too.
+    const [next, result] = await step(pairing)
     await saveSyncPairing(state, extApi, next)
     return result
   })
   syncPairingSteps = run.catch(() => null)
   return run
+}
+
+/** The current pairing, read in turn with every other pairing step. */
+function currentSyncPairing(
+  state: BackgroundBridgeState,
+  extApi: Record<string, any> | null,
+): Promise<PendingSyncPairing> {
+  return withSyncPairing(state, extApi, async pairing => [pairing, pairing])
 }
 
 const SYNC_PAIRING_ALARM = 'frank-sync-pairing-expiry'
@@ -971,7 +982,7 @@ async function relayPairingToOfferTab(
   type: 'pair-hello' | 'pair-confirm',
   payload: unknown,
 ): Promise<unknown> {
-  const offer = (await loadSyncPairing(state, extApi)).offerTab
+  const offer = (await currentSyncPairing(state, extApi)).offerTab
   if (
     !offer ||
     typeof extApi?.tabs?.get !== 'function' ||
@@ -1049,7 +1060,7 @@ async function handleAccountSyncMessage(
     case 'extension-sync-status': {
       // An extension page reopened: show the session's current PIN, if any.
       if (!fromExtensionPage) return rejected('Sender is not an extension page')
-      const current = (await loadSyncPairing(state, extApi)).sender
+      const current = (await currentSyncPairing(state, extApi)).sender
       return {
         ok: true,
         result: current

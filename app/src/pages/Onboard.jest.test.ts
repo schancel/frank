@@ -720,6 +720,9 @@ describe('Onboard.vue & /onboard route', () => {
       mockReceiveAccount.mockResolvedValueOnce({ ok: true, bundle: syncBundle })
       await typePin('222222')
       expect(mockBeginRestore).toHaveBeenCalledTimes(1)
+      expect(mockBeginRestore).toHaveBeenCalledWith(undefined, {
+        keepPending: true,
+      })
       expect(mockConfirmRestore).toHaveBeenCalledWith(
         syncBundle.backupShares,
         'Ann',

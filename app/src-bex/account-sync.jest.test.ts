@@ -375,6 +375,56 @@ describe('extension -> web app account sync by PIN pairing', () => {
     ])
   })
 
+  it('a status query racing a successful confirm never writes the consumed sender back', async () => {
+    const h = harness({ session: true })
+    const pin = await offer(h)
+    let status: Promise<any> | undefined
+    const send: SyncPairingSend = async (type, payload) => {
+      const call = () =>
+        handleBackgroundMessage(
+          { channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL, type, payload },
+          FRANK_TAB,
+          h.state,
+          h.bgScope,
+        ).then(res => res?.result)
+      if (type === 'pair-hello') return call()
+      // A stale offer is also held, so reading the pairing has something to prune.
+      h.held.frankSyncPairing.offerTab = {
+        tabId: 2,
+        createdAt: Date.now() - SYNC_PAIRING_TTL_MS - 1,
+      }
+      // The reopened popup asks for the status just as the confirm arrives,
+      // and its storage read is slow: it sees the sender, then lags behind.
+      const get = h.session!.get.getMockImplementation()!
+      let statusRead!: () => void
+      const statusReading = new Promise<void>(resolve => (statusRead = resolve))
+      h.session!.get.mockImplementationOnce(async (key: string) => {
+        const seen = JSON.parse(JSON.stringify(await get(key)))
+        statusRead()
+        await new Promise(resolve => setTimeout(resolve, 50))
+        return seen
+      })
+      status = handleBackgroundMessage(
+        { channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL, type: 'extension-sync-status' },
+        EXT_PAGE,
+        h.state,
+        h.bgScope,
+      )
+      // The confirm arrives once the status read is under way; a background
+      // that serialises reads with confirms makes it wait its turn.
+      await Promise.race([
+        statusReading,
+        new Promise(resolve => setTimeout(resolve, 100)),
+      ])
+      return call()
+    }
+    expect((await receiveSyncBundle(pin, send)).ok).toBe(true)
+    await status
+    // Take-once holds: neither the bundle nor the PIN is back in storage.session.
+    expect(h.held).toEqual({})
+    expect(JSON.stringify(h.held)).not.toContain(SHARES[0])
+  })
+
   it('answers pairing messages only from the Frank web app or an extension page', async () => {
     const h = harness()
     await offer(h)

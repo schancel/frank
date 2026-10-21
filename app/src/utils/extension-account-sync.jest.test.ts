@@ -136,3 +136,27 @@ describe('a device that already has an account takes none from sync', () => {
     },
   )
 })
+
+describe('restoring a synced account never cancels a pending signup', () => {
+  afterEach(() => mockCreateCeremony.mockReset())
+
+  it('starts the restore with keepPending and gives up when custody refuses', async () => {
+    const ceremony = {
+      beginRestore: jest.fn(async () => {
+        // Durable custody holds another tab's signup: the restore is refused.
+        throw Object.assign(new Error('Account custody: conflict'), {
+          name: 'CustodyError',
+          code: 'conflict',
+        })
+      }),
+      confirm: jest.fn(),
+      cancel: jest.fn(),
+    }
+    mockCreateCeremony.mockReturnValue(ceremony)
+    expect(await restoreAccountFromExtensionBundle(bundle())).toBe(false)
+    expect(ceremony.beginRestore).toHaveBeenCalledWith(undefined, {
+      keepPending: true,
+    })
+    expect(ceremony.confirm).not.toHaveBeenCalled()
+  })
+})

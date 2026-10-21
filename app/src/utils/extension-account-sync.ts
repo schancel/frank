@@ -286,7 +286,8 @@ export async function restoreAccountFromExtensionBundle(
           'Frank User'
         ).trim() || 'Frank User'
 
-      await (ceremony as any).beginRestore()
+      // Never cancel a signup another tab may have started meanwhile.
+      await (ceremony as any).beginRestore(undefined, { keepPending: true })
       const outcome = await (ceremony as any).confirm(shares, chosenName)
       if (outcome?.discoveredRelayUrl) {
         setCustomRelayBaseUrl(outcome.discoveredRelayUrl)

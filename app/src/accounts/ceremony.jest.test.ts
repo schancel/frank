@@ -455,3 +455,40 @@ test('capture cancels a stale pending attempt before staging a new ceremony', as
   }
 })
 
+
+test('a restore that keeps pending attempts refuses, and leaves a durable pending signup alone', async () => {
+  // Another tab began a signup after this tab read its status as fresh.
+  jest.mocked(accountSession.snapshot).mockResolvedValueOnce({
+    schema: 1,
+    revision: 1,
+    active: null,
+    pending: {
+      status: 'staging',
+      account: {
+        displayName: '',
+        descriptor: 'other-tab',
+        fingerprint: '00',
+        receipt: {
+          operationId: 'other-tab-signup',
+          context: {
+            accountId: 'other-tab-account',
+            custodyEpoch: 1,
+            recoveryFormat: 'codex32-root32-v1',
+            registry: 'frank-bip85-bip32-v1',
+            purposes: [],
+          },
+        },
+      },
+      expectedActive: { revision: 0, accountId: null },
+    },
+  })
+  const ceremony = createAccountCeremony()
+  await expect(
+    ceremony.beginRestore(undefined, { keepPending: true }),
+  ).rejects.toMatchObject({ name: 'CustodyError', code: 'conflict' })
+  expect(accountSession.cancelPending).not.toHaveBeenCalled()
+  expect(accountSession.stage).not.toHaveBeenCalled()
+  // The refused ceremony cannot go on to stage anything.
+  await expect(ceremony.confirm(['a', 'b'], 'Bob')).rejects.toThrow()
+  expect(accountSession.stage).not.toHaveBeenCalled()
+})

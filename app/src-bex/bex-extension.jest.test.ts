@@ -210,13 +210,14 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     })
   })
 
-  it('injects idempotent EIP-1193 + EIP-6963 + Solana Wallet Standard provider and routes RPC + PWA sync end-to-end', async () => {
+  it('injects idempotent EIP-1193 + EIP-6963 provider and routes RPC + PWA sync end-to-end', async () => {
     const listeners: Array<
       (msg: any, sender: any, sendResponse: (res: any) => void) => any
     > = []
     const setPanelBehavior = jest.fn().mockResolvedValue(undefined)
     const sidePanelOpen = jest.fn().mockResolvedValue(undefined)
     const storageSet = jest.fn().mockResolvedValue(undefined)
+    const windowsCreate = jest.fn().mockResolvedValue({ id: 31 })
 
     const mockExtensionScope = {
       chrome: {
@@ -241,6 +242,12 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
         sidePanel: {
           setPanelBehavior,
           open: sidePanelOpen,
+        },
+        windows: {
+          create: windowsCreate,
+          update: jest.fn().mockResolvedValue({}),
+          remove: jest.fn().mockResolvedValue(undefined),
+          onRemoved: { addListener: jest.fn() },
         },
         storage: {
           local: {
@@ -298,7 +305,15 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       method: 'eth_requestAccounts',
     })
     await new Promise(resolve => setTimeout(resolve, 10))
-    expect(sidePanelOpen).toHaveBeenCalled()
+    // The request opens the dedicated approval window, not a side panel.
+    expect(windowsCreate).toHaveBeenCalledWith({
+      url: 'chrome-extension://frank-test-ext/approval.html',
+      type: 'popup',
+      width: 400,
+      height: 620,
+      focused: true,
+    })
+    expect(sidePanelOpen).not.toHaveBeenCalled()
     expect(bgState.pendingApprovals.size).toBe(1)
     const connectApproval = Array.from(bgState.pendingApprovals.values())[0]!
     expect(connectApproval.kind).toBe('connect')
@@ -1222,11 +1237,8 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(approvedConnectedOnly.announced).toHaveLength(1)
   })
 
-  it('registers Solana Wallet Standard, Bitcoin (FrankBitcoin/unisat/WBIP004), and eCash Cashtab shims with interactive approval', async () => {
-    const {
-      createFrankSolanaWalletStandard,
-      createFrankBitcoinProvider,
-    } = await import('./inpage')
+  it('registers Bitcoin (FrankBitcoin/unisat/WBIP004) and eCash Cashtab shims with interactive approval', async () => {
+    const { createFrankBitcoinProvider } = await import('./inpage')
 
     const listeners: Array<
       (msg: any, sender: any, sendResponse: (res: any) => void) => any
@@ -1259,41 +1271,9 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     const cleanupContent = installContentScriptBridge(window as any, mockScope)
 
     const provider = installInpageProvider(window as any)!
-    const solanaWallet = createFrankSolanaWalletStandard(provider)
     const btcProvider = createFrankBitcoinProvider(provider)
 
-    // 1. Solana silent connect before approval returns empty accounts without prompting
-    const silentRes = await solanaWallet.features['standard:connect'].connect({
-      silent: true,
-    })
-    expect(silentRes.accounts).toEqual([])
-    expect(bgState.pendingApprovals.size).toBe(0)
-
-    // Interactive Solana connect queues approval and returns base58 publicKey + Uint8Array(32)
-    const solConnectPromise =
-      solanaWallet.features['standard:connect'].connect()
-    await new Promise(resolve => setTimeout(resolve, 10))
-    expect(bgState.pendingApprovals.size).toBe(1)
-    const solApproval = Array.from(bgState.pendingApprovals.values())[0]!
-    expect(solApproval.chainFamily).toBe('solana')
-
-    await sendRuntimeMessage(
-      {
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'companion-resolve-approval',
-        requestId: solApproval.id,
-        approved: true,
-      },
-      mockScope,
-    )
-    const solConnected = await solConnectPromise
-    expect(solConnected.accounts).toHaveLength(1)
-    expect(solConnected.accounts[0]?.publicKey).toBeInstanceOf(Uint8Array)
-    expect(solConnected.accounts[0]?.publicKey.length).toBe(32)
-
-    await solanaWallet.features['standard:disconnect'].disconnect()
-
-    // 2. Bitcoin requestAccounts queues approval and returns deterministic bc1q address
+    // 1. Bitcoin requestAccounts queues approval and returns deterministic bc1q address
     const btcConnectPromise = btcProvider.requestAccounts()
     await new Promise(resolve => setTimeout(resolve, 10))
     const btcApproval = Array.from(bgState.pendingApprovals.values())[0]!
@@ -1311,9 +1291,9 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     const btcAccounts = await btcConnectPromise
     expect(btcAccounts[0]).toMatch(/^bc1q/)
 
-    await solanaWallet.features['standard:disconnect'].disconnect()
+    await provider.request({ method: 'wallet_revokePermissions' })
 
-    // 3. eCash Cashtab postMessage bridge (FROM_PAGE -> xec_cashtabRequest -> FROM_CASHTAB)
+    // 2. eCash Cashtab postMessage bridge (FROM_PAGE -> xec_cashtabRequest -> FROM_CASHTAB)
     const cashtabResponses: any[] = []
     const cashtabListener = (ev: MessageEvent) => {
       if (ev.data?.type === 'FROM_CASHTAB') {
@@ -1351,97 +1331,5 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     window.removeEventListener('message', cashtabListener)
     cleanupContent()
     bg.dispose()
-  })
-})
-
-
-
-
-
-describe('dApp approval reaches an already-open extension view', () => {
-  it('holds eth_requestAccounts, notifies open views, and resolves on approval even when no view can be opened', async () => {
-    const { handleBackgroundMessage } = await import('./background')
-    const { FRANK_DAPP_APPROVALS_CHANGED } = await import('./runtime-adapter')
-    const viewMessages: any[] = []
-    const scope = {
-      chrome: {
-        runtime: {
-          id: 'frank-test-ext',
-          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
-          sendMessage: (msg: any) => {
-            viewMessages.push(msg)
-            return Promise.reject(new Error('Receiving end does not exist.'))
-          },
-        },
-        // A side panel already open on /wallet: open() needs a user gesture the
-        // dApp click does not carry, so it rejects.
-        sidePanel: {
-          open: jest.fn(() =>
-            Promise.reject(new Error('sidePanel.open() requires a user gesture')),
-          ),
-        },
-      },
-    }
-    const state = createBackgroundBridgeState({
-      chainIdHex: '0xaa36a7',
-      activePersonaAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
-      launchMode: 'sidepanel',
-    })
-
-    let settled = false
-    const rpc = handleBackgroundMessage(
-      {
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'dapp-rpc-request',
-        id: 'req-uniswap',
-        origin: 'https://app.uniswap.org',
-        payload: { method: 'eth_requestAccounts' },
-      },
-      { tab: { id: 7, windowId: 3 } },
-      state,
-      scope,
-    ).then(res => {
-      settled = true
-      return res
-    })
-    await new Promise(resolve => setTimeout(resolve, 0))
-
-    expect(settled).toBe(false)
-    expect(state.pendingApprovals.has('req-uniswap')).toBe(true)
-    expect(viewMessages).toContainEqual({
-      channel: FRANK_DAPP_BRIDGE_CHANNEL,
-      type: FRANK_DAPP_APPROVALS_CHANGED,
-    })
-
-    const bridgeState = await handleBackgroundMessage(
-      { channel: FRANK_DAPP_BRIDGE_CHANNEL, type: 'get-bridge-state' },
-      {},
-      state,
-      scope,
-    )
-    expect(bridgeState.result.pendingApprovals).toHaveLength(1)
-
-    viewMessages.length = 0
-    await handleBackgroundMessage(
-      {
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'companion-resolve-approval',
-        requestId: 'req-uniswap',
-        approved: true,
-        useBurnerPersona: false,
-      },
-      {},
-      state,
-      scope,
-    )
-    const res = await rpc
-    expect(res.ok).toBe(true)
-    expect(res.result).toEqual([expect.stringMatching(/^0x[0-9a-fA-F]{40}$/)])
-    expect(state.pendingApprovals.size).toBe(0)
-    // Other open views drop the resolved request.
-    expect(viewMessages).toContainEqual({
-      channel: FRANK_DAPP_BRIDGE_CHANNEL,
-      type: FRANK_DAPP_APPROVALS_CHANGED,
-    })
   })
 })

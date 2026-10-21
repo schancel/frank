@@ -8,10 +8,8 @@ import {
   isBrowserExtensionRuntime,
   isFrankWebAppOrigin,
   onRuntimeMessage,
-  openCompanionPanel,
-  findMainExtensionWindow,
   focusOrOpenMainExtensionWindow,
-  openExtensionInWindow,
+  openCompanionPanel,
 } from './runtime-adapter'
 import {
   createSyncSender,
@@ -28,6 +26,7 @@ import {
   deriveDeterministicOriginBurnerAddress,
   deriveDeterministicXecAddress,
 } from './persona-derivation'
+import { createApprovalWindow, type ApprovalWindow } from './approval-window'
 
 export type DappProviderAnnounceMode = 'always' | 'connected-only' | 'stealth'
 
@@ -41,7 +40,7 @@ export interface OriginPersonaBinding {
 export interface PendingDappApproval {
   id: string
   kind?: 'connect' | 'sign' | 'transaction' | 'permissions'
-  chainFamily?: 'evm' | 'solana' | 'bitcoin' | 'ecash'
+  chainFamily?: 'evm' | 'bitcoin' | 'ecash'
   origin: string
   href: string
   method: string
@@ -93,6 +92,8 @@ export interface BackgroundBridgeState {
   syncPairing: PendingSyncPairing
   openPanelOnActionClick: boolean
   launchMode: ExtensionLaunchMode
+  /** The approval window; created on the first request needing a decision. */
+  approvalWindow?: ApprovalWindow
 }
 
 export type BackgroundDappState = BackgroundBridgeState
@@ -104,11 +105,6 @@ const APPROVAL_REQUIRED_METHODS = new Set([
   'eth_signTypedData_v3',
   'eth_signTypedData_v4',
   'eth_sendTransaction',
-  'solana_connect',
-  'solana_signMessage',
-  'solana_signTransaction',
-  'solana_signAndSendTransaction',
-  'solana_signIn',
   'btc_requestAccounts',
   'btc_signMessage',
   'btc_signPsbt',
@@ -508,80 +504,38 @@ export function createBackgroundBridgeState(
   }
 }
 
-export async function openApprovalCompanionPopup(
-  options: {
-    windowId?: number
-    tabId?: number
-  } = {},
-  runtimeScope?: Record<string, any>,
-  state?: BackgroundBridgeState,
-): Promise<{
-  opened: boolean
-  mode: string
-}> {
-  const extApi = getRawExtensionApi(runtimeScope)
-  if (!extApi) {
-    return { opened: false, mode: 'noop' }
-  }
+const USER_REJECTED = { code: 4001, message: 'User rejected the request.' }
 
-  // An open main pop-out window already shows pending approvals: raise it instead of
-  // opening a second Frank view that would only find the account in use.
-  const mainWindowId = await findMainExtensionWindow(runtimeScope)
-  if (mainWindowId !== null && typeof extApi.windows?.update === 'function') {
-    try {
-      await extApi.windows.update(mainWindowId, { focused: true })
-      return { opened: true, mode: 'window' }
-    } catch {
-      // The window closed meanwhile; open a view below.
-    }
+/**
+ * Answer every waiting dApp request with `error` and empty the queue. Used when
+ * the user closes the approval window without deciding.
+ */
+export function rejectAllPendingApprovals(
+  state: BackgroundBridgeState,
+  runtimeScope: Record<string, any> | undefined,
+  error: { code: number; message: string } = USER_REJECTED,
+): void {
+  const ids = Array.from(state.pendingApprovals.keys())
+  state.pendingApprovals.clear()
+  for (const id of ids) {
+    const waiter = state.pendingRpcWaiters.get(id)
+    state.pendingRpcWaiters.delete(id)
+    waiter?.reject(error)
   }
+  if (ids.length > 0) notifyExtensionViewsOfApprovals(runtimeScope)
+}
 
-  if (
-    state?.launchMode === 'sidepanel' &&
-    extApi.sidePanel &&
-    typeof extApi.sidePanel.open === 'function'
-  ) {
-    return await openCompanionPanel(
-      {
-        windowId: options.windowId,
-        tabId: options.tabId,
-        persistSidePanelOnActionClick: false,
-      },
-      runtimeScope,
-    )
+function approvalWindowFor(
+  state: BackgroundBridgeState,
+  runtimeScope: Record<string, any> | undefined,
+): ApprovalWindow {
+  if (!state.approvalWindow) {
+    state.approvalWindow = createApprovalWindow({
+      api: getRawExtensionApi(runtimeScope),
+      onClosedByUser: () => rejectAllPendingApprovals(state, runtimeScope),
+    })
   }
-
-  if (extApi.action && typeof extApi.action.openPopup === 'function') {
-    try {
-      await extApi.action.openPopup()
-      return { opened: true, mode: 'popup' }
-    } catch {
-      // Fall through to window/sidePanel when openPopup requires user gesture
-    }
-  }
-
-  if (extApi.windows && typeof extApi.windows.create === 'function') {
-    try {
-      const res = await openExtensionInWindow(
-        { path: 'index.html?extMode=window#/dapp-bridge' },
-        runtimeScope,
-      )
-      if (res.opened) {
-        return { opened: true, mode: res.mode }
-      }
-    } catch {
-      // Fall through to companion panel
-    }
-  }
-
-  return await openCompanionPanel(
-    {
-      windowId: options.windowId,
-      tabId: options.tabId,
-      persistSidePanelOnActionClick: false,
-    },
-    runtimeScope,
-  )
+  return state.approvalWindow
 }
 
 export function configureSidePanelBehavior(
@@ -1620,10 +1574,7 @@ export async function handleBackgroundMessage(
       }
     }
 
-    if (
-      method === 'wallet_revokePermissions' ||
-      method === 'solana_disconnect'
-    ) {
+    if (method === 'wallet_revokePermissions') {
       if (normalizedOrigin) {
         state.approvedOrigins.delete(normalizedOrigin)
         state.connectedOrigins.delete(normalizedOrigin)
@@ -1636,20 +1587,7 @@ export async function handleBackgroundMessage(
       return { ok: true, result: null }
     }
 
-    // Solana silent connect on unapproved origin returns [] without prompting
-    if (method === 'solana_connect') {
-      const connectOpt = (Array.isArray(params) ? params[0] : params) as
-        | { silent?: boolean }
-        | undefined
-      if (
-        connectOpt?.silent &&
-        (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin))
-      ) {
-        return { ok: true, result: [] }
-      }
-    }
-
-    // Already-approved origin calling eth_requestAccounts, wallet_requestPermissions, solana_connect, btc_requestAccounts, or xec_cashtabRequest(addressRequest)
+    // Already-approved origin calling eth_requestAccounts, wallet_requestPermissions, btc_requestAccounts, or xec_cashtabRequest(addressRequest)
     const cashtabParams =
       method === 'xec_cashtabRequest'
         ? ((Array.isArray(params) ? params[0] : params) as
@@ -1664,7 +1602,6 @@ export async function handleBackgroundMessage(
     if (
       (method === 'eth_requestAccounts' ||
         method === 'wallet_requestPermissions' ||
-        method === 'solana_connect' ||
         method === 'btc_requestAccounts' ||
         isCashtabAddressRequest) &&
       normalizedOrigin &&
@@ -1770,7 +1707,6 @@ export async function handleBackgroundMessage(
       const isConnectMethod =
         method === 'eth_requestAccounts' ||
         method === 'wallet_requestPermissions' ||
-        method === 'solana_connect' ||
         method === 'btc_requestAccounts' ||
         isCashtabAddressRequest
 
@@ -1796,8 +1732,6 @@ export async function handleBackgroundMessage(
           : isConnectMethod
           ? 'connect'
           : method === 'eth_sendTransaction' ||
-            method === 'solana_signTransaction' ||
-            method === 'solana_signAndSendTransaction' ||
             method === 'btc_signPsbt' ||
             method === 'btc_signPsbts' ||
             (method === 'xec_cashtabRequest' && Boolean(cashtabParams?.txInfo))
@@ -1808,10 +1742,8 @@ export async function handleBackgroundMessage(
         state.activePersonaAddress,
         effectiveOrigin,
       )
-      const chainFamily: 'evm' | 'solana' | 'bitcoin' | 'ecash' =
-        method.startsWith('solana_')
-          ? 'solana'
-          : method.startsWith('btc_')
+      const chainFamily: 'evm' | 'bitcoin' | 'ecash' =
+        method.startsWith('btc_')
           ? 'bitcoin'
           : method === 'xec_cashtabRequest'
           ? 'ecash'
@@ -1841,18 +1773,12 @@ export async function handleBackgroundMessage(
         state.pendingRpcWaiters.set(id, { resolve, reject })
       })
 
-      // An already-open popup/side panel/window learns about the request here;
-      // opening a view is best effort (sidePanel.open and action.openPopup
-      // need a user gesture the dApp's click does not carry to the background).
+      // The approval window shows the request (opening it, or focusing it
+      // when earlier requests are already waiting there).
       notifyExtensionViewsOfApprovals(runtimeScope)
-      void openApprovalCompanionPopup(
-        {
-          windowId: sender?.tab?.windowId,
-          tabId: sender?.tab?.id,
-        },
-        runtimeScope,
-        state,
-      ).catch(() => undefined)
+      void approvalWindowFor(state, runtimeScope)
+        .show()
+        .catch(() => undefined)
 
       try {
         const resolvedResult = await decision
@@ -1864,8 +1790,8 @@ export async function handleBackgroundMessage(
         return {
           ok: false,
           error: {
-            code: typeof err?.code === 'number' ? err.code : 4001,
-            message: String(err?.message || 'User rejected the request.'),
+            code: typeof err?.code === 'number' ? err.code : USER_REJECTED.code,
+            message: String(err?.message || USER_REJECTED.message),
             ...(err?.data !== undefined ? { data: err.data } : {}),
           },
         }
@@ -1911,13 +1837,15 @@ export async function handleBackgroundMessage(
     state.pendingApprovals.delete(requestId)
     state.pendingRpcWaiters.delete(requestId)
     notifyExtensionViewsOfApprovals(runtimeScope)
+    if (state.pendingApprovals.size === 0) {
+      void approvalWindowFor(state, runtimeScope)
+        .close()
+        .catch(() => undefined)
+    }
 
     const approved = Boolean(decision.approved ?? message.approved)
     if (!approved) {
-      const rejectionError = {
-        code: 4001,
-        message: 'User rejected the request.',
-      }
+      const rejectionError = { ...USER_REJECTED }
       if (waiter) {
         waiter.reject(rejectionError)
       }
@@ -1952,7 +1880,6 @@ export async function handleBackgroundMessage(
       pending.kind === 'permissions' ||
       pending.method === 'eth_requestAccounts' ||
       pending.method === 'wallet_requestPermissions' ||
-      pending.method === 'solana_connect' ||
       pending.method === 'btc_requestAccounts' ||
       isPendingCashtabConnect
 

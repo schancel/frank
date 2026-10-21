@@ -30,12 +30,18 @@ jest.mock('@frank/wallet/chain', () => ({
     id === 'monad-testnet' ? { kind: 'monad' } : undefined,
 }))
 let mockDecimals = false
-// The oracle's AVU figure for a stamp; '' (no rate) unless a test sets one.
-let mockAvuFigure = ''
+// The oracle's AVU value of a stamp: no rate (0) unless a test sets one.
+let mockAvu = 0
+let mockStaleAgeMs: number | undefined
 jest.mock('../../stores/oracle', () => ({
   useSafeOracleStore: () => ({
+    getAvu: (asset: string, raw: bigint) =>
+      asset === 'monad' && raw > 0n ? mockAvu : 0,
     formatAvuAmount: (asset: string, raw: bigint) =>
-      asset === 'monad' && raw > 0n ? mockAvuFigure : '',
+      asset === 'monad' && raw > 0n && mockAvu
+        ? `≈ 50 mAVU · testnet${mockStaleAgeMs ? ' (45 min old)' : ''}`
+        : '',
+    valueStaleAgeMs: () => mockStaleAgeMs,
   }),
 }))
 
@@ -336,23 +342,33 @@ describe('modernized chat input interface (#1003)', () => {
       )
     })
 
+    const avuStamp = () =>
+      mount(ChatInput, {
+        props: {
+          minimumStampWei: 10n ** 16n,
+          defaultStampWei: 10n ** 16n,
+          defaultStampMode: false,
+          stampAmount: '0.014142135623730950',
+        },
+        global: globalOptions,
+      })
+
     it('leads with the stamp’s AVU value, the coin amount beside it', () => {
-      mockAvuFigure = '≈ 52.3 mAVU · testnet'
+      mockAvu = 0.05
       try {
-        const wrapper = mount(ChatInput, {
-          props: {
-            minimumStampWei: 10n ** 16n,
-            defaultStampWei: 10n ** 16n,
-            defaultStampMode: false,
-            stampAmount: '0.014142135623730950',
-          },
-          global: globalOptions,
-        })
+        const wrapper = avuStamp()
         const pill = wrapper.get('.chat-stamp-btn')
+        // Short on the pill: no testnet marker or age (those are in the hover line).
         expect(pill.get('[data-testid="stamp-pill-avu"]').text()).toBe(
-          '≈ 52.3 mAVU · testnet',
+          '≈ 50 mAVU',
+        )
+        expect(pill.find('[data-testid="stamp-pill-avu-stale"]').exists()).toBe(
+          false,
         )
         expect(pill.get('.chat-stamp-pill-text').text()).toBe('14.14 mMON')
+        expect(pill.get('.chat-stamp-pill-text').classes()).toContain(
+          'chat-stamp-pill-text--secondary',
+        )
         // AVU is the figure people read; the multiple stays in the hover line.
         expect(pill.find('[data-testid="stamp-pill-multiple"]').exists()).toBe(
           false,
@@ -361,10 +377,30 @@ describe('modernized chat input interface (#1003)', () => {
           'Stamp: 0.01414 MON, ≈1.4142× the default',
         )
         expect(wrapper.get('[data-testid="stamp-tooltip-avu"]').text()).toBe(
-          'Worth ≈ 52.3 mAVU · testnet (1 AVU = 1 kWh)',
+          'Worth ≈ 50 mAVU · testnet (1 AVU = 1 kWh)',
         )
       } finally {
-        mockAvuFigure = ''
+        mockAvu = 0
+      }
+    })
+
+    it('never shows a stale AVU figure unmarked', () => {
+      mockAvu = 0.05
+      mockStaleAgeMs = 45 * 60_000
+      try {
+        const wrapper = avuStamp()
+        const avu = wrapper.get('[data-testid="stamp-pill-avu"]')
+        expect(avu.classes()).toContain('chat-stamp-pill-avu--stale')
+        expect(avu.find('[data-testid="stamp-pill-avu-stale"]').exists()).toBe(
+          true,
+        )
+        expect(avu.text()).toBe('≈ 50 mAVU')
+        expect(wrapper.get('[data-testid="stamp-tooltip-avu"]').text()).toBe(
+          'Worth ≈ 50 mAVU · testnet (45 min old) (1 AVU = 1 kWh)',
+        )
+      } finally {
+        mockAvu = 0
+        mockStaleAgeMs = undefined
       }
     })
 

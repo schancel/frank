@@ -1,14 +1,17 @@
 // The composer's stamp pill: the stamp's AVU value comes from the oracle's one AVU helper,
 // for the asset the canonical registry says prices the chain; nothing when it cannot.
-import { formatStampAvu, stampMultiplierText } from './stamp-display'
+import { stampAvu, stampMultiplierText } from './stamp-display'
 
 const valued: Array<[string, bigint]> = []
+let mockStaleAgeMs: number | undefined
 jest.mock('src/stores/oracle', () => ({
   useSafeOracleStore: () => ({
-    formatAvuAmount: (asset: string, raw: bigint) => {
+    getAvu: (asset: string, raw: bigint) => {
       valued.push([asset, raw])
-      return asset === 'monad' ? '≈ 52.3 mAVU · testnet' : ''
+      return asset === 'monad' ? 0.05 : 0
     },
+    formatAvuAmount: () => '≈ 50 mAVU · testnet',
+    valueStaleAgeMs: () => mockStaleAgeMs,
   }),
 }))
 
@@ -20,26 +23,38 @@ const evm = (chainIdentifier: string, decimals = 18) => ({
 
 beforeEach(() => {
   valued.length = 0
+  mockStaleAgeMs = undefined
 })
 
-describe('formatStampAvu', () => {
+describe('stampAvu', () => {
   it('values the stamp as the registry asset of the canonical chain', () => {
-    expect(formatStampAvu(evm('monad-testnet'), 468_800_000_000_000_000n)).toBe(
-      '≈ 52.3 mAVU · testnet',
-    )
+    expect(stampAvu(evm('monad-testnet'), 468_800_000_000_000_000n)).toEqual({
+      figure: '≈ 50 mAVU',
+      line: '≈ 50 mAVU · testnet',
+      stale: false,
+    })
     expect(valued).toEqual([['monad', 468_800_000_000_000_000n]])
   })
 
-  it('is empty for a free, unparsed, or unvaluable stamp', () => {
-    expect(formatStampAvu(evm('monad-testnet'), 0n)).toBe('')
-    expect(formatStampAvu(evm('monad-testnet'), undefined)).toBe('')
-    expect(formatStampAvu(evm('no-such-chain'), 10n)).toBe('')
+  it('says when the value behind it is stale', () => {
+    mockStaleAgeMs = 45 * 60_000
+    expect(stampAvu(evm('monad-testnet'), 10n ** 17n)?.stale).toBe(true)
+  })
+
+  it('is nothing for a free, unparsed, or unvaluable stamp', () => {
+    expect(stampAvu(evm('monad-testnet'), 0n)).toBeUndefined()
+    expect(stampAvu(evm('monad-testnet'), undefined)).toBeUndefined()
+    expect(stampAvu(evm('no-such-chain'), 10n)).toBeUndefined()
     expect(valued).toEqual([])
   })
 
   it('does not value an amount whose base unit is not the asset’s', () => {
-    expect(formatStampAvu(evm('monad-testnet', 6), 10n ** 6n)).toBe('')
+    expect(stampAvu(evm('monad-testnet', 6), 10n ** 6n)).toBeUndefined()
     expect(valued).toEqual([])
+  })
+
+  it('is nothing when there is no rate', () => {
+    expect(stampAvu(evm('solana-devnet', 9), 10n ** 9n)).toBeUndefined()
   })
 })
 

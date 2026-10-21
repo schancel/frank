@@ -664,7 +664,7 @@
           />
         </div>
         <div
-          class="col-auto row items-center no-wrap q-gutter-x-xs"
+          class="composer-top-actions row items-center no-wrap q-gutter-x-xs"
           data-testid="composer-top-actions"
         >
           <!-- Hidden file input -->
@@ -704,26 +704,33 @@
             data-testid="email-stamp-btn"
           >
             <span
-              v-if="stampAvuText"
+              v-if="stampAvu"
               class="chat-stamp-pill-avu q-ml-xs"
+              :class="{ 'chat-stamp-pill-avu--stale': stampAvu.stale }"
               data-testid="stamp-pill-avu"
-              >{{ stampAvuText }}</span
+              ><q-icon
+                v-if="stampAvu.stale"
+                name="schedule"
+                size="12px"
+                class="chat-stamp-pill-stale q-mr-xs"
+                data-testid="stamp-pill-avu-stale"
+              />{{ stampAvu.figure }}</span
             >
             <span
               class="chat-stamp-pill-text q-ml-xs"
-              :class="{ 'chat-stamp-pill-text--secondary': stampAvuText }"
+              :class="{ 'chat-stamp-pill-text--secondary': stampAvu }"
               >{{ stampPillText }}</span
             >
             <span
-              v-if="!stampAvuText && stampMultiplier && stampMultiplier !== '1'"
+              v-if="!stampAvu && stampMultiplier && stampMultiplier !== '1'"
               class="chat-stamp-pill-multiple q-ml-xs"
               data-testid="stamp-pill-multiple"
               >{{ stampMultiplier }}×</span
             >
             <q-tooltip max-width="280px">
               <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
-              <div v-if="stampAvuText" data-testid="stamp-tooltip-avu">
-                {{ $t('chatInput.stampChipAvu', { value: stampAvuText }) }}
+              <div v-if="stampAvu" data-testid="stamp-tooltip-avu">
+                {{ $t('chatInput.stampChipAvu', { value: stampAvu.line }) }}
               </div>
               <div>
                 {{
@@ -1206,7 +1213,11 @@ import {
 import { STAMP_MULTIPLIER_TENTHS } from 'src/components/chat/ChatInput.vue'
 import { defaultStaticStampForChain } from '@frank/wallet/oracle'
 import { activeChain } from '@frank/wallet/chain'
-import { formatStampAvu, stampMultiplierText } from 'src/utils/stamp-display'
+import {
+  stampAvu as stampAvuOf,
+  stampMultiplierText,
+  type StampAvu,
+} from 'src/utils/stamp-display'
 import { purify, renderMarkdown } from 'src/utils/markdown'
 import {
   applyMarkdownFormat,
@@ -1477,9 +1488,9 @@ export default defineComponent({
     stampMultiplier(): string {
       return stampMultiplierText(this.stampWei, this.effectiveDefaultStampWei)
     },
-    /** What the stamp is worth in AVU ("≈ 52.3 mAVU"); empty with no rate. */
-    stampAvuText(): string {
-      return formatStampAvu(activeChain, this.stampWei)
+    /** What the stamp is worth in AVU; undefined with no rate. */
+    stampAvu(): StampAvu | undefined {
+      return stampAvuOf(activeChain, this.stampWei)
     },
     stampWei(): bigint | undefined {
       try {
@@ -3001,6 +3012,13 @@ export default defineComponent({
   min-height: 32px;
 }
 
+/* Attach and the stamp pill: may shrink (the pill gives way) rather than push the row
+ * off-screen. */
+.composer-top-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 .composer-draft-indicator {
   display: inline-flex;
   align-items: center;
@@ -3192,56 +3210,5 @@ export default defineComponent({
   border: none;
   background-color: transparent;
   display: block;
-}
-
-.chat-stamp-btn {
-  flex-shrink: 0;
-  min-height: 28px;
-  height: auto;
-  padding: 2px 10px;
-  border-radius: 999px !important;
-  font-size: 12px;
-  white-space: nowrap;
-  color: var(--q-primary);
-  background-color: var(--q-chat-stamp-bg, rgba(0, 0, 0, 0.05));
-  transition: background-color 0.15s ease, opacity 0.15s ease;
-}
-
-.chat-stamp-btn :deep(.q-btn__content) {
-  flex-wrap: nowrap !important;
-  white-space: nowrap !important;
-}
-
-.chat-stamp-btn:hover:not(:disabled) {
-  background-color: var(--q-chat-stamp-bg-hover, rgba(0, 0, 0, 0.09));
-}
-
-.chat-stamp-pill-text {
-  font-weight: 600;
-  font-size: 11px;
-  font-family: inherit;
-  opacity: 0.92;
-  white-space: nowrap;
-}
-
-.chat-stamp-pill-multiple {
-  font-size: 10px;
-  font-weight: 600;
-  opacity: 0.82;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.chat-stamp-explanation {
-  opacity: 0.8;
-  max-width: 320px;
-}
-
-.body--dark .chat-stamp-btn {
-  background-color: rgba(255, 255, 255, 0.08);
-}
-
-.body--dark .chat-stamp-btn:hover:not(:disabled) {
-  background-color: rgba(255, 255, 255, 0.14);
 }
 </style>

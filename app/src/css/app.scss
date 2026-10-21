@@ -494,7 +494,6 @@ html.frank-keyboard-open {
   }
 }
 
-
 // ============================================================================
 // Unified Frank Button, Pill & Composer Control Design System
 // Prevents Quasar Material Design 2 defaults (ALL-CAPS text-transform, wrapping
@@ -559,8 +558,14 @@ html.frank-keyboard-open {
   }
 }
 
+/* The stamp pill, in the chat composer and the email composer. Its styles live here only.
+ * It is the one control on the composer row that gives way: it may shrink (the coin
+ * amount ellipsises, then goes) so the send button always stays on screen. */
 .chat-stamp-btn {
-  flex-shrink: 0;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   min-height: 28px;
   height: auto;
   padding: 2px 10px;
@@ -574,6 +579,7 @@ html.frank-keyboard-open {
   .q-btn__content {
     flex-wrap: nowrap !important;
     white-space: nowrap !important;
+    min-width: 0;
   }
 
   &:hover:not(:disabled) {
@@ -582,6 +588,7 @@ html.frank-keyboard-open {
 }
 
 .chat-stamp-pill-text {
+  min-width: 0;
   font-weight: 600;
   font-size: 11px;
   font-family: inherit;
@@ -591,14 +598,23 @@ html.frank-keyboard-open {
   text-overflow: ellipsis;
 }
 
-/* The stamp's AVU value leads the pill; the coin amount follows, quieter. */
+/* The stamp's AVU value leads the pill and is the last thing to give way. */
 .chat-stamp-pill-avu {
+  display: inline-flex;
+  align-items: center;
   font-weight: 700;
   font-size: 11px;
   white-space: nowrap;
   flex-shrink: 0;
 }
 
+/* A stale AVU figure is never shown unmarked: a clock, in the warning colour (the hover
+ * line gives its age). */
+.chat-stamp-pill-avu--stale {
+  color: var(--q-warning);
+}
+
+/* The coin amount beside the AVU value: quieter, and the first thing to go. */
 .chat-stamp-pill-text--secondary {
   font-weight: 500;
   font-size: 10px;
@@ -611,6 +627,26 @@ html.frank-keyboard-open {
   opacity: 0.82;
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+/* Narrow composer (the chat composer is a size container) or narrow phone (the email
+ * composer is not): AVU value alone. */
+@container (max-width: 360px) {
+  .chat-stamp-pill-text--secondary,
+  .chat-stamp-pill-multiple {
+    display: none;
+  }
+
+  .chat-stamp-btn {
+    padding: 2px 8px;
+  }
+}
+
+@media (max-width: 360px) {
+  .chat-stamp-pill-text--secondary,
+  .chat-stamp-pill-multiple {
+    display: none;
+  }
 }
 
 .chat-stamp-explanation {
@@ -701,4 +737,3 @@ body.body--dark {
     font-size: 16px !important;
   }
 }
-

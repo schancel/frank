@@ -89,7 +89,7 @@
         class="chat-input-bottom-bar full-width row no-wrap items-center justify-between"
         data-testid="chat-input-bottom-bar"
       >
-        <div class="row no-wrap items-center q-gutter-x-xs min-w-0">
+        <div class="chat-input-actions row no-wrap items-center q-gutter-x-xs">
           <q-btn
             dense
             flat
@@ -332,14 +332,21 @@
             <!-- What the message will carry, in the compact form: the chip is a tight place. -->
             <!-- AVU first, so people learn to read stamps in AVU; the coin amount beside it. -->
             <span
-              v-if="stampAvuText"
+              v-if="stampAvu"
               class="chat-stamp-pill-avu q-ml-xs"
+              :class="{ 'chat-stamp-pill-avu--stale': stampAvu.stale }"
               data-testid="stamp-pill-avu"
-              >{{ stampAvuText }}</span
+              ><q-icon
+                v-if="stampAvu.stale"
+                name="schedule"
+                size="12px"
+                class="chat-stamp-pill-stale q-mr-xs"
+                data-testid="stamp-pill-avu-stale"
+              />{{ stampAvu.figure }}</span
             >
             <span
               class="chat-stamp-pill-text q-ml-xs"
-              :class="{ 'chat-stamp-pill-text--secondary': stampAvuText }"
+              :class="{ 'chat-stamp-pill-text--secondary': stampAvu }"
               >{{ stampPillText }}</span
             >
             <span
@@ -350,15 +357,15 @@
               >↑</span
             >
             <span
-              v-if="!stampAvuText && stampMultiplier && stampMultiplier !== '1'"
+              v-if="!stampAvu && stampMultiplier && stampMultiplier !== '1'"
               class="chat-stamp-pill-multiple q-ml-xs"
               data-testid="stamp-pill-multiple"
               >{{ stampMultiplier }}×</span
             >
             <q-tooltip max-width="280px">
               <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
-              <div v-if="stampAvuText" data-testid="stamp-tooltip-avu">
-                {{ $t('chatInput.stampChipAvu', { value: stampAvuText }) }}
+              <div v-if="stampAvu" data-testid="stamp-tooltip-avu">
+                {{ $t('chatInput.stampChipAvu', { value: stampAvu.line }) }}
               </div>
               <div
                 v-if="defaultStampMode && suggestedIncrease"
@@ -548,7 +555,11 @@ import {
   type PostAttachment,
 } from '../../utils/post-editor'
 import { activeChain } from '@frank/wallet/chain'
-import { formatStampAvu, stampMultiplierText } from '../../utils/stamp-display'
+import {
+  stampAvu as stampAvuOf,
+  stampMultiplierText,
+  type StampAvu,
+} from '../../utils/stamp-display'
 import { defaultStaticStampForChain } from '@frank/wallet/oracle'
 import {
   formatCompactAmount,
@@ -974,9 +985,9 @@ export default defineComponent({
     stampMultiplier(): string {
       return stampMultiplierText(this.stampWei, this.effectiveDefaultStampWei)
     },
-    /** What the stamp is worth in AVU ("≈ 52.3 mAVU"); empty with no rate. */
-    stampAvuText(): string {
-      return formatStampAvu(activeChain, this.stampWei)
+    /** What the stamp is worth in AVU; undefined with no rate. */
+    stampAvu(): StampAvu | undefined {
+      return stampAvuOf(activeChain, this.stampWei)
     },
     /** The chosen stamp in base units; `undefined` while the field holds no amount. */
     stampWei(): bigint | undefined {
@@ -1141,6 +1152,13 @@ export default defineComponent({
   }
 }
 
+/* The left-hand controls give way before the send button: without a zero minimum width
+ * a flex item never shrinks below its content. */
+.chat-input-actions {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
 .chat-input-field {
   flex: 1 1 0%;
   min-width: 0;
@@ -1164,68 +1182,6 @@ export default defineComponent({
     white-space: nowrap !important;
     text-overflow: ellipsis !important;
   }
-}
-
-.chat-stamp-btn {
-  flex-shrink: 1;
-  min-width: 0;
-  max-width: 100%;
-  min-height: 30px;
-  height: auto;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  white-space: nowrap;
-  color: var(--q-primary);
-  background-color: var(--q-chat-stamp-bg, rgba(0, 0, 0, 0.05));
-  transition: background-color 0.15s ease, opacity 0.15s ease;
-
-  :deep(.q-btn__content) {
-    flex-wrap: nowrap !important;
-    white-space: nowrap !important;
-  }
-
-  &:hover:not(:disabled) {
-    background-color: var(--q-chat-stamp-bg-hover, rgba(0, 0, 0, 0.09));
-  }
-}
-
-.chat-stamp-pill-text {
-  font-weight: 600;
-  font-size: 11px;
-  font-family: inherit;
-  opacity: 0.92;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Secondary to the amount; the first thing to go when the composer is narrow. */
-.chat-stamp-pill-multiple {
-  font-size: 10px;
-  font-weight: 600;
-  opacity: 0.82;
-  white-space: nowrap;
-  flex-shrink: 0;
-
-  @media (max-width: 360px) {
-    display: none;
-  }
-}
-
-@container (max-width: 340px) {
-  .chat-stamp-pill-multiple {
-    display: none;
-  }
-
-  .chat-stamp-btn {
-    padding: 2px 8px;
-  }
-}
-
-.chat-stamp-explanation {
-  opacity: 0.8;
-  max-width: 320px;
 }
 
 .chat-send-btn {
@@ -1270,14 +1226,6 @@ export default defineComponent({
   .chat-input-container {
     background-color: rgba(255, 255, 255, 0.06);
     border-color: rgba(255, 255, 255, 0.12);
-  }
-
-  .chat-stamp-btn {
-    background-color: rgba(255, 255, 255, 0.08);
-
-    &:hover:not(:disabled) {
-      background-color: rgba(255, 255, 255, 0.14);
-    }
   }
 
   .chat-send-btn {

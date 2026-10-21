@@ -1,6 +1,7 @@
 import { getChainRegistryEntry } from '@frank/wallet/chain'
 import { ASSET_DECIMALS, type SupportedAsset } from '@frank/wallet/oracle'
 import { useSafeOracleStore } from 'src/stores/oracle'
+import { formatAvu } from './avu-units'
 
 /** The chain a stamp is paid on: what the composer's stamp pill needs to know of it. */
 export interface StampChain {
@@ -25,20 +26,37 @@ function pricedAsset(chain: StampChain): SupportedAsset | undefined {
   }
 }
 
+/** What a stamp is worth in AVU, in the two forms the stamp pill shows it. */
+export interface StampAvu {
+  /** The pill's figure, short enough for a phone composer: "≈ 52.3 mAVU". */
+  readonly figure: string
+  /** The full line for the hover text, through the one AVU helper: marked "· testnet"
+   * for test-network coins and with its age once stale ("≈ 52.3 mAVU · testnet (45 min
+   * old)"). */
+  readonly line: string
+  /** The price or AVU_hash behind it is stale: the pill must say so, compactly. */
+  readonly stale: boolean
+}
+
 /**
- * What a stamp is worth in AVU, through the one AVU formatter: "≈ 52.3 mAVU", marked
- * "· testnet" for test-network coins and with its age once stale. Empty for a free or
- * unparsed stamp and whenever there is no rate: the pill then shows the coin amount alone.
+ * The stamp's AVU value, or undefined for a free or unparsed stamp and whenever there is
+ * no rate: the pill then shows the coin amount alone, never a made-up value.
  */
-export function formatStampAvu(
+export function stampAvu(
   chain: StampChain,
   stampBaseUnits: bigint | undefined,
-): string {
-  if (stampBaseUnits === undefined || stampBaseUnits <= 0n) return ''
+): StampAvu | undefined {
+  if (stampBaseUnits === undefined || stampBaseUnits <= 0n) return undefined
   const asset = pricedAsset(chain)
-  return asset
-    ? useSafeOracleStore().formatAvuAmount(asset, stampBaseUnits)
-    : ''
+  if (!asset) return undefined
+  const oracle = useSafeOracleStore()
+  const figure = formatAvu(oracle.getAvu(asset, stampBaseUnits))
+  if (!figure) return undefined
+  return {
+    figure: `≈ ${figure}`,
+    line: oracle.formatAvuAmount(asset, stampBaseUnits),
+    stale: oracle.valueStaleAgeMs(asset) !== undefined,
+  }
 }
 
 /**

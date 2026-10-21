@@ -30,6 +30,9 @@
 
 use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::Report;
+use frank_cbor::message_types::{
+    TYPE_TOPIC_POST, TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
+};
 use frank_cbor::{
     content_hash, topic_vote_commitment, validate_frame, Error, Operation, PriorStatement,
     SupportedSchema, TypedPayload, ValidationContext, ValidationResult,
@@ -52,10 +55,6 @@ use crate::{
 /// The Frank-CBOR frame limit for a type-10 post submission (README R6), which is also the route
 /// limit passed to the codec: a request larger than this is rejected before any decoding.
 pub const MAX_TOPIC_EVENT_FRAME_BYTES: u64 = 1_048_576;
-
-const TYPE_TOPIC_POST: u32 = 9;
-const TYPE_TOPIC_POST_SUBMISSION: u32 = 10;
-const TYPE_TOPIC_VOTE_SUBMISSION: u32 = 11;
 
 /// A validated type-10 post submission.
 #[derive(Debug, Clone, PartialEq, Eq)]

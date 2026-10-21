@@ -114,6 +114,8 @@ import {
   expiryTimestamp,
   splitMs,
   validateFrame,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
 } from '@frank/codec'
 
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
@@ -725,7 +727,7 @@ export function buildSignedDirectoryStatement(
   }
 
   const type4Frame = encodeFrame(
-    { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+    { typeId: TYPE_DIRECTORY_STATEMENT, schemaVersion: 3, minReaderVersion: 2 },
     cborMap(type4MapEntries),
   )
 
@@ -745,7 +747,11 @@ export function buildSignedDirectoryStatement(
   ])
 
   const type2Frame = encodeFrame(
-    { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+    {
+      typeId: TYPE_DIRECTORY_ATTESTATION,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
     cborMap([
       [0, type4Frame],
       [1, [sigEntry]],
@@ -854,11 +860,17 @@ export function decodeProfileBytes(
 ): DecodedProfile {
   if (isCborFrame(raw)) {
     const validated = validateFrame(raw, defaultContext({ operation: 'full' }))
-    if (validated.kind !== 'parsed' || validated.typed?.type !== 2) {
+    if (
+      validated.kind !== 'parsed' ||
+      validated.typed?.type !== TYPE_DIRECTORY_ATTESTATION
+    ) {
       throw new Error('invalid CBOR directory attestation frame')
     }
     const stmtFrame = validated.typed.statementFrame
-    if (stmtFrame.kind !== 'parsed' || stmtFrame.typed?.type !== 4) {
+    if (
+      stmtFrame.kind !== 'parsed' ||
+      stmtFrame.typed?.type !== TYPE_DIRECTORY_STATEMENT
+    ) {
       throw new Error('invalid CBOR directory statement frame')
     }
     const stmt = stmtFrame.typed

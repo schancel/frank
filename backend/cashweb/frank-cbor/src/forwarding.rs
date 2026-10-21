@@ -4,9 +4,8 @@ use crate::cbor::CborValue;
 use crate::error::UsageError;
 use crate::frame::{encode_frame, EnvelopeFields, FramePayload};
 use crate::hash::forwarding_payload_digest;
-use crate::limits::{
-    MAX_FORWARDING_DELIVERY_FRAME_BYTES, MAX_PAYMENT_MEMBERS, TYPE_FORWARDING_DELIVERY,
-};
+use crate::limits::{MAX_FORWARDING_DELIVERY_FRAME_BYTES, MAX_PAYMENT_MEMBERS};
+use crate::message_types::TYPE_FORWARDING_DELIVERY_ENVELOPE;
 use crate::model::{AccountRef, ParsedFrame, PaymentMember, PaymentValue, TypedPayload};
 
 fn bad(message: impl Into<String>) -> UsageError {
@@ -138,7 +137,7 @@ pub fn encode_forwarding_delivery(
     let payload_val = CborValue::Map(map_entries);
     let frame = encode_frame(
         EnvelopeFields {
-            type_id: TYPE_FORWARDING_DELIVERY,
+            type_id: TYPE_FORWARDING_DELIVERY_ENVELOPE,
             schema_version: 1,
             min_reader_version: 1,
         },
@@ -154,7 +153,7 @@ pub fn encode_forwarding_delivery(
 
 /// Returns true if the parsed frame is a Type 25 forwarding envelope.
 pub fn is_forwarding_delivery_frame(frame: &ParsedFrame) -> bool {
-    frame.type_id == TYPE_FORWARDING_DELIVERY
+    frame.type_id == TYPE_FORWARDING_DELIVERY_ENVELOPE
         && matches!(
             frame.typed.as_deref(),
             Some(TypedPayload::ForwardingDelivery { .. })

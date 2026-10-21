@@ -24,6 +24,8 @@
     "typecheck": "node --import tsx scripts/typecheck.ts",
     "typecheck:fast": "node --import tsx scripts/typecheck.ts --fast",
     "typecheck:tsc": "node --import tsx scripts/typecheck.ts --tsc",
+    "message-types:generate": "python3 docs/protocol/message-types/generate.py",
+    "message-types:check": "python3 docs/protocol/message-types/generate.py --check",
     "build": "yarn --cwd app build",
     "build:pwa": "yarn --cwd app build:pwa",
     "build:spa": "yarn --cwd app build:spa",

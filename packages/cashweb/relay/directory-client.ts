@@ -6,6 +6,8 @@ import {
   previewDirectoryContext,
   toHex,
   validateFrame,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
 } from '@frank/codec'
 import type { ParsedFrame } from '@frank/codec'
 import type {
@@ -84,13 +86,16 @@ function frame(bytes: Uint8Array): ParsedFrame {
 function candidate(bytes: Uint8Array): Candidate {
   if (bytes.length > LIMIT) throw new Error('Directory frame bound')
   const parsed = frame(bytes)
-  if (parsed.typeId !== 2 || !(parsed.payload instanceof Map))
+  if (
+    parsed.typeId !== TYPE_DIRECTORY_ATTESTATION ||
+    !(parsed.payload instanceof Map)
+  )
     throw new Error('Directory attestation required')
   const statement = parsed.payload.get(0n)
   if (!(statement instanceof Uint8Array))
     throw new Error('Exact embedded statement required')
   const child = frame(statement)
-  if (child.typeId !== 4 || child.schemaVersion !== 4)
+  if (child.typeId !== TYPE_DIRECTORY_STATEMENT || child.schemaVersion !== 4)
     throw new Error('Directory schema 4 required')
   return { statement: statement.slice(), attestation: bytes.slice() }
 }

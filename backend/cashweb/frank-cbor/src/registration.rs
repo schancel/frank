@@ -2,6 +2,7 @@
 //! and the Keccak-256 canonical address. Nothing here touches a frame; the claimed-address
 //! comparison is a consumer check that stays out of the codec (M6).
 
+use crate::message_types::TYPE_DIRECTORY_STATEMENT;
 use secp256k1_abc::PublicKey;
 
 use crate::cbor::CborValue;
@@ -285,7 +286,7 @@ pub fn encode_directory_statement(
     let payload = encode_directory_statement_payload(params)?;
     encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: TYPE_DIRECTORY_STATEMENT,
             schema_version,
             min_reader_version,
         },

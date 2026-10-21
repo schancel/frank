@@ -3,6 +3,10 @@ use crate::cbor::{cbor_map, decode_single_item, encode_canonical, CborValue, Cou
 use crate::error::{CodecError, Error, ErrorCategory, ErrorStage, UsageError};
 use crate::frame::{encode_frame, EnvelopeFields, FramePayload};
 use crate::limits::MAX_FORUM_CURSOR_BYTES;
+use crate::message_types::{
+    TYPE_FORUM_DISCOVERY_PAGE, TYPE_FORUM_OPERATION_STATUS, TYPE_FORUM_TOPIC_PAGE, TYPE_FORUM_VIEW,
+    TYPE_TOPIC_POST,
+};
 use crate::model::{
     ForumCursor, ForumCursorPosition, ForumEntry, ForumOperationStatus, ParsedFrame, Timestamp,
     TopicPostAuthor, TypedPayload, ValidationResult,
@@ -107,7 +111,7 @@ pub fn encode_signed_forum_post(
     }
     let frame = encode_frame(
         EnvelopeFields {
-            type_id: 9,
+            type_id: TYPE_TOPIC_POST,
             schema_version: 2,
             min_reader_version: 2,
         },
@@ -150,7 +154,13 @@ pub fn verify_topic_post_author(
 }
 /// Constructs and validates a complete read frame without asserting its observations are true.
 pub fn encode_forum_read_frame(type_id: u32, payload: &CborValue) -> Result<Vec<u8>, Error> {
-    if !(12..=15).contains(&type_id) {
+    if !matches!(
+        type_id,
+        TYPE_FORUM_VIEW
+            | TYPE_FORUM_TOPIC_PAGE
+            | TYPE_FORUM_DISCOVERY_PAGE
+            | TYPE_FORUM_OPERATION_STATUS
+    ) {
         return Err(failure("expected Forum read type").into());
     }
     let frame = encode_frame(
@@ -194,7 +204,7 @@ pub fn encode_forum_cursor(cursor: &ForumCursor) -> Result<Vec<u8>, Error> {
             timestamp,
             hash,
         } => fields.extend([
-            (1, CborValue::Int(13)),
+            (1, CborValue::Int(i128::from(TYPE_FORUM_TOPIC_PAGE))),
             (
                 4,
                 cbor_map(vec![
@@ -205,9 +215,10 @@ pub fn encode_forum_cursor(cursor: &ForumCursor) -> Result<Vec<u8>, Error> {
             (5, CborValue::Text(topic.clone())),
             (6, time(since)),
         ]),
-        ForumCursorPosition::Discovery { topic } => {
-            fields.extend([(1, CborValue::Int(14)), (4, CborValue::Text(topic.clone()))])
-        }
+        ForumCursorPosition::Discovery { topic } => fields.extend([
+            (1, CborValue::Int(i128::from(TYPE_FORUM_DISCOVERY_PAGE))),
+            (4, CborValue::Text(topic.clone())),
+        ]),
     }
     let bytes = encode_canonical(&cbor_map(fields)).map_err(usage)?;
     decode_forum_cursor(&bytes)?;

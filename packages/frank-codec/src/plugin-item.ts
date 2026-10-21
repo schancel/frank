@@ -54,7 +54,7 @@ export function isPluginMessageItemFrame(
   return (
     frame.kind === 'parsed' &&
     frame.typeId === TYPE_PLUGIN_MESSAGE_ITEM &&
-    frame.typed?.type === 27
+    frame.typed?.type === TYPE_PLUGIN_MESSAGE_ITEM
   )
 }
 

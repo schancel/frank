@@ -160,7 +160,7 @@ export function isForwardingEnvelopeFrame(
 ): frame is ParsedFrame & { typed: ForwardingDeliveryEnvelope<ParsedFrame> } {
   return (
     frame.typeId === TYPE_FORWARDING_DELIVERY_ENVELOPE &&
-    frame.typed?.type === 25
+    frame.typed?.type === TYPE_FORWARDING_DELIVERY_ENVELOPE
   )
 }
 

@@ -1,4 +1,7 @@
 //! Canonical Forum runtime: one lazy store owner and one serialized snapshot/publication boundary.
+use frank_cbor::message_types::{
+    TYPE_FORUM_DISCOVERY_PAGE, TYPE_FORUM_OPERATION_STATUS, TYPE_FORUM_TOPIC_PAGE,
+};
 use std::{
     path::PathBuf,
     sync::Mutex,
@@ -362,7 +365,8 @@ impl State {
                 ]);
             }
         }
-        encode_forum_read_frame(15, &cbor_map(fields)).map_err(|_| ForumError::Unavailable)
+        encode_forum_read_frame(TYPE_FORUM_OPERATION_STATUS, &cbor_map(fields))
+            .map_err(|_| ForumError::Unavailable)
     }
 
     fn page(&mut self, query: Query, raw: Option<&[u8]>) -> Result<Vec<u8>> {
@@ -501,7 +505,8 @@ impl State {
                 if let Some(request) = raw {
                     fields.push((7, CborValue::Bytes(request.to_vec())));
                 }
-                encode_forum_read_frame(13, &cbor_map(fields)).map_err(|_| ForumError::RowTooLarge)
+                encode_forum_read_frame(TYPE_FORUM_TOPIC_PAGE, &cbor_map(fields))
+                    .map_err(|_| ForumError::RowTooLarge)
             }
             Query::Discovery => {
                 let mut after_topic: Option<String> = None;
@@ -598,7 +603,8 @@ impl State {
                 if let Some(request) = raw {
                     fields.push((5, CborValue::Bytes(request.to_vec())));
                 }
-                encode_forum_read_frame(14, &cbor_map(fields)).map_err(|_| ForumError::RowTooLarge)
+                encode_forum_read_frame(TYPE_FORUM_DISCOVERY_PAGE, &cbor_map(fields))
+                    .map_err(|_| ForumError::RowTooLarge)
             }
         }
     }

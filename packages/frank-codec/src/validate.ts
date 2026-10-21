@@ -36,6 +36,7 @@ import {
   TYPE_FORUM_DISCOVERY_PAGE,
   TYPE_FORUM_OPERATION_STATUS,
   U32_MAX,
+  OPEN_ITEM_FIELD_FORBIDDEN_TYPES,
 } from './constants'
 import {
   ErrorCategory,
@@ -358,7 +359,7 @@ function processFrame(
       location,
     )
   }
-  if (mode.kind === 'open' && env.typeId >= 1 && env.typeId <= 15) {
+  if (mode.kind === 'open' && OPEN_ITEM_FIELD_FORBIDDEN_TYPES.has(env.typeId)) {
     throw fail(
       'semantic',
       '8.4',
@@ -547,8 +548,8 @@ function processFrame(
   )
   // Stage 9: semantics. Only the root type-2 case consults the prior statement.
   const previewAttestation =
-    typed.type === 2 &&
-    typed.statementFrame.typed?.type === 4 &&
+    typed.type === TYPE_DIRECTORY_ATTESTATION &&
+    typed.statementFrame.typed?.type === TYPE_DIRECTORY_STATEMENT &&
     typed.statementFrame.typed.preview !== undefined
   if (previewAttestation && sh.ctx.priorDirectoryStatementFrame !== null)
     throw new FrankContextError(
@@ -557,7 +558,7 @@ function processFrame(
   relocating(location, () =>
     checkSemantics(
       typed,
-      typed.type === 2 && !previewAttestation
+      typed.type === TYPE_DIRECTORY_ATTESTATION && !previewAttestation
         ? resolvePrior(sh.ctx)
         : undefined,
       sh.featureCodecs,
@@ -573,19 +574,19 @@ function processFrame(
 /** Stage 10 for a root frame. Only 10.6 exists in this slice; it applies to a type-2 root. */
 function runStage10(typed: FinalPayload): void {
   if (
-    (typed.type === 4 && typed.preview) ||
-    (typed.type === 2 &&
-      typed.statementFrame.typed?.type === 4 &&
+    (typed.type === TYPE_DIRECTORY_STATEMENT && typed.preview) ||
+    (typed.type === TYPE_DIRECTORY_ATTESTATION &&
+      typed.statementFrame.typed?.type === TYPE_DIRECTORY_STATEMENT &&
       typed.statementFrame.typed.preview)
   )
     throw new FrankContextError(
       'full preview directory admission requires trusted anchor, history, clock, relay and atomic state; use verifyPreviewDirectoryEvidence for bounded signed evidence',
     )
   switch (typed.type) {
-    case 2:
+    case TYPE_DIRECTORY_ATTESTATION:
       verifyDirectoryAttestation(typed)
       return
-    case 1:
+    case TYPE_DIRECT_MESSAGE_DELIVERY:
       throw new FrankContextError(
         'stages 10.1-10.5 (the type-1 stamp checks) are outside this slice; `full` runs only the type-2 signature verification of stage 10.6',
       )
@@ -677,7 +678,7 @@ function openChildren(
 ): FinalPayload {
   const P = `${loc}/payload`
   switch (d.type) {
-    case 9:
+    case TYPE_TOPIC_POST:
       if (d.schemaVersion === 1) return d
       return {
         ...d,
@@ -692,7 +693,7 @@ function openChildren(
           `${P}.3`,
         ),
       }
-    case 12:
+    case TYPE_FORUM_VIEW:
       return {
         ...d,
         postFrame: required(
@@ -703,8 +704,8 @@ function openChildren(
           `${P}.1`,
         ),
       }
-    case 13:
-    case 14: {
+    case TYPE_FORUM_TOPIC_PAGE:
+    case TYPE_FORUM_DISCOVERY_PAGE: {
       const cursor = (bytes: Uint8Array | undefined, key: number) =>
         bytes === undefined
           ? undefined
@@ -718,7 +719,7 @@ function openChildren(
               bytes,
               `${P}.${key}`,
             )
-      if (d.type === 13)
+      if (d.type === TYPE_FORUM_TOPIC_PAGE)
         return {
           ...d,
           rows: d.rows.map((bytes, i) =>
@@ -733,7 +734,7 @@ function openChildren(
         requestCursor: cursor(d.requestCursor, 5),
       }
     }
-    case 15:
+    case TYPE_FORUM_OPERATION_STATUS:
       return {
         ...d,
         submittedFrame: required(
@@ -744,7 +745,7 @@ function openChildren(
           `${P}.1`,
         ),
       }
-    case 25:
+    case TYPE_FORWARDING_DELIVERY_ENVELOPE:
       return {
         ...d,
         payloadFrame: required(
@@ -755,7 +756,7 @@ function openChildren(
           `${P}.2`,
         ),
       }
-    case 1:
+    case TYPE_DIRECT_MESSAGE_DELIVERY:
       return {
         ...d,
         payloadFrame: required(
@@ -766,7 +767,7 @@ function openChildren(
           `${P}.2`,
         ),
       }
-    case 2:
+    case TYPE_DIRECTORY_ATTESTATION:
       return {
         ...d,
         statementFrame: required(
@@ -777,7 +778,7 @@ function openChildren(
           `${P}.0`,
         ),
       }
-    case 4: {
+    case TYPE_DIRECTORY_STATEMENT: {
       if (!d.keyTransitions) {
         return { ...d, keyTransitions: undefined }
       }
@@ -795,7 +796,7 @@ function openChildren(
         })),
       }
     }
-    case 6:
+    case TYPE_ENCRYPTED_MESSAGE_CONTENT:
       return {
         ...d,
         revisionFrame: required(
@@ -806,7 +807,7 @@ function openChildren(
           `${P}.2`,
         ),
       }
-    case 10:
+    case TYPE_TOPIC_POST_SUBMISSION:
       return {
         ...d,
         postFrame: required(
@@ -817,9 +818,9 @@ function openChildren(
           `${P}.1`,
         ),
       }
-    case 8:
+    case TYPE_MESSAGE_CONTENT_REVISION:
       return { ...d, items: openItems(d.items, envDepth + 2, sh, `${P}.1`) }
-    case 16:
+    case TYPE_CONTAINER_MESSAGE_ITEM:
       return { ...d, items: openItems(d.items, envDepth + 2, sh, `${P}.0`) }
     default:
       return d
@@ -856,7 +857,7 @@ function resolvePrior(
     }
     throw e
   }
-  if (r.kind !== 'parsed' || r.typed?.type !== 4) {
+  if (r.kind !== 'parsed' || r.typed?.type !== TYPE_DIRECTORY_STATEMENT) {
     throw new FrankContextError(
       'the prior directory statement is not a type-4 frame',
     )

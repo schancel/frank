@@ -14,6 +14,7 @@ import type {
 } from './types'
 import { cborMap, type Encodable } from './cbor'
 import { encodeFrame } from './frame'
+import { TYPE_DIRECTORY_STATEMENT } from './constants'
 
 const MS = 1000n
 const NANOS_PER_MS = 1_000_000n
@@ -272,7 +273,7 @@ export function encodeDirectoryStatement(
   minReaderVersion = 2,
 ): Uint8Array {
   return encodeFrame(
-    { typeId: 4, schemaVersion, minReaderVersion },
+    { typeId: TYPE_DIRECTORY_STATEMENT, schemaVersion, minReaderVersion },
     buildDirectoryStatementMap(params),
   )
 }

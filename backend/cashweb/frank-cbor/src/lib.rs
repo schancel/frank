@@ -35,6 +35,7 @@ mod frame;
 mod hash;
 mod keccak;
 mod limits;
+pub mod message_types;
 mod model;
 mod registration;
 mod schema;
@@ -78,8 +79,9 @@ pub use limits::{
     FRAME_HEADER_BYTES, FRAME_MAGIC, FRAME_VERSION, KNOWN_TYPES, MAX_ARRAY_ELEMENTS,
     MAX_BODY_BYTES, MAX_BYTE_STRING_BYTES, MAX_CONTAINERS, MAX_DEPTH,
     MAX_FORWARDING_DELIVERY_FRAME_BYTES, MAX_FRAME_BYTES, MAX_ITEMS, MAX_MAP_ENTRIES,
-    MAX_TEXT_STRING_BYTES, TYPE_FORWARDING_DELIVERY,
+    MAX_TEXT_STRING_BYTES,
 };
+pub use message_types::TYPE_FORWARDING_DELIVERY_ENVELOPE;
 pub use model::{
     AccountRef, AccountType, BotRole, ChildFrame, FrameOnly, JournalFact, KeyTransition,
     NativeStealthItem, OpaqueSection, ParsedFrame, PaymentMember, PaymentValue,

@@ -1,4 +1,5 @@
 //! Pure typed blackjack writer/projection. No game, fairness or payment authority.
+use crate::message_types::TYPE_BLACKJACK_MESSAGE_ITEM;
 use crate::{
     cbor_map, default_context, encode_frame, validate_frame, BlackjackAction, BlackjackFields,
     BlackjackHandAction, BlackjackHandFields, BlackjackHandV3Action, BlackjackHandV3Fields,
@@ -150,7 +151,7 @@ pub fn encode_blackjack_item(item: &BlackjackItem) -> Result<Vec<u8>, Error> {
     let payload = cbor_map(fields);
     let bytes = encode_frame(
         EnvelopeFields {
-            type_id: 18,
+            type_id: TYPE_BLACKJACK_MESSAGE_ITEM,
             schema_version: 1,
             min_reader_version: 1,
         },
@@ -345,7 +346,7 @@ pub fn encode_blackjack_hand_item(item: &BlackjackHandItem) -> Result<Vec<u8>, E
     let payload = cbor_map(fields);
     let bytes = encode_frame(
         EnvelopeFields {
-            type_id: 18,
+            type_id: TYPE_BLACKJACK_MESSAGE_ITEM,
             schema_version: 2,
             min_reader_version: 2,
         },
@@ -501,7 +502,7 @@ pub fn encode_blackjack_hand_v3_item(item: &BlackjackHandV3Item) -> Result<Vec<u
     let payload = cbor_map(fields);
     let bytes = encode_frame(
         EnvelopeFields {
-            type_id: 18,
+            type_id: TYPE_BLACKJACK_MESSAGE_ITEM,
             schema_version: 3,
             min_reader_version: 2,
         },

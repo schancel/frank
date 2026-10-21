@@ -5,6 +5,11 @@
 //! it does not authenticate plaintext or perform the remaining stamp checks. Ordinary
 //! `full` type-1 validation remains a context error.
 
+use crate::message_types::{
+    OPEN_ITEM_FIELD_FORBIDDEN_TYPES, TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_ENCRYPTED_MESSAGE_CONTENT,
+    TYPE_FORUM_DISCOVERY_PAGE, TYPE_FORUM_OPERATION_STATUS, TYPE_FORUM_TOPIC_PAGE, TYPE_FORUM_VIEW,
+    TYPE_STEALTH_MESSAGE_ITEM, TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
+};
 use std::collections::HashMap;
 
 use crate::cbor::{decode_single_item, Counters};
@@ -13,8 +18,11 @@ use crate::error::{CodecError, ContextError, Error, ErrorCategory, ErrorStage};
 use crate::hash::{directory_signature_digest, key_transition_signature_digest};
 use crate::limits::{
     is_known_type, FRAME_HEADER_BYTES, FRAME_MAGIC, FRAME_VERSION, KNOWN_TYPES, MAX_FRAME_BYTES,
-    MAX_MESSAGE_ITEMS_TOTAL, TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE,
-    TYPE_KEY_TRANSITION_STATEMENT, TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST,
+    MAX_MESSAGE_ITEMS_TOTAL,
+};
+use crate::message_types::{
+    TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_KEY_TRANSITION_STATEMENT,
+    TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TOPIC_POST,
 };
 use crate::model::{
     ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame, PaymentMember,
@@ -96,12 +104,12 @@ pub fn default_context() -> ValidationContext {
             .map(|type_id| SupportedSchema {
                 type_id,
                 schema_version: if type_id == TYPE_DIRECTORY_STATEMENT
-                    || type_id == crate::limits::TYPE_BLACKJACK_ITEM
+                    || type_id == TYPE_BLACKJACK_MESSAGE_ITEM
                 {
                     3
-                } else if type_id == TYPE_RECIPIENT_PAYLOAD
+                } else if type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
                     || type_id == TYPE_TOPIC_POST
-                    || type_id == crate::limits::TYPE_STEALTH_ITEM
+                    || type_id == TYPE_STEALTH_MESSAGE_ITEM
                 {
                     2
                 } else {
@@ -118,7 +126,7 @@ pub fn default_context() -> ValidationContext {
 pub fn relay_context() -> ValidationContext {
     let mut ctx = default_context();
     for s in &mut ctx.supported_schemas {
-        if s.type_id == crate::limits::TYPE_DIRECT_MESSAGE {
+        if s.type_id == TYPE_DIRECT_MESSAGE_DELIVERY {
             s.schema_version = 2;
         }
     }
@@ -346,7 +354,7 @@ fn process_frame(
             ));
         }
     }
-    if matches!(mode, Mode::Open) && (1..=15).contains(&env.type_id) {
+    if matches!(mode, Mode::Open) && OPEN_ITEM_FIELD_FORBIDDEN_TYPES.contains(&env.type_id) {
         return Err(fail(
             ErrorCategory::Semantic,
             ErrorStage::S84,
@@ -413,7 +421,7 @@ fn process_frame(
             );
         }
     }
-    if env.type_id == crate::limits::TYPE_STEALTH_ITEM && env.schema_version >= 2 {
+    if env.type_id == TYPE_STEALTH_MESSAGE_ITEM && env.schema_version >= 2 {
         if env.min_reader_version < 2 {
             return Err(fail(
                 ErrorCategory::Unsupported,
@@ -436,7 +444,7 @@ fn process_frame(
     }
     // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
     // updated authenticated context before this reader may project or retain its extensions.
-    if env.type_id == crate::limits::TYPE_RECIPIENT_PAYLOAD && env.schema_version > highest_schema {
+    if env.type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD && env.schema_version > highest_schema {
         return Err(fail(
             ErrorCategory::Unsupported,
             ErrorStage::S7,
@@ -447,7 +455,7 @@ fn process_frame(
             location,
         ));
     }
-    if env.type_id == crate::limits::TYPE_RECIPIENT_PAYLOAD
+    if env.type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
         && env.schema_version == 2
         && env.min_reader_version != 2
     {
@@ -503,8 +511,17 @@ fn process_frame(
     }
     let effective_schema = parsed.schema_version.min(highest_schema);
     if (matches!(mode, Mode::Root)
-        || (9..=15).contains(&parsed.type_id)
-        || parsed.type_id == crate::limits::TYPE_BLACKJACK_ITEM
+        || matches!(
+            parsed.type_id,
+            TYPE_TOPIC_POST
+                | TYPE_TOPIC_POST_SUBMISSION
+                | TYPE_TOPIC_VOTE_SUBMISSION
+                | TYPE_FORUM_VIEW
+                | TYPE_FORUM_TOPIC_PAGE
+                | TYPE_FORUM_DISCOVERY_PAGE
+                | TYPE_FORUM_OPERATION_STATUS
+        )
+        || parsed.type_id == TYPE_BLACKJACK_MESSAGE_ITEM
         || (parsed.type_id == TYPE_DIRECTORY_STATEMENT && effective_schema >= 4))
         && !check_root_frame_limit(parsed.type_id, parsed.frame.len(), effective_schema)
     {
@@ -563,7 +580,7 @@ fn process_frame(
         check_semantics(&typed, prior_slot.as_ref().map(|slot| slot.as_ref())),
     )?;
     parsed.typed = Some(Box::new(typed));
-    if shared.capture_payload && parsed.type_id == TYPE_RECIPIENT_PAYLOAD {
+    if shared.capture_payload && parsed.type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD {
         shared.payload_position = Some((
             parsed.clone(),
             env_depth + 1,
@@ -878,7 +895,7 @@ fn open_children(
             destination,
             payload_frame: open_required(
                 payload_frame,
-                TYPE_DIRECT_MESSAGE,
+                TYPE_DIRECT_MESSAGE_DELIVERY,
                 env_depth + 1,
                 shared,
                 &format!("{path}.2"),
@@ -914,7 +931,7 @@ fn open_children(
             destination,
             payload_frame: open_required(
                 payload_frame,
-                TYPE_RECIPIENT_PAYLOAD,
+                TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
                 env_depth + 1,
                 shared,
                 &format!("{path}.2"),
@@ -1119,7 +1136,7 @@ fn open_children(
             message_id,
             revision_frame: open_required(
                 revision_frame,
-                TYPE_MESSAGE_REVISION,
+                TYPE_MESSAGE_CONTENT_REVISION,
                 env_depth + 1,
                 shared,
                 &format!("{path}.2"),
@@ -1207,7 +1224,13 @@ fn open_children(
                 .into_iter()
                 .enumerate()
                 .map(|(i, bytes)| {
-                    open_required(bytes, 12, env_depth + 2, shared, &format!("{path}.4[{i}]"))
+                    open_required(
+                        bytes,
+                        TYPE_FORUM_VIEW,
+                        env_depth + 2,
+                        shared,
+                        &format!("{path}.4[{i}]"),
+                    )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(TypedPayload::ForumTopicPage(ForumTopicPage {
@@ -1250,7 +1273,7 @@ fn open_children(
             let ValidationResult::Parsed(submitted_frame) = process_frame(
                 v.submitted_frame,
                 Mode::Required {
-                    type_ids: vec![10, 11],
+                    type_ids: vec![TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION],
                 },
                 env_depth + 1,
                 shared,
@@ -1493,7 +1516,13 @@ impl DirectMessageValidationSession {
             capture_payload: false,
             payload_position: None,
         };
-        let result = open_required(bytes.to_vec(), 6, self.depth, &mut shared, &self.location);
+        let result = open_required(
+            bytes.to_vec(),
+            TYPE_ENCRYPTED_MESSAGE_CONTENT,
+            self.depth,
+            &mut shared,
+            &self.location,
+        );
         if let Some(context) = shared.context_error {
             return Err(Error::Context(context));
         }
@@ -1534,7 +1563,12 @@ pub fn begin_direct_message_validation(
     let context = ctx.clone();
     let (result, mut shared) = validate_root(bytes, &context, true)?;
     let root = match result {
-        ValidationResult::Parsed(root) if root.type_id == 1 || root.type_id == 5 => root,
+        ValidationResult::Parsed(root)
+            if root.type_id == TYPE_DIRECT_MESSAGE_DELIVERY
+                || root.type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD =>
+        {
+            root
+        }
         _ => {
             return Err(Error::Context(ContextError(
                 "DM sessions require a type-1/type-5 root".into(),

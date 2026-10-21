@@ -182,34 +182,41 @@ whose minimum reader version is supported.
 E4. A forwarder MUST NOT decode and re-encode a signed, hashed, committed, or
 unknown object. Successful validation does not authorize reconstruction.
 
-E5. Type identifiers are never reused. Version 1 reserves:
+E5. Type identifiers are never reused. Version 1 reserves the following; the
+authoritative list is [`../message-types/v1.json`](../message-types/v1.json),
+from which this table and the codec constants are generated
+([README](../message-types/README.md)):
 
-|    Type ID | Name                                        | Schema                                     |
-| ---------: | ------------------------------------------- | ------------------------------------------ |
-|          1 | Recipient-specific direct-message delivery  | [direct-message.cddl](direct-message.cddl) |
-|          2 | Signed directory attestation                | [directory.cddl](directory.cddl)           |
-|          3 | Mailbox checkpoint                          | [checkpoint.cddl](checkpoint.cddl)         |
-|          4 | Directory statement signed by type 2        | [directory.cddl](directory.cddl)           |
-|          5 | Recipient-encrypted payload, with stamp E/X | [direct-message.cddl](direct-message.cddl) |
-|          6 | Decrypted message content                   | [direct-message.cddl](direct-message.cddl) |
-|          7 | Key-transition statement                    | [directory.cddl](directory.cddl)           |
-|          8 | Plaintext message-content revision          | [direct-message.cddl](direct-message.cddl) |
-|          9 | Topic post                                  | [topic.cddl](topic.cddl)                   |
-|         10 | Topic post submission (post plus its burn)  | [topic.cddl](topic.cddl)                   |
-|         11 | Topic vote submission                       | [topic.cddl](topic.cddl)                   |
-|         12 | Forum single-post observation               | [topic.cddl](topic.cddl)                   |
-|         13 | Forum topic page                            | [topic.cddl](topic.cddl)                   |
-|         14 | Forum discovery page                        | [topic.cddl](topic.cddl)                   |
-|         15 | Forum operation status                      | [topic.cddl](topic.cddl)                   |
-|         16 | Container message item                      | [direct-message.cddl](direct-message.cddl) |
-|         17 | UTF-8 text message item                     | [direct-message.cddl](direct-message.cddl) |
+<!-- BEGIN GENERATED: message-types (docs/protocol/message-types/generate.py) -->
+
+|    Type ID | Name                                        | Schema                                                        |
+| ---------: | ------------------------------------------- | ------------------------------------------------------------- |
+|          1 | Recipient-specific direct-message delivery  | [direct-message.cddl](direct-message.cddl)                    |
+|          2 | Signed directory attestation                | [directory.cddl](directory.cddl)                              |
+|          3 | Mailbox checkpoint                          | [checkpoint.cddl](checkpoint.cddl)                            |
+|          4 | Directory statement signed by type 2        | [directory.cddl](directory.cddl)                              |
+|          5 | Recipient-encrypted payload, with stamp E/X | [direct-message.cddl](direct-message.cddl)                    |
+|          6 | Decrypted message content                   | [direct-message.cddl](direct-message.cddl)                    |
+|          7 | Key-transition statement                    | [directory.cddl](directory.cddl)                              |
+|          8 | Plaintext message-content revision          | [direct-message.cddl](direct-message.cddl)                    |
+|          9 | Topic post                                  | [topic.cddl](topic.cddl)                                      |
+|         10 | Topic post submission (post plus its burn)  | [topic.cddl](topic.cddl)                                      |
+|         11 | Topic vote submission                       | [topic.cddl](topic.cddl)                                      |
+|         12 | Forum single-post observation               | [topic.cddl](topic.cddl)                                      |
+|         13 | Forum topic page                            | [topic.cddl](topic.cddl)                                      |
+|         14 | Forum discovery page                        | [topic.cddl](topic.cddl)                                      |
+|         15 | Forum operation status                      | [topic.cddl](topic.cddl)                                      |
+|         16 | Container message item                      | [direct-message.cddl](direct-message.cddl)                    |
+|         17 | UTF-8 text message item                     | [direct-message.cddl](direct-message.cddl)                    |
 |         18 | Blackjack message item                      | [blackjack.cddl](../proposals/blackjack-items/blackjack.cddl) |
-|         19 | Stealth payment item                        | [direct-message.cddl](direct-message.cddl) |
-|         24 | Universal state channel update item         | [direct-message.cddl](direct-message.cddl) |
-|         25 | Relay forwarding delivery envelope          | [direct-message.cddl](direct-message.cddl) |
-|         26 | Email bridge message item                   | [direct-message.cddl](direct-message.cddl) |
-|         27 | Generic plugin message item                 | [direct-message.cddl](direct-message.cddl) |
-| 0xffff0001 | Proof-only unknown future message item      | Opaque fixture payload                     |
+|         19 | Stealth payment item                        | [direct-message.cddl](direct-message.cddl)                    |
+|         24 | Universal state channel update item         | [direct-message.cddl](direct-message.cddl)                    |
+|         25 | Relay forwarding delivery envelope          | [direct-message.cddl](direct-message.cddl)                    |
+|         26 | Email bridge message item                   | [direct-message.cddl](direct-message.cddl)                    |
+|         27 | Generic plugin message item                 | [direct-message.cddl](direct-message.cddl)                    |
+| 0xffff0001 | Proof-only unknown future message item      | Opaque fixture payload                                        |
+
+<!-- END GENERATED: message-types -->
 
 The CDDL rule for each type's payload is: 1 `direct-message-delivery`; 2
 `directory-attestation`; 3 `mailbox-checkpoint`; 4 `directory-statement`

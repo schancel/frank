@@ -7,7 +7,7 @@ use frank_cbor::{
     is_forwarding_delivery_frame, payment_commitment, recipient_payload_digest,
     storage_payment_commitment, validate_frame, AccountRef, CborValue, ForwardingDeliveryEnvelope,
     PaymentMember, PaymentValue, TypedPayload, ValidationResult,
-    MAX_FORWARDING_DELIVERY_FRAME_BYTES, TYPE_FORWARDING_DELIVERY,
+    MAX_FORWARDING_DELIVERY_FRAME_BYTES, TYPE_FORWARDING_DELIVERY_ENVELOPE,
 };
 
 const TYPE_DIRECT_MESSAGE: u32 = 1;
@@ -77,7 +77,7 @@ fn test_forwarding_envelope_encode_and_validate() {
 
     let result = validate_frame(&frame, &default_context()).expect("valid frame");
     if let ValidationResult::Parsed(parsed) = result {
-        assert_eq!(parsed.type_id, TYPE_FORWARDING_DELIVERY);
+        assert_eq!(parsed.type_id, TYPE_FORWARDING_DELIVERY_ENVELOPE);
         assert!(is_forwarding_delivery_frame(&parsed));
 
         if let Some(TypedPayload::ForwardingDelivery {

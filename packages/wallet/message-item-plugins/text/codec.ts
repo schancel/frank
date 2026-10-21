@@ -4,6 +4,7 @@
  */
 import { directMessageText } from '@frank/cashweb/relay/canonical-dm'
 import type { TextItem } from '@frank/cashweb/types/messages'
+import { TYPE_TEXT_MESSAGE_ITEM } from '@frank/codec'
 
 import {
   MessageItemDecodeError,
@@ -20,7 +21,7 @@ export function decodeTextItem(
   context: MessageItemDecodeContext,
 ): TextItem {
   const parsed = openItemFrame('text', bytes, context)
-  if (parsed.typed?.type !== 17)
+  if (parsed.typed?.type !== TYPE_TEXT_MESSAGE_ITEM)
     throw new MessageItemDecodeError('text', 'not a text item frame')
   return { type: 'text', text: parsed.typed.text }
 }

@@ -8,6 +8,9 @@ import {
   topicVoteCommitment,
   topicBurnCalldata,
   matchForumOperation,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_VOTE_SUBMISSION,
 } from '@frank/codec'
 import type { ForumOperationStatus, ParsedFrame } from '@frank/codec'
 import type { EvmWalletHandle } from "./evm-wallet-handle";
@@ -74,16 +77,19 @@ export function bindForumAuthority(
   const typed = parsed.typed
   let target: Uint8Array
   let burn: Uint8Array
-  if (operation.kind === 'post' && typed?.type === 10) {
+  if (operation.kind === 'post' && typed?.type === TYPE_TOPIC_POST_SUBMISSION) {
     if (
-      typed.postFrame.typed?.type !== 9 ||
+      typed.postFrame.typed?.type !== TYPE_TOPIC_POST ||
       typed.postFrame.schemaVersion !== 2 ||
       operation.direction !== 'up'
     )
       throw new Error('Invalid canonical Forum post')
     target = topicBurnCommitment(typed.postFrame.frame).hash
     burn = typed.burnTx
-  } else if (operation.kind === 'vote' && typed?.type === 11) {
+  } else if (
+    operation.kind === 'vote' &&
+    typed?.type === TYPE_TOPIC_VOTE_SUBMISSION
+  ) {
     target = typed.targetHash
     burn = typed.burnTx
   } else throw new Error('Forum journal family mismatch')

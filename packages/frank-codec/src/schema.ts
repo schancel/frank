@@ -792,11 +792,18 @@ export function parseForumCursor(
   path: string,
 ): ForumCursor {
   if (!(value instanceof Map)) throw bad(path, 'expected cursor map')
-  const family = u32ish(value.get(1n), `${path}.1`, 13, 14)
+  const family = u32ish(
+    value.get(1n),
+    `${path}.1`,
+    TYPE_FORUM_TOPIC_PAGE,
+    TYPE_FORUM_DISCOVERY_PAGE,
+  )
   const m = fields(
     value,
     path,
-    family === 13 ? [0, 1, 2, 3, 4, 5, 6, 7] : [0, 1, 2, 3, 4, 7],
+    family === TYPE_FORUM_TOPIC_PAGE
+      ? [0, 1, 2, 3, 4, 5, 6, 7]
+      : [0, 1, 2, 3, 4, 7],
     [],
     false,
     false,
@@ -808,12 +815,12 @@ export function parseForumCursor(
     epoch: bstr(m.get(3), `${path}.3`, 16, 16),
     incarnation: uintRange(m.get(7), `${path}.7`, 0n, U64_MAX),
   }
-  if (family === 14)
+  if (family === TYPE_FORUM_DISCOVERY_PAGE)
     return { ...common, family, last: tstr(m.get(4), `${path}.4`, 1, 512) }
   const last = fields(m.get(4), `${path}.4`, [0, 1], [], false, false)
   return {
     ...common,
-    family: 13,
+    family: TYPE_FORUM_TOPIC_PAGE,
     topic: tstr(m.get(5), `${path}.5`, 1, 512),
     since: timestamp(m.get(6), `${path}.6`),
     last: {
@@ -887,7 +894,7 @@ export function parseDraft(
         ? fields(payload, P, [0, 1, 2, 3], [4, 5, 6], true, allow)
         : fields(payload, P, [0, 1, 2, 3, 4], [5, 6], true, allow)
       const res: DirectMessageDelivery<Uint8Array> = {
-        type: 1,
+        type: TYPE_DIRECT_MESSAGE_DELIVERY,
         network: networkTag(m.get(0), `${P}.0`),
         destination: account(m.get(1), `${P}.1`),
         payloadFrame: framed(m.get(2), `${P}.2`),
@@ -917,7 +924,7 @@ export function parseDraft(
     case TYPE_DIRECTORY_ATTESTATION: {
       const m = fields(payload, P, [0, 1], [], true, allow)
       return {
-        type: 2,
+        type: TYPE_DIRECTORY_ATTESTATION,
         statementFrame: framed(m.get(0), `${P}.0`),
         signatures: asList(m.get(1), `${P}.1`, 1, MAX_SIGNATURES).map((e, i) =>
           signatureEntry(e, `${P}.1[${i}]`),
@@ -928,7 +935,7 @@ export function parseDraft(
     case TYPE_MAILBOX_CHECKPOINT: {
       const m = fields(payload, P, [0, 1, 2, 3, 4], [5], true, allow)
       const cp: DraftPayload = {
-        type: 3,
+        type: TYPE_MAILBOX_CHECKPOINT,
         network: networkTag(m.get(0), `${P}.0`),
         owner: account(m.get(1), `${P}.1`),
         checkpointId: bstr(m.get(2), `${P}.2`, 16, 16),
@@ -976,7 +983,7 @@ export function parseDraft(
           'transitions, recovery and profiles are unsupported in directory preview',
         )
       const st: DraftPayload = {
-        type: 4,
+        type: TYPE_DIRECTORY_STATEMENT,
         network: networkTag(m.get(0), `${P}.0`),
         subject: directoryAccount(m.get(1), `${P}.1`, preview),
         revision: uintRange(m.get(2), `${P}.2`, 0n, U64_MAX),
@@ -1044,7 +1051,7 @@ export function parseDraft(
       if (schema.effective >= 2) {
         const m = fields(payload, P, [0, 1, 2, 3, 4, 5, 6, 7], [], true, allow)
         return {
-          type: 5,
+          type: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
           schemaVersion: 2,
           network: networkTag(m.get(0), `${P}.0`),
           sender: account(m.get(1), `${P}.1`),
@@ -1064,7 +1071,7 @@ export function parseDraft(
       }
       const m = fields(payload, P, [0, 1, 2, 3, 4, 5, 6, 7, 8], [], true, allow)
       return {
-        type: 5,
+        type: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
         schemaVersion: 1,
         network: networkTag(m.get(0), `${P}.0`),
         sender: account(m.get(1), `${P}.1`),
@@ -1089,7 +1096,7 @@ export function parseDraft(
         ? tokenTransfer(m.get(6), `${P}.6`, allow)
         : undefined
       return {
-        type: 6,
+        type: TYPE_ENCRYPTED_MESSAGE_CONTENT,
         network: networkTag(m.get(0), `${P}.0`),
         messageId: bstr(m.get(1), `${P}.1`, 16, 16),
         revisionFrame: framed(m.get(2), `${P}.2`),
@@ -1103,7 +1110,7 @@ export function parseDraft(
     case TYPE_KEY_TRANSITION_STATEMENT: {
       const m = fields(payload, P, [0, 1, 2, 3, 4], [], true, allow)
       return {
-        type: 7,
+        type: TYPE_KEY_TRANSITION_STATEMENT,
         network: networkTag(m.get(0), `${P}.0`),
         subject: account(m.get(1), `${P}.1`),
         priorAuthority: account(m.get(2), `${P}.2`),
@@ -1116,7 +1123,7 @@ export function parseDraft(
       const m = fields(payload, P, [0, 1, 3], [2, 4, 5], true, allow)
       const body = bstr(m.get(3), `${P}.3`, 1, MAX_TOPIC_BODY_BYTES)
       const post: TopicPost<Uint8Array> = {
-        type: 9,
+        type: TYPE_TOPIC_POST,
         network: networkTag(m.get(0), `${P}.0`),
         topic: tstr(m.get(1), `${P}.1`, 1, 512),
         body,
@@ -1147,7 +1154,7 @@ export function parseDraft(
         allow,
       )
       return {
-        type: 12,
+        type: TYPE_FORUM_VIEW,
         network: networkTag(m.get(0), `${P}.0`),
         postFrame: framed(m.get(1), `${P}.1`),
         author: bstr(m.get(2), `${P}.2`, 20, 20),
@@ -1165,7 +1172,7 @@ export function parseDraft(
     case TYPE_FORUM_TOPIC_PAGE: {
       const m = fields(payload, P, [0, 1, 2, 3, 4, 6], [5, 7], true, allow)
       return {
-        type: 13,
+        type: TYPE_FORUM_TOPIC_PAGE,
         network: networkTag(m.get(0), `${P}.0`),
         topic: tstr(m.get(1), `${P}.1`, 1, 512),
         since: timestamp(m.get(2), `${P}.2`),
@@ -1186,7 +1193,7 @@ export function parseDraft(
     case TYPE_FORUM_DISCOVERY_PAGE: {
       const m = fields(payload, P, [0, 1, 2, 4], [3, 5], true, allow)
       return {
-        type: 14,
+        type: TYPE_FORUM_DISCOVERY_PAGE,
         network: networkTag(m.get(0), `${P}.0`),
         revision: uintRange(m.get(1), `${P}.1`, 0n, U64_MAX),
         entries: asList(m.get(2), `${P}.2`, 0, MAX_FORUM_ROWS).map((row, i) => {
@@ -1219,7 +1226,7 @@ export function parseDraft(
         allow,
       )
       const common = {
-        type: 15 as const,
+        type: TYPE_FORUM_OPERATION_STATUS,
         network: networkTag(m.get(0), `${P}.0`),
         submittedFrame: framed(m.get(1), `${P}.1`),
         targetHash: bstr(m.get(2), `${P}.2`, 32, 32),
@@ -1257,7 +1264,7 @@ export function parseDraft(
     case TYPE_TOPIC_POST_SUBMISSION: {
       const m = fields(payload, P, [0, 1, 2], [], true, allow)
       return {
-        type: 10,
+        type: TYPE_TOPIC_POST_SUBMISSION,
         network: networkTag(m.get(0), `${P}.0`),
         postFrame: framed(m.get(1), `${P}.1`),
         burnTx: bstr(m.get(2), `${P}.2`, 1, 16384),
@@ -1267,7 +1274,7 @@ export function parseDraft(
     case TYPE_TOPIC_VOTE_SUBMISSION: {
       const m = fields(payload, P, [0, 1, 2], [], true, allow)
       return {
-        type: 11,
+        type: TYPE_TOPIC_VOTE_SUBMISSION,
         network: networkTag(m.get(0), `${P}.0`),
         targetHash: bstr(m.get(1), `${P}.1`, 32, 32),
         burnTx: bstr(m.get(2), `${P}.2`, 1, 16384),
@@ -1279,7 +1286,7 @@ export function parseDraft(
       if (m.get(0) !== 'frank')
         throw bad(`${P}.0`, 'the type-8 domain must be the text "frank"')
       return {
-        type: 8,
+        type: TYPE_MESSAGE_CONTENT_REVISION,
         items: asList(m.get(1), `${P}.1`, 1, MAX_MESSAGE_ITEMS_PER_ARRAY).map(
           (e, i) => framed(e, `${P}.1[${i}]`),
         ),
@@ -1289,7 +1296,7 @@ export function parseDraft(
     case TYPE_CONTAINER_MESSAGE_ITEM: {
       const m = fields(payload, P, [0], [], true, allow)
       return {
-        type: 16,
+        type: TYPE_CONTAINER_MESSAGE_ITEM,
         items: asList(m.get(0), `${P}.0`, 1, MAX_MESSAGE_ITEMS_PER_ARRAY).map(
           (e, i) => framed(e, `${P}.0[${i}]`),
         ),
@@ -1299,7 +1306,7 @@ export function parseDraft(
     case TYPE_TEXT_MESSAGE_ITEM: {
       const m = fields(payload, P, [0], [], true, allow)
       return {
-        type: 17,
+        type: TYPE_TEXT_MESSAGE_ITEM,
         text: tstr(m.get(0), `${P}.0`, 0, 262144),
         unknownFields: m.unknown,
       }
@@ -1308,7 +1315,7 @@ export function parseDraft(
       if (schema.effective >= 2) {
         const m = fields(payload, P, [0], [1], true, allow)
         return {
-          type: 19,
+          type: TYPE_STEALTH_MESSAGE_ITEM,
           transfers: asList(m.get(0), `${P}.0`, 1, 16).map((entry, index) =>
             stealthAssetTransfer(entry, `${P}.0[${index}]`),
           ),
@@ -1318,7 +1325,7 @@ export function parseDraft(
       }
       const m = fields(payload, P, [0, 1, 2, 3], [4], true, allow)
       return {
-        type: 19,
+        type: TYPE_STEALTH_MESSAGE_ITEM,
         networkTag: tstr(m.get(0), `${P}.0`, 1, 64),
         ephemeralPubKey: account(m.get(1), `${P}.1`),
         transactions: asList(m.get(2), `${P}.2`, 1, 16).map((e, i) =>
@@ -1332,7 +1339,7 @@ export function parseDraft(
     case TYPE_CHANNEL_UPDATE: {
       const m = fields(payload, P, [0, 1, 2, 3, 4, 5], [6], true, allow)
       return {
-        type: 24,
+        type: TYPE_CHANNEL_UPDATE,
         channelId: bstr(m.get(0), `${P}.0`, 32, 32),
         appId: tstr(m.get(1), `${P}.1`, 1, 64),
         sequenceNumber: u32ish(m.get(2), `${P}.2`, 0, 4294967295),
@@ -1350,7 +1357,7 @@ export function parseDraft(
     case TYPE_FORWARDING_DELIVERY_ENVELOPE: {
       const m = fields(payload, P, [0, 1, 2, 3, 4], [5, 6], true, allow)
       const res: ForwardingDeliveryEnvelope<Uint8Array> = {
-        type: 25,
+        type: TYPE_FORWARDING_DELIVERY_ENVELOPE,
         network: networkTag(m.get(0), `${P}.0`),
         destination: account(m.get(1), `${P}.1`),
         payloadFrame: framed(m.get(2), `${P}.2`),
@@ -1378,7 +1385,7 @@ export function parseDraft(
         allow,
       )
       const res: EmailMessageItem = {
-        type: 26,
+        type: TYPE_EMAIL_MESSAGE_ITEM,
         messageId: emailMessageId(m.get(0), `${P}.0`),
         from: emailParty(m.get(1), `${P}.1`, allow),
         to: asList(m.get(2), `${P}.2`, 1, MAX_EMAIL_RECIPIENTS).map((e, i) =>
@@ -1426,7 +1433,7 @@ export function parseDraft(
           'a plugin item type is lowercase letters and digits in hyphen-separated groups',
         )
       return {
-        type: 27,
+        type: TYPE_PLUGIN_MESSAGE_ITEM,
         itemType,
         data: bstr(m.get(1), `${P}.1`, 0, MAX_PLUGIN_ITEM_PAYLOAD_BYTES),
         unknownFields: m.unknown,
@@ -1507,20 +1514,20 @@ export function checkAllocated(
   }
   const P = 'root/payload'
   switch (d.type) {
-    case 1:
+    case TYPE_DIRECT_MESSAGE_DELIVERY:
       checkKeyType(d.destination, `${P}.1`)
       if (d.recipient) checkKeyType(d.recipient, `${P}.5`)
       break
-    case 2:
+    case TYPE_DIRECTORY_ATTESTATION:
       d.signatures.forEach((s, i) => {
         checkKeyType(s.signer, `${P}.1[${i}].1`)
         checkSignatureShape(s.algorithm, s.signer, s.signature, `${P}.1[${i}]`)
       })
       break
-    case 3:
+    case TYPE_MAILBOX_CHECKPOINT:
       checkKeyType(d.owner, `${P}.1`)
       break
-    case 4:
+    case TYPE_DIRECTORY_STATEMENT:
       checkKeyType(d.subject, `${P}.1`)
       d.relays.forEach((r, i) => checkKeyType(r.identity, `${P}.4[${i}].2`))
       if (d.stampKey) checkKeyType(d.stampKey, `${P}.8`)
@@ -1531,7 +1538,7 @@ export function checkAllocated(
       })
       d.recoveryAuthorities?.forEach((a, i) => checkKeyType(a, `${P}.7[${i}]`))
       break
-    case 5:
+    case TYPE_RECIPIENT_ENCRYPTED_PAYLOAD:
       checkKeyType(d.sender, `${P}.1`)
       checkKeyType(d.recipient, `${P}.2`)
       if (
@@ -1544,12 +1551,12 @@ export function checkAllocated(
         )
       }
       break
-    case 7:
+    case TYPE_KEY_TRANSITION_STATEMENT:
       checkKeyType(d.subject, `${P}.1`)
       checkKeyType(d.priorAuthority, `${P}.2`)
       checkKeyType(d.newKey, `${P}.4`)
       break
-    case 19:
+    case TYPE_STEALTH_MESSAGE_ITEM:
       if ('transfers' in d) {
         d.transfers.forEach((entry, index) => {
           checkKeyType(entry.recipientSpendKey, `${P}.0[${index}].2`)
@@ -1560,7 +1567,7 @@ export function checkAllocated(
         })
       } else checkKeyType(d.ephemeralPubKey, `${P}.1`)
       break
-    case 24:
+    case TYPE_CHANNEL_UPDATE:
       d.allocations.forEach((a, i) => {
         a.balances.forEach((b, j) => {
           checkKeyType(b.participant, `${P}.3[${i}].2[${j}].0`)
@@ -1571,10 +1578,10 @@ export function checkAllocated(
         checkSignatureShape(s.algorithm, s.signer, s.signature, `${P}.5[${i}]`)
       })
       break
-    case 25:
+    case TYPE_FORWARDING_DELIVERY_ENVELOPE:
       checkKeyType(d.destination, `${P}.1`)
       break
-    case 26:
+    case TYPE_EMAIL_MESSAGE_ITEM:
       if (d.from.frankAccount) checkKeyType(d.from.frankAccount, `${P}.1.2`)
       d.to.forEach((p, i) => {
         if (p.frankAccount) checkKeyType(p.frankAccount, `${P}.2[${i}].2`)

@@ -2,6 +2,7 @@
 
 use crate::cbor::{encode_canonical, CborValue};
 use crate::error::UsageError;
+use crate::message_types::TYPE_RECIPIENT_ENCRYPTED_PAYLOAD;
 use crate::model::AccountRef;
 
 /// Canonical suite-1 context domain.
@@ -9,7 +10,7 @@ pub const DM_CRYPTO_CONTEXT_DOMAIN: &str = "frank/dm-crypto-context/v1";
 /// Production Frank-CBOR DM suite.
 pub const DM_CRYPTO_SUITE: u32 = 1;
 /// Recipient-encrypted-payload type.
-pub const DM_CRYPTO_TYPE: u32 = 5;
+pub const DM_CRYPTO_TYPE: u32 = TYPE_RECIPIENT_ENCRYPTED_PAYLOAD;
 /// Production payload schema and minimum reader version.
 pub const DM_CRYPTO_SCHEMA_VERSION: u32 = 2;
 /// Production payload minimum reader version.

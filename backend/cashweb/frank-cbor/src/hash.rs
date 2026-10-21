@@ -1,5 +1,12 @@
 //! Pure transcripts T1, T1a, T3, T4, and T7 (README section 8). No signature is verified.
 
+use crate::message_types::{
+    TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT,
+    TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT,
+    TYPE_FORWARDING_DELIVERY_ENVELOPE, TYPE_KEY_TRANSITION_STATEMENT, TYPE_MAILBOX_CHECKPOINT,
+    TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM,
+    TYPE_TOPIC_POST, TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
+};
 use sha2::{Digest, Sha256};
 
 use crate::error::UsageError;
@@ -71,8 +78,10 @@ fn network_field(typed: &TypedPayload) -> Option<&str> {
 /// T1's network source. Unknown types have no content hash.
 pub fn content_hash_network(frame: &ParsedFrame) -> Result<String, UsageError> {
     match frame.type_id {
-        8 | 16 | 17 => Ok("frank".to_string()),
-        2 => {
+        TYPE_MESSAGE_CONTENT_REVISION | TYPE_CONTAINER_MESSAGE_ITEM | TYPE_TEXT_MESSAGE_ITEM => {
+            Ok("frank".to_string())
+        }
+        TYPE_DIRECTORY_ATTESTATION => {
             let typed = frame
                 .typed
                 .as_deref()
@@ -93,7 +102,16 @@ pub fn content_hash_network(frame: &ParsedFrame) -> Result<String, UsageError> {
                 )),
             }
         }
-        1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11 | 25 => {
+        TYPE_DIRECT_MESSAGE_DELIVERY
+        | TYPE_MAILBOX_CHECKPOINT
+        | TYPE_DIRECTORY_STATEMENT
+        | TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+        | TYPE_ENCRYPTED_MESSAGE_CONTENT
+        | TYPE_KEY_TRANSITION_STATEMENT
+        | TYPE_TOPIC_POST
+        | TYPE_TOPIC_POST_SUBMISSION
+        | TYPE_TOPIC_VOTE_SUBMISSION
+        | TYPE_FORWARDING_DELIVERY_ENVELOPE => {
             let typed = frame.typed.as_deref().ok_or_else(|| {
                 usage(format!(
                     "T1 for a type-{} frame needs the stage 8 typed projection",

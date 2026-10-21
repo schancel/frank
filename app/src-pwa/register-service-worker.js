@@ -8,15 +8,25 @@ let lastUpdateCheck = 0
 let activeRegistration = null
 let updateCheck = null
 let refreshing = false
-let hadPriorController =
-  typeof navigator !== 'undefined' &&
-  Boolean(navigator.serviceWorker?.controller)
+let currentController =
+  typeof navigator !== 'undefined' ? navigator.serviceWorker?.controller : null
+let controllerReplaced = false
+
+function reloadForUpdate() {
+  if (refreshing) return
+  refreshing = true
+  reloadAfterActivation = false
+  window.location.reload()
+}
 
 export function offerUpdate(registration) {
   const reg = registration || activeRegistration
   if (
     refreshing ||
+    reloadAfterActivation ||
     updateNotice ||
+    (!reg?.waiting && !controllerReplaced) ||
+    (reg?.waiting && !reg.active && !currentController) ||
     (reg?.waiting && reg.waiting === deferredWorker) ||
     (!reg?.waiting && deferredWorker === true)
   ) {
@@ -32,11 +42,21 @@ export function offerUpdate(registration) {
         label: 'Update now',
         color: 'white',
         handler: () => {
-          if (reg?.waiting) {
+          const worker = reg?.waiting
+          if (worker) {
             reloadAfterActivation = true
-            reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+            // Do not depend solely on controllerchange reaching this page. Activation of the
+            // accepted worker also makes the new release available to the next navigation.
+            const activated = () => {
+              if (worker.state === 'activated') {
+                worker.removeEventListener('statechange', activated)
+                reloadForUpdate()
+              }
+            }
+            worker.addEventListener('statechange', activated)
+            worker.postMessage({ type: 'SKIP_WAITING' })
           } else {
-            window.location.reload()
+            reloadForUpdate()
           }
         },
       },
@@ -184,15 +204,21 @@ if (
   'serviceWorker' in navigator
 ) {
   navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return
+    const controller = navigator.serviceWorker.controller
+    if (!controller || controller === currentController) return
+    const previousController = currentController
+    currentController = controller
     if (reloadAfterActivation) {
-      reloadAfterActivation = false
-      window.location.reload()
+      reloadForUpdate()
       return
     }
-    if (hadPriorController || navigator.serviceWorker.controller) {
+    // clientsClaim also fires on first installation. That is not evidence of a new release:
+    // offering a reload there can show the same notice again after every uncontrolled visit.
+    if (previousController) {
+      controllerReplaced = true
       offerUpdate(activeRegistration)
     }
-    hadPriorController = true
   })
 
   navigator.serviceWorker.addEventListener('message', event => {

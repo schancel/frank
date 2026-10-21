@@ -174,7 +174,7 @@ describe('Welcome: landing page for visitors without an account', () => {
       expect(wrapper.find('[data-test="sync-pin-entry"]').exists()).toBe(false)
       await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
       expect(text(wrapper, 'sync-pin-entry')).toContain(
-        enUS.accountSync.enterPin,
+        enUS.accountSync.sourceStep,
       )
 
       mockReceiveAccount.mockResolvedValueOnce({ ok: true, bundle: syncBundle })

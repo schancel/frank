@@ -1,5 +1,27 @@
 <template>
   <div class="column profile-component-root">
+    <div class="q-pa-md">
+      <q-btn
+        unelevated
+        no-caps
+        color="primary"
+        icon="sync"
+        :label="$t('accountSync.send')"
+        data-test="profile-sync-account"
+        @click="openAccountSync"
+      />
+      <div class="text-caption q-mt-xs">{{ $t('accountSync.sendHint') }}</div>
+    </div>
+    <IdentityQrDialog
+      v-if="syncDialogOpen"
+      ref="syncDialog"
+      sync-only
+      :model-value="true"
+      :address="resolvedIdentityAddress"
+      :name="internalName"
+      :avatar="internalAvatar"
+      @update:model-value="syncDialogOpen = $event"
+    />
     <q-splitter
       v-model="splitterSize"
       unit="px"
@@ -357,7 +379,8 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, type PropType } from 'vue'
+import { defineComponent, nextTick, ref, type PropType } from 'vue'
+import IdentityQrDialog from './dialogs/IdentityQrDialog.vue'
 import QrcodeVue from 'qrcode.vue'
 import { copyToClipboard, type QFile } from 'quasar'
 
@@ -382,12 +405,28 @@ function profileTabFromQuery(tab: unknown): 'profile' | 'identity' {
 
 export default defineComponent({
   components: {
+    IdentityQrDialog,
     QrcodeVue,
   },
   setup() {
+    const syncDialogOpen = ref(false)
+    const syncDialog = ref<{
+      syncAccountOverBridge: () => Promise<void>
+    } | null>(null)
+    const openAccountSync = async () => {
+      syncDialogOpen.value = true
+      await nextTick()
+      await syncDialog.value?.syncAccountOverBridge()
+    }
     const filePicker = ref<QFile | null>(null)
     const chooseAvatar = (event: Event) => filePicker.value?.pickFiles(event)
-    return { filePicker, chooseAvatar }
+    return {
+      filePicker,
+      chooseAvatar,
+      syncDialogOpen,
+      syncDialog,
+      openAccountSync,
+    }
   },
   props: {
     name: {
@@ -692,7 +731,7 @@ export default defineComponent({
         this.internalBotRole = newVal
       }
     },
-    async avatarPath(val: File | null) {
+    async 'avatarPath'(val: File | null) {
       if (val == null) {
         return
       }

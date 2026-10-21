@@ -5,7 +5,13 @@
     data-test="sync-pin-entry"
     @submit.prevent="connect"
   >
-    <div class="text-body2">{{ $t('accountSync.enterPin') }}</div>
+    <ol
+      class="text-body2 q-pl-md q-my-xs"
+      data-test="account-sync-instructions"
+    >
+      <li>{{ $t('accountSync.sourceStep') }}</li>
+      <li>{{ $t('accountSync.pinStep') }}</li>
+    </ol>
     <div class="row items-start q-gutter-sm q-mt-xs no-wrap">
       <q-input
         v-model="pin"
@@ -33,6 +39,7 @@
     </div>
     <div
       v-if="error"
+      role="alert"
       class="text-caption text-negative q-mt-xs"
       data-test="sync-pin-error"
     >

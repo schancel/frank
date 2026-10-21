@@ -402,10 +402,10 @@
           data-testid="dapp-account-sync-help"
         >
           To copy your account between this browser's extension and
-          {{ frankWebAppOrigin }}, open your profile in the window with your
-          account and choose Sync account. In the other window, choose Connect
-          Browser Extension on the welcome screen and enter the PIN. The
-          receiving window must not already have an account.
+          {{ frankWebAppOrigin }}, open Profile in the window with your account
+          and choose Sync this account. In the other window, choose Sync existing
+          account on the welcome screen and enter the PIN. The receiving window
+          must not already have an account.
         </p>
         <div class="text-subtitle2 text-weight-medium q-mt-md">
           WalletConnect

@@ -293,7 +293,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     const wrapper = mountPanel({ initialApprovals: [] })
     expect(
       wrapper.get('[data-testid="dapp-account-sync-help"]').text(),
-    ).toContain('Sync account')
+    ).toContain('Sync this account')
     expect(wrapper.get('[data-testid="dapp-wc-unsupported"]').text()).toContain(
       'not supported yet',
     )

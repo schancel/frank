@@ -1,6 +1,60 @@
 <template>
+  <q-dialog
+    v-if="syncOnly"
+    aria-labelledby="account-sync-title"
+    :model-value="modelValue"
+    @update:model-value="$emit('update:modelValue', $event)"
+  >
+    <q-card
+      class="q-pa-md"
+      style="width: 400px; max-width: 100%"
+      data-test="account-sync-sender-dialog"
+    >
+      <div id="account-sync-title" class="text-h6">{{ $t('accountSync.send') }}</div>
+      <p class="text-body2 q-mt-sm">{{ $t('accountSync.sendHint') }}</p>
+      <div v-if="syncPin" data-test="identity-qr-sync-pin-block">
+        <div>{{ syncPinPrompt }}</div>
+        <div
+          class="text-h4 text-weight-bold q-my-sm"
+          data-test="identity-qr-sync-pin"
+        >
+          {{ syncPin }}
+        </div>
+        <q-btn
+          flat
+          no-caps
+          :label="$t('accountSync.cancel')"
+          data-test="identity-qr-sync-cancel"
+          @click="cancelAccountSync"
+        />
+      </div>
+      <div
+        v-if="syncStatusMessage"
+        role="status"
+        class="q-my-sm"
+        data-test="identity-qr-sync-status"
+      >
+        {{ syncStatusMessage }}
+      </div>
+      <q-btn
+        v-if="!syncPin"
+        unelevated
+        color="primary"
+        no-caps
+        :label="$t('accountSync.send')"
+        data-test="sync-account-bridge-btn"
+        @click="syncAccountOverBridge"
+      />
+      <q-btn
+        flat
+        no-caps
+        :label="$t('accountSync.close')"
+        @click="$emit('update:modelValue', false)"
+      />
+    </q-card>
+  </q-dialog>
   <div
-    v-if="inline && modelValue"
+    v-else-if="inline && modelValue"
     class="identity-qr-inline-wrapper full-width"
     data-test="identity-qr-dialog"
   >
@@ -262,7 +316,6 @@
 
         <!-- 1-Click Web App (signet.mx) <-> Browser Extension Account Sync -->
         <div
-          v-if="Boolean(runtimeKindOverride)"
           class="q-mt-sm q-pa-sm identity-qr-panel"
           data-test="identity-qr-sync-section"
         >
@@ -595,7 +648,6 @@
 
         <!-- 1-Click Web App (signet.mx) <-> Browser Extension Account Sync -->
         <div
-          v-if="Boolean(runtimeKindOverride)"
           class="q-mt-sm q-pa-sm identity-qr-panel"
           data-test="identity-qr-sync-section"
         >
@@ -777,6 +829,10 @@ export default defineComponent({
       type: Boolean,
       default: false,
     },
+    syncOnly: {
+      type: Boolean,
+      default: false,
+    },
     runtimeKindOverride: {
       type: String as PropType<RuntimeEnvironmentKind | ''>,
       default: '',
@@ -839,7 +895,8 @@ export default defineComponent({
     )
 
     // Do not auto-open camera on inline pages or inside the browser extension popup
-    const shouldAutoStartScanner = () => !props.inline && !isExtensionMode.value
+    const shouldAutoStartScanner = () =>
+      !props.syncOnly && !props.inline && !isExtensionMode.value
     const scannerOpen = ref(shouldAutoStartScanner())
 
     const scannerVideo = ref<HTMLVideoElement>()

@@ -79,7 +79,7 @@
               no-caps
               class="welcome-action"
               icon="extension"
-              :label="extensionUi.connectExtensionBtn"
+              :label="$t('accountSync.receive')"
               data-test="btn-connect-extension"
               @click="connectBrowserExtension"
             />
@@ -313,9 +313,6 @@ export default defineComponent({
       EXTENSION_DOWNLOAD_TARGETS.safari,
     ]
 
-    const extensionUi = {
-      connectExtensionBtn: 'Connect Browser Extension',
-    }
     const syncPinEntryOpen = ref(false)
 
     // The user typed the PIN, so the received account is restored right away.
@@ -345,7 +342,6 @@ export default defineComponent({
 
     return {
       myDrawerOpen: useMyDrawerOpen(),
-      extensionUi,
       syncPinEntryOpen,
       syncRestoring,
       syncRestoreFailed,

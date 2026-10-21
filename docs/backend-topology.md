@@ -162,31 +162,39 @@ The process starts in this order:
 Shutdown stops accepting writes, drains or checkpoints local delivery jobs, stops federation, and
 then closes RocksDB.
 
-### Monad mailbox default (today's `cashwebd`)
+### Relay network and chain adapters (today's `cashwebd`)
+
+`[registry] network` names the relay's network: a canonical chain identifier from
+`docs/protocol/chains/v1.json` (`monad-testnet` in both shipped configs). It is required; a missing,
+unknown or non-EVM value, or one without a `[[registry.evm_rpc.chains]]` row, is a startup error.
+Nothing defaults to Monad. The network's directory, direct messages, forum and profiles all run on
+it, and its chain id, checkpoint and 4-byte message tag (`MONT`, `MON1`, ...) all come from the
+registry row. The relay reads no network-tag variable.
+
+At startup `cashwebd` builds one adapter per configured chain row (EVM, Solana and Bitcoin-family
+adapters are peers, in `cashweb-registry/src/chains/`) and passes them explicitly to the mailbox
+stamp verification, the forum, the `/chain-rpc/` proxies and `GET /chains`. Every upstream proves
+its identity (EVM chain id and checkpoint block, Solana genesis hash, Bitcoin-family checkpoint
+block) before it carries any traffic; one that has not is probed again in the background and is
+never used meanwhile. Electrum is only served over the WebSocket proxy, which checks each
+connection; HTTP `/chain-rpc/:chain/rpc` refuses Electrum methods.
 
 Direct messages (`PUT /message` and the signed inbox and mailbox reads under `/message/`) are
 **enabled by default** in both shipped configs (`backend/cashweb/cashwebd.local.toml`,
 `backend/docker/cashwebd.toml`) via `[registry.monad_mailbox]`: `enabled = true`,
-`min_value_wei = "1000000000000"`, `expected_chain_id = 10143` (Monad testnet; mainnet is 143),
-together with `[registry.directory]`, without which there are no message routes at all. A relay
-with the mailbox disabled answers 404 on every `/message` route except the topic routes, so a
-disabled default would leave the app unable to send or receive direct messages.
+`min_value_wei = "1000000000000"`, together with `[registry.directory]`, without which there are no
+message routes at all. A relay with the mailbox disabled answers 404 on every `/message` route, so a
+disabled default would leave the app unable to send or receive direct messages. The forum
+(`/topics`) runs when `[registry.forum] burn_address` is set.
 
-Two values are deliberately not in the files and must come from the environment:
+Upstream URLs are secret-bearing and never in the files: each chain row names the environment
+variable that holds them (`MONAD_TESTNET_HTTP_RPC_URL` for the shipped `monad-testnet` row).
+`cashwebd-exe` refuses to start (and `--check-config` fails), naming the variable, when the
+network's variable or that of an enabled Bitcoin-family or Solana row is missing.
 
-| Variable | Required | Meaning |
-| --- | --- | --- |
-| `MONAD_TESTNET_HTTP_RPC_URL` | yes | Monad JSON-RPC endpoint (secret-bearing; never commit it). An explicit `rpc_url` in the config overrides it. |
-| `FRANK_NETWORK_TAG` | yes | `MONT` (testnet) or `MON1` (mainnet). Envelopes must carry the relay's tag, so an unset tag would reject every DM. |
-
-`cashwebd-exe` refuses to start (and `--check-config` fails), naming the variable, when either is
-missing. `docker-compose.yml` defaults the tag to `MONT`; `run-local-monad.sh` does too.
-`MONAD_STAMP_BURN_ADDRESS` only affects the topic routes.
-
-A production operator must: set `MONAD_TESTNET_HTTP_RPC_URL` to their own provider endpoint; for a
-mainnet relay set `expected_chain_id = 143`, `FRANK_NETWORK_TAG=MON1`, the `monad-mainnet` proxy
-row's registry-pinned genesis checkpoint, and an RPC URL for the same network; review
-`min_value_wei` for their spam-resistance policy; and persist `/data`.
+A production operator must: set the network row's variable to their own provider endpoint; for a
+mainnet relay set `[registry] network = "monad-mainnet"` and give the `monad-mainnet` row an RPC
+variable; review `min_value_wei` for their spam-resistance policy; and persist `/data`.
 
 What the relay keeps there: the registry database (`registry.rocksdb`), the message store beside
 it (`registry.messages-v2`), and the session secret (`registry.session-secret`) that signs login
@@ -203,8 +211,7 @@ Copy-paste local recipe (from the repository root):
 
 ```bash
 export MONAD_TESTNET_HTTP_RPC_URL="https://<your-monad-testnet-rpc>"   # your own endpoint
-export FRANK_NETWORK_TAG=MONT                                          # optional locally, default MONT
-export MONAD_TESTNET_CHAIN_ID=10143                                    # optional, default 10143
+export FRANK_RELAY_NETWORK=monad-testnet                               # optional, or monad-mainnet
 export CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1000000000000                  # optional, default shown
 backend/cashweb/run-local-monad.sh   # prints the effective non-secret values, then serves :8098
 ```

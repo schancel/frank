@@ -175,8 +175,8 @@ pub struct RelayInfo {
     pub email_gateway: Option<EmailGatewayConf>,
 }
 impl RelayInfo {
-    fn from_config(config: &DirectoryConf) -> Result<Self> {
-        if config.validate().is_err() || !valid_network(&config.network) {
+    fn from_config(config: &DirectoryConf, network: &str) -> Result<Self> {
+        if config.validate().is_err() || !valid_network(network) {
             return Err(RuntimeError::Trust);
         }
         let point = exact(&config.relay_identity, 33)?;
@@ -201,7 +201,7 @@ impl RelayInfo {
             return Err(RuntimeError::Trust);
         }
         Ok(Self {
-            network: config.network.clone(),
+            network: network.to_owned(),
             email_gateway: config.email_gateway.clone(),
             binding: RelayBinding {
                 relay_id: exact(&config.relay_id, 16)?,
@@ -750,20 +750,23 @@ impl<'a> Worker<'a> {
     }
 }
 impl DirectoryRuntime {
-    /// Start exactly one native owner per registry, on the system clock.
+    /// Start exactly one native owner per registry, serving entries for the relay network
+    /// `network`, on the system clock.
     pub fn start(
         registry: Arc<Registry>,
         config: DirectoryConf,
+        network: &str,
     ) -> Result<(Self, oneshot::Receiver<Result<()>>)> {
-        Self::start_with_clock(registry, config, system_clock())
+        Self::start_with_clock(registry, config, network, system_clock())
     }
     /// As [`Self::start`] with an explicit time source.
     pub fn start_with_clock(
         registry: Arc<Registry>,
         config: DirectoryConf,
+        network: &str,
         clock: Clock,
     ) -> Result<(Self, oneshot::Receiver<Result<()>>)> {
-        let info = RelayInfo::from_config(&config)?;
+        let info = RelayInfo::from_config(&config, network)?;
         let enrollments_per_source_per_hour = config.enrollments_per_source_per_hour;
         let config_sync_interval_s = config.sync_interval_s;
         let trusted_proxies = config.trusted_proxies.clone();
@@ -1173,15 +1176,24 @@ mod tests {
     async fn finite_queue_cancel_races_started_owner_clock_and_shutdown() {
         let root = tempfile::tempdir().unwrap();
         let (registry, config, clock) = setup(root.path());
-        let (runtime, ready) =
-            DirectoryRuntime::start_with_clock(registry.clone(), config.clone(), clock.clock())
-                .unwrap();
+        let (runtime, ready) = DirectoryRuntime::start_with_clock(
+            registry.clone(),
+            config.clone(),
+            "monad-testnet",
+            clock.clock(),
+        )
+        .unwrap();
         ready.await.unwrap().unwrap();
         assert!(matches!(
-            DirectoryRuntime::start_with_clock(registry.clone(), config.clone(), clock.clock()),
+            DirectoryRuntime::start_with_clock(
+                registry.clone(),
+                config.clone(),
+                "monad-testnet",
+                clock.clock()
+            ),
             Err(RuntimeError::Busy)
         ));
-        let network = config.network.as_str();
+        let network = "monad-testnet";
         let bytes = hex::decode(record("bootstrap")["type2_hex"].as_str().unwrap()).unwrap();
         runtime
             .submit(
@@ -1289,15 +1301,20 @@ mod tests {
     async fn more_subjects_than_open_handles_are_all_still_served() {
         let root = tempfile::tempdir().unwrap();
         let (registry, config, clock) = setup(root.path());
-        let (runtime, ready) =
-            DirectoryRuntime::start_with_clock(registry, config.clone(), clock.clock()).unwrap();
+        let (runtime, ready) = DirectoryRuntime::start_with_clock(
+            registry,
+            config.clone(),
+            "monad-testnet",
+            clock.clock(),
+        )
+        .unwrap();
         ready.await.unwrap().unwrap();
         let mut published = Vec::new();
         for secret in 0..(MAX_OPEN_HANDLES as u32 + 8) {
             let entry = crate::http::directory::tests::entry(1000 + secret, |_| ());
             runtime
                 .submit(
-                    runtime.reserve(&config.network, &entry.subject).unwrap(),
+                    runtime.reserve("monad-testnet", &entry.subject).unwrap(),
                     Operation::Put(entry.attestation.clone()),
                 )
                 .wait()
@@ -1309,7 +1326,7 @@ mod tests {
         for entry in [&published[0], published.last().unwrap()] {
             let current = runtime
                 .submit(
-                    runtime.reserve(&config.network, &entry.subject).unwrap(),
+                    runtime.reserve("monad-testnet", &entry.subject).unwrap(),
                     Operation::Current,
                 )
                 .wait()

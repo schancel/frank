@@ -223,14 +223,14 @@ export const DEMO_VARS: readonly DemoVar[] = [
     name: 'FRANK_NETWORK_TAG',
     scope: 'chain',
     default: 'MONT',
-    description: 'Network tag the relay and bots stamp messages with (MONT = Monad testnet).',
+    description: 'Network tag the bots stamp messages with (MONT = Monad testnet). It must match the relay network, which the relay reads from its own config.',
   },
   {
     name: 'MONAD_STAMP_BURN_ADDRESS',
     scope: 'relay, bots, app',
     default: DEMO_DEFAULT_BURN_ADDRESS,
     description:
-      'Burn address of stamps and topic votes (0x + 40 hex). Passed to the relay (without it every forum post and vote fails with HTTP 500), to the bots, and printed in the app command as QCLI_MONAD_STAMP_BURN_ADDRESS: all three must agree. The default is the well-known 0x...dEaD burn address.',
+      'Burn address of stamps and topic votes (0x + 40 hex). Written into the relay config as [registry.forum] burn_address, passed to the bots, and printed in the app command as QCLI_MONAD_STAMP_BURN_ADDRESS: all three must agree. The default is the well-known 0x...dEaD burn address.',
   },
   {
     name: 'CASHWEB_STAMP_MIN_BURN_VALUE_WEI',

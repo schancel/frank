@@ -18,7 +18,7 @@ cat >"$work/stub-cashwebd" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1" == "--check-config" ]]; then cat >"$STUB_OUT/check.toml"; exit 0; fi
 cat >"$STUB_OUT/run.toml"
-echo "rpc=$MONAD_TESTNET_HTTP_RPC_URL tag=$FRANK_NETWORK_TAG burn=${MONAD_STAMP_BURN_ADDRESS:-unset}" >"$STUB_OUT/env.txt"
+echo "rpc=$MONAD_TESTNET_HTTP_RPC_URL" >"$STUB_OUT/env.txt"
 STUB
 chmod +x "$work/stub-cashwebd"
 
@@ -34,12 +34,12 @@ grep -q '^host = "127.0.0.1:19098"$' "$work/out/run.toml" || fail "host override
 grep -q '^url = "http://127.0.0.1:19098"$' "$work/out/run.toml" || fail "url override missing"
 grep -q '^\[registry.directory\]$' "$work/out/run.toml" || fail "directory section missing: the message and directory routes would not exist"
 grep -q '^endpoint = "http://127.0.0.1:19098"$' "$work/out/run.toml" || fail "directory endpoint does not follow the listen address"
-grep -q '^network = "monad-testnet"$' "$work/out/run.toml" || fail "directory network missing"
+grep -q '^network = "monad-testnet"$' "$work/out/run.toml" || fail "relay network missing"
 grep -q "^db_path = \"$work/db\"$" "$work/out/run.toml" || fail "db_path override missing"
 grep -q '^\[\[registry.curated_defaults\]\]$' "$work/out/run.toml" || fail "extra toml not appended"
 grep -q '^enabled = true$' "$work/out/run.toml" || fail "mailbox not enabled"
 cmp -s "$work/out/run.toml" "$work/out/check.toml" || fail "checked config differs from the served one"
-grep -q 'rpc=http://127.0.0.1:9 tag=MONT' "$work/out/env.txt" || fail "daemon env not passed"
+grep -q 'rpc=http://127.0.0.1:9' "$work/out/env.txt" || fail "daemon env not passed"
 
 # 1a. A relay this launcher starts asks no price or energy provider unless the run says so; the
 # providers' own addresses are left as shipped (only the relay's own url lines are rewritten).
@@ -73,14 +73,14 @@ run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashw
     PROTOC="$work/no-such-compiler"
 
 # 3. A repo-root .env is ignored when FRANK_RUN_LOCAL_SKIP_DOTENV=1 and honoured otherwise.
-printf 'FRANK_NETWORK_TAG=MON1\nMONAD_TESTNET_CHAIN_ID=143\n' >"$work/repo/.env"
+printf 'FRANK_RELAY_NETWORK=monad-mainnet\n' >"$work/repo/.env"
 rm -f "$work/out/"*
 run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd" \
     FRANK_RUN_LOCAL_SKIP_DOTENV=1
-grep -q 'tag=MONT' "$work/out/env.txt" || fail ".env was read despite FRANK_RUN_LOCAL_SKIP_DOTENV=1"
+grep -q '^network = "monad-testnet"$' "$work/out/run.toml" || fail ".env was read despite FRANK_RUN_LOCAL_SKIP_DOTENV=1"
 rm -f "$work/out/"*
 run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd"
-grep -q 'tag=MON1' "$work/out/env.txt" || fail ".env not honoured by default"
+grep -q '^network = "monad-mainnet"$' "$work/out/run.toml" || fail ".env not honoured by default"
 rm "$work/repo/.env"
 
 # 4. Bad override values are rejected with one clear message (exit 64), before anything starts.
@@ -91,19 +91,17 @@ for bad in "FRANK_RELAY_ORACLE_COLLECT=yes" "FRANK_RELAY_LISTEN=not-a-port" "FRA
     grep -q '^run-local-monad: FRANK_RELAY_' "$work/err.txt" || fail "no clear message for $bad"
 done
 
-# 5. MONAD_STAMP_BURN_ADDRESS (#364): reaches the daemon and is reported; missing it is a loud
-# warning (the topic routes answer HTTP 500 without it); a malformed value is rejected.
-burn=0x000000000000000000000000000000000000dEaD
+# 5. MONAD_STAMP_BURN_ADDRESS (#364) becomes the forum's burn address in the config the relay
+# is given, and is reported; unset, the checked-in address stays; a malformed value is rejected.
+burn=0x00000000000000000000000000000000000b0b0b
 rm -f "$work/out/"*
 run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd" \
     MONAD_STAMP_BURN_ADDRESS="$burn"
-grep -q "burn=$burn" "$work/out/env.txt" || fail "burn address not passed to the daemon"
-grep -q "MONAD_STAMP_BURN_ADDRESS: $burn" "$work/err.txt" || fail "burn address not reported"
-grep -q WARNING "$work/err.txt" && fail "warned although the burn address is set"
+grep -q "^burn_address = \"$burn\"$" "$work/out/run.toml" || fail "burn address not in the relay config"
+grep -q "forum burn_address:     $burn" "$work/err.txt" || fail "burn address not reported"
 rm -f "$work/out/"*
 run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd"
-grep -q 'burn=unset' "$work/out/env.txt" || fail "unexpected burn address"
-grep -q 'WARNING: MONAD_STAMP_BURN_ADDRESS is not set' "$work/err.txt" || fail "no warning without a burn address"
+grep -q '^burn_address = "0x000000000000000000000000000000000000dEaD"$' "$work/out/run.toml" || fail "checked-in burn address changed"
 if run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd" \
     MONAD_STAMP_BURN_ADDRESS=0xnothex; then
     fail "malformed burn address accepted"

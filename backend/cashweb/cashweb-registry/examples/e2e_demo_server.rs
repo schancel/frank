@@ -47,7 +47,7 @@
 //!
 //! ```sh
 //! cd backend/cashweb
-//! set -a; source ../../.env; set +a   # MONAD_TESTNET_HTTP_RPC_URL, MONAD_STAMP_BURN_ADDRESS, ...
+//! set -a; source ../../.env; set +a
 //! cargo run -p cashweb-registry --example e2e_demo_server -- 127.0.0.1:8098
 //! ```
 
@@ -150,8 +150,8 @@ async fn main() -> Result<()> {
     // This demo constructs its router with the durable Monad mailbox disabled (see
     // `monad_mailbox` below), so `PUT /message/monad` is not served. The mailbox is configured by
     // `[registry.monad_mailbox]` in a `cashwebd` config (see `backend/cashweb/run-local-monad.sh`),
-    // never by environment variables. Only the separate topic routes still read
-    // `MONAD_TESTNET_HTTP_RPC_URL`/`MONAD_STAMP_BURN_ADDRESS` from the environment.
+    // never by environment variables. The forum is off too: it needs `[registry.forum]` and a
+    // verified upstream for the relay network.
     info!("Monad mailbox is disabled in this demo: /message/monad is not served");
 
     // Temp RocksDB dir for this demo run's registry state. Kept alive for the process's whole
@@ -188,6 +188,10 @@ async fn main() -> Result<()> {
         evm_rpc: None,
         bitcoin_proxy: None,
         solana_proxy: None,
+        chains: std::sync::Arc::new(
+            cashweb_registry::chains::RelayChains::network_only("monad-testnet").unwrap(),
+        ),
+        forum: None,
         spa_dir: None,
         event_bus,
     };

@@ -19,6 +19,7 @@ url = "http://127.0.0.1:{port}"
 
 [registry]
 db_path = "{db}"
+network = "monad-testnet"
 net = "mainnet"
 peers = []
 
@@ -72,7 +73,6 @@ impl Daemon {
         let out = std::fs::File::create(&log).unwrap();
         let child = Command::new(env!("CARGO_BIN_EXE_cashwebd-exe"))
             .arg(&conf)
-            .env_remove("FRANK_NETWORK_TAG")
             .env_remove("MONAD_TESTNET_HTTP_RPC_URL")
             .stdin(Stdio::null())
             .stdout(out.try_clone().unwrap())

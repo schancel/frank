@@ -81,12 +81,12 @@ url = "${relayBaseUrl}"
 
 [registry]
 db_path = "${join(root, 'registry.rocksdb')}"
+network = "${NETWORK}"
 net = "mainnet"
 peers = []
 public_relay_urls = []
 
 [registry.directory]
-network = "${NETWORK}"
 relay_id = "0102030405060708090a0b0c0d0e0f10"
 relay_identity = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 endpoint = "${relayBaseUrl}"

@@ -40,7 +40,6 @@ fn vector(id: &str) -> Vec<u8> {
 /// The whole relay configuration: its own tuple. No account appears in it.
 pub(crate) fn relay_config() -> DirectoryConf {
     serde_json::from_value(serde_json::json!({
-        "network": NETWORK,
         "relay_id": "000102030405060708090a0b0c0d0e0f",
         "relay_identity": "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
         "endpoint": "https://relay.example.invalid",
@@ -65,7 +64,8 @@ async fn start(
     clock: &TestClock,
 ) -> DirectoryRuntime {
     let (runtime, ready) =
-        DirectoryRuntime::start_with_clock(registry, config, clock.clock()).unwrap();
+        DirectoryRuntime::start_with_clock(registry, config, "monad-testnet", clock.clock())
+            .unwrap();
     ready.await.unwrap().unwrap();
     runtime
 }
@@ -945,7 +945,7 @@ async fn old_operator_configuration_is_refused_with_a_plain_reason() {
     );
     let root = tempfile::tempdir().unwrap();
     assert!(matches!(
-        DirectoryRuntime::start(registry(root.path()), old),
+        DirectoryRuntime::start(registry(root.path()), old, "monad-testnet"),
         Err(RuntimeError::Trust)
     ));
     let mut incomplete = relay_config();
@@ -955,7 +955,8 @@ async fn old_operator_configuration_is_refused_with_a_plain_reason() {
         "registry.directory.endpoint is required"
     );
     // A relay tuple that has already expired cannot start on the real clock.
-    let (expired, ready) = DirectoryRuntime::start(registry(root.path()), relay_config()).unwrap();
+    let (expired, ready) =
+        DirectoryRuntime::start(registry(root.path()), relay_config(), "monad-testnet").unwrap();
     assert_eq!(ready.await.unwrap(), Err(RuntimeError::Trust));
     expired.wait_stopped().await;
 }
@@ -1125,8 +1126,8 @@ async fn authenticated_https_rust_and_node_client_close_reopen_exact_bytes() {
         serde_json::from_slice(&std::fs::read(root.path().join("native.json")).unwrap()).unwrap();
     let principal = &native["principals"][0];
     let text = |key: &str| principal[key].as_str().unwrap().to_owned();
+    let network = text("network");
     let config = DirectoryConf {
-        network: text("network"),
         relay_id: text("relay_id"),
         relay_identity: text("relay_identity"),
         endpoint: text("endpoint"),
@@ -1141,7 +1142,8 @@ async fn authenticated_https_rust_and_node_client_close_reopen_exact_bytes() {
             Net::Regtest,
         ));
         let (runtime, ready) =
-            DirectoryRuntime::start_with_clock(registry, config.clone(), clock.clock()).unwrap();
+            DirectoryRuntime::start_with_clock(registry, config.clone(), &network, clock.clock())
+                .unwrap();
         ready.await.unwrap().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();

@@ -95,6 +95,10 @@ fn make_server(registry: Registry) -> RegistryServer {
         evm_rpc: None,
         bitcoin_proxy: None,
         solana_proxy: None,
+        chains: std::sync::Arc::new(
+            cashweb_registry::chains::RelayChains::network_only("monad-testnet").unwrap(),
+        ),
+        forum: None,
         spa_dir: None,
         event_bus,
     }

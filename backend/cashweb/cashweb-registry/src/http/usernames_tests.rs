@@ -32,7 +32,8 @@ async fn relay_reserving(
         .map(|(name, key)| (name.to_string(), key.to_string()))
         .collect();
     let (runtime, ready) =
-        DirectoryRuntime::start_with_clock(registry, config, clock.clock()).unwrap();
+        DirectoryRuntime::start_with_clock(registry, config, "monad-testnet", clock.clock())
+            .unwrap();
     ready.await.unwrap().unwrap();
     let shared = Arc::new(runtime.clone());
     let routes = super::router(Arc::clone(&shared)).merge(crate::http::directory::router(shared));
@@ -431,7 +432,8 @@ async fn a_bad_reserved_names_table_stops_the_relay_from_starting() {
             .map(|(name, key)| (name.to_string(), key.to_string()))
             .collect();
         assert!(
-            DirectoryRuntime::start_with_clock(registry, config, clock.clock()).is_err(),
+            DirectoryRuntime::start_with_clock(registry, config, "monad-testnet", clock.clock())
+                .is_err(),
             "{reserved:?}"
         );
     }

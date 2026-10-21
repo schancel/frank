@@ -5,35 +5,39 @@ url = "http://127.0.0.1:8098"
 
 [registry]
 db_path = "data/registry.rocksdb"
+# The network this relay's directory, direct messages, forum and profiles run on: a chain
+# identifier from docs/protocol/chains/v1.json. Required. It must be an EVM chain with a
+# [[registry.evm_rpc.chains]] row below: the mailbox and the forum reach the chain only through
+# that row's upstreams, and only once they have passed its identity check.
+network = "monad-testnet"
 net = "mainnet"
 peers = []
 public_relay_urls = []
 
 # The account directory. The message, directory and relay-info routes (`/message*`,
 # `/directory/v1/*`, `/relay/v1/info`) exist only when this section is present: without it nobody
-# can register on or message through this relay. `network` is the registry id of the chain the
-# mailbox above serves; `endpoint` is the origin clients reach this relay at (run-local-monad.sh
-# keeps both in step with FRANK_NETWORK_TAG, FRANK_RELAY_LISTEN and FRANK_RELAY_PUBLIC_URL).
-# `relay_id` and `relay_identity` only name this relay in directory entries; the relay holds no
-# key for them and signs nothing. These are well-known development values: give a deployed relay
-# its own. No sign-up limit for local development and the demo.
+# can register on or message through this relay. `endpoint` is the origin clients reach this
+# relay at (run-local-monad.sh keeps it in step with FRANK_RELAY_LISTEN and
+# FRANK_RELAY_PUBLIC_URL). `relay_id` and `relay_identity` only name this relay in directory
+# entries; the relay holds no key for them and signs nothing. These are well-known development
+# values: give a deployed relay its own. No sign-up limit for local development and the demo.
 [registry.directory]
-network = "monad-testnet"
 relay_id = "0102030405060708090a0b0c0d0e0f10"
 relay_identity = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 endpoint = "http://127.0.0.1:8098"
 binding_expiry_ns = "1893456000000000000"
 enrollments_per_source_per_hour = 100000
 
-# The RPC URL is deliberately NOT in this file: `cashwebd-exe` reads it from the
-# MONAD_TESTNET_HTTP_RPC_URL environment variable (and refuses to start with a clear message when
-# it is missing), and requires FRANK_NETWORK_TAG (MONT on Monad testnet) to be set too.
-# An explicit `rpc_url = "..."` here would take precedence over the environment.
-# 10143 is Monad testnet's chain ID (mainnet is 143); 1000000000000 wei = 0.000001 MON.
+# Direct messages on `registry.network`. Stamp payments are verified and broadcast through that
+# network's [[registry.evm_rpc.chains]] row. 1000000000000 wei = 0.000001 MON.
 [registry.monad_mailbox]
 enabled = true
 min_value_wei = "1000000000000"
-expected_chain_id = 10143
+
+# The forum (`/topics`): every post and vote burns its payment to this address on
+# `registry.network`. Omit the section to leave the forum routes unavailable.
+[registry.forum]
+burn_address = "0x000000000000000000000000000000000000dEaD"
 
 # One EVM-family handler serves chain rows as data. The provider URL remains server-only in the
 # named environment variable and is chain-id checked before the relay becomes ready.

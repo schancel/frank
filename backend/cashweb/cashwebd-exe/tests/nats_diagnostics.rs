@@ -34,6 +34,7 @@ host = "127.0.0.1:0"
 url = "http://127.0.0.1:8098"
 [registry]
 db_path = "{}"
+network = "monad-testnet"
 net = "mainnet"
 peers = []
 [registry.monad_mailbox]
@@ -54,7 +55,6 @@ url = "{url}"
         let log = std::fs::File::create(&log_path).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_cashwebd-exe"))
             .arg("-")
-            .env_remove("FRANK_NETWORK_TAG")
             .env_remove("MONAD_TESTNET_HTTP_RPC_URL")
             .stdin(Stdio::piped())
             .stdout(log.try_clone().unwrap())

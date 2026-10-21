@@ -80,7 +80,8 @@ async function relayBinary(env: Record<string, string | undefined>): Promise<str
 }
 
 /** The relay's whole configuration for one run: one proxy row per network, and the message
- * mailbox on the Monad network when the stack has one. */
+ * mailbox and the forum on the EVM network when the stack has one. A stack without one names
+ * monad-regtest as the relay network but serves nothing on it. */
 function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): string {
   const evm = chains.flatMap(chain => (chain.relay.section === 'evm_rpc' ? [{ chain, relay: chain.relay }] : []))
   const mailbox = evm[0]
@@ -91,6 +92,7 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
     '',
     '[registry]',
     `db_path = ${JSON.stringify(dbPath)}`,
+    `network = "${mailbox?.chain.chainIdentifier ?? 'monad-regtest'}"`,
     'net = "regtest"',
     'peers = []',
     'public_relay_urls = []',
@@ -100,18 +102,19 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
           // The relay's own entry in the directory wallets publish to. The identity is a fixed
           // public test value, as in backend/cashweb/cashwebd.local.toml.
           '[registry.directory]',
-          `network = "${mailbox.chain.chainIdentifier}"`,
           'relay_id = "0102030405060708090a0b0c0d0e0f10"',
           'relay_identity = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"',
           `endpoint = "http://127.0.0.1:${port}"`,
           'binding_expiry_ns = "1893456000000000000"',
           'enrollments_per_source_per_hour = 100000',
           '',
+          // Stamps and forum burns are checked through the network's own evm_rpc row below.
           '[registry.monad_mailbox]',
           'enabled = true',
-          `rpc_url = "${mailbox.relay.mailbox.rpcUrl}"`,
           `min_value_wei = "${mailbox.relay.mailbox.minValueWei}"`,
-          `expected_chain_id = ${mailbox.relay.mailbox.expectedChainId}`,
+          '',
+          '[registry.forum]',
+          `burn_address = "${DEMO_DEFAULT_BURN_ADDRESS}"`,
           '',
           '[registry.evm_rpc]',
           'enabled = true',
@@ -198,13 +201,6 @@ export async function startRegtestStack(
     const configPath = join(stateDir, 'relay.toml')
     writeFileSync(configPath, relayConfig(relayPort, join(stateDir, 'relay-db'), chains), { mode: 0o600 })
     const relayEnv = Object.assign({}, ...chains.map(chain => chain.relay.env)) as Record<string, string>
-    for (const chain of chains) {
-      if (chain.relay.section !== 'evm_rpc') continue
-      relayEnv.FRANK_NETWORK_TAG = chain.relay.mailbox.networkTag
-      // The relay's forum routes read the chain from these two variables, whatever the network.
-      relayEnv.MONAD_TESTNET_HTTP_RPC_URL = chain.relay.mailbox.rpcUrl
-      relayEnv.MONAD_STAMP_BURN_ADDRESS = DEMO_DEFAULT_BURN_ADDRESS
-    }
     const relay = supervisor.start({
       name: 'relay',
       command: cashwebd,

@@ -16,15 +16,13 @@ if [[ -f "$repo_root/.env" && "${FRANK_RUN_LOCAL_SKIP_DOTENV:-}" != "1" ]]; then
 fi
 
 rpc_url="${MONAD_TESTNET_HTTP_RPC_URL:-}"
-# The mailbox is enabled in the checked-in config, which already carries the local-testnet minimum
-# and chain ID (10143; mainnet is 143). This launcher only overrides those two keys when the
-# environment asks for something else. The RPC URL and network tag are never in the config: the
-# daemon reads MONAD_TESTNET_HTTP_RPC_URL and FRANK_NETWORK_TAG from its environment, and refuses
-# to start without them (an unset tag would make the relay reject every direct message, and a tag other than MONT or
-# MON1 has no Frank-CBOR network mapping).
+# The mailbox and the forum are enabled in the checked-in config, on its `[registry] network`
+# (monad-testnet). This launcher rewrites the network, the stamp minimum and the forum burn
+# address only when the environment asks for something else. The RPC URL is never in the config:
+# it is a secret, and the daemon reads MONAD_TESTNET_HTTP_RPC_URL (the network's evm_rpc
+# upstream_env) from its environment and refuses to start without it.
 min_value_wei="${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-1000000000000}"
-expected_chain_id="${MONAD_TESTNET_CHAIN_ID:-10143}"
-network_tag="${FRANK_NETWORK_TAG:-MONT}"
+relay_network="${FRANK_RELAY_NETWORK:-monad-testnet}"
 cargo_command="${CARGO:-cargo}"
 chronik_url="${XEC_TESTNET_CHRONIK_URL:-https://chronik-testnet.fabien.cash}"
 solana_rpc_url="${SOLANA_DEVNET_HTTP_RPC_URL:-https://api.devnet.solana.com}"
@@ -51,30 +49,25 @@ case "$rpc_url" in
         ;;
 esac
 
-case "$network_tag" in
-    MONT)
-        rpc_chain="monad-testnet"
+# The relay network's Monad row in the config is retargeted to the chosen network; its chain id
+# and checkpoint come from docs/protocol/chains/v1.json.
+case "$relay_network" in
+    monad-testnet)
         canonical_chain_id="10143"
         canonical_checkpoint_hash="0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
         ;;
-    MON1)
-        rpc_chain="monad-mainnet"
+    monad-mainnet)
         canonical_chain_id="143"
         canonical_checkpoint_hash="0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9"
         ;;
     *)
-        echo "run-local-monad: FRANK_NETWORK_TAG must be MONT (Monad testnet) or MON1 (Monad mainnet); the relay maps only these to a Frank-CBOR network and refuses to start otherwise" >&2
+        echo "run-local-monad: FRANK_RELAY_NETWORK must be monad-testnet or monad-mainnet" >&2
         exit 64
         ;;
 esac
-if [[ "$expected_chain_id" != "$canonical_chain_id" ]]; then
-    echo "run-local-monad: MONAD_TESTNET_CHAIN_ID must be $canonical_chain_id when FRANK_NETWORK_TAG=$network_tag" >&2
-    exit 64
-fi
 
-# The topic (forum) routes read MONAD_STAMP_BURN_ADDRESS at request time and answer HTTP 500 without
-# it, while direct messages keep working: a silent half-broken relay. Warn loudly at startup, and
-# reject a malformed value outright.
+# Forum posts and votes burn to `[registry.forum] burn_address`; MONAD_STAMP_BURN_ADDRESS, when set,
+# replaces the checked-in one so the relay, the bots and the app agree.
 burn_address="${MONAD_STAMP_BURN_ADDRESS:-}"
 if [[ -n "$burn_address" && ! "$burn_address" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
     echo "run-local-monad: MONAD_STAMP_BURN_ADDRESS must be 0x followed by 40 hex characters" >&2
@@ -84,12 +77,6 @@ fi
 case "$min_value_wei" in
     '' | *[!0-9]*)
         echo "run-local-monad: CASHWEB_STAMP_MIN_BURN_VALUE_WEI must be a decimal integer" >&2
-        exit 64
-        ;;
-esac
-case "$expected_chain_id" in
-    '' | *[!0-9]*)
-        echo "run-local-monad: MONAD_TESTNET_CHAIN_ID must be a decimal integer" >&2
         exit 64
         ;;
 esac
@@ -103,11 +90,9 @@ if ! awk '
     in_monad_mailbox && /^\[/ { in_monad_mailbox = 0 }
     in_monad_mailbox && /^enabled[[:space:]]*=[[:space:]]*true[[:space:]]*$/ { enabled += 1 }
     in_monad_mailbox && /^min_value_wei[[:space:]]*=/ { minimum += 1 }
-    in_monad_mailbox && /^expected_chain_id[[:space:]]*=/ { chain += 1 }
-    in_monad_mailbox && /^rpc_url[[:space:]]*=/ { rpc += 1 }
-    END { exit !(sections == 1 && enabled == 1 && minimum == 1 && chain == 1 && rpc == 0) }
+    END { exit !(sections == 1 && enabled == 1 && minimum == 1) }
 ' "$base_config"; then
-    echo "run-local-monad: expected exactly one enabled Monad mailbox (with min_value_wei, expected_chain_id and no rpc_url) in $base_config" >&2
+    echo "run-local-monad: expected exactly one enabled Monad mailbox (with min_value_wei) in $base_config" >&2
     exit 70
 fi
 
@@ -203,24 +188,27 @@ if [[ ! -x "$cashwebd" ]]; then
 fi
 
 runtime_config="$(LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
-    LAUNCHER_EXPECTED_CHAIN_ID="$expected_chain_id" \
-    LAUNCHER_RPC_CHAIN="$rpc_chain" \
+    LAUNCHER_EXPECTED_CHAIN_ID="$canonical_chain_id" \
+    LAUNCHER_RPC_CHAIN="$relay_network" \
+    LAUNCHER_BURN_ADDRESS="$burn_address" \
     LAUNCHER_EVM_CHECKPOINT_HASH="$canonical_checkpoint_hash" awk '
+    # The relay network: the directory, the mailbox and the forum all run on it.
+    /^\[registry\]$/ { in_registry = 1; print; next }
+    in_registry && /^\[/ { in_registry = 0 }
+    in_registry && /^network[[:space:]]*=/ {
+        print "network = \"" ENVIRON["LAUNCHER_RPC_CHAIN"] "\""
+        next
+    }
     /^\[registry\.monad_mailbox\]$/ { in_monad_mailbox = 1 }
     in_monad_mailbox && /^\[/ && !/^\[registry\.monad_mailbox\]$/ { in_monad_mailbox = 0 }
     in_monad_mailbox && /^min_value_wei[[:space:]]*=/ {
         print "min_value_wei = \"" ENVIRON["LAUNCHER_MIN_VALUE_WEI"] "\""
         next
     }
-    in_monad_mailbox && /^expected_chain_id[[:space:]]*=/ {
-        print "expected_chain_id = " ENVIRON["LAUNCHER_EXPECTED_CHAIN_ID"]
-        next
-    }
-    # The directory accepts entries for the same network the mailbox and the RPC proxy serve.
-    /^\[registry\.directory\]$/ { in_directory = 1 }
-    in_directory && /^\[/ && !/^\[registry\.directory\]$/ { in_directory = 0 }
-    in_directory && /^network[[:space:]]*=/ {
-        print "network = \"" ENVIRON["LAUNCHER_RPC_CHAIN"] "\""
+    /^\[registry\.forum\]$/ { in_forum = 1 }
+    in_forum && /^\[/ && !/^\[registry\.forum\]$/ { in_forum = 0 }
+    in_forum && ENVIRON["LAUNCHER_BURN_ADDRESS"] != "" && /^burn_address[[:space:]]*=/ {
+        print "burn_address = \"" ENVIRON["LAUNCHER_BURN_ADDRESS"] "\""
         next
     }
     /^\[\[registry\.evm_rpc\.chains\]\]$/ { in_evm_chain = 1; rewrite_evm = 0 }
@@ -247,9 +235,8 @@ runtime_config="$(LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
 ' "$base_config")"
 
 # The daemon (not the config file) reads these variables; export them explicitly so a value
-# taken from a shell default (the tag, chronik, solana) reaches it as well as one sourced from `.env`.
+# taken from a shell default (chronik, solana, electrum) reaches it as well as one sourced from `.env`.
 export MONAD_TESTNET_HTTP_RPC_URL="$rpc_url"
-export FRANK_NETWORK_TAG="$network_tag"
 export XEC_TESTNET_CHRONIK_URL="$chronik_url"
 export SOLANA_DEVNET_HTTP_RPC_URL="$solana_rpc_url"
 export BTC_TESTNET_ELECTRUM_URL="$btc_electrum_url"
@@ -262,18 +249,13 @@ chronik_origin="$(printf '%s' "$chronik_url" | sed -E 's#^([a-z]+://[^/?\#]*).*#
 solana_origin="$(printf '%s' "$solana_rpc_url" | sed -E 's#^([a-z]+://[^/?\#]*).*#\1#')"
 {
     echo "run-local-monad: effective configuration"
-    echo "  config file:            $base_config (mailbox enabled)"
+    echo "  config file:            $base_config (mailbox and forum enabled)"
     echo "  MONAD_TESTNET_HTTP_RPC_URL: set (origin $rpc_origin, path hidden)"
-    echo "  FRANK_NETWORK_TAG:      $network_tag"
+    echo "  network:                $relay_network (chain id $canonical_chain_id)"
     echo "  min_value_wei:          $min_value_wei"
-    echo "  expected_chain_id:      $expected_chain_id"
-    echo "  rpc_chain:              $rpc_chain"
     echo "  XEC_TESTNET_CHRONIK_URL: set (origin $chronik_origin, path hidden)"
     echo "  SOLANA_DEVNET_HTTP_RPC_URL: set (origin $solana_origin, path hidden)"
-    echo "  MONAD_STAMP_BURN_ADDRESS: ${burn_address:-NOT SET}"
-    if [[ -z "$burn_address" ]]; then
-        echo "run-local-monad: WARNING: MONAD_STAMP_BURN_ADDRESS is not set: every forum topic post and vote will fail with HTTP 500 (direct messages still work). Set it (see .env.example)." >&2
-    fi
+    echo "  forum burn_address:     ${burn_address:-as in the config file}"
 } >&2
 
 if [[ -n "${FRANK_RELAY_LISTEN:-}" ]]; then

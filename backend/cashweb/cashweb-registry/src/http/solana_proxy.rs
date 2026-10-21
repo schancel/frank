@@ -5,7 +5,6 @@
 //! Upstream URLs are process-owned secret state and never leak in responses or error messages.
 
 use std::{
-    collections::HashMap,
     fmt,
     net::{IpAddr, SocketAddr},
     sync::Arc,
@@ -20,11 +19,11 @@ use axum::{
     Json,
 };
 use cashweb_config::{SolanaProxyConf, SolanaProxyConfigError};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::Semaphore;
-use url::Url;
 
 use crate::{
+    chains::{RelayChains, SolanaChainAdapter, UpstreamSet},
     http::{
         evm_rpc::{
             authenticate, body_hash, broadcast_error, now_ms, preflight_broadcast_error,
@@ -38,42 +37,14 @@ use crate::{
     monad_http::Address,
 };
 
-const MAX_STARTUP_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_ACCOUNTS_IN_BATCH_QUERY: usize = 100;
 const MAX_SIGNATURES_LIMIT: u64 = 1000;
 const MAX_WIRE_TRANSACTION_CHARS: usize = 4096;
-/// Longest startup waits for the first identity check of this proxy's chains.
-const STARTUP_WAIT: Duration = Duration::from_secs(2);
-/// How often an upstream that has not yet proved its identity is asked again.
-const IDENTITY_RETRY: Duration = if cfg!(test) {
-    Duration::from_millis(50)
-} else {
-    Duration::from_secs(30)
-};
-
-#[derive(Clone)]
-struct SolanaChain {
-    id: String,
-    upstream_urls: Vec<Url>,
-    expected_genesis_hash: String,
-    /// The chain's upstreams have proved they are the configured chain. Until they do, nothing
-    /// is forwarded to them.
-    verified: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl fmt::Debug for SolanaChain {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SolanaChain")
-            .field("id", &self.id)
-            .field("upstream_urls_count", &self.upstream_urls.len())
-            .field("expected_genesis_hash", &self.expected_genesis_hash)
-            .finish()
-    }
-}
 
 /// Validated Solana proxy runtime state.
 pub struct SolanaProxyRuntime {
-    chains: HashMap<String, SolanaChain>,
+    /// The relay's chains; this proxy serves their Solana adapters.
+    chains: Arc<RelayChains>,
     client: reqwest::Client,
     auth: RpcAuthState,
     network_tag: Vec<u8>,
@@ -107,21 +78,9 @@ pub enum SolanaProxyStartError {
     /// Static proxy configuration is invalid.
     #[error("invalid Solana proxy configuration: {0}")]
     InvalidConfig(SolanaProxyConfigError),
-    /// A named server-only environment variable is absent.
-    #[error("missing Solana proxy upstream environment variable {0}")]
-    MissingUpstream(String),
-    /// A named environment variable is not a hosted HTTP(S) URL.
-    #[error("invalid Solana proxy upstream environment variable {0}")]
-    InvalidUpstream(String),
-    /// An upstream did not return a usable startup identity response.
-    #[error("Solana proxy chain {0} failed startup genesis hash validation")]
-    UpstreamUnavailable(String),
-    /// An upstream returned a genesis hash other than the expected one.
-    #[error("Solana proxy chain {id} genesis hash mismatch")]
-    GenesisHashMismatch {
-        /// Stable public protocol chain id.
-        id: String,
-    },
+    /// The HTTP client could not be built.
+    #[error("Solana proxy HTTP client could not be built")]
+    Client,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,16 +91,13 @@ struct CallCost {
 }
 
 impl SolanaProxyRuntime {
-    /// Whether the chain is configured in this runtime.
-    pub(crate) fn has_chain(&self, id: &str) -> bool {
-        self.chains.contains_key(id)
+    fn chain(&self, id: &str) -> Option<&Arc<SolanaChainAdapter>> {
+        self.chains.solana(id)
     }
 
-    /// Return all configured chain IDs.
-    pub(crate) fn chain_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.chains.keys().cloned().collect();
-        ids.sort();
-        ids
+    /// Whether the chain is configured in this runtime.
+    pub(crate) fn has_chain(&self, id: &str) -> bool {
+        self.chain(id).is_some()
     }
 
     pub(crate) fn body_admission(&self) -> (Arc<Semaphore>, usize, Duration) {
@@ -152,24 +108,12 @@ impl SolanaProxyRuntime {
         )
     }
 
-    /// Resolve upstream URLs and check each configured chain's genesis hash. Only a bad
-    /// configuration is an error: an upstream that is down or is the wrong chain leaves that
-    /// chain unserved, never the relay unstarted.
-    pub async fn from_conf_with_env(
+    /// The Solana proxy over `chains`' Solana adapters, with the request limits of `conf`.
+    /// `None` when the proxy is disabled. Challenges and capabilities are signed with a key
+    /// derived from the relay's session secret so they survive a restart.
+    pub fn new(
         conf: &SolanaProxyConf,
-        network_tag: Vec<u8>,
-        env: impl Fn(&str) -> Option<String>,
-    ) -> Result<Option<Arc<Self>>, SolanaProxyStartError> {
-        let session = crate::monad_mailbox::SessionSecret::random();
-        Self::from_conf_with_session(conf, network_tag, env, &session).await
-    }
-
-    /// As [`Self::from_conf_with_env`], signing challenges and capabilities with a key derived
-    /// from the relay's session secret so they survive a restart.
-    pub async fn from_conf_with_session(
-        conf: &SolanaProxyConf,
-        network_tag: Vec<u8>,
-        env: impl Fn(&str) -> Option<String>,
+        chains: Arc<RelayChains>,
         session: &crate::monad_mailbox::SessionSecret,
     ) -> Result<Option<Arc<Self>>, SolanaProxyStartError> {
         conf.validate()
@@ -177,59 +121,15 @@ impl SolanaProxyRuntime {
         if !conf.enabled {
             return Ok(None);
         }
-        let mut chains = HashMap::new();
-        for row in &conf.chains {
-            let mut upstream_urls = Vec::new();
-            let mut all_envs = vec![row.upstream_env.as_str()];
-            for env_name in &row.upstream_envs {
-                all_envs.push(env_name.as_str());
-            }
-            for env_name in all_envs {
-                if let Some(raw) = env(env_name).filter(|s| !s.trim().is_empty()) {
-                    for token in raw
-                        .split([',', ' ', '\n', '\t'])
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                    {
-                        let url = token
-                            .parse::<Url>()
-                            .ok()
-                            .filter(|u| {
-                                matches!(u.scheme(), "http" | "https") && u.host_str().is_some()
-                            })
-                            .ok_or_else(|| {
-                                SolanaProxyStartError::InvalidUpstream(env_name.to_string())
-                            })?;
-                        if !upstream_urls.contains(&url) {
-                            upstream_urls.push(url);
-                        }
-                    }
-                }
-            }
-            if upstream_urls.is_empty() {
-                return Err(SolanaProxyStartError::MissingUpstream(
-                    row.upstream_env.clone(),
-                ));
-            }
-            chains.insert(
-                row.id.clone(),
-                SolanaChain {
-                    id: row.id.clone(),
-                    upstream_urls,
-                    expected_genesis_hash: row.expected_genesis_hash.clone(),
-                    verified: Default::default(),
-                },
-            );
-        }
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|_| SolanaProxyStartError::UpstreamUnavailable("client".into()))?;
-        let runtime = Arc::new(Self {
+            .map_err(|_| SolanaProxyStartError::Client)?;
+        Ok(Some(Arc::new(Self {
+            network_tag: chains.network_tag().to_vec(),
             chains,
             client,
             auth: RpcAuthState::for_session(session, "solana-proxy"),
-            network_tag,
             permits: Arc::new(Semaphore::new(conf.max_concurrency)),
             ingress_permits: Arc::new(Semaphore::new(conf.max_concurrency)),
             max_request_bytes: conf.max_request_bytes,
@@ -240,142 +140,41 @@ impl SolanaProxyRuntime {
             anonymous_quota: FixedHourQuota::new(conf.anonymous_units_per_hour),
             capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
             cooldowns: UpstreamCooldownTracker::default(),
-        });
-        runtime.start_verifying().await;
-        Ok(Some(runtime))
+        })))
     }
 
-    async fn verify_genesis_hash(&self, chain: &SolanaChain) -> Result<(), SolanaProxyStartError> {
-        {
-            let body = json!({
-                "jsonrpc": "2.0",
-                "id": "startup",
-                "method": "getGenesisHash",
-            });
-            let body_bytes = serde_json::to_vec(&body).unwrap();
-            for upstream_url in &chain.upstream_urls {
-                let response = tokio::time::timeout(
-                    self.timeout,
-                    self.client
-                        .post(upstream_url.clone())
-                        .header(reqwest::header::CONTENT_TYPE, "application/json")
-                        .body(body_bytes.clone())
-                        .send(),
-                )
-                .await
-                .map_err(|_| SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()))?
-                .map_err(|_| SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
-
-                if !response.status().is_success() {
-                    return Err(SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()));
-                }
-                let bytes = read_response(response, MAX_STARTUP_RESPONSE_BYTES)
-                    .await
-                    .map_err(|_| SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
-
-                let actual = super::json_rpc::startup_result(
-                    &bytes,
-                    super::json_rpc::JsonRpcVersion::V2,
-                    &json!("startup"),
-                )
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .ok_or_else(|| SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
-
-                if actual != chain.expected_genesis_hash {
-                    return Err(SolanaProxyStartError::GenesisHashMismatch {
-                        id: chain.id.clone(),
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Check the identity of every chain not yet verified. A chain whose upstream cannot be
-    /// reached, or answers as a different chain, stays unserved and is reported; the relay
-    /// and its other chains carry on. Returns whether every chain is now verified.
-    async fn verify_unverified_chains(&self) -> bool {
-        use std::sync::atomic::Ordering;
-        let checks = self
-            .chains
-            .values()
-            .filter(|chain| !chain.verified.load(Ordering::Relaxed))
-            .map(|chain| async move {
-                match self.verify_genesis_hash(chain).await {
-                    Ok(()) => {
-                        chain.verified.store(true, Ordering::Relaxed);
-                        true
-                    }
-                    Err(error) => {
-                        tracing::event!(
-                            tracing::Level::ERROR,
-                            chain = %chain.id,
-                            error = %error,
-                            "Solana proxy chain is NOT being served: its upstream did not pass \
-                             the genesis hash check. Requests for it answer unavailable; the check \
-                             is repeated until it passes"
-                        );
-                        false
-                    }
-                }
-            });
-        futures::future::join_all(checks)
-            .await
-            .into_iter()
-            .all(|verified| verified)
-    }
-
-    /// Check every chain's identity in the background, again and again until all pass or the
-    /// relay stops. Startup waits only briefly for the first round, so a healthy upstream is
-    /// verified before the first request and a dead one never holds the relay up.
-    async fn start_verifying(self: &Arc<Self>) {
-        let runtime = Arc::downgrade(self);
-        let (first_round, first_round_done) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let mut first_round = Some(first_round);
-            loop {
-                let Some(runtime) = runtime.upgrade() else {
-                    return;
-                };
-                let all_verified = runtime.verify_unverified_chains().await;
-                drop(runtime);
-                if let Some(first_round) = first_round.take() {
-                    let _ = first_round.send(());
-                }
-                if all_verified {
-                    return;
-                }
-                tokio::time::sleep(IDENTITY_RETRY).await;
-            }
-        });
-        let _ = tokio::time::timeout(STARTUP_WAIT, first_round_done).await;
-    }
-
-    /// Refuse a request for a chain whose upstream has not proved its identity.
-    fn require_verified(
-        &self,
-        verified: &std::sync::atomic::AtomicBool,
-    ) -> Result<(), RpcRejection> {
-        if verified.load(std::sync::atomic::Ordering::Relaxed) {
-            Ok(())
-        } else {
-            Err(rpc_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "rpc_upstream_unavailable",
-            ))
-        }
+    /// Test composition: the rows of `conf` on Monad testnet, resolved from `env` and probed
+    /// once (in the background thereafter), served by a proxy with a random session.
+    #[cfg(test)]
+    pub(crate) async fn from_conf_with_env(
+        conf: &SolanaProxyConf,
+        env: impl Fn(&str) -> Option<String>,
+    ) -> Result<Option<Arc<Self>>, crate::chains::ChainsStartError> {
+        let chains = Arc::new(RelayChains::from_families(
+            "monad-testnet",
+            &Default::default(),
+            &Default::default(),
+            conf,
+            env,
+        )?);
+        chains.start_verifying().await;
+        Ok(
+            Self::new(conf, chains, &crate::monad_mailbox::SessionSecret::random())
+                .expect("validated by RelayChains"),
+        )
     }
 }
 
-async fn read_response(mut response: reqwest::Response, max: usize) -> Result<Bytes, ()> {
-    let mut out = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
-        if out.len().saturating_add(chunk.len()) > max {
-            return Err(());
-        }
-        out.extend_from_slice(&chunk);
+/// Refuse a request when none of `upstreams` has proved the chain's identity.
+fn require_verified(upstreams: &UpstreamSet) -> Result<(), RpcRejection> {
+    if upstreams.has_verified() {
+        Ok(())
+    } else {
+        Err(rpc_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rpc_upstream_unavailable",
+        ))
     }
-    Ok(out.into())
 }
 
 fn parse_customer(headers: &HeaderMap) -> Result<Option<Address>, RpcRejection> {
@@ -632,7 +431,7 @@ fn validate_call(call: &Value) -> Result<CallCost, RpcRejection> {
 
 fn validate_body(
     runtime: &SolanaProxyRuntime,
-    _chain: &SolanaChain,
+    _chain: &SolanaChainAdapter,
     body: &[u8],
 ) -> Result<CallCost, RpcRejection> {
     if body.is_empty() || body.len() > runtime.max_request_bytes {
@@ -679,8 +478,7 @@ pub(crate) async fn issue_rpc_challenge(
         .as_deref()
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "rpc_disabled"))?;
     let chain = runtime
-        .chains
-        .get(&chain_id)
+        .chain(&chain_id)
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
     validate_body(runtime, chain, &body)?;
     let customer = parse_customer(&headers)?
@@ -822,12 +620,10 @@ async fn proxy_rpc_inner(
         .as_deref()
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "rpc_disabled"))?;
     let chain = runtime
-        .chains
-        .get(&chain_id)
+        .chain(&chain_id)
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
     let cost = validate_body(runtime, chain, &body)?;
-    runtime
-        .require_verified(&chain.verified)
+    require_verified(chain.http_upstreams())
         .map_err(|error| preflight_broadcast_error(error, cost.broadcast))?;
     let correlation = super::json_rpc::request_correlation(&body).map_err(|_| {
         preflight_broadcast_error(
@@ -900,7 +696,8 @@ async fn proxy_rpc_inner(
     }
 
     let deadline = tokio::time::Instant::now() + runtime.timeout;
-    let ordered_upstreams = runtime.cooldowns.splay_order(&chain.upstream_urls);
+    let verified_upstreams = chain.http_upstreams().verified_urls();
+    let ordered_upstreams = runtime.cooldowns.splay_order(&verified_upstreams);
     if ordered_upstreams.is_empty() {
         return Err(broadcast_error(
             StatusCode::BAD_GATEWAY,
@@ -1064,6 +861,7 @@ async fn proxy_rpc_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use axum::{body::Body, http::Request, routing, Router};
@@ -1109,13 +907,12 @@ mod tests {
             ..SolanaProxyConf::default()
         };
         let upstream_url = format!("http://{addr}");
-        let runtime =
-            SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(upstream_url.clone()))
-                .await
-                .unwrap()
-                .expect("must start");
+        let runtime = SolanaProxyRuntime::from_conf_with_env(&conf, |_| Some(upstream_url.clone()))
+            .await
+            .unwrap()
+            .expect("must start");
         assert!(runtime.has_chain("solana-devnet"));
-        assert_eq!(runtime.chain_ids(), vec!["solana-devnet"]);
+        assert!(!runtime.has_chain("solana-mainnet"));
     }
 
     const DEVNET: &str = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
@@ -1172,6 +969,10 @@ mod tests {
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: Some(runtime),
+            chains: std::sync::Arc::new(
+                crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
+            ),
+            forum: None,
             spa_dir: None,
             event_bus,
         }
@@ -1215,7 +1016,7 @@ mod tests {
             ..SolanaProxyConf::default()
         };
         // The relay starts.
-        let runtime = SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |name| {
+        let runtime = SolanaProxyRuntime::from_conf_with_env(&conf, |name| {
             Some(if name == "UP" {
                 up_url.clone()
             } else {
@@ -1271,7 +1072,7 @@ mod tests {
             chains: vec![chain("solana-devnet", "URL", DEVNET)],
             ..SolanaProxyConf::default()
         };
-        let runtime = SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(url.clone()))
+        let runtime = SolanaProxyRuntime::from_conf_with_env(&conf, |_| Some(url.clone()))
             .await
             .unwrap()
             .unwrap();
@@ -1281,7 +1082,7 @@ mod tests {
             let refused = router.clone().oneshot(slot("solana-devnet")).await.unwrap();
             assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
             assert_eq!(error_code(refused).await, "rpc_upstream_unavailable");
-            tokio::time::sleep(IDENTITY_RETRY * 5).await;
+            tokio::time::sleep(crate::chains::IDENTITY_RETRY * 5).await;
         }
         assert_eq!(forwarded.load(Ordering::SeqCst), 0);
     }
@@ -1329,7 +1130,7 @@ mod tests {
         };
         let u1 = format!("http://{addr1}");
         let u2 = format!("http://{addr2}");
-        let runtime = SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |name| match name {
+        let runtime = SolanaProxyRuntime::from_conf_with_env(&conf, |name| match name {
             "SOLANA_RPC_1" => Some(u1.clone()),
             "SOLANA_RPC_2" => Some(u2.clone()),
             _ => None,
@@ -1338,8 +1139,8 @@ mod tests {
         .unwrap()
         .expect("must start");
 
-        let chain = runtime.chains.get("solana-devnet").unwrap();
-        assert_eq!(chain.upstream_urls.len(), 2);
+        let chain = runtime.chains.solana("solana-devnet").unwrap();
+        assert_eq!(chain.http_upstreams().verified_urls().len(), 2);
     }
 
     #[test]

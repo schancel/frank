@@ -30,51 +30,78 @@
             data-test="sync-back"
           />
           <h1 class="text-h5">{{ $t('accountSync.send') }}</h1>
-          <p>{{ $t('accountSync.senderIntro') }}</p>
-          <div v-if="view?.pin" class="q-my-lg" data-test="sync-pin-block">
-            <p>
+          <template v-if="needsPersistentView">
+            <p role="status" data-test="sync-promotion-status">
               {{
                 $t(
-                  view.status === 'new-pin'
-                    ? 'accountSync.newPinAfterMismatch'
-                    : 'accountSync.showPin',
+                  promoted
+                    ? 'accountSync.continueInTab'
+                    : 'accountSync.openingPersistentView',
                 )
               }}
             </p>
-            <output
-              class="account-sync-pin text-h3 text-weight-bold"
-              data-test="sync-sender-pin"
-              >{{ view.pin }}</output
-            >
-            <p class="text-caption q-mt-md">
-              {{ $t('accountSync.pinPrivate') }}
+            <p v-if="promotionError" role="alert" class="text-negative">
+              {{ promotionError }}
             </p>
-          </div>
-          <p
-            v-if="view?.status === 'expired' || view?.status === 'ended'"
-            role="status"
-          >
-            {{ $t(`accountSync.${view.status}`) }}
-          </p>
-          <p
-            v-if="error"
-            role="alert"
-            class="text-negative"
-            data-test="sync-sender-error"
-          >
-            {{ error }}
-          </p>
-          <q-btn
-            v-if="!view?.pin"
-            unelevated
-            no-caps
-            color="primary"
-            :label="$t('accountSync.showPinAction')"
-            :loading="busy"
-            :disable="busy"
-            data-test="sync-show-pin"
-            @click="showPin"
-          />
+            <q-btn
+              v-if="!promoted"
+              unelevated
+              no-caps
+              color="primary"
+              :label="$t('accountSync.openPersistentView')"
+              :loading="promoting"
+              :disable="promoting"
+              data-test="sync-promotion-retry"
+              @click="promoteToPersistentView"
+            />
+          </template>
+          <template v-else>
+            <p>{{ $t('accountSync.senderIntro') }}</p>
+            <div v-if="view?.pin" class="q-my-lg" data-test="sync-pin-block">
+              <p>
+                {{
+                  $t(
+                    view.status === 'new-pin'
+                      ? 'accountSync.newPinAfterMismatch'
+                      : 'accountSync.showPin',
+                  )
+                }}
+              </p>
+              <output
+                class="account-sync-pin text-h3 text-weight-bold"
+                data-test="sync-sender-pin"
+                >{{ view.pin }}</output
+              >
+              <p class="text-caption q-mt-md">
+                {{ $t('accountSync.pinPrivate') }}
+              </p>
+            </div>
+            <p
+              v-if="view?.status === 'expired' || view?.status === 'ended'"
+              role="status"
+            >
+              {{ $t(`accountSync.${view.status}`) }}
+            </p>
+            <p
+              v-if="error"
+              role="alert"
+              class="text-negative"
+              data-test="sync-sender-error"
+            >
+              {{ error }}
+            </p>
+            <q-btn
+              v-if="!view?.pin"
+              unelevated
+              no-caps
+              color="primary"
+              :label="$t('accountSync.showPinAction')"
+              :loading="busy"
+              :disable="busy"
+              data-test="sync-show-pin"
+              @click="showPin"
+            />
+          </template>
           <q-btn
             flat
             no-caps
@@ -93,7 +120,19 @@
 import { onBeforeRouteLeave } from 'vue-router'
 import { useAccountSyncSender } from '../composables/useAccountSyncSender'
 import { viewportPageStyle } from '../utils/layout'
-const { view, busy, error, complete, showPin, cancel } = useAccountSyncSender()
+const {
+  view,
+  busy,
+  error,
+  complete,
+  showPin,
+  cancel,
+  needsPersistentView,
+  promoting,
+  promoted,
+  promotionError,
+  promoteToPersistentView,
+} = useAccountSyncSender()
 onBeforeRouteLeave(() => cancel())
 </script>
 

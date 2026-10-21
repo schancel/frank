@@ -2114,6 +2114,12 @@ export const rawEnUS = {
     back: 'Back',
     done: 'Done',
     showPinAction: 'Show PIN',
+    openingPersistentView:
+      'Opening sync in a Frank tab that stays open while you switch windows.',
+    continueInTab: 'Continue in the new Frank tab and choose Show PIN there.',
+    openPersistentView: 'Open sync in a tab',
+    promotionFailed:
+      'Could not open a Frank tab. Try again, or open Frank in a full tab before syncing. No PIN has been created.',
     senderIntro:
       'In the other Frank window, choose Sync existing account. When you are ready, show a PIN here and enter it there. Keep this page open until the account is sent.',
     pinPrivate:

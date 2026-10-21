@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { accountSession, accountStatus } from '../accounts/session'
 import { useProfileStore } from '../stores/my-profile'
 import { getOwnCanonicalAddress } from '../utils/own-address'
@@ -11,7 +11,9 @@ import {
 import {
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   FRANK_WEB_APP_ORIGIN,
+  getRawExtensionApi,
   isBrowserExtensionRuntime,
+  openExtensionTab,
   isFrankWebAppOrigin,
   onRuntimeMessage,
   sendRuntimeMessage,
@@ -24,6 +26,16 @@ export function useAccountSyncSender() {
   const t = useTranslate()
   const profile = useProfileStore()
   const extension = isBrowserExtensionRuntime()
+  const mode =
+    document.documentElement.getAttribute('data-ext-mode') ??
+    new URLSearchParams(window.location.search).get('extMode')
+  // Toolbar popups disappear as soon as the user focuses the receiving tab.
+  // Never create a credential offer in a view whose lifetime is uncertain.
+  const needsPersistentView =
+    extension && !['tab', 'window', 'sidepanel', 'sidebar'].includes(mode ?? '')
+  const promoting = ref(false)
+  const promoted = ref(false)
+  const promotionError = ref('')
   const extensionView = ref<SyncSenderView | null>(null)
   const view = computed(() =>
     extension ? extensionView.value : pageSyncSender.value,
@@ -120,7 +132,42 @@ export function useAccountSyncSender() {
     },
   )
 
+  async function promoteToPersistentView() {
+    if (!needsPersistentView || promoting.value || promoted.value || disposed)
+      return
+    promoting.value = true
+    promotionError.value = ''
+    try {
+      // Require the extension API's tab creation acknowledgment, rather than a
+      // window.open fallback that a browser could silently block.
+      if (typeof getRawExtensionApi()?.tabs?.create !== 'function')
+        throw new Error('Tab creation unavailable')
+      const result = await openExtensionTab({
+        path: 'index.html?extMode=tab#/account-sync/send',
+      })
+      if (!result.opened) throw new Error('Tab creation failed')
+      if (disposed) return
+      promoted.value = true
+      try {
+        window.close()
+      } catch {
+        /* The persistent tab is open; the popup may stay visible. */
+      }
+    } catch {
+      if (!disposed) promotionError.value = t('accountSync.promotionFailed')
+    } finally {
+      promoting.value = false
+    }
+  }
+  onMounted(() => {
+    if (needsPersistentView) void promoteToPersistentView()
+  })
+
   async function showPin() {
+    if (needsPersistentView) {
+      await promoteToPersistentView()
+      return
+    }
     if (busy.value || complete.value || disposed) return
     const token = ++generation
     error.value = ''
@@ -221,5 +268,17 @@ export function useAccountSyncSender() {
     void cancel(true)
   })
 
-  return { view, busy, error, complete, showPin, cancel }
+  return {
+    view,
+    busy,
+    error,
+    complete,
+    showPin,
+    cancel,
+    needsPersistentView,
+    promoting,
+    promoted,
+    promotionError,
+    promoteToPersistentView,
+  }
 }

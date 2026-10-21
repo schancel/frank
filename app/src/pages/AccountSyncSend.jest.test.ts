@@ -49,6 +49,10 @@ import {
   pageSyncSender,
 } from '../utils/extension-account-sync'
 import { receiveSyncBundle, SYNC_PAIRING_TTL_MS } from '../utils/sync-pairing'
+import {
+  createBackgroundBridgeState,
+  handleBackgroundMessage,
+} from '../../src-bex/background'
 
 export function translate(key: string): string {
   const value = key
@@ -84,6 +88,7 @@ function deferred<T>() {
 }
 let post: jest.SpyInstance
 beforeEach(() => {
+  document.documentElement.setAttribute('data-ext-mode', 'tab')
   mockLeaveGuard = null
   mockStatus.status = 'ready'
   mockStatus.revision = 1
@@ -103,6 +108,7 @@ beforeEach(() => {
 afterEach(() => {
   cancelPageSyncSender()
   post.mockRestore()
+  document.documentElement.removeAttribute('data-ext-mode')
   Reflect.deleteProperty(globalThis, 'chrome')
   jest.useRealTimers()
 })
@@ -130,6 +136,159 @@ async function receive(pin: string) {
 }
 
 describe('full-page account sender', () => {
+  it('promotes the toolbar popup before any export; only the persistent tab can create a pairable PIN', async () => {
+    document.documentElement.setAttribute('data-ext-mode', 'popup')
+    const state = createBackgroundBridgeState()
+    type Message = { type?: string; [key: string]: unknown }
+    type Listener = (
+      message: Message,
+      sender: unknown,
+      reply: (value: unknown) => void,
+    ) => unknown
+    const listeners: Listener[] = []
+    const extensionSender = {
+      id: 'frank-test-ext',
+      url: 'chrome-extension://frank-test-ext/index.html?extMode=tab',
+      frameId: 0,
+    }
+    const frankSender = {
+      id: 'frank-test-ext',
+      url: 'https://signet.mx/',
+      origin: 'https://signet.mx',
+      tab: { id: 2 },
+      frameId: 0,
+    }
+    const tabs = {
+      create: jest.fn(async (_options: { url: string }) => ({ id: 99 })),
+    }
+    const runtime = {
+      id: 'frank-test-ext',
+      getURL: (path: string) => `chrome-extension://frank-test-ext/${path}`,
+      sendMessage: jest.fn(async (message: Message): Promise<unknown> => {
+        if (message.type === 'sync-sender-update') {
+          listeners.forEach(listener =>
+            listener(message, extensionSender, jest.fn()),
+          )
+          return undefined
+        }
+        return handleBackgroundMessage(message, extensionSender, state, scope)
+      }),
+      onMessage: {
+        addListener: (listener: Listener) => listeners.push(listener),
+        removeListener: jest.fn(),
+      },
+    }
+    const scope = { chrome: { runtime, tabs } }
+    Object.assign(globalThis, scope)
+    const close = jest
+      .spyOn(window, 'close')
+      .mockImplementation(() => undefined)
+    const popup = renderSender()
+    try {
+      await flushPromises()
+      expect(tabs.create).toHaveBeenCalledWith({
+        url: 'chrome-extension://frank-test-ext/index.html?extMode=tab#/account-sync/send',
+      })
+      expect(close).toHaveBeenCalledTimes(1)
+      expect(popup.find('[data-test="sync-show-pin"]').exists()).toBe(false)
+      expect(mockBackup).not.toHaveBeenCalled()
+      expect(state.syncPairing.sender).toBeNull()
+      window.dispatchEvent(new Event('pagehide'))
+      const hello = await handleBackgroundMessage(
+        { channel: 'frank-pwa-extension-sync-v1', type: 'pair-hello' },
+        frankSender,
+        state,
+        scope,
+      )
+      expect(hello.result).toEqual({ ok: false, reason: 'no-sender' })
+    } finally {
+      popup.unmount()
+      close.mockRestore()
+    }
+    document.documentElement.setAttribute('data-ext-mode', 'tab')
+    const persistent = renderSender()
+    try {
+      await flushPromises()
+      expect(mockBackup).not.toHaveBeenCalled()
+      expect(state.syncPairing.sender).toBeNull()
+      await persistent.get('[data-test="sync-show-pin"]').trigger('click')
+      await flushPromises()
+      expect(mockBackup).toHaveBeenCalledTimes(1)
+      const pin = persistent.get('[data-test="sync-sender-pin"]').text()
+      const result = await receiveSyncBundle(pin, async (type, payload) => {
+        const response = await handleBackgroundMessage(
+          { channel: 'frank-pwa-extension-sync-v1', type, payload },
+          frankSender,
+          state,
+          scope,
+        )
+        return response.result
+      })
+      expect(result.ok && result.bundle.backupShares).toEqual([
+        'ms12frankshareone',
+        'ms12franksharetwo',
+      ])
+      await flushPromises()
+      expect(persistent.findAll('button').map(button => button.text())).toEqual(
+        [enUS.accountSync.done],
+      )
+      expect(tabs.create).toHaveBeenCalledTimes(1)
+    } finally {
+      persistent.unmount()
+    }
+  })
+
+  it('shows failed popup promotion with retry and usable back/cancel, without any PIN session', async () => {
+    document.documentElement.setAttribute('data-ext-mode', 'popup')
+    const create = jest.fn(async () => {
+      throw new Error('Browser refused the tab')
+    })
+    Object.assign(globalThis, {
+      chrome: {
+        runtime: {
+          id: 'extension',
+          getURL: (path: string) => `chrome-extension://extension/${path}`,
+        },
+        tabs: { create },
+      },
+    })
+    const wrapper = renderSender()
+    try {
+      await flushPromises()
+      expect(wrapper.get('[role="alert"]').text()).toBe(
+        enUS.accountSync.promotionFailed,
+      )
+      expect(wrapper.find('[data-test="sync-show-pin"]').exists()).toBe(false)
+      expect(mockBackup).not.toHaveBeenCalled()
+      expect(wrapper.find('[data-test="sync-back"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="sync-cancel"]').exists()).toBe(true)
+      expect(await mockLeaveGuard?.()).toBe(true)
+      await wrapper.get('[data-test="sync-promotion-retry"]').trigger('click')
+      await flushPromises()
+      expect(create).toHaveBeenCalledTimes(2)
+      expect(mockBackup).not.toHaveBeenCalled()
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it.each(['tab', 'window', 'sidepanel', 'sidebar'])(
+    'does not promote the persistent %s surface',
+    async mode => {
+      document.documentElement.setAttribute('data-ext-mode', mode)
+      const create = jest.fn()
+      Object.assign(globalThis, {
+        chrome: { runtime: { id: 'extension' }, tabs: { create } },
+      })
+      const wrapper = renderSender()
+      await flushPromises()
+      expect(create).not.toHaveBeenCalled()
+      expect(wrapper.find('[data-test="sync-show-pin"]').exists()).toBe(true)
+      expect(mockBackup).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+
   it('opens without a dialog or account export until Show PIN is chosen', async () => {
     const wrapper = renderSender()
     await flushPromises()

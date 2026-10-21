@@ -2177,6 +2177,13 @@ export const rawFrFR = {
     back: 'Retour',
     done: 'Terminé',
     showPinAction: 'Afficher le code PIN',
+    openingPersistentView:
+      'Ouverture de la synchronisation dans un onglet Frank qui reste ouvert quand vous changez de fenêtre.',
+    continueInTab:
+      'Continuez dans le nouvel onglet Frank et choisissez Afficher le code PIN.',
+    openPersistentView: 'Ouvrir dans un onglet',
+    promotionFailed:
+      'Impossible d’ouvrir un onglet Frank. Réessayez ou ouvrez Frank dans un onglet complet avant de synchroniser. Aucun code PIN n’a été créé.',
     senderIntro:
       'Dans l’autre fenêtre Frank, choisissez Synchroniser un compte existant. Quand vous êtes prêt, affichez un code PIN ici et saisissez-le là-bas. Gardez cette page ouverte jusqu’à l’envoi du compte.',
     pinPrivate:

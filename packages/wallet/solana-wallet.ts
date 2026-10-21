@@ -1,4 +1,6 @@
 import {
+  ComputeBudgetInstruction,
+  ComputeBudgetProgram,
   Keypair,
   PublicKey,
   SystemInstruction,
@@ -28,6 +30,7 @@ import {
   ChainAddress,
   ChainTransaction,
   defaultNativeTransactionAttemptStore,
+  NativeFeeExceededError,
   nativeTransactionAttemptKey,
   NativeTransactionAttemptStore,
   NativeTransactionSubmissionError,
@@ -117,6 +120,53 @@ export interface SolanaWalletConnection {
 export interface SolanaTransfer {
   destination: PublicKey | string
   lamports: bigint
+}
+
+/** The signature fee of a one-signature Solana transaction, in lamports. */
+export const SOLANA_SIGNATURE_FEE_LAMPORTS = 5_000n
+
+/**
+ * The fewest compute units a native transfer may request. Its payment-intent memo alone costs
+ * about 58,600 units and the whole transaction about 59,000 (devnet simulation, 2026-10). A
+ * lower limit makes the transaction fail on chain while still charging its fee.
+ */
+export const SOLANA_NATIVE_TRANSFER_MIN_COMPUTE_UNITS = 70_000
+
+const SOLANA_MAX_COMPUTE_UNITS = 1_400_000
+
+/** The compute-unit limit and priority price a native transfer is signed with. */
+export interface SolanaComputeBudget {
+  readonly units: number
+  readonly priorityFeeMicroLamports: bigint
+}
+
+/** The fee a native transfer signed with `budget` pays, in lamports. */
+export function solanaNativeTransferFee(budget?: SolanaComputeBudget): bigint {
+  if (budget === undefined || budget.priorityFeeMicroLamports <= 0n)
+    return SOLANA_SIGNATURE_FEE_LAMPORTS
+  return (
+    SOLANA_SIGNATURE_FEE_LAMPORTS +
+    (BigInt(budget.units) * budget.priorityFeeMicroLamports + 999_999n) /
+      1_000_000n
+  )
+}
+
+function assertComputeBudget(budget: SolanaComputeBudget): void {
+  if (
+    !Number.isSafeInteger(budget.units) ||
+    budget.units < SOLANA_NATIVE_TRANSFER_MIN_COMPUTE_UNITS ||
+    budget.units > SOLANA_MAX_COMPUTE_UNITS
+  ) {
+    throw new RangeError(
+      `compute unit limit must be between ${SOLANA_NATIVE_TRANSFER_MIN_COMPUTE_UNITS} and ${SOLANA_MAX_COMPUTE_UNITS}`,
+    )
+  }
+  if (
+    budget.priorityFeeMicroLamports < 0n ||
+    budget.priorityFeeMicroLamports > MAX_U64
+  ) {
+    throw new RangeError('priority fee is out of range')
+  }
 }
 
 export interface BuildSolanaTransactionBundleParams {
@@ -748,15 +798,31 @@ export class SolanaWallet
     )
   }
 
+  /**
+   * Pays one native transfer. The signed transaction is journalled before anything else sees it,
+   * and while a journalled transfer is unresolved no other transfer is signed. With
+   * `computeBudget` the transaction carries that compute-unit limit and priority price; with
+   * `maxFee` it refuses, unsigned, when its fee would be higher.
+   */
   async sendNative(params: {
     recipient: ChainAddress
     minimumRemainingBalance?: bigint
     value: bigint
+    maxFee?: bigint
+    computeBudget?: SolanaComputeBudget
     onSigned?: (signed: ChainTransaction) => Promise<void>
     fromAddress?: string
   }): Promise<ChainTransaction> {
     if (params.minimumRemainingBalance !== undefined)
       throw new Error('Minimum native reserve is unsupported by this wallet')
+    const computeBudget =
+      params.computeBudget === undefined
+        ? undefined
+        : { ...params.computeBudget }
+    if (computeBudget !== undefined) assertComputeBudget(computeBudget)
+    const fee = solanaNativeTransferFee(computeBudget)
+    if (params.maxFee !== undefined && fee > params.maxFee)
+      throw new NativeFeeExceededError(fee)
     await this.verifyNetwork()
     return runNativeTransactionExclusive(
       this.nativeAttemptKey,
@@ -827,13 +893,13 @@ export class SolanaWallet
             // fallback to primary signer
           }
         }
-        const bundle = await this.buildTransactionBundle({
-          intentId: randomIntentId(),
-          transfers: [
-            { destination: params.recipient.raw, lamports: params.value },
-          ],
-          signer: activeSigner,
-        })
+        const bundle = await this.buildSignedBundle(
+          [{ destination: params.recipient.raw, lamports: params.value }],
+          randomIntentId(),
+          undefined,
+          activeSigner,
+          computeBudget,
+        )
         const submitted = await this.submitNativeBundle(
           bundle,
           params.onSigned,
@@ -860,21 +926,25 @@ export class SolanaWallet
     if (txHash === undefined) {
       throw new Error('Native transaction bundle is empty')
     }
-    if (onSigned !== undefined) await onSigned({ txHash })
     const pendingError = new NativeTransactionSubmissionError({
       transaction: { txHash },
       reason: new Error('Native transaction submission is in progress'),
     })
-    const attemptKey =
-      signerOverride && !signerOverride.publicKey.equals(this.signer.publicKey)
-        ? nativeTransactionAttemptKey({
-            family: 'solana',
-            chainIdentifier: this.chainIdentifier,
-            address: signerOverride.publicKey.toBase58(),
-          })
-        : this.nativeAttemptKey
-    this.nativeAttemptStore.put(attemptKey, pendingError.transaction)
+    // One journal entry per wallet, whichever of its accounts pays: the gate in `sendNative`
+    // and retry/resolve read this key, so a transfer from a stealth account blocks the next one.
+    // It is written before the caller or any RPC sees the signed id.
+    this.nativeAttemptStore.put(this.nativeAttemptKey, pendingError.transaction)
     this.unresolvedNative = { bundle, error: pendingError }
+    if (onSigned !== undefined) {
+      try {
+        await onSigned({ txHash })
+      } catch (reason) {
+        // Nothing was broadcast: the transfer cannot land, so it does not block the wallet.
+        this.nativeAttemptStore.delete(this.nativeAttemptKey)
+        this.unresolvedNative = undefined
+        throw reason
+      }
+    }
     try {
       const result = await this.submitTransactionBundle(bundle)
       const submitted = { txHash: result.submitted[0].txId }
@@ -1103,8 +1173,25 @@ export class SolanaWallet
     intentId: Uint8Array,
     metadata?: ReadonlyArray<TMetadata>,
     signerOverride?: Keypair,
+    computeBudget?: SolanaComputeBudget,
   ): Promise<SolanaTransactionBundle<TMetadata>> {
     assertTransfers(transfers)
+    if (computeBudget !== undefined) assertComputeBudget(computeBudget)
+    const budgetInstructions =
+      computeBudget === undefined
+        ? []
+        : [
+            ComputeBudgetProgram.setComputeUnitLimit({
+              units: computeBudget.units,
+            }),
+            ...(computeBudget.priorityFeeMicroLamports > 0n
+              ? [
+                  ComputeBudgetProgram.setComputeUnitPrice({
+                    microLamports: computeBudget.priorityFeeMicroLamports,
+                  }),
+                ]
+              : []),
+          ]
     assertIntentId(intentId)
     const activeSigner = signerOverride ?? this.signer
     const stableIntentId = intentId.slice()
@@ -1133,6 +1220,7 @@ export class SolanaWallet
           typeof TransactionMessage
         >[0]['recentBlockhash'],
         instructions: [
+          ...budgetInstructions,
           SystemProgram.transfer({
             fromPubkey: activeSigner.publicKey,
             toPubkey: destination,
@@ -1210,12 +1298,48 @@ export class SolanaWallet
     if (!message.payerKey.equals(expectedSignerPubkey)) {
       throw new Error('bundle transaction payer does not match wallet')
     }
-    if (message.instructions.length !== 2) {
+    // An optional compute budget leads: a unit limit, then optionally a unit price.
+    let budgetCount = 0
+    while (
+      budgetCount < message.instructions.length &&
+      message.instructions[budgetCount].programId.equals(
+        ComputeBudgetProgram.programId,
+      )
+    ) {
+      budgetCount += 1
+    }
+    if (budgetCount > 0) {
+      const expected = ['SetComputeUnitLimit', 'SetComputeUnitPrice']
+      if (budgetCount > expected.length) {
+        throw new Error('bundle transaction has an invalid compute budget')
+      }
+      for (let index = 0; index < budgetCount; index += 1) {
+        let type: string
+        try {
+          type = ComputeBudgetInstruction.decodeInstructionType(
+            message.instructions[index],
+          )
+        } catch {
+          throw new Error('bundle transaction has an invalid compute budget')
+        }
+        if (type !== expected[index]) {
+          throw new Error('bundle transaction has an invalid compute budget')
+        }
+      }
+      const { units } = ComputeBudgetInstruction.decodeSetComputeUnitLimit(
+        message.instructions[0],
+      )
+      if (units < SOLANA_NATIVE_TRANSFER_MIN_COMPUTE_UNITS) {
+        throw new Error('bundle transaction compute unit limit is too low')
+      }
+    }
+    const paymentInstructions = message.instructions.slice(budgetCount)
+    if (paymentInstructions.length !== 2) {
       throw new Error(
         'bundle transaction must contain one transfer and one intent instruction',
       )
     }
-    const transfer = SystemInstruction.decodeTransfer(message.instructions[0])
+    const transfer = SystemInstruction.decodeTransfer(paymentInstructions[0])
     if (!transfer.fromPubkey.equals(expectedSignerPubkey)) {
       throw new Error('bundle transfer source does not match wallet')
     }
@@ -1226,7 +1350,7 @@ export class SolanaWallet
         'bundle transaction description does not match signed bytes',
       )
     }
-    const intent = message.instructions[1]
+    const intent = paymentInstructions[1]
     let intentText: string
     try {
       intentText = new TextDecoder('utf-8', { fatal: true }).decode(intent.data)

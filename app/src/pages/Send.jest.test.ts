@@ -762,6 +762,8 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     expect(mockSend).toHaveBeenCalledWith({
       recipient: { raw: recipient },
       value: 1_000_000n,
+      // The reviewed fee binds the Solana wallet too.
+      maxFee: 5_000n,
       onSigned: expect.any(Function),
     })
     expect(sentTransactionNotify).toHaveBeenCalledWith('solana-signature')

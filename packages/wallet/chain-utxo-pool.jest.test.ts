@@ -13,7 +13,6 @@ import {
 } from './chain-utxo-pool'
 import { orderOfMagnitude2 } from './evm-change-distribution'
 import { SolanaWallet } from './solana-wallet'
-import { createSolanaChain } from './chain/solana-chain'
 import { EcashWallet } from './ecash-wallet'
 
 describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
@@ -519,69 +518,6 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(result.transaction.instructions.length).toBeGreaterThanOrEqual(2)
       expect(result.changeLamports).toBe(700_000_000n - 600_005_000n)
       expect(result.transaction.signatures).toHaveLength(2)
-    })
-
-    it('executes Solana sendLegacy and estimateLegacyFee across coins registered under chainIdentifier (#1205)', async () => {
-      const recipient = await Keypair.generate()
-      const sentRaw: Uint8Array[] = []
-      const mockConn: any = {
-        getGenesisHash: jest.fn().mockResolvedValue('solana-genesis-hash'),
-        getSignatureStatus: jest.fn().mockResolvedValue({
-          value: { confirmationStatus: 'confirmed', err: null },
-        }),
-        getBalance: jest.fn().mockResolvedValue(50_000n),
-        getLatestBlockhash: jest.fn().mockResolvedValue({
-          blockhash: 'GfJc19J8P8v92jLK23V2GBjuAEGB1111111111111111',
-          lastValidBlockHeight: 100n,
-        }),
-        sendRawTransaction: jest.fn(async (raw: Uint8Array) => {
-          sentRaw.push(raw)
-          return '5mockAtomicMultiInputSig'
-        }),
-      }
-
-      const solanaChain = createSolanaChain({
-        networkId: 'solana-devnet',
-        genesisHash: 'solana-genesis-hash',
-        connection: mockConn,
-        deriveSigner: () => solanaKp1,
-        chainUtxoPool: pool,
-      })
-
-      const wallet = (await solanaChain.createWallet({
-        mnemonic:
-          'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
-      })) as SolanaWallet
-
-      // Register coins via wallet handle (which registers under 'solana-devnet')
-      const coin1 = wallet.registerInUtxoPool(undefined, 300_000_000n)
-      const coin2 = wallet.registerStealthInUtxoPool({
-        address: solanaKp2.publicKey.toBase58(),
-        privateKey: Buffer.from(solanaKp2.secretKey).toString('hex'),
-        balanceWei: 400_000_000n,
-        ephemeralPubKey: 'ephemPubKey1205',
-      })
-
-      const feeEstimate = await solanaChain.nativeTransfers.estimateLegacyFee!({
-        wallet,
-        recipient: { raw: recipient.publicKey.toBase58() },
-        value: 600_000_000n,
-      })
-      expect(feeEstimate.inputCount).toBe(2)
-      expect(feeEstimate.totalFee).toBe(5_000n)
-
-      const sendResult = await solanaChain.nativeTransfers.sendLegacy!({
-        wallet,
-        recipient: { raw: recipient.publicKey.toBase58() },
-        value: 600_000_000n,
-      })
-      expect(sendResult.txHash).toBe('5mockAtomicMultiInputSig')
-      expect(sendResult.totalValueSent).toBe(600_000_000n)
-      expect(sendResult.totalFeePaid).toBe(5_000n)
-      expect(sendResult.inputCount).toBe(2)
-      expect(sentRaw).toHaveLength(1)
-      expect(pool.getCoin(coin1.id)?.status).toBe('spent')
-      expect(pool.getCoin(coin2.id)?.status).toBe('spent')
     })
   })
 

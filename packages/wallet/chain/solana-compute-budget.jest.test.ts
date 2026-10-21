@@ -1,25 +1,19 @@
 import {
   ComputeBudgetInstruction,
-  ComputeBudgetProgram,
   Keypair,
   PublicKey,
-  SystemProgram,
-  Transaction,
+  TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
 import { getBase58Decoder } from "@solana/codecs-strings";
 import * as bip39 from "bip39";
 
 import {
-  buildSolanaComputeBudgetInstructions,
   computeSolanaComputeUnitLimit,
-  computeSolanaPriorityFeeLamports,
   computeSweepDecoyDelayMs,
   createSolanaChain,
-  DEFAULT_SOLANA_BASE_FEE_LAMPORTS,
   DEFAULT_SOLANA_MAX_COMPUTE_UNITS,
   DEFAULT_SOLANA_MIN_COMPUTE_UNITS,
-  prependSolanaComputeBudgetInstructions,
   sampleSolanaPriorityFeeMicroLamports,
   scheduleBackgroundSweepWithJitter,
   SOLANA_SWEEP_DECOY_MAX_DELAY_MS,
@@ -28,11 +22,22 @@ import {
   SolanaChainConnection,
   SolanaPrioritizationFeeSample,
 } from "./solana-chain";
-import { ChainUtxoPool } from "../chain-utxo-pool";
 import { InMemoryNativeTransactionAttemptStore } from "./chain-wallet";
+import {
+  SOLANA_NATIVE_TRANSFER_MIN_COMPUTE_UNITS,
+  SOLANA_SIGNATURE_FEE_LAMPORTS,
+  solanaNativeTransferFee,
+} from "../solana-wallet";
 
 const base58Decoder = getBase58Decoder();
 const testBlockhash = new PublicKey(new Uint8Array(32).fill(7)).toBase58();
+
+/** The leading compute-budget instructions of a sent native transfer. */
+function budgetOf(raw: Uint8Array) {
+  return TransactionMessage.decompile(
+    VersionedTransaction.deserialize(raw).message
+  ).instructions.slice(0, 2);
+}
 
 class MockRpcConnection implements SolanaChainConnection {
   balance = 1_000_000_000n;
@@ -100,7 +105,7 @@ class MockRpcConnection implements SolanaChainConnection {
 }
 
 describe("solana-compute-budget (#1220)", () => {
-  describe("computeSolanaComputeUnitLimit & computeSolanaPriorityFeeLamports", () => {
+  describe("computeSolanaComputeUnitLimit & solanaNativeTransferFee", () => {
     it("computes dynamic compute units for single-input and multi-input transfers", () => {
       expect(computeSolanaComputeUnitLimit({ inputCount: 1 })).toBe(6_000);
       expect(computeSolanaComputeUnitLimit({ inputCount: 2 })).toBe(7_000);
@@ -136,94 +141,18 @@ describe("solana-compute-budget (#1220)", () => {
       ).toBe(30_000);
     });
 
-    it("computes priority fee in lamports using ceiling division", () => {
-      expect(computeSolanaPriorityFeeLamports(7_000, 0n)).toBe(0n);
-      expect(computeSolanaPriorityFeeLamports(0, 25_000n)).toBe(0n);
-      // 7,000 * 12,500 = 87,500,000 micro-lamports => ceil(87.5) = 88 lamports
-      expect(computeSolanaPriorityFeeLamports(7_000, 12_500n)).toBe(88n);
-      // 10,000 * 100,000 = 1,000,000,000 micro-lamports => 1,000 lamports
-      expect(computeSolanaPriorityFeeLamports(10_000, 100_000n)).toBe(1_000n);
-    });
-  });
-
-  describe("ComputeBudgetProgram instruction construction and ordering", () => {
-    it("constructs SetComputeUnitLimit followed by SetComputeUnitPrice when priority fee > 0", () => {
-      const ixs = buildSolanaComputeBudgetInstructions({
-        units: 9_000,
-        priorityFeeMicroLamports: 15_000n,
-      });
-
-      expect(ixs).toHaveLength(2);
-      expect(ixs[0].programId.equals(ComputeBudgetProgram.programId)).toBe(
-        true
-      );
-      expect(ComputeBudgetInstruction.decodeInstructionType(ixs[0])).toBe(
-        "SetComputeUnitLimit"
-      );
-      expect(ComputeBudgetInstruction.decodeSetComputeUnitLimit(ixs[0])).toEqual(
-        { units: 9_000 }
-      );
-
-      expect(ixs[1].programId.equals(ComputeBudgetProgram.programId)).toBe(
-        true
-      );
-      expect(ComputeBudgetInstruction.decodeInstructionType(ixs[1])).toBe(
-        "SetComputeUnitPrice"
-      );
-      expect(ComputeBudgetInstruction.decodeSetComputeUnitPrice(ixs[1])).toEqual(
-        { microLamports: 15_000n }
-      );
-    });
-
-    it("omits SetComputeUnitPrice when priorityFeeMicroLamports is 0n or undefined", () => {
-      const ixs = buildSolanaComputeBudgetInstructions({
-        units: 6_000,
-        priorityFeeMicroLamports: 0n,
-      });
-
-      expect(ixs).toHaveLength(1);
-      expect(ComputeBudgetInstruction.decodeInstructionType(ixs[0])).toBe(
-        "SetComputeUnitLimit"
-      );
-      expect(ComputeBudgetInstruction.decodeSetComputeUnitLimit(ixs[0])).toEqual(
-        { units: 6_000 }
-      );
-    });
-
-    it("prepends compute budget instructions before transfer instructions and deduplicates existing budget instructions", async () => {
-      const sender = await Keypair.generate();
-      const recipient = await Keypair.generate();
-      const tx = new Transaction();
-      tx.add(
-        ComputeBudgetProgram.setComputeUnitLimit({ units: 3_000 }),
-        SystemProgram.transfer({
-          fromPubkey: sender.publicKey,
-          toPubkey: recipient.publicKey,
-          lamports: 50_000n,
+    it("computes a native transfer's fee with ceiling division of its priority fee", () => {
+      expect(solanaNativeTransferFee()).toBe(SOLANA_SIGNATURE_FEE_LAMPORTS);
+      expect(
+        solanaNativeTransferFee({ units: 70_000, priorityFeeMicroLamports: 0n })
+      ).toBe(5_000n);
+      // 70,000 * 12,345 = 864,150,000 micro-lamports => ceil(864.15) = 865 lamports
+      expect(
+        solanaNativeTransferFee({
+          units: 70_000,
+          priorityFeeMicroLamports: 12_345n,
         })
-      );
-
-      prependSolanaComputeBudgetInstructions(tx, {
-        units: 12_000,
-        priorityFeeMicroLamports: 25_000n,
-      });
-
-      expect(tx.instructions).toHaveLength(3);
-      expect(
-        ComputeBudgetInstruction.decodeInstructionType(tx.instructions[0])
-      ).toBe("SetComputeUnitLimit");
-      expect(
-        ComputeBudgetInstruction.decodeSetComputeUnitLimit(tx.instructions[0])
-      ).toEqual({ units: 12_000 });
-      expect(
-        ComputeBudgetInstruction.decodeInstructionType(tx.instructions[1])
-      ).toBe("SetComputeUnitPrice");
-      expect(
-        ComputeBudgetInstruction.decodeSetComputeUnitPrice(tx.instructions[1])
-      ).toEqual({ microLamports: 25_000n });
-      expect(tx.instructions[2].programId.equals(SystemProgram.programId)).toBe(
-        true
-      );
+      ).toBe(5_865n);
     });
   });
 
@@ -321,7 +250,7 @@ describe("solana-compute-budget (#1220)", () => {
       ).toBe(0n);
     });
 
-    it("integrates RPC priority fee sampling into createSolanaChain sendLegacy and estimateLegacyFee", async () => {
+    it("integrates RPC priority fee sampling into createSolanaChain send and estimateLegacyFee", async () => {
       const mnemonic = bip39.generateMnemonic();
       const primaryKp = await Keypair.generate();
       const recipientKp = await Keypair.generate();
@@ -348,92 +277,81 @@ describe("solana-compute-budget (#1220)", () => {
       const wallet = await chain.createWallet({ mnemonic });
       const recipient = { raw: recipientKp.publicKey.toBase58() };
 
-      // 1 input -> 6,000 units; median fee = 20,000 micro-lamports/CU -> ceil(6000 * 20000 / 1e6) = 120 lamports
+      // 70,000 units (the memo-bearing transfer's floor); median 20,000 micro-lamports/CU
+      // -> ceil(70,000 * 20,000 / 1e6) = 1,400 lamports.
       const estimate = await chain.nativeTransfers.estimateLegacyFee!({
         wallet,
         recipient,
         value: 50_000_000n,
       });
       expect(estimate.inputCount).toBe(1);
-      expect(estimate.totalFee).toBe(DEFAULT_SOLANA_BASE_FEE_LAMPORTS + 120n);
+      expect(estimate.totalFee).toBe(SOLANA_SIGNATURE_FEE_LAMPORTS + 1_400n);
 
-      const sendResult = await chain.nativeTransfers.sendLegacy!({
+      await chain.nativeTransfers.send({
         wallet,
         recipient,
         value: 50_000_000n,
+        maxFee: estimate.totalFee,
       });
-      expect(sendResult.totalFeePaid).toBe(
-        DEFAULT_SOLANA_BASE_FEE_LAMPORTS + 120n
-      );
       expect(connection.sentRaw).toHaveLength(1);
 
-      const deserialized = Transaction.from(connection.sentRaw[0]);
-      expect(
-        ComputeBudgetInstruction.decodeSetComputeUnitLimit(
-          deserialized.instructions[0]
-        )
-      ).toEqual({ units: 6_000 });
-      expect(
-        ComputeBudgetInstruction.decodeSetComputeUnitPrice(
-          deserialized.instructions[1]
-        )
-      ).toEqual({ microLamports: 20_000n });
+      const [limit, price] = budgetOf(connection.sentRaw[0]);
+      expect(ComputeBudgetInstruction.decodeSetComputeUnitLimit(limit)).toEqual(
+        { units: SOLANA_NATIVE_TRANSFER_MIN_COMPUTE_UNITS }
+      );
+      expect(ComputeBudgetInstruction.decodeSetComputeUnitPrice(price)).toEqual(
+        { microLamports: 20_000n }
+      );
     });
 
-    it("applies custom computeUnitLimit on multi-input sendLegacy transfers", async () => {
-      const mnemonic = bip39.generateMnemonic();
-      const primaryKp = await Keypair.generate();
-      const kp1 = await Keypair.generate();
-      const kp2 = await Keypair.generate();
-      const recipientKp = await Keypair.generate();
+    it("applies a configured computeUnitLimit, never below what the transfer's memo needs", async () => {
+      const send = async (computeUnitLimit: number) => {
+        const primaryKp = await Keypair.generate();
+        const connection = new MockRpcConnection({
+          withPrioritizationFees: [{ slot: 1, prioritizationFee: 10_000 }],
+        });
+        const chain = createSolanaChain({
+          networkId: "solana-devnet",
+          genesisHash: connection.genesisHash,
+          connection,
+          deriveSigner: () => primaryKp,
+          nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+          computeBudget: { computeUnitLimit },
+        });
+        const wallet = await chain.createWallet({
+          mnemonic: bip39.generateMnemonic(),
+        });
+        const recipient = {
+          raw: (await Keypair.generate()).publicKey.toBase58(),
+        };
+        const { totalFee } = await chain.nativeTransfers.estimateLegacyFee!({
+          wallet,
+          recipient,
+          value: 1_000_000n,
+        });
+        await chain.nativeTransfers.send({
+          wallet,
+          recipient,
+          value: 1_000_000n,
+          maxFee: totalFee,
+        });
+        const [limit] = budgetOf(connection.sentRaw[0]);
+        return {
+          totalFee,
+          units: ComputeBudgetInstruction.decodeSetComputeUnitLimit(limit).units,
+        };
+      };
 
-      const pool = new ChainUtxoPool();
-      pool.solana.registerDerivedAccount({
-        chain: "solana",
-        address: kp1.publicKey.toBase58(),
-        privateKey: Buffer.from(kp1.secretKey).toString("hex"),
-        balanceWei: 300_000_000n,
+      // 150,000 units * 10,000 micro-lamports = 1,500 lamports
+      await expect(send(150_000)).resolves.toEqual({
+        totalFee: 6_500n,
+        units: 150_000,
       });
-      pool.solana.registerDerivedAccount({
-        chain: "solana",
-        address: kp2.publicKey.toBase58(),
-        privateKey: Buffer.from(kp2.secretKey).toString("hex"),
-        balanceWei: 300_000_000n,
+      // A 15,000-unit limit would fail on chain and still be charged: the floor applies.
+      await expect(send(15_000)).resolves.toEqual({
+        totalFee: 5_700n,
+        units: SOLANA_NATIVE_TRANSFER_MIN_COMPUTE_UNITS,
       });
-
-      const connection = new MockRpcConnection({
-        withPrioritizationFees: [{ slot: 1, prioritizationFee: 10_000 }],
-      });
-      connection.balance = 10_000n;
-
-      const chain = createSolanaChain({
-        networkId: "solana-devnet",
-        genesisHash: connection.genesisHash,
-        connection,
-        deriveSigner: () => primaryKp,
-        nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
-        chainUtxoPool: pool,
-        computeBudget: {
-          computeUnitLimit: 15_000,
-        },
-      });
-
-      const wallet = await chain.createWallet({ mnemonic });
-      const result = await chain.nativeTransfers.sendLegacy!({
-        wallet,
-        recipient: { raw: recipientKp.publicKey.toBase58() },
-        value: 450_000_000n,
-      });
-
-      // 15,000 units * 10,000 micro-lamports = 150,000,000 micro-lamports = 150 lamports
-      expect(result.totalFeePaid).toBe(5_150n);
-      const tx = Transaction.from(connection.sentRaw[0]);
-      expect(
-        ComputeBudgetInstruction.decodeSetComputeUnitLimit(tx.instructions[0])
-      ).toEqual({ units: 15_000 });
-      expect(
-        ComputeBudgetInstruction.decodeSetComputeUnitPrice(tx.instructions[1])
-      ).toEqual({ microLamports: 10_000n });
     });
   });
 

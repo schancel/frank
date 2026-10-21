@@ -6,6 +6,7 @@ import {
   previewDirectoryContext,
   toHex,
   validateFrame,
+  DIRECTORY_ATTESTATION,
   TYPE_DIRECTORY_ATTESTATION,
   TYPE_DIRECTORY_STATEMENT,
 } from '@frank/codec'
@@ -91,7 +92,9 @@ function candidate(bytes: Uint8Array): Candidate {
     !(parsed.payload instanceof Map)
   )
     throw new Error('Directory attestation required')
-  const statement = parsed.payload.get(0n)
+  const statement = parsed.payload.get(
+    BigInt(DIRECTORY_ATTESTATION.statementFrame),
+  )
   if (!(statement instanceof Uint8Array))
     throw new Error('Exact embedded statement required')
   const child = frame(statement)

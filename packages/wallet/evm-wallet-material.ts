@@ -47,6 +47,14 @@ import {
   MAX_DIRECTORY_VALIDITY_NS,
   TYPE_DIRECTORY_STATEMENT,
   TYPE_DIRECTORY_ATTESTATION,
+  ACCOUNT_REF,
+  DIRECTORY_ATTESTATION,
+  DIRECTORY_STATEMENT,
+  KEY_TYPE,
+  RELAY_BINDING,
+  SIGNATURE_ALGORITHM,
+  SIGNATURE_ENTRY,
+  TIMESTAMP,
 } from '@frank/codec'
 import {
   seal,
@@ -57,6 +65,8 @@ import {
   selfOpenKeyFromRoot,
   selfOpenKeyFromBip39Seed,
   SUITE_AUTH_XCHACHA,
+  ENVELOPE_FIELDS,
+  ENVELOPE_VERSION,
 } from '@frank/crypto-box'
 import type { SuiteResult } from '@frank/crypto-box'
 import {
@@ -208,15 +218,16 @@ function roleOwner(
       throw new Error('canonical-roles:identity-mismatch')
     const account = (key: Uint8Array) =>
       cborMap([
-        [0, 1],
-        [1, key],
+        [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+        [ACCOUNT_REF.keyBytes, key],
       ])
     const time = (t: { seconds: bigint; nanoseconds: number }) =>
       cborMap([
-        [0, t.seconds],
-        [1, t.nanoseconds],
+        [TIMESTAMP.seconds, t.seconds],
+        [TIMESTAMP.nanoseconds, t.nanoseconds],
       ])
     const tuple = owned.relay
+    const S = DIRECTORY_STATEMENT
     const statement = encodeFrame(
       {
         typeId: TYPE_DIRECTORY_STATEMENT,
@@ -224,27 +235,27 @@ function roleOwner(
         minReaderVersion: 4,
       },
       cborMap([
-        [0, owned.network],
-        [1, account(auth.compressedPoint)],
-        [2, revision],
-        [3, time(owned.issuedAt)],
+        [S.network, owned.network],
+        [S.subject, account(auth.compressedPoint)],
+        [S.revision, revision],
+        [S.timestamp, time(owned.issuedAt)],
         [
-          4,
+          S.relays,
           [
             cborMap([
-              [0, tuple.relayId],
-              [1, tuple.endpoint],
-              [2, account(tuple.identity.keyBytes)],
-              [3, time(tuple.expiry)],
+              [RELAY_BINDING.relayId, tuple.relayId],
+              [RELAY_BINDING.endpoint, tuple.endpoint],
+              [RELAY_BINDING.identity, account(tuple.identity.keyBytes)],
+              [RELAY_BINDING.expiry, time(tuple.expiry)],
             ]),
           ],
         ],
-        [6, time(owned.expiresAt)],
-        [8, account(stamp.compressedPoint)],
-        [10, account(message.compressedPoint)],
-        [11, 0],
-        [12, 0],
-        [13, predecessor],
+        [S.expiry, time(owned.expiresAt)],
+        [S.stampKey, account(stamp.compressedPoint)],
+        [S.messageDhKey, account(message.compressedPoint)],
+        [S.mailboxKeyGeneration, 0],
+        [S.stampKeyGeneration, 0],
+        [S.predecessorHash, predecessor],
       ]),
     )
     const digest = directorySignatureDigest(owned.network, statement)
@@ -266,18 +277,22 @@ function roleOwner(
         minReaderVersion: 1,
       },
       cborMap([
-        [0, statement],
+        [DIRECTORY_ATTESTATION.statementFrame, statement],
         [
-          1,
+          DIRECTORY_ATTESTATION.signatures,
           [
             cborMap([
-              [0, 1],
-              [1, account(auth.compressedPoint)],
-              [2, signature],
+              [
+                SIGNATURE_ENTRY.algorithm,
+                SIGNATURE_ALGORITHM.secp256k1EcdsaDer,
+              ],
+              [SIGNATURE_ENTRY.signer, account(auth.compressedPoint)],
+              [SIGNATURE_ENTRY.signature, signature],
             ]),
           ],
         ],
       ]),
+
     )
     const evidence = verifyCachedEvidence(attestation, owned.network)
     if (
@@ -599,8 +614,10 @@ function roleOwner(
             const envelope = decodeCanonical(ownedEnvelope)
             if (
               !(envelope instanceof Map) ||
-              envelope.get(0n) !== 2n ||
-              envelope.get(1n) !== 1n
+              envelope.get(BigInt(ENVELOPE_FIELDS.version)) !==
+                BigInt(ENVELOPE_VERSION) ||
+              envelope.get(BigInt(ENVELOPE_FIELDS.suite)) !==
+                BigInt(SUITE_AUTH_XCHACHA)
             )
               return {
                 ok: false as const,
@@ -629,8 +646,10 @@ function roleOwner(
             const envelope = decodeCanonical(ownedEnvelope)
             if (
               !(envelope instanceof Map) ||
-              envelope.get(0n) !== 2n ||
-              envelope.get(1n) !== 1n
+              envelope.get(BigInt(ENVELOPE_FIELDS.version)) !==
+                BigInt(ENVELOPE_VERSION) ||
+              envelope.get(BigInt(ENVELOPE_FIELDS.suite)) !==
+                BigInt(SUITE_AUTH_XCHACHA)
             )
               return {
                 ok: false as const,

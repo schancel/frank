@@ -2,6 +2,7 @@
 // This is deliberately not a general CBOR implementation.
 
 import {
+  ENVELOPE_FIELDS,
   ENC_LENGTH,
   ENVELOPE_VERSION,
   LEGACY_ENVELOPE_VERSION,
@@ -65,17 +66,17 @@ export function encodeEnvelope(
 ): Uint8Array {
   const fields = [
     head(5, MAP_SIZE),
-    head(0, 0),
+    head(0, ENVELOPE_FIELDS.version),
     head(0, ENVELOPE_VERSION),
-    head(0, 1),
+    head(0, ENVELOPE_FIELDS.suite),
     head(0, suiteId),
-    head(0, 2),
+    head(0, ENVELOPE_FIELDS.kem),
     head(0, kemId),
-    head(0, 3),
+    head(0, ENVELOPE_FIELDS.salt),
     encodedLength(2, salt),
-    head(0, 4),
+    head(0, ENVELOPE_FIELDS.enc),
     encodedLength(2, enc),
-    head(0, 5),
+    head(0, ENVELOPE_FIELDS.ciphertext),
     encodedLength(2, ciphertext),
   ]
   let length = 0
@@ -168,17 +169,20 @@ function decodeCborEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
   if (bytes.length > MAX_ENVELOPE) return null
   const reader = new Reader(bytes)
   if (!reader.readExact(0xa0 | MAP_SIZE)) return null
-  if (!reader.readExact(0)) return null
+  // Keys 0..23 encode as one CBOR head byte equal to the key.
+  if (!reader.readExact(ENVELOPE_FIELDS.version)) return null
   const version = reader.readUint(0)
-  if (!reader.readExact(1)) return null
+  if (!reader.readExact(ENVELOPE_FIELDS.suite)) return null
   const suiteId = reader.readUint(0)
-  if (!reader.readExact(2)) return null
+  if (!reader.readExact(ENVELOPE_FIELDS.kem)) return null
   const kemId = reader.readUint(0)
-  if (!reader.readExact(3)) return null
+  if (!reader.readExact(ENVELOPE_FIELDS.salt)) return null
+
   const salt = reader.readBytes(SALT_LENGTH, SALT_LENGTH)
-  if (!reader.readExact(4)) return null
+  if (!reader.readExact(ENVELOPE_FIELDS.enc)) return null
   const enc = reader.readBytes(ENC_LENGTH, ENC_LENGTH)
-  if (!reader.readExact(5)) return null
+  if (!reader.readExact(ENVELOPE_FIELDS.ciphertext)) return null
+
   const ciphertext = reader.readBytes(null, MAX_CIPHERTEXT)
   if (
     version !== ENVELOPE_VERSION ||

@@ -26,6 +26,14 @@ import {
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import {
+  ACCOUNT_REF,
+  DIRECT_MESSAGE_DELIVERY,
+  KEY_TYPE,
+  MESSAGE_CONTENT_REVISION,
+  PAYMENT_MEMBER,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   cborMap,
   decodeDirectMessageCryptoContext,
   encodeFrame,
@@ -827,25 +835,26 @@ function sealUnpaid(
     roles.dispose()
   }
   const payload = parseFrame(sealed.payload)
-  if (payload.kind !== 'parsed' || payload.typed?.type !== 5)
+  if (payload.kind !== 'parsed' || payload.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
     throw new Error('canonical-wallet:payload-required')
   const digest = recipientPayloadDigest(directory.network, sealed.payload)
   const account = (ref: { keyType: number; keyBytes: Uint8Array }) =>
     cborMap([
-      [0, ref.keyType],
-      [1, ref.keyBytes],
+      [ACCOUNT_REF.keyType, ref.keyType],
+      [ACCOUNT_REF.keyBytes, ref.keyBytes],
     ])
   // The paid delivery's fields in the same order, without payment members.
+  const D = DIRECT_MESSAGE_DELIVERY
   const delivery = encodeFrame(
-    { typeId: 1, schemaVersion: 2, minReaderVersion: 1 },
+    { typeId: TYPE_DIRECT_MESSAGE_DELIVERY, schemaVersion: 2, minReaderVersion: 1 },
     cborMap([
-      [0, directory.network],
-      [1, account(decodeDirectMessageCryptoContext(sealed.context).stampKey)],
-      [2, sealed.payload],
-      [3, digest],
-      [4, []],
-      [5, account(payload.typed.recipient)],
-      [6, payload.typed.dleqProof],
+      [D.network, directory.network],
+      [D.destination, account(decodeDirectMessageCryptoContext(sealed.context).stampKey)],
+      [D.payloadFrame, sealed.payload],
+      [D.payloadDigest, digest],
+      [D.payments, []],
+      [D.recipient, account(payload.typed.recipient)],
+      [D.dleqProof, payload.typed.dleqProof],
     ]),
   )
   const boundary = `frank-${toHex(randomBytes(24))}`
@@ -875,38 +884,40 @@ function freezePaidMessage(
   )
   const payments = rawTransactions.map((rawTx, i) => {
     const tx = Transaction.from(rawTx)
+    const M = PAYMENT_MEMBER
     const entries: [number, Encodable][] = [
-      [0, i],
-      [1, getBytes(tx.hash!)],
-      [2, getBytes('0x' + tx.value.toString(16).padStart(64, '0'))],
-      [3, getBytes(tx.to!)],
-      [4, paymentCommitment(digest, i)],
-      [6, getBytes(rawTx)],
+      [M.childIndex, i],
+      [M.transactionId, getBytes(tx.hash!)],
+      [M.value, getBytes('0x' + tx.value.toString(16).padStart(64, '0'))],
+      [M.address, getBytes(tx.to!)],
+      [M.commitment, paymentCommitment(digest, i)],
+      [M.rawTx, getBytes(rawTx)],
     ]
     return cborMap(entries)
   })
+  const D = DIRECT_MESSAGE_DELIVERY
   const delivery = encodeFrame(
-    { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: TYPE_DIRECT_MESSAGE_DELIVERY, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([
-      [0, network],
+      [D.network, network],
       [
-        1,
+        D.destination,
         cborMap([
-          [0, 1],
-          [1, inspected.stampKey.keyBytes],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, inspected.stampKey.keyBytes],
         ]),
       ],
-      [2, sealed.payload],
-      [3, digest],
-      [4, payments],
+      [D.payloadFrame, sealed.payload],
+      [D.payloadDigest, digest],
+      [D.payments, payments],
       [
-        5,
+        D.recipient,
         cborMap([
-          [0, inspected.payload.recipient.keyType],
-          [1, inspected.payload.recipient.keyBytes],
+          [ACCOUNT_REF.keyType, inspected.payload.recipient.keyType],
+          [ACCOUNT_REF.keyBytes, inspected.payload.recipient.keyBytes],
         ]),
       ],
-      [6, inspected.payload.dleqProof],
+      [D.dleqProof, inspected.payload.dleqProof],
     ]),
   )
   return freezeCanonicalRequest(
@@ -1434,7 +1445,7 @@ async function validateOriginalEnvelope(
   > & { messageId: string },
 ): Promise<void> {
   const delivery = parseFrame(fromHex(envelope.delivery))
-  if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+  if (delivery.kind !== 'parsed' || delivery.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY)
     throw new Error('Invalid original delivery')
   const payload = delivery.typed.payloadFrame.typed
   if (
@@ -2016,7 +2027,7 @@ async function send(
     const digestBytes = recipientPayloadDigest(directory.network, sealed.payload)
     const digest = toHex(digestBytes)
     const payload = parseFrame(sealed.payload)
-    if (payload.kind !== 'parsed' || payload.typed?.type !== 5)
+    if (payload.kind !== 'parsed' || payload.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
       throw new Error('canonical-wallet:payload-required')
     const sharedPoint = payload.typed.sharedPoint
     const stampKey = {
@@ -2449,16 +2460,16 @@ export function projectOutboxMessageRecord(
       const rawFrames = outboxItem.itemFrames.map(fromHex)
       const revisionFrame = validateFrame(
         encodeFrame(
-          { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+          { typeId: TYPE_MESSAGE_CONTENT_REVISION, schemaVersion: 1, minReaderVersion: 1 },
           new Map<number, Encodable>([
-            [0, 'frank'],
-            [1, rawFrames],
+            [MESSAGE_CONTENT_REVISION.network, 'frank'],
+            [MESSAGE_CONTENT_REVISION.items, rawFrames],
           ]),
         ),
       )
       if (
         revisionFrame.kind === 'parsed' &&
-        revisionFrame.typed?.type === 8
+        revisionFrame.typed?.type === TYPE_MESSAGE_CONTENT_REVISION
       ) {
         decodedItems = decodeItemFrames(
           registry,
@@ -2695,7 +2706,7 @@ async function readMailbox(
         startedDecoding = true
       }
       const delivery = parseFrame(record.delivery)
-      if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1) continue
+      if (delivery.kind !== 'parsed' || delivery.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY) continue
       const deliveryTyped = delivery.typed
       const payload = deliveryTyped.payloadFrame.typed
       if (payload?.type !== 5) continue
@@ -3133,7 +3144,7 @@ export function canonicalDirectMessages(
               if (!active) return
               try {
                 const delivery = parseFrame(record.delivery)
-                if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+                if (delivery.kind !== 'parsed' || delivery.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY)
                   return
                 const deliveryTyped = delivery.typed
                 const payload = deliveryTyped.payloadFrame.typed

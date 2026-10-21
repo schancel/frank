@@ -362,20 +362,34 @@ def cddl_problems(root: Path, structs: list[Struct]) -> list[str]:
 # ---------------------------------------------------------------------------------------------
 # Raw-literal lint: map keys and type ids in protocol code come from generated constants.
 
-# Directories whose non-test source must not spell a map key or type id as a number literal.
+# Codec cores: non-test source must not spell a map key or type id as a number literal anywhere.
 LINT_ROOTS: list[str] = [
     "packages/frank-codec/src/",
     "backend/cashweb/frank-cbor/src/",
 ]
+# Protocol consumers: only files that handle Frank-CBOR values are checked, and only with the
+# map-specific patterns, because these trees also hold JSON-RPC, EVM, Solana and UTXO code whose
+# small integer arrays and transaction `type` fields are not Frank-CBOR keys.
+CONSUMER_ROOTS: list[str] = [
+    "packages/cashweb/relay/",
+    "packages/cashweb/message-items/",
+    "packages/group-messaging/",
+    "packages/wallet/",
+    "backend/cashweb/cashweb-registry/src/",
+]
+TS_CBOR_MARK = re.compile(r"\.(?:get|has|set)\(\s*\d+n\s*[,)]|\bcborMap\b|\b(?:de|en)codeCanonical\b|\bFrankValue\b|\bencodeFrame\b")
+RUST_CBOR_MARK = re.compile(r"\bCborValue\b|\bcbor_map\b")
 LINT_SKIP = {str(TS_FIELDS_OUT), str(RUST_FIELDS_OUT)}
 ALLOW_MARK = "raw-cbor-key:"
 
 TS_PATTERNS = [
     (re.compile(r"\.(?:get|has|delete)\(\s*\d+n?\s*\)"), "map key literal in .get/.has"),
+    (re.compile(r"\.set\(\s*\d+n?\s*,"), "map key literal in .set"),
     (re.compile(r"\bfields\(\s*[^,]+,\s*[^,]+,\s*\[\s*\d"), "fields() key list literal"),
     (re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}\.\d"), "field path literal `${P}.<n>`"),
     (re.compile(r"\[\s*\d+n?\s*,\s*(?![\d\]])"), "map entry literal `[<n>, value]`"),
     (re.compile(r"\b(?:typeId|type|type_id)\s*[!=]==?\s*\d"), "type id literal comparison"),
+    (re.compile(r"\btypeId\s*:\s*\d"), "type id literal in frame fields"),
 ]
 RUST_PATTERNS = [
     (re.compile(r"\b(?:map_field|get_field|field)\(\s*[^,()]+,\s*\d+\s*\)"), "map key literal"),
@@ -383,8 +397,28 @@ RUST_PATTERNS = [
     (re.compile(r"\bfields\(\s*[^,]+,\s*[^,]+,\s*&\[\s*\d"), "fields() key list literal"),
     (re.compile(r"\{path\}\.\d"), "field path literal `{path}.<n>`"),
     (re.compile(r"\(\s*\d+\s*,\s*CborValue::"), "map entry literal `(<n>, CborValue::…)`"),
+    (re.compile(r"\.push\(\(\s*\d+\s*,"), "map entry literal `.push((<n>, …))`"),
     (re.compile(r"\btype_id\s*[!=]=\s*\d"), "type id literal comparison"),
+    (re.compile(r"\btype_id\s*:\s*\d"), "type id literal in frame fields"),
 ]
+# Inside a map literal (`cbor_map(vec![…])`, `CborValue::Map(vec![…])` in Rust; `cborMap([…])`,
+# `new Map([…])` in TypeScript) any `(<n>, …)` / `[<n>, …]` entry is a key literal.
+RUST_MAP_OPEN = re.compile(r"(?:cbor_map|CborValue::Map)\(\s*vec!\[")
+TS_MAP_OPEN = re.compile(
+    r"(?:cborMap|new Map(?:<[^>]*>)?)\(\s*\[|Array<\[(?:number|bigint)\b[^=]*=\s*\[|\[(?:number|bigint), [^\]]*\]\[\]\s*=\s*\["
+)
+TS_MAP_ENTRY = re.compile(r"\[\s*\d+n?\s*,")
+TS_PUSH_ENTRY = re.compile(r"\.(?:push|unshift)\(\s*\[\s*\d+n?\s*,")
+# Patterns applied to consumer files, which must not trip on non-CBOR arrays or EVM `type`.
+TS_CONSUMER_PATTERNS = [p for p in TS_PATTERNS if p[1] not in ("map entry literal `[<n>, value]`", "type id literal comparison")] + [
+    (re.compile(r"\b(?:typeId|type_id)\s*[!=]==?\s*\d"), "type id literal comparison"),
+    (re.compile(r"\btyped\??\.type\s*[!=]==?\s*\d"), "type id literal comparison"),
+    (re.compile(r"\btypeId\s*:\s*\d"), "type id literal in frame fields"),
+    (TS_PUSH_ENTRY, "map entry literal `.push([<n>, …])`"),
+]
+RUST_MAP_ENTRY = re.compile(r"\(\s*\d+\s*,")
+# A key alone on its line, directly after the line that opens the entry (`[` or `(`).
+OWN_LINE_KEY = re.compile(r"^\s*\d+n?\s*,\s*$")
 TEST_RE = re.compile(r"(^|/)(tests?|fixtures)/|\.test\.|testutil|_tests\.rs$")
 
 
@@ -409,31 +443,67 @@ def _rust_test_ranges(text: str) -> list[tuple[int, int]]:
 def raw_literal_problems(root: Path, files: list[str]) -> list[str]:
     problems = []
     for rel in files:
-        if rel in LINT_SKIP or not any(rel.startswith(r) for r in LINT_ROOTS) or TEST_RE.search(rel):
+        if rel in LINT_SKIP or TEST_RE.search(rel) or not rel.endswith((".ts", ".rs")):
             continue
-        if rel.endswith(".ts"):
-            patterns = TS_PATTERNS
-        elif rel.endswith(".rs"):
-            patterns = RUST_PATTERNS
-        else:
+        core = any(rel.startswith(r) for r in LINT_ROOTS)
+        if not core and not any(rel.startswith(r) for r in CONSUMER_ROOTS):
             continue
         path = root / rel
         if not path.is_file():
             continue
         text = path.read_text()
-        tests = _rust_test_ranges(text) if rel.endswith(".rs") else []
+        rust = rel.endswith(".rs")
+        if not core and not (RUST_CBOR_MARK if rust else TS_CBOR_MARK).search(text):
+            continue
+        patterns = RUST_PATTERNS if rust else (TS_PATTERNS if core else TS_CONSUMER_PATTERNS)
+        tests = _rust_test_ranges(text) if rust else []
         lines = text.splitlines()
+        in_map = _map_literal_lines(lines, RUST_MAP_OPEN if rust else TS_MAP_OPEN)
         offset = 0
+        previous = ""
         for n, line in enumerate(lines, 1):
             start = offset
             offset += len(line) + 1
             code = re.split(r"//", line, maxsplit=1)[0]
-            if not code.strip() or any(a <= start <= b for a, b in tests):
+            if not code.strip() or re.match(r"\s*(?:\*|/\*)", code):
+                continue
+            prior, previous = previous, code.rstrip()
+            if any(a <= start <= b for a, b in tests):
                 continue
             if ALLOW_MARK in line or (n > 1 and ALLOW_MARK in lines[n - 2]):
                 continue
-            for pattern, what in patterns:
-                if pattern.search(code):
-                    problems.append(f"{rel}:{n}: {what}; use the generated constant ({line.strip()})")
-                    break
+            found = [what for pattern, what in patterns if pattern.search(code)]
+            entry = RUST_MAP_ENTRY if rust else TS_MAP_ENTRY
+            if n in in_map and entry.search(code) and not found:
+                found.append("map entry literal in a map literal")
+            if OWN_LINE_KEY.match(code) and prior.endswith(("[", "(")) and n in in_map:
+                found.append("map key literal on its own line")
+            for what in found:
+                problems.append(f"{rel}:{n}: {what}; use the generated constant ({line.strip()})")
     return problems
+
+
+def _map_literal_lines(lines: list[str], opener: re.Pattern) -> set[int]:
+    """1-based line numbers inside a map literal's entry list."""
+
+    inside: set[int] = set()
+    depth = 0
+    for n, line in enumerate(lines, 1):
+        code = re.split(r"//", line, maxsplit=1)[0]
+        if depth > 0:
+            inside.add(n)
+        m = opener.search(code)
+        if m and depth == 0:
+            depth = 1
+            tail = code[m.end():]
+            inside.add(n)
+        else:
+            tail = code if depth > 0 else ""
+        for ch in tail:
+            if ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    break
+    return inside

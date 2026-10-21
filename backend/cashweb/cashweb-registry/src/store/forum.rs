@@ -1,6 +1,10 @@
 //! Private canonical Forum authority. Callers serialize access with the Forum owner lock.
 use std::path::{Path, PathBuf};
 
+use frank_cbor::message_fields::{
+    forum_discovery_row, forum_observation_row, forum_observation_state, forum_pending_accounting,
+    forum_post_row, forum_store_header, forum_store_row_version, timestamp as time_fields,
+};
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue, Timestamp};
 use rocksdb::{Direction, IteratorMode, Options, WriteBatch, WriteOptions};
 use thiserror::Error;
@@ -43,8 +47,11 @@ pub(crate) fn invalid(error: impl std::fmt::Display) -> ForumError {
 
 pub(crate) fn time_value(time: Timestamp) -> CborValue {
     cbor_map(vec![
-        (0, CborValue::Int(time.seconds.into())),
-        (1, CborValue::Int(time.nanoseconds.into())),
+        (time_fields::SECONDS, CborValue::Int(time.seconds.into())),
+        (
+            time_fields::NANOSECONDS,
+            CborValue::Int(time.nanoseconds.into()),
+        ),
     ])
 }
 
@@ -88,11 +95,11 @@ fn bytes(value: &CborValue) -> Result<&[u8]> {
 }
 
 fn timestamp(value: &CborValue) -> Result<Timestamp> {
-    closed(value, &[0, 1])?;
-    let CborValue::Int(seconds) = field(value, 0)? else {
+    closed(value, time_fields::SHAPE.required)?;
+    let CborValue::Int(seconds) = field(value, time_fields::SECONDS)? else {
         return Err(ForumError::Unavailable);
     };
-    let nanos = uint(field(value, 1)?)?;
+    let nanos = uint(field(value, time_fields::NANOSECONDS)?)?;
     if nanos > 999_999_999 {
         return Err(ForumError::Unavailable);
     }
@@ -190,20 +197,31 @@ impl Observation {
         }
     }
     fn value(&self) -> CborValue {
+        use forum_observation_row as R;
         let mut fields = vec![
-            (0, CborValue::Int(1)),
-            (1, CborValue::Bytes(self.frame().to_vec())),
-            (2, time_value(self.first_seen)),
             (
-                3,
-                CborValue::Int(if self.confirmed.is_some() { 2 } else { 1 }),
+                R::VERSION,
+                CborValue::Int(forum_store_row_version::V1.into()),
+            ),
+            (R::FRAME, CborValue::Bytes(self.frame().to_vec())),
+            (R::FIRST_SEEN, time_value(self.first_seen)),
+            (
+                R::STATE,
+                CborValue::Int(
+                    if self.confirmed.is_some() {
+                        forum_observation_state::CONFIRMED
+                    } else {
+                        forum_observation_state::PENDING
+                    }
+                    .into(),
+                ),
             ),
         ];
         if let Some((block, index, visible)) = self.confirmed {
             fields.extend([
-                (4, CborValue::Int(block.into())),
-                (5, CborValue::Int(index.into())),
-                (6, time_value(visible)),
+                (R::BLOCK, CborValue::Int(block.into())),
+                (R::TRANSACTION_INDEX, CborValue::Int(index.into())),
+                (R::VISIBLE, time_value(visible)),
             ]);
         }
         cbor_map(fields)
@@ -232,34 +250,58 @@ pub(crate) struct Post {
 
 impl Post {
     fn value(&self) -> CborValue {
+        use forum_post_row as R;
         let mut fields = vec![
-            (0, CborValue::Int(1)),
-            (1, CborValue::Bytes(self.frame.clone())),
-            (4, CborValue::Bool(self.aggregate.negative)),
-            (5, CborValue::Bytes(self.aggregate.magnitude.0.to_vec())),
-            (6, CborValue::Bytes(self.reserved_up.0.to_vec())),
-            (7, CborValue::Bytes(self.reserved_down.0.to_vec())),
-            (8, CborValue::Text(self.topic.clone())),
+            (
+                R::VERSION,
+                CborValue::Int(forum_store_row_version::V1.into()),
+            ),
+            (R::FRAME, CborValue::Bytes(self.frame.clone())),
+            (R::NEGATIVE, CborValue::Bool(self.aggregate.negative)),
+            (
+                R::MAGNITUDE,
+                CborValue::Bytes(self.aggregate.magnitude.0.to_vec()),
+            ),
+            (
+                R::RESERVED_UP,
+                CborValue::Bytes(self.reserved_up.0.to_vec()),
+            ),
+            (
+                R::RESERVED_DOWN,
+                CborValue::Bytes(self.reserved_down.0.to_vec()),
+            ),
+            (R::TOPIC, CborValue::Text(self.topic.clone())),
         ];
         if let (Some(author), Some(visible)) = (self.author, self.visible) {
             fields.extend([
-                (2, CborValue::Bytes(author.to_vec())),
-                (3, time_value(visible)),
+                (R::AUTHOR, CborValue::Bytes(author.to_vec())),
+                (R::VISIBLE, time_value(visible)),
             ]);
         }
         cbor_map(fields)
     }
     fn parse(value: &CborValue) -> Result<Self> {
-        let known = field(value, 2).is_ok();
+        use forum_post_row as R;
+        let known = field(value, R::AUTHOR).is_ok();
         closed(
             value,
             if known {
-                &[0, 1, 2, 3, 4, 5, 6, 7, 8]
+                &[
+                    R::VERSION,
+                    R::FRAME,
+                    R::AUTHOR,
+                    R::VISIBLE,
+                    R::NEGATIVE,
+                    R::MAGNITUDE,
+                    R::RESERVED_UP,
+                    R::RESERVED_DOWN,
+                    R::TOPIC,
+                ]
             } else {
-                &[0, 1, 4, 5, 6, 7, 8]
+                R::SHAPE.required
             },
         )?;
-        if uint(field(value, 0)?)? != 1 {
+        if uint(field(value, R::VERSION)?)? != u64::from(forum_store_row_version::V1) {
             return Err(ForumError::Unavailable);
         }
         let mag = |k| -> Result<Magnitude> {
@@ -269,10 +311,10 @@ impl Post {
                     .map_err(|_| ForumError::Unavailable)?,
             ))
         };
-        let CborValue::Bool(negative) = field(value, 4)? else {
+        let CborValue::Bool(negative) = field(value, R::NEGATIVE)? else {
             return Err(ForumError::Unavailable);
         };
-        let CborValue::Text(topic) = field(value, 8)? else {
+        let CborValue::Text(topic) = field(value, R::TOPIC)? else {
             return Err(ForumError::Unavailable);
         };
         let magnitude = mag(5)?;
@@ -280,11 +322,11 @@ impl Post {
             return Err(ForumError::Unavailable);
         }
         Ok(Self {
-            frame: bytes(field(value, 1)?)?.to_vec(),
+            frame: bytes(field(value, R::FRAME)?)?.to_vec(),
             topic: topic.clone(),
             author: if known {
                 Some(
-                    bytes(field(value, 2)?)?
+                    bytes(field(value, R::AUTHOR)?)?
                         .try_into()
                         .map_err(|_| ForumError::Unavailable)?,
                 )
@@ -292,7 +334,7 @@ impl Post {
                 None
             },
             visible: if known {
-                Some(timestamp(field(value, 3)?)?)
+                Some(timestamp(field(value, R::VISIBLE)?)?)
             } else {
                 None
             },
@@ -351,10 +393,19 @@ impl Store {
         options.create_if_missing(!exists);
         let db = rocksdb::DB::open(&options, path).map_err(|_| ForumError::Unavailable)?;
         let header = encode(&cbor_map(vec![
-            (0, CborValue::Int(1)),
-            (1, CborValue::Text(network.into())),
-            (2, CborValue::Int(policy.expected_chain_id.into())),
-            (3, CborValue::Bytes(policy.burn_address.0.to_vec())),
+            (
+                forum_store_header::VERSION,
+                CborValue::Int(forum_store_row_version::V1.into()),
+            ),
+            (forum_store_header::NETWORK, CborValue::Text(network.into())),
+            (
+                forum_store_header::CHAIN_ID,
+                CborValue::Int(policy.expected_chain_id.into()),
+            ),
+            (
+                forum_store_header::BURN_ADDRESS,
+                CborValue::Bytes(policy.burn_address.0.to_vec()),
+            ),
         ]))?;
         let mut store = Self {
             db,
@@ -419,20 +470,32 @@ impl Store {
         Ok(())
     }
     fn decode_observation(&self, hash: &[u8], value: &[u8]) -> Result<Observation> {
+        use forum_observation_row as R;
         let map = decode(value)?;
-        let state = uint(field(&map, 3)?)?;
+        let state = uint(field(&map, R::STATE)?)?;
+        let confirmed = state == u64::from(forum_observation_state::CONFIRMED);
         closed(
             &map,
-            if state == 2 {
-                &[0, 1, 2, 3, 4, 5, 6]
+            if confirmed {
+                &[
+                    R::VERSION,
+                    R::FRAME,
+                    R::FIRST_SEEN,
+                    R::STATE,
+                    R::BLOCK,
+                    R::TRANSACTION_INDEX,
+                    R::VISIBLE,
+                ]
             } else {
-                &[0, 1, 2, 3]
+                R::SHAPE.required
             },
         )?;
-        if uint(field(&map, 0)?)? != 1 || !(1..=2).contains(&state) {
+        if uint(field(&map, R::VERSION)?)? != u64::from(forum_store_row_version::V1)
+            || !(state == u64::from(forum_observation_state::PENDING) || confirmed)
+        {
             return Err(ForumError::Unavailable);
         }
-        let event = parse_topic_event(bytes(field(&map, 1)?)?, &self.network)
+        let event = parse_topic_event(bytes(field(&map, R::FRAME)?)?, &self.network)
             .map_err(|_| ForumError::Unavailable)?;
         if matches!(&event, TopicEvent::Post(p) if p.schema_version < 2) {
             return Err(ForumError::Unavailable);
@@ -447,12 +510,12 @@ impl Store {
         Ok(Observation {
             event,
             checked,
-            first_seen: timestamp(field(&map, 2)?)?,
-            confirmed: if state == 2 {
+            first_seen: timestamp(field(&map, R::FIRST_SEEN)?)?,
+            confirmed: if confirmed {
                 Some((
-                    uint(field(&map, 4)?)?,
-                    uint(field(&map, 5)?)?,
-                    timestamp(field(&map, 6)?)?,
+                    uint(field(&map, R::BLOCK)?)?,
+                    uint(field(&map, R::TRANSACTION_INDEX)?)?,
+                    timestamp(field(&map, R::VISIBLE)?)?,
                 ))
             } else {
                 None
@@ -488,9 +551,18 @@ impl Store {
         batch.put(
             b"q",
             encode(&cbor_map(vec![
-                (0, CborValue::Int(1)),
-                (1, CborValue::Int(count.into())),
-                (2, CborValue::Int(bytes.into())),
+                (
+                    forum_pending_accounting::VERSION,
+                    CborValue::Int(forum_store_row_version::V1.into()),
+                ),
+                (
+                    forum_pending_accounting::COUNT,
+                    CborValue::Int(count.into()),
+                ),
+                (
+                    forum_pending_accounting::BYTES,
+                    CborValue::Int(bytes.into()),
+                ),
             ]))?,
         );
         Ok(())
@@ -539,7 +611,7 @@ impl Store {
                 let map = decode(&value)?;
                 // Conservative headroom for every pending operation: a count may
                 // never overflow after its newly admitted post has already burned.
-                uint(field(&map, 1)?)?
+                uint(field(&map, forum_discovery_row::COUNT)?)?
                     .checked_add(self.pending_count)
                     .and_then(|v| v.checked_add(1))
                     .ok_or(ForumError::Capacity)?;
@@ -603,12 +675,17 @@ impl Store {
                 let discovery_key = key(b'd', post.topic.as_bytes());
                 let (count, last) = match self.get(&discovery_key)? {
                     Some(v) => {
+                        use forum_discovery_row as D;
                         let map = decode(&v)?;
-                        closed(&map, &[0, 1, 2])?;
-                        if uint(field(&map, 0)?)? != 1 {
+                        closed(&map, D::SHAPE.required)?;
+                        if uint(field(&map, D::VERSION)?)? != u64::from(forum_store_row_version::V1)
+                        {
                             return Err(ForumError::Unavailable);
                         }
-                        (uint(field(&map, 1)?)?, timestamp(field(&map, 2)?)?)
+                        (
+                            uint(field(&map, D::COUNT)?)?,
+                            timestamp(field(&map, D::LAST_ACTIVITY)?)?,
+                        )
                     }
                     None => (0, visible),
                 };
@@ -621,9 +698,12 @@ impl Store {
                 batch.put(
                     discovery_key,
                     encode(&cbor_map(vec![
-                        (0, CborValue::Int(1)),
-                        (1, CborValue::Int(count.into())),
-                        (2, time_value(last)),
+                        (
+                            forum_discovery_row::VERSION,
+                            CborValue::Int(forum_store_row_version::V1.into()),
+                        ),
+                        (forum_discovery_row::COUNT, CborValue::Int(count.into())),
+                        (forum_discovery_row::LAST_ACTIVITY, time_value(last)),
                     ]))?,
                 );
                 let index_key =
@@ -796,12 +876,16 @@ impl Store {
         Ok(())
     }
     pub(crate) fn decode_discovery_entry(&self, value: &[u8]) -> Result<(u64, Timestamp)> {
+        use forum_discovery_row as D;
         let map = decode(value)?;
-        closed(&map, &[0, 1, 2])?;
-        if uint(field(&map, 0)?)? != 1 {
+        closed(&map, D::SHAPE.required)?;
+        if uint(field(&map, D::VERSION)?)? != u64::from(forum_store_row_version::V1) {
             return Err(ForumError::Unavailable);
         }
-        Ok((uint(field(&map, 1)?)?, timestamp(field(&map, 2)?)?))
+        Ok((
+            uint(field(&map, D::COUNT)?)?,
+            timestamp(field(&map, D::LAST_ACTIVITY)?)?,
+        ))
     }
     pub(crate) fn discovery_entry(&self, topic: &str) -> Result<Option<(u64, Timestamp)>> {
         let key = key(b'd', topic.as_bytes());

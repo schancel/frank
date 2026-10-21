@@ -300,6 +300,27 @@ export const BLACKJACK_ITEM_WELCOME_SHAPE: MapShape = {
   open: false,
 }
 
+/** `canonical-dm-message-row` field keys: One admitted canonical direct message with its frozen payment policy (cashweb-registry canonical message store; local RocksDB value, never on the wire). The policy is an 11-element array in the order network, chain id, minimum, sender P, recipient P, sender M, recipient M, stamp key, sender T1, recipient T1, payload hash. */
+export const CANONICAL_DM_MESSAGE_ROW = {
+  version: 0,
+  body: 1,
+  contentType: 2,
+  policy: 3,
+  deliveredAt: 4,
+} as const
+/** `canonical-dm-message-row` map shape. */
+export const CANONICAL_DM_MESSAGE_ROW_SHAPE: MapShape = {
+  required: [
+    CANONICAL_DM_MESSAGE_ROW.version,
+    CANONICAL_DM_MESSAGE_ROW.body,
+    CANONICAL_DM_MESSAGE_ROW.contentType,
+    CANONICAL_DM_MESSAGE_ROW.policy,
+    CANONICAL_DM_MESSAGE_ROW.deliveredAt,
+  ],
+  optional: [],
+  open: false,
+}
+
 /** `chain-allocation` field keys. */
 export const CHAIN_ALLOCATION = {
   networkTag: 0,
@@ -797,6 +818,23 @@ export const FORUM_DISCOVERY_PAGE_SHAPE: MapShape = {
   open: true,
 }
 
+/** `forum-discovery-row` field keys: Per-topic post count and last activity (cashweb-registry forum store; local RocksDB value, never on the wire). */
+export const FORUM_DISCOVERY_ROW = {
+  version: 0,
+  count: 1,
+  lastActivity: 2,
+} as const
+/** `forum-discovery-row` map shape. */
+export const FORUM_DISCOVERY_ROW_SHAPE: MapShape = {
+  required: [
+    FORUM_DISCOVERY_ROW.version,
+    FORUM_DISCOVERY_ROW.count,
+    FORUM_DISCOVERY_ROW.lastActivity,
+  ],
+  optional: [],
+  open: false,
+}
+
 /** `forum-entry` field keys: Every forum entry's discriminating field 0. */
 export const FORUM_ENTRY = {
   kind: 0,
@@ -840,6 +878,32 @@ export const FORUM_GAME_ENTRY_SHAPE: MapShape = {
   open: true,
 }
 
+/** `forum-observation-row` field keys: One observed topic post or vote burn, keyed by transaction hash (cashweb-registry forum store; local RocksDB value, never on the wire). */
+export const FORUM_OBSERVATION_ROW = {
+  version: 0,
+  frame: 1,
+  firstSeen: 2,
+  state: 3,
+  block: 4,
+  transactionIndex: 5,
+  visible: 6,
+} as const
+/** `forum-observation-row` map shape. */
+export const FORUM_OBSERVATION_ROW_SHAPE: MapShape = {
+  required: [
+    FORUM_OBSERVATION_ROW.version,
+    FORUM_OBSERVATION_ROW.frame,
+    FORUM_OBSERVATION_ROW.firstSeen,
+    FORUM_OBSERVATION_ROW.state,
+  ],
+  optional: [
+    FORUM_OBSERVATION_ROW.block,
+    FORUM_OBSERVATION_ROW.transactionIndex,
+    FORUM_OBSERVATION_ROW.visible,
+  ],
+  open: false,
+}
+
 /** `forum-operation-status` field keys. */
 export const FORUM_OPERATION_STATUS = {
   network: 0,
@@ -876,6 +940,23 @@ export const FORUM_OPERATION_STATUS_SHAPE: MapShape = {
   open: true,
 }
 
+/** `forum-pending-accounting` field keys: Pending-operation count and byte charge (cashweb-registry forum store; local RocksDB value, never on the wire). */
+export const FORUM_PENDING_ACCOUNTING = {
+  version: 0,
+  count: 1,
+  bytes: 2,
+} as const
+/** `forum-pending-accounting` map shape. */
+export const FORUM_PENDING_ACCOUNTING_SHAPE: MapShape = {
+  required: [
+    FORUM_PENDING_ACCOUNTING.version,
+    FORUM_PENDING_ACCOUNTING.count,
+    FORUM_PENDING_ACCOUNTING.bytes,
+  ],
+  optional: [],
+  open: false,
+}
+
 /** `forum-post-entry` field keys. */
 export const FORUM_POST_ENTRY = {
   kind: 0,
@@ -892,6 +973,33 @@ export const FORUM_POST_ENTRY_SHAPE: MapShape = {
     FORUM_POST_ENTRY.message,
   ],
   open: true,
+}
+
+/** `forum-post-row` field keys: Aggregate state of one forum post, keyed by post hash (cashweb-registry forum store; local RocksDB value, never on the wire). */
+export const FORUM_POST_ROW = {
+  version: 0,
+  frame: 1,
+  author: 2,
+  visible: 3,
+  negative: 4,
+  magnitude: 5,
+  reservedUp: 6,
+  reservedDown: 7,
+  topic: 8,
+} as const
+/** `forum-post-row` map shape. */
+export const FORUM_POST_ROW_SHAPE: MapShape = {
+  required: [
+    FORUM_POST_ROW.version,
+    FORUM_POST_ROW.frame,
+    FORUM_POST_ROW.negative,
+    FORUM_POST_ROW.magnitude,
+    FORUM_POST_ROW.reservedUp,
+    FORUM_POST_ROW.reservedDown,
+    FORUM_POST_ROW.topic,
+  ],
+  optional: [FORUM_POST_ROW.author, FORUM_POST_ROW.visible],
+  open: false,
 }
 
 /** `forum-single-view` field keys. */
@@ -925,6 +1033,25 @@ export const FORUM_SINGLE_VIEW_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+}
+
+/** `forum-store-header` field keys: Forum store header binding the database to its network and burn policy (cashweb-registry forum store; local RocksDB value, never on the wire). */
+export const FORUM_STORE_HEADER = {
+  version: 0,
+  network: 1,
+  chainId: 2,
+  burnAddress: 3,
+} as const
+/** `forum-store-header` map shape. */
+export const FORUM_STORE_HEADER_SHAPE: MapShape = {
+  required: [
+    FORUM_STORE_HEADER.version,
+    FORUM_STORE_HEADER.network,
+    FORUM_STORE_HEADER.chainId,
+    FORUM_STORE_HEADER.burnAddress,
+  ],
+  optional: [],
+  open: false,
 }
 
 /** `forum-topic-cursor` field keys. */
@@ -1022,6 +1149,54 @@ export const FRANK_ENVELOPE_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+}
+
+/** `group-epoch-frame` field keys: Shared group mailbox epoch transition frame: the cashweb-registry 'G_meta'/'G_epoch' store value and the optional CBOR body of PUT /groups/:group_id/epochs. Each field is text or bytes (bytes are read as hex); unknown keys are ignored. */
+export const GROUP_EPOCH_FRAME = {
+  groupId: 0,
+  epoch: 1,
+  prevEpochHash: 2,
+  writePubkey: 3,
+  readTokenHash: 4,
+  encryptedEpochDescriptor: 5,
+  adminSig: 6,
+  epochHash: 7,
+  groupPubkey: 8,
+} as const
+/** `group-epoch-frame` map shape. */
+export const GROUP_EPOCH_FRAME_SHAPE: MapShape = {
+  required: [
+    GROUP_EPOCH_FRAME.groupId,
+    GROUP_EPOCH_FRAME.epoch,
+    GROUP_EPOCH_FRAME.writePubkey,
+    GROUP_EPOCH_FRAME.readTokenHash,
+    GROUP_EPOCH_FRAME.encryptedEpochDescriptor,
+    GROUP_EPOCH_FRAME.adminSig,
+    GROUP_EPOCH_FRAME.groupPubkey,
+  ],
+  optional: [GROUP_EPOCH_FRAME.prevEpochHash, GROUP_EPOCH_FRAME.epochHash],
+  open: true,
+}
+
+/** `group-message-envelope` field keys: Sealed-sender group message: the optional CBOR body of PUT /groups/:group_id/messages. Each field is text or bytes (bytes are read as hex); unknown keys are ignored. */
+export const GROUP_MESSAGE_ENVELOPE = {
+  groupId: 0,
+  epoch: 1,
+  nonce: 2,
+  ciphertext: 3,
+  writeSig: 4,
+} as const
+/** `group-message-envelope` map shape. */
+export const GROUP_MESSAGE_ENVELOPE_SHAPE: MapShape = {
+  required: [
+    GROUP_MESSAGE_ENVELOPE.groupId,
+    GROUP_MESSAGE_ENVELOPE.epoch,
+    GROUP_MESSAGE_ENVELOPE.nonce,
+    GROUP_MESSAGE_ENVELOPE.ciphertext,
+    GROUP_MESSAGE_ENVELOPE.writeSig,
+  ],
+  optional: [],
+  open: true,
 }
 
 /** `journal-fact` field keys. */
@@ -1365,6 +1540,23 @@ export const SIGNATURE_ENTRY_SHAPE: MapShape = {
   open: false,
 }
 
+/** `stamp-economic-binding` field keys: The intended stamp economics a canonical stamp attempt is bound to (wallet stamp-attempt journal; local, never on the wire). */
+export const STAMP_ECONOMIC_BINDING = {
+  version: 0,
+  stampValueWei: 1,
+  binding: 2,
+} as const
+/** `stamp-economic-binding` map shape. */
+export const STAMP_ECONOMIC_BINDING_SHAPE: MapShape = {
+  required: [
+    STAMP_ECONOMIC_BINDING.version,
+    STAMP_ECONOMIC_BINDING.stampValueWei,
+    STAMP_ECONOMIC_BINDING.binding,
+  ],
+  optional: [],
+  open: false,
+}
+
 /** `stealth-asset-message-item` field keys: Type 19 schema 2 and later. */
 export const STEALTH_ASSET_MESSAGE_ITEM = {
   transfers: 0,
@@ -1639,6 +1831,11 @@ export const BOT_ROLE = {
   announcer: 7,
 } as const
 
+/** `canonical-dm-message-row-version` values: canonical-dm-message-row field 0. */
+export const CANONICAL_DM_MESSAGE_ROW_VERSION = {
+  v2: 2,
+} as const
+
 /** `encryption-suite` values: Type 5 field 3 (README S2c). */
 export const ENCRYPTION_SUITE = {
   dmAuthXchacha: 1,
@@ -1651,12 +1848,23 @@ export const FORUM_ENTRY_KIND = {
   game: 2,
 } as const
 
+/** `forum-observation-state` values: forum-observation-row field 3. */
+export const FORUM_OBSERVATION_STATE = {
+  pending: 1,
+  confirmed: 2,
+} as const
+
 /** `forum-operation-state` values: forum-operation-status field 7: 0 and 3 echo an unverified request; 1 and 2 are relay observations. */
 export const FORUM_OPERATION_STATE = {
   unknown: 0,
   pending: 1,
   confirmed: 2,
   rejected: 3,
+} as const
+
+/** `forum-store-row-version` values: Field 0 of every forum store row. */
+export const FORUM_STORE_ROW_VERSION = {
+  v1: 1,
 } as const
 
 /** `forum-vote-direction` values: forum-operation-status field 5 (README forum read 15). */
@@ -1678,6 +1886,11 @@ export const SIGNATURE_ALGORITHM = {
   bip340Schnorr: 2,
   bchSchnorr: 3,
   ed25519: 16,
+} as const
+
+/** `stamp-economic-binding-version` values: stamp-economic-binding field 0. */
+export const STAMP_ECONOMIC_BINDING_VERSION = {
+  v1: 1,
 } as const
 
 /** `stealth-derivation-scheme` values: stealth-asset-transfer field 1. Scheme 2 is the experimental Solana binding; the generic reader preserves it without executing it. */

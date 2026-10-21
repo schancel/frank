@@ -70,8 +70,10 @@ and must be regenerated or edited in the same change.
 ## Map field keys and enumerated values
 
 `fields/*.json` (one file per protocol area: `common`, `directory`, `delivery`, `content`,
-`topic`, `blackjack`) is the one source of every Frank-CBOR map key and every enumerated integer
-value that code reads or writes. `fields.py` beside this file loads it; `generate.py` renders it.
+`topic`, `blackjack`, `groups`, and `storage` for local persisted rows that never travel) is the
+one source of every Frank-CBOR map key and every enumerated integer value that code reads or
+writes. Message-item plugins that declare their own field table with `cborItemCodec`
+(`req(N, …)`/`opt(N, …)`) own those keys; that table is their single source. `fields.py` beside this file loads it; `generate.py` renders it.
 
 A **struct** names the keys of one map and lists its **shapes**:
 
@@ -125,10 +127,18 @@ same constants, and build error paths from them (`at(P, K.payments)`).
 
 - a shape disagrees with the CDDL rule it names (required keys, optional keys, or open/closed);
 - non-test source under `packages/frank-codec/src/` or `backend/cashweb/frank-cbor/src/` spells a
-  map key, a field path or a type id as a number literal (`m.get(5)`, `${P}.4`,
-  `(3, CborValue::…)`, `type_id == 19`). A line that must use a raw key, for example to build a
-  deliberately malformed map, carries a `raw-cbor-key: <reason>` comment on it or on the line
-  above.
+  map key, a field path or a type id as a number literal (`m.get(5)`, `m.set(5, …)`, `${P}.4`,
+  `(3, CborValue::…)`, `.push((3, …))`, `type_id == 19`, a key alone on its own line inside a
+  map literal). A line that must use a raw key, for example to build a deliberately malformed
+  map, carries a `raw-cbor-key: <reason>` comment on it or on the line above;
+- non-test source in a protocol consumer (`packages/cashweb/relay/`,
+  `packages/cashweb/message-items/`, `packages/wallet/`, `packages/group-messaging/`,
+  `backend/cashweb/cashweb-registry/src/`) does the same. A consumer file is checked only when it
+  touches Frank-CBOR (`cborMap`, `encodeCanonical`/`decodeCanonical`, `FrankValue`,
+  `encodeFrame`, a bigint-keyed `.get`/`.has`/`.set`, `CborValue`, `cbor_map`). Rust consumers
+  get the full Rust check. TypeScript consumers get only the patterns that are unambiguous
+  outside a codec: map entries inside a map literal, map key literals in `.get`/`.has`/`.set`,
+  typed-payload type comparisons and `typeId: N`.
 
 Renumbering a field is an edit of its key in `fields/*.json` (and of the CDDL), then
 `yarn message-types:generate`. Changing a key changes wire bytes and every vector that holds

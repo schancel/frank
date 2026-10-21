@@ -248,6 +248,28 @@ pub mod blackjack_item {
     };
 }
 
+/// `canonical-dm-message-row` field keys: One admitted canonical direct message with its frozen payment policy (cashweb-registry canonical message store; local RocksDB value, never on the wire). The policy is an 11-element array in the order network, chain id, minimum, sender P, recipient P, sender M, recipient M, stamp key, sender T1, recipient T1, payload hash.
+pub mod canonical_dm_message_row {
+    use super::MapShape;
+
+    /// Field `version`.
+    pub const VERSION: u64 = 0;
+    /// Field `body`.
+    pub const BODY: u64 = 1;
+    /// Field `content-type`.
+    pub const CONTENT_TYPE: u64 = 2;
+    /// Field `policy`.
+    pub const POLICY: u64 = 3;
+    /// Field `delivered-at`.
+    pub const DELIVERED_AT: u64 = 4;
+    /// `canonical-dm-message-row` map shape.
+    pub const SHAPE: MapShape = MapShape {
+        required: &[VERSION, BODY, CONTENT_TYPE, POLICY, DELIVERED_AT],
+        optional: &[],
+        open: false,
+    };
+}
+
 /// `chain-allocation` field keys.
 pub mod chain_allocation {
     use super::MapShape;
@@ -734,6 +756,24 @@ pub mod forum_discovery_page {
     };
 }
 
+/// `forum-discovery-row` field keys: Per-topic post count and last activity (cashweb-registry forum store; local RocksDB value, never on the wire).
+pub mod forum_discovery_row {
+    use super::MapShape;
+
+    /// Field `version`.
+    pub const VERSION: u64 = 0;
+    /// Field `count`.
+    pub const COUNT: u64 = 1;
+    /// Field `last-activity`.
+    pub const LAST_ACTIVITY: u64 = 2;
+    /// `forum-discovery-row` map shape.
+    pub const SHAPE: MapShape = MapShape {
+        required: &[VERSION, COUNT, LAST_ACTIVITY],
+        optional: &[],
+        open: false,
+    };
+}
+
 /// `forum-entry` field keys: Every forum entry's discriminating field 0.
 pub mod forum_entry {
     use super::MapShape;
@@ -780,6 +820,32 @@ pub mod forum_game_entry {
     };
 }
 
+/// `forum-observation-row` field keys: One observed topic post or vote burn, keyed by transaction hash (cashweb-registry forum store; local RocksDB value, never on the wire).
+pub mod forum_observation_row {
+    use super::MapShape;
+
+    /// Field `version`.
+    pub const VERSION: u64 = 0;
+    /// Field `frame`.
+    pub const FRAME: u64 = 1;
+    /// Field `first-seen`.
+    pub const FIRST_SEEN: u64 = 2;
+    /// Field `state`.
+    pub const STATE: u64 = 3;
+    /// Field `block`.
+    pub const BLOCK: u64 = 4;
+    /// Field `transaction-index`.
+    pub const TRANSACTION_INDEX: u64 = 5;
+    /// Field `visible`.
+    pub const VISIBLE: u64 = 6;
+    /// `forum-observation-row` map shape.
+    pub const SHAPE: MapShape = MapShape {
+        required: &[VERSION, FRAME, FIRST_SEEN, STATE],
+        optional: &[BLOCK, TRANSACTION_INDEX, VISIBLE],
+        open: false,
+    };
+}
+
 /// `forum-operation-status` field keys.
 pub mod forum_operation_status {
     use super::MapShape;
@@ -816,6 +882,24 @@ pub mod forum_operation_status {
     };
 }
 
+/// `forum-pending-accounting` field keys: Pending-operation count and byte charge (cashweb-registry forum store; local RocksDB value, never on the wire).
+pub mod forum_pending_accounting {
+    use super::MapShape;
+
+    /// Field `version`.
+    pub const VERSION: u64 = 0;
+    /// Field `count`.
+    pub const COUNT: u64 = 1;
+    /// Field `bytes`.
+    pub const BYTES: u64 = 2;
+    /// `forum-pending-accounting` map shape.
+    pub const SHAPE: MapShape = MapShape {
+        required: &[VERSION, COUNT, BYTES],
+        optional: &[],
+        open: false,
+    };
+}
+
 /// `forum-post-entry` field keys.
 pub mod forum_post_entry {
     use super::MapShape;
@@ -833,6 +917,36 @@ pub mod forum_post_entry {
         required: &[KIND],
         optional: &[TITLE, URL, MESSAGE],
         open: true,
+    };
+}
+
+/// `forum-post-row` field keys: Aggregate state of one forum post, keyed by post hash (cashweb-registry forum store; local RocksDB value, never on the wire).
+pub mod forum_post_row {
+    use super::MapShape;
+
+    /// Field `version`.
+    pub const VERSION: u64 = 0;
+    /// Field `frame`.
+    pub const FRAME: u64 = 1;
+    /// Field `author`.
+    pub const AUTHOR: u64 = 2;
+    /// Field `visible`.
+    pub const VISIBLE: u64 = 3;
+    /// Field `negative`.
+    pub const NEGATIVE: u64 = 4;
+    /// Field `magnitude`.
+    pub const MAGNITUDE: u64 = 5;
+    /// Field `reserved-up`.
+    pub const RESERVED_UP: u64 = 6;
+    /// Field `reserved-down`.
+    pub const RESERVED_DOWN: u64 = 7;
+    /// Field `topic`.
+    pub const TOPIC: u64 = 8;
+    /// `forum-post-row` map shape.
+    pub const SHAPE: MapShape = MapShape {
+        required: &[VERSION, FRAME, NEGATIVE, MAGNITUDE, RESERVED_UP, RESERVED_DOWN, TOPIC],
+        optional: &[AUTHOR, VISIBLE],
+        open: false,
     };
 }
 
@@ -867,6 +981,26 @@ pub mod forum_single_view {
         required: &[NETWORK, POST_FRAME, AUTHOR, AUTHOR_BURN_TX, TRANSACTION_HASH, FIRST_VISIBLE, BLOCK, TRANSACTION_INDEX, AGGREGATE, REVISION, EPOCH],
         optional: &[],
         open: true,
+    };
+}
+
+/// `forum-store-header` field keys: Forum store header binding the database to its network and burn policy (cashweb-registry forum store; local RocksDB value, never on the wire).
+pub mod forum_store_header {
+    use super::MapShape;
+
+    /// Field `version`.
+    pub const VERSION: u64 = 0;
+    /// Field `network`.
+    pub const NETWORK: u64 = 1;
+    /// Field `chain-id`.
+    pub const CHAIN_ID: u64 = 2;
+    /// Field `burn-address`.
+    pub const BURN_ADDRESS: u64 = 3;
+    /// `forum-store-header` map shape.
+    pub const SHAPE: MapShape = MapShape {
+        required: &[VERSION, NETWORK, CHAIN_ID, BURN_ADDRESS],
+        optional: &[],
+        open: false,
     };
 }
 
@@ -969,6 +1103,58 @@ pub mod frank_envelope {
         required: &[TYPE_ID, SCHEMA_VERSION, MIN_READER_VERSION, PAYLOAD],
         optional: &[],
         open: false,
+    };
+}
+
+/// `group-epoch-frame` field keys: Shared group mailbox epoch transition frame: the cashweb-registry 'G_meta'/'G_epoch' store value and the optional CBOR body of PUT /groups/:group_id/epochs. Each field is text or bytes (bytes are read as hex); unknown keys are ignored.
+pub mod group_epoch_frame {
+    use super::MapShape;
+
+    /// Field `group-id`.
+    pub const GROUP_ID: u64 = 0;
+    /// Field `epoch`.
+    pub const EPOCH: u64 = 1;
+    /// Field `prev-epoch-hash`.
+    pub const PREV_EPOCH_HASH: u64 = 2;
+    /// Field `write-pubkey`.
+    pub const WRITE_PUBKEY: u64 = 3;
+    /// Field `read-token-hash`.
+    pub const READ_TOKEN_HASH: u64 = 4;
+    /// Field `encrypted-epoch-descriptor`.
+    pub const ENCRYPTED_EPOCH_DESCRIPTOR: u64 = 5;
+    /// Field `admin-sig`.
+    pub const ADMIN_SIG: u64 = 6;
+    /// Field `epoch-hash`.
+    pub const EPOCH_HASH: u64 = 7;
+    /// Field `group-pubkey`.
+    pub const GROUP_PUBKEY: u64 = 8;
+    /// `group-epoch-frame` map shape.
+    pub const SHAPE: MapShape = MapShape {
+        required: &[GROUP_ID, EPOCH, WRITE_PUBKEY, READ_TOKEN_HASH, ENCRYPTED_EPOCH_DESCRIPTOR, ADMIN_SIG, GROUP_PUBKEY],
+        optional: &[PREV_EPOCH_HASH, EPOCH_HASH],
+        open: true,
+    };
+}
+
+/// `group-message-envelope` field keys: Sealed-sender group message: the optional CBOR body of PUT /groups/:group_id/messages. Each field is text or bytes (bytes are read as hex); unknown keys are ignored.
+pub mod group_message_envelope {
+    use super::MapShape;
+
+    /// Field `group-id`.
+    pub const GROUP_ID: u64 = 0;
+    /// Field `epoch`.
+    pub const EPOCH: u64 = 1;
+    /// Field `nonce`.
+    pub const NONCE: u64 = 2;
+    /// Field `ciphertext`.
+    pub const CIPHERTEXT: u64 = 3;
+    /// Field `write-sig`.
+    pub const WRITE_SIG: u64 = 4;
+    /// `group-message-envelope` map shape.
+    pub const SHAPE: MapShape = MapShape {
+        required: &[GROUP_ID, EPOCH, NONCE, CIPHERTEXT, WRITE_SIG],
+        optional: &[],
+        open: true,
     };
 }
 
@@ -1352,6 +1538,24 @@ pub mod signature_entry {
     };
 }
 
+/// `stamp-economic-binding` field keys: The intended stamp economics a canonical stamp attempt is bound to (wallet stamp-attempt journal; local, never on the wire).
+pub mod stamp_economic_binding {
+    use super::MapShape;
+
+    /// Field `version`.
+    pub const VERSION: u64 = 0;
+    /// Field `stamp-value-wei`.
+    pub const STAMP_VALUE_WEI: u64 = 1;
+    /// Field `binding`.
+    pub const BINDING: u64 = 2;
+    /// `stamp-economic-binding` map shape.
+    pub const SHAPE: MapShape = MapShape {
+        required: &[VERSION, STAMP_VALUE_WEI, BINDING],
+        optional: &[],
+        open: false,
+    };
+}
+
 /// `stealth-asset-message-item` field keys: Type 19 schema 2 and later.
 pub mod stealth_asset_message_item {
     use super::MapShape;
@@ -1704,6 +1908,12 @@ pub mod bot_role {
     pub const ANNOUNCER: u32 = 7;
 }
 
+/// `canonical-dm-message-row-version` values: canonical-dm-message-row field 0.
+pub mod canonical_dm_message_row_version {
+    /// `v2`.
+    pub const V2: u32 = 2;
+}
+
 /// `encryption-suite` values: Type 5 field 3 (README S2c).
 pub mod encryption_suite {
     /// `dm-auth-xchacha`.
@@ -1720,6 +1930,14 @@ pub mod forum_entry_kind {
     pub const GAME: u32 = 2;
 }
 
+/// `forum-observation-state` values: forum-observation-row field 3.
+pub mod forum_observation_state {
+    /// `pending`.
+    pub const PENDING: u32 = 1;
+    /// `confirmed`.
+    pub const CONFIRMED: u32 = 2;
+}
+
 /// `forum-operation-state` values: forum-operation-status field 7: 0 and 3 echo an unverified request; 1 and 2 are relay observations.
 pub mod forum_operation_state {
     /// `unknown`.
@@ -1730,6 +1948,12 @@ pub mod forum_operation_state {
     pub const CONFIRMED: u32 = 2;
     /// `rejected`.
     pub const REJECTED: u32 = 3;
+}
+
+/// `forum-store-row-version` values: Field 0 of every forum store row.
+pub mod forum_store_row_version {
+    /// `v1`.
+    pub const V1: u32 = 1;
 }
 
 /// `forum-vote-direction` values: forum-operation-status field 5 (README forum read 15).
@@ -1760,6 +1984,12 @@ pub mod signature_algorithm {
     pub const BCH_SCHNORR: u32 = 3;
     /// `ed25519`.
     pub const ED25519: u32 = 16;
+}
+
+/// `stamp-economic-binding-version` values: stamp-economic-binding field 0.
+pub mod stamp_economic_binding_version {
+    /// `v1`.
+    pub const V1: u32 = 1;
 }
 
 /// `stealth-derivation-scheme` values: stealth-asset-transfer field 1. Scheme 2 is the experimental Solana binding; the generic reader preserves it without executing it.

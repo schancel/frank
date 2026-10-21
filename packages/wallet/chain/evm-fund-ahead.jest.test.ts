@@ -36,6 +36,7 @@ import {
   MonadSubAccountPool,
 } from "../evm-account-pool";
 import { MonadStampPendingAttemptError } from "../evm-stamp-client";
+import { EvmStampPayer } from "../evm-stamp-payer";
 import type { CanonicalDirectory } from "./canonical-dm";
 import { FUND_AHEAD_MESSAGES } from "./active-chain";
 import {
@@ -282,6 +283,7 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     expect(payersAtRelay(0)).toEqual([main]);
     expect(atRelay!.chainHttp).toEqual([]);
     expect(alice.pool.records()).toEqual([]);
+    await plain.afterDelivery;
     // The send looked at the chain once after its own broadcast: the payment is in a block
     // (the relay stand-in mines it), so the main account is free for the next payment already.
     expect(alice.pool.accountClaimedBy(main)).toBeUndefined();
@@ -331,6 +333,39 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     expect(new Set(atRelay!.rpc)).toEqual(
       new Set(["getBlock", "getGasPrice", "getPriorityFee", "getBlockNumber", "getTransactionCount", "getBalance"])
     );
+  });
+
+  it("one pass quotes the fee once and estimates no gas, for both transfers", async () => {
+    providerRequests.length = 0;
+    chainHttpRequests.length = 0;
+    const ahead = await fundAhead();
+    expect(ahead.outcome).toBe("funded");
+    expect(ahead.fundingTxHashes).toHaveLength(2);
+    expect(providerRequests.filter((name) => name === "getGasPrice")).toHaveLength(1);
+    expect(providerRequests.filter((name) => name === "estimateGas")).toEqual([]);
+    expect(chainHttpRequests.filter((name) => /estimate/i.test(name))).toEqual([]);
+  });
+
+  it("a pass gives way to a send waiting for the main account: it stops before its next transfer, and the next pass funds the rest at once", async () => {
+    const waited = jest.spyOn(EvmStampPayer.prototype, "isWaitedFor");
+    // A send comes to wait for the main account once the first transfer is out.
+    let firstOut = false;
+    waited.mockImplementation((address) => firstOut && address.toLowerCase() === main);
+    const realSubmit = mockFunded.push.bind(mockFunded);
+    jest.spyOn(mockFunded, "push").mockImplementation((...txs) => {
+      firstOut = true;
+      return realSubmit(...txs);
+    });
+    const ahead = await fundAhead();
+    expect(ahead).toMatchObject({ outcome: "not-funded", reason: "yielded" });
+    expect(mockFunded).toHaveLength(1);
+    expect(alice.pool.accountClaimedBy(main)).toBeUndefined();
+    // Giving way is not a failure to back off from: the next pass, once the send is done,
+    // funds the rest at once.
+    waited.mockReturnValue(false);
+    const next = await fundAhead();
+    expect(next.outcome).toBe("funded");
+    expect(mockFunded).toHaveLength(2);
   });
 
   it("repeated and concurrent calls fund nothing extra, and a call that finds the accounts ready makes no request", async () => {
@@ -733,6 +768,9 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     /** What funding one whole-stamp account costs the main account. */
     const ONE_ACCOUNT = STAMP + RESERVE + FUNDING_FEE;
     const PAIR = STAMP + 2n * RESERVE + 2n * FUNDING_FEE;
+    /** What a pass needs for its pair: it signs plain 21,000-gas transfers at the one fee it
+     * read, with no estimate (the stand-in estimates 50,000 for anything). */
+    const PAIR_AHEAD = STAMP + 4n * RESERVE;
 
     // On a03ea904 the pass funded ONE account with the whole stamp, the send then asked for a
     // top-up the emptied main account could not pay, and failed on every retry.
@@ -801,9 +839,9 @@ describe("funding the next message ahead (#1235 Q4)", () => {
         ONE_PAYMENT - 1n,
         ONE_PAYMENT,
         ONE_PAYMENT + 1n,
-        PAIR - 1n,
-        PAIR,
-        PAIR + 1n,
+        PAIR_AHEAD - 1n,
+        PAIR_AHEAD,
+        PAIR_AHEAD + 1n,
         2n * STAMP,
       ];
       // Each attempt opens its own pair of wallets on the same roots.
@@ -849,7 +887,7 @@ describe("funding the next message ahead (#1235 Q4)", () => {
         table[String(balance - STAMP)] = `${without.ok}/${withPass.ok}/${withPass.funded}`;
         expect(without.ok).toBe(balance >= ONE_PAYMENT);
         expect(withPass.ok).toBe(without.ok);
-        expect(withPass.funded).toBe(balance >= PAIR ? 2 : 0);
+        expect(withPass.funded).toBe(balance >= PAIR_AHEAD ? 2 : 0);
       }
       // The window the review found: a send works, a pass must fund nothing.
       expect(
@@ -927,9 +965,10 @@ describe("funding the next message ahead (#1235 Q4)", () => {
       later(FUND_AHEAD_BACKOFF_MIN_MS);
       await fundAhead();
       expect(counts()).toEqual(pass);
-      // The whole pass: the balance, the fee read, the plan's own estimates, and the one
-      // further fee read that decides between a pair and a single account (three requests).
-      expect(pass).toEqual({ rpc: 16, chainHttp: 0 });
+      // The whole pass: the balance, one fee read (three requests) and the pending balance the
+      // plan checks. No estimate and no further fee read: before one fee read per pass this
+      // was 16.
+      expect(pass).toEqual({ rpc: 5, chainHttp: 0 });
     });
 
     it("a transfer the chain has not mined: its bytes are offered again once per wait, with no fee quote, and never on the ticks between", async () => {

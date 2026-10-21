@@ -1012,6 +1012,30 @@ describe("MonadSubAccountPool", () => {
         expect(f.httpClient.submitRawTransaction).toHaveBeenCalledTimes(2);
       });
 
+      it("gives way, before signing its next transfer, to a send that has come to wait for the main account; the first transfer stays recorded", async () => {
+        const f = setupPreparation();
+        const main = f.mainAccountSigner.address.toLowerCase();
+        let sendWaiting = false;
+        const asked: string[] = [];
+        // A send comes to wait for the main account while the first transfer is in flight.
+        f.pool.attachFunderSpacing(async () => undefined);
+        const pass = ahead(f, f.pool, {
+          yieldTo: (address) => {
+            asked.push(address.toLowerCase());
+            return sendWaiting;
+          },
+          onProgress: (progress) => {
+            if (progress.stage === "funding" && progress.completed === 1)
+              sendWaiting = true;
+          },
+        });
+
+        await expect(pass).rejects.toMatchObject({ code: "yielded" });
+        expect(submitted(f).map((tx) => tx.value)).toEqual([375n + RESERVE]);
+        expect(asked).toEqual([main, main]);
+        expect(statuses(f.pool)).toEqual(["available", "unfunded", "unfunded"]);
+      });
+
       it("with the chain's spacing wait attached, the pair is funded without the fixed pause that held the main account; without it the pause stays", async () => {
         const before = INTER_TX_FUNDING_DELAY.ms;
         INTER_TX_FUNDING_DELAY.ms = 1_000;

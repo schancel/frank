@@ -220,11 +220,35 @@ export interface EvmStampPayerConfig {
   heldRefusal?: () => Error
 }
 
+type ClaimInput = {
+  holder: string
+  stampValueWei: bigint
+  /** Limit the coins considered. Default: every source. */
+  sources?: readonly StampCoinSource[]
+  whileBusy?: (holder: string) => Promise<void>
+  /** Whether a holder's payment cannot finish by itself (asked after `whileBusy`): the error
+   * to end this claim with, or `undefined` while it can still finish. A blocked holder ends the
+   * claim only when its coins are needed (everything else that could come back does not cover
+   * the value) and it is still blocked at the next look. */
+  blockedBy?: (holder: string) => Error | undefined
+  /** Called once when this payment starts waiting for an earlier one, and again with the
+   * blocks still to pass when what it waits for is the chain's spacing. */
+  onWaiting?: (blocksRemaining?: number) => void
+  /** Ends the wait: the claim rejects with {@link ChainWaitCancelledError}, nothing taken. */
+  signal?: AbortSignal
+  /** The value is owed, not chosen: a payment smaller than its own transfer's fee is made
+   * all the same (a settlement, or the repeat of a reverted payment). */
+  allowBelowFee?: boolean
+}
+
 export class EvmStampPayer {
   readonly watcher: EvmBlockWatcher
   private fee: { value: StampFee; atMs: number } | undefined
   private feeRead: Promise<StampFee> | undefined
   private poolIndexByAddress = new Map<string, number>()
+  /** Accounts that claims waiting their turn need (held by another operation), with how many
+   * claims wait for each. */
+  private readonly waitedFor = new Map<string, number>()
   constructor(private readonly config: EvmStampPayerConfig) {
     this.watcher =
       config.watcher ?? new EvmBlockWatcher({ provider: config.provider })
@@ -563,26 +587,24 @@ export class EvmStampPayer {
    * Rejects with {@link InsufficientStampFundsError} when nothing the wallet has covers the
    * value; then, and on any other rejection, nothing this call took stays taken.
    */
-  async claim(input: {
-    holder: string
-    stampValueWei: bigint
-    /** Limit the coins considered. Default: every source. */
-    sources?: readonly StampCoinSource[]
-    whileBusy?: (holder: string) => Promise<void>
-    /** Whether a holder's payment cannot finish by itself (asked after `whileBusy`): the error
-     * to end this claim with, or `undefined` while it can still finish. A blocked holder ends the
-     * claim only when its coins are needed (everything else that could come back does not cover
-     * the value) and it is still blocked at the next look. */
-    blockedBy?: (holder: string) => Error | undefined
-    /** Called once when this payment starts waiting for an earlier one, and again with the
-     * blocks still to pass when what it waits for is the chain's spacing. */
-    onWaiting?: (blocksRemaining?: number) => void
-    /** Ends the wait: the claim rejects with {@link ChainWaitCancelledError}, nothing taken. */
-    signal?: AbortSignal
-    /** The value is owed, not chosen: a payment smaller than its own transfer's fee is made
-     * all the same (a settlement, or the repeat of a reverted payment). */
-    allowBelowFee?: boolean
-  }): Promise<StampClaim> {
+  async claim(input: ClaimInput): Promise<StampClaim> {
+    // The accounts this claim has waited for stay marked wanted until it ends, taken or not.
+    const wanted = new Set<string>()
+    try {
+      return await this.claimWaiting(input, wanted)
+    } finally {
+      for (const account of wanted) {
+        const left = (this.waitedFor.get(account) ?? 1) - 1
+        if (left > 0) this.waitedFor.set(account, left)
+        else this.waitedFor.delete(account)
+      }
+    }
+  }
+
+  private async claimWaiting(
+    input: ClaimInput,
+    wanted: Set<string>,
+  ): Promise<StampClaim> {
     const { pool, coins, sync } = this.config
     const allowed = (source: StampCoinSource) =>
       input.sources === undefined || input.sources.includes(source)
@@ -785,6 +807,11 @@ export class EvmStampPayer {
           return holder === undefined ? [] : [holder]
         }),
       ])
+      for (const coin of [...heldByOthers, ...claimedOutside])
+        if (!wanted.has(coin.account)) {
+          wanted.add(coin.account)
+          this.waitedFor.set(coin.account, (this.waitedFor.get(coin.account) ?? 0) + 1)
+        }
       for (const holder of holders) await input.whileBusy?.(holder)
       // A holder that cannot finish by itself is named, never waited for for ever: when, after
       // the others settled, what everyone else holds or will get back does not cover the value.
@@ -817,6 +844,12 @@ export class EvmStampPayer {
       await this.untilChanged(input.signal)
       readDue = false
     }
+  }
+
+  /** True while a payment waits for `address`, which another operation holds (a funding pass,
+   * say): that operation may give way. No request. */
+  isWaitedFor(address: string): boolean {
+    return (this.waitedFor.get(address.toLowerCase()) ?? 0) > 0
   }
 
   /** Resolves when the coin list next changes or the block watcher next looks. */

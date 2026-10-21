@@ -369,6 +369,21 @@ describe('what holds a coin, and what lets it go', () => {
 })
 
 describe('settlement: the chain decides', () => {
+  it('the main account is marked waited for while a payment waits for the operation that holds it (a funding pass may give way), and not before or after', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    f.pool.restoreAccountClaim('fund-ahead', at(main))
+    expect(f.payer.isWaitedFor(at(main))).toBe(false)
+    const waiting = f.payer.claim({ holder: 'send', stampValueWei: MON / 100n })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(f.payer.isWaitedFor(at(main))).toBe(true)
+    expect(f.payer.isWaitedFor(main.address)).toBe(true)
+    f.pool.releaseAccountClaim('fund-ahead', at(main))
+    const made = await waiting
+    expect(made.accounts[0]).toMatchObject({ address: at(main) })
+    expect(f.payer.isWaitedFor(at(main))).toBe(false)
+  })
+
   it('a mined payment spends its coin and the account\'s next coin is listed at the next nonce; a payment waiting for the account then takes it', async () => {
     const f = await make()
     f.node.balances.set(at(main), MON)

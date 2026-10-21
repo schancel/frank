@@ -353,6 +353,8 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     try {
       // Only the main account covers this stamp: this message is paid from it.
       const first = await send(3, 0, MAIN_STAMP)
+      // The wallet's own broadcast and its look at the chain follow delivery.
+      await first.afterDelivery
       expect(alice.pool.accountClaimedBy(main)).toBeDefined()
       expect(alice.pool.accountClaimedBy(main)).not.toMatch(NATIVE_HOLDER)
       expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 1)
@@ -401,6 +403,8 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     await automine(false)
     try {
       const message = await send(4, 0, MAIN_STAMP)
+      // The wallet's own broadcast and its look at the chain follow delivery.
+      await message.afterDelivery
       await expect(
         alice.sendNative({
           recipient: { raw: Wallet.createRandom().address },

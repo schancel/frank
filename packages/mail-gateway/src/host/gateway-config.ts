@@ -160,6 +160,9 @@ export function loadGatewayHostConfig(env: NodeJS.ProcessEnv = process.env): Gat
   const stripePaymentLinkTier1 = env.FRANK_MAIL_STRIPE_LINK_TIER1?.trim() || undefined;
   const stripePaymentLinkTier2 = env.FRANK_MAIL_STRIPE_LINK_TIER2?.trim() || undefined;
   const stripePaymentLinkTier3 = env.FRANK_MAIL_STRIPE_LINK_TIER3?.trim() || undefined;
+  // A payment link without a verifiable webhook would take money it can never credit.
+  if ((stripePaymentLinkTier1 || stripePaymentLinkTier2 || stripePaymentLinkTier3) && !stripeWebhookSecret)
+    throw new Error('Stripe payment links require a Stripe webhook secret');
   const operatorAccountRaw = env.FRANK_MAIL_OPERATOR_ACCOUNT?.trim();
   const operatorForwardRaw = env.FRANK_MAIL_OPERATOR_EMAIL?.trim();
   const operatorForwardEmail = operatorForwardRaw

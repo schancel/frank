@@ -6,6 +6,7 @@ import type { DirectMessageReceived } from '@frank/wallet/chain/active-chain';
 import {
   buildStripeWebhookSignatureHeader,
   CheckoutServer,
+  type VerifiedCheckoutPayment,
   verifyStripeWebhookSignature,
 } from '../src/http/checkout-server';
 import { ResendWebhookHttp } from '../src/host/resend-webhook-http';
@@ -271,6 +272,71 @@ describe('SecureMessagePortal & Onboarding Claim Channel', () => {
         textBody: 'Hello from Frank over TLS!',
         createdAt: clock,
       });
+    });
+
+    it('never hands an unverified OTP reader a claim token or the body (BOT-4)', async () => {
+      const record = portal.createSecureMessage({
+        senderScope: SENDER_SCOPE,
+        authMode: 'otp',
+        cleartext: {
+          subject: 'OTP Secret Subject',
+          textBody: 'TOP SECRET BODY',
+          senderAddress: 'alice@mail.frank.test',
+          recipientEmail: 'bob@gmail.com',
+          conversationId: CONVERSATION_ID,
+          createdAtMs: clock,
+        },
+      });
+
+      // A link scanner's GET: the challenge page carries no claim token.
+      const challenge = await portal.handleHttpRequest({
+        pathname: `/secure/${record.tokenId}`,
+        method: 'GET',
+      });
+      expect(challenge?.status).toBe(200);
+      expect(challenge!.body).not.toMatch(/claim=/);
+      expect(challenge!.body).not.toContain('TOP SECRET BODY');
+      expect(challenge!.body).not.toContain('bob@gmail.com');
+      expect(challenge!.body).toContain('https://app.frank.test/#/onboard?');
+
+      // Even a validly signed claim minted without verification returns metadata only.
+      const unverifiedClaim = createOnboardingClaimToken(
+        {
+          kind: 'secure',
+          id: record.tokenId,
+          peerAddress: SENDER_SCOPE,
+          email: 'bob@gmail.com',
+          conversationId: CONVERSATION_ID,
+          exp: record.expiresAtMs,
+        },
+        MASTER_SECRET,
+      );
+      const claimed = await portal.handleHttpRequest({
+        pathname: `/onboard/claim/${encodeURIComponent(unverifiedClaim)}`,
+        method: 'GET',
+      });
+      expect(claimed?.status).toBe(200);
+      expect(claimed!.body).not.toContain('TOP SECRET BODY');
+      expect(JSON.parse(claimed!.body).textBody).toBe('');
+      expect(portal.getSecureMessage(record.tokenId)!.readCount).toBe(0);
+
+      // After OTP verification, the decrypted page's claim imports the body.
+      await portal.handleHttpRequest({ pathname: `/secure/${record.tokenId}/request-otp`, method: 'POST' });
+      const verified = await portal.handleHttpRequest({
+        pathname: `/secure/${record.tokenId}/verify`,
+        method: 'POST',
+        body: `otp=${sentOtps[0].otp}`,
+      });
+      expect(verified?.status).toBe(200);
+      const hrefMatch = verified!.body.match(/href="([^"]*#\/onboard\?[^"]*)"/);
+      expect(hrefMatch).toBeTruthy();
+      const verifiedClaim = new URLSearchParams(
+        hrefMatch![1].replace(/&amp;/g, '&').split('?')[1],
+      ).get('claim');
+      expect(verifiedClaim).toBeTruthy();
+      expect(verifyOnboardingClaimToken(verifiedClaim!, MASTER_SECRET, clock)?.unlocked).toBe(true);
+      const imported = await portal.claimThread(verifiedClaim!);
+      expect(imported?.textBody).toBe('TOP SECRET BODY');
     });
 
     it('issues 6-digit email OTP, verifies constant-time HMAC, and locks after 5 failed attempts', async () => {
@@ -540,15 +606,16 @@ describe('SecureMessagePortal & Onboarding Claim Channel', () => {
 
       // Start ResendWebhookHttp with securePortal + checkoutServer mounted
       const stripeSecret = 'whsec_test_stripe_secret_999';
-      let verifiedPaymentSender: string | undefined;
+      let verifiedPayment: VerifiedCheckoutPayment | undefined;
       const checkoutServer = new CheckoutServer({
         port: 0,
         ledger,
         stripeWebhookSecret: stripeSecret,
         frankAppUrl: 'https://app.frank.test',
         onboardingSecret: MASTER_SECRET,
-        onPaymentVerified: (ev) => {
-          verifiedPaymentSender = ev.senderEmail;
+        fulfillPayment: async (payment) => {
+          verifiedPayment = payment;
+          ledger.addCredits('bob@gmail.com', payment.credits, payment.providerTxId, payment.provider);
         },
       });
 
@@ -597,13 +664,17 @@ describe('SecureMessagePortal & Onboarding Claim Channel', () => {
         expect(payPageHtml).toContain('https://app.frank.test/#/onboard?');
 
         const webhookPayload = JSON.stringify({
+          id: 'evt_live_abc',
           type: 'checkout.session.completed',
           data: {
             object: {
               id: 'cs_live_abc',
+              payment_status: 'paid',
+              amount_total: 300,
+              currency: 'usd',
               client_reference_id: 'held_stripe_1',
               customer_details: { email: 'bob@gmail.com' },
-              metadata: { credits: '5', tierId: 'tier2' },
+              metadata: { credits: '1000000', tierId: 'tier3' },
             },
           },
         });
@@ -631,7 +702,14 @@ describe('SecureMessagePortal & Onboarding Claim Channel', () => {
           body: webhookPayload,
         });
         expect(goodStripeRes.status).toBe(200);
-        expect(verifiedPaymentSender).toBe('bob@gmail.com');
+        expect(verifiedPayment).toEqual({
+          providerTxId: 'evt_live_abc',
+          provider: 'stripe',
+          tierId: 'tier2',
+          credits: 5,
+          referenceId: 'held_stripe_1',
+          payerEmail: 'bob@gmail.com',
+        });
         expect(ledger.getBalance('bob@gmail.com')).toBe(5);
       } finally {
         await httpIngress.stop();

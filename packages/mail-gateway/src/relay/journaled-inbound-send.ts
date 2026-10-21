@@ -9,7 +9,7 @@ import { readThreadHeaders } from '../rfc/message-headers';
 import { parseRawRfc822 } from '../smtp/smtp-listener';
 import type { BlobStore } from '../storage/blob-store';
 import type { HeldEmailAutoResponder } from '../mta/held-email-auto-responder';
-import type { FrankSendRecord, InboundEmail, StoredMailBytes } from '../types';
+import type { FrankSendRecord, InboundEmail, InboundEmailRecord, StoredMailBytes } from '../types';
 
 /**
  * Only a host that verified its receiving transport and authenticated the From
@@ -32,6 +32,18 @@ export interface JournaledInboundSendOptions {
     HeldEmailAutoResponder,
     'processHeldEmails'
   >;
+}
+
+/** A provider-verified card purchase opened from one held mail's payment page. */
+export interface HeldMailPurchase {
+  /** Provider event id; crediting is idempotent on it. */
+  readonly providerTxId: string;
+  readonly provider: string;
+  readonly credits: number;
+  /** The payment page's held-mail reference: its mail key or held message id. */
+  readonly referenceId?: string;
+  /** The email the payer typed; credited only when no held mail is referenced. */
+  readonly payerEmail?: string;
 }
 
 export type InboundAdmission =
@@ -308,19 +320,7 @@ export class JournaledInboundSend {
     const errors: Array<{ scopeAccount: string; mailKey: string; kind: string }> = [];
     for (const email of held) {
       try {
-        if (!email.raw) throw new Error('Held mail has no source bytes');
-        const headers = readThreadHeaders(await this.resolveBytes(email.raw));
-        if (!headers.ok) throw new Error(`Invalid stored mail thread headers: ${headers.reason}`);
-        const result = this.journal.releaseHeldInboundEmail({
-          scopeAccount: email.scopeAccount,
-          mailKey: email.mailKey,
-          inReplyTo: headers.inReplyTo,
-          references: headers.references,
-        });
-        if (result?.created) {
-          released += 1;
-
-        }
+        if (await this.releaseOne(email)) released += 1;
       } catch (error) {
         errors.push({
           scopeAccount: email.scopeAccount,
@@ -335,6 +335,46 @@ export class JournaledInboundSend {
       errors,
       nextAfter: last ? { scopeAccount: last.scopeAccount, mailKey: last.mailKey } : undefined,
     };
+  }
+
+  /**
+   * Applies a verified purchase to the held mail it was made for: credits that
+   * mail's authenticated sender (not the email typed at checkout), then
+   * releases that one mail. Repeating the same `providerTxId` credits once and
+   * retries only the release. An expired or already relayed mail keeps the
+   * credit for the sender's next mail.
+   */
+  async applyHeldMailPurchase(purchase: HeldMailPurchase): Promise<{
+    readonly creditedEmail: string;
+    readonly released: boolean;
+  }> {
+    if (!purchase.providerTxId) throw new Error('Purchase has no provider transaction id');
+    if (!Number.isSafeInteger(purchase.credits) || purchase.credits < 1)
+      throw new Error('Purchase credits must be a positive integer');
+    const email = purchase.referenceId
+      ? this.journal.findInboundEmailByKey(purchase.referenceId)
+      : undefined;
+    const creditedEmail = email?.senderEmail ?? purchase.payerEmail?.toLowerCase().trim();
+    if (!creditedEmail) throw new Error('Purchase names neither a held mail nor a payer email');
+    this.ledger.atomic(() =>
+      this.ledger.addCredits(creditedEmail, purchase.credits, purchase.providerTxId, purchase.provider)
+    );
+    if (!email || email.disposition !== 'held') return { creditedEmail, released: false };
+    return { creditedEmail, released: await this.releaseOne(email) };
+  }
+
+  /** One atomic credit debit and slot creation for this held mail; false when it stays held. */
+  private async releaseOne(email: InboundEmailRecord): Promise<boolean> {
+    if (!email.raw) throw new Error('Held mail has no source bytes');
+    const headers = readThreadHeaders(await this.resolveBytes(email.raw));
+    if (!headers.ok) throw new Error(`Invalid stored mail thread headers: ${headers.reason}`);
+    const result = this.journal.releaseHeldInboundEmail({
+      scopeAccount: email.scopeAccount,
+      mailKey: email.mailKey,
+      inReplyTo: headers.inReplyTo,
+      references: headers.references,
+    });
+    return result?.created === true;
   }
 
   /** Dispatches RFC 3834 payment & onboarding auto-replies for newly held inbound emails. */

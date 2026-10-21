@@ -206,6 +206,7 @@ describe('End-to-End Integration Test: Live Relay + SMTP Server + Checkout Webho
           client_reference_id: heldId,
           customer_email: 'stranger@example.com',
           amount_total: 100,
+          currency: 'usd',
           payment_status: 'paid',
         },
       },

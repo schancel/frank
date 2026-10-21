@@ -48,6 +48,11 @@ export interface OnboardingClaimPayload {
   readonly conversationId: string;
   readonly subject?: string;
   readonly exp: number;
+  /**
+   * Set only on a `secure` claim minted after the reader passed the link's
+   * authentication. Only such a claim returns an OTP message's body.
+   */
+  readonly unlocked?: true;
 }
 
 export interface OnboardingClaimedThread {
@@ -112,7 +117,8 @@ export function verifyOnboardingClaimToken(
       typeof parsed.email !== 'string' ||
       typeof parsed.conversationId !== 'string' ||
       typeof parsed.exp !== 'number' ||
-      parsed.exp <= nowMs
+      parsed.exp <= nowMs ||
+      (parsed.unlocked !== undefined && parsed.unlocked !== true)
     ) {
       return undefined;
     }
@@ -727,7 +733,11 @@ export class SecureMessagePortal {
       if (!record || record.expiresAtMs <= nowMs) return undefined;
       if (record.failedAttempts >= this.maxVerifyAttempts) return undefined;
 
-      if (record.authMode !== 'passphrase') {
+      // The claim API is unauthenticated and CORS-open. An OTP body is returned
+      // only for a claim minted after verification; a direct link needs none.
+      const mayReadBody =
+        record.authMode === 'direct' || (record.authMode === 'otp' && payload.unlocked === true);
+      if (mayReadBody) {
         try {
           const cleartext = decryptSecureMessagePayload({
             ciphertext: record.ciphertext,
@@ -961,21 +971,36 @@ export class SecureMessagePortal {
     };
   }
 
-  private renderOnboardingCta(record: SecureMessageRecord, subject?: string): string {
+  /**
+   * `unlocked` is true only on the page served after verification. Before it, an
+   * OTP or passphrase page carries no claim token: a link scanner or a forwarded
+   * email must not get a bearer credential for the message.
+   */
+  private renderOnboardingCta(
+    record: SecureMessageRecord,
+    view: { readonly unlocked: boolean; readonly subject?: string },
+  ): string {
     const conversationId = record.conversationId || `conv_${record.tokenId.slice(0, 16)}`;
-    const { url: onboardingUrl } = buildOnboardingDeepLink({
-      frankAppUrl: this.frankAppUrl,
-      secret: this.masterSecret,
-      payload: {
-        kind: 'secure',
-        id: record.tokenId,
-        peerAddress: record.senderScope,
-        email: record.recipientEmail,
-        conversationId,
-        ...(subject ? { subject } : {}),
-        exp: record.expiresAtMs,
-      },
-    });
+    const onboardingUrl =
+      view.unlocked || record.authMode === 'direct'
+        ? buildOnboardingDeepLink({
+            frankAppUrl: this.frankAppUrl,
+            secret: this.masterSecret,
+            payload: {
+              kind: 'secure',
+              id: record.tokenId,
+              peerAddress: record.senderScope,
+              email: record.recipientEmail,
+              conversationId,
+              ...(view.subject ? { subject: view.subject } : {}),
+              exp: record.expiresAtMs,
+              ...(view.unlocked ? { unlocked: true as const } : {}),
+            },
+          }).url
+        : `${this.frankAppUrl}/#/onboard?${new URLSearchParams({
+            peer: record.senderScope,
+            conversationId,
+          }).toString()}`;
     const senderHandle = escapeHtml(record.senderAddress.split('@')[0] || record.senderAddress);
     return `
     <div class="onboarding-card">
@@ -1180,7 +1205,7 @@ export class SecureMessagePortal {
       ${errorBanner}
       ${formHtml}
     </div>
-    ${this.renderOnboardingCta(record)}
+    ${this.renderOnboardingCta(record, { unlocked: false })}
   </div>
 </body>
 </html>`;
@@ -1231,7 +1256,7 @@ export class SecureMessagePortal {
       <pre class="body">${escapeHtml(cleartext.textBody)}</pre>
       ${attachmentsHtml}
     </div>
-    ${this.renderOnboardingCta(record, cleartext.subject)}
+    ${this.renderOnboardingCta(record, { unlocked: true, subject: cleartext.subject })}
   </div>
 </body>
 </html>`;

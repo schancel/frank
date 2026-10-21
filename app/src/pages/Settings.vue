@@ -306,14 +306,16 @@
                     {{ coldVaultError }}
                   </div>
                   <div
-                    class="row items-center justify-end q-gutter-x-sm q-mt-xs"
+                    class="row items-center justify-end q-gutter-x-sm q-mt-sm"
                   >
                     <q-btn
-                      flat
+                      outline
                       dense
                       no-caps
                       size="sm"
-                      color="grey-7"
+                      color="primary"
+                      icon="restart_alt"
+                      class="q-px-sm"
                       :label="$t('settings.resetDefault')"
                       data-test="reset-cold-vault-btn"
                       @click="resetColdVaultSweep"
@@ -551,28 +553,33 @@
                   {{ emailGatewayError }}
                 </div>
                 <div
-                  class="text-caption text-grey-7 q-mt-sm"
-                  data-test="email-gateway-fee"
+                  class="row items-center justify-between q-gutter-sm q-mt-sm"
                 >
-                  <q-icon
-                    name="local_post_office"
-                    size="14px"
-                    class="q-mr-xs text-primary"
-                  />
-                  {{
-                    $t(
-                      'settings.emailGatewayFee',
-                      'Gateway delivery stamp: 0.01 MONT per email',
-                    )
-                  }}
-                </div>
-                <div class="row items-center justify-end q-gutter-x-sm q-mt-xs">
+                  <div
+                    class="col text-caption text-grey-7"
+                    style="min-width: 200px"
+                    data-test="email-gateway-fee"
+                  >
+                    <q-icon
+                      name="local_post_office"
+                      size="14px"
+                      class="q-mr-xs text-primary"
+                    />
+                    {{
+                      $t(
+                        'settings.emailGatewayFee',
+                        'Gateway delivery stamp: 0.01 MONT per email',
+                      )
+                    }}
+                  </div>
                   <q-btn
-                    flat
+                    outline
                     dense
                     no-caps
                     size="sm"
-                    color="grey-7"
+                    color="primary"
+                    icon="restart_alt"
+                    class="q-px-sm col-auto"
                     :label="
                       emailGatewayStatus === 'changed'
                         ? $t('settings.acceptRelayGateway')

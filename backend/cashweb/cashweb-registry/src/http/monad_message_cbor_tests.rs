@@ -754,6 +754,7 @@ async fn private_headers(
     root: &std::path::Path,
     point: &str,
     binding: &crate::monad_mailbox::MailboxRequestBinding,
+    relay_origin: &str,
 ) -> reqwest::header::HeaderMap {
     use crate::monad_mailbox::{MailboxChallenge, MailboxResource};
     use bitcoinsuite_core::Sha256;
@@ -788,8 +789,9 @@ async fn private_headers(
         token: hash_hex(challenge["token"].as_str().unwrap()).unwrap(),
         expires_at_ms: challenge["expires_at_ms"].as_i64().unwrap(),
     };
-    let digest =
-        Sha256::digest(crate::monad_mailbox::mailbox_auth_preimage(token, binding, b"MONT").into());
+    let digest = Sha256::digest(
+        crate::monad_mailbox::mailbox_auth_preimage(token, binding, b"MONT", relay_origin).into(),
+    );
     let signature = public_p_signature(root, digest.as_slice().try_into().unwrap(), point).await;
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("x-frank-mailbox-subject", point.parse().unwrap());

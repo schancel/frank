@@ -17,12 +17,12 @@ import {
 } from '../../../packages/wallet/claim-link'
 import IdentityQrDialog from '../components/dialogs/IdentityQrDialog.vue'
 import Onboard from './Onboard.vue'
-import {
-  clearExtensionSyncOffer,
-  offerExtensionSyncBundle,
-  syncTransferCheckCode,
-} from '../utils/extension-account-sync'
-import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/runtime-adapter'
+
+const mockReceiveAccount = jest.fn()
+jest.mock('../utils/extension-account-sync', () => ({
+  ...jest.requireActual('../utils/extension-account-sync'),
+  receiveAccountOverBridge: (...args: unknown[]) => mockReceiveAccount(...args),
+}))
 
 const mockCreateDirect = jest.fn()
 const mockBeginPasskey = jest.fn()
@@ -187,7 +187,7 @@ beforeEach(() => {
   mockCancel.mockClear()
   mockBeginRestore.mockClear()
   mockConfirmRestore.mockClear()
-  clearExtensionSyncOffer()
+  mockReceiveAccount.mockReset()
   mockNameOwnProfile.mockClear()
   mockEnsureConversationIdSalt.mockClear()
 
@@ -690,54 +690,44 @@ describe('Onboard.vue & /onboard route', () => {
     }
   })
 
-  test('restores an account sent from the Frank extension only after the user confirms it (A8)', async () => {
+  test('restores an account from the other Frank window once the typed PIN pairs, and nothing on a wrong PIN', async () => {
     const syncBundle = {
       displayName: 'Ann',
       backupShares: ['ms12frankshareone', 'ms12franksharetwo'],
     }
     const wrapper = renderOnboard()
     try {
-      // A window message alone, from anywhere, restores nothing.
-      for (const init of [
-        { source: null, origin: 'https://evil.example' },
-        { source: window, origin: window.location.origin },
-      ]) {
-        window.dispatchEvent(
-          new MessageEvent('message', {
-            ...init,
-            data: {
-              channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-              direction: 'to-pwa',
-              type: 'extension-sync-push',
-              payload: { deviceSyncBundle: syncBundle },
-            },
-          }),
-        )
+      await wrapper
+        .get('[data-test="onboard-connect-extension"]')
+        .trigger('click')
+      const typePin = async (pin: string) => {
+        await wrapper.get('[data-test="sync-pin-input"]').setValue(pin)
+        await wrapper.get('[data-test="sync-pin-entry"]').trigger('submit')
         await flushPromises()
       }
-      expect(mockBeginRestore).not.toHaveBeenCalled()
-      expect(mockSession.activatePending).not.toHaveBeenCalled()
 
-      offerExtensionSyncBundle(syncBundle)
-      await flushPromises()
-      expect(
-        wrapper.get('[data-test="onboard-extension-sync-code"]').text(),
-      ).toBe(syncTransferCheckCode(syncBundle))
+      mockReceiveAccount.mockResolvedValueOnce({
+        ok: false,
+        reason: 'pin-mismatch',
+      })
+      await typePin('111111')
+      expect(mockReceiveAccount).toHaveBeenLastCalledWith('111111')
+      expect(wrapper.get('[data-test="sync-pin-error"]').text()).toBe(
+        'accountSync.pinMismatch',
+      )
       expect(mockBeginRestore).not.toHaveBeenCalled()
 
-      await wrapper
-        .get('[data-test="onboard-restore-synced-account"]')
-        .trigger('click')
-      await flushPromises()
+      mockReceiveAccount.mockResolvedValueOnce({ ok: true, bundle: syncBundle })
+      await typePin('222222')
       expect(mockBeginRestore).toHaveBeenCalledTimes(1)
+      expect(mockBeginRestore).toHaveBeenCalledWith(undefined, {
+        keepPending: true,
+      })
       expect(mockConfirmRestore).toHaveBeenCalledWith(
         syncBundle.backupShares,
         'Ann',
       )
       expect(mockSession.activatePending).toHaveBeenCalledTimes(1)
-      expect(
-        wrapper.find('[data-test="onboard-extension-sync-offer"]').exists(),
-      ).toBe(false)
     } finally {
       wrapper.unmount()
     }

@@ -152,43 +152,13 @@
                 data-test="onboard-display-name"
                 :disable="busy"
               />
-              <q-banner
-                v-if="syncOffer"
-                dense
-                rounded
-                class="q-pa-sm q-mt-sm"
-                data-test="onboard-extension-sync-offer"
+              <div
+                v-if="syncPinEntryOpen"
+                class="q-mt-sm"
+                data-test="onboard-extension-sync"
               >
-                <div class="text-body2">{{ syncOfferText }}</div>
-                <div class="text-caption">
-                  {{ syncUi.checkCodeHint }}
-                  <strong data-test="onboard-extension-sync-code">{{
-                    syncOffer.checkCode
-                  }}</strong>
-                </div>
-                <div class="row q-gutter-xs q-mt-xs">
-                  <q-btn
-                    unelevated
-                    dense
-                    no-caps
-                    color="primary"
-                    :label="syncUi.restoreBtn"
-                    :loading="busy"
-                    :disable="busy"
-                    data-test="onboard-restore-synced-account"
-                    @click="restoreSyncedAccount"
-                  />
-                  <q-btn
-                    flat
-                    dense
-                    no-caps
-                    :label="syncUi.dismissBtn"
-                    :disable="busy"
-                    data-test="onboard-dismiss-synced-account"
-                    @click="clearExtensionSyncOffer"
-                  />
-                </div>
-              </q-banner>
+                <SyncPinEntry :busy="busy" @received="restoreSyncedAccount" />
+              </div>
             </q-card-section>
 
             <q-card-actions vertical class="q-px-md q-pb-md q-gutter-y-sm">
@@ -271,16 +241,10 @@ import {
   type ParsedClaimLink,
 } from '../../../packages/wallet/claim-link'
 import {
-  FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-  isBrowserExtensionRuntime,
-  sendRuntimeMessage,
-} from '../../src-bex/runtime-adapter'
-import {
-  clearExtensionSyncOffer,
+  canReceiveSyncedAccount,
   extractValidBackupShares,
-  offerExtensionSyncBundle,
-  pendingExtensionSyncOffer,
 } from '../utils/extension-account-sync'
+import SyncPinEntry from '../components/SyncPinEntry.vue'
 
 defineProps<{ myDrawerOpen?: boolean }>()
 const emit = defineEmits(['toggleMyDrawerOpen', 'setupCompleted'])
@@ -301,19 +265,7 @@ const bearerClaimUi = {
 
 const windowHash = ref(typeof window !== 'undefined' ? window.location.hash : '')
 const redeemedClaimIds = ref<string[]>([])
-const syncUi = {
-  offerTitle: 'Restore the account sent from your other Frank device',
-  checkCodeHint: 'Continue only if the sending device shows the same code:',
-  restoreBtn: 'Restore this account',
-  dismissBtn: 'Dismiss',
-}
-const syncOffer = pendingExtensionSyncOffer
-const syncOfferText = computed(() => {
-  const name = syncOffer.value?.deviceSyncBundle.displayName
-  return typeof name === 'string' && name.trim()
-    ? `${syncUi.offerTitle} (${name.trim()})?`
-    : `${syncUi.offerTitle}?`
-})
+const syncPinEntryOpen = ref(false)
 
 function onWindowHashChange() {
   if (typeof window !== 'undefined') {
@@ -321,48 +273,35 @@ function onWindowHashChange() {
   }
 }
 
-/** Restores the offered account. Runs only from the user's confirm click. */
-function restoreSyncedAccount() {
-  const offer = syncOffer.value
-  if (!offer || account.status === 'ready') return
-  const shares = extractValidBackupShares(offer.deviceSyncBundle)
+/** Restores the account received with the PIN the user typed. */
+function restoreSyncedAccount(bundle: Record<string, unknown>) {
+  if (!canReceiveSyncedAccount()) return
+  const shares = extractValidBackupShares(bundle)
+  if (shares.length < 2) return
+  // Use the sent account's own name, unless the user already chose one.
+  const sentName =
+    typeof bundle.displayName === 'string' ? bundle.displayName.trim() : ''
+  if (
+    sentName &&
+    (!displayName.value.trim() || displayName.value === 'Frank User')
+  ) {
+    displayName.value = sentName
+  }
   return runOnboardAction(async () => {
-    await ceremony.beginRestore()
+    // Never cancel a signup another tab may have started meanwhile.
+    await ceremony.beginRestore(undefined, { keepPending: true })
     const outcome = await ceremony.confirm(
       shares,
       displayName.value.trim() || 'Frank User',
     )
     if (!alive) return
-    clearExtensionSyncOffer()
     await activateStagedAndMigrate(outcome)
   })
 }
 
-async function connectBrowserExtension() {
-  if (isBrowserExtensionRuntime()) {
-    // Collect an account the Frank web app handed to the extension.
-    try {
-      const response = await sendRuntimeMessage<Record<string, any>, any>({
-        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-        type: 'get-synced-state',
-      })
-      offerExtensionSyncBundle(response?.result?.deviceSyncBundle)
-    } catch {
-      // Ignore runtime query errors
-    }
-  } else if (typeof window !== 'undefined') {
-    // Ask the extension's content script for an account it is holding;
-    // AppRuntime receives the reply.
-    window.postMessage(
-      {
-        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-        direction: 'to-extension',
-        type: 'pwa-request-sync',
-        id: `onboard-sync-${Date.now()}`,
-      },
-      window.location.origin,
-    )
-  }
+function connectBrowserExtension() {
+  // The other window shows a PIN after Sync account; type it here.
+  syncPinEntryOpen.value = true
 }
 
 onMounted(() => {
@@ -481,22 +420,6 @@ watch([nameParam, emailParam], ([newName, newEmail]) => {
     displayName.value = deriveDefaultDisplayName(newName, newEmail)
   }
 })
-
-// Suggest the sent account's own name, unless the user already chose one.
-watch(
-  syncOffer,
-  offer => {
-    const name = offer?.deviceSyncBundle.displayName
-    if (
-      typeof name === 'string' &&
-      name.trim() &&
-      (!displayName.value.trim() || displayName.value === 'Frank User')
-    ) {
-      displayName.value = name.trim()
-    }
-  },
-  { immediate: true },
-)
 
 const peerDisplayLabel = computed(() => {
   if (peerNameParam.value) return peerNameParam.value

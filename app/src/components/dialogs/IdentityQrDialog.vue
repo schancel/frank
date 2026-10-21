@@ -295,6 +295,28 @@
             />
           </div>
           <div
+            v-if="syncPin"
+            class="q-mt-xs"
+            data-test="identity-qr-sync-pin-block"
+          >
+            <div class="text-caption">{{ syncPinPrompt }}</div>
+            <div
+              class="text-h5 text-weight-bold identity-qr-sync-pin"
+              data-test="identity-qr-sync-pin"
+            >
+              {{ syncPin }}
+            </div>
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              :label="$t('accountSync.cancel')"
+              data-test="identity-qr-sync-cancel"
+              @click="cancelAccountSync"
+            />
+          </div>
+          <div
             v-if="syncStatusMessage"
             class="text-caption text-positive text-weight-medium q-mt-xs"
             data-test="identity-qr-sync-status"
@@ -606,6 +628,28 @@
             />
           </div>
           <div
+            v-if="syncPin"
+            class="q-mt-xs"
+            data-test="identity-qr-sync-pin-block"
+          >
+            <div class="text-caption">{{ syncPinPrompt }}</div>
+            <div
+              class="text-h5 text-weight-bold identity-qr-sync-pin"
+              data-test="identity-qr-sync-pin"
+            >
+              {{ syncPin }}
+            </div>
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              :label="$t('accountSync.cancel')"
+              data-test="identity-qr-sync-cancel"
+              @click="cancelAccountSync"
+            />
+          </div>
+          <div
             v-if="syncStatusMessage"
             class="text-caption text-positive text-weight-medium q-mt-xs"
             data-test="identity-qr-sync-status"
@@ -660,10 +704,18 @@ import {
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   FRANK_WEB_APP_ORIGIN,
   isFrankWebAppOrigin,
+  onRuntimeMessage,
   RuntimeEnvironmentKind,
   sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
-import { syncTransferCheckCode } from 'src/utils/extension-account-sync'
+import {
+  cancelPageSyncSender,
+  pageSyncSender,
+  startPageSyncSender,
+  type SyncSenderView,
+} from 'src/utils/extension-account-sync'
+import { SYNC_PAIRING_TTL_MS } from 'src/utils/sync-pairing'
+import { useTranslate } from 'src/composables/useTranslate'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../../src-bex/inpage'
 
 function parseGiftAmountAtomic(raw: string): bigint {
@@ -744,7 +796,12 @@ export default defineComponent({
     const claimLinkNote = ref('')
     const generatedClaimLinkUrl = ref('')
     const alwaysOpenInSidePanel = ref(false)
-    const syncStatusMessage = ref('')
+    const t = useTranslate()
+    const syncError = ref('')
+    // The extension's sending session lives in its background; this is what
+    // the background last told this page about it.
+    const extSyncSender = ref<SyncSenderView | null>(null)
+    let extSyncExpiry: ReturnType<typeof setTimeout> | null = null
 
     const detectedRuntimeKind = computed<RuntimeEnvironmentKind>(() => {
       if (props.runtimeKindOverride) {
@@ -1053,10 +1110,115 @@ export default defineComponent({
       })
     }
 
-    // Hands this account's backup shares to the other Frank surface: from the
-    // extension to the Frank web app tab, or from the web app to the extension.
-    // The receiver restores only after its user confirms the same check code.
+    const syncSenderView = computed(() =>
+      isExtensionMode.value ? extSyncSender.value : pageSyncSender.value,
+    )
+    const syncPin = computed(() => syncSenderView.value?.pin ?? '')
+    const syncPinPrompt = computed(() =>
+      syncSenderView.value?.status === 'new-pin'
+        ? t('accountSync.newPinAfterMismatch')
+        : t('accountSync.showPin'),
+    )
+    const syncStatusMessage = computed(() => {
+      if (syncError.value) return syncError.value
+      const status = syncSenderView.value?.status
+      return status === 'sent' || status === 'ended' || status === 'expired'
+        ? t(`accountSync.${status}`)
+        : ''
+    })
+
+    const stopSyncSenderUpdates = onRuntimeMessage(
+      (message: {
+        channel?: unknown
+        type?: unknown
+        status: SyncSenderView['status']
+        pin?: unknown
+      }) => {
+        if (
+          message?.channel !== FRANK_PWA_EXTENSION_SYNC_CHANNEL ||
+          message.type !== 'sync-sender-update' ||
+          !extSyncSender.value
+        ) {
+          return undefined
+        }
+        extSyncSender.value = {
+          pin: message.status === 'new-pin' ? String(message.pin ?? '') : '',
+          status: message.status,
+        }
+        return undefined
+      },
+    )
+    onBeforeUnmount(() => {
+      stopSyncSenderUpdates()
+      if (extSyncExpiry) clearTimeout(extSyncExpiry)
+    })
+
+    const showExtSyncSender = (
+      view: SyncSenderView | null,
+      expiresAt?: number,
+    ) => {
+      extSyncSender.value = view
+      if (extSyncExpiry) clearTimeout(extSyncExpiry)
+      extSyncExpiry = null
+      if (!view) return
+      extSyncExpiry = setTimeout(() => {
+        const status = extSyncSender.value?.status
+        if (status === 'waiting' || status === 'new-pin') {
+          extSyncSender.value = { pin: '', status: 'expired' }
+        }
+      }, Math.max(0, (expiresAt ?? Date.now() + SYNC_PAIRING_TTL_MS) - Date.now()))
+    }
+
+    // A popup that closed and reopened still shows the session's current PIN.
+    if (isExtensionMode.value) {
+      void sendRuntimeMessage<
+        Record<string, unknown>,
+        {
+          result?: {
+            ok?: boolean
+            pin?: string
+            status?: string
+            expiresAt?: number
+          }
+        }
+      >({
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        type: 'extension-sync-status',
+      })
+        .then(response => {
+          const current = response?.result
+          if (!current?.ok || typeof current.pin !== 'string') return
+          if (extSyncSender.value) return
+          showExtSyncSender(
+            {
+              pin: current.pin,
+              status: current.status === 'new-pin' ? 'new-pin' : 'waiting',
+            },
+            current.expiresAt,
+          )
+        })
+        .catch(() => undefined)
+    }
+
+    /** Ends this side's sending session now and wipes it. */
+    const cancelAccountSync = () => {
+      syncError.value = ''
+      if (isExtensionMode.value) {
+        showExtSyncSender(null)
+        void sendRuntimeMessage({
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          type: 'extension-sync-cancel',
+        }).catch(() => undefined)
+      } else {
+        cancelPageSyncSender()
+      }
+    }
+
+    // Hands this account to the other Frank surface (extension or web app) by
+    // PIN pairing: this side shows a PIN, the user types it in the other
+    // window, and the account goes out only to the side that proves the PIN.
     const syncAccountOverBridge = async () => {
+      syncError.value = ''
       let backupShares: string[] = []
       try {
         const { accountSession, accountStatus } = await import(
@@ -1073,7 +1235,7 @@ export default defineComponent({
         // No account custody available
       }
       if (backupShares.length < 2) {
-        syncStatusMessage.value = 'No account to sync yet.'
+        syncError.value = t('accountSync.noAccount')
         return
       }
 
@@ -1085,47 +1247,33 @@ export default defineComponent({
         username: displayUsername.value,
         backupShares,
       }
-      const checkCode = syncTransferCheckCode(deviceSyncBundle)
 
       if (isExtensionMode.value) {
+        // The background holds the session so it outlives a closing popup.
         const response = await sendRuntimeMessage<
           Record<string, unknown>,
-          {
-            result?: {
-              ok?: boolean
-              deliveredToTabCount?: number
-            }
-          }
+          { result?: { ok?: boolean; pin?: string; expiresAt?: number } }
         >({
           channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-          type: 'extension-push-sync-to-tab',
+          type: 'extension-sync-offer',
           payload: { deviceSyncBundle },
         }).catch(() => null)
-        if (!response?.result?.ok) {
-          syncStatusMessage.value = 'Sync failed.'
-        } else if ((response.result.deliveredToTabCount ?? 0) > 0) {
-          syncStatusMessage.value = `Sent to your ${FRANK_WEB_APP_ORIGIN} tab. Check code: ${checkCode}`
-        } else {
-          // A tab that already has an account declines it, so say so plainly.
-          syncStatusMessage.value = `No ${FRANK_WEB_APP_ORIGIN} tab took the account (a tab that is already signed in does not). Open ${FRANK_WEB_APP_ORIGIN} without an account and choose Connect Browser Extension within 2 minutes. Check code: ${checkCode}`
+        const pin = response?.result?.pin
+        if (!response?.result?.ok || typeof pin !== 'string') {
+          showExtSyncSender(null)
+          syncError.value = t('accountSync.failed')
+          return
         }
+        showExtSyncSender({ pin, status: 'waiting' }, response.result.expiresAt)
       } else if (
         typeof window !== 'undefined' &&
         isFrankWebAppOrigin(window.location.origin)
       ) {
-        window.postMessage(
-          {
-            channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-            direction: 'to-extension',
-            type: 'pwa-sync-handshake',
-            id: `sync-${Date.now()}`,
-            payload: { deviceSyncBundle },
-          },
-          window.location.origin,
-        )
-        syncStatusMessage.value = `Sent to the extension. Open it and choose Connect Browser Extension within 2 minutes. Check code: ${checkCode}`
+        startPageSyncSender(deviceSyncBundle)
       } else {
-        syncStatusMessage.value = `Account sync works only on ${FRANK_WEB_APP_ORIGIN}.`
+        syncError.value = t('accountSync.unsupported', {
+          origin: FRANK_WEB_APP_ORIGIN,
+        })
       }
     }
 
@@ -1174,6 +1322,9 @@ export default defineComponent({
       alwaysSidePanelBtnLabel,
       syncBridgeBtnLabel,
       syncStatusMessage,
+      syncPin,
+      syncPinPrompt,
+      cancelAccountSync,
       toggleClaimLinkCreator,
       generateFundedClaimLink,
       openInSidePanel,
@@ -1284,6 +1435,10 @@ body.body--dark .identity-qr-panel {
   gap: 8px;
 }
 
+.identity-qr-sync-pin {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2em;
+}
 .identity-qr-sync-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(156px, 1fr));

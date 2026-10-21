@@ -4,104 +4,239 @@ import { usePersistentStorageStore } from '../stores/persistent-storage'
 import { nameOwnProfile } from './identity-session'
 import { setCustomRelayBaseUrl } from '@frank/wallet/chain'
 import { shallowRef } from 'vue'
-import { sha256 } from '@noble/hashes/sha256.js'
-import { utf8ToBytes } from '@noble/hashes/utils.js'
-import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/runtime-adapter'
+import {
+  FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+  isBrowserExtensionRuntime,
+  sendRuntimeMessage,
+} from '../../src-bex/runtime-adapter'
+import {
+  createSyncSender,
+  receiveSyncBundle,
+  syncSenderConfirm,
+  syncSenderHello,
+  SYNC_PAIRING_TTL_MS,
+  type SyncConfirmRequest,
+  type SyncReceiveResult,
+  type SyncSenderState,
+} from './sync-pairing'
 
 /**
- * An account bundle another Frank surface (extension or web app) offered to this
- * one. It carries backup shares, so it lives only in memory until the user
- * restores it or dismisses it, and it is never restored without that click.
+ * What the sending side shows while it waits for the PIN: the PIN itself, and
+ * whether the last PIN was wrong, the account went out, or the session ended.
  */
-export interface ExtensionSyncOffer {
-  deviceSyncBundle: Record<string, any>
-  /** Check code to compare with the one shown on the sending device. */
-  checkCode: string
+export type SyncSenderStatus =
+  | 'waiting'
+  | 'new-pin'
+  | 'sent'
+  | 'ended'
+  | 'expired'
+
+export interface SyncSenderView {
+  pin: string
+  status: SyncSenderStatus
 }
 
-export const pendingExtensionSyncOffer = shallowRef<ExtensionSyncOffer | null>(
-  null,
-)
+/** The web app's own sending session (web app -> extension). Memory only. */
+export const pageSyncSender = shallowRef<SyncSenderView | null>(null)
+let pageSenderState: SyncSenderState | null = null
+let pageSenderTimer: ReturnType<typeof setTimeout> | null = null
 let restoreInFlight: Promise<boolean> | null = null
 
-/** Holds a received bundle for the user to confirm. Ignores bundles without shares. */
-export function offerExtensionSyncBundle(
-  bundle: Record<string, any> | null | undefined,
-): ExtensionSyncOffer | null {
-  const checkCode = syncTransferCheckCode(bundle)
-  if (!bundle || !checkCode) return null
-  const offer = { deviceSyncBundle: bundle, checkCode }
-  pendingExtensionSyncOffer.value = offer
-  return offer
-}
-
-export function clearExtensionSyncOffer(): void {
-  pendingExtensionSyncOffer.value = null
+function endPageSyncSender(status: SyncSenderStatus): void {
+  pageSenderState = null
+  if (pageSenderTimer) clearTimeout(pageSenderTimer)
+  pageSenderTimer = null
+  pageSyncSender.value = { pin: '', status }
 }
 
 /**
- * Six digits derived from the backup shares in the bundle. The sending device
- * shows the code of what it sent; the receiving device shows the code of what
- * it got. Different codes mean the bundle is not the one the user sent.
+ * Starts handing this web app's account to the extension: makes a PIN for the
+ * user to type there and tells the extension this tab is offering an account.
+ * The bundle stays in this page until the extension proves it has the PIN.
  */
-export function syncTransferCheckCode(
-  bundle: Record<string, any> | null | undefined,
-): string {
-  const shares = extractValidBackupShares(bundle)
-  if (shares.length < 2) return ''
-  const digest = sha256(
-    utf8ToBytes(`frank-sync-check-v1\n${shares.join('\n')}`),
+export function startPageSyncSender(
+  bundle: Record<string, unknown>,
+  win: Window = window,
+): SyncSenderView {
+  if (pageSenderTimer) clearTimeout(pageSenderTimer)
+  pageSenderState = createSyncSender(bundle)
+  pageSenderTimer = setTimeout(
+    () => endPageSyncSender('expired'),
+    SYNC_PAIRING_TTL_MS,
   )
-  const value =
-    ((digest[0] << 24) | (digest[1] << 16) | (digest[2] << 8) | digest[3]) >>> 0
-  return String(value % 1_000_000).padStart(6, '0')
+  const view: SyncSenderView = { pin: pageSenderState.pin, status: 'waiting' }
+  pageSyncSender.value = view
+  win.postMessage(
+    {
+      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+      direction: 'to-extension',
+      type: 'pwa-sync-offer',
+      id: `sync-offer-${Date.now()}`,
+    },
+    win.location.origin,
+  )
+  return view
 }
 
 /**
- * The account-sync window message a listener may act on: same window, same
- * origin, sync channel, addressed to the web app. Returns its bundle, if any.
+ * Ends the web app's sending session now: wipes the bundle and PIN from this
+ * page and withdraws the offer from the extension.
  */
-export function readExtensionSyncWindowMessage(
+export function cancelPageSyncSender(win: Window = window): void {
+  const hadSession = pageSenderState !== null
+  endPageSyncSender('ended')
+  pageSyncSender.value = null
+  if (!hadSession) return
+  win.postMessage(
+    {
+      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+      direction: 'to-extension',
+      type: 'pwa-sync-cancel',
+      id: `sync-cancel-${Date.now()}`,
+    },
+    win.location.origin,
+  )
+}
+
+/**
+ * Answers the extension's pairing requests for the web app's sending session.
+ * The extension's content script relays them; anything else is ignored.
+ * Returns whether the event was such a request.
+ */
+export function handlePageSyncPairingRequest(
   event: MessageEvent,
   win: Window = window,
-): Record<string, any> | null {
-  if (event.source !== win || event.origin !== win.location.origin) return null
+): boolean {
+  if (event.source !== win || event.origin !== win.location.origin) {
+    return false
+  }
   const data = event.data
   if (
     !data ||
     typeof data !== 'object' ||
     data.channel !== FRANK_PWA_EXTENSION_SYNC_CHANNEL ||
     data.direction !== 'to-pwa' ||
-    (data.type !== 'extension-sync-push' && data.type !== 'sync-response')
+    (data.type !== 'pair-hello' && data.type !== 'pair-confirm') ||
+    typeof data.id !== 'string'
   ) {
-    return null
+    return false
   }
-  const bundle = data.payload?.deviceSyncBundle ?? data.result?.deviceSyncBundle
-  return bundle && typeof bundle === 'object' ? bundle : null
-}
-
-/**
- * Tells the extension's content script whether a pushed bundle was offered to
- * the user, so the extension does not report a delivery that did not happen.
- */
-export function replyExtensionSyncOffer(
-  event: MessageEvent,
-  offered: boolean,
-  win: Window = window,
-): void {
-  const data = event.data
-  if (data?.type !== 'extension-sync-push' || typeof data.id !== 'string') {
-    return
+  let result: unknown = { ok: false, reason: 'no-sender' }
+  if (pageSenderState && data.type === 'pair-hello') {
+    const next = syncSenderHello(pageSenderState)
+    pageSenderState = next.state
+    if (!next.state) endPageSyncSender('expired')
+    result = next.reply
+  } else if (pageSenderState) {
+    const next = syncSenderConfirm(pageSenderState, data.payload)
+    pageSenderState = next.state
+    if (next.outcome === 'new-pin' && next.state) {
+      pageSyncSender.value = { pin: next.state.pin, status: 'new-pin' }
+    } else if (next.outcome !== 'stale') {
+      endPageSyncSender(next.outcome === 'sent' ? 'sent' : next.outcome)
+    }
+    result = next.reply
   }
   win.postMessage(
     {
       channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
       direction: 'to-extension',
-      type: 'sync-offer-result',
+      type: 'pair-reply',
       id: data.id,
-      offered,
+      result,
     },
     win.location.origin,
+  )
+  return true
+}
+
+/** How long the web app waits for the extension to answer a pairing message. */
+export const SYNC_PAIR_REPLY_TIMEOUT_MS = 10_000
+let pairRequestSeq = 0
+
+/** Sends one pairing message to the other side and returns its reply, or null. */
+async function sendSyncPairMessage(
+  type: 'pair-hello' | 'pair-confirm',
+  payload: SyncConfirmRequest | undefined,
+  win: Window,
+): Promise<unknown> {
+  if (isBrowserExtensionRuntime()) {
+    // The background relays it to the web app tab that offered an account.
+    const response = await sendRuntimeMessage<Record<string, unknown>, any>({
+      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+      type,
+      payload,
+    }).catch(() => null)
+    return response?.result ?? null
+  }
+  // The extension's content script relays it to the background, which holds
+  // the extension's sending session.
+  const id = `sync-pair-${Date.now()}-${++pairRequestSeq}`
+  return await new Promise<unknown>(resolve => {
+    const done = (value: unknown) => {
+      clearTimeout(timer)
+      win.removeEventListener('message', onMessage)
+      resolve(value)
+    }
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data
+      if (
+        event.source !== win ||
+        event.origin !== win.location.origin ||
+        data?.channel !== FRANK_PWA_EXTENSION_SYNC_CHANNEL ||
+        data.direction !== 'to-pwa' ||
+        (data.type !== 'sync-response' && data.type !== 'sync-error') ||
+        data.id !== id
+      ) {
+        return
+      }
+      done(data.result ?? null)
+    }
+    const timer = setTimeout(() => done(null), SYNC_PAIR_REPLY_TIMEOUT_MS)
+    win.addEventListener('message', onMessage)
+    win.postMessage(
+      {
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        direction: 'to-extension',
+        type,
+        id,
+        payload,
+      },
+      win.location.origin,
+    )
+  })
+}
+
+/**
+ * Whether this side may take an account from the other window: only when it
+ * has none at all. A locked, pending or unavailable account still exists, and
+ * restoring would replace it (or cancel the pending signup).
+ */
+export function canReceiveSyncedAccount(): boolean {
+  return (
+    accountStatus.status === 'fresh' &&
+    !accountStatus.account &&
+    !accountStatus.pending
+  )
+}
+
+/**
+ * Receives the account the other Frank window is offering, using the PIN the
+ * user typed. A missing reply means nothing is offering an account. A side
+ * that already has an account does not pair at all.
+ */
+export async function receiveAccountOverBridge(
+  pin: string,
+  win: Window = window,
+): Promise<SyncReceiveResult> {
+  if (!canReceiveSyncedAccount()) return { ok: false, reason: 'has-account' }
+  return receiveSyncBundle(
+    pin,
+    async (type, payload) =>
+      (await sendSyncPairMessage(type, payload, win)) ?? {
+        ok: false,
+        reason: 'no-sender',
+      },
   )
 }
 
@@ -115,7 +250,7 @@ export function extractValidBackupShares(
   )
 }
 
-/** Restores and activates the bundle's account. Call only from the user's confirm click. */
+/** Restores and activates a bundle received with the PIN the user typed. */
 export async function restoreAccountFromExtensionBundle(
   bundle: Record<string, any> | null | undefined,
   options?: {
@@ -127,8 +262,7 @@ export async function restoreAccountFromExtensionBundle(
   if (shares.length < 2) {
     return false
   }
-  if (accountStatus.status === 'ready') {
-    clearExtensionSyncOffer()
+  if (!canReceiveSyncedAccount()) {
     return false
   }
   if (restoreInFlight) {
@@ -152,7 +286,8 @@ export async function restoreAccountFromExtensionBundle(
           'Frank User'
         ).trim() || 'Frank User'
 
-      await (ceremony as any).beginRestore()
+      // Never cancel a signup another tab may have started meanwhile.
+      await (ceremony as any).beginRestore(undefined, { keepPending: true })
       const outcome = await (ceremony as any).confirm(shares, chosenName)
       if (outcome?.discoveredRelayUrl) {
         setCustomRelayBaseUrl(outcome.discoveredRelayUrl)
@@ -174,7 +309,6 @@ export async function restoreAccountFromExtensionBundle(
         return false
       }
 
-      clearExtensionSyncOffer()
       try {
         void usePersistentStorageStore().afterActivation()
       } catch {

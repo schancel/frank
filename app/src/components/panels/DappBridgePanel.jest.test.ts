@@ -215,17 +215,11 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     wrapper.unmount()
   })
 
-  it('supports Standalone PWA WalletConnect URI pairing and 1-click Extension Sync with SAS code', async () => {
-    const wrapper = mountPanel({
-      initialApprovals: [],
-      initialSasCode: '654321',
-    })
+  it('supports Standalone PWA WalletConnect URI pairing', async () => {
+    const wrapper = mountPanel({ initialApprovals: [] })
 
     const syncSection = wrapper.find('[data-testid="dapp-pwa-sync-section"]')
     expect(syncSection.exists()).toBe(true)
-    expect(wrapper.find('[data-testid="dapp-sync-sas-code"]').text()).toContain(
-      '654321',
-    )
 
     const input = wrapper.find('[data-testid="dapp-wc-uri-input"]')
     await input.setValue('wc:abc123def456@2?relay-protocol=irn&symKey=deadbeef')
@@ -237,14 +231,10 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     expect(
       wrapper.find('[data-testid="dapp-approval-card"]').exists(),
     ).toBe(true)
-
-    await wrapper
-      .find('[data-testid="dapp-extension-sync-btn"]')
-      .trigger('click')
-    expect(wrapper.emitted('extension-sync')).toHaveLength(1)
-    expect(wrapper.find('[data-testid="dapp-sync-sas-code"]').text()).toContain(
-      '654321 (Synced)',
-    )
+    // Account sync lives in the profile dialog (PIN pairing), not here.
+    expect(
+      wrapper.find('[data-testid="dapp-extension-sync-btn"]').exists(),
+    ).toBe(false)
     wrapper.unmount()
   })
 

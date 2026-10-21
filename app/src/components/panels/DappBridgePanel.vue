@@ -422,24 +422,6 @@
         >
           {{ pairedWcStatusText }}
         </div>
-
-        <q-separator class="q-my-md" />
-
-        <div class="row items-center justify-between">
-          <q-btn
-            outline
-            color="primary"
-            data-testid="dapp-extension-sync-btn"
-            :label="syncExtensionBtnLabel"
-            @click="triggerExtensionSync"
-          />
-          <div
-            class="text-subtitle2 text-weight-bold"
-            data-testid="dapp-sync-sas-code"
-          >
-            {{ sasDisplayText }}
-          </div>
-        </div>
       </q-card-section>
     </q-card>
   </div>
@@ -478,7 +460,6 @@ import {
   sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
 import { isDappApprovalsChangedMessage } from 'src/utils/dapp-approval-surface'
-import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../../src-bex/content'
 import {
   DappProviderAnnounceMode,
   FRANK_DAPP_BRIDGE_CHANNEL,
@@ -722,10 +703,6 @@ export default defineComponent({
       type: String as PropType<RuntimeEnvironmentKind | ''>,
       default: '',
     },
-    initialSasCode: {
-      type: String,
-      default: '482910',
-    },
   },
   emits: [
     'create-burner',
@@ -737,7 +714,6 @@ export default defineComponent({
     'disconnect-origin',
     'update-announce-mode',
     'wc-connect',
-    'extension-sync',
   ],
   setup(props, { emit }) {
     const { total: liveWalletBalanceWei } = useBalance()
@@ -776,8 +752,6 @@ export default defineComponent({
     const approvals = ref<DappApprovalItem[]>([...props.initialApprovals])
     const wcUriInput = ref('')
     const pairedWcUri = ref('')
-    const sasCode = ref(props.initialSasCode)
-    const syncTriggered = ref(false)
 
     const resolvedRootAddress = computed(
       () => ownCanonicalAddress.value || bridgeDefaultAddress.value || '',
@@ -946,8 +920,6 @@ export default defineComponent({
       wcInputLabel: 'WalletConnect or dApp URI',
       wcInputPlaceholder: 'wc:00e46b69-d0cc-4b3e-b6a2-...',
       wcConnectBtn: 'Pair URI',
-      syncExtensionBtn: 'Sync with Browser Extension',
-      syncToWebTabBtn: 'Sync Account to signet.mx Tab',
     })
 
     const plugIcon = FA_PLUG_CIRCLE_PLUS_ICON
@@ -975,10 +947,6 @@ export default defineComponent({
 
     const isExtensionRuntime = computed(
       () => detectedRuntimeKind.value !== 'pwa',
-    )
-
-    const syncExtensionBtnLabel = computed(() =>
-      isExtensionRuntime.value ? ui.syncToWebTabBtn : ui.syncExtensionBtn,
     )
 
     const runtimeBadgeLabel = computed(() => {
@@ -1113,12 +1081,6 @@ export default defineComponent({
 
     const pairedWcStatusText = computed(
       () => `Paired dApp URI: ${pairedWcUri.value}`,
-    )
-
-    const sasDisplayText = computed(() =>
-      syncTriggered.value
-        ? `SAS Code: ${sasCode.value} (Synced)`
-        : `SAS Code: ${sasCode.value}`,
     )
 
     function setConnectBurnerMode(useBurner: boolean) {
@@ -1662,40 +1624,6 @@ export default defineComponent({
       wcUriInput.value = ''
     }
 
-    async function triggerExtensionSync() {
-      syncTriggered.value = true
-      const syncPayload = {
-        sasCode: sasCode.value,
-        deviceSyncBundle: {
-          version: 1,
-          activePersonaPath: activeDerivationPath.value,
-          activePersonaAddress: activePersonaAddress.value,
-        },
-      }
-      if (isExtensionRuntime.value) {
-        await sendRuntimeMessage({
-          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-          type: 'extension-push-sync-to-tab',
-          origin: 'frank-extension',
-          payload: syncPayload,
-        })
-      }
-      if (typeof window !== 'undefined' && typeof window.postMessage === 'function') {
-        window.postMessage(
-          {
-            channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-            direction: 'to-extension',
-            type: 'pwa-sync-handshake',
-            id: `sync-${Date.now()}`,
-            idempotencyKey: `sync-${Date.now()}`,
-            payload: syncPayload,
-          },
-          '*',
-        )
-      }
-      emit('extension-sync', syncPayload)
-    }
-
     return {
       ui,
       plugIcon,
@@ -1713,7 +1641,6 @@ export default defineComponent({
       wcUriInput,
       pairedWcUri,
       isExtensionRuntime,
-      syncExtensionBtnLabel,
       runtimeBadgeLabel,
       activeDerivationPath,
       activePersonaAddress,
@@ -1728,7 +1655,6 @@ export default defineComponent({
       approvalMethodSummary,
       jitSweepNoticeText,
       pairedWcStatusText,
-      sasDisplayText,
       setConnectBurnerMode,
       setAnnounceMode,
       disconnectOrigin,
@@ -1740,7 +1666,6 @@ export default defineComponent({
       approveCurrentRequest,
       rejectCurrentRequest,
       connectWalletConnectUri,
-      triggerExtensionSync,
     }
   },
 })

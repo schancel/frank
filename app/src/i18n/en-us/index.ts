@@ -2092,6 +2092,27 @@ export const rawEnUS = {
     addedToContacts: 'Added to Frank Contacts',
     saveVcf: 'Save vCard (.vcf)',
   },
+  accountSync: {
+    cancel: 'Cancel',
+    hasAccount:
+      'This device already has an account. Sync only into a device without one.',
+    showPin: 'Type this PIN in the other window',
+    newPinAfterMismatch:
+      "The PIN didn't match. Type this new PIN in the other window",
+    sent: 'Account sent to the other window.',
+    ended: 'Too many wrong PINs. Choose Sync account to start again.',
+    expired: 'The PIN expired. Choose Sync account to start again.',
+    noAccount: 'No account to sync yet.',
+    failed: 'Sync failed.',
+    unsupported: 'Account sync works only on {origin}.',
+    enterPin: 'Type the PIN shown in your other Frank window',
+    pinLabel: 'PIN',
+    connect: 'Connect',
+    pinMismatch: "PIN didn't match, try again.",
+    noSender:
+      'No account is waiting. Choose Sync account in the other window first.',
+    restoreFailed: 'Could not restore the account. Try syncing again.',
+  },
   onboard: {
     toolbarTitle: 'Frank Onboarding',
     headerBadge: 'End-to-End Encrypted Self-Custodial Onboarding',

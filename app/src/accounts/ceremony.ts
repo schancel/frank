@@ -71,7 +71,12 @@ export function createAccountCeremony() {
     signup = undefined
     attempt = undefined
   }
-  async function capture() {
+  /**
+   * Reads the account state this ceremony may replace. By default a pending attempt left in
+   * custody is cancelled; with `keepPending` (a restore that must not replace anything) it is
+   * left alone and the capture fails with `conflict` instead.
+   */
+  async function capture(options: { keepPending?: boolean } = {}) {
     const token = ++epoch
     const wasLoading =
       (accountSession.state as { status?: string }).status === 'loading'
@@ -88,6 +93,8 @@ export function createAccountCeremony() {
       (snapshot.active?.receipt.context.accountId ?? null) !==
         initialExpected.accountId
     )
+      throw new CustodyError('conflict')
+    if (snapshot.pending && options.keepPending)
       throw new CustodyError('conflict')
     if (snapshot.pending) {
       await accountSession.cancelPending(
@@ -328,11 +335,15 @@ export function createAccountCeremony() {
     share(index: number) {
       return signup?.shares[index] ?? ''
     },
-    async beginRestore(text?: string) {
+    /**
+     * Starts a restore. `keepPending` refuses (with `conflict`) instead of cancelling an
+     * unactivated attempt in custody, e.g. a signup another tab has just started.
+     */
+    async beginRestore(text?: string, options: { keepPending?: boolean } = {}) {
       cancel()
       // Pin the independent descriptor before accepting any shares if provided.
       const descriptor = text ? decodeRecoveryDescriptor(text) : undefined
-      await capture()
+      await capture(options)
       expectedDescriptor = descriptor
       restoring = true
       return descriptor ? encodeRecoveryDescriptor(descriptor) : ''

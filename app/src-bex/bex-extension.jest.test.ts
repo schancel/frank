@@ -17,7 +17,6 @@ import {
 } from './inpage'
 import {
   ensureSafariFallbackInpageScript,
-  FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   installContentScriptBridge,
   isAllowedSyncOrigin,
 } from './content'
@@ -26,9 +25,7 @@ import {
   ensureOffscreenWarmup,
   handleBackgroundMessage,
   installBackgroundBridge,
-  SYNC_TRANSFER_TTL_MS,
 } from './background'
-import { SYNC_OFFER_REPLY_TIMEOUT_MS } from './content'
 
 describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #1710)', () => {
   it('builds Chrome MV3 manifest with sidePanel, service_worker, and MAIN + ISOLATED content scripts', () => {
@@ -40,6 +37,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       'activeTab',
       'scripting',
       'offscreen',
+      'alarms',
     ])
     expect(manifest.background).toEqual({
       service_worker: 'background.js',
@@ -86,7 +84,12 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
         strict_min_version: '128.0',
       },
     })
-    expect(manifest.permissions).toEqual(['storage', 'activeTab', 'scripting'])
+    expect(manifest.permissions).toEqual([
+      'storage',
+      'activeTab',
+      'scripting',
+      'alarms',
+    ])
     expect(manifest.background).toEqual({
       scripts: ['background.js'],
       type: 'module',
@@ -106,7 +109,12 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
   it('builds Safari MV3 manifest with service_worker background and web_accessible_resources for inpage.js fallback', () => {
     const manifest = buildExtensionManifest('safari', '0.3.0')
     expect(manifest.manifest_version).toBe(3)
-    expect(manifest.permissions).toEqual(['storage', 'activeTab', 'scripting'])
+    expect(manifest.permissions).toEqual([
+      'storage',
+      'activeTab',
+      'scripting',
+      'alarms',
+    ])
     expect(manifest.background).toEqual({
       service_worker: 'background.js',
     })
@@ -1435,464 +1443,5 @@ describe('dApp approval reaches an already-open extension view', () => {
       channel: FRANK_DAPP_BRIDGE_CHANNEL,
       type: FRANK_DAPP_APPROVALS_CHANGED,
     })
-  })
-})
-
-describe('Extension <-> web app account sync carries backup shares safely (A1, A8)', () => {
-  const SHARES = ['ms12frankshareone', 'ms12franksharetwo']
-  const bundle = () => ({
-    version: 1,
-    displayName: 'Ann',
-    backupShares: [...SHARES],
-  })
-  const EXT_PAGE = {
-    id: 'frank-test-ext',
-    url: 'chrome-extension://frank-test-ext/index.html?extMode=popup',
-  }
-  const FRANK_TAB = {
-    id: 'frank-test-ext',
-    url: 'https://signet.mx/#/welcome',
-    origin: 'https://signet.mx',
-    tab: { id: 2 },
-  }
-  const OTHER_TAB = {
-    id: 'frank-test-ext',
-    url: 'https://evil.example/',
-    origin: 'https://evil.example',
-    tab: { id: 1 },
-  }
-  const LOCALHOST_TAB = {
-    id: 'frank-test-ext',
-    url: 'http://localhost:9000/',
-    origin: 'http://localhost:9000',
-    tab: { id: 3 },
-  }
-
-  function extensionScope() {
-    const storageSet = jest.fn().mockResolvedValue(undefined)
-    const executeScript = jest.fn().mockResolvedValue(undefined)
-    const tabsSendMessage = jest.fn(async (tabId: number) =>
-      tabId === 2 ? { ok: true, offered: true } : undefined,
-    )
-    // Returns every tab whatever the filter, so the background must check origins itself.
-    const tabsQuery = jest.fn(async () => [
-      { id: 1, url: 'https://evil.example/' },
-      { id: 2, url: 'https://signet.mx/#/welcome' },
-      { id: 3, url: 'http://localhost:9000/' },
-    ])
-    const scope = {
-      chrome: {
-        runtime: {
-          id: 'frank-test-ext',
-          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
-        },
-        storage: { local: { set: storageSet } },
-        tabs: { query: tabsQuery, sendMessage: tabsSendMessage },
-        scripting: { executeScript },
-      },
-    }
-    return { scope, storageSet, executeScript, tabsSendMessage }
-  }
-
-  const sync = (type: string, payload?: unknown) => ({
-    channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-    type,
-    origin: 'https://signet.mx',
-    payload,
-  })
-
-  it('pushes an extension account only to the Frank web app tab, never by executeScript, and persists nothing', async () => {
-    const { scope, storageSet, executeScript, tabsSendMessage } =
-      extensionScope()
-    const state = createBackgroundBridgeState()
-
-    const res = await handleBackgroundMessage(
-      sync('extension-push-sync-to-tab', { deviceSyncBundle: bundle() }),
-      EXT_PAGE,
-      state,
-      scope,
-    )
-
-    expect(res.ok).toBe(true)
-    expect(tabsSendMessage.mock.calls.map(call => call[0])).toEqual([2])
-    expect(executeScript).not.toHaveBeenCalled()
-    expect(JSON.stringify(storageSet.mock.calls)).not.toContain(SHARES[0])
-    // Delivered, so nothing is held afterwards either.
-    expect(state.pendingSyncTransfer).toBeNull()
-  })
-
-  it('holds an undelivered extension account in memory for one pickup by the Frank tab only', async () => {
-    const { scope, storageSet } = extensionScope()
-    scope.chrome.tabs.query = jest.fn(async () => [])
-    const state = createBackgroundBridgeState()
-
-    const pushed = await handleBackgroundMessage(
-      sync('extension-push-sync-to-tab', { deviceSyncBundle: bundle() }),
-      EXT_PAGE,
-      state,
-      scope,
-    )
-    expect(pushed.result.awaitingPickup).toBe(true)
-    expect(storageSet).not.toHaveBeenCalled()
-
-    for (const sender of [OTHER_TAB, LOCALHOST_TAB]) {
-      const stolen = await handleBackgroundMessage(
-        sync('pwa-request-sync'),
-        sender,
-        state,
-        scope,
-      )
-      expect(JSON.stringify(stolen)).not.toContain(SHARES[0])
-    }
-
-    const pulled = await handleBackgroundMessage(
-      sync('pwa-request-sync'),
-      FRANK_TAB,
-      state,
-      scope,
-    )
-    expect(pulled.result.deviceSyncBundle.backupShares).toEqual(SHARES)
-    const again = await handleBackgroundMessage(
-      sync('pwa-request-sync'),
-      FRANK_TAB,
-      state,
-      scope,
-    )
-    expect(again.result.deviceSyncBundle).toBeNull()
-  })
-
-  it('accepts a web app account only from the Frank tab and hands it only to an extension page, once, before it expires', async () => {
-    const { scope, storageSet } = extensionScope()
-    const state = createBackgroundBridgeState()
-
-    for (const sender of [OTHER_TAB, LOCALHOST_TAB]) {
-      const res = await handleBackgroundMessage(
-        sync('pwa-sync-handshake', { deviceSyncBundle: bundle() }),
-        sender,
-        state,
-        scope,
-      )
-      expect(res.ok).toBe(false)
-      expect(state.pendingSyncTransfer).toBeNull()
-    }
-
-    await handleBackgroundMessage(
-      sync('pwa-sync-handshake', { deviceSyncBundle: bundle() }),
-      FRANK_TAB,
-      state,
-      scope,
-    )
-    expect(storageSet).not.toHaveBeenCalled()
-
-    // A web page, even the Frank one, cannot read it back through its content script.
-    const fromTab = await handleBackgroundMessage(
-      sync('get-synced-state'),
-      FRANK_TAB,
-      state,
-      scope,
-    )
-    expect(JSON.stringify(fromTab)).not.toContain(SHARES[0])
-
-    const taken = await handleBackgroundMessage(
-      sync('get-synced-state'),
-      EXT_PAGE,
-      state,
-      scope,
-    )
-    expect(taken.result.deviceSyncBundle.backupShares).toEqual(SHARES)
-    const again = await handleBackgroundMessage(
-      sync('get-synced-state'),
-      EXT_PAGE,
-      state,
-      scope,
-    )
-    expect(again.result.deviceSyncBundle).toBeNull()
-
-    await handleBackgroundMessage(
-      sync('pwa-sync-handshake', { deviceSyncBundle: bundle() }),
-      FRANK_TAB,
-      state,
-      scope,
-    )
-    state.pendingSyncTransfer!.createdAt -= SYNC_TRANSFER_TTL_MS + 1
-    const expired = await handleBackgroundMessage(
-      sync('get-synced-state'),
-      EXT_PAGE,
-      state,
-      scope,
-    )
-    expect(expired.result.deviceSyncBundle).toBeNull()
-  })
-
-  it('removes a sync bundle that earlier builds left in extension storage', () => {
-    const remove = jest.fn().mockResolvedValue(undefined)
-    const scope = {
-      chrome: {
-        runtime: {
-          id: 'frank-test-ext',
-          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
-          onMessage: { addListener: jest.fn(), removeListener: jest.fn() },
-        },
-        storage: { local: { remove } },
-      },
-    }
-    installBackgroundBridge(scope, createBackgroundBridgeState()).dispose()
-    expect(remove).toHaveBeenCalledWith('frankSyncedState')
-  })
-
-  function contentWindow(origin: string) {
-    const url = new URL(origin)
-    let onMessage: ((event: any) => Promise<void>) | undefined
-    const win: any = {
-      location: {
-        origin,
-        protocol: url.protocol,
-        hostname: url.hostname,
-        href: `${origin}/`,
-      },
-      addEventListener: (type: string, fn: any) => {
-        if (type === 'message') onMessage = fn
-      },
-      removeEventListener: jest.fn(),
-      dispatchEvent: jest.fn(),
-      postMessage: jest.fn(),
-    }
-    const runtimeListeners: Array<
-      (msg: any, sender: any, respond: any) => any
-    > = []
-    const sendMessage = jest.fn(async () => ({
-      ok: true,
-      result: { ok: true, deviceSyncBundle: null },
-    }))
-    const scope = {
-      chrome: {
-        runtime: {
-          id: 'frank-test-ext',
-          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
-          sendMessage,
-          onMessage: {
-            addListener: (fn: any) => runtimeListeners.push(fn),
-            removeListener: jest.fn(),
-          },
-        },
-      },
-    }
-    const cleanup = installContentScriptBridge(win, scope)
-    sendMessage.mockClear()
-    win.postMessage.mockClear()
-    const post = async (
-      data: Record<string, unknown>,
-      event: { source?: unknown; origin?: string } = {},
-    ) =>
-      onMessage!({
-        source: 'source' in event ? event.source : win,
-        origin: event.origin ?? origin,
-        data: {
-          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-          direction: 'to-extension',
-          ...data,
-        },
-      })
-    // Resolves with the content script's responses once each has answered.
-    const fromBackground = (message: Record<string, unknown>) =>
-      Promise.all(
-        runtimeListeners.map(
-          fn =>
-            new Promise<unknown>(resolve => {
-              const async = fn(message, {}, resolve)
-              if (async !== true) resolve(undefined)
-            }),
-        ),
-      ).then(responses => responses.filter(r => r !== undefined))
-    return { win, sendMessage, post, fromBackground, cleanup }
-  }
-
-  it('content script forwards only whitelisted types from the Frank window itself and replies to that exact origin', async () => {
-    const { win, sendMessage, post, cleanup } =
-      contentWindow('https://signet.mx')
-
-    await post({ type: 'get-synced-state', id: 'a' })
-    await post({ type: 'extension-push-sync-to-tab', id: 'b' })
-    await post({ type: 'pwa-request-sync', id: 'c' }, { source: {} })
-    await post({ type: 'pwa-request-sync', id: 'd' }, { source: null })
-    await post(
-      { type: 'pwa-request-sync', id: 'e' },
-      { origin: 'https://evil.example' },
-    )
-    expect(sendMessage).not.toHaveBeenCalled()
-
-    await post({ type: 'pwa-request-sync', id: 'f' })
-    expect(sendMessage).toHaveBeenCalledTimes(1)
-    expect(sendMessage.mock.calls[0][0]).toMatchObject({
-      type: 'pwa-request-sync',
-    })
-    expect(win.postMessage).toHaveBeenCalledTimes(1)
-    expect(win.postMessage.mock.calls[0][1]).toBe('https://signet.mx')
-    cleanup()
-  })
-
-  it('content script on any other origin, localhost included, neither forwards sync requests nor accepts pushed bundles', async () => {
-    for (const origin of ['http://localhost:9000', 'https://evil.example']) {
-      const { win, sendMessage, post, fromBackground, cleanup } =
-        contentWindow(origin)
-      await post({ type: 'pwa-request-sync', id: 'x' })
-      await post({
-        type: 'pwa-sync-handshake',
-        id: 'y',
-        payload: { deviceSyncBundle: bundle() },
-      })
-      expect(sendMessage).not.toHaveBeenCalled()
-
-      const acks = await fromBackground({
-        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-        type: 'extension-sync-push',
-        payload: { deviceSyncBundle: bundle() },
-      })
-      expect(acks).toEqual([])
-      expect(JSON.stringify(win.postMessage.mock.calls)).not.toContain(
-        SHARES[0],
-      )
-      cleanup()
-    }
-  })
-
-  it('content script on the Frank origin acks a pushed bundle with whether the page offered it, posting only to its own origin', async () => {
-    const { win, post, fromBackground, cleanup } =
-      contentWindow('https://signet.mx')
-    const push = {
-      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-      type: 'extension-sync-push',
-      payload: { deviceSyncBundle: bundle() },
-    }
-    const pageReply = (offered: boolean, event = {}) => {
-      const sent = win.postMessage.mock.calls.at(-1)
-      expect(sent[1]).toBe('https://signet.mx')
-      return post({ type: 'sync-offer-result', id: sent[0].id, offered }, event)
-    }
-
-    const offered = fromBackground(push)
-    await pageReply(true)
-    expect(await offered).toEqual([{ ok: true, offered: true }])
-
-    // A signed-in page declines the bundle.
-    const declined = fromBackground(push)
-    await pageReply(false)
-    expect(await declined).toEqual([{ ok: true, offered: false }])
-
-    // A reply from another window does not count; no reply means not offered.
-    jest.useFakeTimers({ doNotFake: ['nextTick', 'queueMicrotask'] })
-    try {
-      const silent = fromBackground(push)
-      await pageReply(true, { source: {} })
-      jest.advanceTimersByTime(SYNC_OFFER_REPLY_TIMEOUT_MS)
-      expect(await silent).toEqual([{ ok: true, offered: false }])
-    } finally {
-      jest.useRealTimers()
-    }
-    cleanup()
-  })
-
-  it('keeps a bundle pending and reports no delivery when the Frank tab declines it', async () => {
-    const { scope, tabsSendMessage } = extensionScope()
-    tabsSendMessage.mockImplementation(async (tabId: number) =>
-      tabId === 2 ? { ok: true, offered: false } : undefined,
-    )
-    const state = createBackgroundBridgeState()
-    const res = await handleBackgroundMessage(
-      sync('extension-push-sync-to-tab', { deviceSyncBundle: bundle() }),
-      EXT_PAGE,
-      state,
-      scope,
-    )
-    expect(res.result).toMatchObject({
-      deliveredToTabCount: 0,
-      awaitingPickup: true,
-    })
-    expect(state.pendingSyncTransfer?.deviceSyncBundle).toEqual(bundle())
-  })
-
-  it('holds a bundle in storage.session where available, so it outlives the service worker, readable by trusted contexts only', async () => {
-    const held: Record<string, any> = {}
-    const session = {
-      get: jest.fn(async (key: string) => ({ [key]: held[key] })),
-      set: jest.fn(async (items: Record<string, unknown>) => {
-        Object.assign(held, items)
-      }),
-      remove: jest.fn(async (key: string) => {
-        delete held[key]
-      }),
-      setAccessLevel: jest.fn(async () => undefined),
-    }
-    const localSet = jest.fn()
-    const scope = {
-      chrome: {
-        runtime: {
-          id: 'frank-test-ext',
-          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
-          onMessage: { addListener: jest.fn(), removeListener: jest.fn() },
-        },
-        storage: { session, local: { set: localSet } },
-      },
-    }
-    installBackgroundBridge(scope, createBackgroundBridgeState()).dispose()
-    expect(session.setAccessLevel).toHaveBeenCalledWith({
-      accessLevel: 'TRUSTED_CONTEXTS',
-    })
-
-    const before = createBackgroundBridgeState()
-    await handleBackgroundMessage(
-      sync('pwa-sync-handshake', { deviceSyncBundle: bundle() }),
-      FRANK_TAB,
-      before,
-      scope,
-    )
-    expect(before.pendingSyncTransfer).toBeNull()
-    expect(localSet).not.toHaveBeenCalled()
-
-    // The service worker restarted: fresh background state, same session storage.
-    const after = createBackgroundBridgeState()
-    const taken = await handleBackgroundMessage(
-      sync('get-synced-state'),
-      EXT_PAGE,
-      after,
-      scope,
-    )
-    expect(taken.result.deviceSyncBundle.backupShares).toEqual(SHARES)
-    const again = await handleBackgroundMessage(
-      sync('get-synced-state'),
-      EXT_PAGE,
-      after,
-      scope,
-    )
-    expect(again.result.deviceSyncBundle).toBeNull()
-
-    // Two pickups at once: only one gets it.
-    await handleBackgroundMessage(
-      sync('pwa-sync-handshake', { deviceSyncBundle: bundle() }),
-      FRANK_TAB,
-      after,
-      scope,
-    )
-    const both = await Promise.all([
-      handleBackgroundMessage(sync('get-synced-state'), EXT_PAGE, after, scope),
-      handleBackgroundMessage(sync('get-synced-state'), EXT_PAGE, after, scope),
-    ])
-    expect(both.filter(r => r.result.deviceSyncBundle).length).toBe(1)
-
-    await handleBackgroundMessage(
-      sync('pwa-sync-handshake', { deviceSyncBundle: bundle() }),
-      FRANK_TAB,
-      after,
-      scope,
-    )
-    held.frankPendingSyncTransfer.createdAt -= SYNC_TRANSFER_TTL_MS + 1
-    const expired = await handleBackgroundMessage(
-      sync('get-synced-state'),
-      EXT_PAGE,
-      after,
-      scope,
-    )
-    expect(expired.result.deviceSyncBundle).toBeNull()
-    expect(held).toEqual({})
   })
 })

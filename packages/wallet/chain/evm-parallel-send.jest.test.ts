@@ -665,6 +665,41 @@ describe('parallel paid messages', () => {
     expect(statusOf(row.index)).toBe('spent')
   })
 
+  it('a paid send is answered once the relay has the message: its own broadcast and the main account\'s look run after the answer, and then free the account', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    let open!: () => void
+    const gate = new Promise<void>(resolve => (open = resolve))
+    const original = EvmStampPayer.prototype.submitPaymentSet
+    jest
+      .spyOn(EvmStampPayer.prototype, 'submitPaymentSet')
+      .mockImplementation(async function (this: EvmStampPayer, raws) {
+        await gate
+        return original.call(this, raws)
+      })
+    const sent = await Promise.race([
+      send(1),
+      new Promise<'held'>(resolve => setTimeout(() => resolve('held'), 2_000)),
+    ])
+    // Answered while its own broadcast is still held: nothing broadcast by the wallet yet, and
+    // the main account still held by the payment.
+    expect(sent).not.toBe('held')
+    if (sent === 'held') return
+    expect(bobMailbox).toHaveLength(1)
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+    open()
+    expect(await sent.afterDelivery).toEqual({ failures: [] })
+    // The relay's broadcast is in a block: the look after the answer saw it and let main go.
+    expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
+    expect(
+      f.chain.directMessages.paymentsOf?.({
+        wallet: alice,
+        payloadDigest: sent.payloadDigest,
+      }),
+    ).toEqual(['spent'])
+  })
+
   it('neither broadcast lands while the node is down: the same bytes are broadcast again until included', async () => {
     const [row] = await fundAccounts(1)
     offlineChain.relayBroadcasts = false
@@ -771,7 +806,9 @@ describe('parallel paid messages', () => {
     mockBalances.set(main, 10n ** 17n)
     offlineChain.relayBroadcasts = false
     offlineChain.broadcastDown = true
-    await send(1)
+    // Its own broadcast runs after the answer, and fails while the node is down.
+    const sent = await send(1)
+    expect((await sent.afterDelivery)?.failures).toHaveLength(1)
     offlineChain.broadcastDown = false
     await tick() // broadcasts the payment; it is now in a block
     mockMessageWrite.mode = 'dropped'
@@ -860,7 +897,9 @@ describe('parallel paid messages', () => {
     mockBalances.set(main, 10n ** 17n)
     offlineChain.relayBroadcasts = false
     offlineChain.broadcastDown = true
-    await send(1) // delivered, paid from main; the payment cannot land while the node is down
+    // Delivered, paid from main; the payment cannot land while the node is down. Its own
+    // broadcast and look run after the answer: the waiters below start once they have ended.
+    await (await send(1)).afterDelivery
     const waiting: Promise<unknown>[] = []
     providerRequests.length = 0
     for (let n = 2; n <= 6; n++) {

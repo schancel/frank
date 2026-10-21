@@ -8,6 +8,13 @@ import {
   installBackgroundBridge,
   type BackgroundBridgeState,
 } from './background'
+
+/** Approval decisions come from the extension's approval page; other messages from a site tab. */
+function mockSenderFor(msg: any): Record<string, unknown> {
+  return String(msg?.type).includes('resolve-approval')
+    ? { url: 'chrome-extension://frank-test-ext/approval.html' }
+    : { tab: { id: 1, windowId: 2 } }
+}
 import { mountApprovalPage } from './approval'
 
 const PRIMARY = '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'
@@ -51,7 +58,7 @@ function createExtensionScope() {
         sendMessage: (msg: any, cb?: (res: any) => void) => {
           let answered = false
           for (const fn of [...listeners]) {
-            const keepOpen = fn(msg, { tab: { id: 1, windowId: 2 } }, res => {
+            const keepOpen = fn(msg, mockSenderFor(msg), res => {
               if (answered) return
               answered = true
               cb?.(res)
@@ -117,7 +124,7 @@ function decide(
       approved,
       ...extra,
     },
-    {},
+    { url: 'chrome-extension://frank-test-ext/approval.html' },
     state,
     scope,
   )
@@ -187,6 +194,70 @@ describe('dApp approval window lifecycle', () => {
     expect(windows.remove).toHaveBeenCalledWith(100)
     expect(state.approvedOrigins.has('https://app.uniswap.org')).toBe(false)
   })
+
+  it('ignores a decision that does not come from an extension page', async () => {
+    const { scope } = createExtensionScope()
+    const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
+    const pending = rpc(state, scope, 'r1', 'eth_requestAccounts')
+    await tick()
+    for (const sender of [
+      { tab: { id: 7, windowId: 3 }, url: 'https://app.uniswap.org/' },
+      { url: 'https://evil.example/approval.html' },
+      {},
+    ]) {
+      const res = await handleBackgroundMessage(
+        {
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'resolve-approval',
+          approvalId: 'r1',
+          approved: true,
+        },
+        sender,
+        state,
+        scope,
+      )
+      expect(res).toMatchObject({ ok: false, error: { code: 4100 } })
+    }
+    // The request still waits for the user.
+    expect(state.pendingApprovals.has('r1')).toBe(true)
+    expect(state.approvedOrigins.has('https://app.uniswap.org')).toBe(false)
+    await decide(state, scope, 'r1', false)
+    await pending
+  })
+
+  it.each([
+    ['personal_sign', ['0x68656c6c6f', PRIMARY]],
+    ['eth_signTypedData_v4', [PRIMARY, '{}']],
+    ['eth_sendTransaction', [{ from: PRIMARY, to: PRIMARY, value: '0x1' }]],
+    ['btc_signPsbt', [{}]],
+  ])(
+    'never resolves an approved %s with a signature or hash',
+    async (method, params) => {
+      const { scope } = createExtensionScope()
+      const state = createBackgroundBridgeState({
+        activePersonaAddress: PRIMARY,
+      })
+      const pending = rpc(
+        state,
+        scope,
+        'r1',
+        method,
+        'https://app.uniswap.org',
+        params,
+      )
+      await tick()
+      const res = await decide(state, scope, 'r1', true, {
+        result: '0xdeadbeef',
+        signature: '0xdeadbeef',
+        txHash: '0xdeadbeef',
+      })
+      expect(res).toMatchObject({ ok: false, error: { code: 4200 } })
+      const answer = await pending
+      expect(answer.ok).toBe(false)
+      expect(answer.error.code).toBe(4200)
+      expect(JSON.stringify(answer)).not.toContain('deadbeef')
+    },
+  )
 
   it('rejects every waiting request with 4001 when the user closes the window', async () => {
     const { scope, windows, userCloses } = createExtensionScope()

@@ -410,12 +410,56 @@ function mainWindowStorage(
   return null
 }
 
-function isMainExtensionWindowUrl(url: unknown, mainUrl: string): boolean {
+/**
+ * Whether `url` is the main Frank page in window mode. A separate approval document
+ * (approval.html) is not; the main window itself may route to #/dapp-bridge to show an
+ * approval, so the route does not decide it (approval windows are never recorded anyway).
+ */
+export function isMainExtensionWindowUrl(
+  url: unknown,
+  mainUrl: string,
+): boolean {
   if (typeof url !== 'string') return false
   const base = mainUrl.slice(0, mainUrl.indexOf('?'))
   if (!url.startsWith(base)) return false
   const query = url.slice(base.length).split('#')[0]
   return new URLSearchParams(query).get('extMode') === 'window'
+}
+
+/**
+ * Whether the recorded window is still the main pop-out. Reading tab URLs needs the `tabs`
+ * permission, which Frank does not request, so the check uses the extension's own contexts
+ * (`runtime.getContexts`, which reports their document URLs without it). A window whose page
+ * has not loaded yet has no context and counts on existence alone, as it does where the
+ * browser has no getContexts: window IDs are not reused within a browser session.
+ */
+async function isRecordedMainWindow(
+  api: Record<string, any>,
+  windowId: number,
+  globalScope: Record<string, any>,
+): Promise<boolean> {
+  let win: { type?: string } | undefined
+  try {
+    win = await api.windows.get(windowId)
+  } catch {
+    return false // windows.get rejects for a closed window.
+  }
+  if (!win || (win.type !== undefined && win.type !== 'popup')) return false
+  if (typeof api.runtime?.getContexts !== 'function') return true
+  const mainUrl = getExtensionResourceUrl(MAIN_WINDOW_PATH, globalScope) ?? ''
+  try {
+    const contexts: Array<{ documentUrl?: string }> =
+      await api.runtime.getContexts({
+        contextTypes: ['TAB'],
+        windowIds: [windowId],
+      })
+    if (!Array.isArray(contexts) || contexts.length === 0) return true
+    return contexts.some(context =>
+      isMainExtensionWindowUrl(context.documentUrl, mainUrl),
+    )
+  } catch {
+    return true
+  }
 }
 
 /** The open main pop-out window's ID, or null when none is open. */
@@ -435,22 +479,7 @@ export async function findMainExtensionWindow(
     return null
   }
   if (typeof windowId !== 'number') return null
-  const mainUrl = getExtensionResourceUrl(MAIN_WINDOW_PATH, globalScope) ?? ''
-  try {
-    const win = await api.windows.get(windowId, { populate: true })
-    const tabs: Array<{ url?: string; pendingUrl?: string }> = win?.tabs ?? []
-    if (
-      tabs.some(
-        tab =>
-          isMainExtensionWindowUrl(tab.url, mainUrl) ||
-          isMainExtensionWindowUrl(tab.pendingUrl, mainUrl),
-      )
-    ) {
-      return windowId
-    }
-  } catch {
-    // windows.get rejects for a closed window.
-  }
+  if (await isRecordedMainWindow(api, windowId, globalScope)) return windowId
   try {
     await store.remove?.(FRANK_MAIN_WINDOW_ID_KEY)
   } catch {

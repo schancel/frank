@@ -27,6 +27,13 @@ import {
   installBackgroundBridge,
 } from './background'
 
+/** Approval decisions come from the extension's approval page; other messages from a site tab. */
+function mockSenderFor(msg: any): Record<string, unknown> {
+  return String(msg?.type).includes('resolve-approval')
+    ? { url: 'chrome-extension://frank-test-ext/approval.html' }
+    : { tab: { id: 1, windowId: 2 } }
+}
+
 describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #1710)', () => {
   it('builds Chrome MV3 manifest with sidePanel, service_worker, and MAIN + ISOLATED content scripts', () => {
     const manifest = buildExtensionManifest('chrome', '0.3.0')
@@ -52,11 +59,11 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       default_popup: 'index.html',
       default_title: 'Frank',
       default_icon: {
-          '16': 'icons/extension-16x16.png',
-          '32': 'icons/extension-32x32.png',
-          '64': 'icons/extension-64x64.png',
-          '128': 'icons/extension-128x128.png',
-        },
+        '16': 'icons/extension-16x16.png',
+        '32': 'icons/extension-32x32.png',
+        '64': 'icons/extension-64x64.png',
+        '128': 'icons/extension-128x128.png',
+      },
     })
     expect(manifest.icons).toEqual(manifest.action.default_icon)
     expect(manifest.content_scripts).toEqual([
@@ -119,7 +126,8 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       service_worker: 'background.js',
     })
     expect(manifest.content_security_policy).toEqual({
-      extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+      extension_pages:
+        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
     })
     expect(manifest.content_scripts).toEqual([
       {
@@ -226,7 +234,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
           getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
             for (const fn of listeners) {
-              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+              fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
               })
             }
@@ -341,9 +349,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
 
     // Subsequent eth_accounts returns the approved account list
     const ethAccounts = await p1!.request<string[]>({ method: 'eth_accounts' })
-    expect(ethAccounts).toEqual([
-      '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
-    ])
+    expect(ethAccounts).toEqual(['0x71C7656EC7ab88b098defB751B7401B5f6d8976F'])
 
     // wallet_switchEthereumChain and read-only RPC methods succeed for dApp compatibility
     const switchRes = await p1!.request({
@@ -356,16 +362,19 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     const perms = await p1!.request<any[]>({ method: 'wallet_getPermissions' })
     expect(perms[0]?.parentCapability).toBe('eth_accounts')
 
-    // Signing requests hold RPC Promise open until companion approval resolves with hex signature
+    // Signing is not implemented: approving it never hands the dApp a made-up signature.
     const signPromise = p1!.request<string>({
       method: 'personal_sign',
       params: ['0x48656c6c6f', '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
     })
+    const signOutcome = signPromise.then(
+      () => 'resolved',
+      (err: { code?: number }) => err.code,
+    )
     await new Promise(resolve => setTimeout(resolve, 10))
     expect(bgState.pendingApprovals.size).toBe(1)
     const signApproval = Array.from(bgState.pendingApprovals.values())[0]!
 
-    // Approve request via companion message with signature result
     const resolved = await sendRuntimeMessage<any, any>(
       {
         channel: FRANK_DAPP_BRIDGE_CHANNEL,
@@ -376,12 +385,9 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       },
       mockExtensionScope,
     )
-    expect(resolved.result.approved).toBe(true)
-    expect(resolved.result.accounts).toEqual([
-      '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
-    ])
-    const signRes = await signPromise
-    expect(signRes).toBe('0xdeadbeefcafebabe1b')
+    expect(resolved.ok).toBe(false)
+    expect(resolved.error.code).toBe(4200)
+    expect(await signOutcome).toBe(4200)
 
     // Updating active persona from logged-in Frank wallet updates eth_requestAccounts
     await sendRuntimeMessage<any, any>(
@@ -698,13 +704,17 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { resolveManualChunk } = require('../config/manual-chunks.cjs')
     expect(
-      resolveManualChunk('/repo/node_modules/vue/dist/vue.runtime.esm-bundler.js'),
+      resolveManualChunk(
+        '/repo/node_modules/vue/dist/vue.runtime.esm-bundler.js',
+      ),
     ).toBe('vendor-vue')
+    expect(resolveManualChunk('/repo/node_modules/pinia/dist/pinia.mjs')).toBe(
+      'vendor-vue',
+    )
     expect(
-      resolveManualChunk('/repo/node_modules/pinia/dist/pinia.mjs'),
-    ).toBe('vendor-vue')
-    expect(
-      resolveManualChunk('/repo/node_modules/quasar/src/components/btn/QBtn.js'),
+      resolveManualChunk(
+        '/repo/node_modules/quasar/src/components/btn/QBtn.js',
+      ),
     ).toBe('vendor-quasar')
     expect(
       resolveManualChunk('/repo/node_modules/ethers/lib.esm/index.js'),
@@ -712,15 +722,17 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(
       resolveManualChunk('/repo/node_modules/@noble/curves/secp256k1.js'),
     ).toBe('vendor-noble')
+    expect(resolveManualChunk('/repo/node_modules/level-js/index.js')).toBe(
+      'vendor-storage',
+    )
     expect(
-      resolveManualChunk('/repo/node_modules/level-js/index.js'),
-    ).toBe('vendor-storage')
-    expect(
-      resolveManualChunk('/repo/node_modules/@solana/web3.js/lib/index.browser.esm.js'),
+      resolveManualChunk(
+        '/repo/node_modules/@solana/web3.js/lib/index.browser.esm.js',
+      ),
     ).toBe('vendor-solana')
-    expect(
-      resolveManualChunk('/repo/packages/bitcore-lib-xpi/index.js'),
-    ).toBe('vendor-utxo')
+    expect(resolveManualChunk('/repo/packages/bitcore-lib-xpi/index.js')).toBe(
+      'vendor-utxo',
+    )
     expect(resolveManualChunk('/repo/app/src/pages/Chat.vue')).toBeUndefined()
   })
 
@@ -806,9 +818,10 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       chrome: {
         runtime: {
           id: 'frank-test-ext',
+          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
             for (const fn of listeners) {
-              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+              fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
               })
             }
@@ -965,9 +978,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       'script[data-frank-safari-inpage="true"]',
     ) as HTMLScriptElement | null
     expect(injected).not.toBeNull()
-    expect(injected?.src).toBe(
-      'safari-web-extension://safari-ext-id/inpage.js',
-    )
+    expect(injected?.src).toBe('safari-web-extension://safari-ext-id/inpage.js')
     injected?.remove()
 
     // Also verify deferred mount when document.head and document.documentElement are initially null at document_start
@@ -1028,7 +1039,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
 
     // Verify pure-TS secp256k1 + Keccak256 address derivation matches ethers.computeAddress 100%
     expect(uniswapBurner).toBe(computeAddress(uniswapPrivKey))
-    expect( new Wallet(uniswapPrivKey).address).toBe(uniswapBurner)
+    expect(new Wallet(uniswapPrivKey).address).toBe(uniswapBurner)
     // Anti-supercookie guarantee: Site A, Site B, and Primary Persona all have distinct addresses
     expect(uniswapBurner.toLowerCase()).not.toBe(openseaBurner.toLowerCase())
     expect(uniswapBurner.toLowerCase()).not.toBe(rootAddr.toLowerCase())
@@ -1041,9 +1052,10 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       chrome: {
         runtime: {
           id: 'frank-test-ext',
+          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
             for (const fn of listeners) {
-              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+              fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
               })
             }
@@ -1247,9 +1259,10 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       chrome: {
         runtime: {
           id: 'frank-test-ext',
+          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
             for (const fn of listeners) {
-              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+              fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
               })
             }

@@ -26,15 +26,24 @@ import {
 import {
   createBackgroundBridgeState,
   handleBackgroundMessage,
-  openApprovalCompanionPopup,
+  isExtensionBackgroundContext,
 } from './background'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from './inpage'
 
 const BASE = 'chrome-extension://frank-ext/'
 
-/** A browser with real window bookkeeping: windows exist until removed. */
-function makeBrowser(options: { sessionStorage?: boolean } = {}) {
-  const windows = new Map<number, { id: number; tabs: { url: string }[] }>()
+/**
+ * A browser with real window bookkeeping: windows exist until removed. Like Chrome without
+ * the `tabs` permission, windows.get never reveals tab URLs; runtime.getContexts reports the
+ * extension's own documents.
+ */
+function makeBrowser(
+  options: { sessionStorage?: boolean; getContexts?: boolean } = {},
+) {
+  const windows = new Map<
+    number,
+    { id: number; type: string; documentUrl: string | null }
+  >()
   let nextId = 100
   const sessionData: Record<string, unknown> = {}
   const localData: Record<string, unknown> = {}
@@ -51,7 +60,7 @@ function makeBrowser(options: { sessionStorage?: boolean } = {}) {
   })
   const create = jest.fn(async ({ url }: { url: string }) => {
     const id = nextId++
-    windows.set(id, { id, tabs: [{ url }] })
+    windows.set(id, { id, type: 'popup', documentUrl: url })
     return { id }
   })
   const update = jest.fn(async (id: number) => {
@@ -61,12 +70,32 @@ function makeBrowser(options: { sessionStorage?: boolean } = {}) {
   const get = jest.fn(async (id: number) => {
     const win = windows.get(id)
     if (!win) throw new Error(`No window with id: ${id}.`)
-    return win
+    // No `tabs` permission: tab objects carry no url or pendingUrl.
+    return { id: win.id, type: win.type, tabs: [{ id: win.id * 10 }] }
   })
+  const getContexts = jest.fn(
+    async (filter: { contextTypes: string[]; windowIds: number[] }) =>
+      [...windows.values()]
+        .filter(
+          win =>
+            win.documentUrl !== null &&
+            filter.contextTypes.includes('TAB') &&
+            filter.windowIds.includes(win.id),
+        )
+        .map(win => ({
+          contextType: 'TAB',
+          windowId: win.id,
+          documentUrl: win.documentUrl,
+        })),
+  )
   const openPopup = jest.fn(async () => undefined)
   const scope: Record<string, any> = {
     chrome: {
-      runtime: { id: 'frank-ext', getURL: (p: string) => `${BASE}${p}` },
+      runtime: {
+        id: 'frank-ext',
+        getURL: (p: string) => `${BASE}${p}`,
+        ...(options.getContexts === false ? {} : { getContexts }),
+      },
       windows: { create, update, get },
       action: { openPopup },
       storage: {
@@ -161,7 +190,37 @@ describe('one main pop-out window', () => {
   it('does not count a recorded window that no longer shows the main Frank page', async () => {
     const b = makeBrowser()
     await focusOrOpenMainExtensionWindow({}, b.scope)
-    b.windows.get(100)!.tabs = [{ url: 'https://example.com/' }]
+    b.windows.get(100)!.documentUrl = `${BASE}approval.html?request=1`
+    expect(await findMainExtensionWindow(b.scope)).toBeNull()
+  })
+
+  it('recognises the pop-out from its context while tab URLs are hidden', async () => {
+    const b = makeBrowser()
+    await focusOrOpenMainExtensionWindow({}, b.scope)
+    // The main window may route to the approval screen; it is still the main window.
+    b.windows.get(
+      100,
+    )!.documentUrl = `${BASE}index.html?extMode=window#/dapp-bridge`
+    expect(await findMainExtensionWindow(b.scope)).toBe(100)
+  })
+
+  it('three quick open requests make one window, also before its page has loaded', async () => {
+    const b = makeBrowser()
+    await focusOrOpenMainExtensionWindow({}, b.scope)
+    b.windows.get(100)!.documentUrl = null // created, document not loaded yet
+    await focusOrOpenMainExtensionWindow({}, b.scope)
+    await focusOrOpenMainExtensionWindow({}, b.scope)
+    expect(b.create).toHaveBeenCalledTimes(1)
+    expect(b.windows.size).toBe(1)
+  })
+
+  it('without getContexts, counts the recorded window while it exists as a popup window', async () => {
+    const b = makeBrowser({ getContexts: false })
+    await focusOrOpenMainExtensionWindow({}, b.scope)
+    expect((await focusOrOpenMainExtensionWindow({}, b.scope)).focused).toBe(
+      true,
+    )
+    b.windows.get(100)!.type = 'normal'
     expect(await findMainExtensionWindow(b.scope)).toBeNull()
   })
 
@@ -175,19 +234,6 @@ describe('one main pop-out window', () => {
     const res = await focusOrOpenMainExtensionWindow({}, b.scope)
     expect(res.focused).toBe(false)
     expect(b.create).toHaveBeenCalledTimes(2)
-  })
-
-  it('a dApp request raises the open pop-out instead of opening another view', async () => {
-    const b = makeBrowser()
-    await focusOrOpenMainExtensionWindow({}, b.scope)
-    const res = await openApprovalCompanionPopup(
-      {},
-      b.scope,
-      createBackgroundBridgeState(),
-    )
-    expect(res).toEqual({ opened: true, mode: 'window' })
-    expect(b.openPopup).not.toHaveBeenCalled()
-    expect(b.create).toHaveBeenCalledTimes(1)
   })
 
   it('switching the launch mode to window focuses the open pop-out', async () => {
@@ -267,5 +313,30 @@ describe('raising an extension view', () => {
       }),
     ).toBe(true)
     expect(await hasOtherExtensionViews({})).toBeNull()
+  })
+})
+
+describe('background bridge installation', () => {
+  it('installs only in the background, never in an extension page that imports it', () => {
+    class FakeWorkerScope {}
+    const worker = Object.assign(new FakeWorkerScope(), {
+      ServiceWorkerGlobalScope: FakeWorkerScope,
+    })
+    expect(isExtensionBackgroundContext(worker)).toBe(true)
+    const bgPage: Record<string, any> = {}
+    bgPage.window = bgPage
+    bgPage.chrome = {
+      runtime: { id: 'frank-ext' },
+      extension: { getBackgroundPage: () => bgPage },
+    }
+    expect(isExtensionBackgroundContext(bgPage)).toBe(true)
+    const popOutPage: Record<string, any> = {}
+    popOutPage.window = popOutPage
+    popOutPage.chrome = {
+      runtime: { id: 'frank-ext' },
+      extension: { getBackgroundPage: () => null },
+    }
+    expect(isExtensionBackgroundContext(popOutPage)).toBe(false)
+    expect(isExtensionBackgroundContext({ window: {} })).toBe(false)
   })
 })

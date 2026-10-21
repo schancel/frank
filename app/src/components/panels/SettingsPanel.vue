@@ -13,6 +13,7 @@
       :bio="profile.bio"
       :avatar="profile.avatar"
       :acceptance-price="inbox.acceptancePrice"
+      @open-profile="openProfile"
     />
 
     <div class="flex-break" />

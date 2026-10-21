@@ -1,18 +1,18 @@
 <template>
-  <div class="full-height column profile-component-root">
+  <div class="column profile-component-root">
     <q-splitter
       v-model="splitterSize"
       unit="px"
       disable
       :horizontal="!isDesktopLayout"
-      class="col full-height profile-splitter"
+      class="col profile-splitter"
     >
       <template #before>
         <q-tabs
           v-model="tab"
           :vertical="isDesktopLayout"
           dense
-          class="text-primary full-height profile-tabs"
+          class="text-primary profile-tabs"
         >
           <q-tab
             name="profile"
@@ -34,7 +34,7 @@
           animated
           transition-prev="jump-up"
           transition-next="jump-up"
-          class="full-height bg-transparent"
+          class="bg-transparent"
         >
           <q-tab-panel name="profile" class="q-pa-md">
             <div class="row profile-edit-row">
@@ -464,7 +464,11 @@ export default defineComponent({
       internalAccountType: this.accountType ?? 0,
       internalBotRole: this.botRole,
       avatarPath: null,
-      tab: 'profile',
+      tab:
+        (this as { $route?: { query?: { tab?: string } } }).$route?.query
+          ?.tab === 'identity'
+          ? 'identity'
+          : 'profile',
       defaultAvatarIndex: Math.floor(Math.random() * defaultAvatars.length),
     }
   },
@@ -710,23 +714,64 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.profile-component-root,
-.profile-splitter,
-.profile-component-root :deep(.q-tab-panels) {
+.profile-component-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0%;
   min-width: 0;
   max-width: 100%;
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.profile-splitter {
+  display: flex;
+  flex: 1 1 0%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 0;
+  height: 100%;
+}
+
+.profile-splitter :deep(> .q-splitter__before) {
+  flex: 0 0 auto !important;
+}
+
+.profile-splitter :deep(> .q-splitter__after) {
+  flex: 1 1 0% !important;
+  min-width: 0;
+  min-height: 0 !important;
+  height: auto !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+.profile-component-root :deep(.q-tab-panels) {
+  min-width: 0;
+  max-width: 100%;
+  height: auto !important;
+  min-height: 100%;
+  overflow: visible !important;
 }
 
 .profile-component-root :deep(.q-tab-panels .q-panel) {
-  overflow-y: auto;
-  overflow-x: hidden;
+  height: auto !important;
+  overflow: visible !important;
+}
+
+.profile-component-root :deep(.q-tab-panel) {
+  height: auto !important;
+  overflow: visible !important;
+  padding-bottom: 24px;
 }
 
 .identity-layout {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: 24px;
   min-width: 0;
 }
@@ -735,11 +780,15 @@ export default defineComponent({
   flex: 0 1 280px;
   min-width: 0;
   max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .identity-qr-card {
   box-sizing: border-box;
   max-width: 100%;
+  margin: 0 auto;
 }
 
 .identity-qr-card :deep(canvas),
@@ -748,6 +797,7 @@ export default defineComponent({
   width: min(240px, 100%) !important;
   height: auto !important;
   aspect-ratio: 1;
+  margin: 0 auto;
 }
 
 .identity-details {
@@ -760,6 +810,9 @@ export default defineComponent({
 }
 
 @media (max-width: 800px) {
+  .profile-splitter {
+    flex-direction: column;
+  }
   .profile-splitter :deep(> .q-splitter__before) {
     height: auto !important;
     width: 100% !important;
@@ -776,6 +829,28 @@ export default defineComponent({
   .profile-fields-col {
     width: 100%;
     max-width: 100%;
+  }
+  .identity-layout {
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 16px;
+  }
+  .identity-qr-column {
+    flex: 0 0 auto;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .identity-details {
+    flex: 0 0 auto;
+    width: 100%;
+    text-align: center;
+  }
+  .identity-details :deep(.q-card),
+  .identity-details .q-mb-md {
+    text-align: left;
   }
 }
 </style>

@@ -3,6 +3,9 @@ import { directoryAddress } from '../relay/open-directory'
 import type { GroupEpochCertificate } from './types'
 import axios, { type AxiosInstance } from 'axios'
 import { randomBytes } from '@frank/crypto-box'
+import { hkdf } from '@noble/hashes/hkdf.js'
+import { sha256 } from '@noble/hashes/sha256.js'
+import { concatBytes } from '@noble/hashes/utils.js'
 import {
   bytesToHex,
   deriveEpochKeys,
@@ -438,6 +441,42 @@ export interface RotateGroupEpochOnRelayResult {
 }
 
 /**
+ * The secret of the epoch that follows `prevEpochHashHex`. It mixes entropy that only the
+ * founding administrator's key can produce into the previous secret, so a removed member (who
+ * knows the previous secret but not the administrator key) cannot derive it, while every device
+ * of the administrator account computes the same value without coordination. When two of those
+ * devices race to publish different rosters for the same successor, the device whose relay CAS
+ * loses can therefore open and adopt the winning certificate instead of being stuck behind it.
+ */
+export function deriveAdminEpochSecret(params: {
+  authorityPrivateKey: Uint8Array
+  groupIdHex: string
+  prevEpochSecret: Uint8Array
+  prevEpochHashHex: string
+  nextEpoch: number
+}): Uint8Array {
+  const cleanGroupId = normalizeGroupId(params.groupIdHex)
+  const prevHash = hexToBytes(params.prevEpochHashHex)
+  if (params.authorityPrivateKey.length !== 32 || prevHash.length !== 32)
+    throw new Error('Invalid group rotation authority input')
+  const entropy = hkdf(
+    sha256,
+    params.authorityPrivateKey,
+    concatBytes(hexToBytes(cleanGroupId), prevHash),
+    new TextEncoder().encode(
+      `frank-group-admin-rotation-v1:${params.nextEpoch}`,
+    ),
+    32,
+  )
+  return deriveNextEpochSecret(
+    params.prevEpochSecret,
+    cleanGroupId,
+    params.nextEpoch,
+    entropy,
+  )
+}
+
+/**
  * Ratchets or rotates a group to `prevEpoch + 1`, re-deriving per-member epoch signing keys,
  * encrypting the updated `GroupRoster`, signing the new `GroupEpochFrame`, and publishing it
  * to the relay with `If-Match: prevEpochHashHex` Compare-And-Swap protection.
@@ -450,12 +489,20 @@ export function prepareGroupEpochRotation(
   const nextEpoch = params.prevEpoch + 1
   const nextEpochSecret =
     params.nextEpochSecret ??
-    deriveNextEpochSecret(
-      params.prevEpochSecret,
-      cleanGroupId,
-      nextEpoch,
-      params.freshEntropy ?? randomBytes(32),
-    )
+    (params.freshEntropy
+      ? deriveNextEpochSecret(
+          params.prevEpochSecret,
+          cleanGroupId,
+          nextEpoch,
+          params.freshEntropy,
+        )
+      : deriveAdminEpochSecret({
+          authorityPrivateKey: params.authorityPrivateKey,
+          groupIdHex: cleanGroupId,
+          prevEpochSecret: params.prevEpochSecret,
+          prevEpochHashHex: params.prevEpochHashHex,
+          nextEpoch,
+        }))
   const epochKeys = deriveEpochKeys(nextEpochSecret, cleanGroupId, nextEpoch)
 
   const seenAddresses = new Set<string>()

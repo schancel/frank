@@ -847,6 +847,9 @@ export interface OpenedGroupMessage {
   readonly timestampMs: number
   readonly payload: Uint8Array
   readonly payloadText: string
+  /** The member-signed digest. It names the logical message: a re-encryption of the same
+   * signed frame under a new nonce has a different ciphertext but this same digest. */
+  readonly innerDigestHex: string
 }
 
 /** Validate opaque pre-join history without granting its decryption secret. */
@@ -883,12 +886,13 @@ export function verifyGroupMessageWriteSignature(
 /**
  * Verifies the outer shared write signature ($W_{G,e}$), decrypts the `XChaCha20-Poly1305`
  * ciphertext under $K_e$, verifies the sender's per-epoch public key $S_{i,e}$ against the
- * epoch roster (if provided), and verifies the inner signature over the payload.
+ * epoch roster (required: the sender address comes only from it), and verifies the inner
+ * signature over the payload.
  */
 export function openGroupMessage(params: {
   envelope: SealedGroupMessageEnvelope
   epochKeys: GroupEpochKeys
-  roster?: GroupRoster | readonly GroupRosterMember[]
+  roster: GroupRoster | readonly GroupRosterMember[]
 }): OpenedGroupMessage {
   const { envelope, epochKeys, roster } = params
   if (envelope.epoch !== epochKeys.epoch) {
@@ -936,31 +940,23 @@ export function openGroupMessage(params: {
     throw new Error('Invalid inner senderEpochPubKey length')
   }
 
-  // 3. Check against epoch roster if supplied
-  const members: readonly GroupRosterMember[] | undefined = Array.isArray(
-    roster,
-  )
+  // 3. The sender's address comes only from the authenticated epoch roster.
+  const members: readonly GroupRosterMember[] = Array.isArray(roster)
     ? roster
-    : roster
-    ? (roster as GroupRoster).members
-    : undefined
-  let rosterAddress: string | undefined
-  if (members) {
-    const member = members.find(m => m.index === innerFrame.senderIndex)
-    if (!member) {
-      throw new Error(
-        `Sender index ${innerFrame.senderIndex} is not in the epoch roster`,
-      )
-    }
-    if (
-      member.epochSigningPubKeyHex.toLowerCase() !==
-      innerFrame.senderEpochPubKeyHex.toLowerCase()
-    ) {
-      throw new Error(
-        `Sender epoch pubkey mismatch for member index ${innerFrame.senderIndex}`,
-      )
-    }
-    rosterAddress = member.address
+    : (roster as GroupRoster).members
+  const member = members.find(m => m.index === innerFrame.senderIndex)
+  if (!member) {
+    throw new Error(
+      `Sender index ${innerFrame.senderIndex} is not in the epoch roster`,
+    )
+  }
+  if (
+    member.epochSigningPubKeyHex.toLowerCase() !==
+    innerFrame.senderEpochPubKeyHex.toLowerCase()
+  ) {
+    throw new Error(
+      `Sender epoch pubkey mismatch for member index ${innerFrame.senderIndex}`,
+    )
   }
 
   // 4. Verify inner member signature S_{i,e}
@@ -988,9 +984,10 @@ export function openGroupMessage(params: {
     epoch: innerFrame.epoch,
     senderIndex: innerFrame.senderIndex,
     senderEpochPubKeyHex: innerFrame.senderEpochPubKeyHex.toLowerCase(),
-    senderAddress: rosterAddress ?? innerFrame.senderAddress,
+    senderAddress: member.address,
     timestampMs: innerFrame.timestampMs,
     payload,
     payloadText: utf8Decoder.decode(payload),
+    innerDigestHex: bytesToHex(innerDigest),
   }
 }

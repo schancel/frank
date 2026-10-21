@@ -6,7 +6,19 @@ import type {
 import {
   GROUP_TEST_ACCOUNTS,
   groupTestSigner,
+  groupTestSigningKey,
 } from '@frank/cashweb/groups/group-test.testutil'
+import {
+  GROUP_MSG_AEAD_DOMAIN,
+  bytesToHex,
+  computeOuterWriteSigningHash,
+  deriveEpochKeys,
+  hexToBytes,
+  sealGroupMessage,
+} from '@frank/cashweb/groups/group-crypto'
+import { xchacha20poly1305 } from '@noble/ciphers/chacha.js'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { encodeGroupItems } from '../utils/group-message-items'
 import { accountSession } from '../accounts/session'
 import { fetchContactProfile } from '../utils/directory-peer'
 import { createPinia, setActivePinia } from 'pinia'
@@ -950,5 +962,331 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     ).rejects.toThrow('Unsupported stored group format')
     expect(accountSession.getGroupSigner).not.toHaveBeenCalled()
     expect(messageStore.deleteMessage.mock.calls.length).toBe(deletes)
+  })
+  it('adopts the winning epoch when another administrator device wins the rotation race', async () => {
+    const { chats: laptop, group, client } = await makeGroup()
+    // A second device of the same administrator account starts from the same saved state.
+    const saved = JSON.parse(JSON.stringify(laptop.$state))
+    setActivePinia(createPinia())
+    const phone = useChatStore()
+    phone.$patch(saved)
+    const relayPublish = client.publishEpoch.bind(client)
+    jest
+      .spyOn(client, 'publishEpoch')
+      .mockImplementationOnce(async (...args) => {
+        // The phone publishes a different successor between the laptop's read and its CAS.
+        await phone.inviteMemberToGroup({
+          conversationId: group.id,
+          memberAddress: DAVE,
+          relayClient: client,
+        })
+        return relayPublish(...args)
+      })
+    const getLatest = jest.spyOn(client, 'getLatestEpoch')
+    await expect(
+      laptop.inviteMemberToGroup({
+        conversationId: group.id,
+        memberAddress: CHARLIE,
+        relayClient: client,
+      }),
+    ).rejects.toThrow('Group membership changed on another device; try again')
+    expect(getLatest).toHaveBeenCalled()
+    const winner = phone.conversations[group.id].groupState
+    const state = laptop.conversations[group.id].groupState
+    expect(state.epoch).toBe(1)
+    expect(state.epochFrame.epoch_hash).toBe(winner.epochFrame.epoch_hash)
+    expect(state.epochSecretHex).toBe(winner.epochSecretHex)
+    expect(state.roster.map((member: any) => member.address)).toEqual(
+      winner.roster.map((member: any) => member.address),
+    )
+    expect(state.roster.some((member: any) => member.address === DAVE)).toBe(
+      true,
+    )
+    expect(state.pendingEpoch).toBeUndefined()
+    // The losing roster's deliveries were never sent and are dropped with it.
+    expect(state.pendingMemberDeliveries[CHARLIE]).toBeUndefined()
+    expect(
+      state.pendingMemberDeliveries[BOB].map(
+        (delivery: any) => delivery.items[0].epoch,
+      ),
+    ).toEqual([0])
+    // Sync and send work again.
+    await expect(
+      laptop.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: ALICE,
+      }),
+    ).resolves.toBe(0)
+    const sent = await laptop.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'After the race' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    expect(sent.state).toBe('sent')
+    // The winner's own group-control reaches this device later and applies idempotently.
+    const control = winner.pendingMemberDeliveries[ALICE].at(-1).items[0]
+    expect(control.type).toBe('group-control')
+    await laptop.receiveMessages(
+      [
+        {
+          index: 'winner-control',
+          conversationId: '11111111-1111-4111-8111-111111111111',
+          outbound: false,
+          senderAddress: ALICE,
+          copartyAddress: ALICE,
+          copartyPubKey: { toBuffer: () => GROUP_TEST_ACCOUNTS[0].publicKey },
+          stampValue: 0,
+          message: {
+            outbound: false,
+            status: 'confirmed',
+            senderAddress: ALICE,
+            destinationAddress: ALICE,
+            items: [control],
+            conversationId: '11111111-1111-4111-8111-111111111111',
+            serverTime: 5000,
+            receivedTime: 5000,
+            outpoints: [],
+          },
+        },
+      ],
+      ALICE,
+    )
+    expect(laptop.messages['winner-control'].items[0].type).toBe(
+      'group-control',
+    )
+    expect(laptop.conversations[group.id].groupState.epochFrame.epoch_hash).toBe(
+      winner.epochFrame.epoch_hash,
+    )
+    // Retrying the user's action applies it on top of the adopted epoch.
+    await laptop.inviteMemberToGroup({
+      conversationId: group.id,
+      memberAddress: CHARLIE,
+      relayClient: client,
+    })
+    expect(laptop.conversations[group.id].groupState.epoch).toBe(2)
+    expect(
+      laptop.conversations[group.id].groupState.roster.map(
+        (member: any) => member.address,
+      ),
+    ).toEqual(expect.arrayContaining([ALICE, BOB, CHARLIE, DAVE]))
+  })
+
+  it('keeps a rotation whose publication response was lost pending, then commits it once the relay shows it', async () => {
+    const { chats, group, client } = await makeGroup()
+    const relayPublish = client.publishEpoch.bind(client)
+    jest
+      .spyOn(client, 'publishEpoch')
+      .mockImplementationOnce(async (...args) => {
+        await relayPublish(...args)
+        throw new Error('response interrupted after acceptance')
+      })
+    const latest = client.getLatestEpoch.bind(client)
+    jest
+      .spyOn(client, 'getLatestEpoch')
+      // The rotation reads the relay's epoch first, then reconciliation is offline.
+      .mockImplementationOnce(latest)
+      .mockImplementationOnce(async () => {
+        throw new Error('temporarily offline')
+      })
+    await chats.inviteMemberToGroup({
+      conversationId: group.id,
+      memberAddress: CHARLIE,
+      relayClient: client,
+    })
+    const state = chats.conversations[group.id].groupState
+    // A timeout is not proof of failure: the prepared epoch stays pending, uncommitted.
+    expect(state.epoch).toBe(0)
+    const prepared = state.pendingEpoch.certificate.epoch_hash
+    expect(state.pendingMemberDeliveries[CHARLIE]).toBeUndefined()
+    await expect(
+      chats.retryGroupEpochPublication(group.id, client),
+    ).resolves.toBe('published')
+    const committed = chats.conversations[group.id].groupState
+    expect(committed.epoch).toBe(1)
+    expect(committed.epochFrame.epoch_hash).toBe(prepared)
+    expect(committed.pendingEpoch).toBeUndefined()
+    expect(committed.pendingMemberDeliveries[CHARLIE][0].items[0].type).toBe(
+      'group-welcome',
+    )
+  })
+
+  it('collapses a member re-encryption of another member signed message into the original', async () => {
+    const client = createSharedMockGroupRelay()
+    const alice = useChatStore()
+    const group = await alice.createGroupConversation({
+      groupName: 'Replay',
+      memberAddresses: [BOB, CHARLIE],
+      relayUrl: client.relayUrl,
+      relayClient: client,
+      creatorAddress: ALICE,
+    })
+    await alice.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'Signed once by Alice' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    const original = Object.values(alice.messages)[0] as any
+    const { chats: bob, group: bobGroup } = await inviteBob(group, client)
+    bob.approveGroupInvite(group.id)
+    expect(
+      await bob.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: BOB,
+      }),
+    ).toBe(1)
+    // Bob, a member, re-encrypts Alice's signed inner frame under a fresh nonce and appends it.
+    const keys = deriveEpochKeys(
+      hexToBytes(bobGroup.groupState.epochSecretHex),
+      group.groupId!,
+      0,
+    )
+    const aad = new Uint8Array([
+      ...new TextEncoder().encode(GROUP_MSG_AEAD_DOMAIN),
+      ...hexToBytes(group.groupId!),
+      ...new Uint8Array(8),
+    ])
+    const inner = xchacha20poly1305(
+      keys.encryptionKey,
+      hexToBytes(original.groupEnvelope.nonce),
+      aad,
+    ).decrypt(hexToBytes(original.groupEnvelope.ciphertext))
+    const nonce = new Uint8Array(24).fill(0x5a)
+    const ciphertext = xchacha20poly1305(keys.encryptionKey, nonce, aad).encrypt(
+      inner,
+    )
+    const writeSig = secp256k1
+      .sign(
+        computeOuterWriteSigningHash({
+          groupIdHex: group.groupId!,
+          epoch: 0,
+          nonce,
+          ciphertext,
+        }),
+        keys.writeKeyPair.privateKey,
+        { lowS: true },
+      )
+      .toCompactRawBytes()
+    await client.sendGroupMessage(group.groupId!, {
+      epoch: 0,
+      nonce: bytesToHex(nonce),
+      ciphertext: bytesToHex(ciphertext),
+      write_sig: bytesToHex(writeSig),
+    })
+    const { chats: charlie, group: charlieGroup } = await inviteBob(
+      group,
+      client,
+      CHARLIE,
+    )
+    charlie.approveGroupInvite(group.id)
+    // A member who sees both rows, the original sender, and a third member all show one message.
+    expect(
+      await bob.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: BOB,
+      }),
+    ).toBe(0)
+    expect(bobGroup.messages).toHaveLength(1)
+    currentOwnAddress = ALICE
+    await alice.syncGroupConversation(group.id, {
+      relayClient: client,
+      ownAddress: ALICE,
+    })
+    expect(alice.conversations[group.id].messages).toHaveLength(1)
+    currentOwnAddress = CHARLIE
+    await charlie.syncGroupConversation(group.id, {
+      relayClient: client,
+      ownAddress: CHARLIE,
+    })
+    expect(charlieGroup.groupState.lastSyncedSeq).toBe(2)
+    expect(charlieGroup.messages).toHaveLength(1)
+    // The signed time is shown, so neither copy's relay time changes what members see.
+    expect(charlieGroup.messages[0].serverTime).toBe(original.serverTime)
+    expect(bobGroup.messages[0].serverTime).toBe(original.serverTime)
+  })
+
+  it('does not accept an older-epoch row after a row of a later epoch', async () => {
+    const { chats: alice, group, client } = await makeGroup()
+    await alice.removeMemberFromGroup({
+      conversationId: group.id,
+      memberAddress: BOB,
+      relayClient: client,
+    })
+    const state = alice.conversations[group.id].groupState
+    expect(state.epoch).toBe(1)
+    await alice.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'Epoch 1' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    // A colluding relay appends a message the removed member signed in epoch 0.
+    const epoch0 = state.epochHistory[0]
+    const bobIndex = epoch0.roster.find(
+      (member: any) => member.address === BOB,
+    ).index
+    await client.sendGroupMessage(
+      group.groupId!,
+      sealGroupMessage({
+        epochKeys: deriveEpochKeys(
+          hexToBytes(epoch0.epochSecretHex),
+          group.groupId!,
+          0,
+        ),
+        senderIndex: bobIndex,
+        senderEpochKeyPair: groupTestSigningKey(BOB, group.groupId!, 0),
+        payload: encodeGroupItems([{ type: 'text', text: 'After removal' }]),
+      }),
+    )
+    await alice.syncGroupConversation(group.id, {
+      relayClient: client,
+      ownAddress: ALICE,
+    })
+    expect(
+      alice.conversations[group.id].messages.map(
+        (message: any) => message.items[0].text,
+      ),
+    ).toEqual(['Epoch 1'])
+    expect(alice.conversations[group.id].groupState.lastSyncedSeq).toBe(2)
+  })
+
+  it('replays our own outbound membership deliveries on hydration as ourselves, not as the recipient', async () => {
+    const { chats, group, client } = await makeGroup()
+    const metadata = JSON.parse(JSON.stringify(chats.$state))
+    await chats.inviteMemberToGroup({
+      conversationId: group.id,
+      memberAddress: CHARLIE,
+      relayClient: client,
+    })
+    const control = chats.conversations[group.id].groupState
+      .pendingMemberDeliveries[BOB].at(-1).items[0]
+    expect(control.type).toBe('group-control')
+    const conversationId = '22222222-2222-4222-8222-222222222222'
+    const store = await messageStorePromise
+    store.getIterator.mockResolvedValueOnce([
+      {
+        index: 'sent-control',
+        outbound: true,
+        senderAddress: ALICE,
+        copartyAddress: BOB,
+        message: {
+          outbound: true,
+          status: 'confirmed',
+          senderAddress: ALICE,
+          destinationAddress: BOB,
+          conversationId,
+          items: [control],
+          serverTime: 3000,
+          receivedTime: 3000,
+          outpoints: [],
+        },
+      },
+    ])
+    const restored = await rehydrateChat(metadata)
+    const restoredGroup = restored.conversations[group.id]
+    expect(restoredGroup.groupState.epoch).toBe(1)
+    expect(restoredGroup.groupState.memberIndex).toBe(0)
+    expect(restoredGroup.groupMemberIndex).toBe(0)
   })
 })

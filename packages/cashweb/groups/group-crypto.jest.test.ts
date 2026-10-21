@@ -358,10 +358,30 @@ describe('identity-bound group signing', () => {
       payload,
       timestampMs,
     }
-    expect(
-      openGroupMessage({ envelope: sealGroupMessage(params), epochKeys })
-        .payloadText,
-    ).toBe('signed by custody')
+    const roster = [
+      {
+        index: 0,
+        address: 'alice',
+        identityPubKeyHex: bytesToHex(alice.accountPublicKey),
+        epochSigningPubKeyHex: bytesToHex(alice.publicKey),
+      },
+    ]
+    const opened = openGroupMessage({
+      envelope: sealGroupMessage(params),
+      epochKeys,
+      roster,
+    })
+    expect(opened.payloadText).toBe('signed by custody')
+    expect(opened.senderAddress).toBe('alice')
+    // A member who can open the frame can re-encrypt it under a fresh nonce. The ciphertext
+    // differs, but the signed digest that names the message does not.
+    const replay = openGroupMessage({
+      envelope: sealGroupMessage(params),
+      epochKeys,
+      roster,
+    })
+    expect(replay.innerDigestHex).toBe(opened.innerDigestHex)
+    expect(opened.innerDigestHex).toBe(bytesToHex(digest))
     expect(() =>
       sealGroupMessage({
         ...params,

@@ -1378,6 +1378,12 @@ async function settleHolder(
   owner: CanonicalMessagingOwner,
   holder: string,
 ): Promise<void> {
+  // The coin list's hold on the main or identity account: each message paying from it.
+  const payer = owner.payer()
+  if (holder === payer.accountHolder) {
+    for (const each of payer.accountCoinHolders()) await settleHolder(owner, each)
+    return
+  }
   const prefix = `${owner.subject}:`
   const consumerId = holder.startsWith(prefix)
     ? holder.slice(prefix.length)

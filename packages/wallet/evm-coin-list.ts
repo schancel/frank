@@ -17,6 +17,12 @@
  * - `spent`: the chain shows its spending transaction included. What the account holds after it
  *   is a new coin at the next nonce (the successor), added in the same step.
  *
+ * An account's nonces stack: when a payment is signed from `[account, n]`, what the account
+ * keeps after it (its value less the payment and the most its fee can be) is listed at once as
+ * `[account, n + 1]`, so the next payment can sign at the next nonce without waiting for the
+ * chain to show `n`. The chain mines them in order. Whether the chain lets the account spend
+ * again that soon is the chain adapter's rule (`spendableFromBlock`).
+ *
  * Selection (`select`) is one synchronous pass over the unspent coins: no request, no await, so
  * two payments built at the same moment can never take the same coin. Whatever has to be learned
  * from the chain (that a coin's money arrived, what an account holds after a spend) is learned out
@@ -397,6 +403,8 @@ export class EvmCoinList {
     holder: string,
     coin: { account: string; nonce: number },
     rawTx: string,
+    /** What the account keeps after this payment, listed at once at the next nonce. */
+    successor?: { valueWei: bigint; spendableFromBlock?: number },
   ): Promise<void> {
     const key = coinKey(coin.account, coin.nonce)
     const current = this.coinsByKey.get(key)
@@ -408,9 +416,44 @@ export class EvmCoinList {
     )
       throw new EvmCoinListError(`Coin ${key} is not being built from by ${holder}`)
     const next: EvmListCoin = { ...current, state: 'pending_receipt', spendingTx: rawTx }
+    const successorKey = coinKey(current.account, current.nonce + 1)
+    const stacked: EvmListCoin | undefined =
+      successor !== undefined &&
+      successor.valueWei > 0n &&
+      !this.coinsByKey.has(successorKey)
+        ? {
+            account: current.account,
+            nonce: current.nonce + 1,
+            privateKey: current.privateKey,
+            valueWei: successor.valueWei,
+            origin: current.origin,
+            state: 'unspent',
+            ...(successor.spendableFromBlock === undefined
+              ? {}
+              : { spendableFromBlock: successor.spendableFromBlock }),
+          }
+        : undefined
     await this.store.put(key, toStored(next))
+    if (stacked) await this.persist(stacked)
     this.coinsByKey.set(key, next)
+    if (stacked) this.coinsByKey.set(successorKey, stacked)
     this.notify()
+  }
+
+  /** A coin whose transaction never left the wallet is free again: the successor stacked on it
+   * goes when nothing took it; when something did, the coin keeps only what it had set aside
+   * for its own payment (the rest is that successor's). */
+  private unstack(coin: EvmListCoin): EvmListCoin {
+    const successorKey = coinKey(coin.account, coin.nonce + 1)
+    const successor = this.coinsByKey.get(successorKey)
+    if (successor === undefined) return coin
+    if (successor.state === 'unspent') {
+      this.coinsByKey.delete(successorKey)
+      void this.store.delete(successorKey)
+      return coin
+    }
+    const own = coin.valueWei - successor.valueWei
+    return { ...coin, valueWei: own > 0n ? own : 0n }
   }
 
   /**
@@ -453,10 +496,13 @@ export class EvmCoinList {
       spentInBlock: outcome.block,
     }
     const successorKey = coinKey(current.account, current.nonce + 1)
+    // A successor stacked when the payment was signed and not taken since is replaced by what
+    // the chain shows the account held at the block.
+    const existing = this.coinsByKey.get(successorKey)
     const successor: EvmListCoin | undefined =
       outcome.successor !== undefined &&
       outcome.successor.valueWei > 0n &&
-      !this.coinsByKey.has(successorKey)
+      (existing === undefined || existing.state === 'unspent')
         ? {
             account: current.account,
             nonce: current.nonce + 1,
@@ -554,7 +600,7 @@ export class EvmCoinList {
         (coin.state === 'spend_pending' || coin.state === 'pending_receipt')
       ) {
         const { holder: _holder, spendingTx: _tx, ...rest } = coin
-        const free: EvmListCoin = { ...rest, state: 'unspent' }
+        const free: EvmListCoin = this.unstack({ ...rest, state: 'unspent' })
         this.coinsByKey.set(key, free)
         freed.push(free)
       }
@@ -575,7 +621,7 @@ export class EvmCoinList {
     for (const coin of this.all())
       if (coin.state === 'pending_receipt' && !referenced(coin.account, coin.nonce)) {
         const { holder: _holder, spendingTx: _tx, ...rest } = coin
-        const free: EvmListCoin = { ...rest, state: 'unspent' }
+        const free: EvmListCoin = this.unstack({ ...rest, state: 'unspent' })
         this.coinsByKey.set(coinKey(coin.account, coin.nonce), free)
         await this.persist(free)
         count++

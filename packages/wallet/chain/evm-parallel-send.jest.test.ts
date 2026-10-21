@@ -595,6 +595,47 @@ describe('parallel paid messages', () => {
     expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(2)
   })
 
+  it('after an undelivered message holding [main, n], the next message signs [main, n+1] and goes out at once, in the same and in another conversation', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 18n)
+    f.setPhase('fail')
+    const stuck = await send(1).catch(error => error)
+    expect(stuck).toBeInstanceOf(MonadStampPendingAttemptError)
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    f.setPhase('delivered')
+    const stages: string[] = []
+    const sendIn = (n: number, conversationId?: string) =>
+      f.chain.directMessages.send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: `message ${n}` }],
+        stampValue: STAMP,
+        messageId: ID(n),
+        ...(conversationId === undefined ? {} : { conversationId }),
+        onPreparationProgress: progress => stages.push(progress.stage),
+      })
+    const started = Date.now()
+    const same = await sendIn(2)
+    const other = await sendIn(3, '77'.repeat(16))
+    expect(Date.now() - started).toBeLessThan(3_000)
+    // Never waiting for the undelivered message's payment.
+    expect(stages).not.toContain('waiting-for-payment')
+    const nonceOf = (sent: { stampPayments: { txHash: string }[] }) =>
+      relayPayments()
+        .filter(tx => tx.hash === sent.stampPayments[0]!.txHash)
+        .map(tx => [tx.from!.toLowerCase(), tx.nonce])[0]
+    expect(nonceOf(same)).toEqual([main, 1])
+    expect(nonceOf(other)).toEqual([main, 2])
+    expect(bobMailbox).toHaveLength(2)
+    // The undelivered message still holds its own nonce: nothing of it was broadcast.
+    expect(
+      f.chain.directMessages.paymentsOf?.({
+        wallet: alice,
+        payloadDigest: stuck.payloadHashes[0],
+      }),
+    ).toEqual(['pending'])
+  })
+
   it('the relay never has the message: the wallet broadcasts nothing, keeps the accounts, and broadcasts once a resend is confirmed', async () => {
     const [row] = await fundAccounts(1)
     f.setPhase('fail')

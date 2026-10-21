@@ -722,6 +722,9 @@ export function installEvmStampFundAheadCoordinator(
       coinListSync.markDirty(change.record.address);
       return;
     }
+    // The payer's own hold on an account ends once its coins there are settled: the list
+    // already shows what the account holds.
+    if (change.holder === stampPayer.accountHolder) return;
     const ownedByHolder = coinList
       .all()
       .some(

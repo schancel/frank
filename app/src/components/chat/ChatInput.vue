@@ -1104,7 +1104,6 @@ export default defineComponent({
   padding-left: max(14px, env(safe-area-inset-left, 0px));
   padding-right: max(14px, env(safe-area-inset-right, 0px));
   overflow: visible;
-  container-type: inline-size;
 }
 
 html.frank-keyboard-open .chat-input-toolbar {
@@ -1115,6 +1114,13 @@ html.frank-keyboard-open .chat-input-toolbar {
 .chat-input-bottom-bar {
   min-height: 38px;
   gap: 8px;
+  /* The size container for the narrow-composer stamp pill (app.scss). Only this row, never the
+   * toolbar: size containment gives a container no intrinsic width, and Chrome sizes the composer
+   * footer by laying out its content at that intrinsic width. Around the content-sized textarea
+   * that wrapped every typed character onto its own line, and the footer grew a line a keystroke
+   * (up to the textarea's 140px cap) while the visible field stayed one line, leaving an empty
+   * band under the composer. This row's height does not depend on its width. */
+  container-type: inline-size;
 }
 
 .chat-attach-btn {
@@ -1173,10 +1179,12 @@ html.frank-keyboard-open .chat-input-toolbar {
 }
 
 .chat-input-field--empty {
+  /* One line's height, the same as Quasar's dense textarea with one line typed, so the first
+   * keystroke does not move the composer. */
   :deep(.q-field__native) {
-    height: 32px !important;
-    min-height: 32px !important;
-    max-height: 32px !important;
+    height: 36px !important;
+    min-height: 36px !important;
+    max-height: 36px !important;
     overflow: hidden !important;
     white-space: nowrap !important;
     text-overflow: ellipsis !important;

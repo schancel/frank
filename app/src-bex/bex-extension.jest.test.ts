@@ -255,6 +255,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       activePersonaAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
     })
     const bg = installBackgroundBridge(mockExtensionScope, bgState)
+    await new Promise(r => setTimeout(r, 0))
     expect(setPanelBehavior).toHaveBeenCalledWith({
       openPanelOnActionClick: false,
     })
@@ -411,17 +412,22 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       false,
     )
 
-    // Test toggling sidePanel action click behavior
+    // Choosing the side panel for the toolbar click
     const toggleSidePanelRes = await sendRuntimeMessage<any, any>(
       {
         channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'set-sidepanel-behavior',
-        openPanelOnActionClick: true,
+        type: 'set-launch-mode',
+        launchMode: 'sidepanel',
       },
       mockExtensionScope,
     )
-    expect(toggleSidePanelRes.result.ok).toBe(true)
-    expect(toggleSidePanelRes.result.openPanelOnActionClick).toBe(true)
+    expect(toggleSidePanelRes.result).toEqual({
+      ok: true,
+      launchMode: 'sidepanel',
+    })
+    expect(storageSet).toHaveBeenLastCalledWith({
+      [FRANK_EXT_LAUNCH_MODE_KEY]: 'sidepanel',
+    })
     expect(setPanelBehavior).toHaveBeenLastCalledWith({
       openPanelOnActionClick: true,
     })
@@ -538,9 +544,28 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       expect(transformedHtml).not.toContain('rel="modulepreload"')
       expect(transformedHtml).not.toContain('rel="manifest"')
       expect(transformedHtml).not.toContain('src="/assets/index-AbCd1234.js"')
-      expect(transformedHtml).toContain(
-        'html, body { width: 400px; height: 600px; margin: 0; padding: 0; }',
+      // The popup's size comes from the document alone (browsers size an
+      // action popup from it, starting from a tiny viewport): a fixed
+      // 400x600 box, no viewport-relative clamp on the root.
+      const sizing = /<style id="frank-extension-popup-sizing">([\s\S]*?)<\/style>/.exec(
+        transformedHtml,
+      )?.[1]
+      expect(sizing).toBeDefined()
+      const rootRule = /html:not\(\[data-ext-mode\]\), html\[data-ext-mode='popup'\] \{([^}]*)\}/.exec(
+        sizing!,
+      )?.[1]
+      expect(rootRule).toContain(
+        '--frank-vw: calc(400px / var(--frank-ui-zoom, 1)) !important;',
       )
+      expect(rootRule).toContain(
+        '--frank-vh: calc(600px / var(--frank-ui-zoom, 1)) !important;',
+      )
+      expect(rootRule).toContain('width: var(--frank-vw) !important;')
+      expect(rootRule).toContain('height: var(--frank-vh) !important;')
+      expect(rootRule).toContain('max-width: none !important;')
+      expect(rootRule).toContain('max-height: none !important;')
+      expect(rootRule).not.toMatch(/\d+(vw|vh|dvh)|100%/)
+      expect(transformedHtml).not.toContain('extension-popup.css')
       expect(transformedHtml).toContain('requestAnimationFrame')
       expect(transformedHtml).toContain("import('./assets/index-AbCd1234.js')")
       expect(bootScript).toContain("window.addEventListener('load'")
@@ -596,7 +621,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     }
   })
 
-  it('opens persistent standalone extension window (with tab fallback) and persists launch mode preference', async () => {
+  it('opens a standalone extension window (with tab fallback) or the side panel without changing the toolbar click choice', async () => {
     const windowsCreate = jest.fn().mockResolvedValue({ id: 99 })
     const storageSet = jest.fn().mockResolvedValue(undefined)
     const setPanelBehavior = jest.fn().mockResolvedValue(undefined)
@@ -636,24 +661,15 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       width: 440,
       height: 740,
     })
-    expect(storageSet).toHaveBeenCalledWith({
-      [FRANK_EXT_LAUNCH_MODE_KEY]: 'window',
-    })
-
-    // SidePanel open persists sidepanel launch mode and enables openPanelOnActionClick
+    // Opening the side panel leaves the toolbar click choice alone
     const panelRes = await openCompanionPanel({}, chromeScope)
     expect(panelRes).toEqual({
       opened: true,
       mode: 'sidePanel',
     })
-    expect(setPanelBehavior).toHaveBeenCalledWith({
-      openPanelOnActionClick: true,
-    })
     expect(sidePanelOpen).toHaveBeenCalledWith({ windowId: 42 })
-    expect(storageSet).toHaveBeenCalledWith({
-      [FRANK_EXT_LAUNCH_MODE_KEY]: 'sidepanel',
-      frankOpenPanelOnActionClick: true,
-    })
+    expect(setPanelBehavior).not.toHaveBeenCalled()
+    expect(storageSet).not.toHaveBeenCalled()
 
     // Fallback to chrome.tabs.create when chrome.windows.create is unavailable
     const tabsCreate = jest.fn().mockResolvedValue({ id: 101 })

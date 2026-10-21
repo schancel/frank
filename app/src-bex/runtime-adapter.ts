@@ -115,15 +115,26 @@ export function isBrowserExtensionRuntime(
   return getExtensionRuntime(globalScope).isExtension
 }
 
+/** What a click on the toolbar icon opens. */
 export type ExtensionLaunchMode = 'popup' | 'sidepanel' | 'window'
 
+/**
+ * The user's toolbar click choice, in `storage.local`. Only the background's
+ * `set-launch-mode` handler writes it (from the user's choice); opening a
+ * view never changes it. The background re-applies it at every start.
+ */
 export const FRANK_EXT_LAUNCH_MODE_KEY = 'frank_ext_launch_mode'
+
+export function parseExtensionLaunchMode(
+  raw: unknown,
+): ExtensionLaunchMode | null {
+  return raw === 'popup' || raw === 'sidepanel' || raw === 'window' ? raw : null
+}
 
 export async function openCompanionPanel(
   options: {
     windowId?: number
     tabId?: number
-    persistSidePanelOnActionClick?: boolean
   } = {},
   globalScope?: Record<string, any>,
 ): Promise<{
@@ -136,30 +147,6 @@ export async function openCompanionPanel(
   }
 
   if (api.sidePanel && typeof api.sidePanel.open === 'function') {
-    if (options.persistSidePanelOnActionClick !== false) {
-      if (typeof api.sidePanel.setPanelBehavior === 'function') {
-        try {
-          await Promise.resolve(
-            api.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }),
-          ).catch(() => {})
-        } catch {
-          // Ignore sidePanel behavior errors
-        }
-      }
-      if (typeof api.storage?.local?.set === 'function') {
-        try {
-          await Promise.resolve(
-            api.storage.local.set({
-              [FRANK_EXT_LAUNCH_MODE_KEY]: 'sidepanel',
-              frankOpenPanelOnActionClick: true,
-            }),
-          ).catch(() => {})
-        } catch {
-          // Ignore storage errors
-        }
-      }
-    }
-
     let resolvedWindowId = options.windowId
     if (
       resolvedWindowId === undefined &&
@@ -319,18 +306,6 @@ export async function openExtensionInWindow(
   const height = options.height ?? 740
   const url = getExtensionResourceUrl(path, globalScope) ?? path
   const api = getRawExtensionApi(globalScope)
-
-  if (typeof api?.storage?.local?.set === 'function') {
-    try {
-      await Promise.resolve(
-        api.storage.local.set({
-          [FRANK_EXT_LAUNCH_MODE_KEY]: 'window',
-        }),
-      ).catch(() => {})
-    } catch {
-      // Ignore storage errors
-    }
-  }
 
   if (api?.windows && typeof api.windows.create === 'function') {
     await api.windows.create({

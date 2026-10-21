@@ -549,8 +549,8 @@ export default defineComponent({
       try {
         await sendRuntimeMessage({
           channel: FRANK_DAPP_BRIDGE_CHANNEL,
-          type: 'set-sidepanel-behavior',
-          openPanelOnActionClick: true,
+          type: 'set-launch-mode',
+          launchMode: 'sidepanel',
         })
       } catch {
         // Ignore runtime message errors outside extension runtime

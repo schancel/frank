@@ -852,7 +852,7 @@ export default defineComponent({
     if (isExtensionMode.value) {
       void sendRuntimeMessage<Record<string, any>, any>({
         channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'get-sidepanel-behavior',
+        type: 'get-launch-mode',
       })
         .then(res => {
           const mode = res?.result?.launchMode

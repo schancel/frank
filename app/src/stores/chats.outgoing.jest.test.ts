@@ -2550,6 +2550,40 @@ describe('financial outbox envelope barrier', () => {
     expect(only(reloaded)[0].financialOperations).toEqual(financialOperations)
   })
 
+  it('a failed payment submit after delivery is not sent; reconciliation submits the same operations again', async () => {
+    const send = jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockImplementation(async p => {
+        await p.onEnvelopeDurable?.(HASH)
+        return okResult(HASH)
+      })
+    submit.mockRejectedValueOnce(new Error('indexer unreachable'))
+    const chats = useChatStore()
+    const outcome = await chats.sendMessage({ ...params(), stampValue: 1n })
+    expect(outcome.state).toBe('payment-pending')
+    expect(submit).toHaveBeenCalledTimes(1)
+    expect(only(chats)[0].status).toBe('payment-pending')
+    expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
+    // Durable too: a restart finds it pending, not sent.
+    const reloaded = await reload({ askWallet: false })
+    expect(only(reloaded)[0].status).toBe('payment-pending')
+    // The submit fails again: still pending, and nothing new is sent or paid.
+    const reconcile = reconcileReturns({ [HASH]: 'delivered' })
+    submit.mockRejectedValueOnce(new Error('indexer unreachable'))
+    await reloaded.reconcileOutgoing({ wallet })
+    expect(only(reloaded)[0].status).toBe('payment-pending')
+    // The chain is reachable again: the same captured operations are submitted, then sent.
+    reconcile.mockResolvedValue({ [HASH]: 'delivered' })
+    await reloaded.reconcileOutgoing({ wallet })
+    expect(submit).toHaveBeenCalledTimes(3)
+    expect(send).toHaveBeenCalledTimes(1)
+    for (const [, references] of jest.mocked(captureOutgoingFinancialOperations)
+      .mock.calls)
+      expect(references).toEqual(financialOperations)
+    expect(only(reloaded)[0].status).toBe('confirmed')
+    expect(only(reloaded)[0].payloadDigest).toBe(HASH)
+  })
+
   it('keeps the financial hold when the digest-link write fails before exposure', async () => {
     const chats = useChatStore()
     const save = jest.spyOn(await messageStorePromise, 'saveMessage')

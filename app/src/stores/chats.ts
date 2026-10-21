@@ -1702,7 +1702,8 @@ async function adoptPublishedAdminEpochs(
     throw new Error('Conflicting group epoch')
   const pendingControls = conv.groupState.pendingControls
   for (const epoch of Object.keys(pendingControls ?? {}))
-    if (Number(epoch) <= conv.groupState.epoch) delete pendingControls![Number(epoch)]
+    if (Number(epoch) <= conv.groupState.epoch)
+      delete pendingControls![Number(epoch)]
   return true
 }
 
@@ -6721,7 +6722,9 @@ export const useChatStore = defineStore('chats', {
       }
       checkGroup()
       await this.flushPersistence?.()
-      return hasAppliedGroupEpoch(conv, certificate) ? 'published' : 'superseded'
+      return hasAppliedGroupEpoch(conv, certificate)
+        ? 'published'
+        : 'superseded'
     },
     /** Queued certificate deliveries retain recipients and content across restart. */
     async retryGroupMemberDeliveries(
@@ -7098,8 +7101,10 @@ export const useChatStore = defineStore('chats', {
       wallet?: WalletHandle
       relayClient?: GroupRelayClient
     }): Promise<Conversation> {
-      const { conv, state, client, checkGroup } =
-        await this.beginGroupRotation(conversationId, relayClient)
+      const { conv, state, client, checkGroup } = await this.beginGroupRotation(
+        conversationId,
+        relayClient,
+      )
       const groupIdHex = state.groupIdHex
       const prevEpochHashHex = state.epochFrame.epoch_hash
       const canonicalNewMember =
@@ -7212,9 +7217,7 @@ export const useChatStore = defineStore('chats', {
         relayClient ?? this.getGroupRelayClient(conv.groupState.homeRelay)
       const ownAddress = await getOwnCanonicalAddress()
       checkGroup()
-      if (
-        await adoptPublishedAdminEpochs(conv, client, ownAddress, checkGroup)
-      )
+      if (await adoptPublishedAdminEpochs(conv, client, ownAddress, checkGroup))
         await this.flushPersistence?.()
       checkGroup()
       return { conv, state: conv.groupState, client, checkGroup }
@@ -7330,8 +7333,10 @@ export const useChatStore = defineStore('chats', {
       wallet?: WalletHandle
       relayClient?: GroupRelayClient
     }): Promise<Conversation> {
-      const { conv, state, client, checkGroup } =
-        await this.beginGroupRotation(conversationId, relayClient)
+      const { conv, state, client, checkGroup } = await this.beginGroupRotation(
+        conversationId,
+        relayClient,
+      )
       const removedAddress =
         safeChainDisplayAddress(memberAddress) || memberAddress
       const rotated = this.prepareGroupRotation(

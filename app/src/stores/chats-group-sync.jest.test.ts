@@ -1054,9 +1054,9 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(laptop.messages['winner-control'].items[0].type).toBe(
       'group-control',
     )
-    expect(laptop.conversations[group.id].groupState.epochFrame.epoch_hash).toBe(
-      winner.epochFrame.epoch_hash,
-    )
+    expect(
+      laptop.conversations[group.id].groupState.epochFrame.epoch_hash,
+    ).toBe(winner.epochFrame.epoch_hash)
     // Retrying the user's action applies it on top of the adopted epoch.
     await laptop.inviteMemberToGroup({
       conversationId: group.id,
@@ -1152,9 +1152,11 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       aad,
     ).decrypt(hexToBytes(original.groupEnvelope.ciphertext))
     const nonce = new Uint8Array(24).fill(0x5a)
-    const ciphertext = xchacha20poly1305(keys.encryptionKey, nonce, aad).encrypt(
-      inner,
-    )
+    const ciphertext = xchacha20poly1305(
+      keys.encryptionKey,
+      nonce,
+      aad,
+    ).encrypt(inner)
     const writeSig = secp256k1
       .sign(
         computeOuterWriteSigningHash({
@@ -1258,8 +1260,10 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       memberAddress: CHARLIE,
       relayClient: client,
     })
-    const control = chats.conversations[group.id].groupState
-      .pendingMemberDeliveries[BOB].at(-1).items[0]
+    const control =
+      chats.conversations[group.id].groupState.pendingMemberDeliveries[BOB].at(
+        -1,
+      ).items[0]
     expect(control.type).toBe('group-control')
     const conversationId = '22222222-2222-4222-8222-222222222222'
     const store = await messageStorePromise

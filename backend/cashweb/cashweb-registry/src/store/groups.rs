@@ -1449,7 +1449,12 @@ mod tests {
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store.put_epoch(&id, initial).unwrap();
-        assert!(owner.get().unwrap().get_current_epoch(&id).unwrap().is_some());
+        assert!(owner
+            .get()
+            .unwrap()
+            .get_current_epoch(&id)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

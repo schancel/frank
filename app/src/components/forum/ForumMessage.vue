@@ -98,7 +98,7 @@
         </div>
         <div
           class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
-          v-if="entry.kind === 'post' && renderBody"
+          v-if="entry.kind === 'post'"
         >
           <div
             class="mdstyle text-body2"
@@ -125,7 +125,7 @@
         </div>
         <div
           class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
-          v-if="entry.kind === 'game' && renderBody"
+          v-if="entry.kind === 'game'"
         >
           <div
             v-if="entry.message"
@@ -318,10 +318,6 @@ export default defineComponent({
       type: Boolean,
     },
     showReplies: {
-      default: true,
-      type: Boolean,
-    },
-    renderBody: {
       default: true,
       type: Boolean,
     },

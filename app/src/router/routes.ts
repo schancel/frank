@@ -62,7 +62,12 @@ export function createRoutes(): RouteRecordRaw[] {
             { path: ':address', component: () => import('pages/Chat.vue') },
           ],
         },
-        { path: 'settings', component: () => import('pages/Settings.vue') },
+        // One component for the list and every section (/settings/networking, ...): a phone
+        // shows one of them per route, a wide layout shows the list beside the section.
+        {
+          path: 'settings/:section?',
+          component: () => import('pages/Settings.vue'),
+        },
         { path: 'backup', component: () => import('pages/BackupAccount.vue') },
         { path: 'backup-account', redirect: '/backup' },
         { path: 'profile', component: () => import('pages/Profile.vue') },

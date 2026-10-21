@@ -1108,7 +1108,7 @@ export default defineComponent({
   container-type: inline-size;
 }
 
-:global(html.frank-keyboard-open) .chat-input-toolbar {
+html.frank-keyboard-open .chat-input-toolbar {
   min-height: 52px;
   padding-bottom: 6px !important;
 }
@@ -1218,7 +1218,7 @@ export default defineComponent({
   }
 }
 
-:global(body.body--dark) {
+body.body--dark {
   .chat-attach-btn {
     color: rgba(255, 255, 255, 0.6);
   }

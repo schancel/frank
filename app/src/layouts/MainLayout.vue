@@ -145,7 +145,6 @@ import {
   sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../src-bex/inpage'
-import { useChatStore } from 'src/stores/chats'
 
 import LeftDrawer from '../components/panels/LeftDrawer.vue'
 
@@ -591,24 +590,9 @@ export default defineComponent({
         }
       }
     },
+    // The Messages tab is the conversation list (Telegram/WhatsApp), never a jump into the last
+    // conversation: inside a conversation the bottom bar hides, so landing there lost it.
     openMobileChatsTab() {
-      try {
-        const chats = useChatStore()
-        const target =
-          chats.activeConversationId ??
-          chats.activeChatAddr ??
-          chats.getSortedChatOrder?.[0]?.id ??
-          chats.getSortedChatOrder?.[0]?.address
-        if (target) {
-          if (typeof chats.setActiveConversation === 'function') {
-            chats.setActiveConversation(target)
-          }
-          void this.$router.push(`/chat/${target}`)
-          return
-        }
-      } catch {
-        // Fallback to /chat when store is unavailable
-      }
       void this.$router.push('/chat')
     },
   },
@@ -695,6 +679,8 @@ export default defineComponent({
       if (!setup || this.setupNavigationLocked) return false
       if (!isNarrowWidth(this.screenWidth)) return false
       const path = this.currentRoutePath
+      // Every top-level screen keeps the bar, the conversation list (/chat) included; only an
+      // open conversation (/chat/<id>) hides it, as Telegram and WhatsApp do.
       return !path.startsWith('/chat/') && !path.startsWith('/setup')
     },
     mobileNavChatsLabel(): string {

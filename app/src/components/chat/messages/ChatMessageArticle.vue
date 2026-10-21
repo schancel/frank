@@ -319,7 +319,6 @@ export default defineComponent({
   font-weight: 600;
 }
 
-:global(.body--dark) .chat-message-article-card,
 .body--dark .chat-message-article-card {
   background: #0f172a;
   color: #f8fafc;

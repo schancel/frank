@@ -376,6 +376,10 @@ export type ProfileLinkItem = {
   label?: string
 }
 
+function profileTabFromQuery(tab: unknown): 'profile' | 'identity' {
+  return tab === 'identity' ? 'identity' : 'profile'
+}
+
 export default defineComponent({
   components: {
     QrcodeVue,
@@ -464,11 +468,9 @@ export default defineComponent({
       internalAccountType: this.accountType ?? 0,
       internalBotRole: this.botRole,
       avatarPath: null,
-      tab:
-        (this as { $route?: { query?: { tab?: string } } }).$route?.query
-          ?.tab === 'identity'
-          ? 'identity'
-          : 'profile',
+      tab: profileTabFromQuery(
+        (this as { $route?: { query?: { tab?: unknown } } }).$route?.query?.tab,
+      ),
       defaultAvatarIndex: Math.floor(Math.random() * defaultAvatars.length),
     }
   },
@@ -617,6 +619,11 @@ export default defineComponent({
     },
   },
   watch: {
+    // Settings' profile row links to /profile?tab=identity; the page may already be mounted
+    // (desktop drawer, back/forward), so the query is followed, not read once.
+    '$route.query.tab'(value: unknown) {
+      this.tab = profileTabFromQuery(value)
+    },
     internalName(value: string) {
       this.$emit('update:name', normalizedProfileName(value))
     },

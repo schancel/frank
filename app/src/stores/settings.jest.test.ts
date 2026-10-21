@@ -3,7 +3,12 @@
 import { watch } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { activeChain } from '@frank/wallet/chain'
-import { useSettingsStore, saveSettings, restoreSettings } from './settings'
+import {
+  useSettingsStore,
+  saveSettings,
+  restoreSettings,
+  isValidExternalVaultAddress,
+} from './settings'
 import { discoverEmailGateway } from '@frank/cashweb/relay/email-gateway-discovery'
 
 jest.mock('@frank/cashweb/relay/email-gateway-discovery', () => ({
@@ -345,4 +350,42 @@ describe('coldVaultSweep settings (Issue #1572)', () => {
       }),
     ).toThrow(/Hot-wallet ceiling must be a positive number/)
   })
+})
+
+describe('external vault address validation', () => {
+  it('accepts EVM addresses and Solana addresses that decode to 32 bytes', () => {
+    expect(
+      isValidExternalVaultAddress('0x8888888888888888888888888888888888888888'),
+    ).toBe(true)
+    expect(
+      isValidExternalVaultAddress(
+        'So11111111111111111111111111111111111111112',
+      ),
+    ).toBe(true)
+    expect(isValidExternalVaultAddress('1'.repeat(32))).toBe(true)
+  })
+
+  it('rejects a well-formed prefix of a Solana address', () => {
+    // 32-43 base58 characters pass the shape regex but decode to fewer than 32 bytes.
+    expect(
+      isValidExternalVaultAddress('So1111111111111111111111111111111111111111'),
+    ).toBe(false)
+    expect(
+      isValidExternalVaultAddress('So111111111111111111111111111111'),
+    ).toBe(false)
+  })
+})
+
+it('clearing the gateway override does not accept a changed relay gateway', () => {
+  setActivePinia(createPinia())
+  const store = useSettingsStore()
+  store.emailGatewayOverride = {
+    address: '0x3333333333333333333333333333333333333333',
+  }
+  store.emailGatewayStatus = 'changed'
+  const accepted = store.acceptedEmailGateway
+  store.clearEmailGatewayOverride()
+  expect(store.emailGatewayOverride).toBeNull()
+  expect(store.emailGatewayStatus).toBe('changed')
+  expect(store.acceptedEmailGateway).toEqual(accepted)
 })

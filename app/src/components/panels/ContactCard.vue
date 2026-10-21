@@ -77,10 +77,8 @@ export default defineComponent({
   },
   methods: {
     openProfile() {
+      // The owner (SettingsPanel) decides where the profile opens; the card only reports the tap.
       this.$emit('open-profile')
-      if (this.$router) {
-        void Promise.resolve(this.$router.push('/profile')).catch(() => {})
-      }
     },
     copyAddress() {
       copyToClipboard(this.displayAddress)

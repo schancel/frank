@@ -62,6 +62,17 @@
           <extension-popout-btn />
         </template>
         <template v-else>
+          <!-- Phones: the chat list is its own page, so give the open conversation a way back. -->
+          <q-btn
+            v-if="narrow"
+            class="q-px-sm"
+            flat
+            dense
+            icon="arrow_back"
+            :aria-label="$t('a11y.backToChats')"
+            data-testid="chat-back"
+            @click="$router.push('/chat')"
+          />
           <q-btn
             class="q-px-sm"
             flat
@@ -315,6 +326,8 @@ import { RouteLocationNormalized } from 'vue-router'
 
 import ChatInfoView from '../components/panels/ChatInfoView.vue'
 import { openChat } from '../utils/routes'
+import { isNarrowWidth } from '../utils/layout'
+import { getEffectiveScreenWidth } from '../utils/mobile-viewport-scale'
 import ClearHistoryDialog from '../components/dialogs/ClearHistoryDialog.vue'
 import DeleteChatDialog from '../components/dialogs/DeleteChatDialog.vue'
 import AccountBadge from '../components/contacts/AccountBadge.vue'
@@ -502,6 +515,12 @@ export default defineComponent({
     },
   },
   computed: {
+    narrow(): boolean {
+      const raw =
+        this.$q?.screen?.width ??
+        (typeof window !== 'undefined' ? window.innerWidth : 1024)
+      return isNarrowWidth(getEffectiveScreenWidth(raw))
+    },
     activeConversation(): Conversation | null {
       if (!this.address) return null
       try {

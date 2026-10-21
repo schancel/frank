@@ -547,7 +547,7 @@ onBeforeUnmount(clearShares)
   border: 1px solid rgba(0, 0, 0, 0.08);
 }
 
-:global(body.body--dark) {
+body.body--dark {
   .share-card,
   .custom-scheme-box,
   .verify-shards-box {

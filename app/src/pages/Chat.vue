@@ -2741,16 +2741,11 @@ export default defineComponent({
   overflow: visible;
 }
 
-:global(html.frank-keyboard-open) {
-  .chat-footer,
-  .chat-input-bar {
-    min-height: 52px;
-  }
-
-  :deep(.chat-input-toolbar) {
-    min-height: 52px;
-    padding-bottom: 6px !important;
-  }
+// Plain descendant selectors: in scoped styles `:global(x) .y` compiles to just `x`, which
+// styled <html> itself. The composer toolbar's own keyboard rule lives in ChatInput.vue.
+html.frank-keyboard-open .chat-footer,
+html.frank-keyboard-open .chat-input-bar {
+  min-height: 52px;
 }
 
 :deep(.chat-send-btn) {

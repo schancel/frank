@@ -1249,7 +1249,7 @@ export default defineComponent({
   border: 1px solid rgba(15, 23, 42, 0.08);
 }
 
-:global(body.body--dark) .identity-qr-panel {
+body.body--dark .identity-qr-panel {
   background: rgba(255, 255, 255, 0.05);
   border-color: rgba(255, 255, 255, 0.1);
 }
@@ -1288,8 +1288,8 @@ export default defineComponent({
   background: rgba(234, 88, 12, 0.06);
 }
 
-:global(body.body--dark) .identity-qr-view-btn,
-:global(body.body--dark) .identity-qr-secondary-btn {
+body.body--dark .identity-qr-view-btn,
+body.body--dark .identity-qr-secondary-btn {
   background: rgba(234, 88, 12, 0.12);
 }
 

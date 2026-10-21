@@ -562,7 +562,7 @@ export default defineComponent({
   overflow: hidden;
 }
 
-:global(.body--dark) .offer-swap-dialog {
+.body--dark .offer-swap-dialog {
   background: #0f172a;
   color: #f8fafc;
   border-color: rgba(255, 255, 255, 0.14);
@@ -577,7 +577,7 @@ export default defineComponent({
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
 }
 
-:global(.body--dark) .swap-dialog-header {
+.body--dark .swap-dialog-header {
   border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
@@ -620,7 +620,7 @@ export default defineComponent({
   color: #ea580c;
 }
 
-:global(.body--dark) .swap-dialog-contact {
+.body--dark .swap-dialog-contact {
   color: #fb923c;
 }
 
@@ -641,7 +641,7 @@ export default defineComponent({
   color: #475569;
 }
 
-:global(.body--dark) .swap-dialog-notice {
+.body--dark .swap-dialog-notice {
   color: #94a3b8;
 }
 
@@ -657,7 +657,7 @@ export default defineComponent({
   word-break: break-all;
 }
 
-:global(.body--dark) .swap-dialog-context-pill {
+.body--dark .swap-dialog-context-pill {
   background: rgba(255, 255, 255, 0.06);
   color: #94a3b8;
 }
@@ -679,7 +679,7 @@ export default defineComponent({
   border: 1px solid rgba(59, 130, 246, 0.25);
 }
 
-:global(.body--dark) .swap-dialog-banner--status {
+.body--dark .swap-dialog-banner--status {
   background: rgba(59, 130, 246, 0.16);
   color: #93c5fd;
 }
@@ -690,7 +690,7 @@ export default defineComponent({
   border: 1px solid rgba(239, 68, 68, 0.28);
 }
 
-:global(.body--dark) .swap-dialog-banner--error {
+.body--dark .swap-dialog-banner--error {
   background: rgba(239, 68, 68, 0.18);
   color: #fca5a5;
 }
@@ -723,7 +723,7 @@ export default defineComponent({
   justify-content: center;
 }
 
-:global(.body--dark) .swap-direction-badge {
+.body--dark .swap-direction-badge {
   background: #1e293b;
   color: #cbd5e1;
   border-color: rgba(255, 255, 255, 0.12);
@@ -759,7 +759,7 @@ export default defineComponent({
   background: rgba(234, 88, 12, 0.18);
 }
 
-:global(.body--dark) .swap-preset-chip {
+.body--dark .swap-preset-chip {
   background: rgba(249, 115, 22, 0.16);
   color: #fdba74;
   border-color: rgba(249, 115, 22, 0.3);
@@ -775,7 +775,7 @@ export default defineComponent({
   gap: 10px;
 }
 
-:global(.body--dark) .swap-review-ticket {
+.body--dark .swap-review-ticket {
   background: #1e293b;
   border-color: rgba(255, 255, 255, 0.12);
 }
@@ -785,7 +785,7 @@ export default defineComponent({
   border-bottom: 1px dashed rgba(15, 23, 42, 0.1);
 }
 
-:global(.body--dark) .swap-review-row {
+.body--dark .swap-review-row {
   border-bottom-color: rgba(255, 255, 255, 0.1);
 }
 
@@ -810,7 +810,7 @@ export default defineComponent({
   font-weight: 500;
 }
 
-:global(.body--dark) .swap-review-label {
+.body--dark .swap-review-label {
   color: #94a3b8;
 }
 
@@ -819,7 +819,7 @@ export default defineComponent({
   color: #0f172a;
 }
 
-:global(.body--dark) .swap-review-value {
+.body--dark .swap-review-value {
   color: #f8fafc;
 }
 
@@ -829,7 +829,7 @@ export default defineComponent({
   color: #475569;
 }
 
-:global(.body--dark) .swap-review-mono {
+.body--dark .swap-review-mono {
   color: #cbd5e1;
 }
 
@@ -854,7 +854,7 @@ export default defineComponent({
   padding: 4px 12px;
 }
 
-:global(.body--dark) .swap-btn-secondary {
+.body--dark .swap-btn-secondary {
   color: #94a3b8;
 }
 
@@ -881,7 +881,7 @@ export default defineComponent({
   padding: 8px 12px;
 }
 
-:global(.body--dark) .swap-drawer {
+.body--dark .swap-drawer {
   background: rgba(255, 255, 255, 0.04);
   border-color: rgba(255, 255, 255, 0.08);
 }
@@ -897,7 +897,7 @@ export default defineComponent({
   list-style: none;
 }
 
-:global(.body--dark) .swap-drawer-summary {
+.body--dark .swap-drawer-summary {
   color: #94a3b8;
 }
 
@@ -908,7 +908,7 @@ export default defineComponent({
   background: rgba(15, 23, 42, 0.08);
 }
 
-:global(.body--dark) .swap-drawer-count {
+.body--dark .swap-drawer-count {
   background: rgba(255, 255, 255, 0.1);
 }
 
@@ -930,7 +930,7 @@ export default defineComponent({
   background: rgba(15, 23, 42, 0.04);
 }
 
-:global(.body--dark) .swap-pending-item {
+.body--dark .swap-pending-item {
   background: rgba(255, 255, 255, 0.05);
 }
 

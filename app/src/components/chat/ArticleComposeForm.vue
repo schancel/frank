@@ -604,7 +604,6 @@ export default defineComponent({
   font-weight: 600;
 }
 
-:global(.body--dark) .article-compose-card,
 .body--dark .article-compose-card {
   background: #0f172a;
   color: #f8fafc;

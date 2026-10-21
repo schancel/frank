@@ -715,7 +715,7 @@ export default defineComponent({
   }
 }
 
-:global(body.body--dark) .forum-post-card {
+body.body--dark .forum-post-card {
   background: #1c1613;
   border-color: rgba(255, 255, 255, 0.08);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
@@ -732,7 +732,7 @@ export default defineComponent({
   padding: 2px 6px;
 }
 
-:global(body.body--dark) .forum-vote-pill {
+body.body--dark .forum-vote-pill {
   background: rgba(255, 255, 255, 0.08);
 }
 
@@ -746,7 +746,7 @@ export default defineComponent({
   }
 }
 
-:global(body.body--dark) .forum-action-pill {
+body.body--dark .forum-action-pill {
   background: rgba(255, 255, 255, 0.08);
   &:hover:not(:disabled) {
     background: rgba(255, 255, 255, 0.14);

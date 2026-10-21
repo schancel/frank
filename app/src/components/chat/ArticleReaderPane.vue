@@ -573,7 +573,6 @@ export default defineComponent({
   }
 }
 
-:global(.body--dark) .article-reader-pane,
 .body--dark .article-reader-pane {
   background: #0f172a;
   color: #f8fafc;

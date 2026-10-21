@@ -24,7 +24,7 @@ import {
 import { installMessageItemRegistry } from '@frank/wallet/chain/canonical-dm'
 import { messageItems } from './message-items'
 import { conversationIdSaltOf } from '@frank/wallet/chain/evm-chain'
-import { setConversationIdSalt } from '../stores/chats'
+import { setConversationIdSalt, useChatStore } from '../stores/chats'
 import { openBrowserDirectoryStore } from '@frank/directory-admission/browser'
 import type { DirectoryFetch } from '@frank/cashweb/relay/directory-client'
 import {
@@ -205,6 +205,9 @@ function productionDeps(): MessagingDeps {
     },
     // The wallet's directory and the message-item plugins it sends and receives with.
     install: (wallet, directory) => {
+      const removeGroupHomeRelay = useChatStore().configureGroupHomeRelay(
+        config.relayBaseUrl,
+      )
       const removeMessageItems = installMessageItemRegistry(
         wallet,
         messageItems,
@@ -214,9 +217,11 @@ function productionDeps(): MessagingDeps {
         return () => {
           removeDirectory()
           removeMessageItems()
+          removeGroupHomeRelay()
         }
       } catch (error) {
         removeMessageItems()
+        removeGroupHomeRelay()
         throw error
       }
     },

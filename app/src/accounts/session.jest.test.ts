@@ -1,3 +1,5 @@
+import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { deriveIdentityMemberEpochPublicKey } from '@frank/cashweb/groups/group-crypto'
 // Load the pinned SDK's real embedded WASM in Jest/CommonJS. Only the unused async
 // URL loader needs import.meta removal; initSync and every cryptographic export stay real.
 jest.mock('ecash-lib/dist/ffi/ecash_lib_wasm_browser.js', () => {
@@ -925,7 +927,6 @@ test('refresh preserves pendingReady and pendingIdentityAddress while async reco
   expect(f.session.state.pendingReady).toBe(true)
   expect(f.session.state.pendingIdentityAddress).toBe(initialAddress)
 })
-
 
 async function replaceAccount(
   f: ReturnType<typeof fixture>,
@@ -2458,4 +2459,76 @@ describe('session identity public-key capability boundary', () => {
       expect(f.session.getCachedCurvePublicKey('secp256k1')).toBeUndefined()
     },
   )
+})
+
+test('group signer exposes only scoped authority, agrees with public derivation and is revoked on custody yield', async () => {
+  const f = fixture()
+  f.capability.takeRoots.mockImplementation(() =>
+    DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 1),
+    })),
+  )
+  await f.session.initialize()
+  const root: DomainRoot<'identity-authentication'> = {
+    registry: DERIVATION_REGISTRY_ID,
+    purpose: 'identity-authentication',
+    bytes: new Uint8Array(32).fill(
+      DOMAIN_PURPOSES.indexOf('identity-authentication') + 1,
+    ),
+  }
+  const pub = new Uint8Array(
+    MonadIdentity.fromDomainRoot(root).compressedPubKey,
+  )
+  const groupId = 'ab'.repeat(32)
+  const signer = await f.session.getGroupSigner(groupId, 2)
+  expect(Object.keys(signer).sort()).toEqual(['publicKey', 'signDigest'])
+  expect(signer.publicKey).toEqual(
+    deriveIdentityMemberEpochPublicKey(pub, groupId, 2),
+  )
+  const digest = new Uint8Array(32).fill(19)
+  const signature = await signer.signDigest(digest)
+  expect(signature).toHaveLength(64)
+  expect(
+    secp256k1.verify(signature, digest, signer.publicKey, { lowS: true }),
+  ).toBe(true)
+  expect(secp256k1.verify(signature, digest, pub)).toBe(false)
+  expect(
+    secp256k1.verify(
+      signature,
+      digest,
+      deriveIdentityMemberEpochPublicKey(pub, groupId, 3),
+    ),
+  ).toBe(false)
+  await expect(signer.signDigest(new Uint8Array(31))).rejects.toThrow('32-byte')
+  await f.session.yieldCustody()
+  await expect(signer.signDigest(digest)).rejects.toBeInstanceOf(CustodyError)
+  await f.session.close()
+})
+
+test('group signing rejects custody revoked while its material acquisition is pending', async () => {
+  const f = fixture()
+  f.capability.takeRoots.mockImplementation(() =>
+    DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 1),
+    })),
+  )
+  await f.session.initialize()
+  const signer = await f.session.getGroupSigner('ab'.repeat(32), 0)
+  const opened = deferred<void>()
+  const pending = deferred<Awaited<ReturnType<AccountCustody['openActive']>>>()
+  f.custody.openActive.mockImplementationOnce(() => {
+    opened.resolve()
+    return pending.promise
+  })
+  const signature = signer.signDigest(new Uint8Array(32).fill(17))
+  const rejected = expect(signature).rejects.toBeInstanceOf(CustodyError)
+  await opened.promise
+  await f.session.yieldCustody()
+  pending.resolve(f.capability)
+  await rejected
+  await f.session.close()
 })

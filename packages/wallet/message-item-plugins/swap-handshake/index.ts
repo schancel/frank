@@ -25,7 +25,7 @@ import {
 } from '@frank/codec'
 import type { ApplicationMessageItem } from '@frank/cashweb/types/messages'
 import { formatBaseUnit } from '../../chain/base-unit'
-import { validateApplicationValue } from '../application-item'
+import { validateApplicationValue } from '@frank/cashweb/message-items/application-item'
 import {
   requirePluginCapabilities,
   type ApplicationItemPlugin,
@@ -33,7 +33,7 @@ import {
   type MessageItemPlugin,
   type MessageItemPluginCapabilities,
   type MessageItemRegistry,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 
 export const SWAP_HANDSHAKE_PLUGIN_ID = 'swap-handshake-v1' as const
 export const SWAP_HANDSHAKE_ITEM_TYPE = SWAP_HANDSHAKE_PLUGIN_ID

@@ -5,7 +5,7 @@ import {
   chainAddress,
   decimal,
   req,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 
 export const p2pkhCodec = cborItemCodec<P2PKHSendItem>('p2pkh', {
   address: req(0, chainAddress),

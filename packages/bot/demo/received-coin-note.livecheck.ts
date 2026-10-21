@@ -30,6 +30,7 @@
  *  3. no chat message is handed on for the note, and the second wallet writes no note of its own;
  *  4. a third read changes nothing.
  */
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { randomBytes } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
@@ -43,7 +44,7 @@ import {
 } from '@frank/wallet/chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 import { registerMonadIdentity } from '@frank/wallet/evm-identity'
 import { deriveEvmStealthAddress } from '@frank/wallet/evm-stealth'
 import { DirectoryManager } from '@frank/bot-framework/directory-manager'
@@ -145,7 +146,10 @@ async function openWallet(relayBaseUrl: string, dir: string, state: string) {
   )
   const removeItems = installMessageItemRegistry(
     wallet,
-    createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+    installGroupMessageItemPlugins(
+      createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+      pluginCapabilitiesNotYetAvailable,
+    ),
   )
   return {
     chain,

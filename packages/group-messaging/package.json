@@ -1,0 +1,20 @@
+{
+  "name": "@frank/group-messaging",
+  "version": "0.0.1",
+  "private": true,
+  "sideEffects": false,
+  "description": "Headless group feature payload types, pure codecs and explicitly installed message plugins.",
+  "dependencies": {
+    "@frank/cashweb": "*",
+    "@frank/codec": "*"
+  },
+  "scripts": {
+    "test": "jest --config jest.config.js --runInBand"
+  },
+  "devDependencies": {
+    "@frank/wallet": "*",
+    "jest": "^29",
+    "ts-jest": "^29",
+    "@types/jest": "^29"
+  }
+}

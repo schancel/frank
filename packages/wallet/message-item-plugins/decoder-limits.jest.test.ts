@@ -1,3 +1,5 @@
+import groupFixtures from '@frank/group-messaging/fixtures/wire-v1.json'
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 /**
  * Every range, size and format rule of the sixteen CBOR item decoders, tested against bytes a
  * peer could send: a valid item's own bytes with exactly one field replaced by a value outside
@@ -12,10 +14,11 @@ import {
   MessageItemDecodeError,
   MessageItemEncodeError,
   pluginCapabilitiesNotYetAvailable,
-} from './registry'
+} from '@frank/cashweb/message-items/registry'
 import { standaloneDecodeContext } from './shared/plugin-contract.testutil'
 
-const registry = createDefaultMessageItemRegistry(
+const registry = installGroupMessageItemPlugins(
+  createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
   pluginCapabilitiesNotYetAvailable,
 )
 
@@ -803,6 +806,62 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ...each('conversations[0].subjectSetAt', [1, 0, 5], BAD_TIMESTAMPS),
     ],
   },
+  {
+    item: {
+      type: 'group-welcome',
+      groupId: H,
+      groupPubKey: '02' + H,
+      groupName: 'Group One',
+      homeRelay: 'https://relay.frank.example',
+      epoch: 0,
+      epochSecretHex: H,
+      memberIndex: 1,
+      inviterAddress: A,
+      epochFrame: groupFixtures[0]!.item.epochFrame,
+    },
+    cases: [
+      ...each('groupId', [0], BAD_HASHES),
+      ...each('groupPubKey', [1], ['02', 'zz'.repeat(33)]),
+      ['groupName: empty', [2], ''],
+      ['groupName: 129 bytes', [2], 'x'.repeat(129)],
+      ['homeRelay: empty', [3], ''],
+      ['homeRelay: 513 bytes', [3], 'x'.repeat(513)],
+      ...each('epoch', [4], [-1, 1_000_000_001, '0']),
+      ...each('epochSecretHex', [5], BAD_HASHES),
+      ...each('memberIndex', [6], [-1, 10_001, '1']),
+      ...each('inviterAddress', [7], BAD_CHAIN_ADDRESSES),
+      ...each('epochFrame.epoch', [9, 0], [-1, 1_000_000_001]),
+      ...each('epochFrame.epoch_hash', [9, 7], BAD_HASHES),
+      ...each('epochFrame.authority_sig', [9, 6], ['ab'.repeat(63), 'zz'.repeat(64)]),
+    ],
+  },
+  {
+    item: {
+      type: 'group-control',
+      epochFrame: groupFixtures[1]!.item.epochFrame,
+      groupId: H,
+      action: 'rotate-epoch',
+      epoch: 1,
+      prevEpochHash: H,
+      epochSecretHex: H,
+      targetAddress: B,
+      targetMemberIndex: 2,
+      targetEpochSigningPubKeyHex: '02' + H,
+      authoritySigHex: H + H,
+    },
+    cases: [
+      ...each('groupId', [0], BAD_HASHES),
+      ...each('action', [1], ['destroy']),
+      ...each('epoch', [2], [-1, 1_000_000_001, '1']),
+      ...each('prevEpochHash', [3], BAD_HASHES),
+      ...each('epochSecretHex', [4], BAD_HASHES),
+      ...each('targetAddress', [5], BAD_CHAIN_ADDRESSES),
+      ...each('targetMemberIndex', [6], [-1, 10_001]),
+      ...each('targetEpochSigningPubKeyHex', [7], ['02', 'zz'.repeat(33)]),
+      ...each('authoritySigHex', [8], ['ab'.repeat(63), 'zz'.repeat(64)]),
+      ...each('epochFrame.epoch_hash', [11, 7], BAD_HASHES),
+    ],
+  },
 ]
 
 describe('the CBOR item decoders refuse out-of-range, misformatted and oversize fields', () => {
@@ -816,6 +875,8 @@ describe('the CBOR item decoders refuse out-of-range, misformatted and oversize 
         'device-claim',
         'dice',
         'digital-goods',
+        'group-control',
+        'group-welcome',
         'image',
         'journal-checkpoint',
         'liars-dice',

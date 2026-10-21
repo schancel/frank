@@ -20,7 +20,7 @@ import {
   str,
   struct,
   timestampMs,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 
 export const MAX_CALENDAR_ATTENDEES = 100
 export const MAX_CALENDAR_SEQUENCE = 1_000_000_000

@@ -5,7 +5,7 @@ import { FrankBotHost } from "../src/bot-host";
 import { DirectoryManager } from "../src/directory-manager";
 import { installCanonicalDirectory } from "@frank/wallet/chain/evm-chain";
 import { installMessageItemRegistry } from "@frank/wallet/chain/canonical-dm";
-import { createMessageItemRegistry } from "@frank/wallet/message-item-plugins/registry";
+import { createMessageItemRegistry } from "@frank/cashweb/message-items/registry";
 import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
 
 jest.mock("../src/relay-profile-manager", () => ({

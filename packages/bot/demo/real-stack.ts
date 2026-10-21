@@ -1,3 +1,4 @@
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
 /**
  * The real test harness: the real relay binary against the real chain (Monad testnet), real
@@ -54,7 +55,7 @@ import { installCanonicalDirectory, loadMonadChainConfigFromEnv } from '@frank/w
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { monadProtocolIdentity } from '@frank/wallet/evm-provider'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 
 import { chainId, rpcUrlList } from './chain-rpc'
 import { DEMO_DEFAULT_BURN_ADDRESS, relayUpstreamEnv } from './demo-config'
@@ -319,7 +320,10 @@ export async function openRealWallet(params: {
   })
   await directory.publishWithRetry(params.label)
   installCanonicalDirectory(handle, directory.rawDirectory)
-  installMessageItemRegistry(handle, createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable))
+  installMessageItemRegistry(handle, installGroupMessageItemPlugins(
+    createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+    pluginCapabilitiesNotYetAvailable,
+  ))
   await RelayProfileManager.registerProfile({
     relayBaseUrl: params.relayUrl,
     identity: handle.identity,

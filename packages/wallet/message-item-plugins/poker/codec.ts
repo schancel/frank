@@ -12,7 +12,7 @@ import {
   req,
   str,
   struct,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 import { card, cardOrHidden, chips, id, players } from '../shared/limits'
 
 const player = struct<PokerPlayerView>({

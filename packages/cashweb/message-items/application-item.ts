@@ -1,5 +1,5 @@
 import { isPluginItemType, MAX_DEPTH, MAX_ITEMS } from '@frank/codec'
-import type { MessageItem } from '@frank/cashweb/types/messages'
+import type { MessageItem } from '../types/messages'
 
 /** The dispatch identifier is independent of the neutral carrier's discriminator. */
 export function messageItemType(

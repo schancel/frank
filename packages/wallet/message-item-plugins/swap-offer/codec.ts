@@ -17,7 +17,7 @@ import {
   timestampMs,
   token,
   transactionId,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 import { id } from '../shared/limits'
 
 /** An asset on a chain: a symbol such as "MON", or a token contract or mint address. */

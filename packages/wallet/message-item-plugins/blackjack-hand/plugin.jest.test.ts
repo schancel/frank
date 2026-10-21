@@ -5,7 +5,7 @@ import {
 
 import { BLACKJACK_HAND_V3_ITEMS } from '../../../frank-codec/fixtures/blackjack-hand-v3'
 import { handPreviewText } from '../blackjack/hand'
-import { MessageItemDecodeError } from '../registry'
+import { MessageItemDecodeError } from '@frank/cashweb/message-items/registry'
 import {
   standaloneDecodeContext,
   describePluginContract,

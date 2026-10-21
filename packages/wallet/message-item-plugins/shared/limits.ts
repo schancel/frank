@@ -10,7 +10,7 @@ import {
   str,
   token,
   type Field,
-} from './cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 
 /** A table, round, match, roll, swap or instance identifier. Producers write 16 or 32 hex
  * characters, a UUID (36), or `inst-<id>-<time>`; 64 characters covers all of them. */

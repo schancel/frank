@@ -243,7 +243,7 @@ export interface FrankBotDefinition {
 export interface BotHostOptions {
   /** Explicit host composition; each wallet receives a fresh registry. Defaults preserve the
    * framework's existing feature set. Factory errors abort registration and close its resources. */
-  createMessageItemRegistry?: () => import("@frank/wallet/message-item-plugins/registry").MessageItemRegistry;
+  createMessageItemRegistry?: () => import("@frank/cashweb/message-items/registry").MessageItemRegistry;
   relayBaseUrl?: string;
   networkTag?: "MONT" | "MON1" | "MONR";
   stateDir?: string;

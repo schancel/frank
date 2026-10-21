@@ -12,7 +12,7 @@ import type {
   MessageItemPlugin,
   MessageItemPluginCapabilities,
   MessageItemRegistry,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 
 export * from './invoice-lifecycle'
 

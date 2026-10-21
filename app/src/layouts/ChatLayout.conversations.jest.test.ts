@@ -385,7 +385,7 @@ it('shows the peer and the subject in the title and in each list row, and neithe
   }
 })
 
-it('shows the participants and their number in the title once a third person has posted, and only then', async () => {
+it('keeps the direct header and participant count unchanged when a third party references it', async () => {
   const app = await mountedConversations()
   try {
     const id = await app.create(PEER, 'Project plan')
@@ -423,21 +423,18 @@ it('shows the participants and their number in the title once a third person has
 
     await receive(OTHER, 'from-other')
     await settle()
-    expect(header('name').text()).toBe('Alice, Other peer')
-    // The translator of this file does not fill in the number.
-    expect(header('participants').text()).toBe('{count} participants')
+    expect(header('name').text()).toBe('Alice')
+    expect(header('participants').exists()).toBe(false)
     expect(
       (app.root.getComponent(ChatLayout).vm as { participantCount: number })
         .participantCount,
-    ).toBe(3)
+    ).toBe(2)
     expect(header('subject').text()).toBe('Project plan')
-    expect(header('group-avatar').exists()).toBe(true)
+    expect(header('group-avatar').exists()).toBe(false)
     const row = app.root
       .findAllComponents(ChatListItem)
       .find(item => item.props('conversationId') === id)!
-    expect(row.get('[data-testid="chat-list-title"]').text()).toBe(
-      'Alice, Other peer',
-    )
+    expect(row.get('[data-testid="chat-list-title"]').text()).toBe('Alice')
     expect(row.get('[data-testid="chat-list-subject"]').text()).toBe(
       'Project plan',
     )
@@ -765,6 +762,102 @@ it('New conversation infers email and creates independent equal and blank roots,
     expect(restored.conversations[ids[0]].name).toBe('Same')
     expect(restored.conversations[ids[4]].emailRecipient).toBe(
       'bob@example.com',
+    )
+  } finally {
+    app.root.unmount()
+  }
+})
+
+// These presentation fixtures model metadata already admitted by the signed group boundary.
+// Key creation, roster verification and shared-mailbox polling have their own integration tests.
+function admittedGroup(
+  chats: ReturnType<typeof useChatStore>,
+  fill: string,
+  name: string,
+) {
+  return chats.createConversation({
+    kind: 'group',
+    name,
+    address: `group:${fill.repeat(64)}`,
+    conversationId: `${fill.repeat(8)}-${fill.repeat(4)}-8${fill.repeat(
+      3,
+    )}-8${fill.repeat(3)}-${fill.repeat(12)}`,
+    participants: [SELF, PEER, OTHER],
+  })
+}
+
+it('shows distinct signed names for groups with the same roster in the header and list', async () => {
+  const app = await mountedConversations()
+  try {
+    const first = admittedGroup(app.chats, 'a', 'Protocol Team')
+    const second = admittedGroup(app.chats, 'b', 'Release Team')
+    await settle()
+    for (const group of [first, second, first]) {
+      await app.select(group.id)
+      const layout = app.root.getComponent(ChatLayout)
+      expect(layout.get('[data-testid="chat-header-name"]').text()).toBe(
+        group.name,
+      )
+      expect(layout.find('[data-testid="chat-header-subject"]').exists()).toBe(
+        false,
+      )
+      const row = app.root
+        .findAllComponents(ChatListItem)
+        .find(item => item.props('conversationId') === group.id)!
+      expect(row.get('[data-testid="chat-list-title"]').text()).toBe(group.name)
+    }
+    expect(first.participants).toEqual(second.participants)
+  } finally {
+    app.root.unmount()
+  }
+})
+
+it('offers no unsigned group subject editor and rejects a headless rename without mutation', async () => {
+  const app = await mountedConversations()
+  try {
+    const group = admittedGroup(app.chats, 'a', 'Protocol Team')
+    await settle()
+    await app.select(group.id)
+    const before = mockClone(group)
+    const layout = app.root.getComponent(ChatLayout)
+    expect(
+      layout.find('[data-testid="edit-conversation-subject"]').exists(),
+    ).toBe(false)
+    layout.vm.openSubjectEditor()
+    await settle()
+    expect(
+      layout.find('[data-testid="conversation-subject-input"]').exists(),
+    ).toBe(false)
+    expect(() =>
+      app.chats.renameConversation(group.id, 'Unsigned name'),
+    ).toThrow(/authenticated epoch update/)
+    expect(group).toEqual(before)
+  } finally {
+    app.root.unmount()
+  }
+})
+
+it('gives the icon close controls in both group dialogs an accessible name', async () => {
+  const app = await mountedConversations()
+  try {
+    jest
+      .spyOn(app.chats, 'getGroupHomeRelay')
+      .mockReturnValue('https://relay.example')
+    app.root.getComponent(ChatList).vm.newGroupOpen = true
+    await settle()
+    const newGroup = app.root.getComponent({ name: 'NewGroupDialog' })
+    expect(newGroup.get('button[icon="close"]').attributes('aria-label')).toBe(
+      'Close',
+    )
+    await newGroup.get('button[icon="close"]').trigger('click')
+    const group = admittedGroup(app.chats, 'a', 'Protocol Team')
+    await settle()
+    await app.select(group.id)
+    app.root.getComponent(ChatLayout).vm.openInfo()
+    await settle()
+    const info = app.root.getComponent({ name: 'GroupInfoDialog' })
+    expect(info.get('button[icon="close"]').attributes('aria-label')).toBe(
+      'Close',
     )
   } finally {
     app.root.unmount()

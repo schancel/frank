@@ -3,7 +3,7 @@
  * (docs/protocol/chains/v1.json), so a plugin can check a `chainIdentifier` field without
  * depending on any wallet implementation. Only the `id` values are used here.
  */
-import protocolChains from '../../../../docs/protocol/chains/v1.json'
+import protocolChains from '../../../docs/protocol/chains/v1.json'
 
 const CANONICAL_CHAIN_IDENTIFIERS: ReadonlySet<string> = new Set(
   (protocolChains as { chains: Array<{ id: string }> }).chains.map(

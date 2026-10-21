@@ -9,7 +9,7 @@ import { open } from '@frank/crypto-box'
 import { openNodeDirectoryStore } from '@frank/directory-admission/node'
 import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
 import { createDefaultMessageItemRegistry } from '../message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '../message-item-plugins/registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 import {
   canonicalDirectMessages,
   MemoryOutgoingMessageStore,

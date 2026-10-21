@@ -9,7 +9,7 @@ import { createNewsletterArticlePlugin } from '@frank/wallet/message-item-plugin
 import {
   pluginCapabilitiesNotYetAvailable,
   type MessageItemRegistry,
-} from '@frank/wallet/message-item-plugins/registry'
+} from '@frank/cashweb/message-items/registry'
 import { createSwapHandshakePlugin } from '@frank/wallet/message-item-plugins/swap-handshake'
 import { createWebRtcCallPlugin } from '@frank/wallet/message-item-plugins/webrtc-call'
 

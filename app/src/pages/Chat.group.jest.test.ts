@@ -1,7 +1,6 @@
 /** @jest-environment jsdom */
 // Mounted Chat.vue with the real chat and contact stores: what each bubble is told about its
-// sender in a chat between two people and in a conversation a third person has posted into,
-// and what the composer says about who receives a message sent from there.
+// sender in closed direct conversations, and the actions offered for third-party references.
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import * as quasar from 'quasar'
@@ -17,7 +16,14 @@ jest.mock('../adapters/level-message-store', () => ({
     },
   }),
 }))
-jest.mock('../utils/clients', () => ({ useMonadWallet: () => ({}) }))
+jest.mock('vue-router', () => ({ useRouter: () => ({ push: jest.fn() }) }))
+jest.mock('../utils/clients', () => {
+  const wallet = {}
+  return { useMonadWallet: () => wallet }
+})
+jest.mock('../composables/useBalance', () => ({
+  useBalance: () => ({ refresh: jest.fn() }),
+}))
 jest.mock('../utils/notifications', () => ({
   errorNotify: jest.fn(),
   insufficientStampNotify: jest.fn(),
@@ -37,10 +43,14 @@ import { TextDecoder, TextEncoder } from 'util'
 Object.assign(globalThis, { TextEncoder, TextDecoder })
 /* eslint-disable @typescript-eslint/no-var-requires */
 const ChatPage = require('./Chat.vue').default
-const { useChatStore } = require('../stores/chats')
+const { useChatStore, setConversationIdSalt } = require('../stores/chats')
+const { conversationIdSalt } = require('@frank/cashweb/relay/conversation-id')
 const { useContactStore } = require('../stores/contacts')
-const { pubKeyToColor } = require('../utils/formatting')
 const en = require('../i18n/en-us').default
+const {
+  encodeGroupItems,
+  decodeGroupItems,
+} = require('../utils/group-message-items')
 const fr = require('../i18n/fr-fr').default
 
 const ALICE = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'
@@ -62,6 +72,19 @@ const stubs: Record<string, any> = Object.fromEntries(
       }),
     ]),
 )
+stubs.QBanner = defineComponent({
+  setup:
+    (_, { attrs, slots }) =>
+    () =>
+      h('div', attrs, [slots.default?.(), slots.action?.()]),
+})
+stubs.QBtn = defineComponent({
+  props: ['label'],
+  setup:
+    (props, { attrs, slots }) =>
+    () =>
+      h('button', attrs, [props.label, slots.default?.()]),
+})
 stubs.QScrollArea = defineComponent({
   methods: {
     getScrollTarget: () => ({ scrollTop: 0, scrollHeight: 900 }),
@@ -72,6 +95,14 @@ stubs.QScrollArea = defineComponent({
   },
 })
 const Blank = defineComponent({ setup: () => () => h('div') })
+const NewGroupStub = defineComponent({
+  name: 'NewGroupDialog',
+  props: {
+    modelValue: { type: Boolean, default: false },
+    initialMembers: { type: Array, default: () => [] },
+  },
+  setup: () => () => h('div'),
+})
 // Shows what Chat.vue tells each bubble: `sender | name? | avatar?`, or `plain`.
 const MessageStub = defineComponent({
   inheritAttrs: false,
@@ -185,6 +216,7 @@ async function openConversation(
       components: stubs,
       stubs: {
         ChatInput: Blank,
+        NewGroupDialog: NewGroupStub,
         ChatMessageComponent: MessageStub,
         ChatMessageReply: Blank,
         ChatBannerStack: Blank,
@@ -210,6 +242,7 @@ async function openConversation(
 
 beforeEach(() => {
   time = 0
+  setConversationIdSalt(conversationIdSalt(new Uint8Array(32).fill(0x7e)))
 })
 
 describe('a chat between two people', () => {
@@ -235,125 +268,113 @@ describe('a chat between two people', () => {
   })
 })
 
-describe('a conversation a third person has posted into', () => {
-  it('tells every bubble that is not ours who sent it, grouped in runs', async () => {
+describe('a closed direct conversation referenced by a third party', () => {
+  it('keeps direct bubbles and the reply peer unchanged while offering all three reference actions', async () => {
     const chat = await openConversation()
     await chat.receive(
       received(ALICE, 'one', 1),
-      received(ALICE, 'two', 1),
-      received(BOB, 'three', 2),
+      received(BOB, 'outside claim', 2),
     )
-    chat.chats.sendMessageLocal({
-      address: ALICE,
-      conversationId: CONVERSATION,
-      senderAddress: mockOwn,
-      index: 'mine',
-      items: [{ type: 'text', text: 'four' }],
-      outpoints: [],
-      status: 'confirmed',
-      previousHash: null,
-      timestamp: 10,
-    })
-    time = 20
-    await chat.receive(received(BOB, 'five', 2), received(ALICE, 'six', 1))
-    expect(chat.bubbles()).toEqual([
-      'Alice | name',
-      'Alice | avatar',
-      'Bob | name | avatar',
-      'plain',
-      'Bob | name | avatar',
-      'Alice | name | avatar',
-    ])
-    // The name handed to item components is the message's own sender, not the chat's peer.
+    expect(chat.bubbles()).toEqual(['plain'])
+    expect(chat.chats.conversations[CONVERSATION].participants).toEqual(
+      [mockOwn, ALICE].sort(),
+    )
     expect(
-      chat.wrapper
-        .findAll('[data-testid="chat-message"]')
-        .map(b => b.attributes('data-name')),
-    ).toEqual(['Alice', 'Alice', 'Bob', 'unknown', 'Bob', 'Alice'])
-  })
-
-  it('colours each sender by their key, as everywhere else', async () => {
-    const chat = await openConversation()
-    await chat.receive(received(ALICE, 'one', 1), received(BOB, 'two', 2))
-    const colours = (
-      chat.wrapper.vm as unknown as {
-        attributions: Array<{ sender: { color?: string } } | undefined>
-      }
-    ).attributions.map(a => a?.sender.color)
-    expect(colours).toEqual([pubKeyToColor(keyOf(1)), pubKeyToColor(keyOf(2))])
-  })
-
-  it('shows a newcomer who is not a contact by address, marked, with the colour of the key they wrote with', async () => {
-    const chat = await openConversation()
-    await chat.receive(received(ALICE, 'one', 1), received(STRANGER, 'two', 9))
-    expect(chat.bubbles()).toEqual([
-      'Alice | name | avatar',
-      '0x5555...5555 | (stranger) | name | avatar',
-    ])
-    expect(chat.contacts.isContact(STRANGER)).toBe(false)
+      (chat.wrapper.vm as unknown as { recipientAddress: string })
+        .recipientAddress,
+    ).toBe(ALICE)
     expect(
-      (
-        chat.wrapper.vm as unknown as {
-          attributions: Array<{ sender: { color?: string } } | undefined>
-        }
-      ).attributions[1]?.sender.color,
-    ).toBe(pubKeyToColor(keyOf(9)))
-  })
-
-  it('tells two participants with one display name apart', async () => {
-    const chat = await openConversation()
-    chat.contacts.getContact(BOB).profile.name = 'Alice'
-    await chat.receive(received(ALICE, 'one', 1), received(BOB, 'two', 2))
-    expect(chat.bubbles()).toEqual([
-      'Alice (0x2b2B...2B2B) | name | avatar',
-      'Alice (0x3333...3333) | name | avatar',
-    ])
+      chat.wrapper.get('[data-testid="participant-request-banner"]').text(),
+    ).toContain('0x3333')
+    for (const action of ['view', 'group', 'dismiss'])
+      expect(
+        chat.wrapper
+          .find(`[data-testid="participant-request-${action}"]`)
+          .exists(),
+      ).toBe(true)
+    expect(
+      chat.wrapper.find('[data-testid="chat-group-recipient"]').exists(),
+    ).toBe(false)
+    const request =
+      chat.chats.conversations[CONVERSATION].pendingParticipantRequests[BOB]
+    expect(
+      chat.chats.conversations[request.senderConversationId].messages[0]
+        .senderAddress,
+    ).toBe(BOB)
+    await chat.wrapper
+      .get('[data-testid="participant-request-view"]')
+      .trigger('click')
+    expect(chat.push).toHaveBeenCalledWith(
+      `/chat/${request.senderConversationId}`,
+    )
   })
 
   it.each([
     [
       en,
-      'Your messages here go to Alice only, not to everyone in this conversation.',
+      'Their message is in a separate 1:1 conversation.',
+      'View 1:1',
+      'Dismiss',
     ],
     [
       fr,
-      'Vos messages ici sont envoyés uniquement à Alice, et non à tous les participants de cette conversation.',
+      'Son message reste dans une conversation individuelle distincte.',
+      'Voir la conversation',
+      'Ignorer',
     ],
   ])(
-    'says above the composer that a message goes to the one peer only',
-    async (table, text) => {
+    'localizes the reference and its actions',
+    async (table, explanation, view, dismiss) => {
       const chat = await openConversation(table)
-      await chat.receive(received(ALICE, 'one', 1), received(BOB, 'two', 2))
+      await chat.receive(received(BOB, 'outside claim', 2))
       expect(
-        chat.wrapper.get('[data-testid="chat-group-recipient"]').text(),
-      ).toBe(text)
+        chat.wrapper.get('[data-testid="participant-request-banner"]').text(),
+      ).toContain(explanation)
       expect(
-        (chat.wrapper.vm as unknown as { recipientAddress: string })
-          .recipientAddress,
-      ).toBe(ALICE)
+        chat.wrapper.get('[data-testid="participant-request-view"]').text(),
+      ).toBe(view)
+      expect(
+        chat.wrapper.get('[data-testid="participant-request-dismiss"]').text(),
+      ).toBe(dismiss)
     },
   )
 
-  it('opens the profile of the sender whose name or avatar was used', async () => {
+  it('preselects the peer and requester for a separate group without altering the direct participants', async () => {
     const chat = await openConversation()
-    await chat.receive(received(ALICE, 'one', 1), received(BOB, 'two', 2))
+    await chat.receive(received(BOB, 'outside claim', 2))
+    const before = [...chat.chats.conversations[CONVERSATION].participants]
     await chat.wrapper
-      .findAll('[data-testid="chat-message"]')[1]
+      .get('[data-testid="participant-request-group"]')
       .trigger('click')
-    expect(chat.push).toHaveBeenCalledWith(`/chat/${BOB}?info=true`)
+    const dialog = chat.wrapper.findComponent(NewGroupStub)
+    expect(dialog.props('modelValue')).toBe(true)
+    expect(dialog.props('initialMembers')).toEqual([ALICE, BOB])
+    expect(chat.chats.conversations[CONVERSATION].participants).toEqual(before)
+    expect(chat.chats.conversations[CONVERSATION].kind).toBe('direct')
   })
-})
 
-describe('a two-person chat that one stranger posts into before the peer has', () => {
-  it('shows the stranger as themselves, not as the peer', async () => {
+  it('dismisses the reference while retaining the original sender message', async () => {
     const chat = await openConversation()
-    await chat.receive(received(STRANGER, 'psst', 9))
-    expect(chat.bubbles()).toEqual([
-      '0x5555...5555 | (stranger) | name | avatar',
-    ])
+    await chat.receive(received(STRANGER, 'outside claim', 9))
+    const request =
+      chat.chats.conversations[CONVERSATION].pendingParticipantRequests[
+        STRANGER
+      ]
+    await chat.wrapper
+      .get('[data-testid="participant-request-dismiss"]')
+      .trigger('click')
     expect(
-      chat.wrapper.get('[data-testid="chat-group-recipient"]').text(),
-    ).toContain('Alice')
+      chat.wrapper.find('[data-testid="participant-request-banner"]').exists(),
+    ).toBe(false)
+    expect(
+      chat.chats.conversations[CONVERSATION].dismissedParticipantRequests[
+        STRANGER
+      ],
+    ).toBe(request.receivedAt)
+    expect(
+      chat.chats.conversations[request.senderConversationId].messages,
+    ).toHaveLength(1)
+    expect(chat.contacts.isContact(STRANGER)).toBe(false)
   })
 })
 
@@ -369,22 +390,22 @@ describe('notes to self that someone else posts into', () => {
     ).toBe(false)
   })
 
-  it("shows a stranger's message with its sender, and says the notes reach nobody else", async () => {
+  it('keeps a stranger outside notes and offers a reference instead', async () => {
     const chat = await openConversation(en, mockOwn)
     await chat.receive(received(STRANGER, 'I am in your notes', 9))
-    expect(chat.bubbles()).toEqual([
-      '0x5555...5555 | (stranger) | name | avatar',
-    ])
+    expect(chat.bubbles()).toEqual([])
     expect(
-      chat.wrapper.get('[data-testid="chat-group-recipient"]').text(),
-    ).toBe(
-      'Messages you send here are notes to yourself. Nobody else who has posted here receives them.',
-    )
+      chat.wrapper.find('[data-testid="participant-request-banner"]').exists(),
+    ).toBe(true)
+    expect(
+      (chat.wrapper.vm as unknown as { recipientAddress: string })
+        .recipientAddress,
+    ).toBe(mockOwn)
   })
 })
 
 describe('an email item sent by a third person', () => {
-  it('stays an ordinary attributed bubble; the chat does not become an email thread', async () => {
+  it('keeps email payloads outside the claimed direct thread', async () => {
     const chat = await openConversation()
     const hello = received(ALICE, 'hello', 1)
     const email = received(STRANGER, '', 9)
@@ -401,35 +422,120 @@ describe('an email item sent by a third person', () => {
     expect(
       (chat.wrapper.vm as unknown as { isEmailThread: boolean }).isEmailThread,
     ).toBe(false)
-    expect(chat.bubbles()).toEqual([
-      'Alice | name | avatar',
-      '0x5555...5555 | (stranger) | name | avatar',
-    ])
+    expect(chat.bubbles()).toEqual(['plain'])
+    const request =
+      chat.chats.conversations[CONVERSATION].pendingParticipantRequests[
+        STRANGER
+      ]
+    expect(
+      chat.chats.conversations[request.senderConversationId].messages[0].items,
+    ).toEqual(email.message.items)
     expect(chat.chats.conversations[CONVERSATION].kind).toBe('direct')
     expect(chat.chats.conversations[CONVERSATION].name).toBeUndefined()
   })
 })
 
-describe('a conversation that a stranger opened, which a contact then posts into', () => {
-  it("is the stranger's conversation: the contact is shown as a third person, and the composer names the stranger as who receives a reply", async () => {
+describe('a direct conversation opened by a stranger', () => {
+  it('keeps its original stranger peer when a contact references the same ID', async () => {
     const chat = await openConversation(en, null)
     await chat.receive(received(ALICE, 'second', 1))
-    const conversation = chat.chats.conversations[CONVERSATION]
-    expect(conversation.address).toBe(STRANGER)
+    expect(chat.chats.conversations[CONVERSATION].address).toBe(STRANGER)
     expect(
       (chat.wrapper.vm as unknown as { recipientAddress: string })
         .recipientAddress,
     ).toBe(STRANGER)
-    // Each message under its own sender; Alice's is not taken for the peer's.
-    expect(chat.bubbles()).toEqual([
-      '0x5555...5555 | name | avatar',
-      'Alice | name | avatar',
-    ])
+    expect(chat.bubbles()).toEqual(['plain'])
     expect(
-      chat.wrapper.get('[data-testid="chat-group-recipient"]').text(),
-    ).toBe(
-      'Your messages here go to 0x5555...5555 only, not to everyone in this conversation.',
+      chat.chats.conversations[CONVERSATION].pendingParticipantRequests[ALICE],
+    ).toBeDefined()
+  })
+})
+
+describe('a shared group invitation', () => {
+  it('shows Accept and Decline, hides the composer until accepted, and uses group content mode', async () => {
+    const { wrapper, chats } = await openConversation()
+    const conversation = chats.conversations[CONVERSATION]
+    conversation.kind = 'group'
+    conversation.address = 'group:' + '11'.repeat(32)
+    conversation.membershipStatus = 'invited'
+    conversation.name = 'Protocol Team'
+    const sync = jest.spyOn(chats, 'syncGroupConversation').mockResolvedValue(0)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="group-invite-banner"]').text()).toContain(
+      'Protocol Team',
     )
+    expect(wrapper.findComponent({ name: 'ChatInput' }).exists()).toBe(false)
+    await wrapper.get('[data-testid="accept-group-invite"]').trigger('click')
+    await flushPromises()
+    expect(conversation.membershipStatus).toBe('joined')
+    expect(sync).toHaveBeenCalledWith(CONVERSATION)
+    expect(wrapper.find('[data-testid="group-invite-banner"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="chat-group-recipient"]').exists()).toBe(
+      false,
+    )
+    conversation.membershipStatus = 'invited'
+    await flushPromises()
+    await wrapper.get('[data-testid="decline-group-invite"]').trigger('click')
+    expect(conversation.membershipStatus).toBe('declined')
+    expect(chats.shouldPollGroupMailbox(CONVERSATION)).toBe(false)
+  })
+})
+
+describe('the group composer', () => {
+  it('sends calendar/vCard follow-ups and articles as stamp-free group messages', async () => {
+    const { wrapper, chats } = await openConversation()
+    const conversation = chats.conversations[CONVERSATION]
+    conversation.kind = 'group'
+    conversation.address = 'group:' + '11'.repeat(32)
+    conversation.membershipStatus = 'joined'
+    conversation.name = 'Protocol Team'
+    await flushPromises()
+    const { errorNotify } = require('../utils/notifications')
+    errorNotify.mockClear()
+    const sent: unknown[][] = []
+    jest
+      .spyOn(chats, 'sendGroupMessage')
+      .mockImplementation(async ({ items }: { items: unknown[] }) => {
+        // What the group send seals: every item must have a group codec.
+        decodeGroupItems(encodeGroupItems(items as never))
+        sent.push(items)
+        return { state: 'sent', payloadDigest: 'group-digest' }
+      })
+    const vm = wrapper.vm as any
+    // A direct-message stamp chosen earlier must not turn a group send into a payment.
+    vm.stampAmount = '0.5'
+    const card = {
+      type: 'contact-card',
+      uid: 'bob-example',
+      fullName: 'Bob Example',
+      emails: ['bob@example.com'],
+    }
+    const first = await vm.sendFollowUpItems({ items: [card] })
+    expect(errorNotify.mock.calls).toEqual([])
+    expect(first).toBe(true)
+    vm.articleDialog = true
+    await vm.sendArticle({
+      schemaVersion: 1,
+      articleId: 'group-article-1',
+      title: 'Notes',
+      markdownBody: 'Hello group',
+      publishedAtIso: '2026-10-20T00:00:00.000Z',
+    })
+    await flushPromises()
+    expect(errorNotify).not.toHaveBeenCalled()
+    expect(sent).toHaveLength(2)
+    expect((sent[0][0] as { type: string }).type).toBe('contact-card')
+    expect((sent[1][0] as { type: string }).type).toBe('application')
+    // A follow-up that is itself a payment is refused, never sent free.
+    await expect(
+      vm.sendFollowUpItems({ items: [card], stampValueWei: 5n }),
+    ).resolves.toBe(false)
+    expect(errorNotify).toHaveBeenCalledWith(
+      new Error('Group payments are unsupported'),
+    )
+    expect(sent).toHaveLength(2)
   })
 })
 

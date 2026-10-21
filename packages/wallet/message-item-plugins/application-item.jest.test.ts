@@ -13,14 +13,14 @@ import {
   validateFrame,
   type ChildFrame,
 } from '@frank/codec'
-import { messageItemType, validateApplicationValue } from './application-item'
+import { messageItemType, validateApplicationValue } from '@frank/cashweb/message-items/application-item'
 import {
   createMessageItemRegistry,
   MessageItemDecodeError,
   MessageItemEncodeError,
   MessageItemPluginAlreadyRegisteredError,
   type ApplicationItemPlugin,
-} from './registry'
+} from '@frank/cashweb/message-items/registry'
 import {
   decodeItemFrames,
   encodeItemFrames,

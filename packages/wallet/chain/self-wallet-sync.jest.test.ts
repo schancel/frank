@@ -25,7 +25,7 @@ import {
 } from 'ethers'
 
 import { createDefaultMessageItemRegistry } from '../message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '../message-item-plugins/registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 import * as wire from '../message-item-plugins/wire'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import { isDirectMessageNotAttempted } from './active-chain'

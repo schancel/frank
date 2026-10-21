@@ -1,3 +1,4 @@
+import type { SealedGroupMessageEnvelope } from '../groups/group-crypto'
 import type {
   BlackjackHandV3Item,
   BlackjackItem,
@@ -726,7 +727,10 @@ export interface RecipientAssetPaymentTransfer
     viewTag?: number | string
   }
   derivationScheme: number
-  recipientSpendKey: { keyType: RecipientPaymentClaimKeyType; publicKey: string }
+  recipientSpendKey: {
+    keyType: RecipientPaymentClaimKeyType
+    publicKey: string
+  }
   /** SPL token-program bytes, stored once alongside the mint in asset.identifier. An absent
    * program on an unknown scheme remains incomplete metadata, never a runtime asset default. */
   tokenProgram?: string
@@ -835,6 +839,9 @@ export interface ApplicationMessageItem {
   value: unknown
 }
 
+/** Feature-owned item types extend this map; runtime support requires explicit plugin installation. */
+export interface MessageItemExtensions {}
+
 export type MessageItem =
   | ApplicationMessageItem
   | StealthItem
@@ -865,6 +872,7 @@ export type MessageItem =
   | CalendarInviteItem
   | CalendarRsvpItem
   | ContactCardItem
+  | MessageItemExtensions[keyof MessageItemExtensions]
   | UnsupportedItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
@@ -919,6 +927,10 @@ export interface OutgoingFinancialOperation {
 }
 
 export interface Message {
+  /** Original authenticated thread claim when the local closed-direct projection uses another owner. */
+  requestedConversationId?: string
+  /** Local durable proof for content admitted through a shared group mailbox, never a DM writer field. */
+  groupEnvelope?: SealedGroupMessageEnvelope
   /** Persisted before sealing; reused even for free financial message retries. */
   sealedMessageId?: string
   /** Opaque retained application owner reference; never itself authorizes spending. */

@@ -6,6 +6,7 @@ pub mod directory;
 pub(crate) mod electrum_proxy;
 pub mod error;
 pub mod evm_rpc;
+pub mod groups;
 pub(crate) mod hourly_quota;
 pub(crate) mod json_rpc;
 pub(crate) mod monad_message_cbor;

@@ -5,6 +5,7 @@
     "moduleResolution": "bundler",
     "baseUrl": ".",
     "paths": {
+      "@frank/group-messaging/*": ["../group-messaging/*"],
       "@frank/nakamoto": ["../nakamoto/src/index.ts"],
       "@frank/directory-admission": ["../directory-admission/src/index.ts"],
       "@frank/directory-admission/node": ["../directory-admission/src/node.ts"],

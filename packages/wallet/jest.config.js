@@ -10,6 +10,7 @@ module.exports = {
   // Substitute the Node-safe stub (`vite-env.node.ts`) for tests only; Vite and `tsx` both
   // resolve the real file normally, unaffected by this (Jest-only) config.
   moduleNameMapper: {
+    '^@frank/group-messaging/(.*)$': '<rootDir>/../group-messaging/$1',
     '^@frank/nakamoto/keys$': '<rootDir>/../nakamoto/src/keys.ts',
     '^@frank/nakamoto/(.*)$': '<rootDir>/../nakamoto/src/$1',
     '^@frank/nakamoto$': '<rootDir>/../nakamoto/src/index.ts',

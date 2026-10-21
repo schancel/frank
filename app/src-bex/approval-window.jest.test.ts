@@ -3,21 +3,28 @@
 import { FRANK_DAPP_BRIDGE_CHANNEL, installInpageProvider } from './inpage'
 import { installContentScriptBridge } from './content'
 import {
+  DAPP_PERSONA_NOT_READY_ERROR,
   createBackgroundBridgeState,
   handleBackgroundMessage,
   installBackgroundBridge,
   type BackgroundBridgeState,
 } from './background'
 
-/** Approval decisions come from the extension's approval page; other messages from a site tab. */
+/** Approval decisions and persona provisioning come from extension pages; other messages from a site tab. */
 function mockSenderFor(msg: any): Record<string, unknown> {
-  return String(msg?.type).includes('resolve-approval')
+  return String(msg?.type).includes('resolve-approval') ||
+    msg?.type === 'provision-site-personas' ||
+    msg?.type === 'update-persona-state' ||
+    msg?.type === 'set-active-persona'
     ? { url: 'chrome-extension://frank-test-ext/approval.html' }
     : { tab: { id: 1, windowId: 2 } }
 }
 import { mountApprovalPage } from './approval'
+import { FRANK_DAPP_PROVISION_SITE_PERSONAS } from './runtime-adapter'
 
-const PRIMARY = '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'
+// Custody-derived addresses Frank provides; the extension never derives personas itself.
+const PRIMARY = '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'
+const SITE = '0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359'
 
 /**
  * A fake extension API: one runtime message bus shared by the content script,
@@ -130,6 +137,25 @@ function decide(
   )
 }
 
+/** What an open Frank view does on approvals-changed: provide the site's persona address. */
+function provideSitePersona(
+  state: BackgroundBridgeState,
+  scope: Record<string, any>,
+  origin = 'https://app.uniswap.org',
+  address = SITE,
+) {
+  return handleBackgroundMessage(
+    {
+      channel: FRANK_DAPP_BRIDGE_CHANNEL,
+      type: FRANK_DAPP_PROVISION_SITE_PERSONAS,
+      sitePersonas: { [origin]: address },
+    },
+    { url: 'chrome-extension://frank-test-ext/index.html' },
+    state,
+    scope,
+  )
+}
+
 describe('dApp approval window lifecycle', () => {
   it('opens one focused popup window, resolves the dApp on approve with the per-site persona, then closes it', async () => {
     const { scope, windows, openWindows } = createExtensionScope()
@@ -152,9 +178,17 @@ describe('dApp approval window lifecycle', () => {
       height: 620,
       focused: true,
     })
+    // No site persona until Frank's custody provides one: approving fails explicitly and
+    // the request stays queued.
+    expect(state.pendingApprovals.get('r1')!.suggestedBurnerAddress).toBeUndefined()
+    expect(
+      await decide(state, scope, 'r1', true, { useBurnerPersona: true }),
+    ).toEqual({ ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } })
+    expect(state.pendingApprovals.has('r1')).toBe(true)
+
+    await provideSitePersona(state, scope)
     const burner = state.pendingApprovals.get('r1')!.suggestedBurnerAddress!
-    expect(burner).toMatch(/^0x[0-9a-fA-F]{40}$/)
-    expect(burner).not.toBe(PRIMARY)
+    expect(burner).toBe(SITE)
 
     await decide(state, scope, 'r1', true, { useBurnerPersona: true })
     const res = await pending
@@ -229,7 +263,6 @@ describe('dApp approval window lifecycle', () => {
     ['personal_sign', ['0x68656c6c6f', PRIMARY]],
     ['eth_signTypedData_v4', [PRIMARY, '{}']],
     ['eth_sendTransaction', [{ from: PRIMARY, to: PRIMARY, value: '0x1' }]],
-    ['btc_signPsbt', [{}]],
   ])(
     'never resolves an approved %s with a signature or hash',
     async (method, params) => {
@@ -256,6 +289,32 @@ describe('dApp approval window lifecycle', () => {
       expect(answer.ok).toBe(false)
       expect(answer.error.code).toBe(4200)
       expect(JSON.stringify(answer)).not.toContain('deadbeef')
+    },
+  )
+
+  it.each([
+    'btc_requestAccounts',
+    'btc_getAccounts',
+    'btc_getPublicKey',
+    'btc_getNetwork',
+    'btc_signMessage',
+    'btc_signPsbt',
+    'btc_signPsbts',
+    'xec_cashtabRequest',
+  ])(
+    'answers %s as unsupported: Frank has no Bitcoin or eCash account for dApps',
+    async method => {
+      const { scope, windows } = createExtensionScope()
+      const state = createBackgroundBridgeState({
+        activePersonaAddress: PRIMARY,
+        approvedOrigins: new Set(['https://app.uniswap.org']),
+      })
+      expect(await rpc(state, scope, 'b1', method, undefined, [{}])).toEqual({
+        ok: false,
+        error: { code: 4200, message: `Unsupported method: ${method}` },
+      })
+      expect(state.pendingApprovals.size).toBe(0)
+      expect(windows.create).not.toHaveBeenCalled()
     },
   )
 
@@ -303,6 +362,7 @@ describe('dApp approval window lifecycle', () => {
     // A request arriving later focuses the open window instead of opening one.
     expect(windows.update).toHaveBeenCalledWith(100, { focused: true })
 
+    await provideSitePersona(state, scope, 'https://a.example')
     await decide(state, scope, 'a', true)
     await decide(state, scope, 'b', false)
     await tick()
@@ -326,6 +386,7 @@ describe('approval window page', () => {
     const pending = rpc(state, scope, 'r1', 'eth_requestAccounts')
     await tick()
     expect(windows.create).toHaveBeenCalledTimes(1)
+    await provideSitePersona(state, scope)
 
     const root = document.createElement('main')
     document.body.append(root)
@@ -354,6 +415,37 @@ describe('approval window page', () => {
     page.dispose()
     bg.dispose()
     root.remove()
+  })
+
+  it('cannot connect a per-site persona Frank has not provided yet, and shows it once provided', async () => {
+    const { scope } = createExtensionScope()
+    const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
+    const bg = installBackgroundBridge(scope, state)
+    void rpc(state, scope, 'r1', 'eth_requestAccounts')
+    await tick()
+    const root = document.createElement('main')
+    const page = mountApprovalPage(root, {
+      globalScope: scope,
+      closeWindow: () => undefined,
+    })
+    await tick(5)
+    const approve = () =>
+      root.querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')!
+    expect(root.textContent).toContain('Open Frank and unlock it')
+    expect(approve().disabled).toBe(true)
+    const primary = root.querySelector<HTMLInputElement>(
+      '[data-testid="approval-persona-primary"]',
+    )!
+    primary.checked = true
+    primary.dispatchEvent(new Event('change'))
+    expect(approve().disabled).toBe(false)
+
+    await provideSitePersona(state, scope)
+    await tick(5)
+    expect(root.textContent).toContain(SITE)
+    expect(approve().disabled).toBe(false)
+    page.dispose()
+    bg.dispose()
   })
 
   it('offers no approval for signing and rejects it with 4001', async () => {
@@ -417,6 +509,11 @@ describe('dApp provider end to end (inpage -> content -> background -> approval 
     })
     await tick(10)
     expect(windows.create).toHaveBeenCalledTimes(1)
+    await provideSitePersona(
+      state,
+      scope,
+      Array.from(state.pendingApprovals.values())[0]!.origin,
+    )
 
     const root = document.createElement('main')
     const page = mountApprovalPage(root, {
@@ -426,6 +523,7 @@ describe('dApp provider end to end (inpage -> content -> background -> approval 
     await tick(5)
     const burner = Array.from(state.pendingApprovals.values())[0]!
       .suggestedBurnerAddress!
+    expect(burner).toBe(SITE)
     root
       .querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')!
       .click()

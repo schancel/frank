@@ -29,7 +29,8 @@ jest.mock('ecash-lib/dist/ffi/ecash_lib_wasm_bg_browser.js', () => {
 import * as ecashSeedBoundary from '@frank/wallet/ecash-seed-boundary'
 import type { EcashStealthCustody } from '@frank/wallet/ecash-stealth'
 import { secp256k1 } from '@noble/curves/secp256k1'
-import { Transaction, Wallet, keccak256 } from 'ethers'
+import { Transaction, Wallet, keccak256, recoverAddress } from 'ethers'
+import { deriveDappPersona } from '@frank/wallet/dapp-bridge/persona-keys'
 import { bip32MasterFromDomainRoot } from '@frank/wallet/bip32-domain-root'
 import { MONAD_IDENTITY_DERIVATION_PATH } from '@frank/wallet/evm-identity'
 import { lockingScript, parseTransaction } from '@frank/nakamoto'
@@ -2531,4 +2532,55 @@ test('group signing rejects custody revoked while its material acquisition is pe
   pending.resolve(f.capability)
   await rejected
   await f.session.close()
+})
+
+test('dApp persona signer derives hardened personas from the custody evm-wallet root and exposes no key', async () => {
+  const roots = () =>
+    DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 1),
+    }))
+  const evmRoot = {
+    purpose: 'evm-wallet' as const,
+    bytes: new Uint8Array(32).fill(DOMAIN_PURPOSES.indexOf('evm-wallet') + 1),
+  }
+  const master = bip32MasterFromDomainRoot(evmRoot, 'evm-wallet')
+  const origin = 'https://app.uniswap.org'
+  const expected = [
+    deriveDappPersona(master, { kind: 'shared', slot: 0 }).address,
+    deriveDappPersona(master, { kind: 'site', origin }).address,
+  ]
+  // Two sessions of the same account agree without any sync.
+  for (let instance = 0; instance < 2; instance += 1) {
+    const f = fixture()
+    f.capability.takeRoots.mockImplementation(roots)
+    await f.session.initialize()
+    const personas = await f.session.createDappPersonaSigner()
+    expect(Object.keys(personas).sort()).toEqual([
+      'accountId',
+      'addresses',
+      'signDigest',
+    ])
+    expect(
+      await personas.addresses([
+        { kind: 'shared', slot: 0 },
+        { kind: 'site', origin },
+      ]),
+    ).toEqual(expected)
+    const digest = keccak256(new Uint8Array([1, 2, 3]))
+    const signature = await personas.signDigest({ kind: 'site', origin }, digest)
+    expect(recoverAddress(digest, signature)).toBe(expected[1])
+    await expect(
+      personas.signDigest({ kind: 'site', origin }, '0x1234'),
+    ).rejects.toThrow('digest')
+    await expect(
+      personas.addresses([{ kind: 'site', origin: 'wc://paired-dapp' }]),
+    ).rejects.toThrow()
+    await f.session.yieldCustody()
+    await expect(
+      personas.signDigest({ kind: 'site', origin }, digest),
+    ).rejects.toBeInstanceOf(CustodyError)
+    await f.session.close()
+  }
 })

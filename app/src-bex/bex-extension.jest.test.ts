@@ -27,9 +27,12 @@ import {
   installBackgroundBridge,
 } from './background'
 
-/** Approval decisions come from the extension's approval page; other messages from a site tab. */
+/** Approval decisions and persona provisioning come from extension pages; other messages from a site tab. */
 function mockSenderFor(msg: any): Record<string, unknown> {
-  return String(msg?.type).includes('resolve-approval')
+  return String(msg?.type).includes('resolve-approval') ||
+    msg?.type === 'provision-site-personas' ||
+    msg?.type === 'update-persona-state' ||
+    msg?.type === 'set-active-persona'
     ? { url: 'chrome-extension://frank-test-ext/approval.html' }
     : { tab: { id: 1, windowId: 2 } }
 }
@@ -267,7 +270,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
 
     const bgState = createBackgroundBridgeState({
       chainIdHex: '0x279f',
-      activePersonaAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+      activePersonaAddress: '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
     })
     const bg = installBackgroundBridge(mockExtensionScope, bgState)
     await new Promise(r => setTimeout(r, 0))
@@ -339,18 +342,20 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     )
 
     const accounts = await connectPromise
-    expect(accounts).toEqual(['0x71C7656EC7ab88b098defB751B7401B5f6d8976F'])
+    expect(accounts).toEqual(['0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'])
     expect(p1!.selectedAddress).toBe(
-      '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+      '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
     )
     expect(connectEvents).toEqual([{ chainId: '0x279f' }])
     expect(accountsChangedEvents).toEqual([
-      ['0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
+      ['0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'],
     ])
 
     // Subsequent eth_accounts returns the approved account list
     const ethAccounts = await p1!.request<string[]>({ method: 'eth_accounts' })
-    expect(ethAccounts).toEqual(['0x71C7656EC7ab88b098defB751B7401B5f6d8976F'])
+    expect(ethAccounts).toEqual([
+      '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
+    ])
 
     // wallet_switchEthereumChain and read-only RPC methods succeed for dApp compatibility
     const switchRes = await p1!.request({
@@ -366,7 +371,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     // Signing is not implemented: approving it never hands the dApp a made-up signature.
     const signPromise = p1!.request<string>({
       method: 'personal_sign',
-      params: ['0x48656c6c6f', '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
+      params: ['0x48656c6c6f', '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'],
     })
     const signOutcome = signPromise.then(
       () => 'resolved',
@@ -1038,34 +1043,138 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(container.contains(scriptEl)).toBe(true)
   })
 
-  it('isolates origins with deterministic per-origin burner personas by default and rejects with 4001 on user denial', async () => {
-    const { Wallet, computeAddress } = await import('ethers')
-    const {
-      deriveDeterministicOriginBurnerAddress,
-      deriveDeterministicOriginBurnerPrivateKey,
-    } = await import('./persona-derivation')
+  it('answers persona requests with an explicit not-ready error until Frank provisions a persona', async () => {
+    const { DAPP_PERSONA_NOT_READY_ERROR } = await import('./background')
+    const listeners: Array<
+      (msg: any, sender: any, sendResponse: (res: any) => void) => any
+    > = []
+    const mockScope = {
+      chrome: {
+        runtime: {
+          id: 'frank-test-ext',
+          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
+          sendMessage: (msg: any, cb?: (res: any) => void) => {
+            for (const fn of listeners) {
+              fn(msg, mockSenderFor(msg), (res: any) => {
+                if (cb) cb(res)
+              })
+            }
+          },
+          onMessage: {
+            addListener: (fn: any) => listeners.push(fn),
+            removeListener: (fn: any) => {
+              const idx = listeners.indexOf(fn)
+              if (idx >= 0) listeners.splice(idx, 1)
+            },
+          },
+        },
+      },
+    }
+    // A fresh extension has no persona at all: no well-known placeholder address.
+    const state = createBackgroundBridgeState({
+      approvedOrigins: new Set(['https://app.uniswap.org']),
+    })
+    expect(state.activePersonaAddress).toBe('')
+    const bg = installBackgroundBridge(mockScope, state)
+    const rpc = (origin: string, method: string, params?: unknown) =>
+      sendRuntimeMessage<any, any>(
+        {
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'dapp-rpc-request',
+          origin,
+          payload: { method, params },
+        },
+        mockScope,
+      )
+    const notReady = { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
+    expect(DAPP_PERSONA_NOT_READY_ERROR.code).toBe(4900)
+    // Connected origin, nothing provisioned.
+    expect(await rpc('https://app.uniswap.org', 'eth_accounts')).toEqual(notReady)
+    expect(await rpc('https://app.uniswap.org', 'eth_requestAccounts')).toEqual(
+      notReady,
+    )
+    // New origins cannot even queue a connect or signing request.
+    expect(await rpc('https://opensea.io', 'eth_requestAccounts')).toEqual(
+      notReady,
+    )
+    expect(
+      await rpc('https://opensea.io', 'personal_sign', ['0x00', '0x00']),
+    ).toEqual(notReady)
+    expect(state.pendingApprovals.size).toBe(0)
+    // Unconnected origins still learn nothing.
+    expect((await rpc('https://tracker.example.com', 'eth_accounts')).result).toEqual(
+      [],
+    )
 
-    const rootAddr = '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'
-    const uniswapPrivKey = deriveDeterministicOriginBurnerPrivateKey(
-      rootAddr,
-      'https://app.uniswap.org',
+    // Once Frank provisions the shared persona, a connect is queued; approving a per-site
+    // persona without a custody-supplied address still fails explicitly.
+    await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'update-persona-state',
+        address: '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
+      },
+      mockScope,
     )
-    const uniswapBurner = deriveDeterministicOriginBurnerAddress(
-      rootAddr,
-      'https://app.uniswap.org',
+    expect(
+      (await rpc('https://app.uniswap.org', 'eth_accounts')).result,
+    ).toEqual(['0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'])
+    const pendingConnect = rpc('https://opensea.io', 'eth_requestAccounts')
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const approval = Array.from(state.pendingApprovals.values())[0]!
+    const approveBurner = () =>
+      sendRuntimeMessage<any, any>(
+        {
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'companion-resolve-approval',
+          requestId: approval.id,
+          approved: true,
+          useBurnerPersona: true,
+        },
+        mockScope,
+      )
+    expect((await approveBurner()).error).toEqual(DAPP_PERSONA_NOT_READY_ERROR)
+    expect(state.originPersonas['https://opensea.io']).toBeUndefined()
+    expect(state.pendingApprovals.has(approval.id)).toBe(true)
+    // A web page cannot choose a site's persona address.
+    const forged = await handleBackgroundMessage(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'provision-site-personas',
+        sitePersonas: {
+          'https://opensea.io': '0x000000000000000000000000000000000000dEaD',
+        },
+      },
+      { tab: { id: 1, windowId: 2 }, url: 'https://opensea.io/' },
+      state,
+      mockScope,
     )
-    const openseaBurner = deriveDeterministicOriginBurnerAddress(
-      rootAddr,
-      'https://opensea.io',
+    expect(forged.error.code).toBe(4100)
+    expect(state.sitePersonaAddresses['https://opensea.io']).toBeUndefined()
+    // Frank provides the custody-derived site persona; the same request now connects.
+    await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'provision-site-personas',
+        sitePersonas: {
+          'https://opensea.io': '0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB',
+        },
+      },
+      mockScope,
     )
+    await approveBurner()
+    expect((await pendingConnect).result).toEqual([
+      '0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB',
+    ])
+    bg.dispose()
+  })
 
-    // Verify pure-TS secp256k1 + Keccak256 address derivation matches ethers.computeAddress 100%
-    expect(uniswapBurner).toBe(computeAddress(uniswapPrivKey))
-    expect(new Wallet(uniswapPrivKey).address).toBe(uniswapBurner)
-    // Anti-supercookie guarantee: Site A, Site B, and Primary Persona all have distinct addresses
-    expect(uniswapBurner.toLowerCase()).not.toBe(openseaBurner.toLowerCase())
-    expect(uniswapBurner.toLowerCase()).not.toBe(rootAddr.toLowerCase())
-    expect(openseaBurner.toLowerCase()).not.toBe(rootAddr.toLowerCase())
+  it('binds per-origin personas only to custody-supplied addresses and rejects with 4001 on user denial', async () => {
+    // Frank's custody derives these (hardened, keyed by an account-private HMAC of the origin);
+    // the extension only ever receives the addresses.
+    const rootAddr = '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'
+    const uniswapBurner = '0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359'
+    const openseaBurner = '0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB'
 
     const listeners: Array<
       (msg: any, sender: any, sendResponse: (res: any) => void) => any
@@ -1109,7 +1218,8 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     )
     await new Promise(resolve => setTimeout(resolve, 10))
     const siteAApproval = Array.from(state.pendingApprovals.values())[0]!
-    expect(siteAApproval.personaAddress).toBe(uniswapBurner)
+    // The background no longer computes a burner from public data.
+    expect(siteAApproval.personaAddress).toBeUndefined()
 
     await sendRuntimeMessage<any, any>(
       {
@@ -1118,6 +1228,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
         requestId: siteAApproval.id,
         approved: true,
         useBurnerPersona: true,
+        personaAddress: uniswapBurner,
       },
       mockScope,
     )
@@ -1142,6 +1253,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
         type: 'companion-resolve-approval',
         requestId: siteBApproval.id,
         approved: true,
+        personaAddress: openseaBurner,
       },
       mockScope,
     )
@@ -1271,8 +1383,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(approvedConnectedOnly.announced).toHaveLength(1)
   })
 
-  it('registers Bitcoin (FrankBitcoin/unisat/WBIP004) and eCash Cashtab shims with interactive approval', async () => {
-    const { createFrankBitcoinProvider } = await import('./inpage')
+  it('registers no Bitcoin or Cashtab wallet, which Frank cannot back with an account', async () => {
 
     const listeners: Array<
       (msg: any, sender: any, sendResponse: (res: any) => void) => any
@@ -1300,68 +1411,32 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       },
     }
     const bgState = createBackgroundBridgeState({
-      activePersonaAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+      activePersonaAddress: '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
     })
     const bg = installBackgroundBridge(mockScope, bgState)
     const cleanupContent = installContentScriptBridge(window as any, mockScope)
 
-    const provider = installInpageProvider(window as any)!
-    const btcProvider = createFrankBitcoinProvider(provider)
+    const win = window as any
+    delete win.__FRANK_INPAGE_PROVIDER_INSTALLED__
+    delete win.frankEthereum
+    delete win.frankBitcoin
+    delete win.unisat
+    delete win.wbip_providers
+    installInpageProvider(win)
+    expect(win.frankBitcoin).toBeUndefined()
+    expect(win.unisat).toBeUndefined()
+    expect(win.wbip_providers).toBeUndefined()
 
-    // 1. Bitcoin requestAccounts queues approval and returns deterministic bc1q address
-    const btcConnectPromise = btcProvider.requestAccounts()
-    await new Promise(resolve => setTimeout(resolve, 10))
-    const btcApproval = Array.from(bgState.pendingApprovals.values())[0]!
-    expect(btcApproval.chainFamily).toBe('bitcoin')
-
-    await sendRuntimeMessage(
-      {
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'companion-resolve-approval',
-        requestId: btcApproval.id,
-        approved: true,
-      },
-      mockScope,
-    )
-    const btcAccounts = await btcConnectPromise
-    expect(btcAccounts[0]).toMatch(/^bc1q/)
-
-    await provider.request({ method: 'wallet_revokePermissions' })
-
-    // 2. eCash Cashtab postMessage bridge (FROM_PAGE -> xec_cashtabRequest -> FROM_CASHTAB)
+    // A Cashtab page request gets no answer and queues nothing.
     const cashtabResponses: any[] = []
     const cashtabListener = (ev: MessageEvent) => {
-      if (ev.data?.type === 'FROM_CASHTAB') {
-        cashtabResponses.push(ev.data)
-      }
+      if (ev.data?.type === 'FROM_CASHTAB') cashtabResponses.push(ev.data)
     }
     window.addEventListener('message', cashtabListener)
-
-    window.postMessage(
-      {
-        type: 'FROM_PAGE',
-        text: 'Cashtab',
-        addressRequest: true,
-      },
-      '*',
-    )
+    window.postMessage({ type: 'FROM_PAGE', text: 'Cashtab', addressRequest: true }, '*')
     await new Promise(resolve => setTimeout(resolve, 15))
-    expect(bgState.pendingApprovals.size).toBe(1)
-    const xecApproval = Array.from(bgState.pendingApprovals.values())[0]!
-    expect(xecApproval.chainFamily).toBe('ecash')
-
-    await sendRuntimeMessage(
-      {
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'companion-resolve-approval',
-        requestId: xecApproval.id,
-        approved: true,
-      },
-      mockScope,
-    )
-    await new Promise(resolve => setTimeout(resolve, 15))
-    expect(cashtabResponses.length).toBeGreaterThanOrEqual(1)
-    expect(cashtabResponses[0]?.address).toMatch(/^ecash:q/)
+    expect(cashtabResponses).toEqual([])
+    expect(bgState.pendingApprovals.size).toBe(0)
 
     window.removeEventListener('message', cashtabListener)
     cleanupContent()

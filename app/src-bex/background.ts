@@ -2,6 +2,7 @@ import {
   ExtensionLaunchMode,
   FRANK_DAPP_APPROVALS_CHANGED,
   FRANK_DAPP_BRIDGE_CHANNEL,
+  FRANK_DAPP_PROVISION_SITE_PERSONAS,
   FRANK_EXT_LAUNCH_MODE_KEY,
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   getRawExtensionApi,
@@ -21,12 +22,6 @@ import {
   SYNC_PAIRING_TTL_MS,
   type SyncSenderState,
 } from '../src/utils/sync-pairing'
-import {
-  deriveDeterministicBtcAddress,
-  deriveDeterministicBtcPubKey,
-  deriveDeterministicOriginBurnerAddress,
-  deriveDeterministicXecAddress,
-} from './persona-derivation'
 import { createApprovalWindow, type ApprovalWindow } from './approval-window'
 
 export type DappProviderAnnounceMode = 'always' | 'connected-only' | 'stealth'
@@ -41,7 +36,6 @@ export interface OriginPersonaBinding {
 export interface PendingDappApproval {
   id: string
   kind?: 'connect' | 'sign' | 'transaction' | 'permissions'
-  chainFamily?: 'evm' | 'bitcoin' | 'ecash'
   origin: string
   href: string
   method: string
@@ -49,6 +43,7 @@ export interface PendingDappApproval {
   createdAt: number
   requiresCompanionApproval: boolean
   personaAddress?: string
+  /** Frank's custody-derived per-site persona, once Frank has provided it. */
   suggestedBurnerAddress?: string
   primaryPersonaAddress?: string
 }
@@ -87,6 +82,8 @@ export interface BackgroundBridgeState {
   approvedOrigins: Set<string>
   connectedOrigins: Set<string>
   originPersonas: Record<string, OriginPersonaBinding>
+  /** Custody-derived per-site persona addresses Frank provided, by canonical origin. */
+  sitePersonaAddresses: Record<string, string>
   announceMode: DappProviderAnnounceMode
   pendingApprovals: Map<string, PendingDappApproval>
   pendingRpcWaiters: Map<string, PendingRpcWaiter>
@@ -99,6 +96,14 @@ export interface BackgroundBridgeState {
 
 export type BackgroundDappState = BackgroundBridgeState
 
+/** Methods that answer with the origin's persona address(es). */
+const PERSONA_ADDRESS_METHODS = new Set([
+  'eth_accounts',
+  'eth_requestAccounts',
+  'wallet_getPermissions',
+  'wallet_requestPermissions',
+])
+
 const APPROVAL_REQUIRED_METHODS = new Set([
   'personal_sign',
   'eth_sign',
@@ -106,11 +111,6 @@ const APPROVAL_REQUIRED_METHODS = new Set([
   'eth_signTypedData_v3',
   'eth_signTypedData_v4',
   'eth_sendTransaction',
-  'btc_requestAccounts',
-  'btc_signMessage',
-  'btc_signPsbt',
-  'btc_signPsbts',
-  'xec_cashtabRequest',
 ])
 
 const CHAIN_RPC_URLS: Record<string, string> = {
@@ -184,18 +184,60 @@ export function isOriginConnected(
   )
 }
 
+/**
+ * The extension never derives persona keys or addresses: Frank's custody derives them and
+ * provisions only the addresses. Until it has, persona requests fail with this error.
+ */
+export const DAPP_PERSONA_NOT_READY_ERROR = Object.freeze({
+  code: 4900,
+  message:
+    'Frank has not provided a dApp persona yet. Open Frank and unlock your account, then retry.',
+})
+
+function isPersonaAddress(value: unknown): value is string {
+  return typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value)
+}
+
+/** The persona address bound to an origin, else the shared persona; '' before provisioning. */
 export function getOriginPersonaAddress(
   state: BackgroundBridgeState,
   rawOrigin: string,
 ): string {
   const norm = normalizeBridgeOrigin(rawOrigin)
-  if (norm && state.originPersonas[norm]?.address) {
+  if (norm && isPersonaAddress(state.originPersonas[norm]?.address)) {
     return state.originPersonas[norm].address
   }
-  if (rawOrigin && state.originPersonas[rawOrigin]?.address) {
+  if (rawOrigin && isPersonaAddress(state.originPersonas[rawOrigin]?.address)) {
     return state.originPersonas[rawOrigin].address
   }
-  return state.activePersonaAddress
+  return isPersonaAddress(state.activePersonaAddress)
+    ? state.activePersonaAddress
+    : ''
+}
+
+/**
+ * The address a connection would bind: the one Frank supplied with the decision, else the
+ * provisioned per-site persona (burner) or shared persona. '' when Frank has not provided it.
+ */
+export function connectPersonaAddress(
+  state: BackgroundBridgeState,
+  normalizedOrigin: string,
+  useBurner: boolean,
+  suppliedAddress?: string,
+): string {
+  if (isPersonaAddress(suppliedAddress)) return suppliedAddress
+  const address = useBurner
+    ? state.sitePersonaAddresses[normalizedOrigin]
+    : state.activePersonaAddress
+  return isPersonaAddress(address) ? address : ''
+}
+
+export class DappPersonaNotReadyError extends Error {
+  readonly code = DAPP_PERSONA_NOT_READY_ERROR.code
+  constructor() {
+    super(DAPP_PERSONA_NOT_READY_ERROR.message)
+    this.name = 'DappPersonaNotReadyError'
+  }
 }
 
 export function assignOriginPersona(
@@ -218,10 +260,13 @@ export function assignOriginPersona(
 
   let binding: OriginPersonaBinding
   if (!useBurner) {
-    const address =
-      options?.personaAddress && /^0x[a-fA-F0-9]{40}$/.test(options.personaAddress)
-        ? options.personaAddress
-        : state.activePersonaAddress
+    const address = connectPersonaAddress(
+      state,
+      norm,
+      false,
+      options?.personaAddress,
+    )
+    if (!address) throw new DappPersonaNotReadyError()
     binding = {
       address,
       index: 0,
@@ -242,13 +287,14 @@ export function assignOriginPersona(
       typeof options?.personaIndex === 'number' && options.personaIndex > 0
         ? options.personaIndex
         : existingBurnerIdx ?? maxExistingIdx + 1
-    const address =
-      options?.personaAddress && /^0x[a-fA-F0-9]{40}$/.test(options.personaAddress)
-        ? options.personaAddress
-        : deriveDeterministicOriginBurnerAddress(
-            state.activePersonaAddress,
-            norm || 'https://dapp.local',
-          )
+    // A per-site persona is a hardened custody derivation; only Frank can supply it.
+    const address = connectPersonaAddress(
+      state,
+      norm,
+      true,
+      options?.personaAddress,
+    )
+    if (!address) throw new DappPersonaNotReadyError()
     let hostLabel = norm
     try {
       hostLabel = new URL(norm).hostname || norm
@@ -483,13 +529,13 @@ export function createBackgroundBridgeState(
 
   return {
     chainIdHex: overrides.chainIdHex ?? '0x279f',
-    activePersonaAddress:
-      overrides.activePersonaAddress ??
-      '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+    // Empty until Frank provisions the custody-derived shared persona.
+    activePersonaAddress: overrides.activePersonaAddress ?? '',
     poolBalanceWeiHex: overrides.poolBalanceWeiHex ?? '0x0',
     approvedOrigins: sharedOriginsSet,
     connectedOrigins: sharedOriginsSet,
     originPersonas,
+    sitePersonaAddresses: { ...(overrides.sitePersonaAddresses ?? {}) },
     announceMode: overrides.announceMode ?? 'always',
     pendingApprovals:
       overrides.pendingApprovals ?? new Map<string, PendingDappApproval>(),
@@ -814,8 +860,8 @@ async function persistOriginStateToStorage(
   if (extApi?.storage?.local?.set) {
     try {
       await extApi.storage.local.set({
-        frankApprovedOrigins: Array.from(state.approvedOrigins),
-        frankOriginPersonas: { ...state.originPersonas },
+        frankDappApprovedOrigins: Array.from(state.approvedOrigins),
+        frankDappOriginPersonas: { ...state.originPersonas },
       })
     } catch {
       // Ignore storage errors
@@ -1322,11 +1368,62 @@ export async function handleBackgroundMessage(
     }
   }
 
+  // Frank provides custody-derived per-site persona addresses (never keys) for origins
+  // that are waiting on a decision; the approval window then shows them.
+  if (
+    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+    message.type === FRANK_DAPP_PROVISION_SITE_PERSONAS
+  ) {
+    // Only Frank's own pages provide personas; a web page never chooses a site's address.
+    if (!isExtensionPageSender(sender, getRawExtensionApi(runtimeScope))) {
+      return {
+        ok: false,
+        error: { code: 4100, message: 'Unauthorized persona sender.' },
+      }
+    }
+    const provided =
+      message.sitePersonas && typeof message.sitePersonas === 'object'
+        ? (message.sitePersonas as Record<string, unknown>)
+        : {}
+    let pendingChanged = false
+    for (const [rawOrigin, address] of Object.entries(provided)) {
+      const norm =
+        normalizeBridgeOrigin(rawOrigin) || rawOrigin.trim().toLowerCase()
+      if (!norm || !isPersonaAddress(address)) continue
+      state.sitePersonaAddresses[norm] = address
+      for (const pending of state.pendingApprovals.values()) {
+        if (pending.origin === norm && pending.suggestedBurnerAddress !== address) {
+          pending.suggestedBurnerAddress = address
+          pendingChanged = true
+        }
+      }
+    }
+    const extApi = getRawExtensionApi(runtimeScope)
+    if (extApi?.storage?.local?.set) {
+      try {
+        await extApi.storage.local.set({
+          frankDappSitePersonas: { ...state.sitePersonaAddresses },
+        })
+      } catch {
+        // Ignore storage errors
+      }
+    }
+    if (pendingChanged) notifyExtensionViewsOfApprovals(runtimeScope)
+    return { ok: true, result: { ok: true } }
+  }
+
   if (
     message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
     (message.type === 'set-active-persona' ||
       message.type === 'update-persona-state')
   ) {
+    // Only Frank's own pages set the shared persona; a web page never chooses it.
+    if (!isExtensionPageSender(sender, getRawExtensionApi(runtimeScope))) {
+      return {
+        ok: false,
+        error: { code: 4100, message: 'Unauthorized persona sender.' },
+      }
+    }
     const payload =
       message.payload && typeof message.payload === 'object'
         ? message.payload
@@ -1360,7 +1457,7 @@ export async function handleBackgroundMessage(
 
     if (/^0x[a-fA-F0-9]{40}$/.test(nextAddr)) {
       state.activePersonaAddress = nextAddr
-      storageUpdates.frankActivePersonaAddress = nextAddr
+      storageUpdates.frankDappPersonaAddress = nextAddr
       for (const [origKey, binding] of Object.entries(state.originPersonas)) {
         if (!binding.isBurner) {
           state.originPersonas[origKey] = {
@@ -1370,7 +1467,7 @@ export async function handleBackgroundMessage(
           broadcastProviderEventToTabs('accountsChanged', [nextAddr], origKey)
         }
       }
-      storageUpdates.frankOriginPersonas = { ...state.originPersonas }
+      storageUpdates.frankDappOriginPersonas = { ...state.originPersonas }
     }
     if (/^0x[0-9a-fA-F]+$/.test(nextPoolHex)) {
       state.poolBalanceWeiHex = nextPoolHex.toLowerCase()
@@ -1549,6 +1646,16 @@ export async function handleBackgroundMessage(
       return { ok: true, result: 'FrankWallet/0.3.0' }
     }
 
+    // A connected origin's persona requests need a provisioned persona address.
+    if (
+      PERSONA_ADDRESS_METHODS.has(method) &&
+      normalizedOrigin &&
+      isOriginConnected(state, normalizedOrigin) &&
+      !getOriginPersonaAddress(state, normalizedOrigin)
+    ) {
+      return { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
+    }
+
     // Strict Origin Permission Gating: eth_accounts returns [] unless origin is already approved
     if (method === 'eth_accounts') {
       if (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin)) {
@@ -1557,32 +1664,6 @@ export async function handleBackgroundMessage(
       return {
         ok: true,
         result: [getOriginPersonaAddress(state, normalizedOrigin)],
-      }
-    }
-
-    if (method === 'btc_getNetwork') {
-      return { ok: true, result: 'livenet' }
-    }
-
-    if (method === 'btc_getAccounts') {
-      if (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin)) {
-        return { ok: true, result: [] }
-      }
-      const evmPersona = getOriginPersonaAddress(state, normalizedOrigin)
-      return {
-        ok: true,
-        result: [deriveDeterministicBtcAddress(evmPersona)],
-      }
-    }
-
-    if (method === 'btc_getPublicKey') {
-      if (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin)) {
-        return { ok: true, result: '' }
-      }
-      const evmPersona = getOriginPersonaAddress(state, normalizedOrigin)
-      return {
-        ok: true,
-        result: deriveDeterministicBtcPubKey(evmPersona),
       }
     }
 
@@ -1621,23 +1702,11 @@ export async function handleBackgroundMessage(
       return { ok: true, result: null }
     }
 
-    // Already-approved origin calling eth_requestAccounts, wallet_requestPermissions, btc_requestAccounts, or xec_cashtabRequest(addressRequest)
-    const cashtabParams =
-      method === 'xec_cashtabRequest'
-        ? ((Array.isArray(params) ? params[0] : params) as
-            | { addressRequest?: boolean; txInfo?: unknown }
-            | undefined)
-        : undefined
-    const isCashtabAddressRequest =
-      method === 'xec_cashtabRequest' &&
-      Boolean(cashtabParams?.addressRequest) &&
-      !cashtabParams?.txInfo
-
+    // Already-approved origin calling eth_requestAccounts or wallet_requestPermissions.
+    // Frank has no Bitcoin or eCash account for dApps: btc_* and xec_* fall through to 4200.
     if (
       (method === 'eth_requestAccounts' ||
-        method === 'wallet_requestPermissions' ||
-        method === 'btc_requestAccounts' ||
-        isCashtabAddressRequest) &&
+        method === 'wallet_requestPermissions') &&
       normalizedOrigin &&
       isOriginConnected(state, normalizedOrigin) &&
       !message.payload?.requireExplicitCompanionApproval
@@ -1658,20 +1727,6 @@ export async function handleBackgroundMessage(
               ],
             },
           ],
-        }
-      }
-      if (method === 'btc_requestAccounts') {
-        return {
-          ok: true,
-          result: [deriveDeterministicBtcAddress(personaAddr)],
-        }
-      }
-      if (isCashtabAddressRequest) {
-        return {
-          ok: true,
-          result: {
-            address: deriveDeterministicXecAddress(personaAddr),
-          },
         }
       }
       return { ok: true, result: [personaAddr] }
@@ -1740,9 +1795,7 @@ export async function handleBackgroundMessage(
       const effectiveOrigin = normalizedOrigin || rawOrigin || 'https://dapp.local'
       const isConnectMethod =
         method === 'eth_requestAccounts' ||
-        method === 'wallet_requestPermissions' ||
-        method === 'btc_requestAccounts' ||
-        isCashtabAddressRequest
+        method === 'wallet_requestPermissions'
 
       // Require origin to be connected before signing or sending transactions
       if (
@@ -1765,38 +1818,26 @@ export async function handleBackgroundMessage(
           ? 'permissions'
           : isConnectMethod
           ? 'connect'
-          : method === 'eth_sendTransaction' ||
-            method === 'btc_signPsbt' ||
-            method === 'btc_signPsbts' ||
-            (method === 'xec_cashtabRequest' && Boolean(cashtabParams?.txInfo))
+          : method === 'eth_sendTransaction'
           ? 'transaction'
           : 'sign'
 
-      const suggestedBurnerAddress = deriveDeterministicOriginBurnerAddress(
-        state.activePersonaAddress,
-        effectiveOrigin,
-      )
-      const chainFamily: 'evm' | 'bitcoin' | 'ecash' =
-        method.startsWith('btc_')
-          ? 'bitcoin'
-          : method === 'xec_cashtabRequest'
-          ? 'ecash'
-          : 'evm'
+      // Nothing to approve with until Frank has provisioned the shared persona.
+      if (!isPersonaAddress(state.activePersonaAddress)) {
+        return { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
+      }
 
       const pending: PendingDappApproval = {
         id,
         kind,
-        chainFamily,
         origin: effectiveOrigin,
         href,
         method,
         params,
         createdAt: Date.now(),
         requiresCompanionApproval: true,
-        personaAddress:
-          state.originPersonas[effectiveOrigin]?.address ??
-          suggestedBurnerAddress,
-        suggestedBurnerAddress,
+        personaAddress: state.originPersonas[effectiveOrigin]?.address,
+        suggestedBurnerAddress: state.sitePersonaAddresses[effectiveOrigin],
         primaryPersonaAddress: state.activePersonaAddress,
       }
       state.pendingApprovals.set(id, pending)
@@ -1875,6 +1916,38 @@ export async function handleBackgroundMessage(
         },
       }
     }
+    const approved = Boolean(decision.approved ?? message.approved)
+    const isConnectMethod =
+      pending.kind === 'connect' ||
+      pending.kind === 'permissions' ||
+      pending.method === 'eth_requestAccounts' ||
+      pending.method === 'wallet_requestPermissions'
+
+    const rawUseBurner = decision.useBurnerPersona ?? message.useBurnerPersona
+    const useBurnerPersona =
+      decision.personaIndex === 0 || message.personaIndex === 0
+        ? false
+        : rawUseBurner !== undefined
+        ? Boolean(rawUseBurner)
+        : true
+    const suppliedPersonaAddress =
+      decision.personaAddress ?? message.personaAddress
+    // Approving a connection needs a custody-derived address for the chosen persona. Until
+    // Frank provides it the request stays queued and the decision fails explicitly.
+    if (
+      approved &&
+      isConnectMethod &&
+      !connectPersonaAddress(
+        state,
+        normalizeBridgeOrigin(pending.origin) ||
+          pending.origin.trim().toLowerCase(),
+        useBurnerPersona,
+        suppliedPersonaAddress,
+      )
+    ) {
+      return { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
+    }
+
     state.pendingApprovals.delete(requestId)
     state.pendingRpcWaiters.delete(requestId)
     notifyExtensionViewsOfApprovals(runtimeScope)
@@ -1884,7 +1957,6 @@ export async function handleBackgroundMessage(
         .catch(() => undefined)
     }
 
-    const approved = Boolean(decision.approved ?? message.approved)
     if (!approved) {
       const rejectionError = { ...USER_REJECTED }
       if (waiter) {
@@ -1903,43 +1975,11 @@ export async function handleBackgroundMessage(
       }
     }
 
-    const pendingCashtabParams =
-      pending.method === 'xec_cashtabRequest'
-        ? ((Array.isArray(pending.params)
-            ? pending.params[0]
-            : pending.params) as
-            | { addressRequest?: boolean; txInfo?: unknown }
-            | undefined)
-        : undefined
-    const isPendingCashtabConnect =
-      pending.method === 'xec_cashtabRequest' &&
-      Boolean(pendingCashtabParams?.addressRequest) &&
-      !pendingCashtabParams?.txInfo
-
-    const isConnectMethod =
-      pending.kind === 'connect' ||
-      pending.kind === 'permissions' ||
-      pending.method === 'eth_requestAccounts' ||
-      pending.method === 'wallet_requestPermissions' ||
-      pending.method === 'btc_requestAccounts' ||
-      isPendingCashtabConnect
-
     if (isConnectMethod) {
-      const rawUseBurner =
-        decision.useBurnerPersona ?? message.useBurnerPersona
-      const useBurnerPersona =
-        decision.personaIndex === 0 || message.personaIndex === 0
-          ? false
-          : rawUseBurner !== undefined
-          ? Boolean(rawUseBurner)
-          : true
-
       const binding = assignOriginPersona(state, pending.origin, {
         useBurnerPersona,
-        personaAddress:
-          decision.personaAddress ?? message.personaAddress,
-        personaIndex:
-          decision.personaIndex ?? message.personaIndex,
+        personaAddress: suppliedPersonaAddress,
+        personaIndex: decision.personaIndex ?? message.personaIndex,
         label: decision.label ?? message.label,
       })
 
@@ -1965,10 +2005,6 @@ export async function handleBackgroundMessage(
                 ],
               },
             ]
-          : pending.method === 'btc_requestAccounts'
-          ? [deriveDeterministicBtcAddress(binding.address)]
-          : isPendingCashtabConnect
-          ? { address: deriveDeterministicXecAddress(binding.address) }
           : [binding.address]
 
       if (waiter) {
@@ -2028,10 +2064,11 @@ export async function restoreStoredBridgeState(
   if (typeof api?.storage?.local?.get !== 'function') return
   const stored: Record<string, any> | undefined = await api.storage.local.get([
     FRANK_EXT_LAUNCH_MODE_KEY,
-    'frankActivePersonaAddress',
+    'frankDappPersonaAddress',
     'frankPoolBalanceWeiHex',
-    'frankApprovedOrigins',
-    'frankOriginPersonas',
+    'frankDappApprovedOrigins',
+    'frankDappOriginPersonas',
+    'frankDappSitePersonas',
     'frankAnnounceMode',
     'frankChainIdHex',
   ])
@@ -2039,10 +2076,10 @@ export async function restoreStoredBridgeState(
   const storedMode = parseExtensionLaunchMode(stored[FRANK_EXT_LAUNCH_MODE_KEY])
   if (storedMode) state.launchMode = storedMode
   if (
-    typeof stored.frankActivePersonaAddress === 'string' &&
-    /^0x[a-fA-F0-9]{40}$/.test(stored.frankActivePersonaAddress)
+    typeof stored.frankDappPersonaAddress === 'string' &&
+    /^0x[a-fA-F0-9]{40}$/.test(stored.frankDappPersonaAddress)
   ) {
-    state.activePersonaAddress = stored.frankActivePersonaAddress
+    state.activePersonaAddress = stored.frankDappPersonaAddress
   }
   if (
     typeof stored.frankPoolBalanceWeiHex === 'string' &&
@@ -2050,8 +2087,8 @@ export async function restoreStoredBridgeState(
   ) {
     state.poolBalanceWeiHex = stored.frankPoolBalanceWeiHex
   }
-  if (Array.isArray(stored.frankApprovedOrigins)) {
-    for (const orig of stored.frankApprovedOrigins) {
+  if (Array.isArray(stored.frankDappApprovedOrigins)) {
+    for (const orig of stored.frankDappApprovedOrigins) {
       if (typeof orig === 'string' && orig) {
         const norm = normalizeBridgeOrigin(orig) || orig
         state.approvedOrigins.add(norm)
@@ -2060,10 +2097,20 @@ export async function restoreStoredBridgeState(
     }
   }
   if (
-    stored.frankOriginPersonas &&
-    typeof stored.frankOriginPersonas === 'object'
+    stored.frankDappSitePersonas &&
+    typeof stored.frankDappSitePersonas === 'object'
   ) {
-    for (const [orig, binding] of Object.entries(stored.frankOriginPersonas)) {
+    for (const [orig, address] of Object.entries(stored.frankDappSitePersonas)) {
+      if (isPersonaAddress(address)) {
+        state.sitePersonaAddresses[normalizeBridgeOrigin(orig) || orig] = address
+      }
+    }
+  }
+  if (
+    stored.frankDappOriginPersonas &&
+    typeof stored.frankDappOriginPersonas === 'object'
+  ) {
+    for (const [orig, binding] of Object.entries(stored.frankDappOriginPersonas)) {
       if (binding && typeof binding === 'object') {
         const norm = normalizeBridgeOrigin(orig) || orig
         state.originPersonas[norm] = binding as OriginPersonaBinding

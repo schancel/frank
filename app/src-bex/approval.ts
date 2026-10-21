@@ -20,17 +20,12 @@ const CONNECT_KINDS = new Set(['connect', 'permissions'])
 const METHOD_LABELS: Record<string, string> = {
   eth_requestAccounts: 'Connect to this site',
   wallet_requestPermissions: 'Connect to this site',
-  btc_requestAccounts: 'Connect your Bitcoin address',
-  xec_cashtabRequest: 'eCash request',
   personal_sign: 'Sign a message',
   eth_sign: 'Sign a message',
   eth_signTypedData: 'Sign typed data',
   eth_signTypedData_v3: 'Sign typed data',
   eth_signTypedData_v4: 'Sign typed data',
   eth_sendTransaction: 'Send a transaction',
-  btc_signMessage: 'Sign a message',
-  btc_signPsbt: 'Sign a Bitcoin transaction',
-  btc_signPsbts: 'Sign Bitcoin transactions',
 }
 
 export function isConnectRequest(request: PendingDappApproval): boolean {
@@ -38,11 +33,6 @@ export function isConnectRequest(request: PendingDappApproval): boolean {
 }
 
 export function describeApprovalMethod(request: PendingDappApproval): string {
-  if (request.method === 'xec_cashtabRequest') {
-    return isConnectRequest(request)
-      ? 'Connect your eCash address'
-      : 'Send an eCash transaction'
-  }
   return METHOD_LABELS[request.method] ?? request.method
 }
 
@@ -201,6 +191,15 @@ export function mountApprovalPage(
           address: request.primaryPersonaAddress,
         },
       ]
+      const approve = el(doc, 'button', 'approval-approve', 'Connect')
+      approve.type = 'button'
+      approve.dataset.testid = 'approval-approve'
+      approve.addEventListener('click', () => void decide(request, true))
+      // Persona addresses come from Frank's custody; without one there is nothing to connect.
+      const syncApprove = () => {
+        approve.disabled = !options.find(option => option.burner === useBurner)
+          ?.address
+      }
       for (const option of options) {
         const label = el(doc, 'label', 'approval-persona')
         const input = el(doc, 'input')
@@ -212,22 +211,28 @@ export function mountApprovalPage(
           : 'approval-persona-primary'
         input.addEventListener('change', () => {
           useBurner = option.burner
+          syncApprove()
         })
         const body = el(doc, 'span', 'approval-persona-body')
         body.append(el(doc, 'span', 'approval-persona-label', option.label))
         body.append(el(doc, 'span', 'approval-persona-hint', option.hint))
         if (option.address) {
           body.append(el(doc, 'code', 'approval-address', option.address))
+        } else {
+          body.append(
+            el(
+              doc,
+              'span',
+              'approval-persona-pending',
+              'Open Frank and unlock it to create this address.',
+            ),
+          )
         }
         label.append(input, body)
         choices.append(label)
       }
       root.append(choices)
-
-      const approve = el(doc, 'button', 'approval-approve', 'Connect')
-      approve.type = 'button'
-      approve.dataset.testid = 'approval-approve'
-      approve.addEventListener('click', () => void decide(request, true))
+      syncApprove()
       actions.append(approve)
     } else {
       // Frank has no safe signer for websites yet; the request can only be

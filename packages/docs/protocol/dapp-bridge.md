@@ -20,22 +20,19 @@ When an extension updates or reloads in development or production, `installConte
 
 ---
 
-## 2. Cryptographic Isolation: Multi-Chain dApp Persona Keyring (`account = 1'`) vs. Primary / Stamp Pools (`account = 0'`)
+## 2. dApp Personas: hardened custody derivation
 
-Unlike single-account browser wallets (MetaMask, Rabby, Phantom, UniSat, Cashtab) that expose one linkable address across every website, Frank isolates all external dApp activity onto dedicated `account = 1'` HD derivation branches (`MultiChainDappPersonaKeyring`) across all supported chain families:
+> Status: the `@frank/wallet/dapp-bridge` keyrings and routers (`DappPersonaKeyring`, `MultiChainDappPersonaKeyring`, `FrankDappBridgeRouter`, `UnifiedMultiChainDappRouter` and the Bitcoin/Cashtab bridges) were removed: nothing in production used them and they derived keys from a raw seed outside custody. Sections 3, 6 and 7 describe that removed design. The extension answers Bitcoin and eCash methods as unsupported (`4200`).
 
-| Chain Family | Primary / Pool Branch (`account = 0'`, **NEVER** exposed) | dApp Persona Branch (`account = 1'`) | Address / Policy Format(s) |
-| :--- | :--- | :--- | :--- |
-| **Lotus V2 (`xpi`)** | `m/44'/10605'/0'/0/{i}` (or `899'`) | `m/44'/10605'/1'/0/{index}` | Native `xpi1p...` / `txpi1p...` / `rxpi1p...` Type-1 x-only BLAKE3 keyhash (`addresses.md`) |
-| **EVM (`evm`)** | `m/44'/60'/0'/0/{i}` | `m/44'/60'/1'/0/{index}` | Checksummed `0x...` (secp256k1) |
-| **Solana (`solana`)** | `m/44'/501'/0'/0'/{i}'` | `m/44'/501'/1'/{index}'` | Base58 Ed25519 (`SLIP-0010`) |
-| **Bitcoin (`btc`)** | `m/84'/0'/0'/0/{i}` & `m/86'/0'/0'/0/{i}` | `m/84'/0'/1'/0/{index}` (Payment) & `m/86'/0'/1'/0/{index}` (Ordinals) | Native SegWit `bc1q...` (`p2wpkh`) + Taproot `bc1p...` (`p2tr`) |
-| **Bitcoin Cash (`bch`)** | `m/44'/145'/0'/0/{i}` | `m/44'/145'/1'/0/{index}` | CashAddr `bitcoincash:q...` / `bchtest:q...` |
-| **eCash (`xec`)** | `m/44'/899'/0'/0/{i}` | `m/44'/899'/1'/0/{index}` | CashAddr `ecash:q...` / `ectest:q...` |
-| **Dogecoin (`doge`)** | `m/44'/3'/0'/0/{i}` | `m/44'/3'/1'/0/{index}` | Base58Check `D...` / `n...` |
-| **Litecoin (`ltc`)** | `m/84'/2'/0'/0/{i}` | `m/84'/2'/1'/0/{index}` | Bech32 `ltc1q...` / `tltc1q...` |
+dApp persona keys are hardened BIP-32 children of the account's EVM BIP-32 master (the `evm-wallet` domain root; the BIP39 seed for historical accounts), derived only inside custody (`packages/wallet/dapp-bridge/persona-keys.ts`, exposed through `accountSession.createDappPersonaSigner()`):
 
-Both `DappPersonaKeyring.assertNotIdentityOrStampPoolAddress` and `MultiChainDappPersonaKeyring.assertNotForbiddenAddress` enforce at runtime that no connection, session grant, or signing operation can ever expose a protected messaging identity or `account = 0'` pool address.
+| Path | Use |
+| :--- | :--- |
+| `m/1785'/60'/0'/<slot>'` | Shared persona slots (slot 0 is the default shared persona) |
+| `m/1785'/60'/1'` | Site-index key; its private key keys the per-site HMAC |
+| `m/1785'/60'/2'/<a>'/<b>'` | Per-site persona; `(a, b)` are the first two u32 words (top bit cleared) of `HMAC-SHA256(site-index key, "frank/dapp-persona/site/v1" \|\| 0x00 \|\| canonical origin)` |
+
+Purpose `1785'` is used by no other Frank role. Every frontend of an account computes the same persona for a site without sync; nobody without the account secret can derive a persona key or link two sites. The extension background never derives personas: Frank views provide the addresses (`update-persona-state`, `provision-site-personas`), and until they have, persona requests fail with `4900`.
 
 ---
 

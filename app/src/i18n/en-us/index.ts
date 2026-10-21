@@ -1557,9 +1557,6 @@ export const rawEnUS = {
     uiScale115: '115%',
     uiScale130: '130%',
     uiScale150: '150%',
-    saveSettings: 'Save',
-    savedNotification: 'Settings saved',
-    cancelSettings: 'Cancel',
     languageSelectorCaption: 'Language',
     networkSettings: 'Network & Gateway Settings',
     emailGatewayAddress: 'Email Gateway Address',
@@ -1603,6 +1600,9 @@ export const rawEnUS = {
     coldVaultMaxHotBalanceLabel: 'Max Hot-Wallet Float Ceiling (MON)',
     coldVaultMaxHotBalanceHint:
       'Default: 1,500 MON (~150 AVU, +20% hysteresis trigger at 1,800 MON)',
+    profileRowCaption: 'Profile, Identity & QR',
+    invalidRefreshInterval: 'Enter a number of minutes greater than 0.',
+    invalidNotificationFeeThreshold: 'Enter an amount of 0 or more.',
   },
   profile: {
     name: 'Display Name',

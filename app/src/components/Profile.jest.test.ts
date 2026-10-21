@@ -332,6 +332,29 @@ describe('Profile.vue component avatar handling', () => {
   })
 
   describe('Identity & QR code tab', () => {
+    it('follows ?tab=identity when the route changes while mounted', async () => {
+      const route = jest
+        .requireActual('vue')
+        .reactive({ query: {} as Record<string, string> })
+      const wrapper = mount(ProfileComponent, {
+        props: {
+          name: 'Shammah',
+          identityAddress: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3',
+        },
+        global: {
+          mocks: { $t: (key: string) => key, $route: route },
+          stubs: defaultStubs,
+        },
+      })
+      expect((wrapper.vm as any).tab).toBe('profile')
+      route.query = { tab: 'identity' }
+      await wrapper.vm.$nextTick()
+      expect((wrapper.vm as any).tab).toBe('identity')
+      route.query = {}
+      await wrapper.vm.$nextTick()
+      expect((wrapper.vm as any).tab).toBe('profile')
+    })
+
     it('renders identity tab and quick QR button', async () => {
       const wrapper = mount(ProfileComponent, {
         props: {

@@ -1596,9 +1596,6 @@ export const rawFrFR = {
     uiScale115: '115 %',
     uiScale130: '130 %',
     uiScale150: '150 %',
-    saveSettings: 'Enregistrer',
-    savedNotification: 'Paramètres enregistrés',
-    cancelSettings: 'Annuler',
     languageSelectorCaption: 'Langue',
     networkSettings: 'Paramètres réseau et passerelle',
     emailGatewayAddress: 'Adresse de la passerelle e-mail',
@@ -1642,6 +1639,10 @@ export const rawFrFR = {
     coldVaultMaxHotBalanceLabel: 'Plafond maximal du portefeuille chaud (MON)',
     coldVaultMaxHotBalanceHint:
       'Par défaut : 1 500 MON (~150 AVU, déclenchement avec hystérésis +20 % à 1 800 MON)',
+    profileRowCaption: 'Profil, identité et QR',
+    invalidRefreshInterval: 'Saisissez un nombre de minutes supérieur à 0.',
+    invalidNotificationFeeThreshold:
+      'Saisissez un montant égal ou supérieur à 0.',
   },
   profile: {
     name: 'Nom affiché',

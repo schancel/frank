@@ -174,20 +174,36 @@ pub struct DecodedSignedTransaction {
     pub value_wei: u128,
     /// Signed calldata bytes.
     pub input: Vec<u8>,
+    /// Most the sender can be charged for gas: gas limit times the signed gas price (legacy) or
+    /// max fee per gas (EIP-1559). Saturates at `u128::MAX`.
+    pub max_gas_cost_wei: u128,
 }
 
-fn decode_transaction_fields(
-    raw_tx: &[u8],
-) -> Result<(u64, Option<Address>, u128, Vec<u8>), EvmTxError> {
+/// A big-endian RLP integer as `u128`, saturating when it is wider.
+fn saturating_u128(bytes: &[u8]) -> u128 {
+    if bytes.len() > 16 {
+        return u128::MAX;
+    }
+    bytes
+        .iter()
+        .fold(0u128, |value, byte| (value << 8) | u128::from(*byte))
+}
+
+type TransactionFields = (u64, Option<Address>, u128, Vec<u8>, u128);
+
+fn decode_transaction_fields(raw_tx: &[u8]) -> Result<TransactionFields, EvmTxError> {
     let first_byte = *raw_tx.first().ok_or(EvmTxError::Empty)?;
-    let (rlp, nonce_index, to_index, value_index, input_index) = if first_byte == EIP1559_TYPE {
-        (Rlp::new(&raw_tx[1..]), 1, 5, 6, 7)
-    } else if first_byte >= 0xc0 {
-        (Rlp::new(raw_tx), 0, 3, 4, 5)
-    } else {
-        return Err(EvmTxError::UnsupportedTxType(first_byte));
-    };
+    let (rlp, nonce_index, price_index, gas_index, to_index, value_index, input_index) =
+        if first_byte == EIP1559_TYPE {
+            (Rlp::new(&raw_tx[1..]), 1, 3, 4, 5, 6, 7)
+        } else if first_byte >= 0xc0 {
+            (Rlp::new(raw_tx), 0, 1, 2, 3, 4, 5)
+        } else {
+            return Err(EvmTxError::UnsupportedTxType(first_byte));
+        };
     let nonce = rlp.at(nonce_index)?.as_val()?;
+    let max_gas_cost_wei = saturating_u128(rlp.at(gas_index)?.data()?)
+        .saturating_mul(saturating_u128(rlp.at(price_index)?.data()?));
     let to_bytes = rlp.at(to_index)?.data()?.to_vec();
     let destination = if to_bytes.is_empty() {
         None
@@ -210,6 +226,7 @@ fn decode_transaction_fields(
         destination,
         value_wei,
         rlp.at(input_index)?.data()?.to_vec(),
+        max_gas_cost_wei,
     ))
 }
 
@@ -379,7 +396,8 @@ pub fn has_no_trailing_bytes(raw_tx: &[u8]) -> bool {
 /// Decode and authenticate all fields the relay can validate before it broadcasts anything.
 pub fn decode_signed_transaction(raw_tx: &[u8]) -> Result<DecodedSignedTransaction, EvmTxError> {
     let (sender, chain_id) = recover_sender_and_chain_id(raw_tx)?;
-    let (nonce, destination, value_wei, input) = decode_transaction_fields(raw_tx)?;
+    let (nonce, destination, value_wei, input, max_gas_cost_wei) =
+        decode_transaction_fields(raw_tx)?;
     Ok(DecodedSignedTransaction {
         tx_hash: crate::monad_http::Hash32(keccak256(raw_tx)),
         chain_id,
@@ -388,6 +406,7 @@ pub fn decode_signed_transaction(raw_tx: &[u8]) -> Result<DecodedSignedTransacti
         destination,
         value_wei,
         input,
+        max_gas_cost_wei,
     })
 }
 

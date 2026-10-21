@@ -86,7 +86,7 @@ pub(crate) async fn handle_put(
         let Some(recipient_current) =
             deliverable_recipient(owner, descriptor.cbor_identifier, &principals.recipient).await?
         else {
-            return undeliverable_response(
+            return dead_response(
                 &request,
                 descriptor.cbor_identifier,
                 &principals,
@@ -96,14 +96,9 @@ pub(crate) async fn handle_put(
         // The sender is whoever the message says. The relay does not look the sender up:
         // checking who wrote a message is the job of the recipient's client, which opens it
         // with the key the sender published.
-        let Principals {
-            recipient,
-            recipient_t1,
-            ..
-        } = principals;
-        let historical = match recipient_t1 {
+        let historical = match principals.recipient_t1 {
             Some(t1) if recipient_current.evidence.hash != t1 => {
-                Some(history(owner, descriptor.cbor_identifier, &recipient, t1).await?)
+                Some(history(owner, descriptor.cbor_identifier, &principals.recipient, t1).await?)
             }
             _ => None,
         };
@@ -117,6 +112,16 @@ pub(crate) async fn handle_put(
             descriptor.evm_chain_id,
             runtime.min_value_wei(),
         )?;
+        // A payment the node can never take is refused here, before anything is stored or
+        // delivered, so the sender learns it while nothing has happened yet.
+        if let Some(dead) = precheck_payments(runtime, input.payments()).await {
+            return dead_response(
+                &input.request,
+                descriptor.cbor_identifier,
+                &principals,
+                dead.reason(),
+            );
+        }
         owner.claim(input, now_ms())?
     };
     // The message is in the recipient's inbox from here on. Nothing below can undo that.
@@ -243,6 +248,157 @@ async fn broadcast_payments(
     futures::future::join_all(sends).await
 }
 
+/// Why a message's payments can never land, as the sender's client names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeadPayment {
+    /// A payment's nonce is already used by a different transaction.
+    StaleNonce,
+    /// A sender's balance cannot cover its payments' value and most gas cost.
+    InsufficientTotal,
+}
+impl DeadPayment {
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::StaleNonce => "stale_nonce",
+            Self::InsufficientTotal => "insufficient_total",
+        }
+    }
+}
+
+/// What the node says about one paying account.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SenderState {
+    /// The account's next nonce as `eth_getTransactionCount(pending)` reports it. On Monad
+    /// that is the nonce after the last included transaction: mempool transactions are not
+    /// counted.
+    pub(crate) pending_nonce: u64,
+    /// The account's balance at `latest`.
+    pub(crate) balance_wei: u128,
+}
+
+/// Ask the node whether a new message's payments can still land, before anything is stored.
+/// `Some` only when the node says one cannot. `None` when they can, when there are none, and
+/// when the node could not be asked in time: the message is then delivered as if there had
+/// been no check, and the broadcast after it finds out.
+///
+/// Reads are made together: one pending nonce and one balance per paying account, then a
+/// lookup by hash only for a payment whose nonce is already used. The whole check waits on
+/// the node no longer than one broadcast does.
+async fn precheck_payments(
+    runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
+    payments: &[crate::monad_evm_tx::DecodedSignedTransaction],
+) -> Option<DeadPayment> {
+    if payments.is_empty() {
+        return None;
+    }
+    let client = crate::monad_http::MonadHttpClient::with_transport(runtime.transport().clone());
+    let wait = runtime.config().rpc_timeout.min(BROADCAST_TIMEOUT);
+    let outcome = match tokio::time::timeout(wait, ask_node(&client, payments)).await {
+        Ok(outcome) => outcome,
+        Err(_) => Err("no answer from the node in time".to_owned()),
+    };
+    match outcome {
+        Ok(dead) => dead,
+        Err(reason) => {
+            tracing::event!(
+                tracing::Level::WARN,
+                reason = %reason,
+                "Direct-message payment check skipped; the message is delivered"
+            );
+            None
+        }
+    }
+}
+
+/// The reads behind [`precheck_payments`]. `Err` when any read failed.
+pub(crate) async fn ask_node<T: crate::monad_http::JsonRpcTransport>(
+    client: &crate::monad_http::MonadHttpClient<T>,
+    payments: &[crate::monad_evm_tx::DecodedSignedTransaction],
+) -> std::result::Result<Option<DeadPayment>, String> {
+    use crate::monad_http::BlockTag;
+    use std::collections::{HashMap, HashSet};
+    let senders: HashSet<Address> = payments.iter().map(|payment| payment.sender).collect();
+    let reads = senders.iter().map(|&sender| async move {
+        let (nonce, balance) = futures::future::join(
+            client.get_transaction_count(sender, BlockTag::Pending),
+            client.get_balance(sender, BlockTag::Latest),
+        )
+        .await;
+        Ok::<_, crate::monad_http::MonadRpcError>((
+            sender,
+            SenderState {
+                pending_nonce: nonce?,
+                balance_wei: balance?,
+            },
+        ))
+    });
+    let states: HashMap<Address, SenderState> = futures::future::try_join_all(reads)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .collect();
+    // A used nonce may be this very payment, already sent by the client or by an earlier
+    // submission of this message. Only the node's own record of the hash tells. On Monad
+    // `eth_getTransactionByHash` returns included transactions only, which matches a pending
+    // nonce that counts included transactions only.
+    let used = payments
+        .iter()
+        .filter(|payment| payment.nonce < states[&payment.sender].pending_nonce);
+    let lookups = used.map(|payment| async move {
+        client
+            .get_transaction_by_hash(payment.tx_hash)
+            .await
+            .map(|found| found.map(|_| payment.tx_hash))
+    });
+    let known: HashSet<_> = futures::future::try_join_all(lookups)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .flatten()
+        .collect();
+    Ok(judge_payments(payments, &states, &known))
+}
+
+/// Whether a message's payments can still land, given what the node said. A message any of
+/// whose payments the node already holds is delivered as before: it is a retry, and that
+/// payment's cost is already out of the balance.
+///
+/// The balance check assumes a sender signs only from funds already in its `latest`
+/// balance: no nonce stacking (a second transaction from an account whose earlier one is not
+/// yet included), and no spending of unconfirmed incoming funds or change. Both the current
+/// wallet and the coin list hold to this. If either is ever added, this check must move to a
+/// pending balance or be softened, or it will refuse payments that would land. On Monad the
+/// `pending` tag behaves as `latest` (docs.monad.xyz/reference/rpc-differences), so asking for
+/// `pending` would not help there.
+pub(crate) fn judge_payments(
+    payments: &[crate::monad_evm_tx::DecodedSignedTransaction],
+    states: &std::collections::HashMap<Address, SenderState>,
+    known: &std::collections::HashSet<crate::monad_http::Hash32>,
+) -> Option<DeadPayment> {
+    if payments
+        .iter()
+        .any(|payment| known.contains(&payment.tx_hash))
+    {
+        return None;
+    }
+    if payments
+        .iter()
+        .any(|payment| payment.nonce < states[&payment.sender].pending_nonce)
+    {
+        return Some(DeadPayment::StaleNonce);
+    }
+    let mut owed = std::collections::HashMap::<Address, u128>::new();
+    for payment in payments {
+        let total = owed.entry(payment.sender).or_default();
+        *total = total
+            .saturating_add(payment.value_wei)
+            .saturating_add(payment.max_gas_cost_wei);
+    }
+    owed.iter()
+        .any(|(sender, total)| *total > states[sender].balance_wei)
+        .then_some(DeadPayment::InsufficientTotal)
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -340,9 +496,9 @@ async fn deliverable_recipient(
         Err(_) => Err(CanonicalError::Unavailable),
     }
 }
-/// A final answer for a submission this relay will never deliver, in the shape of the other
-/// dead answers. Nothing was retained and no payment was broadcast.
-fn undeliverable_response(
+/// A final answer for a submission this relay will never deliver: the recipient's mailbox is
+/// elsewhere, or a payment can never land. Nothing was retained and no payment was broadcast.
+fn dead_response(
     request: &ExactRequest,
     network: &str,
     principals: &Principals,

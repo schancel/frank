@@ -1075,6 +1075,51 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
             reason,
         })
     }
+
+    /// An account's nonce at `block` via `eth_getTransactionCount`.
+    pub async fn get_transaction_count(
+        &self,
+        address: Address,
+        block: BlockTag,
+    ) -> Result<u64, MonadRpcError> {
+        const METHOD: &str = "eth_getTransactionCount";
+        let result = self
+            .transport
+            .call(METHOD, json!([address.to_hex(), block.to_param()]))
+            .await?;
+        let quantity = quantity_u128(METHOD, &result)?;
+        u64::try_from(quantity).map_err(|_| MonadRpcError::InvalidResponse {
+            method: METHOD.to_string(),
+            reason: "nonce does not fit 64 bits".to_string(),
+        })
+    }
+
+    /// An account's native balance in wei at `block` via `eth_getBalance`.
+    pub async fn get_balance(
+        &self,
+        address: Address,
+        block: BlockTag,
+    ) -> Result<u128, MonadRpcError> {
+        const METHOD: &str = "eth_getBalance";
+        let result = self
+            .transport
+            .call(METHOD, json!([address.to_hex(), block.to_param()]))
+            .await?;
+        quantity_u128(METHOD, &result)
+    }
+}
+
+/// A `0x`-prefixed hex quantity of at most 128 bits.
+fn quantity_u128(method: &str, value: &Value) -> Result<u128, MonadRpcError> {
+    let invalid = |reason: &str| MonadRpcError::InvalidResponse {
+        method: method.to_string(),
+        reason: reason.to_string(),
+    };
+    let digits = value
+        .as_str()
+        .and_then(|text| text.strip_prefix("0x"))
+        .ok_or_else(|| invalid("expected a 0x-prefixed hex quantity"))?;
+    u128::from_str_radix(digits, 16).map_err(|_| invalid("expected a hex quantity of 128 bits"))
 }
 
 #[cfg(test)]

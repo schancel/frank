@@ -26,6 +26,11 @@ impl CanonicalPaymentInput {
     pub(crate) fn payment_hashes(&self) -> impl Iterator<Item = Hash32> + '_ {
         self.payments.iter().map(|payment| payment.tx_hash)
     }
+
+    /// The signed payments as decoded, in the order the message lists them.
+    pub(crate) fn payments(&self) -> &[DecodedSignedTransaction] {
+        &self.payments
+    }
 }
 
 #[cfg(test)]

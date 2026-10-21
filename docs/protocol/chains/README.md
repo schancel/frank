@@ -12,9 +12,9 @@ and protocol contract.
 
 `allowed_proxy_capabilities` states what the protocol permits for a chain. `GET /chains` reports
 the subset an individual relay actually configured, together with `accepted_payment_networks`
-(the canonical protocol chain IDs the relay accepts for message and topic stamp payments,
-validated against `v1.json` via `registry.accepted_payment_networks` in `cashweb-config`).
-A relay must additionally probe each upstream:
+(the canonical chain IDs the relay accepts message and topic stamp payments on: its
+`[registry] network`, validated against `v1.json` by `cashweb-config`, when its mailbox or forum is
+on, and none otherwise). An upstream carries traffic only after its probe passes:
 
 - EVM: `eth_chainId`, plus the registry-pinned block checkpoint. A regtest row
   (`monad-regtest`) has an operator checkpoint instead: the relay's config row must name a block
@@ -41,9 +41,9 @@ EVM, `solana:<genesis_prefix>` for Solana, and `bip122:<reference>` for Bitcoin-
 ## Unified `ChainAdapter` and Configuration Ownership
 
 `v1.json` owns protocol identifiers, identity requirements and permitted capabilities. The Rust
-configuration crate (`backend/cashweb/cashweb-config/src/lib.rs`) and relay chain registry adapter
-(`backend/cashweb/cashweb-registry/src/chain_registry_adapter.rs`) include and validate that file
-directly.
+configuration crate (`backend/cashweb/cashweb-config/src/lib.rs`) includes and validates that file
+directly; the relay's chain adapters (`backend/cashweb/cashweb-registry/src/chains/`) are built
+from its rows and the operator's configured subset.
 
 `packages/wallet/chain/chains-registry.ts` imports `v1.json` directly through the pure
 `chain/protocol-chain-registry.ts` projection, and `packages/wallet/chain/chain-adapter.ts`

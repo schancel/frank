@@ -4,16 +4,15 @@ use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_error::{Result, WrapErr};
 use cashweb_config::{parse_conf, CashwebdConf, MonadMailboxMode};
 use cashweb_registry::{
+    chains::RelayChains,
     disabled_chain_adapter::DisabledChainAdapter,
     http::{
         bitcoin_proxy::BitcoinProxyRuntime, curated_defaults::build_curated_defaults,
-        evm_rpc::EvmRpcRuntime, pop_protection::PopGate, server::RegistryServer,
-        solana_proxy::SolanaProxyRuntime,
+        evm_rpc::EvmRpcRuntime, monad_topics::ForumRuntime, pop_protection::PopGate,
+        server::RegistryServer, solana_proxy::SolanaProxyRuntime,
     },
     lotus_adapter::LotusAdapter,
-    monad_http::HttpTransport,
     monad_mailbox::{MailboxConfig, MonadMailboxRuntime, SessionSecret},
-    network_tag::{is_valid_network_tag, monad_network},
     p2p::{
         peer::Peer,
         peers::{InitialMetadataDownloadParams, Peers},
@@ -42,39 +41,6 @@ pub enum CashwebdExeError {
 
     #[error("Invalid configuration file {0}")]
     InvalidConfigFail(String),
-
-    #[error(
-        "The Monad mailbox is enabled but no RPC URL is configured: set the \
-         MONAD_TESTNET_HTTP_RPC_URL environment variable (or registry.monad_mailbox.rpc_url)"
-    )]
-    MissingRpcUrlEnv,
-
-    #[error("Invalid registry.monad_mailbox configuration: MONAD_TESTNET_HTTP_RPC_URL must be a comma-separated list of HTTP(S) URLs")]
-    InvalidRpcUrlEnv,
-
-    #[error(
-        "The Monad mailbox is enabled but FRANK_NETWORK_TAG is unset or invalid (1 to 32 bytes, no \
-         surrounding whitespace): the relay would reject every direct message. Set it to MONT \
-         (Monad testnet) or MON1 (Monad mainnet)"
-    )]
-    MissingNetworkTagEnv,
-
-    #[error(
-        "FRANK_NETWORK_TAG is set to a tag with no Frank-CBOR network identifier (known tags: \
-         MONT, MON1, MONR): refusing to start rather than guess a network"
-    )]
-    UnknownNetworkTagEnv,
-
-    #[error(
-        "FRANK_NETWORK_TAG {tag} identifies EVM chain {expected_chain_id}, but \
-         registry.monad_mailbox.expected_chain_id is {actual_chain_id}: refusing to start with \
-         mismatched Frank-CBOR and transaction networks"
-    )]
-    NetworkChainMismatch {
-        tag: String,
-        expected_chain_id: u64,
-        actual_chain_id: u64,
-    },
 }
 
 use self::CashwebdExeError::*;
@@ -94,51 +60,28 @@ fn read_conf_contents(conf_path: &str, stdin: &mut impl Read) -> Result<String> 
     Ok(conf_contents)
 }
 
-/// Shared endpoint list whose first URL supplies the mailbox when configuration omits `rpc_url`.
-const RPC_URL_ENV: &str = "MONAD_TESTNET_HTTP_RPC_URL";
-/// Environment variable naming the network every stored/admitted message must carry.
-const NETWORK_TAG_ENV: &str = "FRANK_NETWORK_TAG";
-
 fn read_and_validate_conf(
     conf_path: &str,
     stdin: &mut impl Read,
-) -> Result<(CashwebdConf, MonadMailboxMode)> {
+) -> Result<(CashwebdConf, MonadMailboxMode, RelayChains)> {
     read_and_validate_conf_with_env(conf_path, stdin, |name| std::env::var(name).ok())
 }
 
 /// Same as [`read_and_validate_conf`] with an injectable environment, so the fail-fast rules are
-/// unit-testable without mutating the process environment.
+/// unit-testable without mutating the process environment. Builds the relay's chain adapters
+/// from `[registry] network` and the proxy rows, resolving their upstream URLs from the
+/// environment, but contacts no upstream: identity is verified when the relay starts.
 fn read_and_validate_conf_with_env(
     conf_path: &str,
     stdin: &mut impl Read,
     env: impl Fn(&str) -> Option<String>,
-) -> Result<(CashwebdConf, MonadMailboxMode)> {
+) -> Result<(CashwebdConf, MonadMailboxMode, RelayChains)> {
     let conf_contents = read_conf_contents(conf_path, stdin)?;
-    let mut conf =
+    let conf =
         parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.to_owned()))?;
     conf.registry
         .validate_cluster()
         .wrap_err("Invalid registry.cluster configuration")?;
-    // The shipped configs enable the mailbox without a URL because the endpoint is secret-bearing:
-    // an explicit `rpc_url` wins, otherwise resolve from the matching `evm_rpc` chain upstream
-    // (or `MONAD_TESTNET_HTTP_RPC_URL` fallback) via `RelayChainRegistry`.
-    if conf.registry.monad_mailbox.enabled && conf.registry.monad_mailbox.rpc_url.is_none() {
-        let resolved =
-            cashweb_registry::chain_registry_adapter::RelayChainRegistry::resolve_mailbox_rpc_url(
-                &conf.registry,
-                RPC_URL_ENV,
-                &env,
-            )
-            .map_err(|err| match err {
-                cashweb_registry::chain_registry_adapter::RelayChainRegistryError::MissingRpcUrlEnv {
-                    ..
-                } => CashwebdExeError::MissingRpcUrlEnv,
-                cashweb_registry::chain_registry_adapter::RelayChainRegistryError::InvalidRpcUrlEnv {
-                    ..
-                } => CashwebdExeError::InvalidRpcUrlEnv,
-            })?;
-        conf.registry.monad_mailbox.rpc_url = resolved;
-    }
     // Validate the mailbox lifecycle before opening the database or binding a socket. The same
     // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
     let mailbox_mode = conf
@@ -146,18 +89,6 @@ fn read_and_validate_conf_with_env(
         .monad_mailbox
         .mode()
         .wrap_err("Invalid registry.monad_mailbox configuration")?;
-    conf.registry
-        .evm_rpc
-        .validate()
-        .wrap_err("Invalid registry.evm_rpc configuration")?;
-    conf.registry
-        .bitcoin_proxy
-        .validate()
-        .wrap_err("Invalid registry.bitcoin_proxy configuration")?;
-    conf.registry
-        .solana_proxy
-        .validate()
-        .wrap_err("Invalid registry.solana_proxy configuration")?;
     if let Some(oracle) = &conf.registry.oracle {
         oracle
             .validate()
@@ -166,37 +97,11 @@ fn read_and_validate_conf_with_env(
     conf.registry
         .validate_rpc_resource_limits()
         .wrap_err("Invalid registry RPC resource limits")?;
-    // An enabled mailbox admits only envelopes carrying the relay's network tag; an unset tag would
-    // silently reject every direct message, so refuse to start instead.
-    let network_tag = env(NETWORK_TAG_ENV);
-    if (matches!(mailbox_mode, MonadMailboxMode::Enabled { .. }) || conf.registry.evm_rpc.enabled)
-        && !network_tag.as_deref().is_some_and(is_valid_network_tag)
-    {
-        return Err(MissingNetworkTagEnv.into());
-    }
-    // A tag that is set must identify one complete deployment (CBOR identifier and EVM chain).
-    // An unset tag keeps its existing disabled-mailbox meaning.
-    let network = match network_tag.as_deref() {
-        Some(tag) => Some(monad_network(tag.as_bytes()).ok_or(UnknownNetworkTagEnv)?),
-        None => None,
-    };
-    if let (
-        Some(network),
-        MonadMailboxMode::Enabled {
-            expected_chain_id, ..
-        },
-    ) = (network, &mailbox_mode)
-    {
-        if network.evm_chain_id != *expected_chain_id {
-            return Err(NetworkChainMismatch {
-                tag: String::from_utf8_lossy(network.network_tag).into_owned(),
-                expected_chain_id: network.evm_chain_id,
-                actual_chain_id: *expected_chain_id,
-            }
-            .into());
-        }
-    }
-    Ok((conf, mailbox_mode))
+    // The relay network must be a canonical registry EVM chain; with the mailbox or the forum
+    // on, its `[[registry.evm_rpc.chains]]` row must have an upstream. Nothing defaults.
+    let chains = RelayChains::from_conf(&conf.registry, env)
+        .wrap_err("Invalid relay network or chain configuration")?;
+    Ok((conf, mailbox_mode, chains))
 }
 
 #[tokio::main]
@@ -221,7 +126,8 @@ async fn main() -> Result<()> {
     } else {
         (false, first_arg)
     };
-    let (conf, mailbox_mode) = read_and_validate_conf(&conf_path, &mut std::io::stdin().lock())?;
+    let (conf, mailbox_mode, chains) =
+        read_and_validate_conf(&conf_path, &mut std::io::stdin().lock())?;
     if check_only {
         return Ok(());
     }
@@ -285,10 +191,18 @@ async fn main() -> Result<()> {
         conf.registry.net,
         Arc::clone(&event_bus),
     ));
-    registry.set_accepted_payment_networks(conf.registry.effective_accepted_payment_networks());
-    let evm_rpc_conf = conf.registry.evm_rpc.clone();
-    let bitcoin_proxy_conf = conf.registry.bitcoin_proxy.clone();
-    let solana_proxy_conf = conf.registry.solana_proxy.clone();
+    // Every upstream proves it is its chain before it carries traffic; startup waits briefly for
+    // the first round and the rest are checked again in the background.
+    let chains = Arc::new(chains);
+    chains.start_verifying().await;
+    let network_adapter = || {
+        chains.network_adapter().cloned().ok_or_else(|| {
+            bitcoinsuite_error::Report::msg(format!(
+                "registry.network {} has no [[registry.evm_rpc.chains]] upstream",
+                chains.network().id
+            ))
+        })
+    };
     let monad_mailbox = match mailbox_mode {
         MonadMailboxMode::Disabled => {
             tracing::event!(
@@ -298,20 +212,25 @@ async fn main() -> Result<()> {
             );
             MonadMailboxRuntime::Disabled
         }
-        MonadMailboxMode::Enabled {
-            rpc_url,
+        MonadMailboxMode::Enabled { min_value_wei } => MonadMailboxRuntime::enabled(
+            network_adapter()?,
+            MailboxConfig::default(),
             min_value_wei,
-            expected_chain_id,
-        } => MonadMailboxRuntime::enabled(
-            HttpTransport::new(rpc_url),
-            MailboxConfig {
-                expected_chain_id,
-                ..MailboxConfig::default()
-            },
-            min_value_wei,
-            cashweb_registry::network_tag::frank_network_tag().to_vec(),
             &session,
         ),
+    };
+    let forum = match &conf.registry.forum {
+        Some(forum) => Some(Arc::new(
+            ForumRuntime::new(network_adapter()?, forum)
+                .ok_or_else(|| bitcoinsuite_error::Report::msg("Invalid registry.forum"))?,
+        )),
+        None => {
+            tracing::event!(
+                tracing::Level::WARN,
+                "Forum routes are disabled ([registry.forum] omitted)"
+            );
+            None
+        }
     };
     let our_peers = conf
         .registry
@@ -377,30 +296,14 @@ async fn main() -> Result<()> {
         build_curated_defaults(&conf.registry.curated_defaults)
             .wrap_err("Invalid registry.curated_defaults entry in configuration file")?,
     );
-    let evm_rpc = EvmRpcRuntime::from_conf_with_session(
-        &evm_rpc_conf,
-        cashweb_registry::network_tag::frank_network_tag().to_vec(),
-        |name| std::env::var(name).ok(),
-        &session,
-    )
-    .await
-    .wrap_err("Starting customer-authenticated EVM RPC proxy")?;
-    let bitcoin_proxy = BitcoinProxyRuntime::from_conf_with_session(
-        &bitcoin_proxy_conf,
-        cashweb_registry::network_tag::frank_network_tag().to_vec(),
-        |name| std::env::var(name).ok(),
-        &session,
-    )
-    .await
-    .wrap_err("Starting Bitcoin-family RPC/indexer proxy")?;
-    let solana_proxy = SolanaProxyRuntime::from_conf_with_session(
-        &solana_proxy_conf,
-        cashweb_registry::network_tag::frank_network_tag().to_vec(),
-        |name| std::env::var(name).ok(),
-        &session,
-    )
-    .await
-    .wrap_err("Starting Solana-family JSON-RPC proxy")?;
+    let evm_rpc = EvmRpcRuntime::new(&conf.registry.evm_rpc, Arc::clone(&chains), &session)
+        .wrap_err("Starting customer-authenticated EVM RPC proxy")?;
+    let bitcoin_proxy =
+        BitcoinProxyRuntime::new(&conf.registry.bitcoin_proxy, Arc::clone(&chains), &session)
+            .wrap_err("Starting Bitcoin-family RPC/indexer proxy")?;
+    let solana_proxy =
+        SolanaProxyRuntime::new(&conf.registry.solana_proxy, Arc::clone(&chains), &session)
+            .wrap_err("Starting Solana-family JSON-RPC proxy")?;
 
     let spa_dir = conf.registry.spa_dir.clone().or_else(|| {
         std::env::var("FRANK_RELAY_SPA_DIR")
@@ -421,6 +324,8 @@ async fn main() -> Result<()> {
         evm_rpc,
         bitcoin_proxy,
         solana_proxy,
+        chains: Arc::clone(&chains),
+        forum,
         spa_dir,
         event_bus: Arc::clone(&event_bus),
     };
@@ -432,6 +337,7 @@ async fn main() -> Result<()> {
         let (runtime, ready) = cashweb_registry::directory_runtime::DirectoryRuntime::start(
             Arc::clone(&registry),
             config,
+            &chains.network().id,
         )
         .map_err(|_| {
             bitcoinsuite_error::Report::msg(
@@ -595,10 +501,42 @@ mod tests {
 
     const LOCAL: &str = include_str!("../../cashwebd.local.toml");
     const DOCKER: &str = include_str!("../../../docker/cashwebd.toml");
+    /// Every upstream variable the shipped configurations name for an enabled proxy row.
     const FULL_ENV: &[(&str, &str)] = &[
         ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
-        ("FRANK_NETWORK_TAG", "MONT"),
+        ("XEC_TESTNET_CHRONIK_URL", "http://127.0.0.1:2"),
+        ("BTC_TESTNET_ELECTRUM_URL", "tcp://127.0.0.1:3"),
+        ("BCH_TESTNET_ELECTRUM_URL", "tcp://127.0.0.1:4"),
+        ("SOLANA_DEVNET_HTTP_RPC_URL", "http://127.0.0.1:5"),
     ];
+
+    /// `FULL_ENV` with `name` set to `value` (or removed, for `None`).
+    fn full_env_with(name: &str, value: Option<&str>) -> Vec<(String, String)> {
+        FULL_ENV
+            .iter()
+            .filter(|(key, _)| *key != name)
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .chain(value.map(|value| (name.to_string(), value.to_string())))
+            .collect()
+    }
+
+    fn owned_env(pairs: Vec<(String, String)>) -> impl Fn(&str) -> Option<String> {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        }
+    }
+
+    const SEPOLIA_ROW: &str = "[[registry.evm_rpc.chains]]\n\
+id = \"ethereum-sepolia\"\n\
+expected_chain_id = 11155111\n\
+upstream_env = \"ETHEREUM_SEPOLIA_HTTP_RPC_URL\"\n\
+checkpoint_block_number = 0\n\
+checkpoint_block_hash = \"0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6dd9\"\n\
+max_get_logs_range = 10\n\n\
+[registry.pop]";
 
     #[test]
     fn unsupported_storage_cannot_pass_the_real_startup_configuration_path() {
@@ -617,7 +555,7 @@ mod tests {
             "{LOCAL}\n[registry.cluster]\ndriver = 'rocksdb'\n\
              [registry.cluster.nats]\nenabled = true\nurl = 'nats://localhost:4222'\n"
         );
-        let (conf, _) =
+        let (conf, _, _) =
             read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
         assert_eq!(
             conf.registry.storage_driver().unwrap(),
@@ -634,7 +572,7 @@ mod tests {
              nats_url = 'nats://legacy.invalid:4222'\n\
              [registry.cluster.nats]\nenabled = false\nurl = 'invalid-but-disabled'\n"
         );
-        let (conf, _) =
+        let (conf, _, _) =
             read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
         assert!(!conf.registry.is_nats_enabled());
         assert_eq!(conf.registry.nats_url(), None);
@@ -643,14 +581,18 @@ mod tests {
     #[test]
     fn shipped_configs_validate_with_the_required_environment() {
         for (name, config) in [("local", LOCAL), ("docker", DOCKER)] {
-            let (conf, mode) =
+            let (conf, mode, chains) =
                 read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV))
                     .unwrap_or_else(|err| panic!("{name}: {err:?}"));
-            assert!(conf.registry.monad_mailbox.enabled, "{name}");
-            let MonadMailboxMode::Enabled { rpc_url, .. } = mode else {
-                panic!("{name}: mailbox must stay enabled");
-            };
-            assert_eq!(rpc_url.as_str(), "http://127.0.0.1:1/", "{name}");
+            assert!(
+                matches!(mode, MonadMailboxMode::Enabled { .. }),
+                "{name}: mailbox must stay enabled"
+            );
+            assert_eq!(chains.network().id, "monad-testnet", "{name}");
+            assert_eq!(chains.network_tag(), b"MONT", "{name}");
+            let adapter = chains.network_adapter().expect("the network's EVM adapter");
+            assert_eq!(adapter.evm_chain_id(), 10_143, "{name}");
+            assert!(conf.registry.forum.is_some(), "{name}");
             // The message routes exist only with both the mailbox and the directory configured.
             // Every shipped config has both, so a relay started from one can be messaged
             // through without a launcher adding anything.
@@ -662,57 +604,84 @@ mod tests {
     }
 
     #[test]
-    fn mailbox_selects_first_endpoint_without_changing_the_shared_environment() {
-        let raw = "  https://rpc.example/first-secret?key=first-secret , http://127.0.0.1:2/second-secret  ";
-        let vars = [
-            ("MONAD_TESTNET_HTTP_RPC_URL", raw),
-            ("FRANK_NETWORK_TAG", "MONT"),
-        ];
-        let shared_env = env(&vars);
+    fn the_relay_network_is_required_and_never_defaults() {
         for config in [LOCAL, DOCKER] {
-            let (conf, mode) =
-                read_and_validate_conf_with_env("-", &mut Cursor::new(config), &shared_env)
-                    .expect("a configured endpoint list must select its first endpoint");
-            let MonadMailboxMode::Enabled { rpc_url, .. } = mode else {
-                panic!("mailbox must stay enabled");
-            };
-            assert_eq!(
-                rpc_url.as_str(),
-                "https://rpc.example/first-secret?key=first-secret"
-            );
-            assert_eq!(conf.registry.monad_mailbox.rpc_url.as_ref(), Some(&rpc_url));
-            assert_eq!(
-                shared_env("MONAD_TESTNET_HTTP_RPC_URL").as_deref(),
-                Some(raw)
-            );
-            assert_eq!(
-                conf.registry.evm_rpc.chains[0].upstream_env,
-                "MONAD_TESTNET_HTTP_RPC_URL"
-            );
+            let missing = config.replace("network = \"monad-testnet\"\n", "");
+            let error =
+                read_and_validate_conf_with_env("-", &mut Cursor::new(missing), env(FULL_ENV))
+                    .expect_err("a relay without [registry] network must not start");
+            assert!(format!("{error:?}").contains("network"), "{error:?}");
+            for network in ["monad", "evm", "MONT", "10143", "solana-devnet", "base-sepolia"] {
+                let other = config.replace(
+                    "network = \"monad-testnet\"\n",
+                    &format!("network = {network:?}\n"),
+                );
+                let error =
+                    read_and_validate_conf_with_env("-", &mut Cursor::new(other), env(FULL_ENV))
+                        .expect_err("an unknown, non-EVM or unproxied network must not start");
+                assert!(format!("{error:?}").contains(network), "{network}: {error:?}");
+            }
         }
     }
 
     #[test]
-    fn mailbox_rejects_invalid_endpoint_lists_without_exposing_endpoint_secrets() {
+    fn dms_and_the_forum_run_on_any_configured_registry_evm_chain() {
+        let sepolia = LOCAL
+            .replace("network = \"monad-testnet\"\n", "network = \"ethereum-sepolia\"\n")
+            .replacen("[registry.pop]", SEPOLIA_ROW, 1);
+        let mut vars = full_env_with("ETHEREUM_SEPOLIA_HTTP_RPC_URL", Some("http://127.0.0.1:6"));
+        let (_, mode, chains) =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(&sepolia), owned_env(vars.clone()))
+                .expect("a relay on ethereum-sepolia starts");
+        assert!(matches!(mode, MonadMailboxMode::Enabled { .. }));
+        assert_eq!(chains.network().id, "ethereum-sepolia");
+        assert_eq!(chains.network_tag(), b"SEPO");
+        let adapter = chains.network_adapter().unwrap();
+        assert_eq!(adapter.id(), "ethereum-sepolia");
+        assert_eq!(adapter.evm_chain_id(), 11_155_111);
+
+        // The mailbox and the forum verify payments only through the network's own upstream.
+        vars.retain(|(key, _)| key != "ETHEREUM_SEPOLIA_HTTP_RPC_URL");
+        let error =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(&sepolia), owned_env(vars))
+                .expect_err("no upstream for the relay network");
+        assert!(format!("{error:?}").contains("ETHEREUM_SEPOLIA_HTTP_RPC_URL"));
+    }
+
+    #[test]
+    fn enabled_mailbox_fails_fast_without_a_usable_network_upstream() {
+        for value in [None, Some(""), Some("  "), Some("file:///x"), Some("not-a-url")] {
+            for (name, config) in [("local", LOCAL), ("docker", DOCKER)] {
+                let error = read_and_validate_conf_with_env(
+                    "-",
+                    &mut Cursor::new(config),
+                    owned_env(full_env_with("MONAD_TESTNET_HTTP_RPC_URL", value)),
+                )
+                .expect_err("must fail fast");
+                let text = format!("{error:?}");
+                assert!(
+                    text.contains("MONAD_TESTNET_HTTP_RPC_URL"),
+                    "{name}/{value:?}: {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_endpoint_lists_fail_without_exposing_endpoint_secrets() {
         for raw in [
             "https://rpc.example/first-secret,https://:bad/second-secret",
-            "https://rpc.example/first-secret,",
-            ",https://rpc.example/second-secret",
-            "https://rpc.example/first-secret, ,https://rpc.example/second-secret",
             "https://rpc.example/first-secret,file:///second-secret",
             "https://rpc.example/first-secret,not-a-url-second-secret",
             "https://user:password@rpc.example/first-secret,https://:bad/second-secret",
-            "",
-            "  ",
         ] {
-            let vars = [
-                ("MONAD_TESTNET_HTTP_RPC_URL", raw),
-                ("FRANK_NETWORK_TAG", "MONT"),
-            ];
             for config in [LOCAL, DOCKER] {
-                let error =
-                    read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(&vars))
-                        .expect_err("every configured endpoint must be valid");
+                let error = read_and_validate_conf_with_env(
+                    "-",
+                    &mut Cursor::new(config),
+                    owned_env(full_env_with("MONAD_TESTNET_HTTP_RPC_URL", Some(raw))),
+                )
+                .expect_err("every configured endpoint must be valid");
                 let diagnostic = format!("{error:?}");
                 assert!(diagnostic.contains("MONAD_TESTNET_HTTP_RPC_URL"));
                 for secret in [
@@ -732,259 +701,45 @@ mod tests {
     }
 
     #[test]
-    fn enabled_mailbox_fails_fast_without_rpc_url_or_network_tag() {
-        type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
-        let cases: [Case; 7] = [
-            (
-                "no rpc",
-                &[("FRANK_NETWORK_TAG", "MONT")],
-                "MONAD_TESTNET_HTTP_RPC_URL",
-            ),
-            (
-                "blank rpc",
-                &[
-                    ("MONAD_TESTNET_HTTP_RPC_URL", "  "),
-                    ("FRANK_NETWORK_TAG", "MONT"),
-                ],
-                "MONAD_TESTNET_HTTP_RPC_URL",
-            ),
-            (
-                "bad scheme",
-                &[
-                    ("MONAD_TESTNET_HTTP_RPC_URL", "file:///x"),
-                    ("FRANK_NETWORK_TAG", "MONT"),
-                ],
-                "Invalid registry.monad_mailbox configuration",
-            ),
-            (
-                "no tag",
-                &[("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1")],
-                "FRANK_NETWORK_TAG",
-            ),
-            (
-                "blank tag",
-                &[
-                    ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
-                    ("FRANK_NETWORK_TAG", " "),
-                ],
-                "FRANK_NETWORK_TAG",
-            ),
-            (
-                "overlong tag",
-                &[
-                    ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
-                    ("FRANK_NETWORK_TAG", "0123456789012345678901234567890123"),
-                ],
-                "FRANK_NETWORK_TAG",
-            ),
-            (
-                "empty tag",
-                &[
-                    ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
-                    ("FRANK_NETWORK_TAG", ""),
-                ],
-                "FRANK_NETWORK_TAG",
-            ),
-        ];
-        for (name, config) in [("local", LOCAL), ("docker", DOCKER)] {
-            for (case, vars, needle) in cases {
-                let error =
-                    read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(vars))
-                        .expect_err("must fail fast");
-                let text = format!("{error:?}");
-                assert!(text.contains(needle), "{name}/{case}: {text}");
-            }
-        }
-    }
-
-    #[test]
-    fn a_tag_must_name_a_known_cbor_network_on_the_configured_evm_chain() {
-        for config in [LOCAL, DOCKER] {
-            for tag in ["MONX", "mont", "TEST"] {
-                let vars = [
-                    ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
-                    ("FRANK_NETWORK_TAG", tag),
-                ];
-                let error =
-                    read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(&vars))
-                        .expect_err("an unmapped tag must fail startup");
-                assert!(format!("{error:?}").contains("no Frank-CBOR network identifier"));
-            }
-            read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV))
-                .expect("MONT and chain 10143 start");
-
-            let mainnet = config
-                .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
-                .replace("expected_chain_id = 10143", "expected_chain_id = 143")
-                .replace(
-                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
-                    "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
-                );
-            let mainnet_vars = [
-                ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
-                ("FRANK_NETWORK_TAG", "MON1"),
-            ];
-            read_and_validate_conf_with_env("-", &mut Cursor::new(&mainnet), env(&mainnet_vars))
-                .expect("MON1 and chain 143 start");
-
-            for (tag, needle) in [
-                ("MON1", "identifies EVM chain 143"),
-                ("MONT", "identifies EVM chain 10143"),
-            ] {
-                let crossed = if tag == "MON1" {
-                    config.to_owned()
-                } else {
-                    mainnet.clone()
-                };
-                let vars = [
-                    ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
-                    ("FRANK_NETWORK_TAG", tag),
-                ];
-                let error =
-                    read_and_validate_conf_with_env("-", &mut Cursor::new(crossed), env(&vars))
-                        .expect_err("a crossed tag and chain must fail startup");
-                assert!(format!("{error:?}").contains(needle));
-            }
-        }
-        // Also with the mailbox disabled: a set-but-unmapped tag still stamps topic records.
-        let disabled = LOCAL.replace("enabled = true", "enabled = false");
-        assert!(read_and_validate_conf_with_env(
+    fn one_relay_may_proxy_several_evm_chains_beside_its_network() {
+        let two_chains = LOCAL.replacen("[registry.pop]", SEPOLIA_ROW, 1);
+        let (conf, _, chains) = read_and_validate_conf_with_env(
             "-",
-            &mut Cursor::new(disabled),
-            env(&[("FRANK_NETWORK_TAG", "MONX")])
+            &mut Cursor::new(two_chains),
+            owned_env(full_env_with(
+                "ETHEREUM_SEPOLIA_HTTP_RPC_URL",
+                Some("http://127.0.0.1:6"),
+            )),
         )
-        .is_err());
-
-        let disabled_mainnet = LOCAL
-            .replacen("enabled = true", "enabled = false", 1)
-            .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
-            .replace("expected_chain_id = 10143", "expected_chain_id = 143")
-            .replace(
-                "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
-                "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
-            );
-        read_and_validate_conf_with_env(
-            "-",
-            &mut Cursor::new(disabled_mainnet),
-            env(&[("FRANK_NETWORK_TAG", "MONT")]),
-        )
-        .expect("the relay identity and proxy target chain are independent");
-
-        let two_chains = LOCAL.replace(
-            "max_get_logs_range = 10\n\n[registry.pop]",
-            "max_get_logs_range = 10\n\n\
-[[registry.evm_rpc.chains]]\n\
-id = \"monad-mainnet\"\n\
-expected_chain_id = 143\n\
-upstream_env = \"MONAD_MAINNET_HTTP_RPC_URL\"\n\
-checkpoint_block_number = 0\n\
-checkpoint_block_hash = \"0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9\"\n\
-max_get_logs_range = 10\n\n\
-[registry.pop]",
-        );
-        let (conf, _) =
-            read_and_validate_conf_with_env("-", &mut Cursor::new(two_chains), env(FULL_ENV))
-                .expect("one relay may expose multiple canonical EVM target chains");
+        .expect("one relay may expose multiple canonical EVM target chains");
         let shipped_rows = LOCAL
             .lines()
             .filter(|line| *line == "[[registry.evm_rpc.chains]]")
             .count();
         assert_eq!(conf.registry.evm_rpc.chains.len(), shipped_rows + 1);
-        assert!(conf
-            .registry
-            .evm_rpc
-            .chains
-            .iter()
-            .any(|chain| chain.id == "monad-mainnet"));
+        assert!(chains.evm("ethereum-sepolia").is_some());
+        assert_eq!(chains.network().id, "monad-testnet");
+        // A row whose variable is unset is not served.
+        assert!(chains.evm("base-sepolia").is_none());
+    }
 
-        // Retained rows are inert when the EVM proxy is disabled. Operators may stage a future
-        // chain or disable a bad upstream without unrelated network-tag validation blocking boot.
-        let disabled_evm_mainnet = LOCAL
-            .replacen("enabled = true", "enabled = false", 2)
-            .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
-            .replace("expected_chain_id = 10143", "expected_chain_id = 143")
+    #[test]
+    fn a_relay_without_mailbox_or_forum_needs_no_network_upstream() {
+        let off = LOCAL
+            .replacen("enabled = true", "enabled = false", 1)
             .replace(
-                "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
-                "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
+                "[registry.forum]\nburn_address = \"0x000000000000000000000000000000000000dEaD\"\n",
+                "",
             );
-        read_and_validate_conf_with_env(
+        let (conf, mode, chains) = read_and_validate_conf_with_env(
             "-",
-            &mut Cursor::new(disabled_evm_mainnet),
-            env(&[("FRANK_NETWORK_TAG", "MONT")]),
+            &mut Cursor::new(&off),
+            owned_env(full_env_with("MONAD_TESTNET_HTTP_RPC_URL", None)),
         )
-        .expect("disabled EVM chain rows must be inert");
-    }
-
-    #[test]
-    fn disabled_mailbox_needs_no_environment() {
-        let disabled = LOCAL.replace("enabled = true", "enabled = false");
-        for vars in [
-            &[][..],
-            &[("MONAD_TESTNET_HTTP_RPC_URL", "invalid-secret,")][..],
-        ] {
-            let (conf, mode) =
-                read_and_validate_conf_with_env("-", &mut Cursor::new(&disabled), env(vars))
-                    .expect("a disabled mailbox must not require or parse the RPC URL or tag");
-            assert!(matches!(mode, MonadMailboxMode::Disabled));
-            assert!(conf.registry.monad_mailbox.rpc_url.is_none());
-        }
-    }
-
-    #[test]
-    fn explicit_rpc_url_in_config_overrides_the_environment() {
-        let explicit = LOCAL.replace(
-            "enabled = true\n",
-            "enabled = true\nrpc_url = \"https://rpc.example\"\n",
-        );
-        let (_, mode) = read_and_validate_conf_with_env(
-            "-",
-            &mut Cursor::new(explicit),
-            env(&[
-                ("FRANK_NETWORK_TAG", "MONT"),
-                ("MONAD_TESTNET_HTTP_RPC_URL", "invalid-secret,"),
-            ]),
-        )
-        .expect("explicit rpc_url overrides the RPC environment variable");
-        let MonadMailboxMode::Enabled { rpc_url, .. } = mode else {
-            panic!("mailbox must stay enabled");
-        };
-        assert_eq!(rpc_url.as_str(), "https://rpc.example/");
-    }
-
-    #[test]
-    fn mailbox_falls_back_to_matching_evm_rpc_chain_upstream() {
-        let mainnet = LOCAL
-            .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
-            .replace("expected_chain_id = 10143", "expected_chain_id = 143")
-            .replace(
-                "upstream_env = \"MONAD_TESTNET_HTTP_RPC_URL\"",
-                "upstream_env = \"MONAD_MAINNET_HTTP_RPC_URL\"",
-            )
-            .replace(
-                "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
-                "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
-            );
-        let (_, mode) = read_and_validate_conf_with_env(
-            "-",
-            &mut Cursor::new(mainnet),
-            env(&[
-                ("FRANK_NETWORK_TAG", "MON1"),
-                (
-                    "MONAD_MAINNET_HTTP_RPC_URL",
-                    "https://mainnet.monad.example/v1,https://backup.monad.example/v1",
-                ),
-            ]),
-        )
-        .expect("mailbox should resolve rpc_url from matching monad-mainnet evm_rpc upstream_env");
-        let MonadMailboxMode::Enabled {
-            rpc_url,
-            expected_chain_id,
-            ..
-        } = mode
-        else {
-            panic!("mailbox must stay enabled");
-        };
-        assert_eq!(expected_chain_id, 143);
-        assert_eq!(rpc_url.as_str(), "https://mainnet.monad.example/v1");
+        .expect("nothing verifies payments, so the network needs no upstream");
+        assert!(matches!(mode, MonadMailboxMode::Disabled));
+        assert!(conf.registry.forum.is_none());
+        assert_eq!(chains.network().id, "monad-testnet");
+        assert!(chains.network_adapter().is_none());
     }
 }

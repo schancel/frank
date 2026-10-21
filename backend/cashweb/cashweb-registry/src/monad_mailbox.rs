@@ -9,6 +9,7 @@ use sha2::Sha256;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
+    chains::EvmChainAdapter,
     monad_http::{Address, HttpTransport},
     store::kv_store::{KvError, RelayKvStore},
 };
@@ -34,11 +35,9 @@ pub enum MonadMailboxRuntime {
     Enabled(Arc<EnabledMonadMailboxRuntime>),
 }
 
-/// What the mailbox needs to know about its chain and its own limits per request.
+/// The mailbox's own limits per request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailboxConfig {
-    /// EVM chain id every payment must be signed for.
-    pub expected_chain_id: u64,
     /// Longest one call to the node may take.
     pub rpc_timeout: Duration,
     /// Most private mailbox reads served at once; more are refused, not queued.
@@ -48,7 +47,6 @@ pub struct MailboxConfig {
 impl Default for MailboxConfig {
     fn default() -> Self {
         Self {
-            expected_chain_id: 41_454,
             rpc_timeout: Duration::from_secs(10),
             private_read_concurrency: 256,
         }
@@ -283,11 +281,11 @@ impl MailboxRequestBinding {
 /// Immutable runtime facts shared by message admission and mailbox reads.
 #[derive(Debug)]
 pub struct EnabledMonadMailboxRuntime {
-    transport: HttpTransport,
+    /// The relay network's EVM chain: payments are checked and broadcast through it.
+    chain: Arc<EvmChainAdapter>,
     config: MailboxConfig,
     private_read_permits: Arc<Semaphore>,
     min_value_wei: u128,
-    network_tag: Vec<u8>,
     auth: MailboxAuthState,
 }
 
@@ -437,20 +435,18 @@ impl MailboxAuthState {
 }
 
 impl MonadMailboxRuntime {
-    /// Construct one enabled runtime after configuration validation.
+    /// The mailbox of the relay network `chain`, after configuration validation.
     pub fn enabled(
-        transport: HttpTransport,
+        chain: Arc<EvmChainAdapter>,
         config: MailboxConfig,
         min_value_wei: u128,
-        network_tag: Vec<u8>,
         session: &SessionSecret,
     ) -> Self {
         Self::Enabled(Arc::new(EnabledMonadMailboxRuntime {
-            transport,
+            chain,
             private_read_permits: Arc::new(Semaphore::new(config.private_read_concurrency.max(1))),
             config,
             min_value_wei,
-            network_tag,
             auth: MailboxAuthState::new(session),
         }))
     }
@@ -465,12 +461,23 @@ impl MonadMailboxRuntime {
 }
 
 impl EnabledMonadMailboxRuntime {
-    /// The node the relay hands payments to.
-    pub fn transport(&self) -> &HttpTransport {
-        &self.transport
+    /// The relay network's chain adapter.
+    pub fn chain(&self) -> &Arc<EvmChainAdapter> {
+        &self.chain
     }
 
-    /// The mailbox's chain and per-request limits.
+    /// The verified nodes the relay hands payments to; `None` while no upstream has proved it
+    /// is the chain.
+    pub fn transport(&self) -> Option<HttpTransport> {
+        self.chain.transport()
+    }
+
+    /// Canonical identifier of the mailbox's network, e.g. `monad-testnet`.
+    pub fn network(&self) -> &'static str {
+        self.chain.id()
+    }
+
+    /// The mailbox's per-request limits.
     pub fn config(&self) -> &MailboxConfig {
         &self.config
     }
@@ -480,14 +487,14 @@ impl EnabledMonadMailboxRuntime {
         self.min_value_wei
     }
 
-    /// Validated network tag for newly admitted envelopes.
+    /// Network tag for newly admitted envelopes.
     pub fn network_tag(&self) -> &[u8] {
-        &self.network_tag
+        self.chain.network_tag()
     }
 
     /// EVM chain id every payment must be signed for.
     pub fn expected_chain_id(&self) -> u64 {
-        self.config.expected_chain_id
+        self.chain.evm_chain_id()
     }
 
     /// Issue a stateless short-lived challenge bound to the complete future request.
@@ -613,10 +620,12 @@ mod tests {
 
     fn runtime_with(session: &SessionSecret, config: MailboxConfig) -> MonadMailboxRuntime {
         MonadMailboxRuntime::enabled(
-            HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
+            std::sync::Arc::new(crate::chains::EvmChainAdapter::assume_verified(
+                "monad-testnet",
+                vec!["http://127.0.0.1:1".parse().unwrap()],
+            )),
             config,
             1,
-            b"MONT".to_vec(),
             session,
         )
     }

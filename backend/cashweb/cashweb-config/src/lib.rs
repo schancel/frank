@@ -338,6 +338,14 @@ pub struct CashwebdConf {
 pub struct RegistryConf {
     /// Path where the Registry's RocksDB database is stored.
     pub db_path: PathBuf,
+    /// Canonical identifier (`docs/protocol/chains/v1.json`) of the network this relay's
+    /// directory, direct messages, forum and profiles run on, e.g. `monad-testnet`. Required: a
+    /// relay never guesses its network. It must be an EVM chain, and when the mailbox or the
+    /// forum is on, a row of `[registry.evm_rpc]` whose verified upstreams they use.
+    pub network: String,
+    /// Forum (`/topics`) payment policy. Omitted: the forum routes answer unavailable.
+    #[serde(default)]
+    pub forum: Option<ForumConf>,
     /// Open directory: this relay's own tuple and publishing limits. Omitted keeps the
     /// directory and canonical message routes disabled.
     #[serde(default)]
@@ -384,11 +392,14 @@ pub struct RegistryConf {
     /// Price and energy oracle (`GET /oracle/v1/feed`). Omitted means no collector and no route.
     #[serde(default)]
     pub oracle: Option<OracleConf>,
-    /// Canonical protocol chain IDs (`docs/protocol/chains/v1.json`) accepted by this relay for
-    /// stamp/burn payment verification across topics and messages. When omitted or empty, defaults
-    /// to the mailbox or directory network (`["monad-testnet"]`).
-    #[serde(default)]
-    pub accepted_payment_networks: Vec<String>,
+}
+
+/// Forum configuration: where a post or vote must burn its payment, on [`RegistryConf::network`].
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ForumConf {
+    /// `0x`-prefixed 20-byte address every forum payment is sent to.
+    pub burn_address: String,
 }
 
 /// Clustered relay configuration for multi-node deployments.
@@ -586,9 +597,6 @@ pub struct ClusterNatsConf {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DirectoryConf {
-    /// Exact protocol network this relay accepts entries for, e.g. `monad-testnet`.
-    #[serde(default)]
-    pub network: String,
     /// This relay's 16-byte identifier, lowercase hex.
     #[serde(default)]
     pub relay_id: String,
@@ -720,7 +728,6 @@ impl DirectoryConf {
             return Err(DirectoryConfError::RemovedSettings);
         }
         for (field, value) in [
-            ("network", &self.network),
             ("relay_id", &self.relay_id),
             ("relay_identity", &self.relay_identity),
             ("endpoint", &self.endpoint),
@@ -760,22 +767,43 @@ impl DirectoryConf {
     }
 }
 
-/// Invalid resource relationship or payment network configuration on `[registry]`.
+/// Invalid resource relationship or network configuration on `[registry]`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RegistryConfigError {
     /// A configured concurrency-and-size product exceeds the process ceiling.
     InvalidLimit(&'static str),
-    /// An entry in `accepted_payment_networks` is unknown to the protocol chain registry or duplicated.
-    InvalidPaymentNetwork(String),
+    /// `registry.network` is not a canonical identifier in the protocol chain registry.
+    UnknownNetwork(String),
+    /// `registry.network` names a chain of a family that carries no messages.
+    NetworkNotEvm(String),
+    /// The mailbox or forum is on but `registry.network` has no `[[registry.evm_rpc.chains]]`
+    /// row (with `[registry.evm_rpc]` enabled) to verify payments through.
+    NetworkNotProxied(String),
+    /// `registry.forum.burn_address` is not a `0x`-prefixed 20-byte hex address.
+    InvalidForumBurnAddress,
 }
 
 impl fmt::Display for RegistryConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidLimit(limit) => write!(formatter, "invalid registry limit: {limit}"),
-            Self::InvalidPaymentNetwork(id) => write!(
+            Self::UnknownNetwork(id) => write!(
                 formatter,
-                "invalid or duplicate registry.accepted_payment_networks entry: {id}"
+                "registry.network {id:?} is not a chain identifier in docs/protocol/chains/v1.json"
+            ),
+            Self::NetworkNotEvm(id) => write!(
+                formatter,
+                "registry.network {id} is not an EVM chain: messages and the forum run on EVM \
+                 chains only"
+            ),
+            Self::NetworkNotProxied(id) => write!(
+                formatter,
+                "registry.network {id} has no [[registry.evm_rpc.chains]] row (with \
+                 [registry.evm_rpc] enabled): the mailbox and the forum verify payments through \
+                 that row's upstreams"
+            ),
+            Self::InvalidForumBurnAddress => formatter.write_str(
+                "registry.forum.burn_address must be 0x followed by 40 hex characters",
             ),
         }
     }
@@ -784,44 +812,40 @@ impl fmt::Display for RegistryConfigError {
 impl Error for RegistryConfigError {}
 
 impl RegistryConf {
-    /// Validate that every configured entry in `accepted_payment_networks` is a canonical protocol
-    /// chain ID in `docs/protocol/chains/v1.json` and is not duplicated.
-    pub fn validate_accepted_payment_networks(&self) -> Result<(), RegistryConfigError> {
-        let mut seen = std::collections::BTreeSet::new();
-        for chain_id in &self.accepted_payment_networks {
-            if protocol_chain(chain_id).is_none() || !seen.insert(chain_id.as_str()) {
-                return Err(RegistryConfigError::InvalidPaymentNetwork(chain_id.clone()));
-            }
-        }
-        Ok(())
-    }
-
-    /// Return the effective list of canonical protocol chain IDs accepted for stamp/burn payment
-    /// verification on this relay.
+    /// Validate `network` and the sections that run on it, returning its protocol row.
     ///
-    /// Uses `self.accepted_payment_networks` when explicitly configured; otherwise falls back to
-    /// the chain matching `monad_mailbox.expected_chain_id`, then `directory.network`, and finally
-    /// `["monad-testnet"]`.
-    pub fn effective_accepted_payment_networks(&self) -> Vec<String> {
-        if !self.accepted_payment_networks.is_empty() {
-            return self.accepted_payment_networks.clone();
+    /// The network must be a canonical EVM chain identifier. When the mailbox is enabled or the
+    /// forum is configured, `[registry.evm_rpc]` must be enabled with a row for that network:
+    /// both verify payments only through that row's identity-checked upstreams.
+    pub fn validate_network(
+        &self,
+    ) -> Result<&'static ProtocolChainDescriptor, RegistryConfigError> {
+        let chain = protocol_chain(&self.network)
+            .ok_or_else(|| RegistryConfigError::UnknownNetwork(self.network.clone()))?;
+        if chain.family != ProtocolChainFamily::Evm {
+            return Err(RegistryConfigError::NetworkNotEvm(self.network.clone()));
         }
-        if let Some(expected_chain_id) = self.monad_mailbox.expected_chain_id {
-            if let Some(descriptor) = protocol_chain_by_evm_chain_id(expected_chain_id) {
-                return vec![descriptor.id.clone()];
+        if self.monad_mailbox.enabled || self.forum.is_some() {
+            let proxied = self.evm_rpc.enabled
+                && self.evm_rpc.chains.iter().any(|row| row.id == chain.id);
+            if !proxied {
+                return Err(RegistryConfigError::NetworkNotProxied(self.network.clone()));
             }
         }
-        if let Some(dir) = &self.directory {
-            if let Some(descriptor) = protocol_chain(&dir.network) {
-                return vec![descriptor.id.clone()];
+        if let Some(forum) = &self.forum {
+            let address = &forum.burn_address;
+            if address.len() != 42
+                || !address.starts_with("0x")
+                || !address[2..].bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(RegistryConfigError::InvalidForumBurnAddress);
             }
         }
-        vec!["monad-testnet".to_string()]
+        Ok(chain)
     }
 
     /// Validate process-wide resource bounds shared by otherwise independent proxy families.
     pub fn validate_rpc_resource_limits(&self) -> Result<(), RegistryConfigError> {
-        self.validate_accepted_payment_networks()?;
         let family_bytes = |enabled: bool, response: usize, concurrency: usize| {
             if enabled {
                 response.checked_mul(concurrency)
@@ -1255,6 +1279,9 @@ pub enum BitcoinProxyConfigError {
     InvalidCheckpoint(String),
     /// Checkpoint contradicts a protocol-pinned chain checkpoint.
     CheckpointMismatch(String),
+    /// An upstream is configured for a capability the protocol registry does not permit on
+    /// this chain.
+    CapabilityNotPermitted(String),
     /// Protection limit is invalid.
     InvalidLimit(&'static str),
 }
@@ -1356,6 +1383,11 @@ impl BitcoinProxyConf {
                     .then_some(ProtocolProxyCapability::Electrum),
             ];
             for capability in configured_capabilities.into_iter().flatten() {
+                if !protocol.allowed_proxy_capabilities.contains(&capability) {
+                    return Err(BitcoinProxyConfigError::CapabilityNotPermitted(
+                        chain.id.clone(),
+                    ));
+                }
                 if let Some((height, expected)) =
                     protocol
                         .identity_probes
@@ -1580,23 +1612,18 @@ impl SolanaProxyConf {
 /// binary. Operators requiring binary downgrade must snapshot before upgrading because older
 /// binaries cannot read newer versioned outbox rows.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct MonadMailboxConf {
     /// Whether messages are accepted and delivered. This is the only switch for the message
     /// routes (`PUT /message`, `/message/auth`, `/message/inbox` and `/message/mailbox`); the
-    /// shipped configs enable it. The one environment input is `cashwebd-exe` filling a missing
-    /// `rpc_url` from `MONAD_TESTNET_HTTP_RPC_URL`; this type itself never reads the
-    /// environment. A disabled deployment does not mount those routes (they answer 404) and
-    /// does not start a worker; stored messages are kept.
+    /// shipped configs enable it. The mailbox runs on [`RegistryConf::network`] and reaches that
+    /// chain only through its verified `[registry.evm_rpc]` upstreams. A disabled deployment
+    /// does not mount those routes (they answer 404) and does not start a worker; stored
+    /// messages are kept.
     pub enabled: bool,
-    /// Monad JSON-RPC endpoint. Required exactly when `enabled` is true; the shipped configs omit it
-    /// and `cashwebd-exe` supplies it from the environment before calling `mode()`.
-    pub rpc_url: Option<url::Url>,
     /// Aggregate direct-message stamp minimum, as a decimal string because TOML has no `u128`.
     /// Required exactly when the mailbox is enabled.
     pub min_value_wei: Option<String>,
-    /// EIP-155/EIP-1559 chain ID every signed stamp payment must carry.
-    /// Required exactly when the mailbox is enabled.
-    pub expected_chain_id: Option<u64>,
 }
 
 /// Validated mailbox mode consumed once, before database open or socket readiness.
@@ -1604,44 +1631,25 @@ pub struct MonadMailboxConf {
 pub enum MonadMailboxMode {
     /// No worker; the HTTP owner must omit the admission route.
     Disabled,
-    /// Worker and admission use the same validated endpoint.
+    /// Worker and admission run on the relay's network.
     Enabled {
-        /// Validated Monad JSON-RPC endpoint.
-        rpc_url: url::Url,
         /// Validated aggregate direct-message stamp minimum.
         min_value_wei: u128,
-        /// Required EVM chain identity for signed stamp payments.
-        expected_chain_id: u64,
     },
 }
 
-/// Invalid enabled mailbox RPC configuration.
+/// Invalid enabled mailbox configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MonadMailboxConfigError {
-    /// Enabled mode omitted its mandatory endpoint.
-    MissingRpcUrl,
-    /// The endpoint is not a hosted HTTP(S) URL.
-    InvalidRpcUrl,
     /// Enabled mode omitted or malformed its aggregate stamp minimum.
     InvalidMinValueWei,
-    /// Enabled mode omitted its expected EVM chain identity.
-    MissingExpectedChainId,
 }
 
 impl fmt::Display for MonadMailboxConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingRpcUrl => f.write_str(
-                "registry.monad_mailbox.rpc_url is required when the mailbox is enabled",
-            ),
-            Self::InvalidRpcUrl => f.write_str(
-                "registry.monad_mailbox.rpc_url must be a hosted http(s) URL when the mailbox is enabled",
-            ),
             Self::InvalidMinValueWei => f.write_str(
                 "registry.monad_mailbox.min_value_wei must be a decimal u128 when the mailbox is enabled",
-            ),
-            Self::MissingExpectedChainId => f.write_str(
-                "registry.monad_mailbox.expected_chain_id is required when the mailbox is enabled",
             ),
         }
     }
@@ -1650,17 +1658,10 @@ impl fmt::Display for MonadMailboxConfigError {
 impl Error for MonadMailboxConfigError {}
 
 impl MonadMailboxConf {
-    /// Validate the enabled/endpoint relationship before any service becomes ready.
+    /// Validate the enabled mailbox before any service becomes ready.
     pub fn mode(&self) -> std::result::Result<MonadMailboxMode, MonadMailboxConfigError> {
         if !self.enabled {
             return Ok(MonadMailboxMode::Disabled);
-        }
-        let rpc_url = self
-            .rpc_url
-            .clone()
-            .ok_or(MonadMailboxConfigError::MissingRpcUrl)?;
-        if !matches!(rpc_url.scheme(), "http" | "https") || rpc_url.host_str().is_none() {
-            return Err(MonadMailboxConfigError::InvalidRpcUrl);
         }
         let min_value_wei = self
             .min_value_wei
@@ -1668,14 +1669,7 @@ impl MonadMailboxConf {
             .ok_or(MonadMailboxConfigError::InvalidMinValueWei)?
             .parse()
             .map_err(|_| MonadMailboxConfigError::InvalidMinValueWei)?;
-        let expected_chain_id = self
-            .expected_chain_id
-            .ok_or(MonadMailboxConfigError::MissingExpectedChainId)?;
-        Ok(MonadMailboxMode::Enabled {
-            rpc_url,
-            min_value_wei,
-            expected_chain_id,
-        })
+        Ok(MonadMailboxMode::Enabled { min_value_wei })
     }
 }
 
@@ -1714,9 +1708,7 @@ pub struct PopConf {
     /// the rest of this struct to parse into a valid gate at server-construction time, or every
     /// gated request fails closed with a `500` (see this struct's docs).
     pub enabled: bool,
-    /// Monad JSON-RPC endpoint used to verify payment transaction receipts. (The direct-message
-    /// mailbox has its own `registry.monad_mailbox.rpc_url`; only the topic routes still read the
-    /// `MONAD_TESTNET_HTTP_RPC_URL` environment variable.)
+    /// Monad JSON-RPC endpoint used to verify payment transaction receipts.
     pub monad_rpc_url: url::Url,
     /// Server-side secret used to sign/verify bearer tokens (HMAC). Must be a long random string
     /// kept only in server config; there is deliberately no built-in default.
@@ -1793,7 +1785,8 @@ mod tests {
     use crate::{
         parse_conf, protocol_chain_registry, BitcoinProxyChainConf, BitcoinProxyConf, CashwebdConf,
         ClusterConf, ClusterNatsConf, CuratedContactConf, EvmRpcChainConf, EvmRpcConf,
-        EvmRpcConfigError, InitialMetadataDownloadConf, MonadMailboxConf, MonadMailboxConfigError,
+        EvmRpcConfigError, ForumConf, InitialMetadataDownloadConf, MonadMailboxConf,
+        MonadMailboxConfigError,
         MonadMailboxMode, PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf,
         RegistryConfigError, SolanaProxyChainConf, SolanaProxyConf, SolanaProxyConfigError,
     };
@@ -1802,7 +1795,6 @@ mod tests {
     fn directory_section_validates_relay_and_optional_gateway_and_rejects_old_files() {
         let minimal: crate::DirectoryConf = toml::from_str(
             r#"
-network = "monad-testnet"
 relay_id = "000102030405060708090a0b0c0d0e0f"
 relay_identity = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"
 endpoint = "https://relay.example.org"
@@ -1823,7 +1815,6 @@ binding_expiry_ns = "1893456000000000000"
         assert_eq!(with_gateway.validate(), Ok(()));
         let parsed: crate::DirectoryConf = toml::from_str(
             r#"
-network = "monad-testnet"
 relay_id = "000102030405060708090a0b0c0d0e0f"
 relay_identity = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"
 endpoint = "https://relay.example.org"
@@ -1837,10 +1828,6 @@ domain = "signet.mx"
         .unwrap();
         assert_eq!(parsed.email_gateway, with_gateway.email_gateway);
         assert_eq!(parsed.validate(), Ok(()));
-        // The bridge identity is independent of the relay's settlement network.
-        let mut bitcoin_relay = with_gateway.clone();
-        bitcoin_relay.network = "btc-testnet".into();
-        assert_eq!(bitcoin_relay.validate(), Ok(()));
         assert!(toml::from_str::<crate::EmailGatewayConf>(
             "chain_identifier = 'monad-testnet'\naddress = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\ndomain = 'signet.mx'"
         )
@@ -1880,8 +1867,10 @@ continuity_file = "/var/lib/frank/continuity"
             .unwrap_err()
             .to_string()
             .contains("accounts now publish their own directory entries"));
-        // A misspelt setting is still an error rather than silently ignored.
+        // A misspelt setting is still an error rather than silently ignored, and the network
+        // now lives on `[registry]`, not here.
         assert!(toml::from_str::<crate::DirectoryConf>("netwrok = \"x\"").is_err());
+        assert!(toml::from_str::<crate::DirectoryConf>("network = \"monad-testnet\"").is_err());
     }
 
     #[test]
@@ -2215,6 +2204,7 @@ continuity_file = "/var/lib/frank/continuity"
 
                 [registry]
                 db_path = "/test/path"
+                network = "monad-testnet"
                 net = "mainnet"
                 peers = ["https://example.com", "http://123.45.67.89"]
 
@@ -2242,6 +2232,8 @@ continuity_file = "/var/lib/frank/continuity"
                 registry: RegistryConf {
                     directory: None,
                     db_path: "/test/path".into(),
+                    network: "monad-testnet".to_string(),
+                    forum: None,
                     net: Net::Mainnet,
                     peers: vec![
                         "https://example.com".parse()?,
@@ -2263,9 +2255,7 @@ continuity_file = "/var/lib/frank/continuity"
                     },
                     monad_mailbox: MonadMailboxConf {
                         enabled: false,
-                        rpc_url: None,
                         min_value_wei: None,
-                        expected_chain_id: None,
                     },
                     evm_rpc: EvmRpcConf::default(),
                     bitcoin_proxy: BitcoinProxyConf::default(),
@@ -2274,7 +2264,6 @@ continuity_file = "/var/lib/frank/continuity"
                     spa_dir: None,
                     cluster: None,
                     oracle: None,
-                    accepted_payment_networks: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -2295,6 +2284,7 @@ continuity_file = "/var/lib/frank/continuity"
 
                 [registry]
                 db_path = "/test/path"
+                network = "monad-testnet"
                 net = "mainnet"
                 peers = ["https://example.com", "http://123.45.67.89"]
                 [registry.imd]
@@ -2324,6 +2314,8 @@ continuity_file = "/var/lib/frank/continuity"
                 registry: RegistryConf {
                     directory: None,
                     db_path: "/test/path".into(),
+                    network: "monad-testnet".to_string(),
+                    forum: None,
                     net: Net::Mainnet,
                     peers: vec![
                         "https://example.com".parse()?,
@@ -2345,9 +2337,7 @@ continuity_file = "/var/lib/frank/continuity"
                     },
                     monad_mailbox: MonadMailboxConf {
                         enabled: false,
-                        rpc_url: None,
                         min_value_wei: None,
-                        expected_chain_id: None,
                     },
                     evm_rpc: EvmRpcConf::default(),
                     bitcoin_proxy: BitcoinProxyConf::default(),
@@ -2356,7 +2346,6 @@ continuity_file = "/var/lib/frank/continuity"
                     spa_dir: None,
                     cluster: None,
                     oracle: None,
-                    accepted_payment_networks: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -2369,40 +2358,64 @@ continuity_file = "/var/lib/frank/continuity"
     }
 
     #[test]
-    fn accepted_payment_networks_defaults_and_validates_protocol_chains() {
-        let mut conf = parse_conf(include_str!("../../cashwebd.local.toml")).unwrap();
-        assert!(conf.registry.accepted_payment_networks.is_empty());
-        assert_eq!(
-            conf.registry.effective_accepted_payment_networks(),
-            vec!["monad-testnet".to_string()]
-        );
-        assert_eq!(conf.registry.validate_accepted_payment_networks(), Ok(()));
+    fn network_is_required_canonical_evm_and_proxied_when_payments_run_on_it() {
+        let shipped = include_str!("../../cashwebd.local.toml");
+        let conf = parse_conf(shipped).unwrap();
+        assert_eq!(conf.registry.validate_network().unwrap().id, "monad-testnet");
 
-        conf.registry.accepted_payment_networks =
-            vec!["monad-testnet".to_string(), "monad-mainnet".to_string()];
-        assert_eq!(conf.registry.validate_accepted_payment_networks(), Ok(()));
-        assert_eq!(
-            conf.registry.effective_accepted_payment_networks(),
-            vec!["monad-testnet".to_string(), "monad-mainnet".to_string()]
-        );
+        // No network at all is a parse error, never a default.
+        let missing = shipped.replace("network = \"monad-testnet\"\nnet =", "net =");
+        assert_ne!(missing, shipped);
+        assert!(parse_conf(&missing)
+            .unwrap_err()
+            .chain()
+            .any(|cause| cause.to_string().contains("missing field `network`")));
 
-        // Duplicate entry is rejected.
-        conf.registry.accepted_payment_networks =
-            vec!["monad-testnet".to_string(), "monad-testnet".to_string()];
+        let mut conf = conf;
+        conf.registry.network = "monad".into();
         assert_eq!(
-            conf.registry.validate_accepted_payment_networks(),
-            Err(RegistryConfigError::InvalidPaymentNetwork(
-                "monad-testnet".to_string()
+            conf.registry.validate_network(),
+            Err(RegistryConfigError::UnknownNetwork("monad".into()))
+        );
+        conf.registry.network = "solana-devnet".into();
+        assert_eq!(
+            conf.registry.validate_network(),
+            Err(RegistryConfigError::NetworkNotEvm("solana-devnet".into()))
+        );
+        // Any registry EVM chain is a network, provided its upstreams are configured.
+        conf.registry.network = "ethereum-sepolia".into();
+        assert_eq!(
+            conf.registry.validate_network(),
+            Err(RegistryConfigError::NetworkNotProxied(
+                "ethereum-sepolia".into()
             ))
         );
-
-        // Unknown chain ID is rejected.
-        conf.registry.accepted_payment_networks = vec!["unknown-chain".to_string()];
+        conf.registry.network = "base-sepolia".into();
+        assert_eq!(conf.registry.validate_network().unwrap().id, "base-sepolia");
+        conf.registry.monad_mailbox.enabled = false;
+        conf.registry.forum = None;
+        conf.registry.network = "ethereum-sepolia".into();
         assert_eq!(
-            conf.registry.validate_accepted_payment_networks(),
-            Err(RegistryConfigError::InvalidPaymentNetwork(
-                "unknown-chain".to_string()
+            conf.registry.validate_network().unwrap().id,
+            "ethereum-sepolia"
+        );
+        conf.registry.forum = Some(ForumConf {
+            burn_address: format!("0x{}", "dE".repeat(20)),
+        });
+        assert_eq!(
+            conf.registry.validate_network(),
+            Err(RegistryConfigError::NetworkNotProxied(
+                "ethereum-sepolia".into()
             ))
+        );
+        conf.registry.network = "monad-testnet".into();
+        assert!(conf.registry.validate_network().is_ok());
+        conf.registry.forum = Some(ForumConf {
+            burn_address: "0xdead".into(),
+        });
+        assert_eq!(
+            conf.registry.validate_network(),
+            Err(RegistryConfigError::InvalidForumBurnAddress)
         );
     }
 
@@ -2415,6 +2428,7 @@ continuity_file = "/var/lib/frank/continuity"
 
                 [registry]
                 db_path = "data/registry.rocksdb"
+                network = "monad-testnet"
                 net = "mainnet"
                 peers = []
 
@@ -2447,6 +2461,7 @@ continuity_file = "/var/lib/frank/continuity"
 
                 [registry]
                 db_path = "/test/path"
+                network = "monad-testnet"
                 net = "mainnet"
                 peers = ["https://example.com", "http://123.45.67.89"]
 
@@ -2493,9 +2508,7 @@ continuity_file = "/var/lib/frank/continuity"
     #[test]
     fn deployed_default_configurations_enable_mailbox_and_evm_proxy() {
         // The mailbox is on by default (owner decision, ticket #279): both checked-in defaults
-        // must parse enabled with the safe non-secret keys. The RPC URL is deliberately absent
-        // (secret-bearing); `cashwebd-exe` resolves it from MONAD_TESTNET_HTTP_RPC_URL, so
-        // `mode()` alone reports it missing while the file is otherwise complete.
+        // must parse enabled, on a named network whose verified EVM upstreams carry payments.
         for (name, config) in [
             (
                 "cashwebd.local.toml",
@@ -2511,25 +2524,26 @@ continuity_file = "/var/lib/frank/continuity"
                 conf.registry.monad_mailbox,
                 MonadMailboxConf {
                     enabled: true,
-                    rpc_url: None,
                     min_value_wei: Some("1000000000000".to_string()),
-                    expected_chain_id: Some(10143),
                 },
                 "{name}"
             );
             assert_eq!(
                 conf.registry.monad_mailbox.mode(),
-                Err(MonadMailboxConfigError::MissingRpcUrl),
+                Ok(MonadMailboxMode::Enabled {
+                    min_value_wei: 1_000_000_000_000,
+                }),
                 "{name}"
             );
-            let rpc_url: url::Url = "http://127.0.0.1:1".parse().unwrap();
-            conf.registry.monad_mailbox.rpc_url = Some(rpc_url.clone());
             assert_eq!(
-                conf.registry.monad_mailbox.mode(),
-                Ok(MonadMailboxMode::Enabled {
-                    rpc_url,
-                    min_value_wei: 1_000_000_000_000,
-                    expected_chain_id: 10143,
+                conf.registry.validate_network().map(|chain| chain.id.as_str()),
+                Ok("monad-testnet"),
+                "{name}"
+            );
+            assert_eq!(
+                conf.registry.forum,
+                Some(ForumConf {
+                    burn_address: "0x000000000000000000000000000000000000dEaD".to_string()
                 }),
                 "{name}"
             );
@@ -2640,73 +2654,38 @@ continuity_file = "/var/lib/frank/continuity"
     }
 
     #[test]
-    fn mailbox_mode_requires_rpc_exactly_when_enabled() {
+    fn mailbox_mode_requires_a_minimum_exactly_when_enabled() {
         assert_eq!(
             MonadMailboxConf {
                 enabled: false,
-                rpc_url: None,
                 min_value_wei: None,
-                expected_chain_id: None,
             }
             .mode()
             .unwrap(),
             MonadMailboxMode::Disabled
         );
-        assert!(MonadMailboxConf {
-            enabled: true,
-            rpc_url: None,
-            min_value_wei: Some("1".to_string()),
-            expected_chain_id: Some(41454),
-        }
-        .mode()
-        .is_err());
-        let rpc_url: url::Url = "https://rpc.example".parse().unwrap();
         assert_eq!(
             MonadMailboxConf {
                 enabled: true,
-                rpc_url: Some(rpc_url.clone()),
                 min_value_wei: Some("1000".to_string()),
-                expected_chain_id: Some(41454),
             }
             .mode()
             .unwrap(),
             MonadMailboxMode::Enabled {
-                rpc_url,
-                min_value_wei: 1000,
-                expected_chain_id: 41454,
+                min_value_wei: 1000
             }
         );
         let missing: MonadMailboxConf = toml::from_str("enabled = true").unwrap();
-        assert!(missing.mode().is_err());
         assert_eq!(
-            MonadMailboxConf {
-                enabled: true,
-                rpc_url: Some("https://rpc.example".parse().unwrap()),
-                min_value_wei: Some("1".to_string()),
-                expected_chain_id: None,
-            }
-            .mode(),
-            Err(MonadMailboxConfigError::MissingExpectedChainId)
+            missing.mode(),
+            Err(MonadMailboxConfigError::InvalidMinValueWei)
         );
-        assert!(toml::from_str::<MonadMailboxConf>(
-            "enabled = true\nrpc_url = 'this is not a URL'"
-        )
-        .is_err());
-        for rejected in [
-            "file:///tmp/rpc",
-            "ftp://rpc.example/path",
-            "data:text/plain,rpc",
+        // The chain is the relay's network, never a mailbox-local endpoint or chain id.
+        for removed in [
+            "enabled = true\nmin_value_wei = '1'\nrpc_url = 'https://rpc.example'",
+            "enabled = true\nmin_value_wei = '1'\nexpected_chain_id = 10143",
         ] {
-            assert_eq!(
-                MonadMailboxConf {
-                    enabled: true,
-                    rpc_url: Some(rejected.parse().unwrap()),
-                    min_value_wei: Some("1".to_string()),
-                    expected_chain_id: Some(41454),
-                }
-                .mode(),
-                Err(MonadMailboxConfigError::InvalidRpcUrl)
-            );
+            assert!(toml::from_str::<MonadMailboxConf>(removed).is_err(), "{removed}");
         }
     }
 

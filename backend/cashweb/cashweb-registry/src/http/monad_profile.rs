@@ -154,9 +154,11 @@ pub async fn handle_put_monad_profile(
         || crate::store::monad_profiles::is_cbor_frame(&body_bytes);
 
     if is_cbor {
-        server
-            .registry
-            .put_monad_profile_cbor(address, &body_bytes)?;
+        server.registry.put_monad_profile_cbor(
+            address,
+            server.chains.network().id.as_str(),
+            &body_bytes,
+        )?;
     } else {
         let signed_metadata = cashweb_payload::proto::SignedPayload::decode(body_bytes.as_ref())
             .map_err(|err| {
@@ -377,6 +379,10 @@ mod tests {
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,
+            chains: std::sync::Arc::new(
+                crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
+            ),
+            forum: None,
             spa_dir: None,
             event_bus,
         }

@@ -28,11 +28,8 @@ pub(crate) async fn handle_put(
         .monad_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unavailable)?;
-    let descriptor = crate::network_tag::monad_network(runtime.network_tag())
-        .ok_or(CanonicalError::Unavailable)?;
-    if descriptor.evm_chain_id != runtime.expected_chain_id() {
-        return Err(CanonicalError::Unavailable);
-    }
+    let network = runtime.network();
+    let evm_chain_id = runtime.expected_chain_id();
     let content_type = single_header(&headers, "content-type")?.to_owned();
     if content_type.starts_with("multipart/form-data") {
         parse_boundary(&content_type, "multipart/form-data")?;
@@ -70,9 +67,7 @@ pub(crate) async fn handle_put(
     // An exact repeat of a stored message is answered from the store, whatever the directory
     // or the admission policy says today.
     let claim = if let Some(stored) = owner.find_request(&request)? {
-        if stored.policy.network != descriptor.cbor_identifier
-            || stored.policy.chain_id != descriptor.evm_chain_id
-        {
+        if stored.policy.network != network || stored.policy.chain_id != evm_chain_id {
             return Err(CanonicalError::Unavailable);
         }
         stored
@@ -80,25 +75,20 @@ pub(crate) async fn handle_put(
         if request.transaction_count() > crate::monad_dm_payment::MAX_STAMP_PAYMENTS {
             return Err(CanonicalError::Invalid);
         }
-        let principals = request_principals(&request, descriptor.cbor_identifier)?;
+        let principals = request_principals(&request, network)?;
         // The recipient's own entry says which relay holds its mailbox. When this relay cannot
         // deliver there, say so as a final answer: nothing is stored, no payment is broadcast.
         let Some(recipient_current) =
-            deliverable_recipient(owner, descriptor.cbor_identifier, &principals.recipient).await?
+            deliverable_recipient(owner, network, &principals.recipient).await?
         else {
-            return dead_response(
-                &request,
-                descriptor.cbor_identifier,
-                &principals,
-                "undeliverable",
-            );
+            return dead_response(&request, network, &principals, "undeliverable");
         };
         // The sender is whoever the message says. The relay does not look the sender up:
         // checking who wrote a message is the job of the recipient's client, which opens it
         // with the key the sender published.
         let historical = match principals.recipient_t1 {
             Some(t1) if recipient_current.evidence.hash != t1 => {
-                Some(history(owner, descriptor.cbor_identifier, &principals.recipient, t1).await?)
+                Some(history(owner, network, &principals.recipient, t1).await?)
             }
             _ => None,
         };
@@ -108,19 +98,14 @@ pub(crate) async fn handle_put(
             request,
             &recipient_current,
             historical.as_ref(),
-            descriptor.cbor_identifier,
-            descriptor.evm_chain_id,
+            network,
+            evm_chain_id,
             runtime.min_value_wei(),
         )?;
         // A payment the node can never take is refused here, before anything is stored or
         // delivered, so the sender learns it while nothing has happened yet.
         if let Some(dead) = precheck_payments(runtime, input.payments()).await {
-            return dead_response(
-                &input.request,
-                descriptor.cbor_identifier,
-                &principals,
-                dead.reason(),
-            );
+            return dead_response(&input.request, network, &principals, dead.reason());
         }
         owner.claim(input, now_ms())?
     };
@@ -210,7 +195,20 @@ async fn broadcast_payments(
     runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
     claim: &crate::store::monad_dm_cbor::Claim,
 ) -> Vec<std::result::Result<&'static str, String>> {
-    let client = crate::monad_http::MonadHttpClient::with_transport(runtime.transport().clone());
+    let Some(transport) = runtime.transport() else {
+        tracing::event!(
+            tracing::Level::WARN,
+            payload_hash = %hex::encode(claim.policy.payload_hash),
+            "Payments were not handed to the node: no upstream of the relay network has proved \
+             its identity yet. A resend of the message hands them over again"
+        );
+        return claim
+            .request
+            .raw_transactions()
+            .map(|_| Err("no verified node".to_owned()))
+            .collect();
+    };
+    let client = crate::monad_http::MonadHttpClient::with_transport(transport);
     let wait = runtime.config().rpc_timeout.min(BROADCAST_TIMEOUT);
     let payload_hash = hex::encode(claim.policy.payload_hash);
     let sends = claim.request.raw_transactions().map(|raw| {
@@ -291,11 +289,16 @@ async fn precheck_payments(
     if payments.is_empty() {
         return None;
     }
-    let client = crate::monad_http::MonadHttpClient::with_transport(runtime.transport().clone());
     let wait = runtime.config().rpc_timeout.min(BROADCAST_TIMEOUT);
-    let outcome = match tokio::time::timeout(wait, ask_node(&client, payments)).await {
-        Ok(outcome) => outcome,
-        Err(_) => Err("no answer from the node in time".to_owned()),
+    let outcome = match runtime.transport() {
+        None => Err("no verified node".to_owned()),
+        Some(transport) => {
+            let client = crate::monad_http::MonadHttpClient::with_transport(transport);
+            match tokio::time::timeout(wait, ask_node(&client, payments)).await {
+                Ok(outcome) => outcome,
+                Err(_) => Err("no answer from the node in time".to_owned()),
+            }
+        }
     };
     match outcome {
         Ok(dead) => dead,
@@ -1016,12 +1019,7 @@ async fn admitted_subject(
     let Some(runtime) = server.monad_mailbox.as_enabled() else {
         return Ok(None);
     };
-    let Some(descriptor) = crate::network_tag::monad_network(runtime.network_tag()) else {
-        return Ok(None);
-    };
-    if descriptor.evm_chain_id != runtime.expected_chain_id() {
-        return Ok(None);
-    }
+    let network = runtime.network();
     let Ok(point) = single_header(headers, "x-frank-mailbox-subject") else {
         return Ok(None);
     };
@@ -1036,7 +1034,7 @@ async fn admitted_subject(
     let Ok(point) = hex::decode(point) else {
         return Ok(None);
     };
-    admitted_point_or_busy(server, descriptor, recipient, point)
+    admitted_point_or_busy(server, network, recipient, point)
         .await
         .map_err(|_| CanonicalError::Unavailable)
 }
@@ -1046,7 +1044,7 @@ async fn admitted_subject(
 /// distinct from "not admitted".
 pub(crate) async fn admitted_point_or_busy(
     server: &super::server::RegistryServer,
-    descriptor: &crate::network_tag::MonadNetworkDescriptor,
+    network: &str,
     recipient: Address,
     point: Vec<u8>,
 ) -> std::result::Result<Option<Vec<u8>>, crate::directory_runtime::RuntimeError> {
@@ -1058,7 +1056,7 @@ pub(crate) async fn admitted_point_or_busy(
     let Some(directory) = server.registry.canonical_dm().directory() else {
         return Ok(None);
     };
-    let reservation = match directory.reserve(descriptor.cbor_identifier, &hex::encode(&point)) {
+    let reservation = match directory.reserve(network, &hex::encode(&point)) {
         Ok(reservation) => reservation,
         Err(error @ (RuntimeError::Busy | RuntimeError::NotStarted)) => return Err(error),
         Err(_) => return Ok(None),
@@ -1075,18 +1073,16 @@ pub(crate) async fn admitted_point_or_busy(
         ) => return Err(error),
         Err(_) => return Ok(None),
     };
-    Ok(verified_point(descriptor, point, &current))
+    Ok(verified_point(network, point, &current))
 }
 fn verified_point(
-    descriptor: &crate::network_tag::MonadNetworkDescriptor,
+    network: &str,
     point: Vec<u8>,
     current: &crate::directory_admission::Current,
 ) -> Option<Vec<u8>> {
-    let verified = frank_cbor::verify_preview_directory_evidence(
-        &current.evidence.attestation,
-        descriptor.cbor_identifier,
-    )
-    .ok()?;
+    let verified =
+        frank_cbor::verify_preview_directory_evidence(&current.evidence.attestation, network)
+            .ok()?;
     if verified.statement_hash != current.evidence.hash
         || verified.statement_frame().frame != current.evidence.statement
     {

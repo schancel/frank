@@ -115,7 +115,21 @@ async function main() {
     )
     const rotated = await rotateGroupEpochOnRelay(params)
     assert.equal(rotated.epoch, 1)
-    await assert.rejects(client.sendGroupMessage(id, envelope))
+    // A retried accepted envelope returns its original receipt; new old-epoch content rejects.
+    assert.deepEqual(await client.sendGroupMessage(id, envelope), acknowledgement)
+    await assert.rejects(
+      client.sendGroupMessage(
+        id,
+        sealGroupMessage({
+          epochKeys: created.epochKeys,
+          senderIndex: 1,
+          senderEpochKeyPair: groupTestSigningKey(bob.address, id, 0),
+          senderAddress: bob.address,
+          payload: new TextEncoder().encode('stale epoch message'),
+          timestampMs: 1700000001235,
+        }),
+      ),
+    )
     await assert.rejects(
       client.fetchGroupMessages(id, created.epochKeys.readTokenHex),
     )

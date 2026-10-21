@@ -13,6 +13,7 @@ import {
   encodeFrame,
   topicBurnCommitment,
   validateFrame,
+  TYPE_FORUM_OPERATION_STATUS,
   TYPE_TOPIC_POST_SUBMISSION,
 } from '@frank/codec'
 import { createInMemoryMonadWalletBundle } from './storage/evm-wallet-bundle'
@@ -223,7 +224,7 @@ async function fixture(location?: string) {
     ])
     for (const [key, value] of changes) fields.set(key, value)
     return encodeFrame(
-      { typeId: 15, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: TYPE_FORUM_OPERATION_STATUS, schemaVersion: 1, minReaderVersion: 1 },
       fields as never,
     )
   }

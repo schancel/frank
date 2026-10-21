@@ -42,7 +42,7 @@ import {
 } from '../src'
 import { MESSAGE_CONTENT_REVISION } from '../src/constants'
 
-describe('universal state channel update item (Type 24, schema 1)', () => {
+describe('universal state channel update item (Type 25, schema 1)', () => {
   // Keypairs for participants Alice and Bob
   const alicePriv = fromHex('01'.repeat(32))
   const alicePub = secp256k1.getPublicKey(alicePriv, true) // 33 bytes compressed
@@ -116,7 +116,7 @@ describe('universal state channel update item (Type 24, schema 1)', () => {
         expect(parsed.typeId).toBe(TYPE_CHANNEL_UPDATE)
         expect(parsed.schemaVersion).toBe(1)
         expect(parsed.minReaderVersion).toBe(1)
-        expect(parsed.typed?.type).toBe(24)
+        expect(parsed.typed?.type).toBe(TYPE_CHANNEL_UPDATE)
 
         if (parsed.typed?.type === TYPE_CHANNEL_UPDATE) {
           expect(toHex(parsed.typed.channelId)).toBe(sampleChannelId)
@@ -802,10 +802,10 @@ describe('universal state channel update item (Type 24, schema 1)', () => {
   })
 
   // -------------------------------------------------------------------------------------------
-  // 6. Encapsulation inside Direct Message content revision (Type 8)
+  // 6. Encapsulation inside Direct Message content revision (Type 20)
   // -------------------------------------------------------------------------------------------
   describe('container encapsulation', () => {
-    it('successfully encapsulates a channel update item frame within a type-8 content revision', () => {
+    it('successfully encapsulates a channel update item frame within a type-20 content revision', () => {
       const channelFrame = encodeChannelUpdateItem({
         type: 'channel-update',
         channelId: sampleChannelId,
@@ -834,7 +834,7 @@ describe('universal state channel update item (Type 24, schema 1)', () => {
         ],
       })
 
-      // Construct a type-8 message-content-revision containing the channel update frame
+      // Construct a type-20 message-content-revision containing the channel update frame
       const type8Frame = encodeFrame(
         {
           typeId: TYPE_MESSAGE_CONTENT_REVISION,
@@ -855,7 +855,7 @@ describe('universal state channel update item (Type 24, schema 1)', () => {
         expect(child.kind).toBe('parsed')
         if (child.kind === 'parsed') {
           expect(child.typeId).toBe(TYPE_CHANNEL_UPDATE)
-          expect(child.typed?.type).toBe(24)
+          expect(child.typed?.type).toBe(TYPE_CHANNEL_UPDATE)
           expect((child.typed as ChannelUpdateItem).appId).toBe('raffle')
         }
       }

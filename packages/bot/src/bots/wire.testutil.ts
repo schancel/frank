@@ -7,6 +7,8 @@ import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/pl
 import {
   encodeFrame,
   standaloneItemBudget,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  MESSAGE_CONTENT_REVISION,
   validateFrame,
   type Encodable,
 } from "@frank/codec";
@@ -28,14 +30,14 @@ export function overTheWire(items: MessageItem[]): MessageItem[] {
   const frames = encodeItemFrames(registry, items);
   const revision = validateFrame(
     encodeFrame(
-      { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: TYPE_MESSAGE_CONTENT_REVISION, schemaVersion: 1, minReaderVersion: 1 },
       new Map<number, Encodable>([
-        [0, "frank"],
-        [1, frames],
+        [MESSAGE_CONTENT_REVISION.network, "frank"],
+        [MESSAGE_CONTENT_REVISION.items, frames],
       ])
     )
   );
-  if (revision.kind !== "parsed" || revision.typed?.type !== 8)
+  if (revision.kind !== "parsed" || revision.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION)
     throw new Error("expected a revision");
   return decodeItemFrames(
     registry,

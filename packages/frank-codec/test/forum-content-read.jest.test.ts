@@ -42,10 +42,12 @@ import {
   FORUM_SINGLE_VIEW,
   FORUM_TOPIC_PAGE,
   TOPIC_POST,
+  TYPE_FORUM_DISCOVERY_PAGE,
   TYPE_FORUM_OPERATION_STATUS,
   TYPE_FORUM_TOPIC_PAGE,
   TYPE_FORUM_VIEW,
   TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
 } from '../src/constants'
 
 const parsed = (bytes: Uint8Array, ctx = defaultContext()): ParsedFrame => {
@@ -64,6 +66,13 @@ const frame = (
     { typeId: type, schemaVersion: schema, minReaderVersion: min },
     payload,
   )
+const FORUM_READ_TYPES = [
+  TYPE_FORUM_VIEW,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_OPERATION_STATUS,
+] as const
 const outcome = (bytes: Uint8Array) => {
   try {
     return validateFrame(bytes, defaultContext()).kind
@@ -117,11 +126,14 @@ describe('active Forum public facade', () => {
     }
     expect(result.kind).toBe('parsed')
     if (result.kind !== 'parsed') throw Error('not parsed')
-    if (f.type >= 12 && f.type <= 15 && f.schema === 1)
+    if (
+      (FORUM_READ_TYPES as readonly number[]).includes(f.type) &&
+      f.schema === 1
+    )
       expect(
         toHex(
           encodeForumReadFrame(
-            f.type as 12 | 13 | 14 | 15,
+            f.type as (typeof FORUM_READ_TYPES)[number],
             recipeValue(f.payload),
           ),
         ),
@@ -132,7 +144,7 @@ describe('active Forum public facade', () => {
         toHex(topicVoteCommitment('monad-testnet', contentHash(result))),
       ).toBe(f.t7)
     if (f.type === TYPE_TOPIC_POST) {
-      expect(result.typed?.type).toBe(9)
+      expect(result.typed?.type).toBe(TYPE_TOPIC_POST)
       if (result.typed?.type === TYPE_TOPIC_POST)
         expect(result.typed.schemaVersion).toBe(f.schema === 1 ? 1 : 2)
     }
@@ -189,7 +201,7 @@ describe('active Forum public facade', () => {
       expect(
         parsed(encodeTopicPostSubmission(raw(id), Uint8Array.of(1))).typed
           ?.type,
-      ).toBe(10)
+      ).toBe(TYPE_TOPIC_POST_SUBMISSION)
     }
     const opaque = parsed(
       frame(TYPE_TOPIC_POST, payloadOf('typescript-origin'), 1, 1),
@@ -339,7 +351,7 @@ describe('cursor and exact request boundaries', () => {
     expect(
       matchForumPage(raw('equal-time-page'), {
         network: p.network,
-        family: 13,
+        family: TYPE_FORUM_TOPIC_PAGE,
         topic: p.topic,
         since: p.since,
       }).frame,
@@ -347,7 +359,7 @@ describe('cursor and exact request boundaries', () => {
     expect(() =>
       matchForumPage(raw('equal-time-page'), {
         network: p.network,
-        family: 13,
+        family: TYPE_FORUM_TOPIC_PAGE,
         topic: p.topic,
         since: p.since,
         requestCursor: fromHex(corpus.cursors[0].hex),

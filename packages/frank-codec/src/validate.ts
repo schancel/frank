@@ -1,7 +1,7 @@
 // Section 9 validation order, stages 1-9 plus stage 10.6 (the signature verification of the
 // type-2 attestation). The separate DM session resumes only the structural required-child
 // part of 10.1; it does not authenticate plaintext or perform the remaining stamp checks.
-// Ordinary `full` type-1 validation remains a context error.
+// Ordinary `full` type-10 validation remains a context error.
 import {
   DEFAULT_FEATURE_CODEC_MAP,
   DEFAULT_FEATURE_CODECS,
@@ -110,8 +110,8 @@ export interface SupportedSchema {
 export interface ValidationContext {
   /**
    * `frame` stops after stage 4, `generic` after stage 7, `typed` after stage 9. `full`
-   * adds stage 10.6, the signature verification of a type-2 root; the type-1 stage-10
-   * checks (10.1-10.5) are outside this slice and make a type-1 `full` root a context error.
+   * adds stage 10.6, the signature verification of a type-2 root; the type-10 stage-10
+   * checks (10.1-10.5) are outside this slice and make a type-10 `full` root a context error.
    * Preview directory `full` also fails: trusted admission requires a separate stateful API.
    */
   operation: Operation
@@ -122,7 +122,7 @@ export interface ValidationContext {
   /** Governs the root frame only (V6.1). */
   opaqueRetentionAllowed: boolean
   /**
-   * For a type-2 root under `typed` or `full`: the last accepted type-4 frame, or `null` for
+   * For a type-2 root under `typed` or `full`: the last accepted type-1 frame, or `null` for
    * bootstrap. Required (not `undefined`) in that case; ignored for other roots.
    * Preview wrappers require null because this codec does not validate their history.
    */
@@ -214,7 +214,7 @@ export function defaultContext(
   return {
     operation: 'typed',
     routeByteLimit: MAX_FRAME_BYTES,
-    // Reader version 2 reads type 4 at schema 3 and the production type-5 DM at schema 2. Type 1
+    // Reader version 2 reads type 1 at schema 3 and the production type-11 DM at schema 2. Type 10
     // is read at schema 2, whose payment list may be empty (an unpaid message); the relay admits
     // deliveries under the same rule (frank-cbor's `relay_context`).
     readerVersion: 2,
@@ -477,7 +477,7 @@ function processFrame(
     throw fail(
       'unsupported',
       '7',
-      'directory preview requires type-4 schema-4 support',
+      'directory preview requires type-1 schema-4 support',
       location,
     )
   }
@@ -494,7 +494,7 @@ function processFrame(
       location,
     )
   }
-  // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
+  // Suite 1 authenticates the complete schema-2 field set. A future type-11 schema needs an
   // updated authenticated context before this reader may project or retain its extensions.
   if (
     env.typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD &&
@@ -503,7 +503,7 @@ function processFrame(
     throw fail(
       'unsupported',
       '7',
-      `type 5 schema ${env.schemaVersion} requires an updated authenticated context`,
+      `type 11 schema ${env.schemaVersion} requires an updated authenticated context`,
       location,
     )
   }
@@ -515,7 +515,7 @@ function processFrame(
     throw fail(
       'unsupported',
       '7',
-      'type 5 schema 2 requires min_reader_version 2',
+      'type 11 schema 2 requires min_reader_version 2',
       location,
     )
   }
@@ -625,7 +625,7 @@ function runStage10(typed: FinalPayload): void {
       return
     case TYPE_DIRECT_MESSAGE_DELIVERY:
       throw new FrankContextError(
-        'stages 10.1-10.5 (the type-1 stamp checks) are outside this slice; `full` runs only the type-2 signature verification of stage 10.6',
+        'stages 10.1-10.5 (the type-10 stamp checks) are outside this slice; `full` runs only the type-2 signature verification of stage 10.6',
       )
     default:
   }
@@ -927,7 +927,7 @@ function resolvePrior(
   }
   if (r.kind !== 'parsed' || r.typed?.type !== TYPE_DIRECTORY_STATEMENT) {
     throw new FrankContextError(
-      'the prior directory statement is not a type-4 frame',
+      'the prior directory statement is not a type-1 frame',
     )
   }
   if (r.typed.preview) {
@@ -1005,7 +1005,7 @@ export interface NestedItemBudget {
 
 /**
  * Nesting depth of the bytes inside a top-level message item's payload map when the message is a
- * production type-1 delivery: type 1 -> type 5 -> (decrypted) type 6 -> type 8 -> item array ->
+ * production type-10 delivery: type 10 -> type 11 -> (decrypted) type 12 -> type 20 -> item array ->
  * item envelope -> item payload map.
  */
 export const DIRECT_MESSAGE_ITEM_CONTENT_DEPTH = 11
@@ -1078,7 +1078,7 @@ function ownedCopy<T>(value: T): T {
 }
 
 /**
- * Begin stages 1–9 for an actual type-1/type-5 root with production schema-2 suite-1
+ * Begin stages 1–9 for an actual type-10/type-11 root with production schema-2 suite-1
  * payload. Requires `context.operation === 'typed'`; ordinary parsing is unchanged.
  * Retains the real traversal counters/depth privately across the authenticated boundary.
  */
@@ -1121,7 +1121,7 @@ export function beginDirectMessageValidation(
     point.payload.typed.suite !== ENCRYPTION_SUITE_DM_AUTH_XCHACHA
   )
     throw new FrankContextError(
-      'DM sessions require a type-1/type-5 root with schema-2 min-reader-2 suite-1 payload',
+      'DM sessions require a type-10/type-11 root with schema-2 min-reader-2 suite-1 payload',
     )
   let saved: ({ root: ParsedFrame; sh: Shared } & typeof point) | undefined = {
     root,
@@ -1160,7 +1160,7 @@ export function beginDirectMessageValidation(
       return {
         root: state.root,
         content,
-        // type 6 -> type 8 -> item array -> item envelope -> item payload map: seven levels.
+        // type 12 -> type 20 -> item array -> item envelope -> item payload map: seven levels.
         itemBudget: nestedItemBudget(state.sh, state.depth + 7),
       }
     },

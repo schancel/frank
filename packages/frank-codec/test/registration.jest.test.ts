@@ -220,7 +220,7 @@ describe('the account-registration corpus (README section 11, M9)', () => {
   })
 })
 
-describe('schema-version dispatch of the type-4 statement (V1/V2, M4)', () => {
+describe('schema-version dispatch of the type-1 statement (V1/V2, M4)', () => {
   it('a schema-2 reader projects a schema-3 statement through V6.3 and retains field 9', () => {
     const r = validateFrame(
       frameOf('reg-fixture-v63-profile-retained'),
@@ -470,7 +470,7 @@ describe('stage 10.6 (full)', () => {
     })
   })
 
-  it('fails closed with a context error for a type-1 full root (10.1-10.5 outside this slice)', () => {
+  it('fails closed with a context error for a type-10 full root (10.1-10.5 outside this slice)', () => {
     expect(() =>
       validateFrame(deliveryFrame(), {
         ...defaultContext(),
@@ -552,7 +552,7 @@ describe('stage 10.6 (full)', () => {
 
 describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
   // Real secp256k1 keys: secret 1 signs the attestation, secret 2 is the prior authority that
-  // signs the type-7 transition frame; the subject is the key behind secret 1.
+  // signs the type-3 transition frame; the subject is the key behind secret 1.
   const subjectSecret = new Uint8Array(32).fill(1)
   const priorSecret = new Uint8Array(32).fill(2)
   const subjectKey = secp256k1.getPublicKey(subjectSecret, true)
@@ -1295,7 +1295,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
       )
       expect(res.kind).toBe('parsed')
       if (res.kind !== 'parsed') throw new Error('not parsed')
-      expect(res.typed?.type).toBe(4)
+      expect(res.typed?.type).toBe(TYPE_DIRECTORY_STATEMENT)
       if (res.typed?.type === TYPE_DIRECTORY_STATEMENT) {
         expect(res.typed.canonicalUsername).toBe(handle)
       }
@@ -1381,7 +1381,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
       parsedWith.kind !== 'parsed' ||
       parsedWith.typed?.type !== TYPE_DIRECTORY_STATEMENT
     ) {
-      throw new Error('expected parsed type 4')
+      throw new Error('expected parsed type 1')
     }
     expect(parsedWith.typed.canonicalUsername).toBe('alice-01')
 
@@ -1402,7 +1402,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
       parsedWithout.kind !== 'parsed' ||
       parsedWithout.typed?.type !== TYPE_DIRECTORY_STATEMENT
     ) {
-      throw new Error('expected parsed type 4')
+      throw new Error('expected parsed type 1')
     }
     expect(parsedWithout.typed.canonicalUsername).toBeUndefined()
   })
@@ -1471,7 +1471,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
     )
     expect(res.kind).toBe('parsed')
     if (res.kind !== 'parsed') throw new Error('not parsed')
-    expect(res.typed?.type).toBe(2)
+    expect(res.typed?.type).toBe(TYPE_DIRECTORY_ATTESTATION)
     if (res.typed?.type === TYPE_DIRECTORY_ATTESTATION) {
       const st = res.typed.statementFrame.typed
       if (st?.type === TYPE_DIRECTORY_STATEMENT) {

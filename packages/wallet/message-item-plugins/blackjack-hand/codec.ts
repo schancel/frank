@@ -1,5 +1,5 @@
 /**
- * A peer-to-peer blackjack hand item is the canonical type-18 schema-3 frame, written and
+ * A peer-to-peer blackjack hand item is the canonical type-26 schema-3 frame, written and
  * projected by the same functions the canonical direct message path uses today, so the bytes are
  * identical.
  */

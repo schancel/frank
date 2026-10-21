@@ -1,4 +1,4 @@
-// Composable Stage 8.1/8.2 and Stage 9 schema descriptor for Type 18 Blackjack message items.
+// Composable Stage 8.1/8.2 and Stage 9 schema descriptor for Type 26 Blackjack message items.
 import type { FrankValue } from './cbor'
 import {
   BLACKJACK_ACTION,
@@ -482,7 +482,7 @@ function blackjackHandV3Payload(
   }
 }
 
-/** Stage 8.2 draft parser for Type 18 Blackjack message items (schemas 1..3). */
+/** Stage 8.2 draft parser for Type 26 Blackjack message items (schemas 1..3). */
 export function parseBlackjackDraft(
   payload: FrankValue,
   _allowUnknown: boolean,
@@ -512,7 +512,7 @@ export function parseBlackjackDraft(
     : blackjackPayload(payload)
 }
 
-/** Stage 9 semantic checks for Type 18 Blackjack message items (schemas 1..3). */
+/** Stage 9 semantic checks for Type 26 Blackjack message items (schemas 1..3). */
 export function checkBlackjackSemantics(typed: BlackjackWireItem): void {
   if (typed.schema === 3) {
     if (typed.action === 'challenge' || typed.action === 'accept') {

@@ -1,5 +1,5 @@
 /**
- * A text item is the canonical type-17 frame, written by the same function the canonical direct
+ * A text item is the canonical type-22 frame, written by the same function the canonical direct
  * message path uses today, so the bytes are identical.
  */
 import { directMessageText } from '@frank/cashweb/relay/canonical-dm'

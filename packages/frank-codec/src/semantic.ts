@@ -329,7 +329,7 @@ export function checkSemantics(
       )
       if (typed.network !== child.network) {
         throw semantic(
-          'forwarding network differs from the type-1 network',
+          'forwarding network differs from the type-10 network',
           at(P, K.network),
         )
       }
@@ -394,11 +394,11 @@ export function checkSemantics(
       )
       if (typed.network !== child.network) {
         throw semantic(
-          'delivery network differs from the type-5 network (S8)',
+          'delivery network differs from the type-11 network (S8)',
           at(P, K.network),
         )
       }
-      // The destination is the stamp key P' and is deliberately not compared with the type-5
+      // The destination is the stamp key P' and is deliberately not compared with the type-11
       // recipient (S8): the routing identity and the payment key are independent.
       if (typed.destination.keyType !== KEY_TYPE.secp256k1) {
         throw semantic(
@@ -542,7 +542,7 @@ export function checkSemantics(
       const child = typedOf(typed.postFrame, TYPE_TOPIC_POST)
       if (typed.network !== child.network) {
         throw semantic(
-          'submission network differs from the type-9 network (S11)',
+          'submission network differs from the type-40 network (S11)',
           at(P, TOPIC_POST_SUBMISSION.network),
         )
       }
@@ -663,7 +663,7 @@ function checkPreviewStatement(st: DirectoryStatement<ParsedFrame>): void {
     )
   )
     throw semantic(
-      'directory preview requires valid compressed type-1 role points',
+      'directory preview requires valid compressed type-10 role points',
     )
   for (let i = 0; i < keys.length; i++)
     for (let j = i + 1; j < keys.length; j++)
@@ -688,7 +688,7 @@ function checkPreviewStatement(st: DirectoryStatement<ParsedFrame>): void {
     !isCompressedPoint(relay.identity.keyBytes)
   )
     throw semantic(
-      'directory preview requires HTTPS and a valid type-1 relay point',
+      'directory preview requires HTTPS and a valid type-10 relay point',
     )
   const nanos = (t: Timestamp) =>
     t.seconds * 1_000_000_000n + BigInt(t.nanoseconds)

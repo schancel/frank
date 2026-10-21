@@ -458,7 +458,7 @@ export function isCborFrame(bytes: Uint8Array): boolean {
 
 /**
  * Builds a canonical Deterministic-CBOR signed account registration frame
- * (Type 2 DirectoryAttestation wrapping a Type 4 DirectoryStatement with schema 3).
+ * (Type 2 DirectoryAttestation wrapping a Type 1 DirectoryStatement with schema 3).
  * Stage 10.6 signature is created using Algorithm 1 (secp256k1 ECDSA over SHA-256).
  */
 const secp256k1Account = (keyBytes: ArrayLike<number>): Encodable =>
@@ -530,7 +530,7 @@ export function buildSignedDirectoryStatement(
   }
   rawSpendKeys.sort(compareAccounts)
 
-  // Default relay binding: required by Type 4 schema (min 1 relay).
+  // Default relay binding: required by Type 1 schema (min 1 relay).
   // Kept internal to maintain clean separation between relay-local profiles
   // and federation topology (#107, #108, #110).
   const relayBindings: Encodable[] = [

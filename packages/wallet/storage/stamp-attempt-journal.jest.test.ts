@@ -1,6 +1,6 @@
 import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
 import { inspectCanonicalPreparedEnvelope } from '../evm-stamp-stealth'
-import { paymentCommitment } from '@frank/codec'
+import { paymentCommitment, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD } from '@frank/codec'
 import {
   LevelStampAttemptJournal,
   OutgoingStampAttempt,
@@ -138,7 +138,7 @@ async function canonicalFixture(
   >
   const stampKey = decodedContext.get(8n)!.get(1n)!
   const parsed = parseFrame(payload)
-  if (parsed.kind !== 'parsed' || parsed.typed?.type !== 5)
+  if (parsed.kind !== 'parsed' || parsed.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
     throw new Error('fixture payload')
   const signer = new Wallet('0x' + '19'.repeat(32))
   const raw = await signer.signTransaction({
@@ -153,7 +153,7 @@ async function canonicalFixture(
   })
   const tx = Transaction.from(raw)
   const delivery = encodeFrame(
-    { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: TYPE_DIRECT_MESSAGE_DELIVERY, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([
       [0, captured.network],
       [
@@ -759,7 +759,7 @@ async function recoveryStorageFixture(
     box[box.length - 1] ^= 1
     fields.set(4n, box)
     fixture.prepared.payload = encodeFrame(
-      { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+      { typeId: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, schemaVersion: 2, minReaderVersion: 2 },
       fields as never,
     )
   }
@@ -804,7 +804,7 @@ async function recoveryStorageFixture(
     )
   }
   const delivery = encodeFrame(
-    { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: TYPE_DIRECT_MESSAGE_DELIVERY, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([
       [0, wire.network],
       [

@@ -602,7 +602,7 @@ fn full_type1_root_is_a_context_error() {
             ..common::typed_context()
         },
     )
-    .expect_err("type-1 full is outside the slice");
+    .expect_err("type-10 full is outside the slice");
     assert!(matches!(error, Error::Context(_)));
 }
 
@@ -700,7 +700,7 @@ fn unsupported_algorithm_precedes_any_signature_verification() {
 #[test]
 fn a_full_type2_transition_authorization_verifies() {
     // Built with real keys via the secp256k1-abc test surface: secret 1 is the subject,
-    // secret 2 the prior authority signing the type-7 frame. The corpus has no transition
+    // secret 2 the prior authority signing the type-3 frame. The corpus has no transition
     // case, so the T2a path is pinned here.
     use secp256k1_abc::{PublicKey, Secp256k1, SecretKey};
 
@@ -1386,7 +1386,7 @@ fn directory_statement_account_type_and_bot_role_rejections() {
                 ])]),
             ),
             (stmt::STAMP_KEY, account(&pub_key_bytes)),
-            // raw-cbor-key: account type 4 is deliberately unallocated
+            // raw-cbor-key: account type 1 is deliberately unallocated
             (stmt::ACCOUNT_TYPE, frank_cbor::CborValue::Int(4)),
         ]),
     );

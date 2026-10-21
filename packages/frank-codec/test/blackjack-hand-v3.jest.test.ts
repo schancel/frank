@@ -44,7 +44,7 @@ const outcome = (run: () => unknown) => {
   }
 }
 
-describe('blackjack hand items with entropy from both sides (type 18, schema 3)', () => {
+describe('blackjack hand items with entropy from both sides (type 26, schema 3)', () => {
   it('keeps the shared corpus equal to what the public writer and reader produce', () => {
     expect(corpus).toEqual(JSON.parse(JSON.stringify(blackjackHandV3Corpus())))
     expect(corpus.frames.filter(f => f.expected.result === 'accept')).toHaveLength(11)

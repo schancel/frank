@@ -5,7 +5,7 @@
  * - signet token list: Show whitelisted tokens across Monad, Ethereum, Solana, and eCash
  * - signet token balance: Display local unspent token UTXO notes and balances from LevelDB
  * - signet token record: Record an inbound/unspent token UTXO note into local storage
- * - signet token send: Transfer tokens to a recipient via Type 6 Encrypted DM with permit/tokenTransfer
+ * - signet token send: Transfer tokens to a recipient via Type 12 Encrypted DM with permit/tokenTransfer
  */
 
 import { computeAddress, formatUnits, getAddress, parseUnits } from 'ethers'
@@ -435,7 +435,7 @@ export async function tokenRecordCommand(
 }
 
 /**
- * Prepares and sends a token transfer via Type 6 Direct Message.
+ * Prepares and sends a token transfer via Type 12 Direct Message.
  */
 export async function tokenSendCommand(
   recipientInput: string,
@@ -555,7 +555,7 @@ export async function tokenSendCommand(
       }
     }
 
-    // Build Type 6 tokenTransfer payload
+    // Build Type 12 tokenTransfer payload
     const tokenTransfer: TokenTransfer = {
       chainNamespace: normalizeChainId(tokenDef.chainId),
       contractAddress: tokenDef.contractAddress,
@@ -646,7 +646,7 @@ export async function tokenSendCommand(
             `  Change Created:   ${result.changeCreated.amountFormatted} -> ${result.changeCreated.address}`,
           )
         }
-        console.log(`  Type 6 Frame:     ${result.type6FrameLength} bytes`)
+        console.log(`  Type 12 Frame:     ${result.type6FrameLength} bytes`)
         console.log(`  Encrypted Size:   ${result.envelopeLength} bytes`)
       },
       options.json,

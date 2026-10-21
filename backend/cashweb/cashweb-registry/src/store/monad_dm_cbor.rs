@@ -1079,7 +1079,7 @@ mod persistence_tests {
         outer.iter_mut().find(|(k, _)| *k == 4).unwrap().1 = CborValue::Array(vec![member]);
         let delivery = frank_cbor::encode_frame(
             frank_cbor::EnvelopeFields {
-                type_id: 1,
+                type_id: frank_cbor::message_types::TYPE_DIRECT_MESSAGE_DELIVERY,
                 schema_version: 1,
                 min_reader_version: 1,
             },

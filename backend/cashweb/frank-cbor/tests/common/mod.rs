@@ -11,10 +11,10 @@ use frank_cbor::message_fields::{
 };
 use frank_cbor::message_types::{
     TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT,
-    TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_FORUM_OPERATION_STATUS,
-    TYPE_FORUM_VIEW, TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_CONTENT_REVISION,
-    TYPE_PROOF_UNKNOWN_ITEM, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM,
-    TYPE_TOPIC_POST, TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
+    TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_KEY_TRANSITION_STATEMENT,
+    TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_CONTENT_REVISION, TYPE_PROOF_UNKNOWN_ITEM,
+    TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM, TYPE_TOPIC_POST,
+    TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
 };
 use frank_cbor::{
     cbor_map, content_hash, decode_canonical, encode_canonical, encode_frame,
@@ -63,7 +63,7 @@ pub fn ts(seconds: i64, nanos: u32) -> CborValue {
 }
 
 /// README T3c worked example (network `monad`): `P'`, `E`, `X` and the DLEQ proof `c || s`. Real
-/// curve points and a real proof, so a type-5 frame built from them passes the T3b encoding
+/// curve points and a real proof, so a type-11 frame built from them passes the T3b encoding
 /// rules. The fixtures use another network tag, so the proof is not verifiable there; only the
 /// encoding is claimed at `typed`.
 pub const T3C_STAMP_KEY: &str =
@@ -81,7 +81,7 @@ pub fn stamp_account(key_hex: &str) -> CborValue {
     account(key_type::SECP256K1, hex::decode(key_hex).expect("key hex"))
 }
 
-/// A frame around `payload`. Type 4 is written at `schema_version` 2 with `min_reader_version` 2,
+/// A frame around `payload`. Type 1 is written at `schema_version` 2 with `min_reader_version` 2,
 /// because its stamp key (field 8) is required from schema 2 (README S10a.1); every other type is
 /// version 1.
 pub fn fr(type_id: u32, payload: &CborValue) -> Vec<u8> {
@@ -179,7 +179,7 @@ fn type6_frame(revision: &[u8]) -> Vec<u8> {
     )
 }
 
-/// The nine fields of the fixture type-5 payload, in key order.
+/// The nine fields of the fixture type-11 payload, in key order.
 pub fn type5_fields() -> Vec<(u64, CborValue)> {
     let revision = revision_frame();
     let encrypted = type6_frame(&revision);
@@ -209,7 +209,7 @@ pub fn type5_frame() -> Vec<u8> {
     fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, &cbor_map(type5_fields()))
 }
 
-/// A second canonical encoding of the type-5 fixture whose source map was assembled in reverse
+/// A second canonical encoding of the type-11 fixture whose source map was assembled in reverse
 /// order. The encoder must converge on [`type5_frame`].
 pub fn type5_frame_reverse_order() -> Vec<u8> {
     let mut fields = type5_fields();
@@ -250,7 +250,7 @@ fn payment(t3: &[u8], index: u32) -> CborValue {
     ])
 }
 
-/// Fixture 1: type-1 direct message with two stamp payments.
+/// Fixture 1: type-10 direct message with two stamp payments.
 pub fn direct_message_frame() -> Vec<u8> {
     let payload_frame = type5_frame();
     let t3 = recipient_payload_digest(NET, &payload_frame).expect("t3");
@@ -291,7 +291,7 @@ pub fn rust_origin_direct_message_frame() -> Vec<u8> {
     )
 }
 
-/// Fixture 4: a top-level type-9 topic post.
+/// Fixture 4: a top-level type-40 topic post.
 pub fn topic_post_frame() -> Vec<u8> {
     fr(
         TYPE_TOPIC_POST,
@@ -303,7 +303,7 @@ pub fn topic_post_frame() -> Vec<u8> {
     )
 }
 
-/// Fixture 5: a type-10 submission wrapping [`topic_post_frame`].
+/// Fixture 5: a type-41 submission wrapping [`topic_post_frame`].
 pub fn topic_post_submission_frame() -> Vec<u8> {
     fr(
         TYPE_TOPIC_POST_SUBMISSION,
@@ -323,7 +323,7 @@ pub fn topic_post_hash() -> Vec<u8> {
     }
 }
 
-/// Fixture 6: a type-11 vote naming [`topic_post_hash`].
+/// Fixture 6: a type-42 vote naming [`topic_post_hash`].
 pub fn topic_vote_frame() -> Vec<u8> {
     fr(
         TYPE_TOPIC_VOTE_SUBMISSION,
@@ -439,7 +439,7 @@ fn section(section_type: u32, schema: u32, value: Vec<u8>) -> CborValue {
     ])
 }
 
-/// Fixture 3: type-3 checkpoint with an unknown nested item and an unknown section.
+/// Fixture 3: type-14 checkpoint with an unknown nested item and an unknown section.
 pub fn checkpoint_frame() -> Vec<u8> {
     fr(
         TYPE_MAILBOX_CHECKPOINT,
@@ -503,18 +503,37 @@ pub const TOPIC_TYPES: [u32; 3] = [
     TYPE_TOPIC_VOTE_SUBMISSION,
 ];
 
+/// The types a historical reader knows: those allocated before #136 plus the topic events.
+/// Listed by name, so renumbering a type does not change the set.
+const HISTORICAL_READER_TYPES: [u32; 13] = [
+    TYPE_DIRECTORY_STATEMENT,
+    TYPE_DIRECTORY_ATTESTATION,
+    TYPE_KEY_TRANSITION_STATEMENT,
+    TYPE_DIRECT_MESSAGE_DELIVERY,
+    TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+    TYPE_ENCRYPTED_MESSAGE_CONTENT,
+    TYPE_MAILBOX_CHECKPOINT,
+    TYPE_MESSAGE_CONTENT_REVISION,
+    TYPE_CONTAINER_MESSAGE_ITEM,
+    TYPE_TEXT_MESSAGE_ITEM,
+    TYPE_TOPIC_POST,
+    TYPE_TOPIC_POST_SUBMISSION,
+    TYPE_TOPIC_VOTE_SUBMISSION,
+];
+
 fn context_for(types: impl Iterator<Item = u32>) -> ValidationContext {
+    // Readers list their schemas in type-id order, as the committed corpus contexts do.
+    let mut types: Vec<u32> = types.collect();
+    types.sort_unstable();
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_FRAME_BYTES as u64,
-        // Reader version 2 reads type 4 and production type 5 at schema 2.
+        // Reader version 2 reads type 1 and production type 11 at schema 2.
         reader_version: 2,
         supported_schemas: types
-            // Freeze historical readers at type17, preserving the Forum read-type omission.
-            .filter(|type_id| {
-                *type_id <= TYPE_TEXT_MESSAGE_ITEM
-                    && !(TYPE_FORUM_VIEW..=TYPE_FORUM_OPERATION_STATUS).contains(type_id)
-            })
+            .into_iter()
+            // Freeze historical readers at the types allocated before the Forum read types.
+            .filter(|type_id| HISTORICAL_READER_TYPES.contains(type_id))
             .map(|type_id| SupportedSchema {
                 type_id,
                 schema_version: if type_id == TYPE_DIRECTORY_STATEMENT

@@ -1,5 +1,5 @@
-//! The stamp fields of #198 at the typed level: type-5 schema-1 fields 6 through 8 and schema-2
-//! fields 5 through 7 (README T3a, T3b encoding rules), the type-4 stamp key (S10a.1), and the
+//! The stamp fields of #198 at the typed level: type-11 schema-1 fields 6 through 8 and schema-2
+//! fields 5 through 7 (README T3a, T3b encoding rules), the type-1 stamp key (S10a.1), and the
 //! same-subject schema order (S10a.2).
 //! The manifest carries the vectors; these tests pin the boundaries and the typed projection.
 
@@ -69,7 +69,7 @@ fn production_type5(suite: u32) -> Vec<u8> {
         },
         FramePayload::Value(&payload),
     )
-    .expect("schema-2 type 5")
+    .expect("schema-2 type 11")
 }
 
 fn point(prefix: u8, x_hex: &str) -> CborValue {
@@ -145,7 +145,7 @@ fn proof_scalars_are_bounded_independently() {
 fn typed_projection_carries_the_stamp_fields() {
     let frame = type5_with(rep1::EPHEMERAL_POINT, Some(hex_bytes(T3C_EPHEMERAL)));
     let Ok(ValidationResult::Parsed(parsed)) = validate_frame(&frame, &typed_context()) else {
-        panic!("type 5 did not parse");
+        panic!("type 11 did not parse");
     };
     match parsed.typed.as_deref() {
         Some(TypedPayload::RecipientPayload {
@@ -166,7 +166,7 @@ fn typed_projection_carries_the_stamp_fields() {
 fn production_suite_one_is_typed_only_in_schema_two() {
     let frame = production_type5(1);
     let Ok(ValidationResult::Parsed(parsed)) = validate_frame(&frame, &typed_context()) else {
-        panic!("type 5 did not parse");
+        panic!("type 11 did not parse");
     };
     match parsed.typed.as_deref() {
         Some(TypedPayload::RecipientPayload {

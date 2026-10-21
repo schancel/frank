@@ -531,7 +531,7 @@ async function recipientRead(config: DriverConfig, fetch: CanonicalFetch) {
         delivery.kind !== 'parsed' ||
         delivery.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY
       )
-        throw new Error('joined-driver: inbox record is not a type1 delivery')
+        throw new Error('joined-driver: inbox record is not a type10 delivery')
       const message = openDirectMessage({
         mode: 'receive',
         network: NETWORK,

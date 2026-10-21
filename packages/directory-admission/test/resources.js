@@ -8,6 +8,8 @@ import {
   directorySignatureDigest,
   encodeFrame,
   previewDirectoryContext,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
   validateFrame,
 } from '@frank/codec'
 import { openNodeDirectoryStore } from '../src/node'
@@ -33,7 +35,7 @@ function signed(revision, predecessor, padding = 0, entropy = 0) {
   payload.set(13n, predecessor)
   payload.set(100n, new Uint8Array(padding))
   const statement = encodeFrame(
-    { typeId: 4, schemaVersion: 5, minReaderVersion: 4 },
+    { typeId: TYPE_DIRECTORY_STATEMENT, schemaVersion: 5, minReaderVersion: 4 },
     payload,
   )
   const extraEntropy = new Uint8Array(32)
@@ -45,7 +47,7 @@ function signed(revision, predecessor, padding = 0, entropy = 0) {
     })
     .toDERRawBytes()
   const attestation = encodeFrame(
-    { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: TYPE_DIRECTORY_ATTESTATION, schemaVersion: 1, minReaderVersion: 1 },
     new Map([
       [0n, statement],
       [

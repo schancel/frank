@@ -1,4 +1,4 @@
-//! Pure encoder and validator helpers for Type 25 relay forwarding delivery envelopes.
+//! Pure encoder and validator helpers for Type 13 relay forwarding delivery envelopes.
 
 use crate::cbor::CborValue;
 use crate::error::UsageError;
@@ -13,14 +13,14 @@ fn bad(message: impl Into<String>) -> UsageError {
     UsageError(message.into())
 }
 
-/// Canonical input to encode a Type 25 forwarding delivery envelope.
+/// Canonical input to encode a Type 13 forwarding delivery envelope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardingDeliveryEnvelope {
     /// Field 0: Destination relay network.
     pub network: String,
     /// Field 1: Destination relay routing identity / stamp key (key type 1).
     pub destination: AccountRef,
-    /// Field 2: Serialized inner direct message delivery (Type 1) frame.
+    /// Field 2: Serialized inner direct message delivery (Type 10) frame.
     pub payload_frame: Vec<u8>,
     /// Field 3: Forwarding payload digest of field 2 (computed if None).
     pub payload_digest: Option<Vec<u8>>,
@@ -88,7 +88,7 @@ fn encode_payment_member(p: &PaymentMember) -> CborValue {
     CborValue::Map(entries)
 }
 
-/// Encodes a canonical Type 25 forwarding delivery envelope frame.
+/// Encodes a canonical Type 13 forwarding delivery envelope frame.
 pub fn encode_forwarding_delivery(
     envelope: &ForwardingDeliveryEnvelope,
 ) -> Result<Vec<u8>, UsageError> {
@@ -188,7 +188,7 @@ pub fn encode_forwarding_delivery(
     Ok(frame)
 }
 
-/// Returns true if the parsed frame is a Type 25 forwarding envelope.
+/// Returns true if the parsed frame is a Type 13 forwarding envelope.
 pub fn is_forwarding_delivery_frame(frame: &ParsedFrame) -> bool {
     frame.type_id == TYPE_FORWARDING_DELIVERY_ENVELOPE
         && matches!(

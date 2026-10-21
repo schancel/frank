@@ -127,7 +127,7 @@ fn build(
     }
     let sealed = frank_cbor::encode_frame(
         frank_cbor::EnvelopeFields {
-            type_id: 5,
+            type_id: frank_cbor::message_types::TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
             schema_version: 2,
             min_reader_version: 2,
         },
@@ -181,7 +181,7 @@ fn build(
     *entry(&mut message, 4) = CborValue::Array(members);
     let delivery = frank_cbor::encode_frame(
         frank_cbor::EnvelopeFields {
-            type_id: 1,
+            type_id: frank_cbor::message_types::TYPE_DIRECT_MESSAGE_DELIVERY,
             schema_version: 2,
             min_reader_version: 1,
         },

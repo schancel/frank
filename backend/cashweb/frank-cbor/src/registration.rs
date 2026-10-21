@@ -127,7 +127,7 @@ pub fn is_valid_canonical_username(handle: &str) -> bool {
         .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
-/// Parameters for encoding a directory statement (Type 4).
+/// Parameters for encoding a directory statement (Type 1).
 #[derive(Debug, Clone)]
 pub struct DirectoryStatementParams<'a> {
     /// Field 0: network tag.
@@ -182,7 +182,7 @@ fn encode_timestamp(ts: &Timestamp) -> CborValue {
     ])
 }
 
-/// Encodes a canonical Type 4 directory statement CBOR payload map.
+/// Encodes a canonical Type 1 directory statement CBOR payload map.
 pub fn encode_directory_statement_payload(
     params: &DirectoryStatementParams<'_>,
 ) -> Result<CborValue, UsageError> {
@@ -303,7 +303,7 @@ pub fn encode_directory_statement_payload(
     Ok(CborValue::Map(entries))
 }
 
-/// Encodes a complete Type 4 directory statement frame.
+/// Encodes a complete Type 1 directory statement frame.
 pub fn encode_directory_statement(
     schema_version: u32,
     min_reader_version: u32,

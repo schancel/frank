@@ -136,6 +136,9 @@ import {
   defaultContext,
   validateFrame,
   type ParsedFrame,
+  TYPE_BLACKJACK_MESSAGE_ITEM,
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_TEXT_MESSAGE_ITEM,
 } from '@frank/codec'
 import type { CanonicalBlackjackMoveItem } from '@frank/cashweb/types/messages'
 import {
@@ -207,7 +210,7 @@ async function canonicalHydrate(item: CanonicalBlackjackMoveItem, p: unknown) {
 
 describe('explicit canonical blackjack boundary', () => {
   test.each(canonicalItems.map((item, i) => [i, item] as const))(
-    'type18 closed shape %i projects and hydrates through public codec',
+    'blackjack closed shape %i projects and hydrates through public codec',
     async (_, item) => {
       const p = provider()
       const result = await canonicalHydrate(item, p)
@@ -252,7 +255,7 @@ describe('explicit canonical blackjack boundary', () => {
 
   test('compatible future projection retains exact original frame without reencoding', () => {
     const future = encodeFrame(
-      { typeId: 18, schemaVersion: 2, minReaderVersion: 1 },
+      { typeId: TYPE_BLACKJACK_MESSAGE_ITEM, schemaVersion: 2, minReaderVersion: 1 },
       new Map<number, unknown>([
         [0, 'g'],
         [1, 3],
@@ -268,7 +271,7 @@ describe('explicit canonical blackjack boundary', () => {
     const p = provider()
     const text = parsed(
       encodeFrame(
-        { typeId: 17, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: TYPE_TEXT_MESSAGE_ITEM, schemaVersion: 1, minReaderVersion: 1 },
         new Map([[0, 'hi']]),
       ),
     )
@@ -314,9 +317,9 @@ describe('explicit canonical blackjack boundary', () => {
 
   test('validated nested welcome/text children preserve parent order and bytes', () => {
     const welcome = encodeCanonicalBlackjackItem(canonicalItems[8])
-    const text = encodeFrame({ typeId: 17, schemaVersion: 1, minReaderVersion: 1 }, new Map([[0, 'hi']]))
-    const container = parsed(encodeFrame({ typeId: 16, schemaVersion: 1, minReaderVersion: 1 }, new Map([[0, [welcome, text]]])))
-    if (container.typed?.type !== 16) throw new Error('expected container')
+    const text = encodeFrame({ typeId: TYPE_TEXT_MESSAGE_ITEM, schemaVersion: 1, minReaderVersion: 1 }, new Map([[0, 'hi']]))
+    const container = parsed(encodeFrame({ typeId: TYPE_CONTAINER_MESSAGE_ITEM, schemaVersion: 1, minReaderVersion: 1 }, new Map([[0, [welcome, text]]])))
+    if (container.typed?.type !== TYPE_CONTAINER_MESSAGE_ITEM) throw new Error('expected container')
     const [first, second] = container.typed.items
     if (first.kind !== 'parsed') throw new Error('expected parsed welcome')
     expect(projectCanonicalBlackjackItem(first).frame).toEqual(welcome)
@@ -418,7 +421,7 @@ describePluginContract({
 })
 
 describe('blackjack-move bytes', () => {
-  it('are the type-18 frame the codec already defines', () => {
+  it('are the blackjack frame the codec already defines', () => {
     for (const item of canonicalItems) {
       expect(registry.encodeItem(item as never).bytes).toEqual(
         encodeCanonicalBlackjackItem(item),

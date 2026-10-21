@@ -253,14 +253,14 @@ describe('type-specific limits (R2-R4)', () => {
     ).toBe('resource@8.1')
   })
 
-  /** A newer type-1 root (schema 3) projected through the reader's schema 2 with one padding field. */
+  /** A newer type-10 root (schema 3) projected through the reader's schema 2 with one padding field. */
   const paddedDelivery = (pad: number): Uint8Array => {
     const payload = deliveryPayload({ payments: 2 })
     payload.set(7, new Uint8Array(pad)) // raw-cbor-key: undeclared padding field
     return fr(TYPE_DIRECT_MESSAGE_DELIVERY, payload, 3, 1)
   }
 
-  it('bounds a type-1 frame at 1 MiB (R2) using the root frame length', () => {
+  it('bounds a type-10 frame at 1 MiB (R2) using the root frame length', () => {
     // Find the pad making the delivery exactly 1,048,576 bytes; length grows 1:1 with the pad.
     let pad = 1_040_000
     pad += 1_048_576 - paddedDelivery(pad).length
@@ -286,7 +286,7 @@ describe('type-specific limits (R2-R4)', () => {
     const att = (pad: number) => attestationFrame(stmt(pad), [sig(acct2(1))])
     let pad = 260_000
     pad += 262_144 - att(pad).length
-    // A reader whose highest type-4 schema is 2 keeps the byte-string pad as a retained
+    // A reader whose highest type-1 schema is 2 keeps the byte-string pad as a retained
     // V6.3 field-9 value; a schema-3 reader would type it and reject the shape.
     const opts = {
       priorDirectoryStatementFrame: null as Uint8Array | null,
@@ -337,7 +337,7 @@ describe('type-specific limits (R2-R4)', () => {
     expect(r.kind).toBe('parsed')
     expect(contentHash(r as ParsedFrame)).toHaveLength(32)
     const t = (r as ParsedFrame).typed
-    if (t?.type !== TYPE_MAILBOX_CHECKPOINT) throw new Error('type 3 expected')
+    if (t?.type !== TYPE_MAILBOX_CHECKPOINT) throw new Error('type 14 expected')
     expect(t.facts).toHaveLength(4096)
     expect(t.sections).toHaveLength(4096)
     // One more fact is a resource error at 8.1.

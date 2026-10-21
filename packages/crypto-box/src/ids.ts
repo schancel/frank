@@ -28,7 +28,7 @@ export const RESERVED_PROOF_SUITE_ID = 65535
 export const SUITE_BASE_AES_GCM = 0xfe01
 export const SUITE_BASE_XCHACHA = 0xfe02
 export const SUITE_AUTH_AES_GCM = 0xfe03
-/** Frank-CBOR production DM suite 1 (type 5 schema 2). */
+/** Frank-CBOR production DM suite 1 (type 11 schema 2). */
 export const SUITE_AUTH_XCHACHA = 1
 
 export const SALT_LENGTH = 32

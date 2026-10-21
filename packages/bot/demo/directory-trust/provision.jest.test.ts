@@ -20,8 +20,6 @@ import { decimal, endpoint } from './provision'
 
 const subject =
   '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
-const anchor =
-  '21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e'
 const corpus = JSON.parse(
   readFileSync(
     resolve(
@@ -31,8 +29,11 @@ const corpus = JSON.parse(
     'utf8',
   ),
 )
-const witness = corpus.records.find((r: { id: string }) => r.id === 'bootstrap')
-  .type2_hex as string
+const bootstrap = corpus.records.find(
+  (r: { id: string }) => r.id === 'bootstrap',
+)
+const anchor = bootstrap.t1 as string
+const witness = bootstrap.type2_hex as string
 const nowNs = 9007199254740993000n // Explicit synthetic test clock, beyond safe JS integer.
 let parent: string
 let runDir: string

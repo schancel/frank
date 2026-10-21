@@ -122,7 +122,7 @@ export function contentHash(p: ParsedFrame): Uint8Array {
   )
 }
 
-/** T1a: `content_digest` of a complete type-8 frame (network is the literal `frank`). */
+/** T1a: `content_digest` of a complete type-20 frame (network is the literal `frank`). */
 export function messageContentDigest(type8Frame: Uint8Array): Uint8Array {
   return sha256(
     commonTranscript('frank/message-content/v1', 'frank', type8Frame),
@@ -130,7 +130,7 @@ export function messageContentDigest(type8Frame: Uint8Array): Uint8Array {
 }
 
 /**
- * T2: the 32-byte SHA-256 digest algorithm 1 signs, over the complete type-4 statement frame.
+ * T2: the 32-byte SHA-256 digest algorithm 1 signs, over the complete type-1 statement frame.
  * The network argument is the statement's own field 0 (T5), never ambient state; the context
  * is empty.
  */
@@ -168,7 +168,7 @@ export function topicPostSignatureDigest(
   )
 }
 
-/** T2a: the digest of a key-transition authorization over the complete type-7 frame. */
+/** T2a: the digest of a key-transition authorization over the complete type-3 frame. */
 export function keyTransitionSignatureDigest(
   network: string,
   type7Frame: Uint8Array,
@@ -178,7 +178,7 @@ export function keyTransitionSignatureDigest(
   )
 }
 
-/** T3: recipient payload digest of a complete type-5 frame with its field-0 network. */
+/** T3: recipient payload digest of a complete type-11 frame with its field-0 network. */
 export function recipientPayloadDigest(
   network: string,
   type5Frame: Uint8Array,
@@ -228,8 +228,8 @@ export function storagePaymentCommitment(
 
 /**
  * T7: `SHA256("frank:topic-vote:v1" || u16be(len(network)) || utf8(network) || target_hash)`.
- * `targetHash` is the T1 hash of the type-9 frame the burn pays for: a type-11 frame's field 1,
- * or the content hash of the frame a type 10 opens.
+ * `targetHash` is the T1 hash of the type-40 frame the burn pays for: a type-42 frame's field 1,
+ * or the content hash of the frame a type 41 opens.
  */
 export function topicVoteCommitment(
   network: string,

@@ -1,4 +1,4 @@
-//! Tests for Type 25 relay forwarding delivery envelope (#986).
+//! Tests for Type 13 relay forwarding delivery envelope (#986).
 
 mod common;
 
@@ -107,7 +107,7 @@ fn test_forwarding_envelope_encode_and_validate() {
             assert_eq!(payments[0].value, PaymentValue::Satoshis(100_000));
             assert_eq!(payments[0].vout, Some(0));
 
-            // Inner delivery frame is opened as Type 1 DirectMessage
+            // Inner delivery frame is opened as Type 10 DirectMessage
             assert_eq!(payload_frame.type_id, TYPE_DIRECT_MESSAGE_DELIVERY);
             assert!(matches!(
                 payload_frame.typed.as_deref(),

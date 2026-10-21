@@ -1,5 +1,5 @@
 // Typed projections of the payload schemas in docs/protocol/cbor/*.cddl (schema version 1,
-// type-4 schemas 1-3 and explicitly opted-in provisional schema 4).
+// type-1 schemas 1-3 and explicitly opted-in provisional schema 4).
 //
 // `F` is the representation of a required-type framed field (the opened child frame once
 // validated, raw bytes in a draft) and `C` that of an open-field child.
@@ -105,7 +105,7 @@ export interface ProfileEntry {
 }
 
 export interface KeyTransition<F> {
-  /** The type-7 key-transition-statement frame. */
+  /** The type-3 key-transition-statement frame. */
   statementFrame: F
   algorithm: number
   signer: AccountRef
@@ -133,7 +133,7 @@ export interface ForwardingDeliveryEnvelope<F> {
   type: typeof TYPE_FORWARDING_DELIVERY_ENVELOPE
   network: string
   destination: AccountRef
-  /** The inner direct-message-delivery (type-1) frame. */
+  /** The inner direct-message-delivery (type-10) frame. */
   payloadFrame: F
   /** Digest of the exact field-2 frame. */
   payloadDigest: Uint8Array
@@ -150,7 +150,7 @@ export interface DirectMessageDelivery<F> {
   type: typeof TYPE_DIRECT_MESSAGE_DELIVERY
   network: string
   destination: AccountRef
-  /** The type-5 recipient-encrypted-payload frame. */
+  /** The type-11 recipient-encrypted-payload frame. */
   payloadFrame: F
   /** T3 digest of the exact field-2 frame, as encoded (not verified at stages 1-9). */
   payloadDigest: Uint8Array
@@ -164,7 +164,7 @@ export interface DirectMessageDelivery<F> {
 
 export interface DirectoryAttestation<F> {
   type: typeof TYPE_DIRECTORY_ATTESTATION
-  /** The type-4 directory-statement frame. */
+  /** The type-1 directory-statement frame. */
   statementFrame: F
   signatures: SignatureEntry[]
   unknownFields: UnknownFields
@@ -303,7 +303,7 @@ export interface EncryptedMessageContent<F> {
   conversationId?: Uint8Array
   conversationName?: string
   tokenTransfer?: TokenTransfer
-  /** The type-8 message-content-revision frame. */
+  /** The type-20 message-content-revision frame. */
   revisionFrame: F
   contentDigest: Uint8Array
   unknownFields: UnknownFields
@@ -324,7 +324,7 @@ interface TopicPostCommon {
   network: string
   /** Exact UTF-8, never normalized (S12). */
   topic: string
-  /** T1 hash of the parent type-9 frame; absent for a top-level post. */
+  /** T1 hash of the parent type-40 frame; absent for a top-level post. */
   parentHash?: Uint8Array
   /** Opaque in version 1. */
   body: Uint8Array
@@ -481,7 +481,7 @@ export type ForumOperationStatus<F> = ForumOperationCommon<F> &
 export interface TopicPostSubmission<F> {
   type: typeof TYPE_TOPIC_POST_SUBMISSION
   network: string
-  /** The type-9 topic-post frame. */
+  /** The type-40 topic-post frame. */
   postFrame: F
   /** Raw signed chain transaction that burns for the post (T7, T8). */
   burnTx: Uint8Array
@@ -491,7 +491,7 @@ export interface TopicPostSubmission<F> {
 export interface TopicVoteSubmission {
   type: typeof TYPE_TOPIC_VOTE_SUBMISSION
   network: string
-  /** T1 hash of the target type-9 frame. */
+  /** T1 hash of the target type-40 frame. */
   targetHash: Uint8Array
   /** Raw signed chain transaction that burns for the vote (T7, T8). */
   burnTx: Uint8Array
@@ -685,7 +685,7 @@ export type BlackjackFields<H, Q> = { gameId: string } & (
     }
 )
 
-/** Closed type-18 projection; exact frame bytes remain on the enclosing ParsedFrame. */
+/** Closed type-26 projection; exact frame bytes remain on the enclosing ParsedFrame. */
 export type BlackjackMessageItem = {
   type: typeof TYPE_BLACKJACK_MESSAGE_ITEM
   schema?: never
@@ -716,7 +716,7 @@ export type BlackjackHandFields<H, Q> = { gameId: string } & (
   | { action: 'refund'; ref: H }
 )
 
-/** Closed type-18 schema-2 projection. */
+/** Closed type-26 schema-2 projection. */
 export type BlackjackHandMessageItem = {
   type: typeof TYPE_BLACKJACK_MESSAGE_ITEM
   schema: 2
@@ -752,7 +752,7 @@ export type BlackjackHandV3Fields<H, Q> = { gameId: string; seq: number } & (
   | { action: 'refund'; ref: H; prev: H }
 )
 
-/** Closed type-18 schema-3 projection. */
+/** Closed type-26 schema-3 projection. */
 export type BlackjackHandV3MessageItem = {
   type: typeof TYPE_BLACKJACK_MESSAGE_ITEM
   schema: 3

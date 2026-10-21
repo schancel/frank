@@ -8,6 +8,9 @@ import {
   validateFrame,
   defaultContext,
   topicBurnCommitment,
+  TYPE_FORUM_OPERATION_STATUS,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
 } from '@frank/codec'
 import { createInMemoryMonadWalletBundle } from './storage/evm-wallet-bundle'
 import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
@@ -170,7 +173,8 @@ async function fixture(valueWei = 1700000n) {
     )
     if (
       parsed.kind !== 'parsed' ||
-      (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)
+      (parsed.typed?.type !== TYPE_TOPIC_POST_SUBMISSION &&
+        parsed.typed?.type !== TYPE_TOPIC_VOTE_SUBMISSION)
     )
       throw new Error('Bad fixture request')
     const typed = parsed.typed
@@ -192,7 +196,7 @@ async function fixture(valueWei = 1700000n) {
       })
     const transactions = rawTransactions.map(raw => Transaction.from(raw))
     const target =
-      typed.type === 10
+      typed.type === TYPE_TOPIC_POST_SUBMISSION
         ? topicBurnCommitment(typed.postFrame.frame).hash
         : typed.targetHash
     const lastIndex = Math.max(
@@ -214,7 +218,7 @@ async function fixture(valueWei = 1700000n) {
     ])
     return {
       data: encodeFrame(
-        { typeId: 15, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: TYPE_FORUM_OPERATION_STATUS, schemaVersion: 1, minReaderVersion: 1 },
         payload as never,
       ),
       headers: { 'content-type': 'application/cbor' },
@@ -247,7 +251,7 @@ const params = {
   amountAtomic: 1000000n,
 }
 test.each(['up', 'down'] as const)(
-  'canonical type11 %s vote requires the confirmed scalar burn',
+  'canonical %s vote submission requires the confirmed scalar burn',
   async direction => {
     const f = await fixture()
     try {

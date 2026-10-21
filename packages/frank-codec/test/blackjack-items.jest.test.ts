@@ -33,7 +33,7 @@ import {
   deriveDeck,
   sha256Hex,
 } from '../../wallet/message-item-plugins/blackjack/deck'
-import { BLACKJACK_ACTION, BLACKJACK_ITEM, ENCRYPTED_MESSAGE_CONTENT, ENCRYPTION_SUITE, RECIPIENT_ENCRYPTED_PAYLOAD_V1, TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM } from '../src/constants'
+import { BLACKJACK_ACTION, BLACKJACK_ITEM, ENCRYPTED_MESSAGE_CONTENT, ENCRYPTION_SUITE, OPEN_ITEM_FIELD_FORBIDDEN_TYPES, RECIPIENT_ENCRYPTED_PAYLOAD_V1, TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_FORWARDING_DELIVERY_ENVELOPE, TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM } from '../src/constants'
 
 interface FrameCase {
   id: string
@@ -336,10 +336,12 @@ describe('closed shapes and independently reachable boundaries', () => {
     expect(
       parseFrame(welcome, { ...old, opaqueRetentionAllowed: true }).kind,
     ).toBe('retained')
-    for (let typeId = 1; typeId <= 15; typeId++)
-      expect(
-        outcome(() => parseFrame(containerItem([fr(typeId, M([]))]))),
-      ).toBe('semantic@8.4')
+    // A client keeps a forwarding envelope item as unknown (open-item-ignored.jest.test.ts).
+    for (const typeId of OPEN_ITEM_FIELD_FORBIDDEN_TYPES)
+      if (typeId !== TYPE_FORWARDING_DELIVERY_ENVELOPE)
+        expect(
+          outcome(() => parseFrame(containerItem([fr(typeId, M([]))]))),
+        ).toBe('semantic@8.4')
     const badRequired = fr(
       TYPE_ENCRYPTED_MESSAGE_CONTENT,
       M([
@@ -363,7 +365,7 @@ describe('closed shapes and independently reachable boundaries', () => {
     expect(outcome(() => parseFrame(at))).toBe('parsed')
     expect(outcome(() => parseFrame(containerItem([at])))).toBe('resource@7')
   })
-  it('continues type18 through the public opaque DM session with inherited depth and terminal ownership', () => {
+  it('continues type26 through the public opaque DM session with inherited depth and terminal ownership', () => {
     const payload = fr(
       TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
       M([
@@ -397,7 +399,7 @@ describe('closed shapes and independently reachable boundaries', () => {
     session.payload.frame.fill(0)
     expect(
       session.completeAuthenticatedContent(content(item)).content.typeId,
-    ).toBe(6)
+    ).toBe(TYPE_ENCRYPTED_MESSAGE_CONTENT)
     expect(() => session.completeAuthenticatedContent(content(item))).toThrow()
     item = containerItem([item])
     expect(outcome(() => parseFrame(content(item)))).toBe('parsed')
@@ -418,7 +420,7 @@ describe('closed shapes and independently reachable boundaries', () => {
 })
 
 it.each(['containers', 'items'] as const)(
-  'type18 continuation shares aggregate-only %s counters',
+  'type26 continuation shares aggregate-only %s counters',
   kind => {
     const grouped = (count: number): Encodable[] => {
       const groups: Encodable[] = []
@@ -498,7 +500,7 @@ describe('composable FeatureCodecDescriptor boundaries', () => {
     // Open container retains uninstalled feature item while parsing sibling core items
     const rev = rev8Frame([item, textItem('hello')])
     const parsedRev = parsed(rev, uninstalledCtx)
-    if (parsedRev.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION) throw Error('expected type 8')
+    if (parsedRev.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION) throw Error('expected type 20')
     expect(parsedRev.typed.items[0]).toMatchObject({
       kind: 'retained',
       reason: 'unknown-type',

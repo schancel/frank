@@ -200,7 +200,11 @@ fn signed_snapshot(
     *map_value(&mut payload, 13) = previous
         .map(|old| CborValue::Bytes(old.evidence.hash.to_vec()))
         .unwrap_or(CborValue::Null);
-    let statement = test_frame(4, 4, &payload);
+    let statement = test_frame(
+        frank_cbor::message_types::TYPE_DIRECTORY_STATEMENT,
+        4,
+        &payload,
+    );
     let signature = Secp256k1::new()
         .sign(
             &Message::from_slice(&directory_signature_digest("monad", &statement).unwrap())
@@ -264,7 +268,11 @@ fn directional_fixture(sender: &Current, recipient: &Current) -> (Vec<u8>, Vec<u
     *map_value(&mut payload, 2) = account_value(&recipient_p);
     // Opaque ciphertext is immaterial to this partial stamp verifier. This constructed
     // frame deliberately makes no claim to be a newly authenticated encryption fixture.
-    let payload = test_frame(5, 2, &payload);
+    let payload = test_frame(
+        frank_cbor::message_types::TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+        2,
+        &payload,
+    );
     let t3 = recipient_payload_digest("monad", &payload).unwrap();
     let mut delivery = original.payload;
     *map_value(&mut delivery, 2) = CborValue::Bytes(payload);
@@ -287,7 +295,14 @@ fn directional_fixture(sender: &Current, recipient: &Current) -> (Vec<u8>, Vec<u
         dleq_proof: &bytes(&v, "proof"),
     })
     .unwrap();
-    (test_frame(1, 1, &delivery), context)
+    (
+        test_frame(
+            frank_cbor::message_types::TYPE_DIRECT_MESSAGE_DELIVERY,
+            1,
+            &delivery,
+        ),
+        context,
+    )
 }
 
 #[test]
@@ -427,7 +442,7 @@ fn delivery_rejects_wrong_t3_t4_destination_and_duplicate_or_noncontiguous_membe
         }
         let frame = encode_frame(
             EnvelopeFields {
-                type_id: 1,
+                type_id: frank_cbor::message_types::TYPE_DIRECT_MESSAGE_DELIVERY,
                 schema_version: 1,
                 min_reader_version: 1,
             },

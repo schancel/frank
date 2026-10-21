@@ -191,7 +191,7 @@ pub enum ForumOperationEvidence {
 pub struct ForumOperationStatus<F> {
     /// Exact validated network tag.
     pub network: String,
-    /// Original required type-10 or type-11 operation frame.
+    /// Original required type-41 or type-42 operation frame.
     pub submitted_frame: F,
     /// Exact target post T1, bound to the submitted operation.
     pub target_hash: Vec<u8>,
@@ -505,10 +505,10 @@ impl BotRole {
     }
 }
 
-/// One key-transition entry after its type-7 frame has been opened.
+/// One key-transition entry after its type-3 frame has been opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyTransition {
-    /// Opened type-7 statement frame.
+    /// Opened type-3 statement frame.
     pub statement: ParsedFrame,
     /// Authorization algorithm.
     pub algorithm: u32,
@@ -549,13 +549,13 @@ pub struct OpaqueSection {
 /// Typed payload. Framed children are opened frames, not raw bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedPayload {
-    /// Type 25.
+    /// Type 13.
     ForwardingDelivery {
         /// Field 0.
         network: String,
         /// Field 1.
         destination: AccountRef,
-        /// Field 2, opened as type 1.
+        /// Field 2, opened as type 10.
         payload_frame: ParsedFrame,
         /// Field 3.
         payload_digest: Vec<u8>,
@@ -568,13 +568,13 @@ pub enum TypedPayload {
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 1.
+    /// Type 10.
     DirectMessage {
         /// Field 0.
         network: String,
         /// Field 1.
         destination: AccountRef,
-        /// Field 2, opened as type 5.
+        /// Field 2, opened as type 11.
         payload_frame: ParsedFrame,
         /// Field 3.
         payload_digest: Vec<u8>,
@@ -589,14 +589,14 @@ pub enum TypedPayload {
     },
     /// Type 2.
     DirectoryAttestation {
-        /// Field 0, opened as type 4.
+        /// Field 0, opened as type 1.
         statement: ParsedFrame,
         /// Field 1.
         signatures: Vec<SignatureEntry>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 3.
+    /// Type 14.
     MailboxCheckpoint {
         /// Field 0.
         network: String,
@@ -613,7 +613,7 @@ pub enum TypedPayload {
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 4.
+    /// Type 1.
     DirectoryStatement {
         /// Field 0.
         network: String,
@@ -648,9 +648,9 @@ pub enum TypedPayload {
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 5.
+    /// Type 11.
     RecipientPayload {
-        /// The interpreted type-5 schema version.
+        /// The interpreted type-11 schema version.
         schema_version: u32,
         /// Field 0.
         network: String,
@@ -675,13 +675,13 @@ pub enum TypedPayload {
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 6.
+    /// Type 12.
     EncryptedContent {
         /// Field 0.
         network: String,
         /// Field 1.
         message_id: Vec<u8>,
-        /// Field 2, opened as type 8.
+        /// Field 2, opened as type 20.
         revision_frame: ParsedFrame,
         /// Field 3.
         content_digest: Vec<u8>,
@@ -692,7 +692,7 @@ pub enum TypedPayload {
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 7.
+    /// Type 3.
     KeyTransitionStatement {
         /// Field 0.
         network: String,
@@ -707,13 +707,13 @@ pub enum TypedPayload {
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 9.
+    /// Type 40.
     TopicPost {
         /// Field 0.
         network: String,
         /// Field 1, exact UTF-8, not normalized.
         topic: String,
-        /// Field 2, when present: T1 hash of the parent type-9 frame.
+        /// Field 2, when present: T1 hash of the parent type-40 frame.
         parent_hash: Option<Vec<u8>>,
         /// Field 3, opaque.
         body: Vec<u8>,
@@ -726,61 +726,61 @@ pub enum TypedPayload {
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 10.
+    /// Type 41.
     TopicPostSubmission {
         /// Field 0.
         network: String,
-        /// Field 1, opened as type 9.
+        /// Field 1, opened as type 40.
         post_frame: ParsedFrame,
         /// Field 2, raw signed chain transaction.
         burn_tx: Vec<u8>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 11.
+    /// Type 42.
     TopicVoteSubmission {
         /// Field 0.
         network: String,
-        /// Field 1: T1 hash of the target type-9 frame.
+        /// Field 1: T1 hash of the target type-40 frame.
         target_hash: Vec<u8>,
         /// Field 2, raw signed chain transaction.
         burn_tx: Vec<u8>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 12, a relay observation over the exact post.
+    /// Type 43, a relay observation over the exact post.
     ForumView(ForumView<ParsedFrame>),
-    /// Type 13, exact view rows and bound continuation.
+    /// Type 44, exact view rows and bound continuation.
     ForumTopicPage(ForumTopicPage<ParsedFrame, ForumCursor>),
-    /// Type 14, ordered discovery entries.
+    /// Type 45, ordered discovery entries.
     ForumDiscoveryPage(ForumDiscoveryPage<ForumCursor>),
-    /// Type 15, tagged request echo or relay observation.
+    /// Type 46, tagged request echo or relay observation.
     ForumOperationStatus(ForumOperationStatus<ParsedFrame>),
-    /// Type 8.
+    /// Type 20.
     MessageRevision {
         /// Field 1 children.
         items: Vec<ChildFrame>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 16.
+    /// Type 21.
     ContainerItem {
         /// Field 0 children.
         items: Vec<ChildFrame>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
-    /// Type 18, nine closed blackjack item shapes.
+    /// Type 26, nine closed blackjack item shapes.
     BlackjackItem(BlackjackMessageItem),
-    /// Type 18 schema 2 with min reader 2, the closed peer-to-peer hand item shapes.
+    /// Type 26 schema 2 with min reader 2, the closed peer-to-peer hand item shapes.
     BlackjackHandItem(BlackjackHandMessageItem),
-    /// Type 18 schema 3, the closed hand shapes with entropy from both sides.
+    /// Type 26 schema 3, the closed hand shapes with entropy from both sides.
     BlackjackHandV3Item(BlackjackHandV3MessageItem),
-    /// Type 19 schema 1, native recovery.
+    /// Type 24 schema 1, native recovery.
     NativeStealthItem(NativeStealthItem),
-    /// Type 19 schema 2, exact multiasset transfer descriptions.
+    /// Type 24 schema 2, exact multiasset transfer descriptions.
     StealthPaymentItem(StealthPaymentItem),
-    /// Type 17.
+    /// Type 22.
     TextItem {
         /// Field 0.
         text: String,
@@ -798,7 +798,7 @@ pub struct PreviewDirectoryRoles {
     pub mailbox_key_generation: u64,
     /// Field 12, exact uint64 sequence.
     pub stamp_key_generation: u64,
-    /// Field 13, exact predecessor type-4 T1, null only at revision zero.
+    /// Field 13, exact predecessor type-1 T1, null only at revision zero.
     pub predecessor: Option<Vec<u8>>,
 }
 
@@ -882,7 +882,7 @@ pub enum BlackjackOutcome {
     PlayerBlackjack,
 }
 
-/// Closed type-18 wire projection; exact frame bytes stay on ParsedFrame.
+/// Closed type-26 wire projection; exact frame bytes stay on ParsedFrame.
 pub type BlackjackMessageItem = BlackjackFields<Vec<u8>, Vec<u8>>;
 
 /// Codec-owned closed schema-2 shapes of one peer-to-peer hand: ten actions, the challenge in
@@ -954,7 +954,7 @@ pub struct BlackjackHandFields<H, Q> {
     pub action: BlackjackHandAction<H, Q>,
 }
 
-/// Closed type-18 schema-2 wire projection; exact frame bytes stay on ParsedFrame.
+/// Closed type-26 schema-2 wire projection; exact frame bytes stay on ParsedFrame.
 pub type BlackjackHandMessageItem = BlackjackHandFields<Vec<u8>, Vec<u8>>;
 
 /// The six schema-3 moves that open one entropy link; they share one closed shape.
@@ -1038,7 +1038,7 @@ pub struct BlackjackHandV3Fields<H, Q> {
     pub action: BlackjackHandV3Action<H, Q>,
 }
 
-/// Closed type-18 schema-3 wire projection; exact frame bytes stay on ParsedFrame.
+/// Closed type-26 schema-3 wire projection; exact frame bytes stay on ParsedFrame.
 pub type BlackjackHandV3MessageItem = BlackjackHandV3Fields<Vec<u8>, Vec<u8>>;
 
 /// Exact transfer quantity without a chain-family interpretation.

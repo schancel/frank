@@ -12,7 +12,7 @@ pub use frank_cbor::{AccountRef, RelayBinding, Timestamp};
 
 /// Maximum retained statements, including the bounded proof of a fork.
 pub const MAX_STATEMENTS: usize = 4096;
-/// Exact type-4 plus stable validating type-2 bytes across retained evidence.
+/// Exact type-1 plus stable validating type-2 bytes across retained evidence.
 pub const MAX_CHARGED_BYTES: usize = 16_777_216;
 /// Both complete frames are independently bounded.
 pub const MAX_FRAME_BYTES: usize = 262_144;
@@ -24,9 +24,9 @@ pub const MAX_FRAME_BYTES: usize = 262_144;
 pub struct Anchor {
     /// Expected network.
     pub network: String,
-    /// Subject and signing authority P (compressed type-1 point).
+    /// Subject and signing authority P (compressed type-10 point).
     pub subject: AccountRef,
-    /// Exact revision-zero type-4 T1.
+    /// Exact revision-zero type-1 T1.
     pub revision_zero: [u8; 32],
 }
 
@@ -199,7 +199,7 @@ pub struct HistoricalEvidence {
     pub statement: Vec<u8>,
     /// Original stable validating wrapper.
     pub attestation: Vec<u8>,
-    /// Exact type-4 T1.
+    /// Exact type-1 T1.
     pub hash: [u8; 32],
 }
 

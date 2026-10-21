@@ -275,7 +275,7 @@ pub fn project_blackjack_item(parsed: &ParsedFrame) -> Result<BlackjackProjectio
     })
 }
 
-/// The closed peer-to-peer hand shapes (type 18, schema 2). Hashes are 64 bare lowercase hex
+/// The closed peer-to-peer hand shapes (type 26, schema 2). Hashes are 64 bare lowercase hex
 /// characters, quantities exact decimal strings. No shape carries an amount of money: a wager,
 /// payout or refund is the stamp of the message that carries the item.
 pub type BlackjackHandItem = BlackjackHandFields<String, String>;
@@ -372,7 +372,7 @@ pub fn encode_blackjack_hand_item(item: &BlackjackHandItem) -> Result<Vec<u8>, E
     validate_frame(&bytes, &default_context())?;
     Ok(bytes)
 }
-/// True for a parsed type-18 child that is a schema-2 hand item.
+/// True for a parsed type-26 child that is a schema-2 hand item.
 pub fn is_blackjack_hand_frame(parsed: &ParsedFrame) -> bool {
     matches!(
         parsed.typed.as_deref(),
@@ -441,7 +441,7 @@ pub fn project_blackjack_hand_item(parsed: &ParsedFrame) -> Result<BlackjackHand
     })
 }
 
-/// The closed hand shapes with entropy from both sides (type 18, schema 3). Hashes are 64 bare
+/// The closed hand shapes with entropy from both sides (type 26, schema 3). Hashes are 64 bare
 /// lowercase hex characters, quantities exact decimal strings. No shape states a card, an
 /// outcome or an amount of money.
 pub type BlackjackHandV3Item = BlackjackHandV3Fields<String, String>;
@@ -533,7 +533,7 @@ pub fn encode_blackjack_hand_v3_item(item: &BlackjackHandV3Item) -> Result<Vec<u
     validate_frame(&bytes, &default_context())?;
     Ok(bytes)
 }
-/// True for a parsed type-18 child that is a schema-3 hand item.
+/// True for a parsed type-26 child that is a schema-3 hand item.
 pub fn is_blackjack_hand_v3_frame(parsed: &ParsedFrame) -> bool {
     matches!(
         parsed.typed.as_deref(),

@@ -64,7 +64,7 @@ fn document(
         "cases": [
             case(
                 "rust-fixture-direct-message",
-                "Rust encoding of the direct-message proof fixture with an additive field and nested opaque future item (type 1).",
+                "Rust encoding of the direct-message proof fixture with an additive field and nested opaque future item (type 10).",
                 direct,
                 &["S3", "S8", "S9", "T3", "T4"],
             ),
@@ -76,25 +76,25 @@ fn document(
             ),
             case(
                 "rust-fixture-checkpoint",
-                "Rust encoding of the mailbox-checkpoint proof fixture with an additive field and opaque future fact/section frames (type 3).",
+                "Rust encoding of the mailbox-checkpoint proof fixture with an additive field and opaque future fact/section frames (type 14).",
                 checkpoint,
                 &["S6", "S7"],
             ),
             topic_case(
                 "rust-fixture-topic-post",
-                "Rust encoding of the type-9 topic post fixture.",
+                "Rust encoding of the type-40 topic post fixture.",
                 &topic[0],
                 &["S12", "T1"],
             ),
             topic_case(
                 "rust-fixture-topic-post-submission",
-                "Rust encoding of the type-10 topic post submission fixture.",
+                "Rust encoding of the type-41 topic post submission fixture.",
                 &topic[1],
                 &["S8", "S11", "T7"],
             ),
             topic_case(
                 "rust-fixture-topic-vote",
-                "Rust encoding of the type-11 topic vote fixture.",
+                "Rust encoding of the type-42 topic vote fixture.",
                 &topic[2],
                 &["S12", "T7"],
             ),

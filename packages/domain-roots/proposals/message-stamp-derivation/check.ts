@@ -8,6 +8,7 @@ import { deriveDomainRoot, type DomainPurpose } from '../../src'
 import {
   encodeFrame,
   commonTranscript,
+  TYPE_DIRECTORY_STATEMENT,
   type Encodable,
 } from '../../../frank-codec/src'
 
@@ -232,7 +233,7 @@ function snapshots(leaves: Leaf[]): Snapshot[] {
       [13, result.length ? fromHex(result[result.length - 1].t1) : null],
     )
     const frame = encodeFrame(
-      { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+      { typeId: TYPE_DIRECTORY_STATEMENT, schemaVersion: 4, minReaderVersion: 4 },
       payload,
     )
     result.push({

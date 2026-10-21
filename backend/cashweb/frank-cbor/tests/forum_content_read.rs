@@ -1,4 +1,9 @@
 //! Active public-facade conformance: shared exact bytes and independent hostile boundary checks.
+use frank_cbor::message_fields::{
+    forum_content, forum_entry_kind, forum_post_entry as entry_k, forum_single_view as view_k,
+    forum_topic_cursor, forum_topic_page as page_k, timestamp, topic_post as post_k,
+};
+use frank_cbor::message_types::{TYPE_FORUM_TOPIC_PAGE, TYPE_FORUM_VIEW, TYPE_TOPIC_POST};
 use frank_cbor::*;
 use serde_json::Value;
 
@@ -115,7 +120,7 @@ fn shared_active_bytes_hashes_rejections_and_retention() {
         if let Some(version) = f["context"]["topicSchema"].as_u64() {
             ctx.supported_schemas
                 .iter_mut()
-                .find(|s| s.type_id == 9)
+                .find(|s| s.type_id == TYPE_TOPIC_POST)
                 .unwrap()
                 .schema_version = version as u32;
         }
@@ -157,7 +162,7 @@ fn shared_active_bytes_hashes_rejections_and_retention() {
                 "T7 {id}"
             );
         }
-        if f["type"] == 9 {
+        if f["type"] == TYPE_TOPIC_POST {
             match p.typed.as_deref().unwrap() {
                 TypedPayload::TopicPost { content, .. } => assert_eq!(
                     matches!(content, ForumPostContent::Opaque),
@@ -222,7 +227,12 @@ fn independent_encode_origins_and_cursor_transport() {
         }
         for network in ["UPPER", "é", "", "-net", &"n".repeat(65)] {
             let mut v = decode_canonical(&bytes).unwrap();
-            set(&mut v, 0, CborValue::Text(network.into()));
+            // Both cursor families keep the network at the same key.
+            set(
+                &mut v,
+                forum_topic_cursor::NETWORK,
+                CborValue::Text(network.into()),
+            );
             assert!(decode_forum_cursor(&encode_canonical(&v).unwrap()).is_err());
         }
     }
@@ -281,43 +291,51 @@ fn status_matching_does_not_promote_request_echoes_to_observations() {
 fn structured(extra: CborValue, index: u8) -> Vec<u8> {
     let content = cbor_map(vec![
         (
-            0,
+            forum_content::AUTHORED,
             cbor_map(vec![
-                (0, CborValue::Int(1700000000)),
-                (1, CborValue::Int(999999999)),
+                (timestamp::SECONDS, CborValue::Int(1700000000)),
+                (timestamp::NANOSECONDS, CborValue::Int(999999999)),
             ]),
         ),
         (
-            1,
-            CborValue::Array(vec![cbor_map(vec![
-                (0, CborValue::Int(1)),
-                (3, CborValue::Text("body".into())),
-            ])]),
+            forum_content::ENTRIES,
+            CborValue::Array(vec![post_entry("body".into())]),
         ),
-        (8, extra),
+        (8, extra), // raw-cbor-key: an additive content field no reader declares
     ]);
     let mut p = payload("typescript-origin");
     set(
         &mut p,
-        3,
+        post_k::BODY,
         CborValue::Bytes(encode_canonical(&content).unwrap()),
     );
-    set(&mut p, 2, CborValue::Bytes(vec![index; 32]));
-    frame(9, &p, 3, 2)
+    set(
+        &mut p,
+        post_k::PARENT_HASH,
+        CborValue::Bytes(vec![index; 32]),
+    );
+    frame(TYPE_TOPIC_POST, &p, 3, 2)
+}
+/// A forum post entry carrying `message`.
+fn post_entry(message: String) -> CborValue {
+    cbor_map(vec![
+        (entry_k::KIND, CborValue::Int(forum_entry_kind::POST.into())),
+        (entry_k::MESSAGE, CborValue::Text(message)),
+    ])
 }
 fn view(post: Vec<u8>) -> Vec<u8> {
     let mut v = payload("view-large-aggregate");
-    set(&mut v, 1, CborValue::Bytes(post));
-    frame(12, &v, 1, 1)
+    set(&mut v, view_k::POST_FRAME, CborValue::Bytes(post));
+    frame(TYPE_FORUM_VIEW, &v, 1, 1)
 }
 fn page(rows: Vec<Vec<u8>>) -> Vec<u8> {
     let mut p = payload("equal-time-page");
     set(
         &mut p,
-        4,
+        page_k::ROWS,
         CborValue::Array(rows.into_iter().map(CborValue::Bytes).collect()),
     );
-    frame(13, &p, 1, 1)
+    frame(TYPE_FORUM_TOPIC_PAGE, &p, 1, 1)
 }
 
 #[test]
@@ -357,16 +375,18 @@ fn required_frames_and_content_share_depth_container_and_item_budgets() {
 #[test]
 fn complete_encoded_response_limits_are_inclusive_and_rows_are_not_skipped() {
     for (type_id, id, limit) in [
-        (12, "view-large-aggregate", 2097152usize),
-        (13, "equal-time-page", 4194304),
+        (TYPE_FORUM_VIEW, "view-large-aggregate", 2097152usize),
+        (TYPE_FORUM_TOPIC_PAGE, "equal-time-page", 4194304),
     ] {
         let mut p = payload(id);
-        set(&mut p, 99, CborValue::Bytes(vec![]));
+        set(&mut p, 99, CborValue::Bytes(vec![])); // raw-cbor-key: additive padding field
         let overhead = frame(type_id, &p, 2, 1).len();
+        // raw-cbor-key: additive padding field
         set(&mut p, 99, CborValue::Bytes(vec![0; limit - overhead - 6]));
         let bytes = frame(type_id, &p, 2, 1);
         assert_eq!(bytes.len(), limit);
         assert_eq!(outcome(&bytes), "parsed");
+        // raw-cbor-key: additive padding field
         set(&mut p, 99, CborValue::Bytes(vec![0; limit - overhead - 5]));
         assert_eq!(outcome(&frame(type_id, &p, 2, 1)), "resource@8.1");
     }
@@ -379,33 +399,37 @@ fn content_and_cursor_boundaries_are_inclusive() {
         let mut p = payload("typescript-origin");
         set(
             &mut p,
-            3,
+            post_k::BODY,
             CborValue::Bytes(encode_canonical(content).unwrap()),
         );
-        frame(9, &p, 3, 2)
+        frame(TYPE_TOPIC_POST, &p, 3, 2)
     };
-    let entry = cbor_map(vec![
-        (0, CborValue::Int(1)),
-        (3, CborValue::Text("x".into())),
-    ]);
+    let entry = post_entry("x".into());
     let mut content = cbor_map(vec![
         (
-            0,
-            cbor_map(vec![(0, CborValue::Int(0)), (1, CborValue::Int(0))]),
+            forum_content::AUTHORED,
+            cbor_map(vec![
+                (timestamp::SECONDS, CborValue::Int(0)),
+                (timestamp::NANOSECONDS, CborValue::Int(0)),
+            ]),
         ),
-        (1, CborValue::Array(vec![entry.clone(); 64])),
+        (
+            forum_content::ENTRIES,
+            CborValue::Array(vec![entry.clone(); 64]),
+        ),
     ]);
     assert_eq!(outcome(&post(&content)), "parsed");
-    set(&mut content, 1, CborValue::Array(vec![entry; 65]));
+    set(
+        &mut content,
+        forum_content::ENTRIES,
+        CborValue::Array(vec![entry; 65]),
+    );
     assert_eq!(outcome(&post(&content)), "resource@8.1");
     for size in [262144, 262145] {
         set(
             &mut content,
-            1,
-            CborValue::Array(vec![cbor_map(vec![
-                (0, CborValue::Int(1)),
-                (3, CborValue::Text("x".repeat(size))),
-            ])]),
+            forum_content::ENTRIES,
+            CborValue::Array(vec![post_entry("x".repeat(size))]),
         );
         assert_eq!(
             outcome(&post(&content)),
@@ -418,15 +442,18 @@ fn content_and_cursor_boundaries_are_inclusive() {
     }
     set(
         &mut content,
-        1,
-        CborValue::Array(vec![cbor_map(vec![(0, CborValue::Int(1))])]),
+        forum_content::ENTRIES,
+        CborValue::Array(vec![cbor_map(vec![(
+            entry_k::KIND,
+            CborValue::Int(forum_entry_kind::POST.into()),
+        )])]),
     );
-    set(&mut content, 8, CborValue::Bytes(vec![]));
+    set(&mut content, 8, CborValue::Bytes(vec![])); // raw-cbor-key: additive content field
     let overhead = encode_canonical(&content).unwrap().len();
     for size in [524288, 524289] {
         set(
             &mut content,
-            8,
+            8, // raw-cbor-key: additive content field
             CborValue::Bytes(vec![0; size - overhead - 4]),
         );
         assert_eq!(encode_canonical(&content).unwrap().len(), size);

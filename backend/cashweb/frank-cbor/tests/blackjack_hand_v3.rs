@@ -1,6 +1,11 @@
 //! Shared corpus of the hand with entropy from both sides (type 18, schema 3 / min reader 2)
 //! through the public facade. No game runtime, fairness or payment authority.
 mod common;
+use frank_cbor::message_fields::{
+    blackjack_action, blackjack_hand_action, blackjack_hand_item as hand, blackjack_item as bj,
+    container_message_item,
+};
+use frank_cbor::message_types::{TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_CONTAINER_MESSAGE_ITEM};
 use frank_cbor::*;
 use serde_json::{json, Value};
 
@@ -314,7 +319,7 @@ fn schema2_hand_frames_and_v3_frames_are_distinct() {
     let schema3 = |payload: &CborValue| {
         encode_frame(
             EnvelopeFields {
-                type_id: 18,
+                type_id: TYPE_BLACKJACK_MESSAGE_ITEM,
                 schema_version: 3,
                 min_reader_version: 2,
             },
@@ -323,14 +328,17 @@ fn schema2_hand_frames_and_v3_frames_are_distinct() {
         .unwrap()
     };
     let old_hit = parsed(&schema3(&cbor_map(vec![
-        (0, CborValue::Text(GAME.into())),
-        (1, CborValue::Int(20)),
+        (hand::GAME_ID, CborValue::Text(GAME.into())),
+        (
+            hand::ACTION,
+            CborValue::Int(blackjack_hand_action::HIT.into()),
+        ),
     ])));
     assert!(is_blackjack_hand_frame(&old_hit) && !is_blackjack_hand_v3_frame(&old_hit));
     assert_eq!(project_blackjack_hand_item(&old_hit).unwrap().item, hit);
     let old_stand = parsed(&schema3(&cbor_map(vec![
-        (0, CborValue::Text("g".into())),
-        (1, CborValue::Int(3)),
+        (bj::GAME_ID, CborValue::Text("g".into())),
+        (bj::ACTION, CborValue::Int(blackjack_action::STAND.into())),
     ])));
     assert!(!is_blackjack_hand_frame(&old_stand) && !is_blackjack_hand_v3_frame(&old_stand));
     assert_eq!(
@@ -340,9 +348,9 @@ fn schema2_hand_frames_and_v3_frames_are_distinct() {
 
     // Nested in a container, a schema-3 item is typed and keeps its exact bytes.
     let nested = common::fr(
-        16,
+        TYPE_CONTAINER_MESSAGE_ITEM,
         &cbor_map(vec![(
-            0,
+            container_message_item::ITEMS,
             CborValue::Array(vec![CborValue::Bytes(frame.clone())]),
         )]),
     );
@@ -366,6 +374,7 @@ fn writer_refuses_malformed_items() {
         link: link.into(),
         prev: prev.into(),
     };
+    // raw-cbor-key-block: `(seq, action)` writer cases, not CBOR map entries
     let refused = [
         // seq: 0 only on a challenge, 1..=255 everywhere else.
         (0, mv(&ok, &ok)),
@@ -453,6 +462,7 @@ fn writer_refuses_malformed_items() {
             },
         ),
     ];
+    // raw-cbor-key-block-end
     for (seq, action) in refused {
         let item = BlackjackHandV3Fields {
             game_id: GAME.into(),
@@ -491,6 +501,7 @@ fn writer_refuses_malformed_items() {
         }
     }
     // The bounds that are allowed round-trip exactly: seq 255 and a maximum bet of 10^40 - 1.
+    // raw-cbor-key-block: `(seq, action)` writer cases, not CBOR map entries
     for (seq, action) in [
         (255, mv(&ok, &ok)),
         (1, mv(&ok, &ok)),
@@ -501,6 +512,7 @@ fn writer_refuses_malformed_items() {
             },
         ),
     ] {
+        // raw-cbor-key-block-end
         let item = BlackjackHandV3Fields {
             game_id: GAME.into(),
             seq,

@@ -280,6 +280,7 @@ def main() -> int:
     problems = hand_written_ids(types, files)
     problems += field_registry.cddl_problems(ROOT, structs)
     problems += field_registry.raw_literal_problems(ROOT, files)
+    problems += field_registry.rust_test_literal_problems(ROOT, files)
     if args.check and stale:
         problems = [f"{p}: stale; run python3 {Path(__file__).relative_to(ROOT)}" for p in stale] + problems
     for p in problems:

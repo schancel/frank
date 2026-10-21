@@ -10,7 +10,8 @@ use frank_cbor::{
     MAX_FORWARDING_DELIVERY_FRAME_BYTES, TYPE_FORWARDING_DELIVERY_ENVELOPE,
 };
 
-const TYPE_DIRECT_MESSAGE: u32 = 1;
+use frank_cbor::message_fields::{direct_message_delivery as dmd, key_type, payment_member as pay};
+use frank_cbor::message_types::TYPE_DIRECT_MESSAGE_DELIVERY;
 
 use common::{bytes_of, fr, int, stamp_account, type5_frame, NET, T3C_STAMP_KEY};
 
@@ -18,20 +19,23 @@ fn sample_delivery_frame() -> Vec<u8> {
     let payload_frame = type5_frame();
     let t3 = recipient_payload_digest(NET, &payload_frame).expect("t3");
     let payment = cbor_map(vec![
-        (0, int(0)),
-        (1, CborValue::Bytes(bytes_of(32, 10))),
-        (2, CborValue::Bytes(vec![0x00; 32])),
-        (3, CborValue::Bytes(bytes_of(20, 20))),
-        (4, CborValue::Bytes(payment_commitment(&t3, 0).to_vec())),
+        (pay::CHILD_INDEX, int(0)),
+        (pay::TRANSACTION_ID, CborValue::Bytes(bytes_of(32, 10))),
+        (pay::VALUE, CborValue::Bytes(vec![0x00; 32])),
+        (pay::ADDRESS, CborValue::Bytes(bytes_of(20, 20))),
+        (
+            pay::COMMITMENT,
+            CborValue::Bytes(payment_commitment(&t3, 0).to_vec()),
+        ),
     ]);
     fr(
-        TYPE_DIRECT_MESSAGE,
+        TYPE_DIRECT_MESSAGE_DELIVERY,
         &cbor_map(vec![
-            (0, CborValue::Text(NET.to_string())),
-            (1, stamp_account(T3C_STAMP_KEY)),
-            (2, CborValue::Bytes(payload_frame)),
-            (3, CborValue::Bytes(t3.to_vec())),
-            (4, CborValue::Array(vec![payment])),
+            (dmd::NETWORK, CborValue::Text(NET.to_string())),
+            (dmd::DESTINATION, stamp_account(T3C_STAMP_KEY)),
+            (dmd::PAYLOAD_FRAME, CborValue::Bytes(payload_frame)),
+            (dmd::PAYLOAD_DIGEST, CborValue::Bytes(t3.to_vec())),
+            (dmd::PAYMENTS, CborValue::Array(vec![payment])),
         ]),
     )
 }
@@ -40,7 +44,7 @@ fn relay_account(seed: u32) -> AccountRef {
     let mut key = vec![0x02];
     key.extend(bytes_of(32, seed));
     AccountRef {
-        key_type: 1,
+        key_type: key_type::SECP256K1,
         key_bytes: key,
     }
 }
@@ -104,7 +108,7 @@ fn test_forwarding_envelope_encode_and_validate() {
             assert_eq!(payments[0].vout, Some(0));
 
             // Inner delivery frame is opened as Type 1 DirectMessage
-            assert_eq!(payload_frame.type_id, TYPE_DIRECT_MESSAGE);
+            assert_eq!(payload_frame.type_id, TYPE_DIRECT_MESSAGE_DELIVERY);
             assert!(matches!(
                 payload_frame.typed.as_deref(),
                 Some(TypedPayload::DirectMessage { .. })

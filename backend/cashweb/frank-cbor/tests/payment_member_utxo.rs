@@ -3,6 +3,8 @@
 
 mod common;
 
+use frank_cbor::message_fields::{direct_message_delivery as dmd, payment_member as pay};
+use frank_cbor::message_types::TYPE_DIRECT_MESSAGE_DELIVERY;
 use frank_cbor::{
     cbor_map, payment_commitment, recipient_payload_digest, validate_frame, CborValue, Error,
     PaymentValue, TypedPayload, ValidationResult,
@@ -21,14 +23,17 @@ fn utxo_payment(
     vout: Option<u32>,
 ) -> CborValue {
     let mut entries = vec![
-        (0, int(i128::from(index))),
-        (1, CborValue::Bytes(txid)),
-        (2, value),
-        (3, CborValue::Bytes(bytes_of(20, 50 + index))),
-        (4, CborValue::Bytes(payment_commitment(t3, index).to_vec())),
+        (pay::CHILD_INDEX, int(i128::from(index))),
+        (pay::TRANSACTION_ID, CborValue::Bytes(txid)),
+        (pay::VALUE, value),
+        (pay::ADDRESS, CborValue::Bytes(bytes_of(20, 50 + index))),
+        (
+            pay::COMMITMENT,
+            CborValue::Bytes(payment_commitment(t3, index).to_vec()),
+        ),
     ];
     if let Some(v) = vout {
-        entries.push((5, int(i128::from(v))));
+        entries.push((pay::VOUT, int(i128::from(v))));
     }
     cbor_map(entries)
 }
@@ -41,19 +46,19 @@ fn build_delivery_with_payments(
     let payload_frame = type5_frame();
     let t3 = recipient_payload_digest(NET, &payload_frame).expect("t3");
     let mut entries = vec![
-        (0, CborValue::Text(NET.to_string())),
-        (1, stamp_account(T3C_STAMP_KEY)),
-        (2, CborValue::Bytes(payload_frame)),
-        (3, CborValue::Bytes(t3.to_vec())),
-        (4, CborValue::Array(payments)),
+        (dmd::NETWORK, CborValue::Text(NET.to_string())),
+        (dmd::DESTINATION, stamp_account(T3C_STAMP_KEY)),
+        (dmd::PAYLOAD_FRAME, CborValue::Bytes(payload_frame)),
+        (dmd::PAYLOAD_DIGEST, CborValue::Bytes(t3.to_vec())),
+        (dmd::PAYMENTS, CborValue::Array(payments)),
     ];
     if let Some(rec) = colocated_recipient {
-        entries.push((5, rec));
+        entries.push((dmd::RECIPIENT, rec));
     }
     if let Some(dleq) = colocated_dleq {
-        entries.push((6, dleq));
+        entries.push((dmd::DLEQ_PROOF, dleq));
     }
-    fr(1, &cbor_map(entries))
+    fr(TYPE_DIRECT_MESSAGE_DELIVERY, &cbor_map(entries))
 }
 
 #[test]

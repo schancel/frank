@@ -507,3 +507,84 @@ def _map_literal_lines(lines: list[str], opener: re.Pattern) -> set[int]:
                 if depth == 0:
                     break
     return inside
+
+
+# ---------------------------------------------------------------------------------------------
+# Rust test code: the frank-cbor integration tests and `#[cfg(test)]` modules in its source name
+# map keys, paths and type ids by their generated constants too. Frozen proposal checkers under
+# `backend/cashweb/frank-cbor/proposals/` are pinned evidence and are not linted.
+
+RUST_TEST_LINT_ROOTS: list[str] = [
+    "backend/cashweb/frank-cbor/tests/",
+    "backend/cashweb/frank-cbor/src/",
+]
+
+
+def rust_test_literal_problems(root: Path, files: list[str]) -> list[str]:
+    problems = []
+    for rel in files:
+        if rel in LINT_SKIP or not rel.endswith(".rs"):
+            continue
+        if not any(rel.startswith(r) for r in RUST_TEST_LINT_ROOTS):
+            continue
+        path = root / rel
+        if not path.is_file():
+            continue
+        text = path.read_text()
+        is_test_file = rel.startswith("backend/cashweb/frank-cbor/tests/")
+        tests = [(0, len(text))] if is_test_file else _rust_test_ranges(text)
+        lines = text.splitlines()
+        offset = 0
+        allowed_block = False
+        previous_code = ""
+        for n, line in enumerate(lines, 1):
+            start = offset
+            offset += len(line) + 1
+            if RUST_TEST_ALLOW_BLOCK_END in line:
+                allowed_block = False
+                continue
+            if RUST_TEST_ALLOW_BLOCK in line:
+                allowed_block = True
+                continue
+            if allowed_block or not any(a <= start <= b for a, b in tests):
+                continue
+            code = line.split("//", 1)[0]
+            if not code.strip():
+                continue
+            split_open, previous_code = bool(RUST_TEST_SPLIT_OPEN.search(previous_code)), code
+            if ALLOW_MARK in line or (n > 1 and ALLOW_MARK in lines[n - 2]):
+                continue
+            if split_open and RUST_TEST_SPLIT_LITERAL.match(code):
+                problems.append(
+                    f"{rel}:{n}: key or type id literal split after `(`; use the generated constant ({line.strip()})"
+                )
+                continue
+            for pattern, what in RUST_PATTERNS + RUST_TEST_PATTERNS:
+                if pattern.search(code):
+                    problems.append(f"{rel}:{n}: {what}; use the generated constant ({line.strip()})")
+                    break
+    return problems
+
+
+# A `// raw-cbor-key-block: <reason>` ... `// raw-cbor-key-block-end` pair exempts a run of
+# tuples that are not CBOR keys (for example `(seq, action)` writer cases).
+RUST_TEST_ALLOW_BLOCK = "raw-cbor-key-block:"
+RUST_TEST_ALLOW_BLOCK_END = "raw-cbor-key-block-end"
+# rustfmt puts a long `(key, value)` entry or `fr(type_id, …)` call's first literal on its own line.
+RUST_TEST_SPLIT_LITERAL = re.compile(r"^\s*\d+\s*,\s*$")
+RUST_TEST_SPLIT_OPEN = re.compile(r"(?:^\s*\(|\[\(|\bfr\()\s*$")
+
+
+RUST_TEST_PATTERNS = [
+    (re.compile(r"\btype_id:\s*\d"), "type id literal `type_id: <n>`"),
+    (re.compile(r"\(\s*\d+\s*,\s*(?:\w+::)*(?:V|CborValue)::"), "map entry literal `(<n>, V::…)`"),
+    (
+        re.compile(r"(?<![A-Za-z0-9_!])\(\s*\d+\s*,\s*(?:(?:\w+::)*[a-z_][a-z0-9_]*\(|vec!|[a-z_][a-z0-9_]*\s*\)|&)"),
+        "map entry literal `(<n>, value)`",
+    ),
+    (re.compile(r"^\s*\(\s*\d+\s*,\s*$"), "map entry literal `(<n>,` split across lines"),
+    (re.compile(r"\*\s*k(?:ey)?\s*==\s*\d"), "map key literal comparison"),
+    (re.compile(r"\b(?:fr|frame|fr_additive)\(\s*\d"), "type id literal frame argument"),
+    (re.compile(r"\bkey_type:\s*\d"), "key type literal; use message_fields::key_type"),
+    (re.compile(r"\bset\(\s*&mut\s+\w+\s*,\s*\d"), "map key literal in set()"),
+]

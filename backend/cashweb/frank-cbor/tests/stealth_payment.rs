@@ -1,6 +1,12 @@
 //! Type-19 exact quantities, scheme boundaries and old-reader rejection.
 mod common;
 use common::{acct1, acct2, fr, int};
+use frank_cbor::message_fields::{
+    account_ref, container_message_item, payment_transfer as xfer,
+    stealth_asset_message_item as item, stealth_asset_transfer as entry_k,
+    stealth_derivation_scheme as scheme_k, stealth_message_item, stealth_metadata,
+};
+use frank_cbor::message_types::{TYPE_CONTAINER_MESSAGE_ITEM, TYPE_STEALTH_MESSAGE_ITEM};
 use frank_cbor::{
     cbor_map, default_context, encode_frame, validate_frame, CborValue, EnvelopeFields,
     FramePayload, Projection, StealthQuantity, TypedPayload, ValidationResult,
@@ -16,28 +22,41 @@ fn set(v: &mut CborValue, key: u64, value: Option<CborValue>) {
 }
 fn transfer() -> CborValue {
     cbor_map(vec![
-        (0, CborValue::Text("monad-testnet".into())),
-        (1, CborValue::Bytes(vec![7; 32])),
-        (3, CborValue::Bytes(vec![8; 20])),
-        (4, CborValue::Bytes(vec![255; 32])),
-        (5, CborValue::Bytes(vec![9; 20])),
-        (6, cbor_map(vec![(0, acct1(1)), (1, int(65535))])),
-        (8, CborValue::Bytes(vec![10; 100])),
+        (xfer::NETWORK_TAG, CborValue::Text("monad-testnet".into())),
+        (xfer::TX_ID, CborValue::Bytes(vec![7; 32])),
+        (xfer::DESTINATION, CborValue::Bytes(vec![8; 20])),
+        (xfer::VALUE, CborValue::Bytes(vec![255; 32])),
+        (xfer::TOKEN, CborValue::Bytes(vec![9; 20])),
+        (
+            xfer::STEALTH_METADATA,
+            cbor_map(vec![
+                (stealth_metadata::EPHEMERAL_PUB_KEY, acct1(1)),
+                (stealth_metadata::VIEW_TAG, int(65535)),
+            ]),
+        ),
+        (xfer::RAW_TX, CborValue::Bytes(vec![10; 100])),
     ])
 }
 fn entry() -> CborValue {
-    cbor_map(vec![(0, transfer()), (1, int(1)), (2, acct1(2))])
+    cbor_map(vec![
+        (entry_k::TRANSFER, transfer()),
+        (
+            entry_k::DERIVATION_SCHEME,
+            int(scheme_k::SECP256K1_ECDH_ADD_V1.into()),
+        ),
+        (entry_k::RECIPIENT_SPEND_KEY, acct1(2)),
+    ])
 }
 fn payload(entries: Vec<CborValue>) -> CborValue {
     cbor_map(vec![
-        (0, CborValue::Array(entries)),
-        (1, CborValue::Text("memo".into())),
+        (item::TRANSFERS, CborValue::Array(entries)),
+        (item::MEMO, CborValue::Text("memo".into())),
     ])
 }
 fn frame(payload: &CborValue, schema: u32, min: u32) -> Vec<u8> {
     encode_frame(
         EnvelopeFields {
-            type_id: 19,
+            type_id: TYPE_STEALTH_MESSAGE_ITEM,
             schema_version: schema,
             min_reader_version: min,
         },
@@ -59,9 +78,9 @@ fn projected(p: &CborValue) -> frank_cbor::ParsedFrame {
 fn exact_token_quantity_and_native_uint64_round_trip() {
     let mut native = entry();
     let mut t = transfer();
-    set(&mut t, 4, Some(int(u64::MAX as i128)));
-    set(&mut t, 5, None);
-    set(&mut native, 0, Some(t));
+    set(&mut t, xfer::VALUE, Some(int(u64::MAX as i128)));
+    set(&mut t, xfer::TOKEN, None);
+    set(&mut native, entry_k::TRANSFER, Some(t));
     let parsed = projected(&payload(vec![entry(), native]));
     assert_eq!(parsed.projection, Projection::Exact);
     let TypedPayload::StealthPaymentItem(p) = parsed.typed.as_deref().unwrap() else {
@@ -81,12 +100,19 @@ fn exact_token_quantity_and_native_uint64_round_trip() {
 #[test]
 fn schema1_recovery_remains_exact() {
     let p = cbor_map(vec![
-        (0, CborValue::Text("monad-testnet".into())),
-        (1, acct1(1)),
-        (2, CborValue::Array(vec![CborValue::Bytes(vec![1; 100])])),
-        (3, int(u64::MAX as i128)),
+        (
+            stealth_message_item::NETWORK_TAG,
+            CborValue::Text("monad-testnet".into()),
+        ),
+        (stealth_message_item::EPHEMERAL_PUB_KEY, acct1(1)),
+        (
+            stealth_message_item::TRANSACTIONS,
+            CborValue::Array(vec![CborValue::Bytes(vec![1; 100])]),
+        ),
+        (stealth_message_item::AMOUNT, int(u64::MAX as i128)),
     ]);
-    let ValidationResult::Parsed(p) = validate_frame(&fr(19, &p), &default_context()).unwrap()
+    let ValidationResult::Parsed(p) =
+        validate_frame(&fr(TYPE_STEALTH_MESSAGE_ITEM, &p), &default_context()).unwrap()
     else {
         panic!("parsed")
     };
@@ -101,7 +127,7 @@ fn old_schema_context_cannot_project_new_shape() {
     let mut old = default_context();
     old.supported_schemas
         .iter_mut()
-        .find(|s| s.type_id == 19)
+        .find(|s| s.type_id == TYPE_STEALTH_MESSAGE_ITEM)
         .unwrap()
         .schema_version = 1;
     assert!(validate_frame(&bytes, &old).is_err());
@@ -110,22 +136,35 @@ fn old_schema_context_cannot_project_new_shape() {
 }
 #[test]
 fn unknown_schemes_preserve_data_without_allocating_solana() {
+    // raw-cbor-key: schemes the reader must treat as unallocated, including Solana's id
     for scheme in [2, u32::MAX] {
         let mut e = entry();
-        set(&mut e, 1, Some(int(scheme as i128)));
-        set(&mut e, 2, Some(acct2(2)));
+        set(
+            &mut e,
+            entry_k::DERIVATION_SCHEME,
+            Some(int(scheme as i128)),
+        );
+        set(&mut e, entry_k::RECIPIENT_SPEND_KEY, Some(acct2(2)));
         let mut t = transfer();
         set(
             &mut t,
-            6,
+            xfer::STEALTH_METADATA,
             Some(cbor_map(vec![
-                (0, acct2(1)),
-                (1, CborValue::Bytes(vec![12; 32])),
+                (stealth_metadata::EPHEMERAL_PUB_KEY, acct2(1)),
+                (stealth_metadata::VIEW_TAG, CborValue::Bytes(vec![12; 32])),
             ])),
         );
-        set(&mut e, 0, Some(t));
-        set(&mut e, 3, Some(CborValue::Bytes(vec![13; 32])));
-        set(&mut e, 4, Some(CborValue::Bytes(vec![14; 1024])));
+        set(&mut e, entry_k::TRANSFER, Some(t));
+        set(
+            &mut e,
+            entry_k::TOKEN_PROGRAM,
+            Some(CborValue::Bytes(vec![13; 32])),
+        );
+        set(
+            &mut e,
+            entry_k::DERIVATION_CONTEXT,
+            Some(CborValue::Bytes(vec![14; 1024])),
+        );
         let parsed = projected(&payload(vec![e]));
         let TypedPayload::StealthPaymentItem(p) = parsed.typed.as_deref().unwrap() else {
             panic!("type19")
@@ -138,7 +177,8 @@ fn unknown_schemes_preserve_data_without_allocating_solana() {
 fn rejects_unsafe_or_ambiguous_entries() {
     let mut bad = Vec::new();
     let mut zero_scheme = entry();
-    set(&mut zero_scheme, 1, Some(int(0)));
+    // raw-cbor-key: scheme 0 is deliberately unallocated
+    set(&mut zero_scheme, entry_k::DERIVATION_SCHEME, Some(int(0)));
     bad.push(zero_scheme);
     for value in [
         int(0),
@@ -148,39 +188,46 @@ fn rejects_unsafe_or_ambiguous_entries() {
     ] {
         let mut e = entry();
         let mut t = transfer();
-        set(&mut t, 4, Some(value));
-        set(&mut e, 0, Some(t));
+        set(&mut t, xfer::VALUE, Some(value));
+        set(&mut e, entry_k::TRANSFER, Some(t));
         bad.push(e);
     }
-    for field in [6] {
+    for field in [xfer::STEALTH_METADATA] {
         let mut e = entry();
         let mut t = transfer();
         set(&mut t, field, None);
-        set(&mut e, 0, Some(t));
+        set(&mut e, entry_k::TRANSFER, Some(t));
         bad.push(e);
     }
     let mut mismatch = entry();
-    set(&mut mismatch, 2, Some(acct2(1)));
+    set(&mut mismatch, entry_k::RECIPIENT_SPEND_KEY, Some(acct2(1)));
     bad.push(mismatch);
-    for field in [3, 4] {
+    for field in [entry_k::TOKEN_PROGRAM, entry_k::DERIVATION_CONTEXT] {
         let mut e = entry();
         set(&mut e, field, Some(CborValue::Bytes(vec![1; 32])));
         bad.push(e);
     }
     let mut no_token = entry();
-    set(&mut no_token, 1, Some(int(99)));
-    set(&mut no_token, 3, Some(CborValue::Bytes(vec![1; 32])));
+    // raw-cbor-key: scheme 99 is deliberately unallocated
+    set(&mut no_token, entry_k::DERIVATION_SCHEME, Some(int(99)));
+    set(
+        &mut no_token,
+        entry_k::TOKEN_PROGRAM,
+        Some(CborValue::Bytes(vec![1; 32])),
+    );
     let mut t = transfer();
-    set(&mut t, 5, None);
-    set(&mut no_token, 0, Some(t));
+    set(&mut t, xfer::TOKEN, None);
+    set(&mut no_token, entry_k::TRANSFER, Some(t));
     bad.push(no_token);
     let mut extra = entry();
+    // raw-cbor-key: undeclared entry field
     set(&mut extra, 5, Some(CborValue::Bytes(vec![1; 20])));
     bad.push(extra);
     let mut nested_extra = entry();
     let mut t = transfer();
+    // raw-cbor-key: undeclared transfer field
     set(&mut t, 9, Some(int(1)));
-    set(&mut nested_extra, 0, Some(t));
+    set(&mut nested_extra, entry_k::TRANSFER, Some(t));
     bad.push(nested_extra);
     for (i, e) in bad.into_iter().enumerate() {
         assert!(!check(&payload(vec![e])), "accepted invalid case {i}");
@@ -192,13 +239,19 @@ fn bounded_arrays_text_and_context() {
     assert!(check(&payload(vec![entry(); 16])));
     assert!(!check(&payload(vec![entry(); 17])));
     let mut p = payload(vec![entry()]);
-    set(&mut p, 1, Some(CborValue::Text("x".repeat(1024))));
+    set(&mut p, item::MEMO, Some(CborValue::Text("x".repeat(1024))));
     assert!(check(&p));
-    set(&mut p, 1, Some(CborValue::Text("x".repeat(1025))));
+    set(&mut p, item::MEMO, Some(CborValue::Text("x".repeat(1025))));
     assert!(!check(&p));
-    for (field, length) in [(3, 31), (3, 33), (4, 0), (4, 1025)] {
+    for (field, length) in [
+        (entry_k::TOKEN_PROGRAM, 31),
+        (entry_k::TOKEN_PROGRAM, 33),
+        (entry_k::DERIVATION_CONTEXT, 0),
+        (entry_k::DERIVATION_CONTEXT, 1025),
+    ] {
         let mut e = entry();
-        set(&mut e, 1, Some(int(99)));
+        // raw-cbor-key: scheme 99 is deliberately unallocated
+        set(&mut e, entry_k::DERIVATION_SCHEME, Some(int(99)));
         set(&mut e, field, Some(CborValue::Bytes(vec![1; length])));
         assert!(!check(&payload(vec![e])));
     }
@@ -208,8 +261,11 @@ fn bounded_arrays_text_and_context() {
 fn nested_known_stealth_malformed_payload_is_rejected_not_retained() {
     let child = frame(&payload(vec![entry()]), 2, 2);
     let container = fr(
-        16,
-        &cbor_map(vec![(0, CborValue::Array(vec![CborValue::Bytes(child)]))]),
+        TYPE_CONTAINER_MESSAGE_ITEM,
+        &cbor_map(vec![(
+            container_message_item::ITEMS,
+            CborValue::Array(vec![CborValue::Bytes(child)]),
+        )]),
     );
     let ValidationResult::Parsed(p) = validate_frame(&container, &default_context()).unwrap()
     else {
@@ -223,9 +279,9 @@ fn nested_known_stealth_malformed_payload_is_rejected_not_retained() {
     );
     let malformed = frame(&payload(vec![]), 2, 2);
     let container = fr(
-        16,
+        TYPE_CONTAINER_MESSAGE_ITEM,
         &cbor_map(vec![(
-            0,
+            container_message_item::ITEMS,
             CborValue::Array(vec![CborValue::Bytes(malformed)]),
         )]),
     );
@@ -235,6 +291,7 @@ fn nested_known_stealth_malformed_payload_is_rejected_not_retained() {
 #[test]
 fn compatible_future_outer_fields_remain_data() {
     let mut p = payload(vec![entry()]);
+    // raw-cbor-key: compatible future outer field
     set(&mut p, 9, Some(CborValue::Bytes(vec![42; 3])));
     assert!(!check(&p));
     let ValidationResult::Parsed(p) = validate_frame(&frame(&p, 3, 2), &default_context()).unwrap()
@@ -245,18 +302,35 @@ fn compatible_future_outer_fields_remain_data() {
     let TypedPayload::StealthPaymentItem(p) = p.typed.as_deref().unwrap() else {
         panic!("type19")
     };
+    // raw-cbor-key: compatible future outer field
     assert_eq!(p.unknown, vec![(9, CborValue::Bytes(vec![42; 3]))]);
 }
 
 #[test]
 fn unallocated_key_types_fail_allocated_stage() {
-    let unknown_key = cbor_map(vec![(0, int(500)), (1, CborValue::Bytes(vec![1; 32]))]);
+    let unknown_key = cbor_map(vec![
+        // raw-cbor-key: key type 500 is deliberately unallocated
+        (account_ref::KEY_TYPE, int(500)),
+        (account_ref::KEY_BYTES, CborValue::Bytes(vec![1; 32])),
+    ]);
     let mut e = entry();
-    set(&mut e, 1, Some(int(99)));
-    set(&mut e, 2, Some(unknown_key.clone()));
+    // raw-cbor-key: scheme 99 is deliberately unallocated
+    set(&mut e, entry_k::DERIVATION_SCHEME, Some(int(99)));
+    set(
+        &mut e,
+        entry_k::RECIPIENT_SPEND_KEY,
+        Some(unknown_key.clone()),
+    );
     let mut t = transfer();
-    set(&mut t, 6, Some(cbor_map(vec![(0, unknown_key)])));
-    set(&mut e, 0, Some(t));
+    set(
+        &mut t,
+        xfer::STEALTH_METADATA,
+        Some(cbor_map(vec![(
+            stealth_metadata::EPHEMERAL_PUB_KEY,
+            unknown_key,
+        )])),
+    );
+    set(&mut e, entry_k::TRANSFER, Some(t));
     match validate_frame(&frame(&payload(vec![e]), 2, 2), &default_context()) {
         Err(frank_cbor::Error::Codec(e)) => {
             assert_eq!(e.category, frank_cbor::ErrorCategory::Unsupported);
@@ -307,7 +381,7 @@ fn shared_typescript_stealth_assets_vectors_agree() {
                     let mut old = default_context();
                     old.supported_schemas
                         .iter_mut()
-                        .find(|s| s.type_id == 19)
+                        .find(|s| s.type_id == TYPE_STEALTH_MESSAGE_ITEM)
                         .unwrap()
                         .schema_version = 1;
                     assert!(
@@ -361,7 +435,7 @@ fn old_stealth_schema_context() -> frank_cbor::ValidationContext {
     ctx.reader_version = 4;
     ctx.supported_schemas
         .iter_mut()
-        .find(|s| s.type_id == 19)
+        .find(|s| s.type_id == TYPE_STEALTH_MESSAGE_ITEM)
         .unwrap()
         .schema_version = 1;
     ctx
@@ -380,7 +454,7 @@ fn old_stealth_schema_retains_root_when_opaque_retention_is_allowed() {
         frank_cbor::RetentionReason::UnsupportedMinReader
     );
     assert_eq!(retained.frame, bytes);
-    assert_eq!(retained.type_id, Some(19));
+    assert_eq!(retained.type_id, Some(TYPE_STEALTH_MESSAGE_ITEM));
     assert_eq!(retained.schema_version, Some(2));
     assert_eq!(retained.min_reader_version, Some(2));
     ctx.opaque_retention_allowed = false;
@@ -397,9 +471,9 @@ fn old_stealth_schema_retains_root_when_opaque_retention_is_allowed() {
 fn old_stealth_schema_retains_open_child_without_rejecting_parent() {
     let bytes = shared_native_uint64_frame();
     let container = fr(
-        16,
+        TYPE_CONTAINER_MESSAGE_ITEM,
         &cbor_map(vec![(
-            0,
+            container_message_item::ITEMS,
             CborValue::Array(vec![CborValue::Bytes(bytes.clone())]),
         )]),
     );
@@ -408,7 +482,7 @@ fn old_stealth_schema_retains_open_child_without_rejecting_parent() {
     let ValidationResult::Parsed(parsed) = validate_frame(&container, &ctx).unwrap() else {
         panic!("expected parsed container")
     };
-    assert_eq!(parsed.type_id, 16);
+    assert_eq!(parsed.type_id, TYPE_CONTAINER_MESSAGE_ITEM);
     let TypedPayload::ContainerItem { items, .. } = parsed.typed.as_deref().unwrap() else {
         panic!("expected container projection")
     };
@@ -421,7 +495,7 @@ fn old_stealth_schema_retains_open_child_without_rejecting_parent() {
         frank_cbor::RetentionReason::UnsupportedMinReader
     );
     assert_eq!(retained.frame, bytes);
-    assert_eq!(retained.type_id, Some(19));
+    assert_eq!(retained.type_id, Some(TYPE_STEALTH_MESSAGE_ITEM));
     assert_eq!(retained.schema_version, Some(2));
     assert_eq!(retained.min_reader_version, Some(2));
 }

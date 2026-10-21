@@ -1,5 +1,15 @@
 //! Active public-facade conformance; no game runtime, authentication or payment authority.
 mod common;
+use frank_cbor::message_fields::{
+    blackjack_action, blackjack_item as bj, container_message_item, direct_message_delivery as dmd,
+    encrypted_message_content as emc, encryption_suite, message_content_revision as revision,
+    recipient_encrypted_payload_v2 as rep2, text_message_item,
+};
+use frank_cbor::message_types::{
+    TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECT_MESSAGE_DELIVERY,
+    TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_FORUM_OPERATION_STATUS, TYPE_MESSAGE_CONTENT_REVISION,
+    TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM,
+};
 use frank_cbor::*;
 use serde_json::{json, Value};
 fn corpus() -> Value {
@@ -270,10 +280,11 @@ fn root_and_nested_frame_limit_precedes_closed_shape() {
         let raw = (size - 100..size)
             .map(|n| {
                 common::fr(
-                    18,
+                    TYPE_BLACKJACK_MESSAGE_ITEM,
                     &cbor_map(vec![
-                        (0, CborValue::Text("x".into())),
-                        (1, CborValue::Int(3)),
+                        (bj::GAME_ID, CborValue::Text("x".into())),
+                        (bj::ACTION, CborValue::Int(blackjack_action::STAND.into())),
+                        // raw-cbor-key: undeclared padding field
                         (14, CborValue::Bytes(vec![0; n])),
                     ]),
                 )
@@ -287,8 +298,11 @@ fn root_and_nested_frame_limit_precedes_closed_shape() {
         };
         assert_eq!(outcome(parse_frame(&raw, &default_context())), expected);
         let nested = common::fr(
-            16,
-            &cbor_map(vec![(0, CborValue::Array(vec![CborValue::Bytes(raw)]))]),
+            TYPE_CONTAINER_MESSAGE_ITEM,
+            &cbor_map(vec![(
+                container_message_item::ITEMS,
+                CborValue::Array(vec![CborValue::Bytes(raw)]),
+            )]),
         );
         assert_eq!(outcome(parse_frame(&nested, &default_context())), expected);
     }
@@ -350,55 +364,62 @@ fn frame(kind: u32, payload: &CborValue, schema: u32, min: u32) -> Vec<u8> {
 }
 fn container(items: Vec<Vec<u8>>) -> Vec<u8> {
     common::fr(
-        16,
+        TYPE_CONTAINER_MESSAGE_ITEM,
         &cbor_map(vec![(
-            0,
+            container_message_item::ITEMS,
             CborValue::Array(items.into_iter().map(CborValue::Bytes).collect()),
         )]),
     )
 }
 fn content(items: Vec<Vec<u8>>, extra: Option<CborValue>) -> Vec<u8> {
     let revision = common::fr(
-        8,
+        TYPE_MESSAGE_CONTENT_REVISION,
         &cbor_map(vec![
-            (0, CborValue::Text("frank".into())),
+            (revision::NETWORK, CborValue::Text("frank".into())),
             (
-                1,
+                revision::ITEMS,
                 CborValue::Array(items.into_iter().map(CborValue::Bytes).collect()),
             ),
         ]),
     );
     let mut fields = vec![
-        (0, CborValue::Text(common::NET.into())),
-        (1, CborValue::Bytes(vec![1; 16])),
-        (2, CborValue::Bytes(revision)),
-        (3, CborValue::Bytes(vec![2; 32])),
-        (4, CborValue::Bytes(vec![3; 16])),
+        (emc::NETWORK, CborValue::Text(common::NET.into())),
+        (emc::MESSAGE_ID, CborValue::Bytes(vec![1; 16])),
+        (emc::REVISION_FRAME, CborValue::Bytes(revision)),
+        (emc::CONTENT_DIGEST, CborValue::Bytes(vec![2; 32])),
+        (emc::CONVERSATION_ID, CborValue::Bytes(vec![3; 16])),
     ];
     let schema = if extra.is_some() { 2 } else { 1 };
     if let Some(extra) = extra {
+        // raw-cbor-key: compatible future field
         fields.push((99, extra));
     }
-    frame(6, &cbor_map(fields), schema, 1)
+    frame(TYPE_ENCRYPTED_MESSAGE_CONTENT, &cbor_map(fields), schema, 1)
 }
 fn dm_root(extra: Option<CborValue>) -> Vec<u8> {
     let payload = frame(
-        5,
+        TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
         &cbor_map(vec![
-            (0, CborValue::Text(common::NET.into())),
-            (1, common::acct1(9)),
-            (2, common::acct1(3)),
-            (3, CborValue::Int(1)),
-            (4, CborValue::Bytes(vec![0xa0])),
+            (rep2::NETWORK, CborValue::Text(common::NET.into())),
+            (rep2::SENDER, common::acct1(9)),
+            (rep2::RECIPIENT, common::acct1(3)),
             (
-                5,
+                rep2::SUITE,
+                CborValue::Int(encryption_suite::DM_AUTH_XCHACHA.into()),
+            ),
+            (rep2::CRYPTO_BOX_ENVELOPE, CborValue::Bytes(vec![0xa0])),
+            (
+                rep2::EPHEMERAL_POINT,
                 CborValue::Bytes(hex::decode(common::T3C_EPHEMERAL).unwrap()),
             ),
             (
-                6,
+                rep2::SHARED_POINT,
                 CborValue::Bytes(hex::decode(common::T3C_SHARED).unwrap()),
             ),
-            (7, CborValue::Bytes(hex::decode(common::T3C_PROOF).unwrap())),
+            (
+                rep2::DLEQ_PROOF,
+                CborValue::Bytes(hex::decode(common::T3C_PROOF).unwrap()),
+            ),
         ]),
         2,
         2,
@@ -406,12 +427,17 @@ fn dm_root(extra: Option<CborValue>) -> Vec<u8> {
     let CborValue::Map(mut fields) = parsed(&common::direct_message_frame()).payload else {
         panic!("map")
     };
-    fields.iter_mut().find(|(k, _)| *k == 2).unwrap().1 = CborValue::Bytes(payload);
+    fields
+        .iter_mut()
+        .find(|(k, _)| *k == dmd::PAYLOAD_FRAME)
+        .unwrap()
+        .1 = CborValue::Bytes(payload);
     let schema = if extra.is_some() { 2 } else { 1 };
     if let Some(extra) = extra {
+        // raw-cbor-key: compatible future field
         fields.push((99, extra));
     }
-    frame(1, &cbor_map(fields), schema, 1)
+    frame(TYPE_DIRECT_MESSAGE_DELIVERY, &cbor_map(fields), schema, 1)
 }
 #[test]
 fn public_session_shares_blackjack_item_depth_aggregate_and_slots() {
@@ -506,31 +532,38 @@ fn closed_maps_cover_each_required_forbidden_kind_and_future_shape() {
         };
         let id = f["id"].as_str().unwrap();
         for (k, _) in &m {
-            if (id == "hit-response" && *k == 5) || (id == "welcome" && (*k == 12 || *k == 13)) {
+            if (id == "hit-response" && *k == bj::PLAYER_CARDS)
+                || (id == "welcome" && (*k == bj::FEE_HINT_WEI || *k == bj::RULES))
+            {
                 continue;
             }
             let missing = CborValue::Map(m.iter().filter(|(key, _)| key != k).cloned().collect());
             assert_eq!(
-                outcome(parse_frame(&common::fr(18, &missing), &default_context())),
+                outcome(parse_frame(
+                    &common::fr(TYPE_BLACKJACK_MESSAGE_ITEM, &missing),
+                    &default_context()
+                )),
                 "schema@8.2"
             );
         }
-        for key in 2..=14 {
-            if m.iter().any(|(k, _)| *k == key) || (id == "hit-request" && key == 5) {
+        // Every optional field plus the first undeclared key.
+        for key in bj::WAGER_TX_HASH..=bj::RULES + 1 {
+            if m.iter().any(|(k, _)| *k == key) || (id == "hit-request" && key == bj::PLAYER_CARDS)
+            {
                 continue;
             }
             let mut extra = m.clone();
             extra.push((key, CborValue::Int(0)));
             assert_eq!(
                 outcome(parse_frame(
-                    &common::fr(18, &cbor_map(extra.clone())),
+                    &common::fr(TYPE_BLACKJACK_MESSAGE_ITEM, &cbor_map(extra.clone())),
                     &default_context()
                 )),
                 "schema@8.2"
             );
             assert_eq!(
                 outcome(parse_frame(
-                    &frame(18, &cbor_map(extra), 2, 1),
+                    &frame(TYPE_BLACKJACK_MESSAGE_ITEM, &cbor_map(extra), 2, 1),
                     &default_context()
                 )),
                 "schema@8.2"
@@ -542,7 +575,7 @@ fn closed_maps_cover_each_required_forbidden_kind_and_future_shape() {
                 changed.iter_mut().find(|(k, _)| k == key).unwrap().1 = bad;
                 assert_eq!(
                     outcome(parse_frame(
-                        &common::fr(18, &cbor_map(changed)),
+                        &common::fr(TYPE_BLACKJACK_MESSAGE_ITEM, &cbor_map(changed)),
                         &default_context()
                     )),
                     "schema@8.2"
@@ -554,16 +587,22 @@ fn closed_maps_cover_each_required_forbidden_kind_and_future_shape() {
 #[test]
 fn retained_order_high_reader_and_required_family_remain_distinct() {
     let welcome = bytes("welcome");
-    let text = common::fr(17, &cbor_map(vec![(0, CborValue::Text("last".into()))]));
+    let text = common::fr(
+        TYPE_TEXT_MESSAGE_ITEM,
+        &cbor_map(vec![(
+            text_message_item::TEXT,
+            CborValue::Text("last".into()),
+        )]),
+    );
     let mut old = default_context();
     old.reader_version = 99;
     old.supported_schemas = vec![
         SupportedSchema {
-            type_id: 16,
+            type_id: TYPE_CONTAINER_MESSAGE_ITEM,
             schema_version: 1,
         },
         SupportedSchema {
-            type_id: 17,
+            type_id: TYPE_TEXT_MESSAGE_ITEM,
             schema_version: 1,
         },
     ];
@@ -581,7 +620,7 @@ fn retained_order_high_reader_and_required_family_remain_distinct() {
     assert!(
         matches!(parse_frame(&welcome,&old).unwrap(),ValidationResult::Retained(r)if r.frame==welcome)
     );
-    for kind in 1..=15 {
+    for kind in TYPE_DIRECT_MESSAGE_DELIVERY..=TYPE_FORUM_OPERATION_STATUS {
         let raw = container(vec![common::fr(kind, &cbor_map(vec![]))]);
         assert_eq!(
             outcome(parse_frame(&raw, &default_context())),
@@ -589,13 +628,13 @@ fn retained_order_high_reader_and_required_family_remain_distinct() {
         );
     }
     let required = common::fr(
-        6,
+        TYPE_ENCRYPTED_MESSAGE_CONTENT,
         &cbor_map(vec![
-            (0, CborValue::Text(common::NET.into())),
-            (1, CborValue::Bytes(vec![1; 16])),
-            (2, CborValue::Bytes(welcome)),
-            (3, CborValue::Bytes(vec![2; 32])),
-            (4, CborValue::Bytes(vec![4; 16])),
+            (emc::NETWORK, CborValue::Text(common::NET.into())),
+            (emc::MESSAGE_ID, CborValue::Bytes(vec![1; 16])),
+            (emc::REVISION_FRAME, CborValue::Bytes(welcome)),
+            (emc::CONTENT_DIGEST, CborValue::Bytes(vec![2; 32])),
+            (emc::CONVERSATION_ID, CborValue::Bytes(vec![4; 16])),
         ]),
     );
     assert_eq!(

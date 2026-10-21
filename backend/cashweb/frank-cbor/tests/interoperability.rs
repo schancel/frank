@@ -92,6 +92,7 @@ fn typescript_origin_frames_round_trip_exactly_in_rust() {
     let frank_cbor::CborValue::Map(fields) = parsed.payload else {
         panic!("TypeScript additive payload map")
     };
+    // raw-cbor-key: field 1 is the undeclared additive field of this V6.3 vector
     assert!(fields.iter().any(|(key, _)| *key == 1));
     for id in &TYPESCRIPT_RETENTION_IDS[1..] {
         assert!(
@@ -159,6 +160,7 @@ fn rust_origin_frames_and_opaque_data_round_trip_exactly_in_rust() {
 fn assert_unknown(unknown: &[(u64, CborValue)], value: &str, id: &str) {
     assert_eq!(
         unknown,
+        // raw-cbor-key: the additive field no reader declares
         &[(100, CborValue::Text(value.to_string()))],
         "{id}: typed unknown field"
     );

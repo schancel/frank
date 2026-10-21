@@ -1,4 +1,7 @@
-import { fetchContactProfile } from '../utils/directory-peer'
+import {
+  fetchContactProfileResult,
+  fetchContactProfile,
+} from '../utils/directory-peer'
 import { relayHandleOf } from '../utils/contact-username'
 import { defineStore } from 'pinia'
 
@@ -214,6 +217,8 @@ export interface CuratedDefaultProvenance {
 export interface State {
   contacts: Record<string, ContactState | undefined>
   updateInterval: number
+  /** Derived display data for conversation peers, never contact trust or durable state. */
+  peerProfiles: Record<string, { profile: Profile; lastUpdateTime: number }>
   /** Canonical addresses of contacts the user deleted: curated defaults are not re-added for
    * them on later launches. */
   dismissedDefaults: string[]
@@ -233,19 +238,24 @@ export interface State {
 function freshContactsState(): State {
   return {
     contacts: {},
+    peerProfiles: {},
     updateInterval: defaultUpdateInterval,
     dismissedDefaults: [],
     curatedDefaults: [],
   }
 }
 
-/** Drops session curated provenance before contacts are written. A later launch starts empty. */
+/** Session display caches and curated provenance are rebuilt, never persisted as contacts. */
 export function omitSessionCuratedDefaults<T extends object>(
   state: T,
-): Omit<T, 'curatedDefaults'> {
-  const copy = { ...state } as T & { curatedDefaults?: unknown }
+): Omit<T, 'curatedDefaults' | 'peerProfiles'> {
+  const copy = { ...state } as T & {
+    curatedDefaults?: unknown
+    peerProfiles?: unknown
+  }
   delete copy.curatedDefaults
-  return copy as Omit<T, 'curatedDefaults'>
+  delete copy.peerProfiles
+  return copy as Omit<T, 'curatedDefaults' | 'peerProfiles'>
 }
 
 type RestorableContactState = {
@@ -333,10 +343,22 @@ export async function rehydrateContacts(
     dismissedDefaults: contactState.dismissedDefaults ?? [],
     // Never trust a saved blob for this. Only a completed fetch in this session sets it.
     curatedDefaults: [],
+    peerProfiles: {},
   }
 }
 
-const inFlightRefreshes = new Map<string, Promise<void>>()
+const inFlightRefreshes = new WeakMap<object, Map<string, Promise<void>>>()
+const peerRefreshQueues = new WeakMap<
+  object,
+  {
+    revision: number
+    profiles: State['peerProfiles']
+    contacts: State['contacts']
+    pending: Set<string>
+    seen: Set<string>
+    promise: Promise<void>
+  }
+>()
 const inFlightRefreshAll = new WeakMap<object, Promise<void>>()
 
 export const useContactStore = defineStore('contacts', {
@@ -393,7 +415,10 @@ export const useContactStore = defineStore('contacts', {
           state.contacts[apiAddress] ?? {
             ...pendingRelayData,
             relayURL: null,
-            profile: { ...pendingRelayData.profile, pubKey: null },
+            profile: state.peerProfiles[apiAddress]?.profile ?? {
+              ...pendingRelayData.profile,
+              pubKey: null,
+            },
           }
         )
       },
@@ -413,7 +438,9 @@ export const useContactStore = defineStore('contacts', {
 
       return state.contacts[apiAddress]
         ? state.contacts[apiAddress]?.profile
-        : { ...pendingRelayData.profile }
+        : state.peerProfiles[apiAddress]?.profile ?? {
+            ...pendingRelayData.profile,
+          }
     },
     getAcceptancePrice: state => (address: string) => {
       const apiAddress = safeToChainDisplayAddress(address) ?? address
@@ -1169,6 +1196,128 @@ export const useContactStore = defineStore('contacts', {
         return false
       }
     },
+    /** Resolve list peers without making discovery an invitation/trust mutation. Concurrent list updates
+     * coalesce into one session-bound batch with at most six requests running. */
+    async refreshPeerProfiles(addresses: string[]) {
+      const state = toRaw(this.$state)
+      const revision = accountSession.state.revision
+      const account = accountSession.state.account
+      if (accountSession.state.status !== 'ready') return
+      const profiles = this.peerProfiles
+      const contacts = this.contacts
+      const current = () =>
+        accountSession.state.status === 'ready' &&
+        accountSession.state.revision === revision &&
+        accountSession.state.account === account &&
+        this.peerProfiles === profiles &&
+        this.contacts === contacts
+      const peers = [
+        ...new Set(
+          addresses
+            .map(safeToChainDisplayAddress)
+            .filter((address): address is string => !!address),
+        ),
+      ]
+      const existing = peerRefreshQueues.get(state)
+      if (
+        existing &&
+        existing.revision === revision &&
+        existing.profiles === profiles &&
+        existing.contacts === contacts
+      ) {
+        for (const address of peers)
+          if (!existing.seen.has(address)) existing.pending.add(address)
+        return existing.promise
+      }
+      const batch = {
+        revision,
+        profiles,
+        contacts,
+        pending: new Set(peers),
+        seen: new Set<string>(),
+        promise: Promise.resolve(),
+      }
+      const run = (async () => {
+        // Install the shared batch before any synchronous lookup can re-enter this action.
+        await Promise.resolve()
+        while (current() && batch.pending.size > 0) {
+          const chunk = [...batch.pending].slice(0, 6)
+          for (const address of chunk) {
+            batch.pending.delete(address)
+            batch.seen.add(address)
+          }
+          await Promise.all(
+            chunk.map(async address => {
+              if (!current()) return
+              if (this.isContact(address)) {
+                try {
+                  await this.refresh(address)
+                } catch (error) {
+                  console.debug(
+                    `Unable to refresh conversation contact ${address}`,
+                    error,
+                  )
+                }
+                return
+              }
+              const cached = profiles[address]
+              if (
+                cached &&
+                this.updateInterval > 0 &&
+                Date.now() - cached.lastUpdateTime < this.updateInterval
+              )
+                return
+              try {
+                const parsed = activeChain.parseAddress(address)
+                if (!parsed) return
+                const profile = await fetchContactProfile(parsed)
+                // Missing/unreachable directory or display entries are retryable, never fresh empties.
+                if (
+                  !profile ||
+                  profile.displayLookupFailed ||
+                  !current() ||
+                  this.isContact(address)
+                )
+                  return
+                const handle = await relayHandleOf(address)
+                if (!current() || this.isContact(address)) return
+                profiles[address] = {
+                  lastUpdateTime: Date.now(),
+                  profile: {
+                    name: isBlankName(profile.name)
+                      ? shortAddressLabel(address)
+                      : (profile.name as string),
+                    signedName: profile.name ?? null,
+                    username: handle?.username ?? null,
+                    bio: profile.bio ?? '',
+                    avatar: profile.avatar ?? '',
+                    location: profile.location ?? null,
+                    links: profile.links ?? [],
+                    isBot: profile.bot === true,
+                    accountType: profile.accountType,
+                    botRole: profile.botRole,
+                    pubKey: markRaw(profilePubKeyFromBytes(profile.pubKey)),
+                  },
+                }
+              } catch (error) {
+                console.debug(
+                  `Unable to refresh conversation peer ${address}`,
+                  error,
+                )
+              }
+            }),
+          )
+        }
+      })()
+      batch.promise = run
+      peerRefreshQueues.set(state, batch)
+      try {
+        await run
+      } finally {
+        if (peerRefreshQueues.get(state) === batch)
+          peerRefreshQueues.delete(state)
+      }
+    },
     async refreshContacts() {
       const stateKey = toRaw(this.$state)
       const existing = inFlightRefreshAll.get(stateKey)
@@ -1205,7 +1354,22 @@ export const useContactStore = defineStore('contacts', {
         return
       }
       const canonical = safeToChainDisplayAddress(address) ?? address
-      const existing = inFlightRefreshes.get(canonical)
+      const state = toRaw(this.$state)
+      let inFlight = inFlightRefreshes.get(state)
+      if (!inFlight) {
+        inFlight = new Map()
+        inFlightRefreshes.set(state, inFlight)
+      }
+      const revision = accountSession.state.revision
+      const account = accountSession.state.account
+      const contacts = this.contacts
+      const status = accountSession.state.status
+      const current = () =>
+        accountSession.state.status === status &&
+        accountSession.state.revision === revision &&
+        accountSession.state.account === account &&
+        this.contacts === contacts
+      const existing = inFlight.get(`${revision}:${canonical}`)
       if (existing) return existing
 
       const refreshOp = (async () => {
@@ -1264,7 +1428,10 @@ export const useContactStore = defineStore('contacts', {
                   handleConflictWarning: null,
                   unverifiedHandleResolution: null,
                 }
-          const profileInfo = await fetchContactProfile(chainAddress)
+          const { profile: profileInfo, failure } =
+            await fetchContactProfileResult(chainAddress)
+          if (!current() || profileInfo?.displayLookupFailed) return
+          if (!profileInfo && failure && failure !== 'not-published') return
           if (!profileInfo) {
             console.debug(`No registered profile found for ${address}`)
             const displayAddress = safeToChainDisplayAddress(address) ?? address
@@ -1323,6 +1490,7 @@ export const useContactStore = defineStore('contacts', {
             inbox: oldContactInfo.inbox,
           })
         } catch (err) {
+          if (!current()) return
           console.error(err)
           const displayAddress = safeToChainDisplayAddress(address) ?? address
           const currentName = oldContactInfo.profile?.name
@@ -1342,11 +1510,11 @@ export const useContactStore = defineStore('contacts', {
         }
       })()
 
-      inFlightRefreshes.set(canonical, refreshOp)
+      inFlight.set(`${revision}:${canonical}`, refreshOp)
       try {
         await refreshOp
       } finally {
-        inFlightRefreshes.delete(canonical)
+        inFlight.delete(`${revision}:${canonical}`)
       }
     },
   },

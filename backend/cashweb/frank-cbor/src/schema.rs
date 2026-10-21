@@ -14,7 +14,8 @@ use crate::limits::{
     MAX_FORUM_CURSOR_BYTES, MAX_FORUM_ENTRIES, MAX_FORUM_PAGE_BYTES, MAX_FORUM_ROWS,
     MAX_FORUM_VIEW_BYTES,
 };
-use crate::message_fields::MapShape;
+use crate::message_fields as mf;
+use crate::message_fields::{account_type, bot_role, key_type, MapShape};
 use crate::message_types::{
     TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_KEY_TRANSITION_STATEMENT,
     TYPE_STEALTH_MESSAGE_ITEM, TYPE_TEXT_MESSAGE_ITEM,
@@ -219,6 +220,11 @@ pub(crate) fn at(path: &str, key: u64) -> String {
     format!("{path}.{key}")
 }
 
+/// Error path of element `i` of the array in field `key` of the map at `path`.
+pub(crate) fn at_index(path: &str, key: u64, i: usize) -> String {
+    format!("{}[{i}]", at(path, key))
+}
+
 /// Read a map through its registered shape (`docs/protocol/message-types/fields/`).
 pub(crate) fn shaped<'a>(
     v: Option<&'a CborValue>,
@@ -269,20 +275,21 @@ fn fields<'a>(
 
 fn key_length(key_type: u32) -> Option<usize> {
     match key_type {
-        1 => Some(33),
-        2 | 3 => Some(32),
+        key_type::SECP256K1 => Some(33),
+        key_type::ED25519 | key_type::SECP256K1_X_ONLY => Some(32),
         _ => None,
     }
 }
 
 fn account(v: Option<&CborValue>, path: &str) -> Result<AccountRef, CodecError> {
-    let map = fields(v, path, &[0, 1], &[], false, false)?;
-    let key_type = u32_in(map.get(0), &format!("{path}.0"), 0, 65_535)?;
-    let key_bytes = bstr(map.get(1), &format!("{path}.1"), 1, 128)?;
+    use mf::account_ref as k;
+    let map = shaped(v, path, &k::SHAPE, false)?;
+    let key_type = u32_in(map.get(k::KEY_TYPE), &at(path, k::KEY_TYPE), 0, 65_535)?;
+    let key_bytes = bstr(map.get(k::KEY_BYTES), &at(path, k::KEY_BYTES), 1, 128)?;
     if let Some(expected) = key_length(key_type) {
         if key_bytes.len() != expected {
             return Err(bad(
-                &format!("{path}.1"),
+                &at(path, k::KEY_BYTES),
                 format!("key type {key_type} requires {expected} key bytes (S2)"),
             ));
         }
@@ -299,7 +306,7 @@ fn directory_account(
     preview: bool,
 ) -> Result<AccountRef, CodecError> {
     let key = account(v, path)?;
-    if preview && key.key_type != 1 {
+    if preview && key.key_type != key_type::SECP256K1 {
         return Err(bad(path, "directory preview key type must be 1"));
     }
     Ok(key)
@@ -335,14 +342,20 @@ fn proof(v: Option<&CborValue>, path: &str) -> Result<Vec<u8>, CodecError> {
 }
 
 fn timestamp(v: Option<&CborValue>, path: &str) -> Result<Timestamp, CodecError> {
-    let map = fields(v, path, &[0, 1], &[], false, false)?;
-    let seconds = match map.get(0) {
+    use mf::timestamp as k;
+    let map = shaped(v, path, &k::SHAPE, false)?;
+    let seconds = match map.get(k::SECONDS) {
         Some(CborValue::Int(n)) if *n >= i128::from(i64::MIN) && *n <= i128::from(i64::MAX) => {
             *n as i64
         }
-        _ => return Err(bad(&format!("{path}.0"), "seconds must be an i64")),
+        _ => return Err(bad(&at(path, k::SECONDS), "seconds must be an i64")),
     };
-    let nanoseconds = u32_in(map.get(1), &format!("{path}.1"), 0, 999_999_999)?;
+    let nanoseconds = u32_in(
+        map.get(k::NANOSECONDS),
+        &at(path, k::NANOSECONDS),
+        0,
+        999_999_999,
+    )?;
     Ok(Timestamp {
         seconds,
         nanoseconds,
@@ -415,67 +428,84 @@ pub(crate) fn check_type_limits(
     };
     match type_id {
         TYPE_DIRECT_MESSAGE_DELIVERY | TYPE_FORWARDING_DELIVERY_ENVELOPE => {
-            if too_many(map_field(payload, 4), MAX_PAYMENT_MEMBERS) {
+            // Both types carry their payment members in field 4.
+            const _: () = assert!(
+                mf::direct_message_delivery::PAYMENTS == mf::forwarding_delivery_envelope::PAYMENTS
+            );
+            if too_many(
+                map_field(payload, mf::direct_message_delivery::PAYMENTS),
+                MAX_PAYMENT_MEMBERS,
+            ) {
                 return Err(over("payment members"));
             }
         }
         TYPE_DIRECTORY_ATTESTATION => {
-            if too_many(map_field(payload, 1), MAX_SIGNATURES) {
+            if too_many(
+                map_field(payload, mf::directory_attestation::SIGNATURES),
+                MAX_SIGNATURES,
+            ) {
                 return Err(over("signatures"));
             }
         }
         TYPE_MAILBOX_CHECKPOINT => {
-            if too_many(map_field(payload, 4), MAX_JOURNAL_FACTS) {
+            if too_many(
+                map_field(payload, mf::mailbox_checkpoint::FACTS),
+                MAX_JOURNAL_FACTS,
+            ) {
                 return Err(over("journal facts"));
             }
-            if too_many(map_field(payload, 5), MAX_OPAQUE_SECTIONS) {
+            if too_many(
+                map_field(payload, mf::mailbox_checkpoint::SECTIONS),
+                MAX_OPAQUE_SECTIONS,
+            ) {
                 return Err(over("opaque sections"));
             }
         }
         TYPE_DIRECTORY_STATEMENT => {
-            if too_many(map_field(payload, 4), MAX_RELAY_BINDINGS) {
+            if too_many(
+                map_field(payload, mf::directory_statement::RELAYS),
+                MAX_RELAY_BINDINGS,
+            ) {
                 return Err(over("relay bindings"));
             }
         }
         TYPE_RECIPIENT_ENCRYPTED_PAYLOAD => {
             if schema_version >= 2 {
-                if let Some(CborValue::Bytes(bytes)) = map_field(payload, 4) {
+                if let Some(CborValue::Bytes(bytes)) = map_field(
+                    payload,
+                    mf::recipient_encrypted_payload_v2::CRYPTO_BOX_ENVELOPE,
+                ) {
                     if bytes.len() > MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES {
                         return Err(over("crypto-box envelope"));
                     }
                 }
-            } else if let Some(CborValue::Bytes(bytes)) = map_field(payload, 5) {
+            } else if let Some(CborValue::Bytes(bytes)) =
+                map_field(payload, mf::recipient_encrypted_payload_v1::CIPHERTEXT)
+            {
                 if bytes.len() > MAX_CIPHERTEXT_BYTES {
                     return Err(over("ciphertext"));
                 }
             }
         }
         TYPE_TOPIC_POST => {
-            if let Some(CborValue::Bytes(bytes)) = map_field(payload, 3) {
+            if let Some(CborValue::Bytes(bytes)) = map_field(payload, mf::topic_post::BODY) {
                 if bytes.len() > MAX_TOPIC_BODY_BYTES {
                     return Err(over("topic body"));
                 }
             }
         }
         TYPE_FORUM_TOPIC_PAGE | TYPE_FORUM_DISCOVERY_PAGE => {
-            if too_many(
-                map_field(
-                    payload,
-                    if type_id == TYPE_FORUM_TOPIC_PAGE {
-                        4
-                    } else {
-                        2
-                    },
-                ),
-                MAX_FORUM_ROWS,
-            ) {
+            let (rows, cursors) = if type_id == TYPE_FORUM_TOPIC_PAGE {
+                use mf::forum_topic_page as k;
+                (k::ROWS, [k::NEXT_CURSOR, k::REQUEST_CURSOR])
+            } else {
+                use mf::forum_discovery_page as k;
+                (k::ENTRIES, [k::NEXT_CURSOR, k::REQUEST_CURSOR])
+            };
+            if too_many(map_field(payload, rows), MAX_FORUM_ROWS) {
                 return Err(over("Forum rows"));
             }
-            for key in if type_id == TYPE_FORUM_TOPIC_PAGE {
-                [5, 7]
-            } else {
-                [3, 5]
-            } {
+            for key in cursors {
                 if let Some(CborValue::Bytes(bytes)) = map_field(payload, key) {
                     if bytes.len() > MAX_FORUM_CURSOR_BYTES {
                         return Err(over("Forum cursor"));
@@ -484,12 +514,18 @@ pub(crate) fn check_type_limits(
             }
         }
         TYPE_MESSAGE_CONTENT_REVISION => {
-            if too_many(map_field(payload, 1), MAX_MESSAGE_ITEMS_PER_ARRAY) {
+            if too_many(
+                map_field(payload, mf::message_content_revision::ITEMS),
+                MAX_MESSAGE_ITEMS_PER_ARRAY,
+            ) {
                 return Err(over("message items"));
             }
         }
         TYPE_CONTAINER_MESSAGE_ITEM => {
-            if too_many(map_field(payload, 0), MAX_MESSAGE_ITEMS_PER_ARRAY) {
+            if too_many(
+                map_field(payload, mf::container_message_item::ITEMS),
+                MAX_MESSAGE_ITEMS_PER_ARRAY,
+            ) {
                 return Err(over("message items"));
             }
         }
@@ -691,60 +727,69 @@ pub(crate) enum Draft {
 }
 
 fn payment_member(v: &CborValue, path: &str) -> Result<PaymentDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1, 2, 3, 4], &[5, 6], false, false)?;
+    use mf::payment_member as k;
+    let map = shaped(Some(v), path, &k::SHAPE, false)?;
     let val_item = map
-        .get(2)
-        .ok_or_else(|| bad(&format!("{path}.2"), "missing value"))?;
+        .get(k::VALUE)
+        .ok_or_else(|| bad(&at(path, k::VALUE), "missing value"))?;
     let value = match val_item {
         CborValue::Bytes(b) => {
             if b.len() != 32 {
-                return Err(bad(&format!("{path}.2"), "expected 32 bytes"));
+                return Err(bad(&at(path, k::VALUE), "expected 32 bytes"));
             }
             PaymentValue::Quantity(b.clone())
         }
         CborValue::Int(n) => {
             if *n < 0 || *n > u64::MAX as i128 {
-                return Err(bad(
-                    &format!("{path}.2"),
-                    "expected satoshis in 0..u64::MAX",
-                ));
+                return Err(bad(&at(path, k::VALUE), "expected satoshis in 0..u64::MAX"));
             }
             PaymentValue::Satoshis(*n as u64)
         }
         _ => {
             return Err(bad(
-                &format!("{path}.2"),
+                &at(path, k::VALUE),
                 "expected a 32-byte string or an unsigned integer",
             ))
         }
     };
-    let vout = if map.has(5) {
-        Some(u32_in(map.get(5), &format!("{path}.5"), 0, u32::MAX)?)
+    let vout = if map.has(k::VOUT) {
+        Some(u32_in(map.get(k::VOUT), &at(path, k::VOUT), 0, u32::MAX)?)
     } else {
         None
     };
-    let raw_tx = if map.has(6) {
-        Some(bstr(map.get(6), &format!("{path}.6"), 1, 16384)?)
+    let raw_tx = if map.has(k::RAW_TX) {
+        Some(bstr(map.get(k::RAW_TX), &at(path, k::RAW_TX), 1, 16384)?)
     } else {
         None
     };
     Ok(PaymentDraft {
-        child_index: u32_in(map.get(0), &format!("{path}.0"), 0, 2_147_483_647)?,
-        transaction_id: bstr(map.get(1), &format!("{path}.1"), 1, 128)?,
+        child_index: u32_in(
+            map.get(k::CHILD_INDEX),
+            &at(path, k::CHILD_INDEX),
+            0,
+            2_147_483_647,
+        )?,
+        transaction_id: bstr(
+            map.get(k::TRANSACTION_ID),
+            &at(path, k::TRANSACTION_ID),
+            1,
+            128,
+        )?,
         value,
-        address: bstr(map.get(3), &format!("{path}.3"), 1, 128)?,
-        commitment: bstr(map.get(4), &format!("{path}.4"), 32, 32)?,
+        address: bstr(map.get(k::ADDRESS), &at(path, k::ADDRESS), 1, 128)?,
+        commitment: bstr(map.get(k::COMMITMENT), &at(path, k::COMMITMENT), 32, 32)?,
         vout,
         raw_tx,
     })
 }
 
 fn signature_entry(v: &CborValue, path: &str) -> Result<SignatureDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1, 2], &[], false, false)?;
+    use mf::signature_entry as k;
+    let map = shaped(Some(v), path, &k::SHAPE, false)?;
     Ok(SignatureDraft {
-        algorithm: u32_in(map.get(0), &format!("{path}.0"), 0, 65_535)?,
-        signer: account(map.get(1), &format!("{path}.1"))?,
-        signature: bstr(map.get(2), &format!("{path}.2"), 1, 512)?,
+        algorithm: u32_in(map.get(k::ALGORITHM), &at(path, k::ALGORITHM), 0, 65_535)?,
+        signer: account(map.get(k::SIGNER), &at(path, k::SIGNER))?,
+        signature: bstr(map.get(k::SIGNATURE), &at(path, k::SIGNATURE), 1, 512)?,
     })
 }
 
@@ -754,69 +799,104 @@ fn relay_binding(
     allow: bool,
     preview: bool,
 ) -> Result<RelayDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1, 2, 3], &[], true, allow)?;
+    use mf::relay_binding as k;
+    let map = shaped(Some(v), path, &k::SHAPE, allow)?;
     Ok(RelayDraft {
-        relay_id: bstr(map.get(0), &format!("{path}.0"), 16, 64)?,
-        endpoint: endpoint(map.get(1), &format!("{path}.1"))?,
-        identity: directory_account(map.get(2), &format!("{path}.2"), preview)?,
-        expiry: timestamp(map.get(3), &format!("{path}.3"))?,
+        relay_id: bstr(map.get(k::RELAY_ID), &at(path, k::RELAY_ID), 16, 64)?,
+        endpoint: endpoint(map.get(k::ENDPOINT), &at(path, k::ENDPOINT))?,
+        identity: directory_account(map.get(k::IDENTITY), &at(path, k::IDENTITY), preview)?,
+        expiry: timestamp(map.get(k::EXPIRY), &at(path, k::EXPIRY))?,
         unknown: map.unknown,
     })
 }
 
 fn key_transition(v: &CborValue, path: &str, allow: bool) -> Result<TransitionDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1, 2, 3], &[], true, allow)?;
+    use mf::key_transition as k;
+    let map = shaped(Some(v), path, &k::SHAPE, allow)?;
     Ok(TransitionDraft {
-        statement_frame: framed(map.get(0), &format!("{path}.0"))?,
-        algorithm: u32_in(map.get(1), &format!("{path}.1"), 0, 65_535)?,
-        signer: account(map.get(2), &format!("{path}.2"))?,
-        signature: bstr(map.get(3), &format!("{path}.3"), 1, 512)?,
+        statement_frame: framed(map.get(k::STATEMENT_FRAME), &at(path, k::STATEMENT_FRAME))?,
+        algorithm: u32_in(map.get(k::ALGORITHM), &at(path, k::ALGORITHM), 0, 65_535)?,
+        signer: account(map.get(k::SIGNER), &at(path, k::SIGNER))?,
+        signature: bstr(map.get(k::SIGNATURE), &at(path, k::SIGNATURE), 1, 512)?,
         unknown: map.unknown,
     })
 }
 
 fn journal_fact(v: &CborValue, path: &str, allow: bool) -> Result<FactDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1, 2, 3], &[], true, allow)?;
+    use mf::journal_fact as k;
+    let map = shaped(Some(v), path, &k::SHAPE, allow)?;
     Ok(FactDraft {
-        timestamp: timestamp(map.get(0), &format!("{path}.0"))?,
-        fact_id: bstr(map.get(1), &format!("{path}.1"), 16, 16)?,
-        kind: u32_in(map.get(2), &format!("{path}.2"), 0, 65_535)?,
-        payload: bstr(map.get(3), &format!("{path}.3"), 0, 8_388_608)?,
+        timestamp: timestamp(map.get(k::TIMESTAMP), &at(path, k::TIMESTAMP))?,
+        fact_id: bstr(map.get(k::FACT_ID), &at(path, k::FACT_ID), 16, 16)?,
+        kind: u32_in(map.get(k::KIND), &at(path, k::KIND), 0, 65_535)?,
+        payload: bstr(map.get(k::PAYLOAD), &at(path, k::PAYLOAD), 0, 8_388_608)?,
         unknown: map.unknown,
     })
 }
 
 fn opaque_section(v: &CborValue, path: &str) -> Result<SectionDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1, 2], &[], false, false)?;
+    use mf::opaque_section as k;
+    let map = shaped(Some(v), path, &k::SHAPE, false)?;
     Ok(SectionDraft {
-        section_type: u32_in(map.get(0), &format!("{path}.0"), 0, u32::MAX)?,
-        section_schema_version: u32_in(map.get(1), &format!("{path}.1"), 1, u32::MAX)?,
-        value: bstr(map.get(2), &format!("{path}.2"), 0, 8_388_608)?,
+        section_type: u32_in(
+            map.get(k::SECTION_TYPE),
+            &at(path, k::SECTION_TYPE),
+            0,
+            u32::MAX,
+        )?,
+        section_schema_version: u32_in(
+            map.get(k::SECTION_SCHEMA_VERSION),
+            &at(path, k::SECTION_SCHEMA_VERSION),
+            1,
+            u32::MAX,
+        )?,
+        value: bstr(map.get(k::VALUE), &at(path, k::VALUE), 0, 8_388_608)?,
     })
 }
 
 /// One profile-entry header (M4): the protobuf name/value set, C11-sorted by name.
 fn profile_header(v: &CborValue, path: &str, allow: bool) -> Result<HeaderDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1], &[], true, allow)?;
+    use mf::profile_header as k;
+    let map = shaped(Some(v), path, &k::SHAPE, allow)?;
     Ok(HeaderDraft {
-        name: tstr(map.get(0), &format!("{path}.0"), 0, MAX_TEXT_STRING_BYTES)?,
-        value: tstr(map.get(1), &format!("{path}.1"), 0, MAX_TEXT_STRING_BYTES)?,
+        name: tstr(
+            map.get(k::NAME),
+            &at(path, k::NAME),
+            0,
+            MAX_TEXT_STRING_BYTES,
+        )?,
+        value: tstr(
+            map.get(k::VALUE),
+            &at(path, k::VALUE),
+            0,
+            MAX_TEXT_STRING_BYTES,
+        )?,
         unknown: map.unknown,
     })
 }
 
 /// One migrated AddressEntry (M4). Authored array order is preserved, never resorted.
 fn profile_entry(v: &CborValue, path: &str, allow: bool) -> Result<ProfileEntryDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1, 2], &[], true, allow)?;
-    let headers = as_list(map.get(1), &format!("{path}.1"), 0, 64)?;
+    use mf::profile_entry as k;
+    let map = shaped(Some(v), path, &k::SHAPE, allow)?;
+    let headers = as_list(map.get(k::HEADERS), &at(path, k::HEADERS), 0, 64)?;
     let mut parsed_headers = Vec::with_capacity(headers.len());
     for (i, header) in headers.iter().enumerate() {
-        parsed_headers.push(profile_header(header, &format!("{path}.1[{i}]"), allow)?);
+        parsed_headers.push(profile_header(
+            header,
+            &format!("{}[{i}]", at(path, k::HEADERS)),
+            allow,
+        )?);
     }
     Ok(ProfileEntryDraft {
-        kind: tstr(map.get(0), &format!("{path}.0"), 0, MAX_TEXT_STRING_BYTES)?,
+        kind: tstr(
+            map.get(k::KIND),
+            &at(path, k::KIND),
+            0,
+            MAX_TEXT_STRING_BYTES,
+        )?,
         headers: parsed_headers,
-        body: bstr(map.get(2), &format!("{path}.2"), 0, 8_388_608)?,
+        body: bstr(map.get(k::BODY), &at(path, k::BODY), 0, 8_388_608)?,
         unknown: map.unknown,
     })
 }
@@ -827,7 +907,9 @@ pub(crate) fn parse_forum_content(
     allow: bool,
     path: &str,
 ) -> Result<ForumContent, CodecError> {
-    if too_many(map_field(value, 1), MAX_FORUM_ENTRIES) {
+    use mf::forum_content as k;
+    use mf::forum_post_entry as post;
+    if too_many(map_field(value, k::ENTRIES), MAX_FORUM_ENTRIES) {
         return Err(fail(
             ErrorCategory::Resource,
             ErrorStage::S81,
@@ -835,15 +917,15 @@ pub(crate) fn parse_forum_content(
             "Forum content exceeds 64 entries",
         ));
     }
-    let m = fields(Some(value), path, &[0, 1], &[], true, allow)?;
+    let m = shaped(Some(value), path, &k::SHAPE, allow)?;
     let mut entries = Vec::new();
-    for (i, entry) in as_list(m.get(1), path, 1, MAX_FORUM_ENTRIES)?
+    for (i, entry) in as_list(m.get(k::ENTRIES), path, 1, MAX_FORUM_ENTRIES)?
         .iter()
         .enumerate()
     {
-        let p = format!("{path}.1[{i}]");
-        let kind = u64_in(map_field(entry, 0), &p, 0, u64::MAX)?;
-        if kind != 1 {
+        let p = format!("{}[{i}]", at(path, k::ENTRIES));
+        let kind = u64_in(map_field(entry, mf::forum_entry::KIND), &p, 0, u64::MAX)?;
+        if kind != u64::from(mf::forum_entry_kind::POST) {
             if !allow {
                 return Err(bad(&p, "unallocated Forum entry kind"));
             }
@@ -855,35 +937,36 @@ pub(crate) fn parse_forum_content(
                 fields: fields.clone(),
             });
         } else {
-            let e = fields(Some(entry), &p, &[0], &[1, 2, 3], true, allow)?;
+            let e = shaped(Some(entry), &p, &post::SHAPE, allow)?;
             let text = |key| {
                 if e.has(key) {
-                    tstr(e.get(key), &format!("{p}.{key}"), 0, MAX_TEXT_STRING_BYTES).map(Some)
+                    tstr(e.get(key), &at(&p, key), 0, MAX_TEXT_STRING_BYTES).map(Some)
                 } else {
                     Ok(None)
                 }
             };
             entries.push(ForumEntry::Post {
-                title: text(1)?,
-                url: text(2)?,
-                message: text(3)?,
+                title: text(post::TITLE)?,
+                url: text(post::URL)?,
+                message: text(post::MESSAGE)?,
                 unknown: e.unknown,
             });
         }
     }
     Ok(ForumContent {
-        authored: timestamp(m.get(0), path)?,
+        authored: timestamp(m.get(k::AUTHORED), path)?,
         entries,
         unknown: m.unknown,
     })
 }
 
 fn forum_aggregate(value: Option<&CborValue>, path: &str) -> Result<ForumAggregate, CodecError> {
-    let m = fields(value, path, &[0, 1], &[], false, false)?;
-    let Some(CborValue::Bool(negative)) = m.get(0) else {
+    use mf::forum_aggregate as k;
+    let m = shaped(value, path, &k::SHAPE, false)?;
+    let Some(CborValue::Bool(negative)) = m.get(k::NEGATIVE) else {
         return Err(bad(path, "expected boolean sign"));
     };
-    let magnitude: [u8; 32] = bstr(m.get(1), path, 32, 32)?
+    let magnitude: [u8; 32] = bstr(m.get(k::MAGNITUDE), path, 32, 32)?
         .try_into()
         .expect("checked length");
     if *negative && magnitude.iter().all(|b| *b == 0) {
@@ -900,37 +983,48 @@ pub(crate) fn parse_forum_cursor(
     bytes: Vec<u8>,
     path: &str,
 ) -> Result<ForumCursor, CodecError> {
+    use mf::forum_discovery_cursor as discovery;
+    use mf::forum_topic_cursor as topic;
+    // The fields both cursor families share have one key in each.
+    const _: () = assert!(
+        topic::NETWORK == discovery::NETWORK
+            && topic::FAMILY == discovery::FAMILY
+            && topic::REVISION == discovery::REVISION
+            && topic::EPOCH == discovery::EPOCH
+            && topic::INCARNATION == discovery::INCARNATION
+    );
     let family = u32_in(
-        map_field(value, 1),
+        map_field(value, topic::FAMILY),
         path,
         TYPE_FORUM_TOPIC_PAGE,
         TYPE_FORUM_DISCOVERY_PAGE,
     )?;
-    let required: &[u64] = if family == TYPE_FORUM_TOPIC_PAGE {
-        &[0, 1, 2, 3, 4, 5, 6, 7]
+    let shape = if family == TYPE_FORUM_TOPIC_PAGE {
+        &topic::SHAPE
     } else {
-        &[0, 1, 2, 3, 4, 7]
+        &discovery::SHAPE
     };
-    let m = fields(Some(value), path, required, &[], false, false)?;
+    let m = shaped(Some(value), path, shape, false)?;
     let position = if family == TYPE_FORUM_TOPIC_PAGE {
-        let last = fields(m.get(4), path, &[0, 1], &[], false, false)?;
+        use mf::forum_cursor_last as last_k;
+        let last = shaped(m.get(topic::LAST), path, &last_k::SHAPE, false)?;
         ForumCursorPosition::Topic {
-            topic: tstr(m.get(5), path, 1, 512)?,
-            since: timestamp(m.get(6), path)?,
-            timestamp: timestamp(last.get(0), path)?,
-            hash: bstr(last.get(1), path, 32, 32)?,
+            topic: tstr(m.get(topic::TOPIC), path, 1, 512)?,
+            since: timestamp(m.get(topic::SINCE), path)?,
+            timestamp: timestamp(last.get(last_k::TIMESTAMP), path)?,
+            hash: bstr(last.get(last_k::HASH), path, 32, 32)?,
         }
     } else {
         ForumCursorPosition::Discovery {
-            topic: tstr(m.get(4), path, 1, 512)?,
+            topic: tstr(m.get(discovery::TOPIC), path, 1, 512)?,
         }
     };
     Ok(ForumCursor {
         bytes,
-        network: network_tag(m.get(0), path)?,
-        revision: u64_in(m.get(2), path, 0, u64::MAX)?,
-        epoch: bstr(m.get(3), path, 16, 16)?,
-        incarnation: u64_in(m.get(7), path, 0, u64::MAX)?,
+        network: network_tag(m.get(topic::NETWORK), path)?,
+        revision: u64_in(m.get(topic::REVISION), path, 0, u64::MAX)?,
+        epoch: bstr(m.get(topic::EPOCH), path, 16, 16)?,
+        incarnation: u64_in(m.get(topic::INCARNATION), path, 0, u64::MAX)?,
         position,
     })
 }
@@ -943,32 +1037,27 @@ fn parse_forum_read(
 ) -> Result<Draft, CodecError> {
     match type_id {
         TYPE_FORUM_VIEW => {
-            let m = fields(
-                Some(value),
-                path,
-                &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                &[],
-                true,
-                allow,
-            )?;
+            use mf::forum_single_view as k;
+            let m = shaped(Some(value), path, &k::SHAPE, allow)?;
             Ok(Draft::ForumView(ForumView {
-                network: network_tag(m.get(0), path)?,
-                post_frame: framed(m.get(1), path)?,
-                author: bstr(m.get(2), path, 20, 20)?,
-                author_burn_tx: bstr(m.get(3), path, 1, 16384)?,
-                transaction_hash: bstr(m.get(4), path, 32, 32)?,
-                first_visible: timestamp(m.get(5), path)?,
-                block: u64_in(m.get(6), path, 0, u64::MAX)?,
-                transaction_index: u64_in(m.get(7), path, 0, u64::MAX)?,
-                aggregate: forum_aggregate(m.get(8), path)?,
-                revision: u64_in(m.get(9), path, 0, u64::MAX)?,
-                epoch: bstr(m.get(10), path, 16, 16)?,
+                network: network_tag(m.get(k::NETWORK), path)?,
+                post_frame: framed(m.get(k::POST_FRAME), path)?,
+                author: bstr(m.get(k::AUTHOR), path, 20, 20)?,
+                author_burn_tx: bstr(m.get(k::AUTHOR_BURN_TX), path, 1, 16384)?,
+                transaction_hash: bstr(m.get(k::TRANSACTION_HASH), path, 32, 32)?,
+                first_visible: timestamp(m.get(k::FIRST_VISIBLE), path)?,
+                block: u64_in(m.get(k::BLOCK), path, 0, u64::MAX)?,
+                transaction_index: u64_in(m.get(k::TRANSACTION_INDEX), path, 0, u64::MAX)?,
+                aggregate: forum_aggregate(m.get(k::AGGREGATE), path)?,
+                revision: u64_in(m.get(k::REVISION), path, 0, u64::MAX)?,
+                epoch: bstr(m.get(k::EPOCH), path, 16, 16)?,
                 unknown: m.unknown,
             }))
         }
         TYPE_FORUM_TOPIC_PAGE => {
-            let m = fields(Some(value), path, &[0, 1, 2, 3, 4, 6], &[5, 7], true, allow)?;
-            let rows = as_list(m.get(4), path, 0, MAX_FORUM_ROWS)?
+            use mf::forum_topic_page as k;
+            let m = shaped(Some(value), path, &k::SHAPE, allow)?;
+            let rows = as_list(m.get(k::ROWS), path, 0, MAX_FORUM_ROWS)?
                 .iter()
                 .map(|v| framed(Some(v), path))
                 .collect::<Result<Vec<_>, _>>()?;
@@ -980,27 +1069,29 @@ fn parse_forum_read(
                 }
             };
             Ok(Draft::ForumTopicPage(ForumTopicPage {
-                network: network_tag(m.get(0), path)?,
-                topic: tstr(m.get(1), path, 1, 512)?,
-                since: timestamp(m.get(2), path)?,
-                revision: u64_in(m.get(3), path, 0, u64::MAX)?,
+                network: network_tag(m.get(k::NETWORK), path)?,
+                topic: tstr(m.get(k::TOPIC), path, 1, 512)?,
+                since: timestamp(m.get(k::SINCE), path)?,
+                revision: u64_in(m.get(k::REVISION), path, 0, u64::MAX)?,
                 rows,
-                next_cursor: cursor(5)?,
-                request_cursor: cursor(7)?,
-                epoch: bstr(m.get(6), path, 16, 16)?,
+                next_cursor: cursor(k::NEXT_CURSOR)?,
+                request_cursor: cursor(k::REQUEST_CURSOR)?,
+                epoch: bstr(m.get(k::EPOCH), path, 16, 16)?,
                 unknown: m.unknown,
             }))
         }
         TYPE_FORUM_DISCOVERY_PAGE => {
-            let m = fields(Some(value), path, &[0, 1, 2, 4], &[3, 5], true, allow)?;
-            let entries = as_list(m.get(2), path, 0, MAX_FORUM_ROWS)?
+            use mf::forum_discovery_entry as entry;
+            use mf::forum_discovery_page as k;
+            let m = shaped(Some(value), path, &k::SHAPE, allow)?;
+            let entries = as_list(m.get(k::ENTRIES), path, 0, MAX_FORUM_ROWS)?
                 .iter()
                 .map(|v| {
-                    let e = fields(Some(v), path, &[0, 1, 2], &[], true, allow)?;
+                    let e = shaped(Some(v), path, &entry::SHAPE, allow)?;
                     Ok(ForumDiscoveryEntry {
-                        topic: tstr(e.get(0), path, 1, 512)?,
-                        count: u64_in(e.get(1), path, 0, u64::MAX)?,
-                        last_activity: timestamp(e.get(2), path)?,
+                        topic: tstr(e.get(entry::TOPIC), path, 1, 512)?,
+                        count: u64_in(e.get(entry::COUNT), path, 0, u64::MAX)?,
+                        last_activity: timestamp(e.get(entry::LAST_ACTIVITY), path)?,
                         unknown: e.unknown,
                     })
                 })
@@ -1013,52 +1104,49 @@ fn parse_forum_read(
                 }
             };
             Ok(Draft::ForumDiscoveryPage(ForumDiscoveryPage {
-                network: network_tag(m.get(0), path)?,
-                revision: u64_in(m.get(1), path, 0, u64::MAX)?,
+                network: network_tag(m.get(k::NETWORK), path)?,
+                revision: u64_in(m.get(k::REVISION), path, 0, u64::MAX)?,
                 entries,
-                next_cursor: cursor(3)?,
-                request_cursor: cursor(5)?,
-                epoch: bstr(m.get(4), path, 16, 16)?,
+                next_cursor: cursor(k::NEXT_CURSOR)?,
+                request_cursor: cursor(k::REQUEST_CURSOR)?,
+                epoch: bstr(m.get(k::EPOCH), path, 16, 16)?,
                 unknown: m.unknown,
             }))
         }
         TYPE_FORUM_OPERATION_STATUS => {
-            let m = fields(
-                Some(value),
-                path,
-                &[0, 1, 2, 3, 4, 5, 6, 7, 10, 11],
-                &[8, 9],
-                true,
-                allow,
-            )?;
-            let state = u32_in(m.get(7), path, 0, 3)?;
-            if m.has(8) != (state == 2) || m.has(9) != (state == 2) {
+            use mf::forum_operation_state as state_k;
+            use mf::forum_operation_status as k;
+            use mf::forum_vote_direction as direction;
+            let m = shaped(Some(value), path, &k::SHAPE, allow)?;
+            let state = u32_in(m.get(k::STATE), path, 0, state_k::REJECTED_REQUEST)?;
+            let confirmed = state == state_k::CONFIRMED;
+            if m.has(k::BLOCK) != confirmed || m.has(k::TRANSACTION_INDEX) != confirmed {
                 return Err(bad(path, "confirmation position iff confirmed"));
             }
-            let value = u64_in(m.get(6), path, 0, u64::MAX)?;
-            if (state == 1 || state == 2) && (value == 0 || value > i64::MAX as u64) {
+            let value = u64_in(m.get(k::VALUE), path, 0, u64::MAX)?;
+            if (state == state_k::PENDING || confirmed) && (value == 0 || value > i64::MAX as u64) {
                 return Err(bad(path, "observed burn outside 1..i64::MAX"));
             }
             let evidence = match state {
-                0 => ForumOperationEvidence::UnknownRequest,
-                1 => ForumOperationEvidence::Pending,
-                2 => ForumOperationEvidence::Confirmed {
-                    block: u64_in(m.get(8), path, 0, u64::MAX)?,
-                    transaction_index: u64_in(m.get(9), path, 0, u64::MAX)?,
+                state_k::UNKNOWN_REQUEST => ForumOperationEvidence::UnknownRequest,
+                state_k::PENDING => ForumOperationEvidence::Pending,
+                state_k::CONFIRMED => ForumOperationEvidence::Confirmed {
+                    block: u64_in(m.get(k::BLOCK), path, 0, u64::MAX)?,
+                    transaction_index: u64_in(m.get(k::TRANSACTION_INDEX), path, 0, u64::MAX)?,
                 },
                 _ => ForumOperationEvidence::RejectedRequest,
             };
             Ok(Draft::ForumOperationStatus(ForumOperationStatus {
-                network: network_tag(m.get(0), path)?,
-                submitted_frame: framed(m.get(1), path)?,
-                target_hash: bstr(m.get(2), path, 32, 32)?,
-                transaction_hash: bstr(m.get(3), path, 32, 32)?,
-                sender: bstr(m.get(4), path, 20, 20)?,
-                direction: u32_in(m.get(5), path, 0, 1)? as u8,
+                network: network_tag(m.get(k::NETWORK), path)?,
+                submitted_frame: framed(m.get(k::SUBMITTED_FRAME), path)?,
+                target_hash: bstr(m.get(k::TARGET_HASH), path, 32, 32)?,
+                transaction_hash: bstr(m.get(k::TRANSACTION_HASH), path, 32, 32)?,
+                sender: bstr(m.get(k::SENDER), path, 20, 20)?,
+                direction: u32_in(m.get(k::DIRECTION), path, direction::DOWN, direction::UP)? as u8,
                 value,
                 evidence,
-                revision: u64_in(m.get(10), path, 0, u64::MAX)?,
-                epoch: bstr(m.get(11), path, 16, 16)?,
+                revision: u64_in(m.get(k::REVISION), path, 0, u64::MAX)?,
+                epoch: bstr(m.get(k::EPOCH), path, 16, 16)?,
                 unknown: m.unknown,
             }))
         }
@@ -1078,21 +1166,30 @@ pub(crate) fn parse_draft(
     }
     match type_id {
         TYPE_FORWARDING_DELIVERY_ENVELOPE => {
-            let map = fields(Some(payload), path, &[0, 1, 2, 3, 4], &[5, 6], true, allow)?;
-            let payments = as_list(map.get(4), &format!("{path}.4"), 1, MAX_PAYMENT_MEMBERS)?;
+            use mf::forwarding_delivery_envelope as k;
+            let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
+            let payments = as_list(
+                map.get(k::PAYMENTS),
+                &at(path, k::PAYMENTS),
+                1,
+                MAX_PAYMENT_MEMBERS,
+            )?;
             let mut parsed = Vec::with_capacity(payments.len());
             for (i, item) in payments.iter().enumerate() {
-                parsed.push(payment_member(item, &format!("{path}.4[{i}]"))?);
+                parsed.push(payment_member(
+                    item,
+                    &format!("{}[{i}]", at(path, k::PAYMENTS)),
+                )?);
             }
-            let endpoint = if map.has(5) {
-                Some(tstr(map.get(5), &format!("{path}.5"), 1, 256)?)
+            let endpoint = if map.has(k::ENDPOINT) {
+                Some(tstr(map.get(k::ENDPOINT), &at(path, k::ENDPOINT), 1, 256)?)
             } else {
                 None
             };
-            let expires_at = if map.has(6) {
+            let expires_at = if map.has(k::EXPIRES_AT) {
                 Some(u64_in(
-                    map.get(6),
-                    &format!("{path}.6"),
+                    map.get(k::EXPIRES_AT),
+                    &at(path, k::EXPIRES_AT),
                     0,
                     u32::MAX as u64,
                 )?)
@@ -1100,10 +1197,15 @@ pub(crate) fn parse_draft(
                 None
             };
             Ok(Draft::ForwardingDelivery {
-                network: network_tag(map.get(0), &format!("{path}.0"))?,
-                destination: account(map.get(1), &format!("{path}.1"))?,
-                payload_frame: framed(map.get(2), &format!("{path}.2"))?,
-                payload_digest: bstr(map.get(3), &format!("{path}.3"), 32, 32)?,
+                network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+                destination: account(map.get(k::DESTINATION), &at(path, k::DESTINATION))?,
+                payload_frame: framed(map.get(k::PAYLOAD_FRAME), &at(path, k::PAYLOAD_FRAME))?,
+                payload_digest: bstr(
+                    map.get(k::PAYLOAD_DIGEST),
+                    &at(path, k::PAYLOAD_DIGEST),
+                    32,
+                    32,
+                )?,
                 payments: parsed,
                 endpoint,
                 expires_at,
@@ -1111,16 +1213,17 @@ pub(crate) fn parse_draft(
             })
         }
         TYPE_DIRECT_MESSAGE_DELIVERY => {
-            let (required, optional): (&[u64], &[u64]) = if schema.effective >= 2 {
-                (&[0, 1, 2, 3], &[4, 5, 6])
+            use mf::direct_message_delivery as k;
+            let shape = if schema.effective >= 2 {
+                &k::V2_SHAPE
             } else {
-                (&[0, 1, 2, 3, 4], &[5, 6])
+                &k::V1_SHAPE
             };
-            let map = fields(Some(payload), path, required, optional, true, allow)?;
-            let payments = match map.get(4) {
+            let map = shaped(Some(payload), path, shape, allow)?;
+            let payments = match map.get(k::PAYMENTS) {
                 Some(value) => as_list(
                     Some(value),
-                    &format!("{path}.4"),
+                    &at(path, k::PAYMENTS),
                     if schema.effective >= 2 { 0 } else { 1 },
                     MAX_PAYMENT_MEMBERS,
                 )?,
@@ -1128,27 +1231,35 @@ pub(crate) fn parse_draft(
             };
             let mut parsed = Vec::with_capacity(payments.len());
             for (i, item) in payments.iter().enumerate() {
-                parsed.push(payment_member(item, &format!("{path}.4[{i}]"))?);
+                parsed.push(payment_member(
+                    item,
+                    &format!("{}[{i}]", at(path, k::PAYMENTS)),
+                )?);
             }
-            let recipient = if map.has(5) {
-                let rec = account(map.get(5), &format!("{path}.5"))?;
-                if rec.key_type != 1 {
-                    return Err(bad(&format!("{path}.5"), "recipient key type must be 1"));
+            let recipient = if map.has(k::RECIPIENT) {
+                let rec = account(map.get(k::RECIPIENT), &at(path, k::RECIPIENT))?;
+                if rec.key_type != key_type::SECP256K1 {
+                    return Err(bad(&at(path, k::RECIPIENT), "recipient key type must be 1"));
                 }
                 Some(rec)
             } else {
                 None
             };
-            let dleq_proof = if map.has(6) {
-                Some(proof(map.get(6), &format!("{path}.6"))?)
+            let dleq_proof = if map.has(k::DLEQ_PROOF) {
+                Some(proof(map.get(k::DLEQ_PROOF), &at(path, k::DLEQ_PROOF))?)
             } else {
                 None
             };
             Ok(Draft::DirectMessage {
-                network: network_tag(map.get(0), &format!("{path}.0"))?,
-                destination: account(map.get(1), &format!("{path}.1"))?,
-                payload_frame: framed(map.get(2), &format!("{path}.2"))?,
-                payload_digest: bstr(map.get(3), &format!("{path}.3"), 32, 32)?,
+                network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+                destination: account(map.get(k::DESTINATION), &at(path, k::DESTINATION))?,
+                payload_frame: framed(map.get(k::PAYLOAD_FRAME), &at(path, k::PAYLOAD_FRAME))?,
+                payload_digest: bstr(
+                    map.get(k::PAYLOAD_DIGEST),
+                    &at(path, k::PAYLOAD_DIGEST),
+                    32,
+                    32,
+                )?,
                 payments: parsed,
                 recipient,
                 dleq_proof,
@@ -1156,40 +1267,70 @@ pub(crate) fn parse_draft(
             })
         }
         TYPE_DIRECTORY_ATTESTATION => {
-            let map = fields(Some(payload), path, &[0, 1], &[], true, allow)?;
-            let sigs = as_list(map.get(1), &format!("{path}.1"), 1, MAX_SIGNATURES)?;
+            use mf::directory_attestation as k;
+            let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
+            let sigs = as_list(
+                map.get(k::SIGNATURES),
+                &at(path, k::SIGNATURES),
+                1,
+                MAX_SIGNATURES,
+            )?;
             let mut parsed = Vec::with_capacity(sigs.len());
             for (i, item) in sigs.iter().enumerate() {
-                parsed.push(signature_entry(item, &format!("{path}.1[{i}]"))?);
+                parsed.push(signature_entry(
+                    item,
+                    &format!("{}[{i}]", at(path, k::SIGNATURES)),
+                )?);
             }
             Ok(Draft::DirectoryAttestation {
-                statement_frame: framed(map.get(0), &format!("{path}.0"))?,
+                statement_frame: framed(
+                    map.get(k::STATEMENT_FRAME),
+                    &at(path, k::STATEMENT_FRAME),
+                )?,
                 signatures: parsed,
                 unknown: map.unknown,
             })
         }
         TYPE_MAILBOX_CHECKPOINT => {
-            let map = fields(Some(payload), path, &[0, 1, 2, 3, 4], &[5], true, allow)?;
-            let facts = as_list(map.get(4), &format!("{path}.4"), 0, MAX_JOURNAL_FACTS)?;
+            use mf::mailbox_checkpoint as k;
+            let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
+            let facts = as_list(map.get(k::FACTS), &at(path, k::FACTS), 0, MAX_JOURNAL_FACTS)?;
             let mut parsed_facts = Vec::with_capacity(facts.len());
             for (i, item) in facts.iter().enumerate() {
-                parsed_facts.push(journal_fact(item, &format!("{path}.4[{i}]"), allow)?);
+                parsed_facts.push(journal_fact(
+                    item,
+                    &format!("{}[{i}]", at(path, k::FACTS)),
+                    allow,
+                )?);
             }
-            let sections = if map.has(5) {
-                let items = as_list(map.get(5), &format!("{path}.5"), 0, MAX_OPAQUE_SECTIONS)?;
+            let sections = if map.has(k::SECTIONS) {
+                let items = as_list(
+                    map.get(k::SECTIONS),
+                    &at(path, k::SECTIONS),
+                    0,
+                    MAX_OPAQUE_SECTIONS,
+                )?;
                 let mut parsed = Vec::with_capacity(items.len());
                 for (i, item) in items.iter().enumerate() {
-                    parsed.push(opaque_section(item, &format!("{path}.5[{i}]"))?);
+                    parsed.push(opaque_section(
+                        item,
+                        &format!("{}[{i}]", at(path, k::SECTIONS)),
+                    )?);
                 }
                 Some(parsed)
             } else {
                 None
             };
             Ok(Draft::Checkpoint {
-                network: network_tag(map.get(0), &format!("{path}.0"))?,
-                owner: account(map.get(1), &format!("{path}.1"))?,
-                checkpoint_id: bstr(map.get(2), &format!("{path}.2"), 16, 16)?,
-                timestamp: timestamp(map.get(3), &format!("{path}.3"))?,
+                network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+                owner: account(map.get(k::OWNER), &at(path, k::OWNER))?,
+                checkpoint_id: bstr(
+                    map.get(k::CHECKPOINT_ID),
+                    &at(path, k::CHECKPOINT_ID),
+                    16,
+                    16,
+                )?,
+                timestamp: timestamp(map.get(k::TIMESTAMP), &at(path, k::TIMESTAMP))?,
                 facts: parsed_facts,
                 sections,
                 unknown: map.unknown,
@@ -1201,30 +1342,37 @@ pub(crate) fn parse_draft(
             // field 9 (the profile entries, M4) is optional from schema 3, where a schema-2
             // reader reads the statement through V6.3 and retains it. `effective` is the exact
             // version, or the reader's highest supported schema when the frame is newer (V6.3).
-            let optional: &[u64] = if schema.effective >= 3 {
-                &[5, 6, 7, 9, 14, 15, 16]
-            } else {
-                &[5, 6, 7, 14, 15, 16]
-            };
+            use mf::directory_statement as k;
             let preview = schema.effective >= 4;
-            let optional = if preview { &[14, 15, 16][..] } else { optional };
-            let required: &[u64] = if preview {
-                &[0, 1, 2, 3, 4, 6, 8, 10, 11, 12, 13]
-            } else if schema.effective >= 2 {
-                &[0, 1, 2, 3, 4, 8]
-            } else {
-                &[0, 1, 2, 3, 4]
+            // Schema 1 also reads the schema-2 optional fields (14-16), which its CDDL rule omits.
+            let v1 = mf::MapShape {
+                optional: k::V2_SHAPE.optional,
+                ..k::V1_SHAPE
             };
-            let map = fields(Some(payload), path, required, optional, true, allow)?;
-            if preview && [5, 7, 9].iter().any(|k| map.has(*k)) {
+            let shape = match schema.effective {
+                0 | 1 => &v1,
+                2 => &k::V2_SHAPE,
+                3 => &k::V3_SHAPE,
+                _ => &k::V4_SHAPE,
+            };
+            let map = shaped(Some(payload), path, shape, allow)?;
+            if preview
+                && [
+                    k::KEY_TRANSITIONS,
+                    k::RECOVERY_AUTHORITIES,
+                    k::PROFILE_ENTRIES,
+                ]
+                .iter()
+                .any(|key| map.has(*key))
+            {
                 return Err(bad(
                     path,
                     "transitions, recovery and profiles are unsupported in directory preview",
                 ));
             }
             let relays = as_list(
-                map.get(4),
-                &format!("{path}.4"),
+                map.get(k::RELAYS),
+                &at(path, k::RELAYS),
                 1,
                 if preview { 1 } else { MAX_RELAY_BINDINGS },
             )?;
@@ -1232,41 +1380,58 @@ pub(crate) fn parse_draft(
             for (i, item) in relays.iter().enumerate() {
                 parsed_relays.push(relay_binding(
                     item,
-                    &format!("{path}.4[{i}]"),
+                    &format!("{}[{i}]", at(path, k::RELAYS)),
                     allow,
                     preview,
                 )?);
             }
-            let key_transitions = if map.has(5) {
-                let items = as_list(map.get(5), &format!("{path}.5"), 1, 16)?;
+            let key_transitions = if map.has(k::KEY_TRANSITIONS) {
+                let items = as_list(
+                    map.get(k::KEY_TRANSITIONS),
+                    &at(path, k::KEY_TRANSITIONS),
+                    1,
+                    16,
+                )?;
                 let mut parsed = Vec::with_capacity(items.len());
                 for (i, item) in items.iter().enumerate() {
-                    parsed.push(key_transition(item, &format!("{path}.5[{i}]"), allow)?);
+                    parsed.push(key_transition(
+                        item,
+                        &format!("{}[{i}]", at(path, k::KEY_TRANSITIONS)),
+                        allow,
+                    )?);
                 }
                 Some(parsed)
             } else {
                 None
             };
-            let expiry = if map.has(6) {
-                Some(timestamp(map.get(6), &format!("{path}.6"))?)
+            let expiry = if map.has(k::EXPIRY) {
+                Some(timestamp(map.get(k::EXPIRY), &at(path, k::EXPIRY))?)
             } else {
                 None
             };
-            let recovery = if map.has(7) {
-                let items = as_list(map.get(7), &format!("{path}.7"), 1, 8)?;
+            let recovery = if map.has(k::RECOVERY_AUTHORITIES) {
+                let items = as_list(
+                    map.get(k::RECOVERY_AUTHORITIES),
+                    &at(path, k::RECOVERY_AUTHORITIES),
+                    1,
+                    8,
+                )?;
                 let mut parsed = Vec::with_capacity(items.len());
                 for (i, item) in items.iter().enumerate() {
-                    parsed.push(account(Some(item), &format!("{path}.7[{i}]"))?);
+                    parsed.push(account(
+                        Some(item),
+                        &format!("{}[{i}]", at(path, k::RECOVERY_AUTHORITIES)),
+                    )?);
                 }
                 Some(parsed)
             } else {
                 None
             };
             Ok(Draft::Statement {
-                network: network_tag(map.get(0), &format!("{path}.0"))?,
-                subject: directory_account(map.get(1), &format!("{path}.1"), preview)?,
-                revision: u64_in(map.get(2), &format!("{path}.2"), 0, u64::MAX)?,
-                timestamp: timestamp(map.get(3), &format!("{path}.3"))?,
+                network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+                subject: directory_account(map.get(k::SUBJECT), &at(path, k::SUBJECT), preview)?,
+                revision: u64_in(map.get(k::REVISION), &at(path, k::REVISION), 0, u64::MAX)?,
+                timestamp: timestamp(map.get(k::TIMESTAMP), &at(path, k::TIMESTAMP))?,
                 relays: parsed_relays,
                 key_transitions,
                 expiry,
@@ -1275,63 +1440,90 @@ pub(crate) fn parse_draft(
                 preview: if preview {
                     Some(PreviewDirectoryRoles {
                         message_dh_key: directory_account(
-                            map.get(10),
-                            &format!("{path}.10"),
+                            map.get(k::MESSAGE_DH_KEY),
+                            &at(path, k::MESSAGE_DH_KEY),
                             true,
                         )?,
                         mailbox_key_generation: u64_in(
-                            map.get(11),
-                            &format!("{path}.11"),
+                            map.get(k::MAILBOX_KEY_GENERATION),
+                            &at(path, k::MAILBOX_KEY_GENERATION),
                             0,
                             u64::MAX,
                         )?,
                         stamp_key_generation: u64_in(
-                            map.get(12),
-                            &format!("{path}.12"),
+                            map.get(k::STAMP_KEY_GENERATION),
+                            &at(path, k::STAMP_KEY_GENERATION),
                             0,
                             u64::MAX,
                         )?,
-                        predecessor: if matches!(map.get(13), Some(CborValue::Null)) {
+                        predecessor: if matches!(
+                            map.get(k::PREDECESSOR_HASH),
+                            Some(CborValue::Null)
+                        ) {
                             None
                         } else {
-                            Some(bstr(map.get(13), &format!("{path}.13"), 32, 32)?)
+                            Some(bstr(
+                                map.get(k::PREDECESSOR_HASH),
+                                &at(path, k::PREDECESSOR_HASH),
+                                32,
+                                32,
+                            )?)
                         },
                     })
                 } else {
                     None
                 },
-                stamp_key: if map.has(8) {
+                stamp_key: if map.has(k::STAMP_KEY) {
                     Some(directory_account(
-                        map.get(8),
-                        &format!("{path}.8"),
+                        map.get(k::STAMP_KEY),
+                        &at(path, k::STAMP_KEY),
                         preview,
                     )?)
                 } else {
                     None
                 },
-                profile_entries: if map.has(9) && schema.effective >= 3 {
-                    let items = as_list(map.get(9), &format!("{path}.9"), 1, 64)?;
+                profile_entries: if map.has(k::PROFILE_ENTRIES) && schema.effective >= 3 {
+                    let items = as_list(
+                        map.get(k::PROFILE_ENTRIES),
+                        &at(path, k::PROFILE_ENTRIES),
+                        1,
+                        64,
+                    )?;
                     let mut parsed = Vec::with_capacity(items.len());
                     for (i, item) in items.iter().enumerate() {
-                        parsed.push(profile_entry(item, &format!("{path}.9[{i}]"), allow)?);
+                        parsed.push(profile_entry(
+                            item,
+                            &format!("{}[{i}]", at(path, k::PROFILE_ENTRIES)),
+                            allow,
+                        )?);
                     }
                     Some(parsed)
                 } else {
                     None
                 },
-                canonical_username: if map.has(14) {
-                    Some(tstr(map.get(14), &format!("{path}.14"), 3, 32)?)
+                canonical_username: if map.has(k::USERNAME) {
+                    Some(tstr(map.get(k::USERNAME), &at(path, k::USERNAME), 3, 32)?)
                 } else {
                     None
                 },
-                account_type: if map.has(15) {
-                    let v = u64_in(map.get(15), &format!("{path}.15"), 0, 3)?;
+                account_type: if map.has(k::ACCOUNT_TYPE) {
+                    let v = u64_in(
+                        map.get(k::ACCOUNT_TYPE),
+                        &at(path, k::ACCOUNT_TYPE),
+                        0,
+                        u64::from(account_type::ORGANIZATION),
+                    )?;
                     Some(crate::model::AccountType::from_u64(v).expect("validated 0..=3"))
                 } else {
                     None
                 },
-                bot_role: if map.has(16) {
-                    let v = u64_in(map.get(16), &format!("{path}.16"), 0, 7)?;
+                bot_role: if map.has(k::BOT_ROLE) {
+                    let v = u64_in(
+                        map.get(k::BOT_ROLE),
+                        &at(path, k::BOT_ROLE),
+                        0,
+                        u64::from(bot_role::ANNOUNCER),
+                    )?;
                     Some(crate::model::BotRole::from_u64(v).expect("validated 0..=7"))
                 } else {
                     None
@@ -1341,115 +1533,141 @@ pub(crate) fn parse_draft(
         }
         TYPE_RECIPIENT_ENCRYPTED_PAYLOAD => {
             if schema.effective >= 2 {
-                let map = fields(
-                    Some(payload),
-                    path,
-                    &[0, 1, 2, 3, 4, 5, 6, 7],
-                    &[],
-                    true,
-                    allow,
-                )?;
+                use mf::recipient_encrypted_payload_v2 as k;
+                let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
                 Ok(Draft::Recipient {
                     schema_version: 2,
-                    network: network_tag(map.get(0), &format!("{path}.0"))?,
-                    sender: account(map.get(1), &format!("{path}.1"))?,
-                    recipient: account(map.get(2), &format!("{path}.2"))?,
-                    suite: u32_in(map.get(3), &format!("{path}.3"), 0, 65_535)?,
+                    network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+                    sender: account(map.get(k::SENDER), &at(path, k::SENDER))?,
+                    recipient: account(map.get(k::RECIPIENT), &at(path, k::RECIPIENT))?,
+                    suite: u32_in(map.get(k::SUITE), &at(path, k::SUITE), 0, 65_535)?,
                     nonce: None,
                     ciphertext: None,
                     crypto_box_envelope: Some(bstr(
-                        map.get(4),
-                        &format!("{path}.4"),
+                        map.get(k::CRYPTO_BOX_ENVELOPE),
+                        &at(path, k::CRYPTO_BOX_ENVELOPE),
                         1,
                         MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES,
                     )?),
-                    ephemeral_point: point(map.get(5), &format!("{path}.5"))?,
-                    shared_point: point(map.get(6), &format!("{path}.6"))?,
-                    dleq_proof: proof(map.get(7), &format!("{path}.7"))?,
+                    ephemeral_point: point(
+                        map.get(k::EPHEMERAL_POINT),
+                        &at(path, k::EPHEMERAL_POINT),
+                    )?,
+                    shared_point: point(map.get(k::SHARED_POINT), &at(path, k::SHARED_POINT))?,
+                    dleq_proof: proof(map.get(k::DLEQ_PROOF), &at(path, k::DLEQ_PROOF))?,
                     unknown: map.unknown,
                 })
             } else {
-                let map = fields(
-                    Some(payload),
-                    path,
-                    &[0, 1, 2, 3, 4, 5, 6, 7, 8],
-                    &[],
-                    true,
-                    allow,
-                )?;
+                use mf::recipient_encrypted_payload_v1 as k;
+                let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
                 Ok(Draft::Recipient {
                     schema_version: 1,
-                    network: network_tag(map.get(0), &format!("{path}.0"))?,
-                    sender: account(map.get(1), &format!("{path}.1"))?,
-                    recipient: account(map.get(2), &format!("{path}.2"))?,
-                    suite: u32_in(map.get(3), &format!("{path}.3"), 0, 65_535)?,
-                    nonce: Some(bstr(map.get(4), &format!("{path}.4"), 1, 64)?),
+                    network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+                    sender: account(map.get(k::SENDER), &at(path, k::SENDER))?,
+                    recipient: account(map.get(k::RECIPIENT), &at(path, k::RECIPIENT))?,
+                    suite: u32_in(map.get(k::SUITE), &at(path, k::SUITE), 0, 65_535)?,
+                    nonce: Some(bstr(map.get(k::NONCE), &at(path, k::NONCE), 1, 64)?),
                     ciphertext: Some(bstr(
-                        map.get(5),
-                        &format!("{path}.5"),
+                        map.get(k::CIPHERTEXT),
+                        &at(path, k::CIPHERTEXT),
                         1,
                         MAX_CIPHERTEXT_BYTES,
                     )?),
                     crypto_box_envelope: None,
-                    ephemeral_point: point(map.get(6), &format!("{path}.6"))?,
-                    shared_point: point(map.get(7), &format!("{path}.7"))?,
-                    dleq_proof: proof(map.get(8), &format!("{path}.8"))?,
+                    ephemeral_point: point(
+                        map.get(k::EPHEMERAL_POINT),
+                        &at(path, k::EPHEMERAL_POINT),
+                    )?,
+                    shared_point: point(map.get(k::SHARED_POINT), &at(path, k::SHARED_POINT))?,
+                    dleq_proof: proof(map.get(k::DLEQ_PROOF), &at(path, k::DLEQ_PROOF))?,
                     unknown: map.unknown,
                 })
             }
         }
         TYPE_ENCRYPTED_MESSAGE_CONTENT => {
             // Field 4 is optional on the wire: writers should send it, readers accept absence.
-            let map = fields(Some(payload), path, &[0, 1, 2, 3], &[4, 5], true, allow)?;
-            let conversation_id = if map.has(4) {
-                Some(bstr(map.get(4), &format!("{path}.4"), 16, 16)?)
+            use mf::encrypted_message_content as k;
+            // This reader does not declare field 6 (token transfer); it is retained as unknown.
+            let map = fields(
+                Some(payload),
+                path,
+                k::SHAPE.required,
+                &[k::CONVERSATION_ID, k::CONVERSATION_NAME],
+                k::SHAPE.open,
+                allow,
+            )?;
+            let conversation_id = if map.has(k::CONVERSATION_ID) {
+                Some(bstr(
+                    map.get(k::CONVERSATION_ID),
+                    &at(path, k::CONVERSATION_ID),
+                    16,
+                    16,
+                )?)
             } else {
                 None
             };
-            let conversation_name = if map.has(5) {
-                Some(conversation_name(map.get(5), &format!("{path}.5"))?)
+            let conversation_name = if map.has(k::CONVERSATION_NAME) {
+                Some(conversation_name(
+                    map.get(k::CONVERSATION_NAME),
+                    &at(path, k::CONVERSATION_NAME),
+                )?)
             } else {
                 None
             };
             Ok(Draft::Encrypted {
-                network: network_tag(map.get(0), &format!("{path}.0"))?,
-                message_id: bstr(map.get(1), &format!("{path}.1"), 16, 16)?,
-                revision_frame: framed(map.get(2), &format!("{path}.2"))?,
-                content_digest: bstr(map.get(3), &format!("{path}.3"), 32, 32)?,
+                network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+                message_id: bstr(map.get(k::MESSAGE_ID), &at(path, k::MESSAGE_ID), 16, 16)?,
+                revision_frame: framed(map.get(k::REVISION_FRAME), &at(path, k::REVISION_FRAME))?,
+                content_digest: bstr(
+                    map.get(k::CONTENT_DIGEST),
+                    &at(path, k::CONTENT_DIGEST),
+                    32,
+                    32,
+                )?,
                 conversation_id,
                 conversation_name,
                 unknown: map.unknown,
             })
         }
         TYPE_KEY_TRANSITION_STATEMENT => {
-            let map = fields(Some(payload), path, &[0, 1, 2, 3, 4], &[], true, allow)?;
+            use mf::key_transition_statement as k;
+            let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
             Ok(Draft::TransitionStatement {
-                network: network_tag(map.get(0), &format!("{path}.0"))?,
-                subject: account(map.get(1), &format!("{path}.1"))?,
-                prior_authority: account(map.get(2), &format!("{path}.2"))?,
-                revision: u64_in(map.get(3), &format!("{path}.3"), 1, u64::MAX)?,
-                new_key: account(map.get(4), &format!("{path}.4"))?,
+                network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+                subject: account(map.get(k::SUBJECT), &at(path, k::SUBJECT))?,
+                prior_authority: account(
+                    map.get(k::PRIOR_AUTHORITY),
+                    &at(path, k::PRIOR_AUTHORITY),
+                )?,
+                revision: u64_in(map.get(k::REVISION), &at(path, k::REVISION), 1, u64::MAX)?,
+                new_key: account(map.get(k::NEW_KEY), &at(path, k::NEW_KEY))?,
                 unknown: map.unknown,
             })
         }
         TYPE_TOPIC_POST => {
-            let map = fields(Some(payload), path, &[0, 1, 3], &[2, 4, 5], true, allow)?;
-            let parent_hash = if map.has(2) {
-                Some(bstr(map.get(2), &format!("{path}.2"), 32, 32)?)
+            use mf::topic_post as k;
+            let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
+            let parent_hash = if map.has(k::PARENT_HASH) {
+                Some(bstr(
+                    map.get(k::PARENT_HASH),
+                    &at(path, k::PARENT_HASH),
+                    32,
+                    32,
+                )?)
             } else {
                 None
             };
-            let from = if map.has(4) {
-                let val = map.get(4);
+            let from = if map.has(k::AUTHOR) {
+                let val = map.get(k::AUTHOR);
                 if matches!(val, Some(CborValue::Map(_))) {
                     Some(TopicPostAuthor::Account(account(
                         val,
-                        &format!("{path}.4"),
+                        &at(path, k::AUTHOR),
                     )?))
                 } else {
                     Some(TopicPostAuthor::Bytes(bstr(
                         val,
-                        &format!("{path}.4"),
+                        &at(path, k::AUTHOR),
                         20,
                         33,
                     )?))
@@ -1457,16 +1675,26 @@ pub(crate) fn parse_draft(
             } else {
                 None
             };
-            let signature = if map.has(5) {
-                Some(bstr(map.get(5), &format!("{path}.5"), 1, 512)?)
+            let signature = if map.has(k::SIGNATURE) {
+                Some(bstr(
+                    map.get(k::SIGNATURE),
+                    &at(path, k::SIGNATURE),
+                    1,
+                    512,
+                )?)
             } else {
                 None
             };
             Ok(Draft::TopicPost {
-                network: network_tag(map.get(0), &format!("{path}.0"))?,
-                topic: tstr(map.get(1), &format!("{path}.1"), 1, 512)?,
+                network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+                topic: tstr(map.get(k::TOPIC), &at(path, k::TOPIC), 1, 512)?,
                 parent_hash,
-                body: bstr(map.get(3), &format!("{path}.3"), 1, MAX_TOPIC_BODY_BYTES)?,
+                body: bstr(
+                    map.get(k::BODY),
+                    &at(path, k::BODY),
+                    1,
+                    MAX_TOPIC_BODY_BYTES,
+                )?,
                 from,
                 signature,
                 structured: schema.effective >= 2,
@@ -1474,40 +1702,43 @@ pub(crate) fn parse_draft(
             })
         }
         TYPE_TOPIC_POST_SUBMISSION => {
-            let map = fields(Some(payload), path, &[0, 1, 2], &[], true, allow)?;
+            use mf::topic_post_submission as k;
+            let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
             Ok(Draft::TopicPostSubmission {
-                network: network_tag(map.get(0), &format!("{path}.0"))?,
-                post_frame: framed(map.get(1), &format!("{path}.1"))?,
-                burn_tx: bstr(map.get(2), &format!("{path}.2"), 1, 16_384)?,
+                network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+                post_frame: framed(map.get(k::POST_FRAME), &at(path, k::POST_FRAME))?,
+                burn_tx: bstr(map.get(k::BURN_TX), &at(path, k::BURN_TX), 1, 16_384)?,
                 unknown: map.unknown,
             })
         }
         TYPE_TOPIC_VOTE_SUBMISSION => {
-            let map = fields(Some(payload), path, &[0, 1, 2], &[], true, allow)?;
+            use mf::topic_vote_submission as k;
+            let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
             Ok(Draft::TopicVoteSubmission {
-                network: network_tag(map.get(0), &format!("{path}.0"))?,
-                target_hash: bstr(map.get(1), &format!("{path}.1"), 32, 32)?,
-                burn_tx: bstr(map.get(2), &format!("{path}.2"), 1, 16_384)?,
+                network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+                target_hash: bstr(map.get(k::TARGET_HASH), &at(path, k::TARGET_HASH), 32, 32)?,
+                burn_tx: bstr(map.get(k::BURN_TX), &at(path, k::BURN_TX), 1, 16_384)?,
                 unknown: map.unknown,
             })
         }
         TYPE_MESSAGE_CONTENT_REVISION => {
-            let map = fields(Some(payload), path, &[0, 1], &[], true, allow)?;
-            if map.get(0) != Some(&CborValue::Text("frank".to_string())) {
+            use mf::message_content_revision as k;
+            let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
+            if map.get(k::NETWORK) != Some(&CborValue::Text("frank".to_string())) {
                 return Err(bad(
-                    &format!("{path}.0"),
+                    &at(path, k::NETWORK),
                     "the type-8 domain must be the text \"frank\"",
                 ));
             }
             let items = as_list(
-                map.get(1),
-                &format!("{path}.1"),
+                map.get(k::ITEMS),
+                &at(path, k::ITEMS),
                 1,
                 MAX_MESSAGE_ITEMS_PER_ARRAY,
             )?;
             let mut parsed = Vec::with_capacity(items.len());
             for (i, item) in items.iter().enumerate() {
-                parsed.push(framed(Some(item), &format!("{path}.1[{i}]"))?);
+                parsed.push(framed(Some(item), &format!("{}[{i}]", at(path, k::ITEMS)))?);
             }
             Ok(Draft::Revision {
                 items: parsed,
@@ -1515,16 +1746,17 @@ pub(crate) fn parse_draft(
             })
         }
         TYPE_CONTAINER_MESSAGE_ITEM => {
-            let map = fields(Some(payload), path, &[0], &[], true, allow)?;
+            use mf::container_message_item as k;
+            let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
             let items = as_list(
-                map.get(0),
-                &format!("{path}.0"),
+                map.get(k::ITEMS),
+                &at(path, k::ITEMS),
                 1,
                 MAX_MESSAGE_ITEMS_PER_ARRAY,
             )?;
             let mut parsed = Vec::with_capacity(items.len());
             for (i, item) in items.iter().enumerate() {
-                parsed.push(framed(Some(item), &format!("{path}.0[{i}]"))?);
+                parsed.push(framed(Some(item), &format!("{}[{i}]", at(path, k::ITEMS)))?);
             }
             Ok(Draft::Container {
                 items: parsed,
@@ -1556,9 +1788,10 @@ pub(crate) fn parse_draft(
         TYPE_BLACKJACK_MESSAGE_ITEM => Ok(Draft::Blackjack(blackjack_payload(payload, path)?)),
         TYPE_STEALTH_MESSAGE_ITEM => parse_stealth(payload, allow, schema.effective, path),
         TYPE_TEXT_MESSAGE_ITEM => {
-            let map = fields(Some(payload), path, &[0], &[], true, allow)?;
+            use mf::text_message_item as k;
+            let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
             Ok(Draft::Text {
-                text: tstr(map.get(0), &format!("{path}.0"), 0, 262_144)?,
+                text: tstr(map.get(k::TEXT), &at(path, k::TEXT), 0, 262_144)?,
                 unknown: map.unknown,
             })
         }
@@ -1567,7 +1800,10 @@ pub(crate) fn parse_draft(
 }
 
 fn check_key_type(account: &AccountRef, path: &str) -> Result<(), CodecError> {
-    if !matches!(account.key_type, 1..=3) {
+    if !matches!(
+        account.key_type,
+        key_type::SECP256K1 | key_type::ED25519 | key_type::SECP256K1_X_ONLY
+    ) {
         return Err(unsupported(
             path,
             format!("unallocated key type {} (S2)", account.key_type),
@@ -1582,11 +1818,12 @@ fn check_signature_shape(
     signature: &[u8],
     path: &str,
 ) -> Result<(), CodecError> {
+    use mf::signature_algorithm as alg;
     let (key_type, ok) = match algorithm {
-        1 => (1, (8..=72).contains(&signature.len())),
-        2 => (3, signature.len() == 64),
-        3 => (1, signature.len() == 64),
-        16 => (2, signature.len() == 64),
+        alg::SECP256K1_ECDSA => (key_type::SECP256K1, (8..=72).contains(&signature.len())),
+        alg::BIP340_SCHNORR => (key_type::SECP256K1_X_ONLY, signature.len() == 64),
+        alg::BCH_SCHNORR => (key_type::SECP256K1, signature.len() == 64),
+        alg::ED25519 => (key_type::ED25519, signature.len() == 64),
         _ => {
             return Err(unsupported(
                 path,
@@ -1608,7 +1845,10 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
     let path = "root/payload";
     match draft {
         Draft::ForwardingDelivery { destination, .. } => {
-            check_key_type(destination, &format!("{path}.1"))?;
+            check_key_type(
+                destination,
+                &at(path, mf::forwarding_delivery_envelope::DESTINATION),
+            )?;
             Ok(())
         }
         Draft::DirectMessage {
@@ -1616,25 +1856,24 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             recipient,
             ..
         } => {
-            check_key_type(destination, &format!("{path}.1"))?;
+            use mf::direct_message_delivery as k;
+            check_key_type(destination, &at(path, k::DESTINATION))?;
             if let Some(r) = recipient {
-                check_key_type(r, &format!("{path}.5"))?;
+                check_key_type(r, &at(path, k::RECIPIENT))?;
             }
             Ok(())
         }
         Draft::DirectoryAttestation { signatures, .. } => {
             for (i, sig) in signatures.iter().enumerate() {
-                check_key_type(&sig.signer, &format!("{path}.1[{i}].1"))?;
-                check_signature_shape(
-                    sig.algorithm,
-                    &sig.signer,
-                    &sig.signature,
-                    &format!("{path}.1[{i}]"),
-                )?;
+                let entry = at_index(path, mf::directory_attestation::SIGNATURES, i);
+                check_key_type(&sig.signer, &at(&entry, mf::signature_entry::SIGNER))?;
+                check_signature_shape(sig.algorithm, &sig.signer, &sig.signature, &entry)?;
             }
             Ok(())
         }
-        Draft::Checkpoint { owner, .. } => check_key_type(owner, &format!("{path}.1")),
+        Draft::Checkpoint { owner, .. } => {
+            check_key_type(owner, &at(path, mf::mailbox_checkpoint::OWNER))
+        }
         Draft::Statement {
             subject,
             relays,
@@ -1644,30 +1883,33 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             preview,
             ..
         } => {
-            check_key_type(subject, &format!("{path}.1"))?;
+            use mf::directory_statement as k;
+            check_key_type(subject, &at(path, k::SUBJECT))?;
             for (i, relay) in relays.iter().enumerate() {
-                check_key_type(&relay.identity, &format!("{path}.4[{i}].2"))?;
+                let binding = at_index(path, k::RELAYS, i);
+                check_key_type(&relay.identity, &at(&binding, mf::relay_binding::IDENTITY))?;
             }
             if let Some(key) = stamp_key {
-                check_key_type(key, &format!("{path}.8"))?;
+                check_key_type(key, &at(path, k::STAMP_KEY))?;
             }
             if let Some(roles) = preview {
-                check_key_type(&roles.message_dh_key, &format!("{path}.10"))?;
+                check_key_type(&roles.message_dh_key, &at(path, k::MESSAGE_DH_KEY))?;
             }
             if let Some(transitions) = key_transitions {
                 for (i, transition) in transitions.iter().enumerate() {
-                    check_key_type(&transition.signer, &format!("{path}.5[{i}].2"))?;
+                    let entry = at_index(path, k::KEY_TRANSITIONS, i);
+                    check_key_type(&transition.signer, &at(&entry, mf::key_transition::SIGNER))?;
                     check_signature_shape(
                         transition.algorithm,
                         &transition.signer,
                         &transition.signature,
-                        &format!("{path}.5[{i}]"),
+                        &entry,
                     )?;
                 }
             }
             if let Some(authorities) = recovery {
                 for (i, authority) in authorities.iter().enumerate() {
-                    check_key_type(authority, &format!("{path}.7[{i}]"))?;
+                    check_key_type(authority, &at_index(path, k::RECOVERY_AUTHORITIES, i))?;
                 }
             }
             Ok(())
@@ -1679,13 +1921,20 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             schema_version,
             ..
         } => {
-            check_key_type(sender, &format!("{path}.1"))?;
-            check_key_type(recipient, &format!("{path}.2"))?;
+            // Both type-5 schemas share fields 1-3.
+            use mf::recipient_encrypted_payload_v2 as k;
+            const _: () = assert!(
+                k::SENDER == mf::recipient_encrypted_payload_v1::SENDER
+                    && k::RECIPIENT == mf::recipient_encrypted_payload_v1::RECIPIENT
+                    && k::SUITE == mf::recipient_encrypted_payload_v1::SUITE
+            );
+            check_key_type(sender, &at(path, k::SENDER))?;
+            check_key_type(recipient, &at(path, k::RECIPIENT))?;
             if (*schema_version == 1 && *suite != ENCRYPTION_SUITE_PROOF)
                 || (*schema_version == 2 && *suite != ENCRYPTION_SUITE_DM_AUTH_XCHACHA)
             {
                 return Err(unsupported(
-                    &format!("{path}.3"),
+                    &at(path, k::SUITE),
                     format!("encryption suite {suite} is unallocated (S2c)"),
                 ));
             }
@@ -1697,16 +1946,29 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             new_key,
             ..
         } => {
-            check_key_type(subject, &format!("{path}.1"))?;
-            check_key_type(prior_authority, &format!("{path}.2"))?;
-            check_key_type(new_key, &format!("{path}.4"))?;
+            use mf::key_transition_statement as k;
+            check_key_type(subject, &at(path, k::SUBJECT))?;
+            check_key_type(prior_authority, &at(path, k::PRIOR_AUTHORITY))?;
+            check_key_type(new_key, &at(path, k::NEW_KEY))?;
             Ok(())
         }
-        Draft::NativeStealth(item) => check_key_type(&item.ephemeral, &format!("{path}.1")),
+        Draft::NativeStealth(item) => check_key_type(
+            &item.ephemeral,
+            &at(path, mf::stealth_message_item::EPHEMERAL_PUB_KEY),
+        ),
         Draft::StealthPayment(item) => {
+            use mf::stealth_asset_transfer as k;
             for (i, entry) in item.entries.iter().enumerate() {
-                check_key_type(&entry.recipient, &format!("{path}.0[{i}].2"))?;
-                check_key_type(&entry.transfer.ephemeral, &format!("{path}.0[{i}].0.6.0"))?;
+                let at_entry = at_index(path, mf::stealth_asset_message_item::TRANSFERS, i);
+                check_key_type(&entry.recipient, &at(&at_entry, k::RECIPIENT_SPEND_KEY))?;
+                let metadata = at(
+                    &at(&at_entry, k::TRANSFER),
+                    mf::payment_transfer::STEALTH_METADATA,
+                );
+                check_key_type(
+                    &entry.transfer.ephemeral,
+                    &at(&metadata, mf::stealth_metadata::EPHEMERAL_PUB_KEY),
+                )?;
             }
             Ok(())
         }
@@ -2019,33 +2281,35 @@ fn parse_stealth(
     path: &str,
 ) -> Result<Draft, CodecError> {
     if version < 2 {
-        let m = fields(Some(payload), path, &[0, 1, 2, 3], &[4], true, allow)?;
+        use mf::stealth_message_item as k;
+        let m = shaped(Some(payload), path, &k::SHAPE, allow)?;
         return Ok(Draft::NativeStealth(NativeStealthItem {
-            network: tstr(m.get(0), path, 1, 64)?,
-            ephemeral: account(m.get(1), path)?,
-            transactions: as_list(m.get(2), path, 1, 16)?
+            network: tstr(m.get(k::NETWORK_TAG), path, 1, 64)?,
+            ephemeral: account(m.get(k::EPHEMERAL_PUB_KEY), path)?,
+            transactions: as_list(m.get(k::TRANSACTIONS), path, 1, 16)?
                 .iter()
                 .map(|v| bstr(Some(v), path, 1, 16384))
                 .collect::<Result<_, _>>()?,
-            amount: u64_in(m.get(3), path, 0, u64::MAX)?,
-            memo: if m.has(4) {
-                Some(tstr(m.get(4), path, 0, 1024)?)
+            amount: u64_in(m.get(k::AMOUNT), path, 0, u64::MAX)?,
+            memo: if m.has(k::MEMO) {
+                Some(tstr(m.get(k::MEMO), path, 0, 1024)?)
             } else {
                 None
             },
             unknown: m.unknown,
         }));
     }
-    let m = fields(Some(payload), path, &[0], &[1], true, allow)?;
-    let entries = as_list(m.get(0), path, 1, 16)?
+    use mf::stealth_asset_message_item as k;
+    let m = shaped(Some(payload), path, &k::SHAPE, allow)?;
+    let entries = as_list(m.get(k::TRANSFERS), path, 1, 16)?
         .iter()
         .enumerate()
-        .map(|(i, v)| stealth_entry(v, &format!("{path}.0[{i}]")))
+        .map(|(i, v)| stealth_entry(v, &at_index(path, k::TRANSFERS, i)))
         .collect::<Result<_, _>>()?;
     Ok(Draft::StealthPayment(StealthPaymentItem {
         entries,
-        memo: if m.has(1) {
-            Some(tstr(m.get(1), path, 0, 1024)?)
+        memo: if m.has(k::MEMO) {
+            Some(tstr(m.get(k::MEMO), path, 0, 1024)?)
         } else {
             None
         },
@@ -2054,22 +2318,34 @@ fn parse_stealth(
 }
 
 fn stealth_entry(v: &CborValue, path: &str) -> Result<StealthPaymentEntry, CodecError> {
-    let m = fields(Some(v), path, &[0, 1, 2], &[3, 4], false, false)?;
+    use mf::payment_transfer as pt;
+    use mf::stealth_asset_transfer as k;
+    use mf::stealth_derivation_scheme as scheme_k;
+    use mf::stealth_metadata as meta;
+    let m = shaped(Some(v), path, &k::SHAPE, false)?;
+    // A recipient payment requires the transfer's stealth metadata (field 6), which the
+    // payment-transfer shape leaves optional.
     let t = fields(
-        m.get(0),
+        m.get(k::TRANSFER),
         path,
-        &[0, 1, 3, 4, 6],
-        &[2, 5, 7, 8],
-        false,
+        &[
+            pt::NETWORK_TAG,
+            pt::TX_ID,
+            pt::DESTINATION,
+            pt::VALUE,
+            pt::STEALTH_METADATA,
+        ],
+        &[pt::VOUT, pt::TOKEN, pt::COMMITMENT, pt::RAW_TX],
+        pt::SHAPE.open,
         false,
     )?;
-    let metadata = fields(t.get(6), path, &[0], &[1], false, false)?;
-    let ephemeral = account(metadata.get(0), path)?;
-    let recipient = account(m.get(2), path)?;
+    let metadata = shaped(t.get(pt::STEALTH_METADATA), path, &meta::SHAPE, false)?;
+    let ephemeral = account(metadata.get(meta::EPHEMERAL_PUB_KEY), path)?;
+    let recipient = account(m.get(k::RECIPIENT_SPEND_KEY), path)?;
     if ephemeral.key_type != recipient.key_type {
         return Err(bad(path, "recipient and ephemeral key types differ"));
     }
-    let value = match t.get(4) {
+    let value = match t.get(pt::VALUE) {
         Some(CborValue::Bytes(b)) if b.len() == 32 && b.iter().any(|v| *v != 0) => {
             StealthQuantity::Quantity256(b.as_slice().try_into().expect("validated length"))
         }
@@ -2083,21 +2359,25 @@ fn stealth_entry(v: &CborValue, path: &str) -> Result<StealthPaymentEntry, Codec
             ))
         }
     };
-    let view_tag = if metadata.has(1) {
-        match metadata.get(1) {
+    let view_tag = if metadata.has(meta::VIEW_TAG) {
+        match metadata.get(meta::VIEW_TAG) {
             Some(CborValue::Int(n)) if *n >= 0 && *n <= 65535 => {}
             Some(CborValue::Bytes(b)) if !b.is_empty() && b.len() <= 32 => {}
             _ => return Err(bad(path, "invalid view tag")),
         }
-        metadata.get(1).cloned()
+        metadata.get(meta::VIEW_TAG).cloned()
     } else {
         None
     };
-    let scheme = u32_in(m.get(1), path, 1, u32::MAX)?;
-    if m.has(3) && !t.has(5) {
+    let scheme = u32_in(m.get(k::DERIVATION_SCHEME), path, 1, u32::MAX)?;
+    if m.has(k::TOKEN_PROGRAM) && !t.has(pt::TOKEN) {
         return Err(bad(path, "token program requires token"));
     }
-    if scheme == 1 && (recipient.key_type != 1 || m.has(3) || m.has(4)) {
+    if scheme == scheme_k::SECP256K1_ECDH_ADD_V1
+        && (recipient.key_type != key_type::SECP256K1
+            || m.has(k::TOKEN_PROGRAM)
+            || m.has(k::DERIVATION_CONTEXT))
+    {
         return Err(bad(
             path,
             "scheme 1 requires secp256k1 keys and no program/context",
@@ -2105,42 +2385,42 @@ fn stealth_entry(v: &CborValue, path: &str) -> Result<StealthPaymentEntry, Codec
     }
     Ok(StealthPaymentEntry {
         transfer: StealthTransfer {
-            network: tstr(t.get(0), path, 1, 64)?,
-            tx_id: bstr(t.get(1), path, 1, 128)?,
-            vout: if t.has(2) {
-                Some(u32_in(t.get(2), path, 0, u32::MAX)?)
+            network: tstr(t.get(pt::NETWORK_TAG), path, 1, 64)?,
+            tx_id: bstr(t.get(pt::TX_ID), path, 1, 128)?,
+            vout: if t.has(pt::VOUT) {
+                Some(u32_in(t.get(pt::VOUT), path, 0, u32::MAX)?)
             } else {
                 None
             },
-            destination: bstr(t.get(3), path, 1, 128)?,
+            destination: bstr(t.get(pt::DESTINATION), path, 1, 128)?,
             value,
-            token: if t.has(5) {
-                Some(bstr(t.get(5), path, 1, 128)?)
+            token: if t.has(pt::TOKEN) {
+                Some(bstr(t.get(pt::TOKEN), path, 1, 128)?)
             } else {
                 None
             },
             ephemeral,
             view_tag,
-            commitment: if t.has(7) {
-                Some(bstr(t.get(7), path, 32, 32)?)
+            commitment: if t.has(pt::COMMITMENT) {
+                Some(bstr(t.get(pt::COMMITMENT), path, 32, 32)?)
             } else {
                 None
             },
-            raw_tx: if t.has(8) {
-                Some(bstr(t.get(8), path, 1, 16384)?)
+            raw_tx: if t.has(pt::RAW_TX) {
+                Some(bstr(t.get(pt::RAW_TX), path, 1, 16384)?)
             } else {
                 None
             },
         },
         scheme,
         recipient,
-        token_program: if m.has(3) {
-            Some(bstr(m.get(3), path, 32, 32)?)
+        token_program: if m.has(k::TOKEN_PROGRAM) {
+            Some(bstr(m.get(k::TOKEN_PROGRAM), path, 32, 32)?)
         } else {
             None
         },
-        scheme_context: if m.has(4) {
-            Some(bstr(m.get(4), path, 1, 1024)?)
+        scheme_context: if m.has(k::DERIVATION_CONTEXT) {
+            Some(bstr(m.get(k::DERIVATION_CONTEXT), path, 1, 1024)?)
         } else {
             None
         },

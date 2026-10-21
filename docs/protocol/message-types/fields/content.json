@@ -448,5 +448,14 @@
         }
       ]
     }
+  ],
+  "enums": [
+    {
+      "key": "stealth-derivation-scheme",
+      "description": "stealth-asset-transfer field 1.",
+      "values": {
+        "secp256k1-ecdh-add-v1": 1
+      }
+    }
   ]
 }

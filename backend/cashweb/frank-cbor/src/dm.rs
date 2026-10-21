@@ -2,13 +2,15 @@
 
 use crate::cbor::{encode_canonical, CborValue};
 use crate::error::UsageError;
+use crate::limits::ENCRYPTION_SUITE_DM_AUTH_XCHACHA;
+use crate::message_fields::{account_ref, dm_crypto_context_v1 as k, key_type};
 use crate::message_types::TYPE_RECIPIENT_ENCRYPTED_PAYLOAD;
 use crate::model::AccountRef;
 
 /// Canonical suite-1 context domain.
 pub const DM_CRYPTO_CONTEXT_DOMAIN: &str = "frank/dm-crypto-context/v1";
 /// Production Frank-CBOR DM suite.
-pub const DM_CRYPTO_SUITE: u32 = 1;
+pub const DM_CRYPTO_SUITE: u32 = ENCRYPTION_SUITE_DM_AUTH_XCHACHA;
 /// Recipient-encrypted-payload type.
 pub const DM_CRYPTO_TYPE: u32 = TYPE_RECIPIENT_ENCRYPTED_PAYLOAD;
 /// Production payload schema and minimum reader version.
@@ -54,7 +56,7 @@ fn exact(bytes: &[u8], length: usize, name: &str) -> Result<CborValue, UsageErro
 
 fn account(value: &AccountRef, name: &str, secp_only: bool) -> Result<CborValue, UsageError> {
     if secp_only
-        && (value.key_type != 1
+        && (value.key_type != key_type::SECP256K1
             || value.key_bytes.len() != 33
             || secp256k1_abc::PublicKey::from_slice(&value.key_bytes).is_err())
     {
@@ -63,8 +65,14 @@ fn account(value: &AccountRef, name: &str, secp_only: bool) -> Result<CborValue,
         )));
     }
     Ok(CborValue::Map(vec![
-        (0, CborValue::Int(i128::from(value.key_type))),
-        (1, CborValue::Bytes(value.key_bytes.clone())),
+        (
+            account_ref::KEY_TYPE,
+            CborValue::Int(i128::from(value.key_type)),
+        ),
+        (
+            account_ref::KEY_BYTES,
+            CborValue::Bytes(value.key_bytes.clone()),
+        ),
     ]))
 }
 
@@ -103,16 +111,16 @@ pub fn encode_direct_message_crypto_context(
         return Err(UsageError("network must be a non-empty string".into()));
     }
     encode_canonical(&CborValue::Map(vec![
-        (0, CborValue::Text(DM_CRYPTO_CONTEXT_DOMAIN.into())),
-        (1, CborValue::Text(input.network.into())),
-        (2, account(input.sender, "sender", false)?),
-        (3, account(input.recipient, "recipient", false)?),
+        (k::DOMAIN, CborValue::Text(DM_CRYPTO_CONTEXT_DOMAIN.into())),
+        (k::NETWORK, CborValue::Text(input.network.into())),
+        (k::SENDER, account(input.sender, "sender", false)?),
+        (k::RECIPIENT, account(input.recipient, "recipient", false)?),
         (
-            4,
+            k::SENDER_STATEMENT_HASH,
             exact(input.sender_directory_hash, 32, "sender_directory_hash")?,
         ),
         (
-            5,
+            k::RECIPIENT_STATEMENT_HASH,
             exact(
                 input.recipient_directory_hash,
                 32,
@@ -120,20 +128,32 @@ pub fn encode_direct_message_crypto_context(
             )?,
         ),
         (
-            6,
+            k::SENDER_MESSAGE_KEY,
             account(input.sender_message_key, "sender_message_key", true)?,
         ),
         (
-            7,
+            k::RECIPIENT_MESSAGE_KEY,
             account(input.recipient_message_key, "recipient_message_key", true)?,
         ),
-        (8, account(input.stamp_key, "stamp_key", true)?),
-        (9, point(input.ephemeral_point, "ephemeral_point")?),
-        (10, point(input.shared_point, "shared_point")?),
-        (11, proof(input.dleq_proof)?),
-        (12, CborValue::Int(i128::from(DM_CRYPTO_SUITE))),
-        (13, CborValue::Int(i128::from(DM_CRYPTO_TYPE))),
-        (14, CborValue::Int(i128::from(DM_CRYPTO_SCHEMA_VERSION))),
-        (15, CborValue::Int(i128::from(DM_CRYPTO_MIN_READER_VERSION))),
+        (
+            k::RECIPIENT_STAMP_KEY,
+            account(input.stamp_key, "stamp_key", true)?,
+        ),
+        (
+            k::EPHEMERAL_POINT,
+            point(input.ephemeral_point, "ephemeral_point")?,
+        ),
+        (k::SHARED_POINT, point(input.shared_point, "shared_point")?),
+        (k::DLEQ_PROOF, proof(input.dleq_proof)?),
+        (k::SUITE, CborValue::Int(i128::from(DM_CRYPTO_SUITE))),
+        (k::OBJECT_TYPE, CborValue::Int(i128::from(DM_CRYPTO_TYPE))),
+        (
+            k::SCHEMA_VERSION,
+            CborValue::Int(i128::from(DM_CRYPTO_SCHEMA_VERSION)),
+        ),
+        (
+            k::MIN_READER_VERSION,
+            CborValue::Int(i128::from(DM_CRYPTO_MIN_READER_VERSION)),
+        ),
     ]))
 }

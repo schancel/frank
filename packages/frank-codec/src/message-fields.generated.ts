@@ -497,7 +497,7 @@ export const FORUM_DISCOVERY_PAGE = {
   entries: 2,
   nextCursor: 3,
   epoch: 4,
-  previousCursor: 5,
+  requestCursor: 5,
 } as const
 /** `forum-discovery-page` map shape (docs/protocol/cbor/topic.cddl#forum-discovery-page). */
 export const FORUM_DISCOVERY_PAGE_SHAPE: MapShape = {
@@ -509,7 +509,7 @@ export const FORUM_DISCOVERY_PAGE_SHAPE: MapShape = {
   ],
   optional: [
     FORUM_DISCOVERY_PAGE.nextCursor,
-    FORUM_DISCOVERY_PAGE.previousCursor,
+    FORUM_DISCOVERY_PAGE.requestCursor,
   ],
   open: true,
 }
@@ -680,7 +680,7 @@ export const FORUM_TOPIC_PAGE = {
   rows: 4,
   nextCursor: 5,
   epoch: 6,
-  previousCursor: 7,
+  requestCursor: 7,
 } as const
 /** `forum-topic-page` map shape (docs/protocol/cbor/topic.cddl#forum-topic-page). */
 export const FORUM_TOPIC_PAGE_SHAPE: MapShape = {
@@ -692,7 +692,7 @@ export const FORUM_TOPIC_PAGE_SHAPE: MapShape = {
     FORUM_TOPIC_PAGE.rows,
     FORUM_TOPIC_PAGE.epoch,
   ],
-  optional: [FORUM_TOPIC_PAGE.nextCursor, FORUM_TOPIC_PAGE.previousCursor],
+  optional: [FORUM_TOPIC_PAGE.nextCursor, FORUM_TOPIC_PAGE.requestCursor],
   open: true,
 }
 
@@ -1311,14 +1311,34 @@ export const FORUM_ENTRY_KIND = {
 
 /** `forum-operation-state` values: forum-operation-status field 7. */
 export const FORUM_OPERATION_STATE = {
-  pending: 0,
-  confirmed: 1,
-  failed: 2,
-  expired: 3,
+  unknownRequest: 0,
+  pending: 1,
+  confirmed: 2,
+  rejectedRequest: 3,
 } as const
 
-/** `forum-vote-direction` values: forum-operation-status field 5. */
+/** `forum-vote-direction` values: forum-operation-status field 5 and the TPIC direction byte (README S11). */
 export const FORUM_VOTE_DIRECTION = {
-  up: 0,
-  down: 1,
+  down: 0,
+  up: 1,
+} as const
+
+/** `key-type` values: account-ref field 0 (README S2). */
+export const KEY_TYPE = {
+  secp256k1: 1,
+  ed25519: 2,
+  secp256k1XOnly: 3,
+} as const
+
+/** `signature-algorithm` values: signature-entry and key-transition algorithm (README S2a, S2b). */
+export const SIGNATURE_ALGORITHM = {
+  secp256k1Ecdsa: 1,
+  bip340Schnorr: 2,
+  bchSchnorr: 3,
+  ed25519: 16,
+} as const
+
+/** `stealth-derivation-scheme` values: stealth-asset-transfer field 1. */
+export const STEALTH_DERIVATION_SCHEME = {
+  secp256k1EcdhAddV1: 1,
 } as const

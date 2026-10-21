@@ -4,6 +4,7 @@ import { isAbsolute, join } from 'node:path';
 import type { ActiveChain, WalletHandle } from '@frank/wallet/chain/active-chain';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { MailJournal, MAIL_JOURNAL_FORMAT } from '../ledger/mail-journal';
+import { MIGRATED_MAIL_JOURNAL_FORMAT } from '../ledger/mail-journal-format8-migration';
 import { LocalFsBlobStore } from '../storage/local-fs-blob-store';
 import { JournaledInboundSend } from '../relay/journaled-inbound-send';
 import { JournaledFrankMailbox } from '../relay/journaled-frank-mailbox';
@@ -106,7 +107,10 @@ function createRelaySenderUsernameLookup(
   };
 }
 
-/** Read-only preflight avoids silently replacing the mail admission history on restart. */
+/**
+ * Read-only preflight avoids silently replacing the mail admission history on restart.
+ * A format-8 journal of this identity passes: `MailJournal` backs it up and migrates it.
+ */
 function requireJournalMode(input: JournaledMailHostOptions): void {
   const present = existsSync(input.journalFile);
   if (input.journalMode === 'provision') {
@@ -118,7 +122,7 @@ function requireJournalMode(input: JournaledMailHostOptions): void {
   try {
     const row = database.prepare('SELECT format, chain_identifier, gateway_account, gateway_domain FROM mail_journal_meta WHERE id = 1')
       .get() as { format: number; chain_identifier: string; gateway_account: string; gateway_domain: string } | undefined;
-    if (!row || row.format !== MAIL_JOURNAL_FORMAT ||
+    if (!row || (row.format !== MAIL_JOURNAL_FORMAT && row.format !== MIGRATED_MAIL_JOURNAL_FORMAT) ||
       row.chain_identifier !== input.chain.chainIdentifier ||
       row.gateway_account !== input.wallet.identity.address.raw.toLowerCase() ||
       row.gateway_domain !== input.gatewayDomain) {
@@ -152,6 +156,11 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       gatewayAccount: input.wallet.identity.address.raw.toLowerCase(),
       gatewayDomain: input.gatewayDomain,
     });
+    if (journal.format8Migration) {
+      console.info(
+        `Mail journal migrated from format 8 to format ${MAIL_JOURNAL_FORMAT}; backup at ${journal.format8Migration.backupPath}; rows ${JSON.stringify(journal.format8Migration.rows)}`
+      );
+    }
     mkdirSync(input.blobDirectory, { recursive: true });
     const resolveSenderUsername =
       input.resolveSenderUsername ??

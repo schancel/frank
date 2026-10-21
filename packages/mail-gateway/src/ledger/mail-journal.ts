@@ -78,6 +78,7 @@ import {
   StoredMailBytes,
 } from '../types';
 import type { CreditLedger } from './credit-ledger';
+import { MailJournalMigrationError, migrateMailJournalFormat8 } from './mail-journal-format8-migration';
 import { isOperationalLocalPart } from '../mailbox/operational-local-parts';
 import { isValidWkdHash, wkdHashLocalPart } from '../wkd/wkd';
 import type {
@@ -96,11 +97,14 @@ import type {
  * transaction with the `mail_journal_meta` row; they are not part of
  * `ensureLedgerSchemaSync` and not part of the Kysely migration.
  *
- * There is no migration and no reader for any other format, formats 1 and 2
- * included. A database whose marker is missing or is not `MAIL_JOURNAL_FORMAT`
- * is refused at open and left as it is; the development reset is to archive the
- * SQLite file together with the gateway wallet's stores (they are one unit for
- * backup) and start a new one.
+ * One migration exists, by owner decision for the production volume: a format-8
+ * journal is backed up and migrated in place to format 9 at open
+ * (`mail-journal-format8-migration.ts`). There is no migration and no reader for
+ * any other format, formats 1, 2 and 7 included. A database whose marker is
+ * missing or is not `MAIL_JOURNAL_FORMAT` (after that migration) is refused at
+ * open and left as it is; the development reset is to archive the SQLite file
+ * together with the gateway wallet's stores (they are one unit for backup) and
+ * start a new one.
  *
  * Identifier comparison is byte-exact: every key column is TEXT under SQLite's
  * default BINARY collation.
@@ -645,6 +649,8 @@ export class MailJournal {
   readonly chainIdentifier: string;
   readonly gatewayAccount: string;
   readonly gatewayDomain: string;
+  /** Set when this open migrated a format-8 journal: where the pre-migration copy is, and the rows carried over. */
+  readonly format8Migration?: { readonly backupPath: string; readonly rows: Readonly<Record<string, number>> };
 
   private readonly ledger: CreditLedger;
   private readonly db: DatabaseSync;
@@ -665,6 +671,9 @@ export class MailJournal {
    *   an alias, another spelling or an inherited property name is refused
    *   before any pragma or statement, because the first open stores it for good.
    * - No journal table present: creates all eight and the marker row.
+   * - A format-8 journal of this chain, account and domain: backed up next to the file and
+   *   migrated to format 9 in one transaction first (`migrateMailJournalFormat8`); a
+   *   refused or failed migration throws `MailJournalOpenError` and leaves the file as it was.
    * - Journal tables present: the marker row must exist, say `MAIL_JOURNAL_FORMAT` and name
    *   the same chain identifier, gateway account and domain, and all eight tables must
    *   be there. Anything else throws `MailJournalOpenError` and changes nothing.
@@ -704,6 +713,21 @@ export class MailJournal {
     // lock and the connection keeps it until it is closed.
     db.exec('PRAGMA locking_mode = EXCLUSIVE');
     try {
+      let migration;
+      try {
+        migration = migrateMailJournalFormat8(db, {
+          format9Ddl: MAIL_JOURNAL_DDL,
+          tables: MAIL_JOURNAL_TABLES,
+          chainIdentifier: this.chainIdentifier,
+          gatewayAccount: this.gatewayAccount,
+          gatewayDomain: this.gatewayDomain,
+          now: this.now,
+        });
+      } catch (err) {
+        if (err instanceof MailJournalMigrationError) throw new MailJournalOpenError(err.message);
+        throw err;
+      }
+      if (migration.migrated) this.format8Migration = { backupPath: migration.backupPath, rows: migration.rows };
       ledger.atomic(() => this.openOrCreate());
     } catch (err) {
       try {

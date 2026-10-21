@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { readStoreJson } from 'src/boot/pinia'
 import { reactive, toRaw } from 'vue'
 import { uniq } from 'ramda'
 
@@ -66,6 +67,23 @@ function forumPostReservationKey(
 // Request authority is session-only and never serialized with observations.
 const refreshContexts = new WeakMap<object, object>()
 const viewRequests = new WeakMap<object, Map<string, object>>()
+
+/** A persisted forum row in the current string-backed format; legacy number-backed rows are not. */
+export function isCanonicalRestoredForumRow(row: unknown): row is ForumMessage {
+  if (!row || typeof row !== 'object') return false
+  const r = row as Record<string, unknown>
+  return (
+    !('satoshis' in r) &&
+    typeof r.payloadDigest === 'string' &&
+    r.payloadDigest.length > 0 &&
+    typeof r.topic === 'string' &&
+    r.topic.length > 0 &&
+    typeof r.poster === 'string' &&
+    typeof r.voteWeightWei === 'string' &&
+    /^(0|[1-9][0-9]*)$/.test(r.voteWeightWei) &&
+    Array.isArray(r.entries)
+  )
+}
 
 /** Build rows, index and acyclic reply links privately, then publish in one Pinia patch. */
 export function forumSnapshot(rows: ForumMessage[]): {
@@ -622,34 +640,15 @@ export const useForumStore = defineStore('forum', {
         JSON.stringify({ ...state, messages, index: {} }),
       )
     },
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage): Promise<Partial<State>> {
-      let forum = '{}'
-      try {
-        forum = await storage.get('forum')
-      } catch (err) {
-        //
-      }
-      const deserializedForum = JSON.parse(forum) as State
+      const deserializedForum =
+        (await readStoreJson<State>(storage, 'forum')) ?? ({} as State)
       const rawMessages = Array.isArray(deserializedForum.messages)
         ? deserializedForum.messages
         : []
-      const isCanonicalRestoredRow = (row: unknown): row is ForumMessage => {
-        if (!row || typeof row !== 'object') return false
-        const r = row as Record<string, unknown>
-        return (
-          !('satoshis' in r) &&
-          typeof r.payloadDigest === 'string' &&
-          r.payloadDigest.length > 0 &&
-          typeof r.topic === 'string' &&
-          r.topic.length > 0 &&
-          typeof r.poster === 'string' &&
-          typeof r.voteWeightWei === 'string' &&
-          /^(0|[1-9][0-9]*)$/.test(r.voteWeightWei) &&
-          Array.isArray(r.entries)
-        )
-      }
-      const snapshot = forumSnapshot(rawMessages.filter(isCanonicalRestoredRow))
+      const snapshot = forumSnapshot(
+        rawMessages.filter(isCanonicalRestoredForumRow),
+      )
       const restoredIndex: Record<string, MessageWithReplies> = {}
       for (const [digest, entry] of Object.entries(snapshot.index)) {
         if (digest in Object.prototype) continue
@@ -672,7 +671,10 @@ export const useForumStore = defineStore('forum', {
         votePercentile:
           typeof deserializedForum.votePercentile === 'number' &&
           Number.isFinite(deserializedForum.votePercentile)
-            ? Math.min(100, Math.max(0, Math.round(deserializedForum.votePercentile)))
+            ? Math.min(
+                100,
+                Math.max(0, Math.round(deserializedForum.votePercentile)),
+              )
             : null,
         voteAmountDisplay:
           typeof deserializedForum.voteAmountDisplay === 'string'

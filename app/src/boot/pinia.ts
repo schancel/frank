@@ -137,24 +137,45 @@ export function createStoragePlugin(
   }
 }
 
+function isNotFound(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === 'object' &&
+    'notFound' in error &&
+    error.notFound === true
+  )
+}
+
+/**
+ * Reads one persisted JSON record. Only the storage's notFound means "nothing stored yet";
+ * any other read error, and unparseable JSON we wrote ourselves, rejects so restoration fails
+ * visibly instead of becoming a default state that the next save would write over real data.
+ */
+export async function readStoreJson<T>(
+  storage: LevelDB,
+  key: string,
+  reviver?: (key: string, value: unknown) => unknown,
+): Promise<T | undefined> {
+  let data: string
+  try {
+    data = await storage.get(key)
+  } catch (error) {
+    if (!isNotFound(error)) throw error
+    return undefined
+  }
+  return JSON.parse(data, reviver) as T
+}
+
 export async function resolveStoreMetadata(
   storage: LevelDB,
 ): Promise<StoreMetadata> {
-  let data: string
-  try {
-    data = await storage.get('storeMetadata')
-  } catch (error) {
-    if (
-      !error ||
-      typeof error !== 'object' ||
-      !('notFound' in error) ||
-      error.notFound !== true
-    )
-      throw error
-    // Current writers legitimately leave this key absent, even in populated stores.
+  const state = await readStoreJson<Record<string, unknown>>(
+    storage,
+    'storeMetadata',
+  )
+  // Current writers legitimately leave this key absent, even in populated stores.
+  if (state === undefined)
     return { networkName: displayNetwork, version: STORE_SCHEMA_VERSION }
-  }
-  const state = JSON.parse(data)
   const metadata: StoreMetadata = {
     networkName: pathOr(displayNetwork, ['networkName'], state),
     version: pathOr(STORE_SCHEMA_VERSION, ['version'], state),

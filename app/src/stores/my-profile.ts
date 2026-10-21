@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { readStoreJson } from 'src/boot/pinia'
 
 /**
  * This device's copy of the active account's profile. The profile itself is the account's and
@@ -61,16 +62,8 @@ export const useProfileStore = defineStore('myProfile', {
     save(storage, _mutation, state): Promise<void> {
       return storage.put('myProfile', JSON.stringify(state))
     },
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage): Promise<Partial<State>> {
-      let myProfile = '{}'
-      try {
-        myProfile = await storage.get('myProfile')
-      } catch (err) {
-        //
-      }
-      const deserializedProfile = JSON.parse(myProfile) as State
-      return deserializedProfile
+      return (await readStoreJson<State>(storage, 'myProfile')) ?? {}
     },
   },
 })

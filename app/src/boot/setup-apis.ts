@@ -11,6 +11,7 @@ import { useContactStore } from '../stores/contacts'
 import { useAppearanceStore } from '../stores/appearance'
 import { useForumStore } from '../stores/forum'
 import { useTopicStore } from '../stores/topics'
+import { useSettingsStore } from '../stores/settings'
 import { useChatStore } from '../stores/chats'
 import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import { accountSession, accountStatus } from '../accounts/session'
@@ -33,6 +34,7 @@ export default boot(async ({ app }) => {
         () => useForumStore().restored,
         () => useChatStore().restored,
         () => useTopicStore().restored,
+        () => useSettingsStore().restored,
         // Chat metadata may skip hydration; required database admission cannot be skipped.
         () => messageStore,
       ].map(restore =>

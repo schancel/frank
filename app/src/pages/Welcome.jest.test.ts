@@ -184,6 +184,16 @@ describe('Welcome: landing page for visitors without an account', () => {
       expect(mockRestore.mock.calls[0][0]).toEqual(syncBundle)
     })
 
+    it('shows a visible failure when the pairing bridge rejects', async () => {
+      const wrapper = mountWelcome(enUS)
+      await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
+      mockReceiveAccount.mockRejectedValueOnce(new Error('bridge unavailable'))
+      await typePin(wrapper, '123456')
+      expect(text(wrapper, 'sync-pin-error')).toBe(enUS.accountSync.failed)
+      expect(mockRestore).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
     it('says the PIN did not match and restores nothing', async () => {
       const wrapper = mountWelcome(frFR)
       await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')

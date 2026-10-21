@@ -289,26 +289,24 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     wrapper.unmount()
   })
 
-  it('supports Standalone PWA WalletConnect URI pairing', async () => {
+  it('explains account sync and reports unsupported WalletConnect without claiming pairing', () => {
     const wrapper = mountPanel({ initialApprovals: [] })
-
-    const syncSection = wrapper.find('[data-testid="dapp-pwa-sync-section"]')
-    expect(syncSection.exists()).toBe(true)
-
-    const input = wrapper.find('[data-testid="dapp-wc-uri-input"]')
-    await input.setValue('wc:abc123def456@2?relay-protocol=irn&symKey=deadbeef')
-    await wrapper.find('[data-testid="dapp-wc-connect-btn"]').trigger('click')
-
-    expect(wrapper.emitted('wc-connect')).toEqual([
-      [{ uri: 'wc:abc123def456@2?relay-protocol=irn&symKey=deadbeef' }],
-    ])
     expect(
-      wrapper.find('[data-testid="dapp-approval-card"]').exists(),
-    ).toBe(true)
-    // Account sync lives in the profile dialog (PIN pairing), not here.
-    expect(
-      wrapper.find('[data-testid="dapp-extension-sync-btn"]').exists(),
-    ).toBe(false)
+      wrapper.get('[data-testid="dapp-account-sync-help"]').text(),
+    ).toContain('Sync account')
+    expect(wrapper.get('[data-testid="dapp-wc-unsupported"]').text()).toContain(
+      'not supported yet',
+    )
+    expect(wrapper.find('[data-testid="dapp-wc-connect-btn"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="dapp-wc-paired-status"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="dapp-approval-card"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.emitted('wc-connect')).toBeUndefined()
     wrapper.unmount()
   })
 

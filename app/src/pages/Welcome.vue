@@ -95,6 +95,24 @@
             />
           </div>
 
+          <div
+            v-if="syncPinEntryOpen"
+            class="welcome-sync q-mt-sm q-pa-sm rounded-borders"
+            data-test="welcome-extension-sync"
+          >
+            <SyncPinEntry
+              :busy="syncRestoring"
+              @received="restoreSyncedAccount"
+            />
+            <div
+              v-if="syncRestoreFailed"
+              class="text-caption text-negative q-mt-xs"
+              data-test="welcome-extension-sync-failed"
+            >
+              {{ $t('accountSync.restoreFailed') }}
+            </div>
+          </div>
+
           <!-- Bundled Browser Extension Download Card (when viewing on web/PWA) -->
           <div
             v-if="!isExtensionRuntime"
@@ -138,24 +156,6 @@
               data-test="welcome-extension-install-hint"
             >
               {{ selectedExtensionInfo.installHint }}
-            </div>
-          </div>
-
-          <div
-            v-if="syncPinEntryOpen"
-            class="welcome-sync q-mt-sm q-pa-sm rounded-borders"
-            data-test="welcome-extension-sync"
-          >
-            <SyncPinEntry
-              :busy="syncRestoring"
-              @received="restoreSyncedAccount"
-            />
-            <div
-              v-if="syncRestoreFailed"
-              class="text-caption text-negative q-mt-xs"
-              data-test="welcome-extension-sync-failed"
-            >
-              {{ $t('accountSync.restoreFailed') }}
             </div>
           </div>
 

@@ -879,6 +879,8 @@ export const rawEnUS = {
     reasonRecipientUnregistered: 'Recipient is not registered on this relay.',
     reasonStampBelowFee:
       'The network fee rose above this stamp before it was sent. Nothing was paid. Retry sends it at the minimum stamp now.',
+    reasonBlocked:
+      'An earlier message whose payment is stuck holds the funds this one needs. Retry that message first. Nothing was paid for this one.',
     reasonError: 'The message could not be sent.',
     retry: 'Retry',
     retryHint:

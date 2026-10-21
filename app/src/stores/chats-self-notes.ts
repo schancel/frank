@@ -7,6 +7,7 @@ import {
   MonadStampRecoveredAttemptError,
   MonadStampRejectedError,
   MonadStampTerminalError,
+  StampBlockedError,
 } from '@frank/wallet/evm-stamp-client'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/mailbox-client'
 import type {
@@ -208,6 +209,13 @@ export function classifySendFailure(
 ): { reason: OutgoingFailureReason; keepDigest?: string } {
   if (error instanceof MonadStampRecoveredAttemptError) {
     return { reason: 'recovered' }
+  }
+  // Nothing was taken or signed for this message: it is not an attempt to keep.
+  if (
+    error instanceof StampBlockedError ||
+    (error instanceof Error && error.name === 'StampBlockedError')
+  ) {
+    return { reason: 'blocked' }
   }
   if (error instanceof MonadStampAbandonedError) {
     return { reason: 'unverified', keepDigest: error.payloadHashHex }

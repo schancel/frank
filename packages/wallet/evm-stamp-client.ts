@@ -439,6 +439,7 @@ export class StampBlockedError extends MonadStampError {
         blockingReason === undefined ? '' : ` (the relay answers ${blockingReason})`
       }. Retry that message; its coin is not released while its payment could still land.`,
     )
+    this.name = 'StampBlockedError'
     this.blockingPayloadDigest = blockingPayloadDigest
     this.blockingReason = blockingReason
   }

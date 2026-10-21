@@ -3,6 +3,10 @@
 import { mount } from '@vue/test-utils'
 import Welcome from './Welcome.vue'
 
+jest.mock('./extension-download-env', () => ({
+  extensionDownloadBuild: 'welcome-build',
+}))
+
 import enUS from 'src/i18n/en-us'
 import frFR from 'src/i18n/fr-fr'
 
@@ -140,8 +144,16 @@ describe('Welcome: landing page for visitors without an account', () => {
     const primaryBtn = wrapper.find('[data-test="btn-download-extension"]')
     expect(primaryBtn.exists()).toBe(true)
     expect(primaryBtn.attributes('href')).toBe(
-      '/downloads/frank-extension-chrome.zip',
+      '/downloads/frank-extension-chrome.zip?v=welcome-build',
     )
+
+    for (const target of ['chrome', 'firefox', 'safari']) {
+      expect(
+        wrapper
+          .get(`[data-test="btn-download-extension-${target}"]`)
+          .attributes('href'),
+      ).toBe(`/downloads/frank-extension-${target}.zip?v=welcome-build`)
+    }
 
     const firefoxBtn = wrapper.find(
       '[data-test="btn-download-extension-firefox"]',
@@ -149,7 +161,7 @@ describe('Welcome: landing page for visitors without an account', () => {
     expect(firefoxBtn.exists()).toBe(true)
     await firefoxBtn.trigger('click')
     expect(primaryBtn.attributes('href')).toBe(
-      '/downloads/frank-extension-firefox.zip',
+      '/downloads/frank-extension-firefox.zip?v=welcome-build',
     )
   })
 })

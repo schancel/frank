@@ -57,6 +57,9 @@ module.exports = {
   // See https://github.com/vuejs/vue-jest/issues/188#issuecomment-620750728
   moduleFileExtensions: ['vue', 'js', 'jsx', 'json', 'ts', 'tsx'],
   moduleNameMapper: {
+    // Vite's build input is replaced only at the CommonJS test boundary.
+    '^\\./extension-download-env$':
+      '<rootDir>/test/jest/extension-download-env.ts',
     '^@frank/swap-protocol/(.*)$': '<rootDir>/../packages/swap-protocol/$1',
     // jsdom's browser/require conditions omit this package's node/import exports.
     // Resolve its public Node entry while loading the actual wrapper implementation.

@@ -2947,6 +2947,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               spendSpacingBlocks: config.spendSpacingBlocks,
               paymentPollIntervalMs: config.paymentPollIntervalMs,
               reserveBalanceWei: config.reserveBalanceWei,
+              changeSplit: config.changeSplit ?? true,
               stampFundingTargetWei: config.stampFundingTargetWei,
               sourceIsHeld,
               sourceHeldRefusalMessage: SOURCE_HELD_FOR_CONTACT_PAYMENT,

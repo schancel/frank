@@ -17,6 +17,16 @@
  * - `spent`: the chain shows its spending transaction included. What the account holds after it
  *   is a new coin at the next nonce (the successor), added in the same step.
  *
+ * Nonce stacking: when a coin's spending transaction is recorded (`recordSigned`), the coin at
+ * the next nonce is added at once, `provisional`, worth what the account holds after that
+ * transaction at its maximum fee. Another payment may take it before the parent is mined (the
+ * caller's chain rule decides when: on Monad only above the reserve balance). The chain then
+ * decides its value (`recordMined` sets what the account held at the parent's block). A
+ * provisional coin whose parent never goes out is dropped with the parent. A parent released as
+ * provably unexposed below a coin someone already spends is never freed: in the same
+ * synchronous step it passes to a gap filler (`filler:<account>:<nonce>`), so nothing else can
+ * claim the nonce, and the caller signs the filler's minimal self-transfer at it.
+ *
  * Selection (`select`) is one synchronous pass over the unspent coins: no request, no await, so
  * two payments built at the same moment can never take the same coin. Whatever has to be learned
  * from the chain (that a coin's money arrived, what an account holds after a spend) is learned out
@@ -28,7 +38,7 @@
  *
  * One list per wallet, and one wallet per chain: a coin carries no chain field.
  */
-import { computeAddress } from 'ethers'
+import { computeAddress, Transaction } from 'ethers'
 import type { RecordStore } from './storage/evm-coin-store'
 import {
   selectStampAccounts,
@@ -67,6 +77,9 @@ export interface EvmListCoin {
   readonly spendableFromBlock?: number
   /** `spent`: the block that included its spending transaction. */
   readonly spentInBlock?: number
+  /** Stacked on the coin at the previous nonce, whose transaction is not mined yet: its value is
+   * what the account holds after that transaction at its maximum fee. */
+  readonly provisional?: true
 }
 
 /** The coin as it is stored: wei as a decimal string. `spend_pending` is never stored. */
@@ -81,9 +94,16 @@ export interface StoredEvmListCoin {
   readonly spendingTx?: string
   readonly spendableFromBlock?: number
   readonly spentInBlock?: number
+  readonly provisional?: true
 }
 
 export const EVM_COIN_LIST_NAMESPACE = 'evm-coin-list'
+
+/** Holders of gap fillers: `filler:<account>:<nonce>`. Never a message. */
+export const FILLER_PREFIX = 'filler:'
+export function fillerHolder(coin: { account: string; nonce: number }): string {
+  return `${FILLER_PREFIX}${coin.account.toLowerCase()}:${coin.nonce}`
+}
 
 export function coinKey(account: string, nonce: number): string {
   return `${account.toLowerCase()}:${nonce}`
@@ -102,6 +122,13 @@ export class EvmCoinListError extends Error {
   }
 }
 
+/** What a signed transaction can take from its account at most: its value and its gas at the
+ * fee cap. */
+export function maxCost(rawTx: string): bigint {
+  const tx = Transaction.from(rawTx)
+  return tx.value + tx.gasLimit * (tx.maxFeePerGas ?? tx.gasPrice ?? 0n)
+}
+
 function toStored(coin: EvmListCoin): StoredEvmListCoin {
   if (coin.state === 'spend_pending')
     throw new EvmCoinListError('A coin being built from is not stored')
@@ -118,6 +145,7 @@ function toStored(coin: EvmListCoin): StoredEvmListCoin {
       ? {}
       : { spendableFromBlock: coin.spendableFromBlock }),
     ...(coin.spentInBlock === undefined ? {} : { spentInBlock: coin.spentInBlock }),
+    ...(coin.provisional ? { provisional: true as const } : {}),
   }
 }
 
@@ -397,6 +425,11 @@ export class EvmCoinList {
     holder: string,
     coin: { account: string; nonce: number },
     rawTx: string,
+    /** What the account holds after this transaction at its maximum fee: the coin at the next
+     * nonce, added at once as `provisional` (none when 0 or absent, or one is there). */
+    successorValueWei?: bigint,
+    /** The successor is taken for this holder at once (a bundle continues on it). */
+    successorHolder?: string,
   ): Promise<void> {
     const key = coinKey(coin.account, coin.nonce)
     const current = this.coinsByKey.get(key)
@@ -410,7 +443,97 @@ export class EvmCoinList {
     const next: EvmListCoin = { ...current, state: 'pending_receipt', spendingTx: rawTx }
     await this.store.put(key, toStored(next))
     this.coinsByKey.set(key, next)
+    const successorKey = coinKey(current.account, current.nonce + 1)
+    if (
+      successorValueWei !== undefined &&
+      successorValueWei > 0n &&
+      !this.coinsByKey.has(successorKey)
+    ) {
+      const { holder: _h, spendingTx: _t, spendableFromBlock: _b, spentInBlock: _s, ...base } =
+        current
+      const successor: EvmListCoin = {
+        ...base,
+        nonce: current.nonce + 1,
+        valueWei: successorValueWei,
+        state: 'unspent',
+        provisional: true,
+      }
+      await this.persist(successor)
+      this.coinsByKey.set(
+        successorKey,
+        successorHolder === undefined
+          ? successor
+          : { ...successor, state: 'spend_pending', holder: successorHolder },
+      )
+    }
     this.notify()
+  }
+
+  /**
+   * Takes, for `holder`, the coin at `[account, nonce]` and records `rawTx` spending it, in one
+   * step: a coin of a bundle the holder builds on its own coin below (a self-send or a payment
+   * stacked at the next nonce). The coin must be free (`unspent`) or already this holder's with
+   * these bytes. Adds the next provisional coin as `recordSigned` does.
+   */
+  async recordStacked(
+    holder: string,
+    coin: { account: string; nonce: number },
+    rawTx: string,
+    successorValueWei?: bigint,
+    successorHolder?: string,
+  ): Promise<void> {
+    const key = coinKey(coin.account, coin.nonce)
+    const current = this.coinsByKey.get(key)
+    if (current === undefined)
+      throw new EvmCoinListError(`Coin ${key} is not in the list`)
+    if (current.state === 'unspent') {
+      this.coinsByKey.set(key, { ...current, state: 'spend_pending', holder })
+    } else if (
+      !(current.holder === holder &&
+        (current.state === 'spend_pending' || current.spendingTx === rawTx))
+    )
+      throw new EvmCoinListError(`Coin ${key} is ${current.state}`)
+    try {
+      await this.recordSigned(holder, coin, rawTx, successorValueWei, successorHolder)
+    } catch (error) {
+      if (this.coinsByKey.get(key)?.state === 'spend_pending')
+        this.coinsByKey.set(key, current)
+      throw error
+    }
+  }
+
+  /** The coin at the next nonce, stacked on this one and not yet spent by anyone, leaves with it. */
+  private dropProvisionalAbove(account: string, nonce: number): EvmListCoin | undefined {
+    const above = this.coinsByKey.get(coinKey(account, nonce + 1))
+    if (above?.provisional && above.state === 'unspent') {
+      this.coinsByKey.delete(coinKey(account, nonce + 1))
+      return above
+    }
+    return undefined
+  }
+
+  /** Whether, above `nonce` and past the coins `holder` itself holds there, the account's next
+   * coin is spent from by another operation. */
+  hasOtherSpenderAbove(account: string, nonce: number, holder: string): boolean {
+    const key = account.toLowerCase()
+    for (let at = nonce + 1; ; at++) {
+      const above = this.coinsByKey.get(coinKey(key, at))
+      if (
+        above === undefined ||
+        (above.state !== 'spend_pending' && above.state !== 'pending_receipt')
+      )
+        return false
+      if (above.holder !== holder) return true
+    }
+  }
+
+  /** Whether the coin at the next nonce is spent from by an operation (its bytes may be out). */
+  hasSpenderAbove(account: string, nonce: number): boolean {
+    const above = this.coinsByKey.get(coinKey(account.toLowerCase(), nonce + 1))
+    return (
+      above !== undefined &&
+      (above.state === 'spend_pending' || above.state === 'pending_receipt')
+    )
   }
 
   /**
@@ -426,6 +549,45 @@ export class EvmCoinList {
     if (current === undefined || current.state !== 'pending_receipt')
       throw new EvmCoinListError(`Coin ${key} has no transaction out`)
     const next: EvmListCoin = { ...current, spendingTx: rawTx }
+    await this.store.put(key, toStored(next))
+    this.coinsByKey.set(key, next)
+    // A provisional coin above it is worth what is left after the newest bytes at their
+    // maximum fee: never more than the cheaper of the two signings leaves.
+    const above = this.coinsByKey.get(coinKey(current.account, current.nonce + 1))
+    if (above?.provisional && above.state === 'unspent' && current.spendingTx !== undefined) {
+      const raise = maxCost(rawTx) - maxCost(current.spendingTx)
+      if (raise > 0n) {
+        const lowered: EvmListCoin = {
+          ...above,
+          valueWei: above.valueWei > raise ? above.valueWei - raise : 0n,
+        }
+        await this.persist(lowered)
+        this.coinsByKey.set(coinKey(above.account, above.nonce), lowered)
+      }
+    }
+    this.notify()
+  }
+
+  /**
+   * A gap filler takes the nonce of a coin whose own transaction never left the wallet, below a
+   * coin someone already spends: the coin now carries the filler's bytes and holder, durably,
+   * before they are broadcast.
+   */
+  async recordFiller(
+    holder: string,
+    coin: { account: string; nonce: number },
+    rawTx: string,
+  ): Promise<void> {
+    const key = coinKey(coin.account, coin.nonce)
+    const current = this.coinsByKey.get(key)
+    if (current === undefined || current.state === 'spent')
+      throw new EvmCoinListError(`Coin ${key} cannot take a filler`)
+    const next: EvmListCoin = {
+      ...current,
+      state: 'pending_receipt',
+      holder,
+      spendingTx: rawTx,
+    }
     await this.store.put(key, toStored(next))
     this.coinsByKey.set(key, next)
     this.notify()
@@ -453,6 +615,33 @@ export class EvmCoinList {
       spentInBlock: outcome.block,
     }
     const successorKey = coinKey(current.account, current.nonce + 1)
+    const stacked = this.coinsByKey.get(successorKey)
+    if (stacked?.provisional) {
+      // The coin stacked on it: the chain now says what it is worth. Still free, it takes the
+      // value the account held at the block (none: it leaves, and the account is read again);
+      // already spent from, its value is only bookkeeping and the chain decides its spend.
+      const { provisional: _p, ...settled } = stacked
+      const value = outcome.successor?.valueWei ?? 0n
+      const free = stacked.state === 'unspent'
+      const revalued: EvmListCoin | undefined =
+        free && value <= 0n
+          ? undefined
+          : {
+              ...settled,
+              ...(free || value > 0n ? { valueWei: value } : {}),
+              ...(free && outcome.successor?.spendableFromBlock !== undefined
+                ? { spendableFromBlock: outcome.successor.spendableFromBlock }
+                : {}),
+            }
+      if (revalued && revalued.state !== 'spend_pending') await this.persist(revalued)
+      else if (!revalued) await this.store.delete(successorKey)
+      await this.persist({ ...current, state: 'spent', spentInBlock: outcome.block })
+      if (revalued) this.coinsByKey.set(successorKey, revalued)
+      else this.coinsByKey.delete(successorKey)
+      this.coinsByKey.set(key, { ...current, state: 'spent', spentInBlock: outcome.block })
+      this.notify()
+      return
+    }
     const successor: EvmListCoin | undefined =
       outcome.successor !== undefined &&
       outcome.successor.valueWei > 0n &&
@@ -487,6 +676,8 @@ export class EvmCoinList {
   async recordGone(coin: { account: string; nonce: number }): Promise<void> {
     const key = coinKey(coin.account, coin.nonce)
     if (!this.coinsByKey.has(key)) return
+    const above = this.dropProvisionalAbove(coin.account.toLowerCase(), coin.nonce)
+    if (above) await this.store.delete(coinKey(above.account, above.nonce))
     await this.store.delete(key)
     this.coinsByKey.delete(key)
     this.notify()
@@ -541,26 +732,51 @@ export class EvmCoinList {
     holder: string,
     /** Only these coins; default: every coin the holder holds. */
     only?: readonly { account: string; nonce: number }[],
-  ): Promise<void> {
+  ): Promise<EvmListCoin[]> {
     const keys =
       only === undefined
         ? undefined
         : new Set(only.map(coin => coinKey(coin.account, coin.nonce)))
-    const freed: EvmListCoin[] = []
-    for (const [key, coin] of this.coinsByKey)
-      if (
+    const mine = [...this.coinsByKey].filter(
+      ([key, coin]) =>
         (keys === undefined || keys.has(key)) &&
         coin.holder === holder &&
-        (coin.state === 'spend_pending' || coin.state === 'pending_receipt')
-      ) {
-        const { holder: _holder, spendingTx: _tx, ...rest } = coin
-        const free: EvmListCoin = { ...rest, state: 'unspent' }
-        this.coinsByKey.set(key, free)
-        freed.push(free)
+        (coin.state === 'spend_pending' || coin.state === 'pending_receipt'),
+    )
+    // Highest nonce first: a coin of this holder stacked on another of its own goes before the
+    // one below it, which is then free of spenders above.
+    mine.sort(([, a], [, b]) => b.nonce - a.nonce)
+    const freed: EvmListCoin[] = []
+    const dropped: EvmListCoin[] = []
+    const underSpender: EvmListCoin[] = []
+    for (const [key, coin] of mine) {
+      // Someone else spends the coin above: this nonce must still be taken by a transaction,
+      // or theirs never lands. It goes straight to a filler; the caller signs it.
+      if (this.hasSpenderAbove(coin.account, coin.nonce)) {
+        this.handToFiller(key, coin)
+        underSpender.push(coin)
+        continue
       }
-    if (freed.length === 0) return
+      const above = this.dropProvisionalAbove(coin.account, coin.nonce)
+      if (above) dropped.push(above)
+      const { holder: _holder, spendingTx: _tx, ...rest } = coin
+      const free: EvmListCoin = { ...rest, state: 'unspent' }
+      this.coinsByKey.set(key, free)
+      freed.push(free)
+    }
+    if (freed.length === 0 && dropped.length === 0) {
+      if (underSpender.length > 0) this.notify()
+      return underSpender
+    }
     this.notify()
-    await Promise.all(freed.map(coin => this.persist(coin)))
+    const gone = new Set(dropped.map(coin => coinKey(coin.account, coin.nonce)))
+    await Promise.all([
+      ...freed
+        .filter(coin => !gone.has(coinKey(coin.account, coin.nonce)))
+        .map(coin => this.persist(coin)),
+      ...dropped.map(coin => this.store.delete(coinKey(coin.account, coin.nonce))),
+    ])
+    return underSpender
   }
 
   /**
@@ -572,16 +788,44 @@ export class EvmCoinList {
     referenced: (account: string, nonce: number) => boolean,
   ): Promise<number> {
     let count = 0
-    for (const coin of this.all())
-      if (coin.state === 'pending_receipt' && !referenced(coin.account, coin.nonce)) {
-        const { holder: _holder, spendingTx: _tx, ...rest } = coin
-        const free: EvmListCoin = { ...rest, state: 'unspent' }
-        this.coinsByKey.set(coinKey(coin.account, coin.nonce), free)
-        await this.persist(free)
+    const unreferenced = this.all()
+      .filter(coin => coin.state === 'pending_receipt' && !referenced(coin.account, coin.nonce))
+      .sort((a, b) => b.nonce - a.nonce)
+    for (const coin of unreferenced) {
+      // Below one a stored record spends: its nonce goes to a filler, whose signing is due.
+      if (this.hasSpenderAbove(coin.account, coin.nonce)) {
+        this.handToFiller(coinKey(coin.account, coin.nonce), coin)
         count++
+        continue
       }
+      const above = this.dropProvisionalAbove(coin.account, coin.nonce)
+      if (above) await this.store.delete(coinKey(above.account, above.nonce))
+      const { holder: _holder, spendingTx: _tx, ...rest } = coin
+      const free: EvmListCoin = { ...rest, state: 'unspent' }
+      this.coinsByKey.set(coinKey(coin.account, coin.nonce), free)
+      await this.persist(free)
+      count++
+    }
     if (count > 0) this.notify()
     return count
+  }
+
+  /**
+   * In memory, synchronously: the coin's dead transaction (never sent) is gone and its nonce is
+   * the filler's, `spend_pending` until the filler is signed and recorded (`recordFiller`). Not
+   * written: after a restart before that, the dead bytes no record names are handed to a filler
+   * again (`releaseUnreferenced`).
+   */
+  private handToFiller(key: string, coin: EvmListCoin): void {
+    const { spendingTx: _tx, ...rest } = coin
+    this.coinsByKey.set(key, { ...rest, state: 'spend_pending', holder: fillerHolder(coin) })
+  }
+
+  /** Coins whose nonce a filler holds and whose filler is not signed yet. */
+  unsignedFillers(): EvmListCoin[] {
+    return this.all().filter(
+      coin => coin.state === 'spend_pending' && coin.holder?.startsWith(FILLER_PREFIX) === true,
+    )
   }
 
   /** Drops spent coins older than `beforeBlock` (the background worker's cleanup). */

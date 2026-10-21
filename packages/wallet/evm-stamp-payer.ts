@@ -21,7 +21,9 @@
  */
 import { getAddress, Transaction, type Provider } from 'ethers'
 import { selectStampAccounts } from './evm-stamp-account-selection'
+import { computeGeometricRadixChangeSplits } from './evm-change-distribution'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
+import { EvmBroadcastGate } from './evm-broadcast-gate'
 import {
   InsufficientStampFundsError,
   type EvmSubAccountPool as MonadSubAccountPool,
@@ -34,6 +36,9 @@ import {
 } from './evm-block-watcher'
 import {
   EvmCoinListError,
+  FILLER_PREFIX,
+  fillerHolder,
+  maxCost,
   type EvmCoinList,
   type EvmCoinListOrigin,
   type EvmListCoin,
@@ -93,6 +98,25 @@ export type StampPaymentObservation =
       readonly state: 'pending'
       readonly where?: 'mempool' | 'included' | 'unknown-to-node'
     }
+
+/** A transfer of a bundle from a paying account to a fresh account of the wallet (change).
+ * `fundsIndex`: the pool row it funds. Never part of the message. */
+export interface StampSelfSend extends StampPayment {
+  readonly fundsIndex: number
+}
+
+/** What one payment signs from its claim: the payments that travel with the message and the
+ * self-sends from the same accounts, nonces mixed at random per account. */
+export interface StampBundle {
+  readonly payments: readonly StampPayment[]
+  readonly selfSends: readonly StampSelfSend[]
+}
+
+/** A coin is split when what it keeps after the payment is more than this many times the
+ * payment. */
+const OVERSIZED_FACTOR = 16n
+/** At most this many self-sends from one account in one bundle. */
+const MAX_SELF_SENDS = 2
 
 /** One coin claimed for a payment: the account, the nonce it is at, and what it pays. */
 export interface ClaimedStampCoin {
@@ -206,6 +230,9 @@ export interface EvmStampPayerConfig {
   /** The wallet's one block watcher for this chain. Absent (a test of the payer alone): one is
    * made over `provider`. */
   watcher?: EvmBlockWatcher
+  /** Whether a payment from an account holding much more than it pays also moves part of the
+   * rest to the wallet's fresh accounts in the same bundle (`signBundle`). Default: off. */
+  changeSplit?: boolean
   /** Called when a payment takes funded sub-accounts (there are now fewer ready). */
   onPoolCoinsClaimed?: () => void
   /**
@@ -225,9 +252,16 @@ export class EvmStampPayer {
   private fee: { value: StampFee; atMs: number } | undefined
   private feeRead: Promise<StampFee> | undefined
   private poolIndexByAddress = new Map<string, number>()
+  /** Each coin's transaction waits for the one below it in its account to be sent. A coin the
+   * list does not hold, or holds as mined, needs no wait. */
+  private readonly gate: EvmBroadcastGate
   constructor(private readonly config: EvmStampPayerConfig) {
     this.watcher =
       config.watcher ?? new EvmBlockWatcher({ provider: config.provider })
+    this.gate = new EvmBroadcastGate((account, nonce) => {
+      const coin = config.coins.get(account, nonce)
+      return coin === undefined || coin.state === 'spent'
+    })
   }
 
   /** A read of the chain on behalf of a payment: its failure marks the chain unreachable and
@@ -334,11 +368,51 @@ export class EvmStampPayer {
       return !pool.isSpendReserved(index)
     }
     const claimant = pool.accountClaimedBy(coin.account)
-    if (claimant !== undefined) {
+    // A coin stacked on a payment of this list: the account is claimed for that payment (and
+    // handed on to whoever spends above it), and this coin is the one after it.
+    if (claimant !== undefined && !(coin.provisional && this.stackedOnList(coin))) {
       seen?.claimedBy?.add(claimant)
       return false
     }
     return true
+  }
+
+  /** Whether the coin below `coin` is spent from by an operation of this list. */
+  private stackedOnList(coin: EvmListCoin): boolean {
+    const below = this.config.coins.get(coin.account, coin.nonce - 1)
+    return (
+      below !== undefined &&
+      below.holder !== undefined &&
+      (below.state === 'pending_receipt' || below.state === 'spend_pending')
+    )
+  }
+
+  /** Whether a transaction of this wallet at the nonce below `rawTx`'s, from the same account,
+   * is still out (signed, not mined). */
+  pendingBelow(rawTx: string): boolean {
+    const tx = Transaction.from(rawTx)
+    if (tx.nonce === 0) return false
+    const below = this.config.coins.get(tx.from!.toLowerCase(), tx.nonce - 1)
+    return below?.state === 'pending_receipt'
+  }
+
+  /** After a holder let go of an account's claim: an operation still spending a coin of that
+   * account stacked above takes it, so nothing outside the list signs from the account while
+   * any of its transactions is out. */
+  private handOverAccount(address: string): void {
+    const { pool, coins } = this.config
+    const account = address.toLowerCase()
+    if (pool.accountClaimedBy(account) !== undefined) return
+    const next = coins
+      .all()
+      .filter(
+        coin =>
+          coin.account === account &&
+          coin.holder !== undefined &&
+          (coin.state === 'spend_pending' || coin.state === 'pending_receipt'),
+      )
+      .sort((a, b) => a.nonce - b.nonce)[0]
+    if (next?.holder !== undefined) pool.restoreAccountClaim(next.holder, account)
   }
 
   /** Whether `coin` may be offered to the chain at `head`, paying `amountWei` out of it. */
@@ -348,6 +422,7 @@ export class EvmStampPayer {
     amountWei: bigint,
     feeReserveWei: bigint,
   ): boolean {
+    if (coin.provisional) return this.stackable(coin, amountWei, feeReserveWei)
     if (coin.spendableFromBlock === undefined) return true
     if (head !== undefined && head >= coin.spendableFromBlock) return true
     // The chain's rule only bites a transfer that takes the account below its reserve.
@@ -357,6 +432,35 @@ export class EvmStampPayer {
       coin.origin !== 'deterministic' &&
       coin.valueWei - amountWei - feeReserveWei >= floor
     )
+  }
+
+  /**
+   * THE chain rule for spending a coin stacked on a payment that is not mined yet (one shared
+   * function, every network): on a chain with no spacing rule it may always be spent; under a
+   * spacing rule (Monad's reserve balance) only by a transfer that leaves the account at or
+   * above the reserve, since a second transaction in the window may not dip below it. Below the
+   * reserve it waits for its parent to be mined, and then for the spacing as any coin does.
+   */
+  private stackable(
+    coin: EvmListCoin,
+    amountWei: bigint,
+    feeReserveWei: bigint,
+  ): boolean {
+    if (!this.config.spendSpacingBlocks) return true
+    const floor = this.config.reserveBalanceWei
+    return (
+      floor !== undefined &&
+      coin.origin !== 'deterministic' &&
+      coin.valueWei - amountWei - feeReserveWei >= floor
+    )
+  }
+
+  /** What the account holds after `rawTx` from `coin` at its maximum fee: the provisional
+   * coin stacked above it. None for a sub-account (spent once) or when nothing is left. */
+  private successorAfter(coin: EvmListCoin, rawTx: string): bigint | undefined {
+    if (coin.origin === 'deterministic') return undefined
+    const left = coin.valueWei - maxCost(rawTx)
+    return left > 0n ? left : undefined
   }
 
   /**
@@ -631,7 +735,12 @@ export class EvmStampPayer {
           const source = stampSourceOf(coin.origin)
           const index = source === 'pool' ? this.indexOf(coin.account) : undefined
           if (index !== undefined) pool.restoreClaim(input.holder, [index])
-          else pool.restoreAccountClaim(input.holder, coin.account)
+          else {
+            const claimant = pool.accountClaimedBy(coin.account)
+            // Stacked: the account stays with the payment below, then passes up the stack.
+            if (claimant === undefined || claimant === input.holder)
+              pool.restoreAccountClaim(input.holder, coin.account)
+          }
           return {
             source,
             ...(index === undefined ? {} : { index }),
@@ -666,6 +775,15 @@ export class EvmStampPayer {
       const notYet = all.filter(
         coin =>
           free(coin) &&
+          !coin.provisional &&
+          !this.spendableNow(coin, head, input.stampValueWei, feeReserveWei),
+      )
+      // Stacked on a payment not mined yet, and not spendable before it is (the chain's rule):
+      // it comes back when the payment below it is mined.
+      const onParent = all.filter(
+        coin =>
+          coin.provisional &&
+          coin.state === 'unspent' &&
           !this.spendableNow(coin, head, input.stampValueWei, feeReserveWei),
       )
       // Worth waiting for: an account another operation is spending from will hold its next
@@ -673,6 +791,11 @@ export class EvmStampPayer {
       // nothing comes back to wait for.
       const comesBack = (coin: EvmListCoin) =>
         coin.origin !== 'deterministic' && allowed(stampSourceOf(coin.origin))
+      // Its account's coin above is already listed (stacked): counted there, not twice.
+      const hasStackedFree = (coin: EvmListCoin) => {
+        const above = coins.get(coin.account, coin.nonce + 1)
+        return above !== undefined && above.state !== 'spent'
+      }
       const heldByOthers = all.filter(
         coin =>
           (coin.state === 'spend_pending' || coin.state === 'pending_receipt') &&
@@ -689,7 +812,11 @@ export class EvmStampPayer {
             : pool.accountClaimedBy(coin.account) !== undefined),
       )
       const could =
-        sum(ready) + sum(notYet) + sum(heldByOthers) + sum(claimedOutside)
+        sum(ready) +
+        sum(notYet) +
+        sum(onParent) +
+        sum(heldByOthers.filter(coin => !hasStackedFree(coin))) +
+        sum(claimedOutside.filter(coin => !hasStackedFree(coin)))
       if (could < input.stampValueWei) {
         // Coins of accounts the list must read again before offering them: another spender of
         // the account (a funding pass, a native send) has just let it go, and its last transfer
@@ -727,6 +854,7 @@ export class EvmStampPayer {
       if (
         heldByOthers.length === 0 &&
         claimedOutside.length === 0 &&
+        onParent.length === 0 &&
         notYet.length > 0
       ) {
         // Only the chain's spacing stands in the way: the next block it allows.
@@ -737,6 +865,10 @@ export class EvmStampPayer {
       }
       const holders = new Set<string>([
         ...heldByOthers.map(coin => coin.holder!),
+        ...onParent.flatMap(coin => {
+          const below = coins.get(coin.account, coin.nonce - 1)?.holder
+          return below === undefined || below === input.holder ? [] : [below]
+        }),
         ...claimedOutside.flatMap(coin => {
           const holder =
             stampSourceOf(coin.origin) === 'pool'
@@ -768,7 +900,18 @@ export class EvmStampPayer {
           const by = claimant(coin)
           return by !== undefined && !blocked.has(by)
         })
-        const unblocked = after.filter(free).concat(comingBack)
+        // A coin stacked on a blocked holder's payment comes back only if that payment lands.
+        const onBlocked = (coin: EvmListCoin) => {
+          for (let below = coins.get(coin.account, coin.nonce - 1); below; ) {
+            if (below.holder !== undefined && blocked.has(below.holder)) return true
+            if (!below.provisional) return false
+            below = coins.get(below.account, below.nonce - 1)
+          }
+          return false
+        }
+        const unblocked = after
+          .filter(coin => free(coin) && !(coin.provisional && onBlocked(coin)))
+          .concat(comingBack)
         if (sum(unblocked) >= input.stampValueWei) blockedLooks = 0
         else if (++blockedLooks >= 2) throw blocked.values().next().value!
       }
@@ -878,6 +1021,136 @@ export class EvmStampPayer {
   }
 
   /**
+   * Signs one payment's bundle from its claim: per claimed coin, the payment to
+   * `destination(i)`, and, when the coin holds far more than it pays (`changeSplit`), up to
+   * {@link MAX_SELF_SENDS} transfers of part of the rest to fresh accounts of the wallet, sized
+   * by the geometric radix split (no part the size of the payment, none costing more than it
+   * moves, the account left at or above the chain's reserve). The payment and the self-sends of
+   * one account take its nonces n, n+1, ... in a random order: which output paid the recipient is
+   * not told by the order. No request is made; nothing is recorded (`recordBundle`).
+   */
+  async signBundle(
+    claim: StampClaim,
+    chainId: bigint,
+    destination: (childIndex: number) => string,
+  ): Promise<StampBundle> {
+    const changes = claim.accounts.map(account => {
+      const coin = this.config.coins.get(account.address, account.nonce)
+      return coin === undefined
+        ? []
+        : this.changeParts(coin, account.paymentValueWei, claim.fee)
+    })
+    // Nothing to split: the payments alone, one per coin.
+    if (changes.every(change => change.length === 0))
+      return { payments: await this.sign(claim, chainId, destination), selfSends: [] }
+    const payments: StampPayment[] = []
+    const selfSends: StampSelfSend[] = []
+    for (const [childIndex, account] of claim.accounts.entries()) {
+      const coin = this.config.coins.get(account.address, account.nonce)
+      if (
+        coin === undefined ||
+        coin.holder !== claim.holder ||
+        coin.state !== 'spend_pending'
+      )
+        throw new Error('A stamp is signed only from a coin its payment took')
+      const change = changes[childIndex]!
+      const rows = change.map(() => this.config.pool.deriveNextUnfunded())
+      // Positions 0..k: the payment is one of them at random.
+      const order = shuffled([-1, ...change.map((_, at) => at)])
+      for (const [offset, which] of order.entries()) {
+        const rawTx = await this.signTransfer({
+          privateKey: coin.privateKey,
+          address: coin.account,
+          chainId,
+          nonce: coin.nonce + offset,
+          to: which === -1 ? destination(childIndex) : rows[which]!.address,
+          valueWei: which === -1 ? account.paymentValueWei : change[which]!,
+          fee: claim.fee,
+        })
+        const base = {
+          source: account.source,
+          ...(account.index === undefined ? {} : { index: account.index }),
+          address: account.address,
+          rawTx,
+        }
+        if (which === -1) payments.push(base)
+        else selfSends.push({ ...base, fundsIndex: rows[which]!.index })
+      }
+    }
+    return { payments, selfSends }
+  }
+
+  /** What part of `coin` beyond the payment a bundle moves to fresh accounts: none unless
+   * `changeSplit` is on and the coin is oversized. */
+  private changeParts(coin: EvmListCoin, paymentWei: bigint, fee: StampFee): bigint[] {
+    if (!this.config.changeSplit || coin.origin === 'deterministic') return []
+    const feeEach = STAMP_GAS_LIMIT * (fee.maxFeePerGas ?? fee.gasPrice)!
+    const floor = this.config.spendSpacingBlocks
+      ? this.config.reserveBalanceWei
+      : 0n
+    if (floor === undefined) return []
+    const kept = coin.valueWei - paymentWei - feeEach
+    if (kept <= floor || kept - floor <= OVERSIZED_FACTOR * paymentWei) return []
+    const parts = computeGeometricRadixChangeSplits({
+      totalAvailableWei: (kept - floor) / 2n,
+      recipientAmountWei: paymentWei,
+      dustThresholdWei: paymentWei > 10n * feeEach ? paymentWei : 10n * feeEach,
+      minFeePerTxWei: feeEach,
+      maxOutputs: MAX_SELF_SENDS,
+    })
+    // A move costing more than it moves is not made.
+    return parts.filter(part => part > feeEach)
+  }
+
+  /**
+   * A bundle's signed transactions go onto their coins, durably, BEFORE they are written anywhere
+   * they could be sent from: per account in nonce order, each stacked on the one below (the
+   * coins above the claimed one are taken for this holder as they are made, so nothing else can
+   * take them in between), and each self-send's fresh account row records its funding bytes.
+   */
+  async recordBundle(holder: string, bundle: StampBundle): Promise<void> {
+    const { coins, pool } = this.config
+    const all = [...bundle.payments, ...bundle.selfSends]
+    const byAccount = new Map<string, { rawTx: string; nonce: number }[]>()
+    for (const one of all) {
+      const nonce = Transaction.from(one.rawTx).nonce
+      const account = one.address.toLowerCase()
+      byAccount.set(account, [...(byAccount.get(account) ?? []), { rawTx: one.rawTx, nonce }])
+    }
+    for (const [account, txs] of byAccount) {
+      txs.sort((a, b) => a.nonce - b.nonce)
+      for (const [at, { rawTx, nonce }] of txs.entries()) {
+        const coin = coins.get(account, nonce)
+        const successor =
+          coin === undefined ? undefined : this.successorAfter(coin, rawTx)
+        const more = at < txs.length - 1
+        if (at === 0)
+          await coins.recordSigned(holder, { account, nonce }, rawTx, successor, more ? holder : undefined)
+        else
+          await coins.recordStacked(holder, { account, nonce }, rawTx, successor, more ? holder : undefined)
+      }
+    }
+    // The fresh accounts' rows (derived, `unfunded`) are on disk, so no restart derives them for
+    // anything else. They record their funding only once the chain shows it (`recordSelfSent`):
+    // a row never holds bytes that might not go out.
+    if (bundle.selfSends.length > 0) await pool.flush()
+  }
+
+  /** The chain shows a self-send included: the fresh account it funded is `available`, and the
+   * list reads it. */
+  async recordSelfSent(send: Pick<StampSelfSend, 'rawTx' | 'fundsIndex'>): Promise<void> {
+    const { pool, sync } = this.config
+    const row = pool.getRecord(send.fundsIndex)
+    if (row === undefined) return
+    if (row.status === 'unfunded')
+      pool.stageSelfFunding(send.rawTx, Transaction.from(send.rawTx).hash!, send.fundsIndex)
+    if (pool.getRecord(send.fundsIndex)?.status === 'funding')
+      pool.setStatus(send.fundsIndex, 'available')
+    await pool.flush()
+    sync.markDirty(row.address)
+  }
+
+  /**
    * The signed payments go onto their coins, durably, BEFORE they are written anywhere they
    * could be sent from. From here only the chain frees those coins.
    */
@@ -887,10 +1160,12 @@ export class EvmStampPayer {
   ): Promise<void> {
     for (const payment of payments) {
       const tx = Transaction.from(payment.rawTx)
+      const coin = this.config.coins.get(payment.address, tx.nonce)
       await this.config.coins.recordSigned(
         holder,
         { account: payment.address, nonce: tx.nonce },
         payment.rawTx,
+        coin === undefined ? undefined : this.successorAfter(coin, payment.rawTx),
       )
     }
   }
@@ -900,17 +1175,34 @@ export class EvmStampPayer {
   async release(claim: StampClaim): Promise<void> {
     const { pool, coins } = this.config
     // The pool's claims first: their release is seen while the coins still name their holder.
+    // An account whose coin above is spent by someone keeps its claim: the filler takes it over.
     for (const account of claim.accounts)
-      if (account.index === undefined)
+      if (account.index !== undefined) pool.releaseClaim(claim.holder, [account.index])
+      else if (!coins.hasOtherSpenderAbove(account.address, account.nonce, claim.holder))
         pool.releaseAccountClaim(claim.holder, account.address)
-      else pool.releaseClaim(claim.holder, [account.index])
-    await coins.releaseUnexposed(
-      claim.holder,
-      claim.accounts.map(account => ({
-        account: account.address,
-        nonce: account.nonce,
-      })),
+    // With the coins its bundle stacked above them (self-sends, the payment at a later nonce).
+    const claimed = new Map(
+      claim.accounts.map(account => [account.address.toLowerCase(), account.nonce]),
     )
+    const underSpender = await coins.releaseUnexposed(
+      claim.holder,
+      coins
+        .heldBy(claim.holder)
+        .filter(coin => {
+          const from = claimed.get(coin.account)
+          return from !== undefined && coin.nonce >= from
+        })
+        .map(coin => ({ account: coin.account, nonce: coin.nonce }))
+        .concat(
+          claim.accounts.map(account => ({
+            account: account.address.toLowerCase(),
+            nonce: account.nonce,
+          })),
+        ),
+    )
+    await this.fillReleased(underSpender)
+    for (const account of claim.accounts)
+      if (account.index === undefined) this.handOverAccount(account.address)
   }
 
   /**
@@ -931,14 +1223,96 @@ export class EvmStampPayer {
     }))
     // Dirty before free: no selection in between can take a coin the chain has not confirmed.
     for (const { payment } of refused) sync.markDirty(payment.address)
-    for (const { payment } of refused)
-      if (payment.index === undefined)
+    for (const { payment, nonce } of refused)
+      if (payment.index !== undefined) pool.releaseClaim(holder, [payment.index])
+      else if (!coins.hasOtherSpenderAbove(payment.address, nonce, holder))
         pool.releaseAccountClaim(holder, payment.address)
-      else pool.releaseClaim(holder, [payment.index])
-    await coins.releaseUnexposed(
+    const underSpender = await coins.releaseUnexposed(
       holder,
       refused.map(({ payment, nonce }) => ({ account: payment.address, nonce })),
     )
+    await this.fillReleased(underSpender)
+    for (const { payment } of refused)
+      if (payment.index === undefined) this.handOverAccount(payment.address)
+  }
+
+  /**
+   * The gap filler. Only an ownership event calls for one: the operation that held a nonce was
+   * released as provably unexposed (its bytes never left the wallet) while a transaction above
+   * it may already be out. Never because a gap is seen or a wait is long: a nonce of an
+   * operation still in progress is that operation's, and the coins above wait for it. The coin
+   * list handed the nonce to the filler in the same step as the release; here its minimal
+   * transfer of the account to itself is signed, recorded on the coin, then broadcast.
+   */
+  private readonly filling = new Set<string>()
+  /** Fillers for nonces just released, on the chain their dead transactions were signed for. A
+   * failure leaves the filler unsigned: the next `settleFillers` signs it. */
+  private async fillReleased(coins: readonly EvmListCoin[]): Promise<void> {
+    for (const coin of coins)
+      await this.fill([coin], Transaction.from(coin.spendingTx!).chainId).catch(() => undefined)
+  }
+  private async fill(coins: readonly EvmListCoin[], chainId: bigint): Promise<void> {
+    for (const coin of coins) {
+      const holder = fillerHolder(coin)
+      const current = this.config.coins.get(coin.account, coin.nonce)
+      if (current?.holder !== holder || current.state !== 'spend_pending') continue
+      if (this.filling.has(holder)) continue
+      this.filling.add(holder)
+      try {
+        const fee = await this.read(() => this.currentFee())
+        const rawTx = await this.signTransfer({
+          privateKey: coin.privateKey,
+          address: coin.account,
+          chainId,
+          nonce: coin.nonce,
+          to: getAddress(coin.account),
+          valueWei: 1n,
+          fee,
+        })
+        await this.config.coins.recordFiller(holder, coin, rawTx)
+        if (stampSourceOf(coin.origin) !== 'pool') {
+          if (coin.holder !== undefined && coin.holder !== holder)
+            this.config.pool.releaseAccountClaim(coin.holder, coin.account)
+          this.handOverAccount(coin.account)
+        }
+        await this.submitPaymentSet([rawTx])
+      } finally {
+        this.filling.delete(holder)
+      }
+    }
+  }
+
+  /**
+   * One look at every gap filler still out: mined, its coin is spent and the account's next coin
+   * listed; not known to the node, the same bytes are offered again; its nonce consumed by
+   * another transaction, it leaves. Never throws.
+   */
+  async settleFillers(chainId: bigint): Promise<void> {
+    for (const coin of this.config.coins.unsignedFillers())
+      await this.fill([coin], chainId).catch(() => undefined)
+    for (const coin of this.config.coins.all()) {
+      if (coin.state !== 'pending_receipt' || !coin.holder?.startsWith(FILLER_PREFIX)) continue
+      const payment: StampPayment = {
+        source: stampSourceOf(coin.origin),
+        ...(stampSourceOf(coin.origin) === 'pool'
+          ? { index: this.indexOf(coin.account) }
+          : {}),
+        address: coin.account,
+        rawTx: coin.spendingTx!,
+      }
+      try {
+        const seen = await this.observe(coin.spendingTx!)
+        if (seen.state === 'included') {
+          await this.recordSpent(coin.holder, payment, seen.block)
+          this.releasePayment(coin.holder, payment)
+        } else if (seen.state === 'replaced') {
+          await this.recordFailed(coin.holder, payment)
+          this.releasePayment(coin.holder, payment)
+        } else if (seen.where === 'unknown-to-node') await this.submitPaymentSet([coin.spendingTx!])
+      } catch {
+        // Nothing known: looked at again on the next pass.
+      }
+    }
   }
 
   /**
@@ -966,14 +1340,25 @@ export class EvmStampPayer {
       const account = payment.address.toLowerCase()
       // Named by a stored message whatever happens below: `finishRestore` never frees it.
       this.restored.add(`${account}:${tx.nonce}`)
-      try {
-        if (payment.index !== undefined) pool.restoreClaim(holder, [payment.index])
-        else pool.restoreAccountClaim(holder, account)
-      } catch {
-        // Another stored message holds this account: it keeps it; the chain decides both.
-        contested.push(payment.address)
-        continue
-      }
+      const claimant =
+        payment.index === undefined ? pool.accountClaimedBy(account) : undefined
+      const atNonce = coins.get(account, tx.nonce)
+      const coinHeldByOther =
+        atNonce?.holder !== undefined &&
+        atNonce.holder !== holder &&
+        (atNonce.state === 'pending_receipt' || atNonce.state === 'spend_pending')
+      if (claimant !== undefined && claimant !== holder && !coinHeldByOther) {
+        // Stacked: another stored message pays from this account at another nonce. The account
+        // stays claimed by that one (and is handed on); this coin is still this message's.
+      } else
+        try {
+          if (payment.index !== undefined) pool.restoreClaim(holder, [payment.index])
+          else pool.restoreAccountClaim(holder, account)
+        } catch {
+          // Another stored message holds this coin: it keeps it; the chain decides both.
+          contested.push(payment.address)
+          continue
+        }
       const existing = coins.get(account, tx.nonce)
       const privateKey =
         existing?.privateKey ??
@@ -1012,8 +1397,10 @@ export class EvmStampPayer {
   /** At open, after `restore` of every stored message: a coin with a transaction out that no
    * message names never left the wallet, and is free again. */
   async finishRestore(): Promise<void> {
-    await this.config.coins.releaseUnreferenced((account, nonce) =>
-      this.restored.has(`${account}:${nonce}`),
+    await this.config.coins.releaseUnreferenced(
+      (account, nonce) =>
+        this.restored.has(`${account}:${nonce}`) ||
+        this.config.coins.get(account, nonce)?.holder?.startsWith(FILLER_PREFIX) === true,
     )
     this.restored.clear()
   }
@@ -1053,7 +1440,10 @@ export class EvmStampPayer {
         provider.getTransactionCount(tx.from!, 'latest'),
       ]),
     )
+    // In a block, in the mempool, or its nonce consumed: the coins above it may go out.
+    const sent = () => this.gate.markSent(tx.from!, tx.nonce)
     if (receipt !== null) {
+      sent()
       if (receipt.status === 0) {
         const [block, head] = await this.read(() =>
           Promise.all([
@@ -1072,7 +1462,10 @@ export class EvmStampPayer {
         block: receipt.blockNumber,
       }
     }
-    if (known !== null) return { state: 'pending', where: 'mempool' }
+    if (known !== null) {
+      sent()
+      return { state: 'pending', where: 'mempool' }
+    }
     // The node knows neither the transaction nor a receipt for it.
     if (used <= tx.nonce) return { state: 'pending', where: 'unknown-to-node' }
     // The nonce is consumed. The three reads above ran side by side: a block that landed
@@ -1082,30 +1475,25 @@ export class EvmStampPayer {
     const again = await this.read(() =>
       provider.getTransactionReceipt(tx.hash!),
     )
+    sent()
     if (again !== null) return { state: 'pending', where: 'included' }
     return { state: 'replaced' }
   }
 
   /**
-   * THE place a message's signed payment set is handed to the chain: the whole set, in order,
-   * with what became of each hand-over. Today one broadcast per transaction (a node that
-   * already has the bytes is not an error); a chain whose node takes a set atomically replaces
-   * the loop here and nowhere else. Whether a payment landed is read from the chain
+   * THE place a message's signed transactions (its payments and any self-sends of its bundle,
+   * gap fillers) are handed to the chain: each once the transaction below it in its account is
+   * sent (`EvmBroadcastGate`), so an account's transactions reach the node in nonce order and
+   * different accounts go in parallel. One whose predecessor belongs to an operation still in
+   * progress is handed over when that one goes out (`waiting`), never filled or dropped for it.
+   * A node that already has the bytes is not an error; one refused does not stop the others
+   * and is offered again by a later pass. Whether a transaction landed is read from the chain
    * (`observe`), never from this.
    */
   async submitPaymentSet(
     rawTransactions: readonly string[],
-  ): Promise<{ rawTx: string; error?: unknown }[]> {
-    return Promise.all(
-      rawTransactions.map(async rawTx => {
-        try {
-          await this.broadcast(rawTx)
-          return { rawTx }
-        } catch (error) {
-          return { rawTx, error }
-        }
-      }),
-    )
+  ): Promise<{ rawTx: string; error?: unknown; waiting?: true }[]> {
+    return this.gate.submit(rawTransactions, rawTx => this.broadcast(rawTx))
   }
 
   /** The chain shows the payment included at block `included`: its coin is spent, and what
@@ -1213,8 +1601,20 @@ export class EvmStampPayer {
     else pool.releaseClaim(holder, [payment.index])
     if (payment.nonce !== undefined)
       coins.abandon(holder, [{ account: payment.address, nonce: payment.nonce }])
+    if (payment.index === undefined) this.handOverAccount(payment.address)
   }
 }
+
+function shuffled<T>(items: readonly T[]): T[] {
+  const out = [...items]
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[out[i], out[j]] = [out[j]!, out[i]!]
+  }
+  return out
+}
+
+export { FILLER_PREFIX } from './evm-coin-list'
 
 function originOf(source: StampCoinSource): EvmCoinListOrigin {
   switch (source) {

@@ -925,17 +925,18 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       expect(relayBodies).toHaveLength(0)
       expect(await received()).toHaveLength(0)
 
-      // Another message is not refused for it: another ID is sent, paid from another coin (the
-      // identity account, given money here), never from the held one.
-      mockBalances.set(alice.identity.address.raw.toLowerCase(), 10n ** 18n)
+      // Another message is not refused for it: another ID is sent, never from the held coin. It
+      // stacks on it, at the main account's next nonce.
       const other = await attempt({ messageId: ID_B })
       expect(other.error).toBeUndefined()
       expect(other.signed).toBe(1)
       expect((await received()).map(m => m.messageId)).toEqual([ID_B])
       expect(paymentSets()).toBe(1)
       expect(
-        (await rows()).flatMap(row => row.payments.map(p => p.source)),
-      ).toEqual(['identity'])
+        (await rows()).flatMap(row =>
+          row.payments.map(p => `${p.source}:${Transaction.from(p.rawTx).nonce}`),
+        ),
+      ).toEqual(['main:1'])
       expect(claimed()).toContain('main')
 
       // A real restart: no record of ID_A exists, so nothing of it was ever handed out. Its
@@ -944,7 +945,9 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       expect((await rows()).map(row => row.consumerId)).toEqual([
         consumerOf(ID_B),
       ])
-      expect(claimed()).not.toContain('main')
+      // ID_A's bytes never left the wallet; its nonce, below ID_B's payment, is the gap
+      // filler's from the restore on (nothing else can claim it).
+      expect(alice.pool.accountClaimedBy(main)).toBeDefined()
       const second = await attempt({ messageId: ID_A })
       expect(second.error).toBeUndefined()
       expect(second.signed).toBe(1)

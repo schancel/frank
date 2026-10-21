@@ -2040,7 +2040,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     })
   })
 
-  it('sends from an unfunded wallet (no funded accounts) with one payment from the main account, funding nothing', async () => {
+  it('sends from an unfunded wallet (no funded accounts) with one payment from the main account, funding nothing first', async () => {
     const main = (await f.alice.getReceiveAddress()).raw.toLowerCase()
     mockBalances.set(main, 10n ** 18n)
     installCanonicalDirectory(
@@ -2062,7 +2062,9 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         Transaction.from('0x' + toHex(raw)).from!.toLowerCase(),
       ),
     ).toEqual([main])
-    expect(f.alice.pool.records()).toEqual([])
+    // What the pool holds now came from the bundle's own change split (self-sends from main,
+    // never in the message): at most two accounts.
+    expect(f.alice.pool.records().length).toBeLessThanOrEqual(2)
   })
 
   describe('labels the send refusals that attempted nothing (#1237)', () => {

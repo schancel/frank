@@ -98,6 +98,9 @@ const FEE_RESERVE = 21_000n * 3n
 const ID = (n: number) =>
   `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`
 
+/** Chain configuration for the next tests' wallets (a describe block sets it in `beforeAll`). */
+let fixtureOverrides: Parameters<typeof fixture>[0] = {}
+
 describe('parallel paid messages', () => {
   jest.setTimeout(120_000)
   let f: Fixture
@@ -128,7 +131,7 @@ describe('parallel paid messages', () => {
     mockMessageWrite.written = []
     REPLACED_AFTER_MS.value = 60_000
     RESIGN_AFTER_MS.value = 3_000
-    f = await fixture()
+    f = await fixture(fixtureOverrides)
     alice = f.alice
     bobMailbox = []
     mailboxes.set(toHex(f.bob.identity.compressedPubKey), bobMailbox)
@@ -790,15 +793,16 @@ describe('parallel paid messages', () => {
     offlineChain.broadcastDown = true
     const first = await send(1)
     const holder = alice.pool.accountClaimedBy(main)!
-    // Letting go of the pool's claim does not free the coin: the coin list holds it.
+    // Letting go of the pool's claim does not free the coin: the coin list holds it, and the
+    // next payment stacks above it at the next nonce, never at the same one.
     alice.pool.releaseAccountClaim(holder, main)
-    const second = send(2)
-    let secondDone = false
-    void second.then(() => (secondDone = true), () => (secondDone = true))
-    await new Promise(resolve => setTimeout(resolve, 200))
-    expect(secondDone).toBe(false)
+    await send(2)
+    expect(
+      relayPayments()
+        .filter(tx => tx.from!.toLowerCase() === main)
+        .map(tx => tx.nonce),
+    ).toEqual([0, 1])
     await reopen()
-    await second.catch(() => undefined)
     expect(alice.pool.accountClaimedBy(main)).toBeDefined()
     offlineChain.broadcastDown = false
     for (
@@ -814,96 +818,112 @@ describe('parallel paid messages', () => {
       .filter(tx => tx.from!.toLowerCase() === main)
       .map(tx => tx.nonce)
     expect(new Set(nonces).size).toBe(nonces.length)
-    expect(first.stampPayments[0].txHash).not.toBe(third.stampPayments[0].txHash)
+    expect(first.stampPayments[0].txHash).not.toBe(
+      third.stampPayments[0].txHash,
+    )
   })
 
-  it('a send waiting for the main account asks the chain about the one payment in its way, never the relay', async () => {
-    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
-    mockBalances.set(main, 10n ** 17n)
-    await fundAccounts(1)
-    // An unrelated message is undelivered (relay down for it), paid from the funded account.
-    f.setPhase('fail')
-    await send(1).catch(() => undefined)
-    f.setPhase('delivered')
-    offlineChain.relayBroadcasts = false
-    offlineChain.broadcastDown = true
-    await send(2) // paid from main; its payment cannot land while the node is down
-    const stages: string[] = []
-    const waiting = f.chain.directMessages.send({
-      wallet: alice,
-      recipient: f.bob.identity.address,
-      items: [{ type: 'text', text: 'message 3' }],
-      stampValue: STAMP,
-      messageId: ID(3),
-      onPreparationProgress: progress => stages.push(progress.stage),
+  describe('waiting for the main account: a chain whose reserve rule forbids stacking below it', () => {
+    // A reserve above anything the wallet holds: a payment never stacks on an unmined one, it
+    // waits for it (as on Monad below 10 MON). One block of spacing, which the stub's head meets.
+    beforeAll(() => {
+      fixtureOverrides = {
+        spendSpacingBlocks: 1,
+        reserveBalanceWei: 10n ** 30n,
+      }
     })
-    const relayRequests = relay.bodies.length
-    providerRequests.length = 0
-    await new Promise(resolve => setTimeout(resolve, 2_500))
-    // About one look a second at the holder's payment; the undelivered message is not re-sent.
-    expect(relay.bodies.length).toBe(relayRequests)
-    expect(
-      providerRequests.filter(m => m === 'getTransactionReceipt').length,
-    ).toBeLessThanOrEqual(4)
-    // The host is told, once, that this send is waiting for the previous payment: its own
-    // stage, not the "checking accounts" one.
-    expect(stages).toEqual(['waiting-for-payment'])
-    offlineChain.broadcastDown = false
-    await tick()
-    await tick()
-    await expect(waiting).resolves.toMatchObject({ stampValueWei: STAMP })
-    expect(relayPayments().filter(tx => tx.from!.toLowerCase() === main).map(tx => tx.nonce)).toEqual([0, 1])
-  })
+    afterAll(() => {
+      fixtureOverrides = {}
+    })
 
-  it('five sends waiting for the main account, started at different moments, make one look a second between them, and fewer while the holder is undelivered', async () => {
-    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
-    mockBalances.set(main, 10n ** 17n)
-    offlineChain.relayBroadcasts = false
-    offlineChain.broadcastDown = true
-    await send(1) // delivered, paid from main; the payment cannot land while the node is down
-    const waiting: Promise<unknown>[] = []
-    providerRequests.length = 0
-    for (let n = 2; n <= 6; n++) {
-      waiting.push(send(n).catch(error => error))
-      await new Promise(resolve => setTimeout(resolve, 170))
-    }
-    await new Promise(resolve => setTimeout(resolve, 3_200))
-    // About four seconds, five waiters out of step with each other: one look a second in all
-    // (a look is one receipt read, and a nonce read when there is no receipt), not five.
-    const receipts = () =>
-      providerRequests.filter(m => m === 'getTransactionReceipt').length
-    expect(receipts()).toBeGreaterThanOrEqual(2)
-    expect(receipts()).toBeLessThanOrEqual(6)
-    offlineChain.broadcastDown = false
-    for (let i = 0; i < 12; i++) {
+    it('a send waiting for the main account asks the chain about the one payment in its way, never the relay', async () => {
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      mockBalances.set(main, 10n ** 17n)
+      await fundAccounts(1)
+      // An unrelated message is undelivered (relay down for it), paid from the funded account.
+      f.setPhase('fail')
+      await send(1).catch(() => undefined)
+      f.setPhase('delivered')
+      offlineChain.relayBroadcasts = false
+      offlineChain.broadcastDown = true
+      await send(2) // paid from main; its payment cannot land while the node is down
+      const stages: string[] = []
+      const waiting = f.chain.directMessages.send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'message 3' }],
+        stampValue: STAMP,
+        messageId: ID(3),
+        onPreparationProgress: progress => stages.push(progress.stage),
+      })
+      const relayRequests = relay.bodies.length
+      providerRequests.length = 0
+      await new Promise(resolve => setTimeout(resolve, 2_500))
+      // About one look a second at the holder's payment; the undelivered message is not re-sent.
+      expect(relay.bodies.length).toBe(relayRequests)
+      expect(
+        providerRequests.filter(m => m === 'getTransactionReceipt').length,
+      ).toBeLessThanOrEqual(4)
+      // The host is told, once, that this send is waiting for the previous payment: its own
+      // stage, not the "checking accounts" one.
+      expect(stages).toEqual(['waiting-for-payment'])
+      offlineChain.broadcastDown = false
       await tick()
-      await new Promise(resolve => setTimeout(resolve, 300))
-    }
-    await Promise.all(waiting)
-    expect(
-      relayPayments()
-        .filter(tx => tx.from!.toLowerCase() === main)
-        .map(tx => tx.nonce)
-        .sort((a, b) => a - b),
-    ).toEqual([0, 1, 2, 3, 4, 5])
+      await tick()
+      await expect(waiting).resolves.toMatchObject({ stampValueWei: STAMP })
+      expect(relayPayments().filter(tx => tx.from!.toLowerCase() === main).map(tx => tx.nonce)).toEqual([0, 1])
+    })
 
-    // Undelivered holder: the relay is down for it, so its payment can land only if the relay
-    // broadcast it before an answer was lost. The waiters' looks thin out.
-    f.setPhase('fail')
-    offlineChain.broadcastDown = true
-    await send(7).catch(() => undefined) // stored, signed, undelivered: holds the main account
-    providerRequests.length = 0
-    const behind = [8, 9, 10].map(n => send(n).catch(error => error))
-    await new Promise(resolve => setTimeout(resolve, 5_200))
-    // Looks at 0 s, 2 s and 4 s after the first (the gap doubles), not five or fifteen.
-    expect(receipts()).toBeLessThanOrEqual(4)
-    f.setPhase('delivered')
-    offlineChain.broadcastDown = false
-    for (let i = 0; i < 20; i++) {
-      await tick()
-      await new Promise(resolve => setTimeout(resolve, 300))
-    }
-    await Promise.all(behind)
+    it('five sends waiting for the main account, started at different moments, make one look a second between them, and fewer while the holder is undelivered', async () => {
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      mockBalances.set(main, 10n ** 17n)
+      offlineChain.relayBroadcasts = false
+      offlineChain.broadcastDown = true
+      await send(1) // delivered, paid from main; the payment cannot land while the node is down
+      const waiting: Promise<unknown>[] = []
+      providerRequests.length = 0
+      for (let n = 2; n <= 6; n++) {
+        waiting.push(send(n).catch(error => error))
+        await new Promise(resolve => setTimeout(resolve, 170))
+      }
+      await new Promise(resolve => setTimeout(resolve, 3_200))
+      // About four seconds, five waiters out of step with each other: one look a second in all
+      // (a look is one receipt read, and a nonce read when there is no receipt), not five.
+      const receipts = () =>
+        providerRequests.filter(m => m === 'getTransactionReceipt').length
+      expect(receipts()).toBeGreaterThanOrEqual(2)
+      expect(receipts()).toBeLessThanOrEqual(6)
+      offlineChain.broadcastDown = false
+      for (let i = 0; i < 12; i++) {
+        await tick()
+        await new Promise(resolve => setTimeout(resolve, 300))
+      }
+      await Promise.all(waiting)
+      expect(
+        relayPayments()
+          .filter(tx => tx.from!.toLowerCase() === main)
+          .map(tx => tx.nonce)
+          .sort((a, b) => a - b),
+      ).toEqual([0, 1, 2, 3, 4, 5])
+
+      // Undelivered holder: the relay is down for it, so its payment can land only if the relay
+      // broadcast it before an answer was lost. The waiters' looks thin out.
+      f.setPhase('fail')
+      offlineChain.broadcastDown = true
+      await send(7).catch(() => undefined) // stored, signed, undelivered: holds the main account
+      providerRequests.length = 0
+      const behind = [8, 9, 10].map(n => send(n).catch(error => error))
+      await new Promise(resolve => setTimeout(resolve, 5_200))
+      // Looks at 0 s, 2 s and 4 s after the first (the gap doubles), not five or fifteen.
+      expect(receipts()).toBeLessThanOrEqual(4)
+      f.setPhase('delivered')
+      offlineChain.broadcastDown = false
+      for (let i = 0; i < 20; i++) {
+        await tick()
+        await new Promise(resolve => setTimeout(resolve, 300))
+      }
+      await Promise.all(behind)
+    })
   })
 
   it('while the chain cannot be reached a paid send queues (nothing claimed or signed), a free message goes out, and the queued send completes once when the chain is back', async () => {
@@ -1330,152 +1350,6 @@ describe('parallel paid messages', () => {
     ).toEqual(['pending'])
   })
 
-  it('a main-paid message whose answer was lost and whose resend the relay keeps refusing does not make the next main-paid send wait for ever: it names the blocking message, and nothing is released', async () => {
-    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
-    mockBalances.set(main, 10n ** 18n)
-    // The first submission's answer is lost: the relay may hold the message.
-    installCanonicalDirectory(alice, {
-      ...directory,
-      fetch: async () => {
-        throw new Error('answer lost')
-      },
-    })
-    const first = await send(1).catch(error => error)
-    expect(first).toBeInstanceOf(MonadStampPendingAttemptError)
-    const digest = first.payloadHashes[0]
-    installCanonicalDirectory(alice, directory)
-    // Every resend: refused, the account short of value plus gas (a deposit could still let
-    // the first bytes land, so they stay held).
-    relay.answer = identity => ({
-      status: 200,
-      body: { version: 1, phase: 'dead', identity, reason: 'insufficient_total' },
-    })
-    await tick([digest])
-    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
-    const big = f.chain.directMessages
-      .send({
-        wallet: alice,
-        recipient: f.bob.identity.address,
-        items: [{ type: 'text', text: 'a large stamp' }],
-        stampValue: 4n * 10n ** 17n,
-        messageId: ID(2),
-      })
-      .catch(error => error)
-    const outcome = await Promise.race([
-      big,
-      new Promise(resolve => setTimeout(() => resolve('still waiting'), 4_000)),
-    ])
-    expect(outcome).toBeInstanceOf(StampBlockedError)
-    expect((outcome as StampBlockedError).blockingPayloadDigest).toBe(digest)
-    // Nothing of the refused send was claimed, signed or stored.
-    expect(isDirectMessageNotAttempted(outcome)).toBe(true)
-    // Nothing was released: the first message still holds the main account's coin.
-    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
-    expect(
-      f.chain.directMessages.paymentsOf?.({ wallet: alice, payloadDigest: digest }),
-    ).toEqual(['pending'])
-  })
-
-  it('a send waiting on an earlier main-paid send that is between its record and the host binding waits for it, and is not refused as blocked', async () => {
-    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
-    mockBalances.set(main, 10n ** 17n)
-    let entered!: () => void
-    const inBinding = new Promise<void>(resolve => (entered = resolve))
-    let bind!: () => void
-    const bound = new Promise<void>(resolve => (bind = resolve))
-    const first = f.chain.directMessages.send({
-      wallet: alice,
-      recipient: f.bob.identity.address,
-      items: [{ type: 'text', text: 'message 1' }],
-      stampValue: STAMP,
-      messageId: ID(1),
-      onEnvelopeDurable: async () => {
-        entered()
-        await bound
-      },
-    })
-    await inBinding
-    const second = send(2)
-    // Several looks of the chain while the first send's host binding is under way.
-    const early = await Promise.race([
-      second.then(
-        () => 'sent',
-        error => error,
-      ),
-      new Promise(resolve => setTimeout(() => resolve('still waiting'), 3_000)),
-    ])
-    expect(early).toBe('still waiting')
-    bind()
-    await expect(first).resolves.toMatchObject({ stampValueWei: STAMP })
-    await tick()
-    await expect(second).resolves.toMatchObject({ stampValueWei: STAMP })
-    expect(
-      relayPayments()
-        .filter(tx => tx.from!.toLowerCase() === main)
-        .map(tx => tx.nonce),
-    ).toEqual([0, 1])
-  })
-
-  it('a blocked holder does not refuse a send that another holder, settling, will free enough for', async () => {
-    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
-    const identity = alice.identity.address.raw.toLowerCase()
-    mockBalances.set(main, 10n ** 18n)
-    // B: delivered, paid from main, its payment not on the chain yet.
-    offlineChain.relayBroadcasts = false
-    offlineChain.broadcastDown = true
-    await send(1)
-    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
-    // A: paid from the identity account, its answer lost, every resend refused.
-    mockBalances.set(identity, 10n ** 18n)
-    installCanonicalDirectory(alice, {
-      ...directory,
-      fetch: async () => {
-        throw new Error('answer lost')
-      },
-    })
-    const blocked = await send(2).catch(error => error)
-    expect(blocked).toBeInstanceOf(MonadStampPendingAttemptError)
-    const blockedDigest = blocked.payloadHashes[0]
-    installCanonicalDirectory(alice, directory)
-    // The relay keeps refusing A's bytes (and only A's).
-    relay.answer = (identityOf, payments) =>
-      payments.some(tx => tx.from!.toLowerCase() === identity)
-        ? {
-            status: 200,
-            body: { version: 1, phase: 'dead', identity: identityOf, reason: 'insufficient_total' },
-          }
-        : undefined
-    await tick([blockedDigest])
-    expect(alice.pool.accountClaimedBy(identity)).toBeDefined()
-    // C: only one account's coin covers it; main comes back once B's payment lands.
-    const big = f.chain.directMessages
-      .send({
-        wallet: alice,
-        recipient: f.bob.identity.address,
-        items: [{ type: 'text', text: 'a large stamp' }],
-        stampValue: 4n * 10n ** 17n,
-        messageId: ID(3),
-      })
-      .catch(error => error)
-    const early = await Promise.race([
-      big,
-      new Promise(resolve => setTimeout(() => resolve('still waiting'), 3_000)),
-    ])
-    expect(early).toBe('still waiting')
-    offlineChain.broadcastDown = false
-    await tick()
-    await tick()
-    const outcome = await big
-    expect(outcome).toMatchObject({ stampValueWei: 4n * 10n ** 17n })
-    expect(
-      relayPayments()
-        .filter(tx => tx.value === 4n * 10n ** 17n)
-        .map(tx => tx.from!.toLowerCase()),
-    ).toEqual([main])
-    // The blocked message still holds its coin.
-    expect(alice.pool.accountClaimedBy(identity)).toBeDefined()
-  })
-
   it('the unexposed mark is off the record on disk before the bytes reach the relay', async () => {
     await fundAccounts(1)
     const onDisk: (string | undefined)[] = []
@@ -1496,47 +1370,419 @@ describe('parallel paid messages', () => {
     expect(onDisk[0]).toContain('"request"')
   })
 
-  it('a later non-refusal answer clears the recorded refusal, so the message no longer names itself blocked', async () => {
-    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
-    mockBalances.set(main, 10n ** 18n)
-    installCanonicalDirectory(alice, {
-      ...directory,
-      fetch: async () => {
-        throw new Error('answer lost')
-      },
+  describe('a blocked main account: a chain whose reserve rule forbids stacking below it', () => {
+    // These sends wait for the main account (nothing stacks on it), so a message holding it can
+    // block them: the reserve is above anything the wallet holds.
+    beforeAll(() => {
+      fixtureOverrides = {
+        spendSpacingBlocks: 1,
+        reserveBalanceWei: 10n ** 30n,
+      }
     })
-    const first = await send(1).catch(error => error)
-    const digest = first.payloadHashes[0]
-    installCanonicalDirectory(alice, directory)
-    relay.answer = identity => ({
-      status: 200,
-      body: { version: 1, phase: 'dead', identity, reason: 'insufficient_total' },
+    afterAll(() => {
+      fixtureOverrides = {}
     })
-    await tick([digest])
-    expect(mockMessageWrite.written.at(-1)).toContain('"reason":"insufficient_total"')
-    relay.answer = identity => ({
-      status: 202,
-      body: { version: 1, phase: 'retained', identity },
+
+    it('a main-paid message whose answer was lost and whose resend the relay keeps refusing does not make the next main-paid send wait for ever: it names the blocking message, and nothing is released', async () => {
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      mockBalances.set(main, 10n ** 18n)
+      // The first submission's answer is lost: the relay may hold the message.
+      installCanonicalDirectory(alice, {
+        ...directory,
+        fetch: async () => {
+          throw new Error('answer lost')
+        },
+      })
+      const first = await send(1).catch(error => error)
+      expect(first).toBeInstanceOf(MonadStampPendingAttemptError)
+      const digest = first.payloadHashes[0]
+      installCanonicalDirectory(alice, directory)
+      // Every resend: refused, the account short of value plus gas (a deposit could still let
+      // the first bytes land, so they stay held).
+      relay.answer = identity => ({
+        status: 200,
+        body: { version: 1, phase: 'dead', identity, reason: 'insufficient_total' },
+      })
+      await tick([digest])
+      expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+      const big = f.chain.directMessages
+        .send({
+          wallet: alice,
+          recipient: f.bob.identity.address,
+          items: [{ type: 'text', text: 'a large stamp' }],
+          stampValue: 4n * 10n ** 17n,
+          messageId: ID(2),
+        })
+        .catch(error => error)
+      const outcome = await Promise.race([
+        big,
+        new Promise(resolve => setTimeout(() => resolve('still waiting'), 4_000)),
+      ])
+      expect(outcome).toBeInstanceOf(StampBlockedError)
+      expect((outcome as StampBlockedError).blockingPayloadDigest).toBe(digest)
+      // Nothing of the refused send was claimed, signed or stored.
+      expect(isDirectMessageNotAttempted(outcome)).toBe(true)
+      // Nothing was released: the first message still holds the main account's coin.
+      expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+      expect(
+        f.chain.directMessages.paymentsOf?.({ wallet: alice, payloadDigest: digest }),
+      ).toEqual(['pending'])
     })
-    for (let pass = 0; pass < 4; pass++) await tick([digest])
-    expect(mockMessageWrite.written.at(-1)).not.toContain('"reason"')
-    // With the refusal gone, a send waiting for main waits instead of naming it.
-    const big = f.chain.directMessages
-      .send({
+
+    it('a send waiting on an earlier main-paid send that is between its record and the host binding waits for it, and is not refused as blocked', async () => {
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      mockBalances.set(main, 10n ** 17n)
+      let entered!: () => void
+      const inBinding = new Promise<void>(resolve => (entered = resolve))
+      let bind!: () => void
+      const bound = new Promise<void>(resolve => (bind = resolve))
+      const first = f.chain.directMessages.send({
         wallet: alice,
         recipient: f.bob.identity.address,
-        items: [{ type: 'text', text: 'a large stamp' }],
-        stampValue: 4n * 10n ** 17n,
-        messageId: ID(2),
+        items: [{ type: 'text', text: 'message 1' }],
+        stampValue: STAMP,
+        messageId: ID(1),
+        onEnvelopeDurable: async () => {
+          entered()
+          await bound
+        },
       })
-      .catch(error => error)
-    const outcome = await Promise.race([
-      big,
-      new Promise(resolve => setTimeout(() => resolve('still waiting'), 3_000)),
-    ])
-    expect(outcome).toBe('still waiting')
-    await alice.close().catch(() => undefined)
-    await big
+      await inBinding
+      const second = send(2)
+      // Several looks of the chain while the first send's host binding is under way.
+      const early = await Promise.race([
+        second.then(
+          () => 'sent',
+          error => error,
+        ),
+        new Promise(resolve => setTimeout(() => resolve('still waiting'), 3_000)),
+      ])
+      expect(early).toBe('still waiting')
+      bind()
+      await expect(first).resolves.toMatchObject({ stampValueWei: STAMP })
+      await tick()
+      await expect(second).resolves.toMatchObject({ stampValueWei: STAMP })
+      expect(
+        relayPayments()
+          .filter(tx => tx.from!.toLowerCase() === main)
+          .map(tx => tx.nonce),
+      ).toEqual([0, 1])
+    })
+
+    it('a blocked holder does not refuse a send that another holder, settling, will free enough for', async () => {
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      const identity = alice.identity.address.raw.toLowerCase()
+      mockBalances.set(main, 10n ** 18n)
+      // B: delivered, paid from main, its payment not on the chain yet.
+      offlineChain.relayBroadcasts = false
+      offlineChain.broadcastDown = true
+      await send(1)
+      expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+      // A: paid from the identity account, its answer lost, every resend refused.
+      mockBalances.set(identity, 10n ** 18n)
+      installCanonicalDirectory(alice, {
+        ...directory,
+        fetch: async () => {
+          throw new Error('answer lost')
+        },
+      })
+      const blocked = await send(2).catch(error => error)
+      expect(blocked).toBeInstanceOf(MonadStampPendingAttemptError)
+      const blockedDigest = blocked.payloadHashes[0]
+      installCanonicalDirectory(alice, directory)
+      // The relay keeps refusing A's bytes (and only A's).
+      relay.answer = (identityOf, payments) =>
+        payments.some(tx => tx.from!.toLowerCase() === identity)
+          ? {
+              status: 200,
+              body: { version: 1, phase: 'dead', identity: identityOf, reason: 'insufficient_total' },
+            }
+          : undefined
+      await tick([blockedDigest])
+      expect(alice.pool.accountClaimedBy(identity)).toBeDefined()
+      // C: only one account's coin covers it; main comes back once B's payment lands.
+      const big = f.chain.directMessages
+        .send({
+          wallet: alice,
+          recipient: f.bob.identity.address,
+          items: [{ type: 'text', text: 'a large stamp' }],
+          stampValue: 4n * 10n ** 17n,
+          messageId: ID(3),
+        })
+        .catch(error => error)
+      const early = await Promise.race([
+        big,
+        new Promise(resolve => setTimeout(() => resolve('still waiting'), 3_000)),
+      ])
+      expect(early).toBe('still waiting')
+      offlineChain.broadcastDown = false
+      await tick()
+      await tick()
+      const outcome = await big
+      expect(outcome).toMatchObject({ stampValueWei: 4n * 10n ** 17n })
+      expect(
+        relayPayments()
+          .filter(tx => tx.value === 4n * 10n ** 17n)
+          .map(tx => tx.from!.toLowerCase()),
+      ).toEqual([main])
+      // The blocked message still holds its coin.
+      expect(alice.pool.accountClaimedBy(identity)).toBeDefined()
+    })
+
+    it('a later non-refusal answer clears the recorded refusal, so the message no longer names itself blocked', async () => {
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      mockBalances.set(main, 10n ** 18n)
+      installCanonicalDirectory(alice, {
+        ...directory,
+        fetch: async () => {
+          throw new Error('answer lost')
+        },
+      })
+      const first = await send(1).catch(error => error)
+      const digest = first.payloadHashes[0]
+      installCanonicalDirectory(alice, directory)
+      relay.answer = identity => ({
+        status: 200,
+        body: { version: 1, phase: 'dead', identity, reason: 'insufficient_total' },
+      })
+      await tick([digest])
+      expect(mockMessageWrite.written.at(-1)).toContain('"reason":"insufficient_total"')
+      relay.answer = identity => ({
+        status: 202,
+        body: { version: 1, phase: 'retained', identity },
+      })
+      for (let pass = 0; pass < 4; pass++) await tick([digest])
+      expect(mockMessageWrite.written.at(-1)).not.toContain('"reason"')
+      // With the refusal gone, a send waiting for main waits instead of naming it.
+      const big = f.chain.directMessages
+        .send({
+          wallet: alice,
+          recipient: f.bob.identity.address,
+          items: [{ type: 'text', text: 'a large stamp' }],
+          stampValue: 4n * 10n ** 17n,
+          messageId: ID(2),
+        })
+        .catch(error => error)
+      const outcome = await Promise.race([
+        big,
+        new Promise(resolve => setTimeout(() => resolve('still waiting'), 3_000)),
+      ])
+      expect(outcome).toBe('still waiting')
+      await alice.close().catch(() => undefined)
+      await big
+    })
+  })
+
+  describe('nonce stacking on one account', () => {
+    it('a second main-paid message does not wait for the first: it pays at the next nonce, and both land in nonce order', async () => {
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      mockBalances.set(main, 10n ** 17n)
+      // The relay keeps the messages but does not broadcast: the wallet's own broadcasts land.
+      offlineChain.relayBroadcasts = false
+      offlineChain.broadcastDown = true
+      const first = await send(1)
+      const stages: string[] = []
+      const second = await f.chain.directMessages.send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'message 2' }],
+        stampValue: STAMP,
+        messageId: ID(2),
+        onPreparationProgress: progress => stages.push(progress.stage),
+      })
+      expect(stages).not.toContain('waiting-for-payment')
+      const nonces = relayPayments()
+        .filter(tx => tx.from!.toLowerCase() === main)
+        .map(tx => tx.nonce)
+      expect(nonces).toEqual([0, 1])
+      offlineChain.broadcastDown = false
+      for (let pass = 0; pass < 4; pass++) await tick()
+      for (const sent of [first, second])
+        expect(
+          f.chain.directMessages.paymentsOf?.({
+            wallet: alice,
+            payloadDigest: sent.payloadDigest,
+          }),
+        ).toEqual(['spent'])
+      expect(mockBalances.get(main)).toBe(10n ** 17n - 2n * STAMP)
+    })
+
+    it('stacked messages delivered out of order: the later nonce waits in the wallet for the earlier one, then both land in nonce order; no filler', async () => {
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      mockBalances.set(main, 10n ** 17n)
+      offlineChain.relayBroadcasts = false
+      // The first message's answer is lost: the relay may hold it, nothing is broadcast.
+      installCanonicalDirectory(alice, {
+        ...directory,
+        fetch: async () => {
+          throw new Error('answer lost')
+        },
+      })
+      const first = await send(1).catch(error => error)
+      expect(first).toBeInstanceOf(MonadStampPendingAttemptError)
+      installCanonicalDirectory(alice, directory)
+      // The second is delivered at once; its nonce 1 waits for nonce 0 to be sent.
+      const second = await send(2)
+      expect(offlineChain.walletBroadcasts).toEqual([])
+      // The resend delivers the first: nonce 0 goes out, then 1, and both land.
+      for (let pass = 0; pass < 4; pass++) await tick([first.payloadHashes[0]])
+      const broadcast = offlineChain.walletBroadcasts.map(raw => Transaction.from(raw))
+      expect(broadcast[0].nonce).toBe(0)
+      expect(broadcast.every(tx => tx.to!.toLowerCase() !== main)).toBe(true)
+      expect(
+        [first.payloadHashes[0], second.payloadDigest].map(digest =>
+          f.chain.directMessages.paymentsOf?.({
+            wallet: alice,
+            payloadDigest: digest,
+          }),
+        ),
+      ).toEqual([['spent'], ['spent']])
+    })
+
+    /** Sends message 1 from main and stops it after its record, before its first submission;
+     * returns the send and a function that lets it go on. */
+    const pausedAfterRecord = () => {
+      let entered!: () => void
+      const paused = new Promise<void>(resolve => (entered = resolve))
+      let resume!: () => void
+      const go = new Promise<void>(resolve => (resume = resolve))
+      const sending = f.chain.directMessages.send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'message 1' }],
+        stampValue: STAMP,
+        messageId: ID(1),
+        onAttemptCreated: async () => {
+          entered()
+          await go
+        },
+      })
+      return { sending, paused, resume }
+    }
+    const selfTransfers = (main: string) =>
+      offlineChain.walletBroadcasts
+        .map(raw => Transaction.from(raw))
+        .filter(tx => tx.to!.toLowerCase() === main)
+
+    it('B takes the next nonce and is delivered before A, which then delivers normally: no filler is ever made, and both land in nonce order', async () => {
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      mockBalances.set(main, 10n ** 17n)
+      offlineChain.relayBroadcasts = false
+      const a = pausedAfterRecord()
+      await a.paused
+      const b = await send(2)
+      expect(
+        relayPayments().find(tx => tx.hash === b.stampPayments[0]!.txHash)?.nonce,
+      ).toBe(1)
+      // B's nonce 1 waits in the wallet: A still owns nonce 0 and is in progress.
+      expect(offlineChain.walletBroadcasts).toEqual([])
+      a.resume()
+      const paidA = await a.sending
+      for (let pass = 0; pass < 4; pass++) await tick()
+      expect(selfTransfers(main)).toEqual([])
+      // Nonce 1's hand-over completed only after nonce 0's.
+      const order = offlineChain.walletBroadcasts.map(raw => Transaction.from(raw).nonce)
+      expect(order.slice(0, 2)).toEqual([0, 1])
+      for (const digest of [paidA.payloadDigest, b.payloadDigest])
+        expect(
+          f.chain.directMessages.paymentsOf?.({ wallet: alice, payloadDigest: digest }),
+        ).toEqual(['spent'])
+    })
+
+    it('A\'s answer is lost after B is out: no filler; nonce 0 stays A\'s and its coin held, and B waits behind it', async () => {
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      mockBalances.set(main, 10n ** 17n)
+      offlineChain.relayBroadcasts = false
+      let lost = false
+      installCanonicalDirectory(alice, {
+        ...directory,
+        fetch: async (...request: Parameters<typeof directory.fetch>) => {
+          if (lost) throw new Error('answer lost')
+          return directory.fetch(...request)
+        },
+      })
+      const a = pausedAfterRecord()
+      await a.paused
+      await send(2)
+      lost = true
+      a.resume()
+      expect(await a.sending.catch(error => error)).toBeInstanceOf(
+        MonadStampPendingAttemptError,
+      )
+      // The resends are lost too: A's nonce is A's for as long as that lasts.
+      for (let pass = 0; pass < 4; pass++) await tick()
+      expect(selfTransfers(main)).toEqual([])
+      expect(offlineChain.walletBroadcasts).toEqual([])
+      expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+      expect(offlineChain.mined.size).toBe(0)
+    })
+
+    it('a message refused before exposure under a message stacked above it already out: a filler takes its nonce, the one above lands, and the refused one is paid again above', async () => {
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      mockBalances.set(main, 10n ** 17n)
+      offlineChain.relayBroadcasts = false
+      let entered!: () => void
+      const paused = new Promise<void>(resolve => (entered = resolve))
+      let resume!: () => void
+      const go = new Promise<void>(resolve => (resume = resolve))
+      // A is recorded at nonce 0 and stops before its first submission.
+      const a = f.chain.directMessages.send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'message 1' }],
+        stampValue: STAMP,
+        messageId: ID(1),
+        onAttemptCreated: async () => {
+          entered()
+          await go
+        },
+      })
+      await paused
+      // B stacks at nonce 1 and is delivered: its payment is out.
+      const b = await send(2)
+      expect(
+        relayPayments().find(tx => tx.hash === b.stampPayments[0]!.txHash)
+          ?.nonce,
+      ).toBe(1)
+      // A's first submission is refused before the relay stored anything.
+      refuseBeforeExposure('insufficient_total', 1)
+      resume()
+      const paidA = await a
+      const ownBroadcasts = offlineChain.walletBroadcasts.map(raw =>
+        Transaction.from(raw),
+      )
+      // The filler: a transfer of main to itself at nonce 0.
+      const filler = ownBroadcasts.find(tx => tx.nonce === 0)!
+      expect(filler.to!.toLowerCase()).toBe(main)
+      expect(filler.value).toBe(1n)
+      for (let pass = 0; pass < 4; pass++) await tick()
+      expect(
+        f.chain.directMessages.paymentsOf?.({
+          wallet: alice,
+          payloadDigest: b.payloadDigest,
+        }),
+      ).toEqual(['spent'])
+      // A was paid again from the next coin up (the refused request is not in what the relay
+      // kept), never at the filled nonce.
+      const aNonces = relayPayments()
+        .filter(
+          tx =>
+            tx.value === STAMP &&
+            tx.from!.toLowerCase() === main &&
+            tx.nonce !== 1,
+        )
+        .map(tx => tx.nonce)
+      expect(aNonces).toEqual([2])
+      for (let pass = 0; pass < 4; pass++) await tick()
+      expect(
+        f.chain.directMessages.paymentsOf?.({
+          wallet: alice,
+          payloadDigest: paidA.payloadDigest,
+        }),
+      ).toEqual(['spent'])
+      expect(paidA.stampValueWei).toBe(STAMP)
+      expect(mockBalances.get(main)).toBe(10n ** 17n - 2n * STAMP)
+    })
   })
 
   it('a payment the chain mined and reverted, of a delivered message, is made once more: same value, same address, recorded before it is broadcast, never a third time', async () => {
@@ -1556,7 +1802,10 @@ describe('parallel paid messages', () => {
     await tick()
     expect(payments()).toEqual(['pending'])
     expect(alice.pool.accountClaimedBy(main)).toBeDefined()
-    expect(offlineChain.walletBroadcasts).toEqual([])
+    // At most the same bytes offered again (the first pass after open rebroadcasts what is
+    // pending, in nonce order): never a new transfer.
+    for (const raw of offlineChain.walletBroadcasts)
+      expect(Transaction.from(raw).hash).toBe(first.hash)
     await reopen()
     expect(alice.pool.accountClaimedBy(main)).toBeDefined()
     jest.spyOn(alice.provider, 'getBlockNumber').mockResolvedValue(3)

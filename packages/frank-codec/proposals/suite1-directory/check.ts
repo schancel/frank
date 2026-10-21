@@ -18,6 +18,15 @@ import {
 } from '../../src'
 import type { Encodable } from '../../src'
 import {
+  DIRECTORY_ATTESTATION,
+  DIRECTORY_PREVIEW_KEY,
+  DIRECTORY_PREVIEW_RELAY,
+  DIRECTORY_STATEMENT,
+  FRANK_ENVELOPE,
+  KEY_TYPE,
+  SIGNATURE_ALGORITHM,
+  SIGNATURE_ENTRY,
+  TIMESTAMP,
   TYPE_DIRECTORY_ATTESTATION,
   TYPE_DIRECTORY_STATEMENT,
 } from '../../src/constants'
@@ -38,35 +47,42 @@ function present<T>(value: T | undefined): T {
 }
 const map = (...pairs: [number, Encodable][]): Map<number, Encodable> =>
   new Map(pairs)
-const time = (seconds: bigint): Encodable => map([0, seconds], [1, 0])
+const time = (seconds: bigint): Encodable =>
+  map([TIMESTAMP.seconds, seconds], [TIMESTAMP.nanoseconds, 0])
 const scalar = (n: number): Uint8Array =>
   fromHex(n.toString(16).padStart(64, '0'))
 const key = (n: number): Encodable =>
-  map([0, 1], [1, secp256k1.getPublicKey(scalar(n), true)])
+  map(
+    [DIRECTORY_PREVIEW_KEY.keyType, KEY_TYPE.secp256k1],
+    [DIRECTORY_PREVIEW_KEY.keyBytes, secp256k1.getPublicKey(scalar(n), true)],
+  )
 const sha = (b: Uint8Array): string =>
   createHash('sha256').update(b).digest('hex')
 const t1 = (network: string, b: Uint8Array): string =>
   sha(commonTranscript('frank/content-hash/v1', network, b))
 // Deliberately synthetic caller-provisioned input. No default exists in a writer.
 const relay = map(
-  [0, Uint8Array.from({ length: 16 }, (_, i) => i)],
-  [1, 'https://relay.example.invalid'],
-  [2, key(4)],
-  [3, time(1700007200n)],
+  [
+    DIRECTORY_PREVIEW_RELAY.relayId,
+    Uint8Array.from({ length: 16 }, (_, i) => i),
+  ],
+  [DIRECTORY_PREVIEW_RELAY.endpoint, 'https://relay.example.invalid'],
+  [DIRECTORY_PREVIEW_RELAY.identity, key(4)],
+  [DIRECTORY_PREVIEW_RELAY.expiry, time(1700007200n)],
 )
 const base = (): Map<number, Encodable> =>
   map(
-    [0, NETWORK],
-    [1, key(1)],
-    [2, 0n],
-    [3, time(1700000000n)],
-    [4, [relay]],
-    [6, time(1700003600n)],
-    [8, key(3)],
-    [10, key(2)],
-    [11, 0n],
-    [12, 0n],
-    [13, null],
+    [DIRECTORY_STATEMENT.network, NETWORK],
+    [DIRECTORY_STATEMENT.subject, key(1)],
+    [DIRECTORY_STATEMENT.revision, 0n],
+    [DIRECTORY_STATEMENT.timestamp, time(1700000000n)],
+    [DIRECTORY_STATEMENT.relays, [relay]],
+    [DIRECTORY_STATEMENT.expiry, time(1700003600n)],
+    [DIRECTORY_STATEMENT.stampKey, key(3)],
+    [DIRECTORY_STATEMENT.messageDhKey, key(2)],
+    [DIRECTORY_STATEMENT.mailboxKeyGeneration, 0n],
+    [DIRECTORY_STATEMENT.stampKeyGeneration, 0n],
+    [DIRECTORY_STATEMENT.predecessorHash, null],
   )
 interface RecordVector {
   id: string
@@ -147,7 +163,7 @@ function generate(): Corpus {
       },
       payload,
     )
-    const network = payload.get(0) as string
+    const network = payload.get(DIRECTORY_STATEMENT.network) as string
     const digest = directorySignatureDigest(network, frame)
     const signature = secp256k1
       .sign(digest, scalar(signWith), { lowS: true })
@@ -160,7 +176,22 @@ function generate(): Corpus {
         schemaVersion: 1,
         minReaderVersion: 1,
       },
-      map([0, frame], [1, [map([0, 1], [1, key(signWith)], [2, signature])]]),
+      map(
+        [DIRECTORY_ATTESTATION.statementFrame, frame],
+        [
+          DIRECTORY_ATTESTATION.signatures,
+          [
+            map(
+              [
+                SIGNATURE_ENTRY.algorithm,
+                SIGNATURE_ALGORITHM.secp256k1EcdsaDer,
+              ],
+              [SIGNATURE_ENTRY.signer, key(signWith)],
+              [SIGNATURE_ENTRY.signature, signature],
+            ),
+          ],
+        ],
+      ),
     )
     const r = {
       id,
@@ -182,63 +213,119 @@ function generate(): Corpus {
     changes: [number, Encodable][] = [],
   ): RecordVector {
     const p = new Map(present(payloads.get(predecessor)))
-    p.set(2, (p.get(2) as bigint) + 1n)
-    p.set(3, time(1700000000n + (p.get(2) as bigint)))
-    p.set(13, fromHex(present(records.find(r => r.id === predecessor)).t1))
+    p.set(
+      DIRECTORY_STATEMENT.revision,
+      (p.get(DIRECTORY_STATEMENT.revision) as bigint) + 1n,
+    )
+    p.set(
+      DIRECTORY_STATEMENT.timestamp,
+      time(1700000000n + (p.get(DIRECTORY_STATEMENT.revision) as bigint)),
+    )
+    p.set(
+      DIRECTORY_STATEMENT.predecessorHash,
+      fromHex(present(records.find(r => r.id === predecessor)).t1),
+    )
     for (const [k, v] of changes) p.set(k, v)
     return add(id, p)
   }
   next('renew', 'bootstrap')
   next('rotate-stamp', 'renew', [
-    [8, key(6)],
-    [12, 1n],
+    [DIRECTORY_STATEMENT.stampKey, key(6)],
+    [DIRECTORY_STATEMENT.stampKeyGeneration, 1n],
   ])
   next('renew-after-rotation', 'rotate-stamp')
   next('rotate-stamp-again', 'renew-after-rotation', [
-    [8, key(7)],
-    [12, 2n],
+    [DIRECTORY_STATEMENT.stampKey, key(7)],
+    [DIRECTORY_STATEMENT.stampKeyGeneration, 2n],
   ])
   next('rotate-message', 'rotate-stamp-again', [
-    [10, key(5)],
-    [11, 1n],
+    [DIRECTORY_STATEMENT.messageDhKey, key(5)],
+    [DIRECTORY_STATEMENT.mailboxKeyGeneration, 1n],
   ])
   for (const [id, field] of [
-    ['missing-message', 10],
-    ['missing-stamp', 8],
-    ['missing-auth', 1],
+    ['missing-message', DIRECTORY_STATEMENT.messageDhKey],
+    ['missing-stamp', DIRECTORY_STATEMENT.stampKey],
+    ['missing-auth', DIRECTORY_STATEMENT.subject],
   ] as const) {
     const p = base()
     p.delete(field)
     add(id, p)
   }
   for (const [id, changes] of [
-    ['auth-as-message', [[10, key(1)]]],
-    ['auth-as-stamp', [[8, key(1)]]],
-    ['stamp-as-message', [[10, key(3)]]],
-    ['wrong-key-type', [[10, map([0, 2], [1, new Uint8Array(32)])]]],
+    ['auth-as-message', [[DIRECTORY_STATEMENT.messageDhKey, key(1)]]],
+    ['auth-as-stamp', [[DIRECTORY_STATEMENT.stampKey, key(1)]]],
+    ['stamp-as-message', [[DIRECTORY_STATEMENT.messageDhKey, key(3)]]],
+    [
+      'wrong-key-type',
+      [
+        [
+          DIRECTORY_STATEMENT.messageDhKey,
+          map(
+            [DIRECTORY_PREVIEW_KEY.keyType, KEY_TYPE.ed25519],
+            [DIRECTORY_PREVIEW_KEY.keyBytes, new Uint8Array(32)],
+          ),
+        ],
+      ],
+    ],
     [
       'invalid-point',
-      [[10, map([0, 1], [1, fromHex('02' + 'ff'.repeat(32))])]],
+      [
+        [
+          DIRECTORY_STATEMENT.messageDhKey,
+          map(
+            [DIRECTORY_PREVIEW_KEY.keyType, KEY_TYPE.secp256k1],
+            [DIRECTORY_PREVIEW_KEY.keyBytes, fromHex('02' + 'ff'.repeat(32))],
+          ),
+        ],
+      ],
     ],
-    ['wrong-network', [[0, 'other-network']]],
-    ['bootstrap-generation', [[11, 1n]]],
-    ['bootstrap-revision', [[2, 1n]]],
-    ['bootstrap-predecessor', [[13, new Uint8Array(32)]]],
-    ['future-issue', [[3, time(NOW + 1n)]]],
-    ['expired', [[6, time(NOW)]]],
+    ['wrong-network', [[DIRECTORY_STATEMENT.network, 'other-network']]],
+    ['bootstrap-generation', [[DIRECTORY_STATEMENT.mailboxKeyGeneration, 1n]]],
+    ['bootstrap-revision', [[DIRECTORY_STATEMENT.revision, 1n]]],
+    [
+      'bootstrap-predecessor',
+      [[DIRECTORY_STATEMENT.predecessorHash, new Uint8Array(32)]],
+    ],
+    ['future-issue', [[DIRECTORY_STATEMENT.timestamp, time(NOW + 1n)]]],
+    ['expired', [[DIRECTORY_STATEMENT.expiry, time(NOW)]]],
     // One second past the 366-day cap, with a relay binding that still covers it.
     [
       'long-validity',
       [
-        [6, time(1700000000n + 31622401n)],
-        [4, [new Map(relay).set(3, time(1700000000n + 31626000n))]],
+        [DIRECTORY_STATEMENT.expiry, time(1700000000n + 31622401n)],
+        [
+          DIRECTORY_STATEMENT.relays,
+          [
+            new Map(relay).set(
+              DIRECTORY_PREVIEW_RELAY.expiry,
+              time(1700000000n + 31626000n),
+            ),
+          ],
+        ],
       ],
     ],
-    ['short-binding', [[4, [new Map(relay).set(3, time(NOW))]]]],
-    ['wrong-relay', [[4, [new Map(relay).set(2, key(8))]]]],
-    ['profile-field', [[9, []]]],
-    ['transition-field', [[5, []]]],
-    ['recovery-field', [[7, [key(8)]]]],
+    [
+      'short-binding',
+      [
+        [
+          DIRECTORY_STATEMENT.relays,
+          [new Map(relay).set(DIRECTORY_PREVIEW_RELAY.expiry, time(NOW))],
+        ],
+      ],
+    ],
+    [
+      'wrong-relay',
+      [
+        [
+          DIRECTORY_STATEMENT.relays,
+          [new Map(relay).set(DIRECTORY_PREVIEW_RELAY.identity, key(8))],
+        ],
+      ],
+    ],
+    ['profile-field', [[DIRECTORY_STATEMENT.profileEntries, []]]],
+    ['transition-field', [[DIRECTORY_STATEMENT.keyTransitions, []]]],
+    ['recovery-field', [[DIRECTORY_STATEMENT.recoveryAuthorities, [key(8)]]]],
+    // raw-cbor-key: key 100 is undeclared: an unknown exact-schema field
     ['unknown-exact-field', [[100, Uint8Array.of(0, 255, 1)]]],
   ] as [string, [number, Encodable][]][]) {
     const p = base()
@@ -252,36 +339,51 @@ function generate(): Corpus {
     .toRawBytes(true)
   add(
     'negated-auth-as-message',
-    new Map(base()).set(10, map([0, 1], [1, negative])),
+    new Map(base()).set(
+      DIRECTORY_STATEMENT.messageDhKey,
+      map(
+        [DIRECTORY_PREVIEW_KEY.keyType, KEY_TYPE.secp256k1],
+        [DIRECTORY_PREVIEW_KEY.keyBytes, negative],
+      ),
+    ),
   )
-  next('unchanged-key-bumped-generation', 'bootstrap', [[11, 1n]])
-  next('changed-key-same-generation', 'bootstrap', [[10, key(5)]])
-  next('skipped-generation', 'bootstrap', [
-    [10, key(5)],
-    [11, 2n],
+  next('unchanged-key-bumped-generation', 'bootstrap', [
+    [DIRECTORY_STATEMENT.mailboxKeyGeneration, 1n],
   ])
-  next('skipped-revision', 'bootstrap', [[2, 2n]])
-  next('wrong-predecessor', 'bootstrap', [[13, new Uint8Array(32)]])
+  next('changed-key-same-generation', 'bootstrap', [
+    [DIRECTORY_STATEMENT.messageDhKey, key(5)],
+  ])
+  next('skipped-generation', 'bootstrap', [
+    [DIRECTORY_STATEMENT.messageDhKey, key(5)],
+    [DIRECTORY_STATEMENT.mailboxKeyGeneration, 2n],
+  ])
+  next('skipped-revision', 'bootstrap', [[DIRECTORY_STATEMENT.revision, 2n]])
+  next('wrong-predecessor', 'bootstrap', [
+    [DIRECTORY_STATEMENT.predecessorHash, new Uint8Array(32)],
+  ])
   next('wrapper-predecessor', 'bootstrap', [
-    [13, fromHex(t1(NETWORK, fromHex(bootstrap.type2_hex)))],
+    [
+      DIRECTORY_STATEMENT.predecessorHash,
+      fromHex(t1(NETWORK, fromHex(bootstrap.type2_hex))),
+    ],
   ])
   next('backward-issue', 'bootstrap', [
-    [3, time(1699999999n)],
-    [6, time(1700003599n)],
+    [DIRECTORY_STATEMENT.timestamp, time(1699999999n)],
+    [DIRECTORY_STATEMENT.expiry, time(1700003599n)],
   ])
   next('fork-of-renew', 'bootstrap', [
-    [8, key(6)],
-    [12, 1n],
+    [DIRECTORY_STATEMENT.stampKey, key(6)],
+    [DIRECTORY_STATEMENT.stampKeyGeneration, 1n],
   ])
   next('swapped-retired-roles', 'rotate-message', [
-    [10, key(3)],
-    [11, 2n],
+    [DIRECTORY_STATEMENT.messageDhKey, key(3)],
+    [DIRECTORY_STATEMENT.mailboxKeyGeneration, 2n],
   ])
   next('reused-stamp', 'rotate-stamp-again', [
-    [8, key(3)],
-    [12, 3n],
+    [DIRECTORY_STATEMENT.stampKey, key(3)],
+    [DIRECTORY_STATEMENT.stampKeyGeneration, 3n],
   ])
-  next('changed-subject', 'bootstrap', [[1, key(8)]])
+  next('changed-subject', 'bootstrap', [[DIRECTORY_STATEMENT.subject, key(8)]])
   add('bad-signature', base(), 4, 4, 1, true)
   add('wrong-signer', base(), 4, 4, 8)
   add('wrong-reader-floor', base(), 4, 2)
@@ -290,6 +392,7 @@ function generate(): Corpus {
     'optional-future',
     new Map(base()).set(
       100,
+      // raw-cbor-key: keys 100 and 24 are undeclared: an optional future field
       map([0, Uint8Array.of(0, 255, 128)], [24, ['opaque', null]]),
     ),
     5,
@@ -299,6 +402,7 @@ function generate(): Corpus {
     'optional-tamper',
     new Map(base()).set(
       100,
+      // raw-cbor-key: keys 100 and 24 are undeclared: an optional future field
       map([0, Uint8Array.of(0, 255, 129)], [24, ['opaque', null]]),
     ),
     5,
@@ -314,43 +418,58 @@ function generate(): Corpus {
         schemaVersion: 1,
         minReaderVersion: 1,
       },
-      map([0, fromHex(tampered.type4_hex)], [1, at(originalWrapper, 1)]),
+      map(
+        [DIRECTORY_ATTESTATION.statementFrame, fromHex(tampered.type4_hex)],
+        [
+          DIRECTORY_ATTESTATION.signatures,
+          at(originalWrapper, DIRECTORY_ATTESTATION.signatures),
+        ],
+      ),
     ),
   )
   tampered.signature_valid = false
   tampered.old_reader = oldReader(fromHex(tampered.type2_hex))
   const downgraded = new Map(present(payloads.get('optional-future')))
+  // raw-cbor-key: key 100 is undeclared: an optional future field
   downgraded.delete(100)
-  downgraded.set(2, 1n)
+  downgraded.set(DIRECTORY_STATEMENT.revision, 1n)
   downgraded.set(
     13,
     fromHex(present(records.find(r => r.id === 'optional-future')).t1),
   )
   add('compatible-schema-downgrade', downgraded)
   const old = base()
-  ;[10, 11, 12, 13].forEach(k => old.delete(k))
+  ;[DIRECTORY_STATEMENT.messageDhKey, 11, 12, 13].forEach(k => old.delete(k))
   add('old-schema2', new Map(old), 2, 2)
   add('old-schema3', new Map(old), 3, 2)
-  next('revision-max', 'bootstrap', [[2, MAX]])
+  next('revision-max', 'bootstrap', [[DIRECTORY_STATEMENT.revision, MAX]])
   next('generation-max', 'bootstrap', [
-    [10, key(5)],
-    [11, MAX],
+    [DIRECTORY_STATEMENT.messageDhKey, key(5)],
+    [DIRECTORY_STATEMENT.mailboxKeyGeneration, MAX],
   ])
-  next('short-head', 'bootstrap', [[6, time(1700000150n)]])
+  next('short-head', 'bootstrap', [
+    [DIRECTORY_STATEMENT.expiry, time(1700000150n)],
+  ])
   next('expired-middle', 'bootstrap', [
-    [3, time(1700003601n)],
-    [6, time(1700007201n)],
-    [4, [new Map(relay).set(3, time(1700007300n))]],
-    [8, key(6)],
-    [12, 1n],
+    [DIRECTORY_STATEMENT.timestamp, time(1700003601n)],
+    [DIRECTORY_STATEMENT.expiry, time(1700007201n)],
+    [
+      DIRECTORY_STATEMENT.relays,
+      [new Map(relay).set(DIRECTORY_PREVIEW_RELAY.expiry, time(1700007300n))],
+    ],
+    [DIRECTORY_STATEMENT.stampKey, key(6)],
+    [DIRECTORY_STATEMENT.stampKeyGeneration, 1n],
   ])
-  const freshRelay = new Map(relay).set(3, time(1700020000n))
+  const freshRelay = new Map(relay).set(
+    DIRECTORY_PREVIEW_RELAY.expiry,
+    time(1700020000n),
+  )
   next('fresh-head', 'expired-middle', [
-    [3, time(1700007202n)],
-    [6, time(1700010802n)],
-    [4, [freshRelay]],
-    [8, key(7)],
-    [12, 2n],
+    [DIRECTORY_STATEMENT.timestamp, time(1700007202n)],
+    [DIRECTORY_STATEMENT.expiry, time(1700010802n)],
+    [DIRECTORY_STATEMENT.relays, [freshRelay]],
+    [DIRECTORY_STATEMENT.stampKey, key(7)],
+    [DIRECTORY_STATEMENT.stampKeyGeneration, 2n],
   ])
   add(
     'expired-middle-bad-signature',
@@ -362,7 +481,10 @@ function generate(): Corpus {
   )
   add(
     'expired-middle-bad-generation',
-    new Map(present(payloads.get('expired-middle'))).set(12, 0n),
+    new Map(present(payloads.get('expired-middle'))).set(
+      DIRECTORY_STATEMENT.stampKeyGeneration,
+      0n,
+    ),
   )
   const cases: Case[] = []
   const directory = (
@@ -769,8 +891,13 @@ const eq = (a: Value, other: Value): boolean =>
   toHex(encodeCanonical(a)) === toHex(encodeCanonical(other))
 const point = (value: Value): string => {
   try {
-    if (m(value).size !== 2 || n(at(value, 0)) !== 1n) throw Error()
-    const raw = b(at(value, 1))
+    if (
+      m(value).size !== 2 ||
+      n(at(value, DIRECTORY_PREVIEW_KEY.keyType)) !== BigInt(KEY_TYPE.secp256k1)
+    )
+      throw Error()
+    const raw = b(at(value, DIRECTORY_PREVIEW_KEY.keyBytes))
+    // raw-cbor-key: SEC1 compressed-point prefix bytes, not a map entry
     if (raw.length !== 33 || ![2, 3].includes(raw[0])) throw Error()
     secp256k1.ProjectivePoint.fromHex(raw).assertValidity()
     return toHex(raw).slice(2)
@@ -779,8 +906,8 @@ const point = (value: Value): string => {
   }
 }
 function timestamp(value: Value): bigint {
-  const seconds = n(at(value, 0)),
-    nanos = n(at(value, 1))
+  const seconds = n(at(value, TIMESTAMP.seconds)),
+    nanos = n(at(value, TIMESTAMP.nanoseconds))
   if (
     m(value).size !== 2 ||
     seconds < -(1n << 63n) ||
@@ -801,7 +928,13 @@ function open(hex: string): {
   assert.equal(Buffer.from(frame).readUInt32BE(5), frame.length - 9)
   const env = m(decodeCanonical(frame.subarray(9)))
   assert.equal(env.size, 4)
-  return { frame, env, payload: decodeCanonical(b(present(env.get(3n)))) }
+  return {
+    frame,
+    env,
+    payload: decodeCanonical(
+      b(present(env.get(BigInt(FRANK_ENVELOPE.payload)))),
+    ),
+  }
 }
 function stampPair(
   history: Value[],
@@ -810,9 +943,9 @@ function stampPair(
   let current: Value = null,
     previous: Value = null
   for (const h of history)
-    if (!eq(at(h, 8), current)) {
+    if (!eq(at(h, DIRECTORY_STATEMENT.stampKey), current)) {
       previous = current
-      current = at(h, 8)
+      current = at(h, DIRECTORY_STATEMENT.stampKey)
     }
   return { current, previous: lost ? null : previous }
 }
@@ -849,7 +982,9 @@ function advance(
             .payload,
       ),
     )
-    return pair.previous === null ? null : toHex(b(at(pair.previous, 1)))
+    return pair.previous === null
+      ? null
+      : toHex(b(at(pair.previous, DIRECTORY_PREVIEW_KEY.keyBytes)))
   }
   const unchanged = (result: string): ReturnType<typeof advance> => ({
     result,
@@ -930,14 +1065,18 @@ function outcome(c: Case, corpus: Corpus, historicalLink = false): string {
     const now = BigInt(c.clock ?? NOW) * 1000000000n
     if (c.operation === 'stamp') {
       assert(head)
-      if (timestamp(at(head, 3)) > now || now >= timestamp(at(head, 6)))
+      if (
+        timestamp(at(head, DIRECTORY_STATEMENT.timestamp)) > now ||
+        now >= timestamp(at(head, DIRECTORY_STATEMENT.expiry))
+      )
         return 'head-expired'
       const { current, previous } = stampPair(
         history,
         c.restart === 'pair-lost',
       )
       const matches = (p: Value): boolean =>
-        p !== null && toHex(b(at(p, 1))) === c.candidate_key
+        p !== null &&
+        toHex(b(at(p, DIRECTORY_PREVIEW_KEY.keyBytes))) === c.candidate_key
       return matches(current) || matches(previous) ? 'accept' : 'stamp-binding'
     }
     const r = byId(present(c.record)),
@@ -948,28 +1087,42 @@ function outcome(c: Case, corpus: Corpus, historicalLink = false): string {
       if (c.archive) return 'archive-only'
       if (
         !head ||
-        timestamp(at(head, 3)) > now ||
-        now >= timestamp(at(head, 6))
+        timestamp(at(head, DIRECTORY_STATEMENT.timestamp)) > now ||
+        now >= timestamp(at(head, DIRECTORY_STATEMENT.expiry))
       )
         return 'head-expired'
-      if (!eq(at(head, 10), at(p, 10))) return 'message-retired'
+      if (
+        !eq(
+          at(head, DIRECTORY_STATEMENT.messageDhKey),
+          at(p, DIRECTORY_STATEMENT.messageDhKey),
+        )
+      )
+        return 'message-retired'
       if (!c.in_flight && r.id !== c.history[c.history.length - 1])
         return 'message-head'
-      if (timestamp(at(p, 3)) > now || now >= timestamp(at(p, 6)))
+      if (
+        timestamp(at(p, DIRECTORY_STATEMENT.timestamp)) > now ||
+        now >= timestamp(at(p, DIRECTORY_STATEMENT.expiry))
+      )
         return 'validity'
       const { current, previous } = stampPair(
         history,
         c.restart === 'pair-lost',
       )
-      return eq(at(p, 8), current) || eq(at(p, 8), previous)
+      return eq(at(p, DIRECTORY_STATEMENT.stampKey), current) ||
+        eq(at(p, DIRECTORY_STATEMENT.stampKey), previous)
         ? 'accept'
         : 'stamp-binding'
     }
     const fail = (condition: boolean, reason: string): void => {
       if (!condition) throw Error(reason)
     }
-    const schema = n(present(opened.env.get(1n))),
-      floor = n(present(opened.env.get(2n)))
+    const schema = n(
+        present(opened.env.get(BigInt(FRANK_ENVELOPE.schemaVersion))),
+      ),
+      floor = n(
+        present(opened.env.get(BigInt(FRANK_ENVELOPE.minReaderVersion))),
+      )
     fail(
       historyFits(
         BigInt(c.history.length),
@@ -983,12 +1136,31 @@ function outcome(c: Case, corpus: Corpus, historicalLink = false): string {
       schema >= 4n && floor === 4n && BigInt(c.reader ?? 4) >= floor,
       'unsupported-version',
     )
-    const required = [0, 1, 2, 3, 4, 6, 8, 10, 11, 12, 13]
+    const required = [
+      DIRECTORY_STATEMENT.network,
+      DIRECTORY_STATEMENT.subject,
+      DIRECTORY_STATEMENT.revision,
+      DIRECTORY_STATEMENT.timestamp,
+      DIRECTORY_STATEMENT.relays,
+      DIRECTORY_STATEMENT.expiry,
+      DIRECTORY_STATEMENT.stampKey,
+      DIRECTORY_STATEMENT.messageDhKey,
+      DIRECTORY_STATEMENT.mailboxKeyGeneration,
+      DIRECTORY_STATEMENT.stampKeyGeneration,
+      DIRECTORY_STATEMENT.predecessorHash,
+    ]
     fail(
       required.every(k => m(p).has(BigInt(k))),
       'shape',
     )
-    fail(![5, 7, 9].some(k => m(p).has(BigInt(k))), 'unsupported-policy')
+    fail(
+      ![
+        DIRECTORY_STATEMENT.keyTransitions,
+        DIRECTORY_STATEMENT.recoveryAuthorities,
+        DIRECTORY_STATEMENT.profileEntries,
+      ].some(k => m(p).has(BigInt(k))),
+      'unsupported-policy',
+    )
     fail(
       schema > 4n || [...m(p).keys()].every(k => required.includes(Number(k))),
       'shape',
@@ -997,12 +1169,26 @@ function outcome(c: Case, corpus: Corpus, historicalLink = false): string {
       opened.frame.length <= 262144 && fromHex(r.type2_hex).length <= 262144,
       'resource',
     )
-    fail(at(p, 0) === (c.network ?? NETWORK), 'network')
-    const points = [1, 10, 8].map(k => point(at(p, k)))
+    fail(
+      at(p, DIRECTORY_STATEMENT.network) === (c.network ?? NETWORK),
+      'network',
+    )
+    const points = [
+      DIRECTORY_STATEMENT.subject,
+      DIRECTORY_STATEMENT.messageDhKey,
+      DIRECTORY_STATEMENT.stampKey,
+    ].map(k => point(at(p, k)))
     fail(new Set(points).size === 3, 'role-separation')
-    if (head) fail(eq(at(p, 1), at(head, 1)), 'unsupported-policy')
-    const issued = timestamp(at(p, 3)),
-      expiry = timestamp(at(p, 6))
+    if (head)
+      fail(
+        eq(
+          at(p, DIRECTORY_STATEMENT.subject),
+          at(head, DIRECTORY_STATEMENT.subject),
+        ),
+        'unsupported-policy',
+      )
+    const issued = timestamp(at(p, DIRECTORY_STATEMENT.timestamp)),
+      expiry = timestamp(at(p, DIRECTORY_STATEMENT.expiry))
     fail(
       issued <= now &&
         (historicalLink || now < expiry) &&
@@ -1010,12 +1196,12 @@ function outcome(c: Case, corpus: Corpus, historicalLink = false): string {
         expiry - issued <= 31622400000000000n,
       'validity',
     )
-    const bindings = at(p, 4)
+    const bindings = at(p, DIRECTORY_STATEMENT.relays)
     fail(Array.isArray(bindings) && bindings.length === 1, 'shape')
     const binding = (bindings as Value[])[0]
-    point(at(binding, 2))
-    const endpoint = at(binding, 1),
-      relayId = b(at(binding, 0))
+    point(at(binding, DIRECTORY_PREVIEW_RELAY.identity))
+    const endpoint = at(binding, DIRECTORY_PREVIEW_RELAY.endpoint),
+      relayId = b(at(binding, DIRECTORY_PREVIEW_RELAY.relayId))
     fail(
       typeof endpoint === 'string' &&
         endpoint.startsWith('https:') &&
@@ -1026,7 +1212,10 @@ function outcome(c: Case, corpus: Corpus, historicalLink = false): string {
         relayId.length <= 64,
       'binding',
     )
-    fail(timestamp(at(binding, 3)) >= expiry, 'binding-expiry')
+    fail(
+      timestamp(at(binding, DIRECTORY_PREVIEW_RELAY.expiry)) >= expiry,
+      'binding-expiry',
+    )
     fail(
       historicalLink ||
         (c.relay !== null &&
@@ -1035,29 +1224,50 @@ function outcome(c: Case, corpus: Corpus, historicalLink = false): string {
       'binding',
     )
     const wrapper = open(r.type2_hex)
-    fail(eq(at(wrapper.payload, 0), opened.frame), 'commitment')
-    const entries = at(wrapper.payload, 1) as Value[]
+    fail(
+      eq(
+        at(wrapper.payload, DIRECTORY_ATTESTATION.statementFrame),
+        opened.frame,
+      ),
+      'commitment',
+    )
+    const entries = at(
+      wrapper.payload,
+      DIRECTORY_ATTESTATION.signatures,
+    ) as Value[]
     fail(
       entries.length === 1 &&
-        n(at(entries[0], 0)) === 1n &&
-        eq(at(entries[0], 1), at(p, 1)),
+        n(at(entries[0], SIGNATURE_ENTRY.algorithm)) ===
+          BigInt(SIGNATURE_ALGORITHM.secp256k1EcdsaDer) &&
+        eq(
+          at(entries[0], SIGNATURE_ENTRY.signer),
+          at(p, DIRECTORY_STATEMENT.subject),
+        ),
       'signer',
     )
     fail(
       verifyAlgorithm1(
-        directorySignatureDigest(at(p, 0) as string, opened.frame),
-        b(at(entries[0], 2)),
-        b(at(at(p, 1), 1)),
+        directorySignatureDigest(
+          at(p, DIRECTORY_STATEMENT.network) as string,
+          opened.frame,
+        ),
+        b(at(entries[0], SIGNATURE_ENTRY.signature)),
+        b(
+          at(
+            at(p, DIRECTORY_STATEMENT.subject),
+            DIRECTORY_PREVIEW_KEY.keyBytes,
+          ),
+        ),
       ),
       'signature',
     )
     fail(c.claimed_t1 === undefined || c.claimed_t1 === r.t1, 'commitment')
     if (!head) {
       fail(
-        n(at(p, 2)) === 0n &&
-          n(at(p, 11)) === 0n &&
-          n(at(p, 12)) === 0n &&
-          at(p, 13) === null,
+        n(at(p, DIRECTORY_STATEMENT.revision)) === 0n &&
+          n(at(p, DIRECTORY_STATEMENT.mailboxKeyGeneration)) === 0n &&
+          n(at(p, DIRECTORY_STATEMENT.stampKeyGeneration)) === 0n &&
+          at(p, DIRECTORY_STATEMENT.predecessorHash) === null,
         'bootstrap',
       )
       fail(
@@ -1069,25 +1279,52 @@ function outcome(c: Case, corpus: Corpus, historicalLink = false): string {
     const prior = byId(c.history[c.history.length - 1])
     if (r.type4_hex === prior.type4_hex) return 'duplicate'
     const sameRevision = c.history.find(
-      id => n(at(open(byId(id).type4_hex).payload, 2)) === n(at(p, 2)),
+      id =>
+        n(
+          at(open(byId(id).type4_hex).payload, DIRECTORY_STATEMENT.revision),
+        ) === n(at(p, DIRECTORY_STATEMENT.revision)),
     )
     if (sameRevision && byId(sameRevision).type4_hex !== r.type4_hex)
       throw Error('fork')
-    fail(n(at(p, 2)) >= n(at(head, 2)), 'rollback')
-    fail(n(at(p, 2)) !== n(at(head, 2)), 'fork')
     fail(
-      schema >= n(present(open(prior.type4_hex).env.get(1n))),
+      n(at(p, DIRECTORY_STATEMENT.revision)) >=
+        n(at(head, DIRECTORY_STATEMENT.revision)),
+      'rollback',
+    )
+    fail(
+      n(at(p, DIRECTORY_STATEMENT.revision)) !==
+        n(at(head, DIRECTORY_STATEMENT.revision)),
+      'fork',
+    )
+    fail(
+      schema >=
+        n(
+          present(
+            open(prior.type4_hex).env.get(BigInt(FRANK_ENVELOPE.schemaVersion)),
+          ),
+        ),
       'schema-downgrade',
     )
     fail(
-      n(at(head, 2)) < MAX && n(at(p, 2)) === n(at(head, 2)) + 1n,
+      n(at(head, DIRECTORY_STATEMENT.revision)) < MAX &&
+        n(at(p, DIRECTORY_STATEMENT.revision)) ===
+          n(at(head, DIRECTORY_STATEMENT.revision)) + 1n,
       'revision',
     )
-    fail(eq(at(p, 13), fromHex(prior.t1)), 'predecessor')
-    fail(issued >= timestamp(at(head, 3)), 'issue-order')
+    fail(
+      eq(at(p, DIRECTORY_STATEMENT.predecessorHash), fromHex(prior.t1)),
+      'predecessor',
+    )
+    fail(
+      issued >= timestamp(at(head, DIRECTORY_STATEMENT.timestamp)),
+      'issue-order',
+    )
     for (const [role, generation] of [
-      [10, 11],
-      [8, 12],
+      [
+        DIRECTORY_STATEMENT.messageDhKey,
+        DIRECTORY_STATEMENT.mailboxKeyGeneration,
+      ],
+      [DIRECTORY_STATEMENT.stampKey, DIRECTORY_STATEMENT.stampKeyGeneration],
     ]) {
       const changed = !eq(at(p, role), at(head, role)),
         prev = n(at(head, generation))
@@ -1100,7 +1337,11 @@ function outcome(c: Case, corpus: Corpus, historicalLink = false): string {
       if (changed)
         fail(
           !history.some(h =>
-            [1, 10, 8].some(k => point(at(h, k)) === point(at(p, role))),
+            [
+              DIRECTORY_STATEMENT.subject,
+              DIRECTORY_STATEMENT.messageDhKey,
+              DIRECTORY_STATEMENT.stampKey,
+            ].some(k => point(at(h, k)) === point(at(p, role))),
           ),
           'key-reuse',
         )
@@ -1128,15 +1369,24 @@ for (const r of corpus.records) {
     )
     assert.equal(
       toHex(encodeCanonical(opened.payload)),
-      toHex(b(present(opened.env.get(3n)))),
+      toHex(b(present(opened.env.get(BigInt(FRANK_ENVELOPE.payload))))),
     )
   }
   assert.equal(
-    t1(at(open(r.type4_hex).payload, 0) as string, fromHex(r.type4_hex)),
+    t1(
+      at(open(r.type4_hex).payload, DIRECTORY_STATEMENT.network) as string,
+      fromHex(r.type4_hex),
+    ),
     r.t1,
   )
   assert.equal(oldReader(fromHex(r.type2_hex)), r.old_reader)
-  if (n(present(open(r.type4_hex).env.get(2n))) >= 4n) {
+  if (
+    n(
+      present(
+        open(r.type4_hex).env.get(BigInt(FRANK_ENVELOPE.minReaderVersion)),
+      ),
+    ) >= 4n
+  ) {
     const retained = validateFrame(
       fromHex(r.type4_hex),
       defaultContext({ opaqueRetentionAllowed: true }),
@@ -1204,14 +1454,17 @@ if (!process.argv.includes('--write')) {
     ),
   ) as RecordVector
   const wrapper = open(rust.type2_hex).payload
-  const entry = (at(wrapper, 1) as Value[])[0]
-  assert.equal(toHex(b(at(wrapper, 0))), corpus.records[0].type4_hex)
+  const entry = (at(wrapper, DIRECTORY_ATTESTATION.signatures) as Value[])[0]
+  assert.equal(
+    toHex(b(at(wrapper, DIRECTORY_ATTESTATION.statementFrame))),
+    corpus.records[0].type4_hex,
+  )
   assert.equal(rust.t1, corpus.records[0].t1)
   assert(
     verifyAlgorithm1(
       fromHex(rust.t2_digest),
-      b(at(entry, 2)),
-      b(at(at(entry, 1), 1)),
+      b(at(entry, SIGNATURE_ENTRY.signature)),
+      b(at(at(entry, SIGNATURE_ENTRY.signer), DIRECTORY_PREVIEW_KEY.keyBytes)),
     ),
   )
 }

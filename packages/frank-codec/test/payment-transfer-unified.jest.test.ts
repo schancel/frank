@@ -19,6 +19,12 @@ import {
   type CanonicalPaymentTransfer,
   type StealthMetadata,
 } from '../src'
+import {
+  ACCOUNT_REF,
+  KEY_TYPE,
+  PAYMENT_TRANSFER,
+  STEALTH_METADATA,
+} from '../src/constants'
 
 function mapOf(entries: Array<[number | bigint, any]>): Map<bigint, any> {
   return new Map(entries.map(([k, v]) => [BigInt(k), v]))
@@ -43,10 +49,10 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
   describe('schema validation: paymentTransfer and stealthMetadata', () => {
     it('validates minimal valid payment-transfer with uint satoshis', () => {
       const map = mapOf([
-        [0, sampleNetwork],
-        [1, sampleTxIdBytes],
-        [3, sampleDestBytes],
-        [4, 50000n],
+        [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+        [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+        [PAYMENT_TRANSFER.destination, sampleDestBytes],
+        [PAYMENT_TRANSFER.value, 50000n],
       ])
 
       const parsed = paymentTransfer(map)
@@ -63,10 +69,10 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
     it('validates minimal valid payment-transfer with 32-byte EVM quantity', () => {
       const evmQty = fromHex('00'.repeat(30) + '04d2') // 1234
       const map = mapOf([
-        [0, sampleNetwork],
-        [1, sampleTxIdBytes],
-        [3, sampleDestBytes],
-        [4, evmQty],
+        [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+        [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+        [PAYMENT_TRANSFER.destination, sampleDestBytes],
+        [PAYMENT_TRANSFER.value, evmQty],
       ])
 
       const parsed = paymentTransfer(map)
@@ -77,24 +83,24 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
     it('validates payment-transfer with all fields populated (UTXO, token, stealth, commitment)', () => {
       const stealthMap = mapOf([
         [
-          0,
+          STEALTH_METADATA.ephemeralPubKey,
           mapOf([
-            [0, 1n],
-            [1, sampleSecpPubBytes],
+            [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.secp256k1)],
+            [ACCOUNT_REF.keyBytes, sampleSecpPubBytes],
           ]),
         ],
-        [1, 0x2an], // view tag
+        [STEALTH_METADATA.viewTag, 0x2an], // view tag
       ])
 
       const map = mapOf([
-        [0, sampleNetwork],
-        [1, sampleTxIdBytes],
-        [2, 3n], // vout
-        [3, sampleDestBytes],
-        [4, 1000000n],
-        [5, sampleTokenBytes],
-        [6, stealthMap],
-        [7, sampleCommitmentBytes],
+        [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+        [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+        [PAYMENT_TRANSFER.vout, 3n], // vout
+        [PAYMENT_TRANSFER.destination, sampleDestBytes],
+        [PAYMENT_TRANSFER.value, 1000000n],
+        [PAYMENT_TRANSFER.token, sampleTokenBytes],
+        [PAYMENT_TRANSFER.stealthMetadata, stealthMap],
+        [PAYMENT_TRANSFER.commitment, sampleCommitmentBytes],
       ])
 
       const parsed = paymentTransfer(map)
@@ -117,13 +123,13 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       const viewTagBytes = new Uint8Array([0x01, 0x02, 0x03, 0x04])
       const stealthMap = mapOf([
         [
-          0,
+          STEALTH_METADATA.ephemeralPubKey,
           mapOf([
-            [0, 2n],
-            [1, sampleEdPubBytes],
+            [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.ed25519)],
+            [ACCOUNT_REF.keyBytes, sampleEdPubBytes],
           ]),
         ],
-        [1, viewTagBytes],
+        [STEALTH_METADATA.viewTag, viewTagBytes],
       ])
 
       const parsed = stealthMetadata(stealthMap)
@@ -135,10 +141,10 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
     it('validates stealth-metadata without view tag', () => {
       const stealthMap = mapOf([
         [
-          0,
+          STEALTH_METADATA.ephemeralPubKey,
           mapOf([
-            [0, 1n],
-            [1, sampleSecpPubBytes],
+            [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.secp256k1)],
+            [ACCOUNT_REF.keyBytes, sampleSecpPubBytes],
           ]),
         ],
       ])
@@ -160,9 +166,9 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [1, sampleTxIdBytes],
-            [3, sampleDestBytes],
-            [4, 100n],
+            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
+            [PAYMENT_TRANSFER.value, 100n],
           ]),
         ),
       ).toThrow(/missing required key 0/)
@@ -171,9 +177,9 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, sampleNetwork],
-            [3, sampleDestBytes],
-            [4, 100n],
+            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
+            [PAYMENT_TRANSFER.value, 100n],
           ]),
         ),
       ).toThrow(/missing required key 1/)
@@ -182,9 +188,9 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, sampleNetwork],
-            [1, sampleTxIdBytes],
-            [4, 100n],
+            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+            [PAYMENT_TRANSFER.value, 100n],
           ]),
         ),
       ).toThrow(/missing required key 3/)
@@ -193,9 +199,9 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, sampleNetwork],
-            [1, sampleTxIdBytes],
-            [3, sampleDestBytes],
+            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
           ]),
         ),
       ).toThrow(/missing required key 4/)
@@ -205,10 +211,11 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, sampleNetwork],
-            [1, sampleTxIdBytes],
-            [3, sampleDestBytes],
-            [4, 100n],
+            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
+            [PAYMENT_TRANSFER.value, 100n],
+            // raw-cbor-key: key 9 is undeclared in a payment transfer
             [9, 'unexpected'],
           ]),
         ),
@@ -220,10 +227,10 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, ''],
-            [1, sampleTxIdBytes],
-            [3, sampleDestBytes],
-            [4, 100n],
+            [PAYMENT_TRANSFER.networkTag, ''],
+            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
+            [PAYMENT_TRANSFER.value, 100n],
           ]),
         ),
       ).toThrow(/text size outside 1..64/)
@@ -232,10 +239,10 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, 'a'.repeat(65)],
-            [1, sampleTxIdBytes],
-            [3, sampleDestBytes],
-            [4, 100n],
+            [PAYMENT_TRANSFER.networkTag, 'a'.repeat(65)],
+            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
+            [PAYMENT_TRANSFER.value, 100n],
           ]),
         ),
       ).toThrow(/text size outside 1..64/)
@@ -244,10 +251,10 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, sampleNetwork],
-            [1, new Uint8Array(0)],
-            [3, sampleDestBytes],
-            [4, 100n],
+            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+            [PAYMENT_TRANSFER.txId, new Uint8Array(0)],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
+            [PAYMENT_TRANSFER.value, 100n],
           ]),
         ),
       ).toThrow(/byte string size outside 1..128/)
@@ -256,10 +263,10 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, sampleNetwork],
-            [1, new Uint8Array(129)],
-            [3, sampleDestBytes],
-            [4, 100n],
+            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+            [PAYMENT_TRANSFER.txId, new Uint8Array(129)],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
+            [PAYMENT_TRANSFER.value, 100n],
           ]),
         ),
       ).toThrow(/byte string size outside 1..128/)
@@ -268,11 +275,11 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, sampleNetwork],
-            [1, sampleTxIdBytes],
-            [3, sampleDestBytes],
-            [4, 100n],
-            [8, new Uint8Array(16385)],
+            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
+            [PAYMENT_TRANSFER.value, 100n],
+            [PAYMENT_TRANSFER.rawTx, new Uint8Array(16385)],
           ]),
         ),
       ).toThrow(/byte string size outside 1..16384/)
@@ -281,11 +288,11 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, sampleNetwork],
-            [1, sampleTxIdBytes],
-            [2, 4294967296n],
-            [3, sampleDestBytes],
-            [4, 100n],
+            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+            [PAYMENT_TRANSFER.vout, 4294967296n],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
+            [PAYMENT_TRANSFER.value, 100n],
           ]),
         ),
       ).toThrow(/integer outside/)
@@ -294,10 +301,10 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, sampleNetwork],
-            [1, sampleTxIdBytes],
-            [3, new Uint8Array(0)],
-            [4, 100n],
+            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+            [PAYMENT_TRANSFER.destination, new Uint8Array(0)],
+            [PAYMENT_TRANSFER.value, 100n],
           ]),
         ),
       ).toThrow(/byte string size outside 1..128/)
@@ -306,10 +313,10 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, sampleNetwork],
-            [1, sampleTxIdBytes],
-            [3, sampleDestBytes],
-            [4, 'invalid-value'],
+            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
+            [PAYMENT_TRANSFER.value, 'invalid-value'],
           ]),
         ),
       ).toThrow(/expected a 32-byte string or an unsigned integer/)
@@ -318,11 +325,11 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() =>
         paymentTransfer(
           mapOf([
-            [0, sampleNetwork],
-            [1, sampleTxIdBytes],
-            [3, sampleDestBytes],
-            [4, 100n],
-            [7, new Uint8Array(31)],
+            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
+            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
+            [PAYMENT_TRANSFER.destination, sampleDestBytes],
+            [PAYMENT_TRANSFER.value, 100n],
+            [PAYMENT_TRANSFER.commitment, new Uint8Array(31)],
           ]),
         ),
       ).toThrow(/byte string size outside 32..32/)
@@ -333,19 +340,19 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() => stealthMetadata('bad' as any)).toThrow(FrankCodecError)
 
       // missing key 0 (ephemeral-pubkey)
-      expect(() => stealthMetadata(mapOf([[1, 42n]]))).toThrow(
-        /missing required key 0/,
-      )
+      expect(() =>
+        stealthMetadata(mapOf([[STEALTH_METADATA.viewTag, 42n]])),
+      ).toThrow(/missing required key 0/)
 
       // keyType 1 with mismatched length (expects 33, given 32)
       expect(() =>
         stealthMetadata(
           mapOf([
             [
-              0,
+              STEALTH_METADATA.ephemeralPubKey,
               mapOf([
-                [0, 1n],
-                [1, sampleEdPubBytes],
+                [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.secp256k1)],
+                [ACCOUNT_REF.keyBytes, sampleEdPubBytes],
               ]),
             ],
           ]),
@@ -357,10 +364,10 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
         stealthMetadata(
           mapOf([
             [
-              0,
+              STEALTH_METADATA.ephemeralPubKey,
               mapOf([
-                [0, 2n],
-                [1, sampleSecpPubBytes],
+                [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.ed25519)],
+                [ACCOUNT_REF.keyBytes, sampleSecpPubBytes],
               ]),
             ],
           ]),
@@ -372,13 +379,13 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
         stealthMetadata(
           mapOf([
             [
-              0,
+              STEALTH_METADATA.ephemeralPubKey,
               mapOf([
-                [0, 1n],
-                [1, sampleSecpPubBytes],
+                [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.secp256k1)],
+                [ACCOUNT_REF.keyBytes, sampleSecpPubBytes],
               ]),
             ],
-            [1, 65536n],
+            [STEALTH_METADATA.viewTag, 65536n],
           ]),
         ),
       ).toThrow(/integer outside/)
@@ -388,12 +395,13 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
         stealthMetadata(
           mapOf([
             [
-              0,
+              STEALTH_METADATA.ephemeralPubKey,
               mapOf([
-                [0, 1n],
-                [1, sampleSecpPubBytes],
+                [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.secp256k1)],
+                [ACCOUNT_REF.keyBytes, sampleSecpPubBytes],
               ]),
             ],
+            // raw-cbor-key: key 2 is undeclared in stealth metadata
             [2, 'unexpected'],
           ]),
         ),
@@ -497,10 +505,12 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
         value: 500n,
       })
       expect(map).toBeInstanceOf(Map)
-      expect(map.get(0n)).toBe(sampleNetwork)
-      expect(map.get(1n)).toEqual(sampleTxIdBytes)
-      expect(map.get(3n)).toEqual(sampleDestBytes)
-      expect(map.get(4n)).toBe(500n)
+      expect(map.get(BigInt(PAYMENT_TRANSFER.networkTag))).toBe(sampleNetwork)
+      expect(map.get(BigInt(PAYMENT_TRANSFER.txId))).toEqual(sampleTxIdBytes)
+      expect(map.get(BigInt(PAYMENT_TRANSFER.destination))).toEqual(
+        sampleDestBytes,
+      )
+      expect(map.get(BigInt(PAYMENT_TRANSFER.value))).toBe(500n)
     })
   })
 

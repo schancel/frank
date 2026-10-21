@@ -22,6 +22,8 @@ export interface ApprovalWindow {
 export function createApprovalWindow(options: {
   /** The browser extension API (`chrome` / `browser`). */
   api: Record<string, any> | null
+  /** Local approval document, optionally showing an informational notice. */
+  pagePath?: string
   /** Called when the user closes the window while it was ours to close. */
   onClosedByUser: () => void
 }): ApprovalWindow {
@@ -35,8 +37,8 @@ export function createApprovalWindow(options: {
 
   const url =
     typeof api?.runtime?.getURL === 'function'
-      ? String(api.runtime.getURL(APPROVAL_PAGE_PATH))
-      : APPROVAL_PAGE_PATH
+      ? String(api.runtime.getURL(options.pagePath ?? APPROVAL_PAGE_PATH))
+      : options.pagePath ?? APPROVAL_PAGE_PATH
 
   const onWindowRemoved = (windowId: number) => {
     if (open?.kind === 'window' && open.id === windowId) {

@@ -6,6 +6,7 @@ import type { DirectMessageReceived } from '@frank/wallet/chain/active-chain';
 import {
   buildStripeWebhookSignatureHeader,
   CheckoutServer,
+  type VerifiedCheckoutPayment,
   verifyStripeWebhookSignature,
 } from '../src/http/checkout-server';
 import { ResendWebhookHttp } from '../src/host/resend-webhook-http';
@@ -540,15 +541,16 @@ describe('SecureMessagePortal & Onboarding Claim Channel', () => {
 
       // Start ResendWebhookHttp with securePortal + checkoutServer mounted
       const stripeSecret = 'whsec_test_stripe_secret_999';
-      let verifiedPaymentSender: string | undefined;
+      let verifiedPayment: VerifiedCheckoutPayment | undefined;
       const checkoutServer = new CheckoutServer({
         port: 0,
         ledger,
         stripeWebhookSecret: stripeSecret,
         frankAppUrl: 'https://app.frank.test',
         onboardingSecret: MASTER_SECRET,
-        onPaymentVerified: (ev) => {
-          verifiedPaymentSender = ev.senderEmail;
+        fulfillPayment: async (payment) => {
+          verifiedPayment = payment;
+          ledger.addCredits('bob@gmail.com', payment.credits, payment.providerTxId, payment.provider);
         },
       });
 
@@ -597,13 +599,17 @@ describe('SecureMessagePortal & Onboarding Claim Channel', () => {
         expect(payPageHtml).toContain('https://app.frank.test/#/onboard?');
 
         const webhookPayload = JSON.stringify({
+          id: 'evt_live_abc',
           type: 'checkout.session.completed',
           data: {
             object: {
               id: 'cs_live_abc',
+              payment_status: 'paid',
+              amount_total: 300,
+              currency: 'usd',
               client_reference_id: 'held_stripe_1',
               customer_details: { email: 'bob@gmail.com' },
-              metadata: { credits: '5', tierId: 'tier2' },
+              metadata: { credits: '1000000', tierId: 'tier3' },
             },
           },
         });
@@ -631,7 +637,14 @@ describe('SecureMessagePortal & Onboarding Claim Channel', () => {
           body: webhookPayload,
         });
         expect(goodStripeRes.status).toBe(200);
-        expect(verifiedPaymentSender).toBe('bob@gmail.com');
+        expect(verifiedPayment).toEqual({
+          providerTxId: 'evt_live_abc',
+          provider: 'stripe',
+          tierId: 'tier2',
+          credits: 5,
+          referenceId: 'held_stripe_1',
+          payerEmail: 'bob@gmail.com',
+        });
         expect(ledger.getBalance('bob@gmail.com')).toBe(5);
       } finally {
         await httpIngress.stop();

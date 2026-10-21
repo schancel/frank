@@ -58,6 +58,16 @@ describe('mail executable configuration', () => {
     expect(() => loadGatewayHostConfig(env)).toThrow('absolute path');
   });
 
+  it('refuses Stripe payment links without a webhook secret that could credit them', () => {
+    const env = settings(dir);
+    env.FRANK_MAIL_STRIPE_LINK_TIER1 = 'https://buy.stripe.com/test_tier1';
+    expect(() => loadGatewayHostConfig(env)).toThrow('Stripe payment links require a Stripe webhook secret');
+    env.FRANK_MAIL_STRIPE_WEBHOOK_SECRET = 'whsec_configured';
+    const config = loadGatewayHostConfig(env);
+    expect(config.stripePaymentLinkTier1).toBe('https://buy.stripe.com/test_tier1');
+    expect(config.stripeWebhookSecret).toBe('whsec_configured');
+  });
+
   it('enables direct SMTP only with a complete file-backed TLS configuration', () => {
     const env = settings(dir);
     const key = path.join(dir, 'smtp-key');

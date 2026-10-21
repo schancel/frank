@@ -260,7 +260,10 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
           conversationId: found.conversationId,
         };
       },
-      onPaymentVerified: async () => {
+      fulfillPayment: async (payment) => {
+        if (payment.payerEmail) {
+          ledger.addCredits(payment.payerEmail, payment.credits, payment.providerTxId, payment.provider);
+        }
         await inbound.releaseHeld(100);
       },
     });

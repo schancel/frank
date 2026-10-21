@@ -82,12 +82,70 @@ export interface HeldPaymentViewRecord {
   readonly conversationId?: string;
 }
 
-export interface StripePaymentVerifiedEvent {
-  readonly senderEmail: string;
-  readonly tierId: string;
-  readonly creditsAdded: number;
-  readonly referenceId: string;
+export type CheckoutTierId = 'tier1' | 'tier2' | 'tier3';
+
+export interface CheckoutTier {
+  readonly id: CheckoutTierId;
+  readonly title: string;
+  readonly blurb: string;
+  readonly priceLabel: string;
+  /** Stripe `amount_total` in the currency's minor unit. */
+  readonly amountMinor: number;
+  readonly currency: string;
+  readonly credits: number;
+}
+
+/**
+ * The only source of credit amounts. A paid Stripe session is matched by its
+ * charged amount and currency; event metadata never sets credits.
+ */
+export const CHECKOUT_TIERS: readonly CheckoutTier[] = [
+  {
+    id: 'tier1',
+    title: 'Single Delivery (1 Credit)',
+    blurb: 'Delivers this held message immediately',
+    priceLabel: '$1.00',
+    amountMinor: 100,
+    currency: 'usd',
+    credits: 1,
+  },
+  {
+    id: 'tier2',
+    title: 'Conversation Pack (5 Credits)',
+    blurb: '1 credit delivers this message &bull; 4 leftover credits for future emails',
+    priceLabel: '$3.00',
+    amountMinor: 300,
+    currency: 'usd',
+    credits: 5,
+  },
+  {
+    id: 'tier3',
+    title: 'Volume Top-Up (20 Credits)',
+    blurb: '1 credit delivers this message &bull; 19 leftover credits ($0.50/msg)',
+    priceLabel: '$10.00',
+    amountMinor: 1000,
+    currency: 'usd',
+    credits: 20,
+  },
+];
+
+export function checkoutTierForAmount(amountMinor: unknown, currency: unknown): CheckoutTier | undefined {
+  if (typeof amountMinor !== 'number' || typeof currency !== 'string') return undefined;
+  const normalized = currency.toLowerCase();
+  return CHECKOUT_TIERS.find((tier) => tier.amountMinor === amountMinor && tier.currency === normalized);
+}
+
+/** A signature-verified, paid `checkout.session.completed` priced by `CHECKOUT_TIERS`. */
+export interface VerifiedCheckoutPayment {
+  /** The Stripe event id; crediting is idempotent on it. */
   readonly providerTxId: string;
+  readonly provider: 'stripe';
+  readonly tierId: CheckoutTierId;
+  readonly credits: number;
+  /** `client_reference_id`: the held mail the payment page was opened for. */
+  readonly referenceId?: string;
+  /** The email the payer typed at checkout. Not proof of who sent the held mail. */
+  readonly payerEmail?: string;
 }
 
 export interface CheckoutServerOptions {
@@ -104,7 +162,11 @@ export interface CheckoutServerOptions {
   readonly frankAppUrl?: string;
   readonly onboardingSecret?: Uint8Array | string;
   readonly findHeldMail?: (tokenOrId: string) => HeldPaymentViewRecord | undefined;
-  readonly onPaymentVerified?: (event: StripePaymentVerifiedEvent) => Promise<void> | void;
+  /**
+   * Credits and releases for a verified payment. A throw answers 500 so Stripe
+   * redelivers the same event. Without it, the legacy `held_messages` path runs.
+   */
+  readonly fulfillPayment?: (payment: VerifiedCheckoutPayment) => Promise<void>;
 }
 
 export class CheckoutServer {
@@ -120,14 +182,14 @@ export class CheckoutServer {
   private readonly frankAppUrl: string;
   private readonly onboardingSecret: Uint8Array | string;
   private readonly findHeldMail?: (tokenOrId: string) => HeldPaymentViewRecord | undefined;
-  private readonly onPaymentVerified?: (event: StripePaymentVerifiedEvent) => Promise<void> | void;
+  private readonly fulfillPayment?: (payment: VerifiedCheckoutPayment) => Promise<void>;
   private server?: Server;
 
   constructor(options: CheckoutServerOptions) {
     this.port = options.port;
     this.ledger = options.ledger;
     this.stampProvider = options.stampProvider;
-    this.stripeWebhookSecret = options.stripeWebhookSecret;
+    this.stripeWebhookSecret = options.stripeWebhookSecret?.trim() || undefined;
     this.outboundDelivery = options.outboundDelivery;
     this.outboundApiToken = options.outboundApiToken?.trim() || undefined;
     this.stripePaymentLinkTier1 = options.stripePaymentLinkTier1;
@@ -139,7 +201,7 @@ export class CheckoutServer {
         ? Buffer.from(options.onboardingSecret)
         : (options.onboardingSecret ?? options.stripeWebhookSecret ?? 'frank-default-onboarding-secret-32b');
     this.findHeldMail = options.findHeldMail;
-    this.onPaymentVerified = options.onPaymentVerified;
+    this.fulfillPayment = options.fulfillPayment;
   }
 
   start(host: string = '127.0.0.1'): Promise<void> {
@@ -352,6 +414,42 @@ export class CheckoutServer {
     </div>`;
   }
 
+  /**
+   * Only configured payment links are offered, and only when the webhook that
+   * credits them is verifiable; otherwise card payment is not offered at all.
+   */
+  private renderPaymentTiers(held: HeldPaymentViewRecord): string {
+    const links: Record<CheckoutTierId, string | undefined> = {
+      tier1: this.stripePaymentLinkTier1,
+      tier2: this.stripePaymentLinkTier2,
+      tier3: this.stripePaymentLinkTier3,
+    };
+    const offered = this.stripeWebhookSecret
+      ? CHECKOUT_TIERS.filter((tier) => links[tier.id])
+      : [];
+    if (offered.length === 0) {
+      return `<div class="credit-info"><strong>Card payment is not available on this gateway.</strong></div>`;
+    }
+    const query = `client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}`;
+    const rows = offered.map((tier) => {
+      const base = links[tier.id]!;
+      const url = `${base}${base.includes('?') ? '&' : '?'}${query}`;
+      return `
+        <div class="tier">
+          <div>
+            <div class="tier-title">${tier.title}</div>
+            <div style="font-size:0.8rem; color:#64748b;">${tier.blurb}</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="tier-price">${tier.priceLabel}</div>
+            <a class="btn" href="${escapeHtml(url)}">Pay with Card</a>
+          </div>
+        </div>`;
+    });
+    return `<div class="tier-list">${rows.join('')}
+      </div>`;
+  }
+
   public renderPaymentPageResponse(
     tokenOrId: string,
     searchParams: URLSearchParams,
@@ -373,7 +471,7 @@ export class CheckoutServer {
       };
     }
 
-    if (held.status === 'released' || searchParams.get('success') === 'true') {
+    if (held.status === 'released') {
       const remainingBalance = this.ledger.getBalance(held.senderEmail);
       return {
         status: 200,
@@ -461,13 +559,24 @@ export class CheckoutServer {
       };
     }
 
+    // The Stripe redirect proves nothing; only the verified webhook releases the mail.
+    if (searchParams.get('success') === 'true') {
+      return {
+        status: 200,
+        headers,
+        body: `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta http-equiv="refresh" content="5"><title>Confirming Payment — Frank Gateway</title><style>body{font-family:Inter,system-ui,sans-serif;padding:2.5rem;max-width:600px;margin:auto;color:#f8fafc;background:#0f172a;}</style></head>
+<body>
+  <h1>Waiting for Payment Confirmation</h1>
+  <p>Your message to ${escapeHtml(held.recipientAddress)} is still held. It is delivered once the payment provider confirms the payment; this page refreshes automatically.</p>
+</body>
+</html>`,
+      };
+    }
+
     const hoursRemaining = Math.max(0, Math.round((held.expiresAtMs - Date.now()) / (1000 * 60 * 60)));
-    const tier1Base = this.stripePaymentLinkTier1 || 'https://buy.stripe.com/mock_tier1';
-    const tier2Base = this.stripePaymentLinkTier2 || 'https://buy.stripe.com/mock_tier2';
-    const tier3Base = this.stripePaymentLinkTier3 || 'https://buy.stripe.com/mock_tier3';
-    const tier1Url = `${tier1Base}?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}`;
-    const tier2Url = `${tier2Base}?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}`;
-    const tier3Url = `${tier3Base}?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}`;
+    const tierHtml = this.renderPaymentTiers(held);
 
     const html = `<!DOCTYPE html>
 <html lang="en">
@@ -529,40 +638,7 @@ export class CheckoutServer {
         Delivering this message will use <strong>1 credit</strong>. Any leftover credits are tied to your email (<code>${escapeHtml(held.senderEmail)}</code>) and can be used to send future emails to any Frank user without having to pay each time. Furthermore, once the recipient replies, subsequent emails in that conversation thread are completely free.
       </div>
 
-      <div class="tier-list">
-        <div class="tier">
-          <div>
-            <div class="tier-title">Single Delivery (1 Credit)</div>
-            <div style="font-size:0.8rem; color:#64748b;">Delivers this held message immediately</div>
-          </div>
-          <div style="text-align:right;">
-            <div class="tier-price">$1.00</div>
-            <a class="btn" href="${tier1Url}">Pay with Card</a>
-          </div>
-        </div>
-
-        <div class="tier">
-          <div>
-            <div class="tier-title">Conversation Pack (5 Credits)</div>
-            <div style="font-size:0.8rem; color:#64748b;">1 credit delivers this message &bull; 4 leftover credits for future emails</div>
-          </div>
-          <div style="text-align:right;">
-            <div class="tier-price">$3.00</div>
-            <a class="btn" href="${tier2Url}">Pay with Card</a>
-          </div>
-        </div>
-
-        <div class="tier">
-          <div>
-            <div class="tier-title">Volume Top-Up (20 Credits)</div>
-            <div style="font-size:0.8rem; color:#64748b;">1 credit delivers this message &bull; 19 leftover credits ($0.50/msg)</div>
-          </div>
-          <div style="text-align:right;">
-            <div class="tier-price">$10.00</div>
-            <a class="btn" href="${tier3Url}">Pay with Card</a>
-          </div>
-        </div>
-      </div>
+      ${tierHtml}
 
       <div class="footer">
         Want to message for free? <a href="${escapeHtml(this.frankAppUrl)}" target="_blank">Download Frank</a> and message ${escapeHtml(held.recipientAddress)} directly.
@@ -582,67 +658,85 @@ export class CheckoutServer {
     res.end(response.body);
   }
 
+  /** Card payment is offered only when its webhook can be verified and credited. */
+  get stripeWebhookConfigured(): boolean {
+    return this.stripeWebhookSecret !== undefined;
+  }
+
+  /**
+   * Fails closed: no secret answers 503, a bad signature 400. Only a paid
+   * `checkout.session.completed` is fulfilled; its credits come from
+   * `CHECKOUT_TIERS` by charged amount, and crediting is idempotent on the
+   * event id. A fulfillment failure answers 500 so Stripe redelivers.
+   */
   public async handleStripeWebhookPayload(
     rawBody: string,
     signatureHeader?: string,
   ): Promise<{ status: number; headers: Record<string, string>; body: string }> {
     const jsonHeaders = { 'Content-Type': 'application/json' };
-    if (this.stripeWebhookSecret) {
-      const valid = verifyStripeWebhookSignature(rawBody, signatureHeader, this.stripeWebhookSecret);
-      if (!valid) {
-        return {
-          status: 400,
-          headers: jsonHeaders,
-          body: JSON.stringify({ error: 'Invalid Stripe webhook signature' }),
-        };
-      }
+    const respond = (status: number, body: Record<string, unknown>) => ({
+      status,
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+    });
+    if (!this.stripeWebhookSecret) {
+      return respond(503, { error: 'Stripe webhook is not configured on this gateway' });
     }
+    if (!verifyStripeWebhookSignature(rawBody, signatureHeader, this.stripeWebhookSecret)) {
+      return respond(400, { error: 'Invalid Stripe webhook signature' });
+    }
+    let event: StripeEventShape;
     try {
-      const event = JSON.parse(rawBody);
-      if (
-        event.type === 'checkout.session.completed' ||
-        event.type === 'payment_intent.succeeded'
-      ) {
-        const session = event.data.object;
-        const heldMessageId = session.client_reference_id || session.metadata?.heldMessageId;
-        const email =
-          session.customer_details?.email || session.customer_email || session.metadata?.email;
-        const credits = Number(session.metadata?.credits ?? 1);
-        const tierId = String(session.metadata?.tierId ?? (credits >= 20 ? 'tier3' : credits >= 5 ? 'tier2' : 'tier1'));
-
-        if (heldMessageId && email) {
-          await this.fulfillPurchase({
-            providerTxId: session.id,
-            provider: 'stripe',
-            email,
-            credits,
-            heldMessageId,
-          });
-          if (this.onPaymentVerified) {
-            await this.onPaymentVerified({
-              senderEmail: email,
-              tierId,
-              creditsAdded: credits,
-              referenceId: heldMessageId,
-              providerTxId: session.id,
-            });
-          }
-        }
+      event = JSON.parse(rawBody) as StripeEventShape;
+    } catch {
+      return respond(400, { error: 'Malformed Stripe event' });
+    }
+    if (event?.type !== 'checkout.session.completed') {
+      return respond(200, { received: true, ignored: 'event_type' });
+    }
+    const session = event.data?.object;
+    if (typeof event.id !== 'string' || !event.id || !session || typeof session !== 'object') {
+      return respond(400, { error: 'Malformed checkout.session.completed event' });
+    }
+    if (session.payment_status !== 'paid') {
+      return respond(200, { received: true, ignored: 'not_paid' });
+    }
+    const tier = checkoutTierForAmount(session.amount_total, session.currency);
+    if (!tier) {
+      return respond(200, { received: true, ignored: 'unknown_amount' });
+    }
+    const referenceId =
+      typeof session.client_reference_id === 'string' && session.client_reference_id.trim()
+        ? session.client_reference_id.trim()
+        : undefined;
+    const typedEmail = session.customer_details?.email ?? session.customer_email;
+    const payerEmail =
+      typeof typedEmail === 'string' && typedEmail.trim() ? typedEmail.trim() : undefined;
+    const payment: VerifiedCheckoutPayment = {
+      providerTxId: event.id,
+      provider: 'stripe',
+      tierId: tier.id,
+      credits: tier.credits,
+      ...(referenceId ? { referenceId } : {}),
+      ...(payerEmail ? { payerEmail } : {}),
+    };
+    try {
+      if (this.fulfillPayment) {
+        await this.fulfillPayment(payment);
+      } else if (referenceId && payerEmail) {
+        await this.fulfillPurchase({
+          providerTxId: payment.providerTxId,
+          provider: payment.provider,
+          email: payerEmail,
+          credits: payment.credits,
+          heldMessageId: referenceId,
+        });
       }
-
-      return {
-        status: 200,
-        headers: jsonHeaders,
-        body: JSON.stringify({ received: true }),
-      };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      return {
-        status: 400,
-        headers: jsonHeaders,
-        body: JSON.stringify({ error: message }),
-      };
+      return respond(500, { error: message });
     }
+    return respond(200, { received: true });
   }
 
   private async handleStripeWebhook(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -771,6 +865,21 @@ export class CheckoutServer {
       createdAtMs: Date.now(),
     });
   }
+}
+
+interface StripeEventShape {
+  readonly id?: unknown;
+  readonly type?: unknown;
+  readonly data?: {
+    readonly object?: {
+      readonly payment_status?: unknown;
+      readonly amount_total?: unknown;
+      readonly currency?: unknown;
+      readonly client_reference_id?: unknown;
+      readonly customer_email?: unknown;
+      readonly customer_details?: { readonly email?: unknown } | null;
+    };
+  };
 }
 
 function escapeHtml(str: string): string {

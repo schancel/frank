@@ -1,4 +1,8 @@
-import { CheckoutServer } from '../src/http/checkout-server';
+import {
+  buildStripeWebhookSignatureHeader,
+  CheckoutServer,
+  type VerifiedCheckoutPayment,
+} from '../src/http/checkout-server';
 import { CreditLedger } from '../src/ledger/credit-ledger';
 import {
   GatewayStampProvider,
@@ -36,6 +40,35 @@ class MockStampProvider implements GatewayStampProvider {
   }
 }
 
+const WEBHOOK_SECRET = 'whsec_checkout_test';
+
+function paidSessionEvent(overrides: {
+  eventId?: string;
+  type?: string;
+  amountTotal?: number;
+  currency?: string;
+  paymentStatus?: string;
+  clientReferenceId?: string;
+  email?: string;
+  metadata?: Record<string, string>;
+} = {}): string {
+  return JSON.stringify({
+    id: overrides.eventId ?? 'evt_test_1',
+    type: overrides.type ?? 'checkout.session.completed',
+    data: {
+      object: {
+        id: 'cs_test_1',
+        payment_status: overrides.paymentStatus ?? 'paid',
+        amount_total: overrides.amountTotal ?? 300,
+        currency: overrides.currency ?? 'usd',
+        client_reference_id: overrides.clientReferenceId ?? 'held_1',
+        customer_details: { email: overrides.email ?? 'payer@external.com' },
+        ...(overrides.metadata ? { metadata: overrides.metadata } : {}),
+      },
+    },
+  });
+}
+
 describe('CheckoutServer', () => {
   let ledger: CreditLedger;
   let stampProvider: MockStampProvider;
@@ -49,6 +82,10 @@ describe('CheckoutServer', () => {
       port: 0,
       ledger,
       stampProvider,
+      stripeWebhookSecret: WEBHOOK_SECRET,
+      stripePaymentLinkTier1: 'https://buy.stripe.com/test_tier1',
+      stripePaymentLinkTier2: 'https://buy.stripe.com/test_tier2',
+      stripePaymentLinkTier3: 'https://buy.stripe.com/test_tier3',
     });
     await server.start();
     testPort = server.getPort();
@@ -104,22 +141,21 @@ describe('CheckoutServer', () => {
       expiresAtMs: Date.now() + 3600000 * 72,
     });
 
-    const stripeEvent = {
-      type: 'checkout.session.completed',
-      data: {
-        object: {
-          id: 'cs_test_123456',
-          client_reference_id: 'held_999',
-          customer_details: { email: 'recruiter@hiring.com' },
-          metadata: { credits: '5' },
-        },
-      },
-    };
+    const body = paidSessionEvent({
+      eventId: 'evt_test_123456',
+      amountTotal: 300,
+      clientReferenceId: 'held_999',
+      email: 'recruiter@hiring.com',
+      metadata: { credits: '1000000' },
+    });
 
     const res = await fetch(`http://127.0.0.1:${testPort}/api/webhooks/stripe`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(stripeEvent),
+      headers: {
+        'Content-Type': 'application/json',
+        'Stripe-Signature': buildStripeWebhookSignatureHeader(body, WEBHOOK_SECRET),
+      },
+      body,
     });
 
     expect(res.status).toBe(200);
@@ -204,7 +240,7 @@ describe('CheckoutServer', () => {
     expect(stampProvider.sentMessages[0].text).toContain('Paper Draft');
   });
 
-  it('renders payment confirmed page when ?success=true query param is passed', async () => {
+  it('does not show payment confirmation for an unverified ?success=true redirect', async () => {
     await ledger.holdMessage({
       id: 'held_redirect',
       senderEmail: 'payer@external.com',
@@ -219,7 +255,9 @@ describe('CheckoutServer', () => {
     const res = await fetch(`http://127.0.0.1:${testPort}/pay/held_redirect?success=true`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain('Payment Confirmed');
+    expect(html).not.toContain('Payment Confirmed');
+    expect(html).toContain('Waiting for Payment Confirmation');
+    expect(ledger.getHeldMessage('held_redirect')?.status).toBe('held');
   });
 
   it('returns 410 Gone when held message has expired', async () => {
@@ -238,5 +276,135 @@ describe('CheckoutServer', () => {
     expect(res.status).toBe(410);
     const html = await res.text();
     expect(html).toContain('Message Expired');
+  });
+});
+
+describe('CheckoutServer Stripe webhook fails closed (BOT-3)', () => {
+  const holdLegacy = (ledger: CreditLedger, id: string) =>
+    ledger.holdMessage({
+      id,
+      senderEmail: 'sender@external.com',
+      recipientAddress: '0xrecipient',
+      dkimDomain: 'external.com',
+      subject: 'Held',
+      rawRfc822: new TextEncoder().encode('Body'),
+      createdAtMs: Date.now(),
+      expiresAtMs: Date.now() + 3600000 * 72,
+    });
+
+  it('answers 503 and credits nothing when no webhook secret is configured', async () => {
+    const ledger = new CreditLedger(':memory:');
+    const fulfilled: VerifiedCheckoutPayment[] = [];
+    const server = new CheckoutServer({
+      port: 0,
+      ledger,
+      fulfillPayment: async (payment) => { fulfilled.push(payment); },
+    });
+    const forged = paidSessionEvent({
+      clientReferenceId: 'anything',
+      email: 'attacker@evil.test',
+      metadata: { credits: '1000000' },
+    });
+    const result = await server.handleStripeWebhookPayload(forged, undefined);
+    expect(result.status).toBe(503);
+    expect(fulfilled).toEqual([]);
+    expect(ledger.getBalance('attacker@evil.test')).toBe(0);
+  });
+
+  it('rejects a missing or wrong signature with 400', async () => {
+    const ledger = new CreditLedger(':memory:');
+    const fulfilled: VerifiedCheckoutPayment[] = [];
+    const server = new CheckoutServer({
+      port: 0,
+      ledger,
+      stripeWebhookSecret: WEBHOOK_SECRET,
+      fulfillPayment: async (payment) => { fulfilled.push(payment); },
+    });
+    const body = paidSessionEvent();
+    expect((await server.handleStripeWebhookPayload(body, undefined)).status).toBe(400);
+    expect(
+      (await server.handleStripeWebhookPayload(body, buildStripeWebhookSignatureHeader(body, 'whsec_other'))).status,
+    ).toBe(400);
+    expect(fulfilled).toEqual([]);
+  });
+
+  it('takes credits from the server tier table by charged amount, never from metadata', async () => {
+    const ledger = new CreditLedger(':memory:');
+    const fulfilled: VerifiedCheckoutPayment[] = [];
+    const server = new CheckoutServer({
+      port: 0,
+      ledger,
+      stripeWebhookSecret: WEBHOOK_SECRET,
+      fulfillPayment: async (payment) => { fulfilled.push(payment); },
+    });
+    const send = (body: string) =>
+      server.handleStripeWebhookPayload(body, buildStripeWebhookSignatureHeader(body, WEBHOOK_SECRET));
+
+    expect((await send(paidSessionEvent({ eventId: 'evt_a', amountTotal: 100, metadata: { credits: '1000000' } }))).status).toBe(200);
+    expect((await send(paidSessionEvent({ eventId: 'evt_b', amountTotal: 1000, currency: 'USD' }))).status).toBe(200);
+    // Unknown amount, wrong currency, unpaid session and other event types fulfil nothing.
+    expect((await send(paidSessionEvent({ eventId: 'evt_c', amountTotal: 1 }))).status).toBe(200);
+    expect((await send(paidSessionEvent({ eventId: 'evt_d', amountTotal: 100, currency: 'eur' }))).status).toBe(200);
+    expect((await send(paidSessionEvent({ eventId: 'evt_e', paymentStatus: 'unpaid' }))).status).toBe(200);
+    expect((await send(paidSessionEvent({ eventId: 'evt_f', type: 'payment_intent.succeeded' }))).status).toBe(200);
+
+    expect(fulfilled.map((p) => [p.providerTxId, p.tierId, p.credits])).toEqual([
+      ['evt_a', 'tier1', 1],
+      ['evt_b', 'tier3', 20],
+    ]);
+  });
+
+  it('answers 500 when fulfilment fails so Stripe redelivers', async () => {
+    const ledger = new CreditLedger(':memory:');
+    const server = new CheckoutServer({
+      port: 0,
+      ledger,
+      stripeWebhookSecret: WEBHOOK_SECRET,
+      fulfillPayment: async () => { throw new Error('journal busy'); },
+    });
+    const body = paidSessionEvent();
+    const result = await server.handleStripeWebhookPayload(body, buildStripeWebhookSignatureHeader(body, WEBHOOK_SECRET));
+    expect(result.status).toBe(500);
+  });
+
+  it('credits a redelivered event once (idempotent by event id)', async () => {
+    const ledger = new CreditLedger(':memory:');
+    await holdLegacy(ledger, 'held_dup');
+    const server = new CheckoutServer({ port: 0, ledger, stripeWebhookSecret: WEBHOOK_SECRET });
+    const body = paidSessionEvent({ eventId: 'evt_dup', amountTotal: 1000, clientReferenceId: 'held_dup' });
+    const header = buildStripeWebhookSignatureHeader(body, WEBHOOK_SECRET);
+    expect((await server.handleStripeWebhookPayload(body, header)).status).toBe(200);
+    expect((await server.handleStripeWebhookPayload(body, header)).status).toBe(200);
+    expect(ledger.getBalance('sender@external.com')).toBe(20);
+  });
+
+  it('offers no card payment and no placeholder links unless links and webhook secret are configured', async () => {
+    const ledger = new CreditLedger(':memory:');
+    await holdLegacy(ledger, 'held_links');
+    const noLinks = new CheckoutServer({ port: 0, ledger, stripeWebhookSecret: WEBHOOK_SECRET });
+    const page = noLinks.renderPaymentPageResponse('held_links', new URLSearchParams());
+    expect(page.status).toBe(200);
+    expect(page.body).not.toContain('buy.stripe.com');
+    expect(page.body).not.toContain('Pay with Card');
+    expect(page.body).toContain('Card payment is not available on this gateway.');
+
+    const linksWithoutSecret = new CheckoutServer({
+      port: 0,
+      ledger,
+      stripePaymentLinkTier1: 'https://buy.stripe.com/test_tier1',
+    });
+    const unverifiable = linksWithoutSecret.renderPaymentPageResponse('held_links', new URLSearchParams());
+    expect(unverifiable.body).not.toContain('Pay with Card');
+
+    const oneLink = new CheckoutServer({
+      port: 0,
+      ledger,
+      stripeWebhookSecret: WEBHOOK_SECRET,
+      stripePaymentLinkTier2: 'https://buy.stripe.com/test_tier2',
+    });
+    const partial = oneLink.renderPaymentPageResponse('held_links', new URLSearchParams());
+    expect(partial.body).toContain('https://buy.stripe.com/test_tier2?client_reference_id=held_links');
+    expect(partial.body).toContain('Conversation Pack (5 Credits)');
+    expect(partial.body).not.toContain('Single Delivery (1 Credit)');
   });
 });

@@ -1,4 +1,4 @@
-; Payload schemas for type 1 and its proof message-item frames.
+; Payload schemas for type 10 and its proof message-item frames.
 ; Imports common.cddl names conceptually; each implementation compiles a
 ; combined schema/module.
 
@@ -52,7 +52,7 @@ dleq-proof = bstr .size 64
 encrypted-message-content = {
   0: network-tag,
   1: uuid-16, ; stable logical message_id; encrypted in a real delivery
-  2: framed-object, ; type-8 message-content-revision frame
+  2: framed-object, ; type-20 message-content-revision frame
   3: digest-32, ; T1a digest of field 2
   ? 4: uuid-16, ; stable logical conversation_id (ticket #818), allocated by whoever starts the conversation and carried by every message in it. Writers SHOULD always send it: when opening a chat with a peer, the UUIDv5 whose namespace is the writer's private conversation-ID salt and whose name is the peer (no topic); for a further conversation with the same peer, a random UUIDv4. Readers MUST accept its absence and file the message under the ID they would themselves allocate for its sender.
   ? 5: conversation-name, ; the conversation's subject (ticket #818). Sent on the first message of a conversation that has one and on a message that renames it; other messages omit it. A reader applies it when the message is from the conversation's peer or is its own account's message (read back from its mailbox); of two, the later relay time wins. A third party's is ignored.
@@ -73,21 +73,21 @@ token-transfer = {
 
 conversation-name = tstr .size (1..512)
 
-; Type 5 schema 1 is retained for the permanently reserved proof fixture only.
+; Type 11 schema 1 is retained for the permanently reserved proof fixture only.
 recipient-encrypted-payload-v1 = {
   0: network-tag,
   1: account-ref, ; routing sender identity, not transferable authorship proof
   2: account-ref, ; routing recipient identity
   3: uint .le 65535, ; exact encryption-suite identifier
   4: bstr .size (1..64), ; suite-defined nonce
-  5: bstr .size (1..524288), ; ciphertext of a complete type-6 frame
+  5: bstr .size (1..524288), ; ciphertext of a complete type-12 frame
   6: stamp-point, ; E (README T3a)
   7: stamp-point, ; X (README T3a)
   8: dleq-proof, ; DLEQ proof (README T3b)
   * uint => frank-value,
 }
 
-; Type 5 schema 2, min_reader_version 2, is the production DM payload.
+; Type 11 schema 2, min_reader_version 2, is the production DM payload.
 recipient-encrypted-payload-v2 = {
   0: network-tag,
   1: account-ref, ; routing sender identity, not transferable authorship proof
@@ -115,7 +115,7 @@ dm-crypto-context-v1 = {
   10: stamp-point, ; X
   11: dleq-proof,
   12: 1, ; suite
-  13: 5, ; object type
+  13: 11, ; object type (type-id: recipient-encrypted-payload)
   14: 2, ; schema_version
   15: 2, ; min_reader_version
 }
@@ -138,7 +138,7 @@ text-message-item = {
   * uint => frank-value,
 }
 
-; Type 19 / schema 1 / min-reader 1: existing native payment recovery.
+; Type 24 / schema 1 / min-reader 1: existing native payment recovery.
 stealth-message-item = {
   0: network-tag,
   1: account-ref, ; ephemeral pubkey (key type 1 or 2)
@@ -148,7 +148,7 @@ stealth-message-item = {
   * uint => frank-value,
 }
 
-; Type 19 / schema 2 / min-reader 2: exact recipient asset payments.
+; Type 24 / schema 2 / min-reader 2: exact recipient asset payments.
 ; Field 0 is deliberately an array rather than the schema-1 network string:
 ; older readers cannot silently interpret a token payment as native currency.
 stealth-asset-message-item = {
@@ -168,7 +168,7 @@ stealth-asset-transfer = {
 ; key type 1, no token program or context. Unknown positive schemes are retained
 ; structurally but MUST NOT acquire a signer or execute a payment effect.
 
-; Active type 24 / schema 1 / min-reader 1: universal state channel update item.
+; Active type 25 / schema 1 / min-reader 1: universal state channel update item.
 channel-update-item = {
   0: digest-32,                      ; unique channel-id
   1: tstr .size (1..64),             ; app-id ("poker", "liars-dice", "swap", "raffle")
@@ -230,11 +230,11 @@ raffle-payload = {
   * uint => frank-value,
 }
 
-; Active type 25 / schema 1 / min-reader 1: relay forwarding delivery envelope.
+; Active type 13 / schema 1 / min-reader 1: relay forwarding delivery envelope.
 forwarding-delivery-envelope = {
   0: network-tag,                       ; destination relay network, e.g. "monad-testnet"
   1: account-ref,                       ; destination relay routing identity (key type 1)
-  2: framed-object,                     ; inner direct-message-delivery (Type 1) frame
+  2: framed-object,                     ; inner direct-message-delivery (Type 10) frame
   3: digest-32,                         ; forwarding payload digest of field 2
   4: [1*64 payment-member],             ; storage payment stamps compensating destination relay
   ? 5: tstr .size (1..256),             ; optional destination relay endpoint URI
@@ -242,7 +242,7 @@ forwarding-delivery-envelope = {
   * uint => frank-value,                ; additive extensible fields
 }
 
-; Active type 26 / schema 1 / min-reader 1: email bridge message item.
+; Active type 23 / schema 1 / min-reader 1: email bridge message item.
 email-message-item = {
   0: tstr .size (1..256),               ; message_id (RFC 5322 Message-ID, e.g. "<...@domain>")
   1: email-party,                       ; from

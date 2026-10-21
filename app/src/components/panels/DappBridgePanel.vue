@@ -478,7 +478,6 @@ import {
   sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
 import { isDappApprovalsChangedMessage } from 'src/utils/dapp-approval-surface'
-import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../../src-bex/content'
 import {
   DappProviderAnnounceMode,
   FRANK_DAPP_BRIDGE_CHANNEL,
@@ -1662,7 +1661,7 @@ export default defineComponent({
       wcUriInput.value = ''
     }
 
-    async function triggerExtensionSync() {
+    function triggerExtensionSync() {
       syncTriggered.value = true
       const syncPayload = {
         sasCode: sasCode.value,
@@ -1671,27 +1670,6 @@ export default defineComponent({
           activePersonaPath: activeDerivationPath.value,
           activePersonaAddress: activePersonaAddress.value,
         },
-      }
-      if (isExtensionRuntime.value) {
-        await sendRuntimeMessage({
-          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-          type: 'extension-push-sync-to-tab',
-          origin: 'frank-extension',
-          payload: syncPayload,
-        })
-      }
-      if (typeof window !== 'undefined' && typeof window.postMessage === 'function') {
-        window.postMessage(
-          {
-            channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-            direction: 'to-extension',
-            type: 'pwa-sync-handshake',
-            id: `sync-${Date.now()}`,
-            idempotencyKey: `sync-${Date.now()}`,
-            payload: syncPayload,
-          },
-          '*',
-        )
       }
       emit('extension-sync', syncPayload)
     }

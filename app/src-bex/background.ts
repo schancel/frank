@@ -4,7 +4,6 @@ import {
   FRANK_DAPP_BRIDGE_CHANNEL,
   FRANK_EXT_LAUNCH_MODE_KEY,
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-  FRANK_WEB_APP_ORIGIN,
   getRawExtensionApi,
   isBrowserExtensionRuntime,
   isFrankWebAppOrigin,
@@ -12,6 +11,13 @@ import {
   openCompanionPanel,
   openExtensionInWindow,
 } from './runtime-adapter'
+import {
+  createSyncSender,
+  syncSenderConfirm,
+  syncSenderHello,
+  SYNC_PAIRING_TTL_MS,
+  type SyncSenderState,
+} from '../src/utils/sync-pairing'
 import {
   createDeterministicRpcResultFallback,
   deriveDeterministicBtcAddress,
@@ -47,23 +53,24 @@ export interface PendingDappApproval {
 export type PendingDappApprovalRecord = PendingDappApproval
 
 /**
- * An account sync bundle the background is carrying between the extension and
- * the Frank web app. It holds backup shares, so it is kept only in memory
+ * Account sync between the extension and the Frank web app (PIN pairing, see
+ * src/utils/sync-pairing.ts). The background keeps, in memory only
  * (`storage.session` where the browser has it, so it outlives a stopped service
- * worker; otherwise the background's own state), handed out once, and expires
- * after SYNC_TRANSFER_TTL_MS.
- *  - 'to-extension': a Frank tab sent it; an extension page collects it.
- *  - 'to-pwa': an extension page sent it while no Frank tab took it; a Frank tab
- *    collects it.
+ * worker; otherwise the background's own state):
+ *  - sender: the extension's own sending session (extension -> web app): the
+ *    bundle and the PIN. It answers the web app tab's pairing messages and ends
+ *    once the bundle is sent, after too many wrong PINs, or after
+ *    SYNC_PAIRING_TTL_MS.
+ *  - offerTab: the Frank web app tab offering its account (web app -> extension).
+ *    It holds no secret; the background relays an extension page's pairing
+ *    messages to that tab.
  */
-export interface PendingSyncTransfer {
-  direction: 'to-extension' | 'to-pwa'
-  deviceSyncBundle: Record<string, unknown>
-  createdAt: number
+export interface PendingSyncPairing {
+  sender: SyncSenderState | null
+  offerTab: { tabId: number; createdAt: number } | null
 }
 
-export const SYNC_TRANSFER_TTL_MS = 2 * 60_000
-const SYNC_TRANSFER_SESSION_KEY = 'frankPendingSyncTransfer'
+const SYNC_PAIRING_SESSION_KEY = 'frankSyncPairing'
 
 export interface PendingRpcWaiter {
   resolve: (value: unknown) => void
@@ -80,7 +87,7 @@ export interface BackgroundBridgeState {
   announceMode: DappProviderAnnounceMode
   pendingApprovals: Map<string, PendingDappApproval>
   pendingRpcWaiters: Map<string, PendingRpcWaiter>
-  pendingSyncTransfer: PendingSyncTransfer | null
+  syncPairing: PendingSyncPairing
   openPanelOnActionClick: boolean
   launchMode: ExtensionLaunchMode
 }
@@ -491,7 +498,7 @@ export function createBackgroundBridgeState(
       overrides.pendingApprovals ?? new Map<string, PendingDappApproval>(),
     pendingRpcWaiters:
       overrides.pendingRpcWaiters ?? new Map<string, PendingRpcWaiter>(),
-    pendingSyncTransfer: overrides.pendingSyncTransfer ?? null,
+    syncPairing: overrides.syncPairing ?? { sender: null, offerTab: null },
     openPanelOnActionClick:
       overrides.openPanelOnActionClick ?? launchMode === 'sidepanel',
     launchMode,
@@ -816,7 +823,7 @@ function urlOrigin(url: unknown): string {
 
 /**
  * Memory-only extension storage that survives the MV3 service worker stopping.
- * Chrome has it; where it is missing the bundle stays in the background state.
+ * Chrome has it; where it is missing the pairing stays in the background state.
  */
 function syncSessionStorage(
   extApi: Record<string, any> | null,
@@ -829,94 +836,109 @@ function syncSessionStorage(
     : null
 }
 
-async function savePendingSyncTransfer(
+async function loadSyncPairing(
   state: BackgroundBridgeState,
   extApi: Record<string, any> | null,
-  transfer: PendingSyncTransfer | null,
+): Promise<PendingSyncPairing> {
+  const session = syncSessionStorage(extApi)
+  if (!session) return state.syncPairing
+  const held = (await session.get(SYNC_PAIRING_SESSION_KEY))?.[
+    SYNC_PAIRING_SESSION_KEY
+  ]
+  return {
+    sender: held?.sender ?? null,
+    offerTab: held?.offerTab ?? null,
+  }
+}
+
+async function saveSyncPairing(
+  state: BackgroundBridgeState,
+  extApi: Record<string, any> | null,
+  pairing: PendingSyncPairing,
 ): Promise<void> {
   const session = syncSessionStorage(extApi)
   if (!session) {
-    state.pendingSyncTransfer = transfer
-  } else if (transfer) {
-    await session.set({ [SYNC_TRANSFER_SESSION_KEY]: transfer })
+    state.syncPairing = pairing
+  } else if (pairing.sender || pairing.offerTab) {
+    await session.set({ [SYNC_PAIRING_SESSION_KEY]: pairing })
   } else {
-    await session.remove(SYNC_TRANSFER_SESSION_KEY)
+    await session.remove(SYNC_PAIRING_SESSION_KEY)
   }
 }
 
-// Takes run one at a time, so two requests cannot both receive the bundle.
-let syncTransferTakes: Promise<unknown> = Promise.resolve()
+// Pairing steps run one at a time, so two confirms cannot both get the bundle.
+let syncPairingSteps: Promise<unknown> = Promise.resolve()
 
-/** Hands out the held bundle once, if it goes the asked direction and is not expired. */
-function takePendingSyncTransfer(
+function withSyncPairing<T>(
   state: BackgroundBridgeState,
   extApi: Record<string, any> | null,
-  direction: PendingSyncTransfer['direction'],
-): Promise<Record<string, unknown> | null> {
-  const take = syncTransferTakes.then(async () => {
-    const session = syncSessionStorage(extApi)
-    const pending: PendingSyncTransfer | null = session
-      ? (await session.get(SYNC_TRANSFER_SESSION_KEY))?.[
-          SYNC_TRANSFER_SESSION_KEY
-        ] ?? null
-      : state.pendingSyncTransfer
-    if (!pending) return null
-    const expired = Date.now() - pending.createdAt > SYNC_TRANSFER_TTL_MS
-    if (!expired && pending.direction !== direction) return null
-    await savePendingSyncTransfer(state, extApi, null)
-    return expired ? null : pending.deviceSyncBundle
+  step: (pairing: PendingSyncPairing) => Promise<[PendingSyncPairing, T]>,
+): Promise<T> {
+  const run = syncPairingSteps.then(async () => {
+    const [next, result] = await step(await loadSyncPairing(state, extApi))
+    await saveSyncPairing(state, extApi, next)
+    return result
   })
-  syncTransferTakes = take.catch(() => null)
-  return take
+  syncPairingSteps = run.catch(() => null)
+  return run
 }
 
-/**
- * Sends the bundle to the content script of every Frank web app tab. Counts only
- * tabs whose page offered it to the user; a page that already has an account
- * declines it.
- */
-async function pushSyncBundleToFrankTabs(
+/** Tells open extension pages how the extension's sending session is going. */
+function announceSyncSender(
   extApi: Record<string, any> | null,
-  deviceSyncBundle: Record<string, unknown>,
-): Promise<number> {
-  if (
-    typeof extApi?.tabs?.query !== 'function' ||
-    typeof extApi.tabs.sendMessage !== 'function'
-  ) {
-    return 0
-  }
-  let tabs: unknown
+  status: 'new-pin' | 'sent' | 'ended' | 'expired',
+  pin = '',
+): void {
+  if (typeof extApi?.runtime?.sendMessage !== 'function') return
   try {
-    tabs = await extApi.tabs.query({ url: `${FRANK_WEB_APP_ORIGIN}/*` })
-  } catch {
-    return 0
-  }
-  let delivered = 0
-  for (const tab of Array.isArray(tabs) ? tabs : []) {
-    if (
-      typeof tab?.id !== 'number' ||
-      !isFrankWebAppOrigin(urlOrigin(tab.url))
-    ) {
-      continue
-    }
-    try {
-      const ack = await extApi.tabs.sendMessage(tab.id, {
+    void Promise.resolve(
+      extApi.runtime.sendMessage({
         channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-        type: 'extension-sync-push',
-        payload: { deviceSyncBundle },
-      })
-      if (ack && typeof ack === 'object' && ack.offered === true) delivered += 1
-    } catch {
-      // No content script in this tab
-    }
+        type: 'sync-sender-update',
+        status,
+        pin,
+      }),
+    ).catch(() => undefined)
+  } catch {
+    // No extension page is listening
   }
-  return delivered
+}
+
+/** Relays an extension page's pairing message to the Frank tab offering its account. */
+async function relayPairingToOfferTab(
+  state: BackgroundBridgeState,
+  extApi: Record<string, any> | null,
+  type: 'pair-hello' | 'pair-confirm',
+  payload: unknown,
+): Promise<unknown> {
+  const pairing = await loadSyncPairing(state, extApi)
+  const offer = pairing.offerTab
+  if (
+    !offer ||
+    Date.now() - offer.createdAt > SYNC_PAIRING_TTL_MS ||
+    typeof extApi?.tabs?.sendMessage !== 'function'
+  ) {
+    return { ok: false, reason: 'no-sender' }
+  }
+  try {
+    const reply = await extApi.tabs.sendMessage(offer.tabId, {
+      channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+      type,
+      payload,
+    })
+    return reply && typeof reply === 'object'
+      ? reply
+      : { ok: false, reason: 'no-sender' }
+  } catch {
+    return { ok: false, reason: 'no-sender' }
+  }
 }
 
 /**
- * Account sync between the extension and the Frank web app. The bundle carries
- * backup shares: it is accepted only from an extension page or a Frank web app
- * tab, delivered only to the other one, held only in memory, and handed out once.
+ * Account sync between the extension and the Frank web app. Pairing messages
+ * from the Frank web app tab go to the extension's sending session; pairing
+ * messages from an extension page go to the tab offering its account. Only
+ * extension pages and the Frank origin's tabs take part.
  */
 async function handleAccountSyncMessage(
   message: any,
@@ -928,67 +950,69 @@ async function handleAccountSyncMessage(
   const fromExtensionPage = isExtensionPageSender(sender, extApi)
   const fromFrankTab =
     !fromExtensionPage && isFrankWebAppOrigin(senderWebOrigin(sender))
-  const bundle = message.payload?.deviceSyncBundle
-  const hasBundle =
-    Boolean(bundle) && typeof bundle === 'object' && !Array.isArray(bundle)
   const rejected = (reason: string) => ({
     ok: false,
     error: { code: 4100, message: reason },
   })
 
   switch (message.type) {
-    case 'pwa-sync-handshake':
-      if (!fromFrankTab) return rejected('Sender is not the Frank web app')
-      if (!hasBundle) return rejected('Missing sync bundle')
-      await savePendingSyncTransfer(state, extApi, {
-        direction: 'to-extension',
-        deviceSyncBundle: bundle,
-        createdAt: Date.now(),
-      })
+    case 'extension-sync-offer': {
+      if (!fromExtensionPage) return rejected('Sender is not an extension page')
+      const bundle = message.payload?.deviceSyncBundle
+      if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
+        return rejected('Missing sync bundle')
+      }
+      const created = createSyncSender(bundle)
+      await withSyncPairing(state, extApi, async pairing => [
+        { ...pairing, sender: created },
+        null,
+      ])
+      return { ok: true, result: { ok: true, pin: created.pin } }
+    }
+    case 'pwa-sync-offer': {
+      const tabId = sender?.tab?.id
+      if (!fromFrankTab || typeof tabId !== 'number') {
+        return rejected('Sender is not the Frank web app')
+      }
+      await withSyncPairing(state, extApi, async pairing => [
+        { ...pairing, offerTab: { tabId, createdAt: Date.now() } },
+        null,
+      ])
       return { ok: true, result: { ok: true } }
-    case 'get-synced-state': {
-      if (!fromExtensionPage) return rejected('Sender is not an extension page')
-      const taken = await takePendingSyncTransfer(state, extApi, 'to-extension')
-      return {
-        ok: true,
-        result: { ok: Boolean(taken), deviceSyncBundle: taken },
-      }
     }
-    case 'extension-push-sync-to-tab': {
-      if (!fromExtensionPage) return rejected('Sender is not an extension page')
-      if (!hasBundle) return rejected('Missing sync bundle')
-      const deliveredToTabCount = await pushSyncBundleToFrankTabs(
-        extApi,
-        bundle,
-      )
-      // No Frank tab offered it: hold it briefly for a Frank tab to collect.
-      await savePendingSyncTransfer(
-        state,
-        extApi,
-        deliveredToTabCount > 0
-          ? null
-          : {
-              direction: 'to-pwa',
-              deviceSyncBundle: bundle,
-              createdAt: Date.now(),
-            },
-      )
-      return {
-        ok: true,
-        result: {
-          ok: true,
-          deliveredToTabCount,
-          awaitingPickup: deliveredToTabCount === 0,
-        },
+    case 'pair-hello':
+    case 'pair-confirm': {
+      if (fromExtensionPage) {
+        const result = await relayPairingToOfferTab(
+          state,
+          extApi,
+          message.type,
+          message.payload,
+        )
+        return { ok: true, result }
       }
-    }
-    case 'pwa-request-sync': {
       if (!fromFrankTab) return rejected('Sender is not the Frank web app')
-      const taken = await takePendingSyncTransfer(state, extApi, 'to-pwa')
-      return {
-        ok: true,
-        result: { ok: Boolean(taken), deviceSyncBundle: taken },
-      }
+      const result = await withSyncPairing(state, extApi, async pairing => {
+        if (!pairing.sender) {
+          return [pairing, { ok: false, reason: 'no-sender' }]
+        }
+        if (message.type === 'pair-hello') {
+          const next = syncSenderHello(pairing.sender)
+          if (!next.state) announceSyncSender(extApi, 'expired')
+          return [{ ...pairing, sender: next.state }, next.reply]
+        }
+        const next = syncSenderConfirm(pairing.sender, message.payload)
+        if (next.outcome === 'new-pin' && next.state) {
+          announceSyncSender(extApi, 'new-pin', next.state.pin)
+        } else if (next.outcome !== 'stale') {
+          announceSyncSender(
+            extApi,
+            next.outcome as 'sent' | 'ended' | 'expired',
+          )
+        }
+        return [{ ...pairing, sender: next.state }, next.reply]
+      })
+      return { ok: true, result }
     }
     default:
       return rejected('Unsupported sync message')

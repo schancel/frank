@@ -1,16 +1,48 @@
 // Composable Stage 8.1/8.2 and Stage 9 schema descriptor for Type 18 Blackjack message items.
 import type { FrankValue } from './cbor'
 import {
+  BLACKJACK_ACTION,
+  BLACKJACK_HAND_ACTION,
+  BLACKJACK_HAND_ITEM,
+  BLACKJACK_HAND_ITEM_ACCEPT_SHAPE,
+  BLACKJACK_HAND_ITEM_ACTION_ONLY_SHAPE,
+  BLACKJACK_HAND_ITEM_CARD_SHAPE,
+  BLACKJACK_HAND_ITEM_CHALLENGE_DEALER_SHAPE,
+  BLACKJACK_HAND_ITEM_CHALLENGE_PLAYER_SHAPE,
+  BLACKJACK_HAND_ITEM_DEAL_SHAPE,
+  BLACKJACK_HAND_ITEM_REFUND_SHAPE,
+  BLACKJACK_HAND_ITEM_REVEAL_SHAPE,
+  BLACKJACK_HAND_V3_ACTION,
+  BLACKJACK_HAND_V3_ITEM,
+  BLACKJACK_HAND_V3_ITEM_ACCEPT_SHAPE,
+  BLACKJACK_HAND_V3_ITEM_BET_SHAPE,
+  BLACKJACK_HAND_V3_ITEM_CHALLENGE_DEALER_SHAPE,
+  BLACKJACK_HAND_V3_ITEM_CHALLENGE_PLAYER_SHAPE,
+  BLACKJACK_HAND_V3_ITEM_MOVE_SHAPE,
+  BLACKJACK_HAND_V3_ITEM_REFUND_SHAPE,
+  BLACKJACK_ITEM,
+  BLACKJACK_ITEM_BET_SHAPE,
+  BLACKJACK_ITEM_DEAL_SHAPE,
+  BLACKJACK_ITEM_DOUBLE_REQUEST_SHAPE,
+  BLACKJACK_ITEM_DOUBLE_RESPONSE_SHAPE,
+  BLACKJACK_ITEM_HIT_SHAPE,
+  BLACKJACK_ITEM_REVEAL_SHAPE,
+  BLACKJACK_ITEM_STAND_SHAPE,
+  BLACKJACK_ITEM_WELCOME_SHAPE,
+  BLACKJACK_OUTCOME,
+  BLACKJACK_ROLE,
   MAX_BLACKJACK_FRAME_BYTES,
   TYPE_BLACKJACK_MESSAGE_ITEM,
+  type MapShape,
 } from './constants'
 import { FrankCodecError } from './errors'
 import {
   asList,
+  at,
   bad,
   bstr,
-  fields,
   isMap,
+  shaped,
   tstr,
   u32ish,
   type FeatureCodecDescriptor,
@@ -31,11 +63,28 @@ export type BlackjackWireItem =
 const semantic = (message: string, location = 'root'): FrankCodecError =>
   new FrankCodecError('semantic', '9', message, location)
 
+/** Wire outcome code (key 9) to its application name. */
+const OUTCOME_NAMES = {
+  [BLACKJACK_OUTCOME.playerWin]: 'player_win',
+  [BLACKJACK_OUTCOME.dealerWin]: 'dealer_win',
+  [BLACKJACK_OUTCOME.push]: 'push',
+  [BLACKJACK_OUTCOME.playerBlackjack]: 'player_blackjack',
+} as const
+const outcomeName = (code: number) =>
+  OUTCOME_NAMES[code as keyof typeof OUTCOME_NAMES]
+
 /** Closed schema-1 shapes, also closed when projected from a compatible future envelope. */
 function blackjackPayload(payload: FrankValue): BlackjackMessageItem {
   const P = 'root/payload'
+  const K = BLACKJACK_ITEM
+  const A = BLACKJACK_ACTION
   if (!isMap(payload)) throw bad(P, 'blackjack payload must be a map')
-  const action = u32ish(payload.get(1n), `${P}.1`, 0, 6)
+  const action = u32ish(
+    payload.get(BigInt(K.action)),
+    at(P, K.action),
+    A.bet,
+    A.welcome,
+  )
   const card = (v: FrankValue | undefined, path: string) =>
     u32ish(v, path, 0, 51)
   const hand = (
@@ -44,90 +93,123 @@ function blackjackPayload(payload: FrankValue): BlackjackMessageItem {
     min: number,
     max: number,
   ) =>
-    asList(v, `${P}.${key}`, min, max).map((c, i) =>
-      card(c, `${P}.${key}[${i}]`),
+    asList(v, at(P, key), min, max).map((c, i) =>
+      card(c, `${at(P, key)}[${i}]`),
     )
-  const read = (required: number[], optional: number[] = []) => {
-    const m = fields(payload, P, [0, 1, ...required], optional, false, false)
+  const read = (shape: MapShape) => {
+    const m = shaped(payload, P, shape, false)
     return {
       m,
       base: {
         type: TYPE_BLACKJACK_MESSAGE_ITEM,
-        gameId: tstr(m.get(0), `${P}.0`, 1, 128),
+        gameId: tstr(m.get(K.gameId), at(P, K.gameId), 1, 128),
       },
     }
   }
   switch (action) {
-    case 0: {
-      const { m, base } = read([2])
+    case A.bet: {
+      const { m, base } = read(BLACKJACK_ITEM_BET_SHAPE)
       return {
         ...base,
         action: 'bet',
-        wagerTxHash: bstr(m.get(2), `${P}.2`, 32, 32),
+        wagerTxHash: bstr(m.get(K.wagerTxHash), at(P, K.wagerTxHash), 32, 32),
       }
     }
-    case 1: {
-      const { m, base } = read([4, 5, 6])
+    case A.deal: {
+      const { m, base } = read(BLACKJACK_ITEM_DEAL_SHAPE)
       return {
         ...base,
         action: 'deal',
-        serverSeedHash: bstr(m.get(4), `${P}.4`, 32, 32),
-        playerCards: hand(m.get(5), 5, 2, 2),
-        dealerUpCard: card(m.get(6), `${P}.6`),
+        serverSeedHash: bstr(
+          m.get(K.serverSeedHash),
+          at(P, K.serverSeedHash),
+          32,
+          32,
+        ),
+        playerCards: hand(m.get(K.playerCards), K.playerCards, 2, 2),
+        dealerUpCard: card(m.get(K.dealerUpCard), at(P, K.dealerUpCard)),
       }
     }
-    case 2: {
-      const { m, base } = read([], [5])
-      return m.has(5)
-        ? { ...base, action: 'hit', playerCards: hand(m.get(5), 5, 3, 52) }
+    case A.hit: {
+      const { m, base } = read(BLACKJACK_ITEM_HIT_SHAPE)
+      return m.has(K.playerCards)
+        ? {
+            ...base,
+            action: 'hit',
+            playerCards: hand(m.get(K.playerCards), K.playerCards, 3, 52),
+          }
         : { ...base, action: 'hit' }
     }
-    case 3:
-      return { ...read([]).base, action: 'stand' }
-    case 4: {
-      if (payload.has(3n) === payload.has(5n))
+    case A.stand:
+      return { ...read(BLACKJACK_ITEM_STAND_SHAPE).base, action: 'stand' }
+    case A.double: {
+      const request = payload.has(BigInt(K.doubleWagerTxHash))
+      if (request === payload.has(BigInt(K.playerCards)))
         throw bad(P, 'double requires exactly one request/response form')
-      const { m, base } = read(payload.has(3n) ? [3] : [5])
-      return m.has(3)
+      const { m, base } = read(
+        request
+          ? BLACKJACK_ITEM_DOUBLE_REQUEST_SHAPE
+          : BLACKJACK_ITEM_DOUBLE_RESPONSE_SHAPE,
+      )
+      return m.has(K.doubleWagerTxHash)
         ? {
             ...base,
             action: 'double',
-            doubleWagerTxHash: bstr(m.get(3), `${P}.3`, 32, 32),
+            doubleWagerTxHash: bstr(
+              m.get(K.doubleWagerTxHash),
+              at(P, K.doubleWagerTxHash),
+              32,
+              32,
+            ),
           }
-        : { ...base, action: 'double', playerCards: hand(m.get(5), 5, 3, 3) }
+        : {
+            ...base,
+            action: 'double',
+            playerCards: hand(m.get(K.playerCards), K.playerCards, 3, 3),
+          }
     }
-    case 5: {
-      const { m, base } = read([7, 8, 9])
-      const seed = tstr(m.get(8), `${P}.8`, 64, 64)
+    case A.reveal: {
+      const { m, base } = read(BLACKJACK_ITEM_REVEAL_SHAPE)
+      const seed = tstr(m.get(K.serverSeed), at(P, K.serverSeed), 64, 64)
       if (seed.length !== 64 || !/^[0-9a-f]+$/.test(seed))
-        throw bad(`${P}.8`, 'seed must be 64 lowercase ASCII hex characters')
-      const outcome = [
-        'player_win',
-        'dealer_win',
-        'push',
-        'player_blackjack',
-      ] as const
+        throw bad(
+          at(P, K.serverSeed),
+          'seed must be 64 lowercase ASCII hex characters',
+        )
       return {
         ...base,
         action: 'reveal',
-        dealerCards: hand(m.get(7), 7, 2, 52),
+        dealerCards: hand(m.get(K.dealerCards), K.dealerCards, 2, 52),
         serverSeed: seed,
-        outcome: outcome[u32ish(m.get(9), `${P}.9`, 0, 3)],
+        outcome: outcomeName(
+          u32ish(
+            m.get(K.outcome),
+            at(P, K.outcome),
+            BLACKJACK_OUTCOME.playerWin,
+            BLACKJACK_OUTCOME.playerBlackjack,
+          ),
+        ),
       }
     }
     default: {
-      const { m, base } = read([10, 11], [12, 13])
+      const { m, base } = read(BLACKJACK_ITEM_WELCOME_SHAPE)
       const result: BlackjackMessageItem = {
         ...base,
         action: 'welcome',
-        minWagerWei: bstr(m.get(10), `${P}.10`, 32, 32),
-        maxWagerWei: bstr(m.get(11), `${P}.11`, 32, 32),
+        minWagerWei: bstr(m.get(K.minWagerWei), at(P, K.minWagerWei), 32, 32),
+        maxWagerWei: bstr(m.get(K.maxWagerWei), at(P, K.maxWagerWei), 32, 32),
       }
-      if (m.has(12)) result.feeHintWei = bstr(m.get(12), `${P}.12`, 32, 32)
-      if (m.has(13)) {
-        result.rules = tstr(m.get(13), `${P}.13`, 0, 1200)
+      if (m.has(K.feeHintWei))
+        result.feeHintWei = bstr(
+          m.get(K.feeHintWei),
+          at(P, K.feeHintWei),
+          32,
+          32,
+        )
+      if (m.has(K.rules)) {
+        result.rules = tstr(m.get(K.rules), at(P, K.rules), 0, 1200)
         if (result.rules.length > 400)
-          throw bad(`${P}.13`, 'rules exceed 400 UTF-16 units')
+          throw bad(at(P, K.rules), 'rules exceed 400 UTF-16 units')
       }
       return result
     }
@@ -137,105 +219,159 @@ function blackjackPayload(payload: FrankValue): BlackjackMessageItem {
 /** Closed schema-2 shapes: one peer-to-peer hand. No shape carries an amount of money. */
 function blackjackHandPayload(payload: FrankValue): BlackjackHandMessageItem {
   const P = 'root/payload'
+  const K = BLACKJACK_HAND_ITEM
+  const A = BLACKJACK_HAND_ACTION
   if (!isMap(payload)) throw bad(P, 'blackjack payload must be a map')
   // Codes 16..25: disjoint from schema 1's 0..6, so no reader can take one for the other.
-  const action = u32ish(payload.get(1n), `${P}.1`, 16, 25) - 16
+  const action = u32ish(
+    payload.get(BigInt(K.action)),
+    at(P, K.action),
+    A.challenge,
+    A.refund,
+  )
   const hand = (
     v: FrankValue | undefined,
     key: number,
     min: number,
     max: number,
   ) =>
-    asList(v, `${P}.${key}`, min, max).map((c, i) =>
-      u32ish(c, `${P}.${key}[${i}]`, 0, 51),
+    asList(v, at(P, key), min, max).map((c, i) =>
+      u32ish(c, `${at(P, key)}[${i}]`, 0, 51),
     )
-  const read = (required: number[]) => {
-    const m = fields(payload, P, [0, 1, ...required], [], false, false)
+  const read = (shape: MapShape) => {
+    const m = shaped(payload, P, shape, false)
     // Fixed form, so a game id is always safe to use as a key: 32 lowercase hex characters.
-    const gameId = tstr(m.get(0), `${P}.0`, 32, 32)
+    const gameId = tstr(m.get(K.gameId), at(P, K.gameId), 32, 32)
     if (!/^[0-9a-f]{32}$/.test(gameId))
-      throw bad(`${P}.0`, 'game id must be 32 lowercase ASCII hex characters')
+      throw bad(
+        at(P, K.gameId),
+        'game id must be 32 lowercase ASCII hex characters',
+      )
     return {
       m,
       base: { type: TYPE_BLACKJACK_MESSAGE_ITEM, schema: 2 as const, gameId },
     }
   }
-  const hash = (m: MapView, key: number) =>
-    bstr(m.get(key), `${P}.${key}`, 32, 32)
+  const hash = (m: MapView, key: number) => bstr(m.get(key), at(P, key), 32, 32)
   switch (action) {
-    case 0: {
-      const dealer = u32ish(payload.get(2n), `${P}.2`, 0, 1) === 0
-      const { m, base } = read(dealer ? [2, 3, 4] : [2, 3])
+    case A.challenge: {
+      const dealer =
+        u32ish(
+          payload.get(BigInt(K.role)),
+          at(P, K.role),
+          BLACKJACK_ROLE.dealer,
+          BLACKJACK_ROLE.player,
+        ) === BLACKJACK_ROLE.dealer
+      const { m, base } = read(
+        dealer
+          ? BLACKJACK_HAND_ITEM_CHALLENGE_DEALER_SHAPE
+          : BLACKJACK_HAND_ITEM_CHALLENGE_PLAYER_SHAPE,
+      )
       return dealer
         ? {
             ...base,
             action: 'challenge',
             role: 'dealer',
-            maxBetWei: hash(m, 3),
-            commitment: hash(m, 4),
+            maxBetWei: hash(m, K.maxBetWei),
+            commitment: hash(m, K.commitment),
           }
         : {
             ...base,
             action: 'challenge',
             role: 'player',
-            maxBetWei: hash(m, 3),
+            maxBetWei: hash(m, K.maxBetWei),
           }
     }
-    case 1: {
-      const { m, base } = read([3, 4])
+    case A.accept: {
+      const { m, base } = read(BLACKJACK_HAND_ITEM_ACCEPT_SHAPE)
       return {
         ...base,
         action: 'accept',
-        maxBetWei: hash(m, 3),
-        commitment: hash(m, 4),
+        maxBetWei: hash(m, K.maxBetWei),
+        commitment: hash(m, K.commitment),
       }
     }
-    case 2:
-      return { ...read([]).base, action: 'bet' }
-    case 3: {
-      const { m, base } = read([5, 6])
+    case A.bet:
+      return {
+        ...read(BLACKJACK_HAND_ITEM_ACTION_ONLY_SHAPE).base,
+        action: 'bet',
+      }
+    case A.deal: {
+      const { m, base } = read(BLACKJACK_HAND_ITEM_DEAL_SHAPE)
       return {
         ...base,
         action: 'deal',
-        playerCards: hand(m.get(5), 5, 2, 2),
-        dealerUpCard: u32ish(m.get(6), `${P}.6`, 0, 51),
+        playerCards: hand(m.get(K.playerCards), K.playerCards, 2, 2),
+        dealerUpCard: u32ish(
+          m.get(K.dealerUpCard),
+          at(P, K.dealerUpCard),
+          0,
+          51,
+        ),
       }
     }
-    case 4:
-      return { ...read([]).base, action: 'hit' }
-    case 5:
-      return { ...read([]).base, action: 'stand' }
-    case 6:
-      return { ...read([]).base, action: 'double' }
-    case 7: {
-      const { m, base } = read([5])
-      return { ...base, action: 'card', playerCards: hand(m.get(5), 5, 3, 52) }
+    case A.hit:
+      return {
+        ...read(BLACKJACK_HAND_ITEM_ACTION_ONLY_SHAPE).base,
+        action: 'hit',
+      }
+    case A.stand:
+      return {
+        ...read(BLACKJACK_HAND_ITEM_ACTION_ONLY_SHAPE).base,
+        action: 'stand',
+      }
+    case A.double:
+      return {
+        ...read(BLACKJACK_HAND_ITEM_ACTION_ONLY_SHAPE).base,
+        action: 'double',
+      }
+    case A.card: {
+      const { m, base } = read(BLACKJACK_HAND_ITEM_CARD_SHAPE)
+      return {
+        ...base,
+        action: 'card',
+        playerCards: hand(m.get(K.playerCards), K.playerCards, 3, 52),
+      }
     }
-    case 8: {
-      const { m, base } = read([7, 8, 9])
-      const seed = tstr(m.get(8), `${P}.8`, 64, 64)
+    case A.reveal: {
+      const { m, base } = read(BLACKJACK_HAND_ITEM_REVEAL_SHAPE)
+      const seed = tstr(m.get(K.seed), at(P, K.seed), 64, 64)
       if (seed.length !== 64 || !/^[0-9a-f]+$/.test(seed))
-        throw bad(`${P}.8`, 'seed must be 64 lowercase ASCII hex characters')
-      const outcome = [
-        'player_win',
-        'dealer_win',
-        'push',
-        'player_blackjack',
-      ] as const
+        throw bad(
+          at(P, K.seed),
+          'seed must be 64 lowercase ASCII hex characters',
+        )
       return {
         ...base,
         action: 'reveal',
-        dealerCards: hand(m.get(7), 7, 2, 52),
+        dealerCards: hand(m.get(K.dealerCards), K.dealerCards, 2, 52),
         seed,
-        outcome: outcome[u32ish(m.get(9), `${P}.9`, 0, 3)],
+        outcome: outcomeName(
+          u32ish(
+            m.get(K.outcome),
+            at(P, K.outcome),
+            BLACKJACK_OUTCOME.playerWin,
+            BLACKJACK_OUTCOME.playerBlackjack,
+          ),
+        ),
       }
     }
     default: {
-      const { m, base } = read([10])
-      return { ...base, action: 'refund', ref: hash(m, 10) }
+      const { m, base } = read(BLACKJACK_HAND_ITEM_REFUND_SHAPE)
+      return { ...base, action: 'refund', ref: hash(m, K.ref) }
     }
   }
 }
+
+/** Schema-3 move codes that carry only `link` and `prev`, by application name. */
+const V3_MOVES = {
+  [BLACKJACK_HAND_V3_ACTION.deal]: 'deal',
+  [BLACKJACK_HAND_V3_ACTION.hit]: 'hit',
+  [BLACKJACK_HAND_V3_ACTION.stand]: 'stand',
+  [BLACKJACK_HAND_V3_ACTION.double]: 'double',
+  [BLACKJACK_HAND_V3_ACTION.card]: 'card',
+  [BLACKJACK_HAND_V3_ACTION.reveal]: 'reveal',
+} as const
 
 /** Closed schema-3 shapes: a hand whose cards come from both sides' entropy. No shape states a
  * card, an outcome or an amount of money. */
@@ -243,19 +379,29 @@ function blackjackHandV3Payload(
   payload: FrankValue,
 ): BlackjackHandV3MessageItem {
   const P = 'root/payload'
+  const K = BLACKJACK_HAND_V3_ITEM
+  const A = BLACKJACK_HAND_V3_ACTION
   if (!isMap(payload)) throw bad(P, 'blackjack payload must be a map')
   // Codes 32..41: disjoint from schema 1's 0..6 and schema 2's 16..25.
-  const action = u32ish(payload.get(1n), `${P}.1`, 32, 41) - 32
-  const read = (required: number[]) => {
-    const m = fields(payload, P, [0, 1, 11, ...required], [], false, false)
-    const gameId = tstr(m.get(0), `${P}.0`, 32, 32)
+  const action = u32ish(
+    payload.get(BigInt(K.action)),
+    at(P, K.action),
+    A.challenge,
+    A.refund,
+  )
+  const read = (shape: MapShape) => {
+    const m = shaped(payload, P, shape, false)
+    const gameId = tstr(m.get(K.gameId), at(P, K.gameId), 32, 32)
     if (!/^[0-9a-f]{32}$/.test(gameId))
-      throw bad(`${P}.0`, 'game id must be 32 lowercase ASCII hex characters')
+      throw bad(
+        at(P, K.gameId),
+        'game id must be 32 lowercase ASCII hex characters',
+      )
     // A challenge is message 0 of its hand; every other message follows one.
     const seq =
-      action === 0
-        ? u32ish(m.get(11), `${P}.11`, 0, 0)
-        : u32ish(m.get(11), `${P}.11`, 1, 255)
+      action === A.challenge
+        ? u32ish(m.get(K.seq), at(P, K.seq), 0, 0)
+        : u32ish(m.get(K.seq), at(P, K.seq), 1, 255)
     return {
       m,
       base: {
@@ -266,65 +412,71 @@ function blackjackHandV3Payload(
       },
     }
   }
-  const hash = (m: MapView, key: number) =>
-    bstr(m.get(key), `${P}.${key}`, 32, 32)
+  const hash = (m: MapView, key: number) => bstr(m.get(key), at(P, key), 32, 32)
   switch (action) {
-    case 0: {
-      const dealer = u32ish(payload.get(2n), `${P}.2`, 0, 1) === 0
-      const { m, base } = read(dealer ? [2, 3, 4] : [2, 3])
+    case A.challenge: {
+      const dealer =
+        u32ish(
+          payload.get(BigInt(K.role)),
+          at(P, K.role),
+          BLACKJACK_ROLE.dealer,
+          BLACKJACK_ROLE.player,
+        ) === BLACKJACK_ROLE.dealer
+      const { m, base } = read(
+        dealer
+          ? BLACKJACK_HAND_V3_ITEM_CHALLENGE_DEALER_SHAPE
+          : BLACKJACK_HAND_V3_ITEM_CHALLENGE_PLAYER_SHAPE,
+      )
       return dealer
         ? {
             ...base,
             action: 'challenge',
             role: 'dealer',
-            maxBetWei: hash(m, 3),
-            commitment: hash(m, 4),
+            maxBetWei: hash(m, K.maxBetWei),
+            commitment: hash(m, K.commitment),
           }
         : {
             ...base,
             action: 'challenge',
             role: 'player',
-            maxBetWei: hash(m, 3),
+            maxBetWei: hash(m, K.maxBetWei),
           }
     }
-    case 1: {
-      const { m, base } = read([3, 4, 12])
+    case A.accept: {
+      const { m, base } = read(BLACKJACK_HAND_V3_ITEM_ACCEPT_SHAPE)
       return {
         ...base,
         action: 'accept',
-        maxBetWei: hash(m, 3),
-        commitment: hash(m, 4),
-        prev: hash(m, 12),
+        maxBetWei: hash(m, K.maxBetWei),
+        commitment: hash(m, K.commitment),
+        prev: hash(m, K.prev),
       }
     }
-    case 2: {
-      const { m, base } = read([4, 12])
+    case A.bet: {
+      const { m, base } = read(BLACKJACK_HAND_V3_ITEM_BET_SHAPE)
       return {
         ...base,
         action: 'bet',
-        commitment: hash(m, 4),
-        prev: hash(m, 12),
+        commitment: hash(m, K.commitment),
+        prev: hash(m, K.prev),
       }
     }
-    case 9: {
-      const { m, base } = read([10, 12])
-      return { ...base, action: 'refund', ref: hash(m, 10), prev: hash(m, 12) }
-    }
-    default: {
-      const { m, base } = read([12, 13])
-      const names = [
-        'deal',
-        'hit',
-        'stand',
-        'double',
-        'card',
-        'reveal',
-      ] as const
+    case A.refund: {
+      const { m, base } = read(BLACKJACK_HAND_V3_ITEM_REFUND_SHAPE)
       return {
         ...base,
-        action: names[action - 3],
-        link: hash(m, 13),
-        prev: hash(m, 12),
+        action: 'refund',
+        ref: hash(m, K.ref),
+        prev: hash(m, K.prev),
+      }
+    }
+    default: {
+      const { m, base } = read(BLACKJACK_HAND_V3_ITEM_MOVE_SHAPE)
+      return {
+        ...base,
+        action: V3_MOVES[action as keyof typeof V3_MOVES],
+        link: hash(m, K.link),
+        prev: hash(m, K.prev),
       }
     }
   }
@@ -340,18 +492,20 @@ export function parseBlackjackDraft(
   // are disjoint from schema 1's (0..6), so the code alone says which closed map applies.
   // A hand shape is read only from a frame that requires reader 2; anywhere else its action
   // code is simply out of range for the schema-1 shapes.
-  const code = isMap(payload) ? payload.get(1n) : undefined
+  const code = isMap(payload)
+    ? payload.get(BigInt(BLACKJACK_ITEM.action))
+    : undefined
   // Schema 3 adds the hand shapes with entropy from both sides, codes 32..41, read only by
   // a reader that supports schema 3.
   if (
     typeof code === 'bigint' &&
-    code >= 32n &&
+    code >= BigInt(BLACKJACK_HAND_V3_ACTION.challenge) &&
     schema.effective >= 3 &&
     (schema.minReader ?? 1) >= 2
   )
     return blackjackHandV3Payload(payload)
   return typeof code === 'bigint' &&
-    code >= 16n &&
+    code >= BigInt(BLACKJACK_HAND_ACTION.challenge) &&
     schema.effective >= 2 &&
     (schema.minReader ?? 1) >= 2
     ? blackjackHandPayload(payload)
@@ -399,10 +553,7 @@ export function checkBlackjackSemantics(typed: BlackjackWireItem): void {
       : undefined
   if (cards && new Set(cards).size !== cards.length)
     throw semantic('blackjack hand contains duplicate cards')
-  if (
-    typed.action === 'deal' &&
-    typed.playerCards.includes(typed.dealerUpCard)
-  )
+  if (typed.action === 'deal' && typed.playerCards.includes(typed.dealerUpCard))
     throw semantic('deal up-card duplicates a player card')
   if (typed.action === 'welcome') {
     const quantity = (bytes: Uint8Array) =>

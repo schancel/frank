@@ -763,7 +763,7 @@ fn verify_entry(
     location: &str,
 ) -> Result<(), CodecError> {
     preflight_algorithm(algorithm, location)?;
-    if algorithm != mf::signature_algorithm::SECP256K1_ECDSA {
+    if algorithm != mf::signature_algorithm::SECP256K1_ECDSA_DER {
         return Err(fail(
             ErrorCategory::Unsupported,
             ErrorStage::S106,

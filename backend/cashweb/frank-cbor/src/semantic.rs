@@ -603,7 +603,7 @@ pub(crate) fn check_semantics(
             }
             if crate::directory_preview::is_preview(opened(statement)) {
                 if signatures.len() != 1
-                    || signatures[0].algorithm != mf::signature_algorithm::SECP256K1_ECDSA
+                    || signatures[0].algorithm != mf::signature_algorithm::SECP256K1_ECDSA_DER
                 {
                     return Err(semantic(
                         "directory preview requires exactly one algorithm-1 subject signature",

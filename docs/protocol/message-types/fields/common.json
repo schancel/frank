@@ -33,10 +33,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/common.cddl#timestamp",
-          "required": [
-            "seconds",
-            "nanoseconds"
-          ],
+          "required": ["seconds", "nanoseconds"],
           "optional": [],
           "open": false
         }
@@ -51,10 +48,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/common.cddl#account-ref",
-          "required": [
-            "key-type",
-            "key-bytes"
-          ],
+          "required": ["key-type", "key-bytes"],
           "optional": [],
           "open": false
         }
@@ -70,11 +64,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/common.cddl#signature-entry",
-          "required": [
-            "algorithm",
-            "signer",
-            "signature"
-          ],
+          "required": ["algorithm", "signer", "signature"],
           "optional": [],
           "open": false
         }

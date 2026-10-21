@@ -22,10 +22,7 @@
             "payload-digest",
             "payments"
           ],
-          "optional": [
-            "recipient",
-            "dleq-proof"
-          ],
+          "optional": ["recipient", "dleq-proof"],
           "open": true
         },
         {
@@ -37,11 +34,7 @@
             "payload-frame",
             "payload-digest"
           ],
-          "optional": [
-            "payments",
-            "recipient",
-            "dleq-proof"
-          ],
+          "optional": ["payments", "recipient", "dleq-proof"],
           "open": true
         }
       ]
@@ -67,10 +60,7 @@
             "address",
             "commitment"
           ],
-          "optional": [
-            "vout",
-            "raw-tx"
-          ],
+          "optional": ["vout", "raw-tx"],
           "open": false
         }
       ]
@@ -84,12 +74,8 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#stealth-metadata",
-          "required": [
-            "ephemeral-pub-key"
-          ],
-          "optional": [
-            "view-tag"
-          ],
+          "required": ["ephemeral-pub-key"],
+          "optional": ["view-tag"],
           "open": false
         }
       ]
@@ -110,12 +96,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#payment-transfer",
-          "required": [
-            "network-tag",
-            "tx-id",
-            "destination",
-            "value"
-          ],
+          "required": ["network-tag", "tx-id", "destination", "value"],
           "optional": [
             "vout",
             "token",
@@ -256,10 +237,7 @@
             "payload-digest",
             "payments"
           ],
-          "optional": [
-            "endpoint",
-            "expires-at"
-          ],
+          "optional": ["endpoint", "expires-at"],
           "open": true
         }
       ]
@@ -284,9 +262,7 @@
             "timestamp",
             "facts"
           ],
-          "optional": [
-            "sections"
-          ],
+          "optional": ["sections"],
           "open": true
         }
       ]
@@ -302,12 +278,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/checkpoint.cddl#journal-fact",
-          "required": [
-            "timestamp",
-            "fact-id",
-            "kind",
-            "payload"
-          ],
+          "required": ["timestamp", "fact-id", "kind", "payload"],
           "optional": [],
           "open": true
         }
@@ -323,11 +294,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/checkpoint.cddl#opaque-section",
-          "required": [
-            "section-type",
-            "section-schema-version",
-            "value"
-          ],
+          "required": ["section-type", "section-schema-version", "value"],
           "optional": [],
           "open": false
         }
@@ -343,13 +310,8 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/checkpoint.cddl#tombstone-fact-payload",
-          "required": [
-            "object-family",
-            "object-id"
-          ],
-          "optional": [
-            "revision-digest"
-          ],
+          "required": ["object-family", "object-id"],
+          "optional": ["revision-digest"],
           "open": true
         }
       ]

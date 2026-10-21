@@ -6,7 +6,17 @@ import {
   type BlackjackWireItem,
 } from './blackjack-schema'
 import type { Encodable } from './cbor'
-import { TYPE_BLACKJACK_MESSAGE_ITEM } from './constants'
+import {
+  BLACKJACK_ACTION,
+  BLACKJACK_HAND_ACTION,
+  BLACKJACK_HAND_ITEM,
+  BLACKJACK_HAND_V3_ACTION,
+  BLACKJACK_HAND_V3_ITEM,
+  BLACKJACK_ITEM,
+  BLACKJACK_OUTCOME,
+  BLACKJACK_ROLE,
+  TYPE_BLACKJACK_MESSAGE_ITEM,
+} from './constants'
 import { FrankCodecError, FrankContextError } from './errors'
 import { encodeFrame } from './frame'
 import { fromHex, toHex } from './hash'
@@ -96,47 +106,56 @@ export function encodeBlackjackItem(item: BlackjackItem): Uint8Array {
   if (item === null || typeof item !== 'object' || Array.isArray(item))
     throw bad('expected an item object')
   const input = item as unknown as Record<string, unknown>
-  const fields: [number, string][] = [[0, 'gameId']]
+  const K = BLACKJACK_ITEM
+  const A = BLACKJACK_ACTION
+  const fields: [number, string][] = [[K.gameId, 'gameId']]
   let action: number
   switch (input.action) {
     case 'bet':
-      action = 0
-      fields.push([2, 'wagerTxHash'])
+      action = A.bet
+      fields.push([K.wagerTxHash, 'wagerTxHash'])
       break
     case 'deal':
-      action = 1
+      action = A.deal
       fields.push(
-        [4, 'serverSeedHash'],
-        [5, 'playerCards'],
-        [6, 'dealerUpCard'],
+        [K.serverSeedHash, 'serverSeedHash'],
+        [K.playerCards, 'playerCards'],
+        [K.dealerUpCard, 'dealerUpCard'],
       )
       break
     case 'hit':
-      action = 2
-      if (own(input, 'playerCards')) fields.push([5, 'playerCards'])
+      action = A.hit
+      if (own(input, 'playerCards')) fields.push([K.playerCards, 'playerCards'])
       break
     case 'stand':
-      action = 3
+      action = A.stand
       break
     case 'double':
-      action = 4
+      action = A.double
       if (own(input, 'doubleWagerTxHash') === own(input, 'playerCards'))
         throw bad('double requires exactly one request/response form')
       fields.push(
         own(input, 'doubleWagerTxHash')
-          ? [3, 'doubleWagerTxHash']
-          : [5, 'playerCards'],
+          ? [K.doubleWagerTxHash, 'doubleWagerTxHash']
+          : [K.playerCards, 'playerCards'],
       )
       break
     case 'reveal':
-      action = 5
-      fields.push([7, 'dealerCards'], [8, 'serverSeed'], [9, 'outcome'])
+      action = A.reveal
+      fields.push(
+        [K.dealerCards, 'dealerCards'],
+        [K.serverSeed, 'serverSeed'],
+        [K.outcome, 'outcome'],
+      )
       break
     case 'welcome':
-      action = 6
-      fields.push([10, 'minWagerWei'], [11, 'maxWagerWei'])
-      if (own(input, 'feeHintWei')) fields.push([12, 'feeHintWei'])
-      if (own(input, 'rules')) fields.push([13, 'rules'])
+      action = A.welcome
+      fields.push(
+        [K.minWagerWei, 'minWagerWei'],
+        [K.maxWagerWei, 'maxWagerWei'],
+      )
+      if (own(input, 'feeHintWei')) fields.push([K.feeHintWei, 'feeHintWei'])
+      if (own(input, 'rules')) fields.push([K.rules, 'rules'])
       break
     default:
       throw bad('unknown blackjack action')
@@ -150,18 +169,24 @@ export function encodeBlackjackItem(item: BlackjackItem): Uint8Array {
     )
   )
     throw bad('closed blackjack item fields required')
-  const payload = new Map<number, Encodable>([[1, action]])
+  const payload = new Map<number, Encodable>([[K.action, action]])
   for (const [key, name] of fields) {
     const value = input[name]
-    if (key === 2 || key === 3 || key === 4)
-      payload.set(key, hash(value, key !== 4))
-    else if (key >= 10 && key <= 12) payload.set(key, quantity(value))
-    else if (key === 9) {
-      const outcomes = ['player_win', 'dealer_win', 'push', 'player_blackjack']
-      if (typeof value !== 'string' || !outcomes.includes(value))
-        throw bad('unknown blackjack outcome')
-      payload.set(key, outcomes.indexOf(value))
-    } else {
+    if (
+      key === K.wagerTxHash ||
+      key === K.doubleWagerTxHash ||
+      key === K.serverSeedHash
+    )
+      // Wager hashes are 0x-prefixed transaction hashes; the seed hash is bare hex.
+      payload.set(key, hash(value, key !== K.serverSeedHash))
+    else if (
+      key === K.minWagerWei ||
+      key === K.maxWagerWei ||
+      key === K.feeHintWei
+    )
+      payload.set(key, quantity(value))
+    else if (key === K.outcome) payload.set(key, outcomeCode(value))
+    else {
       // The canonical encoder rejects invalid host kinds and ill-formed Unicode; the
       // typed validator below enforces every action-specific wire bound and semantic rule.
       payload.set(key, value as Encodable)
@@ -256,54 +281,71 @@ export function projectBlackjackItem(parsed: ParsedFrame): {
 /** The ten closed peer-to-peer hand shapes (type 18, schema 2). Hashes are 64 bare lowercase hex
  * characters, quantities exact decimal strings. No shape carries an amount of money: a wager,
  * payout or refund is the stamp of the message that carries the item. */
-export type BlackjackHandItem = { type: 'blackjack-hand' } & BlackjackHandFields<
-  string,
-  string
->
+export type BlackjackHandItem = {
+  type: 'blackjack-hand'
+} & BlackjackHandFields<string, string>
 
-const HAND_ACTIONS = [
-  'challenge',
-  'accept',
-  'bet',
-  'deal',
-  'hit',
-  'stand',
-  'double',
-  'card',
-  'reveal',
-  'refund',
-] as const
-const OUTCOMES = ['player_win', 'dealer_win', 'push', 'player_blackjack']
+/** Application outcome name to its wire code (key 9). */
+const OUTCOME_CODES: Readonly<Record<string, number>> = {
+  player_win: BLACKJACK_OUTCOME.playerWin,
+  dealer_win: BLACKJACK_OUTCOME.dealerWin,
+  push: BLACKJACK_OUTCOME.push,
+  player_blackjack: BLACKJACK_OUTCOME.playerBlackjack,
+}
+
+function outcomeCode(value: unknown): number {
+  if (typeof value !== 'string' || !own(OUTCOME_CODES, value))
+    throw bad('unknown blackjack outcome')
+  return OUTCOME_CODES[value]
+}
+
+/** Application action name to its schema-2 or schema-3 wire code (key 1). */
+function actionCode(
+  codes: Readonly<Record<string, number>>,
+  action: unknown,
+): number | undefined {
+  return typeof action === 'string' && own(codes, action)
+    ? codes[action]
+    : undefined
+}
 
 /** Deterministic writer for one hand item; the typed validator then enforces every wire rule. */
 export function encodeBlackjackHandItem(item: BlackjackHandItem): Uint8Array {
   if (item === null || typeof item !== 'object' || Array.isArray(item))
     throw bad('expected an item object')
   const input = item as unknown as Record<string, unknown>
-  const action = HAND_ACTIONS.indexOf(input.action as typeof HAND_ACTIONS[number])
-  if (action < 0) throw bad('unknown blackjack action')
-  const fields: [number, string][] = [[0, 'gameId']]
+  const K = BLACKJACK_HAND_ITEM
+  const action = actionCode(BLACKJACK_HAND_ACTION, input.action)
+  if (action === undefined) throw bad('unknown blackjack action')
+  const fields: [number, string][] = [[K.gameId, 'gameId']]
   switch (input.action) {
     case 'challenge':
       if (input.role !== 'dealer' && input.role !== 'player')
         throw bad('unknown blackjack role')
-      fields.push([2, 'role'], [3, 'maxBetWei'])
-      if (input.role === 'dealer') fields.push([4, 'commitment'])
+      fields.push([K.role, 'role'], [K.maxBetWei, 'maxBetWei'])
+      if (input.role === 'dealer') fields.push([K.commitment, 'commitment'])
       break
     case 'accept':
-      fields.push([3, 'maxBetWei'], [4, 'commitment'])
+      fields.push([K.maxBetWei, 'maxBetWei'], [K.commitment, 'commitment'])
       break
     case 'deal':
-      fields.push([5, 'playerCards'], [6, 'dealerUpCard'])
+      fields.push(
+        [K.playerCards, 'playerCards'],
+        [K.dealerUpCard, 'dealerUpCard'],
+      )
       break
     case 'card':
-      fields.push([5, 'playerCards'])
+      fields.push([K.playerCards, 'playerCards'])
       break
     case 'reveal':
-      fields.push([7, 'dealerCards'], [8, 'seed'], [9, 'outcome'])
+      fields.push(
+        [K.dealerCards, 'dealerCards'],
+        [K.seed, 'seed'],
+        [K.outcome, 'outcome'],
+      )
       break
     case 'refund':
-      fields.push([10, 'ref'])
+      fields.push([K.ref, 'ref'])
       break
   }
   const names = ['type', 'action', ...fields.map(([, name]) => name)]
@@ -315,17 +357,19 @@ export function encodeBlackjackHandItem(item: BlackjackHandItem): Uint8Array {
     )
   )
     throw bad('closed blackjack item fields required')
-  const payload = new Map<number, Encodable>([[1, action + 16]])
+  const payload = new Map<number, Encodable>([[K.action, action]])
   for (const [key, name] of fields) {
     const value = input[name]
-    if (key === 2) payload.set(key, value === 'dealer' ? 0 : 1)
-    else if (key === 3) payload.set(key, quantity(value))
-    else if (key === 4 || key === 10) payload.set(key, hash(value, false))
-    else if (key === 9) {
-      if (typeof value !== 'string' || !OUTCOMES.includes(value))
-        throw bad('unknown blackjack outcome')
-      payload.set(key, OUTCOMES.indexOf(value))
-    } else payload.set(key, value as Encodable)
+    if (key === K.role)
+      payload.set(
+        key,
+        value === 'dealer' ? BLACKJACK_ROLE.dealer : BLACKJACK_ROLE.player,
+      )
+    else if (key === K.maxBetWei) payload.set(key, quantity(value))
+    else if (key === K.commitment || key === K.ref)
+      payload.set(key, hash(value, false))
+    else if (key === K.outcome) payload.set(key, outcomeCode(value))
+    else payload.set(key, value as Encodable)
   }
   const frame = encodeFrame(
     {
@@ -431,34 +475,41 @@ export type BlackjackHandV3Item = {
 )
 
 /** Deterministic writer for one schema-3 hand item; the typed validator enforces the wire rules. */
-export function encodeBlackjackHandV3Item(item: BlackjackHandV3Item): Uint8Array {
+export function encodeBlackjackHandV3Item(
+  item: BlackjackHandV3Item,
+): Uint8Array {
   if (item === null || typeof item !== 'object' || Array.isArray(item))
     throw bad('expected an item object')
   const input = item as unknown as Record<string, unknown>
-  const action = HAND_ACTIONS.indexOf(input.action as typeof HAND_ACTIONS[number])
-  if (action < 0) throw bad('unknown blackjack action')
+  const K = BLACKJACK_HAND_V3_ITEM
+  const action = actionCode(BLACKJACK_HAND_V3_ACTION, input.action)
+  if (action === undefined) throw bad('unknown blackjack action')
   const fields: [number, string][] = [
-    [0, 'gameId'],
-    [11, 'seq'],
+    [K.gameId, 'gameId'],
+    [K.seq, 'seq'],
   ]
   switch (input.action) {
     case 'challenge':
       if (input.role !== 'dealer' && input.role !== 'player')
         throw bad('unknown blackjack role')
-      fields.push([2, 'role'], [3, 'maxBetWei'])
-      if (input.role === 'dealer') fields.push([4, 'commitment'])
+      fields.push([K.role, 'role'], [K.maxBetWei, 'maxBetWei'])
+      if (input.role === 'dealer') fields.push([K.commitment, 'commitment'])
       break
     case 'accept':
-      fields.push([3, 'maxBetWei'], [4, 'commitment'], [12, 'prev'])
+      fields.push(
+        [K.maxBetWei, 'maxBetWei'],
+        [K.commitment, 'commitment'],
+        [K.prev, 'prev'],
+      )
       break
     case 'bet':
-      fields.push([4, 'commitment'], [12, 'prev'])
+      fields.push([K.commitment, 'commitment'], [K.prev, 'prev'])
       break
     case 'refund':
-      fields.push([10, 'ref'], [12, 'prev'])
+      fields.push([K.ref, 'ref'], [K.prev, 'prev'])
       break
     default:
-      fields.push([12, 'prev'], [13, 'link'])
+      fields.push([K.prev, 'prev'], [K.link, 'link'])
   }
   const names = ['type', 'action', ...fields.map(([, name]) => name)]
   if (
@@ -469,16 +520,20 @@ export function encodeBlackjackHandV3Item(item: BlackjackHandV3Item): Uint8Array
     )
   )
     throw bad('closed blackjack item fields required')
-  const payload = new Map<number, Encodable>([[1, action + 32]])
+  const payload = new Map<number, Encodable>([[K.action, action]])
   for (const [key, name] of fields) {
     const value = input[name]
-    if (key === 2) payload.set(key, value === 'dealer' ? 0 : 1)
-    else if (key === 3) payload.set(key, quantity(value))
-    else if (key === 11) {
+    if (key === K.role)
+      payload.set(
+        key,
+        value === 'dealer' ? BLACKJACK_ROLE.dealer : BLACKJACK_ROLE.player,
+      )
+    else if (key === K.maxBetWei) payload.set(key, quantity(value))
+    else if (key === K.seq) {
       if (typeof value !== 'number' || !Number.isInteger(value) || value < 0)
         throw bad('seq must be a non-negative integer')
       payload.set(key, value)
-    } else if (key === 0) payload.set(key, value as Encodable)
+    } else if (key === K.gameId) payload.set(key, value as Encodable)
     else payload.set(key, hash(value, false))
   }
   const frame = encodeFrame(

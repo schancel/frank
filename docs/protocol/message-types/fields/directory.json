@@ -10,10 +10,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/directory.cddl#directory-attestation",
-          "required": [
-            "statement-frame",
-            "signatures"
-          ],
+          "required": ["statement-frame", "signatures"],
           "optional": [],
           "open": true
         }
@@ -45,13 +42,7 @@
         {
           "name": "v1",
           "cddl": "docs/protocol/cbor/directory.cddl#directory-statement-v1",
-          "required": [
-            "network",
-            "subject",
-            "revision",
-            "timestamp",
-            "relays"
-          ],
+          "required": ["network", "subject", "revision", "timestamp", "relays"],
           "optional": [
             "key-transitions",
             "expiry",
@@ -121,11 +112,7 @@
             "stamp-key-generation",
             "predecessor-hash"
           ],
-          "optional": [
-            "username",
-            "account-type",
-            "bot-role"
-          ],
+          "optional": ["username", "account-type", "bot-role"],
           "open": true
         }
       ]
@@ -141,12 +128,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/directory.cddl#relay-binding",
-          "required": [
-            "relay-id",
-            "endpoint",
-            "identity",
-            "expiry"
-          ],
+          "required": ["relay-id", "endpoint", "identity", "expiry"],
           "optional": [],
           "open": true
         }
@@ -163,12 +145,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/directory.cddl#key-transition",
-          "required": [
-            "statement-frame",
-            "algorithm",
-            "signer",
-            "signature"
-          ],
+          "required": ["statement-frame", "algorithm", "signer", "signature"],
           "optional": [],
           "open": true
         }
@@ -208,11 +185,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/directory.cddl#profile-entry",
-          "required": [
-            "kind",
-            "headers",
-            "body"
-          ],
+          "required": ["kind", "headers", "body"],
           "optional": [],
           "open": true
         }
@@ -227,10 +200,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/directory.cddl#profile-header",
-          "required": [
-            "name",
-            "value"
-          ],
+          "required": ["name", "value"],
           "optional": [],
           "open": true
         }
@@ -245,10 +215,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/directory.cddl#directory-preview-key",
-          "required": [
-            "key-type",
-            "key-bytes"
-          ],
+          "required": ["key-type", "key-bytes"],
           "optional": [],
           "open": false
         }
@@ -265,12 +232,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/directory.cddl#directory-preview-relay",
-          "required": [
-            "relay-id",
-            "endpoint",
-            "identity",
-            "expiry"
-          ],
+          "required": ["relay-id", "endpoint", "identity", "expiry"],
           "optional": [],
           "open": true
         }

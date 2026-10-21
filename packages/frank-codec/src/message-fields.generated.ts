@@ -20,6 +20,286 @@ export const ACCOUNT_REF_SHAPE: MapShape = {
   open: false,
 }
 
+/** `blackjack-hand-item` field keys: Type 18 schema 2 (closed): one peer-to-peer hand. Key 1 is the action code (blackjack-hand-action). */
+export const BLACKJACK_HAND_ITEM = {
+  gameId: 0,
+  action: 1,
+  role: 2,
+  maxBetWei: 3,
+  commitment: 4,
+  playerCards: 5,
+  dealerUpCard: 6,
+  dealerCards: 7,
+  seed: 8,
+  outcome: 9,
+  ref: 10,
+} as const
+/** `blackjack-hand-item` challenge-dealer map shape. */
+export const BLACKJACK_HAND_ITEM_CHALLENGE_DEALER_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_ITEM.gameId,
+    BLACKJACK_HAND_ITEM.action,
+    BLACKJACK_HAND_ITEM.role,
+    BLACKJACK_HAND_ITEM.maxBetWei,
+    BLACKJACK_HAND_ITEM.commitment,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-item` challenge-player map shape. */
+export const BLACKJACK_HAND_ITEM_CHALLENGE_PLAYER_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_ITEM.gameId,
+    BLACKJACK_HAND_ITEM.action,
+    BLACKJACK_HAND_ITEM.role,
+    BLACKJACK_HAND_ITEM.maxBetWei,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-item` accept map shape. */
+export const BLACKJACK_HAND_ITEM_ACCEPT_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_ITEM.gameId,
+    BLACKJACK_HAND_ITEM.action,
+    BLACKJACK_HAND_ITEM.maxBetWei,
+    BLACKJACK_HAND_ITEM.commitment,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-item` deal map shape. */
+export const BLACKJACK_HAND_ITEM_DEAL_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_ITEM.gameId,
+    BLACKJACK_HAND_ITEM.action,
+    BLACKJACK_HAND_ITEM.playerCards,
+    BLACKJACK_HAND_ITEM.dealerUpCard,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-item` card map shape. */
+export const BLACKJACK_HAND_ITEM_CARD_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_ITEM.gameId,
+    BLACKJACK_HAND_ITEM.action,
+    BLACKJACK_HAND_ITEM.playerCards,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-item` reveal map shape. */
+export const BLACKJACK_HAND_ITEM_REVEAL_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_ITEM.gameId,
+    BLACKJACK_HAND_ITEM.action,
+    BLACKJACK_HAND_ITEM.dealerCards,
+    BLACKJACK_HAND_ITEM.seed,
+    BLACKJACK_HAND_ITEM.outcome,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-item` refund map shape. */
+export const BLACKJACK_HAND_ITEM_REFUND_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_ITEM.gameId,
+    BLACKJACK_HAND_ITEM.action,
+    BLACKJACK_HAND_ITEM.ref,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-item` action-only map shape. */
+export const BLACKJACK_HAND_ITEM_ACTION_ONLY_SHAPE: MapShape = {
+  required: [BLACKJACK_HAND_ITEM.gameId, BLACKJACK_HAND_ITEM.action],
+  optional: [],
+  open: false,
+}
+
+/** `blackjack-hand-v3-item` field keys: Type 18 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action). */
+export const BLACKJACK_HAND_V3_ITEM = {
+  gameId: 0,
+  action: 1,
+  role: 2,
+  maxBetWei: 3,
+  commitment: 4,
+  ref: 10,
+  seq: 11,
+  prev: 12,
+  link: 13,
+} as const
+/** `blackjack-hand-v3-item` challenge-dealer map shape. */
+export const BLACKJACK_HAND_V3_ITEM_CHALLENGE_DEALER_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_V3_ITEM.gameId,
+    BLACKJACK_HAND_V3_ITEM.action,
+    BLACKJACK_HAND_V3_ITEM.seq,
+    BLACKJACK_HAND_V3_ITEM.role,
+    BLACKJACK_HAND_V3_ITEM.maxBetWei,
+    BLACKJACK_HAND_V3_ITEM.commitment,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-v3-item` challenge-player map shape. */
+export const BLACKJACK_HAND_V3_ITEM_CHALLENGE_PLAYER_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_V3_ITEM.gameId,
+    BLACKJACK_HAND_V3_ITEM.action,
+    BLACKJACK_HAND_V3_ITEM.seq,
+    BLACKJACK_HAND_V3_ITEM.role,
+    BLACKJACK_HAND_V3_ITEM.maxBetWei,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-v3-item` accept map shape. */
+export const BLACKJACK_HAND_V3_ITEM_ACCEPT_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_V3_ITEM.gameId,
+    BLACKJACK_HAND_V3_ITEM.action,
+    BLACKJACK_HAND_V3_ITEM.seq,
+    BLACKJACK_HAND_V3_ITEM.maxBetWei,
+    BLACKJACK_HAND_V3_ITEM.commitment,
+    BLACKJACK_HAND_V3_ITEM.prev,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-v3-item` bet map shape. */
+export const BLACKJACK_HAND_V3_ITEM_BET_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_V3_ITEM.gameId,
+    BLACKJACK_HAND_V3_ITEM.action,
+    BLACKJACK_HAND_V3_ITEM.seq,
+    BLACKJACK_HAND_V3_ITEM.commitment,
+    BLACKJACK_HAND_V3_ITEM.prev,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-v3-item` refund map shape. */
+export const BLACKJACK_HAND_V3_ITEM_REFUND_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_V3_ITEM.gameId,
+    BLACKJACK_HAND_V3_ITEM.action,
+    BLACKJACK_HAND_V3_ITEM.seq,
+    BLACKJACK_HAND_V3_ITEM.ref,
+    BLACKJACK_HAND_V3_ITEM.prev,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-hand-v3-item` move map shape. */
+export const BLACKJACK_HAND_V3_ITEM_MOVE_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_HAND_V3_ITEM.gameId,
+    BLACKJACK_HAND_V3_ITEM.action,
+    BLACKJACK_HAND_V3_ITEM.seq,
+    BLACKJACK_HAND_V3_ITEM.prev,
+    BLACKJACK_HAND_V3_ITEM.link,
+  ],
+  optional: [],
+  open: false,
+}
+
+/** `blackjack-item` field keys: Type 18 schema 1 (closed). Key 1 is the action code (blackjack-action); each action is one closed shape. */
+export const BLACKJACK_ITEM = {
+  gameId: 0,
+  action: 1,
+  wagerTxHash: 2,
+  doubleWagerTxHash: 3,
+  serverSeedHash: 4,
+  playerCards: 5,
+  dealerUpCard: 6,
+  dealerCards: 7,
+  serverSeed: 8,
+  outcome: 9,
+  minWagerWei: 10,
+  maxWagerWei: 11,
+  feeHintWei: 12,
+  rules: 13,
+} as const
+/** `blackjack-item` bet map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-bet). */
+export const BLACKJACK_ITEM_BET_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_ITEM.gameId,
+    BLACKJACK_ITEM.action,
+    BLACKJACK_ITEM.wagerTxHash,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-item` deal map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-deal). */
+export const BLACKJACK_ITEM_DEAL_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_ITEM.gameId,
+    BLACKJACK_ITEM.action,
+    BLACKJACK_ITEM.serverSeedHash,
+    BLACKJACK_ITEM.playerCards,
+    BLACKJACK_ITEM.dealerUpCard,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-item` hit map shape. */
+export const BLACKJACK_ITEM_HIT_SHAPE: MapShape = {
+  required: [BLACKJACK_ITEM.gameId, BLACKJACK_ITEM.action],
+  optional: [BLACKJACK_ITEM.playerCards],
+  open: false,
+}
+/** `blackjack-item` stand map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-stand). */
+export const BLACKJACK_ITEM_STAND_SHAPE: MapShape = {
+  required: [BLACKJACK_ITEM.gameId, BLACKJACK_ITEM.action],
+  optional: [],
+  open: false,
+}
+/** `blackjack-item` double-request map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-double-request). */
+export const BLACKJACK_ITEM_DOUBLE_REQUEST_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_ITEM.gameId,
+    BLACKJACK_ITEM.action,
+    BLACKJACK_ITEM.doubleWagerTxHash,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-item` double-response map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-double-response). */
+export const BLACKJACK_ITEM_DOUBLE_RESPONSE_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_ITEM.gameId,
+    BLACKJACK_ITEM.action,
+    BLACKJACK_ITEM.playerCards,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-item` reveal map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-reveal). */
+export const BLACKJACK_ITEM_REVEAL_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_ITEM.gameId,
+    BLACKJACK_ITEM.action,
+    BLACKJACK_ITEM.dealerCards,
+    BLACKJACK_ITEM.serverSeed,
+    BLACKJACK_ITEM.outcome,
+  ],
+  optional: [],
+  open: false,
+}
+/** `blackjack-item` welcome map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-welcome). */
+export const BLACKJACK_ITEM_WELCOME_SHAPE: MapShape = {
+  required: [
+    BLACKJACK_ITEM.gameId,
+    BLACKJACK_ITEM.action,
+    BLACKJACK_ITEM.minWagerWei,
+    BLACKJACK_ITEM.maxWagerWei,
+  ],
+  optional: [BLACKJACK_ITEM.feeHintWei, BLACKJACK_ITEM.rules],
+  open: false,
+}
+
 /** `chain-allocation` field keys. */
 export const CHAIN_ALLOCATION = {
   networkTag: 0,
@@ -1292,6 +1572,59 @@ export const ACCOUNT_TYPE = {
   bot: 1,
   service: 2,
   organization: 3,
+} as const
+
+/** `blackjack-action` values: blackjack-item key 1 (schema 1). */
+export const BLACKJACK_ACTION = {
+  bet: 0,
+  deal: 1,
+  hit: 2,
+  stand: 3,
+  double: 4,
+  reveal: 5,
+  welcome: 6,
+} as const
+
+/** `blackjack-hand-action` values: blackjack-hand-item key 1 (schema 2); disjoint from schema 1's codes. */
+export const BLACKJACK_HAND_ACTION = {
+  challenge: 16,
+  accept: 17,
+  bet: 18,
+  deal: 19,
+  hit: 20,
+  stand: 21,
+  double: 22,
+  card: 23,
+  reveal: 24,
+  refund: 25,
+} as const
+
+/** `blackjack-hand-v3-action` values: blackjack-hand-v3-item key 1 (schema 3); disjoint from schemas 1 and 2. */
+export const BLACKJACK_HAND_V3_ACTION = {
+  challenge: 32,
+  accept: 33,
+  bet: 34,
+  deal: 35,
+  hit: 36,
+  stand: 37,
+  double: 38,
+  card: 39,
+  reveal: 40,
+  refund: 41,
+} as const
+
+/** `blackjack-outcome` values: Reveal key 9 (schemas 1 and 2). */
+export const BLACKJACK_OUTCOME = {
+  playerWin: 0,
+  dealerWin: 1,
+  push: 2,
+  playerBlackjack: 3,
+} as const
+
+/** `blackjack-role` values: Challenge key 2 (schemas 2 and 3). */
+export const BLACKJACK_ROLE = {
+  dealer: 0,
+  player: 1,
 } as const
 
 /** `bot-role` values: Directory statement field 16 (ticket #1120). */

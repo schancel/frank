@@ -30,6 +30,224 @@ pub mod account_ref {
     };
 }
 
+/// `blackjack-hand-item` field keys: Type 18 schema 2 (closed): one peer-to-peer hand. Key 1 is the action code (blackjack-hand-action).
+pub mod blackjack_hand_item {
+    use super::MapShape;
+
+    /// Field `game-id`.
+    pub const GAME_ID: u64 = 0;
+    /// Field `action`.
+    pub const ACTION: u64 = 1;
+    /// Field `role`.
+    pub const ROLE: u64 = 2;
+    /// Field `max-bet-wei`.
+    pub const MAX_BET_WEI: u64 = 3;
+    /// Field `commitment`.
+    pub const COMMITMENT: u64 = 4;
+    /// Field `player-cards`.
+    pub const PLAYER_CARDS: u64 = 5;
+    /// Field `dealer-up-card`.
+    pub const DEALER_UP_CARD: u64 = 6;
+    /// Field `dealer-cards`.
+    pub const DEALER_CARDS: u64 = 7;
+    /// Field `seed`.
+    pub const SEED: u64 = 8;
+    /// Field `outcome`.
+    pub const OUTCOME: u64 = 9;
+    /// Field `ref`.
+    pub const REF: u64 = 10;
+    /// `blackjack-hand-item` challenge-dealer map shape.
+    pub const CHALLENGE_DEALER_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, ROLE, MAX_BET_WEI, COMMITMENT],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-item` challenge-player map shape.
+    pub const CHALLENGE_PLAYER_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, ROLE, MAX_BET_WEI],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-item` accept map shape.
+    pub const ACCEPT_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, MAX_BET_WEI, COMMITMENT],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-item` deal map shape.
+    pub const DEAL_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, PLAYER_CARDS, DEALER_UP_CARD],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-item` card map shape.
+    pub const CARD_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, PLAYER_CARDS],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-item` reveal map shape.
+    pub const REVEAL_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, DEALER_CARDS, SEED, OUTCOME],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-item` refund map shape.
+    pub const REFUND_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, REF],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-item` action-only map shape.
+    pub const ACTION_ONLY_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION],
+        optional: &[],
+        open: false,
+    };
+}
+
+/// `blackjack-hand-v3-item` field keys: Type 18 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action).
+pub mod blackjack_hand_v3_item {
+    use super::MapShape;
+
+    /// Field `game-id`.
+    pub const GAME_ID: u64 = 0;
+    /// Field `action`.
+    pub const ACTION: u64 = 1;
+    /// Field `role`.
+    pub const ROLE: u64 = 2;
+    /// Field `max-bet-wei`.
+    pub const MAX_BET_WEI: u64 = 3;
+    /// Field `commitment`.
+    pub const COMMITMENT: u64 = 4;
+    /// Field `ref`.
+    pub const REF: u64 = 10;
+    /// Field `seq`.
+    pub const SEQ: u64 = 11;
+    /// Field `prev`.
+    pub const PREV: u64 = 12;
+    /// Field `link`.
+    pub const LINK: u64 = 13;
+    /// `blackjack-hand-v3-item` challenge-dealer map shape.
+    pub const CHALLENGE_DEALER_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, SEQ, ROLE, MAX_BET_WEI, COMMITMENT],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-v3-item` challenge-player map shape.
+    pub const CHALLENGE_PLAYER_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, SEQ, ROLE, MAX_BET_WEI],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-v3-item` accept map shape.
+    pub const ACCEPT_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, SEQ, MAX_BET_WEI, COMMITMENT, PREV],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-v3-item` bet map shape.
+    pub const BET_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, SEQ, COMMITMENT, PREV],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-v3-item` refund map shape.
+    pub const REFUND_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, SEQ, REF, PREV],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-hand-v3-item` move map shape.
+    pub const MOVE_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, SEQ, PREV, LINK],
+        optional: &[],
+        open: false,
+    };
+}
+
+/// `blackjack-item` field keys: Type 18 schema 1 (closed). Key 1 is the action code (blackjack-action); each action is one closed shape.
+pub mod blackjack_item {
+    use super::MapShape;
+
+    /// Field `game-id`.
+    pub const GAME_ID: u64 = 0;
+    /// Field `action`.
+    pub const ACTION: u64 = 1;
+    /// Field `wager-tx-hash`.
+    pub const WAGER_TX_HASH: u64 = 2;
+    /// Field `double-wager-tx-hash`.
+    pub const DOUBLE_WAGER_TX_HASH: u64 = 3;
+    /// Field `server-seed-hash`.
+    pub const SERVER_SEED_HASH: u64 = 4;
+    /// Field `player-cards`.
+    pub const PLAYER_CARDS: u64 = 5;
+    /// Field `dealer-up-card`.
+    pub const DEALER_UP_CARD: u64 = 6;
+    /// Field `dealer-cards`.
+    pub const DEALER_CARDS: u64 = 7;
+    /// Field `server-seed`.
+    pub const SERVER_SEED: u64 = 8;
+    /// Field `outcome`.
+    pub const OUTCOME: u64 = 9;
+    /// Field `min-wager-wei`.
+    pub const MIN_WAGER_WEI: u64 = 10;
+    /// Field `max-wager-wei`.
+    pub const MAX_WAGER_WEI: u64 = 11;
+    /// Field `fee-hint-wei`.
+    pub const FEE_HINT_WEI: u64 = 12;
+    /// Field `rules`.
+    pub const RULES: u64 = 13;
+    /// `blackjack-item` bet map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-bet).
+    pub const BET_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, WAGER_TX_HASH],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-item` deal map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-deal).
+    pub const DEAL_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, SERVER_SEED_HASH, PLAYER_CARDS, DEALER_UP_CARD],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-item` hit map shape.
+    pub const HIT_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION],
+        optional: &[PLAYER_CARDS],
+        open: false,
+    };
+    /// `blackjack-item` stand map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-stand).
+    pub const STAND_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-item` double-request map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-double-request).
+    pub const DOUBLE_REQUEST_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, DOUBLE_WAGER_TX_HASH],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-item` double-response map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-double-response).
+    pub const DOUBLE_RESPONSE_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, PLAYER_CARDS],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-item` reveal map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-reveal).
+    pub const REVEAL_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, DEALER_CARDS, SERVER_SEED, OUTCOME],
+        optional: &[],
+        open: false,
+    };
+    /// `blackjack-item` welcome map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-welcome).
+    pub const WELCOME_SHAPE: MapShape = MapShape {
+        required: &[GAME_ID, ACTION, MIN_WAGER_WEI, MAX_WAGER_WEI],
+        optional: &[FEE_HINT_WEI, RULES],
+        open: false,
+    };
+}
+
 /// `chain-allocation` field keys.
 pub mod chain_allocation {
     use super::MapShape;
@@ -1378,6 +1596,92 @@ pub mod account_type {
     pub const SERVICE: u32 = 2;
     /// `organization`.
     pub const ORGANIZATION: u32 = 3;
+}
+
+/// `blackjack-action` values: blackjack-item key 1 (schema 1).
+pub mod blackjack_action {
+    /// `bet`.
+    pub const BET: u32 = 0;
+    /// `deal`.
+    pub const DEAL: u32 = 1;
+    /// `hit`.
+    pub const HIT: u32 = 2;
+    /// `stand`.
+    pub const STAND: u32 = 3;
+    /// `double`.
+    pub const DOUBLE: u32 = 4;
+    /// `reveal`.
+    pub const REVEAL: u32 = 5;
+    /// `welcome`.
+    pub const WELCOME: u32 = 6;
+}
+
+/// `blackjack-hand-action` values: blackjack-hand-item key 1 (schema 2); disjoint from schema 1's codes.
+pub mod blackjack_hand_action {
+    /// `challenge`.
+    pub const CHALLENGE: u32 = 16;
+    /// `accept`.
+    pub const ACCEPT: u32 = 17;
+    /// `bet`.
+    pub const BET: u32 = 18;
+    /// `deal`.
+    pub const DEAL: u32 = 19;
+    /// `hit`.
+    pub const HIT: u32 = 20;
+    /// `stand`.
+    pub const STAND: u32 = 21;
+    /// `double`.
+    pub const DOUBLE: u32 = 22;
+    /// `card`.
+    pub const CARD: u32 = 23;
+    /// `reveal`.
+    pub const REVEAL: u32 = 24;
+    /// `refund`.
+    pub const REFUND: u32 = 25;
+}
+
+/// `blackjack-hand-v3-action` values: blackjack-hand-v3-item key 1 (schema 3); disjoint from schemas 1 and 2.
+pub mod blackjack_hand_v3_action {
+    /// `challenge`.
+    pub const CHALLENGE: u32 = 32;
+    /// `accept`.
+    pub const ACCEPT: u32 = 33;
+    /// `bet`.
+    pub const BET: u32 = 34;
+    /// `deal`.
+    pub const DEAL: u32 = 35;
+    /// `hit`.
+    pub const HIT: u32 = 36;
+    /// `stand`.
+    pub const STAND: u32 = 37;
+    /// `double`.
+    pub const DOUBLE: u32 = 38;
+    /// `card`.
+    pub const CARD: u32 = 39;
+    /// `reveal`.
+    pub const REVEAL: u32 = 40;
+    /// `refund`.
+    pub const REFUND: u32 = 41;
+}
+
+/// `blackjack-outcome` values: Reveal key 9 (schemas 1 and 2).
+pub mod blackjack_outcome {
+    /// `player-win`.
+    pub const PLAYER_WIN: u32 = 0;
+    /// `dealer-win`.
+    pub const DEALER_WIN: u32 = 1;
+    /// `push`.
+    pub const PUSH: u32 = 2;
+    /// `player-blackjack`.
+    pub const PLAYER_BLACKJACK: u32 = 3;
+}
+
+/// `blackjack-role` values: Challenge key 2 (schemas 2 and 3).
+pub mod blackjack_role {
+    /// `dealer`.
+    pub const DEALER: u32 = 0;
+    /// `player`.
+    pub const PLAYER: u32 = 1;
 }
 
 /// `bot-role` values: Directory statement field 16 (ticket #1120).

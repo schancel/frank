@@ -14,16 +14,8 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#topic-post",
-          "required": [
-            "network",
-            "topic",
-            "body"
-          ],
-          "optional": [
-            "parent-hash",
-            "author",
-            "signature"
-          ],
+          "required": ["network", "topic", "body"],
+          "optional": ["parent-hash", "author", "signature"],
           "open": true
         }
       ]
@@ -38,11 +30,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#topic-post-submission",
-          "required": [
-            "network",
-            "post-frame",
-            "burn-tx"
-          ],
+          "required": ["network", "post-frame", "burn-tx"],
           "optional": [],
           "open": true
         }
@@ -58,11 +46,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#topic-vote-submission",
-          "required": [
-            "network",
-            "target-hash",
-            "burn-tx"
-          ],
+          "required": ["network", "target-hash", "burn-tx"],
           "optional": [],
           "open": true
         }
@@ -77,10 +61,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#forum-content",
-          "required": [
-            "authored",
-            "entries"
-          ],
+          "required": ["authored", "entries"],
           "optional": [],
           "open": true
         }
@@ -95,9 +76,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#future-forum-entry",
-          "required": [
-            "kind"
-          ],
+          "required": ["kind"],
           "optional": [],
           "open": true
         }
@@ -114,14 +93,8 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#forum-post-entry",
-          "required": [
-            "kind"
-          ],
-          "optional": [
-            "title",
-            "url",
-            "message"
-          ],
+          "required": ["kind"],
+          "optional": ["title", "url", "message"],
           "open": true
         }
       ]
@@ -143,12 +116,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#forum-game-entry",
-          "required": [
-            "kind",
-            "game-type",
-            "table-id",
-            "host-address"
-          ],
+          "required": ["kind", "game-type", "table-id", "host-address"],
           "optional": [
             "buy-in-amount",
             "current-players",
@@ -170,10 +138,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#forum-aggregate",
-          "required": [
-            "negative",
-            "magnitude"
-          ],
+          "required": ["negative", "magnitude"],
           "optional": [],
           "open": false
         }
@@ -238,10 +203,7 @@
             "rows",
             "epoch"
           ],
-          "optional": [
-            "next-cursor",
-            "request-cursor"
-          ],
+          "optional": ["next-cursor", "request-cursor"],
           "open": true
         }
       ]
@@ -259,16 +221,8 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#forum-discovery-page",
-          "required": [
-            "network",
-            "revision",
-            "entries",
-            "epoch"
-          ],
-          "optional": [
-            "next-cursor",
-            "request-cursor"
-          ],
+          "required": ["network", "revision", "entries", "epoch"],
+          "optional": ["next-cursor", "request-cursor"],
           "open": true
         }
       ]
@@ -283,11 +237,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#forum-discovery-entry",
-          "required": [
-            "topic",
-            "count",
-            "last-activity"
-          ],
+          "required": ["topic", "count", "last-activity"],
           "optional": [],
           "open": true
         }
@@ -324,10 +274,7 @@
             "revision",
             "epoch"
           ],
-          "optional": [
-            "block",
-            "transaction-index"
-          ],
+          "optional": ["block", "transaction-index"],
           "open": true
         }
       ]
@@ -397,10 +344,7 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#forum-topic-cursor.4",
-          "required": [
-            "timestamp",
-            "hash"
-          ],
+          "required": ["timestamp", "hash"],
           "optional": [],
           "open": false
         }

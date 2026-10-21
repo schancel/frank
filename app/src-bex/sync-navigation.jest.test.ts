@@ -457,3 +457,35 @@ test('the existing-tab navigation round trip crosses background, content and pag
   })
   content.cleanup()
 })
+
+test.each(['missing-content-listener', 'closed-tab'] as const)(
+  'skips a first %s exact-origin candidate and reaches the ready second tab',
+  async failure => {
+    const h = backgroundHarness()
+    h.tabs.query.mockResolvedValue([
+      { id: 2, url: 'https://signet.mx/', active: true },
+      { id: 3, url: 'https://signet.mx/#/profile', active: false },
+    ])
+    h.tabs.get.mockImplementation(async id => {
+      if (failure === 'closed-tab' && id === 2)
+        throw new Error('No tab with id: 2.')
+      return { id, url: 'https://signet.mx/' }
+    })
+    h.tabs.sendMessage.mockImplementation(async id => {
+      if (id === 2)
+        throw new Error(
+          'Could not establish connection. Receiving end does not exist.',
+        )
+      return { ok: true }
+    })
+    const result = await h.request()
+    expect(result).toEqual({ ok: true, result: { ok: true } })
+    expect(h.tabs.sendMessage).toHaveBeenCalledWith(
+      3,
+      expect.objectContaining({ channel, type: 'open-sync-sender' }),
+      { frameId: 0 },
+    )
+    expect(h.tabs.create).not.toHaveBeenCalled()
+    expect(h.tabs.update).not.toHaveBeenCalled()
+  },
+)

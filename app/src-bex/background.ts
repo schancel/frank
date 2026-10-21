@@ -977,33 +977,47 @@ async function openExistingSyncSender(
           Number.isInteger(tab.id) && isFrankWebAppOrigin(urlOrigin(tab.url)),
       )
       .sort((a, b) => Number(!!b.active) - Number(!!a.active) || a.id! - b.id!)
+    let unavailable = false
     for (const candidate of candidates) {
-      // Browser query results can already be stale; never relay to a navigated tab.
-      const tab = await api.tabs.get(candidate.id)
       if (Date.now() >= deadline) return { ok: false, reason: 'timeout' }
-      if (!isFrankWebAppOrigin(urlOrigin(tab?.url))) continue
-      const id =
-        'sync-navigation-' +
-        Array.from(crypto.getRandomValues(new Uint8Array(16)), byte =>
-          byte.toString(16).padStart(2, '0'),
-        ).join('')
-      const response = await api.tabs.sendMessage(
-        candidate.id,
-        {
-          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-          type: 'open-sync-sender',
-          id,
-        },
-        { frameId: 0 },
-      )
-      if (response?.ok === true) return { ok: true }
-      if (response?.ok === false && response.reason === 'not-ready') continue
-      return {
-        ok: false,
-        reason: response?.reason === 'timeout' ? 'timeout' : 'unavailable',
+      try {
+        // Browser query results can already be stale; never relay to a navigated tab.
+        const tab = await api.tabs.get(candidate.id)
+        if (Date.now() >= deadline) return { ok: false, reason: 'timeout' }
+        if (!isFrankWebAppOrigin(urlOrigin(tab?.url))) continue
+        const id =
+          'sync-navigation-' +
+          Array.from(crypto.getRandomValues(new Uint8Array(16)), byte =>
+            byte.toString(16).padStart(2, '0'),
+          ).join('')
+        const response = await api.tabs.sendMessage(
+          candidate.id,
+          {
+            channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+            type: 'open-sync-sender',
+            id,
+          },
+          { frameId: 0 },
+        )
+        if (response?.ok === true) return { ok: true }
+        if (response?.ok === false && response.reason === 'not-ready') continue
+        return {
+          ok: false,
+          reason: response?.reason === 'timeout' ? 'timeout' : 'unavailable',
+        }
+      } catch {
+        // A closed tab or missing content listener does not rule out the next verified tab.
+        unavailable = true
       }
     }
-    return { ok: false, reason: candidates.length ? 'not-ready' : 'no-tab' }
+    return {
+      ok: false,
+      reason: unavailable
+        ? 'unavailable'
+        : candidates.length
+        ? 'not-ready'
+        : 'no-tab',
+    }
   } catch {
     return { ok: false, reason: 'unavailable' }
   }

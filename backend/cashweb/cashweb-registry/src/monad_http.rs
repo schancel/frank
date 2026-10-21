@@ -736,18 +736,31 @@ pub struct HttpTransport {
     next_id: Arc<AtomicU64>,
 }
 
+/// Longest one JSON-RPC call through a transport built by [`HttpTransport::new`] may take.
+pub const DEFAULT_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl HttpTransport {
     /// Wrap an RPC endpoint URL (e.g. an Alchemy Monad testnet URL with the API key embedded in
-    /// its path) as a [`HttpTransport`]. The caller is responsible for sourcing the URL (e.g.
-    /// from the `MONAD_TESTNET_HTTP_RPC_URL` env var) — this never reads env/config itself.
+    /// its path) as a [`HttpTransport`]. The caller is responsible for sourcing the URL — this
+    /// never reads env/config itself. Each call is bounded by [`DEFAULT_RPC_TIMEOUT`].
     pub fn new(rpc_url: url::Url) -> Self {
         Self::new_multi(vec![rpc_url])
     }
 
     /// Wrap multiple RPC endpoint URLs with round-robin load balancing and automatic fallback.
+    /// Each call is bounded by [`DEFAULT_RPC_TIMEOUT`].
     pub fn new_multi(rpc_urls: Vec<url::Url>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(DEFAULT_RPC_TIMEOUT)
+            .build()
+            .unwrap_or_default();
+        Self::with_client(client, rpc_urls)
+    }
+
+    /// Use `client` (and so its redirect policy and timeout) for calls to `rpc_urls`.
+    pub fn with_client(client: reqwest::Client, rpc_urls: Vec<url::Url>) -> Self {
         HttpTransport {
-            client: reqwest::Client::new(),
+            client,
             rpc_urls,
             next_index: Arc::new(AtomicUsize::new(0)),
             next_id: Arc::new(AtomicU64::new(1)),

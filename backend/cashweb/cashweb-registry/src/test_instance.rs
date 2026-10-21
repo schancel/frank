@@ -92,6 +92,11 @@ impl RegistryTestInstance {
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,
+            chains: Arc::new(
+                crate::chains::RelayChains::network_only("monad-testnet")
+                    .expect("monad-testnet is a registry chain"),
+            ),
+            forum: None,
             spa_dir: None,
             event_bus: registry.event_bus().clone(),
         };

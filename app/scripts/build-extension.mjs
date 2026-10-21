@@ -13,6 +13,35 @@ const distExtensionsDir = path.join(appDir, 'dist', 'extensions')
 
 const VALID_TARGETS = ['chrome', 'firefox', 'safari']
 
+/**
+ * Size of the toolbar popup. Chrome, Firefox and Safari size an action popup
+ * from its document, starting from a tiny viewport, so nothing on the popup's
+ * root may depend on the viewport: app.scss clamps html/body/#q-app to 100vw
+ * and to --frank-vw/--frank-vh (measured from the viewport), which would pin
+ * the popup at its starting width. In popup mode the document fixes its own
+ * 400x600 box and the viewport variables (in the zoomed CSS pixels the UI
+ * scale setting gives) instead. `html:not([data-ext-mode])` covers the moment
+ * before extension-boot.js marks the mode. Side panel, window and tab views
+ * fill their viewport as the app lays them out.
+ */
+const EXTENSION_POPUP_WIDTH = 400
+const EXTENSION_POPUP_HEIGHT = 600
+export const EXTENSION_POPUP_SIZING_CSS = [
+  "html:not([data-ext-mode]), html[data-ext-mode='popup'] {",
+  `  --frank-vw: calc(${EXTENSION_POPUP_WIDTH}px / var(--frank-ui-zoom, 1)) !important;`,
+  `  --frank-vh: calc(${EXTENSION_POPUP_HEIGHT}px / var(--frank-ui-zoom, 1)) !important;`,
+  '  width: var(--frank-vw) !important; min-width: var(--frank-vw) !important; max-width: none !important;',
+  '  height: var(--frank-vh) !important; min-height: var(--frank-vh) !important; max-height: none !important;',
+  '  margin: 0; padding: 0;',
+  '}',
+  "html:not([data-ext-mode]) body, html[data-ext-mode='popup'] body,",
+  "html:not([data-ext-mode]) #q-app, html[data-ext-mode='popup'] #q-app {",
+  '  width: 100% !important; min-width: 0 !important; max-width: none !important;',
+  '  height: 100% !important; max-height: none !important;',
+  '  margin: 0; padding: 0;',
+  '}',
+].join('\n')
+
 function parseTargetArg(argv) {
   let target = 'all'
   for (let i = 0; i < argv.length; i++) {
@@ -181,22 +210,12 @@ export function transformExtensionIndexHtml(rawHtml, targetDir) {
     html += `\n${replacementBootTag}\n`
   }
 
-  const inlinePopupStyle = `<style id="frank-extension-popup-sizing">html, body { width: 400px; height: 600px; margin: 0; padding: 0; } html[data-ext-mode='sidepanel'], html[data-ext-mode='sidepanel'] body, html[data-ext-mode='sidebar'], html[data-ext-mode='sidebar'] body, html[data-ext-mode='window'], html[data-ext-mode='window'] body, html[data-ext-mode='tab'], html[data-ext-mode='tab'] body { width: 100%; height: 100%; min-width: 0; min-height: 100vh; }</style>`
-
   if (!html.includes('frank-extension-popup-sizing')) {
+    const sizingStyle = `<style id="frank-extension-popup-sizing">${EXTENSION_POPUP_SIZING_CSS}</style>`
     if (html.includes('</head>')) {
-      html = html.replace('</head>', `${inlinePopupStyle}</head>`)
+      html = html.replace('</head>', `${sizingStyle}</head>`)
     } else {
-      html = `${inlinePopupStyle}\n${html}`
-    }
-  }
-
-  if (!html.includes('extension-popup.css')) {
-    if (html.includes('</head>')) {
-      html = html.replace(
-        '</head>',
-        '<link rel="stylesheet" href="/extension-popup.css"></head>',
-      )
+      html = `${sizingStyle}\n${html}`
     }
   }
 
@@ -254,7 +273,6 @@ function ensureFallbackStaticAssets(targetDir) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Frank Companion</title>
-    <link rel="stylesheet" href="/extension-popup.css" />
   </head>
   <body>
     <div id="q-app"></div>
@@ -271,43 +289,6 @@ function ensureFallbackStaticAssets(targetDir) {
     const transformed = transformExtensionIndexHtml(rawHtml, targetDir)
     fs.writeFileSync(indexHtmlPath, transformed, 'utf8')
   }
-
-  fs.writeFileSync(
-    path.join(targetDir, 'extension-popup.css'),
-    `html, body {
-  width: 400px;
-  height: 600px;
-  margin: 0;
-  padding: 0;
-}
-#q-app {
-  min-width: 400px;
-  min-height: 580px;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-}
-html[data-ext-mode='sidepanel'],
-html[data-ext-mode='sidepanel'] body,
-html[data-ext-mode='sidepanel'] #q-app,
-html[data-ext-mode='sidebar'],
-html[data-ext-mode='sidebar'] body,
-html[data-ext-mode='sidebar'] #q-app,
-html[data-ext-mode='window'],
-html[data-ext-mode='window'] body,
-html[data-ext-mode='window'] #q-app,
-html[data-ext-mode='tab'],
-html[data-ext-mode='tab'] body,
-html[data-ext-mode='tab'] #q-app {
-  width: 100% !important;
-  height: 100% !important;
-  min-width: 0 !important;
-  min-height: 100vh !important;
-}
-`,
-    'utf8',
-  )
 
   const iconsDir = path.join(targetDir, 'icons')
   fs.mkdirSync(iconsDir, { recursive: true })
@@ -451,6 +432,84 @@ ${preloadLinks ? preloadLinks + '\n' : ''}  </head>
   )
 }
 
+/**
+ * The dApp approval window (src-bex/approval.ts, opened by
+ * src-bex/approval-window.ts): a plain page, not the Frank app, so it opens at
+ * once and needs no account custody.
+ */
+export const APPROVAL_PAGE_HTML = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Frank – Approve request</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #111827;
+        --muted: #6b7280;
+        --line: #e5e7eb;
+        --accent: #10b981;
+        --accent-fg: #ffffff;
+        --danger: #b91c1c;
+        --card: #f9fafb;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #111827;
+          --fg: #f9fafb;
+          --muted: #9ca3af;
+          --line: #374151;
+          --card: #1f2937;
+          --danger: #f87171;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      }
+      #frank-approval-root {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        min-height: 100%;
+        padding: 16px;
+      }
+      .approval-header { display: flex; justify-content: space-between; align-items: center; }
+      .approval-brand { font-weight: 700; }
+      .approval-count { color: var(--muted); font-size: 12px; }
+      .approval-site { text-align: center; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+      .approval-host { font-size: 16px; font-weight: 600; word-break: break-all; }
+      .approval-origin { color: var(--muted); font-size: 12px; word-break: break-all; }
+      .approval-title { font-size: 18px; margin: 0; text-align: center; }
+      .approval-text { margin: 0; color: var(--muted); }
+      .approval-unsupported { color: var(--fg); }
+      .approval-personas { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+      .approval-personas legend { font-weight: 600; margin-bottom: 6px; }
+      .approval-persona { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+      .approval-persona:has(input:checked) { border-color: var(--accent); }
+      .approval-persona-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+      .approval-persona-label { font-weight: 600; }
+      .approval-persona-hint { color: var(--muted); font-size: 12px; }
+      .approval-address { font-size: 11px; word-break: break-all; }
+      .approval-details pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; max-height: 220px; overflow: auto; background: var(--card); padding: 8px; border-radius: 8px; }
+      .approval-actions { margin-top: auto; display: flex; gap: 10px; }
+      .approval-actions button { flex: 1; padding: 10px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; }
+      .approval-reject { background: transparent; color: var(--danger); border: 1px solid var(--line); }
+      .approval-approve { background: var(--accent); color: var(--accent-fg); border: 0; }
+    </style>
+  </head>
+  <body>
+    <main id="frank-approval-root"></main>
+    <script src="./approval.js"></script>
+  </body>
+</html>
+`
+
 function getNewestMtimeMs(dirPath) {
   if (!fs.existsSync(dirPath)) return 0
   let newest = 0
@@ -590,6 +649,7 @@ export function buildExtensions(argv = process.argv.slice(2)) {
   const inpageBundle = bundleBexEntry('inpage.ts')
   const contentBundle = bundleBexEntry('content.ts')
   const backgroundBundle = bundleBexEntryWithDependencies('background.ts')
+  const approvalBundle = bundleBexEntryWithDependencies('approval.ts')
 
   const pwaDist = process.env.APP_DIST_DIR
     ? path.resolve(appDir, process.env.APP_DIST_DIR)
@@ -656,6 +716,12 @@ export function buildExtensions(argv = process.argv.slice(2)) {
     fs.writeFileSync(
       path.join(targetDir, 'background.js'),
       backgroundBundle,
+      'utf8',
+    )
+    fs.writeFileSync(path.join(targetDir, 'approval.js'), approvalBundle, 'utf8')
+    fs.writeFileSync(
+      path.join(targetDir, 'approval.html'),
+      APPROVAL_PAGE_HTML,
       'utf8',
     )
 

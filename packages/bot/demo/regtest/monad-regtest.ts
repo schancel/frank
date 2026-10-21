@@ -238,12 +238,7 @@ export async function startMonadRegtest(
         'max_get_logs_range = 10',
       ].join('\n'),
       env: { [UPSTREAM_ENV]: rpcUrl, ...(wsUrl ? { MONAD_REGTEST_WS_RPC_URL: wsUrl } : {}) },
-      mailbox: {
-        rpcUrl,
-        expectedChainId: MONAD_REGTEST_CHAIN_ID,
-        minValueWei: MONAD_REGTEST_MIN_STAMP_WEI,
-        networkTag: MONAD_REGTEST_NETWORK_TAG,
-      },
+      mailbox: { minValueWei: MONAD_REGTEST_MIN_STAMP_WEI },
     },
     rpcUrl,
     provider,

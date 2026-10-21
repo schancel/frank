@@ -8,7 +8,7 @@
 //! `cashweb-registry` is a library for the Registry part of a CashWeb server.
 //! It allows storing and retrieving metadata by addresses (scripts).
 
-pub mod chain_registry_adapter;
+pub mod chains;
 pub mod directory_admission;
 pub mod directory_federation;
 pub mod directory_runtime;
@@ -18,7 +18,6 @@ pub(crate) mod forum;
 pub mod http;
 pub mod lotus_adapter;
 pub mod metrics;
-pub mod monad_adapter;
 pub(crate) mod monad_dm_payment;
 pub mod monad_dm_verify;
 pub mod monad_evm_tx;

@@ -1,6 +1,7 @@
 //! Module containing [`RegistryServer`] to run the registry HTTP server.
 
 use crate::{
+    chains::RelayChains,
     http::bitcoin_proxy::{
         issue_chronik_challenge, proxy_chronik, proxy_chronik_capability, BitcoinProxyRuntime,
         BITCOIN_PROXY_CORS_HEADERS,
@@ -18,7 +19,7 @@ use crate::{
     },
     http::monad_topics::{
         handle_forum_status, handle_get_forum_post, handle_list_forum_discovery,
-        handle_list_forum_posts, handle_put_forum_post, handle_put_forum_vote,
+        handle_list_forum_posts, handle_put_forum_post, handle_put_forum_vote, ForumRuntime,
     },
     http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
     http::solana_proxy::SolanaProxyRuntime,
@@ -64,52 +65,30 @@ struct AdvertisedChain {
 }
 
 async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json<ChainDiscovery> {
-    use cashweb_config::{protocol_chain, ProtocolProxyCapability};
-
-    let mut configured = HashMap::<String, Vec<ProtocolProxyCapability>>::new();
-    if let Some(runtime) = &server.evm_rpc {
-        for id in runtime.chain_ids() {
-            configured.insert(id, vec![ProtocolProxyCapability::JsonRpc]);
-        }
-    }
-    if let Some(runtime) = &server.bitcoin_proxy {
-        for (id, json_rpc, chronik, electrum) in runtime.configured_capabilities() {
-            let capabilities = configured.entry(id).or_default();
-            if json_rpc {
-                capabilities.push(ProtocolProxyCapability::JsonRpc);
-            }
-            if chronik {
-                capabilities.push(ProtocolProxyCapability::Chronik);
-            }
-            if electrum {
-                capabilities.push(ProtocolProxyCapability::Electrum);
-            }
-        }
-    }
-    if let Some(runtime) = &server.solana_proxy {
-        for id in runtime.chain_ids() {
-            configured.insert(id, vec![ProtocolProxyCapability::JsonRpc]);
-        }
-    }
-    let mut chains = configured
+    let chains = server
+        .chains
+        .advertised_capabilities()
         .into_iter()
-        .filter_map(|(id, capabilities)| {
-            let row = protocol_chain(&id)?;
-            Some(AdvertisedChain {
-                id,
-                family: row.family,
-                network: row.network.clone(),
-                caip2: row.caip2.clone(),
-                native_chain_id: row.native_chain_id.clone(),
-                capabilities,
-            })
+        .map(|(row, capabilities)| AdvertisedChain {
+            id: row.id.clone(),
+            family: row.family,
+            network: row.network.clone(),
+            caip2: row.caip2.clone(),
+            native_chain_id: row.native_chain_id.clone(),
+            capabilities,
         })
-        .collect::<Vec<_>>();
-    chains.sort_by(|left, right| left.id.cmp(&right.id));
+        .collect();
+    // Stamps and forum burns are accepted on the relay network only, and only while a service
+    // that takes them is on.
+    let takes_payments = server.monad_mailbox.as_enabled().is_some() || server.forum.is_some();
     Json(ChainDiscovery {
         schema_version: 1,
         chains,
-        accepted_payment_networks: server.registry.accepted_payment_networks(),
+        accepted_payment_networks: if takes_payments {
+            vec![server.chains.network().id.clone()]
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -207,6 +186,11 @@ pub struct RegistryServer {
     pub bitcoin_proxy: Option<Arc<BitcoinProxyRuntime>>,
     /// Optional Solana JSON-RPC runtime.
     pub solana_proxy: Option<Arc<SolanaProxyRuntime>>,
+    /// The relay's network and one chain adapter per configured chain. The mailbox, the forum,
+    /// the chain RPC proxies and `/chains` all reach a chain through these.
+    pub chains: Arc<RelayChains>,
+    /// The relay network's forum. `None` (no `[registry.forum]`) answers its routes unavailable.
+    pub forum: Option<Arc<ForumRuntime>>,
     /// Optional directory to serve Single Page Application (SPA) static files from.
     pub spa_dir: Option<PathBuf>,
     /// Notification event bus for real-time relay message fan-out (ticket #982 / track C).
@@ -516,7 +500,7 @@ impl RegistryServer {
                 version: 1,
                 relay: self.peers.own_origin().trim_end_matches('/').to_string(),
                 mail_gateway: None,
-                network: "monad-testnet".to_string(),
+                network: self.chains.network().id.clone(),
             },
         });
         let router = Router::new()
@@ -946,9 +930,11 @@ async fn handle_put_registry(
             || crate::store::monad_profiles::is_cbor_frame(&body_bytes);
 
         if is_cbor {
-            server
-                .registry
-                .put_monad_profile_cbor(monad_address, &body_bytes)?;
+            server.registry.put_monad_profile_cbor(
+                monad_address,
+                server.chains.network().id.as_str(),
+                &body_bytes,
+            )?;
         } else {
             let signed_metadata = cashweb_payload::proto::SignedPayload::decode(
                 body_bytes.as_ref(),
@@ -1272,6 +1258,10 @@ mod spa_tests {
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,
+            chains: std::sync::Arc::new(
+                crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
+            ),
+            forum: None,
             spa_dir,
             event_bus,
         };
@@ -1431,6 +1421,7 @@ mod spa_tests {
         let (runtime, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
             Arc::clone(&registry),
             dir_config,
+            "monad-testnet",
             clock.clock(),
         )
         .unwrap();
@@ -1446,6 +1437,10 @@ mod spa_tests {
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,
+            chains: std::sync::Arc::new(
+                crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
+            ),
+            forum: None,
             spa_dir: None,
             event_bus,
         };

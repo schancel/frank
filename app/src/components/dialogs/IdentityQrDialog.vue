@@ -700,7 +700,7 @@ import {
   isBrowserExtensionRuntime,
   openCompanionPanel,
   openExtensionTab,
-  openExtensionWindow,
+  focusOrOpenMainExtensionWindow,
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   FRANK_WEB_APP_ORIGIN,
   isFrankWebAppOrigin,
@@ -795,7 +795,6 @@ export default defineComponent({
     const claimLinkAmount = ref('0.05')
     const claimLinkNote = ref('')
     const generatedClaimLinkUrl = ref('')
-    const alwaysOpenInSidePanel = ref(false)
     const t = useTranslate()
     const syncError = ref('')
     // The extension's sending session lives in its background; this is what
@@ -832,12 +831,6 @@ export default defineComponent({
       extFullTabBtn: 'Full Tab',
       openDappBridgeBtn: 'Companion & Bridge',
     }
-
-    const alwaysSidePanelBtnLabel = computed(() =>
-      alwaysOpenInSidePanel.value
-        ? 'Toolbar: Side Panel'
-        : 'Toolbar: Popup',
-    )
 
     const syncBridgeBtnLabel = computed(() =>
       isExtensionMode.value
@@ -1093,21 +1086,11 @@ export default defineComponent({
     }
 
     const openInPopoutWindow = async () => {
-      await openExtensionWindow()
+      await focusOrOpenMainExtensionWindow()
     }
 
     const openInFullTab = async () => {
       await openExtensionTab()
-    }
-
-    const toggleAlwaysOpenSidePanel = async () => {
-      const nextVal = !alwaysOpenInSidePanel.value
-      alwaysOpenInSidePanel.value = nextVal
-      await sendRuntimeMessage({
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'set-sidepanel-behavior',
-        openPanelOnActionClick: nextVal,
-      })
     }
 
     const syncSenderView = computed(() =>
@@ -1318,8 +1301,6 @@ export default defineComponent({
       claimUiLabels,
       detectedRuntimeKind,
       isExtensionMode,
-      alwaysOpenInSidePanel,
-      alwaysSidePanelBtnLabel,
       syncBridgeBtnLabel,
       syncStatusMessage,
       syncPin,
@@ -1330,7 +1311,6 @@ export default defineComponent({
       openInSidePanel,
       openInPopoutWindow,
       openInFullTab,
-      toggleAlwaysOpenSidePanel,
       syncAccountOverBridge,
       openDappBridge,
       openEditProfile,

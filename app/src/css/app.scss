@@ -619,7 +619,7 @@ html.frank-keyboard-open {
   flex-shrink: 0;
 }
 
-/* Narrow composer (the chat composer is a size container) or narrow phone (the email
+/* Narrow composer (the chat composer's bottom bar is a size container) or narrow phone (the email
  * composer is not): AVU value alone. */
 @container (max-width: 360px) {
   .chat-stamp-pill-text--secondary,

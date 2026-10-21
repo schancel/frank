@@ -182,7 +182,22 @@
       </q-card-actions>
     </q-card>
 
-    <!-- Inline dApp Approval Queue (#1709) -->
+    <!-- dApp requests wait in the extension's approval window, not here -->
+    <q-card
+      v-if="dappRequestsWaiting > 0"
+      flat
+      bordered
+      data-testid="dapp-requests-waiting"
+    >
+      <q-card-section class="row items-center q-gutter-x-sm">
+        <q-icon name="pending_actions" color="warning" size="20px" />
+        <div class="text-body2">
+          {{ dappRequestsWaitingText }}
+        </div>
+      </q-card-section>
+    </q-card>
+
+    <!-- WalletConnect pairing approval (#1709) -->
     <q-card
       v-if="currentApproval"
       flat
@@ -750,6 +765,7 @@ export default defineComponent({
     )
     const poolTransferDeltaMon = ref(0)
     const approvals = ref<DappApprovalItem[]>([...props.initialApprovals])
+    const dappRequestsWaiting = ref(0)
     const wcUriInput = ref('')
     const pairedWcUri = ref('')
 
@@ -1002,8 +1018,7 @@ export default defineComponent({
         req.kind === 'permissions' ||
         req.method === 'connect' ||
         req.method === 'eth_requestAccounts' ||
-        req.method === 'wallet_requestPermissions' ||
-        req.method === 'solana_connect'
+        req.method === 'wallet_requestPermissions'
       )
     })
 
@@ -1020,6 +1035,12 @@ export default defineComponent({
         normOrigin || 'https://dapp.local',
       )
     })
+
+    const dappRequestsWaitingText = computed(() =>
+      dappRequestsWaiting.value === 1
+        ? '1 dApp request is waiting in the Frank approval window.'
+        : `${dappRequestsWaiting.value} dApp requests are waiting in the Frank approval window.`,
+    )
 
     const connectAddressSharedCaption = computed(() => {
       const req = currentApproval.value
@@ -1205,24 +1226,12 @@ export default defineComponent({
         ) {
           originPersonasMap.value = { ...res.result.originPersonas }
         }
+        // dApp requests are answered in the extension's approval window;
+        // this panel only says how many wait there.
         const pendingList = res?.result?.pendingApprovals
-        if (Array.isArray(pendingList) && props.initialApprovals.length === 0) {
-          // The background owns the dApp queue; keep only locally created
-          // WalletConnect pairings alongside it.
-          const backgroundIds = new Set(pendingList.map(item => item.id))
-          approvals.value = [
-            ...pendingList.map(item => ({
-              id: item.id,
-              kind: item.kind,
-              origin: item.origin,
-              method: item.method,
-              params: item.params,
-            })),
-            ...approvals.value.filter(
-              item => item.id.startsWith('wc-') && !backgroundIds.has(item.id),
-            ),
-          ]
-        }
+        dappRequestsWaiting.value = Array.isArray(pendingList)
+          ? pendingList.length
+          : 0
       } catch {
         // Ignore runtime bridge query failure
       }
@@ -1549,20 +1558,6 @@ export default defineComponent({
             [normOrigin]: binding,
           }
         }
-        if (isExtensionRuntime.value) {
-          void sendRuntimeMessage({
-            channel: FRANK_DAPP_BRIDGE_CHANNEL,
-            type: 'companion-resolve-approval',
-            requestId: req.id,
-            approvalId: req.id,
-            approved: true,
-            useBurnerPersona: chosenUseBurner,
-            personaAddress: chosenConnectAddr,
-            personaIndex: nextBurnerIdx,
-            label: binding.label,
-            result: [chosenConnectAddr],
-          }).catch(() => {})
-        }
         emit('approve-request', {
           request: req,
           jitSweptMon: shortfall,
@@ -1574,16 +1569,6 @@ export default defineComponent({
       }
 
       const signatureOrTxHash = signOrExecuteApprovalRequest(req, normOrigin)
-      if (isExtensionRuntime.value) {
-        void sendRuntimeMessage({
-          channel: FRANK_DAPP_BRIDGE_CHANNEL,
-          type: 'companion-resolve-approval',
-          requestId: req.id,
-          approvalId: req.id,
-          approved: true,
-          result: signatureOrTxHash,
-        }).catch(() => {})
-      }
       emit('approve-request', {
         request: req,
         jitSweptMon: shortfall,
@@ -1595,15 +1580,6 @@ export default defineComponent({
       const req = currentApproval.value
       if (!req) return
       approvals.value.shift()
-      if (isExtensionRuntime.value) {
-        void sendRuntimeMessage({
-          channel: FRANK_DAPP_BRIDGE_CHANNEL,
-          type: 'companion-resolve-approval',
-          requestId: req.id,
-          approvalId: req.id,
-          approved: false,
-        }).catch(() => {})
-      }
       emit('reject-request', {
         request: req,
       })
@@ -1650,6 +1626,8 @@ export default defineComponent({
       currentApproval,
       isConnectApproval,
       previewConnectAddress,
+      dappRequestsWaiting,
+      dappRequestsWaitingText,
       connectAddressSharedCaption,
       currentApprovalShortfall,
       approvalMethodSummary,

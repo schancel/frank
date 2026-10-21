@@ -26,10 +26,7 @@ export interface RegtestChain {
         readonly env: Record<string, string>
         /** The relay's message mailbox runs on this network: stamps are paid here. */
         readonly mailbox: {
-          readonly rpcUrl: string
-          readonly expectedChainId: bigint
           readonly minValueWei: bigint
-          readonly networkTag: string
         }
       }
   /** Pays `amount` (base units) from the network's faucet and confirms it. Returns the txid. */

@@ -16,6 +16,9 @@ import { useChatStore } from '../stores/chats'
 import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import { accountSession, accountStatus } from '../accounts/session'
 import { preloadAppRuntime } from '../App.vue'
+import { hasOtherExtensionViews } from '../../src-bex/runtime-adapter'
+
+const EXTENSION_PEER_PING_TIMEOUT_MS = 300
 
 export default boot(async ({ app }) => {
   const status = reactive({ loaded: false, setup: false })
@@ -98,11 +101,27 @@ export default boot(async ({ app }) => {
       void import('../pages/Welcome.vue').catch(() => undefined)
       void import('../pages/Setup.vue').catch(() => undefined)
     }
+    // The popup boots fast when it is the only extension view. With another view open (the
+    // pop-out, say) it waits long enough for that view to answer: a late answer would let
+    // both views take the account and leave both on the lock screen.
+    const otherViews = isExtensionSurface
+      ? await hasOtherExtensionViews().catch(() => null)
+      : null
     await tabCoordinator.init(
-      isExtensionSurface ? { pingTimeoutMs: 4 } : undefined,
+      isExtensionSurface
+        ? { pingTimeoutMs: otherViews ? EXTENSION_PEER_PING_TIMEOUT_MS : 4 }
+        : undefined,
     )
     if (tabCoordinator.otherTabActive) {
       accountSession.setStandby?.()
+      // Clicking the toolbar icon with the pop-out open raises the pop-out; it never
+      // lands on the lock screen. The lock screen remains when the holder cannot answer.
+      if (
+        isExtensionSurface &&
+        (await tabCoordinator.deferToActiveExtensionView())
+      ) {
+        return
+      }
     }
   } catch {
     // tab coordinator optional in headless/test environments

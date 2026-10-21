@@ -178,7 +178,6 @@ impl NativeDirectoryFixture {
             .collect::<Vec<_>>();
         let home = &captured[home];
         let config: cashweb_config::DirectoryConf = serde_json::from_value(serde_json::json!({
-            "network": home["network"],
             "relay_id": home["relayId"],
             "relay_identity": home["relayIdentity"]["point"],
             "endpoint": home["endpoint"],
@@ -190,9 +189,13 @@ impl NativeDirectoryFixture {
             Arc::new(DisabledChainAdapter),
             bitcoinsuite_core::Net::Regtest,
         ));
-        let (directory, ready) =
-            DirectoryRuntime::start_with_clock(registry.clone(), config.clone(), clock.clock())
-                .unwrap();
+        let (directory, ready) = DirectoryRuntime::start_with_clock(
+            registry.clone(),
+            config.clone(),
+            home["network"].as_str().unwrap(),
+            clock.clock(),
+        )
+        .unwrap();
         ready.await.unwrap().unwrap();
         let directory = Arc::new(directory);
         for (index, account) in accounts.iter().enumerate() {
@@ -273,6 +276,7 @@ impl NativeDirectoryFixture {
         let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
             registry.clone(),
             config.clone(),
+            "monad-testnet",
             clock.clock(),
         )
         .unwrap();
@@ -323,6 +327,7 @@ async fn weak_directory_hook_preserves_same_owner_rejects_other_live_owner_and_o
     let (reopened, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
         registry.clone(),
         config,
+        "monad-testnet",
         clock.clock(),
     )
     .unwrap();
@@ -370,6 +375,7 @@ async fn ordinary_directory_drop_releases_registry_before_reopen() {
     let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
         registry,
         config,
+        "monad-testnet",
         clock.clock(),
     )
     .unwrap();
@@ -413,7 +419,6 @@ fn server_with(
     rpc_timeout: std::time::Duration,
 ) -> super::super::server::RegistryServer {
     let config = crate::monad_mailbox::MailboxConfig {
-        expected_chain_id: 10143,
         rpc_timeout,
         ..Default::default()
     };
@@ -428,15 +433,21 @@ fn server_with(
         )),
         curated_defaults: Arc::new(vec![]),
         monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::enabled(
-            crate::monad_http::HttpTransport::new(rpc.parse().unwrap()),
+            std::sync::Arc::new(crate::chains::EvmChainAdapter::assume_verified(
+                "monad-testnet",
+                vec![rpc.parse().unwrap()],
+            )),
             config,
             min_value_wei,
-            b"MONT".to_vec(),
             &crate::monad_mailbox::SessionSecret::random(),
         ),
         evm_rpc: None,
         bitcoin_proxy: None,
         solana_proxy: None,
+        chains: std::sync::Arc::new(
+            crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
+        ),
+        forum: None,
         spa_dir: None,
         event_bus: fixture.registry.event_bus().clone(),
     }
@@ -821,15 +832,16 @@ async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_
         .canonical_dm()
         .attach_directory(fixture.directory.clone());
     let config = crate::monad_mailbox::MailboxConfig {
-        expected_chain_id: 10143,
         private_read_concurrency: 1,
         ..Default::default()
     };
     let runtime = crate::monad_mailbox::MonadMailboxRuntime::enabled(
-        crate::monad_http::HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
+        std::sync::Arc::new(crate::chains::EvmChainAdapter::assume_verified(
+            "monad-testnet",
+            vec!["http://127.0.0.1:1".parse().unwrap()],
+        )),
         config,
         10143,
-        b"MONT".to_vec(),
         &crate::monad_mailbox::SessionSecret::random(),
     );
     let server = super::super::server::RegistryServer {
@@ -846,6 +858,10 @@ async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_
         evm_rpc: None,
         bitcoin_proxy: None,
         solana_proxy: None,
+        chains: std::sync::Arc::new(
+            crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
+        ),
+        forum: None,
         spa_dir: None,
         event_bus: fixture.registry.event_bus().clone(),
     };

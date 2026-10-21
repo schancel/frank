@@ -1108,8 +1108,14 @@ async function takeoverHere() {
 }
 
 function switchToOpenTab() {
-  tabCoordinator.requestTabFocus()
+  const outcome = tabCoordinator.requestTabFocus()
   showManualTabHint.value = true
+  // In the extension the raised view is the one to use: close this one once it is up.
+  if (isBrowserExtensionRuntime()) {
+    void outcome.then(result => {
+      if (result === 'focused') window.close()
+    })
+  }
 }
 
 watch(

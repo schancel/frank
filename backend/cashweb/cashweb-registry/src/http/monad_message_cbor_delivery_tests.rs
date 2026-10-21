@@ -713,12 +713,10 @@ async fn with_the_monad_rpc_down_at_startup_a_paid_message_is_still_delivered() 
     };
     // Startup succeeds with the upstream down.
     let proxy =
-        crate::http::evm_rpc::EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |_| {
-            Some(dead.to_owned())
-        })
-        .await
-        .unwrap()
-        .unwrap();
+        crate::http::evm_rpc::EvmRpcRuntime::from_conf_with_env(&conf, |_| Some(dead.to_owned()))
+            .await
+            .unwrap()
+            .unwrap();
     let mut server = server_with(&fixture, dead, 1, Duration::from_secs(10));
     server.evm_rpc = Some(proxy);
     let (url, stop, task) =

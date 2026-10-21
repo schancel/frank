@@ -63,9 +63,6 @@ pub struct Registry {
     net: Net,
     /// Notification event bus for real-time relay message fan-out (ticket #982 / track C).
     event_bus: Arc<dyn crate::events::RelayEventBus>,
-    /// Canonical protocol chain IDs accepted for stamp admission and topic burns on this relay.
-    /// Does not restrict wallet RPC/indexer proxy routes (`/chain-rpc/:chain/*`).
-    accepted_payment_networks: std::sync::RwLock<Vec<String>>,
 }
 
 /// Result of putting metadata into the registry.
@@ -221,7 +218,6 @@ impl Registry {
             chain_adapter,
             net,
             event_bus,
-            accepted_payment_networks: std::sync::RwLock::new(Vec::new()),
         }
     }
 
@@ -595,73 +591,6 @@ impl Registry {
     /// (`crate::http::monad_profile::handle_put_monad_profile`) and from the plain
     /// `PUT /metadata/:addr` route's Monad-address dispatch branch
     /// (`crate::http::server::handle_put_registry`) -- see that module's docs for why both exist.
-    /// Returns the expected Frank-CBOR network identifier based on configured network tag and Net.
-    pub fn expected_cbor_network(&self) -> &'static str {
-        if let Some(id) =
-            crate::network_tag::cbor_network_identifier(crate::network_tag::frank_network_tag())
-        {
-            return id;
-        }
-        match self.net {
-            Net::Mainnet => "monad-mainnet",
-            _ => "monad-testnet",
-        }
-    }
-
-    /// Return the EVM chain ID paired with [`Self::expected_cbor_network`].
-    pub fn expected_monad_chain_id(&self) -> u64 {
-        if let Some(network) =
-            crate::network_tag::monad_network(crate::network_tag::frank_network_tag())
-        {
-            return network.evm_chain_id;
-        }
-        match self.net {
-            Net::Mainnet => 143,
-            _ => 10_143,
-        }
-    }
-
-    /// Configure the canonical protocol chain IDs accepted by this relay for stamp admission and
-    /// topic burns.
-    ///
-    /// Does not restrict wallet RPC/indexer proxy routes (`/chain-rpc/:chain/*`).
-    pub fn set_accepted_payment_networks(&self, networks: Vec<String>) {
-        if let Ok(mut guard) = self.accepted_payment_networks.write() {
-            *guard = networks;
-        }
-    }
-
-    /// Return the canonical protocol chain IDs accepted by this relay for stamp admission and
-    /// topic burns.
-    ///
-    /// Defaults to `[self.expected_cbor_network()]` when not explicitly overridden.
-    pub fn accepted_payment_networks(&self) -> Vec<String> {
-        if let Ok(guard) = self.accepted_payment_networks.read() {
-            if !guard.is_empty() {
-                return guard.clone();
-            }
-        }
-        vec![self.expected_cbor_network().to_string()]
-    }
-
-    /// Whether `chain_id` is an accepted payment network for stamp admission and topic burns on
-    /// this relay.
-    pub fn is_payment_network_accepted(&self, chain_id: &str) -> bool {
-        self.accepted_payment_networks()
-            .iter()
-            .any(|accepted| accepted == chain_id)
-    }
-
-    /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad
-    /// equivalent of [`Registry::put_metadata`]. See `crate::monad_profile_verify`'s module docs
-    /// for why this uses an explicit pubkey+signature check (mirroring Lotus's own solution to
-    /// the identical problem) rather than `ecrecover`, which has nothing to recover a signature
-    /// from here (there's no burn transaction backing a profile registration).
-    ///
-    /// Reachable both from the dedicated `PUT /metadata/monad/:addr` route
-    /// (`crate::http::monad_profile::handle_put_monad_profile`) and from the plain
-    /// `PUT /metadata/:addr` route's Monad-address dispatch branch
-    /// (`crate::http::server::handle_put_registry`) -- see that module's docs for why both exist.
     pub fn put_monad_profile(
         &self,
         address: Address,
@@ -702,11 +631,16 @@ impl Registry {
         Ok(())
     }
 
-    /// Fully verify and write a Frank-CBOR type-2 account registration attestation (ticket #605).
-    /// Enforces stage 10.6 signature verification and monotonic revision/timestamp invariants.
-    pub fn put_monad_profile_cbor(&self, address: Address, frame_bytes: &[u8]) -> Result<()> {
+    /// Fully verify and write a Frank-CBOR type-2 account registration attestation (ticket #605)
+    /// for the relay network `network`. Enforces stage 10.6 signature verification and monotonic
+    /// revision/timestamp invariants.
+    pub fn put_monad_profile_cbor(
+        &self,
+        address: Address,
+        network: &str,
+        frame_bytes: &[u8],
+    ) -> Result<()> {
         let _lock = self.db.lock_monad_profiles();
-        let expected_net = self.expected_cbor_network();
         let prior_statement =
             if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
                 frank_cbor::PriorStatement::Frame(info.type_4_frame)
@@ -715,7 +649,7 @@ impl Registry {
             };
 
         let verified =
-            verify_cbor_account_registration(address, expected_net, frame_bytes, prior_statement)?;
+            verify_cbor_account_registration(address, network, frame_bytes, prior_statement)?;
 
         if let Some(existing_bytes) = self.db.monad_profiles().get_raw(&address)? {
             if !crate::store::monad_profiles::is_cbor_frame(&existing_bytes) {

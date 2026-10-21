@@ -115,15 +115,26 @@ export function isBrowserExtensionRuntime(
   return getExtensionRuntime(globalScope).isExtension
 }
 
+/** What a click on the toolbar icon opens. */
 export type ExtensionLaunchMode = 'popup' | 'sidepanel' | 'window'
 
+/**
+ * The user's toolbar click choice, in `storage.local`. Only the background's
+ * `set-launch-mode` handler writes it (from the user's choice); opening a
+ * view never changes it. The background re-applies it at every start.
+ */
 export const FRANK_EXT_LAUNCH_MODE_KEY = 'frank_ext_launch_mode'
+
+export function parseExtensionLaunchMode(
+  raw: unknown,
+): ExtensionLaunchMode | null {
+  return raw === 'popup' || raw === 'sidepanel' || raw === 'window' ? raw : null
+}
 
 export async function openCompanionPanel(
   options: {
     windowId?: number
     tabId?: number
-    persistSidePanelOnActionClick?: boolean
   } = {},
   globalScope?: Record<string, any>,
 ): Promise<{
@@ -136,30 +147,6 @@ export async function openCompanionPanel(
   }
 
   if (api.sidePanel && typeof api.sidePanel.open === 'function') {
-    if (options.persistSidePanelOnActionClick !== false) {
-      if (typeof api.sidePanel.setPanelBehavior === 'function') {
-        try {
-          await Promise.resolve(
-            api.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }),
-          ).catch(() => {})
-        } catch {
-          // Ignore sidePanel behavior errors
-        }
-      }
-      if (typeof api.storage?.local?.set === 'function') {
-        try {
-          await Promise.resolve(
-            api.storage.local.set({
-              [FRANK_EXT_LAUNCH_MODE_KEY]: 'sidepanel',
-              frankOpenPanelOnActionClick: true,
-            }),
-          ).catch(() => {})
-        } catch {
-          // Ignore storage errors
-        }
-      }
-    }
-
     let resolvedWindowId = options.windowId
     if (
       resolvedWindowId === undefined &&
@@ -304,15 +291,14 @@ export function getExtensionResourceUrl(
   return String(api.runtime.getURL(resourcePath))
 }
 
-export async function openExtensionInWindow(
-  options: { path?: string; width?: number; height?: number } = {},
-  globalScope: Record<string, any> = typeof globalThis !== 'undefined'
-    ? (globalThis as Record<string, any>)
-    : {},
+async function createExtensionWindow(
+  options: { path?: string; width?: number; height?: number },
+  globalScope: Record<string, any>,
 ): Promise<{
   opened: boolean
   mode: 'window' | 'tab' | 'noop'
   url: string
+  windowId?: number
 }> {
   const path = options.path ?? 'index.html?extMode=window'
   const width = options.width ?? 440
@@ -320,26 +306,19 @@ export async function openExtensionInWindow(
   const url = getExtensionResourceUrl(path, globalScope) ?? path
   const api = getRawExtensionApi(globalScope)
 
-  if (typeof api?.storage?.local?.set === 'function') {
-    try {
-      await Promise.resolve(
-        api.storage.local.set({
-          [FRANK_EXT_LAUNCH_MODE_KEY]: 'window',
-        }),
-      ).catch(() => {})
-    } catch {
-      // Ignore storage errors
-    }
-  }
-
   if (api?.windows && typeof api.windows.create === 'function') {
-    await api.windows.create({
+    const created = await api.windows.create({
       url,
       type: 'popup',
       width,
       height,
     })
-    return { opened: true, mode: 'window', url }
+    return {
+      opened: true,
+      mode: 'window',
+      url,
+      ...(typeof created?.id === 'number' ? { windowId: created.id } : {}),
+    }
   }
 
   if (api?.tabs && typeof api.tabs.create === 'function') {
@@ -366,17 +345,235 @@ export async function openExtensionInWindow(
   return { opened: false, mode: 'noop', url }
 }
 
-export async function openExtensionWindow(
-  options: { path?: string; width?: number; height?: number } = {},
+/**
+ * The one main pop-out window (extMode=window). Ordinary wallets keep a single pop-out:
+ * opening it again focuses the existing window. Its ID lives in `storage.session` (it
+ * survives a stopped service worker, and every extension page reads the same record),
+ * falling back to `storage.local` where the browser has no session storage. A recorded ID
+ * counts only while that window still exists and still shows the main Frank page.
+ *
+ * Only windows opened through focusOrOpenMainExtensionWindow are recorded, so a dApp
+ * approval window or any other extension window is never mistaken for the main instance.
+ */
+export const FRANK_MAIN_WINDOW_ID_KEY = 'frankMainWindowId'
+const MAIN_WINDOW_PATH = 'index.html?extMode=window'
+
+function mainWindowStorage(
+  api: Record<string, any>,
+): Record<string, any> | null {
+  const session = api.storage?.session
+  if (session && typeof session.get === 'function') return session
+  const local = api.storage?.local
+  if (local && typeof local.get === 'function') return local
+  return null
+}
+
+/**
+ * Whether `url` is the main Frank page in window mode. A separate approval document
+ * (approval.html) is not; the main window itself may route to #/dapp-bridge to show an
+ * approval, so the route does not decide it (approval windows are never recorded anyway).
+ */
+export function isMainExtensionWindowUrl(
+  url: unknown,
+  mainUrl: string,
+): boolean {
+  if (typeof url !== 'string') return false
+  const base = mainUrl.slice(0, mainUrl.indexOf('?'))
+  if (!url.startsWith(base)) return false
+  const query = url.slice(base.length).split('#')[0]
+  return new URLSearchParams(query).get('extMode') === 'window'
+}
+
+/**
+ * Whether the recorded window is still the main pop-out. Reading tab URLs needs the `tabs`
+ * permission, which Frank does not request, so the check uses the extension's own contexts
+ * (`runtime.getContexts`, which reports their document URLs without it). A window whose page
+ * has not loaded yet has no context and counts on existence alone, as it does where the
+ * browser has no getContexts: window IDs are not reused within a browser session.
+ */
+async function isRecordedMainWindow(
+  api: Record<string, any>,
+  windowId: number,
+  globalScope: Record<string, any>,
+): Promise<boolean> {
+  let win: { type?: string } | undefined
+  try {
+    win = await api.windows.get(windowId)
+  } catch {
+    return false // windows.get rejects for a closed window.
+  }
+  if (!win || (win.type !== undefined && win.type !== 'popup')) return false
+  if (typeof api.runtime?.getContexts !== 'function') return true
+  const mainUrl = getExtensionResourceUrl(MAIN_WINDOW_PATH, globalScope) ?? ''
+  try {
+    const contexts: Array<{ documentUrl?: string }> =
+      await api.runtime.getContexts({
+        contextTypes: ['TAB'],
+        windowIds: [windowId],
+      })
+    if (!Array.isArray(contexts) || contexts.length === 0) return true
+    return contexts.some(context =>
+      isMainExtensionWindowUrl(context.documentUrl, mainUrl),
+    )
+  } catch {
+    return true
+  }
+}
+
+/** The open main pop-out window's ID, or null when none is open. */
+export async function findMainExtensionWindow(
+  globalScope: Record<string, any> = typeof globalThis !== 'undefined'
+    ? (globalThis as Record<string, any>)
+    : {},
+): Promise<number | null> {
+  const api = getRawExtensionApi(globalScope)
+  const store = api ? mainWindowStorage(api) : null
+  if (!api || !store || typeof api.windows?.get !== 'function') return null
+  let windowId: unknown
+  try {
+    const stored = await store.get(FRANK_MAIN_WINDOW_ID_KEY)
+    windowId = stored?.[FRANK_MAIN_WINDOW_ID_KEY]
+  } catch {
+    return null
+  }
+  if (typeof windowId !== 'number') return null
+  if (await isRecordedMainWindow(api, windowId, globalScope)) return windowId
+  try {
+    await store.remove?.(FRANK_MAIN_WINDOW_ID_KEY)
+  } catch {
+    // A stale record is re-verified on every lookup.
+  }
+  return null
+}
+
+let mainWindowOpening: Promise<{
+  opened: boolean
+  focused: boolean
+  mode: 'window' | 'tab' | 'noop'
+  url: string
+}> | null = null
+
+/**
+ * Focuses the main pop-out window when one is open; opens and records it otherwise.
+ * Every "open in window" path (toolbar launch mode, pop-out buttons, settings) uses this.
+ */
+export async function focusOrOpenMainExtensionWindow(
+  options: { width?: number; height?: number } = {},
   globalScope: Record<string, any> = typeof globalThis !== 'undefined'
     ? (globalThis as Record<string, any>)
     : {},
 ): Promise<{
   opened: boolean
+  focused: boolean
   mode: 'window' | 'tab' | 'noop'
   url: string
 }> {
-  return openExtensionInWindow(options, globalScope)
+  // A double click must not race two windows.create calls in this context.
+  mainWindowOpening ??= (async () => {
+    const url =
+      getExtensionResourceUrl(MAIN_WINDOW_PATH, globalScope) ?? MAIN_WINDOW_PATH
+    const existing = await findMainExtensionWindow(globalScope)
+    const api = getRawExtensionApi(globalScope)
+    if (existing !== null && typeof api?.windows?.update === 'function') {
+      try {
+        await api.windows.update(existing, { focused: true })
+        return { opened: true, focused: true, mode: 'window' as const, url }
+      } catch {
+        // The window closed between lookup and focus: open a new one.
+      }
+    }
+    // The default path is the main window (extMode=tab where only tabs can open).
+    const created = await createExtensionWindow(options, globalScope)
+    const store = api ? mainWindowStorage(api) : null
+    if (
+      created.windowId !== undefined &&
+      store &&
+      typeof store.set === 'function'
+    ) {
+      try {
+        await store.set({ [FRANK_MAIN_WINDOW_ID_KEY]: created.windowId })
+      } catch {
+        // Without a record the next open cannot focus this window.
+      }
+    }
+    const { windowId: _windowId, ...res } = created
+    return { ...res, focused: false }
+  })().finally(() => {
+    mainWindowOpening = null
+  })
+  return await mainWindowOpening
+}
+
+/**
+ * Raises the extension view this page runs in: its tab and its browser window. A page's own
+ * window.focus() cannot raise a background window in Chromium; the extension windows API can.
+ * Returns false outside an extension or when the browser refuses.
+ */
+export async function focusOwnExtensionView(
+  globalScope: Record<string, any> = typeof globalThis !== 'undefined'
+    ? (globalThis as Record<string, any>)
+    : {},
+): Promise<boolean> {
+  const api = getRawExtensionApi(globalScope)
+  if (!api || typeof api.windows?.update !== 'function') return false
+  try {
+    const tab =
+      typeof api.tabs?.getCurrent === 'function'
+        ? await api.tabs.getCurrent()
+        : undefined
+    if (tab && typeof tab.id === 'number') {
+      if (typeof api.tabs?.update === 'function') {
+        await api.tabs.update(tab.id, { active: true })
+      }
+      if (typeof tab.windowId === 'number') {
+        await api.windows.update(tab.windowId, { focused: true })
+        return true
+      }
+    }
+    // A side panel or popup is not a tab; raise the browser window that hosts it.
+    if (typeof api.windows?.getCurrent === 'function') {
+      const win = await api.windows.getCurrent()
+      if (win && typeof win.id === 'number') {
+        await api.windows.update(win.id, { focused: true })
+        return true
+      }
+    }
+  } catch {
+    // Focus is best effort; the caller keeps its manual fallback.
+  }
+  return false
+}
+
+/**
+ * Whether another extension page (popup, side panel, pop-out window or extension tab) is
+ * open besides the calling page. Null when the browser cannot tell.
+ */
+export async function hasOtherExtensionViews(
+  globalScope: Record<string, any> = typeof globalThis !== 'undefined'
+    ? (globalThis as Record<string, any>)
+    : {},
+): Promise<boolean | null> {
+  const api = getRawExtensionApi(globalScope)
+  if (!api) return null
+  try {
+    if (typeof api.runtime?.getContexts === 'function') {
+      // Lists the calling page too.
+      const contexts = await api.runtime.getContexts({
+        contextTypes: ['TAB', 'POPUP', 'SIDE_PANEL'],
+      })
+      if (Array.isArray(contexts)) return contexts.length > 1
+    }
+    if (typeof api.extension?.getViews === 'function') {
+      const views = api.extension.getViews()
+      if (Array.isArray(views)) {
+        const self = globalScope.window ?? globalScope
+        return views.some(view => view !== self)
+      }
+    }
+  } catch {
+    // Unknown: the caller keeps its default.
+  }
+  return null
 }
 
 export async function openExtensionTab(

@@ -106,8 +106,7 @@ if [[ "${1:-}" == "--check-db" ]]; then
     exec "$FRANK_REAL_CASHWEBD" --check-db -
 fi
 printf '%s\n' "$@" >"$FRANK_LAUNCHER_ARGS"
-printf 'rpc=%s\ntag=%s\n' "${MONAD_TESTNET_HTTP_RPC_URL:-}" "${FRANK_NETWORK_TAG:-}" \
-    >"$FRANK_LAUNCHER_ARGS.env"
+printf 'rpc=%s\n' "${MONAD_TESTNET_HTTP_RPC_URL:-}" >"$FRANK_LAUNCHER_ARGS.env"
 cat >"$FRANK_LAUNCHER_CONFIG"
 if [[ "${FRANK_LAUNCHER_MODE:-}" == "block" ]]; then
     trap 'exit 143' TERM
@@ -134,6 +133,13 @@ launcher="$fixture_root/backend/cashweb/run-local-monad.sh"
 args_file="$fixture_root/args"
 config_file="$fixture_root/config"
 dummy_rpc_url="https://rpc.invalid.example/v2/test-only"
+# The other upstreams the shipped config names; the real relay's --check-config resolves them all.
+proxy_env=(
+    XEC_TESTNET_CHRONIK_URL=https://chronik.invalid.example
+    BTC_TESTNET_ELECTRUM_URL=ssl://electrum.invalid.example:1
+    BCH_TESTNET_ELECTRUM_URL=ssl://electrum.invalid.example:2
+    SOLANA_DEVNET_HTTP_RPC_URL=https://solana.invalid.example
+)
 export XDG_CACHE_HOME="$fixture_root/cache"
 
 if env -u MONAD_TESTNET_HTTP_RPC_URL \
@@ -174,47 +180,49 @@ diff -u <(printf '%s\n' -) "$args_file"
 [[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]] || exit 1
 [[ "$(grep -c '^enabled = true$' "$config_file")" -eq 4 ]] || exit 1
 # The endpoint is secret-bearing: it reaches the daemon only through its environment, never the
-# generated config, and the network tag defaults to Monad testnet's MONT.
+# generated config, and the relay network defaults to monad-testnet.
 [[ "$(grep -c '^rpc_url' "$config_file")" -eq 0 ]] || exit 1
 ! grep -Fq "$dummy_rpc_url" "$config_file" || exit 1
-[[ "$(cat "$args_file.env")" == "$(printf 'rpc=%s\ntag=MONT' "$dummy_rpc_url")" ]] || exit 1
+[[ "$(cat "$args_file.env")" == "$(printf 'rpc=%s' "$dummy_rpc_url")" ]] || exit 1
+[[ "$(grep -Fxc 'network = "monad-testnet"' "$config_file")" -eq 1 ]] || exit 1
 # The effective values are printed, but the secret path of the URL is not.
-grep -Fq 'FRANK_NETWORK_TAG:      MONT' "$fixture_root/effective.err" || exit 1
+grep -Fq 'network:                monad-testnet (chain id 10143)' "$fixture_root/effective.err" || exit 1
 grep -Fq 'min_value_wei:          1000000000000' "$fixture_root/effective.err" || exit 1
-grep -Fq 'expected_chain_id:      10143' "$fixture_root/effective.err" || exit 1
 grep -Fq 'origin https://rpc.invalid.example' "$fixture_root/effective.err" || exit 1
 ! grep -Fq 'test-only' "$fixture_root/effective.err" || exit 1
-# Enabled mode requires an explicit minimum and chain ID; local defaults are Monad testnet's.
+# Enabled mode requires an explicit minimum; the Monad row stays on Monad testnet's chain.
 [[ "$(grep -Fxc 'min_value_wei = "1000000000000"' "$config_file")" -eq 1 ]] || exit 1
-[[ "$(grep -Fxc 'expected_chain_id = 10143' "$config_file")" -eq 2 ]] || exit 1
+[[ "$(grep -Fxc 'expected_chain_id = 10143' "$config_file")" -eq 1 ]] || exit 1
 # Retargeting Monad must leave the other EVM rows on their own chain ids.
 grep -Fxq 'id = "base-sepolia"' "$config_file"
 grep -Fxq 'expected_chain_id = 84532' "$config_file"
 grep -Fxq 'id = "bnb-testnet"' "$config_file"
-# Guard against the harness silently weakening: an enabled mailbox without its minimum/chain ID
-# is rejected by the real parser even with the RPC URL and tag supplied.
-old_style="$(sed '/^min_value_wei/d;/^expected_chain_id/d' "$script_dir/cashwebd.local.toml")"
+# Guard against the harness silently weakening: an enabled mailbox without its minimum is
+# rejected by the real parser even with every upstream supplied.
+old_style="$(sed '/^min_value_wei/d' "$script_dir/cashwebd.local.toml")"
 if printf '%s\n' "$old_style" |
-    MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_NETWORK_TAG=MONT \
+    env "${proxy_env[@]}" MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
         "$FRANK_REAL_CASHWEBD" --check-config - 2>/dev/null; then
-    echo "real parser unexpectedly accepted an enabled mailbox without minimum/chain ID" >&2
+    echo "real parser unexpectedly accepted an enabled mailbox without a minimum" >&2
     exit 1
 fi
-# ... and the shipped config fails fast, naming the variable, when the RPC URL or tag is missing.
-if env -u MONAD_TESTNET_HTTP_RPC_URL FRANK_NETWORK_TAG=MONT \
+# ... and the shipped config fails fast, naming the variable, when the network's RPC URL is
+# missing, and names the setting when the relay network is.
+if env -u MONAD_TESTNET_HTTP_RPC_URL "${proxy_env[@]}" \
     "$FRANK_REAL_CASHWEBD" --check-config - <"$script_dir/cashwebd.local.toml" 2>"$fixture_root/norpc.err"; then
     echo "shipped config unexpectedly validated without the RPC URL" >&2
     exit 1
 fi
 grep -Fq 'MONAD_TESTNET_HTTP_RPC_URL' "$fixture_root/norpc.err" || exit 1
-if env -u FRANK_NETWORK_TAG MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
-    "$FRANK_REAL_CASHWEBD" --check-config - <"$script_dir/cashwebd.local.toml" 2>"$fixture_root/notag.err"; then
-    echo "shipped config unexpectedly validated without the network tag" >&2
+if sed '/^network = /d' "$script_dir/cashwebd.local.toml" |
+    env "${proxy_env[@]}" MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
+        "$FRANK_REAL_CASHWEBD" --check-config - 2>"$fixture_root/nonetwork.err"; then
+    echo "shipped config unexpectedly validated without [registry] network" >&2
     exit 1
 fi
-grep -Fq 'FRANK_NETWORK_TAG' "$fixture_root/notag.err" || exit 1
+grep -Fq 'network' "$fixture_root/nonetwork.err" || exit 1
 # The real parser accepts exactly what the launcher generated.
-MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_NETWORK_TAG=MONT \
+env "${proxy_env[@]}" MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
     "$FRANK_REAL_CASHWEBD" --check-config - <"$config_file"
 [[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]] || exit 1
 
@@ -230,7 +238,7 @@ if MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_FAKE_CHECK_FAIL=1 \
 fi
 [[ ! -e "$args_file" ]] || exit 1
 
-for invalid_env in "CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1e12" "MONAD_TESTNET_CHAIN_ID=0x279f" "FRANK_NETWORK_TAG=MO NT" "FRANK_NETWORK_TAG=MONX" "FRANK_NETWORK_TAG=mont"; do
+for invalid_env in "CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1e12" "FRANK_RELAY_NETWORK=MONT" "FRANK_RELAY_NETWORK=monad" "FRANK_RELAY_NETWORK=ethereum-sepolia" "MONAD_STAMP_BURN_ADDRESS=0xnothex"; do
     if env "$invalid_env" MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
         CARGO="$fixture_root/bin/fake-cargo" \
         "$launcher" >"$fixture_root/invalid-env.out" 2>"$fixture_root/invalid-env.err"; then
@@ -244,14 +252,16 @@ done
 
 rm -f -- "$args_file" "$config_file"
 CASHWEB_STAMP_MIN_BURN_VALUE_WEI=340282366920938463463374607431768211455 \
-    MONAD_TESTNET_CHAIN_ID=143 \
-    FRANK_NETWORK_TAG=MON1 \
+    FRANK_RELAY_NETWORK=monad-mainnet \
+    MONAD_STAMP_BURN_ADDRESS=0x00000000000000000000000000000000000b0b0b \
     MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
     CARGO="$fixture_root/bin/fake-cargo" \
     FRANK_LAUNCHER_ARGS="$args_file" \
     FRANK_LAUNCHER_CONFIG="$config_file" \
     "$launcher"
 grep -Fxq 'min_value_wei = "340282366920938463463374607431768211455"' "$config_file"
+grep -Fxq 'network = "monad-mainnet"' "$config_file"
+grep -Fxq 'burn_address = "0x00000000000000000000000000000000000b0b0b"' "$config_file"
 grep -Fxq 'expected_chain_id = 143' "$config_file"
 grep -Fxq 'id = "monad-mainnet"' "$config_file"
 grep -Fxq 'checkpoint_block_hash = "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9"' "$config_file"
@@ -290,7 +300,6 @@ printf '\nCARGO=%q\nFRANK_LAUNCHER_ARGS=%q\nFRANK_LAUNCHER_CONFIG=%q\n' \
     "$fixture_root/bin/fake-cargo" "$args_file" "$config_file" >>"$fixture_root/.env"
 env -u MONAD_TESTNET_HTTP_RPC_URL "$launcher"
 grep -Fq 'expected_chain_id = 10143' "$config_file" || exit 1
-grep -Fxq 'tag=MONT' "$args_file.env" || exit 1
 grep -Fxq 'rpc=https://monad-testnet.g.alchemy.com/v2/<your-alchemy-key>' "$args_file.env" || exit 1
 
 rm -f -- "$config_file"
@@ -333,7 +342,7 @@ echo "old messages" >"$old_db_dir/registry.monad-dm-cbor-v1/data"
 echo "session" >"$old_db_dir/registry.session-secret"
 echo "not the relay's" >"$old_db_dir/account-root.hex"
 # The relay itself, started directly, refuses and names the paths.
-if printf 'x' | MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_NETWORK_TAG=MONT \
+if printf 'x' | env "${proxy_env[@]}" MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
     "$FRANK_REAL_CASHWEBD" --check-db - <<<"$(sed "s#^db_path = .*#db_path = \"$old_db_dir/registry.rocksdb\"#" "$config_file")" \
     2>"$fixture_root/refusal.err"; then
     echo "the relay unexpectedly opened a database beside an earlier message store" >&2

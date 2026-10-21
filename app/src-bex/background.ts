@@ -8,9 +8,11 @@ import {
   isBrowserExtensionRuntime,
   isFrankWebAppOrigin,
   onRuntimeMessage,
+  focusOrOpenMainExtensionWindow,
   openCompanionPanel,
-  openExtensionInWindow,
+  parseExtensionLaunchMode,
 } from './runtime-adapter'
+import { EXTENSION_POPUP_PATH } from './manifests'
 import {
   createSyncSender,
   syncSenderConfirm,
@@ -20,12 +22,12 @@ import {
   type SyncSenderState,
 } from '../src/utils/sync-pairing'
 import {
-  createDeterministicRpcResultFallback,
   deriveDeterministicBtcAddress,
   deriveDeterministicBtcPubKey,
   deriveDeterministicOriginBurnerAddress,
   deriveDeterministicXecAddress,
 } from './persona-derivation'
+import { createApprovalWindow, type ApprovalWindow } from './approval-window'
 
 export type DappProviderAnnounceMode = 'always' | 'connected-only' | 'stealth'
 
@@ -39,7 +41,7 @@ export interface OriginPersonaBinding {
 export interface PendingDappApproval {
   id: string
   kind?: 'connect' | 'sign' | 'transaction' | 'permissions'
-  chainFamily?: 'evm' | 'solana' | 'bitcoin' | 'ecash'
+  chainFamily?: 'evm' | 'bitcoin' | 'ecash'
   origin: string
   href: string
   method: string
@@ -89,8 +91,10 @@ export interface BackgroundBridgeState {
   pendingApprovals: Map<string, PendingDappApproval>
   pendingRpcWaiters: Map<string, PendingRpcWaiter>
   syncPairing: PendingSyncPairing
-  openPanelOnActionClick: boolean
+  /** The user's toolbar click choice (see FRANK_EXT_LAUNCH_MODE_KEY). */
   launchMode: ExtensionLaunchMode
+  /** The approval window; created on the first request needing a decision. */
+  approvalWindow?: ApprovalWindow
 }
 
 export type BackgroundDappState = BackgroundBridgeState
@@ -102,11 +106,6 @@ const APPROVAL_REQUIRED_METHODS = new Set([
   'eth_signTypedData_v3',
   'eth_signTypedData_v4',
   'eth_sendTransaction',
-  'solana_connect',
-  'solana_signMessage',
-  'solana_signTransaction',
-  'solana_signAndSendTransaction',
-  'solana_signIn',
   'btc_requestAccounts',
   'btc_signMessage',
   'btc_signPsbt',
@@ -455,9 +454,6 @@ async function forwardReadOnlyRpc(
 export function createBackgroundBridgeState(
   overrides: Partial<BackgroundBridgeState> = {},
 ): BackgroundBridgeState {
-  const launchMode: ExtensionLaunchMode =
-    overrides.launchMode ??
-    (overrides.openPanelOnActionClick ? 'sidepanel' : 'popup')
   const originPersonas: Record<string, OriginPersonaBinding> = {
     ...(overrides.originPersonas ?? {}),
   }
@@ -500,74 +496,42 @@ export function createBackgroundBridgeState(
     pendingRpcWaiters:
       overrides.pendingRpcWaiters ?? new Map<string, PendingRpcWaiter>(),
     syncPairing: overrides.syncPairing ?? { sender: null, offerTab: null },
-    openPanelOnActionClick:
-      overrides.openPanelOnActionClick ?? launchMode === 'sidepanel',
-    launchMode,
+    launchMode: overrides.launchMode ?? 'popup',
   }
 }
 
-export async function openApprovalCompanionPopup(
-  options: {
-    windowId?: number
-    tabId?: number
-  } = {},
-  runtimeScope?: Record<string, any>,
-  state?: BackgroundBridgeState,
-): Promise<{
-  opened: boolean
-  mode: string
-}> {
-  const extApi = getRawExtensionApi(runtimeScope)
-  if (!extApi) {
-    return { opened: false, mode: 'noop' }
-  }
+const USER_REJECTED = { code: 4001, message: 'User rejected the request.' }
 
-  if (
-    state?.launchMode === 'sidepanel' &&
-    extApi.sidePanel &&
-    typeof extApi.sidePanel.open === 'function'
-  ) {
-    return await openCompanionPanel(
-      {
-        windowId: options.windowId,
-        tabId: options.tabId,
-        persistSidePanelOnActionClick: false,
-      },
-      runtimeScope,
-    )
+/**
+ * Answer every waiting dApp request with `error` and empty the queue. Used when
+ * the user closes the approval window without deciding.
+ */
+export function rejectAllPendingApprovals(
+  state: BackgroundBridgeState,
+  runtimeScope: Record<string, any> | undefined,
+  error: { code: number; message: string } = USER_REJECTED,
+): void {
+  const ids = Array.from(state.pendingApprovals.keys())
+  state.pendingApprovals.clear()
+  for (const id of ids) {
+    const waiter = state.pendingRpcWaiters.get(id)
+    state.pendingRpcWaiters.delete(id)
+    waiter?.reject(error)
   }
+  if (ids.length > 0) notifyExtensionViewsOfApprovals(runtimeScope)
+}
 
-  if (extApi.action && typeof extApi.action.openPopup === 'function') {
-    try {
-      await extApi.action.openPopup()
-      return { opened: true, mode: 'popup' }
-    } catch {
-      // Fall through to window/sidePanel when openPopup requires user gesture
-    }
+function approvalWindowFor(
+  state: BackgroundBridgeState,
+  runtimeScope: Record<string, any> | undefined,
+): ApprovalWindow {
+  if (!state.approvalWindow) {
+    state.approvalWindow = createApprovalWindow({
+      api: getRawExtensionApi(runtimeScope),
+      onClosedByUser: () => rejectAllPendingApprovals(state, runtimeScope),
+    })
   }
-
-  if (extApi.windows && typeof extApi.windows.create === 'function') {
-    try {
-      const res = await openExtensionInWindow(
-        { path: 'index.html?extMode=window#/dapp-bridge' },
-        runtimeScope,
-      )
-      if (res.opened) {
-        return { opened: true, mode: res.mode }
-      }
-    } catch {
-      // Fall through to companion panel
-    }
-  }
-
-  return await openCompanionPanel(
-    {
-      windowId: options.windowId,
-      tabId: options.tabId,
-      persistSidePanelOnActionClick: false,
-    },
-    runtimeScope,
-  )
+  return state.approvalWindow
 }
 
 export function configureSidePanelBehavior(
@@ -593,6 +557,71 @@ export function configureSidePanelBehavior(
     }
   }
   return false
+}
+
+/**
+ * Make the browser's toolbar click do what the user chose. The browser keeps
+ * neither `action.setPopup` nor (across an update or reload) the side panel
+ * behaviour on its own terms, so the background calls this at every start,
+ * install and update with the stored choice. It never writes the choice.
+ *
+ * - popup: the manifest popup, no side panel on click.
+ * - sidepanel: Chrome opens the side panel itself; elsewhere the click reaches
+ *   `action.onClicked` (no popup), which opens the sidebar or a window.
+ * - window: no popup; `action.onClicked` opens the pop-out window.
+ */
+export function applyToolbarClickBehavior(
+  runtimeScope: Record<string, any> | undefined,
+  mode: ExtensionLaunchMode,
+): void {
+  const api = getRawExtensionApi(runtimeScope)
+  configureSidePanelBehavior(runtimeScope, mode === 'sidepanel')
+  if (typeof api?.action?.setPopup !== 'function') return
+  try {
+    void Promise.resolve(
+      api.action.setPopup({
+        popup: mode === 'popup' ? EXTENSION_POPUP_PATH : '',
+      }),
+    ).catch(() => undefined)
+  } catch {
+    // Ignore action errors in restricted environments
+  }
+}
+
+/** A toolbar click that the browser did not handle with a popup or panel. */
+export async function handleToolbarClick(
+  tab: { windowId?: number } | undefined,
+  state: BackgroundBridgeState,
+  runtimeScope?: Record<string, any>,
+): Promise<void> {
+  const api = getRawExtensionApi(runtimeScope)
+  if (
+    state.launchMode === 'popup' &&
+    typeof api?.action?.openPopup === 'function'
+  ) {
+    await api.action.openPopup()
+    return
+  }
+  if (state.launchMode === 'sidepanel') {
+    if (
+      typeof api?.sidePanel?.open === 'function' &&
+      typeof tab?.windowId === 'number'
+    ) {
+      await api.sidePanel.open({ windowId: tab.windowId })
+      return
+    }
+    if (typeof api?.sidebarAction?.toggle === 'function') {
+      // Called before any await: Firefox opens the sidebar only within the
+      // click's user gesture.
+      try {
+        await api.sidebarAction.toggle()
+        return
+      } catch {
+        // Fall back to the pop-out window
+      }
+    }
+  }
+  await focusOrOpenMainExtensionWindow({}, runtimeScope)
 }
 
 export async function ensureOffscreenWarmup(
@@ -1206,7 +1235,6 @@ export async function handleBackgroundMessage(
         announceMode: state.announceMode,
         pendingApprovals: Array.from(state.pendingApprovals.values()),
         launchMode: state.launchMode,
-        openPanelOnActionClick: state.openPanelOnActionClick,
       },
     }
   }
@@ -1407,45 +1435,11 @@ export async function handleBackgroundMessage(
 
   if (
     message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
-    message.type === 'set-sidepanel-behavior'
-  ) {
-    const enabled = Boolean(message.openPanelOnActionClick)
-    state.openPanelOnActionClick = enabled
-    state.launchMode = enabled ? 'sidepanel' : 'popup'
-    const configured = configureSidePanelBehavior(runtimeScope, enabled)
-    const extApi = getRawExtensionApi(runtimeScope)
-    if (extApi?.storage?.local?.set) {
-      try {
-        await extApi.storage.local.set({
-          frankOpenPanelOnActionClick: enabled,
-          [FRANK_EXT_LAUNCH_MODE_KEY]: state.launchMode,
-        })
-      } catch {
-        // Ignore storage errors
-      }
-    }
-    return {
-      ok: true,
-      result: {
-        ok: true,
-        configured,
-        openPanelOnActionClick: enabled,
-        launchMode: state.launchMode,
-      },
-    }
-  }
-
-  if (
-    message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
-    message.type === 'get-sidepanel-behavior'
+    message.type === 'get-launch-mode'
   ) {
     return {
       ok: true,
-      result: {
-        ok: true,
-        openPanelOnActionClick: state.openPanelOnActionClick,
-        launchMode: state.launchMode,
-      },
+      result: { ok: true, launchMode: state.launchMode },
     }
   }
 
@@ -1453,47 +1447,59 @@ export async function handleBackgroundMessage(
     message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
     message.type === 'set-launch-mode'
   ) {
-    const mode: ExtensionLaunchMode =
-      message.launchMode === 'sidepanel' || message.launchMode === 'window'
-        ? message.launchMode
-        : 'popup'
-    state.launchMode = mode
-    state.openPanelOnActionClick = mode === 'sidepanel'
-    const configured = configureSidePanelBehavior(
-      runtimeScope,
-      state.openPanelOnActionClick,
-    )
-    const extApi = getRawExtensionApi(runtimeScope)
-    if (extApi?.storage?.local?.set) {
-      try {
-        await extApi.storage.local.set({
-          [FRANK_EXT_LAUNCH_MODE_KEY]: mode,
-          frankOpenPanelOnActionClick: state.openPanelOnActionClick,
-        })
-      } catch {
-        // Ignore storage errors
+    const mode = parseExtensionLaunchMode(message.launchMode)
+    if (!mode) {
+      return {
+        ok: false,
+        error: {
+          code: -32602,
+          message: `Unknown launch mode: ${String(message.launchMode)}`,
+        },
       }
     }
-    if (message.openNow) {
-      if (mode === 'sidepanel') {
-        await openCompanionPanel(
-          {
-            windowId: message.windowId ?? sender?.tab?.windowId,
-            tabId: message.tabId ?? sender?.tab?.id,
+    const extApi = getRawExtensionApi(runtimeScope)
+    if (typeof extApi?.storage?.local?.set === 'function') {
+      try {
+        await extApi.storage.local.set({ [FRANK_EXT_LAUNCH_MODE_KEY]: mode })
+      } catch (err) {
+        // Not saved: keep the previous choice and say so to Settings.
+        return {
+          ok: false,
+          error: {
+            code: -32603,
+            message: err instanceof Error ? err.message : String(err),
           },
-          runtimeScope,
-        )
-      } else if (mode === 'window') {
-        await openExtensionInWindow(message.options ?? {}, runtimeScope)
+        }
+      }
+    }
+    state.launchMode = mode
+    applyToolbarClickBehavior(runtimeScope, mode)
+    // The choice is saved and applied; opening the view now is a convenience
+    // (it can need a user gesture this message no longer carries).
+    let openError: string | undefined
+    if (message.openNow) {
+      try {
+        if (mode === 'sidepanel') {
+          await openCompanionPanel(
+            {
+              windowId: message.windowId ?? sender?.tab?.windowId,
+              tabId: message.tabId ?? sender?.tab?.id,
+            },
+            runtimeScope,
+          )
+        } else if (mode === 'window') {
+          await focusOrOpenMainExtensionWindow(message.options ?? {}, runtimeScope)
+        }
+      } catch (err) {
+        openError = err instanceof Error ? err.message : String(err)
       }
     }
     return {
       ok: true,
       result: {
         ok: true,
-        configured,
         launchMode: state.launchMode,
-        openPanelOnActionClick: state.openPanelOnActionClick,
+        ...(openError ? { openError } : {}),
       },
     }
   }
@@ -1502,8 +1508,7 @@ export async function handleBackgroundMessage(
     message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
     message.type === 'open-extension-window'
   ) {
-    state.launchMode = 'window'
-    const res = await openExtensionInWindow(
+    const res = await focusOrOpenMainExtensionWindow(
       message.options ?? {},
       runtimeScope,
     )
@@ -1603,10 +1608,7 @@ export async function handleBackgroundMessage(
       }
     }
 
-    if (
-      method === 'wallet_revokePermissions' ||
-      method === 'solana_disconnect'
-    ) {
+    if (method === 'wallet_revokePermissions') {
       if (normalizedOrigin) {
         state.approvedOrigins.delete(normalizedOrigin)
         state.connectedOrigins.delete(normalizedOrigin)
@@ -1619,20 +1621,7 @@ export async function handleBackgroundMessage(
       return { ok: true, result: null }
     }
 
-    // Solana silent connect on unapproved origin returns [] without prompting
-    if (method === 'solana_connect') {
-      const connectOpt = (Array.isArray(params) ? params[0] : params) as
-        | { silent?: boolean }
-        | undefined
-      if (
-        connectOpt?.silent &&
-        (!normalizedOrigin || !isOriginConnected(state, normalizedOrigin))
-      ) {
-        return { ok: true, result: [] }
-      }
-    }
-
-    // Already-approved origin calling eth_requestAccounts, wallet_requestPermissions, solana_connect, btc_requestAccounts, or xec_cashtabRequest(addressRequest)
+    // Already-approved origin calling eth_requestAccounts, wallet_requestPermissions, btc_requestAccounts, or xec_cashtabRequest(addressRequest)
     const cashtabParams =
       method === 'xec_cashtabRequest'
         ? ((Array.isArray(params) ? params[0] : params) as
@@ -1647,7 +1636,6 @@ export async function handleBackgroundMessage(
     if (
       (method === 'eth_requestAccounts' ||
         method === 'wallet_requestPermissions' ||
-        method === 'solana_connect' ||
         method === 'btc_requestAccounts' ||
         isCashtabAddressRequest) &&
       normalizedOrigin &&
@@ -1753,7 +1741,6 @@ export async function handleBackgroundMessage(
       const isConnectMethod =
         method === 'eth_requestAccounts' ||
         method === 'wallet_requestPermissions' ||
-        method === 'solana_connect' ||
         method === 'btc_requestAccounts' ||
         isCashtabAddressRequest
 
@@ -1779,8 +1766,6 @@ export async function handleBackgroundMessage(
           : isConnectMethod
           ? 'connect'
           : method === 'eth_sendTransaction' ||
-            method === 'solana_signTransaction' ||
-            method === 'solana_signAndSendTransaction' ||
             method === 'btc_signPsbt' ||
             method === 'btc_signPsbts' ||
             (method === 'xec_cashtabRequest' && Boolean(cashtabParams?.txInfo))
@@ -1791,10 +1776,8 @@ export async function handleBackgroundMessage(
         state.activePersonaAddress,
         effectiveOrigin,
       )
-      const chainFamily: 'evm' | 'solana' | 'bitcoin' | 'ecash' =
-        method.startsWith('solana_')
-          ? 'solana'
-          : method.startsWith('btc_')
+      const chainFamily: 'evm' | 'bitcoin' | 'ecash' =
+        method.startsWith('btc_')
           ? 'bitcoin'
           : method === 'xec_cashtabRequest'
           ? 'ecash'
@@ -1824,18 +1807,12 @@ export async function handleBackgroundMessage(
         state.pendingRpcWaiters.set(id, { resolve, reject })
       })
 
-      // An already-open popup/side panel/window learns about the request here;
-      // opening a view is best effort (sidePanel.open and action.openPopup
-      // need a user gesture the dApp's click does not carry to the background).
+      // The approval window shows the request (opening it, or focusing it
+      // when earlier requests are already waiting there).
       notifyExtensionViewsOfApprovals(runtimeScope)
-      void openApprovalCompanionPopup(
-        {
-          windowId: sender?.tab?.windowId,
-          tabId: sender?.tab?.id,
-        },
-        runtimeScope,
-        state,
-      ).catch(() => undefined)
+      void approvalWindowFor(state, runtimeScope)
+        .show()
+        .catch(() => undefined)
 
       try {
         const resolvedResult = await decision
@@ -1847,8 +1824,8 @@ export async function handleBackgroundMessage(
         return {
           ok: false,
           error: {
-            code: typeof err?.code === 'number' ? err.code : 4001,
-            message: String(err?.message || 'User rejected the request.'),
+            code: typeof err?.code === 'number' ? err.code : USER_REJECTED.code,
+            message: String(err?.message || USER_REJECTED.message),
             ...(err?.data !== undefined ? { data: err.data } : {}),
           },
         }
@@ -1869,6 +1846,13 @@ export async function handleBackgroundMessage(
     (message.type === 'resolve-approval' ||
       message.type === 'companion-resolve-approval')
   ) {
+    // Only Frank's own pages decide; a web page or content script never answers for the user.
+    if (!isExtensionPageSender(sender, getRawExtensionApi(runtimeScope))) {
+      return {
+        ok: false,
+        error: { code: 4100, message: 'Unauthorized approval sender.' },
+      }
+    }
     const decision =
       message.payload && typeof message.payload === 'object'
         ? message.payload
@@ -1894,13 +1878,15 @@ export async function handleBackgroundMessage(
     state.pendingApprovals.delete(requestId)
     state.pendingRpcWaiters.delete(requestId)
     notifyExtensionViewsOfApprovals(runtimeScope)
+    if (state.pendingApprovals.size === 0) {
+      void approvalWindowFor(state, runtimeScope)
+        .close()
+        .catch(() => undefined)
+    }
 
     const approved = Boolean(decision.approved ?? message.approved)
     if (!approved) {
-      const rejectionError = {
-        code: 4001,
-        message: 'User rejected the request.',
-      }
+      const rejectionError = { ...USER_REJECTED }
       if (waiter) {
         waiter.reject(rejectionError)
       }
@@ -1935,7 +1921,6 @@ export async function handleBackgroundMessage(
       pending.kind === 'permissions' ||
       pending.method === 'eth_requestAccounts' ||
       pending.method === 'wallet_requestPermissions' ||
-      pending.method === 'solana_connect' ||
       pending.method === 'btc_requestAccounts' ||
       isPendingCashtabConnect
 
@@ -2005,44 +1990,22 @@ export async function handleBackgroundMessage(
       }
     }
 
-    // Signing or transaction request
-    const originPersonaAddress = getOriginPersonaAddress(state, pending.origin)
-    const explicitResult =
-      decision.result ??
-      message.result ??
-      decision.signature ??
-      message.signature ??
-      decision.txHash ??
-      message.txHash
-    const fallbackResult = createDeterministicRpcResultFallback(
-      pending.method,
-      pending.origin,
-      originPersonaAddress,
-      pending.params,
-    )
-    const resolvedRpcResult =
-      explicitResult !== undefined
-        ? explicitResult
-        : pending.method === 'xec_cashtabRequest'
-        ? { txid: fallbackResult.replace(/^0x/, '') }
-        : pending.method === 'btc_signPsbts'
-        ? [fallbackResult]
-        : fallbackResult
-
-    if (waiter) {
-      waiter.resolve(resolvedRpcResult)
+    // Signing and transactions are not implemented: approving one must never hand the dApp a
+    // made-up signature or transaction hash. Answer it as unsupported instead.
+    const unsupported = {
+      code: 4200,
+      message: `Frank cannot complete ${pending.method} yet.`,
     }
-
+    waiter?.reject(unsupported)
     return {
-      ok: true,
+      ok: false,
+      error: unsupported,
       result: {
-        ok: true,
+        ok: false,
         requestId,
         approvalId: requestId,
-        approved: true,
+        approved: false,
         origin: pending.origin,
-        accounts: [originPersonaAddress],
-        result: resolvedRpcResult,
       },
     }
   }
@@ -2054,6 +2017,76 @@ export async function handleBackgroundMessage(
   return undefined
 }
 
+/**
+ * Reads the bridge state persisted in `storage.local` into `state`. Only
+ * values present and valid in storage replace the defaults; nothing is written.
+ */
+export async function restoreStoredBridgeState(
+  state: BackgroundBridgeState,
+  api: any,
+): Promise<void> {
+  if (typeof api?.storage?.local?.get !== 'function') return
+  const stored: Record<string, any> | undefined = await api.storage.local.get([
+    FRANK_EXT_LAUNCH_MODE_KEY,
+    'frankActivePersonaAddress',
+    'frankPoolBalanceWeiHex',
+    'frankApprovedOrigins',
+    'frankOriginPersonas',
+    'frankAnnounceMode',
+    'frankChainIdHex',
+  ])
+  if (!stored) return
+  const storedMode = parseExtensionLaunchMode(stored[FRANK_EXT_LAUNCH_MODE_KEY])
+  if (storedMode) state.launchMode = storedMode
+  if (
+    typeof stored.frankActivePersonaAddress === 'string' &&
+    /^0x[a-fA-F0-9]{40}$/.test(stored.frankActivePersonaAddress)
+  ) {
+    state.activePersonaAddress = stored.frankActivePersonaAddress
+  }
+  if (
+    typeof stored.frankPoolBalanceWeiHex === 'string' &&
+    /^0x[0-9a-fA-F]+$/.test(stored.frankPoolBalanceWeiHex)
+  ) {
+    state.poolBalanceWeiHex = stored.frankPoolBalanceWeiHex
+  }
+  if (Array.isArray(stored.frankApprovedOrigins)) {
+    for (const orig of stored.frankApprovedOrigins) {
+      if (typeof orig === 'string' && orig) {
+        const norm = normalizeBridgeOrigin(orig) || orig
+        state.approvedOrigins.add(norm)
+        state.connectedOrigins.add(norm)
+      }
+    }
+  }
+  if (
+    stored.frankOriginPersonas &&
+    typeof stored.frankOriginPersonas === 'object'
+  ) {
+    for (const [orig, binding] of Object.entries(stored.frankOriginPersonas)) {
+      if (binding && typeof binding === 'object') {
+        const norm = normalizeBridgeOrigin(orig) || orig
+        state.originPersonas[norm] = binding as OriginPersonaBinding
+        state.approvedOrigins.add(norm)
+        state.connectedOrigins.add(norm)
+      }
+    }
+  }
+  if (
+    stored.frankAnnounceMode === 'always' ||
+    stored.frankAnnounceMode === 'connected-only' ||
+    stored.frankAnnounceMode === 'stealth'
+  ) {
+    state.announceMode = stored.frankAnnounceMode
+  }
+  if (
+    typeof stored.frankChainIdHex === 'string' &&
+    /^0x[0-9a-fA-F]+$/.test(stored.frankChainIdHex)
+  ) {
+    state.chainIdHex = stored.frankChainIdHex.toLowerCase()
+  }
+}
+
 export function installBackgroundBridge(
   runtimeScope?: Record<string, any>,
   state: BackgroundBridgeState = createBackgroundBridgeState(),
@@ -2061,7 +2094,6 @@ export function installBackgroundBridge(
   state: BackgroundBridgeState
   dispose: () => void
 } {
-  configureSidePanelBehavior(runtimeScope, state.openPanelOnActionClick)
   void ensureOffscreenWarmup(runtimeScope)
   void reinjectContentScriptsIntoOpenTabs(runtimeScope)
 
@@ -2098,105 +2130,44 @@ export function installBackgroundBridge(
       // Ignore storage errors in restricted environments
     }
   }
-  if (api?.storage?.local?.get) {
-    try {
-      const maybeStored = api.storage.local.get([
-        'frankOpenPanelOnActionClick',
-        FRANK_EXT_LAUNCH_MODE_KEY,
-        'frankActivePersonaAddress',
-        'frankPoolBalanceWeiHex',
-        'frankApprovedOrigins',
-        'frankOriginPersonas',
-        'frankAnnounceMode',
-        'frankChainIdHex',
-      ])
-      if (maybeStored && typeof maybeStored.then === 'function') {
-        maybeStored
-          .then((stored: Record<string, any> | undefined) => {
-            if (!stored) return
-            const storedMode = stored[FRANK_EXT_LAUNCH_MODE_KEY]
-            if (
-              storedMode === 'popup' ||
-              storedMode === 'sidepanel' ||
-              storedMode === 'window'
-            ) {
-              state.launchMode = storedMode
-            }
-            if (typeof stored.frankOpenPanelOnActionClick === 'boolean') {
-              state.openPanelOnActionClick = stored.frankOpenPanelOnActionClick
-              if (stored.frankOpenPanelOnActionClick && !storedMode) {
-                state.launchMode = 'sidepanel'
-              }
-              configureSidePanelBehavior(
-                runtimeScope,
-                state.openPanelOnActionClick,
-              )
-            } else if (storedMode === 'sidepanel') {
-              state.openPanelOnActionClick = true
-              configureSidePanelBehavior(runtimeScope, true)
-            }
-            if (
-              typeof stored.frankActivePersonaAddress === 'string' &&
-              /^0x[a-fA-F0-9]{40}$/.test(stored.frankActivePersonaAddress)
-            ) {
-              state.activePersonaAddress = stored.frankActivePersonaAddress
-            }
-            if (
-              typeof stored.frankPoolBalanceWeiHex === 'string' &&
-              /^0x[0-9a-fA-F]+$/.test(stored.frankPoolBalanceWeiHex)
-            ) {
-              state.poolBalanceWeiHex = stored.frankPoolBalanceWeiHex
-            }
-            if (Array.isArray(stored.frankApprovedOrigins)) {
-              for (const orig of stored.frankApprovedOrigins) {
-                if (typeof orig === 'string' && orig) {
-                  const norm = normalizeBridgeOrigin(orig) || orig
-                  state.approvedOrigins.add(norm)
-                  state.connectedOrigins.add(norm)
-                }
-              }
-            }
-            if (
-              stored.frankOriginPersonas &&
-              typeof stored.frankOriginPersonas === 'object'
-            ) {
-              for (const [orig, binding] of Object.entries(
-                stored.frankOriginPersonas,
-              )) {
-                if (binding && typeof binding === 'object') {
-                  const norm = normalizeBridgeOrigin(orig) || orig
-                  state.originPersonas[norm] = binding as OriginPersonaBinding
-                  state.approvedOrigins.add(norm)
-                  state.connectedOrigins.add(norm)
-                }
-              }
-            }
-            if (
-              stored.frankAnnounceMode === 'always' ||
-              stored.frankAnnounceMode === 'connected-only' ||
-              stored.frankAnnounceMode === 'stealth'
-            ) {
-              state.announceMode = stored.frankAnnounceMode
-            }
-            if (
-              typeof stored.frankChainIdHex === 'string' &&
-              /^0x[0-9a-fA-F]+$/.test(stored.frankChainIdHex)
-            ) {
-              state.chainIdHex = stored.frankChainIdHex.toLowerCase()
-            }
-          })
-          .catch(() => {})
-      }
-    } catch {
-      // Ignore storage read errors in restricted environments
-    }
+  // Restore persisted state before answering anything: a message or click can
+  // be what woke this worker, and answering it from defaults would show (and
+  // apply) a choice the user did not make.
+  const restored = restoreStoredBridgeState(state, api)
+    .catch(() => undefined)
+    .then(() => applyToolbarClickBehavior(runtimeScope, state.launchMode))
+  let restoreDone = false
+  void restored.then(() => {
+    restoreDone = true
+  })
+  // An update, reload or browser start resets the browser's toolbar state;
+  // the stored choice is applied again (never replaced by the default).
+  const reapplyToolbarClick = () => {
+    void restored.then(() =>
+      applyToolbarClickBehavior(runtimeScope, state.launchMode),
+    )
+  }
+  if (typeof api?.runtime?.onInstalled?.addListener === 'function') {
+    api.runtime.onInstalled.addListener(reapplyToolbarClick)
+  }
+  if (typeof api?.runtime?.onStartup?.addListener === 'function') {
+    api.runtime.onStartup.addListener(reapplyToolbarClick)
+  }
+  if (typeof api?.action?.onClicked?.addListener === 'function') {
+    api.action.onClicked.addListener((tab: { windowId?: number }) => {
+      // Once restored, act within the click (Firefox's sidebar needs the
+      // user gesture); a click that woke the worker waits for the choice.
+      const click = () =>
+        handleToolbarClick(tab, state, runtimeScope).catch(() => undefined)
+      if (restoreDone) void click()
+      else void restored.then(click)
+    })
   }
 
-  const unsubscribe = onRuntimeMessage(
-    async (message: any, sender: any) =>
-      await handleBackgroundMessage(message, sender, state, runtimeScope),
-    runtimeScope,
-  )
+  const unsubscribe = onRuntimeMessage(async (message: any, sender: any) => {
+    await restored
+    return await handleBackgroundMessage(message, sender, state, runtimeScope)
+  }, runtimeScope)
 
   return {
     state,
@@ -2204,7 +2175,32 @@ export function installBackgroundBridge(
   }
 }
 
-if (typeof globalThis !== 'undefined' && isBrowserExtensionRuntime()) {
+/**
+ * Whether this script runs as the extension's background (service worker, or Firefox's
+ * background page). Extension pages import this module for its helpers; they must not
+ * install a second background bridge, or every open Frank page would answer background
+ * messages too (each "open window" request then opened one window per page).
+ */
+export function isExtensionBackgroundContext(
+  scope: Record<string, any> = globalThis as Record<string, any>,
+): boolean {
+  const workerScope = scope.ServiceWorkerGlobalScope
+  if (typeof workerScope === 'function' && scope instanceof workerScope) {
+    return true
+  }
+  try {
+    const page = getRawExtensionApi(scope)?.extension?.getBackgroundPage?.()
+    return Boolean(page) && page === (scope.window ?? scope)
+  } catch {
+    return false
+  }
+}
+
+if (
+  typeof globalThis !== 'undefined' &&
+  isBrowserExtensionRuntime() &&
+  isExtensionBackgroundContext()
+) {
   installBackgroundBridge(globalThis as Record<string, any>)
 }
 

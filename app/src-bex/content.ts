@@ -110,7 +110,7 @@ export function installContentScriptBridge(
       return
     }
 
-    // 1. Standard dApp EIP-1193 / Solana bridge
+    // 1. Standard dApp EIP-1193 bridge
     if (
       data.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
       data.direction === 'to-content' &&

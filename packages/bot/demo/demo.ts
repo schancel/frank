@@ -576,9 +576,9 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         ...config.relayUpstreamEnv,
         MONAD_TESTNET_HTTP_RPC_URL: config.rpcUrl,
         ...(config.wsRpcUrl ? { MONAD_TESTNET_WS_RPC_URL: config.wsRpcUrl } : {}),
-        FRANK_NETWORK_TAG: config.networkTag,
         CASHWEB_STAMP_MIN_BURN_VALUE_WEI: config.minStampWei,
-        // The relay's topic routes (forum posts and votes) answer HTTP 500 without it (#364).
+        // The launcher writes it into the relay's [registry.forum], so forum burns go where the
+        // bots and the app send them (#364).
         MONAD_STAMP_BURN_ADDRESS: config.stampBurnAddress,
         XEC_TESTNET_CHRONIK_URL: config.chronikUrl,
         SOLANA_DEVNET_HTTP_RPC_URL: config.solanaRpcUrl,

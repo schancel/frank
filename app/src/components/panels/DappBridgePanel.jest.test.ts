@@ -113,6 +113,51 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     wrapper.unmount()
   })
 
+  it('in the extension, shows waiting dApp requests read-only; they are answered in the approval window', async () => {
+    const g = globalThis as any
+    const previousChrome = g.chrome
+    const sendMessage = jest.fn(async (msg: any) =>
+      msg?.type === 'get-bridge-state'
+        ? {
+            ok: true,
+            result: {
+              pendingApprovals: [
+                { id: 'r1', kind: 'connect', origin: 'https://app.uniswap.org', method: 'eth_requestAccounts' },
+                { id: 'r2', kind: 'sign', origin: 'https://app.uniswap.org', method: 'personal_sign' },
+              ],
+            },
+          }
+        : { ok: true },
+    )
+    g.chrome = {
+      runtime: {
+        id: 'frank-test-ext',
+        sendMessage,
+        onMessage: { addListener: jest.fn(), removeListener: jest.fn() },
+      },
+    }
+    try {
+      const wrapper = mountPanel({ runtimeKindOverride: 'chrome-extension' })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      await wrapper.vm.$nextTick()
+      expect(
+        wrapper.find('[data-testid="dapp-requests-waiting"]').text(),
+      ).toContain('2 dApp requests are waiting in the Frank approval window.')
+      expect(wrapper.find('[data-testid="dapp-approval-card"]').exists()).toBe(
+        false,
+      )
+      // The panel never answers a background request itself.
+      expect(
+        sendMessage.mock.calls.some(([msg]) =>
+          String(msg?.type).includes('resolve-approval'),
+        ),
+      ).toBe(false)
+      wrapper.unmount()
+    } finally {
+      g.chrome = previousChrome
+    }
+  })
+
   it('supports creating a burner persona, topping up from the pool, and sweeping back to the pool', async () => {
     const wrapper = mountPanel({
       initialPersonaBalanceMon: 5,

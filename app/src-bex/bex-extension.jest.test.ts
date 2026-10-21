@@ -7,7 +7,7 @@ import {
   isBrowserExtensionRuntime,
   onRuntimeMessage,
   openCompanionPanel,
-  openExtensionInWindow,
+  focusOrOpenMainExtensionWindow,
   sendRuntimeMessage,
 } from './runtime-adapter'
 import {
@@ -26,6 +26,13 @@ import {
   handleBackgroundMessage,
   installBackgroundBridge,
 } from './background'
+
+/** Approval decisions come from the extension's approval page; other messages from a site tab. */
+function mockSenderFor(msg: any): Record<string, unknown> {
+  return String(msg?.type).includes('resolve-approval')
+    ? { url: 'chrome-extension://frank-test-ext/approval.html' }
+    : { tab: { id: 1, windowId: 2 } }
+}
 
 describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #1710)', () => {
   it('builds Chrome MV3 manifest with sidePanel, service_worker, and MAIN + ISOLATED content scripts', () => {
@@ -52,11 +59,11 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       default_popup: 'index.html',
       default_title: 'Frank',
       default_icon: {
-          '16': 'icons/extension-16x16.png',
-          '32': 'icons/extension-32x32.png',
-          '64': 'icons/extension-64x64.png',
-          '128': 'icons/extension-128x128.png',
-        },
+        '16': 'icons/extension-16x16.png',
+        '32': 'icons/extension-32x32.png',
+        '64': 'icons/extension-64x64.png',
+        '128': 'icons/extension-128x128.png',
+      },
     })
     expect(manifest.icons).toEqual(manifest.action.default_icon)
     expect(manifest.content_scripts).toEqual([
@@ -119,7 +126,8 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       service_worker: 'background.js',
     })
     expect(manifest.content_security_policy).toEqual({
-      extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+      extension_pages:
+        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
     })
     expect(manifest.content_scripts).toEqual([
       {
@@ -210,13 +218,14 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     })
   })
 
-  it('injects idempotent EIP-1193 + EIP-6963 + Solana Wallet Standard provider and routes RPC + PWA sync end-to-end', async () => {
+  it('injects idempotent EIP-1193 + EIP-6963 provider and routes RPC + PWA sync end-to-end', async () => {
     const listeners: Array<
       (msg: any, sender: any, sendResponse: (res: any) => void) => any
     > = []
     const setPanelBehavior = jest.fn().mockResolvedValue(undefined)
     const sidePanelOpen = jest.fn().mockResolvedValue(undefined)
     const storageSet = jest.fn().mockResolvedValue(undefined)
+    const windowsCreate = jest.fn().mockResolvedValue({ id: 31 })
 
     const mockExtensionScope = {
       chrome: {
@@ -225,7 +234,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
           getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
             for (const fn of listeners) {
-              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+              fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
               })
             }
@@ -242,6 +251,12 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
           setPanelBehavior,
           open: sidePanelOpen,
         },
+        windows: {
+          create: windowsCreate,
+          update: jest.fn().mockResolvedValue({}),
+          remove: jest.fn().mockResolvedValue(undefined),
+          onRemoved: { addListener: jest.fn() },
+        },
         storage: {
           local: {
             set: storageSet,
@@ -255,6 +270,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       activePersonaAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
     })
     const bg = installBackgroundBridge(mockExtensionScope, bgState)
+    await new Promise(r => setTimeout(r, 0))
     expect(setPanelBehavior).toHaveBeenCalledWith({
       openPanelOnActionClick: false,
     })
@@ -298,7 +314,15 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       method: 'eth_requestAccounts',
     })
     await new Promise(resolve => setTimeout(resolve, 10))
-    expect(sidePanelOpen).toHaveBeenCalled()
+    // The request opens the dedicated approval window, not a side panel.
+    expect(windowsCreate).toHaveBeenCalledWith({
+      url: 'chrome-extension://frank-test-ext/approval.html',
+      type: 'popup',
+      width: 400,
+      height: 620,
+      focused: true,
+    })
+    expect(sidePanelOpen).not.toHaveBeenCalled()
     expect(bgState.pendingApprovals.size).toBe(1)
     const connectApproval = Array.from(bgState.pendingApprovals.values())[0]!
     expect(connectApproval.kind).toBe('connect')
@@ -326,9 +350,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
 
     // Subsequent eth_accounts returns the approved account list
     const ethAccounts = await p1!.request<string[]>({ method: 'eth_accounts' })
-    expect(ethAccounts).toEqual([
-      '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
-    ])
+    expect(ethAccounts).toEqual(['0x71C7656EC7ab88b098defB751B7401B5f6d8976F'])
 
     // wallet_switchEthereumChain and read-only RPC methods succeed for dApp compatibility
     const switchRes = await p1!.request({
@@ -341,16 +363,19 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     const perms = await p1!.request<any[]>({ method: 'wallet_getPermissions' })
     expect(perms[0]?.parentCapability).toBe('eth_accounts')
 
-    // Signing requests hold RPC Promise open until companion approval resolves with hex signature
+    // Signing is not implemented: approving it never hands the dApp a made-up signature.
     const signPromise = p1!.request<string>({
       method: 'personal_sign',
       params: ['0x48656c6c6f', '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
     })
+    const signOutcome = signPromise.then(
+      () => 'resolved',
+      (err: { code?: number }) => err.code,
+    )
     await new Promise(resolve => setTimeout(resolve, 10))
     expect(bgState.pendingApprovals.size).toBe(1)
     const signApproval = Array.from(bgState.pendingApprovals.values())[0]!
 
-    // Approve request via companion message with signature result
     const resolved = await sendRuntimeMessage<any, any>(
       {
         channel: FRANK_DAPP_BRIDGE_CHANNEL,
@@ -361,12 +386,9 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       },
       mockExtensionScope,
     )
-    expect(resolved.result.approved).toBe(true)
-    expect(resolved.result.accounts).toEqual([
-      '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
-    ])
-    const signRes = await signPromise
-    expect(signRes).toBe('0xdeadbeefcafebabe1b')
+    expect(resolved.ok).toBe(false)
+    expect(resolved.error.code).toBe(4200)
+    expect(await signOutcome).toBe(4200)
 
     // Updating active persona from logged-in Frank wallet updates eth_requestAccounts
     await sendRuntimeMessage<any, any>(
@@ -411,17 +433,22 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       false,
     )
 
-    // Test toggling sidePanel action click behavior
+    // Choosing the side panel for the toolbar click
     const toggleSidePanelRes = await sendRuntimeMessage<any, any>(
       {
         channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'set-sidepanel-behavior',
-        openPanelOnActionClick: true,
+        type: 'set-launch-mode',
+        launchMode: 'sidepanel',
       },
       mockExtensionScope,
     )
-    expect(toggleSidePanelRes.result.ok).toBe(true)
-    expect(toggleSidePanelRes.result.openPanelOnActionClick).toBe(true)
+    expect(toggleSidePanelRes.result).toEqual({
+      ok: true,
+      launchMode: 'sidepanel',
+    })
+    expect(storageSet).toHaveBeenLastCalledWith({
+      [FRANK_EXT_LAUNCH_MODE_KEY]: 'sidepanel',
+    })
     expect(setPanelBehavior).toHaveBeenLastCalledWith({
       openPanelOnActionClick: true,
     })
@@ -538,9 +565,30 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       expect(transformedHtml).not.toContain('rel="modulepreload"')
       expect(transformedHtml).not.toContain('rel="manifest"')
       expect(transformedHtml).not.toContain('src="/assets/index-AbCd1234.js"')
-      expect(transformedHtml).toContain(
-        'html, body { width: 400px; height: 600px; margin: 0; padding: 0; }',
+      // The popup's size comes from the document alone (browsers size an
+      // action popup from it, starting from a tiny viewport): a fixed
+      // 400x600 box, no viewport-relative clamp on the root.
+      const sizing =
+        /<style id="frank-extension-popup-sizing">([\s\S]*?)<\/style>/.exec(
+          transformedHtml,
+        )?.[1]
+      expect(sizing).toBeDefined()
+      const rootRule =
+        /html:not\(\[data-ext-mode\]\), html\[data-ext-mode='popup'\] \{([^}]*)\}/.exec(
+          sizing!,
+        )?.[1]
+      expect(rootRule).toContain(
+        '--frank-vw: calc(400px / var(--frank-ui-zoom, 1)) !important;',
       )
+      expect(rootRule).toContain(
+        '--frank-vh: calc(600px / var(--frank-ui-zoom, 1)) !important;',
+      )
+      expect(rootRule).toContain('width: var(--frank-vw) !important;')
+      expect(rootRule).toContain('height: var(--frank-vh) !important;')
+      expect(rootRule).toContain('max-width: none !important;')
+      expect(rootRule).toContain('max-height: none !important;')
+      expect(rootRule).not.toMatch(/\d+(vw|vh|dvh)|100%/)
+      expect(transformedHtml).not.toContain('extension-popup.css')
       expect(transformedHtml).toContain('requestAnimationFrame')
       expect(transformedHtml).toContain("import('./assets/index-AbCd1234.js')")
       expect(bootScript).toContain("window.addEventListener('load'")
@@ -596,7 +644,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     }
   })
 
-  it('opens persistent standalone extension window (with tab fallback) and persists launch mode preference', async () => {
+  it('opens a standalone extension window (with tab fallback) or the side panel without changing the toolbar click choice', async () => {
     const windowsCreate = jest.fn().mockResolvedValue({ id: 99 })
     const storageSet = jest.fn().mockResolvedValue(undefined)
     const setPanelBehavior = jest.fn().mockResolvedValue(undefined)
@@ -624,9 +672,10 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       },
     }
 
-    const winRes = await openExtensionInWindow({}, chromeScope)
+    const winRes = await focusOrOpenMainExtensionWindow({}, chromeScope)
     expect(winRes).toEqual({
       opened: true,
+      focused: false,
       mode: 'window',
       url: 'chrome-extension://frank-ext/index.html?extMode=window',
     })
@@ -636,24 +685,17 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       width: 440,
       height: 740,
     })
-    expect(storageSet).toHaveBeenCalledWith({
-      [FRANK_EXT_LAUNCH_MODE_KEY]: 'window',
-    })
-
-    // SidePanel open persists sidepanel launch mode and enables openPanelOnActionClick
+    // Opening the side panel leaves the toolbar click choice alone
     const panelRes = await openCompanionPanel({}, chromeScope)
     expect(panelRes).toEqual({
       opened: true,
       mode: 'sidePanel',
     })
-    expect(setPanelBehavior).toHaveBeenCalledWith({
-      openPanelOnActionClick: true,
-    })
     expect(sidePanelOpen).toHaveBeenCalledWith({ windowId: 42 })
-    expect(storageSet).toHaveBeenCalledWith({
-      [FRANK_EXT_LAUNCH_MODE_KEY]: 'sidepanel',
-      frankOpenPanelOnActionClick: true,
-    })
+    expect(setPanelBehavior).not.toHaveBeenCalled()
+    for (const [items] of storageSet.mock.calls) {
+      expect(items).not.toHaveProperty(FRANK_EXT_LAUNCH_MODE_KEY)
+    }
 
     // Fallback to chrome.tabs.create when chrome.windows.create is unavailable
     const tabsCreate = jest.fn().mockResolvedValue({ id: 101 })
@@ -668,9 +710,10 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
         },
       },
     }
-    const tabRes = await openExtensionInWindow({}, tabFallbackScope)
+    const tabRes = await focusOrOpenMainExtensionWindow({}, tabFallbackScope)
     expect(tabRes).toEqual({
       opened: true,
+      focused: false,
       mode: 'tab',
       url: 'chrome-extension://frank-ext/index.html?extMode=tab',
     })
@@ -683,13 +726,17 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { resolveManualChunk } = require('../config/manual-chunks.cjs')
     expect(
-      resolveManualChunk('/repo/node_modules/vue/dist/vue.runtime.esm-bundler.js'),
+      resolveManualChunk(
+        '/repo/node_modules/vue/dist/vue.runtime.esm-bundler.js',
+      ),
     ).toBe('vendor-vue')
+    expect(resolveManualChunk('/repo/node_modules/pinia/dist/pinia.mjs')).toBe(
+      'vendor-vue',
+    )
     expect(
-      resolveManualChunk('/repo/node_modules/pinia/dist/pinia.mjs'),
-    ).toBe('vendor-vue')
-    expect(
-      resolveManualChunk('/repo/node_modules/quasar/src/components/btn/QBtn.js'),
+      resolveManualChunk(
+        '/repo/node_modules/quasar/src/components/btn/QBtn.js',
+      ),
     ).toBe('vendor-quasar')
     expect(
       resolveManualChunk('/repo/node_modules/ethers/lib.esm/index.js'),
@@ -697,15 +744,17 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(
       resolveManualChunk('/repo/node_modules/@noble/curves/secp256k1.js'),
     ).toBe('vendor-noble')
+    expect(resolveManualChunk('/repo/node_modules/level-js/index.js')).toBe(
+      'vendor-storage',
+    )
     expect(
-      resolveManualChunk('/repo/node_modules/level-js/index.js'),
-    ).toBe('vendor-storage')
-    expect(
-      resolveManualChunk('/repo/node_modules/@solana/web3.js/lib/index.browser.esm.js'),
+      resolveManualChunk(
+        '/repo/node_modules/@solana/web3.js/lib/index.browser.esm.js',
+      ),
     ).toBe('vendor-solana')
-    expect(
-      resolveManualChunk('/repo/packages/bitcore-lib-xpi/index.js'),
-    ).toBe('vendor-utxo')
+    expect(resolveManualChunk('/repo/packages/bitcore-lib-xpi/index.js')).toBe(
+      'vendor-utxo',
+    )
     expect(resolveManualChunk('/repo/app/src/pages/Chat.vue')).toBeUndefined()
   })
 
@@ -791,9 +840,10 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       chrome: {
         runtime: {
           id: 'frank-test-ext',
+          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
             for (const fn of listeners) {
-              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+              fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
               })
             }
@@ -950,9 +1000,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       'script[data-frank-safari-inpage="true"]',
     ) as HTMLScriptElement | null
     expect(injected).not.toBeNull()
-    expect(injected?.src).toBe(
-      'safari-web-extension://safari-ext-id/inpage.js',
-    )
+    expect(injected?.src).toBe('safari-web-extension://safari-ext-id/inpage.js')
     injected?.remove()
 
     // Also verify deferred mount when document.head and document.documentElement are initially null at document_start
@@ -1013,7 +1061,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
 
     // Verify pure-TS secp256k1 + Keccak256 address derivation matches ethers.computeAddress 100%
     expect(uniswapBurner).toBe(computeAddress(uniswapPrivKey))
-    expect( new Wallet(uniswapPrivKey).address).toBe(uniswapBurner)
+    expect(new Wallet(uniswapPrivKey).address).toBe(uniswapBurner)
     // Anti-supercookie guarantee: Site A, Site B, and Primary Persona all have distinct addresses
     expect(uniswapBurner.toLowerCase()).not.toBe(openseaBurner.toLowerCase())
     expect(uniswapBurner.toLowerCase()).not.toBe(rootAddr.toLowerCase())
@@ -1026,9 +1074,10 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       chrome: {
         runtime: {
           id: 'frank-test-ext',
+          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
             for (const fn of listeners) {
-              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+              fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
               })
             }
@@ -1222,11 +1271,8 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(approvedConnectedOnly.announced).toHaveLength(1)
   })
 
-  it('registers Solana Wallet Standard, Bitcoin (FrankBitcoin/unisat/WBIP004), and eCash Cashtab shims with interactive approval', async () => {
-    const {
-      createFrankSolanaWalletStandard,
-      createFrankBitcoinProvider,
-    } = await import('./inpage')
+  it('registers Bitcoin (FrankBitcoin/unisat/WBIP004) and eCash Cashtab shims with interactive approval', async () => {
+    const { createFrankBitcoinProvider } = await import('./inpage')
 
     const listeners: Array<
       (msg: any, sender: any, sendResponse: (res: any) => void) => any
@@ -1235,9 +1281,10 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       chrome: {
         runtime: {
           id: 'frank-test-ext',
+          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
             for (const fn of listeners) {
-              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+              fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
               })
             }
@@ -1259,41 +1306,9 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     const cleanupContent = installContentScriptBridge(window as any, mockScope)
 
     const provider = installInpageProvider(window as any)!
-    const solanaWallet = createFrankSolanaWalletStandard(provider)
     const btcProvider = createFrankBitcoinProvider(provider)
 
-    // 1. Solana silent connect before approval returns empty accounts without prompting
-    const silentRes = await solanaWallet.features['standard:connect'].connect({
-      silent: true,
-    })
-    expect(silentRes.accounts).toEqual([])
-    expect(bgState.pendingApprovals.size).toBe(0)
-
-    // Interactive Solana connect queues approval and returns base58 publicKey + Uint8Array(32)
-    const solConnectPromise =
-      solanaWallet.features['standard:connect'].connect()
-    await new Promise(resolve => setTimeout(resolve, 10))
-    expect(bgState.pendingApprovals.size).toBe(1)
-    const solApproval = Array.from(bgState.pendingApprovals.values())[0]!
-    expect(solApproval.chainFamily).toBe('solana')
-
-    await sendRuntimeMessage(
-      {
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'companion-resolve-approval',
-        requestId: solApproval.id,
-        approved: true,
-      },
-      mockScope,
-    )
-    const solConnected = await solConnectPromise
-    expect(solConnected.accounts).toHaveLength(1)
-    expect(solConnected.accounts[0]?.publicKey).toBeInstanceOf(Uint8Array)
-    expect(solConnected.accounts[0]?.publicKey.length).toBe(32)
-
-    await solanaWallet.features['standard:disconnect'].disconnect()
-
-    // 2. Bitcoin requestAccounts queues approval and returns deterministic bc1q address
+    // 1. Bitcoin requestAccounts queues approval and returns deterministic bc1q address
     const btcConnectPromise = btcProvider.requestAccounts()
     await new Promise(resolve => setTimeout(resolve, 10))
     const btcApproval = Array.from(bgState.pendingApprovals.values())[0]!
@@ -1311,9 +1326,9 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     const btcAccounts = await btcConnectPromise
     expect(btcAccounts[0]).toMatch(/^bc1q/)
 
-    await solanaWallet.features['standard:disconnect'].disconnect()
+    await provider.request({ method: 'wallet_revokePermissions' })
 
-    // 3. eCash Cashtab postMessage bridge (FROM_PAGE -> xec_cashtabRequest -> FROM_CASHTAB)
+    // 2. eCash Cashtab postMessage bridge (FROM_PAGE -> xec_cashtabRequest -> FROM_CASHTAB)
     const cashtabResponses: any[] = []
     const cashtabListener = (ev: MessageEvent) => {
       if (ev.data?.type === 'FROM_CASHTAB') {
@@ -1351,97 +1366,5 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     window.removeEventListener('message', cashtabListener)
     cleanupContent()
     bg.dispose()
-  })
-})
-
-
-
-
-
-describe('dApp approval reaches an already-open extension view', () => {
-  it('holds eth_requestAccounts, notifies open views, and resolves on approval even when no view can be opened', async () => {
-    const { handleBackgroundMessage } = await import('./background')
-    const { FRANK_DAPP_APPROVALS_CHANGED } = await import('./runtime-adapter')
-    const viewMessages: any[] = []
-    const scope = {
-      chrome: {
-        runtime: {
-          id: 'frank-test-ext',
-          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
-          sendMessage: (msg: any) => {
-            viewMessages.push(msg)
-            return Promise.reject(new Error('Receiving end does not exist.'))
-          },
-        },
-        // A side panel already open on /wallet: open() needs a user gesture the
-        // dApp click does not carry, so it rejects.
-        sidePanel: {
-          open: jest.fn(() =>
-            Promise.reject(new Error('sidePanel.open() requires a user gesture')),
-          ),
-        },
-      },
-    }
-    const state = createBackgroundBridgeState({
-      chainIdHex: '0xaa36a7',
-      activePersonaAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
-      launchMode: 'sidepanel',
-    })
-
-    let settled = false
-    const rpc = handleBackgroundMessage(
-      {
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'dapp-rpc-request',
-        id: 'req-uniswap',
-        origin: 'https://app.uniswap.org',
-        payload: { method: 'eth_requestAccounts' },
-      },
-      { tab: { id: 7, windowId: 3 } },
-      state,
-      scope,
-    ).then(res => {
-      settled = true
-      return res
-    })
-    await new Promise(resolve => setTimeout(resolve, 0))
-
-    expect(settled).toBe(false)
-    expect(state.pendingApprovals.has('req-uniswap')).toBe(true)
-    expect(viewMessages).toContainEqual({
-      channel: FRANK_DAPP_BRIDGE_CHANNEL,
-      type: FRANK_DAPP_APPROVALS_CHANGED,
-    })
-
-    const bridgeState = await handleBackgroundMessage(
-      { channel: FRANK_DAPP_BRIDGE_CHANNEL, type: 'get-bridge-state' },
-      {},
-      state,
-      scope,
-    )
-    expect(bridgeState.result.pendingApprovals).toHaveLength(1)
-
-    viewMessages.length = 0
-    await handleBackgroundMessage(
-      {
-        channel: FRANK_DAPP_BRIDGE_CHANNEL,
-        type: 'companion-resolve-approval',
-        requestId: 'req-uniswap',
-        approved: true,
-        useBurnerPersona: false,
-      },
-      {},
-      state,
-      scope,
-    )
-    const res = await rpc
-    expect(res.ok).toBe(true)
-    expect(res.result).toEqual([expect.stringMatching(/^0x[0-9a-fA-F]{40}$/)])
-    expect(state.pendingApprovals.size).toBe(0)
-    // Other open views drop the resolved request.
-    expect(viewMessages).toContainEqual({
-      channel: FRANK_DAPP_BRIDGE_CHANNEL,
-      type: FRANK_DAPP_APPROVALS_CHANGED,
-    })
   })
 })

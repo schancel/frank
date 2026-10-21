@@ -4,8 +4,9 @@
 //! never decode, translate, settle or replay their predecessor representations.
 
 use crate::{
+    chains::EvmChainAdapter,
     http::server::RegistryServer,
-    monad_http::{Address, HttpTransport, JsonRpcTransport},
+    monad_http::{Address, JsonRpcTransport},
     monad_stamp_relay::PollConfig,
     monad_topic_cbor::{parse_topic_event, TopicEvent, MAX_TOPIC_EVENT_FRAME_BYTES},
     registry::Registry,
@@ -22,86 +23,34 @@ use axum::{
     Extension, Json,
 };
 use serde::Serialize;
-use std::{fmt, sync::OnceLock};
+use std::sync::Arc;
 
-/// Errors reading required topic-vote gate configuration from the environment.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MonadTopicGateConfigError {
-    /// A required env var wasn't set.
-    MissingEnv(&'static str),
-    /// `MONAD_TESTNET_HTTP_RPC_URL` wasn't a valid URL.
-    InvalidRpcUrl(String),
-    /// `MONAD_STAMP_BURN_ADDRESS` wasn't a valid `0x`-prefixed 20-byte address.
-    InvalidBurnAddress(String),
-}
-
-impl fmt::Display for MonadTopicGateConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MonadTopicGateConfigError::MissingEnv(name) => {
-                write!(
-                    f,
-                    "missing required env var {name} (topic-vote gate is unconfigured)"
-                )
-            }
-            MonadTopicGateConfigError::InvalidRpcUrl(msg) => {
-                write!(f, "invalid MONAD_TESTNET_HTTP_RPC_URL: {msg}")
-            }
-            MonadTopicGateConfigError::InvalidBurnAddress(msg) => {
-                write!(f, "invalid MONAD_STAMP_BURN_ADDRESS: {msg}")
-            }
-        }
-    }
-}
-
-/// Configuration for the `PUT /message/monad/topics` and `PUT /message/monad/topics/vote` routes,
-/// read once from the environment (see module docs).
-#[derive(Debug, Clone)]
-pub struct MonadTopicGateConfig {
-    rpc_urls: Vec<url::Url>,
+/// The forum of the relay network: which chain its posts and votes are paid on, and the
+/// address every payment burns to. Built once at startup from `[registry.forum]`.
+#[derive(Debug)]
+pub struct ForumRuntime {
+    chain: Arc<EvmChainAdapter>,
     burn_address: Address,
 }
 
-fn required_env(name: &'static str) -> Result<String, MonadTopicGateConfigError> {
-    std::env::var(name).map_err(|_| MonadTopicGateConfigError::MissingEnv(name))
-}
-
-impl MonadTopicGateConfig {
-    fn from_env() -> Result<Self, MonadTopicGateConfigError> {
-        let raw = required_env("MONAD_TESTNET_HTTP_RPC_URL")?;
-        let mut rpc_urls = Vec::new();
-        for token in raw
-            .split([',', ' ', '\n', '\t'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            let parsed: url::Url = token
-                .parse()
-                .map_err(|err| MonadTopicGateConfigError::InvalidRpcUrl(format!("{err}")))?;
-            if !rpc_urls.contains(&parsed) {
-                rpc_urls.push(parsed);
-            }
-        }
-        if rpc_urls.is_empty() {
-            return Err(MonadTopicGateConfigError::InvalidRpcUrl(
-                "no valid URLs".to_string(),
-            ));
-        }
-        let burn_address_hex = required_env("MONAD_STAMP_BURN_ADDRESS")?;
-        let burn_address = Address::from_hex(&burn_address_hex)
-            .map_err(|err| MonadTopicGateConfigError::InvalidBurnAddress(format!("{err}")))?;
-        Ok(MonadTopicGateConfig {
-            rpc_urls,
-            burn_address,
+impl ForumRuntime {
+    /// The forum on `chain`, paid to `conf.burn_address`. `None` when the address is not a
+    /// `0x`-prefixed 20-byte hex address (which configuration validation already refuses).
+    pub fn new(chain: Arc<EvmChainAdapter>, conf: &cashweb_config::ForumConf) -> Option<Self> {
+        Some(Self {
+            chain,
+            burn_address: Address::from_hex(&conf.burn_address).ok()?,
         })
     }
-}
 
-/// Process-wide, lazily-initialized gate config, built from the environment on first use.
-fn monad_topic_gate() -> &'static Result<MonadTopicGateConfig, MonadTopicGateConfigError> {
-    static GATE: OnceLock<Result<MonadTopicGateConfig, MonadTopicGateConfigError>> =
-        OnceLock::new();
-    GATE.get_or_init(MonadTopicGateConfig::from_env)
+    /// Canonical identifier of the forum's network.
+    pub fn network(&self) -> &'static str {
+        self.chain.id()
+    }
+
+    fn policy(&self) -> crate::monad_topic_cbor::TopicBurnPolicy {
+        crate::forum::policy(self.chain.evm_chain_id(), self.burn_address)
+    }
 }
 
 /// JSON error body for a rejected topic request.
@@ -291,28 +240,22 @@ fn write_headers(headers: &HeaderMap, body: &[u8]) -> Option<Response> {
 
 async fn forum_submission<T: JsonRpcTransport + Clone>(
     registry: &Registry,
+    network: &str,
+    policy: crate::monad_topic_cbor::TopicBurnPolicy,
     transport: &T,
-    burn: Address,
     frame: &[u8],
     post: bool,
 ) -> Response {
-    let expected_network = registry.expected_cbor_network();
-    if !registry.is_payment_network_accepted(expected_network) {
-        return forum_error(invalid(format!(
-            "payment network {expected_network} is not in registry.accepted_payment_networks"
-        )));
-    }
-    let event = match parse_topic_event(frame, expected_network) {
+    let event = match parse_topic_event(frame, network) {
         Ok(event) => event,
         Err(error) => return forum_error(invalid(error)),
     };
-    let policy = crate::forum::policy(registry.expected_monad_chain_id(), burn);
     match &event {
         TopicEvent::Post(value) if post && value.schema_version >= 2 => (),
         TopicEvent::Vote(value) if !post => {
             match registry
                 .forum()
-                .contains(expected_network, policy, &value.target_hash)
+                .contains(network, policy, &value.target_hash)
             {
                 Ok(true) => (),
                 Ok(false) => return forum_error(ForumError::NotFound),
@@ -323,13 +266,7 @@ async fn forum_submission<T: JsonRpcTransport + Clone>(
     }
     match registry
         .forum()
-        .submit(
-            registry.expected_cbor_network(),
-            policy,
-            frame,
-            transport,
-            PollConfig::default(),
-        )
+        .submit(network, policy, frame, transport, PollConfig::default())
         .await
     {
         Ok(frame) => forum_bytes(frame),
@@ -346,14 +283,18 @@ async fn put_forum(
     if let Some(response) = write_headers(&headers, &body) {
         return response;
     }
-    let Ok(config) = monad_topic_gate().as_ref() else {
+    let Some(forum) = server.forum.as_deref() else {
         return forum_error(ForumError::Unavailable);
     };
-    let transport = HttpTransport::new_multi(config.rpc_urls.clone());
+    // Burns are checked only through upstreams that have proved they are the forum's chain.
+    let Some(transport) = forum.chain.transport() else {
+        return forum_error(ForumError::Unavailable);
+    };
     forum_submission(
         &server.registry,
+        forum.network(),
+        forum.policy(),
         &transport,
-        config.burn_address,
         &body,
         post,
     )
@@ -398,17 +339,13 @@ pub async fn handle_get_forum_post(
         Some(hash) => hash,
         None => return forum_error(invalid("target hash must be 32 decoded bytes")),
     };
-    let Ok(config) = monad_topic_gate().as_ref() else {
+    let Some(forum) = server.forum.as_deref() else {
         return forum_error(ForumError::Unavailable);
     };
-    let policy = crate::forum::policy(
-        server.registry.expected_monad_chain_id(),
-        config.burn_address,
-    );
     match server
         .registry
         .forum()
-        .view(server.registry.expected_cbor_network(), policy, &hash)
+        .view(forum.network(), forum.policy(), &hash)
     {
         Ok(Some(frame)) => forum_bytes(frame),
         Ok(None) => forum_error(ForumError::NotFound),
@@ -425,24 +362,20 @@ pub async fn handle_forum_status(
     if let Some(response) = write_headers(&headers, &body) {
         return response;
     }
-    let Ok(config) = monad_topic_gate().as_ref() else {
+    let Some(forum) = server.forum.as_deref() else {
         return forum_error(ForumError::Unavailable);
     };
-    match parse_topic_event(&body, server.registry.expected_cbor_network()) {
+    match parse_topic_event(&body, forum.network()) {
         Ok(TopicEvent::Post(post)) if post.schema_version < 2 => {
             return forum_error(invalid("historical Forum operation is unsupported"))
         }
         Err(error) => return forum_error(invalid(error)),
         _ => (),
     }
-    let policy = crate::forum::policy(
-        server.registry.expected_monad_chain_id(),
-        config.burn_address,
-    );
     match server
         .registry
         .forum()
-        .status(server.registry.expected_cbor_network(), policy, &body)
+        .status(forum.network(), forum.policy(), &body)
     {
         Ok(frame) => forum_bytes(frame),
         Err(error) => forum_error(error),
@@ -543,7 +476,7 @@ pub async fn handle_list_forum_posts(
             "canonical Forum offers application/cbor",
         );
     }
-    forum_page(&server.registry, raw.as_deref(), false)
+    forum_page(&server, raw.as_deref(), false)
 }
 
 /// List canonical Forum topic discovery counts.
@@ -559,24 +492,22 @@ pub async fn handle_list_forum_discovery(
             "canonical Forum offers application/cbor",
         );
     }
-    forum_page(&server.registry, raw.as_deref(), true)
+    forum_page(&server, raw.as_deref(), true)
 }
 
-fn forum_page(registry: &Registry, raw: Option<&str>, discovery: bool) -> Response {
+fn forum_page(server: &RegistryServer, raw: Option<&str>, discovery: bool) -> Response {
     let (query, cursor) = match forum_query(raw, discovery) {
         Ok(value) => value,
         Err(error) => return forum_error(error),
     };
-    let Ok(config) = monad_topic_gate().as_ref() else {
-        return forum_error(crate::store::forum::ForumError::Unavailable);
+    let Some(forum) = server.forum.as_deref() else {
+        return forum_error(ForumError::Unavailable);
     };
-    let policy = crate::forum::policy(registry.expected_monad_chain_id(), config.burn_address);
-    match registry.forum().page(
-        registry.expected_cbor_network(),
-        policy,
-        query,
-        cursor.as_deref(),
-    ) {
+    match server
+        .registry
+        .forum()
+        .page(forum.network(), forum.policy(), query, cursor.as_deref())
+    {
         Ok(frame) => forum_bytes(frame),
         Err(error) => forum_error(error),
     }
@@ -644,6 +575,10 @@ mod tests {
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
         let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
         (tempdir, registry)
+    }
+
+    fn policy() -> crate::monad_topic_cbor::TopicBurnPolicy {
+        crate::forum::policy(10_143, burn_address())
     }
 
     fn burn_address() -> Address {
@@ -771,8 +706,15 @@ mod tests {
         let (directory, registry) = test_registry();
         let transport = MockTransport::default();
         let over = observation_with_amount(0, None, false, i64::MAX as u128 + 1);
-        let response =
-            forum_submission(&registry, &transport, burn_address(), over.frame(), true).await;
+        let response = forum_submission(
+            &registry,
+            "monad-testnet",
+            policy(),
+            &transport,
+            over.frame(),
+            true,
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(transport.call_count(), 0);
         assert!(!directory.path().join("db.rocksdb.forum-cbor-v1").exists());
@@ -782,7 +724,15 @@ mod tests {
             panic!()
         };
         let frame = cbor_submission(&post.post_frame, vote.event.burn_tx());
-        let response = forum_submission(&registry, &transport, burn_address(), &frame, true).await;
+        let response = forum_submission(
+            &registry,
+            "monad-testnet",
+            policy(),
+            &transport,
+            &frame,
+            true,
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(transport.call_count(), 0);
         assert!(!directory.path().join("db.rocksdb.forum-cbor-v1").exists());
@@ -798,8 +748,15 @@ mod tests {
         transport.set("eth_sendRawTransaction", Value::String(hash.clone()));
         transport.set("eth_getTransactionReceipt",serde_json::json!({"transactionHash":hash,"blockHash":hex_hash(2),"blockNumber":"0x0","transactionIndex":"0x0","from":Address([9;20]).to_hex(),"to":burn_address().to_hex(),"contractAddress":null,"gasUsed":"0x5208","status":"0x1","logs":[]}));
         transport.set("eth_getTransactionByHash",serde_json::json!({"hash":hash,"from":op.checked.decoded.sender.to_hex(),"to":burn_address().to_hex(),"value":"0x7","input":format!("0x{}",hex::encode(&op.checked.decoded.input))}));
-        let response =
-            forum_submission(&registry, &transport, burn_address(), op.frame(), true).await;
+        let response = forum_submission(
+            &registry,
+            "monad-testnet",
+            policy(),
+            &transport,
+            op.frame(),
+            true,
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let policy = crate::forum::policy(10143, burn_address());
         let status = registry
@@ -850,9 +807,6 @@ mod tests {
         };
         use frank_cbor::Timestamp;
         use tower::ServiceExt;
-        std::env::set_var("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1/");
-        std::env::set_var("MONAD_STAMP_BURN_ADDRESS", burn_address().to_hex());
-        std::env::set_var("FRANK_NETWORK_TAG", "MONT");
         let (healthy_directory, healthy_registry) = test_registry();
         let healthy = test_server(healthy_registry).into_router();
         let unknown = observation(3, Some([0xaa; 32]), false);
@@ -1000,16 +954,14 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
-        std::env::set_var("MONAD_TESTNET_HTTP_RPC_URL", format!("http://{address}/"));
-        std::env::set_var("MONAD_STAMP_BURN_ADDRESS", burn_address().to_hex());
-        std::env::set_var("FRANK_NETWORK_TAG", "MONT");
         let task = tokio::spawn(
             axum::Server::from_tcp(listener)
                 .unwrap()
                 .serve(rpc.into_make_service()),
         );
         let (directory, registry) = test_registry();
-        let mut router = test_server(registry).into_router();
+        let mut router =
+            test_server_with_rpc(registry, &format!("http://{address}/")).into_router();
         async fn call(router: &axum::Router, method: &str, path: &str, bytes: &[u8]) -> Vec<u8> {
             let response = router
                 .clone()
@@ -1094,7 +1046,7 @@ mod tests {
             Arc::new(UnusedChainAdapter),
             Net::Regtest,
         );
-        router = test_server(registry).into_router();
+        router = test_server_with_rpc(registry, &format!("http://{address}/")).into_router();
         call(
             &router,
             "POST",
@@ -1138,12 +1090,6 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         true
-    }
-
-    fn configure_reads() {
-        std::env::set_var("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1/");
-        std::env::set_var("MONAD_STAMP_BURN_ADDRESS", burn_address().to_hex());
-        std::env::set_var("FRANK_NETWORK_TAG", "MONT");
     }
 
     #[test]
@@ -1194,7 +1140,6 @@ mod tests {
         ) {
             return;
         }
-        configure_reads();
         use tower::ServiceExt;
         let (dir, registry) = test_registry();
         drop(registry);
@@ -1277,7 +1222,6 @@ mod tests {
     #[tokio::test]
     async fn actual_router_restart_returns_410_for_both_old_cursor_families() {
         if isolated("http::monad_topics::tests::actual_router_restart_returns_410_for_both_old_cursor_families", "FRANK_FORUM_CURSOR_HTTP_CHILD") { return; }
-        configure_reads();
         use crate::store::forum::{
             tests::{distinct_post, facts},
             Store,
@@ -1439,7 +1383,6 @@ mod tests {
         ) {
             return;
         }
-        configure_reads();
         use tower::ServiceExt;
 
         let tempdir = tempdir::TempDir::new("cashweb-test--topics-canonical").unwrap();
@@ -1482,7 +1425,23 @@ mod tests {
     }
 
     fn test_server(registry: Registry) -> RegistryServer {
+        test_server_with_rpc(registry, "http://127.0.0.1:1/")
+    }
+
+    /// A relay on monad-testnet whose forum checks burns through the node at `rpc`.
+    fn test_server_with_rpc(registry: Registry, rpc: &str) -> RegistryServer {
         use crate::{p2p::peers::Peers, test_instance::placeholder_pop_conf};
+        let chain = Arc::new(crate::chains::EvmChainAdapter::assume_verified(
+            "monad-testnet",
+            vec![rpc.parse().unwrap()],
+        ));
+        let forum = ForumRuntime::new(
+            chain,
+            &cashweb_config::ForumConf {
+                burn_address: burn_address().to_hex(),
+            },
+        )
+        .unwrap();
 
         let pop_gate =
             crate::http::pop_protection::PopGate::from_conf_if_enabled(&placeholder_pop_conf());
@@ -1498,6 +1457,10 @@ mod tests {
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,
+            chains: std::sync::Arc::new(
+                crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
+            ),
+            forum: Some(Arc::new(forum)),
             spa_dir: None,
             event_bus,
         }

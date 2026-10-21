@@ -206,7 +206,7 @@ fn build_cbor_attestation(
 
     let statement_frame = encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: frank_cbor::message_types::TYPE_DIRECTORY_STATEMENT,
             schema_version: 3,
             min_reader_version: 2,
         },
@@ -231,7 +231,7 @@ fn build_cbor_attestation(
 
     let attestation_frame = encode_frame(
         EnvelopeFields {
-            type_id: 2,
+            type_id: frank_cbor::message_types::TYPE_DIRECTORY_ATTESTATION,
             schema_version: 1,
             min_reader_version: 1,
         },
@@ -419,7 +419,7 @@ async fn test_typescript_rust_byte_identity_for_actual_production_record() {
     let frame_bytes = hex::decode(frame_hex).unwrap();
 
     let pubkey_bytes =
-        hex::decode("03a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65").unwrap();
+        hex::decode("02141481bf1181ed61aa025f1fe708f68cb018c2c9d6eb719ccd94b3f6ff615308").unwrap();
     let addr_bytes = address_from_compressed_pubkey(&pubkey_bytes).unwrap();
     let address = Address(addr_bytes);
 

@@ -337,7 +337,7 @@ const frankBrowserCheckInstall = function () {
       },
       new Map([[codec.TEXT_MESSAGE_ITEM.text, 'hi']]),
     )
-    if (codec.toHex(hi) !== '46524e4b010000000ea40011010102010345a100626869') {
+    if (codec.toHex(hi) !== '46524e4b010000000ea40016010102010345a100626869') {
       fail('encode', 'worked example bytes differ')
     }
     const a = codec.encodeCanonical(

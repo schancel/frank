@@ -43,12 +43,13 @@ import {
   MESSAGE_CONTENT_REVISION,
   TEXT_MESSAGE_ITEM,
   TYPE_CONTAINER_MESSAGE_ITEM,
-  TYPE_DIRECT_MESSAGE_DELIVERY,
   TYPE_DIRECTORY_ATTESTATION,
   TYPE_DIRECTORY_STATEMENT,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
   TYPE_ENCRYPTED_MESSAGE_CONTENT,
   TYPE_MAILBOX_CHECKPOINT,
   TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_TEXT_MESSAGE_ITEM,
 } from '../src/constants'
 
@@ -77,7 +78,7 @@ describe('typed conversion and exact-byte retention', () => {
       throw new Error('type 2 expected')
     const st = asParsed(t.statementFrame).typed
     if (st?.type !== TYPE_DIRECTORY_STATEMENT)
-      throw new Error('type 4 expected')
+      throw new Error('type 1 expected')
     expect(st.revision).toBe(18446744073709551615n)
     expect(typeof st.revision).toBe('bigint')
     expect(typeof st.timestamp.seconds).toBe('bigint')
@@ -92,7 +93,7 @@ describe('typed conversion and exact-byte retention', () => {
       )
       const q = parse(f, { priorDirectoryStatementFrame: null }).typed
       if (q?.type !== TYPE_DIRECTORY_STATEMENT)
-        throw new Error('type 4 expected')
+        throw new Error('type 1 expected')
       expect(q.timestamp.seconds).toBe(seconds)
       expect(q.timestamp.nanoseconds).toBe(999_999_999)
     }
@@ -129,12 +130,12 @@ describe('typed conversion and exact-byte retention', () => {
     expect(p.frame).toEqual(original)
     const t = p.typed
     if (t?.type !== TYPE_DIRECT_MESSAGE_DELIVERY)
-      throw new Error('type 1 expected')
+      throw new Error('type 10 expected')
     const child = asParsed(t.payloadFrame)
     // The child's bytes are exactly the byte string carried in field 2 of the parent.
     expect(child.frame).toEqual(type5Frame())
     expect(toHex(original)).toContain(toHex(child.frame))
-    expect(child.typeId).toBe(5)
+    expect(child.typeId).toBe(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
   })
 
   it('opens the recursive message-item graph and retains unknown children byte for byte', () => {
@@ -145,25 +146,25 @@ describe('typed conversion and exact-byte retention', () => {
     const p = parse(type6Frame(rev))
     const t6 = p.typed
     if (t6?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT)
-      throw new Error('type 6 expected')
+      throw new Error('type 12 expected')
     const r8 = asParsed(t6.revisionFrame)
     expect(r8.frame).toEqual(rev)
     const t8 = r8.typed
     if (t8?.type !== TYPE_MESSAGE_CONTENT_REVISION)
-      throw new Error('type 8 expected')
+      throw new Error('type 20 expected')
     expect(t8.items).toHaveLength(2)
     const c16 = asParsed(t8.items[1])
     expect(c16.frame).toEqual(middle)
     const t16 = c16.typed
     if (t16?.type !== TYPE_CONTAINER_MESSAGE_ITEM)
-      throw new Error('type 16 expected')
+      throw new Error('type 21 expected')
     const kept = asRetained(t16.items[1])
     expect(kept.reason).toBe('unknown-type')
     expect(kept.typeId).toBe(UNKNOWN_TYPE)
     expect(kept.frame).toEqual(unknown)
     const deep = asParsed(t16.items[2]).typed
     if (deep?.type !== TYPE_CONTAINER_MESSAGE_ITEM)
-      throw new Error('type 16 expected')
+      throw new Error('type 21 expected')
     expect(asParsed(deep.items[0]).typed).toMatchObject({
       type: TYPE_TEXT_MESSAGE_ITEM,
       text: 'two levels down',
@@ -183,7 +184,7 @@ describe('typed conversion and exact-byte retention', () => {
     )
     const t = p.typed
     if (t?.type !== TYPE_MESSAGE_CONTENT_REVISION)
-      throw new Error('type 8 expected')
+      throw new Error('type 20 expected')
     const kept = asRetained(t.items[1])
     expect(kept.reason).toBe('unsupported-frame-version')
     expect(kept.frame).toEqual(weird)
@@ -202,7 +203,7 @@ describe('typed conversion and exact-byte retention', () => {
     })
     const p = parse(cp)
     const t = p.typed
-    if (t?.type !== TYPE_MAILBOX_CHECKPOINT) throw new Error('type 3 expected')
+    if (t?.type !== TYPE_MAILBOX_CHECKPOINT) throw new Error('type 14 expected')
     expect(t.facts[1].payload).toEqual(unknownInFact)
     expect(t.sections?.[1].value).toEqual(unknownInSection)
     expect(t.sections?.[1].sectionType).toBe(0x7fff0001)
@@ -226,7 +227,7 @@ describe('typed conversion and exact-byte retention', () => {
     expect(p.projection).toBe('newer-schema')
     expect(p.schemaVersion).toBe(3)
     const t = p.typed
-    if (t?.type !== TYPE_TEXT_MESSAGE_ITEM) throw new Error('type 17 expected')
+    if (t?.type !== TYPE_TEXT_MESSAGE_ITEM) throw new Error('type 22 expected')
     expect(t.text).toBe('x')
     // raw-cbor-key: keys 5 and 9 are undeclared: unknown fields of a newer schema
     expect([...t.unknownFields.keys()]).toEqual([5n, 9n])
@@ -266,12 +267,12 @@ describe('T1/T1a content hashes and one-byte mutation', () => {
     // Computed with Python hashlib over the section 8 transcript, not with this codec.
     const p = parse(WORKED_TEXT_HI)
     expect(toHex(contentHash(p))).toBe(
-      'eb07b6621727aba0b063616dec5355c23f506c77635a7124c4064d2ecc9afad0',
+      '128985c9a648dd9bdf280e4e6513db8616d1e7c94dc546cb17b342864b45de91',
     )
     expect(
       toHex(commonTranscript('frank/content-hash/v1', 'frank', WORKED_TEXT_HI)),
     ).toBe(
-      '00156672616e6b2f636f6e74656e742d686173682f763100056672616e6b0000001746524e4b010000000ea40011010102010345a100626869',
+      '00156672616e6b2f636f6e74656e742d686173682f763100056672616e6b0000001746524e4b010000000ea40016010102010345a100626869',
     )
   })
 
@@ -300,7 +301,7 @@ describe('T1/T1a content hashes and one-byte mutation', () => {
     )
   })
 
-  it('computes T1a over the type-8 frame with the literal network', () => {
+  it('computes T1a over the type-20 frame with the literal network', () => {
     const rev = rev8Frame()
     expect(toHex(messageContentDigest(rev))).toBe(
       toHex(

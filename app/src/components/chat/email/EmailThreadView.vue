@@ -664,7 +664,7 @@
           />
         </div>
         <div
-          class="col-auto row items-center no-wrap q-gutter-x-xs"
+          class="composer-top-actions row items-center no-wrap q-gutter-x-xs"
           data-testid="composer-top-actions"
         >
           <!-- Hidden file input -->
@@ -703,17 +703,35 @@
             :disable="sending"
             data-testid="email-stamp-btn"
           >
-            <span class="chat-stamp-pill-text q-ml-xs">{{
-              stampPillText
-            }}</span>
             <span
-              v-if="stampMultiplier && stampMultiplier !== '1'"
+              v-if="stampAvu"
+              class="chat-stamp-pill-avu q-ml-xs"
+              :class="{ 'chat-stamp-pill-avu--stale': stampAvu.stale }"
+              data-testid="stamp-pill-avu"
+              ><q-icon
+                v-if="stampAvu.stale"
+                name="schedule"
+                size="12px"
+                class="chat-stamp-pill-stale q-mr-xs"
+                data-testid="stamp-pill-avu-stale"
+              />{{ stampAvu.figure }}</span
+            >
+            <span
+              class="chat-stamp-pill-text q-ml-xs"
+              :class="{ 'chat-stamp-pill-text--secondary': stampAvu }"
+              >{{ stampPillText }}</span
+            >
+            <span
+              v-if="!stampAvu && stampMultiplier && stampMultiplier !== '1'"
               class="chat-stamp-pill-multiple q-ml-xs"
               data-testid="stamp-pill-multiple"
               >{{ stampMultiplier }}×</span
             >
             <q-tooltip max-width="280px">
               <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
+              <div v-if="stampAvu" data-testid="stamp-tooltip-avu">
+                {{ $t('chatInput.stampChipAvu', { value: stampAvu.line }) }}
+              </div>
               <div>
                 {{
                   $t(
@@ -1181,7 +1199,11 @@
 
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
-import { useChatStore, type Conversation, type ChatMessage } from 'src/stores/chats'
+import {
+  useChatStore,
+  type Conversation,
+  type ChatMessage,
+} from 'src/stores/chats'
 import type { EmailItem, MessageItem } from '@frank/cashweb/types/messages'
 import type { EmailParty, EmailAttachment } from '@frank/codec'
 import {
@@ -1191,6 +1213,11 @@ import {
 import { STAMP_MULTIPLIER_TENTHS } from 'src/components/chat/ChatInput.vue'
 import { defaultStaticStampForChain } from '@frank/wallet/oracle'
 import { activeChain } from '@frank/wallet/chain'
+import {
+  stampAvu as stampAvuOf,
+  stampMultiplierText,
+  type StampAvu,
+} from 'src/utils/stamp-display'
 import { purify, renderMarkdown } from 'src/utils/markdown'
 import {
   applyMarkdownFormat,
@@ -1456,26 +1483,14 @@ export default defineComponent({
           })
         : amount
     },
+    /** The stamp as a multiple of the default stamp ("≈1.0511"); the default is priced in
+     * AVU, so a fixed coin amount drifts from 1× as the coin's price moves. */
     stampMultiplier(): string {
-      const selected = this.stampWei
-      const reference = this.effectiveDefaultStampWei
-      if (
-        selected === undefined ||
-        selected === 0n ||
-        reference === undefined ||
-        reference <= 0n
-      )
-        return ''
-      const scaled = (selected * 10000n + reference / 2n) / reference
-      const whole = scaled / 10000n
-      const fraction = (scaled % 10000n)
-        .toString()
-        .padStart(4, '0')
-        .replace(/0+$/, '')
-      const approximate = (selected * 10000n) % reference !== 0n
-      return `${approximate ? '≈' : ''}${whole}${
-        fraction ? '.' + fraction : ''
-      }`
+      return stampMultiplierText(this.stampWei, this.effectiveDefaultStampWei)
+    },
+    /** What the stamp is worth in AVU; undefined with no rate. */
+    stampAvu(): StampAvu | undefined {
+      return stampAvuOf(activeChain, this.stampWei)
     },
     stampWei(): bigint | undefined {
       try {
@@ -1722,11 +1737,13 @@ export default defineComponent({
         this.availableBalanceWei !== undefined &&
         this.stampWei > this.availableBalanceWei
       ) {
-        return `Not enough ${this.chainUnit}: need ${activeChain.toDisplayAmount(
-          this.stampWei,
-        )} ${this.chainUnit}, have ${activeChain.toDisplayAmount(
-          this.availableBalanceWei,
-        )} ${this.chainUnit}`
+        return `Not enough ${
+          this.chainUnit
+        }: need ${activeChain.toDisplayAmount(this.stampWei)} ${
+          this.chainUnit
+        }, have ${activeChain.toDisplayAmount(this.availableBalanceWei)} ${
+          this.chainUnit
+        }`
       }
       return null
     },
@@ -2995,6 +3012,13 @@ export default defineComponent({
   min-height: 32px;
 }
 
+/* Attach and the stamp pill: may shrink (the pill gives way) rather than push the row
+ * off-screen. */
+.composer-top-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 .composer-draft-indicator {
   display: inline-flex;
   align-items: center;
@@ -3186,56 +3210,5 @@ export default defineComponent({
   border: none;
   background-color: transparent;
   display: block;
-}
-
-.chat-stamp-btn {
-  flex-shrink: 0;
-  min-height: 28px;
-  height: auto;
-  padding: 2px 10px;
-  border-radius: 999px !important;
-  font-size: 12px;
-  white-space: nowrap;
-  color: var(--q-primary);
-  background-color: var(--q-chat-stamp-bg, rgba(0, 0, 0, 0.05));
-  transition: background-color 0.15s ease, opacity 0.15s ease;
-}
-
-.chat-stamp-btn :deep(.q-btn__content) {
-  flex-wrap: nowrap !important;
-  white-space: nowrap !important;
-}
-
-.chat-stamp-btn:hover:not(:disabled) {
-  background-color: var(--q-chat-stamp-bg-hover, rgba(0, 0, 0, 0.09));
-}
-
-.chat-stamp-pill-text {
-  font-weight: 600;
-  font-size: 11px;
-  font-family: inherit;
-  opacity: 0.92;
-  white-space: nowrap;
-}
-
-.chat-stamp-pill-multiple {
-  font-size: 10px;
-  font-weight: 600;
-  opacity: 0.82;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.chat-stamp-explanation {
-  opacity: 0.8;
-  max-width: 320px;
-}
-
-.body--dark .chat-stamp-btn {
-  background-color: rgba(255, 255, 255, 0.08);
-}
-
-.body--dark .chat-stamp-btn:hover:not(:disabled) {
-  background-color: rgba(255, 255, 255, 0.14);
 }
 </style>

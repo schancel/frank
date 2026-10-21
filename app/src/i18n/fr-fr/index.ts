@@ -2277,6 +2277,48 @@ export const rawFrFR = {
     sampleLinkText: 'texte du lien',
     invalidPayload: 'Champs de l’article invalides',
   },
+  groupChat: {
+    close: 'Fermer',
+    participantRequest:
+      '{address} a référencé cette conversation directe. Son message reste dans une conversation individuelle distincte.',
+    viewDirect: 'Voir la conversation',
+    dismissRequest: 'Ignorer',
+    syncFailed:
+      'Impossible de synchroniser les mises à jour du groupe. Réessayez pour reprendre.',
+    epochPending:
+      'La préparation du groupe est en attente. Réessayez pour terminer la publication.',
+    retryUpdates: 'Réessayer les mises à jour du groupe',
+    newGroup: 'Nouveau groupe',
+    createGroupTitle: 'Créer un groupe chiffré',
+    groupNameLabel: 'Nom du groupe',
+    groupNamePlaceholder: 'ex. Ingénierie protocole',
+    selectMembersLabel: 'Ajouter des contacts',
+    searchContactsPlaceholder:
+      'Filtrer les contacts ou coller une adresse (0x...)',
+    addByAddressBtn: 'Ajouter l’adresse',
+    selectedMembersCount: '{count} sélectionné(s)',
+    hostingRelayLabel: 'Relais hébergeur',
+    cancel: 'Annuler',
+    createGroupBtn: 'Créer le groupe',
+    creatingGroup: 'Création du groupe…',
+    inviteBannerTitle:
+      'Vous avez été invité(e) à rejoindre le groupe chiffré « {name} ».',
+    inviteBannerSubtitle: 'Époque #{epoch} · Hébergé sur {relay}',
+    acceptInviteBtn: 'Accepter et rejoindre',
+    declineInviteBtn: 'Refuser',
+    groupInfoTitle: 'Infos du groupe',
+    groupIdLabel: 'Identifiant du groupe',
+    epochBadge: 'Époque #{epoch}',
+    membersHeading: 'Membres ({count})',
+    adminBadge: 'Administrateur',
+    youSuffix: '(Vous)',
+    inviteMemberLabel: 'Inviter un membre (Adresse)',
+    inviteMemberPlaceholder: 'Adresse du membre',
+    inviteMemberBtn: 'Inviter',
+    removeMemberBtn: 'Retirer',
+    leaveGroupBtn: 'Ne plus suivre le groupe',
+    syncGroupBtn: 'Synchroniser le groupe',
+  },
   close: 'Fermer',
 }
 

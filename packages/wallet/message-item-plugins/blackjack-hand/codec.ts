@@ -13,7 +13,7 @@ import {
 import {
   MessageItemDecodeError,
   type MessageItemDecodeContext,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import { decodeWith, openItemFrame } from '../shared/frame'
 
 export function encodeBlackjackHand(item: BlackjackHandV3Item): Uint8Array {

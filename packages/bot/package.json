@@ -46,7 +46,8 @@
     "bip39": "^3.0.2",
     "ethers": "^6.17.0",
     "level": "^7.0.0",
-    "@frank/swap-protocol": "*"
+    "@frank/swap-protocol": "*",
+    "@frank/group-messaging": "*"
   },
   "devDependencies": {
     "esbuild": "~0.28.0",

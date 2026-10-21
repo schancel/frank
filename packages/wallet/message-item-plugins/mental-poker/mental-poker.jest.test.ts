@@ -1,7 +1,7 @@
 import {
   createMessageItemRegistry,
   pluginCapabilitiesNotYetAvailable,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import {
   accepterShuffleAndLockDeck,
   ALL_SHOWDOWN_INDICES,

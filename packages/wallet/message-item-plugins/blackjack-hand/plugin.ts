@@ -11,7 +11,7 @@ import {
   requirePluginCapabilities,
   type MessageItemPluginCapabilities,
   type MessageItemRegistry,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import { decodeBlackjackHand, encodeBlackjackHand } from './codec'
 
 export function initBlackjackHandPlugin(

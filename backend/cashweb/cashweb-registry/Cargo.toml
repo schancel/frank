@@ -131,6 +131,8 @@ async-nats = "0.38"
 prost-build = "0.11"
 
 [dev-dependencies]
+# Deterministic elapsed-time control in real-socket boundary tests.
+tokio = { version = "1.17", features = ["test-util"] }
 bitcoinsuite-ecc-secp256k1 = { path = "../../bitcoinsuite/bitcoinsuite-ecc-secp256k1" }
 flate2 = "1"
 hex-literal = "0.3"

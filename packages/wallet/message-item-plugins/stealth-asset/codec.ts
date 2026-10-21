@@ -12,7 +12,7 @@ import { getChainRegistryEntry } from '../../chain/chains-registry'
 import {
   MessageItemDecodeError,
   type MessageItemDecodeContext,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import { decodeWith, openItemFrame } from '../shared/frame'
 
 function canonicalChain(chainIdentifier: string): void {

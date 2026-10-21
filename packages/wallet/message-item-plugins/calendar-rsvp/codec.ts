@@ -17,7 +17,7 @@ import {
   str,
   struct,
   timestampMs,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 import { MAX_CALENDAR_SEQUENCE } from '../calendar-invite/codec'
 
 const attendeePartyStruct = struct<CalendarOrganizer>({

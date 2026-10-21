@@ -139,6 +139,7 @@
                 <q-item
                   clickable
                   v-close-popup
+                  v-if="!groupMode"
                   data-testid="send-stealth-menu-item"
                   @click="sendStealthClicked"
                 >
@@ -153,6 +154,7 @@
                 <q-item
                   clickable
                   v-close-popup
+                  v-if="!groupMode"
                   data-testid="webrtc-call-menu-item"
                   @click="
                     emitAndClose('webrtcCallClicked', { withVideo: false })
@@ -169,6 +171,7 @@
                 <q-item
                   clickable
                   v-close-popup
+                  v-if="!groupMode"
                   data-testid="webrtc-video-call-menu-item"
                   @click="
                     emitAndClose('webrtcCallClicked', { withVideo: true })
@@ -200,6 +203,7 @@
                       <q-item
                         clickable
                         v-close-popup
+                        v-if="!groupMode"
                         data-testid="invoice-menu-item"
                         @click="closeMenuAndEmit('invoiceClicked')"
                       >
@@ -232,7 +236,11 @@
                 </q-item>
 
                 <!-- Submenu: Games (Blackjack, Satoshi Dice, Rock-Paper-Scissors, Heads-Up Poker) -->
-                <q-item clickable data-testid="games-submenu-item">
+                <q-item
+                  v-if="!groupMode"
+                  clickable
+                  data-testid="games-submenu-item"
+                >
                   <q-item-section avatar side>
                     <q-icon name="sports_esports" />
                   </q-item-section>
@@ -312,6 +320,7 @@
             flat
             rounded
             no-caps
+            v-if="!groupMode"
             icon="local_post_office"
             class="chat-stamp-btn"
             :aria-label="$t('a11y.stampPayment')"
@@ -581,6 +590,7 @@ export const STAMP_MULTIPLIER_TENTHS = [
 
 export default defineComponent({
   props: {
+    groupMode: { type: Boolean, default: false },
     message: {
       type: String,
       default: () => '',

@@ -10,7 +10,7 @@ import {
   createMessageItemRegistry,
   MessageItemDecodeError,
   MessageItemEncodeError,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import { decodeItemFrames, encodeItemFrames } from '../wire'
 import {
   createNewsletterArticleItem,

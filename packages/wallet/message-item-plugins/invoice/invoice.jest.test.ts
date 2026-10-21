@@ -1,5 +1,5 @@
 import { standaloneItemBudget } from '@frank/codec'
-import { createMessageItemRegistry } from '../registry'
+import { createMessageItemRegistry } from '@frank/cashweb/message-items/registry'
 import {
   decodeInvoicePayload,
   encodeInvoicePayload,

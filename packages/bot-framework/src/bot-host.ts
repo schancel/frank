@@ -2,6 +2,7 @@ import {
   startBotNegotiationRecovery,
   type BotNegotiationRecovery,
 } from "./negotiation-recovery";
+import { installGroupMessageItemPlugins } from "@frank/group-messaging/groups/plugin";
 import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
 import { DefaultStampUnavailableError, stampPolicyConfig } from '@frank/wallet/oracle/stamp-policy'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
@@ -39,7 +40,7 @@ import {
 import type { MessageItem } from "@frank/cashweb/types/messages";
 import { installMessageItemRegistry } from "@frank/wallet/chain/canonical-dm";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
-import { pluginCapabilitiesNotYetAvailable } from "@frank/wallet/message-item-plugins/registry";
+import { pluginCapabilitiesNotYetAvailable } from "@frank/cashweb/message-items/registry";
 import type {
   DirectMessageSendResult,
   StampPaymentInfo,
@@ -477,7 +478,10 @@ export class FrankBotHost {
       // follows the existing registration cleanup without leaving an installed directory.
       const messageItems = this.options.createMessageItemRegistry
         ? this.options.createMessageItemRegistry()
-        : createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable);
+        : installGroupMessageItemPlugins(
+            createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+            pluginCapabilitiesNotYetAvailable,
+          );
 
       // Install canonical directory so chain.directMessages routes through canonical directory
       const removeDirectory = installCanonicalDirectory(

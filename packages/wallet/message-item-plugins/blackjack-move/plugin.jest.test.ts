@@ -1,4 +1,4 @@
-import { MessageItemEncodeError } from '../registry'
+import { MessageItemEncodeError } from '@frank/cashweb/message-items/registry'
 import {
   describePluginContract,
   registryWith,

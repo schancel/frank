@@ -13,7 +13,7 @@ import {
   opt,
   req,
   timestampMs,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 
 /**
  * How one received coin's key is derived: the chain, the one-time account, and the data the

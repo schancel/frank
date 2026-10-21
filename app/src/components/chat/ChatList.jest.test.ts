@@ -17,6 +17,7 @@ jest.mock('vue-router', () => ({
   }),
 }))
 jest.mock('pinia', () => ({
+  ...jest.requireActual('pinia'),
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
 }))
 const mockChatStore = jest.requireActual('vue').reactive({

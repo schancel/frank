@@ -1,7 +1,7 @@
 /** @jest-environment node */
 import { createAppMessageItemRegistry, messageItems } from './message-items'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 
 it('explicitly installs inert negotiation in the actual app composition without changing wallet defaults', () => {
   const defaults = createDefaultMessageItemRegistry(
@@ -17,6 +17,8 @@ it('explicitly installs inert negotiation in the actual app composition without 
   expect(defaults.has('swap-handshake-v1')).toBe(false)
   expect(app.types()).toEqual([
     ...defaults.types(),
+    'group-welcome',
+    'group-control',
     'swap-negotiation-v1',
     'newsletter-article-v1',
     'article-v1',

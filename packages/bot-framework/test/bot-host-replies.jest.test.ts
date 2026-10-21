@@ -1,3 +1,4 @@
+import { checkpoint, eventQueue, holdStartedCompletion } from "./lifecycle-checkpoints.testutil";
 import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
 /**
  * What a handler is told about the message it answers, and what happens to its reply, through
@@ -96,6 +97,7 @@ describe("FrankBotHost replies", () => {
   let originalEnvironment: NodeJS.ProcessEnv;
   let sequence = 0;
   const hosts: FrankBotHost[] = [];
+  let releaseJournalCompletion: (() => void) | undefined;
 
   /** The wallet accepts the send: it reports the attempt, then resolves with its digest. */
   const accept = async (params: {
@@ -296,6 +298,8 @@ describe("FrankBotHost replies", () => {
   });
 
   afterEach(async () => {
+    releaseJournalCompletion?.();
+    releaseJournalCompletion = undefined;
     for (const host of hosts.splice(0)) await host.stop();
     rmSync(stateDir, { recursive: true, force: true });
     process.env = originalEnvironment;
@@ -653,7 +657,7 @@ describe("FrankBotHost replies", () => {
       expect(effects).toHaveLength(2);
     });
 
-    it("waits for a poll: the handler stays suspended, and other peers are answered meanwhile", async () => {
+    it.each([false, true])("waits for a poll: the handler stays suspended, and other peers are answered meanwhile (held journal completion: %s)", async (holdCompletion) => {
       const effects: string[] = [];
       const { host, instance } = await start(paying(effects));
       mockSend.mockReset().mockImplementation(async (params) => {
@@ -664,11 +668,33 @@ describe("FrankBotHost replies", () => {
       const waiting = inbound("roll");
       const other = inbound("roll", { from: otherPeer });
 
-      await poll(host, [waiting, other]);
-      await until(() => effects.length === 3);
-      await until(
-        () => instance.operations.get(other.payloadDigest) === undefined
-      );
+      const otherCompleted = checkpoint();
+      let completed = false;
+      const complete: (digest: string, cursor: number) => Promise<number> =
+        instance.operations.complete.bind(instance.operations);
+      jest.spyOn(instance.operations, "complete").mockImplementation(async (digest: string, cursor: number) => {
+        const result = await complete(digest, cursor);
+        if (digest === other.payloadDigest) { completed = true; otherCompleted.resolve(); }
+        return result;
+      });
+      const journal = holdCompletion ? holdStartedCompletion() : undefined;
+      releaseJournalCompletion = journal?.release;
+      try {
+        await poll(host, [waiting, other]);
+        if (journal) {
+          await journal.entered;
+          // Exercise the former spin budget while actual journal completion stays held.
+          for (let turn = 0; turn < 2000; turn++)
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(completed).toBe(false);
+          expect(mockSend).not.toHaveBeenCalled();
+          journal.release();
+        }
+        await otherCompleted.promise;
+      } finally {
+        journal?.restore();
+        releaseJournalCompletion = undefined;
+      }
 
       expect(effects).toEqual([
         "paid 01",
@@ -690,15 +716,27 @@ describe("FrankBotHost replies", () => {
       const { host, instance } = await start(paying(effects));
       const error = jest.spyOn(console, "error").mockImplementation(() => {});
       let refusing = true;
+      const refused = eventQueue();
       mockSend.mockReset().mockImplementation(async (params) => {
-        if (refusing) throw notAttempted("one payment is still open");
+        if (refusing) {
+          // After the rejection reaches sendReply, its catch registers nextPoll synchronously:
+          // no I/O, timer or await intervenes. This one event drains that rejection's microtasks;
+          // it is not a turn budget for arbitrary handler or journal completion.
+          setImmediate(refused.publish);
+          throw notAttempted("one payment is still open");
+        }
         return accept(params);
       });
       const message = inbound("roll");
 
       for (let sends = 1; sends <= 5; sends++) {
         await poll(host, [message]);
-        await until(() => mockSend.mock.calls.length === sends);
+        await refused.next();
+        expect(textsSent().filter((text) => text === "you won")).toHaveLength(sends);
+        if (sends < 5) {
+          expect(effects).toEqual(["paid 01"]);
+          expect(instance.operations.get(message.payloadDigest).phase).toBe("started");
+        }
       }
       await drain(instance);
       expect(effects).toEqual(["paid 01"]);

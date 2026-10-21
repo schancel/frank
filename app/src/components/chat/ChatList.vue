@@ -33,6 +33,15 @@
           />
         </q-item>
         <q-separator />
+        <q-item
+          v-if="$status.setup && groupsAvailable"
+          clickable
+          data-testid="new-group-btn"
+          @click="newGroupOpen = true"
+        >
+          <q-item-section avatar><q-icon name="group_add" /></q-item-section>
+          <q-item-section>{{ $t('groupChat.newGroup') }}</q-item-section>
+        </q-item>
 
         <!-- Full-Text E2EE Search Input & Paid-Stranger Screener Filter Chip -->
         <div
@@ -176,6 +185,7 @@
         </q-item>
       </q-list>
     </q-scroll-area>
+    <new-group-dialog v-model="newGroupOpen" @created="selectConversation" />
   </div>
 </template>
 
@@ -184,6 +194,7 @@ import { computed, defineComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
+import NewGroupDialog from '../dialogs/NewGroupDialog.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
 import { unreadValueAvu } from '../../stores/chats-domain'
 import { useContactStore } from '../../stores/contacts'
@@ -192,6 +203,7 @@ import { openChat, openPage } from '../../utils/routes'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { isNarrowWidth } from '../../utils/layout'
+import { messagingState } from '../../utils/messaging-state'
 import { activeChain } from '@frank/wallet/chain'
 import { formatAvu } from 'src/utils/avu-units'
 import { nativeAmountAvu } from 'src/utils/stamp-display'
@@ -317,6 +329,12 @@ export default defineComponent({
     const router = useRouter()
     const $q = useQuasar()
     return {
+      groupsAvailable: computed(
+        () =>
+          messagingState.status === 'ready' &&
+          activeChain.capabilities.directMessages,
+      ),
+      newGroupOpen: ref(false),
       /** What the unread received messages brought, in AVU: stamps plus payments the wallets
        * saw arrive, each chain at its own price. Nothing when there is none, or when part of
        * it has no price: never a claimed amount, never a made-up figure. */
@@ -445,6 +463,7 @@ export default defineComponent({
   },
   components: {
     ChatListItem,
+    NewGroupDialog,
   },
 })
 </script>

@@ -21,7 +21,7 @@ import {
   type Encodable,
 } from '@frank/codec'
 import { createDefaultMessageItemRegistry } from '../default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '../registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 import { decodeItemFrames, encodeItemFrames } from '../wire'
 import { experimentalSolanaRecipientAssetPaymentsFromOperation as project } from './experimental-solana-from-operation'
 

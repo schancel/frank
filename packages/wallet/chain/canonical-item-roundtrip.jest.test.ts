@@ -4,6 +4,7 @@
  * (mailbox read, authentication, opening). The item arrives with the same type and fields. The
  * five types with a dedicated frame are sealed with exactly the bytes their encoders always wrote.
  */
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import * as canonicalDm from '@frank/cashweb/relay/canonical-dm'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 import {
@@ -21,7 +22,7 @@ import {
   MessageItemUnsupportedError,
   createMessageItemRegistry,
   pluginCapabilitiesNotYetAvailable,
-} from '../message-item-plugins/registry'
+} from '@frank/cashweb/message-items/registry'
 import * as wire from '../message-item-plugins/wire'
 import {
   DEDICATED_SAMPLES,
@@ -57,7 +58,8 @@ describe('message items across the canonical path, two wallets', () => {
   let bob: Seat
   let sealed: jest.SpyInstance
   // The composition both wallets normally run with.
-  const registry = createDefaultMessageItemRegistry(
+  const registry = installGroupMessageItemPlugins(
+    createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
     pluginCapabilitiesNotYetAvailable,
   )
   let removeAlice: () => void

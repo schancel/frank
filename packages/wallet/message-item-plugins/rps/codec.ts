@@ -8,7 +8,7 @@ import {
   oneOf,
   opt,
   req,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 import { id, secret } from '../shared/limits'
 
 const move = oneOf('rock', 'paper', 'scissors')

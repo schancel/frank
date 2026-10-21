@@ -4,6 +4,7 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "paths": {
+      "@frank/group-messaging/*": ["../group-messaging/*"],
       "@frank/codec": ["../frank-codec/src/index.ts"],
       "@frank/price-feeds": ["../price-feeds/src/index.ts"],
       "@frank/cashweb/*": ["../cashweb/*"],

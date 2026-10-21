@@ -7,7 +7,7 @@ import {
   requirePluginCapabilities,
   type MessageItemPluginCapabilities,
   type MessageItemRegistry,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import { calendarRsvpCodec } from './codec'
 
 export function initCalendarRsvpPlugin(

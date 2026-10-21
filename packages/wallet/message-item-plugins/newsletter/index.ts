@@ -3,7 +3,7 @@ import type { ApplicationMessageItem } from '@frank/cashweb/types/messages'
 import type {
   ApplicationItemPlugin,
   MessageItemDecodeContext,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 
 export const NEWSLETTER_ARTICLE_ITEM_TYPE = 'newsletter-article-v1'
 

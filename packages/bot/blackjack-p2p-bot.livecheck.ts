@@ -1,3 +1,4 @@
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
 /**
  * PARKED: not registered. Nothing in the bot set, `targets/`, the launcher or the demo starts
@@ -44,7 +45,7 @@ import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 import { BET_MESSAGE_FEE_RESERVE_WEI } from '@frank/wallet/message-item-plugins/blackjack/game'
 import { installMessageItemRegistry } from '@frank/wallet/chain/canonical-dm'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 
 import {
   BlackjackP2pBot,
@@ -247,7 +248,10 @@ export async function main(deps: LauncherDeps = {}) {
   const uninstallDirectory = installCanonicalDirectory(wallet, directory)
   const uninstallMessageItems = installMessageItemRegistry(
     wallet,
-    createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+    installGroupMessageItemPlugins(
+      createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+      pluginCapabilitiesNotYetAvailable,
+    ),
   )
   const uninstall = () => {
     uninstallDirectory()

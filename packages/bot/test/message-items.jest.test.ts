@@ -16,7 +16,7 @@ import {
 import { createBotMessageItemRegistry } from '../src/message-items'
 import { createAppMessageItemRegistry } from '../../../app/src/utils/message-items'
 import { createDefaultMessageItemRegistry } from '../../wallet/message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '../../wallet/message-item-plugins/registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 import { installMessageItemRegistry } from '../../wallet/chain/canonical-dm'
 import {
   STAMP,

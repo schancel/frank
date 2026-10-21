@@ -14,7 +14,7 @@ import type {
   MessageItemPlugin,
   MessageItemPluginCapabilities,
   MessageItemRegistry,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import {
   filterCandidateForIcePolicy,
   sanitizeSdpForIcePolicy,

@@ -10,6 +10,7 @@
  * Plugins are lent wallet capabilities at `init`. The wallet does not provide them yet, so the app
  * passes the provider whose every method rejects with a typed error.
  */
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { createNegotiationMessagePlugin } from '@frank/swap-protocol/src/message-plugin'
 import { TESTNET_NEGOTIATION_POLICY } from '@frank/swap-protocol/src/negotiation'
 import { createArticlePlugin } from '@frank/wallet/message-item-plugins/article'
@@ -20,12 +21,13 @@ import { createNewsletterArticlePlugin } from '@frank/wallet/message-item-plugin
 import {
   pluginCapabilitiesNotYetAvailable,
   type MessageItemRegistry,
-} from '@frank/wallet/message-item-plugins/registry'
+} from '@frank/cashweb/message-items/registry'
 import { createSwapHandshakePlugin } from '@frank/wallet/message-item-plugins/swap-handshake'
 import { createWebRtcCallPlugin } from '@frank/wallet/message-item-plugins/webrtc-call'
 
 export function createAppMessageItemRegistry(): MessageItemRegistry {
-  const registry = createDefaultMessageItemRegistry(
+  const registry = installGroupMessageItemPlugins(
+    createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
     pluginCapabilitiesNotYetAvailable,
   )
   registry.registerApplication(
@@ -40,4 +42,4 @@ export function createAppMessageItemRegistry(): MessageItemRegistry {
   return registry
 }
 
-export const messageItems = createAppMessageItemRegistry()
+export const messageItems: MessageItemRegistry = createAppMessageItemRegistry()

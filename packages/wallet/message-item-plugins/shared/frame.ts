@@ -12,8 +12,8 @@ import type { ParsedFrame } from '@frank/codec'
 import {
   MessageItemDecodeError,
   type MessageItemDecodeContext,
-} from '../registry'
-import { detailOf } from './cbor-fields'
+} from '@frank/cashweb/message-items/registry'
+import { detailOf } from '@frank/cashweb/message-items/cbor-fields'
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false

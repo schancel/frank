@@ -31,6 +31,7 @@
  *  4. that wallet reads what the swap did from the chain, checking that the record's account
  *     paid for the transaction and that it called the exchange.
  */
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { spawnSync } from 'child_process'
 import { randomBytes } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
@@ -48,7 +49,7 @@ import {
 } from '@frank/wallet/chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 import { registerMonadIdentity } from '@frank/wallet/evm-identity'
 import {
   BrowserSolanaLegacyJournal,
@@ -160,7 +161,10 @@ async function openAccount(relayBaseUrl: string, dir: string, state: string) {
   )
   const removeItems = installMessageItemRegistry(
     identity,
-    createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+    installGroupMessageItemPlugins(
+      createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+      pluginCapabilitiesNotYetAvailable,
+    ),
   )
 
   // The wallet's sync event, wired as the app wires it: a free note from the account to itself.

@@ -8,7 +8,7 @@ import type { TextItem } from '@frank/cashweb/types/messages'
 import {
   MessageItemDecodeError,
   type MessageItemDecodeContext,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import { openItemFrame } from '../shared/frame'
 
 export function encodeTextItem(item: TextItem): Uint8Array {

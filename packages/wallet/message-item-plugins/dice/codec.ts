@@ -1,5 +1,5 @@
 import type { SatoshiDiceItem } from '@frank/cashweb/types/messages'
-import { MessageItemDecodeError, MessageItemEncodeError } from '../registry'
+import { MessageItemDecodeError, MessageItemEncodeError } from '@frank/cashweb/message-items/registry'
 
 import {
   amount,
@@ -11,7 +11,7 @@ import {
   opt,
   req,
   type ItemCodec,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 import { diceRoll, id, multiplier, secret } from '../shared/limits'
 
 const fields = cborItemCodec<SatoshiDiceItem>('dice', {

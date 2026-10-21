@@ -22,6 +22,7 @@
  *     the `swap-record` item, under the id derived from the chain and the transaction;
  *  4. that wallet reads what the swap did from the chain by the record's transaction and route.
  */
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { randomBytes } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
@@ -37,7 +38,7 @@ import {
 } from '@frank/wallet/chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 import { registerMonadIdentity } from '@frank/wallet/evm-identity'
 import { findToken } from '@frank/wallet/swap/uniswap-v4'
 import { UniswapV4Dex } from '@frank/wallet/swap/uniswap-v4-dex'
@@ -133,7 +134,10 @@ async function openWallet(relayBaseUrl: string, dir: string, state: string) {
   )
   const removeItems = installMessageItemRegistry(
     wallet,
-    createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+    installGroupMessageItemPlugins(
+      createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+      pluginCapabilitiesNotYetAvailable,
+    ),
   )
   const dex = new UniswapV4Dex(CHAIN, getEvmDexDeployment(CHAIN)!, {
     reader: wallet.evmReader!,

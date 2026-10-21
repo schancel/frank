@@ -59,7 +59,7 @@ import {
 } from "./evm-chain";
 import { installMessageItemRegistry } from "./canonical-dm";
 import { createDefaultMessageItemRegistry } from "../message-item-plugins/default-registry";
-import { pluginCapabilitiesNotYetAvailable } from "../message-item-plugins/registry";
+import { pluginCapabilitiesNotYetAvailable } from "@frank/cashweb/message-items/registry";
 import { NEVER_FROM_A_PEER_SAMPLES } from "../message-item-plugins/wire-samples.testutil";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";

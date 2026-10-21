@@ -2,6 +2,9 @@ const esModules = [
   'quasar/lang',
   'lodash-es',
   '@quasar/app-vite/exports/wrappers\\.js$',
+  'vue-router',
+  'nostics',
+  'perfect-debounce',
 ].join('|')
 
 /* eslint-env node */
@@ -58,6 +61,7 @@ module.exports = {
     // jsdom's browser/require conditions omit this package's node/import exports.
     // Resolve its public Node entry while loading the actual wrapper implementation.
     '^@quasar/app-vite$': require.resolve('@quasar/app-vite'),
+    '^@frank/group-messaging/(.*)$': '<rootDir>/../packages/group-messaging/$1',
     // Resolve workspace packages from this checkout. Worktrees intentionally share the root
     // node_modules directory, whose workspace symlinks otherwise point at another checkout.
     '^@frank/account-recovery$':
@@ -123,6 +127,9 @@ module.exports = {
     '^\\./vite-env$': '<rootDir>/../packages/wallet/chain/vite-env.node.ts',
   },
   transform: {
+    // vue-router's CommonJS entry loads ESM-only diagnostics and devtools debounce code.
+    // Transform those real dependencies; vue-router is allowlisted for nested node_modules.
+    '(nostics|perfect-debounce)/.+\\.mjs$': 'babel-jest',
     // See https://jestjs.io/docs/en/configuration.html#transformignorepatterns-array-string
     [`^(${esModules}).+\\.js$`]: 'babel-jest',
     '^.+\\.(ts|js|html)$': [

@@ -3,10 +3,10 @@
  * what a plugin is lent when it is installed.
  *
  * A registry is an ordinary object. Nothing is registered when a module is imported: a plugin is
- * a directory under `message-item-plugins/<type>/` whose `plugin.ts` exports one
+ * a feature-owned module whose runtime entry exports one
  * `init…Plugin(registry, capabilities)` function, and a composition function (for example
- * `./default-registry.ts`) builds a registry and calls the `init` of every plugin its consumer
- * supports. Wallet send, receive and custody code depends on this file only; it must never import
+ * `@frank/wallet/message-item-plugins/default-registry`) builds a registry and calls the `init` of every plugin its consumer
+ * supports. Wallet send, receive and custody code depends on this neutral contract; it must never import
  * a plugin. This file therefore imports no plugin and no wallet implementation.
  *
  * How a plugin encodes its item is the plugin's own business. `encode` returns bytes and `decode`
@@ -23,7 +23,7 @@ import type {
   ApplicationMessageItem,
   Message,
   MessageItem,
-} from '@frank/cashweb/types/messages'
+} from '../types/messages'
 
 /** Everything a plugin's `hydrate()` needs beyond the raw item itself: the whole message it came
  * from (so a plugin can read `stampPayments`/`outpoints`/`stampValueWei` -- money-carrying types
@@ -578,4 +578,23 @@ export function createMessageItemRegistry(): MessageItemRegistry {
     },
   }
   return registry
+}
+
+/** Installs one plugin and checks it registered its own type and nothing else. */
+export function installMessageItemPlugin(
+  registry: MessageItemRegistry,
+  capabilities: MessageItemCapabilityProvider,
+  type: string,
+  init: MessageItemPluginInit,
+): void {
+  const before = registry.types()
+  init(registry, capabilities.forPlugin(type))
+  const added = registry.types().slice(before.length)
+  if (added.length !== 1 || added[0] !== type) {
+    throw new Error(
+      `Message item plugin '${type}' must register exactly its own type, but registered: ${
+        added.join(', ') || 'nothing'
+      }`,
+    )
+  }
 }

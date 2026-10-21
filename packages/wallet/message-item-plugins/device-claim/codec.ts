@@ -7,7 +7,7 @@ import {
   req,
   str,
   timestampMs,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 import { id } from '../shared/limits'
 
 export const deviceClaimCodec = cborItemCodec<DeviceClaimItem>('device-claim', {

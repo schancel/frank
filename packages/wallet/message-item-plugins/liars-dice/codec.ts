@@ -13,7 +13,7 @@ import {
   recordOf,
   req,
   struct,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 import {
   MAX_DICE_PER_PLAYER,
   MAX_PLAYERS,

@@ -1,4 +1,4 @@
-import { createMessageItemRegistry } from '../registry'
+import { createMessageItemRegistry } from '@frank/cashweb/message-items/registry'
 import { standaloneItemBudget } from '@frank/codec'
 import {
   WEBRTC_CALL_PLUGIN_ID,

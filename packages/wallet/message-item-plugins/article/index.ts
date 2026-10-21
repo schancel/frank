@@ -9,7 +9,7 @@ import type {
   ApplicationItemPlugin,
   MessageItemDecodeContext,
   MessageItemPlugin,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 
 export * from './markdown'
 

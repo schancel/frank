@@ -1,7 +1,7 @@
 import { standaloneItemBudget, validateFrame } from '@frank/codec'
 import type { PreparedStealthPayment } from '../../stealth-payment'
 import { createDefaultMessageItemRegistry } from '../default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '../registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 import { decodeItemFrames, encodeItemFrames } from '../wire'
 import { recipientAssetPaymentFromPrepared } from './from-prepared'
 

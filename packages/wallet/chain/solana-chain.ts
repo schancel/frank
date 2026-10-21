@@ -1,23 +1,20 @@
-import {
-  ComputeBudgetProgram,
-  Keypair,
-  PublicKey,
-  SystemProgram,
-  Transaction,
-  TransactionInstruction,
-} from "@solana/web3.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
 import * as bip39 from "bip39";
-import { getBase58Decoder } from "@solana/codecs-strings";
 
 import { HDSeed, NativeAssetChain, ChainAddress } from "./active-chain";
 import { formatBaseUnit, parseBaseUnit } from "./base-unit";
 import { NativeTransactionAttemptStore } from "./chain-wallet";
-import { SolanaWallet, SolanaWalletConnection } from "../solana-wallet";
+import {
+  SOLANA_NATIVE_TRANSFER_MIN_COMPUTE_UNITS,
+  SolanaComputeBudget,
+  SolanaWallet,
+  SolanaWalletConnection,
+  solanaNativeTransferFee,
+} from "../solana-wallet";
 import { SolanaStealthSendRefusedError } from "../solana-stealth";
 import type { ChainUtxoPool } from "../chain-utxo-pool";
 import { getChainRegistryEntry } from "./chains-registry";
 
-export const DEFAULT_SOLANA_BASE_FEE_LAMPORTS = 5_000n;
 export const DEFAULT_SOLANA_BASE_COMPUTE_UNITS = 5_000;
 export const DEFAULT_SOLANA_PER_INPUT_COMPUTE_UNITS = 1_000;
 export const DEFAULT_SOLANA_PER_INSTRUCTION_COMPUTE_UNITS = 500;
@@ -25,7 +22,6 @@ export const DEFAULT_SOLANA_MIN_COMPUTE_UNITS = 2_000;
 export const DEFAULT_SOLANA_MAX_COMPUTE_UNITS = 1_400_000;
 export const DEFAULT_SOLANA_MIN_PRIORITY_FEE_MICRO_LAMPORTS = 0n;
 export const DEFAULT_SOLANA_MAX_PRIORITY_FEE_MICRO_LAMPORTS = 1_000_000n;
-export const MICRO_LAMPORTS_PER_LAMPORT = 1_000_000n;
 
 export const SOLANA_SWEEP_DECOY_MIN_DELAY_MS = 10_000;
 export const SOLANA_SWEEP_DECOY_MAX_DELAY_MS = 120_000;
@@ -159,30 +155,6 @@ export function computeSolanaComputeUnitLimit(
 }
 
 /**
- * Computes the priority fee in lamports for a given compute unit limit and micro-lamport price.
- * Uses ceiling division (`ceil(units * microLamports / 1_000_000)`) when positive.
- */
-export function computeSolanaPriorityFeeLamports(
-  computeUnits: number,
-  priorityFeeMicroLamports: bigint
-): bigint {
-  if (
-    !Number.isFinite(computeUnits) ||
-    computeUnits <= 0 ||
-    priorityFeeMicroLamports <= 0n
-  ) {
-    return 0n;
-  }
-  const unitsBigInt = BigInt(Math.floor(computeUnits));
-  return (
-    (unitsBigInt * priorityFeeMicroLamports +
-      MICRO_LAMPORTS_PER_LAMPORT -
-      1n) /
-    MICRO_LAMPORTS_PER_LAMPORT
-  );
-}
-
-/**
  * Samples recent prioritization fees from `connection.getRecentPrioritizationFees` when available,
  * computing the configured percentile/median and clamping between `[minPriorityFeeMicroLamports, maxPriorityFeeMicroLamports]`.
  * Falls back gracefully to `defaultPriorityFeeMicroLamports` (or `0n`) if the RPC method is absent,
@@ -282,61 +254,6 @@ export async function sampleSolanaPriorityFeeMicroLamports(
   } catch {
     return fallbackFee;
   }
-}
-
-/**
- * Builds the `ComputeBudgetProgram` instructions in canonical order:
- * 1. `SetComputeUnitLimit`
- * 2. `SetComputeUnitPrice` (when `priorityFeeMicroLamports > 0n`)
- */
-export function buildSolanaComputeBudgetInstructions(params: {
-  readonly units: number;
-  readonly priorityFeeMicroLamports?: bigint;
-  readonly includeLimitWhenZeroFee?: boolean;
-}): TransactionInstruction[] {
-  const instructions: TransactionInstruction[] = [];
-  const hasPositivePrice =
-    params.priorityFeeMicroLamports !== undefined &&
-    params.priorityFeeMicroLamports > 0n;
-  const includeLimit = params.includeLimitWhenZeroFee ?? true;
-
-  if (includeLimit || hasPositivePrice) {
-    const safeUnits = Math.max(1, Math.floor(params.units));
-    instructions.push(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: safeUnits })
-    );
-  }
-
-  if (hasPositivePrice) {
-    instructions.push(
-      ComputeBudgetProgram.setComputeUnitPrice({
-        microLamports: params.priorityFeeMicroLamports!,
-      })
-    );
-  }
-
-  return instructions;
-}
-
-/**
- * Prepends `ComputeBudgetProgram.setComputeUnitLimit` and (when priority fee > 0)
- * `ComputeBudgetProgram.setComputeUnitPrice` to the beginning of a Solana `Transaction`,
- * replacing any existing compute budget instructions so ordering is strictly preserved.
- */
-export function prependSolanaComputeBudgetInstructions(
-  transaction: Transaction,
-  params: {
-    readonly units: number;
-    readonly priorityFeeMicroLamports?: bigint;
-    readonly includeLimitWhenZeroFee?: boolean;
-  }
-): Transaction {
-  const budgetIxs = buildSolanaComputeBudgetInstructions(params);
-  const nonBudgetIxs = transaction.instructions.filter(
-    (ix) => !ix.programId.equals(ComputeBudgetProgram.programId)
-  );
-  transaction.instructions = [...budgetIxs, ...nonBudgetIxs];
-  return transaction;
 }
 
 /**
@@ -502,6 +419,37 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
   const { name, unit } = metadata;
   const network = isTestnet ? "testnet" : "mainnet";
 
+  /** The compute budget a native transfer is signed with now, and the fee it pays. */
+  async function nativeTransferPlan(): Promise<{
+    computeBudget?: SolanaComputeBudget;
+    fee: bigint;
+  }> {
+    const priorityFeeMicroLamports = await sampleSolanaPriorityFeeMicroLamports({
+      ...config.computeBudget,
+      connection: config.connection,
+    });
+    if (
+      priorityFeeMicroLamports === 0n &&
+      config.computeBudget?.computeUnitLimit === undefined &&
+      config.computeBudget?.alwaysSetComputeUnitLimit !== true
+    ) {
+      return { fee: solanaNativeTransferFee() };
+    }
+    const computeBudget = {
+      units: computeSolanaComputeUnitLimit({
+        ...config.computeBudget,
+        inputCount: 1,
+        extraInstructionCount: 1,
+        minComputeUnits: Math.max(
+          config.computeBudget?.minComputeUnits ?? 0,
+          SOLANA_NATIVE_TRANSFER_MIN_COMPUTE_UNITS
+        ),
+      }),
+      priorityFeeMicroLamports,
+    };
+    return { computeBudget, fee: solanaNativeTransferFee(computeBudget) };
+  }
+
   return {
     family: "solana",
     chainIdentifier,
@@ -562,7 +510,7 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
         }
         return wallet.getBalance();
       },
-      async send({ wallet, recipient, value, onSigned }) {
+      async send({ wallet, recipient, value, maxFee, onSigned }) {
         if (wallet.family !== "solana") {
           throw new Error(`Expected a Solana wallet, got ${wallet.family}`);
         }
@@ -571,7 +519,14 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
             `Expected Solana network ${config.networkId}, got ${wallet.networkId}`
           );
         }
-        return wallet.sendNative({ recipient, value, onSigned });
+        const { computeBudget } = await nativeTransferPlan();
+        return (wallet as SolanaWallet).sendNative({
+          recipient,
+          value,
+          ...(maxFee !== undefined ? { maxFee } : {}),
+          ...(computeBudget !== undefined ? { computeBudget } : {}),
+          onSigned,
+        });
       },
       async getTransactionStatus({ wallet, transaction }) {
         if (wallet.family !== "solana") {
@@ -593,237 +548,10 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
           ? "confirmed"
           : "pending";
       },
-      async sendLegacy({
-        wallet,
-        recipient,
-        value,
-        onProgress,
-        onSigned,
-        priorityFeeMicroLamports,
-      }) {
-        if (wallet.family !== "solana") {
-          throw new Error(`Expected a Solana wallet, got ${wallet.family}`);
-        }
-
-        const effectivePriorityFee =
-          await sampleSolanaPriorityFeeMicroLamports({
-            ...config.computeBudget,
-            connection: config.connection,
-            ...(priorityFeeMicroLamports !== undefined
-              ? { priorityFeeMicroLamports }
-              : {}),
-          });
-
-        if (wallet.chainUtxoPool) {
-          const primaryBalance = await wallet.getBalance().catch(() => 0n);
-          const exceedsPrimary = value > primaryBalance;
-          const poolChain =
-            wallet.chainUtxoPool.getCleanCoins(chainIdentifier).length > 0
-              ? chainIdentifier
-              : "solana";
-          let selection:
-            | ReturnType<typeof wallet.chainUtxoPool.selectCoins>
-            | undefined;
-          try {
-            selection = wallet.chainUtxoPool.selectCoins({
-              chain: poolChain,
-              targetAmountWei: value,
-            });
-          } catch (err) {
-            if (exceedsPrimary) {
-              throw err;
-            }
-          }
-
-          if (selection && (exceedsPrimary || selection.selected.length > 1)) {
-            const { blockhash } = await config.connection.getLatestBlockhash();
-            const changeAddress =
-              (wallet as SolanaWallet).address ??
-              (await wallet.getReceiveAddress()).raw;
-            const units = computeSolanaComputeUnitLimit({
-              ...config.computeBudget,
-              inputCount: selection.selected.length,
-            });
-            const priorityFeeLamports = computeSolanaPriorityFeeLamports(
-              units,
-              effectivePriorityFee
-            );
-            const totalFeePaid =
-              DEFAULT_SOLANA_BASE_FEE_LAMPORTS + priorityFeeLamports;
-
-            const multiTransfer =
-              await wallet.chainUtxoPool.solana.buildMultiInputTransfer({
-                inputs: selection.selected,
-                recipientAddress: recipient.raw,
-                targetAmountLamports: value,
-                changeAddress,
-                recentBlockhash: blockhash,
-                feeLamports: DEFAULT_SOLANA_BASE_FEE_LAMPORTS,
-                priorityFeeMicroLamports:
-                  effectivePriorityFee > 0n
-                    ? effectivePriorityFee
-                    : priorityFeeMicroLamports,
-              });
-
-            const defaultPoolUnits = Math.max(
-              2000,
-              1000 * selection.selected.length + 5000
-            );
-            if (units !== defaultPoolUnits) {
-              prependSolanaComputeBudgetInstructions(
-                multiTransfer.transaction,
-                {
-                  units,
-                  priorityFeeMicroLamports: effectivePriorityFee,
-                }
-              );
-              await multiTransfer.transaction.sign(...multiTransfer.signers);
-            }
-
-            const base58Decoder = getBase58Decoder();
-            const txHash = multiTransfer.transaction.signature
-              ? base58Decoder.decode(multiTransfer.transaction.signature)
-              : undefined;
-
-            if (onSigned && txHash) {
-              await onSigned({ txHash });
-            }
-
-            onProgress?.({ status: { stage: "broadcasting" } });
-            const serialized = await multiTransfer.transaction.serialize();
-            const rpcTxHash = await config.connection.sendRawTransaction(
-              serialized
-            );
-            const finalTxHash = rpcTxHash || txHash || "";
-
-            for (const coin of selection.selected) {
-              try {
-                wallet.chainUtxoPool.markSpent(coin.id);
-              } catch {}
-            }
-
-            onProgress?.({
-              status: { stage: "confirmed", txHash: finalTxHash },
-            });
-            return {
-              txHash: finalTxHash,
-              totalValueSent: value,
-              totalFeePaid,
-              inputCount: selection.selected.length,
-            };
-          }
-        }
-
-        const shouldAttachSingleInputBudget =
-          effectivePriorityFee > 0n ||
-          config.computeBudget?.computeUnitLimit !== undefined ||
-          config.computeBudget?.alwaysSetComputeUnitLimit === true;
-
-        const maybeSigner = (wallet as SolanaWallet).signerKeypair;
-        if (shouldAttachSingleInputBudget && maybeSigner) {
-          const { blockhash } = await config.connection.getLatestBlockhash();
-          const units = computeSolanaComputeUnitLimit({
-            ...config.computeBudget,
-            inputCount: 1,
-          });
-          const priorityFeeLamports = computeSolanaPriorityFeeLamports(
-            units,
-            effectivePriorityFee
-          );
-          const totalFeePaid =
-            DEFAULT_SOLANA_BASE_FEE_LAMPORTS + priorityFeeLamports;
-
-          const transaction = new Transaction();
-          transaction.recentBlockhash =
-            blockhash as Transaction["recentBlockhash"];
-          transaction.feePayer = maybeSigner.publicKey;
-          prependSolanaComputeBudgetInstructions(transaction, {
-            units,
-            priorityFeeMicroLamports: effectivePriorityFee,
-          });
-          transaction.add(
-            SystemProgram.transfer({
-              fromPubkey: maybeSigner.publicKey,
-              toPubkey: new PublicKey(recipient.raw),
-              lamports: value,
-            })
-          );
-          await transaction.sign(maybeSigner);
-
-          const base58Decoder = getBase58Decoder();
-          const txHash = transaction.signature
-            ? base58Decoder.decode(transaction.signature)
-            : undefined;
-
-          if (onSigned && txHash) {
-            await onSigned({ txHash });
-          }
-
-          onProgress?.({ status: { stage: "broadcasting" } });
-          const serialized = await transaction.serialize();
-          const rpcTxHash = await config.connection.sendRawTransaction(
-            serialized
-          );
-          const finalTxHash = rpcTxHash || txHash || "";
-          onProgress?.({
-            status: { stage: "confirmed", txHash: finalTxHash },
-          });
-          return {
-            txHash: finalTxHash,
-            totalValueSent: value,
-            totalFeePaid,
-            inputCount: 1,
-          };
-        }
-
-        onProgress?.({ status: { stage: "broadcasting" } });
-        const result = await wallet.sendNative({ recipient, value, onSigned });
-        onProgress?.({ status: { stage: "confirmed", txHash: result.txHash } });
-        return {
-          txHash: result.txHash,
-          totalValueSent: value,
-          totalFeePaid: DEFAULT_SOLANA_BASE_FEE_LAMPORTS,
-        };
-      },
-      async estimateLegacyFee(params) {
-        const effectivePriorityFee =
-          await sampleSolanaPriorityFeeMicroLamports({
-            ...config.computeBudget,
-            connection: config.connection,
-          });
-
-        let inputCount = 1;
-        const pool = params?.wallet?.chainUtxoPool;
-        if (pool && params?.value) {
-          const poolChain =
-            pool.getCleanCoins(chainIdentifier).length > 0
-              ? chainIdentifier
-              : "solana";
-          try {
-            const selection = pool.selectCoins({
-              chain: poolChain,
-              targetAmountWei: params.value,
-            });
-            inputCount = selection.selected.length;
-          } catch {}
-        }
-
-        const units = computeSolanaComputeUnitLimit({
-          ...config.computeBudget,
-          inputCount,
-        });
-        const priorityFeeLamports = computeSolanaPriorityFeeLamports(
-          units,
-          effectivePriorityFee
-        );
-        const totalFee =
-          DEFAULT_SOLANA_BASE_FEE_LAMPORTS + priorityFeeLamports;
-
-        return {
-          totalFee,
-          inputCount,
-          deliveryFee: totalFee,
-        };
+      // The fee `send` will pay now; the Send page reviews it and passes it back as `maxFee`.
+      async estimateLegacyFee() {
+        const { fee } = await nativeTransferPlan();
+        return { totalFee: fee, inputCount: 1, deliveryFee: fee };
       },
       // Refused: nothing is derived, signed or sent. See `SolanaStealthSendRefusedError`.
       async sendToContact() {

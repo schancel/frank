@@ -1,7 +1,8 @@
 import {
   Keypair,
   PublicKey,
-  Transaction,
+  SystemInstruction,
+  TransactionMessage,
   VersionedTransaction,
   ComputeBudgetProgram,
   ComputeBudgetInstruction,
@@ -12,7 +13,12 @@ import * as bip39 from "bip39";
 import { createSolanaChain, SolanaChainConfig } from "./solana-chain";
 import { SolanaWalletConnection, SolanaWallet } from "../solana-wallet";
 import { ChainUtxoPool } from "../chain-utxo-pool";
-import { InMemoryNativeTransactionAttemptStore } from "./chain-wallet";
+import {
+  InMemoryNativeTransactionAttemptStore,
+  NativeFeeExceededError,
+  NativeTransactionSubmissionError,
+  nativeTransactionAttemptKey,
+} from "./chain-wallet";
 
 const base58Decoder = getBase58Decoder();
 const blockhash = new PublicKey(new Uint8Array(32).fill(9)).toBase58();
@@ -27,13 +33,16 @@ class MockSolanaConnection implements SolanaWalletConnection {
     return this.genesisHash;
   }
 
+  status: { err: null; confirmationStatus: "confirmed" } | null = {
+    err: null,
+    confirmationStatus: "confirmed",
+  };
+  failSend: Error | undefined;
+  beforeSend: (() => void) | undefined;
+  blockhashRequests = 0;
+
   async getSignatureStatus(signature: string) {
-    return {
-      value: {
-        err: null,
-        confirmationStatus: "confirmed" as const,
-      },
-    };
+    return { value: this.status };
   }
 
   async getBalance(address: PublicKey): Promise<bigint> {
@@ -42,6 +51,7 @@ class MockSolanaConnection implements SolanaWalletConnection {
   }
 
   async getLatestBlockhash() {
+    this.blockhashRequests++;
     return {
       blockhash,
       lastValidBlockHeight: 100n,
@@ -49,6 +59,8 @@ class MockSolanaConnection implements SolanaWalletConnection {
   }
 
   async sendRawTransaction(rawTransaction: Uint8Array): Promise<string> {
+    this.beforeSend?.();
+    if (this.failSend) throw this.failSend;
     this.sentRaw.push(rawTransaction);
     try {
       return base58Decoder.decode(
@@ -68,6 +80,12 @@ describe("solana-chain", () => {
   let connection: MockSolanaConnection;
   let primaryKeypair: Keypair;
   let config: SolanaChainConfig;
+  const attemptKey = () =>
+    nativeTransactionAttemptKey({
+      family: "solana",
+      chainIdentifier: "solana-devnet",
+      address: primaryKeypair.publicKey.toBase58(),
+    });
 
   beforeEach(async () => {
     connection = new MockSolanaConnection();
@@ -138,239 +156,187 @@ describe("solana-chain", () => {
     });
   });
 
-  describe("sendLegacy", () => {
-    it("executes single-input legacy transfer when chainUtxoPool is not present", async () => {
+  describe("native send", () => {
+    const recipientOf = async () => ({
+      raw: (await Keypair.generate()).publicKey.toBase58(),
+    });
+    /** The compute budget and transfer a sent transaction carries. */
+    const decode = (raw: Uint8Array) => {
+      const message = TransactionMessage.decompile(
+        VersionedTransaction.deserialize(raw).message
+      );
+      const [limit, price, transfer] = message.instructions;
+      return {
+        units: ComputeBudgetInstruction.decodeSetComputeUnitLimit(limit).units,
+        microLamports:
+          ComputeBudgetInstruction.decodeSetComputeUnitPrice(price)
+            .microLamports,
+        lamports: SystemInstruction.decodeTransfer(transfer).lamports,
+        instructions: message.instructions.length,
+      };
+    };
+
+    it("offers no separate legacy send: every native send is the wallet's journalled send", () => {
       const chain = createSolanaChain(config);
-      const wallet = await chain.createWallet({ mnemonic: testMnemonic });
-      const recipientKp = await Keypair.generate();
-      const recipient = { raw: recipientKp.publicKey.toBase58() };
-
-      const onProgress = jest.fn();
-      const onSigned = jest.fn().mockResolvedValue(undefined);
-
-      const result = await chain.nativeTransfers.sendLegacy!({
-        wallet,
-        recipient,
-        value: 100_000_000n, // 0.1 SOL
-        onProgress,
-        onSigned,
-      });
-
-      expect(result.totalValueSent).toBe(100_000_000n);
-      expect(result.totalFeePaid).toBe(5000n);
-      expect(result.txHash).toBeDefined();
-      expect(connection.sentRaw.length).toBe(1);
-      expect(onProgress).toHaveBeenCalledWith(
-        expect.objectContaining({ status: { stage: "broadcasting" } })
-      );
-      expect(onProgress).toHaveBeenCalledWith(
-        expect.objectContaining({
-          status: { stage: "confirmed", txHash: result.txHash },
-        })
-      );
+      expect(chain.nativeTransfers.sendLegacy).toBeUndefined();
     });
 
-    it("executes atomic multi-input legacy transfer when chainUtxoPool is present and multiple coins are selected", async () => {
-      const pool = new ChainUtxoPool();
-      const solanaKp1 = await Keypair.generate();
-      const solanaKp2 = await Keypair.generate();
-
-      // Register two UTXOs in the pool
-      const coin1 = pool.solana.registerDerivedAccount({
-        chain: "solana",
-        address: solanaKp1.publicKey.toBase58(),
-        privateKey: Buffer.from(solanaKp1.secretKey).toString("hex"),
-        balanceWei: 300_000_000n, // 0.3 SOL
-      });
-      const coin2 = pool.solana.registerDerivedAccount({
-        chain: "solana",
-        address: solanaKp2.publicKey.toBase58(),
-        privateKey: Buffer.from(solanaKp2.secretKey).toString("hex"),
-        balanceWei: 400_000_000n, // 0.4 SOL
-      });
-
-      config.chainUtxoPool = pool;
+    it("sends without a compute budget when no priority fee applies", async () => {
       const chain = createSolanaChain(config);
       const wallet = await chain.createWallet({ mnemonic: testMnemonic });
-      const recipientKp = await Keypair.generate();
-      const recipient = { raw: recipientKp.publicKey.toBase58() };
-
-      // Set primary balance low so it must consolidate from pool
-      connection.balance = 50_000n;
-
-      const onProgress = jest.fn();
-      const onSigned = jest.fn().mockResolvedValue(undefined);
-
-      // Target 600,000,000 lamports (0.6 SOL) which requires coin1 + coin2
-      const result = await chain.nativeTransfers.sendLegacy!({
-        wallet,
-        recipient,
-        value: 600_000_000n,
-        onProgress,
-        onSigned,
-      });
-
-      expect(result.totalValueSent).toBe(600_000_000n);
-      expect(result.totalFeePaid).toBe(5000n);
-      expect(result.inputCount).toBe(2);
-      expect(result.txHash).toBeDefined();
-      expect(connection.sentRaw.length).toBe(1);
-
-      // Verify onSigned received the transaction hash before broadcast
-      expect(onSigned).toHaveBeenCalledTimes(1);
-      expect(onSigned).toHaveBeenCalledWith({ txHash: result.txHash });
-
-      // Verify progress notifications
-      expect(onProgress).toHaveBeenCalledWith(
-        expect.objectContaining({ status: { stage: "broadcasting" } })
-      );
-      expect(onProgress).toHaveBeenCalledWith(
-        expect.objectContaining({
-          status: { stage: "confirmed", txHash: result.txHash },
-        })
-      );
-
-      // Verify input coins are marked spent in the pool
-      expect(pool.getCoin(coin1.id)?.status).toBe("spent");
-      expect(pool.getCoin(coin2.id)?.status).toBe("spent");
-    });
-
-    it("executes multi-input transfer when target amount exceeds primary account balance", async () => {
-      const pool = new ChainUtxoPool();
-      const subKp = await Keypair.generate();
-
-      const subCoin = pool.solana.registerDerivedAccount({
-        chain: "solana",
-        address: subKp.publicKey.toBase58(),
-        privateKey: Buffer.from(subKp.secretKey).toString("hex"),
-        balanceWei: 500_000_000n,
-      });
-
-      config.chainUtxoPool = pool;
-      const chain = createSolanaChain(config);
-      const wallet = await chain.createWallet({ mnemonic: testMnemonic });
-      const recipientKp = await Keypair.generate();
-      const recipient = { raw: recipientKp.publicKey.toBase58() };
-
-      // Primary account has 0 balance, target is 200,000,000 lamports
-      connection.balance = 0n;
-
-      const result = await chain.nativeTransfers.sendLegacy!({
-        wallet,
-        recipient,
-        value: 200_000_000n,
-      });
-
-      expect(result.totalValueSent).toBe(200_000_000n);
-      expect(result.txHash).toBeDefined();
-      expect(pool.getCoin(subCoin.id)?.status).toBe("spent");
-    });
-
-    it("estimates legacy fees correctly when chainUtxoPool is attached", async () => {
-      const pool = new ChainUtxoPool();
-      const kp1 = await Keypair.generate();
-      const kp2 = await Keypair.generate();
-
-      pool.solana.registerDerivedAccount({
-        chain: "solana",
-        address: kp1.publicKey.toBase58(),
-        privateKey: Buffer.from(kp1.secretKey).toString("hex"),
-        balanceWei: 100_000_000n,
-      });
-      pool.solana.registerDerivedAccount({
-        chain: "solana",
-        address: kp2.publicKey.toBase58(),
-        privateKey: Buffer.from(kp2.secretKey).toString("hex"),
-        balanceWei: 200_000_000n,
-      });
-
-      config.chainUtxoPool = pool;
-      const chain = createSolanaChain(config);
-      const wallet = await chain.createWallet({ mnemonic: testMnemonic });
-      const recipientKp = await Keypair.generate();
-      const recipient = { raw: recipientKp.publicKey.toBase58() };
-
+      const recipient = await recipientOf();
       const estimate = await chain.nativeTransfers.estimateLegacyFee!({
         wallet,
         recipient,
-        value: 250_000_000n,
+        value: 100_000_000n,
+      });
+      expect(estimate).toEqual({
+        totalFee: 5_000n,
+        inputCount: 1,
+        deliveryFee: 5_000n,
       });
 
-      expect(estimate.totalFee).toBe(5000n);
-      expect(estimate.inputCount).toBe(2);
-      expect(estimate.deliveryFee).toBe(5000n);
-    });
-
-    it("attaches ComputeBudgetProgram.setComputeUnitLimit and setComputeUnitPrice when priorityFeeMicroLamports is provided (#1220)", async () => {
-      const pool = new ChainUtxoPool();
-      const kp1 = await Keypair.generate();
-      const kp2 = await Keypair.generate();
-
-      const coin1 = pool.solana.registerAccount({
-        chain: "solana",
-        address: kp1.publicKey.toBase58(),
-        privateKey: Buffer.from(kp1.secretKey).toString("hex"),
-        balanceWei: 300_000_000n,
-      });
-      const coin2 = pool.solana.registerDerivedAccount({
-        chain: "solana",
-        address: kp2.publicKey.toBase58(),
-        privateKey: Buffer.from(kp2.secretKey).toString("hex"),
-        balanceWei: 400_000_000n,
-      });
-
-      config.chainUtxoPool = pool;
-      connection.sentRaw = [];
-      connection.balance = 10_000n; // low primary balance forces consolidation
-      const chain = createSolanaChain(config);
-      const wallet = await chain.createWallet({ mnemonic: testMnemonic });
-      const recipientKp = await Keypair.generate();
-      const recipient = { raw: recipientKp.publicKey.toBase58() };
-
-      const result = await chain.nativeTransfers.sendLegacy!({
+      const result = await chain.nativeTransfers.send({
         wallet,
         recipient,
-        value: 500_000_000n,
-        priorityFeeMicroLamports: 12_500n,
+        value: 100_000_000n,
+        maxFee: estimate.totalFee,
       });
-
-      expect(result.txHash).toBeDefined();
-      expect(connection.sentRaw.length).toBe(1);
-
-      const deserialized = await Transaction.from(connection.sentRaw[0]);
-
-      // Verify SetComputeUnitLimit instruction
-      const limitIx = deserialized.instructions.find(
-        (ix) =>
-          ix.programId.equals(ComputeBudgetProgram.programId) &&
-          ComputeBudgetInstruction.decodeInstructionType(ix) ===
-            "SetComputeUnitLimit"
+      expect(connection.sentRaw).toHaveLength(1);
+      const message = TransactionMessage.decompile(
+        VersionedTransaction.deserialize(connection.sentRaw[0]).message
       );
-      expect(limitIx).toBeDefined();
       expect(
-        ComputeBudgetInstruction.decodeSetComputeUnitLimit(limitIx!)
-      ).toEqual({
-        units: 7000, // 2 inputs: Math.max(2000, 1000 * 2 + 5000) = 7000
-      });
-
-      // Verify SetComputeUnitPrice instruction
-      const priceIx = deserialized.instructions.find(
-        (ix) =>
-          ix.programId.equals(ComputeBudgetProgram.programId) &&
-          ComputeBudgetInstruction.decodeInstructionType(ix) ===
-            "SetComputeUnitPrice"
-      );
-      expect(priceIx).toBeDefined();
-      expect(
-        ComputeBudgetInstruction.decodeSetComputeUnitPrice(priceIx!)
-      ).toEqual({
-        microLamports: 12_500n,
-      });
-
-      expect(pool.getCoin(coin1.id)?.status).toBe("spent");
-      expect(pool.getCoin(coin2.id)?.status).toBe("spent");
+        message.instructions.some((ix) =>
+          ix.programId.equals(ComputeBudgetProgram.programId)
+        )
+      ).toBe(false);
+      expect(config.nativeAttemptStore!.get(attemptKey())).toEqual(result);
     });
 
+    it("signs the reviewed priority fee into the transfer and journals it before broadcast", async () => {
+      config.computeBudget = { priorityFeeMicroLamports: 12_500n };
+      const chain = createSolanaChain(config);
+      const wallet = await chain.createWallet({ mnemonic: testMnemonic });
+      const recipient = await recipientOf();
+      const estimate = await chain.nativeTransfers.estimateLegacyFee!({
+        wallet,
+        recipient,
+        value: 100_000_000n,
+      });
+      // 5,000 signature fee + ceil(70,000 units * 12,500 micro-lamports / 10^6).
+      expect(estimate.totalFee).toBe(5_875n);
+
+      let journalledAtBroadcast: unknown;
+      connection.beforeSend = () => {
+        journalledAtBroadcast = config.nativeAttemptStore!.get(attemptKey());
+      };
+      const onSigned = jest.fn(async () => {
+        expect(config.nativeAttemptStore!.get(attemptKey())).toBeDefined();
+      });
+      const result = await chain.nativeTransfers.send({
+        wallet,
+        recipient,
+        value: 100_000_000n,
+        maxFee: estimate.totalFee,
+        onSigned,
+      });
+
+      expect(onSigned).toHaveBeenCalledWith(result);
+      expect(journalledAtBroadcast).toEqual(result);
+      expect(decode(connection.sentRaw[0])).toEqual({
+        units: 70_000,
+        microLamports: 12_500n,
+        lamports: 100_000_000n,
+        instructions: 4,
+      });
+    });
+
+    it("refuses, unsigned, a fee above the reviewed fee", async () => {
+      config.computeBudget = { priorityFeeMicroLamports: 12_500n };
+      const chain = createSolanaChain(config);
+      const wallet = await chain.createWallet({ mnemonic: testMnemonic });
+      const onSigned = jest.fn();
+
+      const refusal = chain.nativeTransfers.send({
+        wallet,
+        recipient: await recipientOf(),
+        value: 100_000_000n,
+        maxFee: 5_874n,
+        onSigned,
+      });
+
+      await expect(refusal).rejects.toBeInstanceOf(NativeFeeExceededError);
+      await expect(refusal).rejects.toMatchObject({ fee: 5_875n });
+      expect(onSigned).not.toHaveBeenCalled();
+      expect(connection.sentRaw).toHaveLength(0);
+      expect(config.nativeAttemptStore!.get(attemptKey())).toBeUndefined();
+    });
+
+    it("keeps a priority-fee transfer whose broadcast timed out unresolved after reopening, and refuses a second send", async () => {
+      config.computeBudget = { priorityFeeMicroLamports: 12_500n };
+      connection.status = null; // the chain has not seen it
+      connection.failSend = new Error("RPC request timed out");
+      const chain = createSolanaChain(config);
+      const wallet = await chain.createWallet({ mnemonic: testMnemonic });
+      let signed: { txHash: string } | undefined;
+
+      // Dispatched the way the Send page does: its legacy send when the chain offers one.
+      const client = chain.nativeTransfers;
+      const params = {
+        wallet,
+        recipient: await recipientOf(),
+        value: 100_000_000n,
+        maxFee: 5_875n,
+        onSigned: async (transaction: { txHash: string }) => {
+          signed = transaction;
+        },
+      };
+      const first = client.sendLegacy
+        ? client.sendLegacy(params)
+        : client.send(params);
+      await expect(first).rejects.toBeInstanceOf(
+        NativeTransactionSubmissionError
+      );
+      expect(signed).toBeDefined();
+
+      // The app reloads: a fresh chain and wallet over the same durable journal.
+      connection.failSend = undefined;
+      const reopenedChain = createSolanaChain(config);
+      const reopened = (await reopenedChain.createWallet({
+        mnemonic: testMnemonic,
+      })) as SolanaWallet;
+      expect(reopened.getUnresolvedNativeTransaction()).toEqual(signed);
+
+      const sentBefore = connection.blockhashRequests;
+      await expect(
+        reopenedChain.nativeTransfers.send({
+          wallet: reopened,
+          recipient: await recipientOf(),
+          value: 100_000_000n,
+          maxFee: 5_875n,
+        })
+      ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+      expect(connection.blockhashRequests).toBe(sentBefore);
+      expect(connection.sentRaw).toHaveLength(0);
+    });
+
+    it("rejects a wallet from another Solana network before signing", async () => {
+      const chain = createSolanaChain(config);
+      const wallet = await chain.createWallet({ mnemonic: testMnemonic });
+      const other = createSolanaChain({ ...config, networkId: "solana-mainnet" });
+      await expect(
+        other.nativeTransfers.send({
+          wallet,
+          recipient: await recipientOf(),
+          value: 1n,
+        })
+      ).rejects.toThrow("Expected Solana network solana-mainnet");
+      expect(connection.sentRaw).toHaveLength(0);
+    });
+  });
+
+  describe("ChainUtxoPool multi-input builder", () => {
     it("verifies buildMultiInputTransfer dynamically computes units and attaches compute budget instructions", async () => {
       const pool = new ChainUtxoPool();
       const recipient = await Keypair.generate();

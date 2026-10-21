@@ -9,6 +9,8 @@ import { getBase58Decoder } from '@solana/codecs-strings'
 
 import {
   SOLANA_MIN_STEALTH_LAMPORTS,
+  SOLANA_NATIVE_TRANSFER_MIN_COMPUTE_UNITS,
+  solanaNativeTransferFee,
   SolanaStealthAddressStrategy,
   SolanaStealthWallet,
   SolanaWallet,
@@ -20,8 +22,10 @@ import {
 } from './transaction-bundle-wallet'
 import {
   InMemoryNativeTransactionAttemptStore,
+  NativeFeeExceededError,
   NativeTransactionSubmissionError,
 } from './chain/chain-wallet'
+import { SolanaStealthKeyring } from './solana-stealth'
 
 const blockhash = new PublicKey(new Uint8Array(32).fill(9)).toBase58()
 const rotatedBlockhash = new PublicKey(new Uint8Array(32).fill(10)).toBase58()
@@ -964,6 +968,137 @@ describe('SolanaWallet', () => {
       }),
     ).rejects.toBe(persistenceError)
     expect(connection.sent).toHaveLength(0)
+  })
+
+  it('blocks the next transfer after a stealth-account transfer is left unresolved and the wallet reopens', async () => {
+    const nativeAttemptStore = new InMemoryNativeTransactionAttemptStore()
+    const signer = await makeKeypair(1)
+    const stealth = await makeKeypair(7)
+    const stealthKeyring = new SolanaStealthKeyring()
+    await stealthKeyring.addAccount({
+      address: stealth.publicKey.toBase58(),
+      keypair: stealth,
+      seed: new Uint8Array(32).fill(7),
+      ephemeralPubKey: 'ephemeral',
+      networkTag: 'solana-test',
+      discoveredAtMs: 0,
+    })
+    const connection = new FakeConnection()
+    connection.failAt = 0
+    const wallet = new SolanaWallet({
+      networkId: 'solana-test',
+      genesisHash: 'solana-genesis',
+      connection,
+      signer,
+      nativeAttemptStore,
+      stealthKeyring,
+    })
+    await expect(
+      wallet.sendNative({
+        recipient: { raw: (await makeKeypair(2)).publicKey.toBase58() },
+        value: 42n,
+        fromAddress: stealth.publicKey.toBase58(),
+      }),
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError)
+
+    const reopenedConnection = new FakeConnection()
+    const reopened = new SolanaWallet({
+      networkId: 'solana-test',
+      genesisHash: 'solana-genesis',
+      connection: reopenedConnection,
+      signer,
+      nativeAttemptStore,
+      stealthKeyring,
+    })
+    expect(reopened.getUnresolvedNativeTransaction()).toEqual(
+      wallet.getUnresolvedNativeTransaction(),
+    )
+    await expect(
+      reopened.sendNative({
+        recipient: { raw: (await makeKeypair(3)).publicKey.toBase58() },
+        value: 1n,
+      }),
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError)
+    expect(reopenedConnection.blockhashRequests).toBe(0)
+  })
+
+  it('journals the signed id before the caller hears of it, and clears it when the caller refuses', async () => {
+    const nativeAttemptStore = new InMemoryNativeTransactionAttemptStore()
+    const connection = new FakeConnection()
+    const wallet = new SolanaWallet({
+      networkId: 'solana-test',
+      genesisHash: 'solana-genesis',
+      connection,
+      signer: await makeKeypair(1),
+      nativeAttemptStore,
+    })
+    const refusal = new Error('caller could not record the transfer')
+    let journalled: unknown
+    await expect(
+      wallet.sendNative({
+        recipient: { raw: (await makeKeypair(2)).publicKey.toBase58() },
+        value: 42n,
+        onSigned: async () => {
+          journalled = wallet.getUnresolvedNativeTransaction()
+          throw refusal
+        },
+      }),
+    ).rejects.toBe(refusal)
+
+    expect(journalled).toEqual({ txHash: expect.any(String) })
+    expect(connection.sent).toHaveLength(0)
+    expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined()
+    await expect(
+      wallet.sendNative({
+        recipient: { raw: (await makeKeypair(3)).publicKey.toBase58() },
+        value: 1n,
+      }),
+    ).resolves.toEqual({ txHash: expect.any(String) })
+  })
+
+  it('refuses, unsigned, a compute budget whose fee exceeds maxFee or whose limit is below the memo cost', async () => {
+    const connection = new FakeConnection()
+    const nativeAttemptStore = new InMemoryNativeTransactionAttemptStore()
+    const wallet = new SolanaWallet({
+      networkId: 'solana-test',
+      genesisHash: 'solana-genesis',
+      connection,
+      signer: await makeKeypair(1),
+      nativeAttemptStore,
+    })
+    const recipient = { raw: (await makeKeypair(2)).publicKey.toBase58() }
+    const computeBudget = {
+      units: SOLANA_NATIVE_TRANSFER_MIN_COMPUTE_UNITS,
+      priorityFeeMicroLamports: 10_000n,
+    }
+    // 5,000 + ceil(70,000 * 10,000 / 10^6) = 5,700
+    expect(solanaNativeTransferFee(computeBudget)).toBe(5_700n)
+
+    const tooDear = wallet.sendNative({
+      recipient,
+      value: 1n,
+      computeBudget,
+      maxFee: 5_699n,
+    })
+    await expect(tooDear).rejects.toBeInstanceOf(NativeFeeExceededError)
+    await expect(tooDear).rejects.toMatchObject({ fee: 5_700n })
+    await expect(
+      wallet.sendNative({
+        recipient,
+        value: 1n,
+        computeBudget: { ...computeBudget, units: 6_000 },
+      }),
+    ).rejects.toThrow('compute unit limit must be between')
+    expect(connection.blockhashRequests).toBe(0)
+    expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined()
+
+    await wallet.sendNative({
+      recipient,
+      value: 1n,
+      computeBudget,
+      maxFee: 5_700n,
+    })
+    expect(connection.sent).toHaveLength(1)
   })
 
   it('supports deterministic sub-account and change derivation from mnemonic', async () => {

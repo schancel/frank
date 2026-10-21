@@ -737,6 +737,23 @@ export function createLiveEvmSwapCapability(
 
 let activeExecutionScope: object | undefined
 
+/**
+ * Both escrow keys built above derive from public data, so either peer can sweep both legs
+ * (review A3). Until the swap is rebuilt on the HTLC contract, no new swap execution starts:
+ * reserving inputs for a new swap refuses with this error. Swaps prepared earlier stay
+ * readable so their deposits can still be refunded, claimed or reconciled.
+ */
+export class SwapExecutionDisabledError extends Error {
+  constructor() {
+    super('Atomic swap execution is turned off until it is rebuilt on HTLC')
+    this.name = 'SwapExecutionDisabledError'
+  }
+}
+
+async function refuseNewSwapExecution(): Promise<never> {
+  throw new SwapExecutionDisabledError()
+}
+
 export function startAppSwapExecution(input: {
   wallet: NativeWalletHandle
   revision: number
@@ -795,8 +812,14 @@ export function startAppSwapExecution(input: {
   createSwapExecutionCoordinator({
     store,
     custody,
-    xec: createLiveXecSwapCapability(),
-    evm: createLiveEvmSwapCapability(() => evmWallet),
+    xec: {
+      ...createLiveXecSwapCapability(),
+      reserveInputs: refuseNewSwapExecution,
+    },
+    evm: {
+      ...createLiveEvmSwapCapability(() => evmWallet),
+      reserveInput: refuseNewSwapExecution,
+    },
   })
 
   try {

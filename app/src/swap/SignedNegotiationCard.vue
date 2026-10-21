@@ -103,6 +103,13 @@
       >
         {{ $t(`chatMessageSwap.${executionStatusKey}`) }}
       </p>
+      <p
+        v-if="executionTurnedOff"
+        class="snc-execution-status"
+        data-testid="swap-execution-turned-off"
+      >
+        {{ $t('chatMessageSwap.executionTurnedOff') }}
+      </p>
       <div
         v-if="executionRecord"
         class="snc-selected-inputs"
@@ -130,33 +137,6 @@
         {{ $t('signedSwap.error') }}: {{ executionRecord.reorgWarning }}
       </p>
       <div class="snc-action-row">
-        <q-btn
-          v-if="canPrepareExecution"
-          unelevated
-          no-caps
-          class="snc-btn snc-btn--primary"
-          data-testid="swap-prepare-btn"
-          :label="$t('signedSwap.review')"
-          :loading="execState.busy || executing"
-          :disable="execState.busy || executing"
-          @click="prepareExecution"
-        />
-        <q-btn
-          v-if="canFundExecution"
-          unelevated
-          no-caps
-          class="snc-btn snc-btn--accept"
-          data-testid="swap-fund-btn"
-          :label="
-            $t('chatMessageSwap.lockDeposit', {
-              amount: amount(offer!.terms.xecPrincipal, xec.nativeDecimals!),
-              asset: xec.unit,
-            })
-          "
-          :loading="execState.busy || executing"
-          :disable="execState.busy || executing"
-          @click="fundExecution"
-        />
         <q-btn
           v-if="canCancelExecution"
           flat
@@ -218,8 +198,6 @@ import {
 import {
   swapExecutionState,
   getSwapExecutionRecord,
-  prepareSwapExecution,
-  fundSwapExecution,
   claimSwapExecution,
   refundSwapExecution,
   cancelSwapExecution,
@@ -345,16 +323,12 @@ export default defineComponent({
         return 'statusRefunded'
       return 'statusExpired'
     },
-    canPrepareExecution(): boolean {
+    // No new swap is prepared or funded: the live escrow lets either peer sweep both legs
+    // (review A3) until it is rebuilt on HTLC. Swaps funded earlier keep Claim and Refund.
+    executionTurnedOff(): boolean {
       return (
         this.showExecutionPanel &&
-        !this.executionRecord &&
-        this.state === 'accept'
-      )
-    },
-    canFundExecution(): boolean {
-      return (
-        this.showExecutionPanel && this.executionRecord?.phase === 'prepared'
+        (!this.executionRecord || this.executionRecord.phase === 'prepared')
       )
     },
     canCancelExecution(): boolean {
@@ -414,48 +388,6 @@ export default defineComponent({
   },
   methods: {
     amount: formatNegotiationAmount,
-    async prepareExecution() {
-      if (this.executing || !this.journal || !this.offer) return
-      const own = accountSession.getCachedCurvePublicKey('secp256k1')
-      if (!own) return
-      this.error = ''
-      this.executing = true
-      try {
-        const ownHex = toHex(own)
-        const p0Hex = toHex(this.journal.context.parties[0])
-        const p1Hex = toHex(this.journal.context.parties[1])
-        const role = ownHex === p0Hex ? 'initiator' : 'responder'
-        const peerPublicKey = ownHex === p0Hex ? p1Hex : p0Hex
-        await prepareSwapExecution({
-          swapId: this.swapIdHex,
-          conversationId: this.conversationId,
-          peerPublicKey,
-          role,
-          xecChainIdentifier: TESTNET_NEGOTIATION_POLICY.xecChainIdentifier,
-          evmChainIdentifier: TESTNET_NEGOTIATION_POLICY.evmChainIdentifier,
-          xecPrincipal: this.offer.terms.xecPrincipal,
-          evmPrincipal: this.offer.terms.evmPrincipal,
-          expiry: Number(this.offer.terms.expiry),
-          nowSec: Number(this.now),
-        })
-      } catch (e) {
-        this.error = negotiationErrorCode(e)
-      } finally {
-        this.executing = false
-      }
-    },
-    async fundExecution() {
-      if (this.executing || !this.swapIdHex) return
-      this.error = ''
-      this.executing = true
-      try {
-        await fundSwapExecution(this.swapIdHex)
-      } catch (e) {
-        this.error = negotiationErrorCode(e)
-      } finally {
-        this.executing = false
-      }
-    },
     async cancelExecution() {
       if (this.executing || !this.swapIdHex) return
       this.error = ''

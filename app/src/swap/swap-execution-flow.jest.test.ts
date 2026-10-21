@@ -49,6 +49,8 @@ const { messagingStateOwner } = require('../utils/messaging-state')
 const {
   createSwapExecutionCoordinator,
   installSwapExecutionCoordinator,
+  prepareSwapExecution,
+  fundSwapExecution,
   reconcileSwapExecution,
 } = require('./swap-execution-commands')
 const Card = require('./SignedNegotiationCard.vue').default
@@ -194,7 +196,25 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
     setActiveChain(previousChain)
   })
 
-  test('prepares selected UTXO/EVM inputs, locks funding, reconciles 10-block finality, and claims to completion', async () => {
+  // New swaps are turned off (review A3): the card offers neither Review nor Fund. A swap
+  // prepared and funded before that (driven here through the commands) still claims and
+  // refunds from the card.
+  const prepareEarlierSwap = async () => {
+    await prepareSwapExecution({
+      swapId: toHex(swapId),
+      conversationId,
+      peerPublicKey: toHex(bobPub),
+      role: 'initiator',
+      xecChainIdentifier: TESTNET_NEGOTIATION_POLICY.xecChainIdentifier,
+      evmChainIdentifier: TESTNET_NEGOTIATION_POLICY.evmChainIdentifier,
+      xecPrincipal: 25_000n,
+      evmPrincipal: 1_000_000_000_000_000n,
+      expiry: 3_000_000_000,
+    })
+    await flushPromises()
+  }
+
+  test('offers no prepare or fund for a new swap, and an earlier funded swap still claims to completion', async () => {
     const activeHolds = new Set<string>()
     let xecFunding = { status: 'unseen' as const, confirmations: 0 }
     let evmFunding = { status: 'unseen' as const, confirmations: 0 }
@@ -298,11 +318,14 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
     expect(card.find('[data-testid="swap-execution-panel"]').exists()).toBe(
       true,
     )
-    expect(card.find('[data-testid="swap-prepare-btn"]').exists()).toBe(true)
+    expect(card.find('[data-testid="swap-prepare-btn"]').exists()).toBe(false)
+    expect(card.find('[data-testid="swap-fund-btn"]').exists()).toBe(false)
+    expect(card.find('[data-testid="swap-execution-turned-off"]').text()).toBe(
+      en.chatMessageSwap.executionTurnedOff,
+    )
 
-    // 1. Prepare execution: reserves inputs and acquires custody hold
-    await card.find('[data-testid="swap-prepare-btn"]').trigger('click')
-    await flushPromises()
+    // 1. A swap prepared earlier: inputs reserved and custody hold acquired
+    await prepareEarlierSwap()
 
     expect(activeHolds.size).toBe(1)
     const inputsBox = card.find('[data-testid="swap-selected-inputs"]')
@@ -311,14 +334,17 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
     expect(inputsBox.text()).toContain(
       '0x1234567890123456789012345678901234567890 #12',
     )
-    expect(card.find('[data-testid="swap-fund-btn"]').exists()).toBe(true)
+    expect(card.find('[data-testid="swap-fund-btn"]').exists()).toBe(false)
     expect(card.find('[data-testid="swap-cancel-btn"]').exists()).toBe(true)
 
-    // 2. Fund & lock both legs
+    // 2. Funded & locked on both legs earlier
     xecFunding = { status: 'included', confirmations: 10 }
     evmFunding = { status: 'included', confirmations: 10 }
-    await card.find('[data-testid="swap-fund-btn"]').trigger('click')
+    await fundSwapExecution(toHex(swapId))
     await flushPromises()
+    expect(
+      card.find('[data-testid="swap-execution-turned-off"]').exists(),
+    ).toBe(false)
 
     expect(card.find('[data-testid="swap-execution-status"]').text()).toBe(
       en.chatMessageSwap.statusLocked,
@@ -344,6 +370,33 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
       en.chatMessageSwap.statusWithdrawn,
     )
     expect(activeHolds.size).toBe(0)
+  })
+
+  test('the live app runtime refuses to start a new swap execution (A3)', async () => {
+    const {
+      startAppSwapExecution,
+      SwapExecutionDisabledError,
+    } = require('./live-swap-execution')
+    const { swapExecutionState } = require('./swap-execution-commands')
+    const runtime = startAppSwapExecution({
+      wallet: {
+        chainIdentifier: TESTNET_NEGOTIATION_POLICY.evmChainIdentifier,
+        identity: { compressedPubKey: alicePub },
+      },
+      revision: 1,
+      account: {
+        receipt: { context: { accountId: 'alice-acc' }, revision: 1 },
+      },
+    })
+    try {
+      // The coordinator stays installed so swaps funded earlier can still be refunded.
+      expect(swapExecutionState.coordinator).not.toBeNull()
+      const refused = prepareEarlierSwap()
+      await expect(refused).rejects.toBeInstanceOf(SwapExecutionDisabledError)
+      expect(Object.keys(swapExecutionState.records)).toHaveLength(0)
+    } finally {
+      await runtime.stop()
+    }
   })
 
   test('displays deep-reorg warning and enables unilateral refund when reorg exceeds 10 blocks', async () => {
@@ -443,9 +496,8 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
     })
     mounted.push(card)
 
-    await card.find('[data-testid="swap-prepare-btn"]').trigger('click')
-    await flushPromises()
-    await card.find('[data-testid="swap-fund-btn"]').trigger('click')
+    await prepareEarlierSwap()
+    await fundSwapExecution(toHex(swapId))
     await flushPromises()
 
     // Trigger >10-block deep reorg on XEC leg

@@ -375,7 +375,11 @@ test.each([
     page.vm.defaultStampFailure = ''
     page.vm.minimumStampWei = 0n
     page.vm.stampAmount = f.chain.toDisplayAmount(stamp)
-    await page.find('[data-testid="swap-menu-item"]').trigger('click')
+    // The chat menu no longer offers swaps (review A3); signing a negotiation moves no funds,
+    // so open the page's swap dialog directly to keep the signing flow covered.
+    expect(page.find('[data-testid="swap-menu-item"]').exists()).toBe(false)
+    page.vm.openSwapDialog()
+    await flushPromises()
     const form = page.findComponent(Form)
     expect(form.exists()).toBe(true)
     await form.find('[data-testid="swap-xec-amount"]').setValue('1.23')

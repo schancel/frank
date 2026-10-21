@@ -2,6 +2,8 @@
 
 The executable is `yarn --cwd packages/mail-gateway start`. It refuses startup unless the existing Monad testnet wallet and journal pass read-only identity and format admission. First-run provisioning is a separate explicit operator action; restarting this command never generates wallet roots, resets wallet state, or creates a missing journal. Keep a single writable wallet owner and persist the complete wallet, journal, blob, and directory volumes together.
 
+The journal is format 9. A format-8 journal with this gateway's identity is admitted once more: at open it is copied to `<journal file>.format8-backup-<UTC timestamp>` beside it, under SQLite's exclusive lock, and migrated to format 9 in one transaction. If any row cannot be carried over faithfully, the migration rolls back and startup fails with an error naming the rows. The journal file is then unchanged, and the backup is kept. Every other format is still refused.
+
 The host reads the following nonsecret environment variables:
 
 | Variable | Meaning |

@@ -82,11 +82,13 @@ export function contactLookupFailure(
     : null
 }
 
-/** Profile used to create or refresh a contact. `undefined` when the address cannot be used. */
+/** Profile used to create or refresh a contact. `undefined` when the address cannot be used.
+ * A failed optional display read preserves authenticated identity but must not make an empty
+ * display profile fresh: callers can still use the key and retry display enrichment later. */
 export async function fetchContactProfile(
   address: ChainAddress,
   options?: { relayBaseUrl?: string },
-): Promise<ProfileInfo | undefined> {
+): Promise<(ProfileInfo & { displayLookupFailed?: true }) | undefined> {
   if (lookup === 'pending') {
     await waitForDirectoryLookup(3000)
   }
@@ -121,15 +123,22 @@ export async function fetchContactProfile(
   }
   if (lastFailure?.address === key) lastFailure = null
   let display: ProfileInfo | undefined
+  let displayLookupFailed: true | undefined
   try {
     display = await (options
       ? activeChain.fetchProfile(address, options)
       : activeChain.fetchProfile(address))
   } catch {
+    displayLookupFailed = true
     display = undefined
   }
   // The key is the directory's, whatever a display profile claims.
-  return { ...(display ?? {}), address, pubKey }
+  return {
+    ...(display ?? {}),
+    address,
+    pubKey,
+    ...(displayLookupFailed ? { displayLookupFailed } : {}),
+  }
 }
 
 /** Capture only authenticated directory identity; display profiles never authorize negotiations. */

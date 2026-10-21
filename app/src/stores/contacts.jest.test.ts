@@ -50,6 +50,8 @@ import {
 import type { ContactState } from './contacts'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { activeChain } from '@frank/wallet/chain'
+import { accountSession } from '../accounts/session'
+import { setDirectoryLookup } from '../utils/directory-peer'
 
 import { toChainDisplayAddress as toDisplay } from '../utils/chain-address'
 
@@ -827,6 +829,152 @@ describe('stores/contacts.ts (ticket #42)', () => {
       ])
 
       expect(fetchProfileSpy).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('eager conversation peer profiles', () => {
+    const sessionState = accountSession.state
+    beforeEach(() => {
+      Object.defineProperty(accountSession, 'state', {
+        value: { ...sessionState, status: 'ready' },
+        configurable: true,
+      })
+    })
+    afterEach(() => {
+      Object.defineProperty(accountSession, 'state', {
+        value: sessionState,
+        configurable: true,
+      })
+    })
+    it('loads a restored peer profile without adding a trusted contact', async () => {
+      const contacts = useContactStore()
+      const fetchProfile = jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValue({
+          address: { raw: ADDRESS },
+          pubKey: PUB_KEY_BYTES,
+          name: 'Restored sender',
+          avatar: 'https://example.com/avatar.png',
+        } as Awaited<ReturnType<typeof activeChain.fetchProfile>>)
+
+      await contacts.refreshPeerProfiles([ADDRESS, ADDRESS_LOWERCASE])
+
+      expect(fetchProfile).toHaveBeenCalledTimes(1)
+      expect(contacts.getContactProfile(ADDRESS).name).toBe('Restored sender')
+      expect(contacts.getContact(ADDRESS).profile.avatar).toBe(
+        'https://example.com/avatar.png',
+      )
+      expect(contacts.isContact(ADDRESS)).toBe(false)
+      expect(Object.keys(contacts.contacts)).toEqual([])
+      expect(omitSessionCuratedDefaults(contacts.$state)).not.toHaveProperty(
+        'peerProfiles',
+      )
+      expect((await rehydrateContacts()).peerProfiles).toEqual({})
+    })
+
+    it.each([false, true])(
+      'retries a failed display read after authenticated directory lookup (contact=%s)',
+      async accepted => {
+        const contacts = useContactStore()
+        if (accepted) contacts.addContact({ address: ADDRESS, contact: {} })
+        setDirectoryLookup(async () => ({ subject: PUB_KEY_HEX }))
+        try {
+          const fetchProfile = jest
+            .spyOn(activeChain, 'fetchProfile')
+            .mockRejectedValueOnce(new Error('display service offline'))
+            .mockResolvedValueOnce({
+              address: { raw: ADDRESS },
+              pubKey: PUB_KEY_BYTES,
+              name: 'Recovered display',
+              avatar: 'sender.png',
+            } as Awaited<ReturnType<typeof activeChain.fetchProfile>>)
+          await contacts.refreshPeerProfiles([ADDRESS])
+          await contacts.refreshPeerProfiles([ADDRESS])
+          expect(fetchProfile).toHaveBeenCalledTimes(2)
+          expect(contacts.getContactProfile(ADDRESS).name).toBe(
+            'Recovered display',
+          )
+          expect(contacts.getContactProfile(ADDRESS).avatar).toBe('sender.png')
+          expect(contacts.isContact(ADDRESS)).toBe(accepted)
+        } finally {
+          setDirectoryLookup(null)
+        }
+      },
+    )
+
+    it('drops lookup results after a store/session reset', async () => {
+      const contacts = useContactStore()
+      let resolve!: (
+        profile: Awaited<ReturnType<typeof activeChain.fetchProfile>>,
+      ) => void
+      const response = new Promise<
+        Awaited<ReturnType<typeof activeChain.fetchProfile>>
+      >(done => {
+        resolve = done
+      })
+      const fetchProfile = jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockReturnValue(response)
+      const refreshing = contacts.refreshPeerProfiles([ADDRESS])
+      while (!fetchProfile.mock.calls.length) await Promise.resolve()
+      contacts.$reset()
+      resolve({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+        name: 'Previous session',
+      } as Awaited<ReturnType<typeof activeChain.fetchProfile>>)
+      await refreshing
+      expect(contacts.peerProfiles).toEqual({})
+      expect(contacts.contacts).toEqual({})
+    })
+
+    it('coalesces overlapping list updates, visits every peer, and bounds lookup concurrency', async () => {
+      const contacts = useContactStore()
+      const peers = Array.from({ length: 17 }, (_, index) =>
+        toDisplay(`0x${(index + 1).toString(16).padStart(40, '0')}`),
+      )
+      let active = 0
+      let maxActive = 0
+      const fetchProfile = jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockImplementation(async address => {
+          active++
+          maxActive = Math.max(maxActive, active)
+          await new Promise(resolve => setTimeout(resolve, 1))
+          active--
+          return {
+            address,
+            pubKey: PUB_KEY_BYTES,
+            name: 'A sender',
+          } as Awaited<ReturnType<typeof activeChain.fetchProfile>>
+        })
+      await Promise.all([
+        contacts.refreshPeerProfiles(peers.slice(0, 12)),
+        contacts.refreshPeerProfiles(peers.slice(5)),
+        contacts.refreshPeerProfiles(peers),
+      ])
+      expect(fetchProfile).toHaveBeenCalledTimes(17)
+      expect(maxActive).toBeGreaterThan(1)
+      expect(maxActive).toBeLessThanOrEqual(6)
+      expect(Object.keys(contacts.peerProfiles)).toHaveLength(17)
+      expect(contacts.contacts).toEqual({})
+    })
+
+    it('retries unavailable profiles instead of retaining a successful empty profile', async () => {
+      const contacts = useContactStore()
+      const fetchProfile = jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValueOnce({
+          address: { raw: ADDRESS },
+          pubKey: PUB_KEY_BYTES,
+          name: 'Back online',
+        } as Awaited<ReturnType<typeof activeChain.fetchProfile>>)
+      await contacts.refreshPeerProfiles([ADDRESS])
+      await contacts.refreshPeerProfiles([ADDRESS])
+      expect(fetchProfile).toHaveBeenCalledTimes(2)
+      expect(contacts.getContactProfile(ADDRESS).name).toBe('Back online')
+      expect(contacts.isContact(ADDRESS)).toBe(false)
     })
   })
 

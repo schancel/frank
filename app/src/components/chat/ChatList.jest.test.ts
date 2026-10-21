@@ -1,12 +1,23 @@
 /** @jest-environment jsdom */
 
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import { readFileSync } from 'fs'
 import { parse } from '@vue/compiler-sfc'
 import { transpileModule, ModuleKind } from 'typescript'
 
 import ChatList from './ChatList.vue'
+import { messagingStateOwner } from '../../utils/messaging-state'
+const mockAccountState = jest
+  .requireActual('vue')
+  .reactive({ status: 'loading', revision: 1 })
+jest.mock('../../accounts/session', () => ({
+  accountSession: {
+    get state() {
+      return mockAccountState
+    },
+  },
+}))
 
 const mockPush = jest.fn()
 jest.mock('vue-router', () => ({
@@ -32,6 +43,7 @@ jest.mock('../../stores/chats', () => ({
   useChatStore: () => mockChatStore,
 }))
 const mockContactStore = {
+  refreshPeerProfiles: jest.fn(async () => undefined),
   isContact: (address: string) => address === 'known-contact',
   getContact: () => undefined,
 }
@@ -122,6 +134,39 @@ function unreadClaim(payloadDigest: string, stampValueWei: bigint) {
     items: [{ type: 'stealth', networkTag: 'monad-testnet', amount: 1e21 }],
   }
 }
+
+describe('eager conversation profiles', () => {
+  it('waits for restored messaging readiness, then resolves all peer rows and later arrivals', async () => {
+    mockAccountState.status = 'loading'
+    messagingStateOwner.status = 'pending'
+    mockContactStore.refreshPeerProfiles.mockClear()
+    const wrapper = mount(ChatList, {
+      props: { compact: false },
+      global: { mocks: { $status: { setup: true }, $t: (key: string) => key } },
+    })
+    await flushPromises()
+    expect(mockContactStore.refreshPeerProfiles).not.toHaveBeenCalled()
+    mockAccountState.status = 'ready'
+    messagingStateOwner.status = 'ready'
+    await flushPromises()
+    expect(mockContactStore.refreshPeerProfiles).toHaveBeenLastCalledWith([
+      'addr1',
+    ])
+    mockChatStore.getSortedChatOrder.push({
+      id: 'thread2',
+      address: 'addr2',
+      totalUnreadMessages: 0,
+    })
+    await flushPromises()
+    expect(mockContactStore.refreshPeerProfiles).toHaveBeenLastCalledWith([
+      'addr1',
+      'addr2',
+    ])
+    wrapper.unmount()
+    mockAccountState.status = 'loading'
+    messagingStateOwner.status = 'pending'
+  })
+})
 
 describe('ChatList closeDrawer', () => {
   beforeEach(() => {

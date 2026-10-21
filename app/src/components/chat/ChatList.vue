@@ -204,7 +204,14 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onBeforeUnmount, onMounted, ref } from 'vue'
+import {
+  computed,
+  defineComponent,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
 import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
@@ -218,6 +225,7 @@ import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { isNarrowWidth } from '../../utils/layout'
 import { messagingState } from '../../utils/messaging-state'
+import { accountSession } from '../../accounts/session'
 import { activeChain } from '@frank/wallet/chain'
 import { formatAvu } from 'src/utils/avu-units'
 import { nativeAmountAvu } from 'src/utils/stamp-display'
@@ -334,6 +342,34 @@ export default defineComponent({
       }, UNREAD_VALUE_REREAD_MS)
     })
     onBeforeUnmount(() => clearInterval(receiptsTimer))
+    // Resolve restored and newly received peers without requiring a row click. Directory
+    // readiness gates the lookup; periodic retries recover from transient startup outages.
+    const profilePeers = computed(() =>
+      Array.from(
+        new Set(
+          (getSortedChatOrder.value ?? [])
+            .filter(
+              conversation =>
+                conversation.kind !== 'group' && !conversation.topic,
+            )
+            .map(conversation => conversation.address),
+        ),
+      ).sort(),
+    )
+    watch(
+      [
+        () =>
+          accountSession.state.status === 'ready' &&
+          messagingState.status === 'ready',
+        () => accountSession.state.revision,
+        () => Math.floor(receiptsRead.value / 4),
+        () => profilePeers.value.join(','),
+      ],
+      ([ready]) => {
+        if (ready) void contactStore.refreshPeerProfiles(profilePeers.value)
+      },
+      { immediate: true },
+    )
     // One read of each wallet's coins per tick, shared by every row and message.
     const verifiedReceipts = computed(() => {
       void receiptsRead.value

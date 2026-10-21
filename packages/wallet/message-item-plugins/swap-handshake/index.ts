@@ -828,9 +828,7 @@ export function foldSwapHandshakeState(
       case 'refund': {
         if (
           !isTerminal &&
-          (phase === 'maker_locked' ||
-            phase === 'both_locked' ||
-            phase === 'expired')
+          (phase === 'maker_locked' || phase === 'both_locked')
         ) {
           phase = 'refunded'
           refundTxHash = step.refundTxHash ?? refundTxHash

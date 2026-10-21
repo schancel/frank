@@ -751,10 +751,11 @@ export function createMonadRelayRpcConnection(
           const hasTransientRpcRateLimit =
             response.statusCode === 200 &&
             isReadOnlyRequest &&
+            response.body != null &&
             response.body.length > 0 &&
             (() => {
               try {
-                const resText = new TextDecoder().decode(response.body);
+                const resText = new TextDecoder().decode(response.body!);
                 return (
                   resText.includes('"code":-32007') ||
                   resText.includes('"code": -32007') ||

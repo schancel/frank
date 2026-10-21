@@ -939,6 +939,11 @@ export const rawFrFR = {
       'Le serveur a refusé votre connexion à la messagerie. Nouvelle tentative en cours.',
   },
   chatMessage: {
+    cancelSend: 'Annuler',
+    retrySend: 'Réessayer',
+    discardSend: 'Abandonner',
+    insufficientFunds: 'Pas assez de {unit} — échec de l’envoi',
+    stampBelowFee: 'Timbre inférieur aux frais minimaux',
     notInContacts: 'Pas dans vos contacts',
     openSender: 'Ouvrir le profil de {name}',
     noPayloadFound: 'Impossible de trouver les données pour ce message',
@@ -1352,6 +1357,7 @@ export const rawFrFR = {
       'Rédiger et envoyer un e-mail sortant via la passerelle Frank',
   },
   emailThread: {
+    resetFeeToDefault: 'Rétablir les frais par défaut',
     gatewayBadge: '✉️ Passerelle e-mail (via Passerelle Frank)',
     unverifiedBadge: '⚠️ E-mail P2P direct (non vérifié)',
     collapseAll: 'Tout réduire',

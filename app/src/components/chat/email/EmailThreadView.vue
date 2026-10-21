@@ -1748,16 +1748,16 @@ export default defineComponent({
       return null
     },
     resetFeeButtonLabel(): string {
-      return this.$t('emailThread.resetFeeToDefault', 'Reset fee to default')
+      return this.$t('emailThread.resetFeeToDefault')
     },
     cancelSendLabel(): string {
-      return this.$t('chatMessage.cancelSend', 'Cancel')
+      return this.$t('chatMessage.cancelSend')
     },
     retrySendLabel(): string {
-      return this.$t('chatMessage.retrySend', 'Retry')
+      return this.$t('chatMessage.retrySend')
     },
     discardCardLabel(): string {
-      return this.$t('chatMessage.discardSend', 'Discard')
+      return this.$t('chatMessage.discardSend')
     },
     latestEmail(): ParsedEmailCard | undefined {
       return (
@@ -2155,20 +2155,16 @@ export default defineComponent({
           return {
             color: 'negative',
             icon: 'error_outline',
-            label: this.$t(
-              'chatMessage.insufficientFunds',
-              `Not enough ${this.chainUnit} — failed to send`,
-            ),
+            label: this.$t('chatMessage.insufficientFunds', {
+              unit: this.chainUnit,
+            }),
           }
         }
         if (card.failureReason === 'stamp-below-fee') {
           return {
             color: 'negative',
             icon: 'error_outline',
-            label: this.$t(
-              'chatMessage.stampBelowFee',
-              'Stamp below minimum fee',
-            ),
+            label: this.$t('chatMessage.stampBelowFee'),
           }
         }
         return {

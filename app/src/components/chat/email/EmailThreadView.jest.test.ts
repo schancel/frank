@@ -10,6 +10,21 @@ import { useSettingsStore } from 'src/stores/settings'
 import { useProfileStore } from 'src/stores/my-profile'
 import { encodeEmailMessageItem } from '@frank/codec'
 import type { EmailAttachment } from '@frank/codec'
+import enUS from 'src/i18n/en-us'
+
+/** Resolve a key against the real en-us messages, with `{name}` interpolation. */
+function translate(key: string, params: Record<string, unknown> = {}): string {
+  const message = key
+    .split('.')
+    .reduce<unknown>(
+      (node, part) => (node as Record<string, unknown> | undefined)?.[part],
+      enUS,
+    )
+  if (typeof message !== 'string') return key
+  return message.replace(/\{(\w+)\}/g, (_, name: string) =>
+    String(params[name] ?? `{${name}}`),
+  )
+}
 
 const mockOwnAddress = ref<string | null>(
   '0x1111111111111111111111111111111111111111',
@@ -113,7 +128,8 @@ describe('EmailThreadView', () => {
       },
       global: {
         mocks: {
-          $t: (key: string, fallback?: string) => fallback || key,
+          $t: (key: string, arg?: string | Record<string, unknown>) =>
+            typeof arg === 'string' ? arg : translate(key, arg),
           $q: { dark: { isActive: false } },
         },
         stubs: {
@@ -1714,4 +1730,3 @@ describe('EmailThreadView', () => {
     })
   })
 })
-

@@ -230,6 +230,57 @@ enum Answer {
     Silent,
 }
 
+/// What the fake node knows of the chain, for the relay's reads before it stores a message.
+/// An account it was told nothing about has nonce 0 and plenty of money.
+#[derive(Default)]
+struct Chain {
+    /// Pending nonce by `0x` address.
+    nonces: std::collections::HashMap<String, u64>,
+    /// Balance in wei by `0x` address.
+    balances: std::collections::HashMap<String, u128>,
+    /// `0x` hashes of transactions the node holds or has mined.
+    known: std::collections::HashSet<String>,
+    /// Every read is answered with an error.
+    failing: bool,
+    /// No read is ever answered.
+    hanging: bool,
+}
+impl Chain {
+    fn read(&self, method: &str, first: &str) -> serde_json::Value {
+        if self.failing {
+            return serde_json::json!({"error": {"code": -32603, "message": "internal error"}});
+        }
+        let result = match method {
+            "eth_getTransactionCount" => {
+                serde_json::json!(format!(
+                    "0x{:x}",
+                    self.nonces.get(first).copied().unwrap_or(0)
+                ))
+            }
+            "eth_getBalance" => serde_json::json!(format!(
+                "0x{:x}",
+                self.balances.get(first).copied().unwrap_or(10u128.pow(24))
+            )),
+            "eth_getTransactionByHash" if self.known.contains(first) => serde_json::json!({
+                "hash": first,
+                "from": format!("0x{}", "00".repeat(20)),
+                "to": null,
+                "value": "0x1",
+                "input": "0x",
+            }),
+            _ => serde_json::Value::Null,
+        };
+        serde_json::json!({ "result": result })
+    }
+}
+
+/// The paying account of a raw transaction as the relay reads it, and its hash, both `0x`.
+fn payer(raw: &str) -> (String, String) {
+    let signed =
+        crate::monad_evm_tx::decode_signed_transaction(&hex::decode(&raw[2..]).unwrap()).unwrap();
+    (signed.sender.to_hex(), signed.tx_hash.to_hex())
+}
+
 /// A relay with the two captured accounts published, and the node it broadcasts to.
 struct Relay {
     fixture: NativeDirectoryFixture,
@@ -237,6 +288,8 @@ struct Relay {
     url: String,
     /// Every call the node received: method and first parameter, in arrival order.
     calls: Arc<Mutex<Vec<(String, String)>>>,
+    /// What the node answers reads with. Change it before a submit.
+    chain: Arc<Mutex<Chain>>,
     stops: Vec<tokio::sync::oneshot::Sender<()>>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -266,21 +319,26 @@ impl Relay {
         answer: Option<Arc<dyn Fn(&str) -> Answer + Send + Sync>>,
     ) -> Self {
         let calls = Arc::new(Mutex::new(Vec::new()));
+        let chain = Arc::new(Mutex::new(Chain::default()));
         let (mut stops, mut tasks) = (Vec::new(), Vec::new());
         let rpc_url = match answer {
             None => "http://127.0.0.1:1".to_owned(),
             Some(answer) => {
-                let seen = calls.clone();
+                let (seen, chain) = (calls.clone(), chain.clone());
                 let node = axum::Router::new().route(
                     "/",
                     axum::routing::post(move |Json(query): Json<serde_json::Value>| {
-                        let (seen, answer) = (seen.clone(), answer.clone());
+                        let (seen, answer, chain) = (seen.clone(), answer.clone(), chain.clone());
                         async move {
                             let method = query["method"].as_str().unwrap().to_owned();
                             let raw = query["params"][0].as_str().unwrap_or_default().to_owned();
                             seen.lock().unwrap().push((method.clone(), raw.clone()));
                             let reply = if method != "eth_sendRawTransaction" {
-                                serde_json::json!({"result": null})
+                                let reply = chain.lock().unwrap().read(&method, &raw);
+                                if chain.lock().unwrap().hanging {
+                                    futures::future::pending::<()>().await;
+                                }
+                                reply
                             } else {
                                 match answer(&raw) {
                                     Answer::Accepted => {
@@ -320,6 +378,7 @@ impl Relay {
             server,
             url,
             calls,
+            chain,
             stops,
             tasks,
         }
@@ -341,11 +400,29 @@ impl Relay {
     /// The raw transactions the node was asked to broadcast, in arrival order.
     fn broadcasts(&self) -> Vec<String> {
         let calls = self.calls.lock().unwrap();
-        // The relay asks the node for nothing else: no lookups, no receipts.
-        assert!(calls
+        calls
             .iter()
-            .all(|(method, _)| method == "eth_sendRawTransaction"));
-        calls.iter().map(|(_, raw)| raw.clone()).collect()
+            .filter(|(method, _)| method == "eth_sendRawTransaction")
+            .map(|(_, raw)| raw.clone())
+            .collect()
+    }
+    /// Every read the node was asked, as method and first parameter, sorted. The relay reads
+    /// only before it stores a message: never a receipt, never after the broadcast.
+    fn reads(&self) -> Vec<(String, String)> {
+        let calls = self.calls.lock().unwrap();
+        let mut reads: Vec<_> = calls
+            .iter()
+            .filter(|(method, _)| method != "eth_sendRawTransaction")
+            .cloned()
+            .collect();
+        assert!(reads.iter().all(|(method, _)| [
+            "eth_getTransactionCount",
+            "eth_getBalance",
+            "eth_getTransactionByHash"
+        ]
+        .contains(&method.as_str())));
+        reads.sort();
+        reads
     }
     fn owner(&self) -> &Owner {
         self.fixture.registry.canonical_dm()
@@ -898,7 +975,7 @@ async fn a_submit_abandoned_while_the_node_hangs_is_already_delivered_and_nothin
     // The sender goes away while the relay is waiting on the node: the request is dropped as
     // soon as the node has been handed a payment.
     let node_reached = async {
-        while relay.calls.lock().unwrap().is_empty() {
+        while relay.broadcasts().is_empty() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     };
@@ -1289,4 +1366,184 @@ async fn a_delivered_message_is_read_back_over_http_and_a_login_works_once() {
     assert!(find(&bytes, b"X-Frank-Mailbox-Direction: in").is_some());
     assert!(find(&bytes, request.delivery()).is_some());
     relay.stop().await;
+}
+
+/// The answer for a message the relay refused before storing it: `dead` with `reason`, in
+/// exactly the fields the wallet's decoder takes.
+fn dead(answer: &(u16, serde_json::Value), request: &ExactRequest, reason: &str) {
+    let (status, body) = answer;
+    assert_eq!(*status, 200, "{body}");
+    let mut fields: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
+    fields.sort();
+    assert_eq!(fields, ["identity", "phase", "reason", "version"]);
+    assert_eq!(body["version"], 1);
+    assert_eq!(body["phase"], "dead");
+    assert_eq!(body["reason"], reason);
+    assert_eq!(
+        body["identity"]["submission_identity"],
+        hex::encode(request.submission_identity())
+    );
+}
+
+#[tokio::test]
+async fn a_payment_whose_nonce_another_transaction_used_is_dead_and_nothing_happens() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let request = message(70, 3);
+    // Another device spent the second payment's account: its nonce 0 is gone and the node
+    // has never seen this transaction.
+    let (account, _) = payer(&raws(&request)[1]);
+    relay.chain.lock().unwrap().nonces.insert(account, 1);
+    dead(&relay.put(&request).await, &request, "stale_nonce");
+    relay.assert_nothing_stored(&request);
+    assert!(relay.broadcasts().is_empty());
+    // The same message again gets the same answer: nothing was kept to answer it from.
+    dead(&relay.put(&request).await, &request, "stale_nonce");
+    relay.assert_nothing_stored(&request);
+    assert!(relay.broadcasts().is_empty());
+    relay.stop().await;
+}
+
+#[tokio::test]
+async fn a_payment_the_node_already_holds_is_this_message_paying_and_it_is_delivered() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let request = message(71, 3);
+    // The client broadcast the second payment itself, or an earlier submit did: its nonce is
+    // used, by this very transaction.
+    let (account, hash) = payer(&raws(&request)[1]);
+    {
+        let mut chain = relay.chain.lock().unwrap();
+        chain.nonces.insert(account, 1);
+        chain.known.insert(hash.clone());
+    }
+    delivered(&relay.put(&request).await, &request);
+    relay.assert_delivered_to_both(&request);
+    assert_eq!(sorted(relay.broadcasts()), sorted(raws(&request)));
+    // One lookup by hash, for the one payment whose nonce was used.
+    assert_eq!(
+        relay
+            .reads()
+            .iter()
+            .filter(|(method, _)| method == "eth_getTransactionByHash")
+            .collect::<Vec<_>>(),
+        [&("eth_getTransactionByHash".to_owned(), hash)]
+    );
+    relay.stop().await;
+}
+
+#[tokio::test]
+async fn a_payment_its_account_cannot_cover_with_gas_is_dead_and_nothing_happens() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let request = message(72, 2);
+    let raw = hex::decode(&raws(&request)[0][2..]).unwrap();
+    let signed = crate::monad_evm_tx::decode_signed_transaction(&raw).unwrap();
+    // Enough for the value, one wei short of the value and the most gas it may cost.
+    relay.chain.lock().unwrap().balances.insert(
+        signed.sender.to_hex(),
+        signed.value_wei + signed.max_gas_cost_wei - 1,
+    );
+    dead(&relay.put(&request).await, &request, "insufficient_total");
+    relay.assert_nothing_stored(&request);
+    assert!(relay.broadcasts().is_empty());
+    relay.stop().await;
+}
+
+#[tokio::test]
+async fn when_the_node_cannot_be_read_the_message_is_delivered_as_before() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let request = message(73, 2);
+    {
+        let mut chain = relay.chain.lock().unwrap();
+        chain.failing = true;
+        // Were the reads answered, this message would be dead.
+        let (account, _) = payer(&raws(&request)[0]);
+        chain.nonces.insert(account, 1);
+    }
+    delivered(&relay.put(&request).await, &request);
+    relay.assert_delivered_to_both(&request);
+    assert_eq!(sorted(relay.broadcasts()), sorted(raws(&request)));
+    relay.stop().await;
+}
+
+#[tokio::test]
+async fn when_the_node_never_answers_a_read_the_message_is_delivered_within_the_timeout() {
+    let relay = Relay::start_with(
+        1,
+        Duration::from_millis(300),
+        Some(Arc::new(|_: &str| Answer::Accepted)),
+    )
+    .await;
+    relay.chain.lock().unwrap().hanging = true;
+    let request = message(74, 3);
+    let started = Instant::now();
+    delivered(&relay.put(&request).await, &request);
+    // One timeout for all the reads together, then the broadcast.
+    assert!(
+        started.elapsed() < Duration::from_millis(1100),
+        "{:?}",
+        started.elapsed()
+    );
+    relay.assert_delivered_to_both(&request);
+    assert_eq!(sorted(relay.broadcasts()), sorted(raws(&request)));
+    relay.stop().await;
+}
+
+#[tokio::test]
+async fn a_good_message_costs_one_nonce_and_one_balance_read_per_paying_account() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let request = message(75, 3);
+    delivered(&relay.put(&request).await, &request);
+    let mut expected: Vec<_> = raws(&request)
+        .iter()
+        .flat_map(|raw| {
+            let (account, _) = payer(raw);
+            [
+                ("eth_getBalance".to_owned(), account.clone()),
+                ("eth_getTransactionCount".to_owned(), account),
+            ]
+        })
+        .collect();
+    expected.sort();
+    assert_eq!(relay.reads(), expected);
+    assert_eq!(sorted(relay.broadcasts()), sorted(raws(&request)));
+    // A repeat is answered from the store: no reads at all.
+    let before = relay.reads().len();
+    delivered(&relay.put(&request).await, &request);
+    assert_eq!(relay.reads().len(), before);
+    relay.stop().await;
+}
+
+#[test]
+fn an_account_paying_twice_must_cover_both_payments_and_their_gas() {
+    use std::collections::{HashMap, HashSet};
+    let account = Address([0xaa; 20]);
+    let payment = |nonce: u64, byte: u8| crate::monad_evm_tx::DecodedSignedTransaction {
+        tx_hash: crate::monad_http::Hash32([byte; 32]),
+        chain_id: Some(CHAIN_ID),
+        sender: account,
+        nonce,
+        destination: Some(Address([byte; 20])),
+        value_wei: 100,
+        input: Vec::new(),
+        max_gas_cost_wei: 10,
+    };
+    let payments = [payment(0, 1), payment(1, 2)];
+    let state = |balance_wei| {
+        HashMap::from([(
+            account,
+            SenderState {
+                pending_nonce: 0,
+                balance_wei,
+            },
+        )])
+    };
+    let none = HashSet::new();
+    // Each payment alone fits; both together need 220.
+    assert_eq!(
+        judge_payments(&payments, &state(219), &none),
+        Some(DeadPayment::InsufficientTotal)
+    );
+    assert_eq!(judge_payments(&payments, &state(220), &none), None);
+    // One of them already held by the node: a retry, delivered whatever the balance says.
+    let held = HashSet::from([payments[0].tx_hash]);
+    assert_eq!(judge_payments(&payments, &state(0), &held), None);
 }

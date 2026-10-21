@@ -24,7 +24,13 @@ import DOMPurify from 'dompurify'
 import * as markedModule from 'marked'
 import { marked } from 'marked'
 import { addressMentionTokens } from './address-mentions'
-import { renderMarkdown, purify, clearMarkdownCache } from './markdown'
+import {
+  renderMarkdown,
+  purify,
+  purifyEmailHtml,
+  clearMarkdownCache,
+  EXTERNAL_IMAGE_ATTRIBUTE,
+} from './markdown'
 import {
   markdownPlainText,
   formatSnippet,
@@ -256,37 +262,49 @@ describe('renderMarkdown line breaks', () => {
   })
 })
 
+/** Every attribute or style sheet of the rendered HTML that could name a resource to load. */
+const sources = (html: string) => {
+  const box = document.createElement('div')
+  box.innerHTML = html
+  return Array.from(box.querySelectorAll('*')).flatMap(el => [
+    ...[
+      'src',
+      'srcset',
+      'poster',
+      'background',
+      'data',
+      'action',
+      'formaction',
+      'ping',
+      'lowsrc',
+      'dynsrc',
+      'xlink:href',
+    ]
+      .map(name => el.getAttribute(name))
+      .filter((value): value is string => value !== null)
+      // A picture the content carries inline loads nothing.
+      .filter(value => !(el.tagName === 'IMG' && /^data:image\//.test(value))),
+    ...[
+      el.getAttribute('style') ?? '',
+      el.tagName === 'STYLE' ? el.textContent ?? '' : '',
+    ].filter(css => /url\s*\(|image-set|@import|\\/i.test(css)),
+  ])
+}
+const pictures = (html: string) => {
+  const box = document.createElement('div')
+  box.innerHTML = html
+  return Array.from(box.querySelectorAll('img'))
+}
+const placeholders = (html: string) => {
+  const box = document.createElement('div')
+  box.innerHTML = html
+  return Array.from(
+    box.querySelectorAll<HTMLElement>(`[${EXTERNAL_IMAGE_ATTRIBUTE}]`),
+  )
+}
+
 describe('content that may fetch nothing (a direct message)', () => {
   beforeEach(() => clearMarkdownCache())
-
-  /** Every attribute of the rendered HTML that could name a resource to load. */
-  const sources = (html: string) => {
-    const box = document.createElement('div')
-    box.innerHTML = html
-    return Array.from(box.querySelectorAll('*')).flatMap(el =>
-      [
-        'src',
-        'srcset',
-        'poster',
-        'background',
-        'style',
-        'data',
-        'action',
-        'formaction',
-        'ping',
-        'lowsrc',
-        'dynsrc',
-        'xlink:href',
-      ]
-        .map(name => el.getAttribute(name))
-        .filter((value): value is string => value !== null),
-    )
-  }
-  const pictures = (html: string) => {
-    const box = document.createElement('div')
-    box.innerHTML = html
-    return Array.from(box.querySelectorAll('img'))
-  }
 
   it('leaves a placeholder with no source where the Markdown refers to a listed attachment', () => {
     const html = renderMarkdown('a ![cat](attachment:1) b', false, true, ['1'])
@@ -305,16 +323,21 @@ describe('content that may fetch nothing (a direct message)', () => {
     expect(html).not.toContain('data:')
   })
 
-  it('writes a remote Markdown image as a link and fetches nothing', () => {
+  it('writes a remote Markdown image as a click-to-load placeholder and fetches nothing', () => {
     const html = renderMarkdown(
       'look ![cat](https://evil.example/t.png?id=1)',
       false,
       true,
       ['1'],
     )
-    expect(html).not.toContain('<img')
-    expect(html).toContain('href="https://evil.example/t.png?id=1"')
-    expect(html).toContain('>cat</a>')
+    expect(pictures(html)).toEqual([])
+    expect(sources(html)).toEqual([])
+    const [placeholder] = placeholders(html)
+    expect(placeholder.tagName).toBe('SPAN')
+    expect(placeholder.getAttribute(EXTERNAL_IMAGE_ATTRIBUTE)).toBe(
+      'https://evil.example/t.png?id=1',
+    )
+    expect(placeholder.textContent).toContain('evil.example')
   })
 
   it('writes a data URI, an unlisted attachment or any other scheme as text', () => {
@@ -335,14 +358,120 @@ describe('content that may fetch nothing (a direct message)', () => {
     expect(html).not.toContain('<b>')
   })
 
+  it('keeps the link colour and the quote bar it writes itself', () => {
+    const html = renderMarkdown('[a](https://x.example)\n\n> q', true, true, [])
+    expect(html).toContain('style="color: mock-color(blue-2)"')
+    expect(html).toContain('border-left: 2px solid')
+  })
+})
+
+describe('posts and email fetch nothing either', () => {
+  beforeEach(() => clearMarkdownCache())
+
+  it('writes a remote Markdown image in a post as a placeholder (a tracking pixel loaded before)', () => {
+    const html = renderMarkdown('![](https://tracker.example/?id=you)', false)
+    expect(sources(html)).toEqual([])
+    expect(placeholders(html).map(p => p.dataset.externalImage)).toEqual([
+      'https://tracker.example/?id=you',
+    ])
+  })
+
+  it('shows a picture a post carries inline', () => {
+    const html = renderMarkdown('![p](data:image/png;base64,AAAA)', false)
+    expect(pictures(html).map(i => i.getAttribute('src'))).toEqual([
+      'data:image/png;base64,AAAA',
+    ])
+  })
+
+  it('writes any other Markdown picture as text', () => {
+    const html = renderMarkdown('![p](/local.png) ![q](cid:x)', false)
+    expect(pictures(html)).toEqual([])
+    expect(html).toContain('![p](/local.png)')
+  })
+
+  it('makes an email tracking pixel a placeholder', () => {
+    const html = purifyEmailHtml(
+      '<p>Hi</p><img src="https://tracker.example/open.gif?u=you" width="1" height="1">',
+    )
+    expect(pictures(html)).toEqual([])
+    expect(sources(html)).toEqual([])
+    expect(placeholders(html)).toHaveLength(1)
+  })
+
+  it("shows an email's own pictures: cid: parts and data: URIs", () => {
+    const part = 'data:image/png;base64,CCCC'
+    const html = purifyEmailHtml(
+      '<img src="cid:logo@example"><img src="cid:%3Cbanner%40example%3E"><img src="data:image/gif;base64,DDDD"><img src="cid:missing@example">',
+      new Map([
+        ['logo@example', part],
+        ['banner@example', 'data:image/jpeg;base64,EEEE'],
+      ]),
+    )
+    expect(pictures(html).map(i => i.getAttribute('src'))).toEqual([
+      part,
+      'data:image/jpeg;base64,EEEE',
+      'data:image/gif;base64,DDDD',
+    ])
+  })
+
+  it('keeps email styles but takes out everything in them that loads', () => {
+    const html = purifyEmailHtml(
+      '<style>@import "https://evil.example/a.css"; p { color: red; background: url(https://evil.example/b.png) } h1 { color: blue }</style>' +
+        '<p style="color: green; background-image: url(https://evil.example/c.png); font-weight: bold">x</p>' +
+        '<p style="background: u\\72l(https://evil.example/d.png)">y</p>' +
+        '<p style="background-image: image-set(\'https://evil.example/e.png\' 1x)">z</p>',
+    )
+    expect(sources(html)).toEqual([])
+    expect(html).toContain('color: red')
+    expect(html).toContain('h1 { color: blue }')
+    expect(html).toContain('color: green')
+    expect(html).toContain('font-weight: bold')
+    expect(html).not.toContain('evil.example')
+  })
+
+  it('opens links in a new tab without a referrer', () => {
+    for (const html of [
+      renderMarkdown('[a](https://x.example)', false),
+      purify('<a href="https://x.example">a</a>'),
+      purifyEmailHtml('<a href="https://x.example">a</a>'),
+    ]) {
+      const box = document.createElement('div')
+      box.innerHTML = html
+      const link = box.querySelector('a')!
+      expect(link.getAttribute('href')).toBe('https://x.example')
+      expect(link.getAttribute('target')).toBe('_blank')
+      expect(link.getAttribute('rel')).toBe('noopener noreferrer')
+    }
+  })
+
+  it('does not take a placeholder written into the content as its own', () => {
+    const html = purify(
+      '<span data-external-image="https://evil.example/t.png">x</span>',
+    )
+    expect(placeholders(html)).toEqual([])
+  })
+})
+
+describe.each([
+  [
+    'a direct message',
+    (raw: string) => renderMarkdown(`hello\n\n${raw}`, false, true, ['1']),
+  ],
+  ['a direct message quote', (raw: string) => purify(raw, ['1'])],
+  ['a post', (raw: string) => renderMarkdown(`hello\n\n${raw}`, false)],
+  ['an HTML fragment', (raw: string) => purify(raw)],
+  ['an HTML email', (raw: string) => purifyEmailHtml(raw)],
+])('raw HTML in %s cannot load anything', (_surface, render) => {
+  beforeEach(() => clearMarkdownCache())
+
   it.each([
     '<img src="https://evil.example/t.png">',
     '<img src="//evil.example/t.png">',
     '<img src="http://evil.example/t.png" data-attachment="1">',
-    '<img src="data:image/png;base64,BBBB">',
-    '<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=">',
+    '<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" srcset="https://evil.example/t.png 2x">',
     '<img src="blob:https://evil.example/1">',
     '<img src="javascript:alert(1)">',
+    '<img src="/relative.png">',
     '<img data-attachment="2">',
     '<img data-attachment="1" srcset="https://evil.example/t.png 2x">',
     '<img data-attachment="1" style="background:url(https://evil.example/t.png)">',
@@ -355,8 +484,14 @@ describe('content that may fetch nothing (a direct message)', () => {
     '<input type="image" src="https://evil.example/t.png">',
     '<form action="https://evil.example/f"><button formaction="https://evil.example/g">x</button></form>',
     '<table background="https://evil.example/t.png"><tr><td>x</td></tr></table>',
+    '<body background="https://evil.example/t.png">x</body>',
     '<div style="background-image: url(https://evil.example/t.png)">x</div>',
+    '<div style="background-image: URL ( https://evil.example/t.png )">x</div>',
+    '<div style="background: u\\72l(https://evil.example/t.png)">x</div>',
+    '<div style="background: image-set(\'https://evil.example/t.png\' 1x)">x</div>',
     '<style>body { background: url(https://evil.example/t.png) }</style>x',
+    '<style>@import "https://evil.example/s.css";</style>x',
+    '<style>@font-face { font-family: f; src: url(https://evil.example/f.woff) }</style>x',
     '<link rel="stylesheet" href="https://evil.example/s.css">x',
     '<link rel="prefetch" href="https://evil.example/p">x',
     '<meta http-equiv="refresh" content="0;url=https://evil.example/">x',
@@ -368,38 +503,28 @@ describe('content that may fetch nothing (a direct message)', () => {
     '<object data="https://evil.example/o"></object>',
     '<script src="https://evil.example/s.js"></script>x',
     '<div data-attachment="1" src="https://evil.example/t.png">x</div>',
-  ])('raw HTML cannot load anything either: %s', raw => {
-    for (const html of [
-      renderMarkdown(`hello\n\n${raw}`, false, true, ['1']),
-      purify(raw, ['1']),
-    ]) {
-      expect(sources(html)).toEqual([])
-      // Only a placeholder for the message's own attachment may remain as a picture.
-      for (const image of pictures(html)) {
-        expect(image.getAttribute('data-attachment')).toBe('1')
-        expect(image.attributes).toHaveLength(image.hasAttribute('alt') ? 2 : 1)
-      }
-      const box = document.createElement('div')
-      box.innerHTML = html
-      expect(
-        box.querySelector(
-          'script,iframe,embed,object,link,meta,base,style,svg,video,audio,form,input',
-        ),
-      ).toBeNull()
+  ])('%s', raw => {
+    const html = render(raw)
+    expect(sources(html)).toEqual([])
+    // A picture is only a placeholder for the message's own attachment or one carried inline.
+    for (const image of pictures(html)) {
+      if (image.hasAttribute('src'))
+        expect(image.getAttribute('src')).toMatch(/^data:image\//)
+      else expect(image.getAttribute('data-attachment')).toBe('1')
+      expect(image.attributes).toHaveLength(image.hasAttribute('alt') ? 2 : 1)
     }
-  })
-
-  it('keeps the link colour and the quote bar it writes itself', () => {
-    const html = renderMarkdown('[a](https://x.example)\n\n> q', true, true, [])
-    expect(html).toContain('style="color: mock-color(blue-2)"')
-    expect(html).toContain('border-left: 2px solid')
-  })
-
-  it('leaves the next rendering of other content as it was (posts, email)', () => {
-    renderMarkdown('![x](https://a.example/x.png)', false, true, [])
-    const html = renderMarkdown('![x](https://a.example/x.png)', false)
-    expect(html).toContain('src="https://a.example/x.png"')
-    expect(purify('<img src="https://a.example/x.png">')).toContain('<img')
+    // A web picture is only ever a placeholder holding its address.
+    for (const placeholder of placeholders(html)) {
+      expect(placeholder.tagName).toBe('SPAN')
+      expect(placeholder.dataset.externalImage).toMatch(/^https?:\/\//)
+    }
+    const box = document.createElement('div')
+    box.innerHTML = html
+    expect(
+      box.querySelector(
+        'script,iframe,frame,embed,object,link,meta,base,svg,video,audio,source,picture,form,input',
+      ),
+    ).toBeNull()
   })
 })
 

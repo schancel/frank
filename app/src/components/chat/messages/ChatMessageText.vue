@@ -1,5 +1,10 @@
 <template>
-  <span class="chat-message-text" v-html="markedMessage" @click="clicked" />
+  <span
+    v-external-images
+    class="chat-message-text"
+    @click="clicked"
+    v-html="markedMessage"
+  />
 </template>
 
 <script lang="ts">
@@ -13,6 +18,7 @@ import {
   renderMarkdown,
   purify,
 } from '../../../utils/markdown'
+import { vExternalImages } from '../../../utils/external-images'
 import {
   replaceAttachmentReferences,
   type PostAttachment,
@@ -35,6 +41,7 @@ function objectUrl(dataUrl: string): string | undefined {
 
 export default defineComponent({
   name: 'ChatMessageText',
+  directives: { externalImages: vExternalImages },
   props: {
     text: {
       type: String,
@@ -64,7 +71,8 @@ export default defineComponent({
   computed: {
     markedMessage() {
       // A message is someone else's content: it shows the pictures that came with it and makes
-      // the browser fetch nothing. A reference with no picture stays the text it was.
+      // the browser fetch nothing by itself; a web picture waits for a click on its placeholder.
+      // A reference with no picture stays the text it was.
       if (this.isReply) {
         // The quoted message's picture is shown beside the quote; here it is only named.
         return purify(

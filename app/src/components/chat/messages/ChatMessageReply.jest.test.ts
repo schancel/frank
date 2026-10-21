@@ -103,8 +103,10 @@ describe('ChatMessageReply quoting a message with pictures', () => {
       },
     })
     const quoted = wrapper.get('.chat-message-text')
-    expect(quoted.text()).toBe('see cat')
+    // The web picture is a click-to-load placeholder naming its host, not a picture.
+    expect(quoted.text()).toMatch(/^see cat .*evil\.example$/)
     expect(quoted.findAll('img')).toHaveLength(0)
+    expect(quoted.html()).not.toContain('src=')
   })
 })
 

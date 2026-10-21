@@ -232,6 +232,9 @@ export const rawEnUS = {
     reasonUnreadableHeader: 'unreadable image header',
     reasonEmpty: 'empty image',
     reasonDimensionsTooLarge: 'dimensions too large',
+    externalLabel: 'External image',
+    externalWarning:
+      'Loading this image lets the sender see that you opened the message, and your IP address. Click to load it.',
   },
   raffle: {
     enter: 'Enter',

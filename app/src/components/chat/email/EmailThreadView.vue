@@ -353,12 +353,14 @@
                     <!-- Render Sandboxed HTML iframe or Plain Text -->
                     <iframe
                       v-if="card.rawEmail?.htmlBody && isHtmlView(card.id)"
-                      :srcdoc="sanitizedHtml(card.rawEmail.htmlBody)"
-                      sandbox="allow-same-origin"
+                      :srcdoc="sanitizedHtml(card.rawEmail)"
+                      sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
                       class="email-html-frame"
+                      @load="bindEmailFrame"
                     />
                     <div v-else>
                       <div
+                        v-external-images
                         class="email-body-text text-body1"
                         v-html="
                           formatMessageBody(card.mainBody || card.textBody)
@@ -383,6 +385,7 @@
                         />
                         <div
                           v-if="isQuoteExpanded(card.id)"
+                          v-external-images
                           class="email-quoted-block q-mt-xs q-pl-sm text-body2 text-grey-7"
                           data-test="email-quoted-block"
                           data-testid="email-quoted-block"
@@ -1170,6 +1173,7 @@
       <div class="composer-body-container">
         <div
           v-if="isPreviewMode"
+          v-external-images
           class="email-body-preview q-pa-sm rounded-borders"
           :class="{
             'bg-grey-2': !$q.dark.isActive,
@@ -1218,7 +1222,8 @@ import {
   stampMultiplierText,
   type StampAvu,
 } from 'src/utils/stamp-display'
-import { purify, renderMarkdown } from 'src/utils/markdown'
+import { purifyEmailHtml, renderMarkdown } from 'src/utils/markdown'
+import { bindExternalImages, vExternalImages } from 'src/utils/external-images'
 import {
   applyMarkdownFormat,
   type MarkdownFormatAction,
@@ -1247,6 +1252,7 @@ import {
   formatEmailParties,
   formatAttachmentBytes,
   parseEmailCardsFromMessages,
+  emailContentIds,
   type ParsedEmailCard,
   type EmailReply,
 } from './email-thread-parser'
@@ -1264,8 +1270,12 @@ const DEFAULT_STAMP_MULTIPLIER_TENTHS = [
   1500, 2000, 3000, 5000, 8000, 10000,
 ]
 
+/** Sanitised HTML per email item: its pictures are encoded once, not on every render. */
+const sanitizedEmails = new WeakMap<EmailItem, string>()
+
 export default defineComponent({
   name: 'EmailThreadView',
+  directives: { externalImages: vExternalImages },
   props: {
     conversation: {
       type: Object as PropType<Conversation | null>,
@@ -1728,7 +1738,7 @@ export default defineComponent({
       if (!this.replyText || this.replyText.trim() === '') {
         return '<span class="text-grey-6 italic">Nothing to preview</span>'
       }
-      return purify(renderMarkdown(this.replyText, this.$q.dark.isActive))
+      return renderMarkdown(this.replyText, this.$q.dark.isActive)
     },
     insufficientStampBalanceReason(): string | null {
       if (
@@ -2495,7 +2505,7 @@ export default defineComponent({
     },
     formatMessageBody(text: string): string {
       if (!text) return ''
-      return purify(renderMarkdown(text, this.$q.dark.isActive))
+      return renderMarkdown(text, this.$q.dark.isActive)
     },
     getTextareaElement(): HTMLTextAreaElement | null {
       const inputComp = this.$refs.bodyInputRef as
@@ -2592,9 +2602,21 @@ export default defineComponent({
     toggleHtmlView(id: string) {
       this.htmlViewMap[id] = !this.htmlViewMap[id]
     },
-    sanitizedHtml(html?: string): string {
-      if (!html) return ''
-      return purify(html)
+    /** The email's HTML for its frame: nothing in it loads; its own pictures show. */
+    sanitizedHtml(email: EmailItem): string {
+      let html = sanitizedEmails.get(email)
+      if (html === undefined) {
+        html = email.htmlBody
+          ? purifyEmailHtml(email.htmlBody, emailContentIds(email.attachments))
+          : ''
+        sanitizedEmails.set(email, html)
+      }
+      return html
+    },
+    /** The frame runs no script of its own: its external pictures load from here, on a click. */
+    bindEmailFrame(event: Event) {
+      const body = (event.target as HTMLIFrameElement).contentDocument?.body
+      if (body) bindExternalImages(body, key => this.$t(key))
     },
     triggerFileInput() {
       const input = this.$refs.fileInput as HTMLInputElement | undefined

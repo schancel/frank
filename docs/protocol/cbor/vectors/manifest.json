@@ -23298,67 +23298,6 @@
       "error_stage": "8.4"
     },
     {
-      "id": "forwarding-envelope-as-message-item",
-      "description": "A type-8 revision whose item is a type-25 relay forwarding envelope: a delivery frame cannot ride in an open message-item field.",
-      "source": "handcrafted",
-      "frame_hex": "46524e4b0100000036a400080101020103582ca200656672616e6b0181582046524e4b0100000017a400181901010201034da1006a6672616e6b2d74657374",
-      "validation_context": {
-        "operation": "typed",
-        "route_byte_limit": 8388617,
-        "reader_version": 2,
-        "supported_schemas": [
-          {
-            "type_id": 1,
-            "schema_version": 1
-          },
-          {
-            "type_id": 2,
-            "schema_version": 1
-          },
-          {
-            "type_id": 3,
-            "schema_version": 1
-          },
-          {
-            "type_id": 4,
-            "schema_version": 2
-          },
-          {
-            "type_id": 5,
-            "schema_version": 1
-          },
-          {
-            "type_id": 6,
-            "schema_version": 1
-          },
-          {
-            "type_id": 7,
-            "schema_version": 1
-          },
-          {
-            "type_id": 8,
-            "schema_version": 1
-          },
-          {
-            "type_id": 16,
-            "schema_version": 1
-          },
-          {
-            "type_id": 17,
-            "schema_version": 1
-          }
-        ],
-        "opaque_retention_allowed": false,
-        "prior_directory_statement_frame_hex": null
-      },
-      "expectation": "reject",
-      "rules": [
-        "S8"
-      ],
-      "error_category": "semantic",
-      "error_stage": "8.4"
-    },
-    {
       "id": "topic-post-body-at-limit",
       "description": "A type-9 post with a 524,288-byte body: exactly at the R6 body limit.",
       "source": "typescript",

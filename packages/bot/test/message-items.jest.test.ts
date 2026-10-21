@@ -261,3 +261,55 @@ it('actual app and all-bots registries carry signed offer/accept/reject bidirect
     await f.close()
   }
 }, 120000)
+
+it('encrypted app/bot deliveries preserve human text and the wakeup sidecar independently', async () => {
+  const { f, alice, bob } = await table()
+  const app = createAppMessageItemRegistry()
+  const bot = createBotMessageItemRegistry()
+  installMessageItemRegistry(alice.wallet, app)
+  installMessageItemRegistry(bob.wallet, bot)
+  const { isWakeupCapabilitySidecar } = await import(
+    '../../wallet/message-item-plugins/contact-card/plugin'
+  )
+  try {
+    for (const [sender, recipient] of [
+      [alice, bob],
+      [bob, alice],
+    ]) {
+      const items: import('@frank/cashweb/types/messages').MessageItem[] = [
+        { type: 'text', text: 'Test' },
+        {
+          type: 'contact-card',
+          uid: 'frank-wakeup-capability',
+          fullName: 'Wakeup Capability',
+          wakeupTokenHex: 'ab'.repeat(32),
+        },
+      ]
+      f.setMailbox(recipient.mailbox)
+      const sent = await f.chain.directMessages.send({
+        wallet: sender.wallet,
+        recipient: recipient.wallet.identity.address,
+        items,
+        stampValue: STAMP,
+        conversationId: new Uint8Array(16).fill(0x29),
+      })
+      f.setMailbox(undefined)
+      const received = await f.chain.directMessages.fetchSince({
+        wallet: recipient.wallet,
+        sinceMs: recipient.since,
+      })
+      const message = received.find(m => m.payloadDigest === sent.payloadDigest)
+      expect(message?.items).toEqual(items)
+      if (!message) throw Error('No encrypted delivery')
+      const visible = message.items.filter(
+        item => !isWakeupCapabilitySidecar(item),
+      )
+      expect(visible).toEqual([{ type: 'text', text: 'Test' }])
+      expect((recipient === alice ? app : bot).previewText(visible[0])).toBe(
+        'Test',
+      )
+    }
+  } finally {
+    await f.close()
+  }
+}, 120000)

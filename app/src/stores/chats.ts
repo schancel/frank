@@ -1,3 +1,4 @@
+import { isWakeupCapabilitySidecar } from '@frank/wallet/message-item-plugins/contact-card/plugin'
 import type { GroupEpochCertificate } from '@frank/cashweb/groups/types'
 import type {
   GroupWelcomeItem,
@@ -2463,7 +2464,9 @@ export const useChatStore = defineStore('chats', {
       }
 
       const lastMessage = chat.messages[chat.messages.length - 1]
-      const items = lastMessage.items
+      const items = lastMessage.items.filter(
+        item => !isWakeupCapabilitySidecar(item),
+      )
       const lastItem = items[items.length - 1]
 
       if (!lastItem) {
@@ -6052,24 +6055,6 @@ export const useChatStore = defineStore('chats', {
                 // ignore
               }
             }
-          }
-          if (
-            message.items.length > 1 &&
-            message.items.some(
-              it =>
-                it &&
-                it.type === 'contact-card' &&
-                it.uid === 'frank-wakeup-capability',
-            )
-          ) {
-            message.items = message.items.filter(
-              it =>
-                !(
-                  it &&
-                  it.type === 'contact-card' &&
-                  it.uid === 'frank-wakeup-capability'
-                ),
-            )
           }
         }
 

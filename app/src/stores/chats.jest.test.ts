@@ -1,3 +1,5 @@
+import { messageItems } from '../utils/message-items'
+import { standaloneItemBudget } from '@frank/codec'
 /**
  * Unit tests for `stores/chats.ts`'s rewiring onto `ActiveChain` (ticket #42). Per the ticket's own
  * instructions, `activeChain` is mocked at its own boundary (`jest.spyOn` on
@@ -1917,6 +1919,98 @@ describe('stores/chats.ts (ticket #42)', () => {
         ...overrides,
       }
     }
+
+    it.each([false, true])(
+      'previews human text with a decoded wakeup sidecar across receipt and restore (outbound=%s)',
+      async outbound => {
+        const chats = useChatStore()
+        const conv = chats.createConversation({
+          participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+          address: RECIPIENT_ADDRESS,
+        })
+        const sidecar = {
+          type: 'contact-card' as const,
+          uid: 'frank-wakeup-capability',
+          fullName: 'Capability label may change',
+          frankAddress: outbound ? SENDER_ADDRESS : RECIPIENT_ADDRESS,
+          wakeupTokenHex: 'ab'.repeat(32),
+        }
+        // Use the actual plugin codec to reproduce the items imported from the mailbox.
+        const items = [{ type: 'text' as const, text: 'Test' }, sidecar].map(
+          item => {
+            const encoded = messageItems.encodeItem(item)
+            const decoded = messageItems.decodeItem(
+              encoded.type,
+              encoded.bytes,
+              {
+                budget: standaloneItemBudget(),
+              },
+            )
+            if (decoded.kind !== 'item') throw new Error('Expected known item')
+            return decoded.item
+          },
+        )
+        const wrapper = makeWrapper({
+          outbound,
+          senderAddress: outbound ? SENDER_ADDRESS : RECIPIENT_ADDRESS,
+          message: {
+            ...makeWrapper().message,
+            conversationId: conv.id,
+            outbound,
+            senderAddress: outbound ? SENDER_ADDRESS : RECIPIENT_ADDRESS,
+            items,
+          },
+        })
+        await chats.receiveMessages([wrapper], SENDER_ADDRESS)
+        expect(chats.getLatestMessage(conv.id)).toMatchObject({
+          text: 'Test',
+          outbound,
+        })
+        expect(chats.conversations[conv.id].messages[0].items).toEqual(items)
+        expect(chats.conversations[conv.id].messages).toHaveLength(1)
+        expect(chats.conversations[conv.id].totalUnreadMessages).toBe(
+          outbound ? 0 : 1,
+        )
+        mockMessageStore.getIterator.mockResolvedValueOnce(
+          (async function* () {
+            yield wrapper
+          })(),
+        )
+        chats.$state = await rehydrateChat(chats.$state)
+        expect(chats.getLatestMessage(conv.id)).toMatchObject({
+          text: 'Test',
+          outbound,
+        })
+        expect(chats.conversations[conv.id].messages[0].items).toEqual(items)
+
+        const card = {
+          ...sidecar,
+          uid: 'real-user-contact',
+          fullName: 'Wakeup Capability',
+        }
+        await chats.receiveMessages(
+          [
+            makeWrapper({
+              index: 'genuine-contact-card',
+              outbound,
+              senderAddress: outbound ? SENDER_ADDRESS : RECIPIENT_ADDRESS,
+              message: {
+                ...makeWrapper().message,
+                conversationId: conv.id,
+                outbound,
+                senderAddress: outbound ? SENDER_ADDRESS : RECIPIENT_ADDRESS,
+                serverTime: Date.now() + 1000,
+                items: [card],
+              },
+            }),
+          ],
+          SENDER_ADDRESS,
+        )
+        expect(chats.getLatestMessage(conv.id)?.text).toBe(
+          'Contact card: Wakeup Capability',
+        )
+      },
+    )
 
     it('uses stampValueWei (not stampPrice(outpoints)) for a Monad-sourced message', async () => {
       const chats = useChatStore()

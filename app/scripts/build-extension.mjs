@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import zlib from 'node:zlib'
+import { buildSync } from 'esbuild'
 import ts from 'typescript'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -88,6 +89,24 @@ function bundleBexEntry(entryFilename) {
 
   visit(entryFilename)
   return `(() => {\n  "use strict";\n${chunks.join('\n\n')}\n})();\n`
+}
+
+/**
+ * Bundles a src-bex entry with its package dependencies. background.ts runs the
+ * extension's side of account-sync PIN pairing (src/utils/sync-pairing.ts),
+ * which needs @noble/*, so it cannot use the concatenating bundler above.
+ */
+function bundleBexEntryWithDependencies(entryFilename) {
+  const result = buildSync({
+    entryPoints: [path.join(srcBexDir, entryFilename)],
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2020',
+    write: false,
+    logLevel: 'silent',
+  })
+  return result.outputFiles[0].text
 }
 
 export function stripSourceMappingUrlComments(content) {
@@ -570,7 +589,7 @@ export function buildExtensions(argv = process.argv.slice(2)) {
 
   const inpageBundle = bundleBexEntry('inpage.ts')
   const contentBundle = bundleBexEntry('content.ts')
-  const backgroundBundle = bundleBexEntry('background.ts')
+  const backgroundBundle = bundleBexEntryWithDependencies('background.ts')
 
   const pwaDist = process.env.APP_DIST_DIR
     ? path.resolve(appDir, process.env.APP_DIST_DIR)

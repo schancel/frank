@@ -17,8 +17,8 @@ export function isAllowedSyncOrigin(locationObj: { origin?: string }): boolean {
   return isFrankWebAppOrigin(locationObj?.origin)
 }
 
-/** How long a pushed sync bundle waits for the page to say whether it offered it. */
-export const SYNC_OFFER_REPLY_TIMEOUT_MS = 3_000
+/** How long a relayed pairing message waits for the Frank page's reply. */
+export const SYNC_PAGE_REPLY_TIMEOUT_MS = 5_000
 
 export function ensureSafariFallbackInpageScript(
   win: Window & Record<string, any>,
@@ -93,9 +93,9 @@ export function installContentScriptBridge(
     }
   }
 
-  // Pushed sync bundles waiting for the page's 'sync-offer-result', by id.
-  const offerReplies = new Map<string, (offered: boolean) => void>()
-  let offerReplySeq = 0
+  // Pairing messages relayed to the page, waiting for its 'pair-reply', by id.
+  const pageReplies = new Map<string, (result: unknown) => void>()
+  let pageReplySeq = 0
 
   const handleWindowMessage = async (event: MessageEvent) => {
     if (event.source !== null && event.source !== win) return
@@ -166,27 +166,27 @@ export function installContentScriptBridge(
       return
     }
 
-    // The Frank page says whether it offered a pushed bundle to its user.
+    // The Frank page answers a pairing message the extension relayed to it.
     if (
       data.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
       data.direction === 'to-extension' &&
-      data.type === 'sync-offer-result'
+      data.type === 'pair-reply'
     ) {
-      const reply = offerReplies.get(data.id)
+      const reply = pageReplies.get(data.id)
       if (
         reply &&
         event.source === win &&
         event.origin === win.location?.origin &&
         isAllowedSyncOrigin(win.location)
       ) {
-        reply(data.offered === true)
+        reply(data.result)
       }
       return
     }
 
-    // 2. Frank web app <-> extension account sync. The bundle carries backup
-    // shares: only the Frank origin's own window may use it, only for the listed
-    // message types, and replies go to that exact origin.
+    // 2. Frank web app <-> extension account sync (PIN pairing). Only the Frank
+    // origin's own window may use it, only for the listed message types, and
+    // replies go to that exact origin.
     if (
       data.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
       data.direction === 'to-extension'
@@ -389,35 +389,35 @@ export function installContentScriptBridge(
     if (
       message &&
       message.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
-      message.type === 'extension-sync-push'
+      (message.type === 'pair-hello' || message.type === 'pair-confirm')
     ) {
-      // Only the Frank web app gets the bundle. The ack says whether the page
-      // offered it to its user (a page that has an account declines it).
+      // An extension page pairs with the account this Frank page offers. The
+      // page answers; no answer in time means it offers nothing.
       if (!win.location || !isAllowedSyncOrigin(win.location)) return undefined
-      const id = `sync-push-${++offerReplySeq}`
-      const offered = new Promise<boolean>(resolve => {
+      const id = `sync-pair-${++pageReplySeq}`
+      const replied = new Promise<unknown>(resolve => {
         const timer = setTimeout(
-          () => settle(false),
-          SYNC_OFFER_REPLY_TIMEOUT_MS,
+          () => settle({ ok: false, reason: 'no-sender' }),
+          SYNC_PAGE_REPLY_TIMEOUT_MS,
         )
-        const settle = (value: boolean) => {
+        const settle = (value: unknown) => {
           clearTimeout(timer)
-          offerReplies.delete(id)
+          pageReplies.delete(id)
           resolve(value)
         }
-        offerReplies.set(id, settle)
+        pageReplies.set(id, settle)
       })
       win.postMessage(
         {
           channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
           direction: 'to-pwa',
-          type: 'extension-sync-push',
+          type: message.type,
           id,
           payload: message.payload,
         },
         win.location.origin,
       )
-      return offered.then(value => ({ ok: true, offered: value }))
+      return replied
     }
     return undefined
   }, runtimeScope)

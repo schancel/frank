@@ -142,45 +142,20 @@
           </div>
 
           <div
-            v-if="syncOffer"
-            class="q-mt-sm q-pa-sm rounded-borders"
-            data-test="welcome-extension-sync-offer"
+            v-if="syncPinEntryOpen"
+            class="welcome-sync q-mt-sm q-pa-sm rounded-borders"
+            data-test="welcome-extension-sync"
           >
-            <div class="text-body2">{{ syncOfferText }}</div>
-            <div class="text-caption text-grey-7">
-              {{ extensionUi.syncCheckCodeHint }}
-              <strong data-test="welcome-extension-sync-code">{{
-                syncOffer.checkCode
-              }}</strong>
-            </div>
-            <div class="row justify-center q-gutter-xs q-mt-xs">
-              <q-btn
-                unelevated
-                dense
-                no-caps
-                color="primary"
-                :label="extensionUi.restoreSyncedAccountBtn"
-                :loading="syncRestoring"
-                data-test="btn-restore-synced-account"
-                @click="restoreSyncedAccount"
-              />
-              <q-btn
-                flat
-                dense
-                no-caps
-                color="grey-8"
-                :label="extensionUi.dismissSyncedAccountBtn"
-                :disable="syncRestoring"
-                data-test="btn-dismiss-synced-account"
-                @click="dismissSyncOffer"
-              />
-            </div>
+            <SyncPinEntry
+              :busy="syncRestoring"
+              @received="restoreSyncedAccount"
+            />
             <div
               v-if="syncRestoreFailed"
               class="text-caption text-negative q-mt-xs"
               data-test="welcome-extension-sync-failed"
             >
-              {{ extensionUi.syncRestoreFailed }}
+              {{ $t('accountSync.restoreFailed') }}
             </div>
           </div>
 
@@ -307,17 +282,9 @@
 <script lang="ts">
 import { computed, defineComponent, getCurrentInstance, ref } from 'vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
-import {
-  FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-  isBrowserExtensionRuntime,
-  sendRuntimeMessage,
-} from '../../src-bex/runtime-adapter'
-import {
-  clearExtensionSyncOffer,
-  offerExtensionSyncBundle,
-  pendingExtensionSyncOffer,
-  restoreAccountFromExtensionBundle,
-} from '../utils/extension-account-sync'
+import { isBrowserExtensionRuntime } from '../../src-bex/runtime-adapter'
+import { restoreAccountFromExtensionBundle } from '../utils/extension-account-sync'
+import SyncPinEntry from '../components/SyncPinEntry.vue'
 import {
   detectPreferredExtensionTarget,
   EXTENSION_DOWNLOAD_TARGETS,
@@ -327,6 +294,7 @@ import {
 
 export default defineComponent({
   name: 'WelcomePage',
+  components: { SyncPinEntry },
   emits: ['toggleMyDrawerOpen', 'setupCompleted'],
   setup(_, { emit }) {
     const instance = getCurrentInstance()
@@ -347,25 +315,12 @@ export default defineComponent({
 
     const extensionUi = {
       connectExtensionBtn: 'Connect Browser Extension',
-      syncOfferTitle: 'Restore the account sent from your other Frank device',
-      syncCheckCodeHint:
-        'Continue only if the sending device shows the same code:',
-      restoreSyncedAccountBtn: 'Restore this account',
-      dismissSyncedAccountBtn: 'Dismiss',
-      syncRestoreFailed: 'Could not restore the account. Try syncing again.',
     }
+    const syncPinEntryOpen = ref(false)
 
-    const syncOffer = pendingExtensionSyncOffer
-    const syncOfferText = computed(() => {
-      const name = syncOffer.value?.deviceSyncBundle.displayName
-      return typeof name === 'string' && name.trim()
-        ? `${extensionUi.syncOfferTitle} (${name.trim()})?`
-        : `${extensionUi.syncOfferTitle}?`
-    })
-
-    const restoreSyncedAccount = async () => {
-      const offer = syncOffer.value
-      if (!offer || syncRestoring.value) return
+    // The user typed the PIN, so the received account is restored right away.
+    const restoreSyncedAccount = async (bundle: Record<string, unknown>) => {
+      if (syncRestoring.value) return
       syncRestoring.value = true
       syncRestoreFailed.value = false
       const router = (
@@ -374,37 +329,27 @@ export default defineComponent({
           | undefined
       )?.$router
       try {
-        const restored = await restoreAccountFromExtensionBundle(
-          offer.deviceSyncBundle,
-          {
-            onActivated: () => {
-              emit('setupCompleted')
-              if (router) {
-                void router.push('/forum')
-              }
-            },
+        const restored = await restoreAccountFromExtensionBundle(bundle, {
+          onActivated: () => {
+            emit('setupCompleted')
+            if (router) {
+              void router.push('/forum')
+            }
           },
-        )
+        })
         syncRestoreFailed.value = !restored
       } finally {
         syncRestoring.value = false
       }
     }
 
-    const dismissSyncOffer = () => {
-      syncRestoreFailed.value = false
-      clearExtensionSyncOffer()
-    }
-
     return {
       myDrawerOpen: useMyDrawerOpen(),
       extensionUi,
-      syncOffer,
-      syncOfferText,
+      syncPinEntryOpen,
       syncRestoring,
       syncRestoreFailed,
       restoreSyncedAccount,
-      dismissSyncOffer,
       isExtensionRuntime,
       selectedExtensionTarget,
       selectedExtensionInfo,
@@ -419,33 +364,10 @@ export default defineComponent({
       toggleSettingsDrawerOpen() {
         emit('toggleMyDrawerOpen')
       },
-      async connectBrowserExtension() {
-        if (isBrowserExtensionRuntime()) {
-          // Collect an account the Frank web app handed to the extension.
-          try {
-            const response = await sendRuntimeMessage<Record<string, any>, any>(
-              {
-                channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-                type: 'get-synced-state',
-              },
-            )
-            offerExtensionSyncBundle(response?.result?.deviceSyncBundle)
-          } catch {
-            // Ignore extension runtime query errors
-          }
-        } else if (typeof window !== 'undefined') {
-          // Ask the extension's content script for an account it is holding;
-          // AppRuntime receives the reply.
-          window.postMessage(
-            {
-              channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-              direction: 'to-extension',
-              type: 'pwa-request-sync',
-              id: `welcome-sync-${Date.now()}`,
-            },
-            window.location.origin,
-          )
-        }
+      connectBrowserExtension() {
+        // The other window shows a PIN after Sync account; type it here.
+        syncRestoreFailed.value = false
+        syncPinEntryOpen.value = true
       },
     }
   },

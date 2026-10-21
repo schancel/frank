@@ -83,11 +83,7 @@ import {
   isBrowserExtensionRuntime,
   sendRuntimeMessage,
 } from '../src-bex/runtime-adapter'
-import {
-  offerExtensionSyncBundle,
-  readExtensionSyncWindowMessage,
-  replyExtensionSyncOffer,
-} from 'src/utils/extension-account-sync'
+import { handlePageSyncPairingRequest } from 'src/utils/extension-account-sync'
 
 import { computeAddress, keccak256, toUtf8Bytes } from 'ethers'
 import { deriveDappPersonaKeypair } from '@frank/wallet/dapp-bridge'
@@ -528,19 +524,9 @@ export default defineComponent({
       }
     },
     handleGlobalExtensionSyncMessage(event: MessageEvent) {
-      // An account bundle from the Frank extension, relayed by its content
-      // script. It is only offered: Welcome and Onboard ask the user to confirm.
-      const bundle = readExtensionSyncWindowMessage(event)
-      if (!bundle) return
-      const offered =
-        accountStatus.status !== 'ready' &&
-        Boolean(offerExtensionSyncBundle(bundle))
-      replyExtensionSyncOffer(event, offered)
-      if (!offered) return
-      const currentPath = this.$route?.path || ''
-      if (currentPath !== '/welcome' && currentPath !== '/onboard') {
-        void this.$router?.push('/welcome')
-      }
+      // The extension pairing with the account this web app offered (Sync
+      // account in the profile dialog). The PIN pairing itself decides.
+      handlePageSyncPairingRequest(event)
     },
   },
   created() {

@@ -2155,6 +2155,30 @@ export const rawFrFR = {
     addedToContacts: 'Ajouté aux contacts Frank',
     saveVcf: 'Enregistrer la vCard (.vcf)',
   },
+  accountSync: {
+    cancel: 'Annuler',
+    hasAccount:
+      'Cet appareil a déjà un compte. Synchronisez uniquement vers un appareil sans compte.',
+    showPin: 'Saisissez ce code PIN dans l’autre fenêtre',
+    newPinAfterMismatch:
+      'Le code PIN ne correspondait pas. Saisissez ce nouveau code PIN dans l’autre fenêtre',
+    sent: 'Compte envoyé à l’autre fenêtre.',
+    ended:
+      'Trop de codes PIN erronés. Choisissez Synchroniser le compte pour recommencer.',
+    expired:
+      'Le code PIN a expiré. Choisissez Synchroniser le compte pour recommencer.',
+    noAccount: 'Aucun compte à synchroniser pour l’instant.',
+    failed: 'La synchronisation a échoué.',
+    unsupported: 'La synchronisation du compte ne fonctionne que sur {origin}.',
+    enterPin: 'Saisissez le code PIN affiché dans votre autre fenêtre Frank',
+    pinLabel: 'Code PIN',
+    connect: 'Connecter',
+    pinMismatch: 'Le code PIN ne correspond pas, réessayez.',
+    noSender:
+      'Aucun compte en attente. Choisissez d’abord Synchroniser le compte dans l’autre fenêtre.',
+    restoreFailed:
+      'Impossible de restaurer le compte. Relancez la synchronisation.',
+  },
   onboard: {
     toolbarTitle: 'Inscription Frank',
     headerBadge: 'Inscription auto-hébergée chiffrée de bout en bout',

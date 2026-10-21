@@ -2,18 +2,14 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import Welcome from './Welcome.vue'
-import {
-  clearExtensionSyncOffer,
-  offerExtensionSyncBundle,
-  syncTransferCheckCode,
-} from 'src/utils/extension-account-sync'
-import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/runtime-adapter'
 
 const mockRestore = jest.fn(async () => true)
+const mockReceiveAccount = jest.fn()
 jest.mock('src/utils/extension-account-sync', () => ({
   ...jest.requireActual('src/utils/extension-account-sync'),
   restoreAccountFromExtensionBundle: (...args: unknown[]) =>
     mockRestore(...args),
+  receiveAccountOverBridge: (...args: unknown[]) => mockReceiveAccount(...args),
 }))
 import enUS from 'src/i18n/en-us'
 import frFR from 'src/i18n/fr-fr'
@@ -49,6 +45,11 @@ function mountWelcome(messages: Messages) {
         QCard: { template: '<article><slot /></article>' },
         QCardSection: { template: '<div><slot /></div>' },
         QIcon: { template: '<i><slot /></i>' },
+        QInput: {
+          props: ['modelValue', 'disable', 'label'],
+          template:
+            '<input :value="modelValue" :disabled="disable" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+        },
       },
     },
   })
@@ -149,68 +150,69 @@ describe('Welcome: landing page for visitors without an account', () => {
     )
   })
 
-  describe('account sent from the Frank extension (A8)', () => {
+  describe('account sent from the other Frank window (PIN pairing)', () => {
     const syncBundle = {
       displayName: 'Ann',
       backupShares: ['ms12frankshareone', 'ms12franksharetwo'],
     }
     afterEach(() => {
-      clearExtensionSyncOffer()
       mockRestore.mockClear()
+      mockReceiveAccount.mockReset()
     })
 
-    it('never restores an account straight from a window message', async () => {
-      const wrapper = mountWelcome(enUS)
-      for (const init of [
-        { source: null, origin: 'https://evil.example' },
-        { source: window, origin: window.location.origin },
-      ]) {
-        window.dispatchEvent(
-          new MessageEvent('message', {
-            ...init,
-            data: {
-              channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-              direction: 'to-pwa',
-              type: 'extension-sync-push',
-              payload: { deviceSyncBundle: syncBundle },
-            },
-          }),
-        )
-        await flushPromises()
-      }
-      expect(mockRestore).not.toHaveBeenCalled()
-      wrapper.unmount()
-    })
-
-    it('restores an offered account only when the user confirms it', async () => {
-      offerExtensionSyncBundle(syncBundle)
-      const wrapper = mountWelcome(enUS)
+    async function typePin(
+      wrapper: ReturnType<typeof mountWelcome>,
+      pin: string,
+    ) {
+      await wrapper.get('[data-test="sync-pin-input"]').setValue(pin)
+      await wrapper.get('[data-test="sync-pin-entry"]').trigger('submit')
       await flushPromises()
+    }
 
-      expect(text(wrapper, 'welcome-extension-sync-code')).toBe(
-        syncTransferCheckCode(syncBundle),
+    it('asks for the PIN, and restores the account once it pairs', async () => {
+      const wrapper = mountWelcome(enUS)
+      expect(wrapper.find('[data-test="sync-pin-entry"]').exists()).toBe(false)
+      await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
+      expect(text(wrapper, 'sync-pin-entry')).toContain(
+        enUS.accountSync.enterPin,
       )
-      expect(mockRestore).not.toHaveBeenCalled()
 
-      await wrapper
-        .find('[data-test="btn-restore-synced-account"]')
-        .trigger('click')
-      await flushPromises()
+      mockReceiveAccount.mockResolvedValueOnce({ ok: true, bundle: syncBundle })
+      await typePin(wrapper, '123456')
+      expect(mockReceiveAccount).toHaveBeenCalledWith('123456')
       expect(mockRestore).toHaveBeenCalledTimes(1)
       expect(mockRestore.mock.calls[0][0]).toEqual(syncBundle)
     })
 
-    it('dismissing the offer drops the account without restoring it', async () => {
-      offerExtensionSyncBundle(syncBundle)
-      const wrapper = mountWelcome(enUS)
-      await wrapper
-        .find('[data-test="btn-dismiss-synced-account"]')
-        .trigger('click')
-      await flushPromises()
-      expect(
-        wrapper.find('[data-test="welcome-extension-sync-offer"]').exists(),
-      ).toBe(false)
+    it('says the PIN did not match and restores nothing', async () => {
+      const wrapper = mountWelcome(frFR)
+      await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
+      mockReceiveAccount.mockResolvedValueOnce({
+        ok: false,
+        reason: 'pin-mismatch',
+      })
+      await typePin(wrapper, '123456')
+      expect(text(wrapper, 'sync-pin-error')).toBe(frFR.accountSync.pinMismatch)
       expect(mockRestore).not.toHaveBeenCalled()
+    })
+
+    it('says this device already has an account and restores nothing', async () => {
+      const wrapper = mountWelcome(enUS)
+      await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
+      mockReceiveAccount.mockResolvedValueOnce({
+        ok: false,
+        reason: 'has-account',
+      })
+      await typePin(wrapper, '123456')
+      expect(text(wrapper, 'sync-pin-error')).toBe(enUS.accountSync.hasAccount)
+      expect(mockRestore).not.toHaveBeenCalled()
+    })
+
+    it('does not try a PIN that is not six digits', async () => {
+      const wrapper = mountWelcome(enUS)
+      await wrapper.get('[data-test="btn-connect-extension"]').trigger('click')
+      await typePin(wrapper, '12345')
+      expect(mockReceiveAccount).not.toHaveBeenCalled()
     })
   })
 })

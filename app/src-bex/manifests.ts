@@ -109,6 +109,7 @@ export function buildExtensionManifest(
         'activeTab',
         'scripting',
         'offscreen',
+        'alarms',
       ],
       background: {
         service_worker: 'background.js',
@@ -129,7 +130,7 @@ export function buildExtensionManifest(
           strict_min_version: '128.0',
         },
       },
-      permissions: ['storage', 'activeTab', 'scripting'],
+      permissions: ['storage', 'activeTab', 'scripting', 'alarms'],
       background: {
         scripts: ['background.js'],
         type: 'module',
@@ -150,7 +151,7 @@ export function buildExtensionManifest(
         ...baseManifest.action,
         default_icon: { ...SAFARI_EXTENSION_ICONS },
       },
-      permissions: ['storage', 'activeTab', 'scripting'],
+      permissions: ['storage', 'activeTab', 'scripting', 'alarms'],
       background: {
         service_worker: 'background.js',
       },

@@ -91,3 +91,64 @@ it('no global stylesheet re-places the composer footer', () => {
   }).css
   expect(composerFooterDecls(css)).toEqual({})
 })
+
+/** (ids, classes/attributes/pseudo-classes, types) of a plain compound selector chain. */
+function specificity(selector: string): [number, number, number] {
+  const ids = (selector.match(/#[\w-]+/g) ?? []).length
+  const classes = (selector.match(/\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+/g) ?? [])
+    .length
+  const types = (
+    selector.replace(/[#.:][\w-]+|\[[^\]]+\]/g, ' ').match(/[a-z][\w-]*/gi) ??
+    []
+  ).length
+  return [ids, classes, types]
+}
+const outranks = (a: number[], b: number[]) => {
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i]
+  return false
+}
+
+/** Selectors (as compiled) of the rules that set `bottom` on a footer with !important. */
+function footerBottomSelectors(css: string): string[] {
+  const out: string[] = []
+  for (const [, selectors, body] of css.matchAll(/([^{};]+)\{([^{}]*)\}/g)) {
+    if (!/(^|;)\s*bottom:[^;]*!important/.test(body)) continue
+    for (const s of selectors.split(',')) {
+      if (/\.(q-footer|chat-footer|chat-input-bar)$/.test(s.trim()))
+        out.push(s.trim())
+    }
+  }
+  return out
+}
+
+it('the composer rule outranks the global keyboard `bottom` on .q-layout .q-footer', () => {
+  // A scoped rule gains the component's [data-v-…] attribute on its last compound selector.
+  const own = footerBottomSelectors(scopedCss(path.join(SRC, 'pages/Chat.vue')))
+    .filter(s => /\.chat-footer$/.test(s))
+    .map(s => `${s}[data-v-x]`)
+  expect(own.length).toBeGreaterThan(0)
+
+  const appScss = fs.readFileSync(path.join(SRC, 'css/app.scss'), 'utf8')
+  const globals = [
+    ...footerBottomSelectors(
+      sass.compileString(appScss, {
+        syntax: 'scss',
+        loadPaths: [path.join(SRC, 'css')],
+      }).css,
+    ),
+    ...footerBottomSelectors(
+      scopedCss(path.join(SRC, 'layouts/MainLayout.vue')),
+    ),
+  ].filter(s => /\.q-footer$/.test(s))
+  expect(globals).toContain('.q-layout .q-footer')
+
+  expect(specificity('.q-layout .q-footer')).toEqual([0, 2, 0])
+  for (const ours of own) {
+    for (const theirs of globals) {
+      expect([ours, outranks(specificity(ours), specificity(theirs))]).toEqual([
+        ours,
+        true,
+      ])
+    }
+  }
+})

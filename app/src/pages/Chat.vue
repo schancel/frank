@@ -2707,8 +2707,11 @@ export default defineComponent({
 // column), not where Quasar would fix it. In flow it no longer gets Quasar's `left` offset, so it
 // starts after the open conversation-list drawer itself: a margin, not padding, so its box (top
 // border, background) stays under the conversation pane and never runs across the list.
-.chat-footer,
-.chat-input-bar {
+// Scoped, `.chat-container > .chat-footer` is (0,3,0): it must outrank the global
+// `.q-layout .q-footer { bottom: var(--frank-kb-offset) !important }` (0,2,0), or with the iOS
+// keyboard open that `bottom` would lift the in-flow composer a keyboard-height too high.
+.chat-container > .chat-footer,
+.chat-container > .chat-input-bar {
   position: relative !important;
   top: auto !important;
   bottom: auto !important;

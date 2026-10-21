@@ -568,7 +568,9 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
             delivery: { attemptDigest: digest },
             serverTime: sentAt,
             receivedTime: sentAt,
-            items: [{ type: 'text', text: 'Lunch on Thursday at the usual place?' }],
+            items: [
+              { type: 'text', text: 'Lunch on Thursday at the usual place?' },
+            ],
           },
         ],
       },
@@ -578,7 +580,9 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       failureReason: 'blocked',
       failureDetail: digest,
     })
-    const details = wrapper.get('[data-testid="outgoing-failure-details"]').text()
+    const details = wrapper
+      .get('[data-testid="outgoing-failure-details"]')
+      .text()
     expect(details).toContain(enUS.outgoing.reasonBlocked)
     expect(details).toContain('Lunch on Thursday')
     expect(details).toContain(new Date(sentAt).toLocaleString())
@@ -588,8 +592,8 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       failureReason: 'blocked',
       failureDetail: 'cd'.repeat(32),
     })
-    expect(
-      unknown.get('[data-testid="outgoing-failure-details"]').text(),
-    ).toBe(`Failed to send — ${enUS.outgoing.reasonBlocked}`)
+    expect(unknown.get('[data-testid="outgoing-failure-details"]').text()).toBe(
+      `Failed to send — ${enUS.outgoing.reasonBlocked}`,
+    )
   })
 })

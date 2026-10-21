@@ -32,6 +32,6 @@ describe('text wire bytes', () => {
       Buffer.from(
         registry.encodeItem({ type: 'text', text: 'hi' }).bytes,
       ).toString('hex'),
-    ).toBe('46524e4b010000000ea40011010102010345a100626869')
+    ).toBe('46524e4b010000000ea40016010102010345a100626869')
   })
 })

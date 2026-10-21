@@ -17,6 +17,15 @@ jest.mock('quasar', () => ({
   useQuasar: () => ({ platform: { is: { mobile: false } } }),
 }))
 
+/** The first of time and amount after a status: the status sits before them, at the row's start. */
+function firstAfterStatus(status: Element): Element | null | undefined {
+  return status
+    .closest('.outgoing-status-slot')
+    ?.nextElementSibling?.querySelector(
+      '[data-testid="outgoing-stamp"], [data-testid="outgoing-amount"]',
+    )
+}
+
 function translator(messages: unknown) {
   return (key: string, named: Record<string, string> = {}) => {
     const value = key
@@ -302,10 +311,10 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
         const label = sent.get(
           '[data-testid="outgoing-payment-summary"]',
         ).element
-        expect(label.parentElement).toBe(
+        expect(label.closest('[data-testid="outgoing-footer"]')).toBe(
           sent.get('[data-testid="outgoing-footer"]').element,
         )
-        expect(label.nextElementSibling).toBe(
+        expect(firstAfterStatus(label)).toBe(
           sent.get('[data-testid="outgoing-amount"]').element,
         )
         if (summary === 'pending') {
@@ -329,8 +338,15 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     const time = wrapper.get('[data-testid="outgoing-stamp"]').element
     const amount = wrapper.get('[data-testid="outgoing-amount"]').element
     const sending = wrapper.get('[data-testid="outgoing-sending"]').element
-    expect(sending.parentElement).toBe(footer)
-    expect(sending.nextElementSibling).toBe(time)
+    expect(sending.closest('[data-testid="outgoing-footer"]')).toBe(footer)
+    expect(firstAfterStatus(sending)).toBe(time)
+    // The status, then one row of time, amount and actions; the actions stay with the amount.
+    expect(
+      [...footer.children].map(child => child.className.split(' ')[0]),
+    ).toEqual(['outgoing-status-slot', 'outgoing-row'])
+    expect(amount.parentElement?.querySelector('.outgoing-actions')).not.toBe(
+      null,
+    )
     expect(wrapper.findAll('.outgoing-status')).toHaveLength(0)
     for (const props of [
       { status: 'payment-pending' },
@@ -351,8 +367,8 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       ).toBe(false)
       if (props.status === 'error') {
         const failed = wrapper.get('[data-testid="outgoing-failed"]').element
-        expect(failed.parentElement).toBe(footer)
-        expect(failed.nextElementSibling).toBe(time)
+        expect(failed.closest('[data-testid="outgoing-footer"]')).toBe(footer)
+        expect(firstAfterStatus(failed)).toBe(time)
       } else {
         expect(
           wrapper
@@ -517,8 +533,10 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       )
       const footer = wrapper.get('[data-testid="outgoing-footer"]').element
       const failed = wrapper.get('[data-testid="outgoing-failed"]')
-      expect(failed.element.parentElement).toBe(footer)
-      expect(failed.element.nextElementSibling).toBe(
+      expect(failed.element.closest('[data-testid="outgoing-footer"]')).toBe(
+        footer,
+      )
+      expect(firstAfterStatus(failed.element)).toBe(
         wrapper.get('[data-testid="outgoing-stamp"]').element,
       )
       // The visible label is the short word only; the reason is not inline.

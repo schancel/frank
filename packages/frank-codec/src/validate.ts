@@ -83,6 +83,19 @@ import type {
 } from './types'
 import { verifyDirectoryAttestation } from './verify'
 
+/**
+ * Assigned non-item types that this TypeScript reader (a client) ignores inside an open
+ * message-item field instead of refusing the whole message (S8). Such an item is retained as an
+ * exact, uninterpreted frame with reason `unknown-type`, exactly like an item of a type this
+ * reader does not know: it is never decoded, projected or acted on as its assigned type, and the
+ * message's other items are unaffected. A relay (the Rust codec) still refuses it. A relay
+ * forwarding envelope is a hop-to-hop delivery frame; no sender has a reason to put one in a
+ * message, but anyone can write a client.
+ */
+const CLIENT_IGNORED_ITEM_TYPES: ReadonlySet<number> = new Set([
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
+])
+
 export { DEFAULT_FEATURE_CODECS, type FeatureCodecDescriptor }
 
 export type Operation = 'frame' | 'generic' | 'typed' | 'full'
@@ -378,7 +391,15 @@ function processFrame(
       location,
     )
   }
-  if (mode.kind === 'open' && OPEN_ITEM_FIELD_FORBIDDEN_TYPES.has(env.typeId)) {
+  // A client is permissive where a relay is strict: an item it must not act on is kept as an
+  // uninterpreted frame (the V6.1 unknown-item outcome), so the rest of the message survives.
+  const ignoredItem =
+    mode.kind === 'open' && CLIENT_IGNORED_ITEM_TYPES.has(env.typeId)
+  if (
+    mode.kind === 'open' &&
+    !ignoredItem &&
+    OPEN_ITEM_FIELD_FORBIDDEN_TYPES.has(env.typeId)
+  ) {
     throw fail(
       'semantic',
       '8.4',
@@ -394,6 +415,8 @@ function processFrame(
     sh.counters,
     envDepth,
   )
+  // Never opened, projected or semantically checked as its assigned type.
+  if (ignoredItem) return retained('unknown-type', f, env)
   const highest =
     CORE_KNOWN_TYPES.includes(env.typeId) || sh.featureCodecs.has(env.typeId)
       ? sh.supported.get(env.typeId)

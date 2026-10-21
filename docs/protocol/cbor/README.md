@@ -1434,8 +1434,14 @@ category, and an implementation MUST NOT continue to report a later failure.
         256 fails `resource` before that child's stage 2. The rule applies to any
         root and is labelled stage 8.4.
       - In an open field (a message item), a child of an assigned non-item type
-        (types 1 through 15) is `semantic`, checked after its stage 6
-        like a required-type mismatch. Otherwise the child runs stages 2
+        (types 1 through 15 and the type-25 forwarding envelope: every type whose
+        `open_item_field` is false in `../message-types/v1.json`) is `semantic`, checked after its stage 6
+        like a required-type mismatch. One exception: a client (the TypeScript
+        reader) keeps a type-25 forwarding envelope found there as exact,
+        uninterpreted bytes with reason `unknown-type`, exactly as it keeps an
+        unknown type, and the message's other items are unaffected; it never
+        opens, projects or acts on that child as an envelope. A relay (the Rust
+        reader) still refuses it as `semantic`. Otherwise the child runs stages 2
         through 9 with V6 applied to it. Children open depth-first in array
         order, and the first failure wins. An unknown type, an unknown frame version, or a
         `min_reader_version` above the reader's (each V6.1) is

@@ -37,6 +37,7 @@
     "build-android-debug": "quasar build  -m capacitor -T android -d",
     "zipalign-android": "zipalign -v -p 4 ./dist/capacitor/android/apk/release/app-release-unsigned.apk ./dist/capacitor/android/apk/release/app-release-unsigned-aligned.apk",
     "build-android-release": "yarn build-android && yarn zipalign-android && apksigner sign --ks release.keystore.jks --out ./dist/capacitor/android/apk/release/app-release.apk ./dist/capacitor/android/apk/release/app-release-unsigned-aligned.apk",
+    "test:bubble-footer": "node test/chat-bubble-footer-browser.mjs",
     "test:unit": "jest --config test/jest/accounts.config.cjs --updateSnapshot",
     "test:unit:ci": "jest --config test/jest/accounts.config.cjs --ci",
     "test:integration": "jest --config test/jest/accounts.config.cjs --ci --testPathPattern='(\\.integration\\.jest\\.test\\.ts|swap/swap-.*\\.jest\\.test\\.ts)$'",

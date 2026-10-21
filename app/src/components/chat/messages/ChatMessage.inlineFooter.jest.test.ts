@@ -55,6 +55,15 @@ jest.mock('../../../utils/message-item-renderers', () => ({
 
 const SERVER_TIME = Date.UTC(2026, 8, 30, 19, 0, 0)
 
+/** The first of time and amount after a status: the status sits before them, at the row's start. */
+function firstAfterStatus(status: Element): Element | null | undefined {
+  return status
+    .closest('.outgoing-status-slot')
+    ?.nextElementSibling?.querySelector(
+      '[data-testid="outgoing-stamp"], [data-testid="outgoing-amount"]',
+    )
+}
+
 function translate(messages: unknown) {
   return (key: string) => {
     const value = key
@@ -253,10 +262,12 @@ describe('inline bubble footer (#391)', () => {
       'outgoing-status',
     )
     expect(
-      suffix.get('[data-testid="outgoing-failed"]').element.parentElement,
+      suffix
+        .get('[data-testid="outgoing-failed"]')
+        .element.closest('[data-testid="outgoing-footer"]'),
     ).toBe(footer)
     expect(
-      suffix.get('[data-testid="outgoing-failed"]').element.nextElementSibling,
+      firstAfterStatus(suffix.get('[data-testid="outgoing-failed"]').element),
     ).toBe(time)
     expect(suffix.find('[data-testid="outgoing-retry"]').exists()).toBe(true)
     for (const status of ['pending', 'payment-pending', 'confirmed']) {

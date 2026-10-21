@@ -51,7 +51,10 @@ function blackjackPayload(payload: FrankValue): BlackjackMessageItem {
     const m = fields(payload, P, [0, 1, ...required], optional, false, false)
     return {
       m,
-      base: { type: 18 as const, gameId: tstr(m.get(0), `${P}.0`, 1, 128) },
+      base: {
+        type: TYPE_BLACKJACK_MESSAGE_ITEM,
+        gameId: tstr(m.get(0), `${P}.0`, 1, 128),
+      },
     }
   }
   switch (action) {
@@ -154,7 +157,7 @@ function blackjackHandPayload(payload: FrankValue): BlackjackHandMessageItem {
       throw bad(`${P}.0`, 'game id must be 32 lowercase ASCII hex characters')
     return {
       m,
-      base: { type: 18 as const, schema: 2 as const, gameId },
+      base: { type: TYPE_BLACKJACK_MESSAGE_ITEM, schema: 2 as const, gameId },
     }
   }
   const hash = (m: MapView, key: number) =>
@@ -253,7 +256,15 @@ function blackjackHandV3Payload(
       action === 0
         ? u32ish(m.get(11), `${P}.11`, 0, 0)
         : u32ish(m.get(11), `${P}.11`, 1, 255)
-    return { m, base: { type: 18 as const, schema: 3 as const, gameId, seq } }
+    return {
+      m,
+      base: {
+        type: TYPE_BLACKJACK_MESSAGE_ITEM,
+        schema: 3 as const,
+        gameId,
+        seq,
+      },
+    }
   }
   const hash = (m: MapView, key: number) =>
     bstr(m.get(key), `${P}.${key}`, 32, 32)

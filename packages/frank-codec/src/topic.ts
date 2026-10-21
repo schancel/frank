@@ -169,7 +169,8 @@ export function topicBurnCommitment(postFrame: Uint8Array): {
 } {
   const post = validated(requireBytes(postFrame, 'postFrame'), TYPE_TOPIC_POST)
   const typed = post.typed
-  if (typed?.type !== 9) throw new Error('internal: not a topic post')
+  if (typed?.type !== TYPE_TOPIC_POST)
+    throw new Error('internal: not a topic post')
   const hash = contentHash(post)
   return {
     network: typed.network,

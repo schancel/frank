@@ -35,6 +35,7 @@ import {
   type ChildFrame,
   type NestedItemBudget,
   type ParsedFrame,
+  TYPE_MESSAGE_CONTENT_REVISION,
 } from '@frank/codec'
 import type {
   MessageItem,
@@ -275,14 +276,21 @@ function itemFrame(
 function openAsMessageItems(frames: readonly Uint8Array[]): ChildFrame[] {
   const revision = validateFrame(
     encodeFrame(
-      { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_MESSAGE_CONTENT_REVISION,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       new Map<number, string | Uint8Array[]>([
         [0, 'frank'],
         [1, [...frames]],
       ]),
     ),
   )
-  if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+  if (
+    revision.kind !== 'parsed' ||
+    revision.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
+  )
     throw new Error('the items do not form a message revision')
   return revision.typed.items
 }

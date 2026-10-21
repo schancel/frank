@@ -194,6 +194,7 @@ import {
   compareBytes,
   recipientPayloadDigest,
   type AccountRef,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
 } from '@frank/codec'
 import { verifyCanonicalStampProof } from '@frank/cashweb/relay/canonical-dm-stamp'
 
@@ -214,7 +215,7 @@ export function inspectCanonicalPreparedEnvelope(
   const parsed = validateFrame(payload, defaultContext())
   if (
     parsed.kind !== 'parsed' ||
-    parsed.typed?.type !== 5 ||
+    parsed.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
     parsed.typed.schemaVersion !== 2 ||
     parsed.typed.suite !== 1
   )

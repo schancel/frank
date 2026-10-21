@@ -48,6 +48,7 @@
 //! would destroy the sort order a prefix scan depends on. Search is intentionally prefix-only (not
 //! fuzzy) for this first pass, matching ticket #48's own scoping decision.
 
+use frank_cbor::message_types::TYPE_DIRECTORY_ATTESTATION;
 use std::fmt::Debug;
 
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
@@ -187,7 +188,7 @@ fn extract_cbor_directory_statement(
     if let Ok(frank_cbor::ValidationResult::Parsed(parsed)) =
         frank_cbor::validate_frame(raw_bytes, &ctx)
     {
-        if parsed.type_id == 2 {
+        if parsed.type_id == TYPE_DIRECTORY_ATTESTATION {
             if let frank_cbor::CborValue::Map(entries) = &parsed.payload {
                 if let Some((_, frank_cbor::CborValue::Bytes(stmt_bytes))) =
                     entries.iter().find(|(k, _)| *k == 0)

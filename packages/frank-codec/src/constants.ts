@@ -45,47 +45,24 @@ export const U64_MAX = 18_446_744_073_709_551_615n
 export const I64_MIN = -9_223_372_036_854_775_808n
 export const I64_MAX = 9_223_372_036_854_775_807n
 
-/** Assigned type identifiers (README E5). */
-export const TYPE_DIRECT_MESSAGE_DELIVERY = 1
-export const TYPE_DIRECTORY_ATTESTATION = 2
-export const TYPE_MAILBOX_CHECKPOINT = 3
-export const TYPE_DIRECTORY_STATEMENT = 4
-export const TYPE_RECIPIENT_ENCRYPTED_PAYLOAD = 5
-export const TYPE_ENCRYPTED_MESSAGE_CONTENT = 6
-export const TYPE_KEY_TRANSITION_STATEMENT = 7
-export const TYPE_MESSAGE_CONTENT_REVISION = 8
-export const TYPE_TOPIC_POST = 9
-export const TYPE_TOPIC_POST_SUBMISSION = 10
-export const TYPE_TOPIC_VOTE_SUBMISSION = 11
-export const TYPE_FORUM_VIEW = 12
-export const TYPE_FORUM_TOPIC_PAGE = 13
-export const TYPE_FORUM_DISCOVERY_PAGE = 14
-export const TYPE_FORUM_OPERATION_STATUS = 15
-export const TYPE_CONTAINER_MESSAGE_ITEM = 16
-export const TYPE_TEXT_MESSAGE_ITEM = 17
-export const TYPE_BLACKJACK_MESSAGE_ITEM = 18
+/** Assigned type identifiers (README E5), generated from docs/protocol/message-types/v1.json. */
+export * from './message-types.generated'
+
 export const MAX_BLACKJACK_FRAME_BYTES = 4096
-export const TYPE_STEALTH_MESSAGE_ITEM = 19
 export const MAX_STEALTH_MESSAGE_ITEM_FRAME_BYTES = 65_536
-export const TYPE_CHANNEL_UPDATE = 24
 export const MAX_CHANNEL_UPDATE_FRAME_BYTES = 131_072
 export const MAX_CHANNEL_ALLOCATIONS = 8
 export const MAX_CHANNEL_PARTICIPANTS = 16
 export const MAX_CHANNEL_SIGNATURES = 4
 export const MAX_CHANNEL_APP_STATE_BYTES = 65_536
-export const TYPE_FORWARDING_DELIVERY_ENVELOPE = 25
 export const MAX_FORWARDING_DELIVERY_FRAME_BYTES = 33_554_432
-export const TYPE_EMAIL_MESSAGE_ITEM = 26
 export const MAX_EMAIL_MESSAGE_ITEM_FRAME_BYTES = 1_048_576
 export const MAX_EMAIL_RECIPIENTS = 64
 export const MAX_EMAIL_ATTACHMENTS = 16
-/** Generic plugin message item: an item type identifier with the owning plugin's opaque bytes. */
-export const TYPE_PLUGIN_MESSAGE_ITEM = 27
 /** UTF-8 bytes of a plugin item type identifier (the identifier is ASCII). */
 export const MAX_PLUGIN_ITEM_TYPE_BYTES = 64
 /** A plugin's bytes can never exceed what one encrypted direct message holds (R2). */
 export const MAX_PLUGIN_ITEM_PAYLOAD_BYTES = MAX_CIPHERTEXT_BYTES
-export const TYPE_PROOF_UNKNOWN_ITEM = 0xffff0001
 
 export const ENCRYPTION_SUITE_PROOF = 65535
 /** Authenticated/deniable secp256k1 + HKDF-SHA256 + XChaCha20-Poly1305. */

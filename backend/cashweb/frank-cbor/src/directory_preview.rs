@@ -1,4 +1,5 @@
 //! Provisional directory allocation: signed structure is not trusted directory state.
+use crate::message_types::TYPE_DIRECTORY_STATEMENT;
 use crate::{
     default_context, validate_frame, AccountRef, CodecError, ContextError, Error, ErrorCategory,
     ErrorStage, ParsedFrame, Timestamp, TypedPayload, ValidationContext, ValidationResult,
@@ -9,7 +10,7 @@ pub fn preview_directory_context() -> ValidationContext {
     let mut ctx = default_context();
     ctx.reader_version = 4;
     for schema in &mut ctx.supported_schemas {
-        if schema.type_id == 4 {
+        if schema.type_id == TYPE_DIRECTORY_STATEMENT {
             schema.schema_version = 4;
         }
     }

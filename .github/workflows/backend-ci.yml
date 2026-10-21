@@ -13,6 +13,10 @@ on:
       - "docs/protocol/oracle/seed.json"
       - "packages/price-feeds/src/historical/**"
       - "packages/price-feeds/scripts/build-oracle-seed.py"
+      - "docs/protocol/message-types/**"
+      - "docs/protocol/cbor/README.md"
+      - "packages/docs/cbor/spec.md"
+      - "packages/frank-codec/src/**"
       - ".github/workflows/backend-ci.yml"
   pull_request:
     paths:
@@ -25,6 +29,10 @@ on:
       - "docs/protocol/oracle/seed.json"
       - "packages/price-feeds/src/historical/**"
       - "packages/price-feeds/scripts/build-oracle-seed.py"
+      - "docs/protocol/message-types/**"
+      - "docs/protocol/cbor/README.md"
+      - "packages/docs/cbor/spec.md"
+      - "packages/frank-codec/src/**"
       - ".github/workflows/backend-ci.yml"
 
 # NOTE: adapted from the pre-fork `cashweb` repo's own ci.yml, which checked out `cashweb` and
@@ -130,6 +138,12 @@ jobs:
 
     - name: Check protobuf source and generated-binding inventory
       run: ./docs/protocol/check-protobuf-inventory.sh --check
+      shell: bash
+
+    # Frank-CBOR type identifiers have one source, docs/protocol/message-types/v1.json; the TS and
+    # Rust constants and the doc tables are generated from it and nothing else may define one.
+    - name: Check the message type identifiers are what their registry gives
+      run: python3 docs/protocol/message-types/generate.py --check
       shell: bash
 
     # The relay compiles docs/protocol/oracle/seed.json in; it is generated from the bundled

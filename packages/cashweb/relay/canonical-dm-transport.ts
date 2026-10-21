@@ -11,6 +11,8 @@ import {
   validateFrame,
   type AccountRef,
   type DirectMessageCryptoContext,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
 } from '@frank/codec'
 import { randomBytes, sha256 } from '@frank/crypto-box'
 import { keccak_256 } from '@noble/hashes/sha3'
@@ -545,12 +547,15 @@ export function inspectCanonicalPair(
   )
     invalid('Canonical pair limits')
   const parsed = validateFrame(parts.delivery, defaultContext())
-  if (parsed.kind !== 'parsed' || parsed.typed?.type !== 1)
+  if (
+    parsed.kind !== 'parsed' ||
+    parsed.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY
+  )
     invalid('Canonical type1 delivery required')
   const delivery = parsed.typed,
     payload = delivery.payloadFrame.typed
   if (
-    payload?.type !== 5 ||
+    payload?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
     payload.schemaVersion !== 2 ||
     payload.suite !== 1 ||
     payload.network !== delivery.network ||

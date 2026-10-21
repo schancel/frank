@@ -1,5 +1,6 @@
 //! Private policy over authenticated evidence. Persistence never accepts caller projections.
 use super::*;
+use frank_cbor::message_types::TYPE_DIRECTORY_ATTESTATION;
 use frank_cbor::{
     preview_directory_context, validate_frame, verify_preview_directory_evidence, CborValue,
     Operation, TypedPayload, ValidationResult,
@@ -181,7 +182,7 @@ pub(crate) fn statement_bytes(wrapper: &[u8]) -> Result<Vec<u8>, AdmissionError>
     else {
         return Err(AdmissionError::Evidence);
     };
-    if p.type_id != 2 {
+    if p.type_id != TYPE_DIRECTORY_ATTESTATION {
         return Err(AdmissionError::Evidence);
     }
     let CborValue::Map(fields) = p.payload else {

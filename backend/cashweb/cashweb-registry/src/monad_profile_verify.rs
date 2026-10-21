@@ -63,6 +63,7 @@ use bitcoinsuite_core::{
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use cashweb_payload::proto::signed_payload::SignatureScheme;
+use frank_cbor::message_types::TYPE_DIRECTORY_ATTESTATION;
 use prost::Message;
 use thiserror::Error;
 
@@ -359,7 +360,7 @@ pub fn verify_cbor_account_registration(
         Err(err) => return Err(InvalidCborFrame(err.to_string()).into()),
     };
 
-    if parsed.type_id != 2 {
+    if parsed.type_id != TYPE_DIRECTORY_ATTESTATION {
         return Err(InvalidCborFrame(format!(
             "expected type 2 (DirectoryAttestation), got type {}",
             parsed.type_id

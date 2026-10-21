@@ -268,7 +268,7 @@ export function isEmailMessageItemFrame(
   return (
     frame.kind === 'parsed' &&
     frame.typeId === TYPE_EMAIL_MESSAGE_ITEM &&
-    frame.typed?.type === 26
+    frame.typed?.type === TYPE_EMAIL_MESSAGE_ITEM
   )
 }
 

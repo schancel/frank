@@ -4,7 +4,24 @@ import { FrankCodecError } from './errors'
 import { utf8Encode } from './utf8'
 import { isCompressedPoint } from './point'
 import { contentHash } from './hash'
-import { MAX_DIRECTORY_VALIDITY_NS } from './constants'
+import {
+  MAX_DIRECTORY_VALIDITY_NS,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_VIEW,
+  TYPE_TOPIC_POST,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_FORUM_OPERATION_STATUS,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
+  TYPE_MAILBOX_CHECKPOINT,
+} from './constants'
 import { CANONICAL_USERNAME_REGEX } from './registration'
 import type { FeatureCodecDescriptor } from './schema-primitives'
 import {
@@ -54,7 +71,7 @@ function compareTimestamps(a: Timestamp, b: Timestamp): number {
 function checkForumPage(
   page: ForumTopicPage<ParsedFrame> | ForumDiscoveryPage,
 ): void {
-  const rows = page.type === 13 ? page.rows : page.entries
+  const rows = page.type === TYPE_FORUM_TOPIC_PAGE ? page.rows : page.entries
   if (!rows.length && page.nextCursor)
     throw semantic('empty page has continuation')
   const bind = (cursor: ForumCursor) => {
@@ -66,8 +83,8 @@ function checkForumPage(
     )
       throw semantic('cursor page binding')
     if (
-      cursor.family === 13 &&
-      page.type === 13 &&
+      cursor.family === TYPE_FORUM_TOPIC_PAGE &&
+      page.type === TYPE_FORUM_TOPIC_PAGE &&
       (cursor.topic !== page.topic ||
         compareTimestamps(cursor.since, page.since))
     )
@@ -81,13 +98,18 @@ function checkForumPage(
     page.requestCursor.incarnation !== page.nextCursor.incarnation
   )
     throw semantic('cursor incarnation changed')
-  if (page.type === 13) {
+  if (page.type === TYPE_FORUM_TOPIC_PAGE) {
     let previous =
-      page.requestCursor?.family === 13 ? page.requestCursor.last : undefined
+      page.requestCursor?.family === TYPE_FORUM_TOPIC_PAGE
+        ? page.requestCursor.last
+        : undefined
     const hashes: Uint8Array[] = []
     for (const row of page.rows) {
       const view = row.typed
-      if (view?.type !== 12 || view.postFrame.typed?.type !== 9)
+      if (
+        view?.type !== TYPE_FORUM_VIEW ||
+        view.postFrame.typed?.type !== TYPE_TOPIC_POST
+      )
         throw semantic('required Forum view')
       if (
         view.network !== page.network ||
@@ -114,7 +136,7 @@ function checkForumPage(
       previous = current
     }
     if (
-      page.nextCursor?.family === 13 &&
+      page.nextCursor?.family === TYPE_FORUM_TOPIC_PAGE &&
       (!previous ||
         compareTimestamps(page.nextCursor.last.timestamp, previous.timestamp) ||
         compareBytes(page.nextCursor.last.hash, previous.hash))
@@ -122,7 +144,9 @@ function checkForumPage(
       throw semantic('continuation is not last Forum row')
   } else {
     let previous =
-      page.requestCursor?.family === 14 ? page.requestCursor.last : undefined
+      page.requestCursor?.family === TYPE_FORUM_DISCOVERY_PAGE
+        ? page.requestCursor.last
+        : undefined
     for (const row of page.entries) {
       if (
         previous !== undefined &&
@@ -131,7 +155,10 @@ function checkForumPage(
         throw semantic('discovery rows not strictly ordered')
       previous = row.topic
     }
-    if (page.nextCursor?.family === 14 && page.nextCursor.last !== previous)
+    if (
+      page.nextCursor?.family === TYPE_FORUM_DISCOVERY_PAGE &&
+      page.nextCursor.last !== previous
+    )
       throw semantic('continuation is not last discovery row')
   }
 }
@@ -238,14 +265,14 @@ export function checkSemantics(
   }
   const P = 'root/payload'
   switch (typed.type) {
-    case 6: {
+    case TYPE_ENCRYPTED_MESSAGE_CONTENT: {
       if (typed.tokenTransfer) {
         checkTokenTransferSemantics(typed.tokenTransfer, `${P}.6`)
       }
       return
     }
-    case 25: {
-      const child = typedOf(typed.payloadFrame, 1)
+    case TYPE_FORWARDING_DELIVERY_ENVELOPE: {
+      const child = typedOf(typed.payloadFrame, TYPE_DIRECT_MESSAGE_DELIVERY)
       const pays = typed.payments
       requireOrdered(
         pays,
@@ -302,8 +329,11 @@ export function checkSemantics(
       })
       return
     }
-    case 1: {
-      const child = typedOf(typed.payloadFrame, 5)
+    case TYPE_DIRECT_MESSAGE_DELIVERY: {
+      const child = typedOf(
+        typed.payloadFrame,
+        TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+      )
       const pays = typed.payments
       requireOrdered(
         pays,
@@ -374,8 +404,8 @@ export function checkSemantics(
       })
       return
     }
-    case 2: {
-      const st = typedOf(typed.statementFrame, 4)
+    case TYPE_DIRECTORY_ATTESTATION: {
+      const st = typedOf(typed.statementFrame, TYPE_DIRECTORY_STATEMENT)
       requireOrdered(
         typed.signatures,
         (a, b) =>
@@ -407,7 +437,7 @@ export function checkSemantics(
       checkDirectoryUpdate(st, prior)
       return
     }
-    case 3: {
+    case TYPE_MAILBOX_CHECKPOINT: {
       requireOrdered(
         typed.facts,
         (a, b) =>
@@ -441,34 +471,37 @@ export function checkSemantics(
       }
       return
     }
-    case 12: {
+    case TYPE_FORUM_VIEW: {
       if (
-        typed.postFrame.typed?.type !== 9 ||
+        typed.postFrame.typed?.type !== TYPE_TOPIC_POST ||
         typed.network !== typed.postFrame.typed.network
       )
         throw semantic('Forum view network differs from post')
       return
     }
-    case 13:
-    case 14:
+    case TYPE_FORUM_TOPIC_PAGE:
+    case TYPE_FORUM_DISCOVERY_PAGE:
       checkForumPage(typed)
       return
-    case 15: {
+    case TYPE_FORUM_OPERATION_STATUS: {
       const sub = typed.submittedFrame.typed
       if (
         !sub ||
-        (sub.type !== 10 && sub.type !== 11) ||
+        (sub.type !== TYPE_TOPIC_POST_SUBMISSION &&
+          sub.type !== TYPE_TOPIC_VOTE_SUBMISSION) ||
         sub.network !== typed.network
       )
         throw semantic('status submission network')
       const target =
-        sub.type === 10 ? contentHash(sub.postFrame) : sub.targetHash
+        sub.type === TYPE_TOPIC_POST_SUBMISSION
+          ? contentHash(sub.postFrame)
+          : sub.targetHash
       if (compareBytes(target, typed.targetHash))
         throw semantic('status target differs from submitted operation')
       return
     }
-    case 10: {
-      const child = typedOf(typed.postFrame, 9)
+    case TYPE_TOPIC_POST_SUBMISSION: {
+      const child = typedOf(typed.postFrame, TYPE_TOPIC_POST)
       if (typed.network !== child.network) {
         throw semantic(
           'submission network differs from the type-9 network (S11)',
@@ -477,7 +510,7 @@ export function checkSemantics(
       }
       return
     }
-    case 4: {
+    case TYPE_DIRECTORY_STATEMENT: {
       if (typed.preview) checkPreviewStatement(typed)
       requireOrdered(
         typed.relays,
@@ -501,7 +534,7 @@ export function checkSemantics(
       }
       if (typed.keyTransitions) {
         const stmts = typed.keyTransitions.map(t =>
-          typedOf(t.statementFrame, 7),
+          typedOf(t.statementFrame, TYPE_KEY_TRANSITION_STATEMENT),
         )
         requireOrdered(
           stmts,
@@ -684,7 +717,10 @@ function checkDirectoryUpdate(
     )
   }
   const t = transitions[0]
-  const ts: KeyTransitionStatement = typedOf(t.statementFrame, 7)
+  const ts: KeyTransitionStatement = typedOf(
+    t.statementFrame,
+    TYPE_KEY_TRANSITION_STATEMENT,
+  )
   if (ts.network !== st.network || ts.network !== prior.network) {
     throw semantic(
       'transition network differs from the statement networks (S10)',

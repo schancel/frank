@@ -6,6 +6,8 @@ import {
   topicBurnCalldata,
   matchForumView,
   verifyTopicPostAuthor,
+  TYPE_FORUM_VIEW,
+  TYPE_TOPIC_POST,
 } from '@frank/codec'
 import type { ParsedFrame } from '@frank/codec'
 
@@ -68,9 +70,9 @@ export function projectForumView(
   policy: ForumReadPolicy,
 ): ForumMessage {
   const view = frame.typed
-  if (view?.type !== 12) throw new Error('Expected Forum view')
+  if (view?.type !== TYPE_FORUM_VIEW) throw new Error('Expected Forum view')
   const post = view.postFrame.typed
-  if (post?.type !== 9 || post.schemaVersion !== 2) {
+  if (post?.type !== TYPE_TOPIC_POST || post.schemaVersion !== 2) {
     throw new Error('Expected canonical Forum content')
   }
   const tx = Transaction.from('0x' + toHex(view.authorBurnTx))

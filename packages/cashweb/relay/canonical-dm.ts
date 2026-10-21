@@ -17,6 +17,10 @@ import {
   type Encodable,
   type PreviewDirectoryEvidence,
   type Timestamp,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_TEXT_MESSAGE_ITEM,
 } from '@frank/codec'
 import type { SuiteResult } from '@frank/crypto-box'
 import type { Current, HistoricalEvidence } from '@frank/directory-admission'
@@ -102,7 +106,7 @@ const frame = (typeId: number, payload: Encodable, version = 1): Uint8Array =>
 
 /** Encode text directly as type 17; callers pass exact frames for containers/opaque items. */
 export function directMessageText(text: string): Uint8Array {
-  const bytes = frame(17, cborMap([[0, text]]))
+  const bytes = frame(TYPE_TEXT_MESSAGE_ITEM, cborMap([[0, text]]))
   parseFrame(bytes)
   return bytes
 }
@@ -296,7 +300,7 @@ export function prepareDirectMessage(input: {
       ? copy(input.conversationId)
       : undefined
     const revision = frame(
-      8,
+      TYPE_MESSAGE_CONTENT_REVISION,
       cborMap([
         [0, 'frank'],
         [1, input.items.map(copy)],
@@ -313,7 +317,7 @@ export function prepareDirectMessage(input: {
     if (input.conversationName !== undefined) {
       contentEntries.push([5, input.conversationName])
     }
-    plaintext = frame(6, cborMap(contentEntries))
+    plaintext = frame(TYPE_ENCRYPTED_MESSAGE_CONTENT, cborMap(contentEntries))
     // Reject invalid authoring before invoking the capability or consuming entropy.
     parseFrame(plaintext)
     const proof = createCanonicalStampProof({
@@ -336,7 +340,7 @@ export function prepareDirectMessage(input: {
     }
     if (!sealed.ok) throw new DirectMessageError('crypto')
     const payload = frame(
-      5,
+      TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
       cborMap([
         [0, input.network],
         [1, account(sender.statement.subject)],
@@ -444,12 +448,19 @@ export function openDirectMessage(
     const payload = copy(input.payload)
     const suppliedContext = copy(input.context)
     const root = parseFrame(payload)
-    if (root.kind !== 'parsed' || root.typeId !== 5)
+    if (
+      root.kind !== 'parsed' ||
+      root.typeId !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+    )
       throw new DirectMessageError('context')
     session = beginDirectMessageValidation(payload, defaultContext())
-    if (session.payload.typeId !== 5) throw new DirectMessageError('context')
+    if (session.payload.typeId !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
+      throw new DirectMessageError('context')
     const encrypted = session.payload.typed
-    if (encrypted?.type !== 5 || encrypted.schemaVersion !== 2)
+    if (
+      encrypted?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
+      encrypted.schemaVersion !== 2
+    )
       throw new DirectMessageError('context')
     const mode = input.mode ?? 'receive'
     let sender: PreviewDirectoryEvidence
@@ -527,7 +538,10 @@ export function openDirectMessage(
     session = undefined
     const completed = continuation.completeAuthenticatedContent(plaintext)
     const content = completed.content.typed
-    if (content?.type !== 6 || content.revisionFrame.typed?.type !== 8)
+    if (
+      content?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT ||
+      content.revisionFrame.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
+    )
       throw new DirectMessageError('context')
     if (content.network !== encrypted.network)
       throw new DirectMessageError('network')
@@ -580,7 +594,10 @@ export function openDirectMessage(
         enumerable: true,
         get: () => {
           const revision = parseFrame(bytes.revision)
-          if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+          if (
+            revision.kind !== 'parsed' ||
+            revision.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
+          )
             throw new DirectMessageError('context')
           return revision.typed.items
         },
@@ -607,12 +624,19 @@ export function openOwnDirectMessage(
     const payload = copy(input.payload)
     const suppliedContext = copy(input.context)
     const root = parseFrame(payload)
-    if (root.kind !== 'parsed' || root.typeId !== 5)
+    if (
+      root.kind !== 'parsed' ||
+      root.typeId !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+    )
       throw new DirectMessageError('context')
     session = beginDirectMessageValidation(payload, defaultContext())
-    if (session.payload.typeId !== 5) throw new DirectMessageError('context')
+    if (session.payload.typeId !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
+      throw new DirectMessageError('context')
     const encrypted = session.payload.typed
-    if (encrypted?.type !== 5 || encrypted.schemaVersion !== 2)
+    if (
+      encrypted?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
+      encrypted.schemaVersion !== 2
+    )
       throw new DirectMessageError('context')
 
     let sender: PreviewDirectoryEvidence
@@ -687,7 +711,10 @@ export function openOwnDirectMessage(
     session = undefined
     const completed = continuation.completeAuthenticatedContent(plaintext)
     const content = completed.content.typed
-    if (content?.type !== 6 || content.revisionFrame.typed?.type !== 8)
+    if (
+      content?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT ||
+      content.revisionFrame.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
+    )
       throw new DirectMessageError('context')
     if (content.network !== encrypted.network)
       throw new DirectMessageError('network')
@@ -738,7 +765,10 @@ export function openOwnDirectMessage(
         enumerable: true,
         get: () => {
           const revision = parseFrame(bytes.revision)
-          if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+          if (
+            revision.kind !== 'parsed' ||
+            revision.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
+          )
             throw new DirectMessageError('context')
           return revision.typed.items
         },

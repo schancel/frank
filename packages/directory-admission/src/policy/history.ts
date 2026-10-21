@@ -5,6 +5,7 @@ import {
   uncompressedPubkey,
   validateFrame,
   verifyPreviewDirectoryEvidence,
+  TYPE_DIRECTORY_ATTESTATION,
 } from '@frank/codec'
 import type { AccountRef, Timestamp, RelayBinding } from '@frank/codec'
 import type {
@@ -121,7 +122,7 @@ export function statementBytes(wrapper: Uint8Array): Uint8Array {
     })
     if (
       result.kind !== 'parsed' ||
-      result.typeId !== 2 ||
+      result.typeId !== TYPE_DIRECTORY_ATTESTATION ||
       !(result.payload instanceof Map)
     )
       fail('evidence')

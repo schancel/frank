@@ -3,6 +3,22 @@
 import { sha256 } from '@noble/hashes/sha256'
 import { utf8Encode } from './utf8'
 import type { ParsedFrame } from './types'
+import {
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
+  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_MAILBOX_CHECKPOINT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+} from './constants'
 
 const ASCII_LITERAL = /^[\x20-\x7e]*$/
 
@@ -63,28 +79,31 @@ export function commonTranscript(
 /** T1's network source for each type; undefined for an unknown type. */
 export function contentHashNetwork(p: ParsedFrame): string {
   switch (p.typeId) {
-    case 8:
-    case 16:
-    case 17:
+    case TYPE_MESSAGE_CONTENT_REVISION:
+    case TYPE_CONTAINER_MESSAGE_ITEM:
+    case TYPE_TEXT_MESSAGE_ITEM:
       return 'frank'
-    case 2: {
+    case TYPE_DIRECTORY_ATTESTATION: {
       const t = p.typed
-      if (t?.type === 2 && t.statementFrame.typed?.type === 4)
+      if (
+        t?.type === TYPE_DIRECTORY_ATTESTATION &&
+        t.statementFrame.typed?.type === TYPE_DIRECTORY_STATEMENT
+      )
         return t.statementFrame.typed.network
       throw new Error(
         'T1 for a type-2 frame needs the stage 8 typed projection',
       )
     }
-    case 1:
-    case 3:
-    case 4:
-    case 5:
-    case 6:
-    case 7:
-    case 9:
-    case 10:
-    case 11:
-    case 25: {
+    case TYPE_DIRECT_MESSAGE_DELIVERY:
+    case TYPE_MAILBOX_CHECKPOINT:
+    case TYPE_DIRECTORY_STATEMENT:
+    case TYPE_RECIPIENT_ENCRYPTED_PAYLOAD:
+    case TYPE_ENCRYPTED_MESSAGE_CONTENT:
+    case TYPE_KEY_TRANSITION_STATEMENT:
+    case TYPE_TOPIC_POST:
+    case TYPE_TOPIC_POST_SUBMISSION:
+    case TYPE_TOPIC_VOTE_SUBMISSION:
+    case TYPE_FORWARDING_DELIVERY_ENVELOPE: {
       const t = p.typed
       if (t && 'network' in t) return t.network
       throw new Error(

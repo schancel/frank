@@ -8,16 +8,24 @@ use crate::limits::{
     MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES, MAX_FORWARDING_DELIVERY_FRAME_BYTES, MAX_FRAME_BYTES,
     MAX_JOURNAL_FACTS, MAX_MESSAGE_ITEMS_PER_ARRAY, MAX_OPAQUE_SECTIONS, MAX_PAYMENT_MEMBERS,
     MAX_RELAY_BINDINGS, MAX_SIGNATURES, MAX_TEXT_STRING_BYTES, MAX_TOPIC_BODY_BYTES,
-    MAX_TOPIC_FRAME_BYTES, MAX_TOPIC_VOTE_FRAME_BYTES, TYPE_CONTAINER_ITEM,
-    TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE,
-    TYPE_FORWARDING_DELIVERY, TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_REVISION,
-    TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST, TYPE_TOPIC_POST_SUBMISSION,
-    TYPE_TOPIC_VOTE_SUBMISSION,
+    MAX_TOPIC_FRAME_BYTES, MAX_TOPIC_VOTE_FRAME_BYTES,
 };
 use crate::limits::{
     MAX_FORUM_CURSOR_BYTES, MAX_FORUM_ENTRIES, MAX_FORUM_PAGE_BYTES, MAX_FORUM_ROWS,
-    MAX_FORUM_VIEW_BYTES, TYPE_FORUM_DISCOVERY_PAGE, TYPE_FORUM_OPERATION_STATUS,
-    TYPE_FORUM_TOPIC_PAGE, TYPE_FORUM_VIEW,
+    MAX_FORUM_VIEW_BYTES,
+};
+use crate::message_types::{
+    TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_KEY_TRANSITION_STATEMENT,
+    TYPE_STEALTH_MESSAGE_ITEM, TYPE_TEXT_MESSAGE_ITEM,
+};
+use crate::message_types::{
+    TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT,
+    TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_FORWARDING_DELIVERY_ENVELOPE, TYPE_MAILBOX_CHECKPOINT,
+    TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TOPIC_POST,
+    TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
+};
+use crate::message_types::{
+    TYPE_FORUM_DISCOVERY_PAGE, TYPE_FORUM_OPERATION_STATUS, TYPE_FORUM_TOPIC_PAGE, TYPE_FORUM_VIEW,
 };
 use crate::model::{
     AccountRef, BlackjackAction, BlackjackFields, BlackjackHandAction, BlackjackHandFields,
@@ -324,16 +332,16 @@ pub(crate) fn check_root_frame_limit(
     frame_length: usize,
     schema_version: u32,
 ) -> bool {
-    if type_id == crate::limits::TYPE_BLACKJACK_ITEM {
+    if type_id == TYPE_BLACKJACK_MESSAGE_ITEM {
         return frame_length <= crate::limits::MAX_BLACKJACK_FRAME_BYTES;
     }
     if type_id == TYPE_DIRECTORY_STATEMENT && schema_version >= 4 {
         return frame_length <= MAX_DIRECTORY_ATTESTATION_FRAME_BYTES;
     }
-    if type_id == TYPE_DIRECT_MESSAGE {
+    if type_id == TYPE_DIRECT_MESSAGE_DELIVERY {
         return frame_length <= MAX_DIRECT_MESSAGE_FRAME_BYTES;
     }
-    if type_id == TYPE_FORWARDING_DELIVERY {
+    if type_id == TYPE_FORWARDING_DELIVERY_ENVELOPE {
         return frame_length <= MAX_FORWARDING_DELIVERY_FRAME_BYTES;
     }
     if type_id == TYPE_DIRECTORY_ATTESTATION {
@@ -383,7 +391,7 @@ pub(crate) fn check_type_limits(
         )
     };
     match type_id {
-        TYPE_DIRECT_MESSAGE | TYPE_FORWARDING_DELIVERY => {
+        TYPE_DIRECT_MESSAGE_DELIVERY | TYPE_FORWARDING_DELIVERY_ENVELOPE => {
             if too_many(map_field(payload, 4), MAX_PAYMENT_MEMBERS) {
                 return Err(over("payment members"));
             }
@@ -406,7 +414,7 @@ pub(crate) fn check_type_limits(
                 return Err(over("relay bindings"));
             }
         }
-        TYPE_RECIPIENT_PAYLOAD => {
+        TYPE_RECIPIENT_ENCRYPTED_PAYLOAD => {
             if schema_version >= 2 {
                 if let Some(CborValue::Bytes(bytes)) = map_field(payload, 4) {
                     if bytes.len() > MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES {
@@ -428,12 +436,23 @@ pub(crate) fn check_type_limits(
         }
         TYPE_FORUM_TOPIC_PAGE | TYPE_FORUM_DISCOVERY_PAGE => {
             if too_many(
-                map_field(payload, if type_id == 13 { 4 } else { 2 }),
+                map_field(
+                    payload,
+                    if type_id == TYPE_FORUM_TOPIC_PAGE {
+                        4
+                    } else {
+                        2
+                    },
+                ),
                 MAX_FORUM_ROWS,
             ) {
                 return Err(over("Forum rows"));
             }
-            for key in if type_id == 13 { [5, 7] } else { [3, 5] } {
+            for key in if type_id == TYPE_FORUM_TOPIC_PAGE {
+                [5, 7]
+            } else {
+                [3, 5]
+            } {
                 if let Some(CborValue::Bytes(bytes)) = map_field(payload, key) {
                     if bytes.len() > MAX_FORUM_CURSOR_BYTES {
                         return Err(over("Forum cursor"));
@@ -441,12 +460,12 @@ pub(crate) fn check_type_limits(
                 }
             }
         }
-        TYPE_MESSAGE_REVISION => {
+        TYPE_MESSAGE_CONTENT_REVISION => {
             if too_many(map_field(payload, 1), MAX_MESSAGE_ITEMS_PER_ARRAY) {
                 return Err(over("message items"));
             }
         }
-        TYPE_CONTAINER_ITEM => {
+        TYPE_CONTAINER_MESSAGE_ITEM => {
             if too_many(map_field(payload, 0), MAX_MESSAGE_ITEMS_PER_ARRAY) {
                 return Err(over("message items"));
             }
@@ -858,14 +877,19 @@ pub(crate) fn parse_forum_cursor(
     bytes: Vec<u8>,
     path: &str,
 ) -> Result<ForumCursor, CodecError> {
-    let family = u32_in(map_field(value, 1), path, 13, 14)?;
-    let required: &[u64] = if family == 13 {
+    let family = u32_in(
+        map_field(value, 1),
+        path,
+        TYPE_FORUM_TOPIC_PAGE,
+        TYPE_FORUM_DISCOVERY_PAGE,
+    )?;
+    let required: &[u64] = if family == TYPE_FORUM_TOPIC_PAGE {
         &[0, 1, 2, 3, 4, 5, 6, 7]
     } else {
         &[0, 1, 2, 3, 4, 7]
     };
     let m = fields(Some(value), path, required, &[], false, false)?;
-    let position = if family == 13 {
+    let position = if family == TYPE_FORUM_TOPIC_PAGE {
         let last = fields(m.get(4), path, &[0, 1], &[], false, false)?;
         ForumCursorPosition::Topic {
             topic: tstr(m.get(5), path, 1, 512)?,
@@ -1030,7 +1054,7 @@ pub(crate) fn parse_draft(
         return parse_forum_read(type_id, payload, allow, path);
     }
     match type_id {
-        TYPE_FORWARDING_DELIVERY => {
+        TYPE_FORWARDING_DELIVERY_ENVELOPE => {
             let map = fields(Some(payload), path, &[0, 1, 2, 3, 4], &[5, 6], true, allow)?;
             let payments = as_list(map.get(4), &format!("{path}.4"), 1, MAX_PAYMENT_MEMBERS)?;
             let mut parsed = Vec::with_capacity(payments.len());
@@ -1063,7 +1087,7 @@ pub(crate) fn parse_draft(
                 unknown: map.unknown,
             })
         }
-        TYPE_DIRECT_MESSAGE => {
+        TYPE_DIRECT_MESSAGE_DELIVERY => {
             let (required, optional): (&[u64], &[u64]) = if schema.effective >= 2 {
                 (&[0, 1, 2, 3], &[4, 5, 6])
             } else {
@@ -1292,7 +1316,7 @@ pub(crate) fn parse_draft(
                 unknown: map.unknown,
             })
         }
-        TYPE_RECIPIENT_PAYLOAD => {
+        TYPE_RECIPIENT_ENCRYPTED_PAYLOAD => {
             if schema.effective >= 2 {
                 let map = fields(
                     Some(payload),
@@ -1351,7 +1375,7 @@ pub(crate) fn parse_draft(
                 })
             }
         }
-        crate::limits::TYPE_ENCRYPTED_CONTENT => {
+        TYPE_ENCRYPTED_MESSAGE_CONTENT => {
             // Field 4 is optional on the wire: writers should send it, readers accept absence.
             let map = fields(Some(payload), path, &[0, 1, 2, 3], &[4, 5], true, allow)?;
             let conversation_id = if map.has(4) {
@@ -1374,7 +1398,7 @@ pub(crate) fn parse_draft(
                 unknown: map.unknown,
             })
         }
-        crate::limits::TYPE_KEY_TRANSITION_STATEMENT => {
+        TYPE_KEY_TRANSITION_STATEMENT => {
             let map = fields(Some(payload), path, &[0, 1, 2, 3, 4], &[], true, allow)?;
             Ok(Draft::TransitionStatement {
                 network: network_tag(map.get(0), &format!("{path}.0"))?,
@@ -1444,7 +1468,7 @@ pub(crate) fn parse_draft(
                 unknown: map.unknown,
             })
         }
-        TYPE_MESSAGE_REVISION => {
+        TYPE_MESSAGE_CONTENT_REVISION => {
             let map = fields(Some(payload), path, &[0, 1], &[], true, allow)?;
             if map.get(0) != Some(&CborValue::Text("frank".to_string())) {
                 return Err(bad(
@@ -1467,7 +1491,7 @@ pub(crate) fn parse_draft(
                 unknown: map.unknown,
             })
         }
-        TYPE_CONTAINER_ITEM => {
+        TYPE_CONTAINER_MESSAGE_ITEM => {
             let map = fields(Some(payload), path, &[0], &[], true, allow)?;
             let items = as_list(
                 map.get(0),
@@ -1490,7 +1514,7 @@ pub(crate) fn parse_draft(
         // code is simply out of range for the schema-1 shapes.
         // Schema 3 adds the hand shapes with entropy from both sides, codes 32..41, read only by
         // a reader that supports schema 3.
-        crate::limits::TYPE_BLACKJACK_ITEM
+        TYPE_BLACKJACK_MESSAGE_ITEM
             if schema.effective >= 3
                 && schema.min_reader >= 2
                 && blackjack_action_code_at_least(payload, 32) =>
@@ -1499,18 +1523,16 @@ pub(crate) fn parse_draft(
                 payload, path,
             )?))
         }
-        crate::limits::TYPE_BLACKJACK_ITEM
+        TYPE_BLACKJACK_MESSAGE_ITEM
             if schema.effective >= 2
                 && schema.min_reader >= 2
                 && is_blackjack_hand_action_code(payload) =>
         {
             Ok(Draft::BlackjackHand(blackjack_hand_payload(payload, path)?))
         }
-        crate::limits::TYPE_BLACKJACK_ITEM => {
-            Ok(Draft::Blackjack(blackjack_payload(payload, path)?))
-        }
-        crate::limits::TYPE_STEALTH_ITEM => parse_stealth(payload, allow, schema.effective, path),
-        crate::limits::TYPE_TEXT_ITEM => {
+        TYPE_BLACKJACK_MESSAGE_ITEM => Ok(Draft::Blackjack(blackjack_payload(payload, path)?)),
+        TYPE_STEALTH_MESSAGE_ITEM => parse_stealth(payload, allow, schema.effective, path),
+        TYPE_TEXT_MESSAGE_ITEM => {
             let map = fields(Some(payload), path, &[0], &[], true, allow)?;
             Ok(Draft::Text {
                 text: tstr(map.get(0), &format!("{path}.0"), 0, 262_144)?,

@@ -45,6 +45,8 @@ import {
   encodeFrame,
   directorySignatureDigest,
   MAX_DIRECTORY_VALIDITY_NS,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_DIRECTORY_ATTESTATION,
 } from '@frank/codec'
 import {
   seal,
@@ -216,7 +218,11 @@ function roleOwner(
       ])
     const tuple = owned.relay
     const statement = encodeFrame(
-      { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+      {
+        typeId: TYPE_DIRECTORY_STATEMENT,
+        schemaVersion: 4,
+        minReaderVersion: 4,
+      },
       cborMap([
         [0, owned.network],
         [1, account(auth.compressedPoint)],
@@ -254,7 +260,11 @@ function roleOwner(
       }
     })
     const attestation = encodeFrame(
-      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_DIRECTORY_ATTESTATION,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       cborMap([
         [0, statement],
         [

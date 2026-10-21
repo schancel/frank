@@ -48,6 +48,10 @@ To ensure byte-for-byte deterministic hashing across all languages (TypeScript, 
 
 ## 3. Type ID Allocation Registry
 
+Generated from `docs/protocol/message-types/v1.json`, the authoritative list (see its README).
+
+<!-- BEGIN GENERATED: message-types (docs/protocol/message-types/generate.py) -->
+
 | Type ID |   Hex    | Name                                             | CDDL Schema Rule                 | Description                                                                                                   |
 | :-----: | :------: | :----------------------------------------------- | :------------------------------- | :------------------------------------------------------------------------------------------------------------ |
 |  **1**  | `0x0001` | Direct Message Delivery                          | `direct-message-delivery`        | Outermost DKSAP message container with payment stamps                                                         |
@@ -59,8 +63,8 @@ To ensure byte-for-byte deterministic hashing across all languages (TypeScript, 
 |  **7**  | `0x0007` | Key Transition Statement                         | `key-transition-statement`       | Cryptographic authorization linking a retiring key to a new subject key                                       |
 |  **8**  | `0x0008` | Message Content Revision                         | `message-content-revision`       | Ordered array of semantic message items                                                                       |
 |  **9**  | `0x0009` | Topic Post Content                               | `topic-post`                     | Public forum post content with structured authored entries                                                    |
-| **10**  | `0x000a` | Topic Post Submission                            | `topic-post-submission`          | Initial post creation paired with raw signed on-chain burn transaction ($T_7$)                                 |
-| **11**  | `0x000b` | Topic Vote Submission                            | `topic-vote-submission`          | Upvote on existing post paired with raw signed on-chain burn transaction ($T_7$)                               |
+| **10**  | `0x000a` | Topic Post Submission                            | `topic-post-submission`          | Initial post creation paired with raw signed on-chain burn transaction ($T_7$)                                |
+| **11**  | `0x000b` | Topic Vote Submission                            | `topic-vote-submission`          | Upvote on existing post paired with raw signed on-chain burn transaction ($T_7$)                              |
 | **12**  | `0x000c` | Forum Post Observation                           | `forum-single-view`              | Single post observation paired with author address, raw signed burn tx, and vote weight                       |
 | **13**  | `0x000d` | Forum Topic Batch (`forum-topic-page`)           | `forum-topic-page`               | Paginated batch of up to 128 post observation frames within a topic, with continuation cursor and relay epoch |
 | **14**  | `0x000e` | Forum Discovery Listing (`forum-discovery-page`) | `forum-discovery-page`           | Paginated directory of active topics, post counts, and last activity timestamps                               |
@@ -73,6 +77,8 @@ To ensure byte-for-byte deterministic hashing across all languages (TypeScript, 
 | **25**  | `0x0019` | Forwarding Delivery Envelope                     | `forwarding-delivery-envelope`   | Store-and-forward relay hop delivery envelope with storage stamps (up to 32 MiB)                              |
 | **26**  | `0x001a` | Email Bridge Message Item                        | `email-message-item`             | Email carried through a gateway: parties, subject, bodies, references and attachments                         |
 | **27**  | `0x001b` | Generic Plugin Message Item                      | `plugin-message-item`            | Application item type identifier with the owning plugin's opaque bytes (up to 512 KiB)                        |
+
+<!-- END GENERATED: message-types -->
 
 > [!NOTE]
 > **Database Pagination vs. Web Pages**: In Types 13 and 14 (`forum-topic-page` and `forum-discovery-page`), the term **"Page"** refers strictly to cursor-based database query result sets (holding up to 128 verified post observations with continuation cursors), not HTML documents or rendered web pages.

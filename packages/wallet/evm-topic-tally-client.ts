@@ -12,6 +12,10 @@ import {
   type ForumTopicPage,
   type ForumDiscoveryPage,
   type ParsedFrame,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_VIEW,
+  TYPE_TOPIC_POST,
 } from '@frank/codec'
 import {
   projectForumView,
@@ -247,7 +251,10 @@ function racedCursorEcho(
     echo.network !== sent.network
   )
     return false
-  if (echo.family === 13 && sent.family === 13) {
+  if (
+    echo.family === TYPE_FORUM_TOPIC_PAGE &&
+    sent.family === TYPE_FORUM_TOPIC_PAGE
+  ) {
     if (
       echo.topic !== sent.topic ||
       compareTime(echo.since, sent.since) ||
@@ -255,7 +262,10 @@ function racedCursorEcho(
       compareBytes(echo.last.hash, sent.last.hash)
     )
       return false
-  } else if (echo.family === 14 && sent.family === 14) {
+  } else if (
+    echo.family === TYPE_FORUM_DISCOVERY_PAGE &&
+    sent.family === TYPE_FORUM_DISCOVERY_PAGE
+  ) {
     if (echo.last !== sent.last) return false
   } else return false
   return (
@@ -272,7 +282,7 @@ async function traverse(
     sinceMs?: number
     signal?: AbortSignal
   },
-  family: 13 | 14,
+  family: typeof TYPE_FORUM_TOPIC_PAGE | typeof TYPE_FORUM_DISCOVERY_PAGE,
 ): Promise<ForumMessage[] | DiscoveredTopic[]> {
   return exclusive(async () => {
     for (let attempt = 0; ; attempt++) {
@@ -295,8 +305,8 @@ async function traverse(
           const bytes = await request(
             params.relayBaseUrl.replace(/\/+$/, '') +
               '/message/monad/topics' +
-              (family === 14 ? '/discover' : ''),
-            family === 13
+              (family === TYPE_FORUM_DISCOVERY_PAGE ? '/discover' : ''),
+            family === TYPE_FORUM_TOPIC_PAGE
               ? {
                   topic: params.topic,
                   since: params.sinceMs ?? 0,
@@ -313,13 +323,14 @@ async function traverse(
           const validated = parsed(bytes).typed
           if (
             !validated ||
-            (validated.type !== 13 && validated.type !== 14) ||
+            (validated.type !== TYPE_FORUM_TOPIC_PAGE &&
+              validated.type !== TYPE_FORUM_DISCOVERY_PAGE) ||
             validated.type !== family ||
             validated.network !== params.policy.network
           )
             throw new Error('Page network/family binding')
           if (
-            validated.type === 13 &&
+            validated.type === TYPE_FORUM_TOPIC_PAGE &&
             (validated.topic !== params.topic ||
               compareTime(validated.since, since))
           )
@@ -333,7 +344,11 @@ async function traverse(
             since,
             requestCursor: cursor?.bytes,
           }).typed
-          if (!page || (page.type !== 13 && page.type !== 14))
+          if (
+            !page ||
+            (page.type !== TYPE_FORUM_TOPIC_PAGE &&
+              page.type !== TYPE_FORUM_DISCOVERY_PAGE)
+          )
             throw new Error('Expected Forum page')
           const pageEpoch = toHex(page.epoch)
           if (
@@ -343,14 +358,15 @@ async function traverse(
             throw new SnapshotRace('Snapshot changed')
           epoch = pageEpoch
           revision = page.revision
-          const rows = page.type === 13 ? page.rows : page.entries
+          const rows =
+            page.type === TYPE_FORUM_TOPIC_PAGE ? page.rows : page.entries
           if (rows.length > 128 || (rows.length === 0 && page.nextCursor))
             throw new Error('Invalid page row count')
           const batchYielder = createCooperativeBatchYielder()
           let startedRowDecoding = false
           for (const row of rows) {
             let key: string, projected: ForumMessage | DiscoveredTopic
-            if (page.type === 13) {
+            if (page.type === TYPE_FORUM_TOPIC_PAGE) {
               if (startedRowDecoding) {
                 await batchYielder.maybeYield()
               } else {
@@ -358,7 +374,8 @@ async function traverse(
               }
               const viewFrame = row as (typeof page.rows)[number]
               const view = viewFrame.typed
-              if (view?.type !== 12) throw new Error('Expected Forum view')
+              if (view?.type !== TYPE_FORUM_VIEW)
+                throw new Error('Expected Forum view')
               if (view.revision !== revision || toHex(view.epoch) !== epoch)
                 throw new SnapshotRace('View snapshot changed')
               const hash = contentHash(view.postFrame),
@@ -373,7 +390,7 @@ async function traverse(
               )
                 throw new Error('Nonadvancing topic rows')
               if (
-                view.postFrame.typed?.type !== 9 ||
+                view.postFrame.typed?.type !== TYPE_TOPIC_POST ||
                 view.postFrame.typed.topic !== params.topic
               )
                 throw new Error('Cross-topic row')
@@ -430,7 +447,7 @@ async function traverse(
             (incarnation !== undefined && next.incarnation !== incarnation)
           )
             throw new SnapshotRace('Cursor incarnation changed')
-          if (next.family === 13) {
+          if (next.family === TYPE_FORUM_TOPIC_PAGE) {
             const tuple = last as { timestamp: Timestamp; hash: Uint8Array }
             if (
               next.topic !== params.topic ||
@@ -462,14 +479,17 @@ export async function fetchMonadTopicPostsSince(params: {
   policy: ForumReadPolicy
   signal?: AbortSignal
 }): Promise<ForumMessage[]> {
-  return (await traverse(params, 13)) as ForumMessage[]
+  return (await traverse(params, TYPE_FORUM_TOPIC_PAGE)) as ForumMessage[]
 }
 export async function fetchDiscoveredTopics(params: {
   relayBaseUrl: string
   policy: ForumReadPolicy
   signal?: AbortSignal
 }): Promise<DiscoveredTopic[]> {
-  return (await traverse(params, 14)) as DiscoveredTopic[]
+  return (await traverse(
+    params,
+    TYPE_FORUM_DISCOVERY_PAGE,
+  )) as DiscoveredTopic[]
 }
 export async function fetchMonadTopicPostView(params: {
   relayBaseUrl: string

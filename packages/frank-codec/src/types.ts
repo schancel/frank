@@ -4,6 +4,31 @@
 // `F` is the representation of a required-type framed field (the opened child frame once
 // validated, raw bytes in a draft) and `C` that of an open-field child.
 import type { FrankValue } from './cbor'
+import type {
+  TYPE_BLACKJACK_MESSAGE_ITEM,
+  TYPE_CHANNEL_UPDATE,
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_EMAIL_MESSAGE_ITEM,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_OPERATION_STATUS,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_VIEW,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
+  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_MAILBOX_CHECKPOINT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_PLUGIN_MESSAGE_ITEM,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_STEALTH_MESSAGE_ITEM,
+  TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+} from './message-types.generated'
 
 export type UnknownFields = ReadonlyMap<bigint, FrankValue>
 
@@ -104,7 +129,7 @@ export interface OpaqueSection {
 }
 
 export interface ForwardingDeliveryEnvelope<F> {
-  type: 25
+  type: typeof TYPE_FORWARDING_DELIVERY_ENVELOPE
   network: string
   destination: AccountRef
   /** The inner direct-message-delivery (type-1) frame. */
@@ -121,7 +146,7 @@ export interface ForwardingDeliveryEnvelope<F> {
 }
 
 export interface DirectMessageDelivery<F> {
-  type: 1
+  type: typeof TYPE_DIRECT_MESSAGE_DELIVERY
   network: string
   destination: AccountRef
   /** The type-5 recipient-encrypted-payload frame. */
@@ -137,7 +162,7 @@ export interface DirectMessageDelivery<F> {
 }
 
 export interface DirectoryAttestation<F> {
-  type: 2
+  type: typeof TYPE_DIRECTORY_ATTESTATION
   /** The type-4 directory-statement frame. */
   statementFrame: F
   signatures: SignatureEntry[]
@@ -145,7 +170,7 @@ export interface DirectoryAttestation<F> {
 }
 
 export interface MailboxCheckpoint {
-  type: 3
+  type: typeof TYPE_MAILBOX_CHECKPOINT
   network: string
   owner: AccountRef
   checkpointId: Uint8Array
@@ -156,7 +181,7 @@ export interface MailboxCheckpoint {
 }
 
 export interface DirectoryStatement<F> {
-  type: 4
+  type: typeof TYPE_DIRECTORY_STATEMENT
   network: string
   subject: AccountRef
   revision: bigint
@@ -227,7 +252,7 @@ export interface PreviewDirectoryRoles {
 }
 
 interface RecipientEncryptedPayloadCommon {
-  type: 5
+  type: typeof TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
   network: string
   sender: AccountRef
   recipient: AccountRef
@@ -269,7 +294,7 @@ export interface TokenTransfer {
 }
 
 export interface EncryptedMessageContent<F> {
-  type: 6
+  type: typeof TYPE_ENCRYPTED_MESSAGE_CONTENT
   network: string
   messageId: Uint8Array
   /** Allocated by whoever starts the conversation and carried by every message in it. Writers
@@ -284,7 +309,7 @@ export interface EncryptedMessageContent<F> {
 }
 
 export interface KeyTransitionStatement {
-  type: 7
+  type: typeof TYPE_KEY_TRANSITION_STATEMENT
   network: string
   subject: AccountRef
   priorAuthority: AccountRef
@@ -294,7 +319,7 @@ export interface KeyTransitionStatement {
 }
 
 interface TopicPostCommon {
-  type: 9
+  type: typeof TYPE_TOPIC_POST
   network: string
   /** Exact UTF-8, never normalized (S12). */
   topic: string
@@ -365,16 +390,16 @@ interface ForumCursorCommon {
 export type ForumCursor = ForumCursorCommon &
   (
     | {
-        family: 13
+        family: typeof TYPE_FORUM_TOPIC_PAGE
         topic: string
         since: Timestamp
         last: { timestamp: Timestamp; hash: Uint8Array }
       }
-    | { family: 14; last: string }
+    | { family: typeof TYPE_FORUM_DISCOVERY_PAGE; last: string }
   )
 
 export interface ForumView<F> {
-  type: 12
+  type: typeof TYPE_FORUM_VIEW
   network: string
   postFrame: F
   author: Uint8Array
@@ -389,7 +414,7 @@ export interface ForumView<F> {
   unknownFields: UnknownFields
 }
 export interface ForumTopicPage<F, K = ForumCursor> {
-  type: 13
+  type: typeof TYPE_FORUM_TOPIC_PAGE
   network: string
   topic: string
   since: Timestamp
@@ -407,7 +432,7 @@ export interface ForumDiscoveryEntry {
   unknownFields: UnknownFields
 }
 export interface ForumDiscoveryPage<K = ForumCursor> {
-  type: 14
+  type: typeof TYPE_FORUM_DISCOVERY_PAGE
   network: string
   revision: bigint
   entries: ForumDiscoveryEntry[]
@@ -417,7 +442,7 @@ export interface ForumDiscoveryPage<K = ForumCursor> {
   unknownFields: UnknownFields
 }
 interface ForumOperationCommon<F> {
-  type: 15
+  type: typeof TYPE_FORUM_OPERATION_STATUS
   network: string
   submittedFrame: F
   targetHash: Uint8Array
@@ -453,7 +478,7 @@ export type ForumOperationStatus<F> = ForumOperationCommon<F> &
   )
 
 export interface TopicPostSubmission<F> {
-  type: 10
+  type: typeof TYPE_TOPIC_POST_SUBMISSION
   network: string
   /** The type-9 topic-post frame. */
   postFrame: F
@@ -463,7 +488,7 @@ export interface TopicPostSubmission<F> {
 }
 
 export interface TopicVoteSubmission {
-  type: 11
+  type: typeof TYPE_TOPIC_VOTE_SUBMISSION
   network: string
   /** T1 hash of the target type-9 frame. */
   targetHash: Uint8Array
@@ -473,25 +498,25 @@ export interface TopicVoteSubmission {
 }
 
 export interface MessageContentRevision<C> {
-  type: 8
+  type: typeof TYPE_MESSAGE_CONTENT_REVISION
   items: C[]
   unknownFields: UnknownFields
 }
 
 export interface ContainerMessageItem<C> {
-  type: 16
+  type: typeof TYPE_CONTAINER_MESSAGE_ITEM
   items: C[]
   unknownFields: UnknownFields
 }
 
 export interface TextMessageItem {
-  type: 17
+  type: typeof TYPE_TEXT_MESSAGE_ITEM
   text: string
   unknownFields: UnknownFields
 }
 
 export interface StealthMessageItem {
-  type: 19
+  type: typeof TYPE_STEALTH_MESSAGE_ITEM
   networkTag: string
   ephemeralPubKey: AccountRef
   transactions: Uint8Array[]
@@ -510,7 +535,7 @@ export interface StealthAssetTransfer {
 }
 
 export interface StealthAssetMessageItem {
-  type: 19
+  type: typeof TYPE_STEALTH_MESSAGE_ITEM
   transfers: StealthAssetTransfer[]
   memo?: string
   unknownFields: UnknownFields
@@ -530,7 +555,7 @@ export interface ChainAllocation {
 }
 
 export interface ChannelUpdateItem {
-  type: 24
+  type: typeof TYPE_CHANNEL_UPDATE
   channelId: Uint8Array
   appId: string
   sequenceNumber: number
@@ -604,14 +629,14 @@ export interface EmailAttachment {
  * codec validates the container only; `data` is opaque here and is never interpreted.
  */
 export interface PluginMessageItem {
-  type: 27
+  type: typeof TYPE_PLUGIN_MESSAGE_ITEM
   itemType: string
   data: Uint8Array
   unknownFields: UnknownFields
 }
 
 export interface EmailMessageItem {
-  type: 26
+  type: typeof TYPE_EMAIL_MESSAGE_ITEM
   messageId: string
   from: EmailParty
   to: EmailParty[]
@@ -661,7 +686,7 @@ export type BlackjackFields<H, Q> = { gameId: string } & (
 
 /** Closed type-18 projection; exact frame bytes remain on the enclosing ParsedFrame. */
 export type BlackjackMessageItem = {
-  type: 18
+  type: typeof TYPE_BLACKJACK_MESSAGE_ITEM
   schema?: never
 } & BlackjackFields<Uint8Array, Uint8Array>
 
@@ -692,7 +717,7 @@ export type BlackjackHandFields<H, Q> = { gameId: string } & (
 
 /** Closed type-18 schema-2 projection. */
 export type BlackjackHandMessageItem = {
-  type: 18
+  type: typeof TYPE_BLACKJACK_MESSAGE_ITEM
   schema: 2
 } & BlackjackHandFields<Uint8Array, Uint8Array>
 
@@ -728,7 +753,7 @@ export type BlackjackHandV3Fields<H, Q> = { gameId: string; seq: number } & (
 
 /** Closed type-18 schema-3 projection. */
 export type BlackjackHandV3MessageItem = {
-  type: 18
+  type: typeof TYPE_BLACKJACK_MESSAGE_ITEM
   schema: 3
 } & BlackjackHandV3Fields<Uint8Array, Uint8Array>
 

@@ -22,6 +22,8 @@ import {
   toHex,
   type RelayBinding,
   type Timestamp,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_TEXT_MESSAGE_ITEM,
 } from '@frank/codec'
 import {
   directMessageText,
@@ -525,7 +527,10 @@ async function recipientRead(config: DriverConfig, fetch: CanonicalFetch) {
     const inbox = await fetchCanonicalInboxPage(auth)
     const opened = inbox.records.map(record => {
       const delivery = parseFrame(record.delivery)
-      if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+      if (
+        delivery.kind !== 'parsed' ||
+        delivery.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY
+      )
         throw new Error('joined-driver: inbox record is not a type1 delivery')
       const message = openDirectMessage({
         mode: 'receive',
@@ -546,7 +551,7 @@ async function recipientRead(config: DriverConfig, fetch: CanonicalFetch) {
         context: toHex(record.context),
         t3: toHex(message.t3),
         texts: message.items.map(item =>
-          item.kind === 'parsed' && item.typed?.type === 17
+          item.kind === 'parsed' && item.typed?.type === TYPE_TEXT_MESSAGE_ITEM
             ? item.typed.text
             : null,
         ),

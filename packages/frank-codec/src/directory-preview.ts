@@ -10,6 +10,10 @@ import type {
 } from './types'
 import { defaultContext, validateFrame, ValidationContext } from './validate'
 import { verifyDirectoryAttestation } from './verify'
+import {
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_DIRECTORY_ATTESTATION,
+} from './constants'
 
 /** Explicit opt-in; defaults used by existing runtime routes remain reader 2/schema 3. */
 export function previewDirectoryContext(): ValidationContext {
@@ -18,7 +22,7 @@ export function previewDirectoryContext(): ValidationContext {
     ...ctx,
     readerVersion: 4,
     supportedSchemas: ctx.supportedSchemas.map(s =>
-      s.typeId === 4 ? { ...s, schemaVersion: 4 } : s,
+      s.typeId === TYPE_DIRECTORY_STATEMENT ? { ...s, schemaVersion: 4 } : s,
     ),
   }
 }
@@ -60,8 +64,8 @@ export function verifyPreviewDirectoryEvidence(
   const result = validateFrame(bytes, ctx)
   if (
     result.kind !== 'parsed' ||
-    result.typed?.type !== 2 ||
-    result.typed.statementFrame.typed?.type !== 4 ||
+    result.typed?.type !== TYPE_DIRECTORY_ATTESTATION ||
+    result.typed.statementFrame.typed?.type !== TYPE_DIRECTORY_STATEMENT ||
     !result.typed.statementFrame.typed.preview
   )
     throw new FrankCodecError(

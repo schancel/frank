@@ -131,7 +131,7 @@ export function isStealthMessageItemFrame(
 ): frame is ParsedFrame & { typed: StealthMessageItem } {
   return (
     frame.typeId === TYPE_STEALTH_MESSAGE_ITEM &&
-    frame.typed?.type === 19 &&
+    frame.typed?.type === TYPE_STEALTH_MESSAGE_ITEM &&
     !('transfers' in frame.typed)
   )
 }
@@ -462,7 +462,7 @@ export function paymentTransferFromStealthItem(
   item: CanonicalStealthItem | StealthMessageItem,
   destination?: string | Uint8Array,
 ): PaymentTransfer {
-  const isTyped = 'type' in item && item.type === 19
+  const isTyped = 'type' in item && item.type === TYPE_STEALTH_MESSAGE_ITEM
   const networkTag = item.networkTag
   const keyType = isTyped ? item.ephemeralPubKey.keyType : item.keyType
   const keyBytes = isTyped

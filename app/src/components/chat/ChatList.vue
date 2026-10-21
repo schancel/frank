@@ -9,7 +9,9 @@
         <q-separator />
         <q-item>
           <q-item-section>
-            <q-item-label>{{ $t('chatList.directMessages') }}</q-item-label>
+            <q-item-label v-if="showTitle">{{
+              $t('chatList.directMessages')
+            }}</q-item-label>
           </q-item-section>
           <q-space />
           <q-btn
@@ -403,6 +405,11 @@ export default defineComponent({
     compact: {
       type: Boolean,
       required: true,
+    },
+    // Off where the surrounding header already says "Direct Messages" (the phone chat list page).
+    showTitle: {
+      type: Boolean,
+      default: true,
     },
   },
   components: {

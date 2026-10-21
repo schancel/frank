@@ -505,6 +505,7 @@ export const rawEnUS = {
     openInExplorer: 'Open transaction in block explorer',
     copyTxHash: 'Copy transaction hash',
     backToForum: 'Back to forum',
+    backToChats: 'Back to chats',
     formatBold: 'Format bold',
     formatItalic: 'Format italic',
     formatHeading: 'Format heading',

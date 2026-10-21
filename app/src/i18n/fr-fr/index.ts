@@ -520,6 +520,7 @@ export const rawFrFR = {
     openInExplorer: "Ouvrir la transaction dans l'explorateur de blocs",
     copyTxHash: 'Copier le hash de transaction',
     backToForum: 'Retour au forum',
+    backToChats: 'Retour aux discussions',
     formatBold: 'Formater en gras',
     formatItalic: 'Formater en italique',
     formatHeading: 'Formater en titre',

@@ -9,7 +9,7 @@
       :style-fn="pageStyle"
       data-testid="chat-list-page"
     >
-      <chat-list :compact="false" class="col" />
+      <chat-list :compact="false" :show-title="false" class="col" />
     </q-page>
     <q-page v-else class="flex flex-center text-center q-pa-md">
       <!-- A conversation was clicked and is on its way: say so, not "select a conversation". -->

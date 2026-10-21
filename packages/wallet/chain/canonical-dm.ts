@@ -124,6 +124,7 @@ import type {
 import {
   MonadStampPendingAttemptError,
   MonadStampTerminalError,
+  StampBlockedError,
 } from '../evm-stamp-client'
 import type { EvmStampPayer, StampClaim, StampPayment } from '../evm-stamp-payer'
 import { ChainUnreachableError } from '../evm-block-watcher'
@@ -303,6 +304,11 @@ export interface StoredMessage {
   accounted?: boolean
   /** Complete bytes exist, but the host has not durably bound their financial effects. */
   exposurePending?: true
+  /** No byte of this request has left the wallet except in submissions the home relay refused
+   * before storing or broadcasting anything. Cleared, durably, before every submission (a crash
+   * during one leaves the bytes possibly out), and set again only by such a refusal. Never set
+   * for a recipient reached through forwarding. */
+  unexposed?: true
   createdAt: number
 }
 
@@ -945,20 +951,36 @@ async function submitStored(
   owner: CanonicalMessagingOwner,
   directory: CanonicalDirectory,
   row: StoredMessage,
-): Promise<{ row: StoredMessage; error?: unknown; dead?: string }> {
+): Promise<{
+  row: StoredMessage
+  error?: unknown
+  dead?: string
+  /** Every submission of these bytes, this one included, was refused before exposure. */
+  refusedUnexposed?: true
+}> {
   if (
     row.exposurePending ||
     row.outcome !== undefined ||
     row.request === undefined
   ) return { row }
+  const request = row.request
+  let unexposed = false
+  if (row.unexposed) {
+    // From here the bytes may be out: a crash during the request leaves them possibly exposed.
+    const { unexposed: _unexposed, ...possiblyOut } =
+      owner.messages.get(row.consumerId)!
+    await owner.messages.put(possiblyOut)
+    row = possiblyOut
+    unexposed = true
+  }
   let accepted: CanonicalAcceptedBody
   try {
     accepted = await submitCanonicalRequest({
       installedRelayOrigin: owner.relayBaseUrl,
       expectedNetworkTag: owner.installedNetworkTag,
       request: restoreCanonicalRequest({
-        body: fromHex(row.request.body),
-        contentType: row.request.contentType,
+        body: fromHex(request.body),
+        contentType: request.contentType,
       }),
       fetch: directory.fetch,
     })
@@ -972,13 +994,17 @@ async function submitStored(
   if (accepted.phase !== 'delivered') {
     if (accepted.phase !== 'dead') return { row }
     const dead = accepted.reason
-    if (row.reason === dead) return { row, dead }
+    const before =
+      unexposed && REFUSED_BEFORE_EXPOSURE.has(dead)
+        ? { refusedUnexposed: true as const }
+        : {}
+    if (row.reason === dead) return { row, dead, ...before }
     const refused = {
       ...owner.messages.get(row.consumerId)!,
       reason: dead,
     }
     await owner.messages.put(refused)
-    return { row: refused, dead }
+    return { row: refused, dead, ...before }
   }
   // Delivery resolves the relay obligation, independently of the payments' chain state.
   const { request: _request, reason: _reason, ...kept } =
@@ -986,6 +1012,55 @@ async function submitStored(
   const answered: StoredMessage = { ...kept, outcome: 'delivered' }
   await owner.messages.put(answered)
   return { row: answered }
+}
+
+/**
+ * Ends a message whose every submission the home relay refused before storing or broadcasting
+ * anything (`refusedUnexposed`): its signed payments never left the wallet. The record first
+ * (dead, payments unsent, bytes dropped), then the coins are free and their accounts read again.
+ */
+async function endRefusedUnexposed(
+  owner: CanonicalMessagingOwner,
+  row: StoredMessage,
+): Promise<StoredMessage> {
+  const refused = row.payments.filter(isPending)
+  const { request: _request, unexposed: _unexposed, ...kept } = row
+  const ended: StoredMessage = {
+    ...kept,
+    payments: row.payments.map(payment =>
+      payment.state === 'pending'
+        ? { ...payment, rawTx: '', state: 'unsent' as const }
+        : payment,
+    ),
+    outcome: 'dead',
+  }
+  await owner.lifetime(() => owner.messages.put(ended))
+  await owner.lifetime(() =>
+    owner.payer().releaseRefused(holderOf(owner, row.consumerId), refused),
+  )
+  return ended
+}
+
+/**
+ * The message holding a coin a payment waits for, when its payment cannot finish by itself:
+ * not delivered, nothing of it in the node's hands, and the relay's last answer a refusal (or
+ * the host has not bound it). Retrying it is what can unblock the wait; its coin stays held.
+ * `undefined`: it can still finish (the resend pass is submitting it, or the chain decides).
+ */
+function blockedBy(
+  owner: CanonicalMessagingOwner,
+  holder: string,
+): StampBlockedError | undefined {
+  const prefix = `${owner.subject}:`
+  if (!holder.startsWith(prefix)) return undefined
+  const row = owner.messages.get(holder.slice(prefix.length))
+  if (!row || row.outcome === 'delivered') return undefined
+  const pending = row.payments.filter(isPending)
+  if (pending.length === 0) return undefined
+  if (pending.some(payment => knownToNode.has(payment.rawTx))) return undefined
+  if (row.exposurePending) return new StampBlockedError(row.digest)
+  if (row.reason !== undefined) return new StampBlockedError(row.digest, row.reason)
+  return undefined
 }
 
 /** Signed payments last seen in the mempool or awaiting canonical failure depth. Process memory. */
@@ -1509,6 +1584,9 @@ async function resend(
                 submitted.error,
               )
             row = submitted.row
+            // Refused before exposure, as every submission before it: nothing of it left the
+            // wallet, so it ends and its coins are free.
+            if (submitted.refusedUnexposed) row = await endRefusedUnexposed(owner, row)
             // Just delivered: its payments are broadcast in this same pass.
             if (row.outcome === 'delivered')
               work.chain = { passes: 0, next: 1, gap: 0 }
@@ -1855,12 +1933,15 @@ async function send(
           allowBelowFee: params.settlement === true,
           // The only coin that could pay is spent by an earlier payment: this send waits
           // its turn, and meanwhile asks the chain about that one payment (never the relay).
-          whileBusy: busyHolder => {
+          whileBusy: async busyHolder => {
             claimWaited = true
             // A wallet being closed ends the wait (`payer()` refuses a closed wallet):
             // nothing was signed, the claim loop lets go, and close is not held up.
             owner.payer()
-            return settleHolder(owner, busyHolder)
+            await settleHolder(owner, busyHolder)
+            // A holder that cannot finish by itself is named, never waited for for ever.
+            const blocked = blockedBy(owner, busyHolder)
+            if (blocked) throw blocked
           },
           onWaiting: blocksRemaining => {
             claimWaited = true
@@ -1968,6 +2049,7 @@ async function send(
       payments: signed.map(payment => ({ ...payment, state: 'pending' })),
       createdAt: Date.now(),
       ...(params.onEnvelopeDurable ? { exposurePending: true as const } : {}),
+      ...(elsewhere ? {} : { unexposed: true as const }),
     }
     try {
       await owner.lifetime(() => owner.messages.put(row))
@@ -1999,22 +2081,9 @@ async function send(
         // means nothing of this payment set was ever exposed. Not through a forwarding relay,
         // which keeps the request before it answers.
         const dead = submitted.dead
-        if (dead === undefined || elsewhere || !REFUSED_BEFORE_EXPOSURE.has(dead))
-          break
-        const refused = signed
+        if (!submitted.refusedUnexposed) break
         // The record first: these bytes are never sent again, and nothing names their coins.
-        row = {
-          ...row,
-          payments: refused.map(payment => ({
-            ...payment,
-            rawTx: '',
-            state: 'unsent' as const,
-          })),
-          outcome: 'dead',
-        }
-        delete row.request
-        await owner.lifetime(() => owner.messages.put(row))
-        await owner.lifetime(() => payer.releaseRefused(holder, refused))
+        row = await endRefusedUnexposed(owner, row)
         if (dead === 'undeliverable') throw new CanonicalRecipientUndeliverableError()
         // A coin spent elsewhere, or holding less than the list thought: its account is read
         // again, and the same message is paid from what the wallet has now (same amount, same
@@ -2046,6 +2115,7 @@ async function send(
             contentType: replanned.contentType,
           },
           payments: signed.map(payment => ({ ...payment, state: 'pending' })),
+          unexposed: true,
         }
         try {
           await owner.lifetime(() => owner.messages.put(row))

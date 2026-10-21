@@ -40,6 +40,7 @@ import { EvmStampPayer, InsufficientStampFundsError } from '../evm-stamp-payer'
 import {
   MonadStampPendingAttemptError,
   MonadStampTerminalError,
+  StampBlockedError,
 } from '../evm-stamp-client'
 import {
   CanonicalRecipientUndeliverableError,
@@ -1269,6 +1270,100 @@ describe('parallel paid messages', () => {
     await expect(send(1)).rejects.toBeInstanceOf(
       DirectMessageAlreadyAttemptedError,
     )
+  })
+
+  it('a stored message never submitted (cut off before it reached the relay) that the relay then refuses before exposure is ended by the resend pass, and its coin is free', async () => {
+    const [held] = await fundAccounts(1)
+    const stopped = await f.chain.directMessages
+      .send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'message 1' }],
+        stampValue: STAMP,
+        messageId: ID(1),
+        onAttemptCreated: () => {
+          throw new Error('cut off before the relay')
+        },
+      })
+      .catch(error => error)
+    expect(stopped).toBeInstanceOf(Error)
+    expect(relay.bodies).toHaveLength(0)
+    expect(alice.pool.claimedBy(held.index)).toBeDefined()
+    // Across a restart: the record says nothing of it left the wallet.
+    await reopen()
+    expect(alice.pool.claimedBy(held.index)).toBeDefined()
+    refuseBeforeExposure('insufficient_total')
+    await tick()
+    expect(alice.pool.claimedBy(held.index)).toBeUndefined()
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+  })
+
+  it('a refusal on a resend after a submission whose answer was lost keeps the coin held', async () => {
+    const [held] = await fundAccounts(1)
+    installCanonicalDirectory(alice, {
+      ...directory,
+      fetch: async () => {
+        throw new Error('answer lost')
+      },
+    })
+    const first = await send(1).catch(error => error)
+    expect(first).toBeInstanceOf(MonadStampPendingAttemptError)
+    installCanonicalDirectory(alice, directory)
+    refuseBeforeExposure('insufficient_total')
+    await tick([first.payloadHashes[0]])
+    await reopen()
+    await tick([first.payloadHashes[0]])
+    expect(alice.pool.claimedBy(held.index)).toBeDefined()
+    expect(
+      f.chain.directMessages.paymentsOf?.({
+        wallet: alice,
+        payloadDigest: first.payloadHashes[0],
+      }),
+    ).toEqual(['pending'])
+  })
+
+  it('a main-paid message whose answer was lost and whose resend the relay keeps refusing does not make the next main-paid send wait for ever: it names the blocking message, and nothing is released', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 18n)
+    // The first submission's answer is lost: the relay may hold the message.
+    installCanonicalDirectory(alice, {
+      ...directory,
+      fetch: async () => {
+        throw new Error('answer lost')
+      },
+    })
+    const first = await send(1).catch(error => error)
+    expect(first).toBeInstanceOf(MonadStampPendingAttemptError)
+    const digest = first.payloadHashes[0]
+    installCanonicalDirectory(alice, directory)
+    // Every resend: refused, the account short of value plus gas (a deposit could still let
+    // the first bytes land, so they stay held).
+    relay.answer = identity => ({
+      status: 200,
+      body: { version: 1, phase: 'dead', identity, reason: 'insufficient_total' },
+    })
+    await tick([digest])
+    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+    const big = f.chain.directMessages
+      .send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'a large stamp' }],
+        stampValue: 4n * 10n ** 17n,
+        messageId: ID(2),
+      })
+      .catch(error => error)
+    const outcome = await Promise.race([
+      big,
+      new Promise(resolve => setTimeout(() => resolve('still waiting'), 4_000)),
+    ])
+    expect(outcome).toBeInstanceOf(StampBlockedError)
+    expect((outcome as StampBlockedError).blockingPayloadDigest).toBe(digest)
+    // Nothing was released: the first message still holds the main account's coin.
+    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+    expect(
+      f.chain.directMessages.paymentsOf?.({ wallet: alice, payloadDigest: digest }),
+    ).toEqual(['pending'])
   })
 
   it('a payment the chain mined and reverted, of a delivered message, is made once more: same value, same address, recorded before it is broadcast, never a third time', async () => {

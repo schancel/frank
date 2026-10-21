@@ -423,6 +423,27 @@ export class MonadStampPendingAttemptError extends MonadStampError {
   }
 }
 
+/**
+ * The coin this payment needs is held by an earlier message whose payment cannot finish by
+ * itself: the relay keeps refusing it (or it awaits the host's binding) and its signed bytes may
+ * already be out, so the coin is not released. Nothing was taken for this payment. Retrying the
+ * blocking message (the same bytes) is what can unblock it.
+ */
+export class StampBlockedError extends MonadStampError {
+  readonly blockingPayloadDigest: string
+  readonly blockingReason: string | undefined
+
+  constructor(blockingPayloadDigest: string, blockingReason?: string) {
+    super(
+      `This payment waits for an earlier message (${blockingPayloadDigest}) whose payment cannot finish by itself${
+        blockingReason === undefined ? '' : ` (the relay answers ${blockingReason})`
+      }. Retry that message; its coin is not released while its payment could still land.`,
+    )
+    this.blockingPayloadDigest = blockingPayloadDigest
+    this.blockingReason = blockingReason
+  }
+}
+
 /** A prior exact set completed while reconciling a new send request. The caller must refresh
  * message state instead of silently paying again for the newly salted envelope. */
 export class MonadStampRecoveredAttemptError extends MonadStampError {

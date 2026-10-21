@@ -1,3 +1,8 @@
+import { extensionDownloadBuild } from './extension-download-env'
+
+// Keep artifact names fixed while giving each deployed build its own CDN/browser cache key.
+const downloadVersion = encodeURIComponent(extensionDownloadBuild)
+
 export type ExtensionTargetBrowser = 'chrome' | 'firefox' | 'safari'
 
 export const FA_PLUG_ICON =
@@ -24,7 +29,7 @@ export const EXTENSION_DOWNLOAD_TARGETS: Record<
     label: 'Download Chrome / Brave Extension (.zip)',
     shortLabel: 'Chrome / Brave',
     filename: 'frank-extension-chrome.zip',
-    url: '/downloads/frank-extension-chrome.zip',
+    url: `/downloads/frank-extension-chrome.zip?v=${downloadVersion}`,
     installHint:
       'Unzip and load via chrome://extensions (enable Developer Mode -> Load unpacked or drag zip).',
   },
@@ -33,7 +38,7 @@ export const EXTENSION_DOWNLOAD_TARGETS: Record<
     label: 'Download Firefox Extension (.zip)',
     shortLabel: 'Firefox',
     filename: 'frank-extension-firefox.zip',
-    url: '/downloads/frank-extension-firefox.zip',
+    url: `/downloads/frank-extension-firefox.zip?v=${downloadVersion}`,
     installHint:
       'Load via about:debugging#/runtime/this-firefox -> Load Temporary Add-on.',
   },
@@ -42,7 +47,7 @@ export const EXTENSION_DOWNLOAD_TARGETS: Record<
     label: 'Download Safari Extension (.zip)',
     shortLabel: 'Safari',
     filename: 'frank-extension-safari.zip',
-    url: '/downloads/frank-extension-safari.zip',
+    url: `/downloads/frank-extension-safari.zip?v=${downloadVersion}`,
     installHint:
       'Unzip and convert with xcrun safari-web-extension-converter or enable in Safari -> Settings -> Extensions.',
   },
@@ -54,7 +59,8 @@ export function detectPreferredExtensionTarget(
   const ua =
     typeof userAgent === 'string'
       ? userAgent
-      : typeof navigator !== 'undefined' && typeof navigator.userAgent === 'string'
+      : typeof navigator !== 'undefined' &&
+        typeof navigator.userAgent === 'string'
       ? navigator.userAgent
       : ''
   if (/Firefox\//i.test(ua)) {
@@ -76,14 +82,19 @@ export function getExtensionDownloadInfo(
   target?: ExtensionTargetBrowser,
 ): ExtensionDownloadTargetInfo {
   const resolved = target ?? detectPreferredExtensionTarget()
-  return EXTENSION_DOWNLOAD_TARGETS[resolved] ?? EXTENSION_DOWNLOAD_TARGETS.chrome
+  return (
+    EXTENSION_DOWNLOAD_TARGETS[resolved] ?? EXTENSION_DOWNLOAD_TARGETS.chrome
+  )
 }
 
 export function triggerExtensionDownload(
   target?: ExtensionTargetBrowser,
 ): ExtensionDownloadTargetInfo {
   const info = getExtensionDownloadInfo(target)
-  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+  if (
+    typeof document !== 'undefined' &&
+    typeof document.createElement === 'function'
+  ) {
     const a = document.createElement('a')
     a.href = info.url
     a.download = info.filename

@@ -2,7 +2,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ActiveChain, WalletHandle } from '@frank/wallet/chain/active-chain';
+import { DatabaseSync } from 'node:sqlite';
 import { createJournaledMailHost } from '../src/host/journaled-mail-host';
+import { CreditLedger } from '../src/ledger/credit-ledger';
+import { LocalFsBlobStore } from '../src/storage/local-fs-blob-store';
+import { MailJournal as MailJournalFormat8 } from './fixtures/mail-journal-format8';
 import { buildStripeWebhookSignatureHeader } from '../src/http/checkout-server';
 import { mailKey } from '../src/rfc/mail-keys';
 import { parseRawRfc822 } from '../src/smtp/smtp-listener';
@@ -44,6 +48,40 @@ describe('journaled mail host admission', () => {
     expect(() => createJournaledMailHost({ ...options(dir, 'existing'),
       wallet: { identity: { address: { raw: `0x${'8'.repeat(40)}` } } } as WalletHandle,
     })).toThrow('identity or format differs');
+  });
+
+  // Prevents: the production volume (format 8) being refused by the host preflight before
+  // the journal open can back it up and migrate it.
+  it('opens an existing format-8 journal of this identity, migrating it, and still refuses format 7', async () => {
+    const file = options(dir, 'existing').journalFile;
+    const ledger = new CreditLedger(file, new LocalFsBlobStore({ inMemory: true }));
+    new MailJournalFormat8(ledger, { chainIdentifier: 'monad-testnet', gatewayAccount: GATEWAY, gatewayDomain: 'signet.mx' })
+      .issueMailbox({ localPart: 'alice-inbox', scopeAccount: `0x${'a'.repeat(40)}` });
+    ledger.sqlite!.close();
+    const copy = path.join(dir, 'format7.sqlite3');
+    fs.copyFileSync(file, copy);
+    const raw = new DatabaseSync(copy);
+    raw.exec('UPDATE mail_journal_meta SET format = 7');
+    raw.close();
+    expect(() => createJournaledMailHost({ ...options(dir, 'existing'), journalFile: copy })).toThrow('identity or format differs');
+
+    const host = createJournaledMailHost(options(dir, 'existing'));
+    let backupPath = '';
+    try {
+      backupPath = host.journal.format8Migration?.backupPath ?? '';
+      expect(backupPath).toMatch(/mail\.sqlite3\.format8-backup-/);
+      expect(host.journal.issuedMailbox('alice-inbox')).toEqual({ scopeAccount: `0x${'a'.repeat(40)}` });
+    } finally {
+      await host.close();
+    }
+    const backup = new DatabaseSync(backupPath, { readOnly: true });
+    expect(backup.prepare('SELECT format FROM mail_journal_meta').get()).toEqual({ format: 8 });
+    expect(backup.prepare('SELECT local_part FROM issued_mailbox').all()).toEqual([{ local_part: 'alice-inbox' }]);
+    expect(backup.prepare('PRAGMA table_info(mail_message)').all().map((c) => c.name)).toContain('claimed_rfc_id');
+    backup.close();
+    const check = new DatabaseSync(file, { readOnly: true });
+    expect(check.prepare('SELECT format FROM mail_journal_meta').get()).toEqual({ format: 9 });
+    check.close();
   });
 
   it('a verified Stripe payment releases the paid-for held mail and no other (BOT-8)', async () => {

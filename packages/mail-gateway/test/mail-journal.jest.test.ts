@@ -357,7 +357,7 @@ describe('open, format marker and the single connection', () => {
   it.each([
     ['format 1', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 9 only/],
     ['format 2', 'UPDATE mail_journal_meta SET format = 2', /format 2 is not supported; this build reads format 9 only/],
-    ['format 8', 'UPDATE mail_journal_meta SET format = 8', /format 8 is not supported; this build reads format 9 only/],
+    ['format 8 on a format-9 schema', 'UPDATE mail_journal_meta SET format = 8', /marked format 8 but its schema is not the format-8 schema/],
     ['a later format', 'UPDATE mail_journal_meta SET format = 10', /format 10 is not supported/],
     ['no marker row', 'DELETE FROM mail_journal_meta', /format marker is missing/],
     ['no marker table', 'DROP TABLE mail_journal_meta', /format marker is missing/],

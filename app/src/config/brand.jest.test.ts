@@ -7,6 +7,8 @@ import {
   applyBrandToLocaleMessages,
   resolveAppBrand,
 } from './brand'
+import zlib from 'zlib'
+import { EXTENSION_ICONS } from '../../src-bex/manifests'
 import { rawEnUS } from '../i18n/en-us'
 import { rawFrFR } from '../i18n/fr-fr'
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -146,4 +148,37 @@ describe('Multi-brand whitebox configuration', () => {
       )
     }
   })
+})
+
+/** Alpha of the top-left pixel of an 8-bit RGBA PNG (any row filter leaves it raw). */
+function topLeftAlpha(png: Buffer): number {
+  expect(png.readUInt8(24)).toBe(8) // bit depth
+  expect(png.readUInt8(25)).toBe(6) // colour type RGBA
+  const idat: Buffer[] = []
+  for (let off = 8; off < png.length; ) {
+    const len = png.readUInt32BE(off)
+    if (png.toString('ascii', off + 4, off + 8) === 'IDAT') {
+      idat.push(png.subarray(off + 8, off + 8 + len))
+    }
+    off += len + 12
+  }
+  return zlib.inflateSync(Buffer.concat(idat))[1 + 3]!
+}
+
+describe('browser extension toolbar icons', () => {
+  it.each(['frank', 'plainspoken'])(
+    '%s publishes a transparent icon for every manifest icon path',
+    brandId => {
+      const icons = BUILTIN_BRANDS[brandId]!.publicIcons
+      for (const rel of Object.values(EXTENSION_ICONS)) {
+        const asset = icons[rel]
+        expect(asset).toBeDefined()
+        const png = fs.readFileSync(
+          path.resolve(__dirname, '../assets', asset!),
+        )
+        // An opaque corner renders as a coloured square in the Safari toolbar.
+        expect(topLeftAlpha(png)).toBe(0)
+      }
+    },
+  )
 })

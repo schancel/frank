@@ -37,7 +37,15 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, provide, ref, watch } from 'vue'
+import {
+  computed,
+  defineComponent,
+  onBeforeUnmount,
+  onMounted,
+  provide,
+  ref,
+  watch,
+} from 'vue'
 import { useNotificationPermissionOffer } from 'src/composables/useNotificationPermissionOffer'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
@@ -56,6 +64,7 @@ import { applyTheme } from 'src/utils/theme'
 import { applyViewportScaleAndMetrics } from 'src/utils/mobile-viewport-scale'
 import { invokeNotificationClickCallback } from 'src/utils/notifications'
 import { openChat } from 'src/utils/routes'
+import { installDappApprovalSurfacing } from 'src/utils/dapp-approval-surface'
 import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
@@ -223,6 +232,21 @@ export default defineComponent({
     } = storeToRefs(chatStore)
 
     const router = useRouter()
+    // A dApp request waits on the background until an extension view shows it.
+    let disposeApprovalSurfacing: (() => void) | undefined
+    let unmounted = false
+    onMounted(() => {
+      if (!isBrowserExtensionRuntime()) return
+      void router.isReady().then(() => {
+        if (!unmounted) {
+          disposeApprovalSurfacing = installDappApprovalSurfacing(router)
+        }
+      })
+    })
+    onBeforeUnmount(() => {
+      unmounted = true
+      disposeApprovalSurfacing?.()
+    })
     const chatSearchShortcut = createChatSearchShortcut()
     provide(CHAT_SEARCH_SHORTCUT, chatSearchShortcut)
 

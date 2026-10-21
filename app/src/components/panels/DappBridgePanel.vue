@@ -446,7 +446,15 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, PropType, ref, watch } from 'vue'
+import {
+  computed,
+  defineComponent,
+  onBeforeUnmount,
+  onMounted,
+  PropType,
+  ref,
+  watch,
+} from 'vue'
 import {
   computeAddress,
   formatUnits,
@@ -465,9 +473,11 @@ import { deriveDappPersonaKeypair } from '@frank/wallet/dapp-bridge'
 import { accountSession, accountStatus } from 'src/accounts/session'
 import {
   getExtensionRuntime,
+  onRuntimeMessage,
   RuntimeEnvironmentKind,
   sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
+import { isDappApprovalsChangedMessage } from 'src/utils/dapp-approval-surface'
 import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../../src-bex/content'
 import {
   DappProviderAnnounceMode,
@@ -1191,8 +1201,7 @@ export default defineComponent({
       { immediate: true },
     )
 
-    onMounted(async () => {
-      if (!isExtensionRuntime.value) return
+    async function refreshBridgeState() {
       try {
         const res = await sendRuntimeMessage<{
           result?: {
@@ -1235,23 +1244,38 @@ export default defineComponent({
           originPersonasMap.value = { ...res.result.originPersonas }
         }
         const pendingList = res?.result?.pendingApprovals
-        if (
-          Array.isArray(pendingList) &&
-          pendingList.length > 0 &&
-          props.initialApprovals.length === 0
-        ) {
-          approvals.value = pendingList.map(item => ({
-            id: item.id,
-            kind: item.kind,
-            origin: item.origin,
-            method: item.method,
-            params: item.params,
-          }))
+        if (Array.isArray(pendingList) && props.initialApprovals.length === 0) {
+          // The background owns the dApp queue; keep only locally created
+          // WalletConnect pairings alongside it.
+          const backgroundIds = new Set(pendingList.map(item => item.id))
+          approvals.value = [
+            ...pendingList.map(item => ({
+              id: item.id,
+              kind: item.kind,
+              origin: item.origin,
+              method: item.method,
+              params: item.params,
+            })),
+            ...approvals.value.filter(
+              item => item.id.startsWith('wc-') && !backgroundIds.has(item.id),
+            ),
+          ]
         }
       } catch {
         // Ignore runtime bridge query failure
       }
+    }
+
+    let offApprovalsChanged: (() => void) | undefined
+    onMounted(() => {
+      if (!isExtensionRuntime.value) return
+      offApprovalsChanged = onRuntimeMessage(message => {
+        if (isDappApprovalsChangedMessage(message)) void refreshBridgeState()
+        return undefined
+      })
+      void refreshBridgeState()
     })
+    onBeforeUnmount(() => offApprovalsChanged?.())
 
     function selectPersona(index: number) {
       if (index < 0 || index > maxPersonaIndex.value) return

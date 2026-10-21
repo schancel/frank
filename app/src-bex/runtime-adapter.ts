@@ -1,5 +1,11 @@
 export const FRANK_DAPP_BRIDGE_CHANNEL = 'frank-dapp-bridge-v1'
 export const FRANK_PWA_EXTENSION_SYNC_CHANNEL = 'frank-pwa-extension-sync-v1'
+/**
+ * Sent by the background to open extension pages (popup, side panel, window)
+ * on FRANK_DAPP_BRIDGE_CHANNEL whenever the pending dApp approval queue
+ * changes. It carries no approval data; views re-read `get-bridge-state`.
+ */
+export const FRANK_DAPP_APPROVALS_CHANGED = 'approvals-changed'
 
 export type RuntimeEnvironmentKind =
   | 'pwa'

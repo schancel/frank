@@ -45,10 +45,19 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(manifest.side_panel).toEqual({
       default_path: 'index.html?extMode=sidepanel',
     })
+    // Bare index.html: Safari will not load a popup path with a query string;
+    // extension-boot.js adds ?extMode=popup before the app boots.
     expect(manifest.action).toEqual({
-      default_popup: 'index.html?extMode=popup',
+      default_popup: 'index.html',
       default_title: 'Frank',
+      default_icon: {
+          '16': 'icons/extension-16x16.png',
+          '32': 'icons/extension-32x32.png',
+          '64': 'icons/extension-64x64.png',
+          '128': 'icons/extension-128x128.png',
+        },
     })
+    expect(manifest.icons).toEqual(manifest.action.default_icon)
     expect(manifest.content_scripts).toEqual([
       {
         matches: ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*'],
@@ -82,7 +91,12 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(manifest.sidebar_action).toEqual({
       default_panel: 'index.html?extMode=sidebar',
       default_title: 'Frank',
-      default_icon: 'icons/icon-128x128.png',
+      default_icon: {
+        '16': 'icons/extension-16x16.png',
+        '32': 'icons/extension-32x32.png',
+        '64': 'icons/extension-64x64.png',
+        '128': 'icons/extension-128x128.png',
+      },
     })
   })
 
@@ -552,6 +566,51 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       expect(bootScript).toContain("window.addEventListener('load'")
       expect(bootScript).toContain('requestAnimationFrame')
       expect(bootScript).toContain("import('./assets/index-AbCd1234.js')")
+      // The manifest popup is bare index.html; boot records the mode in the URL
+      // before the app reads location.search.
+      expect(bootScript).toContain("params.set('extMode', extMode)")
+      expect(bootScript).toContain('history.replaceState(')
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('ships every manifest icon, falling back to the 128px app icon when the brand publishes no extension icon', async () => {
+    const { execFileSync } = await import('node:child_process')
+    const fs = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const { pathToFileURL } = await import('node:url')
+    const scriptUrl = pathToFileURL(
+      path.resolve(__dirname, '../scripts/build-extension.mjs'),
+    ).href
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'frank-bex-icons-'))
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'icons'))
+      fs.writeFileSync(path.join(tmpDir, 'icons', 'icon-128x128.png'), 'app')
+      fs.writeFileSync(
+        path.join(tmpDir, 'icons', 'extension-16x16.png'),
+        'transparent',
+      )
+      const manifest = buildExtensionManifest('firefox', '0.3.0')
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `import { ensureManifestIcons } from ${JSON.stringify(
+            scriptUrl,
+          )}; ensureManifestIcons(${JSON.stringify(tmpDir)}, ${JSON.stringify(
+            manifest,
+          )});`,
+        ],
+        { stdio: 'pipe' },
+      )
+      const read = (rel: string) =>
+        fs.readFileSync(path.join(tmpDir, rel), 'utf8')
+      expect(read('icons/extension-16x16.png')).toBe('transparent')
+      expect(read('icons/extension-128x128.png')).toBe('app')
+      expect(read('icons/extension-64x64.png')).toBe('app')
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }
@@ -1318,3 +1377,91 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
 
 
 
+
+describe('dApp approval reaches an already-open extension view', () => {
+  it('holds eth_requestAccounts, notifies open views, and resolves on approval even when no view can be opened', async () => {
+    const { handleBackgroundMessage } = await import('./background')
+    const { FRANK_DAPP_APPROVALS_CHANGED } = await import('./runtime-adapter')
+    const viewMessages: any[] = []
+    const scope = {
+      chrome: {
+        runtime: {
+          id: 'frank-test-ext',
+          getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
+          sendMessage: (msg: any) => {
+            viewMessages.push(msg)
+            return Promise.reject(new Error('Receiving end does not exist.'))
+          },
+        },
+        // A side panel already open on /wallet: open() needs a user gesture the
+        // dApp click does not carry, so it rejects.
+        sidePanel: {
+          open: jest.fn(() =>
+            Promise.reject(new Error('sidePanel.open() requires a user gesture')),
+          ),
+        },
+      },
+    }
+    const state = createBackgroundBridgeState({
+      chainIdHex: '0xaa36a7',
+      activePersonaAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+      launchMode: 'sidepanel',
+    })
+
+    let settled = false
+    const rpc = handleBackgroundMessage(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'dapp-rpc-request',
+        id: 'req-uniswap',
+        origin: 'https://app.uniswap.org',
+        payload: { method: 'eth_requestAccounts' },
+      },
+      { tab: { id: 7, windowId: 3 } },
+      state,
+      scope,
+    ).then(res => {
+      settled = true
+      return res
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(settled).toBe(false)
+    expect(state.pendingApprovals.has('req-uniswap')).toBe(true)
+    expect(viewMessages).toContainEqual({
+      channel: FRANK_DAPP_BRIDGE_CHANNEL,
+      type: FRANK_DAPP_APPROVALS_CHANGED,
+    })
+
+    const bridgeState = await handleBackgroundMessage(
+      { channel: FRANK_DAPP_BRIDGE_CHANNEL, type: 'get-bridge-state' },
+      {},
+      state,
+      scope,
+    )
+    expect(bridgeState.result.pendingApprovals).toHaveLength(1)
+
+    viewMessages.length = 0
+    await handleBackgroundMessage(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'companion-resolve-approval',
+        requestId: 'req-uniswap',
+        approved: true,
+        useBurnerPersona: false,
+      },
+      {},
+      state,
+      scope,
+    )
+    const res = await rpc
+    expect(res.ok).toBe(true)
+    expect(res.result).toEqual([expect.stringMatching(/^0x[0-9a-fA-F]{40}$/)])
+    expect(state.pendingApprovals.size).toBe(0)
+    // Other open views drop the resolved request.
+    expect(viewMessages).toContainEqual({
+      channel: FRANK_DAPP_BRIDGE_CHANNEL,
+      type: FRANK_DAPP_APPROVALS_CHANGED,
+    })
+  })
+})

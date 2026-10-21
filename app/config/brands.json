@@ -19,6 +19,10 @@
       "icons/icon-256x256.png": "brand-plainspoken/raster/plainspoken-paper-256.png",
       "icons/icon-384x384.png": "brand-plainspoken/raster/plainspoken-paper-384.png",
       "icons/icon-512x512.png": "brand-plainspoken/raster/plainspoken-paper-512.png",
+      "icons/extension-16x16.png": "brand-plainspoken/raster/plainspoken-transparent-16.png",
+      "icons/extension-32x32.png": "brand-plainspoken/raster/plainspoken-transparent-32.png",
+      "icons/extension-64x64.png": "brand-plainspoken/raster/plainspoken-transparent-64.png",
+      "icons/extension-128x128.png": "brand-plainspoken/raster/plainspoken-transparent-128.png",
       "icons/safari-pinned-tab.svg": "brand-plainspoken/plainspoken-mark.svg"
     }
   },
@@ -42,6 +46,10 @@
       "icons/icon-256x256.png": "brand-plainspoken/raster/plainspoken-paper-256.png",
       "icons/icon-384x384.png": "brand-plainspoken/raster/plainspoken-paper-384.png",
       "icons/icon-512x512.png": "brand-plainspoken/raster/plainspoken-paper-512.png",
+      "icons/extension-16x16.png": "brand-plainspoken/raster/plainspoken-transparent-16.png",
+      "icons/extension-32x32.png": "brand-plainspoken/raster/plainspoken-transparent-32.png",
+      "icons/extension-64x64.png": "brand-plainspoken/raster/plainspoken-transparent-64.png",
+      "icons/extension-128x128.png": "brand-plainspoken/raster/plainspoken-transparent-128.png",
       "icons/safari-pinned-tab.svg": "brand-plainspoken/plainspoken-mark.svg"
     }
   },

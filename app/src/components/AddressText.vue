@@ -39,6 +39,8 @@ const container = ref<HTMLElement>()
 const measure = ref<HTMLElement>()
 const displayed = ref(props.address)
 let observer: ResizeObserver | undefined
+let frame = 0
+let observedWidth = -1
 let active = true
 
 function fitAddress() {
@@ -79,17 +81,38 @@ watch(
     if (active) fitAddress()
   },
 )
+// Fitting changes the text, and where the container is sized by its content
+// (e.g. the wallet asset rows) that resizes the observed box. Refitting inside
+// the observer callback re-triggers it in the same frame ("ResizeObserver loop
+// completed with undelivered notifications"), so fit on the next frame and
+// only when the available width actually changed.
+function scheduleFit() {
+  if (frame) return
+  frame = requestAnimationFrame(() => {
+    frame = 0
+    if (active) fitAddress()
+  })
+}
 onMounted(() => {
   fitAddress()
   if (typeof ResizeObserver !== 'undefined') {
-    observer = new ResizeObserver(fitAddress)
+    observer = new ResizeObserver(() => {
+      const width = container.value?.clientWidth ?? -1
+      if (width === observedWidth) return
+      observedWidth = width
+      scheduleFit()
+    })
     if (container.value) observer.observe(container.value)
-    if (measure.value) observer.observe(measure.value)
   }
+  // The probe is measured with the real font; refit once web fonts load.
+  void document.fonts?.ready.then(() => {
+    if (active) scheduleFit()
+  })
 })
 onBeforeUnmount(() => {
   active = false
   observer?.disconnect()
+  if (frame) cancelAnimationFrame(frame)
 })
 async function copyAddress() {
   try {

@@ -88,7 +88,7 @@
           flat
           :label="$t('groupChat.dismissMemberChange')"
           data-testid="dismiss-group-member-change"
-          @click="chatStore.dismissSupersededMemberChange(conversation.id)"
+          @click="dismissSupersededMemberChange"
       /></template>
     </q-banner>
     <q-banner
@@ -2208,6 +2208,14 @@ export default defineComponent({
       if (!this.conversation) return
       try {
         await this.chatStore.retrySupersededMemberChange(this.conversation.id)
+      } catch (error) {
+        errorNotify(error instanceof Error ? error : new Error(String(error)))
+      }
+    },
+    async dismissSupersededMemberChange() {
+      if (!this.conversation) return
+      try {
+        await this.chatStore.dismissSupersededMemberChange(this.conversation.id)
       } catch (error) {
         errorNotify(error instanceof Error ? error : new Error(String(error)))
       }

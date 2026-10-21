@@ -511,6 +511,17 @@ describe('a membership change another device superseded', () => {
         .get('[data-testid="retry-group-member-change"]')
         .trigger('click')
       expect(retry).toHaveBeenCalledWith(CONVERSATION)
+      // A failed dismissal is reported like a failed retry, never left unhandled.
+      const { errorNotify } = require('../utils/notifications')
+      errorNotify.mockClear()
+      jest
+        .spyOn(chats, 'dismissSupersededMemberChange')
+        .mockRejectedValueOnce(new Error('persistence failed'))
+      await wrapper
+        .get('[data-testid="dismiss-group-member-change"]')
+        .trigger('click')
+      await flushPromises()
+      expect(errorNotify).toHaveBeenCalledWith(new Error('persistence failed'))
       await wrapper
         .get('[data-testid="dismiss-group-member-change"]')
         .trigger('click')

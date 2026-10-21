@@ -1663,6 +1663,15 @@ function applyGroupControlItem(
 export const GROUP_EPOCH_SUPERSEDED =
   'Group membership changed on another device; try again'
 
+function sameMemberChange(
+  a: GroupMemberChange | undefined,
+  b: GroupMemberChange,
+): boolean {
+  return (
+    !!a && a.action === b.action && sameCanonicalAddress(a.address, b.address)
+  )
+}
+
 function hasAppliedGroupEpoch(
   conv: Conversation,
   certificate: GroupEpochCertificate,
@@ -7126,6 +7135,8 @@ export const useChatStore = defineStore('chats', {
       memberAddress: string
       wallet?: WalletHandle
       relayClient?: GroupRelayClient
+      /** Applies the change only while it is still the superseded one on record. */
+      retrying?: GroupMemberChange
     }): Promise<Conversation> {
       return groupRun(
         this,
@@ -7139,16 +7150,21 @@ export const useChatStore = defineStore('chats', {
       memberAddress,
       wallet,
       relayClient,
+      retrying,
     }: {
       conversationId: string
       memberAddress: string
       wallet?: WalletHandle
       relayClient?: GroupRelayClient
+      retrying?: GroupMemberChange
     }): Promise<Conversation> {
       const { conv, state, client, checkGroup } = await this.beginGroupRotation(
         conversationId,
         relayClient,
       )
+      // The adopted epochs may have settled or undone the change since the user saw it.
+      if (retrying && !sameMemberChange(state.supersededMemberChange, retrying))
+        return conv
       const groupIdHex = state.groupIdHex
       const prevEpochHashHex = state.epochFrame.epoch_hash
       const canonicalNewMember =
@@ -7338,8 +7354,15 @@ export const useChatStore = defineStore('chats', {
         return conv
       }
       checkGroup()
-      if (!hasAppliedGroupEpoch(conv, certificate))
+      if (!hasAppliedGroupEpoch(conv, certificate)) {
+        // The user is told by this error; the record is for a change no one was told about.
+        const current = conv.groupState!
+        if (sameMemberChange(current.supersededMemberChange, memberChange)) {
+          current.supersededMemberChange = undefined
+          await this.flushPersistence?.()
+        }
         throw new Error(GROUP_EPOCH_SUPERSEDED)
+      }
       try {
         await this.retryGroupMemberDeliveries(conv.id, wallet)
       } catch {
@@ -7359,6 +7382,8 @@ export const useChatStore = defineStore('chats', {
       memberAddress: string
       wallet?: WalletHandle
       relayClient?: GroupRelayClient
+      /** Applies the change only while it is still the superseded one on record. */
+      retrying?: GroupMemberChange
     }): Promise<Conversation> {
       return groupRun(
         this,
@@ -7372,16 +7397,21 @@ export const useChatStore = defineStore('chats', {
       memberAddress,
       wallet,
       relayClient,
+      retrying,
     }: {
       conversationId: string
       memberAddress: string
       wallet?: WalletHandle
       relayClient?: GroupRelayClient
+      retrying?: GroupMemberChange
     }): Promise<Conversation> {
       const { conv, state, client, checkGroup } = await this.beginGroupRotation(
         conversationId,
         relayClient,
       )
+      // The adopted epochs may have settled or undone the change since the user saw it.
+      if (retrying && !sameMemberChange(state.supersededMemberChange, retrying))
+        return conv
       const removedAddress =
         safeChainDisplayAddress(memberAddress) || memberAddress
       const rotated = this.prepareGroupRotation(
@@ -7426,6 +7456,7 @@ export const useChatStore = defineStore('chats', {
         conversationId,
         memberAddress: change.address,
         relayClient,
+        retrying: change,
       }
       return change.action === 'add-member'
         ? this.inviteMemberToGroup(input)

@@ -1002,6 +1002,8 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       true,
     )
     expect(state.pendingEpoch).toBeUndefined()
+    // The user was told by the error; no banner repeats it.
+    expect(state.supersededMemberChange).toBeUndefined()
     // The losing roster's deliveries were never sent and are dropped with it.
     expect(state.pendingMemberDeliveries[CHARLIE]).toBeUndefined()
     expect(
@@ -1300,14 +1302,15 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     )
   })
 
-  it('shows a removal superseded after a timeout instead of dropping it, and the user retries it', async () => {
+  /** The laptop's change times out unanswered while the phone, another device of the same
+   * administrator, publishes "add Charlie"; the laptop's next sync finds the phone won. */
+  async function supersededOnLaptop(change: 'add-member' | 'remove-member') {
     const { chats: laptop, group, client } = await makeGroup()
     const saved = JSON.parse(JSON.stringify(laptop.$state))
     setActivePinia(createPinia())
     const phone = useChatStore()
     phone.$patch(saved)
     jest.spyOn(client, 'publishEpoch').mockImplementationOnce(async () => {
-      // The phone's change wins while the laptop's publication times out unanswered.
       await phone.inviteMemberToGroup({
         conversationId: group.id,
         memberAddress: CHARLIE,
@@ -1324,11 +1327,14 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       .mockImplementationOnce(async () => {
         throw new Error('temporarily offline')
       })
-    await laptop.removeMemberFromGroup({
+    const input = {
       conversationId: group.id,
-      memberAddress: BOB,
+      memberAddress: change === 'add-member' ? DAVE : BOB,
       relayClient: client,
-    })
+    }
+    await (change === 'add-member'
+      ? laptop.inviteMemberToGroup(input)
+      : laptop.removeMemberFromGroup(input))
     expect(laptop.conversations[group.id].groupState.pendingEpoch).toBeDefined()
     await laptop.syncGroupConversation(group.id, {
       relayClient: client,
@@ -1339,19 +1345,72 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(state.epochFrame.epoch_hash).toBe(
       phone.conversations[group.id].groupState.epochFrame.epoch_hash,
     )
-    // Bob is still a member, and the user is told so; nothing retried it unasked.
-    expect(state.roster.some((member: any) => member.address === BOB)).toBe(
-      true,
+    expect(state.supersededMemberChange.action).toBe(change)
+    expect(state.supersededMemberChange.address.toLowerCase()).toBe(
+      input.memberAddress,
     )
-    expect(state.supersededMemberChange.action).toBe('remove-member')
-    expect(state.supersededMemberChange.address.toLowerCase()).toBe(BOB)
+    return { laptop, phone, group, client }
+  }
+  const rosterOf = (chats: any, id: string) =>
+    chats.conversations[id].groupState.roster.map((member: any) =>
+      member.address.toLowerCase(),
+    )
+
+  it('shows a removal superseded after a timeout instead of dropping it, and the user retries it', async () => {
+    const { laptop, group, client } = await supersededOnLaptop('remove-member')
+    // Bob is still a member, and the user is told so; nothing retried it unasked.
+    expect(rosterOf(laptop, group.id)).toContain(BOB)
     await laptop.retrySupersededMemberChange(group.id, client)
     const retried = laptop.conversations[group.id].groupState
     expect(retried.epoch).toBe(2)
-    expect(retried.roster.some((member: any) => member.address === BOB)).toBe(
-      false,
-    )
+    expect(rosterOf(laptop, group.id)).not.toContain(BOB)
+    // The winning epoch's change is kept underneath the retried one.
+    expect(rosterOf(laptop, group.id)).toContain(CHARLIE)
     expect(retried.supersededMemberChange).toBeUndefined()
+  })
+
+  it('does not re-add a member through a stale retry after another device added and removed them', async () => {
+    const { laptop, phone, group, client } = await supersededOnLaptop(
+      'add-member',
+    )
+    await phone.inviteMemberToGroup({
+      conversationId: group.id,
+      memberAddress: DAVE,
+      relayClient: client,
+    })
+    await phone.removeMemberFromGroup({
+      conversationId: group.id,
+      memberAddress: DAVE,
+      relayClient: client,
+    })
+    await laptop.retrySupersededMemberChange(group.id, client)
+    const state = laptop.conversations[group.id].groupState
+    expect(state.epoch).toBe(3)
+    expect(rosterOf(laptop, group.id)).not.toContain(DAVE)
+    expect(rosterOf(laptop, group.id)).toContain(CHARLIE)
+    expect(state.supersededMemberChange).toBeUndefined()
+  })
+
+  it('does not re-remove a member through a stale retry after another device removed and re-added them', async () => {
+    const { laptop, phone, group, client } = await supersededOnLaptop(
+      'remove-member',
+    )
+    await phone.removeMemberFromGroup({
+      conversationId: group.id,
+      memberAddress: BOB,
+      relayClient: client,
+    })
+    await phone.inviteMemberToGroup({
+      conversationId: group.id,
+      memberAddress: BOB,
+      relayClient: client,
+    })
+    await laptop.retrySupersededMemberChange(group.id, client)
+    const state = laptop.conversations[group.id].groupState
+    expect(state.epoch).toBe(3)
+    expect(rosterOf(laptop, group.id)).toContain(BOB)
+    expect(rosterOf(laptop, group.id)).toContain(CHARLIE)
+    expect(state.supersededMemberChange).toBeUndefined()
   })
 
   it('does not accept an older-epoch row after a row of a later epoch', async () => {

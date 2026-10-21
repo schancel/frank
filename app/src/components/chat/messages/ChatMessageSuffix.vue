@@ -25,21 +25,29 @@
       <span
         v-if="status === 'error'"
         class="outgoing-status outgoing-status--failed"
+        role="button"
+        tabindex="0"
+        :aria-label="failureDetails"
+        :aria-expanded="failureDetailsOpen ? 'true' : 'false'"
         data-testid="outgoing-failed"
+        @click.stop="failureDetailsOpen = !failureDetailsOpen"
+        @keydown.enter.space.prevent.stop="
+          failureDetailsOpen = !failureDetailsOpen
+        "
       >
         <q-icon
           name="error"
           :color="inline && outbound ? undefined : 'negative'"
         />
-        <span class="outgoing-status-text">
-          <span>{{ $t('chatMessage.failedToSend') }}</span>
-          <template v-if="failureText">
-            {{ ' — '
-            }}<span data-testid="outgoing-failure-reason">{{
-              failureText
-            }}</span>
-          </template>
-        </span>
+        <span class="outgoing-status-text">{{
+          $t('chatMessage.failedShort')
+        }}</span>
+        <q-tooltip
+          v-model="failureDetailsOpen"
+          max-width="260px"
+          data-testid="outgoing-failure-details"
+          >{{ failureDetails }}</q-tooltip
+        >
       </span>
       <span
         v-else-if="status === 'payment-pending'"
@@ -164,7 +172,7 @@ export default defineComponent({
       required: false,
       default: '',
     },
-    /** Why the message failed (`OutgoingFailureReason`), shown next to "Failed to send". */
+    /** Why the message failed (`OutgoingFailureReason`), explained in the tooltip of "Failed". */
     failureReason: {
       type: String,
       required: false,
@@ -174,6 +182,9 @@ export default defineComponent({
   data() {
     return {
       announced: '',
+      /** The failure's explanation is open: hover shows it, and a tap or Enter toggles it,
+       * since a phone has no hover. */
+      failureDetailsOpen: false,
       showPaymentSuccess: false,
       paymentSuccessTimer: undefined as
         | ReturnType<typeof setTimeout>
@@ -204,6 +215,9 @@ export default defineComponent({
           this.showPaymentSuccess = false
         }, 5000)
       }
+    },
+    status() {
+      this.failureDetailsOpen = false
     },
     announcement(text: string) {
       this.announced = text
@@ -266,13 +280,14 @@ export default defineComponent({
         return this.sendingText
       }
       if (this.status === 'payment-pending') return this.paymentText
-      if (this.status === 'error') {
-        return `${this.$t('chatMessage.failedToSend')} ${
-          this.failureText
-        }`.trim()
-      }
+      if (this.status === 'error') return this.failureDetails
       if (this.showPaymentSuccess) return this.$t(this.paymentSuccessKey)
       return this.paymentSummaryText
+    },
+    /** The full failure, for the tooltip of the short "Failed" label and for screen readers. */
+    failureDetails(): string {
+      const failed = this.$t('chatMessage.failedToSend')
+      return this.failureText ? `${failed} — ${this.failureText}` : failed
     },
     failureText(): string {
       const keys: Record<string, string> = {
@@ -327,5 +342,9 @@ export default defineComponent({
   align-items: center;
   gap: 4px;
   white-space: normal;
+}
+.outgoing-status--failed {
+  white-space: nowrap;
+  cursor: pointer;
 }
 </style>

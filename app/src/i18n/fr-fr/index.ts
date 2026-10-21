@@ -949,6 +949,7 @@ export const rawFrFR = {
     openSender: 'Ouvrir le profil de {name}',
     noPayloadFound: 'Impossible de trouver les données pour ce message',
     failedToSend: 'Échec de l’envoi',
+    failedShort: 'Échec',
     showActions: 'Afficher les actions du message',
     replyMessage: 'Répondre au message',
     forwardMessage: 'Transférer le message',

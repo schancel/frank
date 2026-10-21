@@ -49,6 +49,8 @@ import { withDefaultMessageItems } from './message-items.testutil'
 export const START_BALANCE = 10n ** 18n
 export const STAMP = 1_000n
 export interface InboxRecord {
+  /** `out`: the sender's own copy of a message it sent. */
+  direction?: 'in' | 'out'
   delivery: Uint8Array
   context: Uint8Array
   submissionIdentity: string
@@ -364,6 +366,7 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
     relay: tuple,
   }
   const stores: DirectoryStore[] = []
+  const opened: EvmChainWalletHandle[] = []
   // Each wallet admits both subjects through its own independent public store.
   const admit = async (owner: string, wallet: EvmChainWalletHandle) => {
     const exported = prepareMonadRevisionZeroExport(wallet, input)
@@ -389,6 +392,9 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
   const requests: { body: Uint8Array; contentType: string }[] = []
   /** The mailbox the relay stores the next delivered message in. */
   let deliverTo: InboxRecord[] | undefined
+  /** Where the relay keeps the sender's own copy of what it delivers, as the real relay does
+   * (the sender's mailbox, direction `out`). Off unless a test sets it. */
+  let senderCopyTo: InboxRecord[] | undefined
   let clock = 1_000
   let phase: 'delivered' | 'retained' | 'fail' = 'delivered'
   /** Opt-in barrier armed by `holdNextRelayRequest`: the next request waits here. */
@@ -421,13 +427,22 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
           // The relay only logs a broadcast it could not make.
         }
       }
-    if (phase === 'delivered' && deliverTo)
+    if (phase === 'delivered' && deliverTo) {
+      const timestampMs = ++clock
       deliverTo.push({
         delivery: restored.parts.delivery,
         context: restored.parts.context,
         submissionIdentity: restored.identity.submission_identity,
-        timestampMs: ++clock,
+        timestampMs,
       })
+      senderCopyTo?.push({
+        direction: 'out',
+        delivery: restored.parts.delivery,
+        context: restored.parts.context,
+        submissionIdentity: restored.identity.submission_identity,
+        timestampMs,
+      })
+    }
     const identity = restoreCanonicalRequest({
       body,
       contentType: init.headers['Content-Type'],
@@ -527,10 +542,24 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
       }
     },
     setMailbox: (next: InboxRecord[] | undefined) => (deliverTo = next),
+    setSenderCopies: (next: InboxRecord[] | undefined) => (senderCopyTo = next),
+    /** The same account (`roots(index)`) opened on another device: its own wallet store. */
+    async otherDevice(index: number, name: string) {
+      const other = withDefaultMessageItems(
+        createEvmChain({
+          ...config,
+          walletStorageLocation: join(directory, `wallet-${name}`),
+        }),
+      )
+      const wallet = (await other.createWallet(roots(index))) as EvmChainWalletHandle
+      opened.push(wallet)
+      return { chain: other, wallet }
+    },
     directoryFor,
     close: async () => {
       await alice.close()
       await bob.close()
+      for (const wallet of opened) await wallet.close().catch(() => undefined)
       for (const store of stores) await store.close()
       rmSync(directory, { recursive: true, force: true })
     },

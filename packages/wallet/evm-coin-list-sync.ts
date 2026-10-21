@@ -64,11 +64,15 @@ export class EvmCoinListSync {
 
   /** The key of a wallet account the list may hold coins of, or undefined. */
   keyOf(account: string): string | undefined {
+    return this.sourceOf(account)?.privateKey()
+  }
+
+  /** The wallet account the list may hold coins of, or undefined: not this wallet's. */
+  sourceOf(account: string): CoinListSource | undefined {
     const key = account.toLowerCase()
     return this.config
       .sources()
       .find(source => source.account.toLowerCase() === key)
-      ?.privateKey()
   }
 
   isDirty(account: string): boolean {

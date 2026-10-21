@@ -1271,6 +1271,82 @@ describe('parallel paid messages', () => {
     )
   })
 
+  it('a paid message sent on one device spends its coin on the account\'s other device, from the sender copy in the mailbox, before the chain shows it', async () => {
+    // Neither the relay nor the sender's own broadcast lands: only the mailbox tells.
+    offlineChain.relayBroadcasts = false
+    offlineChain.broadcastDown = true
+    const [sub] = await fundAccounts(1, 3n * (STAMP + FEE_RESERVE))
+    // One process opens an account once, so the two devices take turns; each has its own store.
+    const poolSize = alice.pool.records().length
+    await alice.close()
+    const openOther = async () => {
+      const other = await f.otherDevice(0, 'alice-2')
+      installCanonicalDirectory(
+        other.wallet,
+        await f.directoryFor(`alice-2-${Math.random()}`, other.wallet, f.bob),
+      )
+      other.wallet.pool.ensureSize(poolSize)
+      await other.wallet.pool.flush()
+      return {
+        ...other,
+        list: evmWalletInternals(other.wallet).coinList!,
+        sync: evmWalletInternals(other.wallet).coinListSync!,
+      }
+    }
+    let other = await openOther()
+    await other.sync.refresh()
+    expect(other.list.get(sub.address, 0)).toMatchObject({ state: 'unspent' })
+    await other.wallet.close()
+    // The first device sends; the relay keeps the sender's copy in the account's mailbox.
+    await reopen()
+    const aliceMailbox: InboxRecord[] = []
+    mailboxes.set(toHex(alice.identity.compressedPubKey), aliceMailbox)
+    f.setSenderCopies(aliceMailbox)
+    const sent = await send(1)
+    const [paid] = relayPayments()
+    expect(paid.from!.toLowerCase()).toBe(sub.address.toLowerCase())
+    await alice.close()
+    // The other device, as it last knew the account: the coin unspent.
+    other = await openOther()
+    expect(other.list.get(sub.address, 0)).toMatchObject({ state: 'unspent' })
+    const read = () =>
+      other.chain.directMessages.fetchSince({
+        wallet: other.wallet,
+        sinceMs: 0,
+        onIncompleteTimestamp: () => undefined,
+      })
+    const seen = await read()
+    expect(seen.map(message => message.payloadDigest)).toContain(
+      sent.payloadDigest,
+    )
+    expect(other.list.get(sub.address, 0)).toMatchObject({
+      state: 'spent',
+      spendingTx: paid.serialized,
+    })
+    // It cannot pay from that coin, though the chain does not show it spent yet.
+    await expect(
+      other.chain.directMessages.send({
+        wallet: other.wallet,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'from the other device' }],
+        stampValue: STAMP,
+        messageId: ID(2),
+      }),
+    ).rejects.toBeInstanceOf(InsufficientStampFundsError)
+    // Reading the mailbox again changes nothing.
+    await read()
+    expect(other.list.get(sub.address, 0)?.state).toBe('spent')
+    // Once the chain shows the nonce consumed, the account's next coin is what it holds.
+    offlineChain.mine(paid.serialized)
+    await other.sync.refresh({ all: true })
+    expect(other.list.get(sub.address, 1)).toMatchObject({
+      state: 'unspent',
+      valueWei: mockBalances.get(sub.address.toLowerCase()),
+    })
+    await other.wallet.close()
+    await reopen()
+  })
+
   it('a payment the chain mined and reverted, of a delivered message, is made once more: same value, same address, recorded before it is broadcast, never a third time', async () => {
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     mockBalances.set(main, 10n ** 17n)

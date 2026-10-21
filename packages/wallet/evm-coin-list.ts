@@ -15,7 +15,9 @@
  *   became of that transaction (`recordMined` / `recordGone`). A timeout, a restart, a relay
  *   refusal or a deleted message is not that.
  * - `spent`: the chain shows its spending transaction included. What the account holds after it
- *   is a new coin at the next nonce (the successor), added in the same step.
+ *   is a new coin at the next nonce (the successor), added in the same step. Or another device
+ *   of the account spent it (its sent mailbox shows the transaction, `spentInBlock` absent): the
+ *   sync lists the successor once the chain shows the nonce consumed.
  *
  * Selection (`select`) is one synchronous pass over the unspent coins: no request, no await, so
  * two payments built at the same moment can never take the same coin. Whatever has to be learned
@@ -476,6 +478,61 @@ export class EvmCoinList {
     if (successor) this.coinsByKey.set(successorKey, successor)
     this.coinsByKey.set(key, spent)
     this.notify()
+  }
+
+  /**
+   * Another device of the account signed `rawTx` from `[account, nonce]`, and the relay holds it
+   * (the account's sent mailbox shows that exact transaction): the coin is spent here too, and
+   * never selectable again, though no block is known yet. What the account holds after it is
+   * listed by the sync once the chain shows the nonce consumed. A coin the list does not have
+   * yet is recorded spent (its value unknown, zero), so a read that predates the transaction
+   * cannot list it. A coin this device took itself is left to its own settlement. Returns
+   * whether the list changed.
+   */
+  async recordSpentElsewhere(
+    coin: {
+      account: string
+      nonce: number
+      privateKey: string
+      origin: EvmCoinListOrigin
+    },
+    rawTx: string,
+  ): Promise<boolean> {
+    const account = coin.account.toLowerCase()
+    const key = coinKey(account, coin.nonce)
+    const current = this.coinsByKey.get(key)
+    if (current !== undefined) {
+      if (current.state !== 'unspent') return false
+      const spent: EvmListCoin = { ...current, state: 'spent', spendingTx: rawTx }
+      await this.persist(spent)
+      this.coinsByKey.set(key, spent)
+      this.notify()
+      return true
+    }
+    if (computeAddress(coin.privateKey).toLowerCase() !== account)
+      throw new EvmCoinListError('A coin is added with its own account key')
+    const mine = this.all().filter(other => other.account === account)
+    // The list already knows the account past this nonce.
+    if (mine.some(other => other.nonce > coin.nonce)) return false
+    // Older coins of the account that nothing holds are stale: this transaction came after them.
+    const stale = mine.filter(other => other.state === 'unspent')
+    const spent: EvmListCoin = {
+      account,
+      nonce: coin.nonce,
+      privateKey: coin.privateKey,
+      valueWei: 0n,
+      origin: coin.origin,
+      state: 'spent',
+      spendingTx: rawTx,
+    }
+    await this.persist(spent)
+    this.coinsByKey.set(key, spent)
+    for (const old of stale) this.coinsByKey.delete(coinKey(old.account, old.nonce))
+    this.notify()
+    await Promise.all(
+      stale.map(old => this.store.delete(coinKey(old.account, old.nonce))),
+    )
+    return true
   }
 
   /**

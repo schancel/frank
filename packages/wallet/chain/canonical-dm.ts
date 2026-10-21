@@ -2458,6 +2458,24 @@ export function paymentsToSelf<T extends { address: Uint8Array; childIndex: numb
   )
 }
 
+/**
+ * A sent record of this account's mailbox (the relay keeps the sender's copy with the complete
+ * payment set): each coin of this wallet its payments spend is spent here too. This is how the
+ * account's other devices learn a paid message's spends, before the chain shows them.
+ */
+async function noteSentPayments(
+  owner: CanonicalMessagingOwner,
+  payments: readonly { rawTx?: Uint8Array }[],
+): Promise<void> {
+  const rawTxs = payments.flatMap(member =>
+    member.rawTx ? [hexlify(member.rawTx)] : [],
+  )
+  if (rawTxs.length === 0) return
+  await owner.lifetime(() =>
+    owner.payer().recordSentElsewhere(owner.chainId, rawTxs),
+  )
+}
+
 async function readMailbox(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['fetchSince']>[0],
@@ -2741,6 +2759,18 @@ async function readMailbox(
         })
         continue
       }
+      // A message this account sent, from this device or another: the coins its payments
+      // spend are spent here too. A failure leaves the record to be read again.
+      if (isOutbound)
+        try {
+          await noteSentPayments(owner, deliveryTyped.payments)
+        } catch (error) {
+          console.warn(
+            '[monad-canonical-dm] could not record a sent message\'s payments:',
+            error,
+          )
+          incomplete(record.timestampMs)
+        }
       const paidHere = isOutbound
         ? deliveryTyped.payments
         : paymentsToSelf(
@@ -3124,6 +3154,15 @@ export function canonicalDirectMessages(
                 } finally {
                   roles.dispose()
                 }
+                // As in a mailbox read; one that fails here is recorded by the next read.
+                if (isOutbound)
+                  await noteSentPayments(owner, deliveryTyped.payments).catch(
+                    error =>
+                      console.warn(
+                        '[monad-canonical-dm] could not record a sent message\'s payments:',
+                        error,
+                      ),
+                  )
                 const paidHere = isOutbound
                   ? deliveryTyped.payments
                   : paymentsToSelf(

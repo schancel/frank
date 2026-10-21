@@ -182,6 +182,36 @@ describe('the coin list', () => {
     expect(list.latestOf(accounts[0]!.address)!.nonce).toBe(2)
   })
 
+  it('a coin another device of the account spent (its sent mailbox shows the transaction) is spent here; a held coin is left to its own settlement', async () => {
+    const { list, store } = await listWith([MON / 10n, MON / 10n])
+    const source = (i: number, nonce: number) => ({
+      account: accounts[i]!.address,
+      nonce,
+      privateKey: accounts[i]!.privateKey,
+      origin: 'deterministic' as const,
+    })
+    // Known and unspent: spent, with that transaction, and never selected again.
+    expect(await list.recordSpentElsewhere(source(0, 0), '0xaa')).toBe(true)
+    expect(list.get(at(accounts[0]!), 0)).toMatchObject({
+      state: 'spent',
+      spendingTx: '0xaa',
+    })
+    expect(await list.recordSpentElsewhere(source(0, 0), '0xaa')).toBe(false)
+    // Held by this device: its own settlement decides.
+    list.select({ holder: 'mine', amountWei: MON / 20n, feeReserveWei: FEE })
+    expect(await list.recordSpentElsewhere(source(1, 0), '0xbb')).toBe(false)
+    expect(list.get(at(accounts[1]!), 0)?.state).toBe('spend_pending')
+    // Not known yet: recorded spent, so a read from before it cannot list the old nonce.
+    expect(await list.recordSpentElsewhere(source(2, 3), '0xcc')).toBe(true)
+    expect(list.latestOf(at(accounts[2]!))).toMatchObject({ nonce: 3, state: 'spent' })
+    // Already past that nonce: nothing changes.
+    expect(await list.recordSpentElsewhere(source(2, 1), '0xdd')).toBe(false)
+    // It survives a restart.
+    const reopened = await EvmCoinList.open(store)
+    expect(reopened.get(at(accounts[0]!), 0)?.state).toBe('spent')
+    expect(reopened.get(at(accounts[2]!), 3)?.state).toBe('spent')
+  })
+
   it('sync never overwrites a held coin or moves an account back, and replaces an older unspent coin', async () => {
     const { list } = await listWith([MON])
     const account = accounts[0]!

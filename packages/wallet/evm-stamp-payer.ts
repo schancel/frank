@@ -271,8 +271,6 @@ export class EvmStampPayer {
     }
   }
 
-  /** The transaction spending `(address, nonce)` was seen mined at `block`: its successor coin
-
   /** The pool index of a sub-account's address. */
   private indexOf(address: string): number | undefined {
     const key = address.toLowerCase()
@@ -1117,6 +1115,49 @@ export class EvmStampPayer {
         pool.setStatus(index, 'retired')
     }
     await pool.flush()
+  }
+
+  /**
+   * The account's sent mailbox shows these signed payments: a message of this account, sent by
+   * this device or another. Each coin of this wallet one of them spends is spent here too (this
+   * device's own are already held, and left to its settlement), and its account is read again
+   * once the chain shows the nonce consumed. A transaction for another chain, or from an account
+   * that is not this wallet's, changes nothing. Repeating it changes nothing more.
+   */
+  async recordSentElsewhere(
+    chainId: bigint,
+    rawTxs: readonly string[],
+  ): Promise<void> {
+    const { pool, coins, sync } = this.config
+    for (const rawTx of rawTxs) {
+      const tx = Transaction.from(rawTx)
+      if (tx.chainId !== chainId || tx.from === null) continue
+      const source = sync.sourceOf(tx.from)
+      if (source === undefined) continue
+      const changed = await coins.recordSpentElsewhere(
+        {
+          account: source.account,
+          nonce: tx.nonce,
+          privateKey: source.privateKey(),
+          origin: source.origin,
+        },
+        rawTx,
+      )
+      if (!changed) continue
+      sync.markDirty(source.account)
+      // The pool's row of a sub-account says so too, for the spenders that still read it.
+      const index = tx.nonce === 0 ? this.indexOf(source.account) : undefined
+      if (index === undefined) continue
+      try {
+        pool.commitSpend(index, rawTx)
+        await pool.flush()
+      } catch (error) {
+        console.warn(
+          `[evm-stamp-payer] sub-account ${index} was spent by another device but its row refused the record:`,
+          error,
+        )
+      }
+    }
   }
 
   /** The chain shows the coin's nonce consumed by another transaction: this payment can never

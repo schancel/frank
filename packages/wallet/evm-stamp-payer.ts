@@ -707,13 +707,36 @@ export class EvmStampPayer {
         // the account (a funding pass, a native send) has just let it go, and its last transfer
         // may still be on its way into a block. That is not "no funds": the accounts are read
         // again at each look of the chain until they are known, a bounded number of times.
+        // Only coins this payment could take once read: not held for a contact payment, not
+        // reserved by the native journal at their nonce, and not claimed by another operation
+        // (those are counted above, or never come back).
+        const takeableOnceRead = (coin: EvmListCoin): boolean => {
+          if (claimedOutside.includes(coin)) return false
+          if (this.config.accountHeld?.(coin.account)) return false
+          if (this.config.canSelectAccount?.(coin.account, coin.nonce) === false)
+            return false
+          if (stampSourceOf(coin.origin) === 'pool') {
+            const index = this.indexOf(coin.account)
+            if (index === undefined) return false
+            const row = pool.getRecord(index)
+            const claimant = pool.claimedBy(index)
+            return (
+              row !== undefined &&
+              LISTED_ROW_STATUSES.has(row.status) &&
+              (coin.nonce !== 0 || row.status === 'available') &&
+              (claimant === undefined || claimant === input.holder) &&
+              !pool.isSpendReserved(index)
+            )
+          }
+          const claimant = pool.accountClaimedBy(coin.account)
+          return claimant === undefined || claimant === input.holder
+        }
         const unread = all.filter(
           coin =>
             coin.state === 'unspent' &&
             sync.isDirty(coin.account) &&
             allowed(stampSourceOf(coin.origin)) &&
-            !this.config.accountHeld?.(coin.account) &&
-            !claimedOutside.includes(coin),
+            takeableOnceRead(coin),
         )
         if (
           unread.length > 0 &&
@@ -721,6 +744,11 @@ export class EvmStampPayer {
           unreadLooks < MAX_UNREAD_LOOKS
         ) {
           unreadLooks++
+          // The payment waits for the reads: the host shows it waiting, not stuck.
+          if (!waiting) {
+            waiting = true
+            input.onWaiting?.()
+          }
           await this.read(() => sync.refresh(), input.signal)
           if (unread.some(coin => sync.isDirty(coin.account)))
             await this.untilChanged(input.signal)

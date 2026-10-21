@@ -317,6 +317,46 @@ describe('what holds a coin, and what lets it go', () => {
     expect(claim.accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
   })
 
+  it('a coin only the native journal\'s reservation keeps out is refused at once, not read again and again', async () => {
+    const f = await make({
+      canSelectAccount: (address, nonce) => !(address.toLowerCase() === at(main) && nonce === 0),
+    })
+    f.node.balances.set(at(main), MON)
+    await f.sync.refresh()
+    const reads = f.node.calls.length
+    const waited: unknown[] = []
+    await expect(
+      f.payer.claim({
+        holder: 'm',
+        stampValueWei: MON / 100n,
+        onWaiting: blocks => waited.push(blocks),
+      }),
+    ).rejects.toBeInstanceOf(InsufficientStampFundsError)
+    expect(
+      f.node.calls.slice(reads).filter(call => call === `balance:${at(main)}`).length,
+    ).toBeLessThanOrEqual(2)
+    expect(waited).toHaveLength(0)
+  })
+
+  it('a sub-account coin another operation claims, waiting to be read again, is refused at once: it never comes back', async () => {
+    const f = await make({ poolRows: 1 })
+    const row = f.pool.records()[0]!
+    const account = row.address.toLowerCase()
+    f.node.balances.set(account, MON / 50n)
+    await f.sync.refresh()
+    f.pool.restoreClaim('a', [row.index])
+    f.node.pending = new Map([[account, 1]])
+    f.sync.markDirty(account)
+    const started = Date.now()
+    await expect(
+      f.payer.claim({ holder: 'b', stampValueWei: MON / 100n, sources: ['pool'] }),
+    ).rejects.toBeInstanceOf(InsufficientStampFundsError)
+    expect(
+      f.node.calls.filter(call => call === `balance:${account}`).length,
+    ).toBeLessThanOrEqual(3)
+    expect(Date.now() - started).toBeLessThan(1_000)
+  })
+
   it('a sub-account another payment holds is not waited for: it never comes back', async () => {
     const f = await make({ poolRows: 1 })
     const row = f.pool.records()[0]!
@@ -467,7 +507,12 @@ describe('what the list may be out of date about', () => {
     // so a read leaves the account waiting to be read again.
     f.node.pending = new Map([[at(main), 1]])
     f.sync.markDirty(at(main))
-    const claiming = f.payer.claim({ holder: 'm', stampValueWei: MON / 2n })
+    const waited: unknown[] = []
+    const claiming = f.payer.claim({
+      holder: 'm',
+      stampValueWei: MON / 2n,
+      onWaiting: blocks => waited.push(blocks),
+    })
     let settled = false
     void claiming.then(
       () => (settled = true),
@@ -475,6 +520,8 @@ describe('what the list may be out of date about', () => {
     )
     await new Promise(resolve => setTimeout(resolve, 60))
     expect(settled).toBe(false)
+    // The host is told the payment is waiting while the account is read again.
+    expect(waited).toHaveLength(1)
     // The transfer is mined: main is at nonce 1 with what is left.
     f.node.pending = undefined
     f.node.nonces.set(at(main), 1)

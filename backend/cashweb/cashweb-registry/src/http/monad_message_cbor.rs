@@ -1159,7 +1159,11 @@ async fn page(
                 .into_iter()
                 .next()
                 .map(|(claim, direction)| (claim, Some(direction))),
-            MailboxResource::MailboxStream => unreachable!("the stream is not paged"),
+            MailboxResource::MailboxStream
+            | MailboxResource::NotificationPolicyRead
+            | MailboxResource::NotificationPolicyWrite => {
+                unreachable!("only the inbox and the mailbox are paged")
+            }
         })
     };
     let position = |claim: &crate::store::monad_dm_cbor::Claim| match resource {
@@ -1262,83 +1266,136 @@ pub(crate) async fn handle_mailbox(
 
 const MAX_NOTIFICATION_POLICY_BYTES: usize = 64 * 1024;
 
-fn decode_hex_header(headers: &HeaderMap, primary: &str, fallback: &str) -> Result<Vec<u8>> {
-    let raw = single_header(headers, primary)
-        .or_else(|_| single_header(headers, fallback))
-        .map_err(|_| CanonicalError::Unauthorized)?;
-    let trimmed = raw.trim();
-    let clean = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-        .unwrap_or(trimmed);
-    hex::decode(clean).map_err(|_| CanonicalError::Unauthorized)
+/// Domain of the bytes a mailbox owner signs to read or replace their notification policy.
+pub(crate) const NOTIFICATION_POLICY_AUTH_DOMAIN: &str = "frank:notification-policy-auth:v2";
+/// Compressed secp256k1 public key (hex) of the mailbox owner signing a policy request.
+const NOTIFICATION_POLICY_SUBJECT_HEADER: &str = "x-frank-mailbox-subject";
+
+fn notification_policy_binding(
+    address: Address,
+    resource: crate::monad_mailbox::MailboxResource,
+) -> crate::monad_mailbox::MailboxRequestBinding {
+    crate::monad_mailbox::MailboxRequestBinding {
+        resource,
+        recipient: address,
+        since: 0,
+        cursor: None,
+        limit: 0,
+        max_bytes: 0,
+    }
 }
 
-fn authenticate_notification_policy(
-    headers: &HeaderMap,
-    address: Address,
+/// The one signing string a notification-policy request is accepted under: the relay-issued
+/// single-use challenge (its epoch and MAC name this relay), the method, the mailbox address,
+/// the relay's network tag and SHA-256 of the exact request body (empty for GET).
+pub(crate) fn notification_policy_auth_preimage(
+    challenge: crate::monad_mailbox::MailboxChallenge,
     method: &str,
+    address: Address,
+    network_tag: &[u8],
+    body: &[u8],
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(256 + network_tag.len());
+    bytes.extend_from_slice(NOTIFICATION_POLICY_AUTH_DOMAIN.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(&challenge.epoch);
+    bytes.extend_from_slice(&challenge.nonce);
+    bytes.extend_from_slice(&challenge.expires_at_ms.to_be_bytes());
+    bytes.extend_from_slice(&challenge.token);
+    bytes.extend_from_slice(method.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(&address.0);
+    bytes.extend_from_slice(&(network_tag.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(network_tag);
+    bytes.extend_from_slice(Sha256::digest(body.to_vec().into()).as_slice());
+    bytes
+}
+
+/// `401` carrying a fresh challenge for exactly this request; the client signs it and retries.
+fn notification_policy_challenge(
+    runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
+    binding: &crate::monad_mailbox::MailboxRequestBinding,
+) -> Response {
+    let challenge = runtime.issue_challenge(binding, now_ms());
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({
+            "version": 1,
+            "error": "mailbox_auth_required",
+            "challenge": {
+                "epoch": hex::encode(challenge.epoch),
+                "nonce": hex::encode(challenge.nonce),
+                "expires_at_ms": challenge.expires_at_ms,
+                "token": hex::encode(challenge.token),
+                "signing_domain": NOTIFICATION_POLICY_AUTH_DOMAIN,
+                "network_tag": hex::encode(runtime.network_tag()),
+            },
+        })),
+    )
+        .into_response()
+}
+
+/// Verify the owner's signature over [`notification_policy_auth_preimage`] and consume the
+/// challenge, so the request cannot be replayed. The challenge itself was already checked to be
+/// one this relay issued for this method and address and still live.
+fn authenticate_notification_policy(
+    server: &super::server::RegistryServer,
+    runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
+    headers: &HeaderMap,
+    binding: &crate::monad_mailbox::MailboxRequestBinding,
+    (challenge, signature): (crate::monad_mailbox::MailboxChallenge, Vec<u8>),
+    method: &str,
+    body: &[u8],
 ) -> Result<()> {
-    let pubkey_bytes =
-        decode_hex_header(headers, "x-cashweb-auth-pubkey", "x-frank-mailbox-subject")?;
-    let derived = if pubkey_bytes.len() == 33 {
-        crate::monad_stamp_stealth::recipient_address_from_public_key(&pubkey_bytes)
-            .map_err(|_| CanonicalError::Unauthorized)?
-    } else if pubkey_bytes.len() == 65 {
-        let arr: [u8; 65] = pubkey_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| CanonicalError::Unauthorized)?;
-        crate::monad_evm_tx::address_from_uncompressed_pubkey(&arr)
-    } else {
-        return Err(CanonicalError::Unauthorized);
-    };
-    if derived != address {
-        return Err(CanonicalError::Unauthorized);
-    }
-
-    let timestamp_str = single_header(headers, "x-cashweb-auth-timestamp")
-        .or_else(|_| single_header(headers, "x-frank-mailbox-expires-at-ms"))
-        .map_err(|_| CanonicalError::Unauthorized)?
-        .trim();
-    if timestamp_str.is_empty() || timestamp_str.parse::<u64>().is_err() {
-        return Err(CanonicalError::Unauthorized);
-    }
-
-    let sig_bytes = decode_hex_header(
-        headers,
-        "x-cashweb-auth-signature",
-        "x-frank-mailbox-signature",
-    )?;
-    let pk = secp256k1_abc::PublicKey::from_slice(&pubkey_bytes)
+    use crate::monad_mailbox::ChallengeConsumption;
+    let subject = single_header(headers, NOTIFICATION_POLICY_SUBJECT_HEADER)
         .map_err(|_| CanonicalError::Unauthorized)?;
-    let mut sig = if sig_bytes.len() == 64 {
-        secp256k1_abc::Signature::from_compact(&sig_bytes)
-            .map_err(|_| CanonicalError::Unauthorized)?
-    } else {
-        secp256k1_abc::Signature::from_der(&sig_bytes).map_err(|_| CanonicalError::Unauthorized)?
-    };
-    sig.normalize_s();
-
-    let addr_hex = address.to_hex();
-    let candidates = [
-        format!("frank-notification-policy-auth-v1:{method}:{addr_hex}:{timestamp_str}"),
-        format!("frank-notification-policy-auth-v1:{addr_hex}:{timestamp_str}"),
-        format!("{method}:{addr_hex}:{timestamp_str}"),
-        format!("{addr_hex}:{timestamp_str}"),
-        timestamp_str.to_string(),
-    ];
-    let secp = secp256k1_abc::Secp256k1::verification_only();
-    let verified = candidates.iter().any(|preimage| {
-        let digest = Sha256::digest(preimage.as_bytes().to_vec().into());
-        secp256k1_abc::Message::from_slice(digest.as_slice())
-            .map(|msg| secp.verify(&msg, &sig, &pk).is_ok())
-            .unwrap_or(false)
-    });
-    if !verified {
+    let mut pubkey = [0u8; 33];
+    hex::decode_to_slice(subject, &mut pubkey).map_err(|_| CanonicalError::Unauthorized)?;
+    let derived = crate::monad_stamp_stealth::recipient_address_from_public_key(&pubkey)
+        .map_err(|_| CanonicalError::Unauthorized)?;
+    if derived != binding.recipient {
         return Err(CanonicalError::Unauthorized);
     }
-    Ok(())
+    let pk =
+        secp256k1_abc::PublicKey::from_slice(&pubkey).map_err(|_| CanonicalError::Unauthorized)?;
+    let mut sig = if signature.len() == 64 {
+        secp256k1_abc::Signature::from_compact(&signature)
+    } else {
+        secp256k1_abc::Signature::from_der(&signature)
+    }
+    .map_err(|_| CanonicalError::Unauthorized)?;
+    sig.normalize_s();
+    let digest = Sha256::digest(
+        notification_policy_auth_preimage(
+            challenge,
+            method,
+            binding.recipient,
+            runtime.network_tag(),
+            body,
+        )
+        .into(),
+    );
+    let msg = secp256k1_abc::Message::from_slice(digest.as_slice())
+        .map_err(|_| CanonicalError::Unauthorized)?;
+    if secp256k1_abc::Secp256k1::verification_only()
+        .verify(&msg, &sig, &pk)
+        .is_err()
+    {
+        return Err(CanonicalError::Unauthorized);
+    }
+    match server.registry.canonical_dm().consume_challenge(
+        challenge.epoch,
+        binding.recipient,
+        challenge.nonce,
+        challenge.expires_at_ms,
+        now_ms(),
+        crate::monad_mailbox::MAX_USED_CHALLENGES_PER_RECIPIENT,
+    )? {
+        ChallengeConsumption::Consumed => Ok(()),
+        ChallengeConsumption::Rejected => Err(CanonicalError::Unauthorized),
+        ChallengeConsumption::AtCapacity => Err(CanonicalError::Capacity),
+    }
 }
 
 pub(crate) async fn handle_get_vapid_public_key(
@@ -1367,7 +1424,20 @@ pub(crate) async fn handle_get_notification_policy(
     headers: HeaderMap,
 ) -> Result<Response> {
     let address = Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?;
-    authenticate_notification_policy(&headers, address, "GET")?;
+    let runtime = server
+        .monad_mailbox
+        .as_enabled()
+        .ok_or(CanonicalError::Unavailable)?;
+    let binding = notification_policy_binding(
+        address,
+        crate::monad_mailbox::MailboxResource::NotificationPolicyRead,
+    );
+    let Some(auth) =
+        crate::monad_mailbox::parse_mailbox_authentication(&headers, runtime, &binding, now_ms())
+    else {
+        return Ok(notification_policy_challenge(runtime, &binding));
+    };
+    authenticate_notification_policy(&server, runtime, &headers, &binding, auth, "GET", &[])?;
     let owner = server.registry.canonical_dm();
     let policy = owner.get_notification_policy(address)?;
     let mut response = (StatusCode::OK, Json(policy)).into_response();
@@ -1389,7 +1459,20 @@ pub(crate) async fn handle_put_notification_policy(
 ) -> Result<Response> {
     use hyper::body::HttpBody;
     let address = Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?;
-    authenticate_notification_policy(&headers, address, "PUT")?;
+    let runtime = server
+        .monad_mailbox
+        .as_enabled()
+        .ok_or(CanonicalError::Unavailable)?;
+    let binding = notification_policy_binding(
+        address,
+        crate::monad_mailbox::MailboxResource::NotificationPolicyWrite,
+    );
+    // A challenge this relay did not issue for this request is answered before the body is read.
+    let Some(auth) =
+        crate::monad_mailbox::parse_mailbox_authentication(&headers, runtime, &binding, now_ms())
+    else {
+        return Ok(notification_policy_challenge(runtime, &binding));
+    };
     let mut bytes = Vec::new();
     while let Some(chunk) = body.data().await {
         let chunk = chunk.map_err(|_| CanonicalError::Invalid)?;
@@ -1398,6 +1481,7 @@ pub(crate) async fn handle_put_notification_policy(
         }
         bytes.extend_from_slice(&chunk);
     }
+    authenticate_notification_policy(&server, runtime, &headers, &binding, auth, "PUT", &bytes)?;
     let mut policy: crate::store::notification_policy::MailboxNotificationPolicy =
         serde_json::from_slice(&bytes).map_err(|_| CanonicalError::Invalid)?;
     if policy

@@ -761,6 +761,9 @@ async fn private_headers(
         MailboxResource::Inbox => "inbox",
         MailboxResource::Mailbox => "mailbox",
         MailboxResource::MailboxStream => "mailbox_ws",
+        MailboxResource::NotificationPolicyRead | MailboxResource::NotificationPolicyWrite => {
+            unreachable!("notification-policy challenges come from the policy route")
+        }
     };
     let query = format!(
         "resource={resource}&since={}&limit={}&max_bytes={}",
@@ -1202,6 +1205,92 @@ async fn one_signed_payment_cannot_be_claimed_for_a_second_message() {
     }
 }
 
+#[test]
+fn notification_policy_signing_string_matches_the_typescript_signer() {
+    // The same vector is asserted in packages/cashweb/relay/notification-policy.jest.test.ts.
+    let challenge = crate::monad_mailbox::MailboxChallenge {
+        epoch: [1; 32],
+        nonce: [2; 32],
+        expires_at_ms: 1_700_000_060_000,
+        token: [3; 32],
+    };
+    let address = Address::from_hex("0x10239e8fbfd030da11df8f452984ebfb894d0dc3").unwrap();
+    let preimage = notification_policy_auth_preimage(challenge, "PUT", address, b"MONT", b"{}");
+    assert_eq!(
+        hex::encode(Sha256::digest(preimage.into()).as_slice()),
+        "f9fe117f1707923d059de7aa48ae6d0a6332391d5df1b113518a206a09ace464"
+    );
+}
+
+/// What an unauthenticated notification-policy request is answered with: `401` and a challenge.
+async fn notification_policy_challenge_for(
+    url: &str,
+    owner_hex: &str,
+    method: reqwest::Method,
+) -> crate::monad_mailbox::MailboxChallenge {
+    let response = reqwest::Client::new()
+        .request(
+            method,
+            format!("{url}/message/monad/mailbox/{owner_hex}/notification-policy"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    let challenge = &body["challenge"];
+    assert_eq!(challenge["network_tag"], "4d4f4e54");
+    assert_eq!(challenge["signing_domain"], NOTIFICATION_POLICY_AUTH_DOMAIN);
+    crate::monad_mailbox::MailboxChallenge {
+        epoch: hash_hex(challenge["epoch"].as_str().unwrap()).unwrap(),
+        nonce: hash_hex(challenge["nonce"].as_str().unwrap()).unwrap(),
+        token: hash_hex(challenge["token"].as_str().unwrap()).unwrap(),
+        expires_at_ms: challenge["expires_at_ms"].as_i64().unwrap(),
+    }
+}
+
+/// Headers carrying `challenge` and the owner's signature over `preimage`.
+fn notification_policy_headers(
+    sk: &secp256k1_abc::SecretKey,
+    challenge: crate::monad_mailbox::MailboxChallenge,
+    preimage: &[u8],
+) -> reqwest::header::HeaderMap {
+    let secp = secp256k1_abc::Secp256k1::new();
+    let digest = Sha256::digest(preimage.to_vec().into());
+    let msg = secp256k1_abc::Message::from_slice(digest.as_slice()).unwrap();
+    let signature = secp.sign(&msg, sk).serialize_compact();
+    let pubkey = secp256k1_abc::PublicKey::from_secret_key(&secp, sk).serialize();
+    let mut headers = reqwest::header::HeaderMap::new();
+    for (name, value) in [
+        ("x-frank-mailbox-subject", hex::encode(pubkey)),
+        ("x-frank-mailbox-epoch", hex::encode(challenge.epoch)),
+        ("x-frank-mailbox-nonce", hex::encode(challenge.nonce)),
+        ("x-frank-mailbox-token", hex::encode(challenge.token)),
+        (
+            "x-frank-mailbox-expires-at-ms",
+            challenge.expires_at_ms.to_string(),
+        ),
+        ("x-frank-mailbox-signature", hex::encode(signature)),
+    ] {
+        headers.insert(name, value.parse().unwrap());
+    }
+    headers
+}
+
+/// Fresh signed headers for one notification-policy request carrying exactly `body`.
+async fn signed_notification_policy_headers(
+    url: &str,
+    sk: &secp256k1_abc::SecretKey,
+    owner: Address,
+    method: reqwest::Method,
+    body: &[u8],
+) -> reqwest::header::HeaderMap {
+    let challenge = notification_policy_challenge_for(url, &owner.to_hex(), method.clone()).await;
+    let preimage =
+        notification_policy_auth_preimage(challenge, method.as_str(), owner, b"MONT", body);
+    notification_policy_headers(sk, challenge, &preimage)
+}
+
 #[tokio::test]
 async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero_value_inbox_storage(
 ) {
@@ -1232,25 +1321,46 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
         let owner_addr =
             crate::monad_stamp_stealth::recipient_address_from_public_key(&pubkey_bytes).unwrap();
         let owner_hex = owner_addr.to_hex();
+        let policy_url = format!("{url}/message/monad/mailbox/{owner_hex}/notification-policy");
+        let client = reqwest::Client::new();
+
+        // 1. Unauthenticated GET is answered with 401 and a challenge, never the policy.
+        notification_policy_challenge_for(&url, &owner_hex, reqwest::Method::GET).await;
+
+        // 1a. The old timestamp-only signing strings are refused, with or without the
+        // challenge headers.
         let ts = "1700000000000";
-
-        let sign_auth = |method: &str| -> String {
-            let preimage = format!("frank-notification-policy-auth-v1:{method}:{owner_hex}:{ts}");
-            let digest = Sha256::digest(preimage.into_bytes().into());
+        let old_signature = |preimage: &str| -> String {
+            let digest = Sha256::digest(preimage.as_bytes().to_vec().into());
             let msg = secp256k1_abc::Message::from_slice(digest.as_slice()).unwrap();
-            let sig = secp.sign(&msg, &sk);
-            hex::encode(sig.serialize_compact())
+            hex::encode(secp.sign(&msg, &sk).serialize_compact())
         };
-
-        // 1. Unauthenticated GET is rejected with 401
-        let unauth = reqwest::Client::new()
-            .get(format!(
-                "{url}/message/monad/mailbox/{owner_hex}/notification-policy"
-            ))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+        for old in [
+            format!("frank-notification-policy-auth-v1:GET:{owner_hex}:{ts}"),
+            format!("frank-notification-policy-auth-v1:{owner_hex}:{ts}"),
+            format!("GET:{owner_hex}:{ts}"),
+            format!("{owner_hex}:{ts}"),
+            ts.to_string(),
+        ] {
+            let legacy = client
+                .get(&policy_url)
+                .header("x-cashweb-auth-pubkey", hex::encode(pubkey_bytes))
+                .header("x-cashweb-auth-timestamp", ts)
+                .header("x-cashweb-auth-signature", old_signature(&old))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(legacy.status(), StatusCode::UNAUTHORIZED, "{old}");
+            let challenge =
+                notification_policy_challenge_for(&url, &owner_hex, reqwest::Method::GET).await;
+            let with_challenge = client
+                .get(&policy_url)
+                .headers(notification_policy_headers(&sk, challenge, old.as_bytes()))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(with_challenge.status(), StatusCode::UNAUTHORIZED, "{old}");
+        }
 
         // 1b. GET /push/vapid-public-key returns a persistent 65-byte P-256 public key
         let vapid_res = reqwest::Client::new()
@@ -1284,17 +1394,38 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
         assert_eq!(reopened_vapid.public_key_base64url(), vapid_pubkey);
 
         // 2. Authenticated GET returns default policy + x-cashweb-vapid-public-key header
-        let get_default = reqwest::Client::new()
-            .get(format!(
-                "{url}/message/monad/mailbox/{owner_hex}/notification-policy"
-            ))
-            .header("x-cashweb-auth-pubkey", hex::encode(pubkey_bytes))
-            .header("x-cashweb-auth-timestamp", ts)
-            .header("x-cashweb-auth-signature", sign_auth("GET"))
+        let get_headers = signed_notification_policy_headers(
+            &url,
+            &sk,
+            owner_addr,
+            reqwest::Method::GET,
+            b"",
+        )
+        .await;
+        let get_default = client
+            .get(&policy_url)
+            .headers(get_headers.clone())
             .send()
             .await
             .unwrap();
         assert_eq!(get_default.status(), StatusCode::OK);
+        // The same signed request, replayed, is refused: its challenge is used up.
+        let replayed_get = client
+            .get(&policy_url)
+            .headers(get_headers.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(replayed_get.status(), StatusCode::UNAUTHORIZED);
+        // A GET challenge does not authorize a PUT.
+        let cross_method = client
+            .put(&policy_url)
+            .headers(get_headers)
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(cross_method.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             get_default
                 .headers()
@@ -1369,27 +1500,65 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
             coalesce_window_seconds: 0,
             updated_at_ms: 1700000000000,
         };
-        let put_res = reqwest::Client::new()
-            .put(format!(
-                "{url}/message/monad/mailbox/{owner_hex}/notification-policy"
-            ))
+        let new_body = serde_json::to_vec(&new_policy).unwrap();
+        // A signature over one body does not carry a different body.
+        let tampered_headers = signed_notification_policy_headers(
+            &url,
+            &sk,
+            owner_addr,
+            reqwest::Method::PUT,
+            &new_body,
+        )
+        .await;
+        let tampered = client
+            .put(&policy_url)
             .header("content-type", "application/json")
-            .header("x-cashweb-auth-pubkey", hex::encode(pubkey_bytes))
-            .header("x-cashweb-auth-timestamp", ts)
-            .header("x-cashweb-auth-signature", sign_auth("PUT"))
-            .body(serde_json::to_vec(&new_policy).unwrap())
+            .headers(tampered_headers)
+            .body(serde_json::to_vec(&default_policy).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(tampered.status(), StatusCode::UNAUTHORIZED);
+
+        let put_headers = signed_notification_policy_headers(
+            &url,
+            &sk,
+            owner_addr,
+            reqwest::Method::PUT,
+            &new_body,
+        )
+        .await;
+        let put_res = client
+            .put(&policy_url)
+            .header("content-type", "application/json")
+            .headers(put_headers.clone())
+            .body(new_body.clone())
             .send()
             .await
             .unwrap();
         assert_eq!(put_res.status(), StatusCode::OK);
+        let replayed_put = client
+            .put(&policy_url)
+            .header("content-type", "application/json")
+            .headers(put_headers)
+            .body(new_body.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(replayed_put.status(), StatusCode::UNAUTHORIZED);
 
-        let get_updated = reqwest::Client::new()
-            .get(format!(
-                "{url}/message/monad/mailbox/{owner_hex}/notification-policy"
-            ))
-            .header("x-cashweb-auth-pubkey", hex::encode(pubkey_bytes))
-            .header("x-cashweb-auth-timestamp", ts)
-            .header("x-cashweb-auth-signature", sign_auth("GET"))
+        let get_updated = client
+            .get(&policy_url)
+            .headers(
+                signed_notification_policy_headers(
+                    &url,
+                    &sk,
+                    owner_addr,
+                    reqwest::Method::GET,
+                    b"",
+                )
+                .await,
+            )
             .send()
             .await
             .unwrap();

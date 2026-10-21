@@ -52,7 +52,7 @@ export interface WakeupCapability {
 export interface NotificationPolicyAuthContext {
   /** Mailbox owner's Ethereum/Monad address (`0x`-prefixed 40-char hex). */
   address: string
-  /** Compressed (33-byte) or uncompressed (65-byte) secp256k1 public key in hex. */
+  /** Compressed (33-byte) secp256k1 public key in hex. */
   publicKeyHex: string
   /**
    * Signs a 32-byte SHA-256 digest and returns a 64-byte compact or DER ECDSA signature
@@ -298,33 +298,178 @@ export function buildMailboxNotificationPolicy(options?: {
   }
 }
 
+/** Domain of the bytes the mailbox owner signs; must equal the relay's. */
+export const NOTIFICATION_POLICY_AUTH_DOMAIN =
+  'frank:notification-policy-auth:v2'
+
 /**
- * Build `X-Cashweb-Auth-*` headers signed by the mailbox owner for notification policy endpoints.
+ * Single-use challenge the relay answers an unauthenticated notification-policy request with
+ * (`401`). Its epoch and token are the relay's own MAC, so a signature over it is good only at
+ * that relay, for that method and address, once, before `expires_at_ms`.
+ */
+export interface NotificationPolicyChallenge {
+  epoch: string
+  nonce: string
+  expires_at_ms: number
+  token: string
+  signing_domain: string
+  /** The relay's network tag, hex. */
+  network_tag: string
+}
+
+function hex32(value: unknown, name: string): Uint8Array {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`Invalid notification-policy challenge ${name}`)
+  }
+  return hexToBytes(value)
+}
+
+/** Parse the challenge from a relay `401` body, or `null` when it carries none. */
+export function parseNotificationPolicyChallenge(
+  body: unknown,
+): NotificationPolicyChallenge | null {
+  const challenge = (body as { challenge?: unknown } | null)?.challenge as
+    | Record<string, unknown>
+    | undefined
+  if (!challenge || typeof challenge !== 'object') {
+    return null
+  }
+  if (challenge.signing_domain !== NOTIFICATION_POLICY_AUTH_DOMAIN) {
+    throw new Error('Unsupported notification-policy signing domain')
+  }
+  hex32(challenge.epoch, 'epoch')
+  hex32(challenge.nonce, 'nonce')
+  hex32(challenge.token, 'token')
+  if (!Number.isSafeInteger(challenge.expires_at_ms)) {
+    throw new Error('Invalid notification-policy challenge expiry')
+  }
+  if (
+    typeof challenge.network_tag !== 'string' ||
+    !/^(?:[0-9a-f]{2})+$/.test(challenge.network_tag)
+  ) {
+    throw new Error('Invalid notification-policy challenge network tag')
+  }
+  return challenge as unknown as NotificationPolicyChallenge
+}
+
+/**
+ * The one signing string the relay accepts: domain, challenge (epoch, nonce, expiry, token),
+ * method, address, the relay's network tag and SHA-256 of the exact request body (empty for
+ * GET). Mirrors `notification_policy_auth_preimage` in the relay.
+ */
+export function notificationPolicyAuthPreimage(
+  challenge: NotificationPolicyChallenge,
+  method: 'GET' | 'PUT',
+  address: string,
+  body: Uint8Array,
+): Uint8Array {
+  const addressBytes = hexToBytes(address.trim().toLowerCase())
+  if (addressBytes.length !== 20) {
+    throw new Error('Invalid mailbox address')
+  }
+  const networkTag = hexToBytes(challenge.network_tag)
+  const expiry = new Uint8Array(8)
+  new DataView(expiry.buffer).setBigInt64(0, BigInt(challenge.expires_at_ms))
+  const tagLength = new Uint8Array(4)
+  new DataView(tagLength.buffer).setUint32(0, networkTag.length)
+  const parts = [
+    utf8ToBytes(NOTIFICATION_POLICY_AUTH_DOMAIN),
+    new Uint8Array([0]),
+    hex32(challenge.epoch, 'epoch'),
+    hex32(challenge.nonce, 'nonce'),
+    expiry,
+    hex32(challenge.token, 'token'),
+    utf8ToBytes(method),
+    new Uint8Array([0]),
+    addressBytes,
+    tagLength,
+    networkTag,
+    cryptoBackend.sha256(body),
+  ]
+  const out = new Uint8Array(
+    parts.reduce((total, part) => total + part.length, 0),
+  )
+  let offset = 0
+  for (const part of parts) {
+    out.set(part, offset)
+    offset += part.length
+  }
+  return out
+}
+
+/**
+ * Build the `x-frank-mailbox-*` headers that answer `challenge` for one request carrying
+ * exactly `body`.
  */
 export async function buildNotificationPolicyAuthHeaders(
   method: 'GET' | 'PUT',
   auth: NotificationPolicyAuthContext,
-  timestampMs: number = Date.now(),
+  challenge: NotificationPolicyChallenge,
+  body: Uint8Array = new Uint8Array(0),
 ): Promise<Record<string, string>> {
-  const address = auth.address.trim().toLowerCase()
   const pubkeyClean = auth.publicKeyHex.trim().replace(/^0x/i, '').toLowerCase()
-  const ts = String(Math.floor(timestampMs))
-  const preimage = `frank-notification-policy-auth-v1:${method}:${address}:${ts}`
-  const digest = cryptoBackend.sha256(utf8ToBytes(preimage))
+  if (!/^0[23][0-9a-f]{64}$/.test(pubkeyClean)) {
+    throw new Error('Notification-policy auth needs a compressed public key')
+  }
+  const digest = cryptoBackend.sha256(
+    notificationPolicyAuthPreimage(challenge, method, auth.address, body),
+  )
   const sigResult = await auth.signDigest(digest)
   const sigHex =
     typeof sigResult === 'string'
       ? sigResult.trim().replace(/^0x/i, '').toLowerCase()
       : bytesToHex(sigResult)
   return {
-    'x-cashweb-auth-pubkey': pubkeyClean,
-    'x-cashweb-auth-timestamp': ts,
-    'x-cashweb-auth-signature': sigHex,
+    'x-frank-mailbox-subject': pubkeyClean,
+    'x-frank-mailbox-epoch': challenge.epoch,
+    'x-frank-mailbox-nonce': challenge.nonce,
+    'x-frank-mailbox-expires-at-ms': String(challenge.expires_at_ms),
+    'x-frank-mailbox-token': challenge.token,
+    'x-frank-mailbox-signature': sigHex,
   }
 }
 
 function normalizeRelayUrl(relayBaseUrl: string): string {
   return relayBaseUrl.trim().replace(/\/+$/, '')
+}
+
+/**
+ * Send one notification-policy request. The relay answers it unauthenticated with `401` and a
+ * single-use challenge; the request is then signed over that challenge and its body and sent
+ * once more.
+ */
+async function authorizedPolicyRequest(
+  url: string,
+  method: 'GET' | 'PUT',
+  auth: NotificationPolicyAuthContext,
+  fetchImpl: typeof fetch,
+  body?: string,
+): Promise<Response> {
+  const baseHeaders: Record<string, string> = { accept: 'application/json' }
+  if (body !== undefined) {
+    baseHeaders['content-type'] = 'application/json'
+  }
+  const first = await fetchImpl(url, { method, headers: baseHeaders, body })
+  if (first.status !== 401) {
+    return first
+  }
+  const challenge = parseNotificationPolicyChallenge(
+    await first.json().catch(() => null),
+  )
+  if (!challenge) {
+    return first
+  }
+  const authHeaders = await buildNotificationPolicyAuthHeaders(
+    method,
+    auth,
+    challenge,
+    utf8ToBytes(body ?? ''),
+  )
+  return fetchImpl(url, {
+    method,
+    headers: { ...baseHeaders, ...authHeaders },
+    body,
+  })
 }
 
 /**
@@ -336,15 +481,10 @@ export async function getMailboxNotificationPolicy(
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<MailboxNotificationPolicy> {
   const address = auth.address.trim().toLowerCase()
-  const url = `${normalizeRelayUrl(relayBaseUrl)}/message/monad/mailbox/${address}/notification-policy`
-  const headers = await buildNotificationPolicyAuthHeaders('GET', auth)
-  const response = await fetchImpl(url, {
-    method: 'GET',
-    headers: {
-      accept: 'application/json',
-      ...headers,
-    },
-  })
+  const url = `${normalizeRelayUrl(
+    relayBaseUrl,
+  )}/message/monad/mailbox/${address}/notification-policy`
+  const response = await authorizedPolicyRequest(url, 'GET', auth, fetchImpl)
   if (!response.ok) {
     throw new Error(
       `Failed to fetch mailbox notification policy: HTTP ${response.status}`,
@@ -363,17 +503,16 @@ export async function putMailboxNotificationPolicy(
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<MailboxNotificationPolicy> {
   const address = auth.address.trim().toLowerCase()
-  const url = `${normalizeRelayUrl(relayBaseUrl)}/message/monad/mailbox/${address}/notification-policy`
-  const headers = await buildNotificationPolicyAuthHeaders('PUT', auth)
-  const response = await fetchImpl(url, {
-    method: 'PUT',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json',
-      ...headers,
-    },
-    body: JSON.stringify(policy),
-  })
+  const url = `${normalizeRelayUrl(
+    relayBaseUrl,
+  )}/message/monad/mailbox/${address}/notification-policy`
+  const response = await authorizedPolicyRequest(
+    url,
+    'PUT',
+    auth,
+    fetchImpl,
+    JSON.stringify(policy),
+  )
   if (!response.ok) {
     throw new Error(
       `Failed to update mailbox notification policy: HTTP ${response.status}`,
@@ -526,4 +665,3 @@ export async function fetchRelayVapidPublicKey(
   }
   return null
 }
-

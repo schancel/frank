@@ -7,13 +7,13 @@
   },
   "contracts": {
     "GenericHTLC": {
-      "address": "0xda33153b25F24f5E43Ad8A344256c75bA1DfaE96",
+      "address": "0xA66eFc8AcC533896Ac55479CAad2AcF125d29Ee7",
       "deployer": "0xE128CC764bBCD085C525CB873ad30520DD8cC4B9",
       "deployedVia": "create2-proxy",
-      "transactionHash": "0xd468e11ca9a964db9c9ecbda09a2751841cabca711057e3f98c818910e6c1d14",
-      "blockNumber": 69755287,
-      "initCodeHash": "0x19f020febbf4438773df6c09d329a91e5866bac60eb297b8a91e74c2aa6254b0",
-      "runtimeCodeHash": "0x214390bce48c8b9162a94ecbf10eaff77d20516d9885a7ceaa6080cc4c8bbaca",
+      "transactionHash": "0xf63a0329d02d2c607ede6ac0832d2c54ada94417955a0886bb7b67c98037ffd7",
+      "blockNumber": 72848446,
+      "initCodeHash": "0xcdca43319909cba985742b3e06adeecb5b5e250e6ec001948fb55026ac3a195c",
+      "runtimeCodeHash": "0x09c5bee1193bd3134435e7ba1c0187fe1f05f3d59dca189d1255a22ccc2fb60f",
       "compiler": {
         "version": "0.8.37+commit.f401782d.Emscripten.clang",
         "settings": {
@@ -26,13 +26,13 @@
       }
     },
     "StateChannel": {
-      "address": "0x85a0095c9F5305B200289Ee0b9a422239408809A",
+      "address": "0x2CB4caDC110517070FA11e4c8D628c8c2a262636",
       "deployer": "0xE128CC764bBCD085C525CB873ad30520DD8cC4B9",
       "deployedVia": "create2-proxy",
-      "transactionHash": "0xc64a6f11414406e2e0c467178ce856327e6e6f6dc0490d783aa33a52ff44d253",
-      "blockNumber": 69755305,
-      "initCodeHash": "0xdff4f2cdd39599b9d4718b1ab9bb20505dc1900aa8e2a7a76998e1530297bf7c",
-      "runtimeCodeHash": "0x4a6ab149bbea7bfa828e1544f4577abb16967b71d42cac35829a1649f7d84214",
+      "transactionHash": "0x8c93644a45cbc84b19f853bf9d77e686d4d9ff0d4535eee83a27368778a2064c",
+      "blockNumber": 72848453,
+      "initCodeHash": "0xc329a8b99716269ec2eb9cd3a897a114e4659156339fa79039ba7f0e91814817",
+      "runtimeCodeHash": "0xd243eb708725b677a1ffa7015fccab79b3c11566e71bccbb3023904218b7706a",
       "compiler": {
         "version": "0.8.37+commit.f401782d.Emscripten.clang",
         "settings": {

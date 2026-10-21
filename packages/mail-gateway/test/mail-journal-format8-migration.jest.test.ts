@@ -5,6 +5,7 @@
  * verbatim from 1760e3031^), on a real file, and then opened by the current journal. No
  * database mocks.
  */
+import { spawnSync } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -64,6 +65,28 @@ function openFormat9(options: Partial<MailJournalOptions> = {}): { ledger: Credi
 
 function fileHash(target = file): string {
   return sha(fs.readFileSync(target));
+}
+
+/** Every row of every table, in rowid order. */
+function dumpAll(db: DatabaseSync): string {
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>)
+    .map((r) => r.name);
+  return JSON.stringify(tables.map((t) => [t, rows(db, `SELECT * FROM "${t}" ORDER BY rowid`)]));
+}
+
+/** Another process tries to write the database file; answers 'wrote' or 'locked'. */
+function otherProcessWrite(): string {
+  const script = `
+    const { DatabaseSync } = require('node:sqlite');
+    try {
+      const db = new DatabaseSync(${JSON.stringify(file)});
+      db.exec('PRAGMA busy_timeout = 0');
+      db.exec("INSERT INTO credit_ledger (email, balance, updated_at) VALUES ('intruder@x.example', 1, 1)");
+      process.stdout.write('wrote');
+    } catch (err) {
+      process.stdout.write(/locked|busy/i.test(String(err && err.message)) ? 'locked' : 'error: ' + err.message);
+    }`;
+  return spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' }).stdout;
 }
 
 function backups(): string[] {
@@ -292,17 +315,24 @@ describe('format-8 journal migration', () => {
     expect(f8.contestedOutboundId).toBe(`<${ikey('B')}@contested.${DOMAIN}>`);
     const before = fileHash();
     let raw = new DatabaseSync(file);
+    const everythingBefore = dumpAll(raw);
     const unchangedBefore = snapshotUnchanged(raw);
     const metaBefore = rows(raw, 'SELECT * FROM mail_journal_meta');
     raw.close();
 
     const { journal, ledger } = openFormat9();
+    // The connection still holds its exclusive lock. (Checked first: reading the file in this
+    // process, as fileHash does, would itself drop the lock; so did the earlier file-copy backup.)
+    expect(otherProcessWrite()).toBe('locked');
 
-    // Backup: one file, byte-identical to the format-8 database.
+    // Backup: one file, holding every row of the format-8 database.
     expect(backups()).toHaveLength(1);
     expect(journal.format8Migration?.backupPath).toBe(path.join(dir, backups()[0]));
     expect(backups()[0]).toBe(`gateway.sqlite3.format8-backup-${new Date(T0 + 3_000 + 73 * 3600_000).toISOString().replace(/[-:.]/g, '')}`);
-    expect(fileHash(journal.format8Migration!.backupPath)).toBe(before);
+    const backup = new DatabaseSync(journal.format8Migration!.backupPath, { readOnly: true });
+    expect(dumpAll(backup)).toBe(everythingBefore);
+    expect(backup.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
+    backup.close();
 
     const db = ledger.sqlite!;
     expect(rows(db, 'SELECT * FROM mail_journal_meta')).toEqual([{ ...metaBefore[0], format: 9 }]);
@@ -434,11 +464,18 @@ describe('format-8 journal migration', () => {
       /contested inbound mail_message rows whose real Message-ID is not confirmed.*<changed@x\.example>/,
     ],
     [
-      'an outbound job whose sender mailbox is missing (fails at the foreign-key check, after the rebuild)',
+      'an outbound job whose sender mailbox is missing',
       `PRAGMA foreign_keys = OFF; DELETE FROM issued_mailbox WHERE local_part = (SELECT sender_local_part FROM outbound_job ORDER BY job_id LIMIT 1)`,
-      /Foreign key violations/,
+      /foreign key violations \(1\): .*outbound_job/,
     ],
-  ])('rolls back and leaves the file byte-identical, apart from the backup: %s', (_name, damage, message) => {
+    [
+      'an outbound job whose message is inbound',
+      `INSERT INTO outbound_job (scope_account, rfc_message_id, recipient_email, sender_local_part, bounce_token,
+         signed_rfc822, state, next_attempt_at, created_at)
+       VALUES ('${ALICE}', '${ROOT_ID}', 'z@x.example', 'alice-thread', 'tok-z', X'00', 'pending', 1, 1)`,
+      /outbound_job rows with no outbound mail_message.*"direction":"email_to_frank"/,
+    ],
+  ])('refuses before any backup or write, naming the rows: %s', (_name, damage, message) => {
     writeFormat8Journal();
     const raw = new DatabaseSync(file);
     raw.exec(damage);
@@ -452,17 +489,83 @@ describe('format-8 journal migration', () => {
       error = err;
     }
     expect(error).toBeInstanceOf(MailJournalOpenError);
-    expect((error as Error).message).toMatch(/migration failed and was rolled back; the database is unchanged/);
+    expect((error as Error).message).toMatch(/Nothing was changed and no backup was written/);
     expect((error as Error).message).toMatch(message);
     closeAll();
 
     expect(fileHash()).toBe(before);
-    expect(backups()).toHaveLength(1);
-    expect(fileHash(path.join(dir, backups()[0]))).toBe(before);
+    expect(backups()).toEqual([]);
     const check = new DatabaseSync(file);
     expect(check.prepare('SELECT format FROM mail_journal_meta').get()).toEqual({ format: 8 });
     expect(check.prepare("PRAGMA table_info(mail_message)").all().map((c) => c.name)).toContain('claimed_rfc_id');
     check.close();
+  });
+
+  it('a failure after the rebuild has written rolls back: file byte-identical, the verified backup kept', () => {
+    writeFormat8Journal();
+    const before = fileHash();
+    const ledger = newLedger();
+    // A temporary trigger lives on this connection only, outside the schema: it fails the
+    // marker update, the last write of the migration.
+    ledger.sqlite!.exec(
+      "CREATE TEMP TRIGGER injected BEFORE UPDATE ON main.mail_journal_meta BEGIN SELECT RAISE(ABORT, 'injected'); END"
+    );
+    expect(() => new MailJournal(ledger, { ...IDENTITY, now: () => clock })).toThrow(
+      /migration failed and was rolled back; the database is unchanged\. The verified backup .* was kept\. .*injected/
+    );
+    closeAll();
+    expect(fileHash()).toBe(before);
+    expect(backups()).toHaveLength(1);
+    const backup = new DatabaseSync(path.join(dir, backups()[0]), { readOnly: true });
+    const raw = new DatabaseSync(file, { readOnly: true });
+    expect(dumpAll(backup)).toBe(dumpAll(raw));
+    backup.close();
+    raw.close();
+  });
+
+  it('holds the exclusive lock throughout the migration window', () => {
+    writeFormat8Journal();
+    let during = '';
+    // The clock is read for the backup's name, after the lock is taken and before the backup.
+    openFormat9({ now: () => ((during = otherProcessWrite()), clock) });
+    expect(during).toBe('locked');
+    expect(otherProcessWrite()).toBe('locked');
+  });
+
+  it('keeps an outbound_job sequence above the largest job id', () => {
+    const f8 = writeFormat8Journal();
+    let raw = new DatabaseSync(file);
+    raw.exec("UPDATE sqlite_sequence SET seq = 500 WHERE name = 'outbound_job'");
+    raw.close();
+    expect(f8.jobSeq).toBeLessThan(500);
+    const { ledger } = openFormat9();
+    raw = ledger.sqlite!;
+    expect(raw.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'outbound_job'").get()).toEqual({ seq: 500 });
+    expect(raw.prepare('SELECT MAX(job_id) AS m FROM outbound_job').get()).toEqual({ m: f8.jobSeq });
+  });
+
+  it('refuses when the backup path already exists, leaving that file and the journal as they were', () => {
+    writeFormat8Journal();
+    const taken = `${file}.format8-backup-${new Date(clock).toISOString().replace(/[-:.]/g, '')}`;
+    fs.writeFileSync(taken, 'someone else');
+    const before = fileHash();
+    expect(() => openFormat9()).toThrow(/backup path .* already exists\. Nothing was changed and no backup was written/);
+    closeAll();
+    expect(fs.readFileSync(taken, 'utf8')).toBe('someone else');
+    expect(fileHash()).toBe(before);
+  });
+
+  it('refuses a format-8 journal in WAL mode without a backup', () => {
+    writeFormat8Journal();
+    let raw = new DatabaseSync(file);
+    raw.exec('PRAGMA journal_mode = WAL');
+    raw.close();
+    expect(() => openFormat9()).toThrow(/uses journal_mode wal; the migration needs a rollback journal\. Nothing was changed/);
+    closeAll();
+    expect(backups()).toEqual([]);
+    raw = new DatabaseSync(file);
+    expect(raw.prepare('SELECT format FROM mail_journal_meta').get()).toEqual({ format: 8 });
+    raw.close();
   });
 
   it('refuses a format-8 journal of another gateway without a backup or a change', () => {

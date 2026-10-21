@@ -55,7 +55,8 @@ describe('journaled mail host admission', () => {
   it('opens an existing format-8 journal of this identity, migrating it, and still refuses format 7', async () => {
     const file = options(dir, 'existing').journalFile;
     const ledger = new CreditLedger(file, new LocalFsBlobStore({ inMemory: true }));
-    new MailJournalFormat8(ledger, { chainIdentifier: 'monad-testnet', gatewayAccount: GATEWAY, gatewayDomain: 'signet.mx' });
+    new MailJournalFormat8(ledger, { chainIdentifier: 'monad-testnet', gatewayAccount: GATEWAY, gatewayDomain: 'signet.mx' })
+      .issueMailbox({ localPart: 'alice-inbox', scopeAccount: `0x${'a'.repeat(40)}` });
     ledger.sqlite!.close();
     const copy = path.join(dir, 'format7.sqlite3');
     fs.copyFileSync(file, copy);
@@ -65,11 +66,19 @@ describe('journaled mail host admission', () => {
     expect(() => createJournaledMailHost({ ...options(dir, 'existing'), journalFile: copy })).toThrow('identity or format differs');
 
     const host = createJournaledMailHost(options(dir, 'existing'));
+    let backupPath = '';
     try {
-      expect(host.journal.format8Migration?.backupPath).toMatch(/mail\.sqlite3\.format8-backup-/);
+      backupPath = host.journal.format8Migration?.backupPath ?? '';
+      expect(backupPath).toMatch(/mail\.sqlite3\.format8-backup-/);
+      expect(host.journal.issuedMailbox('alice-inbox')).toEqual({ scopeAccount: `0x${'a'.repeat(40)}` });
     } finally {
       await host.close();
     }
+    const backup = new DatabaseSync(backupPath, { readOnly: true });
+    expect(backup.prepare('SELECT format FROM mail_journal_meta').get()).toEqual({ format: 8 });
+    expect(backup.prepare('SELECT local_part FROM issued_mailbox').all()).toEqual([{ local_part: 'alice-inbox' }]);
+    expect(backup.prepare('PRAGMA table_info(mail_message)').all().map((c) => c.name)).toContain('claimed_rfc_id');
+    backup.close();
     const check = new DatabaseSync(file, { readOnly: true });
     expect(check.prepare('SELECT format FROM mail_journal_meta').get()).toEqual({ format: 9 });
     check.close();

@@ -36,17 +36,21 @@
  * format-8 DDL and whose marker names this gateway's chain, account and domain. Any row it
  * cannot carry over faithfully (two messages with one mail key or one item key in a scope,
  * a contested inbound message whose real Message-ID cannot be confirmed, a job whose
- * message is missing or not outbound) aborts it before any write, with an error naming
- * the rows. A failure after the first write rolls the whole transaction back. Afterwards
- * the row count of every journal table, the foreign keys and the exact format-9 schema
- * are checked inside the transaction before it commits.
+ * message is missing or not outbound, a foreign-key violation) refuses it before any
+ * backup or write, with an error naming the rows. A failure after the first write rolls
+ * the whole transaction back. Afterwards the row count of every journal table, the foreign
+ * keys and the exact format-9 schema are checked inside the transaction before it commits.
  *
- * Backup: before the first write, under SQLite's exclusive file lock (`BEGIN EXCLUSIVE`,
- * so no other connection can be writing), the database file is copied byte for byte to
- * `<file>.format8-backup-<UTC timestamp>` next to it, flushed to disk, and its hash checked
- * against the file. The backup is kept whatever happens next.
+ * Backup: after those checks and before the first write, with SQLite's exclusive file lock
+ * held (and kept, under the exclusive locking mode), SQLite writes a consistent copy with
+ * `VACUUM INTO` to `<file>.format8-backup-<UTC timestamp>` next to it. It is flushed, then
+ * opened read-only and checked (`integrity_check`, the format-8 marker, the row count of
+ * every table). The migration refuses unless twice the database size is free, refuses an
+ * existing backup path, and removes a backup that failed. A verified backup is kept.
+ *
+ * Roll-forward only: once the gateway has run on the migrated journal it may have sent
+ * mail and spent; restoring the format-8 backup then would replay that history.
  */
-import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -268,10 +272,6 @@ function describeRows(kind: string, rows: Row[]): string {
   return `${kind} (${rows.length}): ${shown.join('; ')}${more}`;
 }
 
-function sha256File(file: string): string {
-  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-}
-
 function fsyncPath(target: string, flags: string): void {
   const fd = fs.openSync(target, flags);
   try {
@@ -343,6 +343,11 @@ function unconvertibleRows(db: DatabaseSync): string[] {
  * one transaction; otherwise changes nothing and returns `{ migrated: false }`, leaving the
  * format check to the journal's open. Must be called on the journal's connection outside any
  * transaction, after it has taken the exclusive locking mode.
+ *
+ * This process never opens a file descriptor on the database path: POSIX advisory locks
+ * belong to the process, so closing any descriptor on that file would drop the lock the
+ * connection holds, and under the exclusive locking mode SQLite would not take it again.
+ * The backup is therefore written by SQLite itself (`VACUUM INTO`).
  */
 export function migrateMailJournalFormat8(
   db: DatabaseSync,
@@ -353,38 +358,42 @@ export function migrateMailJournalFormat8(
   const metas = all(db, 'SELECT * FROM mail_journal_meta');
   if (metas.length !== 1 || metas[0].format !== 8) return { migrated: false };
 
-  const nothing = 'Nothing was changed; the journal was not migrated.';
+  const nothing = 'Nothing was changed and no backup was written; the journal was not migrated.';
+  const refuse = (why: string): never => {
+    throw new MailJournalMigrationError(`${why} ${nothing}`);
+  };
+  if (db.isTransaction) refuse('Mail journal format 8 migration must not run inside a transaction.');
+  if (String(Object.values(get(db, 'PRAGMA locking_mode') ?? {})[0]).toLowerCase() !== 'exclusive') {
+    refuse('Mail journal format 8 migration needs the exclusive locking mode.');
+  }
+  // Take SQLite's exclusive file lock and keep it: under the exclusive locking mode a
+  // connection never releases a lock it took, so from here on no other connection can read
+  // or write the file, and every check below and the backup see the same database.
+  db.exec('BEGIN EXCLUSIVE');
+  db.exec('COMMIT');
+
   const meta = metas[0];
   if (
     meta.chain_identifier !== options.chainIdentifier ||
     meta.gateway_account !== options.gatewayAccount ||
     meta.gateway_domain !== options.gatewayDomain
   ) {
-    throw new MailJournalMigrationError(
+    refuse(
       `Mail journal format 8 belongs to chain ${String(meta.chain_identifier)}, gateway account ` +
         `${String(meta.gateway_account)}, and domain ${String(meta.gateway_domain)}; not ${options.chainIdentifier}, ` +
-        `${options.gatewayAccount}, and ${options.gatewayDomain}. ${nothing}`
+        `${options.gatewayAccount}, and ${options.gatewayDomain}.`
     );
   }
   const differs = differingObjects(journalSchema(db, options.tables), schemaOf(FORMAT_8_DDL, options.tables));
   if (differs.length > 0) {
-    throw new MailJournalMigrationError(
-      `Mail journal is marked format 8 but its schema is not the format-8 schema (differs: ${differs.join(', ')}). ${nothing}`
-    );
-  }
-  if (db.isTransaction) {
-    throw new MailJournalMigrationError(`Mail journal format 8 migration must not run inside a transaction. ${nothing}`);
+    refuse(`Mail journal is marked format 8 but its schema is not the format-8 schema (differs: ${differs.join(', ')}).`);
   }
   const main = all(db, 'PRAGMA database_list').find((r) => r.name === 'main');
   const file = typeof main?.file === 'string' ? main.file : '';
-  if (file === '') {
-    throw new MailJournalMigrationError(`Mail journal format 8 is not in a file, so it cannot be backed up. ${nothing}`);
-  }
+  if (file === '') refuse('Mail journal format 8 is not in a file, so it cannot be backed up.');
   const journalMode = String(Object.values(get(db, 'PRAGMA journal_mode') ?? {})[0]).toLowerCase();
   if (!['delete', 'truncate', 'persist'].includes(journalMode)) {
-    throw new MailJournalMigrationError(
-      `Mail journal format 8 uses journal_mode ${journalMode}; the migration needs a rollback journal for its file backup. ${nothing}`
-    );
+    refuse(`Mail journal format 8 uses journal_mode ${journalMode}; the migration needs a rollback journal.`);
   }
 
   // Selected from the format-9 DDL, so the rebuilt tables are created by the same text as a new journal's.
@@ -392,40 +401,71 @@ export function migrateMailJournalFormat8(
     REBUILT_TABLES.some((t) => s.startsWith(`CREATE TABLE ${t} (`) || new RegExp(`^CREATE (UNIQUE )?INDEX \\w+ ON ${t}\\(`).test(s))
   );
   if (rebuilt.length !== 7) {
-    throw new MailJournalMigrationError(
-      `The format-9 DDL no longer has the two tables and five indexes this migration rebuilds (${rebuilt.length} found). ${nothing}`
-    );
+    refuse(`The format-9 DDL no longer has the two tables and five indexes this migration rebuilds (${rebuilt.length} found).`);
   }
   const format9Schema = schemaOf(options.format9Ddl, options.tables);
 
+  // Every refusal that depends on the rows, before any backup: a refused journal leaves no
+  // file behind, so a restart loop on it cannot fill the disk.
+  const problems = unconvertibleRows(db);
+  const preexisting = all(db, 'PRAGMA foreign_key_check');
+  if (preexisting.length > 0) problems.push(describeRows('foreign key violations', preexisting));
+  if (problems.length > 0) refuse(`Mail journal format 8 has rows format 9 cannot hold faithfully: ${problems.join(' | ')}.`);
+
+  const backupPath = `${file}.format8-backup-${backupStamp(options.now())}`;
+  if (fs.existsSync(backupPath)) refuse(`The backup path ${backupPath} already exists.`);
+  const pageSize = Number(Object.values(get(db, 'PRAGMA page_size') ?? {})[0]);
+  const pageCount = Number(Object.values(get(db, 'PRAGMA page_count') ?? {})[0]);
+  const dbBytes = pageSize * pageCount;
+  const space = fs.statfsSync(path.dirname(backupPath));
+  const freeBytes = Number(space.bavail) * Number(space.bsize);
+  if (freeBytes < 2 * dbBytes) {
+    refuse(
+      `Mail journal format 8 is ${dbBytes} bytes; the migration needs at least ${2 * dbBytes} bytes free ` +
+        `beside it (backup and rollback journal), and ${freeBytes} are free.`
+    );
+  }
+
+  const tableNames = all(db, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").map((r) => String(r.name));
+  const countRows = (on: DatabaseSync, table: string): number =>
+    Number(get(on, `SELECT COUNT(*) AS n FROM "${table.replace(/"/g, '""')}"`)!.n);
+  const liveCounts = Object.fromEntries(tableNames.map((t) => [t, countRows(db, t)]));
+
+  // The backup: a consistent copy written by SQLite under the lock taken above, flushed, and
+  // checked by reading it back. A failed backup is removed and nothing else is done.
+  try {
+    db.prepare('VACUUM INTO ?').run(backupPath);
+    fsyncPath(backupPath, 'r+');
+    fsyncPath(path.dirname(backupPath), 'r');
+    const copy = new DatabaseSync(backupPath, { readOnly: true });
+    try {
+      const integrity = all(copy, 'PRAGMA integrity_check').map((r) => String(Object.values(r)[0]));
+      if (integrity.join() !== 'ok') throw new Error(`integrity_check: ${integrity.slice(0, 5).join('; ')}`);
+      if (get(copy, 'SELECT format FROM mail_journal_meta WHERE id = 1')?.format !== 8) {
+        throw new Error('it does not hold the format-8 marker');
+      }
+      const differing = tableNames.filter((t) => countRows(copy, t) !== liveCounts[t]);
+      if (differing.length > 0) throw new Error(`row counts differ in ${differing.join(', ')}`);
+    } finally {
+      copy.close();
+    }
+  } catch (err) {
+    fs.rmSync(backupPath, { force: true });
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new MailJournalMigrationError(
+      `Mail journal format 8 could not be backed up to ${backupPath} (${cause}); the partial backup was removed. Nothing was changed; the journal was not migrated.`
+    );
+  }
+
+  const rowsBefore = Object.fromEntries(options.tables.map((t) => [t, liveCounts[t]]));
+  const jobSequence = get(db, "SELECT seq FROM sqlite_sequence WHERE name = 'outbound_job'")?.seq;
   const foreignKeysBefore = Number(Object.values(get(db, 'PRAGMA foreign_keys') ?? {})[0]);
   // Off for the rebuild (it cannot change inside a transaction); checked explicitly before commit.
   db.exec('PRAGMA foreign_keys = OFF');
-  let backupPath: string | undefined;
   try {
     db.exec('BEGIN EXCLUSIVE');
     const format = get(db, 'SELECT format FROM mail_journal_meta WHERE id = 1')?.format;
     if (format !== 8) throw new MailJournalMigrationError(`Mail journal format changed to ${String(format)} during the open.`);
-
-    // The exclusive lock is held and nothing is written yet: the file is the committed database.
-    backupPath = `${file}.format8-backup-${backupStamp(options.now())}`;
-    fs.copyFileSync(file, backupPath, fs.constants.COPYFILE_EXCL);
-    fsyncPath(backupPath, 'r+');
-    fsyncPath(path.dirname(backupPath), 'r');
-    if (sha256File(backupPath) !== sha256File(file)) {
-      throw new MailJournalMigrationError(`The backup ${backupPath} does not match the database file.`);
-    }
-
-    const problems = unconvertibleRows(db);
-    if (problems.length > 0) {
-      throw new MailJournalMigrationError(
-        `Mail journal format 8 has rows format 9 cannot hold faithfully: ${problems.join(' | ')}.`
-      );
-    }
-
-    const countRows = (table: string): number => Number(get(db, `SELECT COUNT(*) AS n FROM ${table}`)!.n);
-    const rowsBefore = Object.fromEntries(options.tables.map((t) => [t, countRows(t)]));
-    const jobSequence = get(db, "SELECT seq FROM sqlite_sequence WHERE name = 'outbound_job'")?.seq;
 
     for (const index of FORMAT_8_DROPPED_INDEXES) db.exec(`DROP INDEX ${index}`);
     db.exec('ALTER TABLE outbound_job RENAME TO outbound_job_format8');
@@ -466,7 +506,7 @@ export function migrateMailJournalFormat8(
     }
     db.exec('UPDATE mail_journal_meta SET format = 9 WHERE id = 1 AND format = 8');
 
-    const rowsAfter = Object.fromEntries(options.tables.map((t) => [t, countRows(t)]));
+    const rowsAfter = Object.fromEntries(options.tables.map((t) => [t, countRows(db, t)]));
     const lost = options.tables.filter((t) => rowsAfter[t] !== rowsBefore[t]);
     if (lost.length > 0) {
       throw new MailJournalMigrationError(
@@ -484,9 +524,9 @@ export function migrateMailJournalFormat8(
   } catch (err) {
     if (db.isTransaction) db.exec('ROLLBACK');
     const cause = err instanceof Error ? err.message : String(err);
-    const kept = backupPath && fs.existsSync(backupPath) ? ` The backup ${backupPath} was kept.` : '';
     throw new MailJournalMigrationError(
-      `Mail journal format 8 to 9 migration failed and was rolled back; the database is unchanged.${kept} ${cause}`
+      `Mail journal format 8 to 9 migration failed and was rolled back; the database is unchanged. ` +
+        `The verified backup ${backupPath} was kept. ${cause}`
     );
   } finally {
     db.exec(`PRAGMA foreign_keys = ${foreignKeysBefore ? 'ON' : 'OFF'}`);

@@ -129,6 +129,7 @@ function mountFailed() {
       stubs: {
         QIcon: { template: '<i />' },
         QBtn: { template: '<button><slot /></button>' },
+        QTooltip: { template: '<span><slot /></span>' },
       },
     },
   })

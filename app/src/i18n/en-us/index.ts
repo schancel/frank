@@ -930,6 +930,7 @@ export const rawEnUS = {
     openSender: "Open {name}'s profile",
     noPayloadFound: 'Unable to find message payload',
     failedToSend: 'Failed to send',
+    failedShort: 'Failed',
     showActions: 'Show message actions',
     replyMessage: 'Reply to message',
     forwardMessage: 'Forward message',

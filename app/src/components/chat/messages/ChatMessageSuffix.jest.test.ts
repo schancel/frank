@@ -27,6 +27,11 @@ function mountSuffix(props: Record<string, unknown>, messages: unknown = enUS) {
       stubs: {
         QIcon: { template: '<i />' },
         QBtn: { template: '<button><slot /></button>' },
+        QTooltip: {
+          props: ['modelValue'],
+          template:
+            '<span class="tooltip-stub" :data-open="String(!!modelValue)"><slot /></span>',
+        },
       },
     },
   })
@@ -66,15 +71,17 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       failureReason: 'unavailable',
     })
     expect(wrapper.text()).toContain('Failed to send')
-    expect(wrapper.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
-      'This relay does not offer messaging.',
+    expect(wrapper.get('[data-testid="outgoing-failure-details"]').text()).toBe(
+      'Failed to send — This relay does not offer messaging.',
     )
     expect(wrapper.find('[data-testid="outgoing-retry-hint"]').exists()).toBe(
       false,
     )
-    expect(wrapper.get('[data-testid="outgoing-failed"]').text()).toContain(
-      'Failed to send',
-    )
+    expect(
+      wrapper
+        .get('[data-testid="outgoing-failed"] .outgoing-status-text')
+        .text(),
+    ).toBe('Failed')
 
     await wrapper.get('[data-testid="outgoing-retry"]').trigger('click')
     await wrapper.get('[data-testid="outgoing-discard"]').trigger('click')
@@ -90,7 +97,7 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       },
       enUS,
     )
-    expect(en.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
+    expect(en.get('[data-testid="outgoing-failure-details"]').text()).toContain(
       'Recipient is not registered on this relay.',
     )
 
@@ -101,7 +108,7 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       },
       frFR,
     )
-    expect(fr.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
+    expect(fr.get('[data-testid="outgoing-failure-details"]').text()).toContain(
       "Le destinataire n'est pas enregistré sur ce relais.",
     )
   })
@@ -175,6 +182,7 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
         stubs: {
           QIcon: { template: '<i />' },
           QBtn: { template: '<button><slot /></button>' },
+          QTooltip: { template: '<span><slot /></span>' },
         },
       },
     })
@@ -217,20 +225,17 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       { status: 'error', failureReason: 'insufficient-funds' },
       locale,
     )
-    expect(failed.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
-      text,
-    )
+    expect(
+      failed.get('[data-testid="outgoing-failure-details"]').text(),
+    ).toContain(text)
     expect(failed.text()).not.toContain('stamp-account')
   })
 
   it('does not render a duplicate generic fallback reason when failureReason is error or empty', () => {
     const failed = mountSuffix({ status: 'error', failureReason: 'error' })
-    expect(failed.get('[data-testid="outgoing-failed"]').text()).toBe(
+    expect(failed.get('[data-testid="outgoing-failure-details"]').text()).toBe(
       'Failed to send',
     )
-    expect(
-      failed.find('[data-testid="outgoing-failure-reason"]').exists(),
-    ).toBe(false)
   })
 
   it.each([
@@ -472,6 +477,67 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       standalone
         .get('[data-testid="outgoing-failed"] .outgoing-status-text')
         .text(),
+    ).toBe('Failed')
+    expect(
+      standalone.get('[data-testid="outgoing-failure-details"]').text(),
     ).toBe("Failed to send — Can't reach the server.")
   })
+
+  it.each([
+    ['en-us', enUS],
+    ['fr-fr', frFR],
+  ])(
+    'a failed message says a short "Failed" inline before the time, like "Sending", with the reason in a tooltip a tap opens (%s)',
+    async (_name, messages) => {
+      const t = translator(messages)
+      const wrapper = mountSuffix(
+        {
+          status: 'error',
+          inline: true,
+          stamp: '20:20:41',
+          amount: '0.4688 MONT',
+          failureReason: 'interrupted',
+        },
+        messages,
+      )
+      const footer = wrapper.get('[data-testid="outgoing-footer"]').element
+      const failed = wrapper.get('[data-testid="outgoing-failed"]')
+      expect(failed.element.parentElement).toBe(footer)
+      expect(failed.element.nextElementSibling).toBe(
+        wrapper.get('[data-testid="outgoing-stamp"]').element,
+      )
+      // The visible label is the short word only; the reason is not inline.
+      expect(failed.get('.outgoing-status-text').text()).toBe(
+        t('chatMessage.failedShort'),
+      )
+      expect(t('chatMessage.failedShort')).not.toBe('chatMessage.failedShort')
+      expect(failed.get('.outgoing-status-text').text()).not.toContain(
+        t('outgoing.reasonInterrupted'),
+      )
+      const details = failed.get('[data-testid="outgoing-failure-details"]')
+      expect(details.text()).toBe(
+        `${t('chatMessage.failedToSend')} — ${t('outgoing.reasonInterrupted')}`,
+      )
+      expect(failed.attributes('aria-label')).toBe(details.text())
+      // Phones have no hover: a tap (and Enter) toggles the tooltip.
+      expect(details.attributes('data-open')).toBe('false')
+      await failed.trigger('click')
+      expect(
+        wrapper
+          .get('[data-testid="outgoing-failure-details"]')
+          .attributes('data-open'),
+      ).toBe('true')
+      await failed.trigger('keydown', { key: 'Enter' })
+      expect(
+        wrapper
+          .get('[data-testid="outgoing-failure-details"]')
+          .attributes('data-open'),
+      ).toBe('false')
+      // Retry and Discard stay where they were.
+      expect(wrapper.find('[data-testid="outgoing-retry"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="outgoing-discard"]').exists()).toBe(
+        true,
+      )
+    },
+  )
 })

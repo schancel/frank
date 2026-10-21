@@ -8,6 +8,8 @@ import {
 } from "./chain/active-chain";
 import { EvmBlockWatcher } from "./evm-block-watcher";
 import { EvmStampPayer, waitForSpendSpacing } from "./evm-stamp-payer";
+import type { EvmCoinList } from "./evm-coin-list";
+import { EvmCoinListSync, type CoinListSource } from "./evm-coin-list-sync";
 import {
   evmWalletInternals,
   type CanonicalInventoryFunder,
@@ -155,6 +157,9 @@ export interface PrepareEvmTopicBurnAccountParams {
   readonly creatorBurnAddress: (wallet: EvmWalletHandle) => string;
   readonly sourceIsHeld: (wallet: object, address: string) => boolean;
   readonly sourceHeldRefusalMessage: string;
+  /** The holder `runMainAccountExclusive` claims funding accounts under. Its own claim does
+   * not make an account ineligible: the exclusive run waits for its own earlier transfer. */
+  readonly mainAccountHolder: (wallet: EvmChainWalletHandle) => string;
   readonly runMainAccountExclusive: <T>(
     wallet: EvmChainWalletHandle,
     task: () => Promise<T>,
@@ -178,6 +183,7 @@ export async function prepareEvmTopicBurnAccount(
     creatorBurnAddress,
     sourceIsHeld,
     sourceHeldRefusalMessage,
+    mainAccountHolder,
     runMainAccountExclusive,
   } = params;
   const leaseHolder = `${wallet.identity.address.raw.toLowerCase()}:topic:${hexlify(
@@ -235,10 +241,12 @@ export async function prepareEvmTopicBurnAccount(
           },
         ];
 
-    const isEligible = (address: string) =>
-      !sourceIsHeld(wallet, address) &&
-      (typeof wallet.pool?.accountClaimedBy !== "function" ||
-        wallet.pool.accountClaimedBy(address) === undefined);
+    const isEligible = (address: string) => {
+      if (sourceIsHeld(wallet, address)) return false;
+      if (typeof wallet.pool?.accountClaimedBy !== "function") return true;
+      const claimant = wallet.pool.accountClaimedBy(address);
+      return claimant === undefined || claimant === mainAccountHolder(wallet);
+    };
 
     // 1. Check mainAccount first (if not held and balance >= requiredTotalWei -> fast path)
     const mainCandidate = candidates.find((c) => c.source === "main");
@@ -297,15 +305,26 @@ export async function prepareEvmTopicBurnAccount(
         provider: wallet.provider,
         httpClient: wallet.httpClient,
       });
-      const preparation = await wallet.pool.prepareBurnAccount({
-        mainAccountSigner: funderSigner,
-        mainAccountAddress: mainAddress,
-        provider: wallet.provider,
-        burnValueWei: voteWeightWei,
-        gasReserveWei,
-        onProgress,
-        claimFor: leaseHolder,
-      });
+      // The funder is claimed like the main account is: no stamp payment or other spender
+      // signs from it at the same nonce while the funding transfer is out.
+      const preparation = await runMainAccountExclusive(
+        wallet,
+        () =>
+          wallet.pool.prepareBurnAccount({
+            mainAccountSigner: funderSigner,
+            mainAccountAddress: mainAddress,
+            provider: wallet.provider,
+            burnValueWei: voteWeightWei,
+            gasReserveWei,
+            onProgress,
+            claimFor: leaseHolder,
+          }),
+        {
+          ...FUNDING_FROM_MAIN,
+          addresses: [singleChosen.address],
+          onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
+        }
+      );
       if (singleChosen.source === "coin") {
         wallet.invalidateBalanceCache?.();
       }
@@ -366,7 +385,6 @@ export async function prepareEvmTopicBurnAccount(
         source: f.candidate.source,
       }));
 
-      const hasMain = funders.some((f) => f.source === "main");
       const hasCoin = funders.some((f) => f.source === "coin");
 
       const executeMultiFund = async () => {
@@ -382,12 +400,16 @@ export async function prepareEvmTopicBurnAccount(
         });
       };
 
-      const preparation = hasMain
-        ? await runMainAccountExclusive(wallet, executeMultiFund, {
-            ...FUNDING_FROM_MAIN,
-            onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
-          })
-        : await executeMultiFund();
+      // Every funder is claimed for the funding, not only the main account.
+      const preparation = await runMainAccountExclusive(
+        wallet,
+        executeMultiFund,
+        {
+          ...FUNDING_FROM_MAIN,
+          addresses: selectedFunders.map((f) => f.candidate.address),
+          onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
+        }
+      );
 
       if (hasCoin) {
         wallet.invalidateBalanceCache?.();
@@ -442,6 +464,8 @@ export interface InstallEvmStampFundAheadCoordinatorParams {
   readonly provider: Provider;
   readonly httpClient: MonadHttpClient;
   readonly coinStore: RecordStore<EvmCoin>;
+  /** The wallet's coin list for this chain (`EvmCoinList`), open. */
+  readonly coinList: EvmCoinList;
   readonly readCoins: () => Promise<void>;
   readonly invalidateCoinsRead: () => void;
   readonly spendSpacingBlocks?: number;
@@ -482,6 +506,7 @@ export function installEvmStampFundAheadCoordinator(
     provider,
     httpClient,
     coinStore,
+    coinList,
     readCoins,
     invalidateCoinsRead,
     spendSpacingBlocks,
@@ -631,8 +656,83 @@ export function installEvmStampFundAheadCoordinator(
   });
   walletInternals.blockWatcher = blockWatcher;
 
+  // The wallet's coin list: every account it may pay a stamp from, with its key, at its nonce.
+  // Learned from the chain off the send path; a send reads none of it from the chain.
+  const listedPoolStatuses = new Set(["available", "spent", "retired"]);
+  const coinListSync = new EvmCoinListSync({
+    list: coinList,
+    provider,
+    watcher: blockWatcher,
+    ...(spendSpacingBlocks === undefined ? {} : { spendSpacingBlocks }),
+    sources: () => {
+      const sources: CoinListSource[] = [
+        {
+          account: mainAccount.address.toLowerCase(),
+          origin: "root",
+          privateKey: () => mainAccount.privateKey,
+        },
+      ];
+      if (
+        identity.address.raw.toLowerCase() !==
+        mainAccount.address.toLowerCase()
+      )
+        sources.push({
+          account: identity.address.raw.toLowerCase(),
+          origin: "identity",
+          privateKey: () => identity.toPrivateKeyHex(),
+        });
+      for (const record of pool.records()) {
+        const account = record.address.toLowerCase();
+        // A funded row, or a spent one whose later coin only the list holds.
+        if (
+          record.status === "available" ||
+          (listedPoolStatuses.has(record.status) &&
+            coinList.latestOf(account) !== undefined)
+        )
+          sources.push({
+            account,
+            origin: "deterministic",
+            privateKey: () => pool.privateKeyOf(record.index),
+          });
+      }
+      for (const coin of coinStore.all()) {
+        const account = coin.address.toLowerCase();
+        if (
+          coin.state === "unspent" ||
+          (coin.state === "spent" && coinList.latestOf(account) !== undefined)
+        )
+          sources.push({
+            account,
+            origin: "stealth",
+            privateKey: () => coin.privateKey,
+          });
+      }
+      return sources;
+    },
+  });
+  walletInternals.coinList = coinList;
+  walletInternals.coinListSync = coinListSync;
+  // What other spenders do to these accounts makes the list's coin of them stale: it is read
+  // again before it is chosen (by the next payment the list does not cover, or a quote). No
+  // request is made here: a wallet nobody uses reads nothing.
+  pool.onChange((change) => {
+    if (change.kind === "record") {
+      coinListSync.markDirty(change.record.address);
+      return;
+    }
+    const ownedByHolder = coinList
+      .all()
+      .some(
+        (coin) =>
+          coin.account === change.address && coin.holder === change.holder
+      );
+    if (!ownedByHolder) coinListSync.markDirty(change.address);
+  });
+
   const stampPayer = new EvmStampPayer({
     pool,
+    coins: coinList,
+    sync: coinListSync,
     provider,
     httpClient,
     watcher: blockWatcher,
@@ -641,44 +741,16 @@ export function installEvmStampFundAheadCoordinator(
     onPoolCoinsClaimed: () => {
       walletInternals.fundAheadBackoff = undefined;
     },
-    coins: () =>
-      spendableCoins(coinStore.all())
-        .filter(
-          (coin) =>
-            walletInternals.nativeOperationOwner?.holdsSource(coin.address) !==
-            true
-        )
-        .sort((a, b) => (BigInt(a.amountWei) > BigInt(b.amountWei) ? -1 : 1))
-        .map((coin) => ({
-          address: coin.address,
-          privateKey: () => coin.privateKey,
-        })),
-    onCoinClaimed: () => {
-      invalidateCoinsRead();
-    },
     accountHeld: (address) => sourceIsHeld(wallet, address),
-    canSelectAccount: (address, nonce) =>
-      topicOwner.nativeJournal!.canSelect(address, nonce),
+    canSelectAccount: (address, nonce) => {
+      const selectable =
+        topicOwner.nativeJournal!.canSelect(address, nonce) &&
+        walletInternals.nativeOperationOwner?.holdsSource(address) !== true;
+      const received = coinStore.get(address.toLowerCase());
+      return selectable && received?.state !== "failed";
+    },
     heldRefusal: () => new Error(sourceHeldRefusalMessage),
-    accounts: [
-      {
-        source: "main" as const,
-        address: mainAccount.address,
-        privateKey: () => mainAccount.privateKey,
-      },
-      ...(identity.address.raw.toLowerCase() ===
-      mainAccount.address.toLowerCase()
-        ? []
-        : [
-            {
-              source: "identity" as const,
-              address: identity.address.raw,
-              privateKey: () => identity.toPrivateKeyHex(),
-            },
-          ]),
-    ],
   });
-
   walletInternals.canonicalStampQuoter = (input) =>
     topicOwner.runLifetime(async () => {
       if (input.stampValueWei > 0n) {

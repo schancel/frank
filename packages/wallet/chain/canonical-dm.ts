@@ -1145,7 +1145,7 @@ async function settlePayments(
       try {
         const seen = await payer.observe(payment.rawTx)
         if (seen.state === 'included') {
-          await payer.recordSpent(holder, payment)
+          await payer.recordSpent(holder, payment, seen.block)
           return seen.reverted ? 'reverted' : 'spent'
         }
         // The node knows neither the transaction nor a receipt and the nonce is consumed:
@@ -1221,6 +1221,7 @@ async function repayReverted(
       const [signed] = await payer.sign(claim, owner.chainId, () => reverted.to!)
       if (claim.accounts.length !== 1 || signed === undefined)
         throw new Error('A repeated payment is one transfer')
+      await payer.recordSigned(holder, [signed])
       await owner.messages.put({
         ...owner.messages.get(consumerId)!,
         payments: [
@@ -1519,9 +1520,12 @@ async function resend(
   await Promise.all([freeResends, paidResends])
 }
 
-/** At open, before the wallet is handed out: the accounts every stored message with a pending
- * payment pays from are claimed again, so nothing else selects them. Synchronous, no request. */
-export function restoreOutgoingClaims(owner: CanonicalMessagingOwner): void {
+/** At open, before the wallet is handed out: the coins every stored message with a pending
+ * payment pays from are its again, so nothing else selects them; a coin with a transaction out
+ * that no stored message names is free again (nothing could have sent it). No request. */
+export async function restoreOutgoingClaims(
+  owner: CanonicalMessagingOwner,
+): Promise<void> {
   const payer = owner.payer()
   for (const row of owner.messages.all()) {
     // One claim per coin: a payment signed more than once at its nonce names its coin again.
@@ -1537,7 +1541,10 @@ export function restoreOutgoingClaims(owner: CanonicalMessagingOwner): void {
     if (pending.length === 0) continue
     // Two records naming one coin must never stop the wallet from opening: the first keeps the
     // claim, both stay in the resend pass, and the chain says which payment landed.
-    const contested = payer.restore(holderOf(owner, row.consumerId), pending)
+    const contested = await payer.restore(
+      holderOf(owner, row.consumerId),
+      pending,
+    )
     if (contested.length > 0)
       console.warn(
         `[monad-canonical-dm] sent message ${row.digest} names ${contested.join(
@@ -1545,6 +1552,7 @@ export function restoreOutgoingClaims(owner: CanonicalMessagingOwner): void {
         )}, which another unsettled message also pays from. Both are kept; the chain decides.`,
       )
   }
+  await payer.finishRestore()
 }
 
 function unpaidResult(payloadDigest: string): DirectMessageSendResult {
@@ -1913,6 +1921,8 @@ async function send(
     // submitted): the caller learns the digest of what is about to become sendable. If it
     // refuses, nothing signed leaves the wallet and the coins are free again.
     await params.onBeforeExposure?.(digest)
+    // The signed bytes go onto their coins before the row that could send them is written.
+    await owner.lifetime(() => payer.recordSigned(holder, signed))
     const request = freezePaidMessage(
       directory.network,
       sealed,
@@ -2015,7 +2025,8 @@ async function send(
     }
   } catch (error) {
     // Nothing signed left the wallet and nothing is stored: the accounts are free at once.
-    if (!recorded) payer.release(holder)
+    if (!recorded && claim !== undefined)
+      await payer.release(claim).catch(() => undefined)
     throw attempted ? possiblyAttempted(error) : notAttempted(error)
   } finally {
     if (work.creating) {

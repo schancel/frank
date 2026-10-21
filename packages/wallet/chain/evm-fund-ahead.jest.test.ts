@@ -326,9 +326,10 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     await tick();
     expect(rows("available")).toEqual([]);
     expect(rows("spent")).toHaveLength(2);
-    // Before exposure the send quotes its fee and validates the funded pair's current nonce.
+    // Before exposure the send quotes its fee and reads the freshly funded pair into the coin
+    // list once (its nonce and what it holds): no funding request.
     expect(new Set(atRelay!.rpc)).toEqual(
-      new Set(["getBlock", "getGasPrice", "getPriorityFee", "getBlockNumber", "getTransactionCount"])
+      new Set(["getBlock", "getGasPrice", "getPriorityFee", "getBlockNumber", "getTransactionCount", "getBalance"])
     );
   });
 

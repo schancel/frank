@@ -1,823 +1,509 @@
 /**
- * The payer's choice of coins, alone: a stub node that answers balances, nonces and a fee, and
- * a stub of the pool's claims. What is asserted is which coins are claimed and what each signed
- * transfer pays; the same on real chain software is the parallel-send check's phase w.
+ * The payer on the wallet's coin list, alone: a stub node that answers balances, nonces, blocks
+ * and a fee; the real pool, coin list and coin-list sync. What is asserted is which coins a
+ * payment takes, what it reads from the node to take them, and what becomes of each coin when
+ * the payment is signed, given up, settled or restored after a restart. The same on real chain
+ * software is the parallel-send check.
  */
 import { Transaction, Wallet, type Provider } from 'ethers'
 import { EvmBlockWatcher } from './evm-block-watcher'
-import {
-  EvmStampPayer,
-  InsufficientStampFundsError,
-} from './evm-stamp-payer'
+import { EvmStampPayer, InsufficientStampFundsError } from './evm-stamp-payer'
 import { MonadSubAccountPool } from './evm-account-pool'
+import { EvmCoinList, type StoredEvmListCoin } from './evm-coin-list'
+import { EvmCoinListSync, type CoinListSource } from './evm-coin-list-sync'
 import { MonadHdKeyring } from './secp256k1-hd-keyring'
 import { InMemorySubAccountPoolStore } from './storage/sub-account-pool-storage'
+import { MemoryRecordStore } from './storage/evm-coin-store'
 
 const GWEI = 10n ** 9n
 const MON = 10n ** 18n
 /** Monad testnet's shape: charged 102 gwei, cap 202 gwei. */
 const CHARGED = 21_000n * 102n * GWEI
 const RESERVE = 21_000n * 202n * GWEI
+const CHAIN_ID = 10143n
 const key = (n: number) => '0x' + n.toString(16).padStart(64, '0')
 const main = new Wallet(key(1))
-const coins = [2, 3, 4].map(n => new Wallet(key(n)))
+const received = [2, 3, 4].map(n => new Wallet(key(n)))
+const at = (wallet: { address: string }) => wallet.address.toLowerCase()
+const DESTINATION = new Wallet(key(9)).address
 
-function payer(balances: Record<string, bigint>, options: {
-  provider?: Partial<Provider>
-  spendSpacingBlocks?: number
-  canSelectAccount?: (address: string, nonce: number) => boolean
-} = {}) {
-  const held = new Map<string, string>()
+interface Node {
+  head: number
+  balances: Map<string, bigint>
+  nonces: Map<string, number>
+  /** Balance an account had at an older block, for the spacing rule; default: what it has. */
+  balanceAt?: (account: string, block: number) => bigint
+  /** Nonce an account had at an older block; default: what it has. */
+  nonceAt?: (account: string, block: number) => number
+  pending?: Map<string, number>
+  receipts: Map<string, { status: number; blockNumber: number; blockHash: string }>
+  calls: string[]
+}
+
+async function setup(
+  options: {
+    poolRows?: number
+    spendSpacingBlocks?: number
+    reserveBalanceWei?: bigint
+    canSelectAccount?: (address: string, nonce: number) => boolean
+    accountHeld?: (address: string) => boolean
+    store?: MemoryRecordStore<StoredEvmListCoin>
+    pool?: MonadSubAccountPool
+    node?: Node
+  } = {},
+) {
+  const node: Node = options.node ?? {
+    head: 1000,
+    balances: new Map(),
+    nonces: new Map(),
+    receipts: new Map(),
+    calls: [],
+  }
   const provider = {
-    getBlockNumber: async () => 1000,
-    getTransactionCount: async () => 0,
-    getBalance: async (address: string) => balances[address.toLowerCase()] ?? 0n,
+    getBlockNumber: async () => (node.calls.push('block'), node.head),
+    getTransactionCount: async (address: string, tag: number | string) => {
+      node.calls.push(`count:${address.toLowerCase()}:${tag}`)
+      const account = address.toLowerCase()
+      const now = node.nonces.get(account) ?? 0
+      if (tag === 'pending') return node.pending?.get(account) ?? now
+      if (typeof tag === 'number') return node.nonceAt?.(account, tag) ?? now
+      return now
+    },
+    getBalance: async (address: string, tag?: number | string) => {
+      node.calls.push(`balance:${address.toLowerCase()}`)
+      const account = address.toLowerCase()
+      const now = node.balances.get(account) ?? 0n
+      if (typeof tag === 'number') return node.balanceAt?.(account, tag) ?? now
+      return now
+    },
     getFeeData: async () => ({
       gasPrice: 102n * GWEI,
       maxFeePerGas: 202n * GWEI,
       maxPriorityFeePerGas: 2n * GWEI,
     }),
-    ...options.provider,
+    getTransactionReceipt: async (hash: string) => {
+      node.calls.push(`receipt:${hash}`)
+      return node.receipts.get(hash) ?? null
+    },
+    getTransaction: async () => null,
+    getBlock: async (n: number) => ({ hash: `0xblock${n}` }),
   } as unknown as Provider
-  const pool = {
-    records: () => [],
-    isSpendReserved: () => false,
-    accountClaimedBy: (address: string) => held.get(address.toLowerCase()),
-    accountGeneration: () => 0,
-    claimAccount: (holder: string, address: string) =>
-      held.has(address.toLowerCase())
-        ? false
-        : (held.set(address.toLowerCase(), holder), true),
-    releaseAccountClaim: (holder: string, address: string) => {
-      if (held.get(address.toLowerCase()) === holder)
-        held.delete(address.toLowerCase())
-    },
-    // The stub wakes nobody: a waiter looks again at the block watcher's next look.
-    accountReleased: () => new Promise<void>(() => undefined),
-    releaseClaim: (holder: string) => {
-      for (const [address, by] of held) if (by === holder) held.delete(address)
-    },
-  } as unknown as MonadSubAccountPool
+  const keyring = MonadHdKeyring.fromMnemonic(
+    'test test test test test test test test test test test junk',
+  )
+  const pool =
+    options.pool ??
+    new MonadSubAccountPool({ keyring, store: new InMemorySubAccountPoolStore() })
+  if (options.poolRows !== undefined) pool.ensureSize(options.poolRows)
+  const store = options.store ?? new MemoryRecordStore<StoredEvmListCoin>()
+  const list = await EvmCoinList.open(store)
   const watcher = new EvmBlockWatcher({ provider, intervalMs: 10 })
-  const stampPayer = new EvmStampPayer({
+  const sync = new EvmCoinListSync({
+    list,
+    provider,
+    watcher,
+    ...(options.spendSpacingBlocks === undefined
+      ? {}
+      : { spendSpacingBlocks: options.spendSpacingBlocks }),
+    sources: () => {
+      const sources: CoinListSource[] = [
+        { account: at(main), origin: 'root', privateKey: () => main.privateKey },
+        ...received.map(coin => ({
+          account: at(coin),
+          origin: 'stealth' as const,
+          privateKey: () => coin.privateKey,
+        })),
+      ]
+      for (const row of pool.records())
+        if (row.status === 'available' || list.latestOf(row.address) !== undefined)
+          sources.push({
+            account: row.address.toLowerCase(),
+            origin: 'deterministic',
+            privateKey: () => pool.privateKeyOf(row.index),
+          })
+      return sources
+    },
+  })
+  const payer = new EvmStampPayer({
     pool,
+    coins: list,
+    sync,
     provider,
     httpClient: {} as never,
     watcher,
-    spendSpacingBlocks: options.spendSpacingBlocks,
-    canSelectAccount: options.canSelectAccount,
-    accounts: [
-      { source: 'main', address: main.address, privateKey: () => main.privateKey },
-    ],
-    // As the wallet lists them: the largest first.
-    coins: () =>
-      coins
-        .filter(coin => (balances[coin.address.toLowerCase()] ?? 0n) > 0n)
-        .sort((a, b) =>
-          balances[a.address.toLowerCase()]! > balances[b.address.toLowerCase()]!
-            ? -1
-            : 1,
-        )
-        .map(coin => ({ address: coin.address, privateKey: () => coin.privateKey })),
+    ...(options.spendSpacingBlocks === undefined
+      ? {}
+      : { spendSpacingBlocks: options.spendSpacingBlocks }),
+    ...(options.reserveBalanceWei === undefined
+      ? {}
+      : { reserveBalanceWei: options.reserveBalanceWei }),
+    ...(options.canSelectAccount ? { canSelectAccount: options.canSelectAccount } : {}),
+    ...(options.accountHeld
+      ? {
+          accountHeld: options.accountHeld,
+          heldRefusal: () => new Error('held for a contact payment'),
+        }
+      : {}),
   })
-  return { stampPayer, held, watcher }
+  return { node, pool, store, list, sync, payer, watcher }
 }
-const at = (wallet: Wallet) => wallet.address.toLowerCase()
-const sources = ['main', 'identity', 'coin'] as const
+
+type Setup = Awaited<ReturnType<typeof setup>>
+const stop: Setup[] = []
+async function make(options: Parameters<typeof setup>[0] = {}) {
+  const made = await setup(options)
+  stop.push(made)
+  return made
+}
+afterEach(() => {
+  for (const made of stop.splice(0)) made.watcher.stop()
+})
+
+/** Signs the claim to one destination and records the signed payments on their coins. */
+async function signAndRecord(f: Setup, claim: Awaited<ReturnType<EvmStampPayer['claim']>>) {
+  const signed = await f.payer.sign(claim, CHAIN_ID, () => DESTINATION)
+  await f.payer.recordSigned(claim.holder, signed)
+  return signed
+}
+
+/** The chain mines `rawTx` at `block`: the account's nonce moves on and its balance falls. */
+function mine(node: Node, rawTx: string, block: number) {
+  const tx = Transaction.from(rawTx)
+  const from = tx.from!.toLowerCase()
+  node.nonces.set(from, tx.nonce + 1)
+  node.balances.set(
+    from,
+    (node.balances.get(from) ?? 0n) - tx.value - 21_000n * 102n * GWEI,
+  )
+  node.receipts.set(tx.hash!, {
+    status: 1,
+    blockNumber: block,
+    blockHash: `0xblock${block}`,
+  })
+}
 
 describe('which coins pay a stamp', () => {
-  // Seen in Chrome on testnet: 0.08 MON in the wallet (0.012 at the main address, 0.05 in
-  // received payments) and "There are not enough funds to send this message".
-  it('no one coin covers it: several pay it together, the largest first, each a part worth its transfer; the parts add up to the stamp', async () => {
-    const { stampPayer, held, watcher } = payer({
-      [at(main)]: MON / 100n, // 0.01
-      [at(coins[0]!)]: (3n * MON) / 100n, // 0.03
-      [at(coins[1]!)]: (2n * MON) / 100n, // 0.02
-    })
+  it('no one coin covers it: several pay it together, each a part worth its transfer; the parts add up to the stamp', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON / 100n)
+    f.node.balances.set(at(received[0]!), (3n * MON) / 100n)
+    f.node.balances.set(at(received[1]!), (2n * MON) / 100n)
     const stamp = (4n * MON) / 100n
-    const claim = await stampPayer.claim({
-      holder: 'message',
-      stampValueWei: stamp,
-      sources,
-    })
-    watcher.stop()
-    expect(claim.accounts.map(account => account.address)).toEqual([
-      at(coins[0]!),
-      at(coins[1]!),
-    ])
-    // The first gives all it can after its own fee; the second the rest.
-    expect(claim.accounts[0]!.paymentValueWei).toBe((3n * MON) / 100n - RESERVE)
-    expect(
-      claim.accounts.reduce((sum, account) => sum + account.paymentValueWei, 0n),
-    ).toBe(stamp)
+    const claim = await f.payer.claim({ holder: 'message', stampValueWei: stamp })
+    // The Stamp wallet's rule: spread over the coins, none paying more than it holds after its
+    // own fee.
+    expect(claim.accounts.length).toBeGreaterThanOrEqual(2)
+    for (const account of claim.accounts)
+      expect(account.paymentValueWei).toBeLessThanOrEqual(
+        f.node.balances.get(account.address)! - RESERVE,
+      )
+    expect(claim.accounts.reduce((sum, a) => sum + a.paymentValueWei, 0n)).toBe(stamp)
     for (const account of claim.accounts)
       expect(account.paymentValueWei).toBeGreaterThanOrEqual(CHARGED)
-    // Both are claimed for this message; the main account is not touched.
-    expect([...held.keys()].sort()).toEqual([at(coins[0]!), at(coins[1]!)].sort())
-    // One signed transfer per coin, each from its own key to its own destination.
-    const destinations = [new Wallet(key(8)).address, new Wallet(key(9)).address]
-    const signed = (
-      await stampPayer.sign(claim, 10143n, index => destinations[index]!)
-    ).map(payment => Transaction.from(payment.rawTx))
-    expect(signed.map(tx => tx.from!.toLowerCase())).toEqual([
-      at(coins[0]!),
-      at(coins[1]!),
-    ])
-    expect(signed.map(tx => tx.to)).toEqual(destinations)
-    expect(signed.reduce((sum, tx) => sum + tx.value, 0n)).toBe(stamp)
-    expect(signed.every(tx => tx.type === 2 && tx.gasLimit === 21_000n)).toBe(true)
+    // Taken in the list and mirrored in the pool's claims.
+    const taken = claim.accounts.map(account => account.address)
+    expect(f.list.heldBy('message').map(coin => coin.account).sort()).toEqual(
+      [...taken].sort(),
+    )
+    for (const account of taken) expect(f.pool.accountClaimedBy(account)).toBe('message')
+    // One signed transfer per coin, each from the key the coin carries.
+    const signed = await f.payer.sign(claim, CHAIN_ID, () => DESTINATION)
+    expect(signed.map(p => Transaction.from(p.rawTx).from!.toLowerCase())).toEqual(taken)
   })
 
-  it('one coin that covers the stamp pays it alone, in one transfer, as before', async () => {
-    const { stampPayer, watcher } = payer({
-      [at(main)]: MON / 1000n,
-      [at(coins[0]!)]: (3n * MON) / 100n,
-      [at(coins[1]!)]: (2n * MON) / 100n,
-    })
-    const claim = await stampPayer.claim({
-      holder: 'message',
-      stampValueWei: MON / 100n,
-      sources,
-    })
-    watcher.stop()
-    expect(claim.accounts).toHaveLength(1)
-    expect(claim.accounts[0]).toMatchObject({
-      address: at(coins[0]!),
-      paymentValueWei: MON / 100n,
-    })
-  })
-
-  it('coins that do not cover it together are refused, and nothing stays claimed; a coin that cannot pay its own fee is never an input', async () => {
-    const { stampPayer, held, watcher } = payer({
-      [at(main)]: MON / 100n,
-      [at(coins[0]!)]: (2n * MON) / 100n,
-      // Holds less than a transfer costs: moving it would cost more than it is.
-      [at(coins[1]!)]: CHARGED,
-    })
+  it('coins that do not cover it together are refused, and nothing stays taken', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON / 100n)
+    f.node.balances.set(at(received[0]!), RESERVE) // cannot pay its own fee: never an input
     await expect(
-      stampPayer.claim({
-        holder: 'message',
-        stampValueWei: (4n * MON) / 100n,
-        sources,
-      }),
+      f.payer.claim({ holder: 'message', stampValueWei: MON }),
     ).rejects.toBeInstanceOf(InsufficientStampFundsError)
-    expect(held.size).toBe(0)
-    // What the two usable coins can pay after their fees is paid by the two of them.
-    const reachable = MON / 100n + (2n * MON) / 100n - 2n * RESERVE
-    const claim = await stampPayer.claim({
-      holder: 'next',
-      stampValueWei: reachable,
-      sources,
-    })
-    watcher.stop()
-    expect(claim.accounts.map(account => account.address).sort()).toEqual(
-      [at(main), at(coins[0]!)].sort(),
-    )
+    expect(f.list.heldBy('message')).toEqual([])
+    expect(f.pool.accountClaimedBy(at(main))).toBeUndefined()
   })
 
-  it('a coin another payment holds is not taken: the send waits for it instead of failing or signing a second transfer from it', async () => {
-    const { stampPayer, held, watcher } = payer({
-      [at(coins[0]!)]: (3n * MON) / 100n,
-      [at(coins[1]!)]: (2n * MON) / 100n,
-    })
-    held.set(at(coins[0]!), 'an earlier message')
-    let waited = 0
-    const claim = stampPayer.claim({
-      holder: 'message',
-      stampValueWei: (4n * MON) / 100n,
-      sources,
-      onWaiting: () => waited++,
-    })
-    await new Promise(resolve => setTimeout(resolve, 80))
-    expect(waited).toBeGreaterThan(0)
-    expect(held.get(at(coins[1]!))).toBeUndefined()
-    held.delete(at(coins[0]!))
-    const made = await claim
-    watcher.stop()
-    expect(made.accounts).toHaveLength(2)
+  it('two payments built at the same moment take different coins; once the list knows the coins, a payment reads nothing from the node to take them', async () => {
+    const f = await make({ poolRows: 4 })
+    for (const row of f.pool.records()) f.node.balances.set(row.address.toLowerCase(), MON / 50n)
+    await f.sync.refresh()
+    f.node.calls.length = 0
+    const [a, b] = await Promise.all([
+      f.payer.claim({ holder: 'a', stampValueWei: MON / 100n, sources: ['pool'] }),
+      f.payer.claim({ holder: 'b', stampValueWei: MON / 100n, sources: ['pool'] }),
+    ])
+    const accounts = [...a.accounts, ...b.accounts].map(account => account.address)
+    expect(new Set(accounts).size).toBe(accounts.length)
+    expect(f.node.calls.filter(call => !call.startsWith('block'))).toEqual([])
+  })
+
+  it('two wallets of two chains keep separate lists: a coin of one is never a coin of the other', async () => {
+    const one = await make()
+    const two = await make()
+    one.node.balances.set(at(main), MON)
+    await expect(
+      two.payer.claim({ holder: 'm', stampValueWei: MON / 100n }),
+    ).rejects.toBeInstanceOf(InsufficientStampFundsError)
+    const claim = await one.payer.claim({ holder: 'm', stampValueWei: MON / 100n })
+    expect(claim.accounts.map(a => a.address)).toEqual([at(main)])
+    expect(two.list.all()).toEqual([])
   })
 })
 
-
-describe('settling a stamp from its actual receipt', () => {
-  async function payment() {
-    return main.signTransaction({
-      chainId: 10143n, nonce: 0, to: coins[0]!.address, value: MON / 100n,
-      gasLimit: 21_000n, maxFeePerGas: 202n * GWEI, maxPriorityFeePerGas: 2n * GWEI,
+describe('what holds a coin, and what lets it go', () => {
+  it('a payment let go before anything signed left the wallet frees only its own coins (not the holder\'s others)', async () => {
+    const f = await make()
+    f.node.balances.set(at(received[0]!), MON / 10n)
+    f.node.balances.set(at(received[1]!), MON / 20n)
+    const first = await f.payer.claim({ holder: 'm', stampValueWei: MON / 20n })
+    await signAndRecord(f, first)
+    f.node.balances.set(at(main), MON)
+    const second = await f.payer.claim({
+      holder: 'm',
+      stampValueWei: MON / 50n,
+      sources: ['main'],
     })
-  }
-
-  it('nonce zero uses the mined block: the next send waits only the remaining spacing', async () => {
-    const state = { head: 1001 }
-    const { stampPayer, watcher } = payer({ [at(main)]: MON }, {
-      spendSpacingBlocks: 3,
-      provider: {
-        getBlockNumber: async () => state.head,
-        getTransactionCount: async (_address, block) => typeof block === 'number' && block < 1000 ? 0 : 1,
-        getTransaction: async () => null,
-        getTransactionReceipt: async () => ({ status: 1, blockNumber: 1000 }) as never,
-      },
-    })
-    try {
-      expect(await stampPayer.observe(await payment())).toMatchObject({ state: 'included' })
-      const waits: (number | undefined)[] = []
-      const claim = stampPayer.claim({ holder: 'next', stampValueWei: MON / 100n,
-        sources: ['main'], onWaiting: blocks => waits.push(blocks) })
-      void claim.catch(() => undefined)
-      await new Promise(resolve => setTimeout(resolve, 50))
-      expect(waits).toEqual([1])
-      state.head = 1002
-      expect((await claim).accounts[0]!.nonce).toBe(1)
-    } finally { watcher.stop() }
+    await f.payer.release(second)
+    expect(f.list.heldBy('m').map(coin => coin.account).sort()).toEqual(
+      first.accounts.map(a => a.address).sort(),
+    )
+    for (const a of first.accounts)
+      expect(f.pool.accountClaimedBy(a.address)).toBe('m')
+    for (const a of second.accounts)
+      expect(f.pool.accountClaimedBy(a.address)).toBeUndefined()
   })
 
-  it('a reverted receipt stays pending until three confirmations on the canonical block', async () => {
-    const state = { head: 1000, hash: 'canonical' }
-    const { stampPayer, watcher } = payer({}, { provider: {
-      getBlockNumber: async () => state.head,
-      getTransactionCount: async () => 1,
-      getTransaction: async () => null,
-      getTransactionReceipt: async () => ({ status: 0, blockNumber: 1000, blockHash: 'canonical' }) as never,
-      getBlock: async () => ({ hash: state.hash }) as never,
-    } })
-    try {
-      const raw = await payment()
-      expect(await stampPayer.observe(raw)).toEqual({ state: 'pending', where: 'included' })
-      state.head = 1001
-      expect(await stampPayer.observe(raw)).toEqual({ state: 'pending', where: 'included' })
-      state.head = 1002
-      state.hash = 'other-fork'
-      expect(await stampPayer.observe(raw)).toEqual({ state: 'pending', where: 'included' })
-      state.hash = 'canonical'
-      expect(await stampPayer.observe(raw)).toEqual({ state: 'included', reverted: true, block: 1000 })
-    } finally { watcher.stop() }
+  it('a signed payment\'s coin is not given back by releasePayment: only the chain frees it', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    const claim = await f.payer.claim({ holder: 'm', stampValueWei: MON / 100n })
+    await signAndRecord(f, claim)
+    f.payer.releasePayment('m', claim.accounts[0]!)
+    expect(f.list.get(at(main), 0)?.state).toBe('pending_receipt')
+    await expect(
+      f.payer.claim({
+        holder: 'other',
+        stampValueWei: MON / 100n,
+        signal: AbortSignal.timeout(100),
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('an account a contact payment holds is refused at once, not waited for', async () => {
+    const f = await make({ accountHeld: address => address.toLowerCase() === at(main) })
+    f.node.balances.set(at(main), MON)
+    await expect(
+      f.payer.claim({ holder: 'm', stampValueWei: MON / 100n }),
+    ).rejects.toThrow('held for a contact payment')
+  })
+
+  it('a coin whose nonce the native journal reserves is not taken from any source (main included), and its account is read again', async () => {
+    let reserved = true
+    const f = await make({
+      canSelectAccount: (address, nonce) =>
+        !(reserved && address.toLowerCase() === at(main) && nonce === 0),
+    })
+    f.node.balances.set(at(main), MON)
+    await expect(
+      f.payer.claim({ holder: 'm', stampValueWei: MON / 100n }),
+    ).rejects.toBeInstanceOf(InsufficientStampFundsError)
+    expect(f.sync.isDirty(at(main))).toBe(true)
+    // The native operation lands: the account is read again at its next nonce.
+    reserved = false
+    f.node.nonces.set(at(main), 1)
+    const claim = await f.payer.claim({ holder: 'm', stampValueWei: MON / 100n })
+    expect(claim.accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
+  })
+
+  it('a sub-account another payment holds is not waited for: it never comes back', async () => {
+    const f = await make({ poolRows: 1 })
+    const row = f.pool.records()[0]!
+    f.node.balances.set(row.address.toLowerCase(), MON / 50n)
+    await f.payer.claim({ holder: 'a', stampValueWei: MON / 100n, sources: ['pool'] })
+    await expect(
+      f.payer.claim({ holder: 'b', stampValueWei: MON / 100n, sources: ['pool'] }),
+    ).rejects.toBeInstanceOf(InsufficientStampFundsError)
   })
 })
 
+describe('settlement: the chain decides', () => {
+  it('a mined payment spends its coin and the account\'s next coin is listed at the next nonce; a payment waiting for the account then takes it', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    const first = await f.payer.claim({ holder: 'one', stampValueWei: MON / 100n })
+    const [signed] = await signAndRecord(f, first)
+    const waits: (number | undefined)[] = []
+    const second = f.payer.claim({
+      holder: 'two',
+      stampValueWei: MON / 100n,
+      onWaiting: blocks => waits.push(blocks),
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(waits).toEqual([undefined])
+    mine(f.node, signed!.rawTx, 1001)
+    const seen = await f.payer.observe(signed!.rawTx)
+    expect(seen).toEqual({ state: 'included', reverted: false, block: 1001 })
+    await f.payer.recordSpent('one', signed!, 1001)
+    f.payer.releasePayment('one', signed!)
+    const made = await second
+    expect(made.accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
+    expect(f.list.get(at(main), 0)?.state).toBe('spent')
+    expect(f.list.get(at(main), 1)?.valueWei).toBe(f.node.balances.get(at(main)))
+  })
 
-describe('reconstructed pool account nonces', () => {
-  function recovered() {
-    const keyring = MonadHdKeyring.fromMnemonic(
-      'test test test test test test test test test test test junk',
-    )
-    const pool = new MonadSubAccountPool({
-      keyring,
-      store: new InMemorySubAccountPoolStore(),
+  it('a payment is called replaced only when, read again after the nonce, it still has no receipt', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    const claim = await f.payer.claim({ holder: 'm', stampValueWei: MON / 100n })
+    const [signed] = await signAndRecord(f, claim)
+    const hash = Transaction.from(signed!.rawTx).hash!
+    f.node.nonces.set(at(main), 1)
+    // The receipt shows up between the parallel reads and the second look.
+    let looks = 0
+    const receipts = f.node.receipts
+    f.node.receipts = new Map()
+    const get = receipts.get.bind(receipts)
+    f.node.receipts.get = ((h: string) =>
+      h === hash && ++looks > 1
+        ? { status: 1, blockNumber: 1001, blockHash: '0xblock1001' }
+        : get(h)) as typeof receipts.get
+    expect(await f.payer.observe(signed!.rawTx)).toEqual({
+      state: 'pending',
+      where: 'included',
     })
-    pool.ensureSize(2)
-    const provider = {
-      getBlockNumber: jest.fn(async () => 1000),
-      getTransactionCount: jest.fn(async () => 1),
-      getBalance: jest.fn(async () => MON / 50n),
-      getFeeData: jest.fn(async () => ({
-        gasPrice: 102n * GWEI,
-        maxFeePerGas: 202n * GWEI,
-        maxPriorityFeePerGas: 2n * GWEI,
-      })),
-    }
-    const watcher = new EvmBlockWatcher({
-      provider: provider as unknown as Provider,
-      intervalMs: 10,
+    // Nothing ever shows it: replaced, and the coin leaves the list to be read again.
+    f.node.receipts = new Map()
+    expect(await f.payer.observe(signed!.rawTx)).toEqual({ state: 'replaced' })
+    await f.payer.recordFailed('m', signed!)
+    expect(f.list.get(at(main), 0)).toBeUndefined()
+    expect(f.sync.isDirty(at(main))).toBe(true)
+  })
+
+  it('below the chain\'s reserve, the next coin of an account that just sent waits out the spacing and says how many blocks', async () => {
+    const f = await make({ spendSpacingBlocks: 3, reserveBalanceWei: 10n * MON })
+    f.node.balances.set(at(main), MON)
+    const first = await f.payer.claim({ holder: 'one', stampValueWei: MON / 100n })
+    const [signed] = await signAndRecord(f, first)
+    mine(f.node, signed!.rawTx, 1001)
+    f.node.head = 1001
+    await f.payer.recordSpent('one', signed!, 1001)
+    f.payer.releasePayment('one', signed!)
+    expect(f.list.get(at(main), 1)?.spendableFromBlock).toBe(1003)
+    const waits: (number | undefined)[] = []
+    const second = f.payer.claim({
+      holder: 'two',
+      stampValueWei: MON / 100n,
+      onWaiting: blocks => waits.push(blocks),
     })
-    const stampPayer = new EvmStampPayer({
-      pool,
-      provider: provider as unknown as Provider,
-      httpClient: {} as never,
-      watcher,
-      accounts: [],
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(waits).toContain(2)
+    f.node.head = 1003
+    const made = await second
+    expect(made.accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
+  })
+
+  it('at or above the reserve, the same coin is taken at once', async () => {
+    const f = await make({ spendSpacingBlocks: 3, reserveBalanceWei: MON })
+    f.node.balances.set(at(main), 50n * MON)
+    const first = await f.payer.claim({ holder: 'one', stampValueWei: MON / 100n })
+    const [signed] = await signAndRecord(f, first)
+    mine(f.node, signed!.rawTx, 1001)
+    f.node.head = 1001
+    await f.payer.recordSpent('one', signed!, 1001)
+    f.payer.releasePayment('one', signed!)
+    const made = await f.payer.claim({ holder: 'two', stampValueWei: MON / 100n })
+    expect(made.accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
+  })
+
+  it('funds that just arrived are listed with the block from which they may be spent', async () => {
+    const f = await make({ spendSpacingBlocks: 3 })
+    f.node.balances.set(at(main), MON)
+    f.node.balanceAt = () => 0n
+    await f.sync.refresh()
+    expect(f.list.get(at(main), 0)?.spendableFromBlock).toBe(1004)
+  })
+})
+
+describe('restart and repeated sync', () => {
+  it('after a restart, a stored payment\'s coin is held again; a signed coin no record names is free', async () => {
+    const store = new MemoryRecordStore<StoredEvmListCoin>()
+    const node: Node = {
+      head: 1000,
+      balances: new Map([
+        [at(main), MON],
+        [at(received[0]!), MON],
+      ]),
+      nonces: new Map(),
+      receipts: new Map(),
+      calls: [],
+    }
+    const before = await make({ store, node })
+    const kept = await before.payer.claim({
+      holder: 'kept',
+      stampValueWei: MON / 100n,
+      sources: ['main'],
     })
-    return { pool, provider, watcher, stampPayer }
-  }
-  it('signs the remaining value at nonce one after a recovered available account previously burned at nonce zero', async () => {
-    const f = recovered()
-    try {
-      const claim = await f.stampPayer.claim({
-        holder: 'new-message',
-        stampValueWei: MON / 100n,
-        sources: ['pool'],
-      })
-      expect(claim.accounts).toHaveLength(1)
-      expect(claim.accounts[0]!.nonce).toBe(1)
-      const [payment] = await f.stampPayer.sign(
-        claim,
-        10143n,
-        () => main.address,
-      )
-      expect(Transaction.from(payment!.rawTx).nonce).toBe(1)
-      expect(Transaction.from(payment!.rawTx).value).toBe(MON / 100n)
-    } finally {
-      f.watcher.stop()
-      f.stampPayer.release('new-message')
-    }
+    const [stored] = await signAndRecord(before, kept)
+    const lost = await before.payer.claim({
+      holder: 'lost',
+      stampValueWei: MON / 100n,
+      sources: ['coin'],
+    })
+    await signAndRecord(before, lost) // its record was never written
+    before.watcher.stop()
+
+    const after = await make({ store, node })
+    const contested = await after.payer.restore('kept', [stored!])
+    expect(contested).toEqual([])
+    await after.payer.finishRestore()
+    expect(after.list.get(at(main), 0)).toMatchObject({
+      state: 'pending_receipt',
+      holder: 'kept',
+      spendingTx: stored!.rawTx,
+    })
+    expect(after.pool.accountClaimedBy(at(main))).toBe('kept')
+    expect(after.list.get(at(received[0]!), 0)?.state).toBe('unspent')
+    // A second stored message naming the same coin does not stop the open: it is reported.
+    expect(await after.payer.restore('other', [stored!])).toEqual([at(main)])
   })
-  it('does not construct over a pending nonce and can use another available account', async () => {
-    const f = recovered()
-    const first = f.pool.records()[0]!.address.toLowerCase()
-    f.provider.getTransactionCount.mockImplementation(
-      async (address?: unknown, block?: unknown) =>
-        String(address).toLowerCase() === first && block === 'pending' ? 2 : 1,
-    )
-    try {
-      const claim = await f.stampPayer.claim({
-        holder: 'new-message',
-        stampValueWei: MON / 100n,
-        sources: ['pool'],
-      })
-      expect(claim.accounts[0]!.address).not.toBe(first)
-      expect(claim.accounts[0]!.nonce).toBe(1)
-      expect(f.pool.claimedBy(0)).toBeUndefined()
-    } finally {
-      f.watcher.stop()
-      f.stampPayer.release('new-message')
-    }
-  })
-  it('preserves a restored ambiguous original claim even when the chain nonce advanced', async () => {
-    const f = recovered()
-    const original = await f.pool
-      .getSigner(0, {
-        provider: f.provider as unknown as Provider,
-        httpClient: {} as never,
-      })
-      .signFrozenUnsigned({
-        from: f.pool.records()[0]!.address.toLowerCase(),
-        unsignedSerialized: Transaction.from({
-          type: 2,
-          chainId: 10143n,
-          nonce: 0,
-          to: main.address,
-          value: MON / 100n,
-          gasLimit: 21000n,
-          maxFeePerGas: 202n * GWEI,
-          maxPriorityFeePerGas: 2n * GWEI,
-        }).unsignedSerialized,
-      })
-    // This is the public restore boundary the durable outgoing-message owner invokes on reopen.
-    f.pool.restoreClaim('original-operation', [0])
-    try {
-      const claim = await f.stampPayer.claim({
-        holder: 'different-message',
-        stampValueWei: MON / 100n,
-        sources: ['pool'],
-      })
-      expect(claim.accounts[0]!.index).toBe(1)
-      expect(f.pool.claimedBy(0)).toBe('original-operation')
-      expect(Transaction.from(original.rawTx).nonce).toBe(0)
-    } finally {
-      f.watcher.stop()
-      f.stampPayer.release('different-message')
-      f.pool.releaseClaim('original-operation')
-    }
-  })
-  it('reserves independent recovered accounts exclusively for concurrent construction', async () => {
-    const f = recovered()
-    try {
-      const claims = await Promise.all(
-        ['first', 'second'].map(holder =>
-          f.stampPayer.claim({
-            holder,
-            stampValueWei: MON / 100n,
-            sources: ['pool'],
-          }),
-        ),
-      )
-      expect(
-        new Set(claims.map(claim => claim.accounts[0]!.address)).size,
-      ).toBe(2)
-      expect(claims.map(claim => claim.accounts[0]!.nonce)).toEqual([1, 1])
-    } finally {
-      f.watcher.stop()
-      f.stampPayer.release('first')
-      f.stampPayer.release('second')
-    }
+
+  it('reading the chain again changes nothing that did not change, and skips an account with a transaction still in the mempool', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    await f.sync.refresh()
+    const once = f.list.all()
+    f.sync.markDirty(at(main))
+    await f.sync.refresh()
+    expect(f.list.all()).toEqual(once)
+    f.node.pending = new Map([[at(main), 1]])
+    f.sync.markDirty(at(main))
+    await f.sync.refresh()
+    expect(f.sync.isDirty(at(main))).toBe(true)
+    expect(f.list.all()).toEqual(once)
   })
 })
 
 describe('read-only stamp affordability', () => {
-  it('quotes the actual fragmented plan and maximum native fees, without claiming', async () => {
-    const { stampPayer, held, watcher } = payer({
-      [at(main)]: MON / 100n,
-      [at(coins[0]!)]: (3n * MON) / 100n,
-      [at(coins[1]!)]: (2n * MON) / 100n,
-    })
-    const stampValueWei = (4n * MON) / 100n
-    const quote = await stampPayer.quote({ stampValueWei })
-    expect(quote).toEqual({
-      status: 'available',
-      stampValueWei,
-      maximumFeeWei: RESERVE * 2n,
-      capacityWei: (6n * MON) / 100n - RESERVE * 3n,
-    })
-    expect(held.size).toBe(0)
-    const claim = await stampPayer.claim({
-      holder: 'actual-send',
-      stampValueWei,
-      sources,
-    })
-    expect(claim.accounts).toHaveLength(2)
+  it('quotes what the free coins can pay, without taking anything; held coins are not counted', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON / 10n)
+    f.node.balances.set(at(received[0]!), MON / 10n)
+    const quote = await f.payer.quote({ stampValueWei: MON / 20n })
+    expect(quote).toMatchObject({ status: 'available', maximumFeeWei: RESERVE })
+    expect(f.list.all().every(coin => coin.state === 'unspent')).toBe(true)
+    await f.payer.claim({ holder: 'm', stampValueWei: MON / 20n })
+    const after = await f.payer.quote({ stampValueWei: MON / 20n })
+    expect(after.capacityWei).toBe(MON / 10n - RESERVE)
     expect(
-      claim.accounts.reduce((total, coin) => total + coin.paymentValueWei, 0n),
-    ).toBe(stampValueWei)
-    stampPayer.release('actual-send')
-    watcher.stop()
+      (await f.payer.quote({ stampValueWei: MON / 5n })).status,
+    ).toBe('insufficient')
   })
 
-  it('excludes held and quoted financial sources despite a large aggregate balance', async () => {
-    const { stampPayer, held, watcher } = payer({
-      [at(main)]: MON,
-      [at(coins[0]!)]: MON,
-    })
-    held.set(at(main), 'earlier-message')
-    const quote = await stampPayer.quote({
-      stampValueWei: MON / 100n,
-      excludedAddresses: [coins[0]!.address],
-    })
-    expect(quote).toEqual({
-      status: 'insufficient',
-      stampValueWei: MON / 100n,
-      capacityWei: 0n,
-    })
-    expect(held).toEqual(new Map([[at(main), 'earlier-message']]))
-    watcher.stop()
-  })
-
-  it('refuses a fallback plan exceeding the canonical transport payment count', async () => {
-    const accounts = Array.from({ length: 65 }, (_, i) => new Wallet(key(i + 10)))
-    const provider = {
-      getBlockNumber: async () => 1000,
-      getTransactionCount: async () => 0,
-      getBalance: async () => RESERVE + CHARGED,
-      getFeeData: async () => ({ gasPrice: 102n * GWEI, maxFeePerGas: 202n * GWEI }),
-    } as unknown as Provider
-    const pool = new MonadSubAccountPool({
-      keyring: MonadHdKeyring.fromMnemonic('test test test test test test test test test test test junk'),
-      store: new InMemorySubAccountPoolStore(),
-    })
-    const stampPayer = new EvmStampPayer({ pool, provider, httpClient: {} as never,
-      accounts: [], coins: () => accounts.map(account => ({ address: account.address,
-        privateKey: () => { throw new Error('Quote must never request signing material') } })),
-    })
-    expect(await stampPayer.quote({ stampValueWei: CHARGED * 65n, maxPayments: 64 })).toEqual({
-      status: 'insufficient', stampValueWei: CHARGED * 65n, capacityWei: CHARGED * 64n,
-    })
-    expect(await stampPayer.quote({ stampValueWei: CHARGED * 64n, maxPayments: 64 })).toEqual({
-      status: 'available', stampValueWei: CHARGED * 64n, capacityWei: CHARGED * 64n,
-      maximumFeeWei: RESERVE * 64n,
-    })
-    expect(accounts.some(account => pool.accountClaimedBy(account.address) !== undefined)).toBe(false)
-    stampPayer.watcher.stop()
-  })
-
-  it('excludes the current nonce reserved by the native operation owner', async () => {
-    const eligible = jest.fn(() => false)
-    const { stampPayer, held, watcher } = payer({ [at(main)]: MON }, {
-      canSelectAccount: eligible,
-    })
-    expect(await stampPayer.quote({ stampValueWei: MON / 100n })).toEqual({
-      status: 'insufficient', stampValueWei: MON / 100n, capacityWei: 0n,
-    })
-    expect(eligible).toHaveBeenCalledWith(at(main), 0)
-    expect(held.size).toBe(0)
-    watcher.stop()
-  })
-
-  it('rechecks a claim taken during network reads', async () => {
-    let block!: () => void
-    const gate = new Promise<void>(resolve => {
-      block = resolve
-    })
-    let started!: () => void
-    const reading = new Promise<void>(resolve => {
-      started = resolve
-    })
-    const { stampPayer, held, watcher } = payer(
-      { [at(main)]: MON },
-      {
-        provider: {
-          getBalance: async () => {
-            started()
-            await gate
-            return MON
-          },
-        },
-      },
-    )
-    const quote = stampPayer.quote({ stampValueWei: MON / 100n })
-    await reading
-    held.set(at(main), 'concurrent-send')
-    block()
-    expect((await quote).status).toBe('insufficient')
-    expect(held.get(at(main))).toBe('concurrent-send')
-    watcher.stop()
-  })
-
-  it('free messages cost zero without node reads; node failures remain observable', async () => {
-    const read = jest.fn(async () => {
-      throw new Error('offline')
-    })
-    const { stampPayer, held, watcher } = payer(
-      {},
-      {
-        provider: { getFeeData: read, getBlockNumber: read },
-      },
-    )
-    expect(await stampPayer.quote({ stampValueWei: 0n })).toEqual({
+  it('a free message costs nothing and reads nothing', async () => {
+    const f = await make()
+    expect(await f.payer.quote({ stampValueWei: 0n })).toMatchObject({
       status: 'available',
-      stampValueWei: 0n,
-      capacityWei: 0n,
       maximumFeeWei: 0n,
     })
-    expect(read).not.toHaveBeenCalled()
-    await expect(stampPayer.quote({ stampValueWei: 1n })).rejects.toThrow(
-      'The chain could not be read',
-    )
-    expect(held.size).toBe(0)
-    watcher.stop()
-  })
-
-  it('excludes a pending nonce and immature funds without waiting', async () => {
-    const { stampPayer, held, watcher } = payer(
-      { [at(main)]: MON },
-      {
-        spendSpacingBlocks: 3,
-        provider: {
-          getBalance: async (_address, block) =>
-            block === undefined ? MON : 0n,
-        },
-      },
-    )
-    expect((await stampPayer.quote({ stampValueWei: MON / 100n })).status).toBe(
-      'insufficient',
-    )
-    expect(held.size).toBe(0)
-    watcher.stop()
-    const pending = payer(
-      { [at(main)]: MON },
-      {
-        provider: {
-          getTransactionCount: async (_address, block) =>
-            block === 'pending' ? 1 : 0,
-        },
-      },
-    )
-    expect(
-      (await pending.stampPayer.quote({ stampValueWei: MON / 100n })).status,
-    ).toBe('insufficient')
-    pending.watcher.stop()
-  })
-
-  it('tolerates load-balanced RPC replica block skew and pruned historical block tags without throwing UNKNOWN_ERROR', async () => {
-    const blockNotFound = Object.assign(
-      new Error('Block requested not found'),
-      { code: 'UNKNOWN_ERROR' },
-    )
-    const { stampPayer, watcher } = payer(
-      { [at(main)]: MON },
-      {
-        spendSpacingBlocks: 3,
-        provider: {
-          getTransactionCount: async (_address, block) => {
-            if (typeof block === 'number') throw blockNotFound
-            return 0
-          },
-          getBalance: async (_address, block) => {
-            if (typeof block === 'number') throw blockNotFound
-            return MON
-          },
-        },
-      },
-    )
-    const quote = await stampPayer.quote({ stampValueWei: MON / 100n })
-    expect(quote).toEqual({
-      status: 'available',
-      stampValueWei: MON / 100n,
-      maximumFeeWei: RESERVE,
-      capacityWei: MON - RESERVE,
-    })
-    const claim = await stampPayer.claim({
-      holder: 'skewed-replica',
-      stampValueWei: MON / 100n,
-      sources: ['main'],
-    })
-    expect(claim.accounts).toHaveLength(1)
-    stampPayer.release('skewed-replica')
-    watcher.stop()
-  })
-
-  it('retries transient -32007 upstream RPC rate-limit errors and skips nonce reads on empty accounts during quote', async () => {
-    let mainBalanceAttempts = 0
-    const txCountAddresses: string[] = []
-    const { stampPayer, watcher } = payer(
-      { [at(main)]: MON, [at(coins[0])]: 0n },
-      {
-        spendSpacingBlocks: 3,
-        provider: {
-          getBalance: async (address, block) => {
-            if (address.toLowerCase() === at(main).toLowerCase() && block === undefined) {
-              mainBalanceAttempts += 1
-              if (mainBalanceAttempts === 1) {
-                throw Object.assign(
-                  new Error('could not coalesce error (error={ "code": -32007, "message": "upstream RPC error" })'),
-                  { code: 'UNKNOWN_ERROR', error: { code: -32007, message: 'upstream RPC error' } },
-                )
-              }
-              return MON
-            }
-            return address.toLowerCase() === at(main).toLowerCase() ? MON : 0n
-          },
-          getTransactionCount: async (address) => {
-            txCountAddresses.push(address.toLowerCase())
-            return 0
-          },
-        },
-      },
-    )
-    const quote = await stampPayer.quote({ stampValueWei: MON / 100n })
-    expect(quote.status).toBe('available')
-    expect(mainBalanceAttempts).toBe(2)
-    expect(txCountAddresses).toContain(at(main).toLowerCase())
-    expect(txCountAddresses).not.toContain(at(coins[0]).toLowerCase())
-    watcher.stop()
-  })
-})
-
-
-describe('a send reads only the accounts it pays from', () => {
-  // Seen on testnet: sends stuck at "Sending..." for many seconds. Every claim read the nonce
-  // counts and balances of EVERY funded pool account (two at a time) before choosing one.
-  async function claimsWith(funded: number) {
-    const keyring = MonadHdKeyring.fromMnemonic(
-      'test test test test test test test test test test test junk',
-    )
-    const pool = new MonadSubAccountPool({
-      keyring,
-      store: new InMemorySubAccountPoolStore(),
-    })
-    pool.ensureSize(funded)
-    let calls = 0
-    const counted =
-      <A extends unknown[], T>(fn: (...args: A) => Promise<T>) =>
-      (...args: A) => {
-        calls++
-        return fn(...args)
-      }
-    const provider = {
-      getBlockNumber: counted(async () => 1000),
-      getTransactionCount: counted(async () => 0),
-      getBalance: counted(async () => MON / 2n),
-      getFeeData: counted(async () => ({
-        gasPrice: 102n * GWEI,
-        maxFeePerGas: 202n * GWEI,
-        maxPriorityFeePerGas: 2n * GWEI,
-      })),
-    } as unknown as Provider
-    const watcher = new EvmBlockWatcher({ provider, intervalMs: 10_000 })
-    const stampPayer = new EvmStampPayer({
-      pool,
-      provider,
-      httpClient: {} as never,
-      watcher,
-      accounts: [],
-      spendSpacingBlocks: 3,
-    })
-    const stamp = MON / 10n
-    try {
-      // The first send of a session learns the balances it has never read.
-      await stampPayer.claim({ holder: 'first', stampValueWei: stamp, sources: ['pool'] })
-      calls = 0
-      // The first is still unsettled (it holds its account): the second does not wait for it.
-      const second = await stampPayer.claim({
-        holder: 'second',
-        stampValueWei: stamp,
-        sources: ['pool'],
-      })
-      expect(second.accounts).toHaveLength(1)
-      expect(pool.claimedBy(second.accounts[0]!.index)).toBe('second')
-      return calls
-    } finally {
-      watcher.stop()
-      stampPayer.release('first')
-      stampPayer.release('second')
-    }
-  }
-
-  it('the number of node requests of a claim does not grow with the funded accounts', async () => {
-    const few = await claimsWith(3)
-    const many = await claimsWith(40)
-    expect(many).toBe(few)
-    // Counts and balances of the one account paid from, its coin, and the head.
-    expect(many).toBeLessThanOrEqual(10)
-  })
-
-  it('an account the holder already holds (its own earlier payment) is never paid from again, and a failed claim leaves it held', async () => {
-    const keyring = MonadHdKeyring.fromMnemonic(
-      'test test test test test test test test test test test junk',
-    )
-    const pool = new MonadSubAccountPool({
-      keyring,
-      store: new InMemorySubAccountPoolStore(),
-    })
-    pool.ensureSize(2)
-    const provider = {
-      getBlockNumber: async () => 1000,
-      getTransactionCount: async () => 0,
-      getBalance: async () => MON / 2n,
-      getFeeData: async () => ({
-        gasPrice: 102n * GWEI,
-        maxFeePerGas: 202n * GWEI,
-        maxPriorityFeePerGas: 2n * GWEI,
-      }),
-    } as unknown as Provider
-    const watcher = new EvmBlockWatcher({ provider, intervalMs: 10_000 })
-    const stampPayer = new EvmStampPayer({
-      pool,
-      provider,
-      httpClient: {} as never,
-      watcher,
-      accounts: [],
-    })
-    try {
-      // The first repayment of a message: signed (and maybe broadcast) from one account, which
-      // stays `available` until the chain shows it spent.
-      const first = await stampPayer.claim({
-        holder: 'message',
-        stampValueWei: MON / 10n,
-        sources: ['pool'],
-      })
-      const held = first.accounts[0]!.index
-      const second = await stampPayer.claim({
-        holder: 'message',
-        stampValueWei: MON / 10n,
-        sources: ['pool'],
-      })
-      expect(second.accounts.map(a => a.index)).not.toContain(held)
-      // Nothing left covers a third: it is refused, and the two signed payments keep their
-      // accounts.
-      await expect(
-        stampPayer.claim({
-          holder: 'message',
-          stampValueWei: MON / 10n,
-          sources: ['pool'],
-        }),
-      ).rejects.toBeInstanceOf(InsufficientStampFundsError)
-      expect(pool.claimedBy(held)).toBe('message')
-      expect(pool.claimedBy(second.accounts[0]!.index)).toBe('message')
-    } finally {
-      watcher.stop()
-      stampPayer.release('message')
-    }
-  })
-
-  it('an account found spent under the claim is let go and another pays', async () => {
-    const keyring = MonadHdKeyring.fromMnemonic(
-      'test test test test test test test test test test test junk',
-    )
-    const pool = new MonadSubAccountPool({
-      keyring,
-      store: new InMemorySubAccountPoolStore(),
-    })
-    pool.ensureSize(3)
-    const emptied = pool.records()[0]!.address.toLowerCase()
-    let read = false
-    const provider = {
-      getBlockNumber: async () => 1000,
-      // Remembered as funded; another device of the account has since spent from it.
-      getTransactionCount: async (address: string) =>
-        address.toLowerCase() === emptied && read ? 1 : 0,
-      getBalance: async (address: string) =>
-        address.toLowerCase() === emptied && read ? 0n : MON / 2n,
-      getFeeData: async () => ({
-        gasPrice: 102n * GWEI,
-        maxFeePerGas: 202n * GWEI,
-        maxPriorityFeePerGas: 2n * GWEI,
-      }),
-    } as unknown as Provider
-    const watcher = new EvmBlockWatcher({ provider, intervalMs: 10_000 })
-    const stampPayer = new EvmStampPayer({
-      pool,
-      provider,
-      httpClient: {} as never,
-      watcher,
-      accounts: [],
-    })
-    try {
-      await pool.fundedCapacities(provider, RESERVE, { fromBalance: true })
-      read = true
-      const seen = new Set<string>()
-      for (const holder of ['a', 'b']) {
-        const claim = await stampPayer.claim({
-          holder,
-          stampValueWei: MON / 10n,
-          sources: ['pool'],
-        })
-        expect(claim.accounts.map(a => a.address)).not.toContain(emptied)
-        for (const account of claim.accounts) seen.add(account.address)
-      }
-      expect(seen.size).toBe(2)
-      expect(pool.claimedBy(0)).toBeUndefined()
-    } finally {
-      watcher.stop()
-      stampPayer.release('a')
-      stampPayer.release('b')
-    }
+    expect(f.node.calls).toEqual([])
   })
 })

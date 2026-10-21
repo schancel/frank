@@ -492,6 +492,98 @@ export class EvmCoinList {
     this.notify()
   }
 
+  /**
+   * At open, from the durable record of an operation (a stored message): the coin
+   * `[account, nonce]` is that operation's, and `rawTx` (the newest transaction signed at that
+   * nonce) may have left the wallet. Synchronous in memory, so the wallet is handed out with the
+   * coin held; the returned promise writes it. A coin the list does not have (its store was
+   * reset) is recorded with an unknown value: settlement reads what the account holds.
+   */
+  restoreHeld(
+    holder: string,
+    coin: {
+      account: string
+      nonce: number
+      privateKey: string
+      origin: EvmCoinListOrigin
+      rawTx: string
+    },
+  ): Promise<void> {
+    const account = coin.account.toLowerCase()
+    const key = coinKey(account, coin.nonce)
+    const current = this.coinsByKey.get(key)
+    if (current?.state === 'spent') return Promise.resolve()
+    if (current !== undefined && current.holder !== undefined && current.holder !== holder && current.state !== 'unspent')
+      throw new EvmCoinListError(`Coin ${key} is held by ${current.holder} and by ${holder}`)
+    const next: EvmListCoin = {
+      ...(current ?? {
+        account,
+        nonce: coin.nonce,
+        privateKey: coin.privateKey,
+        valueWei: 0n,
+        origin: coin.origin,
+      }),
+      state: 'pending_receipt',
+      holder,
+      spendingTx: coin.rawTx,
+    }
+    this.coinsByKey.set(key, next)
+    this.notify()
+    return this.persist(next)
+  }
+
+  /**
+   * Frees every coin `holder` holds, signed or not. ONLY for a caller that knows none of the
+   * signed transactions was handed to anything that can broadcast it (the operation's own record
+   * was never written).
+   */
+  async releaseUnexposed(
+    holder: string,
+    /** Only these coins; default: every coin the holder holds. */
+    only?: readonly { account: string; nonce: number }[],
+  ): Promise<void> {
+    const keys =
+      only === undefined
+        ? undefined
+        : new Set(only.map(coin => coinKey(coin.account, coin.nonce)))
+    const freed: EvmListCoin[] = []
+    for (const [key, coin] of this.coinsByKey)
+      if (
+        (keys === undefined || keys.has(key)) &&
+        coin.holder === holder &&
+        (coin.state === 'spend_pending' || coin.state === 'pending_receipt')
+      ) {
+        const { holder: _holder, spendingTx: _tx, ...rest } = coin
+        const free: EvmListCoin = { ...rest, state: 'unspent' }
+        this.coinsByKey.set(key, free)
+        freed.push(free)
+      }
+    if (freed.length === 0) return
+    this.notify()
+    await Promise.all(freed.map(coin => this.persist(coin)))
+  }
+
+  /**
+   * At open, after every durable record restored its coins: a coin with a transaction out that
+   * no record names was signed and never written anywhere it could be sent from, so it never
+   * left the wallet: free again.
+   */
+  async releaseUnreferenced(
+    referenced: (account: string, nonce: number) => boolean,
+  ): Promise<number> {
+    let count = 0
+    for (const coin of this.all())
+      if (coin.state === 'pending_receipt' && !referenced(coin.account, coin.nonce)) {
+        const { holder: _holder, spendingTx: _tx, ...rest } = coin
+        const free: EvmListCoin = { ...rest, state: 'unspent' }
+        this.coinsByKey.set(coinKey(coin.account, coin.nonce), free)
+        await this.persist(free)
+        count++
+      }
+    if (count > 0) this.notify()
+    return count
+  }
+
   /** Drops spent coins older than `beforeBlock` (the background worker's cleanup). */
   async prune(beforeBlock: number): Promise<number> {
     const old = this.all().filter(

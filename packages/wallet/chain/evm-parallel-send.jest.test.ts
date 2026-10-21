@@ -754,21 +754,38 @@ describe('parallel paid messages', () => {
     expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
   })
 
-  it('two stored messages naming one coin do not stop the wallet from opening', async () => {
+  it('a coin whose payment is out is held across a restart until the chain shows it; the next message pays from what the account holds after it', async () => {
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     mockBalances.set(main, 10n ** 17n)
     offlineChain.relayBroadcasts = false
     offlineChain.broadcastDown = true
-    await send(1)
-    // A second record on the same coin, as a crash between release and write once left.
+    const first = await send(1)
     const holder = alice.pool.accountClaimedBy(main)!
+    // Letting go of the pool's claim does not free the coin: the coin list holds it.
     alice.pool.releaseAccountClaim(holder, main)
-    await send(2)
-    offlineChain.broadcastDown = false
+    const second = send(2)
+    let secondDone = false
+    void second.then(() => (secondDone = true), () => (secondDone = true))
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(secondDone).toBe(false)
     await reopen()
+    await second.catch(() => undefined)
     expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+    offlineChain.broadcastDown = false
+    for (
+      let pass = 0;
+      pass < 20 && alice.pool.accountClaimedBy(main) !== undefined;
+      pass++
+    )
+      await tick()
+    expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
+    const third = await send(3)
     for (let pass = 0; pass < 20; pass++) await tick()
-    expect(bobMailbox).toHaveLength(2)
+    const nonces = relayPayments()
+      .filter(tx => tx.from!.toLowerCase() === main)
+      .map(tx => tx.nonce)
+    expect(new Set(nonces).size).toBe(nonces.length)
+    expect(first.stampPayments[0].txHash).not.toBe(third.stampPayments[0].txHash)
   })
 
   it('a send waiting for the main account asks the chain about the one payment in its way, never the relay', async () => {

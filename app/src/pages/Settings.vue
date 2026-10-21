@@ -264,7 +264,7 @@
                   :error="!!coldVaultError"
                   data-test="cold-vault-address-input"
                   class="full-width q-mb-sm"
-                  @update:model-value="coldVaultField.schedule()"
+                  @update:model-value="coldVaultField.markDirty()"
                   @blur="coldVaultField.commitNow()"
                 />
                 <q-input
@@ -276,7 +276,7 @@
                   outlined
                   data-test="cold-vault-max-hot-balance-input"
                   class="full-width q-mb-xs"
-                  @update:model-value="coldVaultField.schedule()"
+                  @update:model-value="coldVaultField.markDirty()"
                   @blur="coldVaultField.commitNow()"
                 />
                 <div
@@ -472,7 +472,7 @@
                 data-testid="notification-fee-threshold-input"
                 class="full-width q-mb-sm"
                 @update:model-value="notificationFeeThresholdField.schedule()"
-                @blur="notificationFeeThresholdField.commitNow()"
+                @blur="commitNotificationFeeThresholdAndSync"
               />
               <div class="row items-center q-mt-sm">
                 <q-toggle
@@ -605,6 +605,7 @@ import {
   SETTINGS_ROW_GROUPS,
   SettingsRow,
   SettingsSectionId,
+  blurField,
   debouncedField,
   settingsSectionFromParam,
 } from 'src/utils/settings-navigation'
@@ -766,7 +767,7 @@ export default defineComponent({
       if (
         String(updateInterval.value).trim() === '' ||
         !Number.isFinite(minutes) ||
-        minutes <= 0
+        minutes < 1
       ) {
         updateIntervalError.value = 'settings.invalidRefreshInterval'
         return
@@ -800,13 +801,25 @@ export default defineComponent({
       notificationFeeThresholdError.value = ''
       if (value === settingsStore.notificationFeeThresholdAvu) return
       settingsStore.setNotificationFeeThresholdAvu(value)
+    })
+    // The relay is told the policy once the user is done with the field (blur, leaving the
+    // page), not at every typing pause.
+    let syncedThresholdAvu = settingsStore.notificationFeeThresholdAvu
+    function syncThresholdIfChanged() {
+      if (settingsStore.notificationFeeThresholdAvu === syncedThresholdAvu) return
+      syncedThresholdAvu = settingsStore.notificationFeeThresholdAvu
       syncNotificationPolicy(
         settingsStore.notificationFeeThresholdAvu,
         settingsStore.allowContactNotificationBypass,
       )
-    })
+    }
+    function commitNotificationFeeThresholdAndSync() {
+      notificationFeeThresholdField.commitNow()
+      syncThresholdIfChanged()
+    }
     function commitAllowContactNotificationBypass(value: boolean) {
       settingsStore.setAllowContactNotificationBypass(Boolean(value))
+      syncedThresholdAvu = settingsStore.notificationFeeThresholdAvu
       syncNotificationPolicy(
         settingsStore.notificationFeeThresholdAvu,
         settingsStore.allowContactNotificationBypass,
@@ -862,9 +875,7 @@ export default defineComponent({
       if (usesRelayGateway) {
         // Clearing the field drops the override. Accepting a *changed* relay gateway stays an
         // explicit decision on the button; it never happens as a side effect of typing.
-        if (current && settingsStore.emailGatewayStatus !== 'changed') {
-          settingsStore.resetEmailGatewayAddress()
-        }
+        if (current) settingsStore.clearEmailGatewayOverride()
         return
       }
       if (trimmed === current) return
@@ -895,7 +906,7 @@ export default defineComponent({
       },
       { deep: true },
     )
-    const coldVaultField = debouncedField(() => {
+    const coldVaultField = blurField(() => {
       coldVaultError.value = ''
       const next = {
         enabled: coldVaultEnabled.value,
@@ -933,6 +944,7 @@ export default defineComponent({
     onBeforeUnmount(() => {
       updateIntervalField.flush()
       notificationFeeThresholdField.flush()
+      syncThresholdIfChanged()
       emailGatewayField.flush()
       coldVaultField.flush()
     })
@@ -969,6 +981,7 @@ export default defineComponent({
       notificationFeeThresholdAvu,
       notificationFeeThresholdError,
       notificationFeeThresholdField,
+      commitNotificationFeeThresholdAndSync,
       allowContactNotificationBypass,
       commitAllowContactNotificationBypass,
       emailGatewayStatus: computed(() => settingsStore.emailGatewayStatus),

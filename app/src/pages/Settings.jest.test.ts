@@ -82,8 +82,12 @@ jest.mock('src/utils/own-address', () => ({
   useReactiveOwnCanonicalAddress: () =>
     jest.requireActual('vue').ref('0x1111111111111111111111111111111111111111'),
 }))
+const mockSyncRelayNotificationPolicy = jest.fn((_policy: unknown) =>
+  Promise.resolve(),
+)
 jest.mock('src/utils/webpush-sync', () => ({
-  syncRelayNotificationPolicy: jest.fn(() => Promise.resolve()),
+  syncRelayNotificationPolicy: (policy: unknown) =>
+    mockSyncRelayNotificationPolicy(policy),
 }))
 const mockSetEmailGatewayAddress = jest.fn((address: string) => {
   if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
@@ -98,6 +102,9 @@ const mockSetEmailGatewayAddress = jest.fn((address: string) => {
 })
 const mockResetEmailGatewayAddress = jest.fn(() => {
   mockSettingsStore.emailGatewayAddress = ''
+  mockSettingsStore.emailGatewayOverride = null
+})
+const mockClearEmailGatewayOverride = jest.fn(() => {
   mockSettingsStore.emailGatewayOverride = null
 })
 const mockAcceptAdvertisedEmailGateway = jest.fn(() => {
@@ -170,6 +177,7 @@ const mockSettingsStore = jest.requireActual('vue').reactive({
   setEmailGatewayAddress: mockSetEmailGatewayAddress,
   resetEmailGatewayAddress: mockResetEmailGatewayAddress,
   acceptAdvertisedEmailGateway: mockAcceptAdvertisedEmailGateway,
+  clearEmailGatewayOverride: mockClearEmailGatewayOverride,
   setNotificationFeeThresholdAvu: mockSetNotificationFeeThresholdAvu,
   setAllowContactNotificationBypass: mockSetAllowContactNotificationBypass,
   setColdVaultSweep: mockSetColdVaultSweep,
@@ -466,6 +474,13 @@ describe('Settings apply immediately, without Save', () => {
         .attributes('data-error-message'),
     ).toBe('settings.invalidRefreshInterval')
 
+    await input.setValue('0.5')
+    await input.trigger('blur')
+    expect(mockContactStore.updateInterval).toBe(5 * 60_000)
+    expect((wrapper.vm as any).updateIntervalError).toBe(
+      'settings.invalidRefreshInterval',
+    )
+
     // Blur commits without waiting.
     await input.setValue('10')
     await input.trigger('blur')
@@ -515,6 +530,7 @@ describe('Settings Gateways section and Email Gateway Configuration (#1133)', ()
     mockSetEmailGatewayAddress.mockClear()
     mockResetEmailGatewayAddress.mockClear()
     mockAcceptAdvertisedEmailGateway.mockClear()
+    mockClearEmailGatewayOverride.mockClear()
     mockSettingsStore.emailGatewayAddress = ''
     mockSettingsStore.emailGatewayOverride = null
     mockSettingsStore.emailGatewayStatus = 'unavailable'
@@ -595,9 +611,10 @@ describe('Settings Gateways section and Email Gateway Configuration (#1133)', ()
     mockSettingsStore.emailGatewayStatus = 'changed'
     await wrapper.vm.$nextTick()
 
-    // Emptying the field does not accept the changed gateway as a side effect.
+    // Emptying the field drops the override but does not accept the changed gateway.
     await wrapper.find('[data-test="email-gateway-input"]').setValue('')
     await wait(650)
+    expect(mockClearEmailGatewayOverride).toHaveBeenCalled()
     expect(mockAcceptAdvertisedEmailGateway).not.toHaveBeenCalled()
     expect(mockResetEmailGatewayAddress).not.toHaveBeenCalled()
 
@@ -617,7 +634,7 @@ describe('Settings Gateways section and Email Gateway Configuration (#1133)', ()
     await input.setValue('   ')
     await input.trigger('blur')
 
-    expect(mockResetEmailGatewayAddress).toHaveBeenCalled()
+    expect(mockClearEmailGatewayOverride).toHaveBeenCalled()
     expect((wrapper.vm as any).emailGatewayError).toBe('')
     wrapper.unmount()
   })
@@ -732,6 +749,7 @@ describe('Notification Fee Threshold (AVU) (#1574)', () => {
     mockSettingsStore.allowContactNotificationBypass = true
     mockSetNotificationFeeThresholdAvu.mockClear()
     mockSetAllowContactNotificationBypass.mockClear()
+    mockSyncRelayNotificationPolicy.mockClear()
   })
 
   it('saves a valid threshold once typing pauses and the contact bypass toggle at once', async () => {
@@ -744,6 +762,16 @@ describe('Notification Fee Threshold (AVU) (#1574)', () => {
     await wait(650)
     expect(mockSetNotificationFeeThresholdAvu).toHaveBeenCalledWith(0.25)
     expect(mockSettingsStore.notificationFeeThresholdAvu).toBe(0.25)
+    // The relay hears about it when the user leaves the field, not at each pause.
+    expect(mockSyncRelayNotificationPolicy).not.toHaveBeenCalled()
+    await wrapper
+      .find('[data-test="notification-fee-threshold-input"]')
+      .trigger('blur')
+    await wait(0)
+    expect(mockSyncRelayNotificationPolicy).toHaveBeenCalledTimes(1)
+    expect(mockSyncRelayNotificationPolicy).toHaveBeenCalledWith(
+      expect.objectContaining({ avuThreshold: 0.25 }),
+    )
 
     await wrapper
       .find('[data-test="notification-contact-bypass-toggle"]')
@@ -816,6 +844,26 @@ describe('Cold-Wallet Auto-Sweep Vault Section (#1572)', () => {
     expect(mockSettingsStore.coldVaultSweep.enabled).toBe(true)
     expect((wrapper.vm as any).coldVaultError).toBe('')
     wrapper.unmount()
+  })
+
+  it('the vault address and ceiling save on blur or leaving, never at a typing pause', async () => {
+    const wrapper = await openNetworking()
+    const ceiling = wrapper.find(
+      '[data-test="cold-vault-max-hot-balance-input"]',
+    )
+
+    // "1" on the way to "1000" is a valid ceiling, so a pause must not save it.
+    await ceiling.setValue('1')
+    await wait(650)
+    expect(mockSetColdVaultSweep).not.toHaveBeenCalled()
+
+    await ceiling.setValue('1000')
+    await ceiling.trigger('blur')
+    expect(mockSettingsStore.coldVaultSweep.maxHotBalanceDisplay).toBe('1000')
+
+    await ceiling.setValue('2000')
+    wrapper.unmount()
+    expect(mockSettingsStore.coldVaultSweep.maxHotBalanceDisplay).toBe('2000')
   })
 
   it('enabling without a valid external vault address shows the error and saves nothing', async () => {

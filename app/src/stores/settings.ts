@@ -24,12 +24,39 @@ export const DEFAULT_COLD_VAULT_SWEEP_SETTINGS: Readonly<ColdVaultSweepSettings>
     maxHotBalanceDisplay: DEFAULT_COLD_VAULT_MAX_HOT_BALANCE_DISPLAY,
   })
 
+const BASE58_ALPHABET =
+  '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+
+/** Bytes a base58 string decodes to, or null when it is not base58. */
+function base58ByteLength(text: string): number | null {
+  let value = 0n
+  for (const ch of text) {
+    const digit = BASE58_ALPHABET.indexOf(ch)
+    if (digit < 0) return null
+    value = value * 58n + BigInt(digit)
+  }
+  let length = 0
+  while (value > 0n) {
+    value >>= 8n
+    length++
+  }
+  let leadingZeros = 0
+  while (text[leadingZeros] === '1') leadingZeros++
+  return length + leadingZeros
+}
+
+/** A Solana address is base58 for exactly 32 bytes (an ed25519 public key or PDA); a
+ * well-formed but shorter prefix of one is not an address. */
+export function isValidSolanaAddress(address: string): boolean {
+  return (
+    SOLANA_ADDRESS_REGEX.test(address) && base58ByteLength(address) === 32
+  )
+}
+
 export function isValidExternalVaultAddress(address: string): boolean {
   const trimmed = (address || '').trim()
   if (!trimmed) return false
-  return (
-    ETHEREUM_ADDRESS_REGEX.test(trimmed) || SOLANA_ADDRESS_REGEX.test(trimmed)
-  )
+  return ETHEREUM_ADDRESS_REGEX.test(trimmed) || isValidSolanaAddress(trimmed)
 }
 
 type GatewayIdentity = Pick<AdvertisedEmailGateway, 'address'>
@@ -286,6 +313,10 @@ export const useSettingsStore = defineStore('settings', {
         this.emailGatewayStatus = 'ready'
         this.emailGatewayOverride = null
       }
+    },
+    /** Drops the user's override and nothing else: a changed relay gateway is not accepted. */
+    clearEmailGatewayOverride() {
+      this.emailGatewayOverride = null
     },
     resetEmailGatewayAddress() {
       this.emailGatewayOverride = null

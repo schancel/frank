@@ -95,3 +95,30 @@ export function debouncedField(commit: () => void, delayMs = 600) {
     cancel,
   }
 }
+
+/**
+ * A typed settings field that applies itself only when the user is done with it: on blur
+ * (`commitNow()`) or on leaving the page (`flush()`, only if edited since the last commit).
+ * For values whose prefixes are valid values themselves (an address, an amount), where saving
+ * after a typing pause would store "1" on the way to "1000".
+ */
+export function blurField(commit: () => void) {
+  let dirty = false
+  return {
+    markDirty() {
+      dirty = true
+    },
+    commitNow() {
+      dirty = false
+      commit()
+    },
+    flush() {
+      if (!dirty) return
+      dirty = false
+      commit()
+    },
+    cancel() {
+      dirty = false
+    },
+  }
+}

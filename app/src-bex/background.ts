@@ -1475,22 +1475,33 @@ export async function handleBackgroundMessage(
     }
     state.launchMode = mode
     applyToolbarClickBehavior(runtimeScope, mode)
+    // The choice is saved and applied; opening the view now is a convenience
+    // (it can need a user gesture this message no longer carries).
+    let openError: string | undefined
     if (message.openNow) {
-      if (mode === 'sidepanel') {
-        await openCompanionPanel(
-          {
-            windowId: message.windowId ?? sender?.tab?.windowId,
-            tabId: message.tabId ?? sender?.tab?.id,
-          },
-          runtimeScope,
-        )
-      } else if (mode === 'window') {
-        await openExtensionInWindow(message.options ?? {}, runtimeScope)
+      try {
+        if (mode === 'sidepanel') {
+          await openCompanionPanel(
+            {
+              windowId: message.windowId ?? sender?.tab?.windowId,
+              tabId: message.tabId ?? sender?.tab?.id,
+            },
+            runtimeScope,
+          )
+        } else if (mode === 'window') {
+          await openExtensionInWindow(message.options ?? {}, runtimeScope)
+        }
+      } catch (err) {
+        openError = err instanceof Error ? err.message : String(err)
       }
     }
     return {
       ok: true,
-      result: { ok: true, launchMode: state.launchMode },
+      result: {
+        ok: true,
+        launchMode: state.launchMode,
+        ...(openError ? { openError } : {}),
+      },
     }
   }
 

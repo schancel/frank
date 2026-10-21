@@ -185,6 +185,27 @@ describe('toolbar click choice', () => {
     expect(got.result.launchMode).toBe('sidepanel')
   })
 
+  it('keeps a saved choice when opening the view right away fails', async () => {
+    const storage = makeStorage()
+    const b = startBrowser(storage)
+    await settle()
+    b.chrome.windows.create.mockRejectedValueOnce(
+      new Error('needs a user gesture'),
+    )
+    const res = await b.send({
+      type: 'set-launch-mode',
+      launchMode: 'window',
+      openNow: true,
+    })
+    expect(res.ok).toBe(true)
+    expect(res.result.launchMode).toBe('window')
+    expect(res.result.openError).toContain('user gesture')
+    expect(storage.data[FRANK_EXT_LAUNCH_MODE_KEY]).toBe('window')
+    expect(b.chrome.action.setPopup).toHaveBeenLastCalledWith({ popup: '' })
+    const got = await b.send({ type: 'get-launch-mode' })
+    expect(got.result.launchMode).toBe('window')
+  })
+
   it('opens the Firefox sidebar within the click, and a window if that fails', async () => {
     const toggle = jest.fn(async () => undefined)
     const create = jest.fn(async () => ({ id: 1 }))

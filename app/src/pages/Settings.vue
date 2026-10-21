@@ -548,6 +548,13 @@
                 >
                   {{ extLaunchModeError }}
                 </div>
+                <div
+                  v-if="extLaunchModeNote"
+                  class="text-caption settings-muted q-mt-xs"
+                  data-test="ext-mode-note"
+                >
+                  {{ extLaunchModeNote }}
+                </div>
                 <div class="row items-center q-mt-sm">
                   <q-btn
                     outline
@@ -871,11 +878,13 @@ export default defineComponent({
     }
 
     const extLaunchModeError = ref('')
+    const extLaunchModeNote = ref('')
     // The one place that changes what the toolbar icon opens: the user's choice here.
     async function selectExtensionLaunchMode(mode: ExtensionLaunchMode) {
       const previous = extensionLaunchMode.value
       extensionLaunchMode.value = mode
       extLaunchModeError.value = ''
+      extLaunchModeNote.value = ''
       let res: any
       try {
         res = await sendRuntimeMessage<Record<string, any>, any>({
@@ -892,6 +901,9 @@ export default defineComponent({
         extLaunchModeError.value = `Could not save the toolbar click choice${
           res?.error?.message ? `: ${res.error.message}` : ''
         }`
+      } else if (res.result.openError) {
+        extLaunchModeNote.value =
+          'Saved. Click the Frank toolbar icon to open it this way.'
       }
     }
 
@@ -1209,6 +1221,7 @@ export default defineComponent({
       extViewLabels: EXT_VIEW_LABELS,
       extLaunchModeDescription,
       extLaunchModeError,
+      extLaunchModeNote,
       selectExtensionLaunchMode,
       openInFullBrowserTab,
       updateInterval,

@@ -6,7 +6,10 @@ import path from 'path'
 import { defineComponent, nextTick, reactive, ref } from 'vue'
 
 const runtime = { legacy: false }
-const mockAccountStatus = { status: 'ready' }
+const mockAccountStatus = {
+  status: 'ready',
+  account: { receipt: { context: { accountId: 'acc' } } },
+}
 jest.mock('../../accounts/session', () => ({
   accountStatus: mockAccountStatus,
 }))
@@ -17,14 +20,6 @@ const balance = {
   hasError: ref(false),
 }
 
-const mockWalletStore = {
-  seedPhrase:
-    'apple banana cherry dinosaur elephant fox grape hat ice joke kite lemon' as
-      | string
-      | null,
-  seedConfirmedAt: 123456789 as number | null,
-  backedUp: true as boolean,
-}
 const mockProfileStore = {
   profile: {
     name: 'Alice',
@@ -44,9 +39,6 @@ jest.mock('vue-router', () => ({
 }))
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({ totalUnread: 0, getSortedChatOrder: [] }),
-}))
-jest.mock('src/stores/wallet', () => ({
-  useWalletStore: () => mockWalletStore,
 }))
 jest.mock('src/stores/my-profile', () => ({
   useProfileStore: () => mockProfileStore,
@@ -90,6 +82,10 @@ jest.mock('../panels/WalletPanel.vue', () => ({
 jest.mock('../dialogs/RelayConnectDialog.vue', () => ({ template: '<div />' }))
 
 import LeftDrawer from './LeftDrawer.vue'
+import {
+  clearAccountBackedUp,
+  markAccountBackedUp,
+} from '../../accounts/backup-status'
 
 const QTabStub = defineComponent({
   inheritAttrs: false,
@@ -127,6 +123,7 @@ function mountDrawer(setup = true, relayConnected?: boolean) {
 
 describe('LeftDrawer Wallet rail tab (#399)', () => {
   beforeEach(() => {
+    markAccountBackedUp('acc')
     runtime.legacy = false
     mockRoute.path = '/'
     mockRoute.query = {}
@@ -166,7 +163,9 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
       html.indexOf('rail-tab-settings'),
     )
     const dappBridge = wrapper.get('#rail-tab-dapp-bridge')
-    expect(dappBridge.attributes('aria-controls')).toBe('rail-panel-dapp-bridge')
+    expect(dappBridge.attributes('aria-controls')).toBe(
+      'rail-panel-dapp-bridge',
+    )
     expect(wrapper.get('#rail-panel-dapp-bridge').attributes()).toMatchObject({
       'role': 'tabpanel',
       'aria-labelledby': 'rail-tab-dapp-bridge',
@@ -418,14 +417,27 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
 
   describe('balance backup warning indicator', () => {
     it('shows warning icon when account is not backed up', () => {
-      mockWalletStore.backedUp = false
+      clearAccountBackedUp('acc')
       const wrapper = mountDrawer(true)
       const warning = wrapper.find('[data-test="balance-backup-warning"]')
       expect(warning.exists()).toBe(true)
     })
 
+    it('clears the warning once the account is recorded as backed up', async () => {
+      clearAccountBackedUp('acc')
+      const wrapper = mountDrawer(true)
+      expect(
+        wrapper.find('[data-test="balance-backup-warning"]').exists(),
+      ).toBe(true)
+      markAccountBackedUp('acc')
+      await nextTick()
+      expect(
+        wrapper.find('[data-test="balance-backup-warning"]').exists(),
+      ).toBe(false)
+    })
+
     it('clicking warning icon navigates to /backup', async () => {
-      mockWalletStore.backedUp = false
+      clearAccountBackedUp('acc')
       mockRouterPush.mockReset()
       const wrapper = mountDrawer(true)
       const warning = wrapper.get('[data-test="balance-backup-warning"]')
@@ -434,7 +446,7 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     })
 
     it('clicking balance navigates to /backup when not backed up', async () => {
-      mockWalletStore.backedUp = false
+      clearAccountBackedUp('acc')
       mockRouterPush.mockReset()
       const wrapper = mountDrawer(true)
       await (wrapper.vm as any).openReceive()
@@ -442,7 +454,7 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     })
 
     it('hides warning icon and navigates to /wallet when account is backed up', async () => {
-      mockWalletStore.backedUp = true
+      markAccountBackedUp('acc')
       mockRouterPush.mockReset()
       const wrapper = mountDrawer(true)
       expect(

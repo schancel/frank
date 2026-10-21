@@ -17,6 +17,10 @@ import { bip39Descriptor } from '../accounts/custody/bip39'
 import { MonadIdentity } from '@frank/wallet/evm-identity'
 import type { AccountCustody, PublicAccount } from '../accounts/custody'
 import { createAccountSession, type RuntimeWallet } from '../accounts/session'
+import {
+  clearAccountBackedUp,
+  isAccountBackedUp,
+} from '../accounts/backup-status'
 
 const mockRouterBack = jest.fn()
 const mockRouterPush = jest.fn()
@@ -40,6 +44,9 @@ jest.mock('../accounts/session', () => ({
   ...jest.requireActual('../accounts/session'),
   get accountSession() {
     return mockSession
+  },
+  get accountStatus() {
+    return mockSession?.state
   },
 }))
 
@@ -198,6 +205,7 @@ function mountPage() {
 describe('BackupAccount page', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    clearAccountBackedUp()
     Object.assign(navigator, {
       clipboard: {
         writeText: jest.fn().mockResolvedValue(undefined),
@@ -561,5 +569,60 @@ describe('BackupAccount page', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-test="verify-error"]').exists()).toBe(true)
+  })
+
+  describe('backed-up status', () => {
+    async function verify(wrapper: Mounted, shares: readonly string[]) {
+      await wrapper
+        .find('[data-test="verify-shards-input"]')
+        .setValue(shares.join('\n'))
+      await wrapper.find('[data-test="verify-shards-btn"]').trigger('click')
+      await flushPromises()
+    }
+
+    it('generating shares alone does not mark the account backed up', async () => {
+      await device()
+      const shares = await mockSession!.backupCodex32(2, 3)
+      expect(shares).toHaveLength(3)
+      expect(isAccountBackedUp('account')).toBe(false)
+    })
+
+    it('opening the page, copying shares and leaving keeps the reminder', async () => {
+      await device()
+      const wrapper = mountPage()
+      await shownShares(wrapper, 3)
+      expect(wrapper.find('[data-test="verify-shards-input"]').exists()).toBe(
+        true,
+      )
+      await wrapper.findAll('[data-test="copy-share"]')[0]!.trigger('click')
+      await flushPromises()
+      await wrapper.find('[data-test="backup-back"]').trigger('click')
+      wrapper.unmount()
+      expect(isAccountBackedUp('account')).toBe(false)
+    })
+
+    it('verifying saved shards marks the account backed up', async () => {
+      await device()
+      const wrapper = mountPage()
+      const shares = await shownShares(wrapper, 3)
+      expect(isAccountBackedUp('account')).toBe(false)
+      await verify(wrapper, shares.slice(1))
+      expect(wrapper.find('[data-test="verify-success"]').exists()).toBe(true)
+      expect(isAccountBackedUp('account')).toBe(true)
+      wrapper.unmount()
+    })
+
+    it('shards of another account do not verify this one', async () => {
+      const { signupShares: otherShares } = await device()
+      await mockSession!.close()
+      await device()
+      const wrapper = mountPage()
+      await shownShares(wrapper, 3)
+      await verify(wrapper, otherShares.slice(0, 2))
+      expect(wrapper.find('[data-test="verify-success"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="verify-error"]').exists()).toBe(true)
+      expect(isAccountBackedUp('account')).toBe(false)
+      wrapper.unmount()
+    })
   })
 })

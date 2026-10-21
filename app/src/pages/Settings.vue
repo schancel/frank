@@ -252,7 +252,7 @@
                     :aria-label="$t('settings.coldVaultEnabled')"
                     color="primary"
                     data-test="cold-vault-enabled-toggle"
-                    @update:model-value="coldVaultField.commitNow()"
+                    @update:model-value="toggleColdVault"
                   />
                 </div>
                 <q-input
@@ -288,6 +288,30 @@
                     :label="$t('settings.coldVaultUseAddress')"
                     data-test="cold-vault-address-use-btn"
                     @click="reviewColdVaultAddress"
+                  />
+                </div>
+                <!-- An emptied field with a stored address must not look like a removed vault:
+                sweeps still go to the stored address until it is removed here. -->
+                <div
+                  v-else-if="coldVaultAddressEmptied"
+                  class="row items-center no-wrap q-gutter-x-sm q-mb-sm"
+                >
+                  <div
+                    class="col text-caption settings-muted"
+                    data-test="cold-vault-address-still-stored"
+                  >
+                    {{ $t('settings.coldVaultAddressStillStored') }}
+                  </div>
+                  <q-btn
+                    outline
+                    dense
+                    no-caps
+                    size="sm"
+                    color="negative"
+                    class="q-px-sm"
+                    :label="$t('settings.coldVaultRemoveAddress')"
+                    data-test="cold-vault-address-remove-btn"
+                    @click="reviewColdVaultAddressRemoval"
                   />
                 </div>
                 <q-input
@@ -329,8 +353,17 @@
                 data-test="cold-vault-confirm-dialog"
               >
                 <q-card class="cold-vault-confirm-card">
-                  <q-card-section class="text-h6">
-                    {{ $t('settings.coldVaultConfirmTitle') }}
+                  <q-card-section
+                    class="text-h6"
+                    data-test="cold-vault-confirm-title"
+                  >
+                    {{
+                      coldVaultDialogMode === 'remove'
+                        ? $t('settings.coldVaultRemoveTitle')
+                        : coldVaultEnableOnConfirm
+                        ? $t('settings.coldVaultConfirmTitleAndEnable')
+                        : $t('settings.coldVaultConfirmTitle')
+                    }}
                   </q-card-section>
                   <q-card-section class="q-pt-none">
                     <div class="text-caption settings-muted">
@@ -349,8 +382,17 @@
                     >
                       {{ coldVaultPendingAddress }}
                     </div>
-                    <div class="text-caption">
-                      {{ $t('settings.coldVaultConfirmBody') }}
+                    <div
+                      class="text-caption"
+                      data-test="cold-vault-confirm-body"
+                    >
+                      {{
+                        coldVaultDialogMode === 'remove'
+                          ? $t('settings.coldVaultRemoveBody')
+                          : coldVaultEnableOnConfirm
+                          ? $t('settings.coldVaultConfirmBodyAndEnable')
+                          : $t('settings.coldVaultConfirmBody')
+                      }}
                     </div>
                   </q-card-section>
                   <q-card-actions align="right">
@@ -364,10 +406,18 @@
                     <q-btn
                       unelevated
                       no-caps
-                      color="primary"
-                      :label="$t('settings.coldVaultUseAddress')"
+                      :color="
+                        coldVaultDialogMode === 'remove'
+                          ? 'negative'
+                          : 'primary'
+                      "
+                      :label="
+                        coldVaultDialogMode === 'remove'
+                          ? $t('settings.coldVaultRemoveAddress')
+                          : $t('settings.coldVaultUseAddress')
+                      "
                       data-test="cold-vault-confirm-accept"
-                      @click="confirmColdVaultAddress"
+                      @click="confirmColdVaultDialog"
                     />
                   </q-card-actions>
                 </q-card>
@@ -977,6 +1027,11 @@ export default defineComponent({
     const coldVaultError = ref('')
     const coldVaultConfirmOpen = ref(false)
     const coldVaultPendingAddress = ref('')
+    const coldVaultDialogMode = ref<'use' | 'remove'>('use')
+    // The user turned sweeping on before any address was saved. The store refuses that, so the
+    // toggle goes back off; confirming an address then turns sweeping on with it, and the
+    // dialog says so.
+    const coldVaultEnableOnConfirm = ref(false)
     const savedColdVaultAddress = () =>
       settingsStore.coldVaultSweep?.externalVaultAddress ?? ''
     // An emptied field is not an address to confirm; Reset is how the vault is cleared.
@@ -984,6 +1039,11 @@ export default defineComponent({
       const typed = String(coldVaultAddressInput.value ?? '').trim()
       return typed !== '' && typed !== savedColdVaultAddress()
     })
+    const coldVaultAddressEmptied = computed(
+      () =>
+        String(coldVaultAddressInput.value ?? '').trim() === '' &&
+        savedColdVaultAddress() !== '',
+    )
     const coldVaultPendingChainKey = computed(() => {
       const chain = externalVaultAddressChain(coldVaultPendingAddress.value)
       if (chain === 'evm') return 'settings.coldVaultChainEvm'
@@ -1021,11 +1081,17 @@ export default defineComponent({
       ) {
         return
       }
+      if (next.enabled && !next.externalVaultAddress) {
+        coldVaultEnableOnConfirm.value = true
+      }
       try {
         settingsStore.setColdVaultSweep(next)
-      } catch (err: any) {
+      } catch (err: unknown) {
         coldVaultError.value =
-          err?.message || 'Invalid Cold-Wallet Auto-Sweep configuration'
+          (err instanceof Error && err.message) ||
+          'Invalid Cold-Wallet Auto-Sweep configuration'
+        // Nothing was saved: the toggle shows the stored state, not the refused one.
+        coldVaultEnabled.value = settingsStore.coldVaultSweep?.enabled ?? false
       }
     })
     function reviewColdVaultAddress() {
@@ -1035,15 +1101,40 @@ export default defineComponent({
         return
       }
       coldVaultError.value = ''
+      coldVaultDialogMode.value = 'use'
       coldVaultPendingAddress.value = typed
       coldVaultConfirmOpen.value = true
     }
-    function confirmColdVaultAddress() {
+    function toggleColdVault(value: boolean) {
+      if (!value) coldVaultEnableOnConfirm.value = false
+      coldVaultField.commitNow()
+    }
+    function reviewColdVaultAddressRemoval() {
+      coldVaultError.value = ''
+      coldVaultDialogMode.value = 'remove'
+      coldVaultPendingAddress.value = savedColdVaultAddress()
+      coldVaultConfirmOpen.value = true
+    }
+    function confirmColdVaultDialog() {
       const address = coldVaultPendingAddress.value
+      const mode = coldVaultDialogMode.value
       coldVaultConfirmOpen.value = false
       coldVaultPendingAddress.value = ''
       try {
-        settingsStore.setColdVaultSweep({ externalVaultAddress: address })
+        if (mode === 'remove') {
+          // Removing the destination turns sweeping off; the ceiling is left as it is.
+          settingsStore.setColdVaultSweep({
+            enabled: false,
+            externalVaultAddress: '',
+          })
+        } else {
+          settingsStore.setColdVaultSweep(
+            coldVaultEnableOnConfirm.value
+              ? { externalVaultAddress: address, enabled: true }
+              : { externalVaultAddress: address },
+          )
+        }
+        coldVaultEnableOnConfirm.value = false
         coldVaultAddressInput.value = savedColdVaultAddress()
       } catch (err: unknown) {
         coldVaultError.value =
@@ -1053,12 +1144,14 @@ export default defineComponent({
     }
     function dropUnconfirmedColdVaultAddress() {
       coldVaultConfirmOpen.value = false
+      coldVaultEnableOnConfirm.value = false
       coldVaultPendingAddress.value = ''
       coldVaultAddressInput.value = savedColdVaultAddress()
     }
     function resetColdVaultSweep() {
       coldVaultField.cancel()
       coldVaultError.value = ''
+      coldVaultEnableOnConfirm.value = false
       settingsStore.resetColdVaultSweep()
       coldVaultEnabled.value = false
       coldVaultAddressInput.value = ''
@@ -1128,7 +1221,12 @@ export default defineComponent({
       coldVaultPendingAddress,
       coldVaultPendingChainKey,
       reviewColdVaultAddress,
-      confirmColdVaultAddress,
+      reviewColdVaultAddressRemoval,
+      toggleColdVault,
+      confirmColdVaultDialog,
+      coldVaultDialogMode,
+      coldVaultEnableOnConfirm,
+      coldVaultAddressEmptied,
       resetColdVaultSweep,
       flushPendingEdits,
       getWalletNetworkLabel,

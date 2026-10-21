@@ -1643,6 +1643,16 @@ export const rawFrFR = {
     coldVaultConfirmTitle: 'Envoyer les fonds balayés à cette adresse ?',
     coldVaultConfirmBody:
       'Vérifiez chaque caractère avec votre portefeuille coffre. Les fonds envoyés à une mauvaise adresse sont irrécupérables.',
+    coldVaultConfirmTitleAndEnable:
+      'Envoyer les fonds balayés à cette adresse et activer le balayage ?',
+    coldVaultConfirmBodyAndEnable:
+      'Vérifiez chaque caractère avec votre portefeuille coffre. Les fonds envoyés à une mauvaise adresse sont irrécupérables. Le balayage commence dès votre confirmation.',
+    coldVaultAddressStillStored:
+      'Les balayages vont toujours à l’adresse enregistrée tant que vous ne la retirez pas.',
+    coldVaultRemoveAddress: 'Retirer l’adresse du coffre',
+    coldVaultRemoveTitle: 'Retirer l’adresse du coffre ?',
+    coldVaultRemoveBody:
+      'Le balayage est désactivé et plus rien n’est envoyé à cette adresse. Le plafond reste inchangé.',
     coldVaultConfirmChain: 'Chaîne',
     coldVaultChainEvm: 'EVM',
     coldVaultChainSolana: 'Solana',

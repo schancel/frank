@@ -1025,6 +1025,142 @@ describe('Cold-Wallet Auto-Sweep Vault Section (#1572)', () => {
     wrapper.unmount()
   })
 
+  it('emptying the field with a saved address says sweeps still go there and offers Remove', async () => {
+    const saved = '0x8888888888888888888888888888888888888888'
+    mockSettingsStore.coldVaultSweep = {
+      enabled: true,
+      externalVaultAddress: saved,
+      maxHotBalanceDisplay: '2500',
+    }
+    const wrapper = await openNetworking()
+    await wrapper.find('[data-test="cold-vault-address-input"]').setValue('')
+
+    expect(
+      wrapper.find('[data-test="cold-vault-address-still-stored"]').text(),
+    ).toBe('settings.coldVaultAddressStillStored')
+    expect(
+      wrapper.find('[data-test="cold-vault-address-use-btn"]').exists(),
+    ).toBe(false)
+
+    await wrapper
+      .find('[data-test="cold-vault-address-remove-btn"]')
+      .trigger('click')
+    expect(wrapper.find('[data-test="cold-vault-confirm-title"]').text()).toBe(
+      'settings.coldVaultRemoveTitle',
+    )
+    expect(
+      wrapper.find('[data-test="cold-vault-confirm-address"]').text(),
+    ).toBe(saved)
+    expect(mockSetColdVaultSweep).not.toHaveBeenCalled()
+
+    await wrapper
+      .find('[data-test="cold-vault-confirm-accept"]')
+      .trigger('click')
+    expect(mockSetColdVaultSweep).toHaveBeenLastCalledWith({
+      enabled: false,
+      externalVaultAddress: '',
+    })
+    expect(mockSettingsStore.coldVaultSweep).toEqual({
+      enabled: false,
+      externalVaultAddress: '',
+      maxHotBalanceDisplay: '2500',
+    })
+    expect((wrapper.vm as any).coldVaultEnabled).toBe(false)
+    expect(
+      wrapper.find('[data-test="cold-vault-address-still-stored"]').exists(),
+    ).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('cancelling Remove keeps the saved address, and leaving restores it in the field', async () => {
+    const saved = '0x8888888888888888888888888888888888888888'
+    mockSettingsStore.coldVaultSweep = {
+      enabled: true,
+      externalVaultAddress: saved,
+      maxHotBalanceDisplay: '1500',
+    }
+    const wrapper = await openNetworking()
+    await wrapper.find('[data-test="cold-vault-address-input"]').setValue('')
+    await wrapper
+      .find('[data-test="cold-vault-address-remove-btn"]')
+      .trigger('click')
+    await wrapper
+      .find('[data-test="cold-vault-confirm-cancel"]')
+      .trigger('click')
+    expect(mockSetColdVaultSweep).not.toHaveBeenCalled()
+    wrapper.unmount()
+    expect(mockSettingsStore.coldVaultSweep.externalVaultAddress).toBe(saved)
+    expect(mockSettingsStore.coldVaultSweep.enabled).toBe(true)
+  })
+
+  it('turning sweeping on without a saved address reverts the toggle; confirming an address then turns it on', async () => {
+    const wrapper = await openNetworking()
+    const toggle = wrapper.find('[data-test="cold-vault-enabled-toggle"]')
+
+    await toggle.setValue(true)
+    expect((wrapper.vm as any).coldVaultError).toContain(
+      'External vault address is required',
+    )
+    expect((wrapper.vm as any).coldVaultEnabled).toBe(false)
+    expect(mockSettingsStore.coldVaultSweep.enabled).toBe(false)
+
+    const vaultAddr = '0x8888888888888888888888888888888888888888'
+    await wrapper
+      .find('[data-test="cold-vault-address-input"]')
+      .setValue(vaultAddr)
+    await wrapper
+      .find('[data-test="cold-vault-address-use-btn"]')
+      .trigger('click')
+    expect(wrapper.find('[data-test="cold-vault-confirm-title"]').text()).toBe(
+      'settings.coldVaultConfirmTitleAndEnable',
+    )
+    expect(wrapper.find('[data-test="cold-vault-confirm-body"]').text()).toBe(
+      'settings.coldVaultConfirmBodyAndEnable',
+    )
+    await wrapper
+      .find('[data-test="cold-vault-confirm-accept"]')
+      .trigger('click')
+
+    expect(mockSetColdVaultSweep).toHaveBeenLastCalledWith({
+      externalVaultAddress: vaultAddr,
+      enabled: true,
+    })
+    expect(mockSettingsStore.coldVaultSweep).toEqual({
+      enabled: true,
+      externalVaultAddress: vaultAddr,
+      maxHotBalanceDisplay: '1500',
+    })
+    expect((wrapper.vm as any).coldVaultEnabled).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('turning the refused toggle back off means confirming an address does not turn sweeping on', async () => {
+    const wrapper = await openNetworking()
+    const toggle = wrapper.find('[data-test="cold-vault-enabled-toggle"]')
+    await toggle.setValue(true)
+    await toggle.setValue(true)
+    await toggle.setValue(false)
+
+    const vaultAddr = '0x8888888888888888888888888888888888888888'
+    await wrapper
+      .find('[data-test="cold-vault-address-input"]')
+      .setValue(vaultAddr)
+    await wrapper
+      .find('[data-test="cold-vault-address-use-btn"]')
+      .trigger('click')
+    expect(wrapper.find('[data-test="cold-vault-confirm-title"]').text()).toBe(
+      'settings.coldVaultConfirmTitle',
+    )
+    await wrapper
+      .find('[data-test="cold-vault-confirm-accept"]')
+      .trigger('click')
+    expect(mockSetColdVaultSweep).toHaveBeenLastCalledWith({
+      externalVaultAddress: vaultAddr,
+    })
+    expect(mockSettingsStore.coldVaultSweep.enabled).toBe(false)
+    wrapper.unmount()
+  })
+
   it('resets cold-vault sweep settings to defaults when reset button is clicked', async () => {
     const wrapper = await openNetworking()
 

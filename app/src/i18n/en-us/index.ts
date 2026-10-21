@@ -1604,6 +1604,16 @@ export const rawEnUS = {
     coldVaultConfirmTitle: 'Send swept funds to this address?',
     coldVaultConfirmBody:
       'Check every character against your vault wallet. Funds swept to a wrong address cannot be recovered.',
+    coldVaultConfirmTitleAndEnable:
+      'Send swept funds to this address and turn on sweeping?',
+    coldVaultConfirmBodyAndEnable:
+      'Check every character against your vault wallet. Funds swept to a wrong address cannot be recovered. Sweeping starts once you confirm.',
+    coldVaultAddressStillStored:
+      'Sweeps still go to the saved address until you remove it.',
+    coldVaultRemoveAddress: 'Remove vault address',
+    coldVaultRemoveTitle: 'Remove the vault address?',
+    coldVaultRemoveBody:
+      'Sweeping turns off and nothing more is sent to this address. The ceiling stays as it is.',
     coldVaultConfirmChain: 'Chain',
     coldVaultChainEvm: 'EVM',
     coldVaultChainSolana: 'Solana',

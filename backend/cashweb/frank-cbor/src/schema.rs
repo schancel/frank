@@ -1020,7 +1020,7 @@ pub(crate) fn parse_forum_cursor(
         }
     } else {
         ForumCursorPosition::Discovery {
-            topic: tstr(m.get(discovery::TOPIC), path, 1, 512)?,
+            topic: tstr(m.get(discovery::LAST), path, 1, 512)?,
         }
     };
     Ok(ForumCursor {

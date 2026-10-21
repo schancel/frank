@@ -248,7 +248,7 @@ pub fn encode_forum_cursor(cursor: &ForumCursor) -> Result<Vec<u8>, Error> {
                 discovery::FAMILY,
                 CborValue::Int(i128::from(TYPE_FORUM_DISCOVERY_PAGE)),
             ),
-            (discovery::TOPIC, CborValue::Text(topic.clone())),
+            (discovery::LAST, CborValue::Text(topic.clone())),
         ]),
     }
     let bytes = encode_canonical(&cbor_map(fields)).map_err(usage)?;

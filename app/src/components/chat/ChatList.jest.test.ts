@@ -39,7 +39,28 @@ jest.mock('../../stores/contacts', () => ({
 }))
 
 jest.mock('@frank/wallet/chain', () => ({
-  activeChain: { toDisplayAmount: (n: bigint) => n.toString(), unit: 'MON' },
+  activeChain: {
+    chainIdentifier: 'monad-testnet',
+    toDisplayAmount: (n: bigint) => n.toString(),
+    unit: 'MON',
+  },
+}))
+jest.mock('../../stores/settings', () => ({ useSettingsStore: () => ({}) }))
+// Prices: 1 MON = 2 AVU, 1 SOL = 300 AVU; no price for anything else.
+jest.mock('src/utils/stamp-display', () => ({
+  nativeAmountAvu: (chain: string, units: bigint) =>
+    chain === 'monad-testnet'
+      ? (Number(units) / 1e18) * 2
+      : chain === 'solana-devnet'
+      ? (Number(units) / 1e9) * 300
+      : undefined,
+}))
+const mockReceipts: Record<
+  string,
+  Array<{ chainIdentifier: string; baseUnits: bigint }>
+> = {}
+jest.mock('src/utils/message-receipts', () => ({
+  verifiedMessageReceipts: (digest: string) => mockReceipts[digest] ?? [],
 }))
 jest.mock('./ChatListItem.vue', () => ({
   props: ['valueUnread', 'numUnread', 'screenerStamp'],
@@ -79,6 +100,22 @@ async function selectChatAt(width: number) {
   })
   await wrapper.find('[data-testid="chat-item"]').trigger('click')
   return wrapper
+}
+
+/** A received message whose stealth item claims 1000 MON. */
+function unreadClaim(payloadDigest: string, stampValueWei: bigint) {
+  return {
+    outbound: false,
+    status: 'confirmed',
+    serverTime: 100,
+    receivedTime: 100,
+    senderAddress: '0xPEER',
+    destinationAddress: '0xME',
+    payloadDigest,
+    outpoints: [],
+    stampValueWei,
+    items: [{ type: 'stealth', networkTag: 'monad-testnet', amount: 1e21 }],
+  }
 }
 
 describe('ChatList closeDrawer', () => {
@@ -122,24 +159,43 @@ describe('ChatList closeDrawer', () => {
     },
   )
 
-  it('passes a zero unread value with the configured messaging unit to the row', async () => {
-    const chain = jest.requireMock('@frank/wallet/chain').activeChain
-    const previousUnit = chain.unit
-    chain.unit = 'SOL'
+  it('passes no unread value when unread messages brought nothing', async () => {
     mockChatStore.getSortedChatOrder = [
       {
         id: 'free-unread',
         address: 'addr1',
         totalUnreadMessages: 2,
         totalUnreadValue: 0,
+        lastRead: 0,
+        messages: [unreadClaim('free', 0n)],
+      },
+    ]
+    const wrapper = await selectChatAt(390)
+    expect(wrapper.get('[data-testid="unread-value"]').text()).toBe('')
+    wrapper.unmount()
+  })
+
+  it('shows the unread value in AVU: stamps plus verified receipts, never the claim', async () => {
+    // 0.5 MON stamp = 1 AVU; the wallet saw 0.01 SOL arrive for the message = 3 AVU. The
+    // stealth item's claimed 1000 MON is not counted.
+    mockReceipts.paid = [
+      { chainIdentifier: 'solana-devnet', baseUnits: 10n ** 7n },
+    ]
+    mockChatStore.getSortedChatOrder = [
+      {
+        id: 'paid-unread',
+        address: 'addr1',
+        totalUnreadMessages: 1,
+        lastRead: 0,
+        messages: [unreadClaim('paid', 5n * 10n ** 17n)],
       },
     ]
     try {
       const wrapper = await selectChatAt(390)
-      expect(wrapper.get('[data-testid="unread-value"]').text()).toBe('0 SOL')
+      expect(wrapper.get('[data-testid="unread-value"]').text()).toBe('≈ 4 AVU')
       wrapper.unmount()
     } finally {
-      chain.unit = previousUnit
+      delete mockReceipts.paid
     }
   })
 

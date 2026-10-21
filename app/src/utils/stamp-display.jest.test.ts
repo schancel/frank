@@ -1,11 +1,13 @@
 // The composer's stamp pill: the stamp's AVU value comes from the oracle's one AVU helper,
 // for the asset the canonical registry says prices the chain; nothing when it cannot.
-import { stampAvu, stampMultiplierText } from './stamp-display'
+import { nativeAmountAvu, stampAvu, stampMultiplierText } from './stamp-display'
 
 const valued: Array<[string, bigint]> = []
 let mockStaleAgeMs: number | undefined
+let mockRates: Record<string, number> = {}
 jest.mock('src/stores/oracle', () => ({
   useSafeOracleStore: () => ({
+    current: { rates: mockRates },
     getAvu: (asset: string, raw: bigint) => {
       valued.push([asset, raw])
       return asset === 'monad' ? 0.05 : 0
@@ -24,6 +26,21 @@ const evm = (chainIdentifier: string, decimals = 18) => ({
 beforeEach(() => {
   valued.length = 0
   mockStaleAgeMs = undefined
+  mockRates = {}
+})
+
+describe('nativeAmountAvu', () => {
+  it('values each chain at its own coin’s price', () => {
+    mockRates = { monad: 2, solana: 300 }
+    expect(nativeAmountAvu('monad-testnet', 3n * 10n ** 18n)).toBe(6)
+    expect(nativeAmountAvu('solana-devnet', 10n ** 8n)).toBeCloseTo(30)
+  })
+
+  it('is undefined, not zero, when the coin has no price', () => {
+    mockRates = { monad: 2 }
+    expect(nativeAmountAvu('solana-devnet', 10n ** 9n)).toBeUndefined()
+    expect(nativeAmountAvu('no-such-chain', 10n)).toBeUndefined()
+  })
 })
 
 describe('stampAvu', () => {

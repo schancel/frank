@@ -241,7 +241,8 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, PropType } from 'vue'
+import { defineComponent, onBeforeUnmount, onMounted, PropType, ref } from 'vue'
+import { RECEIVED_PAYMENT_RECHECK_MS } from '../../../composables/useReceivedPayment'
 
 import { useChatStore } from '../../../stores/chats'
 import {
@@ -345,7 +346,46 @@ export default defineComponent({
         props.message.items.some(item => item.type === 'stealth'),
     )
     const chats = useChatStore()
+    // A received stamp is the payer's signed transfer; it is shown as claimed until the
+    // messaging wallet saw it arrive on chain. Read again while it may still arrive.
+    const stampSettled = ref(false)
+    let stampTimer: ReturnType<typeof setTimeout> | undefined
+    let stopped = false
+    const checkStamp = async () => {
+      const message = props.message
+      if (
+        stopped ||
+        message.outbound ||
+        !props.payloadDigest ||
+        !((message.stampValueWei ?? 0n) > 0n)
+      )
+        return
+      let status: string | undefined
+      try {
+        const wallet = useMonadWallet()
+        status = (
+          (await wallet.checkMessagePayment?.(props.payloadDigest)) ??
+          wallet.getMessagePayment?.(props.payloadDigest)
+        )?.stampStatus
+      } catch {
+        // No wallet or node now: the stamp stays claimed and is read again.
+      }
+      if (stopped) return
+      stampSettled.value = status === 'received'
+      if (status === 'received' || status === 'failed') return
+      stampTimer = setTimeout(
+        () => void checkStamp(),
+        RECEIVED_PAYMENT_RECHECK_MS,
+      )
+      ;(stampTimer as { unref?: () => void }).unref?.()
+    }
+    onMounted(() => void checkStamp())
+    onBeforeUnmount(() => {
+      stopped = true
+      if (stampTimer !== undefined) clearTimeout(stampTimer)
+    })
     return {
+      stampSettled,
       applicationRenderer,
       sentContactPayments,
       deleteMessage: chats.deleteMessage,
@@ -676,7 +716,15 @@ export default defineComponent({
     },
     stampAmount() {
       if (this.message.stampValueWei !== undefined) {
-        return formatDisplayAmount(activeChain, this.message.stampValueWei)
+        const amount = formatDisplayAmount(
+          activeChain,
+          this.message.stampValueWei,
+        )
+        return !this.message.outbound &&
+          this.message.stampValueWei > 0n &&
+          !this.stampSettled
+          ? `${amount} (${this.$t('chatMessageStealth.claimedAmount')})`
+          : amount
       }
       if (!this.message || !this.message.outpoints) {
         return `0 ${activeChain.unit}`

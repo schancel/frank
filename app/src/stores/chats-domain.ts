@@ -5,10 +5,8 @@ import {
   toChainDisplayAddress,
 } from '../utils/chain-address'
 import { activeChain, type WalletHandle } from '@frank/wallet/chain'
-import { messageItems } from '../utils/message-items'
 import type {
   Message,
-  MessageItem,
   OutgoingDelivery,
   OutgoingFailureReason,
 } from '@frank/cashweb/types/messages'
@@ -413,14 +411,115 @@ export function stripReleasedPayments(message: ChatMessage): void {
   )
 }
 
+/**
+ * What a confirmed message counts for in a conversation's stored `totalValue` /
+ * `totalUnreadValue`: its stamp, whose destination and amount the relay verified, in the
+ * messaging chain's base unit. Never an amount a message item states: a stealth item's amount
+ * is the sender's claim, and money it brought is counted only once the wallet saw it arrive
+ * (`receivedMessageAmounts`).
+ */
 export function accountedMessageValue(message: {
   status: string
-  items: MessageItem[]
   outpoints: Utxo[]
   stampValueWei?: bigint
 }): number {
   if (message.status !== 'confirmed') return 0
-  return messageStampPrice(message) + messageItems.tallyValue(message.items)
+  return messageStampPrice(message)
+}
+
+/** An amount in one canonical chain's native base unit (wei, lamports, satoshis). */
+export interface ChainAmount {
+  readonly chainIdentifier: string
+  readonly baseUnits: bigint
+}
+
+/** What the account's wallets saw arrive on chain for a message (its payloadDigest), beyond its
+ * stamp: one entry per wallet, on that wallet's canonical chain. Never what the message states. */
+export type VerifiedMessageReceipts = (
+  payloadDigest: string,
+) => readonly ChainAmount[]
+
+/** A native amount's AVU value; undefined when the chain's coin has no price. */
+export type AmountInAvu = (
+  chainIdentifier: string,
+  baseUnits: bigint,
+) => number | undefined
+
+/** A received message that is still unread in its conversation. */
+export function isUnreadReceived(
+  chat: Pick<ChatState, 'id' | 'lastRead'>,
+  message: ChatMessage,
+  activeConversationId: string | null,
+): boolean {
+  return (
+    !isOwnMessage(message) &&
+    chat.id !== activeConversationId &&
+    chat.lastRead < message.serverTime
+  )
+}
+
+/**
+ * What a received message brought, per canonical chain: its relay-verified stamp on the
+ * messaging chain, plus what the wallets verified as received for it, matched by payloadDigest
+ * on each wallet's chain. A payment the message only claims adds nothing.
+ */
+export function receivedMessageAmounts(
+  message: ChatMessage,
+  stampChainIdentifier: string,
+  verifiedReceipts: VerifiedMessageReceipts,
+): ChainAmount[] {
+  if (message.status !== 'confirmed' || isOwnMessage(message)) return []
+  const amounts: ChainAmount[] = []
+  if (message.stampValueWei !== undefined && message.stampValueWei > 0n)
+    amounts.push({
+      chainIdentifier: stampChainIdentifier,
+      baseUnits: message.stampValueWei,
+    })
+  if (message.payloadDigest)
+    for (const receipt of verifiedReceipts(message.payloadDigest))
+      if (receipt.baseUnits > 0n) amounts.push(receipt)
+  return amounts
+}
+
+/**
+ * The sum of amounts on any chains, in AVU: each chain's amount is converted at its own price
+ * before adding, never raw units summed across chains. Undefined when any of them has no price:
+ * a total that silently left part out would be a made-up number.
+ */
+export function amountsInAvu(
+  amounts: readonly ChainAmount[],
+  toAvu: AmountInAvu,
+): number | undefined {
+  let total = 0
+  for (const amount of amounts) {
+    if (amount.baseUnits <= 0n) continue
+    const avu = toAvu(amount.chainIdentifier, amount.baseUnits)
+    if (avu === undefined || !Number.isFinite(avu)) return undefined
+    total += avu
+  }
+  return total
+}
+
+/** What a conversation's unread received messages brought, in AVU (see `amountsInAvu`). */
+export function unreadValueAvu(
+  chat: Pick<ChatState, 'id' | 'lastRead' | 'messages'>,
+  activeConversationId: string | null,
+  value: {
+    stampChainIdentifier: string
+    verifiedReceipts: VerifiedMessageReceipts
+    toAvu: AmountInAvu
+  },
+): number | undefined {
+  const amounts = (chat.messages ?? []).flatMap(message =>
+    isUnreadReceived(chat, message, activeConversationId)
+      ? receivedMessageAmounts(
+          message,
+          value.stampChainIdentifier,
+          value.verifiedReceipts,
+        )
+      : [],
+  )
+  return amountsInAvu(amounts, value.toAvu)
 }
 
 export const defaultContactObject = {
@@ -540,11 +639,7 @@ export function recomputeChatAccounting(
   for (const message of chat.messages) {
     const value = accountedMessageValue(message)
     chat.totalValue += value
-    if (
-      !isOwnMessage(message) &&
-      chat.id !== activeConversationId &&
-      chat.lastRead < message.serverTime
-    ) {
+    if (isUnreadReceived(chat, message, activeConversationId)) {
       chat.totalUnreadMessages += 1
       chat.totalUnreadValue += value
     }

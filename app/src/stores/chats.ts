@@ -202,6 +202,8 @@ export interface Conversation {
   epoch?: ConversationEpoch
   messages: ChatMessage[]
   totalUnreadMessages: number
+  /** Relay-verified stamps only, in the messaging chain's base unit (`accountedMessageValue`).
+   * Never a claimed payment. The list's unread value in AVU is `unreadValueAvu`. */
   totalUnreadValue: number
   totalValue: number
   lastReceived: number

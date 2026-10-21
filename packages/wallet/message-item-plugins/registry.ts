@@ -279,13 +279,13 @@ export interface MessageItemPlugin<
    * anything that is not exactly one well-formed item of this type. Decodes under the enclosing
    * message's budget in `context`, never a fresh one. */
   decode(bytes: Uint8Array, context: MessageItemDecodeContext): TRaw
-  /** Only for value-carrying types (e.g. a legacy stealth payment) -- omit entirely for types that
-   * never carry value of their own. A plain sort/badge-value `number`, not a `bigint` wei amount.
-   * Same raw-item, synchronous constraint as `previewText`: this reads whatever the type already
-   * read before the registry existed (e.g. stealth's own self-reported `amount`), not a
-   * chain-verified figure (ticket #60). A type that needs a real verified wei amount (e.g.
-   * blackjack's wager) should use `hydrate`/`reduceState` instead, not this hook. Must return a
-   * finite number, never NaN: a field it reads is validated when the item is decoded. */
+  /** A plain `number` read from the raw item's own fields, synchronously. It is what the sender
+   * wrote, never value received: a type whose item states an amount someone paid (a stealth
+   * payment) must not report it here. Conversation totals, the screener and search do not read
+   * this hook; received value is the message's relay-verified stamp plus what the wallet saw
+   * arrive on chain for the message. A type that needs a verified amount (e.g. blackjack's
+   * wager) uses `hydrate`/`reduceState`. Must return a finite number, never NaN: a field it
+   * reads is validated when the item is decoded. */
   tallyValue?(raw: TRaw): number
   /** Groups items of this type into independent threads (e.g. one per blackjack hand) before
    * folding state with `reduceState`. Synchronous, operates on the raw item (a thread key is

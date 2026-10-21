@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "structs": [
+    {
+      "key": "frank-envelope",
+      "description": "The outer map of every frame after the FRNK header (README E1).",
+      "fields": { "type-id": 0, "schema-version": 1, "min-reader-version": 2, "payload": 3 },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/common.cddl#frank-envelope",
+          "required": ["type-id", "schema-version", "min-reader-version", "payload"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "timestamp",
+      "fields": { "seconds": 0, "nanoseconds": 1 },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/common.cddl#timestamp",
+          "required": ["seconds", "nanoseconds"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "account-ref",
+      "fields": { "key-type": 0, "key-bytes": 1 },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/common.cddl#account-ref",
+          "required": ["key-type", "key-bytes"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "signature-entry",
+      "fields": { "algorithm": 0, "signer": 1, "signature": 2 },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/common.cddl#signature-entry",
+          "required": ["algorithm", "signer", "signature"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    }
+  ]
+}

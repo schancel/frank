@@ -35,6 +35,7 @@ mod frame;
 mod hash;
 mod keccak;
 mod limits;
+pub mod message_fields;
 pub mod message_types;
 mod model;
 mod registration;

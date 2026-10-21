@@ -47,6 +47,8 @@ export const I64_MAX = 9_223_372_036_854_775_807n
 
 /** Assigned type identifiers (README E5), generated from docs/protocol/message-types/v1.json. */
 export * from './message-types.generated'
+/** Map field keys and enumerated values, generated from docs/protocol/message-types/fields/. */
+export * from './message-fields.generated'
 
 export const MAX_BLACKJACK_FRAME_BYTES = 4096
 export const MAX_STEALTH_MESSAGE_ITEM_FRAME_BYTES = 65_536

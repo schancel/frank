@@ -1,0 +1,438 @@
+{
+  "version": 1,
+  "structs": [
+    {
+      "key": "topic-post",
+      "fields": {
+        "network": 0,
+        "topic": 1,
+        "parent-hash": 2,
+        "body": 3,
+        "author": 4,
+        "signature": 5
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#topic-post",
+          "required": [
+            "network",
+            "topic",
+            "body"
+          ],
+          "optional": [
+            "parent-hash",
+            "author",
+            "signature"
+          ],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "topic-post-submission",
+      "fields": {
+        "network": 0,
+        "post-frame": 1,
+        "burn-tx": 2
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#topic-post-submission",
+          "required": [
+            "network",
+            "post-frame",
+            "burn-tx"
+          ],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "topic-vote-submission",
+      "fields": {
+        "network": 0,
+        "target-hash": 1,
+        "burn-tx": 2
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#topic-vote-submission",
+          "required": [
+            "network",
+            "target-hash",
+            "burn-tx"
+          ],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "forum-content",
+      "fields": {
+        "authored": 0,
+        "entries": 1
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-content",
+          "required": [
+            "authored",
+            "entries"
+          ],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "forum-entry",
+      "description": "Every forum entry's discriminating field 0.",
+      "fields": {
+        "kind": 0
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#future-forum-entry",
+          "required": [
+            "kind"
+          ],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "forum-post-entry",
+      "fields": {
+        "kind": 0,
+        "title": 1,
+        "url": 2,
+        "message": 3
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-post-entry",
+          "required": [
+            "kind"
+          ],
+          "optional": [
+            "title",
+            "url",
+            "message"
+          ],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "forum-game-entry",
+      "fields": {
+        "kind": 0,
+        "game-type": 1,
+        "table-id": 2,
+        "host-address": 3,
+        "buy-in-amount": 4,
+        "current-players": 5,
+        "max-players": 6,
+        "bot-address": 7,
+        "title": 8,
+        "message": 9
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-game-entry",
+          "required": [
+            "kind",
+            "game-type",
+            "table-id",
+            "host-address"
+          ],
+          "optional": [
+            "buy-in-amount",
+            "current-players",
+            "max-players",
+            "bot-address",
+            "title",
+            "message"
+          ],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "forum-aggregate",
+      "fields": {
+        "negative": 0,
+        "magnitude": 1
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-aggregate",
+          "required": [
+            "negative",
+            "magnitude"
+          ],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "forum-single-view",
+      "fields": {
+        "network": 0,
+        "post-frame": 1,
+        "author": 2,
+        "author-burn-tx": 3,
+        "transaction-hash": 4,
+        "first-visible": 5,
+        "block": 6,
+        "transaction-index": 7,
+        "aggregate": 8,
+        "revision": 9,
+        "epoch": 10
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-single-view",
+          "required": [
+            "network",
+            "post-frame",
+            "author",
+            "author-burn-tx",
+            "transaction-hash",
+            "first-visible",
+            "block",
+            "transaction-index",
+            "aggregate",
+            "revision",
+            "epoch"
+          ],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "forum-topic-page",
+      "fields": {
+        "network": 0,
+        "topic": 1,
+        "since": 2,
+        "revision": 3,
+        "rows": 4,
+        "next-cursor": 5,
+        "epoch": 6,
+        "previous-cursor": 7
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-topic-page",
+          "required": [
+            "network",
+            "topic",
+            "since",
+            "revision",
+            "rows",
+            "epoch"
+          ],
+          "optional": [
+            "next-cursor",
+            "previous-cursor"
+          ],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "forum-discovery-page",
+      "fields": {
+        "network": 0,
+        "revision": 1,
+        "entries": 2,
+        "next-cursor": 3,
+        "epoch": 4,
+        "previous-cursor": 5
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-discovery-page",
+          "required": [
+            "network",
+            "revision",
+            "entries",
+            "epoch"
+          ],
+          "optional": [
+            "next-cursor",
+            "previous-cursor"
+          ],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "forum-discovery-entry",
+      "fields": {
+        "topic": 0,
+        "count": 1,
+        "last-activity": 2
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-discovery-entry",
+          "required": [
+            "topic",
+            "count",
+            "last-activity"
+          ],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "forum-operation-status",
+      "fields": {
+        "network": 0,
+        "submitted-frame": 1,
+        "target-hash": 2,
+        "transaction-hash": 3,
+        "sender": 4,
+        "direction": 5,
+        "value": 6,
+        "state": 7,
+        "block": 8,
+        "transaction-index": 9,
+        "revision": 10,
+        "epoch": 11
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-operation-status",
+          "required": [
+            "network",
+            "submitted-frame",
+            "target-hash",
+            "transaction-hash",
+            "sender",
+            "direction",
+            "value",
+            "state",
+            "revision",
+            "epoch"
+          ],
+          "optional": [
+            "block",
+            "transaction-index"
+          ],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "forum-topic-cursor",
+      "fields": {
+        "network": 0,
+        "family": 1,
+        "revision": 2,
+        "epoch": 3,
+        "last": 4,
+        "topic": 5,
+        "since": 6,
+        "incarnation": 7
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-topic-cursor",
+          "required": [
+            "network",
+            "family",
+            "revision",
+            "epoch",
+            "last",
+            "topic",
+            "since",
+            "incarnation"
+          ],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "forum-discovery-cursor",
+      "fields": {
+        "network": 0,
+        "family": 1,
+        "revision": 2,
+        "epoch": 3,
+        "topic": 4,
+        "incarnation": 7
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-discovery-cursor",
+          "required": [
+            "network",
+            "family",
+            "revision",
+            "epoch",
+            "topic",
+            "incarnation"
+          ],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "forum-cursor-last",
+      "fields": {
+        "timestamp": 0,
+        "hash": 1
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/topic.cddl#forum-topic-cursor.4",
+          "required": [
+            "timestamp",
+            "hash"
+          ],
+          "optional": [],
+          "open": false
+        }
+      ]
+    }
+  ],
+  "enums": [
+    {
+      "key": "forum-entry-kind",
+      "description": "forum-content entry field 0.",
+      "values": {
+        "post": 1,
+        "game": 2
+      }
+    },
+    {
+      "key": "forum-vote-direction",
+      "description": "forum-operation-status field 5.",
+      "values": {
+        "up": 0,
+        "down": 1
+      }
+    },
+    {
+      "key": "forum-operation-state",
+      "description": "forum-operation-status field 7.",
+      "values": {
+        "pending": 0,
+        "confirmed": 1,
+        "failed": 2,
+        "expired": 3
+      }
+    }
+  ]
+}

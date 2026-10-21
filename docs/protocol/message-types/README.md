@@ -66,3 +66,58 @@ compared with a typed projection's `type` discriminant stops compiling, because 
 are `typeof TYPE_…`; a literal compared with a plain `typeId: number` does not, so search for any
 that remain. Test vectors, fixtures, test code and the prose of the CBOR README still name numbers
 and must be regenerated or edited in the same change.
+
+## Map field keys and enumerated values
+
+`fields/*.json` (one file per protocol area: `common`, `directory`, `delivery`, `content`,
+`topic`, `blackjack`) is the one source of every Frank-CBOR map key and every enumerated integer
+value that code reads or writes. `fields.py` beside this file loads it; `generate.py` renders it.
+
+A **struct** names the keys of one map and lists its **shapes**:
+
+```json
+{
+  "key": "forwarding-delivery-envelope",
+  "fields": { "network": 0, "destination": 1, "payload-frame": 2, "payload-digest": 3, "payments": 4 },
+  "shapes": [
+    {
+      "cddl": "docs/protocol/cbor/direct-message.cddl#forwarding-delivery-envelope",
+      "required": ["network", "destination", "payload-frame", "payload-digest", "payments"],
+      "optional": [],
+      "open": true
+    }
+  ]
+}
+```
+
+A shape is one CDDL map rule: its required and optional keys, and whether it is open (undeclared
+keys are retained under V6.3) or closed (C12 rejects them). A struct whose key space is shared
+by several schema versions or actions (`directory-statement`, blackjack items) has one named
+shape per version or action. `cddl` is `path#rule`, or `path#rule.<key>` for an inline map in
+that rule's field; a shape without `cddl` (for example a historical schema the CDDL no longer
+spells out) is not compared.
+
+An **enum** names the integer values of one field (`account-type`, `bot-role`, blackjack action
+codes and so on). `rust_type` selects the Rust integer type (default `u32`).
+
+| Output                                                   | Contents                                                                                     |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `packages/frank-codec/src/message-fields.generated.ts`   | `FORWARDING_DELIVERY_ENVELOPE.payloadFrame`, `FORWARDING_DELIVERY_ENVELOPE_SHAPE`, enums     |
+| `backend/cashweb/frank-cbor/src/message_fields.rs`       | `forwarding_delivery_envelope::PAYLOAD_FRAME`, `forwarding_delivery_envelope::SHAPE`, enums  |
+
+Codecs read maps through a shape (`fields(payload, P, SHAPE, allow)` in TypeScript,
+`fields_of(Some(payload), path, &SHAPE, allow)` in Rust), read fields by name, write maps with the
+same constants, and build error paths from them (`at(P, K.payments)`).
+
+`--check` also fails when:
+
+- a shape disagrees with the CDDL rule it names (required keys, optional keys, or open/closed);
+- non-test source under `packages/frank-codec/src/` or `backend/cashweb/frank-cbor/src/` spells a
+  map key, a field path or a type id as a number literal (`m.get(5)`, `${P}.4`,
+  `(3, CborValue::…)`, `type_id == 19`). A line that must use a raw key, for example to build a
+  deliberately malformed map, carries a `raw-cbor-key: <reason>` comment on it or on the line
+  above.
+
+Renumbering a field is an edit of its key in `fields/*.json` (and of the CDDL), then
+`yarn message-types:generate`. Changing a key changes wire bytes and every vector that holds
+that map.

@@ -1,0 +1,358 @@
+{
+  "version": 1,
+  "structs": [
+    {
+      "key": "direct-message-delivery",
+      "fields": {
+        "network": 0,
+        "destination": 1,
+        "payload-frame": 2,
+        "payload-digest": 3,
+        "payments": 4,
+        "recipient": 5,
+        "dleq-proof": 6
+      },
+      "shapes": [
+        {
+          "name": "v1",
+          "required": [
+            "network",
+            "destination",
+            "payload-frame",
+            "payload-digest",
+            "payments"
+          ],
+          "optional": [
+            "recipient",
+            "dleq-proof"
+          ],
+          "open": true
+        },
+        {
+          "name": "v2",
+          "cddl": "docs/protocol/cbor/direct-message.cddl#direct-message-delivery",
+          "required": [
+            "network",
+            "destination",
+            "payload-frame",
+            "payload-digest"
+          ],
+          "optional": [
+            "payments",
+            "recipient",
+            "dleq-proof"
+          ],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "payment-member",
+      "fields": {
+        "child-index": 0,
+        "transaction-id": 1,
+        "value": 2,
+        "address": 3,
+        "commitment": 4,
+        "vout": 5,
+        "raw-tx": 6
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#payment-member",
+          "required": [
+            "child-index",
+            "transaction-id",
+            "value",
+            "address",
+            "commitment"
+          ],
+          "optional": [
+            "vout",
+            "raw-tx"
+          ],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "stealth-metadata",
+      "fields": {
+        "ephemeral-pub-key": 0,
+        "view-tag": 1
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#stealth-metadata",
+          "required": [
+            "ephemeral-pub-key"
+          ],
+          "optional": [
+            "view-tag"
+          ],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "payment-transfer",
+      "fields": {
+        "network-tag": 0,
+        "tx-id": 1,
+        "vout": 2,
+        "destination": 3,
+        "value": 4,
+        "token": 5,
+        "stealth-metadata": 6,
+        "commitment": 7,
+        "raw-tx": 8
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#payment-transfer",
+          "required": [
+            "network-tag",
+            "tx-id",
+            "destination",
+            "value"
+          ],
+          "optional": [
+            "vout",
+            "token",
+            "stealth-metadata",
+            "commitment",
+            "raw-tx"
+          ],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "recipient-encrypted-payload-v1",
+      "fields": {
+        "network": 0,
+        "sender": 1,
+        "recipient": 2,
+        "suite": 3,
+        "nonce": 4,
+        "ciphertext": 5,
+        "ephemeral-point": 6,
+        "shared-point": 7,
+        "dleq-proof": 8
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#recipient-encrypted-payload-v1",
+          "required": [
+            "network",
+            "sender",
+            "recipient",
+            "suite",
+            "nonce",
+            "ciphertext",
+            "ephemeral-point",
+            "shared-point",
+            "dleq-proof"
+          ],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "recipient-encrypted-payload-v2",
+      "fields": {
+        "network": 0,
+        "sender": 1,
+        "recipient": 2,
+        "suite": 3,
+        "crypto-box-envelope": 4,
+        "ephemeral-point": 5,
+        "shared-point": 6,
+        "dleq-proof": 7
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#recipient-encrypted-payload-v2",
+          "required": [
+            "network",
+            "sender",
+            "recipient",
+            "suite",
+            "crypto-box-envelope",
+            "ephemeral-point",
+            "shared-point",
+            "dleq-proof"
+          ],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "dm-crypto-context-v1",
+      "fields": {
+        "domain": 0,
+        "network": 1,
+        "sender": 2,
+        "recipient": 3,
+        "sender-statement-hash": 4,
+        "recipient-statement-hash": 5,
+        "sender-message-key": 6,
+        "recipient-message-key": 7,
+        "recipient-stamp-key": 8,
+        "ephemeral-point": 9,
+        "shared-point": 10,
+        "dleq-proof": 11,
+        "suite": 12,
+        "object-type": 13,
+        "schema-version": 14,
+        "min-reader-version": 15
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#dm-crypto-context-v1",
+          "required": [
+            "domain",
+            "network",
+            "sender",
+            "recipient",
+            "sender-statement-hash",
+            "recipient-statement-hash",
+            "sender-message-key",
+            "recipient-message-key",
+            "recipient-stamp-key",
+            "ephemeral-point",
+            "shared-point",
+            "dleq-proof",
+            "suite",
+            "object-type",
+            "schema-version",
+            "min-reader-version"
+          ],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "forwarding-delivery-envelope",
+      "fields": {
+        "network": 0,
+        "destination": 1,
+        "payload-frame": 2,
+        "payload-digest": 3,
+        "payments": 4,
+        "endpoint": 5,
+        "expires-at": 6
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#forwarding-delivery-envelope",
+          "required": [
+            "network",
+            "destination",
+            "payload-frame",
+            "payload-digest",
+            "payments"
+          ],
+          "optional": [
+            "endpoint",
+            "expires-at"
+          ],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "mailbox-checkpoint",
+      "fields": {
+        "network": 0,
+        "owner": 1,
+        "checkpoint-id": 2,
+        "timestamp": 3,
+        "facts": 4,
+        "sections": 5
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/checkpoint.cddl#mailbox-checkpoint",
+          "required": [
+            "network",
+            "owner",
+            "checkpoint-id",
+            "timestamp",
+            "facts"
+          ],
+          "optional": [
+            "sections"
+          ],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "journal-fact",
+      "fields": {
+        "timestamp": 0,
+        "fact-id": 1,
+        "kind": 2,
+        "payload": 3
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/checkpoint.cddl#journal-fact",
+          "required": [
+            "timestamp",
+            "fact-id",
+            "kind",
+            "payload"
+          ],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "opaque-section",
+      "fields": {
+        "section-type": 0,
+        "section-schema-version": 1,
+        "value": 2
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/checkpoint.cddl#opaque-section",
+          "required": [
+            "section-type",
+            "section-schema-version",
+            "value"
+          ],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "tombstone-fact-payload",
+      "fields": {
+        "object-family": 0,
+        "object-id": 1,
+        "revision-digest": 2
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/checkpoint.cddl#tombstone-fact-payload",
+          "required": [
+            "object-family",
+            "object-id"
+          ],
+          "optional": [
+            "revision-digest"
+          ],
+          "open": true
+        }
+      ]
+    }
+  ]
+}

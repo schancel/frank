@@ -640,3 +640,125 @@ describe('read-only stamp affordability', () => {
   })
 })
 
+
+describe('a send reads only the accounts it pays from', () => {
+  // Seen on testnet: sends stuck at "Sending..." for many seconds. Every claim read the nonce
+  // counts and balances of EVERY funded pool account (two at a time) before choosing one.
+  async function claimsWith(funded: number) {
+    const keyring = MonadHdKeyring.fromMnemonic(
+      'test test test test test test test test test test test junk',
+    )
+    const pool = new MonadSubAccountPool({
+      keyring,
+      store: new InMemorySubAccountPoolStore(),
+    })
+    pool.ensureSize(funded)
+    let calls = 0
+    const counted =
+      <A extends unknown[], T>(fn: (...args: A) => Promise<T>) =>
+      (...args: A) => {
+        calls++
+        return fn(...args)
+      }
+    const provider = {
+      getBlockNumber: counted(async () => 1000),
+      getTransactionCount: counted(async () => 0),
+      getBalance: counted(async () => MON / 2n),
+      getFeeData: counted(async () => ({
+        gasPrice: 102n * GWEI,
+        maxFeePerGas: 202n * GWEI,
+        maxPriorityFeePerGas: 2n * GWEI,
+      })),
+    } as unknown as Provider
+    const watcher = new EvmBlockWatcher({ provider, intervalMs: 10_000 })
+    const stampPayer = new EvmStampPayer({
+      pool,
+      provider,
+      httpClient: {} as never,
+      watcher,
+      accounts: [],
+      spendSpacingBlocks: 3,
+    })
+    const stamp = MON / 10n
+    try {
+      // The first send of a session learns the balances it has never read.
+      await stampPayer.claim({ holder: 'first', stampValueWei: stamp, sources: ['pool'] })
+      calls = 0
+      // The first is still unsettled (it holds its account): the second does not wait for it.
+      const second = await stampPayer.claim({
+        holder: 'second',
+        stampValueWei: stamp,
+        sources: ['pool'],
+      })
+      expect(second.accounts).toHaveLength(1)
+      expect(pool.claimedBy(second.accounts[0]!.index)).toBe('second')
+      return calls
+    } finally {
+      watcher.stop()
+      stampPayer.release('first')
+      stampPayer.release('second')
+    }
+  }
+
+  it('the number of node requests of a claim does not grow with the funded accounts', async () => {
+    const few = await claimsWith(3)
+    const many = await claimsWith(40)
+    expect(many).toBe(few)
+    // Counts and balances of the one account paid from, its coin, and the head.
+    expect(many).toBeLessThanOrEqual(10)
+  })
+
+  it('an account found spent under the claim is let go and another pays', async () => {
+    const keyring = MonadHdKeyring.fromMnemonic(
+      'test test test test test test test test test test test junk',
+    )
+    const pool = new MonadSubAccountPool({
+      keyring,
+      store: new InMemorySubAccountPoolStore(),
+    })
+    pool.ensureSize(3)
+    const emptied = pool.records()[0]!.address.toLowerCase()
+    let read = false
+    const provider = {
+      getBlockNumber: async () => 1000,
+      // Remembered as funded; another device of the account has since spent from it.
+      getTransactionCount: async (address: string) =>
+        address.toLowerCase() === emptied && read ? 1 : 0,
+      getBalance: async (address: string) =>
+        address.toLowerCase() === emptied && read ? 0n : MON / 2n,
+      getFeeData: async () => ({
+        gasPrice: 102n * GWEI,
+        maxFeePerGas: 202n * GWEI,
+        maxPriorityFeePerGas: 2n * GWEI,
+      }),
+    } as unknown as Provider
+    const watcher = new EvmBlockWatcher({ provider, intervalMs: 10_000 })
+    const stampPayer = new EvmStampPayer({
+      pool,
+      provider,
+      httpClient: {} as never,
+      watcher,
+      accounts: [],
+    })
+    try {
+      await pool.fundedCapacities(provider, RESERVE, { fromBalance: true })
+      read = true
+      const seen = new Set<string>()
+      for (const holder of ['a', 'b']) {
+        const claim = await stampPayer.claim({
+          holder,
+          stampValueWei: MON / 10n,
+          sources: ['pool'],
+        })
+        expect(claim.accounts.map(a => a.address)).not.toContain(emptied)
+        for (const account of claim.accounts) seen.add(account.address)
+      }
+      expect(seen.size).toBe(2)
+      expect(pool.claimedBy(0)).toBeUndefined()
+    } finally {
+      watcher.stop()
+      stampPayer.release('a')
+      stampPayer.release('b')
+    }
+  })
+})

@@ -1,12 +1,12 @@
 // Real Vue/Quasar chat bubbles with the real message footer, in a new blank browser profile.
-// BUBBLE_FOOTER_PLAYWRIGHT=/external/prefix/node_modules/playwright node app/test/chat-bubble-footer-browser.mjs [--out=<dir>] [--source-ref=<revision>]
+// BUBBLE_FOOTER_PLAYWRIGHT=/external/prefix/node_modules/playwright yarn workspace frank test:bubble-footer, or node app/test/chat-bubble-footer-browser.mjs [--out=<dir>] [--source-ref=<revision>]
 // BUBBLE_FOOTER_CHROME=<chrome binary> uses that browser instead of Playwright's download.
 // --source-ref renders the footer component and app.scss from an earlier revision, to show the
 // regression; --out keeps one screenshot per viewport. No app server, account, relay or chain.
 //
-// The footer of a bubble is one row: the time, amount and any status on the left, shortened with
-// an ellipsis when too long, and the actions (retry, discard, menu) at the right. The actions never
-// drop onto a line of their own while the row has room for them.
+// The time, amount and actions (retry, discard, menu) of a bubble share one row; the actions never
+// stand on a line alone. A status that fits sits at the start of that row; one that does not wraps
+// in full onto its own line above it. Nothing is cut short, overlaps, or spills out of the bubble.
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { readFile, mkdir } from 'node:fs/promises'
@@ -212,7 +212,7 @@ const viewports = [
   { name: 'desktop', width: 1280, height: 800, chat: 900, size: '6' },
   { name: 'mobile-390', width: 390, height: 844, chat: 390, size: '9' },
   { name: 'popup-400x600', width: 400, height: 600, chat: 400, size: '9' },
-  // Too narrow for time, amount and actions side by side: only here may the actions wrap.
+  // Too narrow for time, amount and actions side by side: only here may the time go above.
   {
     name: 'too-narrow-200',
     width: 200,
@@ -245,62 +245,100 @@ try {
     )
     const measured = await page.evaluate(() =>
       [...document.querySelectorAll('.bubble')].map(element => {
-        const box = selector => {
-          const found = element.querySelector(selector)
+        const rect = found => {
           if (!found) return null
           const r = found.getBoundingClientRect()
-          return r.width || r.height
-            ? { left: r.left, right: r.right, top: r.top, bottom: r.bottom }
-            : null
+          return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }
         }
         const footer = element.querySelector('[data-testid="outgoing-footer"]')
-        const actions = footer?.lastElementChild
-        const actionRect = actions?.getBoundingClientRect()
-        // Status, time and amount: what the footer shows apart from its actions.
-        const meta = [...footer.querySelectorAll('[data-testid^="outgoing-"]')]
-          .filter(child => !child.closest('button') && child !== footer)
-          .map(child => child.getBoundingClientRect())
-          .filter(r => r.width > 0)
+        const statuses = [
+          ...footer.querySelectorAll(
+            '[data-testid="outgoing-failed"], [data-testid="outgoing-payment-pending"], [data-testid="outgoing-sending"], [data-testid="outgoing-payment-summary"], [data-testid="outgoing-payment-success"]',
+          ),
+        ]
+        // Cut text: any status element, or anything inside it, narrower than its content, or
+        // set to end in an ellipsis.
+        const truncated = statuses.some(status =>
+          [status, ...status.querySelectorAll('*')].some(
+            node =>
+              node.scrollWidth > node.clientWidth + 1 ||
+              getComputedStyle(node).textOverflow === 'ellipsis',
+          ),
+        )
+        // Shown buttons only: the confirmed menu keeps reply/forward/info hidden until opened.
+        const buttons = [...footer.querySelectorAll('button')].filter(
+          button => button.getBoundingClientRect().width > 0,
+        )
+        const actions = buttons.length
+          ? rect({
+              getBoundingClientRect: () => {
+                const all = buttons.map(button =>
+                  button.getBoundingClientRect(),
+                )
+                return {
+                  left: Math.min(...all.map(r => r.left)),
+                  right: Math.max(...all.map(r => r.right)),
+                  top: Math.min(...all.map(r => r.top)),
+                  bottom: Math.max(...all.map(r => r.bottom)),
+                }
+              },
+            })
+          : null
         return {
           name: element.dataset.case,
-          bubble: box('.q-message-text'),
-          footer: box('[data-testid="outgoing-footer"]'),
-          actions:
-            actionRect && actionRect.width
-              ? {
-                  left: actionRect.left,
-                  right: actionRect.right,
-                  top: actionRect.top,
-                  bottom: actionRect.bottom,
-                }
-              : null,
-          metaTop: Math.min(...meta.map(r => r.top)),
-          metaBottom: Math.max(...meta.map(r => r.bottom)),
-          metaRight: Math.max(...meta.map(r => r.right)),
+          bubble: rect(element.querySelector('.q-message-text')),
+          statuses: statuses.map(status => ({
+            id: status.dataset.testid,
+            ...rect(status),
+          })),
+          truncated,
+          time: rect(footer.querySelector('[data-testid="outgoing-stamp"]')),
+          amount: rect(footer.querySelector('[data-testid="outgoing-amount"]')),
+          actions,
         }
       }),
     )
+    const sameLine = (a, b) =>
+      Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 4
+    const overlap = (a, b) =>
+      Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5 &&
+      Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5
+    const inside = (a, box) =>
+      a.left >= box.left - 0.5 &&
+      a.right <= box.right + 0.5 &&
+      a.top >= box.top - 0.5 &&
+      a.bottom <= box.bottom + 0.5
     for (const result of measured) {
       console.log(JSON.stringify({ viewport: viewport.name, ...result }))
       const where = `${viewport.name} ${result.name}`
-      if (
-        result.footer.right > result.bubble.right + 0.5 ||
-        result.footer.left < result.bubble.left - 0.5
-      )
-        failures.push(`${where}: footer sticks out of the bubble`)
-      if (result.metaBottom - result.metaTop > 24)
-        failures.push(
-          `${where}: time, amount and status span more than one line`,
-        )
-      if (result.actions) {
-        if (!viewport.tooNarrow && result.actions.top >= result.metaBottom - 2)
-          failures.push(`${where}: actions dropped below the time and amount`)
+      const fail = text => failures.push(`${where}: ${text}`)
+      const parts = [
+        ...result.statuses.map(status => [status.id, status]),
+        ['time', result.time],
+        ['amount', result.amount],
+        ...(result.actions ? [['actions', result.actions]] : []),
+      ]
+      for (const [name, box] of parts)
+        if (!inside(box, result.bubble))
+          fail(`${name} spills out of the bubble`)
+      for (const status of result.statuses)
+        if (status.right - status.left < 1 || status.bottom - status.top < 1)
+          fail(`${status.id} has no width`)
+      if (result.truncated) fail('status is cut short')
+      for (let i = 0; i < parts.length; i++)
+        for (let j = i + 1; j < parts.length; j++)
+          if (overlap(parts[i][1], parts[j][1]))
+            fail(`${parts[i][0]} overlaps ${parts[j][0]}`)
+      if (result.actions && !sameLine(result.actions, result.amount))
+        fail('actions sit on a line by themselves')
+      if (!viewport.tooNarrow && !sameLine(result.time, result.amount))
+        fail('time and amount are not on one row')
+      for (const status of result.statuses)
         if (
-          result.actions.top < result.metaBottom - 2 &&
-          result.actions.left < result.metaRight - 0.5
+          !sameLine(status, result.amount) &&
+          status.bottom > result.amount.top + 0.5
         )
-          failures.push(`${where}: actions overlap the time and amount`)
-      }
+          fail(`${status.id} is below the time and amount row`)
     }
     if (out)
       await page.screenshot({
@@ -313,7 +351,7 @@ try {
   await browser.close()
 }
 for (const failure of failures) console.log(`FAIL: ${failure}`)
-assert.deepEqual(failures, [], 'every bubble keeps its footer on one row')
+assert.deepEqual(failures, [], 'every bubble footer keeps the layout rule')
 console.log(
-  'PASS: footer is one row (meta left, actions right) at desktop, 390px and the 400x600 popup',
+  'PASS: bubble footers at desktop, 390px, the 400x600 popup and 200px',
 )

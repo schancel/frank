@@ -22,86 +22,86 @@
       :class="suffixPlacement"
       data-testid="outgoing-footer"
     >
-      <!-- One row: status, time and amount on the left, the actions at the right. Only the
-      status gives way when the bubble is narrow: it is shortened with an ellipsis. -->
-      <span class="outgoing-meta">
-        <span class="outgoing-status-slot">
-          <span
-            v-if="status === 'error'"
-            class="outgoing-status outgoing-status--failed"
-            role="button"
-            tabindex="0"
-            :aria-label="failureDetails"
-            :aria-expanded="failureDetailsOpen ? 'true' : 'false'"
-            data-testid="outgoing-failed"
-            @click.stop="failureDetailsOpen = !failureDetailsOpen"
-            @keydown.enter.space.prevent.stop="
-              failureDetailsOpen = !failureDetailsOpen
-            "
-          >
-            <q-icon
-              name="error"
-              :color="inline && outbound ? undefined : 'negative'"
-            />
-            <span class="outgoing-status-text">{{
-              $t('chatMessage.failedShort')
-            }}</span>
-            <q-tooltip
-              v-model="failureDetailsOpen"
-              max-width="260px"
-              data-testid="outgoing-failure-details"
-              >{{ failureDetails }}</q-tooltip
-            >
-          </span>
-          <span
-            v-else-if="status === 'payment-pending'"
-            class="outgoing-status"
-            data-testid="outgoing-payment-pending"
-          >
-            <q-icon name="schedule" />
-            <span class="outgoing-status-text" :title="paymentText">{{
-              paymentText
-            }}</span>
-          </span>
-          <span
-            v-else-if="status === 'pending' && outbound"
-            data-testid="outgoing-sending"
-            :title="sendingText"
-            >{{ sendingText }}</span
-          >
-          <span
-            v-else-if="paymentSummaryText"
-            data-testid="outgoing-payment-summary"
-            :title="paymentSummaryText"
-            >{{ paymentSummaryText }}</span
-          >
-          <span
-            v-if="showPaymentSuccess"
-            class="outgoing-payment-success"
-            data-testid="outgoing-payment-success"
-            >{{ $t(paymentSuccessKey) }}</span
+      <!-- The status at the start, then time, amount and actions as one row. A status too long to
+      share that row wraps in full onto its own line above it. See the style block. -->
+      <span class="outgoing-status-slot">
+        <span
+          v-if="status === 'error'"
+          class="outgoing-status outgoing-status--failed"
+          role="button"
+          tabindex="0"
+          :aria-label="failureDetails"
+          :aria-expanded="failureDetailsOpen ? 'true' : 'false'"
+          data-testid="outgoing-failed"
+          @click.stop="failureDetailsOpen = !failureDetailsOpen"
+          @keydown.enter.space.prevent.stop="
+            failureDetailsOpen = !failureDetailsOpen
+          "
+        >
+          <q-icon
+            name="error"
+            :color="inline && outbound ? undefined : 'negative'"
+          />
+          <span class="outgoing-status-text">{{
+            $t('chatMessage.failedShort')
+          }}</span>
+          <q-tooltip
+            v-model="failureDetailsOpen"
+            max-width="260px"
+            data-testid="outgoing-failure-details"
+            >{{ failureDetails }}</q-tooltip
           >
         </span>
+        <span
+          v-else-if="status === 'payment-pending'"
+          class="outgoing-status"
+          data-testid="outgoing-payment-pending"
+        >
+          <q-icon name="schedule" />
+          <span>{{ paymentText }}</span>
+        </span>
+        <span
+          v-else-if="status === 'pending' && outbound"
+          data-testid="outgoing-sending"
+          >{{ sendingText }}</span
+        >
+        <span
+          v-else-if="paymentSummaryText"
+          data-testid="outgoing-payment-summary"
+          >{{ paymentSummaryText }}</span
+        >
+        <span
+          v-if="showPaymentSuccess"
+          class="outgoing-payment-success"
+          data-testid="outgoing-payment-success"
+          >{{ $t(paymentSuccessKey) }}</span
+        >
+      </span>
+      <span class="outgoing-row">
         <time
           v-if="stamp"
           data-testid="outgoing-stamp"
           :datetime="stampDatetime || undefined"
           >{{ stamp }}</time
         >
-        <span data-testid="outgoing-amount" :title="amountExact || undefined">{{
-          amount
-        }}</span>
+        <span class="outgoing-amount-actions">
+          <span
+            data-testid="outgoing-amount"
+            :title="amountExact || undefined"
+            >{{ amount }}</span
+          >
+          <chat-message-suffix-buttons
+            class="outgoing-actions"
+            :status="status"
+            @replyClick="$emit('replyClick')"
+            @forwardClick="$emit('forwardClick')"
+            @infoClick="$emit('infoClick')"
+            @deleteClick="$emit('deleteClick')"
+            @resendClick="$emit('resendClick')"
+            @discardClick="$emit('discardClick')"
+          />
+        </span>
       </span>
-      <chat-message-suffix-buttons
-        class="outgoing-actions"
-        :status="status"
-        @replyClick="$emit('replyClick')"
-        @forwardClick="$emit('forwardClick')"
-        @infoClick="$emit('infoClick')"
-        @deleteClick="$emit('deleteClick')"
-        @resendClick="$emit('resendClick')"
-        @discardClick="$emit('discardClick')"
-      />
     </div>
   </div>
 </template>
@@ -370,52 +370,64 @@ export default defineComponent({
   flex-direction: column;
   align-items: stretch;
 }
-/* The footer is one row: `.outgoing-meta` (status, time, amount) at the start, the actions at the
- * end. Only the status gives way when there is little room: `.outgoing-status-slot` is a grid
- * whose column may shrink to nothing, so its text counts towards how wide the bubble grows but
- * not towards the row's minimum width, and it is cut with an ellipsis instead. The actions drop
- * below only when even the time, amount and actions do not fit side by side. */
+/* The status comes first, then one row of time, amount and actions (`.outgoing-row`). When the
+ * status fits beside that row it sits at its start; when it does not, the footer wraps the row
+ * onto the next line and the status takes the line above it, wrapping its own words as needed.
+ * The status is never cut short, and the actions never stand alone: only in a bubble too narrow
+ * even for time, amount and actions does the row break, after the time, keeping the amount with
+ * the actions. Every item may shrink to its longest word, so nothing overlaps or spills out. */
 .outgoing-footer {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  column-gap: 6px;
+  gap: 2px 6px;
   white-space: nowrap;
 }
 .outgoing-footer.text-left {
   justify-content: flex-start;
 }
-.outgoing-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1 1 0;
-  justify-content: flex-end;
-}
-.outgoing-footer.text-left .outgoing-meta {
-  justify-content: flex-start;
-}
-.outgoing-meta > time,
-.outgoing-meta > span:not(.outgoing-status-slot) {
-  flex: none;
-}
 .outgoing-status-slot {
-  display: inline-grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, max-content);
-  gap: 6px;
-  min-width: 0;
+  display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 2px 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .outgoing-status-slot:empty {
   display: none;
 }
-.outgoing-status-slot > *,
-.outgoing-status-text {
+.outgoing-status-slot > * {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+.outgoing-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px 6px;
+  flex: 0 1 auto;
+  margin-inline-start: auto;
+}
+.outgoing-footer.text-left .outgoing-row {
+  justify-content: flex-start;
+  margin-inline-start: 0;
+  margin-inline-end: auto;
+}
+.outgoing-amount-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* In a bubble too narrow even for the amount and its actions (about 200px wide), the amount
+ * breaks, inside the number if it must, rather than leave the actions alone or push them out. */
+.outgoing-amount-actions > [data-testid='outgoing-amount'] {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .outgoing-actions {
   display: flex;
@@ -428,8 +440,7 @@ export default defineComponent({
   gap: 4px;
 }
 .outgoing-status--failed {
-  /* Short, and focusable: keep its focus ring unclipped. Its word still ends in an ellipsis. */
-  overflow: visible;
+  flex: none;
   cursor: pointer;
 }
 </style>

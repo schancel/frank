@@ -19,7 +19,7 @@
 import { defineComponent } from 'vue'
 import {
   isBrowserExtensionRuntime,
-  openExtensionInWindow,
+  focusOrOpenMainExtensionWindow,
 } from '../../../src-bex/runtime-adapter'
 
 export default defineComponent({
@@ -79,7 +79,7 @@ export default defineComponent({
   },
   methods: {
     async popOutExtensionWindow() {
-      const res = await openExtensionInWindow()
+      const res = await focusOrOpenMainExtensionWindow()
       if (
         res.opened &&
         typeof window !== 'undefined' &&

@@ -16,7 +16,16 @@ let mockProfileName: string | undefined = 'Monad user'
 const mockAccountStatus = { status: 'ready' }
 jest.mock('../accounts/session', () => ({
   accountStatus: mockAccountStatus,
-  accountSession: { initialize: jest.fn(async () => undefined) },
+  accountSession: {
+    initialize: jest.fn(async () => undefined),
+    setStandby: jest.fn(),
+  },
+}))
+const mockHasOtherExtensionViews = jest.fn(
+  async (): Promise<boolean | null> => null,
+)
+jest.mock('../../src-bex/runtime-adapter', () => ({
+  hasOtherExtensionViews: () => mockHasOtherExtensionViews(),
 }))
 const mockLegacyWallet = { setXPrivKey: jest.fn() }
 const mockLegacyWalletConstructor = jest.fn(() => mockLegacyWallet)
@@ -77,11 +86,13 @@ jest.mock('src/stores/chats', () => ({ useChatStore: restoredStore }))
 jest.mock('src/stores/topics', () => ({ useTopicStore: restoredStore }))
 jest.mock('src/stores/settings', () => ({ useSettingsStore: restoredStore }))
 const mockTabCoordinatorInit = jest.fn(async () => undefined)
+const mockTabCoordinator = {
+  init: mockTabCoordinatorInit,
+  otherTabActive: false,
+  deferToActiveExtensionView: jest.fn(async () => false),
+}
 jest.mock('../stores/tab-coordinator', () => ({
-  useTabCoordinatorStore: () => ({
-    init: mockTabCoordinatorInit,
-    otherTabActive: false,
-  }),
+  useTabCoordinatorStore: () => mockTabCoordinator,
 }))
 
 import { Quasar } from 'quasar'
@@ -92,6 +103,13 @@ import { startupRestoration } from './startup-state'
 describe('setup-apis in Monad mode', () => {
   beforeEach(() => {
     mockTabCoordinatorInit.mockClear()
+    mockTabCoordinator.otherTabActive = false
+    mockTabCoordinator.deferToActiveExtensionView.mockReset()
+    mockTabCoordinator.deferToActiveExtensionView.mockResolvedValue(false)
+    mockHasOtherExtensionViews.mockReset()
+    mockHasOtherExtensionViews.mockResolvedValue(null)
+    jest.mocked(accountSession.initialize).mockClear()
+    jest.mocked(accountSession.setStandby).mockClear()
     // This browser boot fixture resolves Quasar's SSR build under Jest.
     jest.spyOn(Quasar.lang, 'set').mockImplementation(() => undefined)
   })
@@ -159,5 +177,44 @@ describe('setup-apis in Monad mode', () => {
     } finally {
       window.history.replaceState({}, '', originalUrl)
     }
+  })
+
+  describe('extension popup opened from the toolbar', () => {
+    let originalUrl: string
+    beforeEach(() => {
+      originalUrl = window.location.href
+      window.history.replaceState({}, '', '/index.html?extMode=popup')
+    })
+    afterEach(() => window.history.replaceState({}, '', originalUrl))
+
+    it('waits for an already open extension view to answer before taking the account', async () => {
+      mockHasOtherExtensionViews.mockResolvedValue(true)
+      await setupApis({ app: { config: { globalProperties: {} } } } as never)
+      expect(mockTabCoordinatorInit).toHaveBeenCalledWith({
+        pingTimeoutMs: 300,
+      })
+    })
+
+    it('raises the open pop-out and never opens the account or the lock screen here', async () => {
+      mockHasOtherExtensionViews.mockResolvedValue(true)
+      mockTabCoordinator.otherTabActive = true
+      mockTabCoordinator.deferToActiveExtensionView.mockResolvedValue(true)
+      await setupApis({ app: { config: { globalProperties: {} } } } as never)
+      expect(accountSession.setStandby).toHaveBeenCalled()
+      expect(mockTabCoordinator.deferToActiveExtensionView).toHaveBeenCalled()
+      expect(accountSession.initialize).not.toHaveBeenCalled()
+    })
+
+    it('stays on standby when the open view cannot be raised', async () => {
+      mockTabCoordinator.otherTabActive = true
+      await setupApis({ app: { config: { globalProperties: {} } } } as never)
+      expect(accountSession.setStandby).toHaveBeenCalled()
+      // initialize() on a standby session does not acquire custody.
+      expect(
+        jest.mocked(accountSession.setStandby).mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        jest.mocked(accountSession.initialize).mock.invocationCallOrder[0],
+      )
+    })
   })
 })

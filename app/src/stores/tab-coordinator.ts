@@ -16,6 +16,10 @@ import { watch } from 'vue'
 import { accountSession, accountStatus } from '../accounts/session'
 import { useLeaderStore } from './leader'
 import { translateMessage } from '../i18n'
+import {
+  focusOwnExtensionView,
+  isBrowserExtensionRuntime,
+} from '../../src-bex/runtime-adapter'
 
 type TabFocusResult = 'focused' | 'notified' | 'manual'
 
@@ -84,8 +88,17 @@ let syncChannel: BroadcastChannel | null = null
 let unloadListenerAttached = false
 let focusRequestId: string | null = null
 let focusRequestTimer: ReturnType<typeof setTimeout> | null = null
+let focusRequestResolver:
+  | ((result: TabFocusResult | 'unavailable') => void)
+  | null = null
 let takeoverResolver: (() => void) | null = null
 let pingResolver: (() => void) | null = null
+
+function settleFocusRequest(result: TabFocusResult | 'unavailable') {
+  const resolve = focusRequestResolver
+  focusRequestResolver = null
+  resolve?.(result)
+}
 
 export const useTabCoordinatorStore = defineStore('tabCoordinator', {
   state: (): TabCoordinatorState => ({
@@ -144,6 +157,10 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
         () => accountStatus.status,
         status => {
           if (status === 'ready' && !this.isYielded) {
+            // This view now holds the account; any other holder yields on the claim. A
+            // late TAB_PONG must not leave the holder itself on the "open elsewhere" screen.
+            this.otherTabActive = false
+            this.activeTabId = this.tabId
             this.broadcast({
               type: 'TAB_CLAIM_CUSTODY',
               tabId: this.tabId,
@@ -302,10 +319,17 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
             } catch {
               // Browsers may refuse focus without a direct user gesture in this tab.
             }
+            // An extension view (pop-out window, extension tab, side panel) can raise its own
+            // window through the extension API, which window.focus() cannot do in Chromium.
+            const raisedByExtension =
+              isBrowserExtensionRuntime() && (await focusOwnExtensionView())
             // Already-open windows may send the original targeted focus-only request.
             // Correlated requests additionally receive a notification/result.
             if (!msg.requesterTabId || !msg.requestId) break
-            if (typeof document !== 'undefined' && document.hasFocus()) {
+            if (
+              raisedByExtension ||
+              (typeof document !== 'undefined' && document.hasFocus())
+            ) {
               result = 'focused'
             } else if (
               typeof Notification !== 'undefined' &&
@@ -361,6 +385,7 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
             focusRequestTimer = null
             focusRequestId = null
             this.focusRequestStatus = msg.focusResult
+            settleFocusRequest(msg.focusResult)
           }
           break
         }
@@ -412,14 +437,20 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
       }
     },
 
-    requestTabFocus() {
+    requestTabFocus(): Promise<TabFocusResult | 'unavailable'> {
       if (focusRequestTimer) clearTimeout(focusRequestTimer)
+      // A newer request supersedes an unanswered one.
+      settleFocusRequest('unavailable')
       focusRequestId = generateTabId()
       this.focusRequestStatus = 'waiting'
+      const outcome = new Promise<TabFocusResult | 'unavailable'>(resolve => {
+        focusRequestResolver = resolve
+      })
       focusRequestTimer = setTimeout(() => {
         focusRequestTimer = null
         focusRequestId = null
         this.focusRequestStatus = 'unavailable'
+        settleFocusRequest('unavailable')
       }, 1800)
       this.broadcast({
         type: 'FOCUS_REQUEST',
@@ -427,6 +458,26 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
         requesterTabId: this.tabId,
         requestId: focusRequestId,
       })
+      return outcome
+    },
+
+    /**
+     * The popup, side panel and pop-out window are views of one extension, not competing
+     * tabs. When another extension view already holds the account, this view raises that
+     * one and closes itself instead of showing the "open in another tab" screen. It closes
+     * only after the holder confirms it is alive and raised; otherwise it stays on standby
+     * (the lock screen), so two views never both hold custody.
+     */
+    async deferToActiveExtensionView(): Promise<boolean> {
+      if (!this.otherTabActive || !isBrowserExtensionRuntime()) return false
+      const result = await this.requestTabFocus()
+      if (result !== 'focused') return false
+      try {
+        window.close()
+      } catch {
+        return false
+      }
+      return true
     },
 
     resetForTesting() {
@@ -440,6 +491,7 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
       if (focusRequestTimer) clearTimeout(focusRequestTimer)
       focusRequestTimer = null
       focusRequestId = null
+      focusRequestResolver = null
       this.focusRequestStatus = 'idle'
       if (syncChannel) {
         syncChannel.close()

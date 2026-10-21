@@ -700,7 +700,7 @@ import {
   isBrowserExtensionRuntime,
   openCompanionPanel,
   openExtensionTab,
-  openExtensionWindow,
+  focusOrOpenMainExtensionWindow,
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   FRANK_WEB_APP_ORIGIN,
   isFrankWebAppOrigin,
@@ -1086,7 +1086,7 @@ export default defineComponent({
     }
 
     const openInPopoutWindow = async () => {
-      await openExtensionWindow()
+      await focusOrOpenMainExtensionWindow()
     }
 
     const openInFullTab = async () => {

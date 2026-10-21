@@ -9,7 +9,7 @@ import {
   FRANK_DAPP_BRIDGE_CHANNEL,
   FRANK_EXT_LAUNCH_MODE_KEY,
   openCompanionPanel,
-  openExtensionInWindow,
+  focusOrOpenMainExtensionWindow,
 } from './runtime-adapter'
 import {
   createBackgroundBridgeState,
@@ -117,7 +117,12 @@ describe('toolbar click choice', () => {
     expect(second.chrome.action.setPopup).toHaveBeenCalledWith({ popup: '' })
     second.fire('startup')
     await settle()
-    expect(storage.set).toHaveBeenCalledTimes(1)
+    // Saved once; the only other write is the pop-out's window record.
+    expect(
+      storage.set.mock.calls.filter(
+        ([items]) => FRANK_EXT_LAUNCH_MODE_KEY in items,
+      ),
+    ).toHaveLength(1)
     expect(storage.data[FRANK_EXT_LAUNCH_MODE_KEY]).toBe('window')
   })
 
@@ -165,9 +170,11 @@ describe('toolbar click choice', () => {
     const { scope, chrome } = startBrowser(storage)
     await settle()
     chrome.sidePanel.setPanelBehavior.mockClear()
-    await openExtensionInWindow({}, scope)
+    await focusOrOpenMainExtensionWindow({}, scope)
     await openCompanionPanel({ windowId: 1 }, scope)
-    expect(storage.set).not.toHaveBeenCalled()
+    for (const [items] of storage.set.mock.calls) {
+      expect(items).not.toHaveProperty(FRANK_EXT_LAUNCH_MODE_KEY)
+    }
     expect(chrome.sidePanel.setPanelBehavior).not.toHaveBeenCalled()
     expect(storage.data[FRANK_EXT_LAUNCH_MODE_KEY]).toBe('popup')
   })

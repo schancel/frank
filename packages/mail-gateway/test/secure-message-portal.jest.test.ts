@@ -274,6 +274,71 @@ describe('SecureMessagePortal & Onboarding Claim Channel', () => {
       });
     });
 
+    it('never hands an unverified OTP reader a claim token or the body (BOT-4)', async () => {
+      const record = portal.createSecureMessage({
+        senderScope: SENDER_SCOPE,
+        authMode: 'otp',
+        cleartext: {
+          subject: 'OTP Secret Subject',
+          textBody: 'TOP SECRET BODY',
+          senderAddress: 'alice@mail.frank.test',
+          recipientEmail: 'bob@gmail.com',
+          conversationId: CONVERSATION_ID,
+          createdAtMs: clock,
+        },
+      });
+
+      // A link scanner's GET: the challenge page carries no claim token.
+      const challenge = await portal.handleHttpRequest({
+        pathname: `/secure/${record.tokenId}`,
+        method: 'GET',
+      });
+      expect(challenge?.status).toBe(200);
+      expect(challenge!.body).not.toMatch(/claim=/);
+      expect(challenge!.body).not.toContain('TOP SECRET BODY');
+      expect(challenge!.body).not.toContain('bob@gmail.com');
+      expect(challenge!.body).toContain('https://app.frank.test/#/onboard?');
+
+      // Even a validly signed claim minted without verification returns metadata only.
+      const unverifiedClaim = createOnboardingClaimToken(
+        {
+          kind: 'secure',
+          id: record.tokenId,
+          peerAddress: SENDER_SCOPE,
+          email: 'bob@gmail.com',
+          conversationId: CONVERSATION_ID,
+          exp: record.expiresAtMs,
+        },
+        MASTER_SECRET,
+      );
+      const claimed = await portal.handleHttpRequest({
+        pathname: `/onboard/claim/${encodeURIComponent(unverifiedClaim)}`,
+        method: 'GET',
+      });
+      expect(claimed?.status).toBe(200);
+      expect(claimed!.body).not.toContain('TOP SECRET BODY');
+      expect(JSON.parse(claimed!.body).textBody).toBe('');
+      expect(portal.getSecureMessage(record.tokenId)!.readCount).toBe(0);
+
+      // After OTP verification, the decrypted page's claim imports the body.
+      await portal.handleHttpRequest({ pathname: `/secure/${record.tokenId}/request-otp`, method: 'POST' });
+      const verified = await portal.handleHttpRequest({
+        pathname: `/secure/${record.tokenId}/verify`,
+        method: 'POST',
+        body: `otp=${sentOtps[0].otp}`,
+      });
+      expect(verified?.status).toBe(200);
+      const hrefMatch = verified!.body.match(/href="([^"]*#\/onboard\?[^"]*)"/);
+      expect(hrefMatch).toBeTruthy();
+      const verifiedClaim = new URLSearchParams(
+        hrefMatch![1].replace(/&amp;/g, '&').split('?')[1],
+      ).get('claim');
+      expect(verifiedClaim).toBeTruthy();
+      expect(verifyOnboardingClaimToken(verifiedClaim!, MASTER_SECRET, clock)?.unlocked).toBe(true);
+      const imported = await portal.claimThread(verifiedClaim!);
+      expect(imported?.textBody).toBe('TOP SECRET BODY');
+    });
+
     it('issues 6-digit email OTP, verifies constant-time HMAC, and locks after 5 failed attempts', async () => {
       const record = portal.createSecureMessage({
         senderScope: SENDER_SCOPE,

@@ -17,8 +17,31 @@ goals below for the broader planned scope.
 
 The compose board
 `docker/monitoring/grafana/provisioning/dashboards/json/frank-relay-overview.json` queries these
-series. Forum posts use `frank_forum_stored_posts`. The profile panel's delta is fixed at six
-hours, so its description says six hours rather than "the selected interval."
+series. Forum posts use `frank_forum_stored_posts`. The stored-profile panel is a time series
+of `max(frank_registry_stored_public_profile_records)`: one line across deployment labels,
+showing the largest currently scraped relay-local count at each instant. It does not sum overlapping
+stores or compute their global unique union. Presentation profiles are relay-local and are not
+publicly federated, so separate relay stores can legitimately have different counts. A target
+switch to a smaller store can lower this line without any row being deleted.
+
+The profile net-change panel applies `delta` to that aggregate with a one-minute subquery step:
+`delta((max(frank_registry_stored_public_profile_records))[6h:1m])`. Aggregating first avoids
+separate per-deployment rolling windows. This remains an extrapolated rolling six-hour estimate,
+not a cumulative registration counter: earlier growth leaving the window can bring the delta
+back to zero while the stored count stays unchanged. Store/target changes can affect the estimate.
+Missing samples are not replaced with zero.
+
+The gauge counts all primary public-profile rows without inspecting payload expiry. The current
+public-profile store has no age-based deletion policy; replacement updates the same address row
+and removes its previous secondary-index entries. Signed identity-directory entry and relay-binding
+expiry is enforced separately and does not make this gauge a count of unexpired identities.
+The directory publisher requests 365 days of validity, capped by the relay binding expiry, and
+renews before the last 30 days (or half of a shorter lifetime). See
+[`open-directory.ts`](../packages/cashweb/relay/open-directory.ts),
+[`directory_admission/policy.rs`](../backend/cashweb/cashweb-registry/src/directory_admission/policy.rs),
+and the counted store's [`monad_profiles.rs`](../backend/cashweb/cashweb-registry/src/store/monad_profiles.rs).
+Introducing age-based deletion would be a separate storage-policy change.
+The dashboard JSON above is mounted directly by `docker-compose.yml`; there is no generated copy.
 
 ## Goals
 

@@ -13,6 +13,35 @@ const distExtensionsDir = path.join(appDir, 'dist', 'extensions')
 
 const VALID_TARGETS = ['chrome', 'firefox', 'safari']
 
+/**
+ * Size of the toolbar popup. Chrome, Firefox and Safari size an action popup
+ * from its document, starting from a tiny viewport, so nothing on the popup's
+ * root may depend on the viewport: app.scss clamps html/body/#q-app to 100vw
+ * and to --frank-vw/--frank-vh (measured from the viewport), which would pin
+ * the popup at its starting width. In popup mode the document fixes its own
+ * 400x600 box and the viewport variables (in the zoomed CSS pixels the UI
+ * scale setting gives) instead. `html:not([data-ext-mode])` covers the moment
+ * before extension-boot.js marks the mode. Side panel, window and tab views
+ * fill their viewport as the app lays them out.
+ */
+const EXTENSION_POPUP_WIDTH = 400
+const EXTENSION_POPUP_HEIGHT = 600
+export const EXTENSION_POPUP_SIZING_CSS = [
+  "html:not([data-ext-mode]), html[data-ext-mode='popup'] {",
+  `  --frank-vw: calc(${EXTENSION_POPUP_WIDTH}px / var(--frank-ui-zoom, 1)) !important;`,
+  `  --frank-vh: calc(${EXTENSION_POPUP_HEIGHT}px / var(--frank-ui-zoom, 1)) !important;`,
+  '  width: var(--frank-vw) !important; min-width: var(--frank-vw) !important; max-width: none !important;',
+  '  height: var(--frank-vh) !important; min-height: var(--frank-vh) !important; max-height: none !important;',
+  '  margin: 0; padding: 0;',
+  '}',
+  "html:not([data-ext-mode]) body, html[data-ext-mode='popup'] body,",
+  "html:not([data-ext-mode]) #q-app, html[data-ext-mode='popup'] #q-app {",
+  '  width: 100% !important; min-width: 0 !important; max-width: none !important;',
+  '  height: 100% !important; max-height: none !important;',
+  '  margin: 0; padding: 0;',
+  '}',
+].join('\n')
+
 function parseTargetArg(argv) {
   let target = 'all'
   for (let i = 0; i < argv.length; i++) {
@@ -181,22 +210,12 @@ export function transformExtensionIndexHtml(rawHtml, targetDir) {
     html += `\n${replacementBootTag}\n`
   }
 
-  const inlinePopupStyle = `<style id="frank-extension-popup-sizing">html, body { width: 400px; height: 600px; margin: 0; padding: 0; } html[data-ext-mode='sidepanel'], html[data-ext-mode='sidepanel'] body, html[data-ext-mode='sidebar'], html[data-ext-mode='sidebar'] body, html[data-ext-mode='window'], html[data-ext-mode='window'] body, html[data-ext-mode='tab'], html[data-ext-mode='tab'] body { width: 100%; height: 100%; min-width: 0; min-height: 100vh; }</style>`
-
   if (!html.includes('frank-extension-popup-sizing')) {
+    const sizingStyle = `<style id="frank-extension-popup-sizing">${EXTENSION_POPUP_SIZING_CSS}</style>`
     if (html.includes('</head>')) {
-      html = html.replace('</head>', `${inlinePopupStyle}</head>`)
+      html = html.replace('</head>', `${sizingStyle}</head>`)
     } else {
-      html = `${inlinePopupStyle}\n${html}`
-    }
-  }
-
-  if (!html.includes('extension-popup.css')) {
-    if (html.includes('</head>')) {
-      html = html.replace(
-        '</head>',
-        '<link rel="stylesheet" href="/extension-popup.css"></head>',
-      )
+      html = `${sizingStyle}\n${html}`
     }
   }
 
@@ -254,7 +273,6 @@ function ensureFallbackStaticAssets(targetDir) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Frank Companion</title>
-    <link rel="stylesheet" href="/extension-popup.css" />
   </head>
   <body>
     <div id="q-app"></div>
@@ -271,43 +289,6 @@ function ensureFallbackStaticAssets(targetDir) {
     const transformed = transformExtensionIndexHtml(rawHtml, targetDir)
     fs.writeFileSync(indexHtmlPath, transformed, 'utf8')
   }
-
-  fs.writeFileSync(
-    path.join(targetDir, 'extension-popup.css'),
-    `html, body {
-  width: 400px;
-  height: 600px;
-  margin: 0;
-  padding: 0;
-}
-#q-app {
-  min-width: 400px;
-  min-height: 580px;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-}
-html[data-ext-mode='sidepanel'],
-html[data-ext-mode='sidepanel'] body,
-html[data-ext-mode='sidepanel'] #q-app,
-html[data-ext-mode='sidebar'],
-html[data-ext-mode='sidebar'] body,
-html[data-ext-mode='sidebar'] #q-app,
-html[data-ext-mode='window'],
-html[data-ext-mode='window'] body,
-html[data-ext-mode='window'] #q-app,
-html[data-ext-mode='tab'],
-html[data-ext-mode='tab'] body,
-html[data-ext-mode='tab'] #q-app {
-  width: 100% !important;
-  height: 100% !important;
-  min-width: 0 !important;
-  min-height: 100vh !important;
-}
-`,
-    'utf8',
-  )
 
   const iconsDir = path.join(targetDir, 'icons')
   fs.mkdirSync(iconsDir, { recursive: true })

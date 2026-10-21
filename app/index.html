@@ -120,26 +120,9 @@
             return origSend.apply(this, arguments)
           }
         } catch (e) {}
-        try {
-          if (
-            typeof location !== 'undefined' &&
-            typeof location.search === 'string' &&
-            location.search.indexOf('extMode=popup') !== -1
-          ) {
-            document.documentElement.setAttribute('data-ext-mode', 'popup')
-          }
-        } catch (e) {}
       })()
     </script>
     <style>
-      html[data-ext-mode='popup'],
-      html[data-ext-mode='popup'] body {
-        width: var(--frank-vw, 400px);
-        min-height: var(--frank-vh, 600px);
-        height: var(--frank-vh, 600px);
-        margin: 0;
-        padding: 0;
-      }
       #q-app:empty {
         display: flex;
         flex-direction: column;

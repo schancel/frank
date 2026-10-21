@@ -21,11 +21,11 @@ import {
   focusOrOpenMainExtensionWindow,
   focusOwnExtensionView,
   hasOtherExtensionViews,
-  openExtensionInWindow,
 } from './runtime-adapter'
 import {
   createBackgroundBridgeState,
   handleBackgroundMessage,
+  handleToolbarClick,
   isExtensionBackgroundContext,
 } from './background'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from './inpage'
@@ -226,10 +226,11 @@ describe('one main pop-out window', () => {
 
   it('does not count a dApp approval window as the main instance', async () => {
     const b = makeBrowser()
-    await openExtensionInWindow(
-      { path: 'index.html?extMode=window#/dapp-bridge' },
-      b.scope,
-    )
+    // The approval window (approval-window.ts) opens approval.html itself.
+    await b.scope.chrome.windows.create({
+      url: `${BASE}approval.html`,
+      type: 'popup',
+    })
     expect(await findMainExtensionWindow(b.scope)).toBeNull()
     const res = await focusOrOpenMainExtensionWindow({}, b.scope)
     expect(res.focused).toBe(false)
@@ -252,6 +253,34 @@ describe('one main pop-out window', () => {
     )
     expect(b.update).toHaveBeenCalledTimes(1)
     expect(b.create).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('toolbar click in pop-out mode', () => {
+  it('focuses the one pop-out on every click, also after the service worker restarts', async () => {
+    const b = makeBrowser()
+    await handleToolbarClick(
+      { windowId: 1 },
+      createBackgroundBridgeState({ launchMode: 'window' }),
+      b.scope,
+    )
+    await handleToolbarClick(
+      { windowId: 1 },
+      createBackgroundBridgeState({ launchMode: 'window' }),
+      b.scope,
+    )
+    let restarted: typeof import('./background') | undefined
+    jest.isolateModules(() => {
+      restarted = require('./background')
+    })
+    await restarted!.handleToolbarClick(
+      { windowId: 1 },
+      restarted!.createBackgroundBridgeState({ launchMode: 'window' }),
+      b.scope,
+    )
+    expect(b.create).toHaveBeenCalledTimes(1)
+    expect(b.update).toHaveBeenCalledTimes(2)
+    expect(b.windows.size).toBe(1)
   })
 })
 

@@ -44,7 +44,11 @@ jest.mock('@frank/wallet/chain', () => ({
     chainIdentifier: 'monad-testnet',
     toDisplayAmount: (n: bigint) => n.toString(),
     unit: 'MON',
+    capabilities: { directMessages: true },
   },
+}))
+jest.mock('../../utils/messaging-state', () => ({
+  messagingState: { status: 'ready' },
 }))
 jest.mock('../../stores/settings', () => ({ useSettingsStore: () => ({}) }))
 // Prices: 1 MON = 2 AVU, 1 SOL = 300 AVU; no price for anything else.
@@ -286,6 +290,51 @@ describe('ChatList new conversation action', () => {
     )
     await startConvBtn.trigger('click')
     expect(mockPush).toHaveBeenCalledWith('/new-conversation')
+  })
+})
+
+describe('ChatList toolbar', () => {
+  it('is one bar: search, new group, my QR code and new chat; the filter row stays below it', async () => {
+    mockWidth = 390
+    const wrapper = mount(ChatList, {
+      props: { compact: false },
+      global: {
+        components: {
+          QScrollArea: passthrough,
+          QList: passthrough,
+          QItem: passthrough,
+          QItemSection: passthrough,
+          QItemLabel: passthrough,
+          QSeparator: passthrough,
+          QSpace: passthrough,
+          QBtn: passthrough,
+          QTooltip: passthrough,
+        },
+        stubs: { NewGroupDialog: true },
+        mocks: { $status: { setup: true }, $t: (k: string) => k },
+      },
+    })
+    const bar = wrapper.get('[data-testid="chat-list-toolbar"]')
+    for (const control of [
+      '[data-testid="chat-search-input"]',
+      '[data-testid="new-group-btn"]',
+      '[data-testid="chat-list-qr-btn"]',
+      '[data-testid="start-conversation-btn"]',
+    ])
+      expect(bar.find(control).exists()).toBe(true)
+    // No separate "New Group" row and no separate search row.
+    expect(wrapper.findAll('[data-testid="new-group-btn"]')).toHaveLength(1)
+    expect(wrapper.findAll('[data-testid="chat-search-input"]')).toHaveLength(1)
+    const newGroup = bar.get('[data-testid="new-group-btn"]')
+    expect(newGroup.attributes('aria-label')).toBe('groupChat.newGroup')
+    expect(newGroup.text()).toContain('groupChat.newGroup')
+    await newGroup.trigger('click')
+    expect(
+      wrapper.findComponent({ name: 'NewGroupDialog' }).props('modelValue'),
+    ).toBe(true)
+    // The clear button is still there once something is typed.
+    await bar.get('[data-testid="chat-search-input"]').setValue('hello')
+    expect(bar.find('[data-test="chat-search-clear"]').exists()).toBe(true)
   })
 })
 

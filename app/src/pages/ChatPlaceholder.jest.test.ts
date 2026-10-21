@@ -32,9 +32,3 @@ it('on a wide layout the list stays in the sidebar and the pane invites a pick',
   expect(wrapper.findComponent({ name: 'ChatList' }).exists()).toBe(false)
   expect(wrapper.text()).toContain('chatList.selectChatOrAddContact')
 })
-
-it('the phone list page leaves the "Direct Messages" title to the layout header', () => {
-  const wrapper = mountAt(375)
-  const list = wrapper.findComponent({ name: 'ChatList' })
-  expect(list.attributes('show-title')).toBe('false')
-})

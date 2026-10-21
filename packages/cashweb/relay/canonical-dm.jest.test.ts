@@ -241,19 +241,19 @@ test('openOwnDirectMessage opens outbound message sealed with deterministic ephe
 const blackjackFrames = blackjackCorpus.frames.filter(record => record.frozen)
 const container = (items: Uint8Array[]) =>
   encodeFrame(
-    { typeId: 16, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: 21, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([[0, items]]),
   )
 function contentWithItems(items: Uint8Array[]): Uint8Array {
   const revision = encodeFrame(
-    { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([
       [0, 'frank'],
       [1, items],
     ]),
   )
   return encodeFrame(
-    { typeId: 6, schemaVersion: 2, minReaderVersion: 1 },
+    { typeId: 12, schemaVersion: 2, minReaderVersion: 1 },
     cborMap([
       [0, corpus.network],
       [1, new Uint8Array(16)],
@@ -311,13 +311,13 @@ test.each(blackjackFrames)(
       parent = result.items[1]
     if (direct.kind !== 'parsed' || parent.kind !== 'parsed')
       throw Error('known item retained')
-    expect(direct.typed?.type).toBe(18)
+    expect(direct.typed?.type).toBe(26)
     const group = parent.typed
-    if (group?.type !== 16) throw Error('container not recognized')
+    if (group?.type !== 21) throw Error('container not recognized')
     expect(toHex(group.items[0].frame)).toBe(record.frameHex)
     const child = group.items[0]
     if (child.kind !== 'parsed') throw Error('known child retained')
-    expect(child.typed?.type).toBe(18)
+    expect(child.typed?.type).toBe(26)
     expect(toHex(result.items[3].frame)).toBe(toHex(opaque))
     result.items[0].frame.fill(0)
     expect(toHex(result.items[0].frame)).toBe(record.frameHex)
@@ -368,7 +368,7 @@ test('authenticated type18 shares the 256-item graph cap across containers', () 
       const item = run().items[0]
       if (item.kind !== 'parsed') throw Error('known container retained')
       const group = item.typed
-      if (group?.type !== 16) throw Error('container not recognized')
+      if (group?.type !== 21) throw Error('container not recognized')
       expect(group.items).toHaveLength(255)
     } else {
       expect(run).toThrow('resource')
@@ -392,14 +392,14 @@ test('higher type18 minimum reader preserves exact closed fields with the actual
   const item = result.items[0]
   if (item.kind !== 'parsed') throw Error('supported projection retained')
   expect(item.typed).toEqual({
-    type: 18,
+    type: 26,
     action: 'stand',
     gameId: 'bj-1',
   })
 })
 test('authenticated oversize type18 fails its 4096-byte frame cap', () => {
   const item = encodeFrame(
-    { typeId: 18, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: 26, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([
       [0, 'bj'],
       [1, 3],
@@ -527,24 +527,24 @@ test.each(['deep', 'items'])(
     let item = directMessageText('leaf')
     let items: Uint8Array[]
     if (kind === 'deep') {
-      for (let i = 0; i < 9; i++) item = f(9, cborMap([[0, [item]]]))
+      for (let i = 0; i < 9; i++) item = f(21, cborMap([[0, [item]]]))
       items = [item]
     } else {
       const group = f(
-        9,
+        21,
         cborMap([[0, Array.from({ length: 127 }, () => item)]]),
       )
       items = [group, group, item]
     }
     const revision = f(
-      8,
+      20,
       cborMap([
         [0, 'frank'],
         [1, items],
       ]),
     )
     const content = f(
-      6,
+      12,
       cborMap([
         [0, corpus.network],
         [1, new Uint8Array(16)],
@@ -593,7 +593,7 @@ test.each([
   const parsed = parseFrame(fromHex(v.payload))
   if (
     parsed.kind !== 'parsed' ||
-    parsed.typed?.type !== 5 ||
+    parsed.typed?.type !== 11 ||
     parsed.typed.schemaVersion !== 2
   )
     throw new Error('fixture')
@@ -607,7 +607,7 @@ test.each([
   if (change === 'proof') proof[0] ^= 1
   const payload = encodeFrame(
     {
-      typeId: 5,
+      typeId: 11,
       schemaVersion: change === 'schema' ? 1 : 2,
       minReaderVersion: change === 'min-reader' || change === 'schema' ? 1 : 2,
     },
@@ -805,14 +805,14 @@ test('authenticated aggregate containers retain original ciphertext graph budget
   ]
   const text = directMessageText('aggregate')
   const revision = encodeFrame(
-    { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([
       [0, 'frank'],
       [1, [text]],
     ]),
   )
   const content = encodeFrame(
-    { typeId: 6, schemaVersion: 2, minReaderVersion: 1 },
+    { typeId: 12, schemaVersion: 2, minReaderVersion: 1 },
     cborMap([
       [0, corpus.network],
       [1, new Uint8Array(16)],
@@ -843,7 +843,7 @@ test('authenticated aggregate containers retain original ciphertext graph budget
   const parsed = parseFrame(prepared.payload)
   if (
     parsed.kind !== 'parsed' ||
-    parsed.typed?.type !== 5 ||
+    parsed.typed?.type !== 11 ||
     parsed.typed.schemaVersion !== 2
   )
     throw new Error('fixture')
@@ -854,7 +854,7 @@ test('authenticated aggregate containers retain original ciphertext graph budget
         [1, key],
       ])
   const payload = encodeFrame(
-    { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+    { typeId: 11, schemaVersion: 2, minReaderVersion: 2 },
     cborMap([
       [0, corpus.network],
       [1, a(t.sender.keyBytes)],
@@ -1033,7 +1033,7 @@ test('a message whose caller names no conversation carries none, never the messa
   })
   expect(prepared.conversationId).toBeUndefined()
   const content = parseFrame(prepared.content)
-  if (content.kind !== 'parsed' || content.typed?.type !== 6)
+  if (content.kind !== 'parsed' || content.typed?.type !== 12)
     throw new Error('expected type 6 content')
   expect(content.typed.conversationId).toBeUndefined()
   expect(toHex(content.typed.messageId)).toBe(toHex(messageId))
@@ -1058,14 +1058,14 @@ test('a message whose caller names no conversation carries none, never the messa
 test('a message from a client that sent no conversation ID opens with none', () => {
   // Our own writer always sends one; this is another client's message, sealed by hand.
   const revision = encodeFrame(
-    { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([
       [0, 'frank'],
       [1, [directMessageText('from a foreign client')]],
     ]),
   )
   const foreign = encodeFrame(
-    { typeId: 6, schemaVersion: 2, minReaderVersion: 1 },
+    { typeId: 12, schemaVersion: 2, minReaderVersion: 1 },
     cborMap([
       [0, corpus.network],
       [1, new Uint8Array(16).fill(0x21)],

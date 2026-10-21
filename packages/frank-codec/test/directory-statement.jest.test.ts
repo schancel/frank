@@ -70,7 +70,7 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
     }
 
     return encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
       M(fields),
     )
   }
@@ -120,7 +120,7 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
         const frame = makeRawStatement(handle)
         const parsed = validateFrame(frame, defaultContext({ operation: 'typed' }))
         expect(parsed.kind).toBe('parsed')
-        if (parsed.kind === 'parsed' && parsed.typed?.type === 4) {
+        if (parsed.kind === 'parsed' && parsed.typed?.type === 1) {
           expect(parsed.typed.canonicalUsername).toBe(handle)
         }
       }
@@ -216,7 +216,7 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
 
       const decoded = validateFrame(encoded, defaultContext({ operation: 'typed' }))
       expect(decoded.kind).toBe('parsed')
-      if (decoded.kind === 'parsed' && decoded.typed?.type === 4) {
+      if (decoded.kind === 'parsed' && decoded.typed?.type === 1) {
         expect(decoded.typed.canonicalUsername).toBe(handle)
         expect(decoded.typed.network).toBe('monad-mainnet')
         expect(decoded.typed.revision).toBe(100n)
@@ -235,7 +235,7 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
 
       const decoded = validateFrame(encoded, defaultContext({ operation: 'typed' }))
       expect(decoded.kind).toBe('parsed')
-      if (decoded.kind === 'parsed' && decoded.typed?.type === 4) {
+      if (decoded.kind === 'parsed' && decoded.typed?.type === 1) {
         expect(decoded.typed.canonicalUsername).toBeUndefined()
       }
     })
@@ -290,7 +290,7 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
       expect(result.kind).toBe('parsed')
       if (result.kind === 'parsed' && result.typed?.type === 2) {
         const inner = result.typed.statementFrame.typed
-        if (inner?.type === 4) {
+        if (inner?.type === 1) {
           expect(inner.canonicalUsername).toBe('authenticated-user')
         }
       }

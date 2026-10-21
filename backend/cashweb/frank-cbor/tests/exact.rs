@@ -64,7 +64,7 @@ fn integer_boundaries_round_trip_as_integers() {
 fn timestamp_seconds_and_nanoseconds_stay_exact_in_a_typed_frame() {
     for (seconds, nanos) in [(i64::MIN, 999_999_999u32), (i64::MAX, 999_999_999), (0, 0)] {
         let frame = fr(
-            3,
+            14,
             &cbor_map(vec![
                 (0, CborValue::Text(NET.to_string())),
                 (1, acct1(5)),

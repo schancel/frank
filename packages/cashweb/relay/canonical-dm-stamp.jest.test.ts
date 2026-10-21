@@ -33,10 +33,10 @@ test('shared exact suite1 fixture opens through crypto-box and binds directory/T
   expect(toHex(directory.statementFrame.frame)).toBe(v.statement)
   expect(toHex(directory.statementHash)).toBe(v.t1)
   const result = parseFrame(fromHex(v.delivery))
-  if (result.kind !== 'parsed' || result.typed?.type !== 1)
+  if (result.kind !== 'parsed' || result.typed?.type !== 10)
     throw new Error('delivery')
   const payload = result.typed.payloadFrame
-  if (payload.typed?.type !== 5 || payload.typed.schemaVersion !== 2)
+  if (payload.typed?.type !== 11 || payload.typed.schemaVersion !== 2)
     throw new Error('payload')
   expect(toHex(payload.frame)).toBe(v.payload)
   expect(toHex(recipientPayloadDigest(corpus.network, payload.frame))).toBe(
@@ -52,7 +52,7 @@ test('shared exact suite1 fixture opens through crypto-box and binds directory/T
   if (!opened.ok) throw new Error(opened.error.code)
   expect(toHex(opened.value)).toBe(v.content)
   const decoded = decodeCanonical(opened.value.subarray(9)) as Map<bigint, any>
-  expect(Number(decoded.get(0n))).toBe(6)
+  expect(Number(decoded.get(0n))).toBe(12)
   const badContext = fromHex(v.context)
   badContext[badContext.length - 1] ^= 1
   expect(

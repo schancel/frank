@@ -140,7 +140,7 @@ fn malformed_contexts_are_rejected_only_by_experimental_helper() {
     entry.iter_mut().find(|(k, _)| *k == 4).unwrap().1 = CborValue::Bytes(vec![255]);
     let wire = frank_cbor::encode_frame(
         frank_cbor::EnvelopeFields {
-            type_id: 19,
+            type_id: 24,
             schema_version: 2,
             min_reader_version: 2,
         },

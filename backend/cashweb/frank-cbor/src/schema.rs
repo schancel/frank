@@ -428,12 +428,23 @@ pub(crate) fn check_type_limits(
         }
         TYPE_FORUM_TOPIC_PAGE | TYPE_FORUM_DISCOVERY_PAGE => {
             if too_many(
-                map_field(payload, if type_id == 13 { 4 } else { 2 }),
+                map_field(
+                    payload,
+                    if type_id == TYPE_FORUM_TOPIC_PAGE {
+                        4
+                    } else {
+                        2
+                    },
+                ),
                 MAX_FORUM_ROWS,
             ) {
                 return Err(over("Forum rows"));
             }
-            for key in if type_id == 13 { [5, 7] } else { [3, 5] } {
+            for key in if type_id == TYPE_FORUM_TOPIC_PAGE {
+                [5, 7]
+            } else {
+                [3, 5]
+            } {
                 if let Some(CborValue::Bytes(bytes)) = map_field(payload, key) {
                     if bytes.len() > MAX_FORUM_CURSOR_BYTES {
                         return Err(over("Forum cursor"));
@@ -915,14 +926,19 @@ pub(crate) fn parse_forum_cursor(
     bytes: Vec<u8>,
     path: &str,
 ) -> Result<ForumCursor, CodecError> {
-    let family = u32_in(map_field(value, 1), path, 13, 14)?;
-    let required: &[u64] = if family == 13 {
+    let family = u32_in(
+        map_field(value, 1),
+        path,
+        TYPE_FORUM_TOPIC_PAGE,
+        TYPE_FORUM_DISCOVERY_PAGE,
+    )?;
+    let required: &[u64] = if family == TYPE_FORUM_TOPIC_PAGE {
         &[0, 1, 2, 3, 4, 5, 6, 7]
     } else {
         &[0, 1, 2, 3, 4, 7]
     };
     let m = fields(Some(value), path, required, &[], false, false)?;
-    let position = if family == 13 {
+    let position = if family == TYPE_FORUM_TOPIC_PAGE {
         let last = fields(m.get(4), path, &[0, 1], &[], false, false)?;
         ForumCursorPosition::Topic {
             topic: tstr(m.get(5), path, 1, 512)?,

@@ -244,14 +244,14 @@ const registry = createDefaultMessageItemRegistry(
 function children(frames: Uint8Array[]) {
   const result = validateFrame(
     encodeFrame(
-      { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
       new Map<number, Encodable>([
         [0, 'frank'],
         [1, frames],
       ]),
     ),
   )
-  if (result.kind !== 'parsed' || result.typed?.type !== 8)
+  if (result.kind !== 'parsed' || result.typed?.type !== 20)
     throw new Error('expected revision')
   return result.typed.items
 }
@@ -290,7 +290,7 @@ it.each(['signed', 'exposed', 'settled'] as const)(
         parsed.typeId,
         parsed.schemaVersion,
         parsed.minReaderVersion,
-      ]).toEqual([19, 2, 2])
+      ]).toEqual([24, 2, 2])
       for (const [index, entry] of parsed.typed.transfers.entries()) {
         const row = rows[index]
         const expectedAsset =

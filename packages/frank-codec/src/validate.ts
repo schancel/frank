@@ -33,6 +33,7 @@ import {
   TYPE_FORUM_DISCOVERY_PAGE,
   TYPE_FORUM_OPERATION_STATUS,
   U32_MAX,
+  isAssignedNonItemType,
 } from './constants'
 import {
   ErrorCategory,
@@ -94,14 +95,22 @@ export interface ValidationContext {
 
 /** Types with a version-1 schema in this codec (README E5). */
 export const KNOWN_TYPES: readonly number[] = [
-  TYPE_DIRECT_MESSAGE_DELIVERY,
-  TYPE_DIRECTORY_ATTESTATION,
-  TYPE_MAILBOX_CHECKPOINT,
   TYPE_DIRECTORY_STATEMENT,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_ENCRYPTED_MESSAGE_CONTENT,
-  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
+  TYPE_MAILBOX_CHECKPOINT,
   TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_EMAIL_MESSAGE_ITEM,
+  TYPE_STEALTH_MESSAGE_ITEM,
+  TYPE_CHANNEL_UPDATE,
+  TYPE_BLACKJACK_MESSAGE_ITEM,
+  TYPE_PLUGIN_MESSAGE_ITEM,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
@@ -109,14 +118,6 @@ export const KNOWN_TYPES: readonly number[] = [
   TYPE_FORUM_TOPIC_PAGE,
   TYPE_FORUM_DISCOVERY_PAGE,
   TYPE_FORUM_OPERATION_STATUS,
-  TYPE_CONTAINER_MESSAGE_ITEM,
-  TYPE_TEXT_MESSAGE_ITEM,
-  TYPE_BLACKJACK_MESSAGE_ITEM,
-  TYPE_STEALTH_MESSAGE_ITEM,
-  TYPE_CHANNEL_UPDATE,
-  TYPE_FORWARDING_DELIVERY_ENVELOPE,
-  TYPE_EMAIL_MESSAGE_ITEM,
-  TYPE_PLUGIN_MESSAGE_ITEM,
 ]
 
 export function defaultContext(
@@ -299,7 +300,7 @@ function processFrame(
       location,
     )
   }
-  if (mode.kind === 'open' && env.typeId >= 1 && env.typeId <= 15) {
+  if (mode.kind === 'open' && isAssignedNonItemType(env.typeId)) {
     throw fail(
       'semantic',
       '8.4',
@@ -374,7 +375,7 @@ function processFrame(
     throw fail(
       'unsupported',
       '7',
-      'directory preview requires type-4 schema-4 support',
+      'directory preview requires type-1 schema-4 support',
       location,
     )
   }
@@ -391,7 +392,7 @@ function processFrame(
       location,
     )
   }
-  // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
+  // Suite 1 authenticates the complete schema-2 field set. A future type-11 schema needs an
   // updated authenticated context before this reader may project or retain its extensions.
   if (
     env.typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD &&
@@ -400,7 +401,7 @@ function processFrame(
     throw fail(
       'unsupported',
       '7',
-      `type 5 schema ${env.schemaVersion} requires an updated authenticated context`,
+      `type 11 schema ${env.schemaVersion} requires an updated authenticated context`,
       location,
     )
   }
@@ -412,7 +413,7 @@ function processFrame(
     throw fail(
       'unsupported',
       '7',
-      'type 5 schema 2 requires min_reader_version 2',
+      'type 11 schema 2 requires min_reader_version 2',
       location,
     )
   }
@@ -471,7 +472,7 @@ function processFrame(
   // Stage 9: semantics. Only the root type-2 case consults the prior statement.
   const previewAttestation =
     typed.type === 2 &&
-    typed.statementFrame.typed?.type === 4 &&
+    typed.statementFrame.typed?.type === 1 &&
     typed.statementFrame.typed.preview !== undefined
   if (previewAttestation && sh.ctx.priorDirectoryStatementFrame !== null)
     throw new FrankContextError(
@@ -495,9 +496,9 @@ function processFrame(
 /** Stage 10 for a root frame. Only 10.6 exists in this slice; it applies to a type-2 root. */
 function runStage10(typed: FinalPayload): void {
   if (
-    (typed.type === 4 && typed.preview) ||
+    (typed.type === 1 && typed.preview) ||
     (typed.type === 2 &&
-      typed.statementFrame.typed?.type === 4 &&
+      typed.statementFrame.typed?.type === 1 &&
       typed.statementFrame.typed.preview)
   )
     throw new FrankContextError(
@@ -507,9 +508,9 @@ function runStage10(typed: FinalPayload): void {
     case 2:
       verifyDirectoryAttestation(typed)
       return
-    case 1:
+    case 10:
       throw new FrankContextError(
-        'stages 10.1-10.5 (the type-1 stamp checks) are outside this slice; `full` runs only the type-2 signature verification of stage 10.6',
+        'stages 10.1-10.5 (the type-10 stamp checks) are outside this slice; `full` runs only the type-2 signature verification of stage 10.6',
       )
     default:
   }
@@ -599,7 +600,7 @@ function openChildren(
 ): FinalPayload {
   const P = `${loc}/payload`
   switch (d.type) {
-    case 9:
+    case 40:
       if (d.schemaVersion === 1) return d
       return {
         ...d,
@@ -614,7 +615,7 @@ function openChildren(
           `${P}.3`,
         ),
       }
-    case 12:
+    case 43:
       return {
         ...d,
         postFrame: required(
@@ -625,8 +626,8 @@ function openChildren(
           `${P}.1`,
         ),
       }
-    case 13:
-    case 14: {
+    case 44:
+    case 45: {
       const cursor = (bytes: Uint8Array | undefined, key: number) =>
         bytes === undefined
           ? undefined
@@ -640,7 +641,7 @@ function openChildren(
               bytes,
               `${P}.${key}`,
             )
-      if (d.type === 13)
+      if (d.type === 44)
         return {
           ...d,
           rows: d.rows.map((bytes, i) =>
@@ -655,7 +656,7 @@ function openChildren(
         requestCursor: cursor(d.requestCursor, 5),
       }
     }
-    case 15:
+    case 46:
       return {
         ...d,
         submittedFrame: required(
@@ -666,7 +667,7 @@ function openChildren(
           `${P}.1`,
         ),
       }
-    case 25:
+    case 13:
       return {
         ...d,
         payloadFrame: required(
@@ -677,7 +678,7 @@ function openChildren(
           `${P}.2`,
         ),
       }
-    case 1:
+    case 10:
       return {
         ...d,
         payloadFrame: required(
@@ -699,7 +700,7 @@ function openChildren(
           `${P}.0`,
         ),
       }
-    case 4: {
+    case 1: {
       if (!d.keyTransitions) {
         return { ...d, keyTransitions: undefined }
       }
@@ -717,7 +718,7 @@ function openChildren(
         })),
       }
     }
-    case 6:
+    case 12:
       return {
         ...d,
         revisionFrame: required(
@@ -728,7 +729,7 @@ function openChildren(
           `${P}.2`,
         ),
       }
-    case 10:
+    case 41:
       return {
         ...d,
         postFrame: required(
@@ -739,9 +740,9 @@ function openChildren(
           `${P}.1`,
         ),
       }
-    case 8:
+    case 20:
       return { ...d, items: openItems(d.items, envDepth + 2, sh, `${P}.1`) }
-    case 16:
+    case 21:
       return { ...d, items: openItems(d.items, envDepth + 2, sh, `${P}.0`) }
     default:
       return d
@@ -777,9 +778,9 @@ function resolvePrior(
     }
     throw e
   }
-  if (r.kind !== 'parsed' || r.typed?.type !== 4) {
+  if (r.kind !== 'parsed' || r.typed?.type !== 1) {
     throw new FrankContextError(
-      'the prior directory statement is not a type-4 frame',
+      'the prior directory statement is not a type-1 frame',
     )
   }
   if (r.typed.preview) {

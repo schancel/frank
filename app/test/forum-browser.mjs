@@ -428,9 +428,9 @@ try {
       if(row.method==='PUT'||row.method==='POST'){
         if(row.headers['content-type']!=='application/cbor')throw Error('non-CBOR Content-Type');
         const p=c.validateFrame(new Uint8Array(row.request),c.defaultContext());
-        if(p.kind!=='parsed'||![10,11].includes(p.typeId))throw Error('noncanonical request');
+        if(p.kind!=='parsed'||![41,42].includes(p.typeId))throw Error('noncanonical request');
         seen.add(p.typeId);
-        if(p.typeId===10){
+        if(p.typeId===41){
           const post=p.typed.postFrame;
           if(post.schemaVersion!==2)throw Error('schema-1 post');
           const entry=post.typed.content.entries[0];
@@ -445,20 +445,20 @@ try {
               digest,
             )})throw Error('reply parent/body changed');
           }else throw Error('unexpected fixture post');
-          seen.add(9);
+          seen.add(40);
         }
 
       }
       if(row.contentType?.split(';')[0]!=='application/cbor')throw Error('non-CBOR response');
       const p=c.validateFrame(new Uint8Array(row.response),c.defaultContext());
-      if(p.kind!=='parsed'||![12,13,14,15].includes(p.typeId))throw Error('unexpected canonical response');
+      if(p.kind!=='parsed'||![43,44,45,46].includes(p.typeId))throw Error('unexpected canonical response');
       seen.add(p.typeId);
-      if(p.typeId===15 && p.typed.submittedFrame.typeId===11)directions.add(p.typed.direction);
+      if(p.typeId===46 && p.typed.submittedFrame.typeId===42)directions.add(p.typed.direction);
     }
     if(!directions.has(0)||!directions.has(1))throw Error('missing exact up/down operation statuses');
     return {seen:[...seen].sort((a,b)=>a-b),wireCount:window.__forumWire.length};
   })()`)
-  assert.deepEqual(audit.seen, [9, 10, 11, 12, 13, 14, 15])
+  assert.deepEqual(audit.seen, [40, 41, 42, 43, 44, 45, 46])
   console.log('Canonical normal flow witnesses:', audit)
   await evaluate(`location.hash='#/forum'`)
   await until(
@@ -494,7 +494,7 @@ try {
       const p=c.validateFrame(new Uint8Array(${JSON.stringify([
         ...bytes,
       ])}),c.defaultContext());
-      if(p.kind!=='parsed'||p.typeId!==13)throw Error('fixture requires exact type13');
+      if(p.kind!=='parsed'||p.typeId!==44)throw Error('fixture requires exact type13');
       const payload=p.payload;
       payload.set(3n,18446744073709551615n);
       const magnitude=c.fromHex(${JSON.stringify(
@@ -504,9 +504,9 @@ try {
         const view=c.validateFrame(raw,c.defaultContext());
         view.payload.set(8n,new Map([[0n,${weight < 0n}],[1n,magnitude]]));
         view.payload.set(9n,18446744073709551615n);
-        return c.encodeForumReadFrame(12,view.payload);
+        return c.encodeForumReadFrame(43,view.payload);
       }));
-      return Array.from(c.encodeForumReadFrame(13,payload));
+      return Array.from(c.encodeForumReadFrame(44,payload));
     })()`)
     await call('Fetch.fulfillRequest', {
       requestId: event.params.requestId,
@@ -711,7 +711,7 @@ try {
       const page=c.validateFrame(new Uint8Array(${JSON.stringify([
         ...raw,
       ])}),c.defaultContext());
-      if(page.kind!=='parsed'||page.typeId!==13)throw Error('expected actual first topic page');
+      if(page.kind!=='parsed'||page.typeId!==44)throw Error('expected actual first topic page');
       const rows=page.typed.rows.filter(view=>{
         const title=view.typed.postFrame.typed.content.entries[0].title;
         return title===${JSON.stringify(title)}||title===${JSON.stringify(
@@ -722,17 +722,17 @@ try {
       const encoded=rows.map(view=>{
         view.payload.set(8n,new Map([[0n,false],[1n,c.fromHex('0'.repeat(63)+'7')]]));
         view.payload.set(9n,18446744073709551615n);
-        return c.encodeForumReadFrame(12,view.payload);
+        return c.encodeForumReadFrame(43,view.payload);
       });
       const firstView=rows[0].typed;
-      const cursor=c.encodeForumCursor({family:13,network:page.typed.network,
+      const cursor=c.encodeForumCursor({family:44,network:page.typed.network,
         revision:18446744073709551615n,epoch:page.typed.epoch,incarnation:1n,
         topic:page.typed.topic,since:page.typed.since,
         last:{timestamp:firstView.firstVisible,hash:c.contentHash(firstView.postFrame)}});
       const first=new Map(page.payload),terminal=new Map(page.payload);
       first.set(3n,18446744073709551615n);first.set(4n,[encoded[0]]);first.set(5n,cursor);first.delete(7n);
       terminal.set(3n,18446744073709551615n);terminal.set(4n,[encoded[1]]);terminal.delete(5n);terminal.set(7n,cursor);
-      return {first:Array.from(c.encodeForumReadFrame(13,first)),terminal:Array.from(c.encodeForumReadFrame(13,terminal)),
+      return {first:Array.from(c.encodeForumReadFrame(44,first)),terminal:Array.from(c.encodeForumReadFrame(44,terminal)),
         cursor:c.forumCursorToTransport(cursor),hashes:rows.map(view=>c.toHex(c.contentHash(view.typed.postFrame)))};
     })()`)
     pagingFixture.since = query.get('since')
@@ -801,13 +801,13 @@ try {
       const page=c.validateFrame(new Uint8Array(${JSON.stringify([
         ...raw,
       ])}),c.defaultContext());
-      if(page.kind!=='parsed'||page.typeId!==14||page.typed.nextCursor)throw Error('discovery fixture requires complete type14');
+      if(page.kind!=='parsed'||page.typeId!==45||page.typed.nextCursor)throw Error('discovery fixture requires complete type14');
       const entries=page.payload.get(2n);
       const news=entries.find(entry=>entry.get(0n)==='news');
       if(!news)throw Error('normal discovery omitted signed news posts');
       news.set(1n,18446744073709551615n);
       page.payload.set(1n,18446744073709551615n);
-      return Array.from(c.encodeForumReadFrame(14,page.payload));
+      return Array.from(c.encodeForumReadFrame(45,page.payload));
     })()`)
     await fulfill(event, encoded)
   }

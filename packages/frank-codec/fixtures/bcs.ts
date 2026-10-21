@@ -25,8 +25,8 @@ function child(w: BcsWriter, c: ChildFrame): void {
     return
   }
   const t = c.typed
-  if (t?.type === 17) w.uleb(0).string(t.text)
-  else if (t?.type === 16) {
+  if (t?.type === 22) w.uleb(0).string(t.text)
+  else if (t?.type === 21) {
     w.uleb(1).uleb(t.items.length)
     for (const i of t.items) child(w, i)
   } else throw new Error('unexpected message item')
@@ -37,7 +37,7 @@ export function toBcs(p: ParsedFrame): Uint8Array {
   if (!t) throw new Error('typed projection required')
   const w = new BcsWriter()
   switch (t.type) {
-    case 1:
+    case 10:
       w.string(t.network)
       acct(w, t.destination)
       w.bytes(toBcs(t.payloadFrame)).fixed(t.payloadDigest)
@@ -55,19 +55,19 @@ export function toBcs(p: ParsedFrame): Uint8Array {
           .u32(m.childIndex)
       }
       return w.toBytes()
-    case 5:
+    case 11:
       w.string(t.network)
       acct(w, t.sender)
       acct(w, t.recipient)
       w.u16(t.suite).bytes(t.nonce).bytes(t.ciphertext)
       return w.toBytes()
-    case 6:
+    case 12:
       w.string(t.network)
         .fixed(t.messageId)
         .bytes(toBcs(t.revisionFrame))
         .fixed(t.contentDigest)
       return w.toBytes()
-    case 8:
+    case 20:
       w.uleb(t.items.length)
       for (const i of t.items) child(w, i)
       return w.toBytes()
@@ -80,7 +80,7 @@ export function toBcs(p: ParsedFrame): Uint8Array {
         w.bytes(s.signature)
       }
       return w.toBytes()
-    case 4:
+    case 1:
       w.string(t.network)
       acct(w, t.subject)
       w.u64(t.revision)
@@ -101,7 +101,7 @@ export function toBcs(p: ParsedFrame): Uint8Array {
       if (t.recoveryAuthorities)
         throw new Error('authorities are not part of the fixtures')
       return w.toBytes()
-    case 3:
+    case 14:
       w.string(t.network)
       acct(w, t.owner)
       w.fixed(t.checkpointId)

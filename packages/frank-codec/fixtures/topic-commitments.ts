@@ -16,7 +16,7 @@ function t1(frame: Uint8Array): Uint8Array {
     operation: 'typed',
     routeByteLimit: 8_388_617,
     readerVersion: 1,
-    supportedSchemas: [9, 10, 11].map(typeId => ({ typeId, schemaVersion: 1 })),
+    supportedSchemas: [40, 41, 42].map(typeId => ({ typeId, schemaVersion: 1 })),
     opaqueRetentionAllowed: false,
     priorDirectoryStatementFrame: null,
   })

@@ -139,7 +139,7 @@ describe('committed vector manifest', () => {
         m =>
           (find(m, 'worked-type17-hi').validation_context.payment_policy = {}),
       ),
-    ).toContainEqual(expect.stringContaining('non-type-1 root'))
+    ).toContainEqual(expect.stringContaining('non-type-10 root'))
     expect(
       tweak(
         m =>
@@ -176,7 +176,7 @@ describe('committed vector manifest', () => {
         ).frame_hex
       }),
     ).toContainEqual(
-      expect.stringContaining('prior statement is not a type-4 frame'),
+      expect.stringContaining('prior statement is not a type-1 frame'),
     )
   })
 

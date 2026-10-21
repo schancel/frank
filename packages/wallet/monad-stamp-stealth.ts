@@ -214,7 +214,7 @@ export function inspectCanonicalPreparedEnvelope(
   const parsed = validateFrame(payload, defaultContext())
   if (
     parsed.kind !== 'parsed' ||
-    parsed.typed?.type !== 5 ||
+    parsed.typed?.type !== 11 ||
     parsed.typed.schemaVersion !== 2 ||
     parsed.typed.suite !== 1
   )

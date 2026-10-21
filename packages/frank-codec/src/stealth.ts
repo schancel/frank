@@ -132,7 +132,7 @@ export function isStealthMessageItemFrame(
 ): frame is ParsedFrame & { typed: StealthMessageItem } {
   return (
     frame.typeId === TYPE_STEALTH_MESSAGE_ITEM &&
-    frame.typed?.type === 19 &&
+    frame.typed?.type === 24 &&
     !('transfers' in frame.typed)
   )
 }

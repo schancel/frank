@@ -150,7 +150,7 @@ pub fn encode_blackjack_item(item: &BlackjackItem) -> Result<Vec<u8>, Error> {
     let payload = cbor_map(fields);
     let bytes = encode_frame(
         EnvelopeFields {
-            type_id: 18,
+            type_id: 26,
             schema_version: 1,
             min_reader_version: 1,
         },
@@ -345,7 +345,7 @@ pub fn encode_blackjack_hand_item(item: &BlackjackHandItem) -> Result<Vec<u8>, E
     let payload = cbor_map(fields);
     let bytes = encode_frame(
         EnvelopeFields {
-            type_id: 18,
+            type_id: 26,
             schema_version: 2,
             min_reader_version: 2,
         },
@@ -501,7 +501,7 @@ pub fn encode_blackjack_hand_v3_item(item: &BlackjackHandV3Item) -> Result<Vec<u
     let payload = cbor_map(fields);
     let bytes = encode_frame(
         EnvelopeFields {
-            type_id: 18,
+            type_id: 26,
             schema_version: 3,
             min_reader_version: 2,
         },

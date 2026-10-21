@@ -1146,11 +1146,11 @@
     },
     {
       "path": "packages/wallet/monad-identity.ts",
-      "sha256": "13725223295396025d081a6d2516ac9df67218af0a5843f3d92b259ae0305d13"
+      "sha256": "4aea5397b0a40c8cbc09d9f422c3f9804a8fc81194de6bfa53ed340019f59896"
     },
     {
       "path": "packages/wallet/monad-wallet-material.ts",
-      "sha256": "b0efda20337a77067f7ba0a2162d5890a801ca0da046cdffc0f7e938029b5eb3"
+      "sha256": "771e698fe0b44ccbafecedd5803e458b512041ca708d809a041d2f42483b8cba"
     },
     {
       "path": "packages/wallet/monad-hd-keyring.ts",

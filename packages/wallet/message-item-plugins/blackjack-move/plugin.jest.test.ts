@@ -252,7 +252,7 @@ describe('explicit canonical blackjack boundary', () => {
 
   test('compatible future projection retains exact original frame without reencoding', () => {
     const future = encodeFrame(
-      { typeId: 18, schemaVersion: 2, minReaderVersion: 1 },
+      { typeId: 26, schemaVersion: 2, minReaderVersion: 1 },
       new Map<number, unknown>([
         [0, 'g'],
         [1, 3],
@@ -268,7 +268,7 @@ describe('explicit canonical blackjack boundary', () => {
     const p = provider()
     const text = parsed(
       encodeFrame(
-        { typeId: 17, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: 22, schemaVersion: 1, minReaderVersion: 1 },
         new Map([[0, 'hi']]),
       ),
     )
@@ -314,9 +314,9 @@ describe('explicit canonical blackjack boundary', () => {
 
   test('validated nested welcome/text children preserve parent order and bytes', () => {
     const welcome = encodeCanonicalBlackjackItem(canonicalItems[8])
-    const text = encodeFrame({ typeId: 17, schemaVersion: 1, minReaderVersion: 1 }, new Map([[0, 'hi']]))
-    const container = parsed(encodeFrame({ typeId: 16, schemaVersion: 1, minReaderVersion: 1 }, new Map([[0, [welcome, text]]])))
-    if (container.typed?.type !== 16) throw new Error('expected container')
+    const text = encodeFrame({ typeId: 22, schemaVersion: 1, minReaderVersion: 1 }, new Map([[0, 'hi']]))
+    const container = parsed(encodeFrame({ typeId: 21, schemaVersion: 1, minReaderVersion: 1 }, new Map([[0, [welcome, text]]])))
+    if (container.typed?.type !== 21) throw new Error('expected container')
     const [first, second] = container.typed.items
     if (first.kind !== 'parsed') throw new Error('expected parsed welcome')
     expect(projectCanonicalBlackjackItem(first).frame).toEqual(welcome)

@@ -10,7 +10,7 @@ use frank_cbor::{
     MAX_FORWARDING_DELIVERY_FRAME_BYTES, TYPE_FORWARDING_DELIVERY,
 };
 
-const TYPE_DIRECT_MESSAGE: u32 = 1;
+const TYPE_DIRECT_MESSAGE: u32 = 10;
 
 use common::{bytes_of, fr, int, stamp_account, type5_frame, NET, T3C_STAMP_KEY};
 

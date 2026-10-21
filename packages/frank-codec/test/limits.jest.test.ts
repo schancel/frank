@@ -165,20 +165,20 @@ describe('global limits', () => {
   })
 
   it('accepts a 262,144-byte text and rejects 262,145 as resource, not malformed', () => {
-    const ok = fr(17, M([[0, 'a'.repeat(262_144)]]))
+    const ok = fr(22, M([[0, 'a'.repeat(262_144)]]))
     const t = (validateFrame(ok, defaultContext()) as ParsedFrame).typed
-    expect(t).toMatchObject({ type: 17 })
-    expect(outcome(fr(17, M([[0, 'a'.repeat(262_145)]])))).toBe('resource@7')
+    expect(t).toMatchObject({ type: 22 })
+    expect(outcome(fr(22, M([[0, 'a'.repeat(262_145)]])))).toBe('resource@7')
     // Text size counts UTF-8 bytes, not characters.
-    expect(outcome(fr(17, M([[0, '€'.repeat(87_381)]])))).toBe('parsed') // 262,143 bytes
-    expect(outcome(fr(17, M([[0, '€'.repeat(87_382)]])))).toBe('resource@7') // 262,146 bytes
+    expect(outcome(fr(22, M([[0, '€'.repeat(87_381)]])))).toBe('parsed') // 262,143 bytes
+    expect(outcome(fr(22, M([[0, '€'.repeat(87_382)]])))).toBe('resource@7') // 262,146 bytes
   })
 })
 
 describe('type-specific limits (R2-R4)', () => {
   it('bounds the ciphertext at 524,288 bytes (resource at 8.1)', () => {
     const p = (n: number) =>
-      fr(5, new Map([...type5Payload(), [5, new Uint8Array(n)]]))
+      fr(11, new Map([...type5Payload(), [5, new Uint8Array(n)]]))
     expect(outcome(p(524_288))).toBe('parsed')
     expect(outcome(p(524_289))).toBe('resource@8.1')
   })
@@ -186,7 +186,7 @@ describe('type-specific limits (R2-R4)', () => {
   it('classifies schema-1 nonce length before applying schema-2 envelope limits', () => {
     const legacy = new Map(type5Payload())
     legacy.set(4, new Uint8Array(524_377))
-    expect(outcome(fr(5, legacy, 1, 1))).toBe('schema@8.2')
+    expect(outcome(fr(11, legacy, 1, 1))).toBe('schema@8.2')
 
     const production = new Map<number, Encodable>([
       [0, NET],
@@ -198,17 +198,17 @@ describe('type-specific limits (R2-R4)', () => {
       [6, T3C.shared],
       [7, T3C.proof],
     ])
-    expect(outcome(fr(5, production, 2, 2))).toBe('resource@8.1')
+    expect(outcome(fr(11, production, 2, 2))).toBe('resource@8.1')
   })
 
-  /** A newer type-1 root (schema 3) projected through the reader's schema 2 with one padding field. */
+  /** A newer type-10 root (schema 3) projected through the reader's schema 2 with one padding field. */
   const paddedDelivery = (pad: number): Uint8Array => {
     const payload = deliveryPayload({ payments: 2 })
     payload.set(7, new Uint8Array(pad))
-    return fr(1, payload, 3, 1)
+    return fr(10, payload, 3, 1)
   }
 
-  it('bounds a type-1 frame at 1 MiB (R2) using the root frame length', () => {
+  it('bounds a type-10 frame at 1 MiB (R2) using the root frame length', () => {
     // Find the pad making the delivery exactly 1,048,576 bytes; length grows 1:1 with the pad.
     let pad = 1_040_000
     pad += 1_048_576 - paddedDelivery(pad).length
@@ -223,7 +223,7 @@ describe('type-specific limits (R2-R4)', () => {
   it('bounds a type-2 frame at 256 KiB (R3)', () => {
     const stmt = (pad: number) =>
       fr(
-        4,
+        1,
         new Map<number, Encodable>([
           ...statementPayload(),
           [9, new Uint8Array(pad)],
@@ -234,12 +234,12 @@ describe('type-specific limits (R2-R4)', () => {
     const att = (pad: number) => attestationFrame(stmt(pad), [sig(acct2(1))])
     let pad = 260_000
     pad += 262_144 - att(pad).length
-    // A reader whose highest type-4 schema is 2 keeps the byte-string pad as a retained
+    // A reader whose highest type-1 schema is 2 keeps the byte-string pad as a retained
     // V6.3 field-9 value; a schema-3 reader would type it and reject the shape.
     const opts = {
       priorDirectoryStatementFrame: null as Uint8Array | null,
       supportedSchemas: defaultContext().supportedSchemas.map(s =>
-        s.typeId === 4 ? { ...s, schemaVersion: 2 } : s,
+        s.typeId === 1 ? { ...s, schemaVersion: 2 } : s,
       ),
     }
     expect(att(pad).length).toBe(262_144)
@@ -262,7 +262,7 @@ describe('type-specific limits (R2-R4)', () => {
       section(i, 1, new Uint8Array(0)),
     )
     const cp = fr(
-      3,
+      14,
       M([
         [0, NET],
         [1, acct1(5)],
@@ -285,11 +285,11 @@ describe('type-specific limits (R2-R4)', () => {
     expect(r.kind).toBe('parsed')
     expect(contentHash(r as ParsedFrame)).toHaveLength(32)
     const t = (r as ParsedFrame).typed
-    if (t?.type !== 3) throw new Error('type 3 expected')
+    if (t?.type !== 14) throw new Error('type 14 expected')
     expect(t.facts).toHaveLength(4096)
     expect(t.sections).toHaveLength(4096)
     // One more fact is a resource error at 8.1.
-    const over = fr(3, M([[4, Array.from({ length: 4097 }, () => M([]))]]))
+    const over = fr(14, M([[4, Array.from({ length: 4097 }, () => M([]))]]))
     expect(outcome(over)).toBe('resource@8.1')
   })
 })

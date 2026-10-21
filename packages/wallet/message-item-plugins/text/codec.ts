@@ -1,5 +1,5 @@
 /**
- * A text item is the canonical type-17 frame, written by the same function the canonical direct
+ * A text item is the canonical type-22 frame, written by the same function the canonical direct
  * message path uses today, so the bytes are identical.
  */
 import { directMessageText } from '@frank/cashweb/relay/canonical-dm'
@@ -20,7 +20,7 @@ export function decodeTextItem(
   context: MessageItemDecodeContext,
 ): TextItem {
   const parsed = openItemFrame('text', bytes, context)
-  if (parsed.typed?.type !== 17)
+  if (parsed.typed?.type !== 22)
     throw new MessageItemDecodeError('text', 'not a text item frame')
   return { type: 'text', text: parsed.typed.text }
 }

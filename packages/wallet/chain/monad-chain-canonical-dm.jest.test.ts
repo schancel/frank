@@ -772,10 +772,10 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(request.identity.payload_hash).toBe(sent.payloadDigest)
     expect(created).toEqual([sent.payloadDigest])
     const delivery = parseFrame(request.parts.delivery)
-    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10)
       throw new Error('type1 delivery expected')
     const payload = delivery.typed.payloadFrame
-    expect(payload.typed?.type).toBe(5)
+    expect(payload.typed?.type).toBe(11)
     expect(payload.schemaVersion).toBe(2)
     expect(toHex(recipientPayloadDigest('monad-testnet', payload.frame))).toBe(
       sent.payloadDigest,
@@ -1714,7 +1714,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         expect(request.parts.transactions).toEqual([])
         expect(request.identity.payload_hash).toBe(sent.payloadDigest)
         const delivery = parseFrame(request.parts.delivery)
-        if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+        if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10)
           throw new Error('not a delivery')
         expect(delivery.schemaVersion).toBe(2)
         expect(delivery.minReaderVersion).toBe(1)
@@ -3694,7 +3694,7 @@ describe('two typed wallets on the open directory', () => {
     expect(recovered).toHaveLength(1)
     expect(recovered[0].items).toEqual(text('recover original'))
     const parsed = parseFrame(original.delivery)
-    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 1) throw new Error('fixture')
+    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 10) throw new Error('fixture')
     expect(recovered[0].payloadDigest).toBe(toHex(parsed.typed.payloadDigest))
     expect(recovered[0].stampPayments?.map(payment => payment.txHash)).toEqual(
       parsed.typed.payments.map(payment => '0x' + toHex(payment.transactionId)),
@@ -3959,7 +3959,7 @@ describe('two typed wallets on the open directory', () => {
     const unpaid = {
       ...paid,
       delivery: encodeFrame(
-        { typeId: 1, schemaVersion: 2, minReaderVersion: 1 },
+        { typeId: 10, schemaVersion: 2, minReaderVersion: 1 },
         payload,
       ),
       submissionIdentity: 'cd'.repeat(32),
@@ -4008,14 +4008,14 @@ describe('two typed wallets on the open directory', () => {
     // ciphertext is not what the key holders sealed, so it cannot be opened now or later.
     const original = inboxRecord(0, 5)
     const delivery = parseFrame(original.delivery)
-    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10)
       throw new Error('fixture')
     const sealed = delivery.typed.payloadFrame
     if (!(sealed.payload instanceof Map)) throw new Error('fixture')
     const box = new Uint8Array(sealed.payload.get(4n) as Uint8Array)
     box[box.length - 1] ^= 1
     const forgedPayload = encodeFrame(
-      { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+      { typeId: 11, schemaVersion: 2, minReaderVersion: 2 },
       new Map(sealed.payload).set(4n, box),
     )
     const forgedDigest = recipientPayloadDigest(
@@ -4025,7 +4025,7 @@ describe('two typed wallets on the open directory', () => {
     const forged = {
       ...original,
       delivery: encodeFrame(
-        { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: 10, schemaVersion: 1, minReaderVersion: 1 },
         new Map(delivery.payload as Map<bigint, FrankValue>)
           .set(2n, forgedPayload)
           .set(3n, forgedDigest),
@@ -4072,7 +4072,7 @@ describe('two typed wallets on the open directory', () => {
       }
       const original = inboxRecord(1, 7)
       const delivered = parseFrame(original.delivery)
-      if (delivered.kind !== 'parsed' || delivered.typed?.type !== 1)
+      if (delivered.kind !== 'parsed' || delivered.typed?.type !== 10)
         throw new Error('fixture')
       const records: ServedRecord[] = [
         inboxRecord(0, 5),

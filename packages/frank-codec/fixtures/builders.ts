@@ -55,15 +55,15 @@ export const ts = (seconds: bigint | number, nanos: number): Fields =>
   ])
 
 /**
- * A frame around `payload`. Type 4 is written at `schema_version` 2 with `min_reader_version` 2
+ * A frame around `payload`. Type 1 is written at `schema_version` 2 with `min_reader_version` 2
  * by default, because its stamp key (field 8) is required from schema 2 (README S10a.1); every
  * other type is version 1.
  */
 export const fr = (
   typeId: number,
   payload: Encodable,
-  schema = typeId === 4 ? 2 : 1,
-  minReader = typeId === 4 ? 2 : 1,
+  schema = typeId === 1 ? 2 : 1,
+  minReader = typeId === 1 ? 2 : 1,
 ): Uint8Array =>
   encodeFrame(
     { typeId, schemaVersion: schema, minReaderVersion: minReader },
@@ -125,7 +125,7 @@ export function envBody(
 /** A well-formed frame whose payload item is the given raw (possibly hostile) bytes. */
 export const framePayload = (
   payload: Uint8Array | string,
-  typeId = 17,
+  typeId = 22,
   schema = 1,
   min = 1,
 ): Uint8Array =>
@@ -137,12 +137,12 @@ export const framePayload = (
   )
 
 // ---------------------------------------------------------------------------------------------
-// Message items (types 16, 17, unknown)
+// Message items (types 21, 22, unknown)
 // ---------------------------------------------------------------------------------------------
 
-export const textItem = (s = 'hello'): Uint8Array => fr(17, M([[0, s]]))
+export const textItem = (s = 'hello'): Uint8Array => fr(22, M([[0, s]]))
 export const containerItem = (children: Uint8Array[]): Uint8Array =>
-  fr(16, M([[0, children]]))
+  fr(21, M([[0, children]]))
 export const UNKNOWN_TYPE = 0xffff0001
 export const unknownItem = (n = 1): Uint8Array =>
   fr(UNKNOWN_TYPE, M([[0, `future item ${n}`]]))
@@ -152,9 +152,9 @@ export const revision8 = (items: Uint8Array[]): Fields =>
     [1, items],
   ])
 
-/** The README section 1 worked example: a type-17 item `{0: "hi"}` (23 bytes). */
+/** The README section 1 worked example: a type-22 item `{0: "hi"}` (23 bytes). */
 export const WORKED_TEXT_HI = hex(
-  '46524e4b010000000e a4 0011 0101 0201 0345 a1 00 62 6869',
+  '46524e4b010000000e a4 0016 0101 0201 0345 a1 00 62 6869',
 )
 /** The README section 1 retention example: `0xffff0001`, payload `a0`. */
 export const WORKED_RETAINED = hex(
@@ -162,10 +162,10 @@ export const WORKED_RETAINED = hex(
 )
 
 // ---------------------------------------------------------------------------------------------
-// Direct messages (types 1, 5, 6, 8)
+// Direct messages (types 10, 11, 12, 20)
 // ---------------------------------------------------------------------------------------------
 
-/** The nested, recursive type-8 revision used by the direct-message fixture. */
+/** The nested, recursive type-20 revision used by the direct-message fixture. */
 export function nestedItems(): Uint8Array[] {
   return [
     textItem('hello from the browser codec'),
@@ -178,7 +178,7 @@ export function nestedItems(): Uint8Array[] {
 }
 
 export const rev8Frame = (items = nestedItems()): Uint8Array =>
-  fr(8, revision8(items))
+  fr(20, revision8(items))
 
 export const DEFAULT_CONVERSATION_ID = bytesOf(16, 8)
 
@@ -201,12 +201,12 @@ export function type6Frame(
   if (tokenTransfer !== undefined) {
     entries.push([6, encodeTokenTransferMap(tokenTransfer)])
   }
-  return fr(6, M(entries))
+  return fr(12, M(entries))
 }
 
 /**
  * README T3c worked example (network `monad`): `P'`, `E`, `X` and the DLEQ proof `c || s`.
- * Real curve points and a real proof, so a type-5 frame built from them passes the T3b encoding
+ * Real curve points and a real proof, so a type-11 frame built from them passes the T3b encoding
  * rules. The typed fixtures use a different network tag, so the proof is not verifiable there;
  * stage 10 is a later step and typed frames never claim it.
  */
@@ -249,7 +249,7 @@ export function type5Payload(
     [2, o.recipient ?? acct1(3)],
     [3, o.suite ?? 65535],
     [4, bytesOf(24, 4)],
-    // Proof suite 65535: the ciphertext is exactly the decrypted type-6 frame (README S2c).
+    // Proof suite 65535: the ciphertext is exactly the decrypted type-12 frame (README S2c).
     [5, type6Frame()],
     [6, o.e ?? T3C.ephemeral],
     [7, o.x ?? T3C.shared],
@@ -259,7 +259,7 @@ export function type5Payload(
 
 export const type5Frame = (
   o?: Parameters<typeof type5Payload>[0],
-): Uint8Array => fr(5, type5Payload(o))
+): Uint8Array => fr(11, type5Payload(o))
 
 export interface PaymentOpts {
   index: number
@@ -316,12 +316,12 @@ export function deliveryPayload(
 
 export const deliveryFrame = (
   o?: Parameters<typeof deliveryPayload>[0],
-): Uint8Array => fr(1, deliveryPayload(o))
+): Uint8Array => fr(10, deliveryPayload(o))
 
 export { recipientPayloadDigest }
 
 // ---------------------------------------------------------------------------------------------
-// Topic events (types 9, 10, 11)
+// Topic events (types 40, 41, 42)
 // ---------------------------------------------------------------------------------------------
 
 export function topicPostPayload(
@@ -343,7 +343,7 @@ export function topicPostPayload(
 
 export const topicPostFrame = (
   o?: Parameters<typeof topicPostPayload>[0],
-): Uint8Array => fr(9, topicPostPayload(o))
+): Uint8Array => fr(40, topicPostPayload(o))
 
 /** Filler for the raw signed chain transaction: the codec never opens it (README T8). */
 export const burnTx = (seed = 31, length = 110): Uint8Array =>
@@ -361,7 +361,7 @@ export function topicSubmissionPayload(
 
 export const topicSubmissionFrame = (
   o?: Parameters<typeof topicSubmissionPayload>[0],
-): Uint8Array => fr(10, topicSubmissionPayload(o))
+): Uint8Array => fr(41, topicSubmissionPayload(o))
 
 export function topicVotePayload(
   o: Partial<{ net: string; target: Uint8Array; burnTx: Uint8Array }> = {},
@@ -375,10 +375,10 @@ export function topicVotePayload(
 
 export const topicVoteFrame = (
   o?: Parameters<typeof topicVotePayload>[0],
-): Uint8Array => fr(11, topicVotePayload(o))
+): Uint8Array => fr(42, topicVotePayload(o))
 
 // ---------------------------------------------------------------------------------------------
-// Directory (types 2, 4, 7)
+// Directory (types 1, 2, 3)
 // ---------------------------------------------------------------------------------------------
 
 export function relay(
@@ -424,7 +424,7 @@ export function statementPayload(
 
 export const statementFrame = (
   o?: Parameters<typeof statementPayload>[0],
-): Uint8Array => fr(4, statementPayload(o))
+): Uint8Array => fr(1, statementPayload(o))
 
 export function sig(signer: Fields, seed = 1, algorithm = 16): Fields {
   return M([
@@ -456,7 +456,7 @@ export function transitionStatement(
   }> = {},
 ): Uint8Array {
   return fr(
-    7,
+    3,
     M([
       [0, o.net ?? NET],
       [1, o.subject ?? acct2(1)],
@@ -480,7 +480,7 @@ export function transition(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Checkpoints (type 3)
+// Checkpoints (type 14)
 // ---------------------------------------------------------------------------------------------
 
 export function fact(
@@ -539,7 +539,7 @@ export function checkpointPayload(
 
 export const checkpointFrame = (
   o?: Parameters<typeof checkpointPayload>[0],
-): Uint8Array => fr(3, checkpointPayload(o))
+): Uint8Array => fr(14, checkpointPayload(o))
 
 export { commonTranscript }
 

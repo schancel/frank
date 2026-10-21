@@ -64,7 +64,7 @@ describe('signed topic post author verification', () => {
     if (parsed.kind !== 'parsed') return
 
     const post = parsed.typed as any
-    expect(post.type).toBe(9)
+    expect(post.type).toBe(40)
     expect(post.from).toBeDefined()
     expect(post.signature).toBeDefined()
 

@@ -21,22 +21,22 @@ function failure(f: () => unknown): FrankCodecError {
 }
 
 describe('README section 1 worked examples', () => {
-  it('encodes the 23-byte type-17 frame exactly', () => {
+  it('encodes the 23-byte type-22 frame exactly', () => {
     const f = encodeFrame(
-      { typeId: 17, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 22, schemaVersion: 1, minReaderVersion: 1 },
       M([[0, 'hi']]),
     )
     expect(f.length).toBe(23)
-    expect(toHex(f)).toBe('46524e4b010000000ea40011010102010345a100626869')
+    expect(toHex(f)).toBe('46524e4b010000000ea40016010102010345a100626869')
     expect(f).toEqual(WORKED_TEXT_HI)
   })
 
-  it('parses the type-17 frame and exposes its exact bytes', () => {
+  it('parses the type-22 frame and exposes its exact bytes', () => {
     const r = parseFrame(WORKED_TEXT_HI)
     expect(r.kind).toBe('parsed')
     if (r.kind !== 'parsed') return
-    expect(r.typeId).toBe(17)
-    expect(r.typed).toMatchObject({ type: 17, text: 'hi' })
+    expect(r.typeId).toBe(22)
+    expect(r.typed).toMatchObject({ type: 22, text: 'hi' })
     expect(r.frame).toEqual(WORKED_TEXT_HI)
     expect(toHex(contentHash(r))).toMatch(/^[0-9a-f]{64}$/)
   })

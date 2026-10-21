@@ -204,6 +204,49 @@ describe('journal-backed inbound Frank send', () => {
     expect(ledger.getBalance(SENDER)).toBe(0);
   });
 
+  it('credits and releases only the held mail a purchase was made for (BOT-8)', async () => {
+    const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    const daveRaw = Buffer.from(
+      `From: Dave <dave@mail.example>\r\nTo: ${RECIPIENT}@gw.example\r\nMessage-ID: <mail-2@mail.example>\r\nSubject: Other\r\n\r\nNot paid for.`,
+      'utf8'
+    );
+    expect(admit(sender)).toEqual({ kind: 'held' });
+    expect(sender.admit(
+      { email: parseRawRfc822(daveRaw), verifiedTransportId: 'resend:mail-2', authenticatedSenderEmail: 'dave@mail.example' },
+      RECIPIENT,
+      1000n
+    )).toEqual({ kind: 'held' });
+    // Dave has credit too, but this purchase is not for his mail.
+    ledger.addCredits('dave@mail.example', 1);
+    const carolKey = mailKey(RAW);
+
+    const purchase = {
+      providerTxId: 'evt_paid_1',
+      provider: 'stripe',
+      credits: 5,
+      referenceId: carolKey,
+      payerEmail: 'someone-else@typed.example',
+    };
+    expect(await sender.applyHeldMailPurchase(purchase)).toEqual({ creditedEmail: SENDER, released: true });
+    expect(ledger.getBalance(SENDER)).toBe(4);
+    expect(ledger.getBalance('someone-else@typed.example')).toBe(0);
+    expect(journal.findInboundEmail(RECIPIENT, carolKey)?.disposition).toBe('relay');
+    expect(journal.findInboundEmail(RECIPIENT, mailKey(daveRaw))?.disposition).toBe('held');
+    expect(ledger.getBalance('dave@mail.example')).toBe(1);
+    expect(journal.listUnfinishedFrankSends()).toHaveLength(1);
+
+    // Stripe redelivers the same event: no second credit, no second slot.
+    expect(await sender.applyHeldMailPurchase(purchase)).toEqual({ creditedEmail: SENDER, released: false });
+    expect(ledger.getBalance(SENDER)).toBe(4);
+    expect(journal.listUnfinishedFrankSends()).toHaveLength(1);
+
+    // A purchase with no held mail credits the payer's own email.
+    expect(await sender.applyHeldMailPurchase({
+      providerTxId: 'evt_paid_2', provider: 'stripe', credits: 1, payerEmail: 'Payer@Typed.example',
+    })).toEqual({ creditedEmail: 'payer@typed.example', released: false });
+    expect(ledger.getBalance('payer@typed.example')).toBe(1);
+  });
+
   it('never releases an expired held alias or consumes its later credit', async () => {
     const conversationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     const verified = { email: parseRawRfc822(RAW), verifiedTransportId: 'resend:mail-1', authenticatedSenderEmail: SENDER };

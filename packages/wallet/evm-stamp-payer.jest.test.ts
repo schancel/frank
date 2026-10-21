@@ -666,6 +666,26 @@ describe('read-only stamp affordability', () => {
     ).toBe('insufficient')
   })
 
+  it('throttles repeated insufficient quotes but a real payment discovers a new deposit immediately', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(10_000)
+    try {
+      const f = await make()
+      expect((await f.payer.quote({ stampValueWei: MON })).status).toBe('insufficient')
+      const reads = f.node.calls.filter(call => call.startsWith('count:')).length
+      await f.payer.quote({ stampValueWei: MON })
+      expect(f.node.calls.filter(call => call.startsWith('count:'))).toHaveLength(reads)
+      f.node.balances.set(at(main), 2n * MON)
+      const claim = await f.payer.claim({ holder: 'deposit', stampValueWei: MON })
+      expect(claim.accounts[0]).toMatchObject({ address: at(main), nonce: 0 })
+      const readsBeforeExpiry = f.node.calls.filter(call => call.startsWith('count:')).length
+      now.mockReturnValue(15_000)
+      await f.payer.quote({ stampValueWei: 10n * MON })
+      expect(f.node.calls.filter(call => call.startsWith('count:')).length).toBeGreaterThan(readsBeforeExpiry)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
   it('a free message costs nothing and reads nothing', async () => {
     const f = await make()
     expect(await f.payer.quote({ stampValueWei: 0n })).toMatchObject({

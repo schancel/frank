@@ -1298,8 +1298,8 @@ crash recovery or financial journaling (Packet C).
 
 B independently starts a challenge and public `closeAfterChallenge` refunds `[M,0]` to B/J. The
 fallback can settle at opening timestamp plus challenge duration D if B challenges immediately.
-Cooperative close remains valid after expiry until fallback settles; CLTV likewise enables refund
-without expiring XEC success. The pure policy therefore requires strictly
+Cooperative close and checkpoint are refused once the challenge window has expired; only
+`closeAfterChallenge` settles. CLTV, by contrast, enables refund without expiring XEC success. The pure policy therefore requires strictly
 `openingTimestamp + D > XEC_refund_final_bound + EVM_claim_response_margin + cross_clock_margin`.
 The XEC bound includes MTP lag, watcher downtime, inclusion and accepted reorg/finality depth.
 B's honest reveal cutoff precedes XEC refund maturity by its claim inclusion/finality margin.

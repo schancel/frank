@@ -67,6 +67,43 @@ it('stops a rate-limited inventory sweep, shares cooldown, and recovers without 
   expect(f.sync.isDirty(f.sources[0]!.account)).toBe(false)
 })
 
+it('stops scheduling when a sibling reports429 after an earlier generic rejection, while another read drains', async () => {
+  const f = await fixture()
+  const firstAccount = f.sources[0]!.account
+  f.sync.markDirty(firstAccount)
+  let release!: () => void
+  const gate = new Promise<void>(resolve => {
+    release = resolve
+  })
+  f.provider.getTransactionCount.mockImplementation(async (account, block) => {
+    if (account !== firstAccount) return 0
+    if (block === 'latest') throw new Error('unrelated read failure')
+    await Promise.resolve()
+    throw limited
+  })
+  f.provider.getBalance.mockImplementation(async account => {
+    if (account === firstAccount) await gate
+    return 100n
+  })
+  let finished = false
+  const read = f.sync.refresh().finally(() => {
+    finished = true
+  })
+  const rejection = expect(read).rejects.toBe(limited)
+  try {
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(finished).toBe(false)
+    expect(f.provider.getTransactionCount).toHaveBeenCalledTimes(12)
+  } finally {
+    release()
+    await rejection
+  }
+  expect(f.sync.isDirty(firstAccount)).toBe(true)
+  expect(f.list.latestOf(firstAccount)).toBeUndefined()
+  await expect(f.sync.refresh()).rejects.toBe(limited)
+  expect(f.provider.getTransactionCount).toHaveBeenCalledTimes(12)
+})
+
 it('observes rate limits in optional spacing reads and drains sibling reads before returning', async () => {
   const f = await fixture(3)
   let release!: () => void

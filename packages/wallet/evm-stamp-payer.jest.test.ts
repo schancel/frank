@@ -677,9 +677,10 @@ describe('read-only stamp affordability', () => {
       f.node.balances.set(at(main), 2n * MON)
       const claim = await f.payer.claim({ holder: 'deposit', stampValueWei: MON })
       expect(claim.accounts[0]).toMatchObject({ address: at(main), nonce: 0 })
+      const readsBeforeExpiry = f.node.calls.filter(call => call.startsWith('count:')).length
       now.mockReturnValue(15_000)
       await f.payer.quote({ stampValueWei: 10n * MON })
-      expect(f.node.calls.filter(call => call.startsWith('count:')).length).toBeGreaterThan(reads)
+      expect(f.node.calls.filter(call => call.startsWith('count:')).length).toBeGreaterThan(readsBeforeExpiry)
     } finally {
       now.mockRestore()
     }

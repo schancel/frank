@@ -216,10 +216,17 @@ export class EvmCoinListSync {
       }
       return undefined
     }
+    const observeRead = <T>(read: Promise<T>): Promise<T> =>
+      read.catch(error => {
+        // Observe each rejection immediately. Promise.all exposes only its first rejection;
+        // another read may report a rate limit while that first failure is still draining.
+        if (isRateLimited(error)) onRateLimit(error)
+        throw error
+      })
     const reads = [
-      provider.getTransactionCount(account, 'latest'),
-      provider.getTransactionCount(account, 'pending'),
-      provider.getBalance(account),
+      observeRead(provider.getTransactionCount(account, 'latest')),
+      observeRead(provider.getTransactionCount(account, 'pending')),
+      observeRead(provider.getBalance(account)),
       spacing > 0 && head >= lag
         ? provider.getBalance(account, head - lag).catch(optionalHistoricalRead)
         : Promise.resolve(undefined),

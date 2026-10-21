@@ -1,3 +1,4 @@
+import { watch } from 'vue'
 import type { Router } from 'vue-router'
 import {
   FRANK_DAPP_APPROVALS_CHANGED,
@@ -6,6 +7,7 @@ import {
   onRuntimeMessage,
   sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
+import { accountStatus } from '../accounts/session'
 
 export const DAPP_APPROVAL_ROUTE = '/dapp-bridge'
 
@@ -47,14 +49,23 @@ export function installDappApprovalSurfacing(
   }
 
   let checking = false
+  let recheck = false
   const check = async () => {
-    if (checking) return
+    if (checking) {
+      recheck = true
+      return
+    }
     checking = true
     try {
-      if ((await fetchPendingDappApprovalCount(globalScope)) === 0) return
-      if (router.currentRoute.value.path !== DAPP_APPROVAL_ROUTE) {
-        await router.push(DAPP_APPROVAL_ROUTE)
-      }
+      do {
+        recheck = false
+        // Onboarding and setup keep the screen until the account is ready.
+        if (accountStatus.status !== 'ready') continue
+        if ((await fetchPendingDappApprovalCount(globalScope)) === 0) continue
+        if (router.currentRoute.value.path !== DAPP_APPROVAL_ROUTE) {
+          await router.push(DAPP_APPROVAL_ROUTE)
+        }
+      } while (recheck)
     } catch {
       // Background unavailable; the next change notification retries.
     } finally {
@@ -82,9 +93,17 @@ export function installDappApprovalSurfacing(
   if (typeof window !== 'undefined') {
     window.addEventListener('focus', onVisible)
   }
+  // A request that arrived during setup surfaces once the account is ready.
+  const stopReadyWatch = watch(
+    () => accountStatus.status,
+    status => {
+      if (status === 'ready') void check()
+    },
+  )
   void check()
 
   return () => {
+    stopReadyWatch()
     offMessage()
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisible)

@@ -8,6 +8,22 @@ import {
   DAPP_APPROVAL_ROUTE,
   installDappApprovalSurfacing,
 } from './dapp-approval-surface'
+import * as session from '../accounts/session'
+
+const setAccountStatus = (
+  session as unknown as {
+    __setStatus: (s: string) => void
+  }
+).__setStatus
+
+jest.mock('../accounts/session', () => {
+  const { reactive } = jest.requireActual('vue')
+  const accountStatus = reactive({ status: 'ready' })
+  return {
+    accountStatus,
+    __setStatus: (s: string) => (accountStatus.status = s),
+  }
+})
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
 
@@ -75,6 +91,20 @@ it('routes to a request that was already pending when the view opened', async ()
   const { scope } = extensionScope([{ id: 'req-0' }])
   const router = fakeRouter('/chat')
   const dispose = installDappApprovalSurfacing(router, scope)
+  await flush()
+  expect(router.push).toHaveBeenCalledWith(DAPP_APPROVAL_ROUTE)
+  dispose()
+})
+
+it('waits for account setup before leaving onboarding, then routes', async () => {
+  setAccountStatus('fresh')
+  const { scope } = extensionScope([{ id: 'req-1' }])
+  const router = fakeRouter('/setup')
+  const dispose = installDappApprovalSurfacing(router, scope)
+  await flush()
+  expect(router.push).not.toHaveBeenCalled()
+  setAccountStatus('ready')
+  await flush()
   await flush()
   expect(router.push).toHaveBeenCalledWith(DAPP_APPROVAL_ROUTE)
   dispose()

@@ -2247,6 +2247,12 @@ export const rawEnUS = {
     syncFailed: 'Group updates could not be synchronized. Retry to resume.',
     epochPending: 'Group setup is pending. Retry to finish publishing.',
     retryUpdates: 'Retry group updates',
+    memberAddSuperseded:
+      "Adding {member} didn't apply: the group changed on another device. Retry to add them.",
+    memberRemoveSuperseded:
+      "Removing {member} didn't apply: the group changed on another device, and they are still a member. Retry to remove them.",
+    retryMemberChange: 'Retry',
+    dismissMemberChange: 'Dismiss',
     newGroup: 'New Group',
     createGroupTitle: 'Create Encrypted Group',
     groupNameLabel: 'Group Name',

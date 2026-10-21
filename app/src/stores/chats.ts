@@ -237,6 +237,12 @@ export interface LogicalMessageRecord {
   revisions: RevisionRecord[]
 }
 
+/** A membership change the user asked for: the member it adds or removes. */
+export interface GroupMemberChange {
+  action: 'add-member' | 'remove-member'
+  address: string
+}
+
 type GroupMemberDeliveries = Record<
   string,
   { items: MessageItem[]; operationId: string }[]
@@ -265,9 +271,14 @@ export interface GroupConversationState {
     epochSecretHex?: string
     /** Rotation only: deliveries that are queued once the successor is published. */
     memberDeliveries?: GroupMemberDeliveries
-    /** Rotation only: queued deliveries to this removed member are dropped on publication. */
-    removedAddress?: string
+    /** Rotation only: the change it makes. Queued deliveries to a removed member are dropped
+     * on publication. */
+    memberChange?: GroupMemberChange
   }
+  /** A membership change the user asked for that another device of this administrator
+   * account superseded: it was never published. Shown until the roster holds it or the user
+   * dismisses it; it is retried only by the user. */
+  supersededMemberChange?: GroupMemberChange
   pendingMessages?: Record<string, true>
   pendingMemberDeliveries?: GroupMemberDeliveries
   /** Highest epoch of an accepted mailbox row; a later row of an older epoch is not accepted. */
@@ -1381,8 +1392,26 @@ function applyAuthenticatedGroupEpoch(
     ? previous.pendingEpoch
     : undefined
   let pendingMemberDeliveries = previous?.pendingMemberDeliveries
+  let supersededMemberChange = previous?.supersededMemberChange
+  if (
+    rotation?.memberChange &&
+    rotation.certificate.epoch_hash !== certificate.epoch_hash
+  )
+    supersededMemberChange = rotation.memberChange
+  // The roster already holds the change, whoever made it: nothing is left to retry.
+  const change = supersededMemberChange
+  const isMember =
+    change &&
+    roster.members.some(member =>
+      sameCanonicalAddress(member.address, change.address),
+    )
+  if (change && isMember === (change.action === 'add-member'))
+    supersededMemberChange = undefined
   if (rotation && rotation.certificate.epoch_hash === certificate.epoch_hash) {
-    const removed = rotation.removedAddress
+    const removed =
+      rotation.memberChange?.action === 'remove-member'
+        ? rotation.memberChange.address
+        : undefined
     pendingMemberDeliveries = Object.fromEntries(
       Object.entries(pendingMemberDeliveries ?? {}).filter(
         ([address]) => !removed || !sameCanonicalAddress(address, removed),
@@ -1421,6 +1450,7 @@ function applyAuthenticatedGroupEpoch(
     pendingControls: previous?.pendingControls,
     pendingMemberDeliveries,
     highestSyncedEpoch: previous?.highestSyncedEpoch,
+    supersededMemberChange,
   }
   conv.groupEpochSecretHex = epochSecretHex
   conv.groupMemberIndex = own?.index
@@ -6609,9 +6639,15 @@ export const useChatStore = defineStore('chats', {
         const res = await client.sendGroupMessage(state.groupIdHex, envelope)
         checkGroup()
         message.status = 'confirmed'
-        // Group messages show the sender-signed time; the relay time records acceptance.
-        message.receivedTime = res.server_time_ms
+        // The relay time replaces this device's clock, as it does for every member; an
+        // acknowledgement of a retried copy never moves an earlier accepted row's time.
+        const relayTime = message.localTime
+          ? res.server_time_ms
+          : Math.min(message.serverTime, res.server_time_ms)
+        message.serverTime = relayTime
+        message.receivedTime = relayTime
         message.localTime = false
+        conv.messages.sort(byRelayTime)
         await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
         checkGroup()
         delete state.pendingMessages![payloadDigest]
@@ -6964,9 +7000,10 @@ export const useChatStore = defineStore('chats', {
         const isOutbound = Boolean(
           ownAddress && sameCanonicalAddress(senderAddress, ownAddress),
         )
-        // Shown at the time the sender signed, which a replay cannot change; the relay time
-        // only records acceptance.
-        const serverTime = opened.timestampMs
+        // Ordered and read by the relay time of the first accepted row, which every device
+        // sees alike. The member-signed time is the sender's clock and orders nothing; a replay
+        // under a new nonce collapses into that first row by its digest.
+        const serverTime = row.server_time_ms
 
         const existingMsg = this.messages[payloadDigest]
         if (existingMsg) {
@@ -6974,9 +7011,16 @@ export const useChatStore = defineStore('chats', {
             conv.groupState.lastSyncedSeq = row.server_seq
             continue
           }
+          // Our own send: its local time, or the acknowledgement of a retried copy, gives way
+          // to the earliest row holding this envelope.
+          const relayTime = existingMsg.localTime
+            ? serverTime
+            : Math.min(existingMsg.serverTime, serverTime)
           existingMsg.status = 'confirmed'
-          existingMsg.receivedTime = row.server_time_ms
+          existingMsg.serverTime = relayTime
+          existingMsg.receivedTime = relayTime
           existingMsg.localTime = false
+          conv.messages.sort(byRelayTime)
           await (
             await store
           ).saveMessage(
@@ -7186,6 +7230,7 @@ export const useChatStore = defineStore('chats', {
           sameCanonicalAddress(address, canonicalNewMember)
             ? welcomeItem
             : control,
+        memberChange: { action: 'add-member', address: canonicalNewMember },
       })
     },
     /** Rotations start from the epoch the relay holds: whatever another device of this
@@ -7252,7 +7297,7 @@ export const useChatStore = defineStore('chats', {
       rotated,
       wallet,
       itemFor,
-      removedAddress,
+      memberChange,
     }: {
       conv: Conversation
       state: GroupConversationState
@@ -7261,7 +7306,7 @@ export const useChatStore = defineStore('chats', {
       rotated: ReturnType<typeof prepareGroupEpochRotation>
       wallet: WalletHandle | undefined
       itemFor: (address: string) => MessageItem
-      removedAddress?: string
+      memberChange: GroupMemberChange
     }): Promise<Conversation> {
       checkGroup()
       if (conv.groupState !== state || state.pendingEpoch)
@@ -7280,7 +7325,7 @@ export const useChatStore = defineStore('chats', {
         expectedPreviousHash: state.epochFrame.epoch_hash,
         epochSecretHex: rotated.epochSecretHex,
         memberDeliveries,
-        ...(removedAddress ? { removedAddress } : {}),
+        memberChange,
       }
       await this.flushPersistence?.()
       try {
@@ -7366,8 +7411,31 @@ export const useChatStore = defineStore('chats', {
         rotated,
         wallet: wallet || messagingWallet(),
         itemFor: () => controlItem,
-        removedAddress,
+        memberChange: { action: 'remove-member', address: removedAddress },
       })
+    },
+    /** Applies the user's superseded membership change again, on top of the current epoch. */
+    async retrySupersededMemberChange(
+      conversationId: string,
+      relayClient?: GroupRelayClient,
+    ): Promise<Conversation> {
+      const change =
+        this.conversations[conversationId]?.groupState?.supersededMemberChange
+      if (!change) throw new Error('No superseded group membership change')
+      const input = {
+        conversationId,
+        memberAddress: change.address,
+        relayClient,
+      }
+      return change.action === 'add-member'
+        ? this.inviteMemberToGroup(input)
+        : this.removeMemberFromGroup(input)
+    },
+    async dismissSupersededMemberChange(conversationId: string): Promise<void> {
+      const state = this.conversations[conversationId]?.groupState
+      if (!state?.supersededMemberChange) return
+      state.supersededMemberChange = undefined
+      await this.flushPersistence?.()
     },
     /**
      * Issue #70: Leaves a group conversation locally and stops polling its shared mailbox.

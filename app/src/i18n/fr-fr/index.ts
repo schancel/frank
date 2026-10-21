@@ -2321,6 +2321,12 @@ export const rawFrFR = {
     epochPending:
       'La préparation du groupe est en attente. Réessayez pour terminer la publication.',
     retryUpdates: 'Réessayer les mises à jour du groupe',
+    memberAddSuperseded:
+      "L'ajout de {member} n'a pas été appliqué : le groupe a changé sur un autre appareil. Réessayez pour l'ajouter.",
+    memberRemoveSuperseded:
+      "Le retrait de {member} n'a pas été appliqué : le groupe a changé sur un autre appareil et ce membre en fait toujours partie. Réessayez pour le retirer.",
+    retryMemberChange: 'Réessayer',
+    dismissMemberChange: 'Ignorer',
     newGroup: 'Nouveau groupe',
     createGroupTitle: 'Créer un groupe chiffré',
     groupNameLabel: 'Nom du groupe',

@@ -483,6 +483,45 @@ describe('a shared group invitation', () => {
   })
 })
 
+describe('a membership change another device superseded', () => {
+  for (const [locale, table, text] of [
+    ['en-us', en, "Removing 0x3333...3333 didn't apply"],
+    ['fr-fr', fr, "Le retrait de 0x3333...3333 n'a pas été appliqué"],
+  ] as const)
+    it(`says so in ${locale} and retries or dismisses it only when asked`, async () => {
+      const { wrapper, chats } = await openConversation(table)
+      const conversation = chats.conversations[CONVERSATION]
+      conversation.kind = 'group'
+      conversation.address = 'group:' + '11'.repeat(32)
+      conversation.membershipStatus = 'joined'
+      conversation.groupState = {
+        roster: [],
+        supersededMemberChange: { action: 'remove-member', address: BOB },
+      }
+      const retry = jest
+        .spyOn(chats, 'retrySupersededMemberChange')
+        .mockResolvedValue(conversation)
+      await flushPromises()
+      const banner = wrapper.get(
+        '[data-testid="group-member-change-superseded"]',
+      )
+      expect(banner.text()).toContain(text)
+      expect(retry).not.toHaveBeenCalled()
+      await wrapper
+        .get('[data-testid="retry-group-member-change"]')
+        .trigger('click')
+      expect(retry).toHaveBeenCalledWith(CONVERSATION)
+      await wrapper
+        .get('[data-testid="dismiss-group-member-change"]')
+        .trigger('click')
+      await flushPromises()
+      expect(conversation.groupState.supersededMemberChange).toBeUndefined()
+      expect(
+        wrapper.find('[data-testid="group-member-change-superseded"]').exists(),
+      ).toBe(false)
+    })
+})
+
 describe('the group composer', () => {
   it('sends calendar/vCard follow-ups and articles as stamp-free group messages', async () => {
     const { wrapper, chats } = await openConversation()

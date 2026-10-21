@@ -94,6 +94,7 @@
         >
           <div
             class="mdstyle text-body2"
+            v-external-images
             v-html="markedMessage(entry.message, entry.title)"
           />
           <game-announcement-card
@@ -123,6 +124,7 @@
           <div
             v-if="entry.message"
             class="mdstyle text-body2"
+            v-external-images
             v-html="markedMessage(entry.message, entry.title)"
           />
           <game-announcement-card
@@ -239,6 +241,7 @@ import type { PropType } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { renderMarkdown } from '../../utils/markdown'
+import { vExternalImages } from '../../utils/external-images'
 
 import AMessageReplies from './ForumMessageReplies.vue'
 import GameAnnouncementCard from 'components/topic/GameAnnouncementCard.vue'
@@ -333,6 +336,7 @@ export default defineComponent({
       type: Boolean,
     },
   },
+  directives: { externalImages: vExternalImages },
   components: {
     AMessageReplies,
     GameAnnouncementCard,

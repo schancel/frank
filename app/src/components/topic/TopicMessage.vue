@@ -79,7 +79,11 @@
         >
           {{ displayTitle(entry.title) || getAnnouncement(entry)?.gameName }}
         </div>
-        <span class="mdstyle" v-html="markedMessage(entry.message)" />
+        <span
+          v-external-images
+          class="mdstyle"
+          v-html="markedMessage(entry.message)"
+        />
         <game-announcement-card
           v-if="getAnnouncement(entry)"
           :announcement="getAnnouncement(entry)!"
@@ -95,6 +99,7 @@
         <span
           v-if="entry.message"
           class="mdstyle"
+          v-external-images
           v-html="markedMessage(entry.message)"
         />
         <game-announcement-card
@@ -115,6 +120,7 @@ import { computed, defineComponent, ref } from 'vue'
 import type { PropType } from 'vue'
 
 import { renderMarkdown } from '../../utils/markdown'
+import { vExternalImages } from '../../utils/external-images'
 import { useContactStore } from 'src/stores/contacts'
 
 import type { ForumMessage } from '@frank/wallet/forum-model'
@@ -136,6 +142,7 @@ import AccountBadge from 'src/components/contacts/AccountBadge.vue'
 import { authorDisplayProfile } from 'src/utils/author-display-profile'
 
 export default defineComponent({
+  directives: { externalImages: vExternalImages },
   components: {
     GameAnnouncementCard,
     AccountBadge,

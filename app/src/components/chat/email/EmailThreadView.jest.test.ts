@@ -702,7 +702,16 @@ describe('EmailThreadView', () => {
           subject: 'Weekly Digest',
           textBody: 'Plain text version of weekly digest.',
           htmlBody:
-            '<h1>Weekly Digest</h1><p>Welcome to <b>Frank</b>!</p><script>alert("evil")</script>',
+            '<h1>Weekly Digest</h1><p>Welcome to <b>Frank</b>!</p><script>alert("evil")</script>' +
+            '<img src="https://tracker.example/open.gif?u=me" width="1" height="1"><img src="cid:logo@example.com">',
+          attachments: [
+            {
+              filename: 'logo.png',
+              contentType: 'image/png',
+              content: new Uint8Array([137, 80, 78, 71]),
+              contentId: '<logo@example.com>',
+            },
+          ],
         }
 
         const msgWithHtml: ChatMessage = {
@@ -741,7 +750,10 @@ describe('EmailThreadView', () => {
         // Sandboxed iframe should now be rendered
         const iframe = wrapper.find('iframe.email-html-frame')
         expect(iframe.exists()).toBe(true)
-        expect(iframe.attributes('sandbox')).toBe('allow-same-origin')
+        // No script runs in the frame; its links may open a new tab.
+        expect(iframe.attributes('sandbox')).toBe(
+          'allow-same-origin allow-popups allow-popups-to-escape-sandbox',
+        )
 
         // srcdoc should contain sanitized HTML (script tag stripped by DOMPurify)
         const srcdoc = iframe.attributes('srcdoc')
@@ -749,6 +761,19 @@ describe('EmailThreadView', () => {
         expect(srcdoc).toContain('<b>Frank</b>')
         expect(srcdoc).not.toContain('<script>')
         expect(srcdoc).not.toContain('alert("evil")')
+        // A tracking pixel is a click-to-load placeholder; the email's own picture shows.
+        const frame = document.createElement('div')
+        frame.innerHTML = srcdoc
+        expect(
+          Array.from(frame.querySelectorAll('img')).map(i =>
+            i.getAttribute('src'),
+          ),
+        ).toEqual(['data:image/png;base64,iVBORw=='])
+        expect(
+          frame
+            .querySelector('[data-external-image]')
+            ?.getAttribute('data-external-image'),
+        ).toBe('https://tracker.example/open.gif?u=me')
 
         // Click toggle again to switch back to plain text
         await toggleBtn.trigger('click')

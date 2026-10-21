@@ -241,7 +241,7 @@
         <q-card-section class="col-12 q-pa-none q-pt-md" v-show="message">
           <div class="text-weight-bold text-caption">Message Preview</div>
           <q-card-section class="q-pa-none q-pt-xs">
-            <span class="mdstyle" v-html="markedMessage" />
+            <span class="mdstyle" v-external-images v-html="markedMessage" />
           </q-card-section>
         </q-card-section>
       </q-card-section>
@@ -308,6 +308,7 @@ import { storeToRefs } from 'pinia'
 import type { QSelectProps } from 'quasar'
 
 import { renderMarkdown } from '../utils/markdown'
+import { vExternalImages } from '../utils/external-images'
 import {
   applyMarkdownFormat,
   compressPostImage,
@@ -376,6 +377,7 @@ export default defineComponent({
       getPostReservationStatus: forum.getPostReservationStatus,
     }
   },
+  directives: { externalImages: vExternalImages },
   components: {
     AMessage,
   },

@@ -237,6 +237,9 @@ export const rawFrFR = {
     reasonUnreadableHeader: "en-tête d'image illisible",
     reasonEmpty: 'image vide',
     reasonDimensionsTooLarge: 'dimensions trop grandes',
+    externalLabel: 'Image externe',
+    externalWarning:
+      "Charger cette image permet à l'expéditeur de voir que vous avez ouvert le message, ainsi que votre adresse IP. Cliquez pour la charger.",
   },
   raffle: {
     enter: 'Participer',

@@ -4,6 +4,7 @@ import type { EmailParty, EmailAttachment } from '@frank/codec'
 import { formatConversationTimestamp } from 'src/utils/formatting'
 import { isChainAddress } from 'src/utils/chain-address'
 import { cleanEmailSnippet } from 'src/utils/markdown-plain-text'
+import { contentIdKey } from 'src/utils/markdown'
 
 export const THREAD_REPLY_ALIAS_LOCAL_RE = /^m[0-9a-f]{30}$/i
 export const GATEWAY_USERNAME_LOCAL_RE = /^[a-z0-9][a-z0-9_-]{2,31}$/i
@@ -296,4 +297,38 @@ export function parseEmailCardsFromMessages(params: {
 
   cards.sort((a, b) => a.timestamp - b.timestamp)
   return cards
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  }
+  return btoa(binary)
+}
+
+/**
+ * The email's own pictures by Content-ID (without angle brackets), as `data:image` URIs, for its
+ * HTML's `cid:` references. An email item carries its MIME parts as `attachments`, each with
+ * the part's Content-ID (`contentId`, wire field 3) when it has one; only image parts are
+ * pictures. (The mail gateway does not yet split inbound MIME into parts, so today such parts
+ * come only from senders that fill `attachments` themselves.)
+ */
+export function emailContentIds(
+  attachments: readonly EmailAttachment[] = [],
+): Map<string, string> {
+  const pictures = new Map<string, string>()
+  for (const attachment of attachments) {
+    const type = attachment.contentType?.trim().toLowerCase() ?? ''
+    if (!attachment.contentId || !/^image\/[a-z0-9.+-]+$/.test(type)) continue
+    const base64 = attachment.content?.length
+      ? bytesToBase64(attachment.content)
+      : attachment.dataBase64?.replace(/^data:[^,]*,/, '').replace(/\s+/g, '')
+    if (!base64) continue
+    pictures.set(
+      contentIdKey(attachment.contentId),
+      `data:${type};base64,${base64}`,
+    )
+  }
+  return pictures
 }

@@ -63,6 +63,7 @@ describe('universal state channel update item (Type 24, schema 1)', () => {
   // -------------------------------------------------------------------------------------------
   describe('single-chain allocation', () => {
     it('encodes, validates, and projects a valid single-chain channel update item', () => {
+      // raw-cbor-key: opaque state bytes, not a map entry
       const stateBytes = new Uint8Array([1, 2, 3, 4, 5])
       const allocations = [
         {

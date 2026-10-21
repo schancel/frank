@@ -11,7 +11,12 @@ import {
   type5Payload,
   acct1,
 } from '../fixtures/builders'
-import { ENCRYPTION_SUITE, RECIPIENT_ENCRYPTED_PAYLOAD_V2, TYPE_DIRECTORY_STATEMENT, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD } from '../src/constants'
+import {
+  ENCRYPTION_SUITE,
+  RECIPIENT_ENCRYPTED_PAYLOAD_V2,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+} from '../src/constants'
 
 const ctx = defaultContext()
 const outcome = (f: Uint8Array, c = ctx): string => {

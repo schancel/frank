@@ -26,7 +26,13 @@ import {
 import { CASES, PRE_TOPIC_SCHEMAS } from '../fixtures/cases'
 import { contextOf } from '../fixtures/manifest'
 import { buildTopicCommitments } from '../fixtures/topic-commitments'
-import { TOPIC_POST_SUBMISSION, TOPIC_VOTE_SUBMISSION, TYPE_TOPIC_POST, TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION } from '../src/constants'
+import {
+  TOPIC_POST_SUBMISSION,
+  TOPIC_VOTE_SUBMISSION,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+} from '../src/constants'
 
 const COMMITMENTS_PATH = path.resolve(
   __dirname,
@@ -129,6 +135,7 @@ describe('R6 limits', () => {
           [TOPIC_POST_SUBMISSION.postFrame, big],
           [TOPIC_POST_SUBMISSION.burnTx, burnTx()],
         ]) as Map<number, unknown>),
+        // raw-cbor-key: key 9 is undeclared: padding past the frame ceiling
         [9, new Uint8Array(1_048_576 - big.length)],
       ]) as never,
     )
@@ -145,6 +152,7 @@ describe('R6 limits', () => {
           [TOPIC_VOTE_SUBMISSION.targetHash, bytesOf(32, 1)],
           [TOPIC_VOTE_SUBMISSION.burnTx, burnTx()],
         ]) as Map<number, unknown>),
+        // raw-cbor-key: key 9 is undeclared: padding past the frame ceiling
         [9, new Uint8Array(65_536)],
       ]) as never,
     )
@@ -258,7 +266,11 @@ describe('the corpus written before #136', () => {
         ...before,
         supportedSchemas: [
           ...PRE_TOPIC_SCHEMAS,
-          ...[9, 10, 11].map(typeId => ({ typeId, schemaVersion: 1 })),
+          ...[
+            TYPE_TOPIC_POST,
+            TYPE_TOPIC_POST_SUBMISSION,
+            TYPE_TOPIC_VOTE_SUBMISSION,
+          ].map(typeId => ({ typeId, schemaVersion: 1 })),
         ],
       }
       const run = (ctx: typeof before): string => {

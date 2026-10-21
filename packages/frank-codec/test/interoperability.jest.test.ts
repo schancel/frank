@@ -19,6 +19,7 @@ import type { ManifestCase } from '../fixtures/manifest'
 import {
   TYPE_CONTAINER_MESSAGE_ITEM,
   TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_DIRECTORY_ATTESTATION,
   TYPE_ENCRYPTED_MESSAGE_CONTENT,
   TYPE_MAILBOX_CHECKPOINT,
   TYPE_MESSAGE_CONTENT_REVISION,
@@ -83,9 +84,9 @@ describe('complete-frame TypeScript/Rust interoperability', () => {
       'rust-fixture-checkpoint',
     ])
     const expected = [
-      [1, 'rust-additive-direct'],
-      [2, 'rust-additive-directory'],
-      [3, 'rust-additive-checkpoint'],
+      [TYPE_DIRECT_MESSAGE_DELIVERY, 'rust-additive-direct'],
+      [TYPE_DIRECTORY_ATTESTATION, 'rust-additive-directory'],
+      [TYPE_MAILBOX_CHECKPOINT, 'rust-additive-checkpoint'],
     ] as const
     for (const [index, id] of interoperability.rust_origin_ids.entries()) {
       const c = byId(rustOrigin, id)
@@ -100,6 +101,7 @@ describe('complete-frame TypeScript/Rust interoperability', () => {
       if (parsed.kind !== 'parsed') throw new Error(`${id} was not parsed`)
       expect(parsed.projection).toBe('newer-schema')
       expect(parsed.typed?.type).toBe(expected[index][0])
+      // raw-cbor-key: key 100 is an additive future field, not a registered one
       expect(parsed.typed?.unknownFields.get(100n)).toBe(expected[index][1])
       if (parsed.typed?.type === TYPE_DIRECT_MESSAGE_DELIVERY)
         assertDirectNestedOpaque(parsed.typed)

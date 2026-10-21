@@ -10,7 +10,12 @@ import {
   toHex,
   type DirectMessageCryptoContext,
 } from '../src'
-import { ACCOUNT_REF, ENCRYPTION_SUITE, RECIPIENT_ENCRYPTED_PAYLOAD_V2, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD } from '../src/constants'
+import {
+  ACCOUNT_REF,
+  ENCRYPTION_SUITE,
+  RECIPIENT_ENCRYPTED_PAYLOAD_V2,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+} from '../src/constants'
 
 const bytes = (length: number, value: number) =>
   new Uint8Array(length).fill(value)
@@ -83,8 +88,14 @@ describe('DM crypto context v1', () => {
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender, accountMap(C.sender)],
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.recipient, accountMap(C.recipient)],
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.suite, ENCRYPTION_SUITE.dmAuthXchacha],
-      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.cryptoBoxEnvelope, fromHex(CORPUS.cryptoBox.envelopeHex)],
-      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.ephemeralPoint, fromHex(C.ephemeralPointHex)],
+      [
+        RECIPIENT_ENCRYPTED_PAYLOAD_V2.cryptoBoxEnvelope,
+        fromHex(CORPUS.cryptoBox.envelopeHex),
+      ],
+      [
+        RECIPIENT_ENCRYPTED_PAYLOAD_V2.ephemeralPoint,
+        fromHex(C.ephemeralPointHex),
+      ],
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sharedPoint, fromHex(C.sharedPointHex)],
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.dleqProof, fromHex(C.dleqProofHex)],
     ])

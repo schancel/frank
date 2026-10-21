@@ -129,6 +129,7 @@ describe('type 27 writer and limits', () => {
     ['dice-', false],
     ['a--b', false],
     ['dïce', false],
+    // raw-cbor-key: a non-string plugin item type value, not a map entry
     [27, false],
     [undefined, false],
   ])('isPluginItemType(%p) is %p', (value, expected) => {
@@ -301,6 +302,7 @@ describe('a plugin item is decoded under the enclosing budget', () => {
   })
 
   it('returns an unknown nested frame retained, never interpreted', () => {
+    // raw-cbor-key: an unregistered future item type has no registered field names
     const unknown = fr(TYPE_PROOF_UNKNOWN_ITEM, M([[0, 1]]))
     const opened = standaloneItemBudget().openFrame(unknown)
     expect(opened.kind).toBe('retained')

@@ -33,7 +33,7 @@ import {
   deriveDeck,
   sha256Hex,
 } from '../../wallet/message-item-plugins/blackjack/deck'
-import { BLACKJACK_ITEM, ENCRYPTED_MESSAGE_CONTENT, ENCRYPTION_SUITE, RECIPIENT_ENCRYPTED_PAYLOAD_V1, TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM } from '../src/constants'
+import { BLACKJACK_ACTION, BLACKJACK_ITEM, ENCRYPTED_MESSAGE_CONTENT, ENCRYPTION_SUITE, RECIPIENT_ENCRYPTED_PAYLOAD_V1, TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM } from '../src/constants'
 
 interface FrameCase {
   id: string
@@ -155,6 +155,7 @@ describe('active blackjack public facade and immutable shared corpus', () => {
         input = {
           ...input,
           action: 'deal',
+          // raw-cbor-key: card list, not a map entry
           playerCards: [0, 1],
           dealerUpCard: 2,
         }
@@ -218,6 +219,7 @@ describe('closed shapes and independently reachable boundaries', () => {
       ...common,
       action: 'double',
       doubleWagerTxHash: '0x' + 'a'.repeat(64),
+      // raw-cbor-key: card list, not a map entry
       playerCards: [0, 1, 2],
     }
     // @ts-expect-error a double must contain one of the two forms
@@ -259,28 +261,32 @@ describe('closed shapes and independently reachable boundaries', () => {
   })
   it('keeps card/hash/gameId/seed/rules bounds at their intended stage', () => {
     for (const [id, key, badValues] of [
-      ['deal', 4, [new Uint8Array(31), new Uint8Array(33)]],
-      ['deal', 5, [[], [0], [0, 1, 2], [-1, 1], [0, 52]]],
+      ['deal', BLACKJACK_ITEM.serverSeedHash, [new Uint8Array(31), new Uint8Array(33)]],
+      // raw-cbor-key: card list, not a map entry
+      ['deal', BLACKJACK_ITEM.playerCards, [[], [0], [0, 1, 2], [-1, 1], [0, 52]]],
       [
         'hit-response',
-        5,
+        BLACKJACK_ITEM.playerCards,
+        // raw-cbor-key: card list, not a map entry
         [[0, 1], Array.from({ length: 53 }, (_, i) => i % 52)],
       ],
       [
         'double-response',
-        5,
+        BLACKJACK_ITEM.playerCards,
         [
+          // raw-cbor-key: card list, not a map entry
           [0, 1],
+          // raw-cbor-key: card list, not a map entry
           [0, 1, 2, 3],
         ],
       ],
-      ['reveal', 7, [[0], Array.from({ length: 53 }, (_, i) => i % 52)]],
+      ['reveal', BLACKJACK_ITEM.dealerCards, [[0], Array.from({ length: 53 }, (_, i) => i % 52)]],
       [
         'reveal',
-        8,
+        BLACKJACK_ITEM.serverSeed,
         ['a'.repeat(63), 'a'.repeat(65), 'A'.repeat(64), 'a'.repeat(63) + '\n'],
       ],
-      ['welcome', 13, ['x'.repeat(401), '🎴'.repeat(201)]],
+      ['welcome', BLACKJACK_ITEM.rules, ['x'.repeat(401), '🎴'.repeat(201)]],
     ] as [string, number, Encodable[]][]) {
       for (const bad of badValues) {
         const changed = mapOf(id)
@@ -290,6 +296,7 @@ describe('closed shapes and independently reachable boundaries', () => {
     }
   })
   it('isolates root AND nested4096 cap before otherwise-closed-map rejection', () => {
+    // raw-cbor-key: frame-size list, not a map entry
     for (const size of [4096, 4097]) {
       let bytes = new Uint8Array()
       for (let n = size - 100; n < size; n++) {
@@ -297,7 +304,8 @@ describe('closed shapes and independently reachable boundaries', () => {
           TYPE_BLACKJACK_MESSAGE_ITEM,
           M([
             [BLACKJACK_ITEM.gameId, 'x'],
-            [BLACKJACK_ITEM.action, 3],
+            [BLACKJACK_ITEM.action, BLACKJACK_ACTION.stand],
+            // raw-cbor-key: key 14 is undeclared in a schema-1 blackjack item
             [14, new Uint8Array(n)],
           ]),
         )
@@ -448,6 +456,7 @@ it.each(['containers', 'items'] as const)(
         [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8Frame([stand()])],
         [ENCRYPTED_MESSAGE_CONTENT.contentDigest, bytesOf(32, 2)],
         [ENCRYPTED_MESSAGE_CONTENT.conversationId, bytesOf(16, 3)],
+        // raw-cbor-key: key 99 is undeclared: padding past the budget
         [99, grouped(kind === 'containers' ? 9000 : 75000)],
       ]),
       2,

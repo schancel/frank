@@ -221,6 +221,7 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
         [TOKEN_TRANSFER.amount, 100n],
         [TOKEN_TRANSFER.decimals, 18],
         [TOKEN_TRANSFER.symbol, 'USDC'],
+        // raw-cbor-key: key 99 is undeclared in a token transfer
         [99, 'extra'],
       ])
       const badBytes = encodeCanonical(badMap)
@@ -231,7 +232,10 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
       // Construct raw Type 6 frame with amount = 0
       const transferMap = cborMap([
         [TOKEN_TRANSFER.chainNamespace, 'monad'],
-        [TOKEN_TRANSFER.contractAddress, '0x1234567890123456789012345678901234567890'],
+        [
+          TOKEN_TRANSFER.contractAddress,
+          '0x1234567890123456789012345678901234567890',
+        ],
         [TOKEN_TRANSFER.amount, 0n],
         [TOKEN_TRANSFER.decimals, 6],
         [TOKEN_TRANSFER.symbol, 'USDC'],

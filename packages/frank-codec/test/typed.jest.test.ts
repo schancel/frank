@@ -214,7 +214,9 @@ describe('typed conversion and exact-byte retention', () => {
       TYPE_TEXT_MESSAGE_ITEM,
       M([
         [TEXT_MESSAGE_ITEM.text, 'x'],
+        // raw-cbor-key: keys 5 and 9 are undeclared: unknown fields of a newer schema
         [5, new Uint8Array([1, 2])],
+        // raw-cbor-key: keys 5 and 9 are undeclared: unknown fields of a newer schema
         [9, M([[1, 'y']])],
       ]),
       3,
@@ -226,6 +228,7 @@ describe('typed conversion and exact-byte retention', () => {
     const t = p.typed
     if (t?.type !== TYPE_TEXT_MESSAGE_ITEM) throw new Error('type 17 expected')
     expect(t.text).toBe('x')
+    // raw-cbor-key: keys 5 and 9 are undeclared: unknown fields of a newer schema
     expect([...t.unknownFields.keys()]).toEqual([5n, 9n])
     expect(p.frame).toEqual(f)
     // An exactly supported schema has no unknown fields.

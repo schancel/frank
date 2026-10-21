@@ -15,7 +15,10 @@ import {
   bytesOf,
   textItem,
 } from '../fixtures/builders'
-import { ENCRYPTED_MESSAGE_CONTENT, TYPE_ENCRYPTED_MESSAGE_CONTENT } from '../src/constants'
+import {
+  ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+} from '../src/constants'
 
 describe('ticket #818: conversation identifiers and names in encrypted message content', () => {
   it('parses conversation_id and optional conversation_name on type 6', () => {
@@ -52,7 +55,10 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
       [ENCRYPTED_MESSAGE_CONTENT.network, 'frank'],
       [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 1)],
       [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8Frame([textItem('test')])],
-      [ENCRYPTED_MESSAGE_CONTENT.contentDigest, messageContentDigest(rev8Frame([textItem('test')]))],
+      [
+        ENCRYPTED_MESSAGE_CONTENT.contentDigest,
+        messageContentDigest(rev8Frame([textItem('test')])),
+      ],
     ])
     const frame = encodeFrame(
       {
@@ -90,11 +96,15 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
   })
 
   it('rejects conversation_id with wrong byte length', () => {
+    // raw-cbor-key: byte-length list, not a map entry
     for (const len of [15, 17, 0, 32]) {
       const rawMap = new Map<number, unknown>([
         [ENCRYPTED_MESSAGE_CONTENT.network, 'frank'],
         [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 1)],
-        [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8Frame([textItem('test')])],
+        [
+          ENCRYPTED_MESSAGE_CONTENT.revisionFrame,
+          rev8Frame([textItem('test')]),
+        ],
         [ENCRYPTED_MESSAGE_CONTENT.contentDigest, bytesOf(32, 2)],
         [ENCRYPTED_MESSAGE_CONTENT.conversationId, bytesOf(len, 4)],
       ])

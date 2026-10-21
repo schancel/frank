@@ -248,6 +248,7 @@ describe('Type 26: Email Message Item', () => {
           {
             filename: 'second',
             contentType: 'text/plain',
+            // raw-cbor-key: attachment bytes, not a map entry
             content: new Uint8Array([2, 3]),
           },
         ],

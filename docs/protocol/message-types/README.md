@@ -53,7 +53,8 @@ yarn message-types:check      # python3 docs/protocol/message-types/generate.py 
   literal (a shadow copy, whether or not it agrees), or non-test source defines any `TYPE_*`
   constant as a number literal.
 
-Backend CI runs the check. `packages/frank-codec/test/message-types.jest.test.ts` and
+The `typecheck` workflow, which has no path filter, runs the check on every push and pull request.
+`packages/frank-codec/test/message-types.jest.test.ts` and
 `backend/cashweb/frank-cbor/tests/message_types.rs` also compare the generated constants with the
 registry inside each language's test suite.
 

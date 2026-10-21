@@ -11,6 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Frank-CBOR type identifiers have one source, docs/protocol/message-types/v1.json; the TS and
+      # Rust constants and the doc tables are generated from it and nothing else may define one.
+      # It scans every tracked source file, so it runs here, where no path filter applies.
+      - name: Check the message type identifiers are what their registry gives
+        run: python3 docs/protocol/message-types/generate.py --check
+        shell: bash
       - uses: actions/setup-node@v4
         with:
           node-version: "26"

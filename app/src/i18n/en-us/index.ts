@@ -917,6 +917,11 @@ export const rawEnUS = {
     unauthorized: 'The server rejected your messaging login. Retrying.',
   },
   chatMessage: {
+    cancelSend: 'Cancel',
+    retrySend: 'Retry',
+    discardSend: 'Discard',
+    insufficientFunds: 'Not enough {unit} — failed to send',
+    stampBelowFee: 'Stamp below minimum fee',
     notInContacts: 'Not in your contacts',
     openSender: "Open {name}'s profile",
     noPayloadFound: 'Unable to find message payload',
@@ -1315,6 +1320,7 @@ export const rawEnUS = {
       'Compose and send outbound email via Frank Email Gateway',
   },
   emailThread: {
+    resetFeeToDefault: 'Reset fee to default',
     gatewayBadge: '✉️ Email Bridge (via Frank Gateway)',
     unverifiedBadge: '⚠️ Direct P2P Email (Unverified)',
     collapseAll: 'Collapse All',

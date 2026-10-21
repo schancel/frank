@@ -475,6 +475,42 @@ describe('what the list may be out of date about', () => {
   })
 })
 
+describe('settlement on a node that keeps only recent state', () => {
+  it('a payment settled after the included block\'s state was pruned is spent with no guessed successor; the sync lists what the account holds', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    const claim = await f.payer.claim({ holder: 'm', stampValueWei: MON / 100n })
+    const [signed] = await signAndRecord(f, claim)
+    mine(f.node, signed!.rawTx, 1001)
+    f.node.head = 1500
+    f.node.balanceAt = () => {
+      throw new Error('missing trie node')
+    }
+    await f.payer.recordSpent('m', signed!, 1001)
+    expect(f.list.get(at(main), 0)?.state).toBe('spent')
+    expect(f.list.get(at(main), 1)).toBeUndefined()
+    expect(f.sync.isDirty(at(main))).toBe(true)
+    // The sync's read (at the head, not the old block) gives the account's coin.
+    f.node.balanceAt = undefined
+    await f.sync.refresh()
+    expect(f.list.get(at(main), 1)?.valueWei).toBe(f.node.balances.get(at(main)))
+  })
+
+  it('a failed read at the included block while the node does not yet show the nonce consumed settles nothing', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    const claim = await f.payer.claim({ holder: 'm', stampValueWei: MON / 100n })
+    const [signed] = await signAndRecord(f, claim)
+    f.node.balanceAt = () => {
+      throw new Error('header not found')
+    }
+    await expect(f.payer.recordSpent('m', signed!, 1001)).rejects.toThrow(
+      'header not found',
+    )
+    expect(f.list.get(at(main), 0)?.state).toBe('pending_receipt')
+  })
+})
+
 describe('restart and repeated sync', () => {
   it('a coin whose write fails while it is restored stays held, and the open fails rather than freeing it', async () => {
     const store = new MemoryRecordStore<StoredEvmListCoin>()

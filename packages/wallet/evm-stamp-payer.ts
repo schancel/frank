@@ -1068,19 +1068,36 @@ export class EvmStampPayer {
         await coins.recordMined(coin, { block: this.watcher.latest() ?? 0 })
         this.config.sync.markDirty(account)
       } else {
-        const balance = await this.read(() =>
-          this.config.provider.getBalance(account, included),
-        )
-        const spacing = this.config.spendSpacingBlocks ?? 0
-        await coins.recordMined(coin, {
-          block: included,
-          successor: {
-            valueWei: balance,
-            ...(spacing > 0
-              ? { spendableFromBlock: included + spacing - 1 }
-              : {}),
-          },
-        })
+        let balance: bigint | undefined
+        try {
+          // Straight to the node: a refusal to answer for an old block says nothing about
+          // whether the chain can be reached.
+          balance = await this.config.provider.getBalance(account, included)
+        } catch (error) {
+          // A node that keeps only recent state (about 128 blocks on many RPCs) cannot answer
+          // for an old block, as when settlement runs long after the payment (a restart). Once
+          // the chain shows the nonce consumed, the coin is spent all the same: no successor
+          // is made from a guess, the account is read again and the sync lists what it holds.
+          const nonce = await this.read(() =>
+            this.config.provider.getTransactionCount(account, 'latest'),
+          )
+          if (nonce <= tx.nonce) throw error
+        }
+        if (balance === undefined) {
+          await coins.recordMined(coin, { block: included })
+          this.config.sync.markDirty(account)
+        } else {
+          const spacing = this.config.spendSpacingBlocks ?? 0
+          await coins.recordMined(coin, {
+            block: included,
+            successor: {
+              valueWei: balance,
+              ...(spacing > 0
+                ? { spendableFromBlock: included + spacing - 1 }
+                : {}),
+            },
+          })
+        }
       }
     }
     if (payment.index === undefined || tx.nonce !== 0) return

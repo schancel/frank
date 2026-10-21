@@ -33,6 +33,7 @@ import {
   deriveDeck,
   sha256Hex,
 } from '../../wallet/message-item-plugins/blackjack/deck'
+import { BLACKJACK_ACTION, BLACKJACK_ITEM, ENCRYPTED_MESSAGE_CONTENT, ENCRYPTION_SUITE, RECIPIENT_ENCRYPTED_PAYLOAD_V1, TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM } from '../src/constants'
 
 interface FrameCase {
   id: string
@@ -154,6 +155,7 @@ describe('active blackjack public facade and immutable shared corpus', () => {
         input = {
           ...input,
           action: 'deal',
+          // raw-cbor-key: card list, not a map entry
           playerCards: [0, 1],
           dealerUpCard: 2,
         }
@@ -200,13 +202,13 @@ describe('closed shapes and independently reachable boundaries', () => {
           continue
         const missing = new Map(value)
         missing.delete(key)
-        expect(outcome(() => parseFrame(fr(18, missing)))).toBe('schema@8.2')
+        expect(outcome(() => parseFrame(fr(TYPE_BLACKJACK_MESSAGE_ITEM, missing)))).toBe('schema@8.2')
       }
       for (let key = 2n; key <= 14n; key++) {
         if (value.has(key) || (f.id === 'hit-request' && key === 5n)) continue
         const extra = new Map(value)
         extra.set(key, 0)
-        expect(outcome(() => parseFrame(fr(18, extra)))).toBe('schema@8.2')
+        expect(outcome(() => parseFrame(fr(TYPE_BLACKJACK_MESSAGE_ITEM, extra)))).toBe('schema@8.2')
       }
     }
   })
@@ -217,6 +219,7 @@ describe('closed shapes and independently reachable boundaries', () => {
       ...common,
       action: 'double',
       doubleWagerTxHash: '0x' + 'a'.repeat(64),
+      // raw-cbor-key: card list, not a map entry
       playerCards: [0, 1, 2],
     }
     // @ts-expect-error a double must contain one of the two forms
@@ -229,7 +232,7 @@ describe('closed shapes and independently reachable boundaries', () => {
         for (const bad of [null, true] as const) {
           const changed = new Map(value)
           changed.set(key, bad)
-          expect(outcome(() => parseFrame(fr(18, changed)))).toBe('schema@8.2')
+          expect(outcome(() => parseFrame(fr(TYPE_BLACKJACK_MESSAGE_ITEM, changed)))).toBe('schema@8.2')
         }
       const input = f.application
       if (!input) throw Error(`missing application ${f.id}`)
@@ -258,45 +261,51 @@ describe('closed shapes and independently reachable boundaries', () => {
   })
   it('keeps card/hash/gameId/seed/rules bounds at their intended stage', () => {
     for (const [id, key, badValues] of [
-      ['deal', 4, [new Uint8Array(31), new Uint8Array(33)]],
-      ['deal', 5, [[], [0], [0, 1, 2], [-1, 1], [0, 52]]],
+      ['deal', BLACKJACK_ITEM.serverSeedHash, [new Uint8Array(31), new Uint8Array(33)]],
+      // raw-cbor-key: card list, not a map entry
+      ['deal', BLACKJACK_ITEM.playerCards, [[], [0], [0, 1, 2], [-1, 1], [0, 52]]],
       [
         'hit-response',
-        5,
+        BLACKJACK_ITEM.playerCards,
+        // raw-cbor-key: card list, not a map entry
         [[0, 1], Array.from({ length: 53 }, (_, i) => i % 52)],
       ],
       [
         'double-response',
-        5,
+        BLACKJACK_ITEM.playerCards,
         [
+          // raw-cbor-key: card list, not a map entry
           [0, 1],
+          // raw-cbor-key: card list, not a map entry
           [0, 1, 2, 3],
         ],
       ],
-      ['reveal', 7, [[0], Array.from({ length: 53 }, (_, i) => i % 52)]],
+      ['reveal', BLACKJACK_ITEM.dealerCards, [[0], Array.from({ length: 53 }, (_, i) => i % 52)]],
       [
         'reveal',
-        8,
+        BLACKJACK_ITEM.serverSeed,
         ['a'.repeat(63), 'a'.repeat(65), 'A'.repeat(64), 'a'.repeat(63) + '\n'],
       ],
-      ['welcome', 13, ['x'.repeat(401), '🎴'.repeat(201)]],
+      ['welcome', BLACKJACK_ITEM.rules, ['x'.repeat(401), '🎴'.repeat(201)]],
     ] as [string, number, Encodable[]][]) {
       for (const bad of badValues) {
         const changed = mapOf(id)
         changed.set(BigInt(key), bad)
-        expect(outcome(() => parseFrame(fr(18, changed)))).toBe('schema@8.2')
+        expect(outcome(() => parseFrame(fr(TYPE_BLACKJACK_MESSAGE_ITEM, changed)))).toBe('schema@8.2')
       }
     }
   })
   it('isolates root AND nested4096 cap before otherwise-closed-map rejection', () => {
+    // raw-cbor-key: frame-size list, not a map entry
     for (const size of [4096, 4097]) {
       let bytes = new Uint8Array()
       for (let n = size - 100; n < size; n++) {
         bytes = fr(
-          18,
+          TYPE_BLACKJACK_MESSAGE_ITEM,
           M([
-            [0, 'x'],
-            [1, 3],
+            [BLACKJACK_ITEM.gameId, 'x'],
+            [BLACKJACK_ITEM.action, BLACKJACK_ACTION.stand],
+            // raw-cbor-key: key 14 is undeclared in a schema-1 blackjack item
             [14, new Uint8Array(n)],
           ]),
         )
@@ -313,14 +322,14 @@ describe('closed shapes and independently reachable boundaries', () => {
     const old = defaultContext({
       readerVersion: 99,
       supportedSchemas: [
-        { typeId: 16, schemaVersion: 1 },
-        { typeId: 17, schemaVersion: 1 },
+        { typeId: TYPE_CONTAINER_MESSAGE_ITEM, schemaVersion: 1 },
+        { typeId: TYPE_TEXT_MESSAGE_ITEM, schemaVersion: 1 },
       ],
     })
     const welcome = raw('welcome'),
       text = textItem('last')
     const p = parsed(containerItem([welcome, text]), old)
-    if (p.typed?.type !== 16) throw Error('container')
+    if (p.typed?.type !== TYPE_CONTAINER_MESSAGE_ITEM) throw Error('container')
     expect(p.typed.items.map(c => c.kind)).toEqual(['retained', 'parsed'])
     expect(p.typed.items.map(c => c.frame)).toEqual([welcome, text])
     expect(outcome(() => parseFrame(welcome, old))).toBe('unsupported@7')
@@ -332,13 +341,13 @@ describe('closed shapes and independently reachable boundaries', () => {
         outcome(() => parseFrame(containerItem([fr(typeId, M([]))]))),
       ).toBe('semantic@8.4')
     const badRequired = fr(
-      6,
+      TYPE_ENCRYPTED_MESSAGE_CONTENT,
       M([
-        [0, NET],
-        [1, bytesOf(16, 1)],
-        [2, welcome],
-        [3, bytesOf(32, 2)],
-        [4, bytesOf(16, 4)],
+        [ENCRYPTED_MESSAGE_CONTENT.network, NET],
+        [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 1)],
+        [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, welcome],
+        [ENCRYPTED_MESSAGE_CONTENT.contentDigest, bytesOf(32, 2)],
+        [ENCRYPTED_MESSAGE_CONTENT.conversationId, bytesOf(16, 4)],
       ]),
     )
     expect(outcome(() => parseFrame(badRequired))).toBe('semantic@8.4')
@@ -356,30 +365,30 @@ describe('closed shapes and independently reachable boundaries', () => {
   })
   it('continues type18 through the public opaque DM session with inherited depth and terminal ownership', () => {
     const payload = fr(
-      5,
+      TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
       M([
-        [0, NET],
-        [1, acct1(9)],
-        [2, acct1(3)],
-        [3, 1],
-        [4, Uint8Array.of(0xa0)],
-        [5, T3C.ephemeral],
-        [6, T3C.shared],
-        [7, T3C.proof],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.network, NET],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sender, acct1(9)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.recipient, acct1(3)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.suite, ENCRYPTION_SUITE.dmAuthXchacha],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.nonce, Uint8Array.of(0xa0)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ciphertext, T3C.ephemeral],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ephemeralPoint, T3C.shared],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sharedPoint, T3C.proof],
       ]),
       2,
       2,
     )
-    const root = fr(1, deliveryPayload({ payloadFrame: payload }))
+    const root = fr(TYPE_DIRECT_MESSAGE_DELIVERY, deliveryPayload({ payloadFrame: payload }))
     const content = (item: Uint8Array) =>
       fr(
-        6,
+        TYPE_ENCRYPTED_MESSAGE_CONTENT,
         M([
-          [0, NET],
-          [1, bytesOf(16, 1)],
-          [2, rev8Frame([item])],
-          [3, bytesOf(32, 2)],
-          [4, bytesOf(16, 3)],
+          [ENCRYPTED_MESSAGE_CONTENT.network, NET],
+          [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 1)],
+          [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8Frame([item])],
+          [ENCRYPTED_MESSAGE_CONTENT.contentDigest, bytesOf(32, 2)],
+          [ENCRYPTED_MESSAGE_CONTENT.conversationId, bytesOf(16, 3)],
         ]),
       )
     let item = stand()
@@ -422,31 +431,32 @@ it.each(['containers', 'items'] as const)(
       return groups
     }
     const payload = fr(
-      5,
+      TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
       M([
-        [0, NET],
-        [1, acct1(9)],
-        [2, acct1(3)],
-        [3, 1],
-        [4, Uint8Array.of(0xa0)],
-        [5, T3C.ephemeral],
-        [6, T3C.shared],
-        [7, T3C.proof],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.network, NET],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sender, acct1(9)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.recipient, acct1(3)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.suite, ENCRYPTION_SUITE.dmAuthXchacha],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.nonce, Uint8Array.of(0xa0)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ciphertext, T3C.ephemeral],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ephemeralPoint, T3C.shared],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sharedPoint, T3C.proof],
       ]),
       2,
       2,
     )
     const fields = deliveryPayload({ payloadFrame: payload })
-    fields.set(99, grouped(kind === 'containers' ? 8000 : 60000))
-    const root = fr(1, fields, 3, 1)
+    fields.set(99, grouped(kind === 'containers' ? 8000 : 60000)) // raw-cbor-key: deliberately invalid or undeclared
+    const root = fr(TYPE_DIRECT_MESSAGE_DELIVERY, fields, 3, 1)
     const content = fr(
-      6,
+      TYPE_ENCRYPTED_MESSAGE_CONTENT,
       M([
-        [0, NET],
-        [1, bytesOf(16, 1)],
-        [2, rev8Frame([stand()])],
-        [3, bytesOf(32, 2)],
-        [4, bytesOf(16, 3)],
+        [ENCRYPTED_MESSAGE_CONTENT.network, NET],
+        [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 1)],
+        [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8Frame([stand()])],
+        [ENCRYPTED_MESSAGE_CONTENT.contentDigest, bytesOf(32, 2)],
+        [ENCRYPTED_MESSAGE_CONTENT.conversationId, bytesOf(16, 3)],
+        // raw-cbor-key: key 99 is undeclared: padding past the budget
         [99, grouped(kind === 'containers' ? 9000 : 75000)],
       ]),
       2,
@@ -488,15 +498,15 @@ describe('composable FeatureCodecDescriptor boundaries', () => {
     // Open container retains uninstalled feature item while parsing sibling core items
     const rev = rev8Frame([item, textItem('hello')])
     const parsedRev = parsed(rev, uninstalledCtx)
-    if (parsedRev.typed?.type !== 8) throw Error('expected type 8')
+    if (parsedRev.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION) throw Error('expected type 8')
     expect(parsedRev.typed.items[0]).toMatchObject({
       kind: 'retained',
       reason: 'unknown-type',
-      typeId: 18,
+      typeId: TYPE_BLACKJACK_MESSAGE_ITEM,
     })
     expect(parsedRev.typed.items[1]).toMatchObject({
       kind: 'parsed',
-      typeId: 17,
+      typeId: TYPE_TEXT_MESSAGE_ITEM,
     })
 
     // Malformed CBOR inside an uninstalled feature frame still fails Stage 7

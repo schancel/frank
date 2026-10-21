@@ -17,6 +17,32 @@ import {
   toHex,
   topicVoteCommitment,
 } from '../../src/hash'
+import {
+  FORUM_AGGREGATE,
+  FORUM_CONTENT,
+  FORUM_CURSOR_LAST,
+  FORUM_DISCOVERY_CURSOR,
+  FORUM_DISCOVERY_ENTRY,
+  FORUM_DISCOVERY_PAGE,
+  FORUM_ENTRY,
+  FORUM_OPERATION_STATUS,
+  FORUM_POST_ENTRY,
+  FORUM_SINGLE_VIEW,
+  FORUM_TOPIC_CURSOR,
+  FORUM_TOPIC_PAGE,
+  FRANK_ENVELOPE,
+  TIMESTAMP,
+  TOPIC_POST,
+  TOPIC_POST_SUBMISSION,
+  TOPIC_VOTE_SUBMISSION,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_OPERATION_STATUS,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_VIEW,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+} from '../../src/constants'
 
 const PATH = resolve('docs/protocol/proposals/forum-content-read/vectors.json')
 const NET = 'monad-testnet',
@@ -26,8 +52,8 @@ const EPOCH = new Uint8Array(16).fill(7)
 const M = (entries: [number, Encodable][]) => new Map(entries)
 const stamp = (seconds = 1700000000n, nanos = 999999999) =>
   M([
-    [0, seconds],
-    [1, nanos],
+    [TIMESTAMP.seconds, seconds],
+    [TIMESTAMP.nanoseconds, nanos],
   ])
 const sha = (bytes: Uint8Array) =>
   new Uint8Array(createHash('sha256').update(bytes).digest())
@@ -35,7 +61,7 @@ const t1 = (bytes: Uint8Array) =>
   sha(
     commonTranscript(
       'frank/content-hash/v1',
-      get(open(bytes).payload, 0) as string,
+      get(open(bytes).payload, TOPIC_POST.network) as string,
       bytes,
     ),
   )
@@ -79,22 +105,25 @@ const keys = (v: FrankValue, allowed: number[], future = false) => {
     requireThat(future || allowed.includes(Number(k)), 'unknown key')
 }
 const timestamp = (v: FrankValue) => {
-  keys(v, [0, 1])
-  const s = get(v, 0)
+  keys(v, [TIMESTAMP.seconds, TIMESTAMP.nanoseconds])
+  const s = get(v, TIMESTAMP.seconds)
   requireThat(
     typeof s === 'bigint' && s >= -(1n << 63n) && s < 1n << 63n,
     'seconds',
   )
-  uint(get(v, 1), 999999999n)
+  uint(get(v, TIMESTAMP.nanoseconds), 999999999n)
 }
 const timeOrder = (a: FrankValue, b: FrankValue) => {
-  const x = get(a, 0) as bigint,
-    y = get(b, 0) as bigint
+  const x = get(a, TIMESTAMP.seconds) as bigint,
+    y = get(b, TIMESTAMP.seconds) as bigint
   return x < y
     ? -1
     : x > y
     ? 1
-    : Number((get(a, 1) as bigint) - (get(b, 1) as bigint))
+    : Number(
+        (get(a, TIMESTAMP.nanoseconds) as bigint) -
+          (get(b, TIMESTAMP.nanoseconds) as bigint),
+      )
 }
 
 type Recipe =
@@ -152,119 +181,247 @@ function open(raw: Uint8Array): Opened {
     'length',
   )
   const env = decodeCanonical(raw.slice(9))
-  keys(env, [0, 1, 2, 3])
-  const type = Number(uint(get(env, 0), 0xffffffffn)),
-    schema = Number(uint(get(env, 1), 0xffffffffn)),
-    min = Number(uint(get(env, 2), 0xffffffffn))
+  keys(env, [
+    FRANK_ENVELOPE.typeId,
+    FRANK_ENVELOPE.schemaVersion,
+    FRANK_ENVELOPE.minReaderVersion,
+    FRANK_ENVELOPE.payload,
+  ])
+  const type = Number(uint(get(env, FRANK_ENVELOPE.typeId), 0xffffffffn)),
+    schema = Number(uint(get(env, FRANK_ENVELOPE.schemaVersion), 0xffffffffn)),
+    min = Number(uint(get(env, FRANK_ENVELOPE.minReaderVersion), 0xffffffffn))
   requireThat(schema >= 1 && min >= 1 && min <= schema, 'version')
   return {
     type,
     schema,
     min,
-    payload: decodeCanonical(bytes(get(env, 3), 1, 8388608)),
+    payload: decodeCanonical(
+      bytes(get(env, FRANK_ENVELOPE.payload), 1, 8388608),
+    ),
     raw,
   }
 }
 function validate(raw: Uint8Array): Opened {
   const f = open(raw),
     p = f.payload,
-    future = f.schema > (f.type === 9 ? 2 : 1)
+    future = f.schema > (f.type === TYPE_TOPIC_POST ? 2 : 1)
   requireThat(
-    f.min <= (f.type === 9 ? 2 : 1) && f.schema >= (f.type === 9 ? 2 : 1),
+    f.min <= (f.type === TYPE_TOPIC_POST ? 2 : 1) &&
+      f.schema >= (f.type === TYPE_TOPIC_POST ? 2 : 1),
     'required version',
   )
+  // raw-cbor-key: field 0 is network in every forum type
   text(get(p, 0), 1, 64)
-  if (f.type === 9) {
+  if (f.type === TYPE_TOPIC_POST) {
     requireThat(raw.length <= 1048576, 'post limit')
-    keys(p, [0, 1, 2, 3], future)
-    text(get(p, 1), 1, 512)
-    if (has(p, 2)) bytes(get(p, 2), 32)
-    const content = decodeCanonical(bytes(get(p, 3), 1, 524288))
-    keys(content, [0, 1], future)
-    timestamp(get(content, 0))
-    const entries = get(content, 1)
+    keys(
+      p,
+      [
+        TOPIC_POST.network,
+        TOPIC_POST.topic,
+        TOPIC_POST.parentHash,
+        TOPIC_POST.body,
+      ],
+      future,
+    )
+    text(get(p, TOPIC_POST.topic), 1, 512)
+    if (has(p, TOPIC_POST.parentHash)) bytes(get(p, TOPIC_POST.parentHash), 32)
+    const content = decodeCanonical(bytes(get(p, TOPIC_POST.body), 1, 524288))
+    keys(content, [FORUM_CONTENT.authored, FORUM_CONTENT.entries], future)
+    timestamp(get(content, FORUM_CONTENT.authored))
+    const entries = get(content, FORUM_CONTENT.entries)
     requireThat(
       Array.isArray(entries) && entries.length >= 1 && entries.length <= 64,
       'entry count',
     )
     for (const entry of entries) {
-      const kind = uint(get(entry, 0))
+      const kind = uint(get(entry, FORUM_POST_ENTRY.kind))
       requireThat(kind === 1n || future, 'kind')
       if (kind === 1n) {
-        keys(entry, [0, 1, 2, 3], future)
-        for (const k of [1, 2, 3])
+        keys(
+          entry,
+          [
+            FORUM_POST_ENTRY.kind,
+            FORUM_POST_ENTRY.title,
+            FORUM_POST_ENTRY.url,
+            FORUM_POST_ENTRY.message,
+          ],
+          future,
+        )
+        for (const k of [
+          FORUM_POST_ENTRY.title,
+          FORUM_POST_ENTRY.url,
+          FORUM_POST_ENTRY.message,
+        ])
           if (has(entry, k)) text(get(entry, k), 0, 262144)
       }
     }
-  } else if (f.type === 10 || f.type === 11) {
-    keys(p, [0, 1, 2], future)
+  } else if (
+    f.type === TYPE_TOPIC_POST_SUBMISSION ||
+    f.type === TYPE_TOPIC_VOTE_SUBMISSION
+  ) {
+    keys(
+      p,
+      [
+        TOPIC_POST_SUBMISSION.network,
+        TOPIC_POST_SUBMISSION.postFrame,
+        TOPIC_POST_SUBMISSION.burnTx,
+      ],
+      future,
+    )
     requireThat(
-      raw.length <= (f.type === 10 ? 1048576 : 65536),
+      raw.length <= (f.type === TYPE_TOPIC_POST_SUBMISSION ? 1048576 : 65536),
       'submission limit',
     )
-    bytes(get(p, 2), 1, 16384)
-    if (f.type === 10) {
-      const post = validate(bytes(get(p, 1), 9, 1048576))
+    bytes(get(p, TOPIC_POST_SUBMISSION.burnTx), 1, 16384)
+    if (f.type === TYPE_TOPIC_POST_SUBMISSION) {
+      const post = validate(
+        bytes(get(p, TOPIC_POST_SUBMISSION.postFrame), 9, 1048576),
+      )
       requireThat(
-        post.type === 9 && equal(get(post.payload, 0), get(p, 0)),
+        post.type === TYPE_TOPIC_POST &&
+          equal(
+            get(post.payload, TOPIC_POST.network),
+            get(p, TOPIC_POST_SUBMISSION.network),
+          ),
         'post network',
       )
-    } else bytes(get(p, 1), 32)
-  } else if (f.type === 12) {
+    } else bytes(get(p, TOPIC_VOTE_SUBMISSION.targetHash), 32)
+  } else if (f.type === TYPE_FORUM_VIEW) {
     requireThat(raw.length <= 2097152, 'view limit')
-    keys(p, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], future)
-    const post = validate(bytes(get(p, 1), 9, 1048576))
+    keys(
+      p,
+      [
+        FORUM_SINGLE_VIEW.network,
+        FORUM_SINGLE_VIEW.postFrame,
+        FORUM_SINGLE_VIEW.author,
+        FORUM_SINGLE_VIEW.authorBurnTx,
+        FORUM_SINGLE_VIEW.transactionHash,
+        FORUM_SINGLE_VIEW.firstVisible,
+        FORUM_SINGLE_VIEW.block,
+        FORUM_SINGLE_VIEW.transactionIndex,
+        FORUM_SINGLE_VIEW.aggregate,
+        FORUM_SINGLE_VIEW.revision,
+        FORUM_SINGLE_VIEW.epoch,
+      ],
+      future,
+    )
+    const post = validate(
+      bytes(get(p, FORUM_SINGLE_VIEW.postFrame), 9, 1048576),
+    )
     requireThat(
-      post.type === 9 && equal(get(post.payload, 0), get(p, 0)),
+      post.type === TYPE_TOPIC_POST &&
+        equal(
+          get(post.payload, TOPIC_POST.network),
+          get(p, FORUM_SINGLE_VIEW.network),
+        ),
       'view network',
     )
-    bytes(get(p, 2), 20)
-    bytes(get(p, 3), 1, 16384)
-    bytes(get(p, 4), 32)
-    timestamp(get(p, 5))
-    for (const k of [6, 7, 9]) uint(get(p, k))
-    bytes(get(p, 10), 16)
-    const a = get(p, 8)
-    keys(a, [0, 1], future)
-    requireThat(typeof get(a, 0) === 'boolean', 'sign')
-    const mag = bytes(get(a, 1), 32)
-    requireThat(get(a, 0) === false || mag.some(x => x !== 0), 'negative zero')
-  } else if (f.type === 13 || f.type === 14) {
+    bytes(get(p, FORUM_SINGLE_VIEW.author), 20)
+    bytes(get(p, FORUM_SINGLE_VIEW.authorBurnTx), 1, 16384)
+    bytes(get(p, FORUM_SINGLE_VIEW.transactionHash), 32)
+    timestamp(get(p, FORUM_SINGLE_VIEW.firstVisible))
+    for (const k of [
+      FORUM_SINGLE_VIEW.block,
+      FORUM_SINGLE_VIEW.transactionIndex,
+      FORUM_SINGLE_VIEW.revision,
+    ])
+      uint(get(p, k))
+    bytes(get(p, FORUM_SINGLE_VIEW.epoch), 16)
+    const a = get(p, FORUM_SINGLE_VIEW.aggregate)
+    keys(a, [FORUM_AGGREGATE.negative, FORUM_AGGREGATE.magnitude], future)
+    requireThat(typeof get(a, FORUM_AGGREGATE.negative) === 'boolean', 'sign')
+    const mag = bytes(get(a, FORUM_AGGREGATE.magnitude), 32)
+    requireThat(
+      get(a, FORUM_AGGREGATE.negative) === false || mag.some(x => x !== 0),
+      'negative zero',
+    )
+  } else if (
+    f.type === TYPE_FORUM_TOPIC_PAGE ||
+    f.type === TYPE_FORUM_DISCOVERY_PAGE
+  ) {
     requireThat(raw.length <= 4194304, 'page limit')
     keys(
       p,
-      f.type === 13 ? [0, 1, 2, 3, 4, 5, 6, 7] : [0, 1, 2, 3, 4, 5],
+      f.type === TYPE_FORUM_TOPIC_PAGE
+        ? [
+            FORUM_TOPIC_PAGE.network,
+            FORUM_TOPIC_PAGE.topic,
+            FORUM_TOPIC_PAGE.since,
+            FORUM_TOPIC_PAGE.revision,
+            FORUM_TOPIC_PAGE.rows,
+            FORUM_TOPIC_PAGE.nextCursor,
+            FORUM_TOPIC_PAGE.epoch,
+            FORUM_TOPIC_PAGE.requestCursor,
+          ]
+        : [
+            FORUM_DISCOVERY_PAGE.network,
+            FORUM_DISCOVERY_PAGE.revision,
+            FORUM_DISCOVERY_PAGE.entries,
+            FORUM_DISCOVERY_PAGE.nextCursor,
+            FORUM_DISCOVERY_PAGE.epoch,
+            FORUM_DISCOVERY_PAGE.requestCursor,
+          ],
       future,
     )
-    const topic = f.type === 13
+    const topic = f.type === TYPE_FORUM_TOPIC_PAGE
     if (topic) {
-      text(get(p, 1), 1, 512)
-      timestamp(get(p, 2))
+      text(get(p, FORUM_TOPIC_PAGE.topic), 1, 512)
+      timestamp(get(p, FORUM_TOPIC_PAGE.since))
     }
-    const rev = get(p, topic ? 3 : 1)
+    const rev = get(
+      p,
+      topic ? FORUM_TOPIC_PAGE.revision : FORUM_DISCOVERY_PAGE.revision,
+    )
     uint(rev)
-    const epoch = bytes(get(p, topic ? 6 : 4), 16),
-      rows = get(p, topic ? 4 : 2)
+    const epoch = bytes(
+        get(p, topic ? FORUM_TOPIC_PAGE.epoch : FORUM_DISCOVERY_PAGE.epoch),
+        16,
+      ),
+      rows = get(
+        p,
+        topic ? FORUM_TOPIC_PAGE.rows : FORUM_DISCOVERY_PAGE.entries,
+      )
     requireThat(Array.isArray(rows) && rows.length <= 128, 'row count')
-    for (const k of topic ? [5, 7] : [3, 5])
+    for (const k of topic
+      ? [FORUM_TOPIC_PAGE.nextCursor, FORUM_TOPIC_PAGE.requestCursor]
+      : [FORUM_DISCOVERY_PAGE.nextCursor, FORUM_DISCOVERY_PAGE.requestCursor])
       if (has(p, k)) bytes(get(p, k), 1, 2048)
-    requireThat(rows.length > 0 || !has(p, topic ? 5 : 3), 'empty continuation')
+    requireThat(
+      rows.length > 0 ||
+        !has(
+          p,
+          topic ? FORUM_TOPIC_PAGE.nextCursor : FORUM_DISCOVERY_PAGE.nextCursor,
+        ),
+      'empty continuation',
+    )
     let previous: FrankValue | undefined, previousId: Uint8Array | undefined
     for (const row of rows) {
       if (topic) {
         const v = validate(bytes(row, 9, 2097152))
-        requireThat(v.type === 12, 'row type')
-        const post = validate(get(v.payload, 1) as Uint8Array)
+        requireThat(v.type === TYPE_FORUM_VIEW, 'row type')
+        const post = validate(
+          get(v.payload, FORUM_SINGLE_VIEW.postFrame) as Uint8Array,
+        )
         requireThat(
-          equal(get(v.payload, 0), get(p, 0)) &&
-            equal(get(post.payload, 1), get(p, 1)) &&
-            equal(get(v.payload, 9), rev) &&
-            equal(get(v.payload, 10), epoch),
+          equal(
+            get(v.payload, FORUM_SINGLE_VIEW.network),
+            get(p, FORUM_TOPIC_PAGE.network),
+          ) &&
+            equal(
+              get(post.payload, TOPIC_POST.topic),
+              get(p, FORUM_TOPIC_PAGE.topic),
+            ) &&
+            equal(get(v.payload, FORUM_SINGLE_VIEW.revision), rev) &&
+            equal(get(v.payload, FORUM_SINGLE_VIEW.epoch), epoch),
           'row binding',
         )
-        const time = get(v.payload, 5),
+        const time = get(v.payload, FORUM_SINGLE_VIEW.firstVisible),
           id = t1(post.raw)
-        requireThat(timeOrder(time, get(p, 2)) >= 0, 'since')
+        requireThat(
+          timeOrder(time, get(p, FORUM_TOPIC_PAGE.since)) >= 0,
+          'since',
+        )
         if (previous !== undefined)
           requireThat(
             timeOrder(previous, time) < 0 ||
@@ -275,10 +432,18 @@ function validate(raw: Uint8Array): Opened {
         previous = time
         previousId = id
       } else {
-        keys(row, [0, 1, 2], future)
-        const name = text(get(row, 0), 1, 512)
-        uint(get(row, 1))
-        timestamp(get(row, 2))
+        keys(
+          row,
+          [
+            FORUM_DISCOVERY_ENTRY.topic,
+            FORUM_DISCOVERY_ENTRY.count,
+            FORUM_DISCOVERY_ENTRY.lastActivity,
+          ],
+          future,
+        )
+        const name = text(get(row, FORUM_DISCOVERY_ENTRY.topic), 1, 512)
+        uint(get(row, FORUM_DISCOVERY_ENTRY.count))
+        timestamp(get(row, FORUM_DISCOVERY_ENTRY.lastActivity))
         if (previous !== undefined)
           requireThat(
             Buffer.compare(Buffer.from(previous as string), Buffer.from(name)) <
@@ -288,40 +453,68 @@ function validate(raw: Uint8Array): Opened {
         previous = name
       }
     }
-  } else if (f.type === 15) {
+  } else if (f.type === TYPE_FORUM_OPERATION_STATUS) {
     requireThat(raw.length <= 2097152, 'status limit')
-    keys(p, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], future)
-    const sub = validate(bytes(get(p, 1), 9, 1048576))
+    keys(
+      p,
+      [
+        FORUM_OPERATION_STATUS.network,
+        FORUM_OPERATION_STATUS.submittedFrame,
+        FORUM_OPERATION_STATUS.targetHash,
+        FORUM_OPERATION_STATUS.transactionHash,
+        FORUM_OPERATION_STATUS.sender,
+        FORUM_OPERATION_STATUS.direction,
+        FORUM_OPERATION_STATUS.value,
+        FORUM_OPERATION_STATUS.state,
+        FORUM_OPERATION_STATUS.block,
+        FORUM_OPERATION_STATUS.transactionIndex,
+        FORUM_OPERATION_STATUS.revision,
+        FORUM_OPERATION_STATUS.epoch,
+      ],
+      future,
+    )
+    const sub = validate(
+      bytes(get(p, FORUM_OPERATION_STATUS.submittedFrame), 9, 1048576),
+    )
     requireThat(
-      (sub.type === 10 || sub.type === 11) &&
-        equal(get(sub.payload, 0), get(p, 0)),
+      (sub.type === TYPE_TOPIC_POST_SUBMISSION ||
+        sub.type === TYPE_TOPIC_VOTE_SUBMISSION) &&
+        equal(
+          get(sub.payload, TOPIC_POST_SUBMISSION.network),
+          get(p, FORUM_OPERATION_STATUS.network),
+        ),
       'status network',
     )
     const target =
-      sub.type === 10
-        ? t1(get(sub.payload, 1) as Uint8Array)
-        : get(sub.payload, 1)
-    requireThat(equal(bytes(get(p, 2), 32), target), 'status target')
-    bytes(get(p, 3), 32)
-    bytes(get(p, 4), 20)
-    uint(get(p, 5), 1n)
-    uint(get(p, 6))
-    const state = uint(get(p, 7), 3n)
+      sub.type === TYPE_TOPIC_POST_SUBMISSION
+        ? t1(get(sub.payload, TOPIC_POST_SUBMISSION.postFrame) as Uint8Array)
+        : get(sub.payload, TOPIC_POST_SUBMISSION.postFrame)
     requireThat(
-      has(p, 8) === (state === 2n) && has(p, 9) === (state === 2n),
+      equal(bytes(get(p, FORUM_OPERATION_STATUS.targetHash), 32), target),
+      'status target',
+    )
+    bytes(get(p, FORUM_OPERATION_STATUS.transactionHash), 32)
+    bytes(get(p, FORUM_OPERATION_STATUS.sender), 20)
+    uint(get(p, FORUM_OPERATION_STATUS.direction), 1n)
+    uint(get(p, FORUM_OPERATION_STATUS.value))
+    const state = uint(get(p, FORUM_OPERATION_STATUS.state), 3n)
+    requireThat(
+      has(p, FORUM_OPERATION_STATUS.block) === (state === 2n) &&
+        has(p, FORUM_OPERATION_STATUS.transactionIndex) === (state === 2n),
       'confirmation position',
     )
     if (state === 2n) {
-      uint(get(p, 8))
-      uint(get(p, 9))
+      uint(get(p, FORUM_OPERATION_STATUS.block))
+      uint(get(p, FORUM_OPERATION_STATUS.transactionIndex))
     }
     if (state === 1n || state === 2n)
       requireThat(
-        (get(p, 6) as bigint) > 0n && (get(p, 6) as bigint) <= (1n << 63n) - 1n,
+        (get(p, FORUM_OPERATION_STATUS.value) as bigint) > 0n &&
+          (get(p, FORUM_OPERATION_STATUS.value) as bigint) <= (1n << 63n) - 1n,
         'burn ceiling',
       )
-    uint(get(p, 10))
-    bytes(get(p, 11), 16)
+    uint(get(p, FORUM_OPERATION_STATUS.revision))
+    bytes(get(p, FORUM_OPERATION_STATUS.epoch), 16)
   } else throw Error('unknown type')
   return f
 }
@@ -333,8 +526,8 @@ function fixtures(): Fixture[] {
     type: number,
     payload: Encodable,
     valid = true,
-    schema = type === 9 ? 2 : 1,
-    min = type === 9 ? 2 : 1,
+    schema = type === TYPE_TOPIC_POST ? 2 : 1,
+    min = type === TYPE_TOPIC_POST ? 2 : 1,
     origin = 'typescript',
   ) {
     const raw = encodeFrame(
@@ -350,7 +543,7 @@ function fixtures(): Fixture[] {
       payload: recipe(payload),
       hex: toHex(raw),
       valid,
-      ...(type === 9
+      ...(type === TYPE_TOPIC_POST
         ? { t1: toHex(t1(raw)), t7: toHex(topicVoteCommitment(NET, t1(raw))) }
         : {}),
     })
@@ -358,35 +551,37 @@ function fixtures(): Fixture[] {
   }
   const content = (
     entry: Encodable = M([
-      [0, 1],
-      [1, 'Title'],
-      [2, 'https://example.invalid/é?q=é'],
-      [3, 'Body 😀 é é'],
+      [FORUM_POST_ENTRY.kind, 1],
+      [FORUM_POST_ENTRY.title, 'Title'],
+      [FORUM_POST_ENTRY.url, 'https://example.invalid/é?q=é'],
+      [FORUM_POST_ENTRY.message, 'Body 😀 é é'],
     ]),
     time = stamp(),
   ) =>
     encodeCanonical(
       M([
-        [0, time],
-        [1, [entry]],
+        [FORUM_CONTENT.authored, time],
+        [FORUM_CONTENT.entries, [entry]],
       ]),
     )
   const post = (body: Uint8Array, parent?: Uint8Array) =>
     M([
-      [0, NET],
-      [1, TOPIC],
-      ...(parent ? [[2, parent] as [number, Encodable]] : []),
-      [3, body],
+      [TOPIC_POST.network, NET],
+      [TOPIC_POST.topic, TOPIC],
+      ...(parent
+        ? [[TOPIC_POST.parentHash, parent] as [number, Encodable]]
+        : []),
+      [TOPIC_POST.body, body],
     ])
-  const top = add('typescript-origin', 9, post(content()))
+  const top = add('typescript-origin', TYPE_TOPIC_POST, post(content()))
   const rust = add(
     'rust-origin',
-    9,
+    TYPE_TOPIC_POST,
     post(
       content(
         M([
-          [0, 1],
-          [3, 'Rust origin λ'],
+          [FORUM_POST_ENTRY.kind, 1],
+          [FORUM_POST_ENTRY.message, 'Rust origin λ'],
         ]),
         stamp(-1n, 1),
       ),
@@ -398,12 +593,12 @@ function fixtures(): Fixture[] {
   )
   add(
     'reply',
-    9,
+    TYPE_TOPIC_POST,
     post(
       content(
         M([
-          [0, 1],
-          [3, 'Reply'],
+          [FORUM_POST_ENTRY.kind, 1],
+          [FORUM_POST_ENTRY.message, 'Reply'],
         ]),
       ),
       t1(top),
@@ -411,26 +606,26 @@ function fixtures(): Fixture[] {
   )
   add(
     'different-authored-time',
-    9,
+    TYPE_TOPIC_POST,
     post(content(undefined, stamp(1700000001n))),
   )
   add(
     'multiple-entries',
-    9,
+    TYPE_TOPIC_POST,
     post(
       encodeCanonical(
         M([
-          [0, stamp()],
+          [FORUM_CONTENT.authored, stamp()],
           [
-            1,
+            FORUM_CONTENT.entries,
             [
               M([
-                [0, 1],
-                [1, 'First'],
+                [FORUM_POST_ENTRY.kind, 1],
+                [FORUM_POST_ENTRY.title, 'First'],
               ]),
               M([
-                [0, 1],
-                [3, 'Second'],
+                [FORUM_POST_ENTRY.kind, 1],
+                [FORUM_POST_ENTRY.message, 'Second'],
               ]),
             ],
           ],
@@ -440,40 +635,47 @@ function fixtures(): Fixture[] {
   )
   add(
     'empty-optionals',
-    9,
+    TYPE_TOPIC_POST,
     post(
       content(
         M([
-          [0, 1],
-          [1, ''],
-          [2, ''],
-          [3, ''],
+          [FORUM_POST_ENTRY.kind, 1],
+          [FORUM_POST_ENTRY.title, ''],
+          [FORUM_POST_ENTRY.url, ''],
+          [FORUM_POST_ENTRY.message, ''],
         ]),
       ),
     ),
   )
-  add('absent-optionals', 9, post(content(M([[0, 1]]))))
+  add(
+    'absent-optionals',
+    TYPE_TOPIC_POST,
+    post(content(M([[FORUM_POST_ENTRY.kind, 1]]))),
+  )
   add(
     'future-retention',
-    9,
+    TYPE_TOPIC_POST,
     post(
       encodeCanonical(
         M([
-          [0, stamp()],
+          [FORUM_CONTENT.authored, stamp()],
           [
-            1,
+            FORUM_CONTENT.entries,
             [
               M([
-                [0, 1],
-                [3, 'Known'],
+                [FORUM_POST_ENTRY.kind, 1],
+                [FORUM_POST_ENTRY.message, 'Known'],
+                // raw-cbor-key: key 99 is undeclared: a future field the reader retains
                 [99, fromHex('aabb')],
               ]),
               M([
-                [0, 27],
+                [FORUM_POST_ENTRY.kind, 27],
+                // raw-cbor-key: key 42 is undeclared: an unknown future entry kind's field
                 [42, 'opaque'],
               ]),
             ],
           ],
+          // raw-cbor-key: key 77 is undeclared: a future field the reader retains
           [77, fromHex('0102')],
         ]),
       ),
@@ -482,15 +684,21 @@ function fixtures(): Fixture[] {
     3,
     2,
   )
-  add('required-version', 9, post(content()), false, 3, 3)
-  add('unknown-kind', 9, post(content(M([[0, 27]]))), false)
+  add('required-version', TYPE_TOPIC_POST, post(content()), false, 3, 3)
+  add(
+    'unknown-kind',
+    TYPE_TOPIC_POST,
+    post(content(M([[FORUM_ENTRY.kind, 27]]))),
+    false,
+  )
   add(
     'unknown-key-current',
-    9,
+    TYPE_TOPIC_POST,
     post(
       content(
         M([
-          [0, 1],
+          [FORUM_POST_ENTRY.kind, 1],
+          // raw-cbor-key: key 9 is undeclared in a current-schema post entry
           [9, 'x'],
         ]),
       ),
@@ -504,15 +712,15 @@ function fixtures(): Fixture[] {
     ['trailing-content', 'a200a2000001000181a1000100'],
     ['malformed-content', 'a2'],
   ] as const)
-    add(id, 9, post(fromHex(raw)), false)
+    add(id, TYPE_TOPIC_POST, post(fromHex(raw)), false)
   add(
     'empty-entries',
-    9,
+    TYPE_TOPIC_POST,
     post(
       encodeCanonical(
         M([
-          [0, stamp()],
-          [1, []],
+          [FORUM_CONTENT.authored, stamp()],
+          [FORUM_CONTENT.entries, []],
         ]),
       ),
     ),
@@ -520,12 +728,15 @@ function fixtures(): Fixture[] {
   )
   add(
     'too-many-entries',
-    9,
+    TYPE_TOPIC_POST,
     post(
       encodeCanonical(
         M([
-          [0, stamp()],
-          [1, Array(65).fill(M([[0, 1]]))],
+          [FORUM_CONTENT.authored, stamp()],
+          [
+            FORUM_CONTENT.entries,
+            Array(65).fill(M([[FORUM_POST_ENTRY.kind, 1]])),
+          ],
         ]),
       ),
     ),
@@ -536,29 +747,29 @@ function fixtures(): Fixture[] {
     sender = new Uint8Array(20).fill(3)
   const subA = add(
       'submission-a',
-      10,
+      TYPE_TOPIC_POST_SUBMISSION,
       M([
-        [0, NET],
-        [1, top],
-        [2, txA],
+        [TOPIC_POST_SUBMISSION.network, NET],
+        [TOPIC_POST_SUBMISSION.postFrame, top],
+        [TOPIC_POST_SUBMISSION.burnTx, txA],
       ]),
     ),
     subB = add(
       'submission-b',
-      10,
+      TYPE_TOPIC_POST_SUBMISSION,
       M([
-        [0, NET],
-        [1, top],
-        [2, txB],
+        [TOPIC_POST_SUBMISSION.network, NET],
+        [TOPIC_POST_SUBMISSION.postFrame, top],
+        [TOPIC_POST_SUBMISSION.burnTx, txB],
       ]),
     )
   add(
     'vote',
-    11,
+    TYPE_TOPIC_VOTE_SUBMISSION,
     M([
-      [0, NET],
-      [1, t1(top)],
-      [2, txB],
+      [TOPIC_VOTE_SUBMISSION.network, NET],
+      [TOPIC_VOTE_SUBMISSION.targetHash, t1(top)],
+      [TOPIC_VOTE_SUBMISSION.burnTx, txB],
     ]),
   )
   const magnitude = fromHex(
@@ -567,149 +778,161 @@ function fixtures(): Fixture[] {
   const view = (frame: Uint8Array, epoch = EPOCH) => {
     const tx = frame === rust ? fromHex('02aabb03') : txA
     return M([
-      [0, NET],
-      [1, frame],
-      [2, sender],
-      [3, tx],
-      [4, keccak_256(tx)],
-      [5, stamp()],
-      [6, U64],
-      [7, 0],
+      [FORUM_SINGLE_VIEW.network, NET],
+      [FORUM_SINGLE_VIEW.postFrame, frame],
+      [FORUM_SINGLE_VIEW.author, sender],
+      [FORUM_SINGLE_VIEW.authorBurnTx, tx],
+      [FORUM_SINGLE_VIEW.transactionHash, keccak_256(tx)],
+      [FORUM_SINGLE_VIEW.firstVisible, stamp()],
+      [FORUM_SINGLE_VIEW.block, U64],
+      [FORUM_SINGLE_VIEW.transactionIndex, 0],
       [
-        8,
+        FORUM_SINGLE_VIEW.aggregate,
         M([
-          [0, false],
-          [1, magnitude],
+          [FORUM_AGGREGATE.negative, false],
+          [FORUM_AGGREGATE.magnitude, magnitude],
         ]),
       ],
-      [9, U64],
-      [10, epoch],
+      [FORUM_SINGLE_VIEW.revision, U64],
+      [FORUM_SINGLE_VIEW.epoch, epoch],
     ])
   }
-  const viewA = add('view-large-aggregate', 12, view(top)),
-    viewB = add('view-rust', 12, view(rust))
+  const viewA = add('view-large-aggregate', TYPE_FORUM_VIEW, view(top)),
+    viewB = add('view-rust', TYPE_FORUM_VIEW, view(rust))
   const negative = view(top)
   negative.set(
     8,
     M([
-      [0, true],
-      [1, new Uint8Array(32)],
+      [FORUM_AGGREGATE.negative, true],
+      [FORUM_AGGREGATE.magnitude, new Uint8Array(32)],
     ]),
   )
-  add('negative-zero', 12, negative, false)
+  add('negative-zero', TYPE_FORUM_VIEW, negative, false)
   const pageRows = [viewA, viewB].sort((a, b) =>
     Buffer.compare(
-      Buffer.from(t1(get(open(a).payload, 1) as Uint8Array)),
-      Buffer.from(t1(get(open(b).payload, 1) as Uint8Array)),
+      Buffer.from(
+        t1(get(open(a).payload, FORUM_SINGLE_VIEW.postFrame) as Uint8Array),
+      ),
+      Buffer.from(
+        t1(get(open(b).payload, FORUM_SINGLE_VIEW.postFrame) as Uint8Array),
+      ),
     ),
   )
   add(
     'equal-time-page',
-    13,
+    TYPE_FORUM_TOPIC_PAGE,
     M([
-      [0, NET],
-      [1, TOPIC],
-      [2, stamp()],
-      [3, U64],
-      [4, pageRows],
-      [6, EPOCH],
+      [FORUM_TOPIC_PAGE.network, NET],
+      [FORUM_TOPIC_PAGE.topic, TOPIC],
+      [FORUM_TOPIC_PAGE.since, stamp()],
+      [FORUM_TOPIC_PAGE.revision, U64],
+      [FORUM_TOPIC_PAGE.rows, pageRows],
+      [FORUM_TOPIC_PAGE.epoch, EPOCH],
     ]),
   )
   add(
     'wrong-topic-page',
-    13,
+    TYPE_FORUM_TOPIC_PAGE,
     M([
-      [0, NET],
-      [1, 'other'],
-      [2, stamp()],
-      [3, U64],
-      [4, pageRows],
-      [6, EPOCH],
+      [FORUM_TOPIC_PAGE.network, NET],
+      [FORUM_TOPIC_PAGE.topic, 'other'],
+      [FORUM_TOPIC_PAGE.since, stamp()],
+      [FORUM_TOPIC_PAGE.revision, U64],
+      [FORUM_TOPIC_PAGE.rows, pageRows],
+      [FORUM_TOPIC_PAGE.epoch, EPOCH],
     ]),
     false,
   )
   add(
     'wrong-epoch-page',
-    13,
+    TYPE_FORUM_TOPIC_PAGE,
     M([
-      [0, NET],
-      [1, TOPIC],
-      [2, stamp()],
-      [3, U64],
-      [4, pageRows],
-      [6, new Uint8Array(16)],
+      [FORUM_TOPIC_PAGE.network, NET],
+      [FORUM_TOPIC_PAGE.topic, TOPIC],
+      [FORUM_TOPIC_PAGE.since, stamp()],
+      [FORUM_TOPIC_PAGE.revision, U64],
+      [FORUM_TOPIC_PAGE.rows, pageRows],
+      [FORUM_TOPIC_PAGE.epoch, new Uint8Array(16)],
     ]),
     false,
   )
   add(
     'discovery-u64',
-    14,
+    TYPE_FORUM_DISCOVERY_PAGE,
     M([
-      [0, NET],
-      [1, U64],
+      [FORUM_DISCOVERY_PAGE.network, NET],
+      [FORUM_DISCOVERY_PAGE.revision, U64],
       [
-        2,
+        FORUM_DISCOVERY_PAGE.entries,
         [
           M([
-            [0, 'a'],
-            [1, U64],
-            [2, stamp()],
+            [FORUM_DISCOVERY_ENTRY.topic, 'a'],
+            [FORUM_DISCOVERY_ENTRY.count, U64],
+            [FORUM_DISCOVERY_ENTRY.lastActivity, stamp()],
           ]),
           M([
-            [0, 'é'],
-            [1, 1],
-            [2, stamp()],
+            [FORUM_DISCOVERY_ENTRY.topic, 'é'],
+            [FORUM_DISCOVERY_ENTRY.count, 1],
+            [FORUM_DISCOVERY_ENTRY.lastActivity, stamp()],
           ]),
         ],
       ],
-      [4, EPOCH],
+      [FORUM_DISCOVERY_PAGE.epoch, EPOCH],
     ]),
   )
   const status = (submission: Uint8Array, state: number) =>
     M([
-      [0, NET],
-      [1, submission],
-      [2, t1(top)],
-      [3, keccak_256(submission === subA ? txA : txB)],
-      [4, sender],
-      [5, 1],
-      [6, 9007199254740993n],
-      [7, state],
+      [FORUM_OPERATION_STATUS.network, NET],
+      [FORUM_OPERATION_STATUS.submittedFrame, submission],
+      [FORUM_OPERATION_STATUS.targetHash, t1(top)],
+      [
+        FORUM_OPERATION_STATUS.transactionHash,
+        keccak_256(submission === subA ? txA : txB),
+      ],
+      [FORUM_OPERATION_STATUS.sender, sender],
+      [FORUM_OPERATION_STATUS.direction, 1],
+      [FORUM_OPERATION_STATUS.value, 9007199254740993n],
+      [FORUM_OPERATION_STATUS.state, state],
       ...(state === 2
         ? ([
-            [8, U64],
-            [9, 0],
+            [FORUM_OPERATION_STATUS.block, U64],
+            [FORUM_OPERATION_STATUS.transactionIndex, 0],
           ] as [number, Encodable][])
         : []),
-      [10, U64],
-      [11, EPOCH],
+      [FORUM_OPERATION_STATUS.revision, U64],
+      [FORUM_OPERATION_STATUS.epoch, EPOCH],
     ])
-  add('confirmed-a', 15, status(subA, 2))
-  add('unknown-b-same-post', 15, status(subB, 0))
-  add('pending-a', 15, status(subA, 1))
-  add('rejected-b', 15, status(subB, 3))
+  add('confirmed-a', TYPE_FORUM_OPERATION_STATUS, status(subA, 2))
+  add('unknown-b-same-post', TYPE_FORUM_OPERATION_STATUS, status(subB, 0))
+  add('pending-a', TYPE_FORUM_OPERATION_STATUS, status(subA, 1))
+  add('rejected-b', TYPE_FORUM_OPERATION_STATUS, status(subB, 3))
   for (const [label, key, v] of [
-    ['tx', 3, new Uint8Array(32)],
-    ['sender', 4, new Uint8Array(20)],
-    ['direction', 5, 0],
-    ['value', 6, 1n],
+    ['tx', FORUM_OPERATION_STATUS.transactionHash, new Uint8Array(32)],
+    ['sender', FORUM_OPERATION_STATUS.sender, new Uint8Array(20)],
+    ['direction', FORUM_OPERATION_STATUS.direction, 0],
+    ['value', FORUM_OPERATION_STATUS.value, 1n],
   ] as [string, number, Encodable][]) {
     const changed = status(subA, 2)
     changed.set(key, v)
-    add(`mismatched-response-${label}`, 15, changed)
+    add(`mismatched-response-${label}`, TYPE_FORUM_OPERATION_STATUS, changed)
   }
   const wrongTarget = status(subA, 2)
-  wrongTarget.set(2, new Uint8Array(32))
-  add('wrong-target', 15, wrongTarget, false)
+  wrongTarget.set(FORUM_OPERATION_STATUS.targetHash, new Uint8Array(32))
+  add('wrong-target', TYPE_FORUM_OPERATION_STATUS, wrongTarget, false)
   const wrongNet = status(subA, 2)
-  wrongNet.set(0, 'other')
-  add('wrong-network', 15, wrongNet, false)
+  wrongNet.set(FORUM_OPERATION_STATUS.network, 'other')
+  add('wrong-network', TYPE_FORUM_OPERATION_STATUS, wrongNet, false)
   const highBurn = status(subA, 2)
-  highBurn.set(6, U64)
-  add('u64-burn-not-admitted', 15, highBurn, false)
+  highBurn.set(FORUM_OPERATION_STATUS.value, U64)
+  add('u64-burn-not-admitted', TYPE_FORUM_OPERATION_STATUS, highBurn, false)
   const unknownPosition = status(subB, 0)
-  unknownPosition.set(8, 1)
-  add('unknown-cannot-have-position', 15, unknownPosition, false)
+  unknownPosition.set(FORUM_OPERATION_STATUS.block, 1)
+  add(
+    'unknown-cannot-have-position',
+    TYPE_FORUM_OPERATION_STATUS,
+    unknownPosition,
+    false,
+  )
   return out
 }
 
@@ -720,17 +943,40 @@ function bindStatus(
   observed?: FrankValue,
 ): string {
   const p = validate(raw).payload
-  for (const k of [0, 1, 2, 3, 4, 5, 6])
+  for (const k of [
+    FORUM_OPERATION_STATUS.network,
+    FORUM_OPERATION_STATUS.submittedFrame,
+    FORUM_OPERATION_STATUS.targetHash,
+    FORUM_OPERATION_STATUS.transactionHash,
+    FORUM_OPERATION_STATUS.sender,
+    FORUM_OPERATION_STATUS.direction,
+    FORUM_OPERATION_STATUS.value,
+  ])
     requireThat(equal(get(p, k), get(request, k)), `request mismatch ${k}`)
-  const state = get(p, 7)
+  const state = get(p, FORUM_OPERATION_STATUS.state)
   if (state === 0n || state === 3n) return 'unverified-request'
   requireThat(observed !== undefined, 'missing observation')
-  const submission = open(get(p, 1) as Uint8Array)
+  const submission = open(
+    get(p, FORUM_OPERATION_STATUS.submittedFrame) as Uint8Array,
+  )
   requireThat(
-    equal(get(p, 3), keccak_256(get(submission.payload, 2) as Uint8Array)),
+    equal(
+      get(p, FORUM_OPERATION_STATUS.transactionHash),
+      keccak_256(
+        get(submission.payload, TOPIC_POST_SUBMISSION.burnTx) as Uint8Array,
+      ),
+    ),
     'raw transaction hash',
   )
-  for (const k of [0, 1, 2, 3, 4, 5, 6])
+  for (const k of [
+    FORUM_OPERATION_STATUS.network,
+    FORUM_OPERATION_STATUS.submittedFrame,
+    FORUM_OPERATION_STATUS.targetHash,
+    FORUM_OPERATION_STATUS.transactionHash,
+    FORUM_OPERATION_STATUS.sender,
+    FORUM_OPERATION_STATUS.direction,
+    FORUM_OPERATION_STATUS.value,
+  ])
     requireThat(equal(get(p, k), get(observed, k)), `observation mismatch ${k}`)
   return state === 2n ? 'relay-confirmed' : 'relay-pending'
 }
@@ -772,32 +1018,47 @@ function checkObserved(all: Fixture[], facts: ReturnType<typeof observations>) {
   for (const id of ['view-large-aggregate', 'view-rust']) {
     const p = validate(fromHex(all.find(f => f.id === id)!.hex)).payload
     const fact = factFor(
-      get(p, 3) as Uint8Array,
-      t1(get(p, 1) as Uint8Array),
-      get(p, 0) as string,
+      get(p, FORUM_SINGLE_VIEW.authorBurnTx) as Uint8Array,
+      t1(get(p, FORUM_SINGLE_VIEW.postFrame) as Uint8Array),
+      get(p, FORUM_SINGLE_VIEW.network) as string,
     )
-    assert.equal(toHex(get(p, 2) as Uint8Array), fact.sender)
-    assert.equal(toHex(get(p, 4) as Uint8Array), fact.hash)
+    assert.equal(
+      toHex(get(p, FORUM_SINGLE_VIEW.author) as Uint8Array),
+      fact.sender,
+    )
+    assert.equal(
+      toHex(get(p, FORUM_SINGLE_VIEW.transactionHash) as Uint8Array),
+      fact.hash,
+    )
     assert.equal(fact.direction, 1)
-    rejects(() => factFor(get(p, 3) as Uint8Array, new Uint8Array(32), NET))
+    rejects(() =>
+      factFor(
+        get(p, FORUM_SINGLE_VIEW.authorBurnTx) as Uint8Array,
+        new Uint8Array(32),
+        NET,
+      ),
+    )
   }
   for (const id of ['confirmed-a', 'pending-a']) {
     const raw = fromHex(all.find(f => f.id === id)!.hex),
       p = validate(raw).payload,
-      sub = open(get(p, 1) as Uint8Array)
+      sub = open(get(p, FORUM_OPERATION_STATUS.submittedFrame) as Uint8Array)
     const fact = factFor(
-      get(sub.payload, 2) as Uint8Array,
-      get(p, 2) as Uint8Array,
-      get(p, 0) as string,
+      get(sub.payload, TOPIC_POST_SUBMISSION.burnTx) as Uint8Array,
+      get(p, FORUM_OPERATION_STATUS.targetHash) as Uint8Array,
+      get(p, FORUM_OPERATION_STATUS.network) as string,
     )
     const observed = M([
-      [0, fact.network],
-      [1, get(p, 1)],
-      [2, fromHex(fact.target)],
-      [3, fromHex(fact.hash)],
-      [4, fromHex(fact.sender)],
-      [5, fact.direction],
-      [6, BigInt(fact.value)],
+      [FORUM_OPERATION_STATUS.network, fact.network],
+      [
+        FORUM_OPERATION_STATUS.submittedFrame,
+        get(p, FORUM_OPERATION_STATUS.submittedFrame),
+      ],
+      [FORUM_OPERATION_STATUS.targetHash, fromHex(fact.target)],
+      [FORUM_OPERATION_STATUS.transactionHash, fromHex(fact.hash)],
+      [FORUM_OPERATION_STATUS.sender, fromHex(fact.sender)],
+      [FORUM_OPERATION_STATUS.direction, fact.direction],
+      [FORUM_OPERATION_STATUS.value, BigInt(fact.value)],
     ])
     assert.equal(
       bindStatus(raw, p, decodeCanonical(encodeCanonical(observed))),
@@ -805,29 +1066,29 @@ function checkObserved(all: Fixture[], facts: ReturnType<typeof observations>) {
     )
   }
 }
-function cursorFixtures(all: Fixture[], family = 13) {
+function cursorFixtures(all: Fixture[], family = TYPE_FORUM_TOPIC_PAGE) {
   const top = fromHex(all.find(f => f.id === 'typescript-origin')!.hex)
   const cursor = M([
-    [0, NET],
-    [1, 13],
-    [2, U64],
-    [3, EPOCH],
+    [FORUM_TOPIC_CURSOR.network, NET],
+    [FORUM_TOPIC_CURSOR.family, TYPE_FORUM_TOPIC_PAGE],
+    [FORUM_TOPIC_CURSOR.revision, U64],
+    [FORUM_TOPIC_CURSOR.epoch, EPOCH],
     [
-      4,
+      FORUM_TOPIC_CURSOR.last,
       M([
-        [0, stamp()],
-        [1, t1(top)],
+        [FORUM_CURSOR_LAST.timestamp, stamp()],
+        [FORUM_CURSOR_LAST.hash, t1(top)],
       ]),
     ],
-    [5, TOPIC],
-    [6, stamp()],
-    [7, 1n],
+    [FORUM_TOPIC_CURSOR.topic, TOPIC],
+    [FORUM_TOPIC_CURSOR.since, stamp()],
+    [FORUM_TOPIC_CURSOR.incarnation, 1n],
   ])
-  if (family === 14) {
-    cursor.set(1, 14)
-    cursor.set(4, TOPIC)
-    cursor.delete(5)
-    cursor.delete(6)
+  if (family === TYPE_FORUM_DISCOVERY_PAGE) {
+    cursor.set(FORUM_DISCOVERY_CURSOR.family, TYPE_FORUM_DISCOVERY_PAGE)
+    cursor.set(FORUM_DISCOVERY_CURSOR.last, TOPIC)
+    cursor.delete(FORUM_TOPIC_CURSOR.topic)
+    cursor.delete(FORUM_TOPIC_CURSOR.since)
   }
   const expected = toHex(encodeCanonical(cursor))
   const out: {
@@ -858,10 +1119,17 @@ function cursorFixtures(all: Fixture[], family = 13) {
       retainedIncarnation,
     })
   const raw = fromHex(expected)
-  add(family === 13 ? 'topic-cursor' : 'discovery-cursor', raw, true)
+  add(
+    family === TYPE_FORUM_TOPIC_PAGE ? 'topic-cursor' : 'discovery-cursor',
+    raw,
+    true,
+  )
   for (const k of cursor.keys()) {
     const changed = new Map(cursor)
-    changed.set(k, k === 3 ? new Uint8Array(16) : 'forged')
+    changed.set(
+      k,
+      k === FORUM_TOPIC_CURSOR.epoch ? new Uint8Array(16) : 'forged',
+    )
     add(`forged-field-${k}`, encodeCanonical(changed), false)
   }
   for (const [id, hex] of [
@@ -877,7 +1145,7 @@ function cursorFixtures(all: Fixture[], family = 13) {
   // starts at age zero; its original cursor must stay expired.
   add('expired-recreated-original-cursor', raw, false, true, 0, undefined, '2')
   const recreated = new Map(cursor)
-  recreated.set(7, 2n)
+  recreated.set(FORUM_TOPIC_CURSOR.incarnation, 2n)
   add(
     'recreated-current-cursor',
     encodeCanonical(recreated),
@@ -888,10 +1156,10 @@ function cursorFixtures(all: Fixture[], family = 13) {
     '2',
   )
   const missingIncarnation = new Map(cursor)
-  missingIncarnation.delete(7)
+  missingIncarnation.delete(FORUM_TOPIC_CURSOR.incarnation)
   add('missing-incarnation', encodeCanonical(missingIncarnation), false)
   const lastIncarnation = new Map(cursor)
-  lastIncarnation.set(7, U64)
+  lastIncarnation.set(FORUM_TOPIC_CURSOR.incarnation, U64)
   add(
     'u64-incarnation',
     encodeCanonical(lastIncarnation),
@@ -928,10 +1196,15 @@ function checkCursors(shared: ReturnType<typeof cursorFixtures>) {
       assert.equal(toHex(raw), f.hex)
       const c = decodeCanonical(raw)
       const retained = new Map(map(decodeCanonical(fromHex(shared.expected))))
-      retained.set(7n, BigInt(f.retainedIncarnation))
+      retained.set(
+        BigInt(FORUM_TOPIC_CURSOR.incarnation),
+        BigInt(f.retainedIncarnation),
+      )
       keys(c, [...retained.keys()].map(Number))
       const lookupKey = (cursor: FrankValue) =>
-        `${toHex(bytes(get(cursor, 3), 16))}:${uint(get(cursor, 7))}`
+        `${toHex(bytes(get(cursor, FORUM_TOPIC_CURSOR.epoch), 16))}:${uint(
+          get(cursor, FORUM_TOPIC_CURSOR.incarnation),
+        )}`
       // The retained store is keyed by lifetime identity, never query/revision.
       const snapshots = new Map([[lookupKey(retained), retained]])
       const snapshot = snapshots.get(lookupKey(c))
@@ -959,7 +1232,15 @@ function policies(all: Fixture[]) {
     rejects(() =>
       bindStatus(raw(`mismatched-response-${label}`), confirmed, confirmed),
     )
-  for (const key of [0, 1, 2, 3, 4, 5, 6]) {
+  for (const key of [
+    FORUM_OPERATION_STATUS.network,
+    FORUM_OPERATION_STATUS.submittedFrame,
+    FORUM_OPERATION_STATUS.targetHash,
+    FORUM_OPERATION_STATUS.transactionHash,
+    FORUM_OPERATION_STATUS.sender,
+    FORUM_OPERATION_STATUS.direction,
+    FORUM_OPERATION_STATUS.value,
+  ]) {
     const changed = new Map(map(confirmed))
     const v = get(confirmed, key)
     changed.set(
@@ -1034,7 +1315,10 @@ if (process.argv.includes('--emit')) {
         chainFacts:
           'synthetic exact-byte observations; not signed transaction evidence',
         frames,
-        cursors: [cursorFixtures(frames), cursorFixtures(frames, 14)],
+        cursors: [
+          cursorFixtures(frames),
+          cursorFixtures(frames, TYPE_FORUM_DISCOVERY_PAGE),
+        ],
         observations: observations(frames),
       },
       null,
@@ -1066,7 +1350,10 @@ if (process.argv.includes('--emit')) {
     } else rejects(() => validate(encoded))
   }
   policies(all)
-  assert.deepEqual(doc.cursors, [cursorFixtures(all), cursorFixtures(all, 14)])
+  assert.deepEqual(doc.cursors, [
+    cursorFixtures(all),
+    cursorFixtures(all, TYPE_FORUM_DISCOVERY_PAGE),
+  ])
   doc.cursors.forEach(checkCursors)
   assert.deepEqual(doc.observations, observations(all))
   checkObserved(all, doc.observations)

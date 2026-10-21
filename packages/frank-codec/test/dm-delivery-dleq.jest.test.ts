@@ -17,6 +17,7 @@ import {
   fr,
   NET,
 } from '../fixtures/builders'
+import { ACCOUNT_REF, KEY_TYPE, TYPE_DIRECT_MESSAGE_DELIVERY } from '../src/constants'
 
 const ctx = defaultContext()
 
@@ -39,13 +40,13 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
     })
     const res = validateFrame(frame, ctx)
     expect(res.kind).toBe('parsed')
-    if (res.kind !== 'parsed' || res.typed?.type !== 1) {
+    if (res.kind !== 'parsed' || res.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY) {
       throw new Error('expected parsed Type 1 delivery')
     }
 
     expect(res.typed.recipient).toBeDefined()
-    expect(res.typed.recipient?.keyType).toBe(1)
-    expect(res.typed.recipient?.keyBytes).toEqual(recipientAcct.get(1))
+    expect(res.typed.recipient?.keyType).toBe(KEY_TYPE.secp256k1)
+    expect(res.typed.recipient?.keyBytes).toEqual(recipientAcct.get(ACCOUNT_REF.keyBytes))
     expect(res.typed.dleqProof).toBeDefined()
     expect(res.typed.dleqProof).toEqual(dleqProof)
     expect(res.typed.payments.length).toBe(2)
@@ -55,7 +56,7 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
     const frame = deliveryFrame()
     const res = validateFrame(frame, ctx)
     expect(res.kind).toBe('parsed')
-    if (res.kind !== 'parsed' || res.typed?.type !== 1) {
+    if (res.kind !== 'parsed' || res.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY) {
       throw new Error('expected parsed Type 1 delivery')
     }
 
@@ -83,8 +84,8 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
 
     // Key type 3 (Schnorr)
     const badAcct3 = M([
-      [0, 3],
-      [1, bytesOf(32, 9)],
+      [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1XOnly],
+      [ACCOUNT_REF.keyBytes, bytesOf(32, 9)],
     ])
     const frame3 = deliveryFrame({
       recipient: badAcct3,
@@ -103,8 +104,8 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
 
   it('rejects recipient with keyType 1 but incorrect key length (requires 33 bytes)', () => {
     const badAcctLength = M([
-      [0, 1],
-      [1, bytesOf(32, 5)], // 32 bytes instead of 33
+      [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+      [ACCOUNT_REF.keyBytes, bytesOf(32, 5)], // 32 bytes instead of 33
     ])
     const frame = deliveryFrame({
       recipient: badAcctLength,
@@ -200,7 +201,7 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
     const payload = deliveryPayload({
       recipient: recipientAcct,
     })
-    const frame = fr(1, payload)
+    const frame = fr(TYPE_DIRECT_MESSAGE_DELIVERY, payload)
     expect(() => validateFrame(frame, ctx)).toThrow(FrankCodecError)
     try {
       validateFrame(frame, ctx)
@@ -218,7 +219,7 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
     const payload = deliveryPayload({
       dleqProof,
     })
-    const frame = fr(1, payload)
+    const frame = fr(TYPE_DIRECT_MESSAGE_DELIVERY, payload)
     expect(() => validateFrame(frame, ctx)).toThrow(FrankCodecError)
     try {
       validateFrame(frame, ctx)
@@ -250,7 +251,7 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
     })
     const goodRes = validateFrame(goodFrame, ctx)
     expect(goodRes.kind).toBe('parsed')
-    if (goodRes.kind === 'parsed' && goodRes.typed?.type === 1) {
+    if (goodRes.kind === 'parsed' && goodRes.typed?.type === TYPE_DIRECT_MESSAGE_DELIVERY) {
       expect(goodRes.typed.payments.length).toBe(3)
       expect(goodRes.typed.payments[0].childIndex).toBe(0)
       expect(goodRes.typed.payments[1].childIndex).toBe(1)
@@ -286,17 +287,18 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
       recipient: recipientAcct,
       dleqProof,
     })
-    const frame = fr(1, payload)
+    const frame = fr(TYPE_DIRECT_MESSAGE_DELIVERY, payload)
     const res = validateFrame(frame, ctx)
     expect(res.kind).toBe('parsed')
-    if (res.kind === 'parsed' && res.typed?.type === 1) {
+    if (res.kind === 'parsed' && res.typed?.type === TYPE_DIRECT_MESSAGE_DELIVERY) {
       expect(res.typed.unknownFields.size).toBe(0)
     }
 
     // Adding key 7 (undeclared) fails C12 in strict mode
     const payloadWith7 = new Map(payload)
+    // raw-cbor-key: key 7 is undeclared in a direct-message delivery
     payloadWith7.set(7, new Uint8Array([1, 2, 3]))
-    const frameWith7 = fr(1, payloadWith7)
+    const frameWith7 = fr(TYPE_DIRECT_MESSAGE_DELIVERY, payloadWith7)
     expect(() => validateFrame(frameWith7, ctx)).toThrow(FrankCodecError)
     try {
       validateFrame(frameWith7, ctx)

@@ -1,3 +1,4 @@
+// raw-cbor-key-file: generic canonical CBOR encoder/decoder tests; no Frank message schema applies
 import {
   FrankCodecError,
   I64_MAX,

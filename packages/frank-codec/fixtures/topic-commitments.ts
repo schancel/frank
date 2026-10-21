@@ -10,13 +10,22 @@ import {
   topicSubmissionFrame,
   topicVoteFrame,
 } from './builders'
+import {
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+} from '../src/constants'
 
 function t1(frame: Uint8Array): Uint8Array {
   const r = validateFrame(frame, {
     operation: 'typed',
     routeByteLimit: 8_388_617,
     readerVersion: 1,
-    supportedSchemas: [9, 10, 11].map(typeId => ({ typeId, schemaVersion: 1 })),
+    supportedSchemas: [
+      TYPE_TOPIC_POST,
+      TYPE_TOPIC_POST_SUBMISSION,
+      TYPE_TOPIC_VOTE_SUBMISSION,
+    ].map(typeId => ({ typeId, schemaVersion: 1 })),
     opaqueRetentionAllowed: false,
     priorDirectoryStatementFrame: null,
   })

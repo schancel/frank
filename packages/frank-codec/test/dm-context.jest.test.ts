@@ -10,6 +10,12 @@ import {
   toHex,
   type DirectMessageCryptoContext,
 } from '../src'
+import {
+  ACCOUNT_REF,
+  ENCRYPTION_SUITE,
+  RECIPIENT_ENCRYPTED_PAYLOAD_V2,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+} from '../src/constants'
 
 const bytes = (length: number, value: number) =>
   new Uint8Array(length).fill(value)
@@ -52,8 +58,8 @@ const account = ({ keyType, keyHex }: CorpusAccount) => ({
 })
 const accountMap = (value: CorpusAccount) =>
   cborMap([
-    [0, value.keyType],
-    [1, fromHex(value.keyHex)],
+    [ACCOUNT_REF.keyType, value.keyType],
+    [ACCOUNT_REF.keyBytes, fromHex(value.keyHex)],
   ])
 
 const VECTOR: DirectMessageCryptoContext = {
@@ -78,19 +84,29 @@ describe('DM crypto context v1', () => {
 
   it('matches the shared type-5 schema-2 frame', () => {
     const payload = cborMap([
-      [0, C.network],
-      [1, accountMap(C.sender)],
-      [2, accountMap(C.recipient)],
-      [3, 1],
-      [4, fromHex(CORPUS.cryptoBox.envelopeHex)],
-      [5, fromHex(C.ephemeralPointHex)],
-      [6, fromHex(C.sharedPointHex)],
-      [7, fromHex(C.dleqProofHex)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.network, C.network],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender, accountMap(C.sender)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.recipient, accountMap(C.recipient)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.suite, ENCRYPTION_SUITE.dmAuthXchacha],
+      [
+        RECIPIENT_ENCRYPTED_PAYLOAD_V2.cryptoBoxEnvelope,
+        fromHex(CORPUS.cryptoBox.envelopeHex),
+      ],
+      [
+        RECIPIENT_ENCRYPTED_PAYLOAD_V2.ephemeralPoint,
+        fromHex(C.ephemeralPointHex),
+      ],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sharedPoint, fromHex(C.sharedPointHex)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V2.dleqProof, fromHex(C.dleqProofHex)],
     ])
     expect(
       toHex(
         encodeFrame(
-          { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+          {
+            typeId: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+            schemaVersion: 2,
+            minReaderVersion: 2,
+          },
           payload,
         ),
       ),

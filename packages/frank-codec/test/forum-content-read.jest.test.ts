@@ -36,6 +36,17 @@ import {
   contentPayload,
   ForumFixture,
 } from '../fixtures/forum-content-read'
+import {
+  FORUM_CONTENT,
+  FORUM_POST_ENTRY,
+  FORUM_SINGLE_VIEW,
+  FORUM_TOPIC_PAGE,
+  TOPIC_POST,
+  TYPE_FORUM_OPERATION_STATUS,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_VIEW,
+  TYPE_TOPIC_POST,
+} from '../src/constants'
 
 const parsed = (bytes: Uint8Array, ctx = defaultContext()): ParsedFrame => {
   const r = validateFrame(bytes, ctx)
@@ -46,8 +57,8 @@ const raw = (id: string) => fromHex(forumFixture(id).hex)
 const frame = (
   type: number,
   payload: Encodable,
-  schema = type === 9 ? 2 : 1,
-  min = type === 9 ? 2 : 1,
+  schema = type === TYPE_TOPIC_POST ? 2 : 1,
+  min = type === TYPE_TOPIC_POST ? 2 : 1,
 ) =>
   encodeFrame(
     { typeId: type, schemaVersion: schema, minReaderVersion: min },
@@ -81,7 +92,7 @@ describe('active Forum public facade', () => {
     const topicSchema = f.context?.topicSchema
     if (topicSchema)
       context.supportedSchemas = context.supportedSchemas.map(s =>
-        s.typeId === 9 ? { ...s, schemaVersion: topicSchema } : s,
+        s.typeId === TYPE_TOPIC_POST ? { ...s, schemaVersion: topicSchema } : s,
       )
     if (!f.valid) {
       try {
@@ -120,9 +131,9 @@ describe('active Forum public facade', () => {
       expect(
         toHex(topicVoteCommitment('monad-testnet', contentHash(result))),
       ).toBe(f.t7)
-    if (f.type === 9) {
+    if (f.type === TYPE_TOPIC_POST) {
       expect(result.typed?.type).toBe(9)
-      if (result.typed?.type === 9)
+      if (result.typed?.type === TYPE_TOPIC_POST)
         expect(result.typed.schemaVersion).toBe(f.schema === 1 ? 1 : 2)
     }
   })
@@ -155,7 +166,7 @@ describe('active Forum public facade', () => {
     ).toBe(forumFixture('rust-origin').hex)
     for (const id of ['typescript-origin', 'rust-origin']) {
       const post = parsed(raw(id)).typed
-      if (post?.type !== 9 || post.schemaVersion !== 2)
+      if (post?.type !== TYPE_TOPIC_POST || post.schemaVersion !== 2)
         throw Error('not structured')
       expect(post.content.entries.every(e => e.kind === 'post')).toBe(true)
       const entries = post.content.entries.map(e => {
@@ -180,8 +191,10 @@ describe('active Forum public facade', () => {
           ?.type,
       ).toBe(10)
     }
-    const opaque = parsed(frame(9, payloadOf('typescript-origin'), 1, 1)).typed
-    expect(opaque).toMatchObject({ type: 9, schemaVersion: 1 })
+    const opaque = parsed(
+      frame(TYPE_TOPIC_POST, payloadOf('typescript-origin'), 1, 1),
+    ).typed
+    expect(opaque).toMatchObject({ type: TYPE_TOPIC_POST, schemaVersion: 1 })
     expect(opaque && 'content' in opaque).toBe(false)
     expect(contentHash(parsed(raw('typescript-origin')))).not.toEqual(
       contentHash(parsed(raw('different-authored-time'))),
@@ -190,7 +203,7 @@ describe('active Forum public facade', () => {
   it('retains unknown future bytes and uses only a fixed bounded placeholder', () => {
     const bytes = raw('future-retention'),
       post = parsed(bytes).typed
-    if (post?.type !== 9 || post.schemaVersion !== 2)
+    if (post?.type !== TYPE_TOPIC_POST || post.schemaVersion !== 2)
       throw Error('not structured')
     expect(
       post.content.entries.find(e => e.kind === 'unsupported'),
@@ -203,6 +216,7 @@ describe('cursor and exact request boundaries', () => {
   it('checks cursor byte and transport ceilings before parsing or allocation', () => {
     // Closed cursor fields cannot fill 2048 bytes; prove the inclusive byte gate
     // separately from the subsequent canonical/schema rejection.
+    // raw-cbor-key: byte-size list, not a map entry
     for (const size of [2048, 2049]) {
       try {
         decodeForumCursor(new Uint8Array(size))
@@ -238,10 +252,12 @@ describe('cursor and exact request boundaries', () => {
       expect(() => forumCursorFromTransport(spelling)).toThrow()
     for (const network of ['UPPER', 'é', '', '-net', 'n'.repeat(65)]) {
       const value = new Map(decodeCanonical(bytes) as Map<bigint, FrankValue>)
+      // raw-cbor-key: network (0) sits at the same key in topic and discovery cursors
       value.set(0n, network)
       expect(() => decodeForumCursor(encodeCanonical(value))).toThrow()
     }
     const missing = new Map(decodeCanonical(bytes) as Map<bigint, FrankValue>)
+    // raw-cbor-key: incarnation (7) sits at the same key in topic and discovery cursors
     missing.delete(7n)
     expect(() => decodeForumCursor(encodeCanonical(missing))).toThrow()
   })
@@ -253,7 +269,7 @@ describe('cursor and exact request boundaries', () => {
       'rejected-b',
     ]) {
       const p = parsed(raw(id)).typed
-      if (p?.type !== 15) throw Error('status')
+      if (p?.type !== TYPE_FORUM_OPERATION_STATUS) throw Error('status')
       const expected: ForumOperationExpectation = {
         network: p.network,
         submittedFrame: p.submittedFrame.frame,
@@ -297,7 +313,11 @@ describe('cursor and exact request boundaries', () => {
   it('matches explicit view facts without inventing chain evidence or a read-frame T1', () => {
     const bytes = raw('view-large-aggregate'),
       v = parsed(bytes).typed
-    if (v?.type !== 12 || v.postFrame.typed?.type !== 9) throw Error('view')
+    if (
+      v?.type !== TYPE_FORUM_VIEW ||
+      v.postFrame.typed?.type !== TYPE_TOPIC_POST
+    )
+      throw Error('view')
     const hash = contentHash(v.postFrame),
       expected = {
         network: v.network,
@@ -315,7 +335,7 @@ describe('cursor and exact request boundaries', () => {
       matchForumView(bytes, { ...expected, topic: 'different' }),
     ).toThrow()
     const p = parsed(raw('equal-time-page')).typed
-    if (p?.type !== 13) throw Error('page')
+    if (p?.type !== TYPE_FORUM_TOPIC_PAGE) throw Error('page')
     expect(
       matchForumPage(raw('equal-time-page'), {
         network: p.network,
@@ -338,28 +358,29 @@ describe('cursor and exact request boundaries', () => {
 
 describe('cumulative opened resource budgets', () => {
   const postWith = (content: FrankValue, schema = 2) =>
-    frame(9, contentPayload(content), schema, 2)
+    frame(TYPE_TOPIC_POST, contentPayload(content), schema, 2)
   it('enforces 64 entries and the inclusive text/content byte ceilings', () => {
     const c = baseContent(),
       entry = new Map<bigint, FrankValue>([
-        [0n, 1n],
-        [3n, 'x'],
+        [BigInt(FORUM_POST_ENTRY.kind), 1n],
+        [BigInt(FORUM_POST_ENTRY.message), 'x'],
       ])
     c.set(
-      1n,
+      BigInt(FORUM_CONTENT.entries),
       Array.from({ length: 64 }, () => entry),
     )
     expect(outcome(postWith(c))).toBe('parsed')
     c.set(
-      1n,
+      BigInt(FORUM_CONTENT.entries),
       Array.from({ length: 65 }, () => entry),
     )
     expect(outcome(postWith(c))).toBe('resource@8.1')
+    // raw-cbor-key: byte-size list, not a map entry
     for (const size of [262144, 262145]) {
-      c.set(1n, [
+      c.set(BigInt(FORUM_CONTENT.entries), [
         new Map<bigint, FrankValue>([
-          [0n, 1n],
-          [3n, 'x'.repeat(size)],
+          [BigInt(FORUM_POST_ENTRY.kind), 1n],
+          [BigInt(FORUM_POST_ENTRY.message), 'x'.repeat(size)],
         ]),
       ])
       expect(outcome(postWith(c))).toBe(
@@ -368,28 +389,32 @@ describe('cumulative opened resource budgets', () => {
     }
     // Pad a compatible future map to an exact body size without exceeding per-string limits.
     const body = baseContent()
+    // raw-cbor-key: key 8 is undeclared in forum content: compatible future padding
     body.set(8n, new Uint8Array(0))
     const overhead = encodeCanonical(body).length
     // Header for this large byte string grows by four bytes relative to the empty one.
+    // raw-cbor-key: key 8 is undeclared in forum content: compatible future padding
     body.set(8n, new Uint8Array(524288 - overhead - 4))
     expect(encodeCanonical(body).length).toBe(524288)
     expect(outcome(postWith(body, 3))).toBe('parsed')
+    // raw-cbor-key: key 8 is undeclared in forum content: compatible future padding
     body.set(8n, new Uint8Array(524289 - overhead - 4))
     expect(outcome(postWith(body, 3))).toBe('resource@8.1')
   })
   it('charges content, cursor and required children to one depth budget', () => {
     const wrap = (post: Uint8Array) => {
       const view = payloadOf('view-large-aggregate')
-      view.set(1, post)
+      view.set(FORUM_SINGLE_VIEW.postFrame, post)
       const page = payloadOf('equal-time-page')
-      page.set(4, [frame(12, view)])
-      return frame(13, page)
+      page.set(FORUM_TOPIC_PAGE.rows, [frame(TYPE_FORUM_VIEW, view)])
+      return frame(TYPE_FORUM_TOPIC_PAGE, page)
     }
     let found = false
     for (let depth = 20; depth < 34; depth++) {
       let extra: FrankValue = 0n
       for (let i = 0; i < depth; i++) extra = [extra]
       const content = baseContent()
+      // raw-cbor-key: key 8 is undeclared in forum content: compatible future nesting
       content.set(8n, extra)
       const post = postWith(content, 3)
       if (
@@ -406,6 +431,7 @@ describe('cumulative opened resource budgets', () => {
     for (const kind of ['containers', 'items']) {
       const content = baseContent()
       content.set(
+        // raw-cbor-key: key 8 is undeclared in forum content: compatible future nesting
         8n,
         kind === 'containers'
           ? Array.from({ length: 8190 }, () => [])
@@ -413,62 +439,68 @@ describe('cumulative opened resource budgets', () => {
       )
       if (kind === 'items')
         content.set(
+          // raw-cbor-key: key 8 is undeclared in forum content: compatible future nesting
           8n,
           Array.from({ length: 8 }, () => Array<FrankValue>(8190).fill(0n)),
         )
+      // raw-cbor-key: post-index list, not a map entry
       const posts = [0, 1, 2].map(i => {
         const p = contentPayload(content)
-        p.set(2, new Uint8Array(32).fill(i))
-        return frame(9, p, 3, 2)
+        p.set(TOPIC_POST.parentHash, new Uint8Array(32).fill(i))
+        return frame(TYPE_TOPIC_POST, p, 3, 2)
       })
       for (const p of posts) expect(outcome(p)).toBe('parsed')
       const views = posts.map(p => {
         const v = payloadOf('view-large-aggregate')
-        v.set(1, p)
-        return frame(12, v)
+        v.set(FORUM_SINGLE_VIEW.postFrame, p)
+        return frame(TYPE_FORUM_VIEW, v)
       })
       for (const v of views) expect(outcome(v)).toBe('parsed')
       const page = payloadOf('equal-time-page')
-      page.set(4, views)
-      expect(outcome(frame(13, page))).toBe('resource@8.4')
+      page.set(FORUM_TOPIC_PAGE.rows, views)
+      expect(outcome(frame(TYPE_FORUM_TOPIC_PAGE, page))).toBe('resource@8.4')
     }
   })
   it('enforces encoded view/page bytes and rejects excess rows before opening them', () => {
     for (const [type, id, limit] of [
-      [12, 'view-large-aggregate', 2097152],
-      [13, 'equal-time-page', 4194304],
+      [TYPE_FORUM_VIEW, 'view-large-aggregate', 2097152],
+      [TYPE_FORUM_TOPIC_PAGE, 'equal-time-page', 4194304],
     ] as const) {
       const payload = payloadOf(id)
+      // raw-cbor-key: key 99 is undeclared: compatible future padding
       payload.set(99, new Uint8Array(0))
       const overhead = frame(type, payload, 2, 1).length
       // Both the padding string and the envelope's payload string widen their headers.
+      // raw-cbor-key: key 99 is undeclared: compatible future padding
       payload.set(99, new Uint8Array(limit - overhead - 6))
       expect(frame(type, payload, 2, 1).length).toBe(limit)
       expect(outcome(frame(type, payload, 2, 1))).toBe('parsed')
+      // raw-cbor-key: key 99 is undeclared: compatible future padding
       payload.set(99, new Uint8Array(limit - overhead - 5))
       expect(outcome(frame(type, payload, 2, 1))).toBe('resource@8.1')
     }
     const page = payloadOf('equal-time-page')
     const rows = Array.from({ length: 128 }, (_, i) => {
       const post = payloadOf('typescript-origin')
-      post.set(2, new Uint8Array(32).fill(i))
+      post.set(TOPIC_POST.parentHash, new Uint8Array(32).fill(i))
       const view = payloadOf('view-large-aggregate')
-      view.set(1, frame(9, post))
-      return frame(12, view)
+      view.set(FORUM_SINGLE_VIEW.postFrame, frame(TYPE_TOPIC_POST, post))
+      return frame(TYPE_FORUM_VIEW, view)
     }).sort((a, b) => {
       const av = parsed(a).typed,
         bv = parsed(b).typed
-      if (av?.type !== 12 || bv?.type !== 12) throw Error('view')
+      if (av?.type !== TYPE_FORUM_VIEW || bv?.type !== TYPE_FORUM_VIEW)
+        throw Error('view')
       return toHex(contentHash(av.postFrame)).localeCompare(
         toHex(contentHash(bv.postFrame)),
       )
     })
-    page.set(4, rows)
-    expect(outcome(frame(13, page))).toBe('parsed')
+    page.set(FORUM_TOPIC_PAGE.rows, rows)
+    expect(outcome(frame(TYPE_FORUM_TOPIC_PAGE, page))).toBe('parsed')
     page.set(
-      4,
+      FORUM_TOPIC_PAGE.rows,
       Array.from({ length: 129 }, () => raw('view-rust')),
     )
-    expect(outcome(frame(13, page))).toBe('resource@8.1')
+    expect(outcome(frame(TYPE_FORUM_TOPIC_PAGE, page))).toBe('resource@8.1')
   })
 })

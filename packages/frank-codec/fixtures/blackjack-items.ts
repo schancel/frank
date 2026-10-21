@@ -23,6 +23,7 @@ export const TYPESCRIPT_BLACKJACK_ORIGINS: readonly {
       type: 'blackjack-move',
       action: 'reveal',
       gameId: 'bj-🎴-é',
+      // raw-cbor-key: card list, not a map entry
       dealerCards: [51, 0, 13],
       serverSeed: '0123456789abcdef'.repeat(4),
       outcome: 'push',

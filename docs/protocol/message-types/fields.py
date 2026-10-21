@@ -440,18 +440,36 @@ def _rust_test_ranges(text: str) -> list[tuple[int, int]]:
     return ranges
 
 
+# Test and fixture code checked by the same patterns (no test exemption). A whole file that only
+# exercises generic CBOR (not Frank-CBOR schemas) may opt out with `raw-cbor-key-file: <reason>`.
+TEST_LINT_ROOTS: list[str] = [
+    "packages/frank-codec/test/",
+    "packages/frank-codec/fixtures/",
+    "packages/frank-codec/proposals/",
+    "packages/frank-codec/browsercheck/",
+    "packages/frank-codec/scripts/",
+]
+ALLOW_FILE_MARK = "raw-cbor-key-file:"
+
+
+
 def raw_literal_problems(root: Path, files: list[str]) -> list[str]:
     problems = []
     for rel in files:
-        if rel in LINT_SKIP or TEST_RE.search(rel) or not rel.endswith((".ts", ".rs")):
+        if rel in LINT_SKIP or not rel.endswith((".ts", ".js", ".cjs", ".mjs", ".rs")):
             continue
-        core = any(rel.startswith(r) for r in LINT_ROOTS)
+        test_root = any(rel.startswith(r) for r in TEST_LINT_ROOTS)
+        if not test_root and TEST_RE.search(rel):
+            continue
+        core = test_root or any(rel.startswith(r) for r in LINT_ROOTS)
         if not core and not any(rel.startswith(r) for r in CONSUMER_ROOTS):
             continue
         path = root / rel
         if not path.is_file():
             continue
         text = path.read_text()
+        if ALLOW_FILE_MARK in text:
+            continue
         rust = rel.endswith(".rs")
         if not core and not (RUST_CBOR_MARK if rust else TS_CBOR_MARK).search(text):
             continue

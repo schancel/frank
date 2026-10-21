@@ -10,6 +10,13 @@ import {
   toHex,
 } from '../src'
 import type { Encodable, CanonicalStealthAssetMessageItem } from '../src'
+import {
+  FRANK_ENVELOPE,
+  PAYMENT_TRANSFER,
+  STEALTH_ASSET_MESSAGE_ITEM,
+  STEALTH_ASSET_TRANSFER,
+  TYPE_STEALTH_MESSAGE_ITEM,
+} from '../src/constants'
 
 const recipient = fromHex(
   '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
@@ -39,14 +46,22 @@ function malformed(
 ): Uint8Array {
   const good = encodeStealthAssetMessageItem({ transfers: [sample()] })
   const envelope = decodeCanonical(good.subarray(9)) as Map<bigint, Encodable>
-  const payload = decodeCanonical(envelope.get(3n) as Uint8Array) as Map<
-    bigint,
-    Encodable
-  >
-  const entry = (payload.get(0n) as Map<bigint, Encodable>[])[0]
+  const payload = decodeCanonical(
+    envelope.get(BigInt(FRANK_ENVELOPE.payload)) as Uint8Array,
+  ) as Map<bigint, Encodable>
+  const entry = (
+    payload.get(BigInt(STEALTH_ASSET_MESSAGE_ITEM.transfers)) as Map<
+      bigint,
+      Encodable
+    >[]
+  )[0]
   change(entry)
   return encodeFrame(
-    { typeId: 19, schemaVersion: 2, minReaderVersion: 2 },
+    {
+      typeId: TYPE_STEALTH_MESSAGE_ITEM,
+      schemaVersion: 2,
+      minReaderVersion: 2,
+    },
     payload,
   )
 }
@@ -62,6 +77,7 @@ export function stealthAssetCorpus() {
   const unknown = sample()
   unknown.derivationScheme = 2 // Unallocated; retained, never a supported signing capability.
   unknown.tokenProgram = new Uint8Array(32).fill(4)
+  // raw-cbor-key: opaque derivation-context bytes, not a map entry
   unknown.derivationContext = new Uint8Array([1, 2, 3])
   const cases = [
     {
@@ -93,29 +109,41 @@ export function stealthAssetCorpus() {
     {
       id: 'reject-zero',
       bytes: malformed(entry =>
-        (entry.get(0n) as Map<bigint, Encodable>).set(4n, 0n),
+        (
+          entry.get(BigInt(STEALTH_ASSET_TRANSFER.transfer)) as Map<
+            bigint,
+            Encodable
+          >
+        ).set(BigInt(PAYMENT_TRANSFER.value), 0n),
       ),
     },
     {
       id: 'reject-missing-metadata',
       bytes: malformed(entry => {
-        const transfer = entry.get(0n) as Map<bigint, Encodable>
-        transfer.delete(6n)
+        const transfer = entry.get(
+          BigInt(STEALTH_ASSET_TRANSFER.transfer),
+        ) as Map<bigint, Encodable>
+        transfer.delete(BigInt(PAYMENT_TRANSFER.stealthMetadata))
       }),
     },
     {
       id: 'reject-program-without-token',
       bytes: malformed(entry => {
-        const transfer = entry.get(0n) as Map<bigint, Encodable>
-        transfer.delete(5n)
-        entry.set(1n, 2n)
-        entry.set(3n, new Uint8Array(32))
+        const transfer = entry.get(
+          BigInt(STEALTH_ASSET_TRANSFER.transfer),
+        ) as Map<bigint, Encodable>
+        transfer.delete(BigInt(PAYMENT_TRANSFER.token))
+        entry.set(BigInt(STEALTH_ASSET_TRANSFER.derivationScheme), 2n)
+        entry.set(
+          BigInt(STEALTH_ASSET_TRANSFER.tokenProgram),
+          new Uint8Array(32),
+        )
       }),
     },
     {
       id: 'reject-zero-scheme',
       bytes: malformed(entry => {
-        entry.set(1n, 0n)
+        entry.set(BigInt(STEALTH_ASSET_TRANSFER.derivationScheme), 0n)
       }),
     },
   ]

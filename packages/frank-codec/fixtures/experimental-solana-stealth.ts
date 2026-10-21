@@ -51,6 +51,7 @@ export function experimentalEntry(spl = false): StealthAssetTransfer {
           ),
         },
       },
+      // raw-cbor-key: raw transaction bytes, not a map entry
       rawTx: new Uint8Array([1, 2, 3]),
     },
   }

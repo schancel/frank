@@ -24,6 +24,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { outgoingMessageId, rehydateChat, useChatStore } from './chats'
 import { activeChain } from '@frank/wallet/chain'
 import { DirectMessageAlreadyAttemptedError } from '@frank/wallet/chain'
+import { directMessageNotAttempted } from '@frank/wallet/chain/active-chain'
 import type {
   DirectMessageAttemptStatus,
   DirectMessageSendResult,
@@ -619,6 +620,137 @@ describe('outgoing direct messages (#269, #270)', () => {
     ).toBe('sent')
     expect(minimum).toHaveBeenCalled()
     expect(send.mock.calls[1][0].stampValue).toBe(5000n)
+  })
+
+  describe('reconnecting an explicitly unattempted send', () => {
+    const offline = () =>
+      Object.assign(new Error('network unavailable'), {
+        [directMessageNotAttempted]: true,
+      })
+
+    it('keeps the original request queued across restart and recovers once online', async () => {
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValue(offline())
+      const chats = useChatStore()
+      expect(
+        await chats.sendMessage({
+          wallet,
+          address: PEER,
+          items: TEXT,
+          stampValue: 5n,
+        }),
+      ).toEqual({ state: 'payment-pending' })
+      const original = send.mock.calls[0][0]
+      const queued = only(chats)[0]
+      expect(queued.status).toBe('payment-pending')
+      expect(queued.delivery?.attemptDigest).toBeUndefined()
+      const restored = await reload()
+      expect(
+        only(restored).find(m => m.payloadDigest === queued.payloadDigest)
+          ?.status,
+      ).toBe('payment-pending')
+      send.mockResolvedValue(okResult(HASH))
+      await Promise.all([
+        restored.reconcileOutgoing({ wallet }),
+        restored.reconcileOutgoing({ wallet }),
+      ])
+      expect(send).toHaveBeenCalledTimes(4)
+      expect(send.mock.calls[3][0]).toEqual(
+        expect.objectContaining({
+          messageId: original.messageId,
+          recipient: original.recipient,
+          items: original.items,
+          stampValue: 5n,
+        }),
+      )
+      expect(
+        only(restored).filter(
+          m => m.items[0]?.type === 'text' && m.items[0].text === TEXT[0].text,
+        ),
+      ).toEqual([
+        expect.objectContaining({ status: 'confirmed', payloadDigest: HASH }),
+      ])
+      await restored.reconcileOutgoing({ wallet })
+      expect(send).toHaveBeenCalledTimes(4)
+      expect(only(await reload())).toHaveLength(1)
+    })
+
+    it('does not hold unrelated messages while the offline request waits', async () => {
+      let rejectOffline!: (error: unknown) => void
+      const waiting = new Promise<never>((_resolve, reject) => {
+        rejectOffline = reject
+      })
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValue(offline())
+        .mockReturnValueOnce(waiting)
+      const chats = useChatStore()
+      const first = chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: TEXT,
+        stampValue: 5n,
+      })
+      while (send.mock.calls.length === 0) await Promise.resolve()
+      send.mockResolvedValueOnce(okResult('cd'.repeat(32)))
+      expect(
+        (
+          await chats.sendMessage({
+            wallet,
+            address: PEER,
+            items: [{ type: 'text', text: 'other' }],
+            stampValue: 5n,
+          })
+        ).state,
+      ).toBe('sent')
+      rejectOffline(offline())
+      expect(await first).toEqual({ state: 'payment-pending' })
+      expect(only(chats)).toHaveLength(2)
+    })
+
+    it('never queues a later labelled refusal after an ambiguous call', async () => {
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValueOnce(new Error('network response lost'))
+        .mockRejectedValue(offline())
+      const chats = useChatStore()
+      expect(
+        (
+          await chats.sendMessage({
+            wallet,
+            address: PEER,
+            items: TEXT,
+            stampValue: 5n,
+          })
+        ).state,
+      ).toBe('failed')
+      await chats.reconcileOutgoing({ wallet })
+      expect(send).toHaveBeenCalledTimes(3)
+      expect(only(chats)[0].status).toBe('error')
+    })
+
+    it('reconciles an exposed attempt rather than sending a new request', async () => {
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async params => {
+          await params.onAttemptCreated?.(HASH)
+          throw new Error('network response lost')
+        })
+      const chats = useChatStore()
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: TEXT,
+        stampValue: 5n,
+      })
+      const restored = await reload()
+      const reconcile = reconcileReturns({ [HASH]: 'unknown' })
+      await restored.reconcileOutgoing({ wallet })
+      expect(reconcile).toHaveBeenCalled()
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(only(restored)[0].delivery?.attemptDigest).toBe(HASH)
+    })
   })
 
   describe('#269: a failed message survives a reload with its Retry', () => {

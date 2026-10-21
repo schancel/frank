@@ -283,6 +283,7 @@ describe('a stamp paid from an account whose funds have just arrived', () => {
         return candidates
       },
       updateCapacityCache: () => undefined,
+      claimedBy: () => undefined,
       accountClaimedBy: () => mainClaimed,
       accountGeneration: () => 0,
       claimAccount: (holder: string) => ((mainClaimed = holder), true),

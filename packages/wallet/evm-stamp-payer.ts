@@ -742,6 +742,10 @@ export class EvmStampPayer {
     const { pool, provider } = this.config
     const allowed = (source: StampCoinSource) =>
       input.sources === undefined || input.sources.includes(source)
+    // What THIS call claims, and so all that its failure lets go: the holder may already hold
+    // other accounts for payments it has signed (a repeat of a reverted payment does).
+    const claimedIndices = new Set<number>()
+    const claimedAddresses = new Set<string>()
     try {
       if (input.signal?.aborted) throw new ChainWaitCancelledError()
       const fee = await this.read(() => this.currentFee())
@@ -773,17 +777,28 @@ export class EvmStampPayer {
           const tryClaimPool = async (
             allowImmature: boolean,
           ): Promise<StampClaim | undefined> => {
-            for (;;) {
+            // Every pass but a re-read balance sets an account aside, so this ends; bounded all
+            // the same.
+            for (let pass = 0; pass <= capacities.length + 1; pass++) {
               const selected = pool.claimStampAccounts(
                 input.holder,
                 input.stampValueWei,
                 feeReserveWei,
                 (index, address) =>
+                  // An account this holder already holds is spoken for by its own earlier
+                  // payment (signed, perhaps broadcast): never a second payment from it.
+                  pool.claimedBy(index) === undefined &&
                   !unusable.has(index) &&
                   (allowImmature || !immature.has(index)) &&
                   this.config.accountHeld?.(address) !== true,
               )
               if (selected === undefined) return undefined
+              const indices = selected.map(account => account.index)
+              for (const index of indices) claimedIndices.add(index)
+              const letGo = () => {
+                pool.releaseClaim(input.holder, indices)
+                for (const index of indices) claimedIndices.delete(index)
+              }
               // No payment smaller than its own transfer's fee: a split that would make one is
               // not used, and the stamp is paid in one piece instead.
               const dust =
@@ -794,10 +809,9 @@ export class EvmStampPayer {
                     STAMP_GAS_LIMIT * fee.chargedPerGas,
                 )
               if (dust) {
-                pool.releaseClaim(input.holder)
+                letGo()
                 return undefined
               }
-              const indices = selected.map(account => account.index)
               // Claimed: nothing else signs from these accounts now, so what is read of them
               // here stays true until this payment releases them. Restoring keys reconstructs
               // addresses, not a proof that their nonce is still zero: each account's counts and
@@ -863,7 +877,7 @@ export class EvmStampPayer {
                 } else immature.delete(account.index)
               }
               if (retry) {
-                pool.releaseClaim(input.holder, indices)
+                letGo()
                 continue
               }
               const nonces = new Map<number, number>()
@@ -902,7 +916,7 @@ export class EvmStampPayer {
                 }),
               )
               if (reserved) {
-                pool.releaseClaim(input.holder, indices)
+                letGo()
                 continue
               }
               this.config.onPoolCoinsClaimed?.()
@@ -918,6 +932,7 @@ export class EvmStampPayer {
                 })),
               }
             }
+            return undefined
           }
           const maturePoolClaim = capacities.some(a => a.capacityWei > 0n)
             ? await tryClaimPool(false)
@@ -983,6 +998,7 @@ export class EvmStampPayer {
           if (balanceWei < input.stampValueWei + feeReserveWei) continue
           // Synchronous: free, and not spent by anyone since the nonce above was read.
           if (pool.claimAccount(input.holder, account.address, generation)) {
+            claimedAddresses.add(account.address)
             // Claimed: nothing else signs from it. Its coin says the nonce to sign at and the
             // block from which it may be spent (the chain's spacing after the account's last
             // transaction): that block is waited for on the wallet's one block watcher.
@@ -1127,7 +1143,9 @@ export class EvmStampPayer {
         }
       }
     } catch (error) {
-      pool.releaseClaim(input.holder)
+      pool.releaseClaim(input.holder, [...claimedIndices])
+      for (const address of claimedAddresses)
+        pool.releaseAccountClaim(input.holder, address)
       throw error
     }
   }

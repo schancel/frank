@@ -708,6 +708,65 @@ describe('a send reads only the accounts it pays from', () => {
     expect(many).toBeLessThanOrEqual(10)
   })
 
+  it('an account the holder already holds (its own earlier payment) is never paid from again, and a failed claim leaves it held', async () => {
+    const keyring = MonadHdKeyring.fromMnemonic(
+      'test test test test test test test test test test test junk',
+    )
+    const pool = new MonadSubAccountPool({
+      keyring,
+      store: new InMemorySubAccountPoolStore(),
+    })
+    pool.ensureSize(2)
+    const provider = {
+      getBlockNumber: async () => 1000,
+      getTransactionCount: async () => 0,
+      getBalance: async () => MON / 2n,
+      getFeeData: async () => ({
+        gasPrice: 102n * GWEI,
+        maxFeePerGas: 202n * GWEI,
+        maxPriorityFeePerGas: 2n * GWEI,
+      }),
+    } as unknown as Provider
+    const watcher = new EvmBlockWatcher({ provider, intervalMs: 10_000 })
+    const stampPayer = new EvmStampPayer({
+      pool,
+      provider,
+      httpClient: {} as never,
+      watcher,
+      accounts: [],
+    })
+    try {
+      // The first repayment of a message: signed (and maybe broadcast) from one account, which
+      // stays `available` until the chain shows it spent.
+      const first = await stampPayer.claim({
+        holder: 'message',
+        stampValueWei: MON / 10n,
+        sources: ['pool'],
+      })
+      const held = first.accounts[0]!.index
+      const second = await stampPayer.claim({
+        holder: 'message',
+        stampValueWei: MON / 10n,
+        sources: ['pool'],
+      })
+      expect(second.accounts.map(a => a.index)).not.toContain(held)
+      // Nothing left covers a third: it is refused, and the two signed payments keep their
+      // accounts.
+      await expect(
+        stampPayer.claim({
+          holder: 'message',
+          stampValueWei: MON / 10n,
+          sources: ['pool'],
+        }),
+      ).rejects.toBeInstanceOf(InsufficientStampFundsError)
+      expect(pool.claimedBy(held)).toBe('message')
+      expect(pool.claimedBy(second.accounts[0]!.index)).toBe('message')
+    } finally {
+      watcher.stop()
+      stampPayer.release('message')
+    }
+  })
+
   it('an account found spent under the claim is let go and another pays', async () => {
     const keyring = MonadHdKeyring.fromMnemonic(
       'test test test test test test test test test test test junk',

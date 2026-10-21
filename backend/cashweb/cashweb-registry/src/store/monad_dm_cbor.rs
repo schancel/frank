@@ -25,6 +25,7 @@ use std::{
     },
 };
 
+use frank_cbor::message_fields::{canonical_dm_message_row as R, canonical_dm_message_row_version};
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue};
 mod rocks;
 use rocks::{Admission, MessageRead, RocksCanonicalMessages};
@@ -41,7 +42,7 @@ use crate::{
 pub(crate) const STORE_EXTENSION: &str = "messages-v2";
 /// Extensions of message stores written by earlier development builds. None can be read.
 pub(crate) const OLD_STORE_EXTENSIONS: &[&str] = &["monad-dm-cbor-v1"];
-const ROW_VERSION: i128 = 2;
+const ROW_VERSION: i128 = canonical_dm_message_row_version::V2 as i128;
 
 /// What admission established about a message, kept with it: who it is from and to, and the
 /// directory facts its context was checked against.
@@ -763,11 +764,14 @@ fn encode_row(message: &Claim) -> Result<Vec<u8>> {
         blob(p.payload_hash),
     ]);
     encode_canonical(&cbor_map(vec![
-        (0, int(ROW_VERSION)),
-        (1, blob(message.request.body())),
-        (2, CborValue::Text(message.request.content_type().into())),
-        (3, policy),
-        (4, int(message.delivered_at)),
+        (R::VERSION, int(ROW_VERSION)),
+        (R::BODY, blob(message.request.body())),
+        (
+            R::CONTENT_TYPE,
+            CborValue::Text(message.request.content_type().into()),
+        ),
+        (R::POLICY, policy),
+        (R::DELIVERED_AT, int(message.delivered_at)),
     ]))
     .map_err(|_| CanonicalError::Unavailable)
 }
@@ -790,7 +794,7 @@ fn load(db: &MessageRead<'_>, hash: &[u8; 32]) -> Result<Option<Claim>> {
     let CborValue::Map(rows) = &value else {
         return Err(CanonicalError::Unavailable);
     };
-    let [(0, version), (1, body), (2, content_type), (3, CborValue::Array(p)), (4, delivered_at)] =
+    let [(R::VERSION, version), (R::BODY, body), (R::CONTENT_TYPE, content_type), (R::POLICY, CborValue::Array(p)), (R::DELIVERED_AT, delivered_at)] =
         rows.as_slice()
     else {
         return Err(CanonicalError::Unavailable);

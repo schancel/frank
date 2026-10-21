@@ -36,7 +36,9 @@ import {
   type NestedItemBudget,
   type ParsedFrame,
   TYPE_MESSAGE_CONTENT_REVISION,
+  MESSAGE_CONTENT_REVISION,
 } from '@frank/codec'
+
 import type {
   MessageItem,
   UnsupportedItem,
@@ -282,8 +284,8 @@ function openAsMessageItems(frames: readonly Uint8Array[]): ChildFrame[] {
         minReaderVersion: 1,
       },
       new Map<number, string | Uint8Array[]>([
-        [0, 'frank'],
-        [1, [...frames]],
+        [MESSAGE_CONTENT_REVISION.network, 'frank'],
+        [MESSAGE_CONTENT_REVISION.items, [...frames]],
       ]),
     ),
   )

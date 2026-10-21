@@ -30,6 +30,34 @@ import type { Encodable, Operation, Timestamp, ValidationContext } from '../src'
 import { M, deliveryFrame } from '../fixtures/builders'
 import { checkManifest } from '../fixtures/checker'
 import type { ManifestCase } from '../fixtures/manifest'
+import {
+  ACCOUNT_REF,
+  ACCOUNT_TYPE,
+  BOT_ROLE,
+  DIRECTORY_ATTESTATION,
+  DIRECTORY_STATEMENT,
+  FRANK_ENVELOPE,
+  KEY_TRANSITION,
+  KEY_TRANSITION_STATEMENT,
+  KEY_TYPE,
+  RELAY_BINDING,
+  SIGNATURE_ALGORITHM,
+  SIGNATURE_ENTRY,
+  TIMESTAMP,
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_MAILBOX_CHECKPOINT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+} from '../src/constants'
 
 const DOCS = path.resolve(__dirname, '../../../docs/protocol/cbor')
 const CORPUS: Manifest = JSON.parse(
@@ -198,11 +226,12 @@ describe('schema-version dispatch of the type-4 statement (V1/V2, M4)', () => {
       frameOf('reg-fixture-v63-profile-retained'),
       contextOf('reg-fixture-v63-profile-retained'),
     )
-    if (r.kind !== 'parsed' || r.typed?.type !== 2)
+    if (r.kind !== 'parsed' || r.typed?.type !== TYPE_DIRECTORY_ATTESTATION)
       throw new Error('not a parsed type-2')
     expect(r.typed.statementFrame.projection).toBe('newer-schema')
     const st = r.typed.statementFrame.typed
-    if (st?.type !== 4) throw new Error('statement not typed')
+    if (st?.type !== TYPE_DIRECTORY_STATEMENT)
+      throw new Error('statement not typed')
     expect(st.schemaVersion).toBe(3)
     expect(st.profileEntries).toBeUndefined()
     expect([...st.unknownFields.keys()]).toEqual([9n])
@@ -213,11 +242,12 @@ describe('schema-version dispatch of the type-4 statement (V1/V2, M4)', () => {
       frameOf('reg-fixture-testnet-statement-typed'),
       contextOf('reg-fixture-testnet-statement-typed'),
     )
-    if (r.kind !== 'parsed' || r.typed?.type !== 2)
+    if (r.kind !== 'parsed' || r.typed?.type !== TYPE_DIRECTORY_ATTESTATION)
       throw new Error('not a parsed type-2')
     expect(r.typed.statementFrame.projection).toBe('exact')
     const st = r.typed.statementFrame.typed
-    if (st?.type !== 4) throw new Error('statement not typed')
+    if (st?.type !== TYPE_DIRECTORY_STATEMENT)
+      throw new Error('statement not typed')
     expect(st.schemaVersion).toBe(3)
     if (!st.profileEntries) throw new Error('field 9 absent')
     expect(st.profileEntries.map(e => e.kind)).toEqual([
@@ -267,16 +297,27 @@ describe('the M2/M3/M6 pure-value vectors', () => {
     ).toBe(v.prior_statement_frame_hex)
     const attestation = decodeEnvelope(fromHex(corpusCase.frame_hex))
     const statement = decodeEnvelope(attestation.statement)
-    expect(statement.payload.get(0n)).toBe(v.network)
-    const transitions = statement.payload.get(5n) as Map<bigint, unknown>[]
+    expect(statement.payload.get(BigInt(DIRECTORY_STATEMENT.network))).toBe(
+      v.network,
+    )
+    const transitions = statement.payload.get(
+      BigInt(DIRECTORY_STATEMENT.keyTransitions),
+    ) as Map<bigint, unknown>[]
     expect(transitions).toHaveLength(1)
     const entry = transitions[0]
-    const signer = entry.get(2n) as Map<bigint, unknown>
-    expect(toHex(entry.get(0n) as Uint8Array)).toBe(
-      v.transition_statement_frame_hex,
+    const signer = entry.get(BigInt(KEY_TRANSITION.signer)) as Map<
+      bigint,
+      unknown
+    >
+    expect(
+      toHex(entry.get(BigInt(KEY_TRANSITION.statementFrame)) as Uint8Array),
+    ).toBe(v.transition_statement_frame_hex)
+    expect(toHex(signer.get(BigInt(ACCOUNT_REF.keyBytes)) as Uint8Array)).toBe(
+      v.signer_public_key_hex,
     )
-    expect(toHex(signer.get(1n) as Uint8Array)).toBe(v.signer_public_key_hex)
-    expect(toHex(entry.get(3n) as Uint8Array)).toBe(v.signature_der_hex)
+    expect(
+      toHex(entry.get(BigInt(KEY_TRANSITION.signature)) as Uint8Array),
+    ).toBe(v.signature_der_hex)
   })
 
   it('maps every timestamp vector losslessly (M2)', () => {
@@ -386,18 +427,25 @@ describe('stage 10.6 (full)', () => {
       }),
     ).toEqual({
       kind: 'accept',
-      typeId: 2,
+      typeId: TYPE_DIRECTORY_ATTESTATION,
       schemaVersion: 1,
       contentHashHex: expect.any(String),
     })
     const body = decodeEnvelope(frame)
     const statement = body.statement
     const stPayload = decodeEnvelope(statement).payload
-    const subject = stPayload.get(1n) as Map<bigint, unknown>
-    const key = subject.get(1n) as Uint8Array
-    const entry = (body.payload.get(1n) as unknown[])[0] as Map<bigint, unknown>
-    const der = entry.get(2n) as Uint8Array
-    expect(stPayload.get(0n)).toBe('monad-mainnet')
+    const subject = stPayload.get(BigInt(DIRECTORY_STATEMENT.subject)) as Map<
+      bigint,
+      unknown
+    >
+    const key = subject.get(BigInt(ACCOUNT_REF.keyBytes)) as Uint8Array
+    const entry = (
+      body.payload.get(BigInt(DIRECTORY_ATTESTATION.signatures)) as unknown[]
+    )[0] as Map<bigint, unknown>
+    const der = entry.get(BigInt(SIGNATURE_ENTRY.signature)) as Uint8Array
+    expect(stPayload.get(BigInt(DIRECTORY_STATEMENT.network))).toBe(
+      'monad-mainnet',
+    )
     // The signature was made over the testnet transcript: an unbound verifier with the
     // ambient testnet network configured would accept this record.
     expect(
@@ -437,27 +485,40 @@ describe('stage 10.6 (full)', () => {
     // unsupported before any signature verification runs.
     const base = frameOf('reg-fixture-testnet-minimal-full')
     const body = decodeEnvelope(base)
-    const statements = body.payload.get(0n) as Uint8Array
-    const entries = body.payload.get(1n) as unknown[]
+    const statements = body.payload.get(
+      BigInt(DIRECTORY_ATTESTATION.statementFrame),
+    ) as Uint8Array
+    const entries = body.payload.get(
+      BigInt(DIRECTORY_ATTESTATION.signatures),
+    ) as unknown[]
     const first = entries[0] as Map<bigint, unknown>
     const corrupted = new Map(first)
-    const der = (first.get(2n) as Uint8Array).slice()
+    const der = (
+      first.get(BigInt(SIGNATURE_ENTRY.signature)) as Uint8Array
+    ).slice()
     der[der.length - 1] ^= 0x01
-    corrupted.set(2n, der)
+    corrupted.set(BigInt(SIGNATURE_ENTRY.signature), der)
     const ed25519Signer = M([
-      [0, 2],
-      [1, new Uint8Array(32).fill(7)],
+      [ACCOUNT_REF.keyType, KEY_TYPE.ed25519],
+      [ACCOUNT_REF.keyBytes, new Uint8Array(32).fill(7)],
     ])
     const second = M([
-      [0, 16],
-      [1, ed25519Signer],
-      [2, new Uint8Array(64).fill(3)],
+      [SIGNATURE_ENTRY.algorithm, SIGNATURE_ALGORITHM.ed25519],
+      [SIGNATURE_ENTRY.signer, ed25519Signer],
+      [SIGNATURE_ENTRY.signature, new Uint8Array(64).fill(3)],
     ])
     const attestation = encodeFrame(
-      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_DIRECTORY_ATTESTATION,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       M([
-        [0, statements],
-        [1, [corrupted as unknown as Encodable, second]],
+        [DIRECTORY_ATTESTATION.statementFrame, statements],
+        [
+          DIRECTORY_ATTESTATION.signatures,
+          [corrupted as unknown as Encodable, second],
+        ],
       ]),
     )
     const ctx = contextOf('reg-fixture-testnet-minimal-full')
@@ -468,10 +529,17 @@ describe('stage 10.6 (full)', () => {
     })
     // With the first entry left valid, the same second entry is still unsupported.
     const withValidFirst = encodeFrame(
-      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_DIRECTORY_ATTESTATION,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       M([
-        [0, statements],
-        [1, [first as unknown as Encodable, second]],
+        [DIRECTORY_ATTESTATION.statementFrame, statements],
+        [
+          DIRECTORY_ATTESTATION.signatures,
+          [first as unknown as Encodable, second],
+        ],
       ]),
     )
     expect(observe(withValidFirst, ctx)).toEqual({
@@ -495,141 +563,145 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
     new Uint8Array(secp256k1.sign(digest, secret).toDERRawBytes())
 
   const priorStatement = encodeFrame(
-    { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+    { typeId: TYPE_DIRECTORY_STATEMENT, schemaVersion: 3, minReaderVersion: 2 },
     M([
-      [0, NETWORK],
+      [DIRECTORY_STATEMENT.network, NETWORK],
       [
-        1,
+        DIRECTORY_STATEMENT.subject,
         M([
-          [0, 1],
-          [1, priorKey],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, priorKey],
         ]),
       ],
-      [2, 9n],
+      [DIRECTORY_STATEMENT.revision, 9n],
       [
-        3,
+        DIRECTORY_STATEMENT.timestamp,
         M([
-          [0, 1_700_000_000],
-          [1, 0],
+          [TIMESTAMP.seconds, 1_700_000_000],
+          [TIMESTAMP.nanoseconds, 0],
         ]),
       ],
       [
-        4,
+        DIRECTORY_STATEMENT.relays,
         [
           M([
-            [0, new Uint8Array(16).fill(1)],
-            [1, 'https://relay.example/r'],
+            [RELAY_BINDING.relayId, new Uint8Array(16).fill(1)],
+            [RELAY_BINDING.endpoint, 'https://relay.example/r'],
             [
-              2,
+              RELAY_BINDING.identity,
               M([
-                [0, 1],
-                [1, priorKey],
+                [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                [ACCOUNT_REF.keyBytes, priorKey],
               ]),
             ],
             [
-              3,
+              RELAY_BINDING.expiry,
               M([
-                [0, 1_800_000_000],
-                [1, 0],
+                [TIMESTAMP.seconds, 1_800_000_000],
+                [TIMESTAMP.nanoseconds, 0],
               ]),
             ],
           ]),
         ],
       ],
       [
-        8,
+        DIRECTORY_STATEMENT.stampKey,
         M([
-          [0, 1],
-          [1, subjectKey],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, subjectKey],
         ]),
       ],
     ]),
   )
   const transitionStatement = encodeFrame(
-    { typeId: 7, schemaVersion: 1, minReaderVersion: 1 },
+    {
+      typeId: TYPE_KEY_TRANSITION_STATEMENT,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
     M([
-      [0, NETWORK],
+      [KEY_TRANSITION_STATEMENT.network, NETWORK],
       [
-        1,
+        KEY_TRANSITION_STATEMENT.subject,
         M([
-          [0, 1],
-          [1, priorKey],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, priorKey],
         ]),
       ],
       [
-        2,
+        KEY_TRANSITION_STATEMENT.priorAuthority,
         M([
-          [0, 1],
-          [1, priorKey],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, priorKey],
         ]),
       ],
-      [3, 10n],
+      [KEY_TRANSITION_STATEMENT.revision, 10n],
       [
-        4,
+        KEY_TRANSITION_STATEMENT.newKey,
         M([
-          [0, 1],
-          [1, subjectKey],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, subjectKey],
         ]),
       ],
     ]),
   )
   const statement = encodeFrame(
-    { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+    { typeId: TYPE_DIRECTORY_STATEMENT, schemaVersion: 3, minReaderVersion: 2 },
     M([
-      [0, NETWORK],
+      [DIRECTORY_STATEMENT.network, NETWORK],
       [
-        1,
+        DIRECTORY_STATEMENT.subject,
         M([
-          [0, 1],
-          [1, subjectKey],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, subjectKey],
         ]),
       ],
-      [2, 10n],
+      [DIRECTORY_STATEMENT.revision, 10n],
       [
-        3,
+        DIRECTORY_STATEMENT.timestamp,
         M([
-          [0, 1_700_000_100],
-          [1, 0],
+          [TIMESTAMP.seconds, 1_700_000_100],
+          [TIMESTAMP.nanoseconds, 0],
         ]),
       ],
       [
-        4,
+        DIRECTORY_STATEMENT.relays,
         [
           M([
-            [0, new Uint8Array(16).fill(2)],
-            [1, 'https://relay.example/r'],
+            [RELAY_BINDING.relayId, new Uint8Array(16).fill(2)],
+            [RELAY_BINDING.endpoint, 'https://relay.example/r'],
             [
-              2,
+              RELAY_BINDING.identity,
               M([
-                [0, 1],
-                [1, subjectKey],
+                [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                [ACCOUNT_REF.keyBytes, subjectKey],
               ]),
             ],
             [
-              3,
+              RELAY_BINDING.expiry,
               M([
-                [0, 1_800_000_000],
-                [1, 0],
+                [TIMESTAMP.seconds, 1_800_000_000],
+                [TIMESTAMP.nanoseconds, 0],
               ]),
             ],
           ]),
         ],
       ],
       [
-        5,
+        DIRECTORY_STATEMENT.keyTransitions,
         [
           M([
-            [0, transitionStatement],
-            [1, 1],
+            [KEY_TRANSITION.statementFrame, transitionStatement],
+            [KEY_TRANSITION.algorithm, SIGNATURE_ALGORITHM.secp256k1EcdsaDer],
             [
-              2,
+              KEY_TRANSITION.signer,
               M([
-                [0, 1],
-                [1, priorKey],
+                [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                [ACCOUNT_REF.keyBytes, priorKey],
               ]),
             ],
             [
-              3,
+              KEY_TRANSITION.signature,
               sign(
                 keyTransitionSignatureDigest(NETWORK, transitionStatement),
                 new Uint8Array(32).fill(2),
@@ -639,32 +711,36 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
         ],
       ],
       [
-        8,
+        DIRECTORY_STATEMENT.stampKey,
         M([
-          [0, 1],
-          [1, subjectKey],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, subjectKey],
         ]),
       ],
     ]),
   )
   const attestation = encodeFrame(
-    { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+    {
+      typeId: TYPE_DIRECTORY_ATTESTATION,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
     M([
-      [0, statement],
+      [DIRECTORY_ATTESTATION.statementFrame, statement],
       [
-        1,
+        DIRECTORY_ATTESTATION.signatures,
         [
           M([
-            [0, 1],
+            [SIGNATURE_ENTRY.algorithm, SIGNATURE_ALGORITHM.secp256k1EcdsaDer],
             [
-              1,
+              SIGNATURE_ENTRY.signer,
               M([
-                [0, 1],
-                [1, subjectKey],
+                [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                [ACCOUNT_REF.keyBytes, subjectKey],
               ]),
             ],
             [
-              2,
+              SIGNATURE_ENTRY.signature,
               sign(
                 directorySignatureDigest(NETWORK, statement),
                 new Uint8Array(32).fill(1),
@@ -680,19 +756,19 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
     routeByteLimit: 8_388_617,
     readerVersion: 2,
     supportedSchemas: [
-      { typeId: 1, schemaVersion: 1 },
-      { typeId: 2, schemaVersion: 1 },
-      { typeId: 3, schemaVersion: 1 },
-      { typeId: 4, schemaVersion: 3 },
-      { typeId: 5, schemaVersion: 1 },
-      { typeId: 6, schemaVersion: 1 },
-      { typeId: 7, schemaVersion: 1 },
-      { typeId: 8, schemaVersion: 1 },
-      { typeId: 9, schemaVersion: 1 },
-      { typeId: 10, schemaVersion: 1 },
-      { typeId: 11, schemaVersion: 1 },
-      { typeId: 16, schemaVersion: 1 },
-      { typeId: 17, schemaVersion: 1 },
+      { typeId: TYPE_DIRECT_MESSAGE_DELIVERY, schemaVersion: 1 },
+      { typeId: TYPE_DIRECTORY_ATTESTATION, schemaVersion: 1 },
+      { typeId: TYPE_MAILBOX_CHECKPOINT, schemaVersion: 1 },
+      { typeId: TYPE_DIRECTORY_STATEMENT, schemaVersion: 3 },
+      { typeId: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, schemaVersion: 1 },
+      { typeId: TYPE_ENCRYPTED_MESSAGE_CONTENT, schemaVersion: 1 },
+      { typeId: TYPE_KEY_TRANSITION_STATEMENT, schemaVersion: 1 },
+      { typeId: TYPE_MESSAGE_CONTENT_REVISION, schemaVersion: 1 },
+      { typeId: TYPE_TOPIC_POST, schemaVersion: 1 },
+      { typeId: TYPE_TOPIC_POST_SUBMISSION, schemaVersion: 1 },
+      { typeId: TYPE_TOPIC_VOTE_SUBMISSION, schemaVersion: 1 },
+      { typeId: TYPE_CONTAINER_MESSAGE_ITEM, schemaVersion: 1 },
+      { typeId: TYPE_TEXT_MESSAGE_ITEM, schemaVersion: 1 },
     ],
     opaqueRetentionAllowed: false,
     priorDirectoryStatementFrame: priorStatement,
@@ -701,7 +777,7 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
   it('accepts a record whose transition authorization verifies', () => {
     expect(observe(attestation, ctx)).toEqual({
       kind: 'accept',
-      typeId: 2,
+      typeId: TYPE_DIRECTORY_ATTESTATION,
       schemaVersion: 1,
       contentHashHex: expect.any(String),
     })
@@ -717,23 +793,30 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
     const corruptedDer = fromHex(transitionSigBytes)
     corruptedDer[corruptedDer.length - 1] ^= 0x01
     const withBadTransition = encodeFrame(
-      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_DIRECTORY_ATTESTATION,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       M([
-        [0, statement],
+        [DIRECTORY_ATTESTATION.statementFrame, statement],
         [
-          1,
+          DIRECTORY_ATTESTATION.signatures,
           [
             M([
-              [0, 1],
               [
-                1,
+                SIGNATURE_ENTRY.algorithm,
+                SIGNATURE_ALGORITHM.secp256k1EcdsaDer,
+              ],
+              [
+                SIGNATURE_ENTRY.signer,
                 M([
-                  [0, 1],
-                  [1, subjectKey],
+                  [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                  [ACCOUNT_REF.keyBytes, subjectKey],
                 ]),
               ],
               [
-                2,
+                SIGNATURE_ENTRY.signature,
                 sign(
                   directorySignatureDigest(NETWORK, statement),
                   subjectSecret,
@@ -746,91 +829,102 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
     )
     void withBadTransition
     const badTransitionStatement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      {
+        typeId: TYPE_DIRECTORY_STATEMENT,
+        schemaVersion: 3,
+        minReaderVersion: 2,
+      },
       M([
-        [0, NETWORK],
+        [DIRECTORY_STATEMENT.network, NETWORK],
         [
-          1,
+          DIRECTORY_STATEMENT.subject,
           M([
-            [0, 1],
-            [1, subjectKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, subjectKey],
           ]),
         ],
-        [2, 10n],
+        [DIRECTORY_STATEMENT.revision, 10n],
         [
-          3,
+          DIRECTORY_STATEMENT.timestamp,
           M([
-            [0, 1_700_000_100],
-            [1, 0],
+            [TIMESTAMP.seconds, 1_700_000_100],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
         [
-          4,
+          DIRECTORY_STATEMENT.relays,
           [
             M([
-              [0, new Uint8Array(16).fill(2)],
-              [1, 'https://relay.example/r'],
+              [RELAY_BINDING.relayId, new Uint8Array(16).fill(2)],
+              [RELAY_BINDING.endpoint, 'https://relay.example/r'],
               [
-                2,
+                RELAY_BINDING.identity,
                 M([
-                  [0, 1],
-                  [1, subjectKey],
+                  [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                  [ACCOUNT_REF.keyBytes, subjectKey],
                 ]),
               ],
               [
-                3,
+                RELAY_BINDING.expiry,
                 M([
-                  [0, 1_800_000_000],
-                  [1, 0],
+                  [TIMESTAMP.seconds, 1_800_000_000],
+                  [TIMESTAMP.nanoseconds, 0],
                 ]),
               ],
             ]),
           ],
         ],
         [
-          5,
+          DIRECTORY_STATEMENT.keyTransitions,
           [
             M([
-              [0, transitionStatement],
-              [1, 1],
+              [KEY_TRANSITION.statementFrame, transitionStatement],
+              [KEY_TRANSITION.algorithm, SIGNATURE_ALGORITHM.secp256k1EcdsaDer],
               [
-                2,
+                KEY_TRANSITION.signer,
                 M([
-                  [0, 1],
-                  [1, priorKey],
+                  [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                  [ACCOUNT_REF.keyBytes, priorKey],
                 ]),
               ],
-              [3, corruptedDer],
+              [KEY_TRANSITION.signature, corruptedDer],
             ]),
           ],
         ],
         [
-          8,
+          DIRECTORY_STATEMENT.stampKey,
           M([
-            [0, 1],
-            [1, subjectKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, subjectKey],
           ]),
         ],
       ]),
     )
     const badAttestation = encodeFrame(
-      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_DIRECTORY_ATTESTATION,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       M([
-        [0, badTransitionStatement],
+        [DIRECTORY_ATTESTATION.statementFrame, badTransitionStatement],
         [
-          1,
+          DIRECTORY_ATTESTATION.signatures,
           [
             M([
-              [0, 1],
               [
-                1,
+                SIGNATURE_ENTRY.algorithm,
+                SIGNATURE_ALGORITHM.secp256k1EcdsaDer,
+              ],
+              [
+                SIGNATURE_ENTRY.signer,
                 M([
-                  [0, 1],
-                  [1, subjectKey],
+                  [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                  [ACCOUNT_REF.keyBytes, subjectKey],
                 ]),
               ],
               [
-                2,
+                SIGNATURE_ENTRY.signature,
                 sign(
                   directorySignatureDigest(NETWORK, badTransitionStatement),
                   subjectSecret,
@@ -858,64 +952,68 @@ describe('directory statement spendKeys (field 14)', () => {
     const edKey = new Uint8Array(32).fill(0x22)
 
     const statement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      {
+        typeId: TYPE_DIRECTORY_STATEMENT,
+        schemaVersion: 3,
+        minReaderVersion: 2,
+      },
       M([
-        [0, 'monad-testnet'],
+        [DIRECTORY_STATEMENT.network, 'monad-testnet'],
         [
-          1,
+          DIRECTORY_STATEMENT.subject,
           M([
-            [0, 1],
-            [1, secpKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, secpKey],
           ]),
         ],
-        [2, 1000n],
+        [DIRECTORY_STATEMENT.revision, 1000n],
         [
-          3,
+          DIRECTORY_STATEMENT.timestamp,
           M([
-            [0, 100n],
-            [1, 0],
+            [TIMESTAMP.seconds, 100n],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
         [
-          4,
+          DIRECTORY_STATEMENT.relays,
           [
             M([
-              [0, new Uint8Array(16)],
-              [1, 'https://relay1.frank.example'],
+              [RELAY_BINDING.relayId, new Uint8Array(16)],
+              [RELAY_BINDING.endpoint, 'https://relay1.frank.example'],
               [
-                2,
+                RELAY_BINDING.identity,
                 M([
-                  [0, 1],
-                  [1, secpKey],
+                  [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                  [ACCOUNT_REF.keyBytes, secpKey],
                 ]),
               ],
               [
-                3,
+                RELAY_BINDING.expiry,
                 M([
-                  [0, 2000n],
-                  [1, 0],
+                  [TIMESTAMP.seconds, 2000n],
+                  [TIMESTAMP.nanoseconds, 0],
                 ]),
               ],
             ]),
           ],
         ],
         [
-          8,
+          DIRECTORY_STATEMENT.stampKey,
           M([
-            [0, 1],
-            [1, secpKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, secpKey],
           ]),
         ],
         [
-          14,
+          DIRECTORY_STATEMENT.username,
           [
             M([
-              [0, 1],
-              [1, secpKey],
+              [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+              [ACCOUNT_REF.keyBytes, secpKey],
             ]),
             M([
-              [0, 2],
-              [1, edKey],
+              [ACCOUNT_REF.keyType, KEY_TYPE.ed25519],
+              [ACCOUNT_REF.keyBytes, edKey],
             ]),
           ],
         ],
@@ -925,7 +1023,10 @@ describe('directory statement spendKeys (field 14)', () => {
     const ctx = defaultContext({ operation: 'typed' })
     const validated = validateFrame(statement, ctx)
     expect(validated.kind).toBe('parsed')
-    if (validated.kind === 'parsed' && validated.typed?.type === 4) {
+    if (
+      validated.kind === 'parsed' &&
+      validated.typed?.type === TYPE_DIRECTORY_STATEMENT
+    ) {
       expect(validated.typed.spendKeys).toBeDefined()
       expect(validated.typed.spendKeys?.length).toBe(2)
       expect(validated.typed.spendKeys?.[0]).toEqual({
@@ -948,64 +1049,68 @@ describe('directory statement spendKeys (field 14)', () => {
 
     // edKey (keyType 2) placed before secpKey (keyType 1)
     const statement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      {
+        typeId: TYPE_DIRECTORY_STATEMENT,
+        schemaVersion: 3,
+        minReaderVersion: 2,
+      },
       M([
-        [0, 'monad-testnet'],
+        [DIRECTORY_STATEMENT.network, 'monad-testnet'],
         [
-          1,
+          DIRECTORY_STATEMENT.subject,
           M([
-            [0, 1],
-            [1, secpKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, secpKey],
           ]),
         ],
-        [2, 1000n],
+        [DIRECTORY_STATEMENT.revision, 1000n],
         [
-          3,
+          DIRECTORY_STATEMENT.timestamp,
           M([
-            [0, 100n],
-            [1, 0],
+            [TIMESTAMP.seconds, 100n],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
         [
-          4,
+          DIRECTORY_STATEMENT.relays,
           [
             M([
-              [0, new Uint8Array(16)],
-              [1, 'https://relay1.frank.example'],
+              [RELAY_BINDING.relayId, new Uint8Array(16)],
+              [RELAY_BINDING.endpoint, 'https://relay1.frank.example'],
               [
-                2,
+                RELAY_BINDING.identity,
                 M([
-                  [0, 1],
-                  [1, secpKey],
+                  [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                  [ACCOUNT_REF.keyBytes, secpKey],
                 ]),
               ],
               [
-                3,
+                RELAY_BINDING.expiry,
                 M([
-                  [0, 2000n],
-                  [1, 0],
+                  [TIMESTAMP.seconds, 2000n],
+                  [TIMESTAMP.nanoseconds, 0],
                 ]),
               ],
             ]),
           ],
         ],
         [
-          8,
+          DIRECTORY_STATEMENT.stampKey,
           M([
-            [0, 1],
-            [1, secpKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, secpKey],
           ]),
         ],
         [
-          14,
+          DIRECTORY_STATEMENT.username,
           [
             M([
-              [0, 2],
-              [1, edKey],
+              [ACCOUNT_REF.keyType, KEY_TYPE.ed25519],
+              [ACCOUNT_REF.keyBytes, edKey],
             ]),
             M([
-              [0, 1],
-              [1, secpKey],
+              [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+              [ACCOUNT_REF.keyBytes, secpKey],
             ]),
           ],
         ],
@@ -1019,7 +1124,7 @@ describe('directory statement spendKeys (field 14)', () => {
     } catch (e: any) {
       expect(e.category).toBe('semantic')
       expect(e.stage).toBe('9')
-      expect(e.location).toBe('root/payload.14')
+      expect(e.location).toBe(`root/payload.${DIRECTORY_STATEMENT.username}`)
     }
   })
 
@@ -1031,60 +1136,64 @@ describe('directory statement spendKeys (field 14)', () => {
     const badEdKey = new Uint8Array(33).fill(0x22) // keyType 2 expects 32 bytes
 
     const statement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      {
+        typeId: TYPE_DIRECTORY_STATEMENT,
+        schemaVersion: 3,
+        minReaderVersion: 2,
+      },
       M([
-        [0, 'monad-testnet'],
+        [DIRECTORY_STATEMENT.network, 'monad-testnet'],
         [
-          1,
+          DIRECTORY_STATEMENT.subject,
           M([
-            [0, 1],
-            [1, secpKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, secpKey],
           ]),
         ],
-        [2, 1000n],
+        [DIRECTORY_STATEMENT.revision, 1000n],
         [
-          3,
+          DIRECTORY_STATEMENT.timestamp,
           M([
-            [0, 100n],
-            [1, 0],
+            [TIMESTAMP.seconds, 100n],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
         [
-          4,
+          DIRECTORY_STATEMENT.relays,
           [
             M([
-              [0, new Uint8Array(16)],
-              [1, 'https://relay1.frank.example'],
+              [RELAY_BINDING.relayId, new Uint8Array(16)],
+              [RELAY_BINDING.endpoint, 'https://relay1.frank.example'],
               [
-                2,
+                RELAY_BINDING.identity,
                 M([
-                  [0, 1],
-                  [1, secpKey],
+                  [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                  [ACCOUNT_REF.keyBytes, secpKey],
                 ]),
               ],
               [
-                3,
+                RELAY_BINDING.expiry,
                 M([
-                  [0, 2000n],
-                  [1, 0],
+                  [TIMESTAMP.seconds, 2000n],
+                  [TIMESTAMP.nanoseconds, 0],
                 ]),
               ],
             ]),
           ],
         ],
         [
-          8,
+          DIRECTORY_STATEMENT.stampKey,
           M([
-            [0, 1],
-            [1, secpKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, secpKey],
           ]),
         ],
         [
-          14,
+          DIRECTORY_STATEMENT.username,
           [
             M([
-              [0, 2],
-              [1, badEdKey],
+              [ACCOUNT_REF.keyType, KEY_TYPE.ed25519],
+              [ACCOUNT_REF.keyBytes, badEdKey],
             ]),
           ],
         ],
@@ -1109,55 +1218,59 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
 
   const makeStatement = (handle: any) =>
     encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      {
+        typeId: TYPE_DIRECTORY_STATEMENT,
+        schemaVersion: 3,
+        minReaderVersion: 2,
+      },
       M([
-        [0, 'monad-testnet'],
+        [DIRECTORY_STATEMENT.network, 'monad-testnet'],
         [
-          1,
+          DIRECTORY_STATEMENT.subject,
           M([
-            [0, 1],
-            [1, secpKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, secpKey],
           ]),
         ],
-        [2, 1000n],
+        [DIRECTORY_STATEMENT.revision, 1000n],
         [
-          3,
+          DIRECTORY_STATEMENT.timestamp,
           M([
-            [0, 100n],
-            [1, 0],
+            [TIMESTAMP.seconds, 100n],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
         [
-          4,
+          DIRECTORY_STATEMENT.relays,
           [
             M([
-              [0, new Uint8Array(16)],
-              [1, 'https://relay1.frank.example'],
+              [RELAY_BINDING.relayId, new Uint8Array(16)],
+              [RELAY_BINDING.endpoint, 'https://relay1.frank.example'],
               [
-                2,
+                RELAY_BINDING.identity,
                 M([
-                  [0, 1],
-                  [1, secpKey],
+                  [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                  [ACCOUNT_REF.keyBytes, secpKey],
                 ]),
               ],
               [
-                3,
+                RELAY_BINDING.expiry,
                 M([
-                  [0, 2000n],
-                  [1, 0],
+                  [TIMESTAMP.seconds, 2000n],
+                  [TIMESTAMP.nanoseconds, 0],
                 ]),
               ],
             ]),
           ],
         ],
         [
-          8,
+          DIRECTORY_STATEMENT.stampKey,
           M([
-            [0, 1],
-            [1, secpKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, secpKey],
           ]),
         ],
-        [14, handle],
+        [DIRECTORY_STATEMENT.username, handle],
       ]),
     )
 
@@ -1183,7 +1296,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
       expect(res.kind).toBe('parsed')
       if (res.kind !== 'parsed') throw new Error('not parsed')
       expect(res.typed?.type).toBe(4)
-      if (res.typed?.type === 4) {
+      if (res.typed?.type === TYPE_DIRECTORY_STATEMENT) {
         expect(res.typed.canonicalUsername).toBe(handle)
       }
     }
@@ -1211,7 +1324,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
       } catch (e: any) {
         expect(e.category).toBe('semantic')
         expect(e.stage).toBe('9')
-        expect(e.location).toBe('root/payload.14')
+        expect(e.location).toBe(`root/payload.${DIRECTORY_STATEMENT.username}`)
       }
     }
   })
@@ -1264,7 +1377,10 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
       encodedWithHandle,
       defaultContext({ operation: 'typed' }),
     )
-    if (parsedWith.kind !== 'parsed' || parsedWith.typed?.type !== 4) {
+    if (
+      parsedWith.kind !== 'parsed' ||
+      parsedWith.typed?.type !== TYPE_DIRECTORY_STATEMENT
+    ) {
       throw new Error('expected parsed type 4')
     }
     expect(parsedWith.typed.canonicalUsername).toBe('alice-01')
@@ -1282,7 +1398,10 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
       encodedWithoutHandle,
       defaultContext({ operation: 'typed' }),
     )
-    if (parsedWithout.kind !== 'parsed' || parsedWithout.typed?.type !== 4) {
+    if (
+      parsedWithout.kind !== 'parsed' ||
+      parsedWithout.typed?.type !== TYPE_DIRECTORY_STATEMENT
+    ) {
       throw new Error('expected parsed type 4')
     }
     expect(parsedWithout.typed.canonicalUsername).toBeUndefined()
@@ -1317,22 +1436,29 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
     const sig = new Uint8Array(secp256k1.sign(digest, secret).toDERRawBytes())
 
     const attestation = encodeFrame(
-      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_DIRECTORY_ATTESTATION,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       M([
-        [0, type4Statement],
+        [DIRECTORY_ATTESTATION.statementFrame, type4Statement],
         [
-          1,
+          DIRECTORY_ATTESTATION.signatures,
           [
             M([
-              [0, 1], // alg 1
               [
-                1,
+                SIGNATURE_ENTRY.algorithm,
+                SIGNATURE_ALGORITHM.secp256k1EcdsaDer,
+              ], // alg 1
+              [
+                SIGNATURE_ENTRY.signer,
                 M([
-                  [0, 1],
-                  [1, pubKey],
+                  [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                  [ACCOUNT_REF.keyBytes, pubKey],
                 ]),
               ],
-              [2, sig],
+              [SIGNATURE_ENTRY.signature, sig],
             ]),
           ],
         ],
@@ -1346,9 +1472,9 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
     expect(res.kind).toBe('parsed')
     if (res.kind !== 'parsed') throw new Error('not parsed')
     expect(res.typed?.type).toBe(2)
-    if (res.typed?.type === 2) {
+    if (res.typed?.type === TYPE_DIRECTORY_ATTESTATION) {
       const st = res.typed.statementFrame.typed
-      if (st?.type === 4) {
+      if (st?.type === TYPE_DIRECTORY_STATEMENT) {
         expect(st.canonicalUsername).toBe('valid-agent_42')
       } else {
         throw new Error('inner statement not typed')
@@ -1367,22 +1493,29 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
     })
 
     const badAttestation = encodeFrame(
-      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_DIRECTORY_ATTESTATION,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       M([
-        [0, tamperedStatement],
+        [DIRECTORY_ATTESTATION.statementFrame, tamperedStatement],
         [
-          1,
+          DIRECTORY_ATTESTATION.signatures,
           [
             M([
-              [0, 1],
               [
-                1,
+                SIGNATURE_ENTRY.algorithm,
+                SIGNATURE_ALGORITHM.secp256k1EcdsaDer,
+              ],
+              [
+                SIGNATURE_ENTRY.signer,
                 M([
-                  [0, 1],
-                  [1, pubKey],
+                  [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                  [ACCOUNT_REF.keyBytes, pubKey],
                 ]),
               ],
-              [2, sig],
+              [SIGNATURE_ENTRY.signature, sig],
             ]),
           ],
         ],
@@ -1424,7 +1557,7 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
 
     const res = validateFrame(encoded, defaultContext())
     expect(res.kind).toBe('parsed')
-    if (res.kind === 'parsed' && res.typed?.type === 4) {
+    if (res.kind === 'parsed' && res.typed?.type === TYPE_DIRECTORY_STATEMENT) {
       expect(res.typed.accountType).toBe(codec.ACCOUNT_TYPE_SERVICE)
       expect(res.typed.botRole).toBe(codec.BOT_ROLE_FAUCET)
     } else {
@@ -1436,20 +1569,20 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
     const pubKey = fromHex('02'.repeat(33))
     const relays = [
       M([
-        [0, fromHex('02'.repeat(16))],
-        [1, 'https://relay.example/r'],
+        [RELAY_BINDING.relayId, fromHex('02'.repeat(16))],
+        [RELAY_BINDING.endpoint, 'https://relay.example/r'],
         [
-          2,
+          RELAY_BINDING.identity,
           M([
-            [0, 1],
-            [1, pubKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, pubKey],
           ]),
         ],
         [
-          3,
+          RELAY_BINDING.expiry,
           M([
-            [0, 2000],
-            [1, 0],
+            [TIMESTAMP.seconds, 2000],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
       ]),
@@ -1457,33 +1590,37 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
 
     // Invalid accountType 4 (> 3)
     const badTypeStatement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      {
+        typeId: TYPE_DIRECTORY_STATEMENT,
+        schemaVersion: 3,
+        minReaderVersion: 2,
+      },
       M([
-        [0, 'monad-testnet'],
+        [DIRECTORY_STATEMENT.network, 'monad-testnet'],
         [
-          1,
+          DIRECTORY_STATEMENT.subject,
           M([
-            [0, 1],
-            [1, pubKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, pubKey],
           ]),
         ],
-        [2, 1],
+        [DIRECTORY_STATEMENT.revision, 1],
         [
-          3,
+          DIRECTORY_STATEMENT.timestamp,
           M([
-            [0, 100],
-            [1, 0],
+            [TIMESTAMP.seconds, 100],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
-        [4, relays],
+        [DIRECTORY_STATEMENT.relays, relays],
         [
-          8,
+          DIRECTORY_STATEMENT.stampKey,
           M([
-            [0, 1],
-            [1, pubKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, pubKey],
           ]),
         ],
-        [15, 4], // > 3
+        [DIRECTORY_STATEMENT.accountType, 4], // > 3
       ]),
     )
     expect(() => validateFrame(badTypeStatement, defaultContext())).toThrow(
@@ -1497,34 +1634,38 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
 
     // Invalid botRole 8 (> 7)
     const badRoleStatement = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      {
+        typeId: TYPE_DIRECTORY_STATEMENT,
+        schemaVersion: 3,
+        minReaderVersion: 2,
+      },
       M([
-        [0, 'monad-testnet'],
+        [DIRECTORY_STATEMENT.network, 'monad-testnet'],
         [
-          1,
+          DIRECTORY_STATEMENT.subject,
           M([
-            [0, 1],
-            [1, pubKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, pubKey],
           ]),
         ],
-        [2, 1],
+        [DIRECTORY_STATEMENT.revision, 1],
         [
-          3,
+          DIRECTORY_STATEMENT.timestamp,
           M([
-            [0, 100],
-            [1, 0],
+            [TIMESTAMP.seconds, 100],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
-        [4, relays],
+        [DIRECTORY_STATEMENT.relays, relays],
         [
-          8,
+          DIRECTORY_STATEMENT.stampKey,
           M([
-            [0, 1],
-            [1, pubKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, pubKey],
           ]),
         ],
-        [15, 1], // Bot
-        [16, 8], // > 7
+        [DIRECTORY_STATEMENT.accountType, ACCOUNT_TYPE.bot], // Bot
+        [DIRECTORY_STATEMENT.botRole, 8], // > 7
       ]),
     )
     expect(() => validateFrame(badRoleStatement, defaultContext())).toThrow(
@@ -1538,34 +1679,38 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
 
     // Semantic rejection: botRole on Person (accountType 0)
     const roleOnPerson = encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      {
+        typeId: TYPE_DIRECTORY_STATEMENT,
+        schemaVersion: 3,
+        minReaderVersion: 2,
+      },
       M([
-        [0, 'monad-testnet'],
+        [DIRECTORY_STATEMENT.network, 'monad-testnet'],
         [
-          1,
+          DIRECTORY_STATEMENT.subject,
           M([
-            [0, 1],
-            [1, pubKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, pubKey],
           ]),
         ],
-        [2, 1],
+        [DIRECTORY_STATEMENT.revision, 1],
         [
-          3,
+          DIRECTORY_STATEMENT.timestamp,
           M([
-            [0, 100],
-            [1, 0],
+            [TIMESTAMP.seconds, 100],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
-        [4, relays],
+        [DIRECTORY_STATEMENT.relays, relays],
         [
-          8,
+          DIRECTORY_STATEMENT.stampKey,
           M([
-            [0, 1],
-            [1, pubKey],
+            [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+            [ACCOUNT_REF.keyBytes, pubKey],
           ]),
         ],
-        [15, 0], // Person
-        [16, 1], // Role on person!
+        [DIRECTORY_STATEMENT.accountType, ACCOUNT_TYPE.person], // Person
+        [DIRECTORY_STATEMENT.botRole, BOT_ROLE.assistant], // Role on person!
       ]),
     )
     expect(() => validateFrame(roleOnPerson, defaultContext())).toThrow(
@@ -1588,13 +1733,17 @@ function decodeEnvelope(frame: Uint8Array): {
   statement: Uint8Array
 } {
   const body = decodeCanonical(frame.subarray(9)) as Map<bigint, unknown>
-  const payloadBytes = body.get(3n) as Uint8Array
+  const payloadBytes = body.get(BigInt(FRANK_ENVELOPE.payload)) as Uint8Array
   const payload = decodeCanonical(payloadBytes) as Map<bigint, unknown>
   return {
-    typeId: body.get(0n) as number,
-    schemaVersion: body.get(1n) as number,
-    minReaderVersion: body.get(2n) as number,
+    typeId: body.get(BigInt(FRANK_ENVELOPE.typeId)) as number,
+    schemaVersion: body.get(BigInt(FRANK_ENVELOPE.schemaVersion)) as number,
+    minReaderVersion: body.get(
+      BigInt(FRANK_ENVELOPE.minReaderVersion),
+    ) as number,
     payload,
-    statement: payload.get(0n) as Uint8Array,
+    statement: payload.get(
+      BigInt(DIRECTORY_ATTESTATION.statementFrame),
+    ) as Uint8Array,
   }
 }

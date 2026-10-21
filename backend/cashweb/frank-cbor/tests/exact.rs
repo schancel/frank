@@ -7,6 +7,9 @@ use frank_cbor::{
     ValidationResult,
 };
 
+use frank_cbor::message_fields::mailbox_checkpoint as ckpt;
+use frank_cbor::message_types::TYPE_MAILBOX_CHECKPOINT;
+
 const NINT_MIN: i128 = -1 - (u64::MAX as i128);
 
 use common::{acct1, bytes_of, directory_attestation_frame, fr, ts, typed_context, NET};
@@ -64,13 +67,13 @@ fn integer_boundaries_round_trip_as_integers() {
 fn timestamp_seconds_and_nanoseconds_stay_exact_in_a_typed_frame() {
     for (seconds, nanos) in [(i64::MIN, 999_999_999u32), (i64::MAX, 999_999_999), (0, 0)] {
         let frame = fr(
-            3,
+            TYPE_MAILBOX_CHECKPOINT,
             &cbor_map(vec![
-                (0, CborValue::Text(NET.to_string())),
-                (1, acct1(5)),
-                (2, CborValue::Bytes(bytes_of(16, 77))),
-                (3, ts(seconds, nanos)),
-                (4, CborValue::Array(vec![])),
+                (ckpt::NETWORK, CborValue::Text(NET.to_string())),
+                (ckpt::OWNER, acct1(5)),
+                (ckpt::CHECKPOINT_ID, CborValue::Bytes(bytes_of(16, 77))),
+                (ckpt::TIMESTAMP, ts(seconds, nanos)),
+                (ckpt::FACTS, CborValue::Array(vec![])),
             ]),
         );
         let result = validate_frame(&frame, &typed_context()).expect("checkpoint");

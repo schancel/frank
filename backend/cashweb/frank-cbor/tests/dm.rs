@@ -1,3 +1,7 @@
+use frank_cbor::message_fields::{
+    account_ref, encryption_suite, key_type, recipient_encrypted_payload_v2 as rep2,
+};
+use frank_cbor::message_types::TYPE_RECIPIENT_ENCRYPTED_PAYLOAD;
 use frank_cbor::{
     cbor_map, encode_direct_message_crypto_context, encode_frame, AccountRef, CborValue,
     DirectMessageCryptoContext, EnvelopeFields, FramePayload, DM_CRYPTO_CONTEXT_DOMAIN,
@@ -12,8 +16,14 @@ fn account(value: &serde_json::Value) -> AccountRef {
 
 fn account_value(value: &AccountRef) -> CborValue {
     cbor_map(vec![
-        (0, CborValue::Int(i128::from(value.key_type))),
-        (1, CborValue::Bytes(value.key_bytes.clone())),
+        (
+            account_ref::KEY_TYPE,
+            CborValue::Int(i128::from(value.key_type)),
+        ),
+        (
+            account_ref::KEY_BYTES,
+            CborValue::Bytes(value.key_bytes.clone()),
+        ),
     ])
 }
 
@@ -67,7 +77,7 @@ fn dm_context_matches_typescript_vector() {
     ))
     .unwrap();
     let uncompressed_account = AccountRef {
-        key_type: 1,
+        key_type: key_type::SECP256K1,
         key_bytes: uncompressed.clone(),
     };
     assert!(encode_with(&uncompressed_account, &ephemeral).is_err());
@@ -75,25 +85,28 @@ fn dm_context_matches_typescript_vector() {
 
     let payload = cbor_map(vec![
         (
-            0,
+            rep2::NETWORK,
             CborValue::Text(context["network"].as_str().unwrap().into()),
         ),
-        (1, account_value(&sender)),
-        (2, account_value(&recipient)),
-        (3, CborValue::Int(1)),
+        (rep2::SENDER, account_value(&sender)),
+        (rep2::RECIPIENT, account_value(&recipient)),
         (
-            4,
+            rep2::SUITE,
+            CborValue::Int(encryption_suite::DM_AUTH_XCHACHA.into()),
+        ),
+        (
+            rep2::CRYPTO_BOX_ENVELOPE,
             CborValue::Bytes(
                 hex::decode(corpus["cryptoBox"]["envelopeHex"].as_str().unwrap()).unwrap(),
             ),
         ),
-        (5, CborValue::Bytes(ephemeral)),
-        (6, CborValue::Bytes(shared)),
-        (7, CborValue::Bytes(proof)),
+        (rep2::EPHEMERAL_POINT, CborValue::Bytes(ephemeral)),
+        (rep2::SHARED_POINT, CborValue::Bytes(shared)),
+        (rep2::DLEQ_PROOF, CborValue::Bytes(proof)),
     ]);
     let frame = encode_frame(
         EnvelopeFields {
-            type_id: 5,
+            type_id: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
             schema_version: 2,
             min_reader_version: 2,
         },

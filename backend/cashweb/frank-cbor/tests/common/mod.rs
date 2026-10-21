@@ -1,6 +1,21 @@
 //! Shared helpers for the Frank-CBOR vector and fixture tests.
 #![allow(dead_code)]
 
+use frank_cbor::message_fields::{
+    account_ref, container_message_item, direct_message_delivery as dmd, directory_attestation,
+    directory_statement as stmt, encrypted_message_content as emc, encryption_suite, journal_fact,
+    key_type, mailbox_checkpoint as ckpt, message_content_revision as revision, opaque_section,
+    payment_member as pay, recipient_encrypted_payload_v1 as rep1, relay_binding,
+    signature_algorithm, signature_entry, text_message_item, timestamp, topic_post as post,
+    topic_post_submission as post_sub, topic_vote_submission as vote,
+};
+use frank_cbor::message_types::{
+    TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT,
+    TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_FORUM_OPERATION_STATUS,
+    TYPE_FORUM_VIEW, TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_CONTENT_REVISION,
+    TYPE_PROOF_UNKNOWN_ITEM, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM,
+    TYPE_TOPIC_POST, TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
+};
 use frank_cbor::{
     cbor_map, content_hash, decode_canonical, encode_canonical, encode_frame,
     message_content_digest, payment_commitment, recipient_payload_digest, validate_frame,
@@ -23,19 +38,27 @@ pub fn bytes_of(length: usize, seed: u32) -> Vec<u8> {
 pub fn acct1(seed: u32) -> CborValue {
     let mut key = vec![0x02];
     key.extend(bytes_of(32, seed));
-    cbor_map(vec![(0, int(1)), (1, CborValue::Bytes(key))])
+    account(key_type::SECP256K1, key)
+}
+
+/// An account-ref map of `key_type` and `key`.
+pub fn account(key_type: u32, key: Vec<u8>) -> CborValue {
+    cbor_map(vec![
+        (account_ref::KEY_TYPE, int(key_type.into())),
+        (account_ref::KEY_BYTES, CborValue::Bytes(key)),
+    ])
 }
 
 pub fn acct2(seed: u32) -> CborValue {
     let mut key = bytes_of(32, seed);
     key[0] = u8::try_from(seed).expect("acct2 seed fits in one byte");
-    cbor_map(vec![(0, int(2)), (1, CborValue::Bytes(key))])
+    account(key_type::ED25519, key)
 }
 
 pub fn ts(seconds: i64, nanos: u32) -> CborValue {
     cbor_map(vec![
-        (0, int(i128::from(seconds))),
-        (1, int(i128::from(nanos))),
+        (timestamp::SECONDS, int(i128::from(seconds))),
+        (timestamp::NANOSECONDS, int(i128::from(nanos))),
     ])
 }
 
@@ -55,17 +78,18 @@ pub const T3C_PROOF: &str = concat!(
 
 /// A key-type-1 account holding the given hex key.
 pub fn stamp_account(key_hex: &str) -> CborValue {
-    cbor_map(vec![
-        (0, int(1)),
-        (1, CborValue::Bytes(hex::decode(key_hex).expect("key hex"))),
-    ])
+    account(key_type::SECP256K1, hex::decode(key_hex).expect("key hex"))
 }
 
 /// A frame around `payload`. Type 4 is written at `schema_version` 2 with `min_reader_version` 2,
 /// because its stamp key (field 8) is required from schema 2 (README S10a.1); every other type is
 /// version 1.
 pub fn fr(type_id: u32, payload: &CborValue) -> Vec<u8> {
-    let version = if type_id == 4 { 2 } else { 1 };
+    let version = if type_id == TYPE_DIRECTORY_STATEMENT {
+        2
+    } else {
+        1
+    };
     encode_frame(
         EnvelopeFields {
             type_id,
@@ -91,17 +115,30 @@ fn fr_additive(type_id: u32, payload: &CborValue) -> Vec<u8> {
 }
 
 fn text_item(text: &str) -> Vec<u8> {
-    fr(17, &cbor_map(vec![(0, CborValue::Text(text.to_string()))]))
+    fr(
+        TYPE_TEXT_MESSAGE_ITEM,
+        &cbor_map(vec![(
+            text_message_item::TEXT,
+            CborValue::Text(text.to_string()),
+        )]),
+    )
 }
 
 fn container_item(children: Vec<Vec<u8>>) -> Vec<u8> {
     let items = children.into_iter().map(CborValue::Bytes).collect();
-    fr(16, &cbor_map(vec![(0, CborValue::Array(items))]))
+    fr(
+        TYPE_CONTAINER_MESSAGE_ITEM,
+        &cbor_map(vec![(
+            container_message_item::ITEMS,
+            CborValue::Array(items),
+        )]),
+    )
 }
 
 pub fn unknown_item(n: u32) -> Vec<u8> {
     fr(
-        0xffff_0001,
+        TYPE_PROOF_UNKNOWN_ITEM,
+        // raw-cbor-key: the proof-only unknown item's payload has no registered schema
         &cbor_map(vec![(0, CborValue::Text(format!("future item {n}")))]),
     )
 }
@@ -120,10 +157,10 @@ fn nested_items() -> Vec<Vec<u8>> {
 pub fn revision_frame() -> Vec<u8> {
     let items = nested_items().into_iter().map(CborValue::Bytes).collect();
     fr(
-        8,
+        TYPE_MESSAGE_CONTENT_REVISION,
         &cbor_map(vec![
-            (0, CborValue::Text("frank".to_string())),
-            (1, CborValue::Array(items)),
+            (revision::NETWORK, CborValue::Text("frank".to_string())),
+            (revision::ITEMS, CborValue::Array(items)),
         ]),
     )
 }
@@ -131,13 +168,13 @@ pub fn revision_frame() -> Vec<u8> {
 fn type6_frame(revision: &[u8]) -> Vec<u8> {
     let digest = message_content_digest(revision).expect("t1a");
     fr(
-        6,
+        TYPE_ENCRYPTED_MESSAGE_CONTENT,
         &cbor_map(vec![
-            (0, CborValue::Text(NET.to_string())),
-            (1, CborValue::Bytes(bytes_of(16, 7))),
-            (2, CborValue::Bytes(revision.to_vec())),
-            (3, CborValue::Bytes(digest.to_vec())),
-            (4, CborValue::Bytes(bytes_of(16, 8))),
+            (emc::NETWORK, CborValue::Text(NET.to_string())),
+            (emc::MESSAGE_ID, CborValue::Bytes(bytes_of(16, 7))),
+            (emc::REVISION_FRAME, CborValue::Bytes(revision.to_vec())),
+            (emc::CONTENT_DIGEST, CborValue::Bytes(digest.to_vec())),
+            (emc::CONVERSATION_ID, CborValue::Bytes(bytes_of(16, 8))),
         ]),
     )
 }
@@ -147,20 +184,29 @@ pub fn type5_fields() -> Vec<(u64, CborValue)> {
     let revision = revision_frame();
     let encrypted = type6_frame(&revision);
     vec![
-        (0, CborValue::Text(NET.to_string())),
-        (1, acct2(9)),
-        (2, acct1(3)),
-        (3, int(65_535)),
-        (4, CborValue::Bytes(bytes_of(24, 4))),
-        (5, CborValue::Bytes(encrypted)),
-        (6, CborValue::Bytes(hex::decode(T3C_EPHEMERAL).unwrap())),
-        (7, CborValue::Bytes(hex::decode(T3C_SHARED).unwrap())),
-        (8, CborValue::Bytes(hex::decode(T3C_PROOF).unwrap())),
+        (rep1::NETWORK, CborValue::Text(NET.to_string())),
+        (rep1::SENDER, acct2(9)),
+        (rep1::RECIPIENT, acct1(3)),
+        (rep1::SUITE, int(encryption_suite::PROOF.into())),
+        (rep1::NONCE, CborValue::Bytes(bytes_of(24, 4))),
+        (rep1::CIPHERTEXT, CborValue::Bytes(encrypted)),
+        (
+            rep1::EPHEMERAL_POINT,
+            CborValue::Bytes(hex::decode(T3C_EPHEMERAL).unwrap()),
+        ),
+        (
+            rep1::SHARED_POINT,
+            CborValue::Bytes(hex::decode(T3C_SHARED).unwrap()),
+        ),
+        (
+            rep1::DLEQ_PROOF,
+            CborValue::Bytes(hex::decode(T3C_PROOF).unwrap()),
+        ),
     ]
 }
 
 pub fn type5_frame() -> Vec<u8> {
-    fr(5, &cbor_map(type5_fields()))
+    fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, &cbor_map(type5_fields()))
 }
 
 /// A second canonical encoding of the type-5 fixture whose source map was assembled in reverse
@@ -168,7 +214,7 @@ pub fn type5_frame() -> Vec<u8> {
 pub fn type5_frame_reverse_order() -> Vec<u8> {
     let mut fields = type5_fields();
     fields.reverse();
-    fr(5, &CborValue::Map(fields))
+    fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, &CborValue::Map(fields))
 }
 
 /// A valid canonical one-byte mutation of [`type5_frame`]. Only the final nonce byte changes.
@@ -176,13 +222,13 @@ pub fn mutated_type5_frame() -> Vec<u8> {
     let mut fields = type5_fields();
     let (_, CborValue::Bytes(nonce)) = fields
         .iter_mut()
-        .find(|(key, _)| *key == 4)
+        .find(|(key, _)| *key == rep1::NONCE)
         .expect("nonce field")
     else {
         panic!("nonce is not bytes")
     };
     *nonce.last_mut().expect("non-empty nonce") ^= 1;
-    fr(5, &CborValue::Map(fields))
+    fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, &CborValue::Map(fields))
 }
 
 fn payment(t3: &[u8], index: u32) -> CborValue {
@@ -190,11 +236,17 @@ fn payment(t3: &[u8], index: u32) -> CborValue {
     value[31] = 1 + (index % 200) as u8;
     value[30] = 0x0f;
     cbor_map(vec![
-        (0, int(i128::from(index))),
-        (1, CborValue::Bytes(bytes_of(32, 100 + index))),
-        (2, CborValue::Bytes(value)),
-        (3, CborValue::Bytes(bytes_of(20, 50 + index))),
-        (4, CborValue::Bytes(payment_commitment(t3, index).to_vec())),
+        (pay::CHILD_INDEX, int(i128::from(index))),
+        (
+            pay::TRANSACTION_ID,
+            CborValue::Bytes(bytes_of(32, 100 + index)),
+        ),
+        (pay::VALUE, CborValue::Bytes(value)),
+        (pay::ADDRESS, CborValue::Bytes(bytes_of(20, 50 + index))),
+        (
+            pay::COMMITMENT,
+            CborValue::Bytes(payment_commitment(t3, index).to_vec()),
+        ),
     ])
 }
 
@@ -203,13 +255,16 @@ pub fn direct_message_frame() -> Vec<u8> {
     let payload_frame = type5_frame();
     let t3 = recipient_payload_digest(NET, &payload_frame).expect("t3");
     fr(
-        1,
+        TYPE_DIRECT_MESSAGE_DELIVERY,
         &cbor_map(vec![
-            (0, CborValue::Text(NET.to_string())),
-            (1, stamp_account(T3C_STAMP_KEY)),
-            (2, CborValue::Bytes(payload_frame)),
-            (3, CborValue::Bytes(t3.to_vec())),
-            (4, CborValue::Array(vec![payment(&t3, 0), payment(&t3, 1)])),
+            (dmd::NETWORK, CborValue::Text(NET.to_string())),
+            (dmd::DESTINATION, stamp_account(T3C_STAMP_KEY)),
+            (dmd::PAYLOAD_FRAME, CborValue::Bytes(payload_frame)),
+            (dmd::PAYLOAD_DIGEST, CborValue::Bytes(t3.to_vec())),
+            (
+                dmd::PAYMENTS,
+                CborValue::Array(vec![payment(&t3, 0), payment(&t3, 1)]),
+            ),
         ]),
     )
 }
@@ -220,13 +275,17 @@ pub fn rust_origin_direct_message_frame() -> Vec<u8> {
     let payload_frame = type5_frame();
     let t3 = recipient_payload_digest(NET, &payload_frame).expect("t3");
     fr_additive(
-        1,
+        TYPE_DIRECT_MESSAGE_DELIVERY,
         &cbor_map(vec![
-            (0, CborValue::Text(NET.to_string())),
-            (1, stamp_account(T3C_STAMP_KEY)),
-            (2, CborValue::Bytes(payload_frame)),
-            (3, CborValue::Bytes(t3.to_vec())),
-            (4, CborValue::Array(vec![payment(&t3, 0), payment(&t3, 1)])),
+            (dmd::NETWORK, CborValue::Text(NET.to_string())),
+            (dmd::DESTINATION, stamp_account(T3C_STAMP_KEY)),
+            (dmd::PAYLOAD_FRAME, CborValue::Bytes(payload_frame)),
+            (dmd::PAYLOAD_DIGEST, CborValue::Bytes(t3.to_vec())),
+            (
+                dmd::PAYMENTS,
+                CborValue::Array(vec![payment(&t3, 0), payment(&t3, 1)]),
+            ),
+            // raw-cbor-key: an additive field no reader declares
             (100, CborValue::Text("rust-additive-direct".to_string())),
         ]),
     )
@@ -235,11 +294,11 @@ pub fn rust_origin_direct_message_frame() -> Vec<u8> {
 /// Fixture 4: a top-level type-9 topic post.
 pub fn topic_post_frame() -> Vec<u8> {
     fr(
-        9,
+        TYPE_TOPIC_POST,
         &cbor_map(vec![
-            (0, CborValue::Text(NET.to_string())),
-            (1, CborValue::Text("frank.demo".to_string())),
-            (3, CborValue::Bytes(bytes_of(64, 21))),
+            (post::NETWORK, CborValue::Text(NET.to_string())),
+            (post::TOPIC, CborValue::Text("frank.demo".to_string())),
+            (post::BODY, CborValue::Bytes(bytes_of(64, 21))),
         ]),
     )
 }
@@ -247,11 +306,11 @@ pub fn topic_post_frame() -> Vec<u8> {
 /// Fixture 5: a type-10 submission wrapping [`topic_post_frame`].
 pub fn topic_post_submission_frame() -> Vec<u8> {
     fr(
-        10,
+        TYPE_TOPIC_POST_SUBMISSION,
         &cbor_map(vec![
-            (0, CborValue::Text(NET.to_string())),
-            (1, CborValue::Bytes(topic_post_frame())),
-            (2, CborValue::Bytes(bytes_of(110, 31))),
+            (post_sub::NETWORK, CborValue::Text(NET.to_string())),
+            (post_sub::POST_FRAME, CborValue::Bytes(topic_post_frame())),
+            (post_sub::BURN_TX, CborValue::Bytes(bytes_of(110, 31))),
         ]),
     )
 }
@@ -267,11 +326,11 @@ pub fn topic_post_hash() -> Vec<u8> {
 /// Fixture 6: a type-11 vote naming [`topic_post_hash`].
 pub fn topic_vote_frame() -> Vec<u8> {
     fr(
-        11,
+        TYPE_TOPIC_VOTE_SUBMISSION,
         &cbor_map(vec![
-            (0, CborValue::Text(NET.to_string())),
-            (1, CborValue::Bytes(topic_post_hash())),
-            (2, CborValue::Bytes(bytes_of(110, 32))),
+            (vote::NETWORK, CborValue::Text(NET.to_string())),
+            (vote::TARGET_HASH, CborValue::Bytes(topic_post_hash())),
+            (vote::BURN_TX, CborValue::Bytes(bytes_of(110, 32))),
         ]),
     )
 }
@@ -280,36 +339,42 @@ fn relay(i: u32) -> CborValue {
     let mut id = bytes_of(16, i);
     id[0] = u8::try_from(i).expect("relay index");
     cbor_map(vec![
-        (0, CborValue::Bytes(id)),
+        (relay_binding::RELAY_ID, CborValue::Bytes(id)),
         (
-            1,
+            relay_binding::ENDPOINT,
             CborValue::Text(format!("https://relay{i}.example/frank")),
         ),
-        (2, acct1(20 + i)),
-        (3, ts(1_800_000_000, 0)),
+        (relay_binding::IDENTITY, acct1(20 + i)),
+        (relay_binding::EXPIRY, ts(1_800_000_000, 0)),
     ])
 }
 
 fn directory_statement_frame() -> Vec<u8> {
     fr(
-        4,
+        TYPE_DIRECTORY_STATEMENT,
         &cbor_map(vec![
-            (0, CborValue::Text(NET.to_string())),
-            (1, acct2(1)),
-            (2, int(i128::from(u64::MAX))),
-            (3, ts(1_700_000_000, 123_456_789)),
-            (4, CborValue::Array(vec![relay(1), relay(2)])),
-            (6, ts(1_900_000_000, 999_999_999)),
-            (8, stamp_account(T3C_STAMP_KEY)),
+            (stmt::NETWORK, CborValue::Text(NET.to_string())),
+            (stmt::SUBJECT, acct2(1)),
+            (stmt::REVISION, int(i128::from(u64::MAX))),
+            (stmt::TIMESTAMP, ts(1_700_000_000, 123_456_789)),
+            (stmt::RELAYS, CborValue::Array(vec![relay(1), relay(2)])),
+            (stmt::EXPIRY, ts(1_900_000_000, 999_999_999)),
+            (stmt::STAMP_KEY, stamp_account(T3C_STAMP_KEY)),
         ]),
     )
 }
 
 fn signature(signer: CborValue) -> CborValue {
     cbor_map(vec![
-        (0, int(16)),
-        (1, signer),
-        (2, CborValue::Bytes(bytes_of(64, 1))),
+        (
+            signature_entry::ALGORITHM,
+            int(signature_algorithm::ED25519.into()),
+        ),
+        (signature_entry::SIGNER, signer),
+        (
+            signature_entry::SIGNATURE,
+            CborValue::Bytes(bytes_of(64, 1)),
+        ),
     ])
 }
 
@@ -317,10 +382,16 @@ fn signature(signer: CborValue) -> CborValue {
 pub fn directory_attestation_frame() -> Vec<u8> {
     let statement = directory_statement_frame();
     fr(
-        2,
+        TYPE_DIRECTORY_ATTESTATION,
         &cbor_map(vec![
-            (0, CborValue::Bytes(statement)),
-            (1, CborValue::Array(vec![signature(acct2(1))])),
+            (
+                directory_attestation::STATEMENT_FRAME,
+                CborValue::Bytes(statement),
+            ),
+            (
+                directory_attestation::SIGNATURES,
+                CborValue::Array(vec![signature(acct2(1))]),
+            ),
         ]),
     )
 }
@@ -329,10 +400,17 @@ pub fn directory_attestation_frame() -> Vec<u8> {
 pub fn rust_origin_directory_attestation_frame() -> Vec<u8> {
     let statement = directory_statement_frame();
     fr_additive(
-        2,
+        TYPE_DIRECTORY_ATTESTATION,
         &cbor_map(vec![
-            (0, CborValue::Bytes(statement)),
-            (1, CborValue::Array(vec![signature(acct2(1))])),
+            (
+                directory_attestation::STATEMENT_FRAME,
+                CborValue::Bytes(statement),
+            ),
+            (
+                directory_attestation::SIGNATURES,
+                CborValue::Array(vec![signature(acct2(1))]),
+            ),
+            // raw-cbor-key: an additive field no reader declares
             (100, CborValue::Text("rust-additive-directory".to_string())),
         ]),
     )
@@ -340,39 +418,45 @@ pub fn rust_origin_directory_attestation_frame() -> Vec<u8> {
 
 fn fact(seconds: i64, nanos: u32, id_seed: u32, payload: Vec<u8>) -> CborValue {
     cbor_map(vec![
-        (0, ts(seconds, nanos)),
-        (1, CborValue::Bytes(bytes_of(16, id_seed))),
-        (2, int(7)),
-        (3, CborValue::Bytes(payload)),
+        (journal_fact::TIMESTAMP, ts(seconds, nanos)),
+        (
+            journal_fact::FACT_ID,
+            CborValue::Bytes(bytes_of(16, id_seed)),
+        ),
+        (journal_fact::KIND, int(7)),
+        (journal_fact::PAYLOAD, CborValue::Bytes(payload)),
     ])
 }
 
 fn section(section_type: u32, schema: u32, value: Vec<u8>) -> CborValue {
     cbor_map(vec![
-        (0, int(i128::from(section_type))),
-        (1, int(i128::from(schema))),
-        (2, CborValue::Bytes(value)),
+        (opaque_section::SECTION_TYPE, int(i128::from(section_type))),
+        (
+            opaque_section::SECTION_SCHEMA_VERSION,
+            int(i128::from(schema)),
+        ),
+        (opaque_section::VALUE, CborValue::Bytes(value)),
     ])
 }
 
 /// Fixture 3: type-3 checkpoint with an unknown nested item and an unknown section.
 pub fn checkpoint_frame() -> Vec<u8> {
     fr(
-        3,
+        TYPE_MAILBOX_CHECKPOINT,
         &cbor_map(vec![
-            (0, CborValue::Text(NET.to_string())),
-            (1, acct1(5)),
-            (2, CborValue::Bytes(bytes_of(16, 77))),
-            (3, ts(1_700_000_500, 5)),
+            (ckpt::NETWORK, CborValue::Text(NET.to_string())),
+            (ckpt::OWNER, acct1(5)),
+            (ckpt::CHECKPOINT_ID, CborValue::Bytes(bytes_of(16, 77))),
+            (ckpt::TIMESTAMP, ts(1_700_000_500, 5)),
             (
-                4,
+                ckpt::FACTS,
                 CborValue::Array(vec![
                     fact(1_700_000_100, 0, 1, bytes_of(10, 1)),
                     fact(1_700_000_100, 9, 2, unknown_item(2)),
                 ]),
             ),
             (
-                5,
+                ckpt::SECTIONS,
                 CborValue::Array(vec![
                     section(1, 1, bytes_of(12, 3)),
                     section(0x7fff_0001, 9, unknown_item(3)),
@@ -386,33 +470,38 @@ pub fn checkpoint_frame() -> Vec<u8> {
 /// opaque future frames without opening them.
 pub fn rust_origin_checkpoint_frame() -> Vec<u8> {
     fr_additive(
-        3,
+        TYPE_MAILBOX_CHECKPOINT,
         &cbor_map(vec![
-            (0, CborValue::Text(NET.to_string())),
-            (1, acct1(5)),
-            (2, CborValue::Bytes(bytes_of(16, 77))),
-            (3, ts(1_700_000_500, 5)),
+            (ckpt::NETWORK, CborValue::Text(NET.to_string())),
+            (ckpt::OWNER, acct1(5)),
+            (ckpt::CHECKPOINT_ID, CborValue::Bytes(bytes_of(16, 77))),
+            (ckpt::TIMESTAMP, ts(1_700_000_500, 5)),
             (
-                4,
+                ckpt::FACTS,
                 CborValue::Array(vec![
                     fact(1_700_000_100, 0, 1, bytes_of(10, 1)),
                     fact(1_700_000_100, 9, 2, unknown_item(2)),
                 ]),
             ),
             (
-                5,
+                ckpt::SECTIONS,
                 CborValue::Array(vec![
                     section(1, 1, bytes_of(12, 3)),
                     section(0x7fff_0001, 9, unknown_item(3)),
                 ]),
             ),
+            // raw-cbor-key: an additive field no reader declares
             (100, CborValue::Text("rust-additive-checkpoint".to_string())),
         ]),
     )
 }
 
-/// Topic-event types (README E5, types 9 through 11), assigned by #136.
-pub const TOPIC_TYPES: [u32; 3] = [9, 10, 11];
+/// Topic-event types (README E5), assigned by #136.
+pub const TOPIC_TYPES: [u32; 3] = [
+    TYPE_TOPIC_POST,
+    TYPE_TOPIC_POST_SUBMISSION,
+    TYPE_TOPIC_VOTE_SUBMISSION,
+];
 
 fn context_for(types: impl Iterator<Item = u32>) -> ValidationContext {
     ValidationContext {
@@ -422,10 +511,19 @@ fn context_for(types: impl Iterator<Item = u32>) -> ValidationContext {
         reader_version: 2,
         supported_schemas: types
             // Freeze historical readers at type17, preserving the Forum read-type omission.
-            .filter(|type_id| *type_id <= 17 && !(12..=15).contains(type_id))
+            .filter(|type_id| {
+                *type_id <= TYPE_TEXT_MESSAGE_ITEM
+                    && !(TYPE_FORUM_VIEW..=TYPE_FORUM_OPERATION_STATUS).contains(type_id)
+            })
             .map(|type_id| SupportedSchema {
                 type_id,
-                schema_version: if type_id == 4 || type_id == 5 { 2 } else { 1 },
+                schema_version: if type_id == TYPE_DIRECTORY_STATEMENT
+                    || type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+                {
+                    2
+                } else {
+                    1
+                },
             })
             .collect(),
         opaque_retention_allowed: false,

@@ -1,5 +1,10 @@
 /** Ordinary canonical DM transport. Structural checks here grant no directory or payment authority. */
 import {
+  ACCOUNT_REF,
+  DM_CRYPTO_CONTEXT_V1,
+  DM_CRYPTO_CONTEXT_V1_SHAPE,
+  ENCRYPTION_SUITE,
+  KEY_TYPE,
   addressFromCompressedPubkey,
   compareBytes,
   decodeCanonical,
@@ -490,9 +495,16 @@ function field(
 }
 function account(map: ReadonlyMap<bigint, unknown>, key: number): AccountRef {
   const value = map.get(BigInt(key))
-  if (!(value instanceof Map) || value.size !== 2 || value.get(0n) !== 1n)
+  if (
+    !(value instanceof Map) ||
+    value.size !== 2 ||
+    value.get(BigInt(ACCOUNT_REF.keyType)) !== BigInt(KEY_TYPE.secp256k1)
+  )
     invalid('Invalid canonical context account')
-  return { keyType: 1, keyBytes: field(value, 1, 33) }
+  return {
+    keyType: KEY_TYPE.secp256k1,
+    keyBytes: field(value, ACCOUNT_REF.keyBytes, 33),
+  }
 }
 /** Exact structural descriptor only: no fresh admission, secret derivation, receipt or finality claim. */
 export function describeCanonicalParts(
@@ -557,7 +569,7 @@ export function inspectCanonicalPair(
   if (
     payload?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
     payload.schemaVersion !== 2 ||
-    payload.suite !== 1 ||
+    payload.suite !== ENCRYPTION_SUITE.dmAuthXchacha ||
     payload.network !== delivery.network ||
     !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(delivery.network)
   )
@@ -575,16 +587,20 @@ export function inspectCanonicalPair(
   const recipient = delivery.recipient ?? payload.recipient
   const dleqProof = delivery.dleqProof ?? payload.dleqProof
   const decoded = decodeCanonical(parts.context)
-  if (!(decoded instanceof Map) || decoded.size !== 16)
+  const C = DM_CRYPTO_CONTEXT_V1
+  if (
+    !(decoded instanceof Map) ||
+    decoded.size !== DM_CRYPTO_CONTEXT_V1_SHAPE.required.length
+  )
     invalid('Exact allocated context required')
   const context: DirectMessageCryptoContext = {
     network: delivery.network,
     sender: payload.sender,
     recipient,
-    senderDirectoryHash: field(decoded, 4, 32),
-    recipientDirectoryHash: field(decoded, 5, 32),
-    senderMessageKey: account(decoded, 6),
-    recipientMessageKey: account(decoded, 7),
+    senderDirectoryHash: field(decoded, C.senderStatementHash, 32),
+    recipientDirectoryHash: field(decoded, C.recipientStatementHash, 32),
+    senderMessageKey: account(decoded, C.senderMessageKey),
+    recipientMessageKey: account(decoded, C.recipientMessageKey),
     stampKey: delivery.destination,
     ephemeralPoint: payload.ephemeralPoint,
     sharedPoint: payload.sharedPoint,
@@ -593,8 +609,9 @@ export function inspectCanonicalPair(
   if (!same(encodeDirectMessageCryptoContext(context), parts.context))
     invalid('Delivery/context mismatch')
   if (
-    recipient.keyType !== 1 ||
-    payload.recipient.keyType !== 1 ||
+    recipient.keyType !== KEY_TYPE.secp256k1 ||
+    payload.recipient.keyType !== KEY_TYPE.secp256k1 ||
+
     !same(
       recipientPayloadDigest(delivery.network, delivery.payloadFrame.frame),
       delivery.payloadDigest,

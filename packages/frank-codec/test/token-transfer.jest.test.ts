@@ -14,6 +14,7 @@ import {
   TYPE_ENCRYPTED_MESSAGE_CONTENT,
 } from '../src'
 import type { TokenTransfer } from '../src'
+import { ENCRYPTED_MESSAGE_CONTENT, TOKEN_TRANSFER } from '../src/constants'
 
 describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
   const sampleTransfer: TokenTransfer = {
@@ -110,7 +111,8 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
       if (parsed.kind !== 'parsed') throw new Error('expected parsed')
 
       expect(parsed.typed?.type).toBe(6)
-      if (parsed.typed?.type !== 6) throw new Error('expected type 6')
+      if (parsed.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT)
+        throw new Error('expected type 6')
 
       expect(parsed.typed.conversationName).toBe('Direct Payment')
       expect(parsed.typed.tokenTransfer).toBeDefined()
@@ -201,10 +203,10 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
     it('rejects missing required fields in tokenTransfer CBOR payload at schema stage', () => {
       // Map missing key 5 (symbol)
       const badMap = cborMap([
-        [1, 'monad'],
-        [2, '0x1234'],
-        [3, 100n],
-        [4, 18],
+        [TOKEN_TRANSFER.chainNamespace, 'monad'],
+        [TOKEN_TRANSFER.contractAddress, '0x1234'],
+        [TOKEN_TRANSFER.amount, 100n],
+        [TOKEN_TRANSFER.decimals, 18],
       ])
       const badBytes = encodeCanonical(badMap)
       expect(() => decodeTokenTransfer(badBytes)).toThrow(
@@ -214,11 +216,12 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
 
     it('rejects undeclared key in tokenTransfer at schema stage', () => {
       const badMap = cborMap([
-        [1, 'monad'],
-        [2, '0x1234'],
-        [3, 100n],
-        [4, 18],
-        [5, 'USDC'],
+        [TOKEN_TRANSFER.chainNamespace, 'monad'],
+        [TOKEN_TRANSFER.contractAddress, '0x1234'],
+        [TOKEN_TRANSFER.amount, 100n],
+        [TOKEN_TRANSFER.decimals, 18],
+        [TOKEN_TRANSFER.symbol, 'USDC'],
+        // raw-cbor-key: key 99 is undeclared in a token transfer
         [99, 'extra'],
       ])
       const badBytes = encodeCanonical(badMap)
@@ -228,19 +231,22 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
     it('rejects zero amount in Type 6 validation during semantic stage', () => {
       // Construct raw Type 6 frame with amount = 0
       const transferMap = cborMap([
-        [1, 'monad'],
-        [2, '0x1234567890123456789012345678901234567890'],
-        [3, 0n],
-        [4, 6],
-        [5, 'USDC'],
+        [TOKEN_TRANSFER.chainNamespace, 'monad'],
+        [
+          TOKEN_TRANSFER.contractAddress,
+          '0x1234567890123456789012345678901234567890',
+        ],
+        [TOKEN_TRANSFER.amount, 0n],
+        [TOKEN_TRANSFER.decimals, 6],
+        [TOKEN_TRANSFER.symbol, 'USDC'],
       ])
       const payloadMap = cborMap([
-        [0, 'frank-test'],
-        [1, msgId],
-        [2, rev8],
-        [3, new Uint8Array(32)],
-        [4, convId],
-        [6, transferMap],
+        [ENCRYPTED_MESSAGE_CONTENT.network, 'frank-test'],
+        [ENCRYPTED_MESSAGE_CONTENT.messageId, msgId],
+        [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8],
+        [ENCRYPTED_MESSAGE_CONTENT.contentDigest, new Uint8Array(32)],
+        [ENCRYPTED_MESSAGE_CONTENT.conversationId, convId],
+        [ENCRYPTED_MESSAGE_CONTENT.tokenTransfer, transferMap],
       ])
       const frame = encodeFrame(
         {

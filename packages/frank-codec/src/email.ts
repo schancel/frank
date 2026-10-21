@@ -2,6 +2,10 @@
 
 import { cborMap } from './cbor'
 import {
+  ACCOUNT_REF,
+  EMAIL_ATTACHMENT,
+  EMAIL_MESSAGE_ITEM,
+  EMAIL_PARTY,
   MAX_EMAIL_ATTACHMENTS,
   MAX_EMAIL_MESSAGE_ITEM_FRAME_BYTES,
   MAX_EMAIL_RECIPIENTS,
@@ -115,20 +119,20 @@ export interface CanonicalEmailMessageItem {
 
 export function encodeEmailParty(party: EmailParty): Map<number | bigint, any> {
   requireTextBytes(party.address, 'party address', 3, 320)
-  const entries: Array<[number, any]> = [[0, party.address]]
+  const entries: Array<[number, any]> = [[EMAIL_PARTY.address, party.address]]
   if (party.name !== undefined) {
     requireTextBytes(party.name, 'party name', 1, 256)
-    entries.push([1, party.name])
+    entries.push([EMAIL_PARTY.name, party.name])
   }
   if (party.frankAccount !== undefined) {
     if (party.frankAccount.keyBytes.length !== 33) {
       throw bad('party frankAccount requires 33 key bytes')
     }
     entries.push([
-      2,
+      EMAIL_PARTY.frankAccount,
       cborMap([
-        [0, party.frankAccount.keyType],
-        [1, party.frankAccount.keyBytes],
+        [ACCOUNT_REF.keyType, party.frankAccount.keyType],
+        [ACCOUNT_REF.keyBytes, party.frankAccount.keyBytes],
       ]),
     ])
   }
@@ -159,13 +163,13 @@ export function encodeEmailAttachment(
     throw bad('attachment content exceeds 8388608 bytes')
   }
   const entries: Array<[number, any]> = [
-    [0, att.filename],
-    [1, att.contentType],
-    [2, content],
+    [EMAIL_ATTACHMENT.filename, att.filename],
+    [EMAIL_ATTACHMENT.contentType, att.contentType],
+    [EMAIL_ATTACHMENT.content, content],
   ]
   if (att.contentId !== undefined) {
     requireTextBytes(att.contentId, 'attachment contentId', 1, 128)
-    entries.push([3, att.contentId])
+    entries.push([EMAIL_ATTACHMENT.contentId, att.contentId])
   }
   if (att.unknownFields) {
     for (const [k, v] of att.unknownFields) {
@@ -211,29 +215,32 @@ export function encodeEmailMessageItem(
   }
 
   const entries: Array<[number, any]> = [
-    [0, email.messageId],
-    [1, encodeEmailParty(email.from)],
-    [2, email.to.map(encodeEmailParty)],
+    [EMAIL_MESSAGE_ITEM.messageId, email.messageId],
+    [EMAIL_MESSAGE_ITEM.from, encodeEmailParty(email.from)],
+    [EMAIL_MESSAGE_ITEM.to, email.to.map(encodeEmailParty)],
   ]
   if (email.cc && email.cc.length > 0) {
-    entries.push([3, email.cc.map(encodeEmailParty)])
+    entries.push([EMAIL_MESSAGE_ITEM.cc, email.cc.map(encodeEmailParty)])
   }
-  entries.push([4, email.subject])
-  entries.push([5, email.textBody])
+  entries.push([EMAIL_MESSAGE_ITEM.subject, email.subject])
+  entries.push([EMAIL_MESSAGE_ITEM.textBody, email.textBody])
   if (email.htmlBody !== undefined) {
-    entries.push([6, email.htmlBody])
+    entries.push([EMAIL_MESSAGE_ITEM.htmlBody, email.htmlBody])
   }
   if (email.inReplyTo !== undefined) {
-    entries.push([7, email.inReplyTo])
+    entries.push([EMAIL_MESSAGE_ITEM.inReplyTo, email.inReplyTo])
   }
   if (email.references && email.references.length > 0) {
-    entries.push([8, email.references])
+    entries.push([EMAIL_MESSAGE_ITEM.references, email.references])
   }
   if (email.attachments && email.attachments.length > 0) {
-    entries.push([9, email.attachments.map(encodeEmailAttachment)])
+    entries.push([
+      EMAIL_MESSAGE_ITEM.attachments,
+      email.attachments.map(encodeEmailAttachment),
+    ])
   }
   if (email.replyTo !== undefined) {
-    entries.push([10, encodeEmailParty(email.replyTo)])
+    entries.push([EMAIL_MESSAGE_ITEM.replyTo, encodeEmailParty(email.replyTo)])
   }
   if (email.unknownFields) {
     for (const [k, v] of email.unknownFields) {

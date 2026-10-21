@@ -5,10 +5,13 @@ use std::collections::HashSet;
 
 use crate::error::{CodecError, ErrorCategory, ErrorStage};
 use crate::hash::content_hash;
+use crate::message_fields as mf;
+use crate::message_fields::key_type;
 use crate::model::{
     AccountRef, KeyTransition, ParsedFrame, SignatureEntry, Timestamp, TypedPayload,
 };
 use crate::model::{ForumCursor, ForumCursorPosition, ForumDiscoveryPage, ForumTopicPage};
+use crate::schema::{at, at_index};
 
 pub(crate) struct PriorView {
     pub network: String,
@@ -351,13 +354,16 @@ pub(crate) fn check_semantics(
                         .then_with(|| a.transaction_id.cmp(&b.transaction_id))
                 },
                 "payment members",
-                &format!("{path}.4"),
+                &at(path, mf::forwarding_delivery_envelope::PAYMENTS),
                 false,
             )?;
             let mut seen_idx = HashSet::new();
             for payment in payments {
                 if !seen_idx.insert(payment.child_index) {
-                    return Err(semantic("duplicate child index", &format!("{path}.4")));
+                    return Err(semantic(
+                        "duplicate child index",
+                        &at(path, mf::forwarding_delivery_envelope::PAYMENTS),
+                    ));
                 }
             }
             let tx_keys: Vec<Vec<u8>> = payments
@@ -374,7 +380,11 @@ pub(crate) fn check_semantics(
                 })
                 .collect();
             let tx_key_refs: Vec<&[u8]> = tx_keys.iter().map(|k| k.as_slice()).collect();
-            require_unique(&tx_key_refs, "transaction id", &format!("{path}.4"))?;
+            require_unique(
+                &tx_key_refs,
+                "transaction id",
+                &at(path, mf::forwarding_delivery_envelope::PAYMENTS),
+            )?;
             let child_network = match opened(payload_frame) {
                 TypedPayload::DirectMessage { network, .. } => network,
                 _ => panic!("internal: expected an opened type-1 frame"),
@@ -382,22 +392,26 @@ pub(crate) fn check_semantics(
             if network != child_network {
                 return Err(semantic(
                     "forwarding network differs from the type-1 network",
-                    &format!("{path}.0"),
+                    &at(path, mf::forwarding_delivery_envelope::NETWORK),
                 ));
             }
-            if destination.key_type != 1 {
+            if destination.key_type != key_type::SECP256K1 {
                 return Err(semantic(
                     "destination account must be key type 1",
-                    &format!("{path}.1"),
+                    &at(path, mf::forwarding_delivery_envelope::DESTINATION),
                 ));
             }
             let addresses: Vec<&[u8]> = payments.iter().map(|p| p.address.as_slice()).collect();
-            require_unique(&addresses, "payment address", &format!("{path}.4"))?;
+            require_unique(
+                &addresses,
+                "payment address",
+                &at(path, mf::forwarding_delivery_envelope::PAYMENTS),
+            )?;
             for (i, payment) in payments.iter().enumerate() {
                 if payment.child_index != i as u32 {
                     return Err(semantic(
                         "child indices must be exactly contiguous 0..n-1 (T3a.5)",
-                        &format!("{path}.4[{i}]"),
+                        &at_index(path, mf::forwarding_delivery_envelope::PAYMENTS, i),
                     ));
                 }
             }
@@ -420,13 +434,16 @@ pub(crate) fn check_semantics(
                         .then_with(|| a.transaction_id.cmp(&b.transaction_id))
                 },
                 "payment members",
-                &format!("{path}.4"),
+                &at(path, mf::direct_message_delivery::PAYMENTS),
                 false,
             )?;
             let mut seen_idx = HashSet::new();
             for payment in payments {
                 if !seen_idx.insert(payment.child_index) {
-                    return Err(semantic("duplicate child index", &format!("{path}.4")));
+                    return Err(semantic(
+                        "duplicate child index",
+                        &at(path, mf::direct_message_delivery::PAYMENTS),
+                    ));
                 }
             }
             let tx_keys: Vec<Vec<u8>> = payments
@@ -443,7 +460,11 @@ pub(crate) fn check_semantics(
                 })
                 .collect();
             let tx_key_refs: Vec<&[u8]> = tx_keys.iter().map(|k| k.as_slice()).collect();
-            require_unique(&tx_key_refs, "transaction id", &format!("{path}.4"))?;
+            require_unique(
+                &tx_key_refs,
+                "transaction id",
+                &at(path, mf::direct_message_delivery::PAYMENTS),
+            )?;
             let child_network = match opened(payload_frame) {
                 TypedPayload::RecipientPayload { network, .. } => network,
                 _ => panic!("internal: expected an opened type-5 frame"),
@@ -451,15 +472,15 @@ pub(crate) fn check_semantics(
             if network != child_network {
                 return Err(semantic(
                     "delivery network differs from the type-5 network (S8)",
-                    &format!("{path}.0"),
+                    &at(path, mf::direct_message_delivery::NETWORK),
                 ));
             }
             // The destination is the stamp key P' and is deliberately not compared with the
             // type-5 recipient (S8): the routing identity and the payment key are independent.
-            if destination.key_type != 1 {
+            if destination.key_type != key_type::SECP256K1 {
                 return Err(semantic(
                     "destination account must be key type 1 (S9)",
-                    &format!("{path}.1"),
+                    &at(path, mf::direct_message_delivery::DESTINATION),
                 ));
             }
             if (recipient.is_some() && dleq_proof.is_none())
@@ -471,20 +492,24 @@ pub(crate) fn check_semantics(
                 ));
             }
             if let Some(rec) = recipient {
-                if rec.key_type != 1 {
+                if rec.key_type != key_type::SECP256K1 {
                     return Err(semantic(
                         "recipient account must be key type 1",
-                        &format!("{path}.5"),
+                        &at(path, mf::direct_message_delivery::RECIPIENT),
                     ));
                 }
             }
             let addresses: Vec<&[u8]> = payments.iter().map(|p| p.address.as_slice()).collect();
-            require_unique(&addresses, "payment address", &format!("{path}.4"))?;
+            require_unique(
+                &addresses,
+                "payment address",
+                &at(path, mf::direct_message_delivery::PAYMENTS),
+            )?;
             for (i, payment) in payments.iter().enumerate() {
                 if payment.child_index != i as u32 {
                     return Err(semantic(
                         "child indices must be exactly contiguous 0..n-1 (T3a.5)",
-                        &format!("{path}.4[{i}]"),
+                        &at_index(path, mf::direct_message_delivery::PAYMENTS, i),
                     ));
                 }
             }
@@ -529,7 +554,7 @@ pub(crate) fn check_semantics(
             } if post_network == network => Ok(()),
             TypedPayload::TopicPost { .. } => Err(semantic(
                 "submission network differs from the type-9 network (S11)",
-                &format!("{path}.0"),
+                &at(path, mf::topic_post_submission::NETWORK),
             )),
             _ => panic!("internal: expected an opened type-9 frame"),
         },
@@ -546,7 +571,7 @@ pub(crate) fn check_semantics(
                         .then_with(|| cmp_account(&a.signer, &b.signer))
                 },
                 "signatures",
-                &format!("{path}.1"),
+                &at(path, mf::directory_attestation::SIGNATURES),
                 true,
             )?;
             let (st_network, st_subject, st_revision, st_schema, transitions) =
@@ -573,14 +598,16 @@ pub(crate) fn check_semantics(
             {
                 return Err(semantic(
                     "no signature entry is signed by the statement subject",
-                    &format!("{path}.1"),
+                    &at(path, mf::directory_attestation::SIGNATURES),
                 ));
             }
             if crate::directory_preview::is_preview(opened(statement)) {
-                if signatures.len() != 1 || signatures[0].algorithm != 1 {
+                if signatures.len() != 1
+                    || signatures[0].algorithm != mf::signature_algorithm::SECP256K1_ECDSA_DER
+                {
                     return Err(semantic(
                         "directory preview requires exactly one algorithm-1 subject signature",
-                        &format!("{path}.1"),
+                        &at(path, mf::directory_attestation::SIGNATURES),
                     ));
                 }
                 return Ok(());
@@ -605,11 +632,11 @@ pub(crate) fn check_semantics(
                         .then_with(|| a.fact_id.cmp(&b.fact_id))
                 },
                 "journal facts",
-                &format!("{path}.4"),
+                &at(path, mf::mailbox_checkpoint::FACTS),
                 false,
             )?;
             let ids: Vec<&[u8]> = facts.iter().map(|fact| fact.fact_id.as_slice()).collect();
-            require_unique(&ids, "fact_id", &format!("{path}.4"))?;
+            require_unique(&ids, "fact_id", &at(path, mf::mailbox_checkpoint::FACTS))?;
             if let Some(sections) = sections {
                 require_ordered(
                     sections,
@@ -619,13 +646,16 @@ pub(crate) fn check_semantics(
                             .then_with(|| a.section_schema_version.cmp(&b.section_schema_version))
                     },
                     "opaque sections",
-                    &format!("{path}.5"),
+                    &at(path, mf::mailbox_checkpoint::SECTIONS),
                     false,
                 )?;
                 let mut seen = HashSet::new();
                 for section in sections {
                     if !seen.insert(section.section_type) {
-                        return Err(semantic("duplicate section_type", &format!("{path}.5")));
+                        return Err(semantic(
+                            "duplicate section_type",
+                            &at(path, mf::mailbox_checkpoint::SECTIONS),
+                        ));
                     }
                 }
             }
@@ -651,21 +681,21 @@ pub(crate) fn check_semantics(
                         .then_with(|| a.endpoint.cmp(&b.endpoint))
                 },
                 "relay bindings",
-                &format!("{path}.4"),
+                &at(path, mf::directory_statement::RELAYS),
                 false,
             )?;
             let ids: Vec<&[u8]> = relays
                 .iter()
                 .map(|relay| relay.relay_id.as_slice())
                 .collect();
-            require_unique(&ids, "relay_id", &format!("{path}.4"))?;
+            require_unique(&ids, "relay_id", &at(path, mf::directory_statement::RELAYS))?;
             // S10a.1: the stamp key is key type 1. Whether it is a curve point is not a
             // statement check (a bad point makes every delivery to it fail at T3a.6, stage 10).
             if let Some(key) = stamp_key {
-                if key.key_type != 1 {
+                if key.key_type != key_type::SECP256K1 {
                     return Err(semantic(
                         "stamp key must be key type 1 (S10a.1)",
-                        &format!("{path}.8"),
+                        &at(path, mf::directory_statement::STAMP_KEY),
                     ));
                 }
             }
@@ -682,14 +712,14 @@ pub(crate) fn check_semantics(
                             .then_with(|| cmp_account(a.new_key, b.new_key))
                     },
                     "key transitions",
-                    &format!("{path}.5"),
+                    &at(path, mf::directory_statement::KEY_TRANSITIONS),
                     true,
                 )?;
                 for i in 1..parts.len() {
                     if parts[i - 1].revision == parts[i].revision {
                         return Err(semantic(
                             "two key transitions share a revision (S5)",
-                            &format!("{path}.5"),
+                            &at(path, mf::directory_statement::KEY_TRANSITIONS),
                         ));
                     }
                 }
@@ -699,7 +729,7 @@ pub(crate) fn check_semantics(
                     authorities,
                     cmp_account,
                     "recovery authorities",
-                    &format!("{path}.7"),
+                    &at(path, mf::directory_statement::RECOVERY_AUTHORITIES),
                     true,
                 )?;
             }
@@ -711,7 +741,10 @@ pub(crate) fn check_semantics(
                         &names,
                         Ord::cmp,
                         "profile-entry headers",
-                        &format!("{path}.9[{i}].1"),
+                        &at(
+                            &at_index(path, mf::directory_statement::PROFILE_ENTRIES, i),
+                            mf::profile_entry::HEADERS,
+                        ),
                         true,
                     )?;
                 }
@@ -720,7 +753,7 @@ pub(crate) fn check_semantics(
                 if !crate::registration::is_valid_canonical_username(username) {
                     return Err(semantic(
                         "canonical username must match ^[a-z0-9][a-z0-9_-]{2,31}$",
-                        &format!("{path}.14"),
+                        &at(path, mf::directory_statement::USERNAME),
                     ));
                 }
             }
@@ -730,7 +763,7 @@ pub(crate) fn check_semantics(
             {
                 return Err(semantic(
                     "bot-role requires account-type to be bot (1) or service (2)",
-                    &format!("{path}.16"),
+                    &at(path, mf::directory_statement::BOT_ROLE),
                 ));
             }
             Ok(())
@@ -747,7 +780,7 @@ fn check_directory_update(
     transitions: Option<&[KeyTransition]>,
     prior: Option<&PriorView>,
 ) -> Result<(), CodecError> {
-    let path = "root/payload.0";
+    let path = &at("root/payload", mf::directory_attestation::STATEMENT_FRAME);
     let Some(prior) = prior else {
         if transitions.is_some() {
             return Err(semantic(

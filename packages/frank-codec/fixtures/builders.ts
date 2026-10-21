@@ -11,6 +11,46 @@ import {
 } from '../src/hash'
 import type { TokenTransfer } from '../src/types'
 import { encodeTokenTransferMap } from '../src/token-transfer'
+import {
+  ACCOUNT_REF,
+  CONTAINER_MESSAGE_ITEM,
+  DIRECT_MESSAGE_DELIVERY,
+  DIRECTORY_ATTESTATION,
+  DIRECTORY_STATEMENT,
+  ENCRYPTED_MESSAGE_CONTENT,
+  ENCRYPTION_SUITE,
+  FRANK_ENVELOPE,
+  JOURNAL_FACT,
+  KEY_TRANSITION,
+  KEY_TRANSITION_STATEMENT,
+  KEY_TYPE,
+  MAILBOX_CHECKPOINT,
+  MESSAGE_CONTENT_REVISION,
+  OPAQUE_SECTION,
+  PAYMENT_MEMBER,
+  RECIPIENT_ENCRYPTED_PAYLOAD_V1,
+  RELAY_BINDING,
+  SIGNATURE_ALGORITHM,
+  SIGNATURE_ENTRY,
+  TEXT_MESSAGE_ITEM,
+  TIMESTAMP,
+  TOPIC_POST,
+  TOPIC_POST_SUBMISSION,
+  TOPIC_VOTE_SUBMISSION,
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_MAILBOX_CHECKPOINT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+} from '../src/constants'
 
 export type Fields = Map<number, Encodable>
 
@@ -33,8 +73,8 @@ export function acct1(seed: number): Fields {
   k[0] = 0x02
   k.set(bytesOf(32, seed), 1)
   return M([
-    [0, 1],
-    [1, k],
+    [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+    [ACCOUNT_REF.keyBytes, k],
   ])
 }
 
@@ -43,15 +83,15 @@ export function acct2(seed: number): Fields {
   const k = bytesOf(32, seed)
   k[0] = seed
   return M([
-    [0, 2],
-    [1, k],
+    [ACCOUNT_REF.keyType, KEY_TYPE.ed25519],
+    [ACCOUNT_REF.keyBytes, k],
   ])
 }
 
 export const ts = (seconds: bigint | number, nanos: number): Fields =>
   M([
-    [0, seconds],
-    [1, nanos],
+    [TIMESTAMP.seconds, seconds],
+    [TIMESTAMP.nanoseconds, nanos],
   ])
 
 /**
@@ -62,8 +102,8 @@ export const ts = (seconds: bigint | number, nanos: number): Fields =>
 export const fr = (
   typeId: number,
   payload: Encodable,
-  schema = typeId === 4 ? 2 : 1,
-  minReader = typeId === 4 ? 2 : 1,
+  schema = typeId === TYPE_DIRECTORY_STATEMENT ? 2 : 1,
+  minReader = typeId === TYPE_DIRECTORY_STATEMENT ? 2 : 1,
 ): Uint8Array =>
   encodeFrame(
     { typeId, schemaVersion: schema, minReaderVersion: minReader },
@@ -114,10 +154,10 @@ export function envBody(
 ): Uint8Array {
   return encodeCanonical(
     cborMap([
-      [0, typeId],
-      [1, schema],
-      [2, min],
-      [3, payload],
+      [FRANK_ENVELOPE.typeId, typeId],
+      [FRANK_ENVELOPE.schemaVersion, schema],
+      [FRANK_ENVELOPE.minReaderVersion, min],
+      [FRANK_ENVELOPE.payload, payload],
     ]),
   )
 }
@@ -125,7 +165,7 @@ export function envBody(
 /** A well-formed frame whose payload item is the given raw (possibly hostile) bytes. */
 export const framePayload = (
   payload: Uint8Array | string,
-  typeId = 17,
+  typeId: number = TYPE_TEXT_MESSAGE_ITEM,
   schema = 1,
   min = 1,
 ): Uint8Array =>
@@ -140,16 +180,18 @@ export const framePayload = (
 // Message items (types 16, 17, unknown)
 // ---------------------------------------------------------------------------------------------
 
-export const textItem = (s = 'hello'): Uint8Array => fr(17, M([[0, s]]))
+export const textItem = (s = 'hello'): Uint8Array =>
+  fr(TYPE_TEXT_MESSAGE_ITEM, M([[TEXT_MESSAGE_ITEM.text, s]]))
 export const containerItem = (children: Uint8Array[]): Uint8Array =>
-  fr(16, M([[0, children]]))
+  fr(TYPE_CONTAINER_MESSAGE_ITEM, M([[CONTAINER_MESSAGE_ITEM.items, children]]))
 export const UNKNOWN_TYPE = 0xffff0001
 export const unknownItem = (n = 1): Uint8Array =>
+  // raw-cbor-key: an unregistered future item type has no registered field names
   fr(UNKNOWN_TYPE, M([[0, `future item ${n}`]]))
 export const revision8 = (items: Uint8Array[]): Fields =>
   M([
-    [0, 'frank'],
-    [1, items],
+    [MESSAGE_CONTENT_REVISION.network, 'frank'],
+    [MESSAGE_CONTENT_REVISION.items, items],
   ])
 
 /** The README section 1 worked example: a type-17 item `{0: "hi"}` (23 bytes). */
@@ -178,7 +220,7 @@ export function nestedItems(): Uint8Array[] {
 }
 
 export const rev8Frame = (items = nestedItems()): Uint8Array =>
-  fr(8, revision8(items))
+  fr(TYPE_MESSAGE_CONTENT_REVISION, revision8(items))
 
 export const DEFAULT_CONVERSATION_ID = bytesOf(16, 8)
 
@@ -189,19 +231,22 @@ export function type6Frame(
   tokenTransfer?: TokenTransfer,
 ): Uint8Array {
   const entries: [number, any][] = [
-    [0, NET],
-    [1, bytesOf(16, 7)],
-    [2, rev8],
-    [3, messageContentDigest(rev8)],
-    [4, conversationId],
+    [ENCRYPTED_MESSAGE_CONTENT.network, NET],
+    [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 7)],
+    [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8],
+    [ENCRYPTED_MESSAGE_CONTENT.contentDigest, messageContentDigest(rev8)],
+    [ENCRYPTED_MESSAGE_CONTENT.conversationId, conversationId],
   ]
   if (conversationName !== undefined) {
-    entries.push([5, conversationName])
+    entries.push([ENCRYPTED_MESSAGE_CONTENT.conversationName, conversationName])
   }
   if (tokenTransfer !== undefined) {
-    entries.push([6, encodeTokenTransferMap(tokenTransfer)])
+    entries.push([
+      ENCRYPTED_MESSAGE_CONTENT.tokenTransfer,
+      encodeTokenTransferMap(tokenTransfer),
+    ])
   }
-  return fr(6, M(entries))
+  return fr(TYPE_ENCRYPTED_MESSAGE_CONTENT, M(entries))
 }
 
 /**
@@ -229,8 +274,8 @@ export const T3C = {
 /** A key-type-1 account holding `key` (default: the T3c stamp key `P'`). */
 export const stampAccount = (key: Uint8Array = T3C.stampKey): Fields =>
   M([
-    [0, 1],
-    [1, key],
+    [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+    [ACCOUNT_REF.keyBytes, key],
   ])
 
 export function type5Payload(
@@ -244,22 +289,22 @@ export function type5Payload(
   }> = {},
 ): Fields {
   return M([
-    [0, o.net ?? NET],
-    [1, acct2(9)],
-    [2, o.recipient ?? acct1(3)],
-    [3, o.suite ?? 65535],
-    [4, bytesOf(24, 4)],
+    [RECIPIENT_ENCRYPTED_PAYLOAD_V1.network, o.net ?? NET],
+    [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sender, acct2(9)],
+    [RECIPIENT_ENCRYPTED_PAYLOAD_V1.recipient, o.recipient ?? acct1(3)],
+    [RECIPIENT_ENCRYPTED_PAYLOAD_V1.suite, o.suite ?? ENCRYPTION_SUITE.proof],
+    [RECIPIENT_ENCRYPTED_PAYLOAD_V1.nonce, bytesOf(24, 4)],
     // Proof suite 65535: the ciphertext is exactly the decrypted type-6 frame (README S2c).
-    [5, type6Frame()],
-    [6, o.e ?? T3C.ephemeral],
-    [7, o.x ?? T3C.shared],
-    [8, o.proof ?? T3C.proof],
+    [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ciphertext, type6Frame()],
+    [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ephemeralPoint, o.e ?? T3C.ephemeral],
+    [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sharedPoint, o.x ?? T3C.shared],
+    [RECIPIENT_ENCRYPTED_PAYLOAD_V1.dleqProof, o.proof ?? T3C.proof],
   ])
 }
 
 export const type5Frame = (
   o?: Parameters<typeof type5Payload>[0],
-): Uint8Array => fr(5, type5Payload(o))
+): Uint8Array => fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, type5Payload(o))
 
 export interface PaymentOpts {
   index: number
@@ -277,11 +322,11 @@ export function payment(t3: Uint8Array, o: PaymentOpts): Fields {
   value[31] = 1 + (o.index % 200)
   value[30] = 0x0f
   return M([
-    [0, o.index],
-    [1, bytesOf(32, o.txSeed ?? 100 + o.index)],
-    [2, value],
-    [3, bytesOf(20, o.addrSeed ?? 50 + o.index)],
-    [4, paymentCommitment(t3, o.index)],
+    [PAYMENT_MEMBER.childIndex, o.index],
+    [PAYMENT_MEMBER.transactionId, bytesOf(32, o.txSeed ?? 100 + o.index)],
+    [PAYMENT_MEMBER.value, value],
+    [PAYMENT_MEMBER.address, bytesOf(20, o.addrSeed ?? 50 + o.index)],
+    [PAYMENT_MEMBER.commitment, paymentCommitment(t3, o.index)],
   ])
 }
 
@@ -302,20 +347,22 @@ export function deliveryPayload(
       ? Array.from({ length: o.payments }, (_, i) => payment(t3, { index: i }))
       : o.payments ?? [payment(t3, { index: 0 }), payment(t3, { index: 1 })]
   const m = M([
-    [0, o.net ?? NET],
-    [1, o.destination ?? stampAccount()],
-    [2, pf],
-    [3, t3],
-    [4, payments],
+    [DIRECT_MESSAGE_DELIVERY.network, o.net ?? NET],
+    [DIRECT_MESSAGE_DELIVERY.destination, o.destination ?? stampAccount()],
+    [DIRECT_MESSAGE_DELIVERY.payloadFrame, pf],
+    [DIRECT_MESSAGE_DELIVERY.payloadDigest, t3],
+    [DIRECT_MESSAGE_DELIVERY.payments, payments],
   ])
-  if (o.recipient !== undefined) m.set(5, o.recipient)
-  if (o.dleqProof !== undefined) m.set(6, o.dleqProof)
+  if (o.recipient !== undefined)
+    m.set(DIRECT_MESSAGE_DELIVERY.recipient, o.recipient)
+  if (o.dleqProof !== undefined)
+    m.set(DIRECT_MESSAGE_DELIVERY.dleqProof, o.dleqProof)
   return m
 }
 
 export const deliveryFrame = (
   o?: Parameters<typeof deliveryPayload>[0],
-): Uint8Array => fr(1, deliveryPayload(o))
+): Uint8Array => fr(TYPE_DIRECT_MESSAGE_DELIVERY, deliveryPayload(o))
 
 export { recipientPayloadDigest }
 
@@ -332,17 +379,18 @@ export function topicPostPayload(
   }> = {},
 ): Fields {
   const m = M([
-    [0, o.net ?? NET],
-    [1, o.topic ?? 'frank.demo'],
-    [3, o.body ?? bytesOf(64, 21)],
+    [TOPIC_POST.network, o.net ?? NET],
+    [TOPIC_POST.topic, o.topic ?? 'frank.demo'],
+    [TOPIC_POST.body, o.body ?? bytesOf(64, 21)],
   ])
-  if (o.parent !== null && o.parent !== undefined) m.set(2, o.parent)
+  if (o.parent !== null && o.parent !== undefined)
+    m.set(TOPIC_POST.parentHash, o.parent)
   return m
 }
 
 export const topicPostFrame = (
   o?: Parameters<typeof topicPostPayload>[0],
-): Uint8Array => fr(9, topicPostPayload(o))
+): Uint8Array => fr(TYPE_TOPIC_POST, topicPostPayload(o))
 
 /** Filler for the raw signed chain transaction: the codec never opens it (README T8). */
 export const burnTx = (seed = 31, length = 110): Uint8Array =>
@@ -352,29 +400,29 @@ export function topicSubmissionPayload(
   o: Partial<{ net: string; post: Uint8Array; burnTx: Uint8Array }> = {},
 ): Fields {
   return M([
-    [0, o.net ?? NET],
-    [1, o.post ?? topicPostFrame()],
-    [2, o.burnTx ?? burnTx()],
+    [TOPIC_POST_SUBMISSION.network, o.net ?? NET],
+    [TOPIC_POST_SUBMISSION.postFrame, o.post ?? topicPostFrame()],
+    [TOPIC_POST_SUBMISSION.burnTx, o.burnTx ?? burnTx()],
   ])
 }
 
 export const topicSubmissionFrame = (
   o?: Parameters<typeof topicSubmissionPayload>[0],
-): Uint8Array => fr(10, topicSubmissionPayload(o))
+): Uint8Array => fr(TYPE_TOPIC_POST_SUBMISSION, topicSubmissionPayload(o))
 
 export function topicVotePayload(
   o: Partial<{ net: string; target: Uint8Array; burnTx: Uint8Array }> = {},
 ): Fields {
   return M([
-    [0, o.net ?? NET],
-    [1, o.target ?? bytesOf(32, 41)],
-    [2, o.burnTx ?? burnTx(32)],
+    [TOPIC_VOTE_SUBMISSION.network, o.net ?? NET],
+    [TOPIC_VOTE_SUBMISSION.targetHash, o.target ?? bytesOf(32, 41)],
+    [TOPIC_VOTE_SUBMISSION.burnTx, o.burnTx ?? burnTx(32)],
   ])
 }
 
 export const topicVoteFrame = (
   o?: Parameters<typeof topicVotePayload>[0],
-): Uint8Array => fr(11, topicVotePayload(o))
+): Uint8Array => fr(TYPE_TOPIC_VOTE_SUBMISSION, topicVotePayload(o))
 
 // ---------------------------------------------------------------------------------------------
 // Directory (types 2, 4, 7)
@@ -387,10 +435,10 @@ export function relay(
   const id = bytesOf(16, i)
   id[0] = i
   return M([
-    [0, id],
-    [1, endpoint],
-    [2, acct1(20 + i)],
-    [3, ts(1_800_000_000, 0)],
+    [RELAY_BINDING.relayId, id],
+    [RELAY_BINDING.endpoint, endpoint],
+    [RELAY_BINDING.identity, acct1(20 + i)],
+    [RELAY_BINDING.expiry, ts(1_800_000_000, 0)],
   ])
 }
 
@@ -407,29 +455,35 @@ export function statementPayload(
   }> = {},
 ): Fields {
   const m = M([
-    [0, o.net ?? NET],
-    [1, o.subject ?? acct2(1)],
-    [2, o.revision ?? 5n],
-    [3, ts(1_700_000_000, 123_456_789)],
-    [4, o.relays ?? [relay(1), relay(2)]],
+    [DIRECTORY_STATEMENT.network, o.net ?? NET],
+    [DIRECTORY_STATEMENT.subject, o.subject ?? acct2(1)],
+    [DIRECTORY_STATEMENT.revision, o.revision ?? 5n],
+    [DIRECTORY_STATEMENT.timestamp, ts(1_700_000_000, 123_456_789)],
+    [DIRECTORY_STATEMENT.relays, o.relays ?? [relay(1), relay(2)]],
   ])
-  if (o.transitions) m.set(5, o.transitions)
-  if (o.expiry) m.set(6, o.expiry)
-  if (o.authorities) m.set(7, o.authorities)
+  if (o.transitions) m.set(DIRECTORY_STATEMENT.keyTransitions, o.transitions)
+  if (o.expiry) m.set(DIRECTORY_STATEMENT.expiry, o.expiry)
+  if (o.authorities)
+    m.set(DIRECTORY_STATEMENT.recoveryAuthorities, o.authorities)
   // Schema 2 requires the stamp key; `stampKey: null` builds the field-less schema-1 layout.
-  if (o.stampKey !== null) m.set(8, o.stampKey ?? stampAccount())
+  if (o.stampKey !== null)
+    m.set(DIRECTORY_STATEMENT.stampKey, o.stampKey ?? stampAccount())
   return m
 }
 
 export const statementFrame = (
   o?: Parameters<typeof statementPayload>[0],
-): Uint8Array => fr(4, statementPayload(o))
+): Uint8Array => fr(TYPE_DIRECTORY_STATEMENT, statementPayload(o))
 
-export function sig(signer: Fields, seed = 1, algorithm = 16): Fields {
+export function sig(
+  signer: Fields,
+  seed = 1,
+  algorithm: number = SIGNATURE_ALGORITHM.ed25519,
+): Fields {
   return M([
-    [0, algorithm],
-    [1, signer],
-    [2, bytesOf(64, seed)],
+    [SIGNATURE_ENTRY.algorithm, algorithm],
+    [SIGNATURE_ENTRY.signer, signer],
+    [SIGNATURE_ENTRY.signature, bytesOf(64, seed)],
   ])
 }
 
@@ -438,10 +492,10 @@ export const attestationFrame = (
   sigs: Fields[],
 ): Uint8Array =>
   fr(
-    2,
+    TYPE_DIRECTORY_ATTESTATION,
     M([
-      [0, stmt],
-      [1, sigs],
+      [DIRECTORY_ATTESTATION.statementFrame, stmt],
+      [DIRECTORY_ATTESTATION.signatures, sigs],
     ]),
   )
 
@@ -455,13 +509,13 @@ export function transitionStatement(
   }> = {},
 ): Uint8Array {
   return fr(
-    7,
+    TYPE_KEY_TRANSITION_STATEMENT,
     M([
-      [0, o.net ?? NET],
-      [1, o.subject ?? acct2(1)],
-      [2, o.prior ?? acct2(1)],
-      [3, o.revision ?? 6n],
-      [4, o.newKey ?? acct2(2)],
+      [KEY_TRANSITION_STATEMENT.network, o.net ?? NET],
+      [KEY_TRANSITION_STATEMENT.subject, o.subject ?? acct2(1)],
+      [KEY_TRANSITION_STATEMENT.priorAuthority, o.prior ?? acct2(1)],
+      [KEY_TRANSITION_STATEMENT.revision, o.revision ?? 6n],
+      [KEY_TRANSITION_STATEMENT.newKey, o.newKey ?? acct2(2)],
     ]),
   )
 }
@@ -471,10 +525,10 @@ export function transition(
   signer: Fields = acct2(1),
 ): Fields {
   return M([
-    [0, stmt],
-    [1, 16],
-    [2, signer],
-    [3, bytesOf(64, 9)],
+    [KEY_TRANSITION.statementFrame, stmt],
+    [KEY_TRANSITION.algorithm, SIGNATURE_ALGORITHM.ed25519],
+    [KEY_TRANSITION.signer, signer],
+    [KEY_TRANSITION.signature, bytesOf(64, 9)],
   ])
 }
 
@@ -489,10 +543,10 @@ export function fact(
   payload: Uint8Array = new Uint8Array(0),
 ): Fields {
   return M([
-    [0, ts(seconds, nanos)],
-    [1, bytesOf(16, idSeed)],
-    [2, 7],
-    [3, payload],
+    [JOURNAL_FACT.timestamp, ts(seconds, nanos)],
+    [JOURNAL_FACT.factId, bytesOf(16, idSeed)],
+    [JOURNAL_FACT.kind, 7],
+    [JOURNAL_FACT.payload, payload],
   ])
 }
 
@@ -502,9 +556,9 @@ export function section(
   value: Uint8Array,
 ): Fields {
   return M([
-    [0, type],
-    [1, schema],
-    [2, value],
+    [OPAQUE_SECTION.sectionType, type],
+    [OPAQUE_SECTION.sectionSchemaVersion, schema],
+    [OPAQUE_SECTION.value, value],
   ])
 }
 
@@ -512,12 +566,12 @@ export function checkpointPayload(
   o: Partial<{ facts: Fields[]; sections: Fields[] }> = {},
 ): Fields {
   const m = M([
-    [0, NET],
-    [1, acct1(5)],
-    [2, bytesOf(16, 77)],
-    [3, ts(1_700_000_500, 5)],
+    [MAILBOX_CHECKPOINT.network, NET],
+    [MAILBOX_CHECKPOINT.owner, acct1(5)],
+    [MAILBOX_CHECKPOINT.checkpointId, bytesOf(16, 77)],
+    [MAILBOX_CHECKPOINT.timestamp, ts(1_700_000_500, 5)],
     [
-      4,
+      MAILBOX_CHECKPOINT.facts,
       o.facts ?? [
         fact(1_700_000_100, 0, 1, bytesOf(10, 1)),
         // A journal fact retaining an unknown nested message item, byte for byte.
@@ -526,7 +580,7 @@ export function checkpointPayload(
     ],
   ])
   m.set(
-    5,
+    MAILBOX_CHECKPOINT.sections,
     o.sections ?? [
       section(1, 1, bytesOf(12, 3)),
       // A future section kind, and one whose bytes happen to be a Frank frame: never opened.
@@ -538,7 +592,7 @@ export function checkpointPayload(
 
 export const checkpointFrame = (
   o?: Parameters<typeof checkpointPayload>[0],
-): Uint8Array => fr(3, checkpointPayload(o))
+): Uint8Array => fr(TYPE_MAILBOX_CHECKPOINT, checkpointPayload(o))
 
 export { commonTranscript }
 

@@ -7,6 +7,7 @@ import {
   encodeFrame,
   encodeCanonical,
 } from '../src'
+import { FORUM_CONTENT, FORUM_ENTRY_KIND, FORUM_GAME_ENTRY, TIMESTAMP, TOPIC_POST, TYPE_TOPIC_POST } from '../src/constants'
 
 describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
   const authored = { seconds: 1700000000n, nanoseconds: 0 }
@@ -70,12 +71,12 @@ describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
     })
 
     const rawPayload = new Map<number, any>([
-      [0, 'monad-testnet'],
-      [1, 'games'],
-      [3, body],
+      [TOPIC_POST.network, 'monad-testnet'],
+      [TOPIC_POST.topic, 'games'],
+      [TOPIC_POST.body, body],
     ])
     const frame = encodeFrame(
-      { typeId: 9, schemaVersion: 2, minReaderVersion: 2 },
+      { typeId: TYPE_TOPIC_POST, schemaVersion: 2, minReaderVersion: 2 },
       rawPayload,
     )
 
@@ -133,30 +134,30 @@ describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
   it('rejects kind 2 entries missing required fields (tableId, hostAddress)', () => {
     // Missing required field 3 (hostAddress)
     const invalidEntry = new Map<number, any>([
-      [0, 2],
-      [1, 'poker'],
-      [2, 'table-1'],
+      [FORUM_GAME_ENTRY.kind, FORUM_ENTRY_KIND.game],
+      [FORUM_GAME_ENTRY.gameType, 'poker'],
+      [FORUM_GAME_ENTRY.tableId, 'table-1'],
       // 3 (hostAddress) missing
     ])
     const body = encodeCanonical(
       new Map<number, any>([
         [
-          0,
+          FORUM_CONTENT.authored,
           new Map<number, any>([
-            [0, 1700000000n],
-            [1, 0],
+            [TIMESTAMP.seconds, 1700000000n],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
-        [1, [invalidEntry]],
+        [FORUM_CONTENT.entries, [invalidEntry]],
       ]),
     )
     const payload = new Map<number, any>([
-      [0, 'monad-testnet'],
-      [1, 'games'],
-      [3, body],
+      [TOPIC_POST.network, 'monad-testnet'],
+      [TOPIC_POST.topic, 'games'],
+      [TOPIC_POST.body, body],
     ])
     const frame = encodeFrame(
-      { typeId: 9, schemaVersion: 2, minReaderVersion: 2 },
+      { typeId: TYPE_TOPIC_POST, schemaVersion: 2, minReaderVersion: 2 },
       payload,
     )
 
@@ -165,31 +166,31 @@ describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
 
   it('rejects player counts outside allowed range 0..1000', () => {
     const invalidEntry = new Map<number, any>([
-      [0, 2],
-      [1, 'poker'],
-      [2, 'table-1'],
-      [3, '0xHost'],
-      [5, 1001], // currentPlayers > 1000
+      [FORUM_GAME_ENTRY.kind, FORUM_ENTRY_KIND.game],
+      [FORUM_GAME_ENTRY.gameType, 'poker'],
+      [FORUM_GAME_ENTRY.tableId, 'table-1'],
+      [FORUM_GAME_ENTRY.hostAddress, '0xHost'],
+      [FORUM_GAME_ENTRY.currentPlayers, 1001], // currentPlayers > 1000
     ])
     const body = encodeCanonical(
       new Map<number, any>([
         [
-          0,
+          FORUM_CONTENT.authored,
           new Map<number, any>([
-            [0, 1700000000n],
-            [1, 0],
+            [TIMESTAMP.seconds, 1700000000n],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
-        [1, [invalidEntry]],
+        [FORUM_CONTENT.entries, [invalidEntry]],
       ]),
     )
     const payload = new Map<number, any>([
-      [0, 'monad-testnet'],
-      [1, 'games'],
-      [3, body],
+      [TOPIC_POST.network, 'monad-testnet'],
+      [TOPIC_POST.topic, 'games'],
+      [TOPIC_POST.body, body],
     ])
     const frame = encodeFrame(
-      { typeId: 9, schemaVersion: 2, minReaderVersion: 2 },
+      { typeId: TYPE_TOPIC_POST, schemaVersion: 2, minReaderVersion: 2 },
       payload,
     )
 

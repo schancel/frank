@@ -231,6 +231,7 @@ it.each(invalid)('rejects experimental projection: %s', (_name, mutate) => {
   expect(() => projectExperimentalSolanaStealthTransfer(entry)).toThrow()
 })
 
+// raw-cbor-key: derivation-scheme list, not a map entry
 it.each([2, 3])(
   'keeps scheme %s opaque in generic readers despite experimental restrictions',
   scheme => {

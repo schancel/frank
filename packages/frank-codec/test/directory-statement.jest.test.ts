@@ -10,6 +10,7 @@ import {
   isValidCanonicalUsername,
 } from '../src'
 import { M } from '../fixtures/builders'
+import { ACCOUNT_REF, DIRECTORY_ATTESTATION, DIRECTORY_STATEMENT, KEY_TYPE, RELAY_BINDING, SIGNATURE_ALGORITHM, SIGNATURE_ENTRY, TIMESTAMP, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT } from '../src/constants'
 
 describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)', () => {
   const secretKey = new Uint8Array(32).fill(0x2a)
@@ -17,60 +18,60 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
 
   const makeRawStatement = (field14Value?: unknown) => {
     const fields: Array<[number | bigint, unknown]> = [
-      [0, 'monad-testnet'],
+      [DIRECTORY_STATEMENT.network, 'monad-testnet'],
       [
-        1,
+        DIRECTORY_STATEMENT.subject,
         M([
-          [0, 1],
-          [1, secpKey],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, secpKey],
         ]),
       ],
-      [2, 42n],
+      [DIRECTORY_STATEMENT.revision, 42n],
       [
-        3,
+        DIRECTORY_STATEMENT.timestamp,
         M([
-          [0, 1700000000n],
-          [1, 0],
+          [TIMESTAMP.seconds, 1700000000n],
+          [TIMESTAMP.nanoseconds, 0],
         ]),
       ],
       [
-        4,
+        DIRECTORY_STATEMENT.relays,
         [
           M([
-            [0, new Uint8Array(16).fill(1)],
-            [1, 'https://relay1.example.com'],
+            [RELAY_BINDING.relayId, new Uint8Array(16).fill(1)],
+            [RELAY_BINDING.endpoint, 'https://relay1.example.com'],
             [
-              2,
+              RELAY_BINDING.identity,
               M([
-                [0, 1],
-                [1, secpKey],
+                [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                [ACCOUNT_REF.keyBytes, secpKey],
               ]),
             ],
             [
-              3,
+              RELAY_BINDING.expiry,
               M([
-                [0, 1700003600n],
-                [1, 0],
+                [TIMESTAMP.seconds, 1700003600n],
+                [TIMESTAMP.nanoseconds, 0],
               ]),
             ],
           ]),
         ],
       ],
       [
-        8,
+        DIRECTORY_STATEMENT.stampKey,
         M([
-          [0, 1],
-          [1, secpKey],
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, secpKey],
         ]),
       ],
     ]
 
     if (field14Value !== undefined) {
-      fields.push([14, field14Value])
+      fields.push([DIRECTORY_STATEMENT.username, field14Value])
     }
 
     return encodeFrame(
-      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      { typeId: TYPE_DIRECTORY_STATEMENT, schemaVersion: 3, minReaderVersion: 2 },
       M(fields),
     )
   }
@@ -120,7 +121,7 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
         const frame = makeRawStatement(handle)
         const parsed = validateFrame(frame, defaultContext({ operation: 'typed' }))
         expect(parsed.kind).toBe('parsed')
-        if (parsed.kind === 'parsed' && parsed.typed?.type === 4) {
+        if (parsed.kind === 'parsed' && parsed.typed?.type === TYPE_DIRECTORY_STATEMENT) {
           expect(parsed.typed.canonicalUsername).toBe(handle)
         }
       }
@@ -155,7 +156,7 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
           if (e instanceof FrankCodecError) {
             expect(e.category).toBe('semantic')
             expect(e.stage).toBe('9')
-            expect(e.location).toBe('root/payload.14')
+            expect(e.location).toBe(`root/payload.${DIRECTORY_STATEMENT.username}`)
           } else {
             throw e
           }
@@ -216,7 +217,7 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
 
       const decoded = validateFrame(encoded, defaultContext({ operation: 'typed' }))
       expect(decoded.kind).toBe('parsed')
-      if (decoded.kind === 'parsed' && decoded.typed?.type === 4) {
+      if (decoded.kind === 'parsed' && decoded.typed?.type === TYPE_DIRECTORY_STATEMENT) {
         expect(decoded.typed.canonicalUsername).toBe(handle)
         expect(decoded.typed.network).toBe('monad-mainnet')
         expect(decoded.typed.revision).toBe(100n)
@@ -235,7 +236,7 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
 
       const decoded = validateFrame(encoded, defaultContext({ operation: 'typed' }))
       expect(decoded.kind).toBe('parsed')
-      if (decoded.kind === 'parsed' && decoded.typed?.type === 4) {
+      if (decoded.kind === 'parsed' && decoded.typed?.type === TYPE_DIRECTORY_STATEMENT) {
         expect(decoded.typed.canonicalUsername).toBeUndefined()
       }
     })
@@ -256,22 +257,22 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
       const sigDer = new Uint8Array(secp256k1.sign(digest, secretKey).toDERRawBytes())
 
       const type2Bytes = encodeFrame(
-        { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: TYPE_DIRECTORY_ATTESTATION, schemaVersion: 1, minReaderVersion: 1 },
         M([
-          [0, type4Bytes],
+          [DIRECTORY_ATTESTATION.statementFrame, type4Bytes],
           [
-            1,
+            DIRECTORY_ATTESTATION.signatures,
             [
               M([
-                [0, 1], // algorithm 1
+                [SIGNATURE_ENTRY.algorithm, SIGNATURE_ALGORITHM.secp256k1EcdsaDer], // algorithm 1
                 [
-                  1,
+                  SIGNATURE_ENTRY.signer,
                   M([
-                    [0, 1],
-                    [1, secpKey],
+                    [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                    [ACCOUNT_REF.keyBytes, secpKey],
                   ]),
                 ],
-                [2, sigDer],
+                [SIGNATURE_ENTRY.signature, sigDer],
               ]),
             ],
           ],
@@ -288,9 +289,9 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
       )
 
       expect(result.kind).toBe('parsed')
-      if (result.kind === 'parsed' && result.typed?.type === 2) {
+      if (result.kind === 'parsed' && result.typed?.type === TYPE_DIRECTORY_ATTESTATION) {
         const inner = result.typed.statementFrame.typed
-        if (inner?.type === 4) {
+        if (inner?.type === TYPE_DIRECTORY_STATEMENT) {
           expect(inner.canonicalUsername).toBe('authenticated-user')
         }
       }
@@ -307,22 +308,22 @@ describe('Directory Statement Canonical Username (Field 14, Tickets 1.2 & 1.3)',
       })
 
       const tamperedType2 = encodeFrame(
-        { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: TYPE_DIRECTORY_ATTESTATION, schemaVersion: 1, minReaderVersion: 1 },
         M([
-          [0, tamperedType4],
+          [DIRECTORY_ATTESTATION.statementFrame, tamperedType4],
           [
-            1,
+            DIRECTORY_ATTESTATION.signatures,
             [
               M([
-                [0, 1],
+                [SIGNATURE_ENTRY.algorithm, SIGNATURE_ALGORITHM.secp256k1EcdsaDer],
                 [
-                  1,
+                  SIGNATURE_ENTRY.signer,
                   M([
-                    [0, 1],
-                    [1, secpKey],
+                    [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+                    [ACCOUNT_REF.keyBytes, secpKey],
                   ]),
                 ],
-                [2, sigDer],
+                [SIGNATURE_ENTRY.signature, sigDer],
               ]),
             ],
           ],

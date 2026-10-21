@@ -1,6 +1,7 @@
 // Stage 8.2 primitive value getters, map field helpers, and feature codec descriptor contract.
 import type { FrankValue } from './cbor'
 import { U32_MAX } from './constants'
+import type { MapShape } from './message-fields.generated'
 import { ErrorCategory, ErrorStage, FrankCodecError } from './errors'
 import type { DraftPayload, FinalPayload, UnknownFields } from './types'
 
@@ -103,6 +104,34 @@ export interface MapView {
  * undeclared keys only when the enclosing frame is read through V6.3 (`allowUnknown`);
  * otherwise C12 makes an undeclared key a schema error. Closed maps never allow one.
  */
+/** Error path of field `key` inside the map at `path` (README error locations). */
+export const at = (path: string, key: number | bigint): string =>
+  `${path}.${key}`
+
+/** Error path of element `index` of the list in field `key` of the map at `path`. */
+export const atItem = (
+  path: string,
+  key: number | bigint,
+  index: number,
+): string => `${path}.${key}[${index}]`
+
+/** Read a map through its registered shape (docs/protocol/message-types/fields/). */
+export function shaped(
+  v: FrankValue | undefined,
+  path: string,
+  shape: MapShape,
+  allowUnknown: boolean,
+): MapView {
+  return fields(
+    v,
+    path,
+    shape.required,
+    shape.optional,
+    shape.open,
+    allowUnknown,
+  )
+}
+
 export function fields(
   v: FrankValue | undefined,
   path: string,

@@ -472,6 +472,15 @@ export type MonadStampAttemptStatus = 'live' | 'delivered' | 'dead' | 'unknown'
 import { randomBytes as canonicalRandomBytes } from '@frank/crypto-box'
 // Opt-in canonical consumer. Legacy client/default submission and journals above are unchanged.
 import {
+  ACCOUNT_REF,
+  DIRECT_MESSAGE_DELIVERY,
+  DM_CRYPTO_CONTEXT_V1,
+  ENCRYPTION_SUITE,
+  KEY_TYPE,
+  PAYMENT_MEMBER,
+  STAMP_ECONOMIC_BINDING,
+  STAMP_ECONOMIC_BINDING_SHAPE,
+  STAMP_ECONOMIC_BINDING_VERSION,
   cborMap,
   encodeFrame,
   encodeCanonical,
@@ -752,13 +761,13 @@ export class MonadCanonicalStampClient {
       parsed.kind !== 'parsed' ||
       parsed.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
       parsed.schemaVersion !== 2 ||
-      parsed.typed.suite !== 1 ||
+      parsed.typed.suite !== ENCRYPTION_SUITE.dmAuthXchacha ||
       !(fields instanceof Map)
     )
       throw new Error('canonical-wallet:prepared-required')
     const bound = JSON.parse(this.wallet.walletState.canonicalBinding!.tuple)
-    const t1 = (key: bigint) => {
-      const value = fields.get(key)
+    const t1 = (key: number) => {
+      const value = fields.get(BigInt(key))
       if (!(value instanceof Uint8Array) || value.length !== 32)
         throw new Error('canonical-wallet:T1-required')
       return toHex(value)
@@ -770,15 +779,21 @@ export class MonadCanonicalStampClient {
       network: parsed.typed.network,
       senderSubject: toHex(parsed.typed.sender.keyBytes),
       recipientSubject: toHex(parsed.typed.recipient.keyBytes),
-      senderT1: t1(4n),
-      recipientT1: t1(5n),
+      senderT1: t1(DM_CRYPTO_CONTEXT_V1.senderStatementHash),
+      recipientT1: t1(DM_CRYPTO_CONTEXT_V1.recipientStatementHash),
       payload,
       context,
       economicBinding: encodeCanonical(
         cborMap([
-          [0, 1],
-          [1, input.stampValueWei.toString()],
-          [2, new Uint8Array(input.economicBinding)],
+          [STAMP_ECONOMIC_BINDING.version, STAMP_ECONOMIC_BINDING_VERSION.v1],
+          [
+            STAMP_ECONOMIC_BINDING.stampValueWei,
+            input.stampValueWei.toString(),
+          ],
+          [
+            STAMP_ECONOMIC_BINDING.binding,
+            new Uint8Array(input.economicBinding),
+          ],
         ]),
       ),
     }
@@ -888,12 +903,15 @@ export class MonadCanonicalStampClient {
       if (snapshot.status !== 'ready')
         throw new EvmInputAdmissionError(snapshot.reason)
       const economics = decodeCanonical(input.prepared.economicBinding)
+      const E = STAMP_ECONOMIC_BINDING
       if (
         !(economics instanceof Map) ||
-        economics.size !== 3 ||
-        economics.get(0n) !== 1n ||
-        economics.get(1n) !== input.stampValueWei.toString() ||
-        !(economics.get(2n) instanceof Uint8Array)
+        economics.size !== STAMP_ECONOMIC_BINDING_SHAPE.required.length ||
+        economics.get(BigInt(E.version)) !==
+          BigInt(STAMP_ECONOMIC_BINDING_VERSION.v1) ||
+        economics.get(BigInt(E.stampValueWei)) !==
+          input.stampValueWei.toString() ||
+        !(economics.get(BigInt(E.binding)) instanceof Uint8Array)
       )
         throw new Error('canonical-wallet:economics-mismatch')
       const existing = this.lookup(input.prepared)
@@ -930,40 +948,45 @@ export class MonadCanonicalStampClient {
         !(context instanceof Map)
       )
         throw new Error('canonical-wallet:prepared-required')
-      const stampKey = context.get(8n)
+      const C = DM_CRYPTO_CONTEXT_V1
+      const secp256k1KeyBytes = (role: unknown): Uint8Array | undefined => {
+        if (
+          !(role instanceof Map) ||
+          role.get(BigInt(ACCOUNT_REF.keyType)) !== BigInt(KEY_TYPE.secp256k1)
+        )
+          return undefined
+        const bytes = role.get(BigInt(ACCOUNT_REF.keyBytes))
+        return bytes instanceof Uint8Array ? bytes : undefined
+      }
+      const stampKeyBytes = secp256k1KeyBytes(
+        context.get(BigInt(C.recipientStampKey)),
+      )
       if (
-        !(stampKey instanceof Map) ||
-        stampKey.get(0n) !== 1n ||
-        !(stampKey.get(1n) instanceof Uint8Array) ||
+        !stampKeyBytes ||
         compareBytes(
-          stampKey.get(1n) as Uint8Array,
+          stampKeyBytes,
           input.recipientCurrent.stampKey.keyBytes,
         ) !== 0
       )
         throw new Error('canonical-wallet:stamp-key-mismatch')
       const ownedStampKey = {
-        keyType: 1,
+        keyType: KEY_TYPE.secp256k1,
         keyBytes: new Uint8Array(input.recipientCurrent.stampKey.keyBytes),
       }
       for (const [key, expected] of [
-        [6n, input.senderCurrent.messageKey.keyBytes],
-        [7n, input.recipientCurrent.messageKey.keyBytes],
+        [C.senderMessageKey, input.senderCurrent.messageKey.keyBytes],
+        [C.recipientMessageKey, input.recipientCurrent.messageKey.keyBytes],
       ] as const) {
-        const role = context.get(key)
-        if (
-          !(role instanceof Map) ||
-          role.get(0n) !== 1n ||
-          !(role.get(1n) instanceof Uint8Array) ||
-          compareBytes(role.get(1n) as Uint8Array, expected) !== 0
-        )
+        const roleBytes = secp256k1KeyBytes(context.get(BigInt(key)))
+        if (!roleBytes || compareBytes(roleBytes, expected) !== 0)
           throw new Error('canonical-wallet:message-role-mismatch')
       }
       for (const [key, expected] of [
-        [9n, parsed.typed.ephemeralPoint],
-        [10n, parsed.typed.sharedPoint],
-        [11n, parsed.typed.dleqProof],
+        [C.ephemeralPoint, parsed.typed.ephemeralPoint],
+        [C.sharedPoint, parsed.typed.sharedPoint],
+        [C.dleqProof, parsed.typed.dleqProof],
       ] as const) {
-        const bytes = context.get(key)
+        const bytes = context.get(BigInt(key))
         if (
           !(bytes instanceof Uint8Array) ||
           compareBytes(bytes, expected) !== 0
@@ -1254,15 +1277,16 @@ export class MonadCanonicalStampClient {
         const tx = Transaction.from(member.rawTx!)
         const value = getBytes('0x' + tx.value.toString(16).padStart(64, '0'))
         const rawBytes = member.rawTx ? getBytes(member.rawTx) : undefined
+        const M = PAYMENT_MEMBER
         const entries: [number, Encodable][] = [
-          [0, i],
-          [1, getBytes(tx.hash!)],
-          [2, value],
-          [3, getBytes(tx.to!)],
-          [4, paymentCommitment(digest, i)],
+          [M.childIndex, i],
+          [M.transactionId, getBytes(tx.hash!)],
+          [M.value, value],
+          [M.address, getBytes(tx.to!)],
+          [M.commitment, paymentCommitment(digest, i)],
         ]
         if (rawBytes && rawBytes.length > 0) {
-          entries.push([6, rawBytes])
+          entries.push([M.rawTx, rawBytes])
         }
         return cborMap(entries)
       })
@@ -1277,25 +1301,25 @@ export class MonadCanonicalStampClient {
           minReaderVersion: 1,
         },
         cborMap([
-          [0, intent.prepared.network],
+          [DIRECT_MESSAGE_DELIVERY.network, intent.prepared.network],
           [
-            1,
+            DIRECT_MESSAGE_DELIVERY.destination,
             cborMap([
-              [0, 1],
-              [1, inspected.stampKey.keyBytes],
+              [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+              [ACCOUNT_REF.keyBytes, inspected.stampKey.keyBytes],
             ]),
           ],
-          [2, intent.prepared.payload],
-          [3, digest],
-          [4, payments],
+          [DIRECT_MESSAGE_DELIVERY.payloadFrame, intent.prepared.payload],
+          [DIRECT_MESSAGE_DELIVERY.payloadDigest, digest],
+          [DIRECT_MESSAGE_DELIVERY.payments, payments],
           [
-            5,
+            DIRECT_MESSAGE_DELIVERY.recipient,
             cborMap([
-              [0, inspected.payload.recipient.keyType],
-              [1, inspected.payload.recipient.keyBytes],
+              [ACCOUNT_REF.keyType, inspected.payload.recipient.keyType],
+              [ACCOUNT_REF.keyBytes, inspected.payload.recipient.keyBytes],
             ]),
           ],
-          [6, inspected.payload.dleqProof],
+          [DIRECT_MESSAGE_DELIVERY.dleqProof, inspected.payload.dleqProof],
         ]),
       )
       const request = freezeCanonicalRequest(

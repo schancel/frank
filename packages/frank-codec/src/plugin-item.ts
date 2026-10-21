@@ -4,6 +4,7 @@
 import { cborMap } from './cbor'
 import {
   MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
+  PLUGIN_MESSAGE_ITEM,
   TYPE_PLUGIN_MESSAGE_ITEM,
 } from './constants'
 import { FrankCodecError } from './errors'
@@ -40,8 +41,8 @@ export function encodePluginMessageItem(item: {
       minReaderVersion: 1,
     },
     cborMap([
-      [0, item.itemType],
-      [1, new Uint8Array(item.data)],
+      [PLUGIN_MESSAGE_ITEM.itemType, item.itemType],
+      [PLUGIN_MESSAGE_ITEM.data, new Uint8Array(item.data)],
     ]),
   )
   parseFrame(bytes)

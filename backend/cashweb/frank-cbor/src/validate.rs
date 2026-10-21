@@ -5,11 +5,13 @@
 //! it does not authenticate plaintext or perform the remaining stamp checks. Ordinary
 //! `full` type-1 validation remains a context error.
 
+use crate::message_fields as mf;
 use crate::message_types::{
     OPEN_ITEM_FIELD_FORBIDDEN_TYPES, TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_ENCRYPTED_MESSAGE_CONTENT,
     TYPE_FORUM_DISCOVERY_PAGE, TYPE_FORUM_OPERATION_STATUS, TYPE_FORUM_TOPIC_PAGE, TYPE_FORUM_VIEW,
     TYPE_STEALTH_MESSAGE_ITEM, TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
 };
+use crate::schema::{at, at_index};
 use std::collections::HashMap;
 
 use crate::cbor::{decode_single_item, Counters};
@@ -17,8 +19,8 @@ use crate::crypto;
 use crate::error::{CodecError, ContextError, Error, ErrorCategory, ErrorStage};
 use crate::hash::{directory_signature_digest, key_transition_signature_digest};
 use crate::limits::{
-    is_known_type, FRAME_HEADER_BYTES, FRAME_MAGIC, FRAME_VERSION, KNOWN_TYPES, MAX_FRAME_BYTES,
-    MAX_MESSAGE_ITEMS_TOTAL,
+    is_known_type, ENCRYPTION_SUITE_DM_AUTH_XCHACHA, FRAME_HEADER_BYTES, FRAME_MAGIC,
+    FRAME_VERSION, KNOWN_TYPES, MAX_FRAME_BYTES, MAX_MESSAGE_ITEMS_TOTAL,
 };
 use crate::message_types::{
     TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_KEY_TRANSITION_STATEMENT,
@@ -199,12 +201,13 @@ fn parse_envelope(value: &crate::cbor::CborValue, location: &str) -> Result<Enve
     let crate::cbor::CborValue::Map(entries) = value else {
         return Err(bad("the envelope must be a map (E1)".to_string()));
     };
-    if entries.len() != 4 {
+    let envelope_keys = mf::frank_envelope::SHAPE.required;
+    if entries.len() != envelope_keys.len() {
         return Err(bad(
             "the envelope must have exactly keys 0..3 (E1)".to_string()
         ));
     }
-    for key in [0, 1, 2, 3] {
+    for &key in envelope_keys {
         if !entries.iter().any(|(k, _)| *k == key) {
             return Err(bad(format!("missing envelope key {key} (E1)")));
         }
@@ -224,10 +227,10 @@ fn parse_envelope(value: &crate::cbor::CborValue, location: &str) -> Result<Enve
             ))),
         }
     };
-    let type_id = u32_field(0, 0)?;
-    let schema_version = u32_field(1, 1)?;
-    let min_reader_version = u32_field(2, 1)?;
-    let payload_bytes = match map_get(value, 3) {
+    let type_id = u32_field(mf::frank_envelope::TYPE_ID, 0)?;
+    let schema_version = u32_field(mf::frank_envelope::SCHEMA_VERSION, 1)?;
+    let min_reader_version = u32_field(mf::frank_envelope::MIN_READER_VERSION, 1)?;
+    let payload_bytes = match map_get(value, mf::frank_envelope::PAYLOAD) {
         Some(crate::cbor::CborValue::Bytes(bytes)) => bytes.clone(),
         _ => return Err(bad("envelope payload must be a byte string".to_string())),
     };
@@ -641,12 +644,23 @@ pub(crate) fn verify_attestation(
     statement: &ParsedFrame,
     signatures: &[SignatureEntry],
 ) -> Result<(), CodecError> {
+    use mf::directory_attestation as att;
+    let root = "root/payload";
+    let signatures_path = at(root, att::SIGNATURES);
+    let statement_path = at(root, att::STATEMENT_FRAME);
+    // Key-transition locations keep their historical `<statement>/<field>[i]` spelling.
+    let transition_path = |i: usize| {
+        format!(
+            "{statement_path}/{}[{i}]",
+            mf::directory_statement::KEY_TRANSITIONS
+        )
+    };
     let Some(typed) = statement.typed.as_deref() else {
         return Err(fail(
             ErrorCategory::Cryptographic,
             ErrorStage::S106,
             "internal: statement not typed",
-            "root/payload.1",
+            &signatures_path,
         ));
     };
     let TypedPayload::DirectoryStatement {
@@ -659,7 +673,7 @@ pub(crate) fn verify_attestation(
             ErrorCategory::Cryptographic,
             ErrorStage::S106,
             "internal: statement not a type-4 payload",
-            "root/payload.1",
+            &signatures_path,
         ));
     };
     let digest = directory_signature_digest(network, &statement.frame).map_err(|err| {
@@ -667,17 +681,17 @@ pub(crate) fn verify_attestation(
             ErrorCategory::Cryptographic,
             ErrorStage::S106,
             format!("invalid directory signature transcript: {}", err.0),
-            "root/payload.0",
+            &statement_path,
         )
     })?;
     let transitions = key_transitions.as_deref().unwrap_or(&[]);
     // M7: an allocated algorithm this reader cannot verify makes the entire attestation
     // unsupported. Discover that before running any algorithm-1 verification.
     for (i, entry) in signatures.iter().enumerate() {
-        preflight_algorithm(entry.algorithm, &format!("root/payload.1[{i}]"))?;
+        preflight_algorithm(entry.algorithm, &format!("{signatures_path}[{i}]"))?;
     }
     for (i, transition) in transitions.iter().enumerate() {
-        preflight_algorithm(transition.algorithm, &format!("root/payload.0/5[{i}]"))?;
+        preflight_algorithm(transition.algorithm, &transition_path(i))?;
     }
     for (i, entry) in signatures.iter().enumerate() {
         verify_entry(
@@ -685,7 +699,7 @@ pub(crate) fn verify_attestation(
             &entry.signer,
             &entry.signature,
             &digest,
-            &format!("root/payload.1[{i}]"),
+            &format!("{signatures_path}[{i}]"),
         )?;
     }
     for (i, transition) in transitions.iter().enumerate() {
@@ -699,7 +713,7 @@ pub(crate) fn verify_attestation(
                 ErrorCategory::Cryptographic,
                 ErrorStage::S106,
                 "internal: transition statement not typed",
-                &format!("root/payload.0/5[{i}]"),
+                &transition_path(i),
             ));
         };
         let digest =
@@ -709,7 +723,7 @@ pub(crate) fn verify_attestation(
                         ErrorCategory::Cryptographic,
                         ErrorStage::S106,
                         format!("invalid key-transition signature transcript: {}", err.0),
-                        &format!("root/payload.0/5[{i}]"),
+                        &transition_path(i),
                     )
                 })?;
         verify_entry(
@@ -717,14 +731,18 @@ pub(crate) fn verify_attestation(
             &transition.signer,
             &transition.signature,
             &digest,
-            &format!("root/payload.0/5[{i}]"),
+            &transition_path(i),
         )?;
     }
     Ok(())
 }
 
 fn preflight_algorithm(algorithm: u32, location: &str) -> Result<(), CodecError> {
-    if matches!(algorithm, 2 | 3 | 16) {
+    use mf::signature_algorithm as alg;
+    if matches!(
+        algorithm,
+        alg::BIP340_SCHNORR | alg::BCH_SCHNORR | alg::ED25519
+    ) {
         return Err(fail(
             ErrorCategory::Unsupported,
             ErrorStage::S106,
@@ -745,7 +763,7 @@ fn verify_entry(
     location: &str,
 ) -> Result<(), CodecError> {
     preflight_algorithm(algorithm, location)?;
-    if algorithm != 1 {
+    if algorithm != mf::signature_algorithm::SECP256K1_ECDSA_DER {
         return Err(fail(
             ErrorCategory::Unsupported,
             ErrorStage::S106,
@@ -898,7 +916,7 @@ fn open_children(
                 TYPE_DIRECT_MESSAGE_DELIVERY,
                 env_depth + 1,
                 shared,
-                &format!("{path}.2"),
+                &at(&path, mf::forwarding_delivery_envelope::PAYLOAD_FRAME),
             )?,
             payload_digest,
             payments: payments
@@ -934,7 +952,7 @@ fn open_children(
                 TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
                 env_depth + 1,
                 shared,
-                &format!("{path}.2"),
+                &at(&path, mf::direct_message_delivery::PAYLOAD_FRAME),
             )?,
             payload_digest,
             payments: payments
@@ -963,7 +981,7 @@ fn open_children(
                 TYPE_DIRECTORY_STATEMENT,
                 env_depth + 1,
                 shared,
-                &format!("{path}.0"),
+                &at(&path, mf::directory_attestation::STATEMENT_FRAME),
             )?,
             signatures: signatures
                 .into_iter()
@@ -1038,7 +1056,10 @@ fn open_children(
                                 TYPE_KEY_TRANSITION_STATEMENT,
                                 env_depth + 3,
                                 shared,
-                                &format!("{path}.5[{i}].0"),
+                                &at(
+                                    &at_index(&path, mf::directory_statement::KEY_TRANSITIONS, i),
+                                    mf::key_transition::STATEMENT_FRAME,
+                                ),
                             )?,
                             algorithm: transition.algorithm,
                             signer: transition.signer,
@@ -1139,7 +1160,7 @@ fn open_children(
                 TYPE_MESSAGE_CONTENT_REVISION,
                 env_depth + 1,
                 shared,
-                &format!("{path}.2"),
+                &at(&path, mf::encrypted_message_content::REVISION_FRAME),
             )?,
             content_digest,
             conversation_id,
@@ -1175,14 +1196,14 @@ fn open_children(
                 let value = decode_single_item(
                     &body,
                     ErrorStage::S84,
-                    &format!("{path}.3"),
+                    &at(&path, mf::topic_post::BODY),
                     &mut shared.counters,
                     env_depth + 1,
                 )?;
                 ForumPostContent::Structured(parse_forum_content(
                     &value,
                     allow_unknown,
-                    &format!("{path}.3"),
+                    &at(&path, mf::topic_post::BODY),
                 )?)
             } else {
                 ForumPostContent::Opaque
@@ -1204,7 +1225,7 @@ fn open_children(
                 TYPE_TOPIC_POST,
                 env_depth + 1,
                 shared,
-                &format!("{path}.1"),
+                &at(&path, mf::forum_single_view::POST_FRAME),
             )?,
             network: v.network,
             author: v.author,
@@ -1229,7 +1250,7 @@ fn open_children(
                         TYPE_FORUM_VIEW,
                         env_depth + 2,
                         shared,
-                        &format!("{path}.4[{i}]"),
+                        &at_index(&path, mf::forum_topic_page::ROWS, i),
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -1245,13 +1266,13 @@ fn open_children(
                     v.next_cursor,
                     env_depth + 1,
                     shared,
-                    &format!("{path}.5"),
+                    &at(&path, mf::forum_topic_page::NEXT_CURSOR),
                 )?,
                 request_cursor: open_cursor(
                     v.request_cursor,
                     env_depth + 1,
                     shared,
-                    &format!("{path}.7"),
+                    &at(&path, mf::forum_topic_page::REQUEST_CURSOR),
                 )?,
             }))
         }
@@ -1261,12 +1282,17 @@ fn open_children(
             entries: v.entries,
             epoch: v.epoch,
             unknown: v.unknown,
-            next_cursor: open_cursor(v.next_cursor, env_depth + 1, shared, &format!("{path}.3"))?,
+            next_cursor: open_cursor(
+                v.next_cursor,
+                env_depth + 1,
+                shared,
+                &at(&path, mf::forum_discovery_page::NEXT_CURSOR),
+            )?,
             request_cursor: open_cursor(
                 v.request_cursor,
                 env_depth + 1,
                 shared,
-                &format!("{path}.5"),
+                &at(&path, mf::forum_discovery_page::REQUEST_CURSOR),
             )?,
         })),
         Draft::ForumOperationStatus(v) => {
@@ -1277,7 +1303,7 @@ fn open_children(
                 },
                 env_depth + 1,
                 shared,
-                &format!("{path}.1"),
+                &at(&path, mf::forum_operation_status::SUBMITTED_FRAME),
                 Operation::Typed,
             )?
             else {
@@ -1309,7 +1335,7 @@ fn open_children(
                 TYPE_TOPIC_POST,
                 env_depth + 1,
                 shared,
-                &format!("{path}.1"),
+                &at(&path, mf::topic_post_submission::POST_FRAME),
             )?,
             burn_tx,
             unknown,
@@ -1326,11 +1352,21 @@ fn open_children(
             unknown,
         }),
         Draft::Revision { items, unknown } => Ok(TypedPayload::MessageRevision {
-            items: open_items(items, env_depth + 2, shared, &format!("{path}.1"))?,
+            items: open_items(
+                items,
+                env_depth + 2,
+                shared,
+                &at(&path, mf::message_content_revision::ITEMS),
+            )?,
             unknown,
         }),
         Draft::Container { items, unknown } => Ok(TypedPayload::ContainerItem {
-            items: open_items(items, env_depth + 2, shared, &format!("{path}.0"))?,
+            items: open_items(
+                items,
+                env_depth + 2,
+                shared,
+                &at(&path, mf::container_message_item::ITEMS),
+            )?,
             unknown,
         }),
         Draft::Blackjack(item) => Ok(TypedPayload::BlackjackItem(item)),
@@ -1584,7 +1620,10 @@ pub fn begin_direct_message_validation(
         || payload.min_reader_version != 2
         || !matches!(
             payload.typed.as_deref(),
-            Some(TypedPayload::RecipientPayload { suite: 1, .. })
+            Some(TypedPayload::RecipientPayload {
+                suite: ENCRYPTION_SUITE_DM_AUTH_XCHACHA,
+                ..
+            })
         )
     {
         return Err(Error::Context(ContextError(

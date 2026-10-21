@@ -17,6 +17,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use frank_cbor::message_fields::{group_epoch_frame, group_message_envelope};
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue};
 use secp256k1_abc::{Message as SecpMessage, PublicKey, Secp256k1, Signature};
 use serde::{Deserialize, Serialize};
@@ -265,22 +266,33 @@ impl GroupEpochFrame {
 
     /// Encode to canonical CBOR bytes for storage or wire transport.
     pub fn to_cbor_bytes(&self) -> Result<Vec<u8>, GroupError> {
+        use group_epoch_frame as F;
         let val = cbor_map(vec![
-            (0, CborValue::Text(self.group_id.clone())),
-            (1, CborValue::Int(self.epoch as i128)),
-            (2, CborValue::Text(self.prev_epoch_hash.clone())),
-            (3, CborValue::Text(self.write_pubkey.clone())),
-            (4, CborValue::Text(self.read_token_hash.clone())),
-            (5, CborValue::Text(self.encrypted_epoch_descriptor.clone())),
-            (6, CborValue::Text(self.admin_sig.clone())),
-            (7, CborValue::Text(self.epoch_hash.clone())),
-            (8, CborValue::Text(self.group_pubkey.clone())),
+            (F::GROUP_ID, CborValue::Text(self.group_id.clone())),
+            (F::EPOCH, CborValue::Int(self.epoch as i128)),
+            (
+                F::PREV_EPOCH_HASH,
+                CborValue::Text(self.prev_epoch_hash.clone()),
+            ),
+            (F::WRITE_PUBKEY, CborValue::Text(self.write_pubkey.clone())),
+            (
+                F::READ_TOKEN_HASH,
+                CborValue::Text(self.read_token_hash.clone()),
+            ),
+            (
+                F::ENCRYPTED_EPOCH_DESCRIPTOR,
+                CborValue::Text(self.encrypted_epoch_descriptor.clone()),
+            ),
+            (F::ADMIN_SIG, CborValue::Text(self.admin_sig.clone())),
+            (F::EPOCH_HASH, CborValue::Text(self.epoch_hash.clone())),
+            (F::GROUP_PUBKEY, CborValue::Text(self.group_pubkey.clone())),
         ]);
         encode_canonical(&val).map_err(|e| GroupError::Storage(e.to_string()))
     }
 
     /// Decode from canonical CBOR bytes.
     pub fn from_cbor_bytes(bytes: &[u8]) -> Result<Self, GroupError> {
+        use group_epoch_frame as F;
         let val = decode_canonical(bytes).map_err(|e| GroupError::InvalidInput(e.to_string()))?;
         let CborValue::Map(entries) = val else {
             return Err(GroupError::InvalidInput("expected CBOR map".into()));
@@ -297,23 +309,27 @@ impl GroupEpochFrame {
 
         for (k, v) in entries {
             match (k, v) {
-                (8, CborValue::Text(s)) => group_pubkey = Some(s),
-                (8, CborValue::Bytes(b)) => group_pubkey = Some(hex::encode(b)),
-                (0, CborValue::Text(s)) => group_id = Some(s),
-                (0, CborValue::Bytes(b)) => group_id = Some(hex::encode(b)),
-                (1, CborValue::Int(n)) if n >= 0 => epoch = u64::try_from(n).ok(),
-                (2, CborValue::Text(s)) => prev_epoch_hash = s,
-                (2, CborValue::Bytes(b)) => prev_epoch_hash = hex::encode(b),
-                (3, CborValue::Text(s)) => write_pubkey = Some(s),
-                (3, CborValue::Bytes(b)) => write_pubkey = Some(hex::encode(b)),
-                (4, CborValue::Text(s)) => read_token_hash = Some(s),
-                (4, CborValue::Bytes(b)) => read_token_hash = Some(hex::encode(b)),
-                (5, CborValue::Text(s)) => encrypted_epoch_descriptor = Some(s),
-                (5, CborValue::Bytes(b)) => encrypted_epoch_descriptor = Some(hex::encode(b)),
-                (6, CborValue::Text(s)) => admin_sig = Some(s),
-                (6, CborValue::Bytes(b)) => admin_sig = Some(hex::encode(b)),
-                (7, CborValue::Text(s)) => epoch_hash = s,
-                (7, CborValue::Bytes(b)) => epoch_hash = hex::encode(b),
+                (F::GROUP_PUBKEY, CborValue::Text(s)) => group_pubkey = Some(s),
+                (F::GROUP_PUBKEY, CborValue::Bytes(b)) => group_pubkey = Some(hex::encode(b)),
+                (F::GROUP_ID, CborValue::Text(s)) => group_id = Some(s),
+                (F::GROUP_ID, CborValue::Bytes(b)) => group_id = Some(hex::encode(b)),
+                (F::EPOCH, CborValue::Int(n)) if n >= 0 => epoch = u64::try_from(n).ok(),
+                (F::PREV_EPOCH_HASH, CborValue::Text(s)) => prev_epoch_hash = s,
+                (F::PREV_EPOCH_HASH, CborValue::Bytes(b)) => prev_epoch_hash = hex::encode(b),
+                (F::WRITE_PUBKEY, CborValue::Text(s)) => write_pubkey = Some(s),
+                (F::WRITE_PUBKEY, CborValue::Bytes(b)) => write_pubkey = Some(hex::encode(b)),
+                (F::READ_TOKEN_HASH, CborValue::Text(s)) => read_token_hash = Some(s),
+                (F::READ_TOKEN_HASH, CborValue::Bytes(b)) => read_token_hash = Some(hex::encode(b)),
+                (F::ENCRYPTED_EPOCH_DESCRIPTOR, CborValue::Text(s)) => {
+                    encrypted_epoch_descriptor = Some(s)
+                }
+                (F::ENCRYPTED_EPOCH_DESCRIPTOR, CborValue::Bytes(b)) => {
+                    encrypted_epoch_descriptor = Some(hex::encode(b))
+                }
+                (F::ADMIN_SIG, CborValue::Text(s)) => admin_sig = Some(s),
+                (F::ADMIN_SIG, CborValue::Bytes(b)) => admin_sig = Some(hex::encode(b)),
+                (F::EPOCH_HASH, CborValue::Text(s)) => epoch_hash = s,
+                (F::EPOCH_HASH, CborValue::Bytes(b)) => epoch_hash = hex::encode(b),
                 _ => {}
             }
         }
@@ -382,6 +398,7 @@ impl GroupMessageEnvelope {
 
     /// Decode from canonical CBOR bytes.
     pub fn from_cbor_bytes(bytes: &[u8]) -> Result<Self, GroupError> {
+        use group_message_envelope as F;
         let val = decode_canonical(bytes).map_err(|e| GroupError::InvalidInput(e.to_string()))?;
         let CborValue::Map(entries) = val else {
             return Err(GroupError::InvalidInput("expected CBOR map".into()));
@@ -393,15 +410,15 @@ impl GroupMessageEnvelope {
         let mut write_sig = None;
         for (k, v) in entries {
             match (k, v) {
-                (0, CborValue::Text(s)) => group_id = Some(s),
-                (0, CborValue::Bytes(b)) => group_id = Some(hex::encode(b)),
-                (1, CborValue::Int(n)) if n >= 0 => epoch = u64::try_from(n).ok(),
-                (2, CborValue::Text(s)) => nonce = Some(s),
-                (2, CborValue::Bytes(b)) => nonce = Some(hex::encode(b)),
-                (3, CborValue::Text(s)) => ciphertext = Some(s),
-                (3, CborValue::Bytes(b)) => ciphertext = Some(hex::encode(b)),
-                (4, CborValue::Text(s)) => write_sig = Some(s),
-                (4, CborValue::Bytes(b)) => write_sig = Some(hex::encode(b)),
+                (F::GROUP_ID, CborValue::Text(s)) => group_id = Some(s),
+                (F::GROUP_ID, CborValue::Bytes(b)) => group_id = Some(hex::encode(b)),
+                (F::EPOCH, CborValue::Int(n)) if n >= 0 => epoch = u64::try_from(n).ok(),
+                (F::NONCE, CborValue::Text(s)) => nonce = Some(s),
+                (F::NONCE, CborValue::Bytes(b)) => nonce = Some(hex::encode(b)),
+                (F::CIPHERTEXT, CborValue::Text(s)) => ciphertext = Some(s),
+                (F::CIPHERTEXT, CborValue::Bytes(b)) => ciphertext = Some(hex::encode(b)),
+                (F::WRITE_SIG, CborValue::Text(s)) => write_sig = Some(s),
+                (F::WRITE_SIG, CborValue::Bytes(b)) => write_sig = Some(hex::encode(b)),
                 _ => {}
             }
         }

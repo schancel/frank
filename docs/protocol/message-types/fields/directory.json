@@ -1,0 +1,268 @@
+{
+  "version": 1,
+  "structs": [
+    {
+      "key": "directory-attestation",
+      "fields": {
+        "statement-frame": 0,
+        "signatures": 1
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/directory.cddl#directory-attestation",
+          "required": ["statement-frame", "signatures"],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "directory-statement",
+      "description": "One key space across schemas 1-4; each schema is a shape.",
+      "fields": {
+        "network": 0,
+        "subject": 1,
+        "revision": 2,
+        "timestamp": 3,
+        "relays": 4,
+        "key-transitions": 5,
+        "expiry": 6,
+        "recovery-authorities": 7,
+        "stamp-key": 8,
+        "profile-entries": 9,
+        "message-dh-key": 10,
+        "mailbox-key-generation": 11,
+        "stamp-key-generation": 12,
+        "predecessor-hash": 13,
+        "username": 14,
+        "account-type": 15,
+        "bot-role": 16
+      },
+      "shapes": [
+        {
+          "name": "v1",
+          "cddl": "docs/protocol/cbor/directory.cddl#directory-statement-v1",
+          "required": ["network", "subject", "revision", "timestamp", "relays"],
+          "optional": [
+            "key-transitions",
+            "expiry",
+            "recovery-authorities",
+            "username",
+            "account-type",
+            "bot-role"
+          ],
+          "open": true
+        },
+        {
+          "name": "v2",
+          "cddl": "docs/protocol/cbor/directory.cddl#directory-statement",
+          "required": [
+            "network",
+            "subject",
+            "revision",
+            "timestamp",
+            "relays",
+            "stamp-key"
+          ],
+          "optional": [
+            "key-transitions",
+            "expiry",
+            "recovery-authorities",
+            "username",
+            "account-type",
+            "bot-role"
+          ],
+          "open": true
+        },
+        {
+          "name": "v3",
+          "cddl": "docs/protocol/cbor/directory.cddl#directory-statement-v3",
+          "required": [
+            "network",
+            "subject",
+            "revision",
+            "timestamp",
+            "relays",
+            "stamp-key"
+          ],
+          "optional": [
+            "key-transitions",
+            "expiry",
+            "recovery-authorities",
+            "profile-entries",
+            "username",
+            "account-type",
+            "bot-role"
+          ],
+          "open": true
+        },
+        {
+          "name": "v4",
+          "cddl": "docs/protocol/cbor/directory.cddl#directory-statement-v4",
+          "required": [
+            "network",
+            "subject",
+            "revision",
+            "timestamp",
+            "relays",
+            "expiry",
+            "stamp-key",
+            "message-dh-key",
+            "mailbox-key-generation",
+            "stamp-key-generation",
+            "predecessor-hash"
+          ],
+          "optional": ["username", "account-type", "bot-role"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "relay-binding",
+      "fields": {
+        "relay-id": 0,
+        "endpoint": 1,
+        "identity": 2,
+        "expiry": 3
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/directory.cddl#relay-binding",
+          "required": ["relay-id", "endpoint", "identity", "expiry"],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "key-transition",
+      "fields": {
+        "statement-frame": 0,
+        "algorithm": 1,
+        "signer": 2,
+        "signature": 3
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/directory.cddl#key-transition",
+          "required": ["statement-frame", "algorithm", "signer", "signature"],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "key-transition-statement",
+      "fields": {
+        "network": 0,
+        "subject": 1,
+        "prior-authority": 2,
+        "revision": 3,
+        "new-key": 4
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/directory.cddl#key-transition-statement",
+          "required": [
+            "network",
+            "subject",
+            "prior-authority",
+            "revision",
+            "new-key"
+          ],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "profile-entry",
+      "fields": {
+        "kind": 0,
+        "headers": 1,
+        "body": 2
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/directory.cddl#profile-entry",
+          "required": ["kind", "headers", "body"],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "profile-header",
+      "fields": {
+        "name": 0,
+        "value": 1
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/directory.cddl#profile-header",
+          "required": ["name", "value"],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "directory-preview-key",
+      "fields": {
+        "key-type": 0,
+        "key-bytes": 1
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/directory.cddl#directory-preview-key",
+          "required": ["key-type", "key-bytes"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "directory-preview-relay",
+      "fields": {
+        "relay-id": 0,
+        "endpoint": 1,
+        "identity": 2,
+        "expiry": 3
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/directory.cddl#directory-preview-relay",
+          "required": ["relay-id", "endpoint", "identity", "expiry"],
+          "optional": [],
+          "open": true
+        }
+      ]
+    }
+  ],
+  "enums": [
+    {
+      "key": "account-type",
+      "description": "Directory statement field 15 (ticket #1120); absent means person.",
+      "values": {
+        "person": 0,
+        "bot": 1,
+        "service": 2,
+        "organization": 3
+      }
+    },
+    {
+      "key": "bot-role",
+      "description": "Directory statement field 16 (ticket #1120).",
+      "values": {
+        "generic": 0,
+        "assistant": 1,
+        "faucet": 2,
+        "game": 3,
+        "bridge": 4,
+        "merchant": 5,
+        "moderator": 6,
+        "announcer": 7
+      }
+    }
+  ]
+}

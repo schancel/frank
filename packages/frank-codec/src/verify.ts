@@ -13,12 +13,22 @@ import type {
   KeyTransitionStatement,
   ParsedFrame,
 } from './types'
+import {
+  KEY_TYPE,
+  SIGNATURE_ALGORITHM,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_KEY_TRANSITION_STATEMENT,
+} from './constants'
 
 /** Group order `n` of secp256k1. */
 const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
 
 /** Allocated signature algorithms this slice cannot verify (M7). */
-const UNVERIFIABLE_ALGORITHMS: ReadonlySet<number> = new Set([2, 3, 16])
+const UNVERIFIABLE_ALGORITHMS: ReadonlySet<number> = new Set([
+  SIGNATURE_ALGORITHM.bip340Schnorr,
+  SIGNATURE_ALGORITHM.bchSchnorr,
+  SIGNATURE_ALGORITHM.ed25519,
+])
 
 const fail = (
   category: 'unsupported' | 'cryptographic',
@@ -136,8 +146,8 @@ function verifyEntry(
   location: string,
 ): void {
   preflightAlgorithm(entry, location)
-  if (entry.algorithm === 1) {
-    if (entry.signer.keyType !== 1) {
+  if (entry.algorithm === SIGNATURE_ALGORITHM.secp256k1EcdsaDer) {
+    if (entry.signer.keyType !== KEY_TYPE.secp256k1) {
       throw fail(
         'cryptographic',
         'algorithm 1 needs a key-type-1 signer',
@@ -162,14 +172,14 @@ function verifyEntry(
 
 function statementOf(f: ParsedFrame): DirectoryStatement<ParsedFrame> {
   const t = f.typed
-  if (!t || t.type !== 4)
+  if (!t || t.type !== TYPE_DIRECTORY_STATEMENT)
     throw new Error('internal: expected an opened type-4 frame')
   return t
 }
 
 function transitionOf(f: ParsedFrame): KeyTransitionStatement {
   const t = f.typed
-  if (!t || t.type !== 7)
+  if (!t || t.type !== TYPE_KEY_TRANSITION_STATEMENT)
     throw new Error('internal: expected an opened type-7 frame')
   return t
 }

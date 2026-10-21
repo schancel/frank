@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "structs": [
+    {
+      "key": "stamp-economic-binding",
+      "description": "The intended stamp economics a canonical stamp attempt is bound to (wallet stamp-attempt journal; local, never on the wire).",
+      "fields": {
+        "version": 0,
+        "stamp-value-wei": 1,
+        "binding": 2
+      },
+      "shapes": [
+        {
+          "required": ["version", "stamp-value-wei", "binding"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "forum-store-header",
+      "description": "Forum store header binding the database to its network and burn policy (cashweb-registry forum store; local RocksDB value, never on the wire).",
+      "fields": {
+        "version": 0,
+        "network": 1,
+        "chain-id": 2,
+        "burn-address": 3
+      },
+      "shapes": [
+        {
+          "required": ["version", "network", "chain-id", "burn-address"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "forum-observation-row",
+      "description": "One observed topic post or vote burn, keyed by transaction hash (cashweb-registry forum store; local RocksDB value, never on the wire).",
+      "fields": {
+        "version": 0,
+        "frame": 1,
+        "first-seen": 2,
+        "state": 3,
+        "block": 4,
+        "transaction-index": 5,
+        "visible": 6
+      },
+      "shapes": [
+        {
+          "required": ["version", "frame", "first-seen", "state"],
+          "optional": ["block", "transaction-index", "visible"],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "forum-post-row",
+      "description": "Aggregate state of one forum post, keyed by post hash (cashweb-registry forum store; local RocksDB value, never on the wire).",
+      "fields": {
+        "version": 0,
+        "frame": 1,
+        "author": 2,
+        "visible": 3,
+        "negative": 4,
+        "magnitude": 5,
+        "reserved-up": 6,
+        "reserved-down": 7,
+        "topic": 8
+      },
+      "shapes": [
+        {
+          "required": [
+            "version",
+            "frame",
+            "negative",
+            "magnitude",
+            "reserved-up",
+            "reserved-down",
+            "topic"
+          ],
+          "optional": ["author", "visible"],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "forum-pending-accounting",
+      "description": "Pending-operation count and byte charge (cashweb-registry forum store; local RocksDB value, never on the wire).",
+      "fields": {
+        "version": 0,
+        "count": 1,
+        "bytes": 2
+      },
+      "shapes": [
+        {
+          "required": ["version", "count", "bytes"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "forum-discovery-row",
+      "description": "Per-topic post count and last activity (cashweb-registry forum store; local RocksDB value, never on the wire).",
+      "fields": {
+        "version": 0,
+        "count": 1,
+        "last-activity": 2
+      },
+      "shapes": [
+        {
+          "required": ["version", "count", "last-activity"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "canonical-dm-message-row",
+      "description": "One admitted canonical direct message with its frozen payment policy (cashweb-registry canonical message store; local RocksDB value, never on the wire). The policy is an 11-element array in the order network, chain id, minimum, sender P, recipient P, sender M, recipient M, stamp key, sender T1, recipient T1, payload hash.",
+      "fields": {
+        "version": 0,
+        "body": 1,
+        "content-type": 2,
+        "policy": 3,
+        "delivered-at": 4
+      },
+      "shapes": [
+        {
+          "required": [
+            "version",
+            "body",
+            "content-type",
+            "policy",
+            "delivered-at"
+          ],
+          "optional": [],
+          "open": false
+        }
+      ]
+    }
+  ],
+  "enums": [
+    {
+      "key": "stamp-economic-binding-version",
+      "description": "stamp-economic-binding field 0.",
+      "values": {
+        "v1": 1
+      }
+    },
+    {
+      "key": "forum-store-row-version",
+      "description": "Field 0 of every forum store row.",
+      "values": {
+        "v1": 1
+      }
+    },
+    {
+      "key": "forum-observation-state",
+      "description": "forum-observation-row field 3.",
+      "values": {
+        "pending": 1,
+        "confirmed": 2
+      }
+    },
+    {
+      "key": "canonical-dm-message-row-version",
+      "description": "canonical-dm-message-row field 0.",
+      "values": {
+        "v2": 2
+      }
+    }
+  ]
+}

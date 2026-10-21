@@ -217,6 +217,7 @@ pub struct CanonicalStampChecks {
 /// check either; it only requires them to be well formed. The recipient's client is what
 /// checks them, when it opens the message with the key the sender published.
 fn stated_sender(context: &[u8]) -> Result<([u8; 32], AccountRef)> {
+    use frank_cbor::message_fields::{account_ref as A, dm_crypto_context_v1 as C};
     use frank_cbor::CborValue;
     let CborValue::Map(fields) =
         frank_cbor::decode_canonical(context).map_err(|_| CanonicalStampError::Encoding)?
@@ -229,13 +230,14 @@ fn stated_sender(context: &[u8]) -> Result<([u8; 32], AccountRef)> {
             .find_map(|(key, value)| (*key == wanted).then_some(value))
             .ok_or(CanonicalStampError::Encoding)
     };
-    let CborValue::Bytes(hash) = field(4)? else {
+    let CborValue::Bytes(hash) = field(C::SENDER_STATEMENT_HASH)? else {
         return Err(CanonicalStampError::Encoding);
     };
-    let CborValue::Map(account) = field(6)? else {
+    let CborValue::Map(account) = field(C::SENDER_MESSAGE_KEY)? else {
         return Err(CanonicalStampError::Encoding);
     };
-    let [(0, CborValue::Int(key_type)), (1, CborValue::Bytes(key_bytes))] = account.as_slice()
+    let [(A::KEY_TYPE, CborValue::Int(key_type)), (A::KEY_BYTES, CborValue::Bytes(key_bytes))] =
+        account.as_slice()
     else {
         return Err(CanonicalStampError::Encoding);
     };

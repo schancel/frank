@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "structs": [
+    {
+      "key": "group-epoch-frame",
+      "description": "Shared group mailbox epoch transition frame: the cashweb-registry 'G_meta'/'G_epoch' store value and the optional CBOR body of PUT /groups/:group_id/epochs. Each field is text or bytes (bytes are read as hex); unknown keys are ignored.",
+      "fields": {
+        "group-id": 0,
+        "epoch": 1,
+        "prev-epoch-hash": 2,
+        "write-pubkey": 3,
+        "read-token-hash": 4,
+        "encrypted-epoch-descriptor": 5,
+        "admin-sig": 6,
+        "epoch-hash": 7,
+        "group-pubkey": 8
+      },
+      "shapes": [
+        {
+          "required": [
+            "group-id",
+            "epoch",
+            "write-pubkey",
+            "read-token-hash",
+            "encrypted-epoch-descriptor",
+            "admin-sig",
+            "group-pubkey"
+          ],
+          "optional": ["prev-epoch-hash", "epoch-hash"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "group-message-envelope",
+      "description": "Sealed-sender group message: the optional CBOR body of PUT /groups/:group_id/messages. Each field is text or bytes (bytes are read as hex); unknown keys are ignored.",
+      "fields": {
+        "group-id": 0,
+        "epoch": 1,
+        "nonce": 2,
+        "ciphertext": 3,
+        "write-sig": 4
+      },
+      "shapes": [
+        {
+          "required": ["group-id", "epoch", "nonce", "ciphertext", "write-sig"],
+          "optional": [],
+          "open": true
+        }
+      ]
+    }
+  ],
+  "enums": []
+}

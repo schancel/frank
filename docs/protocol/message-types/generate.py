@@ -17,6 +17,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fields as field_registry  # noqa: E402  (beside this script)
+
 ROOT = Path(__file__).resolve().parents[3]
 REGISTRY = Path("docs/protocol/message-types/v1.json")
 TS_OUT = Path("packages/frank-codec/src/message-types.generated.ts")
@@ -198,8 +201,10 @@ def splice(path: Path, body: list[str], current: str) -> str:
     return current[: start + len(BEGIN)] + "\n\n" + "\n".join(body) + "\n\n" + current[end:]
 
 
-def outputs(types: list[dict]) -> dict[Path, str]:
+def outputs(types: list[dict], structs: list, enums: list) -> dict[Path, str]:
     return {
+        field_registry.TS_FIELDS_OUT: field_registry.render_ts(structs, enums),
+        field_registry.RUST_FIELDS_OUT: field_registry.render_rust(structs, enums),
         TS_OUT: render_ts(types),
         RUST_OUT: render_rust(types),
         CBOR_README: splice(CBOR_README, readme_table(types), (ROOT / CBOR_README).read_text()),
@@ -218,7 +223,14 @@ TEST_PATH_RE = re.compile(
 )
 
 
-def hand_written_ids(types: list[dict]) -> list[str]:
+def tracked_files() -> list[str]:
+    return subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=ROOT, check=True, capture_output=True, text=True,
+    ).stdout.split("\0")
+
+
+def hand_written_ids(types: list[dict], files: list[str]) -> list[str]:
     """Hand-written type-id definitions that the registry should own instead.
 
     Every tracked source file is scanned. A definition that reuses a generated constant's name is
@@ -227,11 +239,7 @@ def hand_written_ids(types: list[dict]) -> list[str]:
     """
 
     by_name = {const_name(t): t["id"] for t in types}
-    generated = {str(TS_OUT), str(RUST_OUT)}
-    files = subprocess.run(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-        cwd=ROOT, check=True, capture_output=True, text=True,
-    ).stdout.split("\0")
+    generated = {str(TS_OUT), str(RUST_OUT), str(field_registry.TS_FIELDS_OUT), str(field_registry.RUST_FIELDS_OUT)}
     problems = []
     for rel in files:
         if not rel.endswith(SOURCE_SUFFIXES) or rel in generated or "node_modules/" in rel:
@@ -258,8 +266,9 @@ def main() -> int:
     args = parser.parse_args()
     try:
         types = load_registry()
-        rendered = outputs(types)
-    except RegistryError as e:
+        structs, enums = field_registry.load(ROOT)
+        rendered = outputs(types, structs, enums)
+    except (RegistryError, field_registry.FieldRegistryError) as e:
         print(e, file=sys.stderr)
         return 1
     stale = [p for p, text in rendered.items() if not (ROOT / p).is_file() or (ROOT / p).read_text() != text]
@@ -267,7 +276,11 @@ def main() -> int:
         for p in stale:
             (ROOT / p).write_text(rendered[p])
             print(f"wrote {p}")
-    problems = hand_written_ids(types)
+    files = tracked_files()
+    problems = hand_written_ids(types, files)
+    problems += field_registry.cddl_problems(ROOT, structs)
+    problems += field_registry.raw_literal_problems(ROOT, files)
+    problems += field_registry.rust_test_literal_problems(ROOT, files)
     if args.check and stale:
         problems = [f"{p}: stale; run python3 {Path(__file__).relative_to(ROOT)}" for p in stale] + problems
     for p in problems:
@@ -275,7 +288,10 @@ def main() -> int:
     if problems:
         return 1
     if args.check:
-        print(f"message types: {len(types)} registered, generated outputs current, no hand-written ids")
+        print(
+            f"message types: {len(types)} registered, {len(structs)} maps and {len(enums)} enums; "
+            "generated outputs current, CDDL agrees, no hand-written ids or raw keys"
+        )
     return 0
 
 

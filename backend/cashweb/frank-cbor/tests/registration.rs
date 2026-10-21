@@ -15,6 +15,14 @@ use frank_cbor::{
 };
 
 use common::NET;
+use frank_cbor::message_fields::{
+    account_ref, account_type, bot_role, directory_attestation as att, directory_statement as stmt,
+    frank_envelope, key_transition, key_transition_statement as kts, key_type, relay_binding,
+    signature_algorithm, signature_entry,
+};
+use frank_cbor::message_types::{
+    TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT, TYPE_KEY_TRANSITION_STATEMENT,
+};
 
 fn hex(s: &str) -> Vec<u8> {
     hex::decode(s).expect("hex")
@@ -449,7 +457,7 @@ fn strict_der_rejects_malformed_and_high_s() {
                     .iter()
                     .map(|t| SupportedSchema {
                         type_id: *t,
-                        schema_version: if *t == 4 { 3 } else { 1 },
+                        schema_version: if *t == TYPE_DIRECTORY_STATEMENT { 3 } else { 1 },
                     })
                     .collect(),
                 opaque_retention_allowed: false,
@@ -517,7 +525,7 @@ fn wrong_network_signature_verifies_only_over_the_ambient_network() {
             .iter()
             .map(|t| SupportedSchema {
                 type_id: *t,
-                schema_version: if *t == 4 { 3 } else { 1 },
+                schema_version: if *t == TYPE_DIRECTORY_STATEMENT { 3 } else { 1 },
             })
             .collect(),
         opaque_retention_allowed: false,
@@ -613,7 +621,7 @@ fn unsupported_algorithm_precedes_any_signature_verification() {
     };
     let payload_bytes = envelope
         .iter()
-        .find(|(key, _)| *key == 3)
+        .find(|(key, _)| *key == frank_envelope::PAYLOAD)
         .and_then(|(_, value)| match value {
             CborValue::Bytes(bytes) => Some(bytes),
             _ => None,
@@ -624,12 +632,12 @@ fn unsupported_algorithm_precedes_any_signature_verification() {
     };
     let statement = payload
         .iter()
-        .find(|(key, _)| *key == 0)
+        .find(|(key, _)| *key == att::STATEMENT_FRAME)
         .map(|(_, value)| value.clone())
         .expect("statement");
     let entries = payload
         .iter()
-        .find(|(key, _)| *key == 1)
+        .find(|(key, _)| *key == att::SIGNATURES)
         .and_then(|(_, value)| match value {
             CborValue::Array(entries) => Some(entries),
             _ => None,
@@ -640,7 +648,7 @@ fn unsupported_algorithm_precedes_any_signature_verification() {
     };
     let signature = corrupted
         .iter_mut()
-        .find(|(key, _)| *key == 2)
+        .find(|(key, _)| *key == signature_entry::SIGNATURE)
         .and_then(|(_, value)| match value {
             CborValue::Bytes(bytes) => Some(bytes),
             _ => None,
@@ -648,26 +656,32 @@ fn unsupported_algorithm_precedes_any_signature_verification() {
         .expect("signature bytes");
     *signature.last_mut().expect("non-empty signature") ^= 1;
     let unsupported = cbor_map(vec![
-        (0, CborValue::Int(16)),
         (
-            1,
+            signature_entry::ALGORITHM,
+            CborValue::Int(signature_algorithm::ED25519.into()),
+        ),
+        (
+            signature_entry::SIGNER,
             cbor_map(vec![
-                (0, CborValue::Int(2)),
-                (1, CborValue::Bytes(vec![7; 32])),
+                (
+                    account_ref::KEY_TYPE,
+                    CborValue::Int(key_type::ED25519.into()),
+                ),
+                (account_ref::KEY_BYTES, CborValue::Bytes(vec![7; 32])),
             ]),
         ),
-        (2, CborValue::Bytes(vec![3; 64])),
+        (signature_entry::SIGNATURE, CborValue::Bytes(vec![3; 64])),
     ]);
     let payload = cbor_map(vec![
-        (0, statement),
+        (att::STATEMENT_FRAME, statement),
         (
-            1,
+            att::SIGNATURES,
             CborValue::Array(vec![CborValue::Map(corrupted), unsupported]),
         ),
     ]);
     let mixed = encode_frame(
         EnvelopeFields {
-            type_id: 2,
+            type_id: TYPE_DIRECTORY_ATTESTATION,
             schema_version: 1,
             min_reader_version: 1,
         },
@@ -698,34 +712,40 @@ fn a_full_type2_transition_authorization_verifies() {
     let account = |key: &[u8]| common::stamp_account(&hex::encode(key));
     let relay = |id: u8, key: &[u8]| {
         frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Bytes(vec![id; 16])),
             (
-                1,
+                relay_binding::RELAY_ID,
+                frank_cbor::CborValue::Bytes(vec![id; 16]),
+            ),
+            (
+                relay_binding::ENDPOINT,
                 frank_cbor::CborValue::Text("https://relay.example/r".to_string()),
             ),
-            (2, account(key)),
-            (3, common::ts(1_800_000_000, 0)),
+            (relay_binding::IDENTITY, account(key)),
+            (relay_binding::EXPIRY, common::ts(1_800_000_000, 0)),
         ])
     };
     let prior_statement = common::fr(
-        4,
+        TYPE_DIRECTORY_STATEMENT,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Text(NET.to_string())),
-            (1, account(&prior_key)),
-            (2, frank_cbor::CborValue::Int(9)),
-            (3, common::ts(1_700_000_000, 0)),
-            (4, frank_cbor::CborValue::Array(vec![relay(1, &prior_key)])),
-            (8, account(&subject_key)),
+            (stmt::NETWORK, frank_cbor::CborValue::Text(NET.to_string())),
+            (stmt::SUBJECT, account(&prior_key)),
+            (stmt::REVISION, frank_cbor::CborValue::Int(9)),
+            (stmt::TIMESTAMP, common::ts(1_700_000_000, 0)),
+            (
+                stmt::RELAYS,
+                frank_cbor::CborValue::Array(vec![relay(1, &prior_key)]),
+            ),
+            (stmt::STAMP_KEY, account(&subject_key)),
         ]),
     );
     let transition_statement = common::fr(
-        7,
+        TYPE_KEY_TRANSITION_STATEMENT,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Text(NET.to_string())),
-            (1, account(&prior_key)),
-            (2, account(&prior_key)),
-            (3, frank_cbor::CborValue::Int(10)),
-            (4, account(&subject_key)),
+            (kts::NETWORK, frank_cbor::CborValue::Text(NET.to_string())),
+            (kts::SUBJECT, account(&prior_key)),
+            (kts::PRIOR_AUTHORITY, account(&prior_key)),
+            (kts::REVISION, frank_cbor::CborValue::Int(10)),
+            (kts::NEW_KEY, account(&subject_key)),
         ]),
     );
     let digest = key_transition_signature_digest(NET, &transition_statement).expect("digest");
@@ -737,32 +757,35 @@ fn a_full_type2_transition_authorization_verifies() {
         .serialize_der()
         .to_vec();
     let statement = common::fr(
-        4,
+        TYPE_DIRECTORY_STATEMENT,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Text(NET.to_string())),
-            (1, account(&subject_key)),
-            (2, frank_cbor::CborValue::Int(10)),
-            (3, common::ts(1_700_000_100, 0)),
+            (stmt::NETWORK, frank_cbor::CborValue::Text(NET.to_string())),
+            (stmt::SUBJECT, account(&subject_key)),
+            (stmt::REVISION, frank_cbor::CborValue::Int(10)),
+            (stmt::TIMESTAMP, common::ts(1_700_000_100, 0)),
             (
-                4,
+                stmt::RELAYS,
                 frank_cbor::CborValue::Array(vec![relay(2, &subject_key)]),
             ),
             (
-                5,
+                stmt::KEY_TRANSITIONS,
                 frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
                     (
-                        0,
+                        key_transition::STATEMENT_FRAME,
                         frank_cbor::CborValue::Bytes(transition_statement.clone()),
                     ),
-                    (1, frank_cbor::CborValue::Int(1)),
-                    (2, account(&prior_key)),
                     (
-                        3,
+                        key_transition::ALGORITHM,
+                        frank_cbor::CborValue::Int(signature_algorithm::SECP256K1_ECDSA_DER.into()),
+                    ),
+                    (key_transition::SIGNER, account(&prior_key)),
+                    (
+                        key_transition::SIGNATURE,
                         frank_cbor::CborValue::Bytes(transition_signature.clone()),
                     ),
                 ])]),
             ),
-            (8, account(&subject_key)),
+            (stmt::STAMP_KEY, account(&subject_key)),
         ]),
     );
     let attestation_digest = directory_signature_digest(NET, &statement).expect("digest");
@@ -774,15 +797,24 @@ fn a_full_type2_transition_authorization_verifies() {
         .serialize_der()
         .to_vec();
     let attestation = common::fr(
-        2,
+        TYPE_DIRECTORY_ATTESTATION,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Bytes(statement)),
             (
-                1,
+                att::STATEMENT_FRAME,
+                frank_cbor::CborValue::Bytes(statement),
+            ),
+            (
+                att::SIGNATURES,
                 frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                    (0, frank_cbor::CborValue::Int(1)),
-                    (1, account(&subject_key)),
-                    (2, frank_cbor::CborValue::Bytes(attestation_signature)),
+                    (
+                        signature_entry::ALGORITHM,
+                        frank_cbor::CborValue::Int(signature_algorithm::SECP256K1_ECDSA_DER.into()),
+                    ),
+                    (signature_entry::SIGNER, account(&subject_key)),
+                    (
+                        signature_entry::SIGNATURE,
+                        frank_cbor::CborValue::Bytes(attestation_signature),
+                    ),
                 ])]),
             ),
         ]),
@@ -795,7 +827,7 @@ fn a_full_type2_transition_authorization_verifies() {
             .iter()
             .map(|t| SupportedSchema {
                 type_id: *t,
-                schema_version: if *t == 4 { 3 } else { 1 },
+                schema_version: if *t == TYPE_DIRECTORY_STATEMENT { 3 } else { 1 },
             })
             .collect(),
         opaque_retention_allowed: false,
@@ -807,26 +839,35 @@ fn a_full_type2_transition_authorization_verifies() {
     let last = corrupted.len() - 1;
     corrupted[last] ^= 0x01;
     let bad_statement = common::fr(
-        4,
+        TYPE_DIRECTORY_STATEMENT,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Text(NET.to_string())),
-            (1, account(&subject_key)),
-            (2, frank_cbor::CborValue::Int(10)),
-            (3, common::ts(1_700_000_100, 0)),
+            (stmt::NETWORK, frank_cbor::CborValue::Text(NET.to_string())),
+            (stmt::SUBJECT, account(&subject_key)),
+            (stmt::REVISION, frank_cbor::CborValue::Int(10)),
+            (stmt::TIMESTAMP, common::ts(1_700_000_100, 0)),
             (
-                4,
+                stmt::RELAYS,
                 frank_cbor::CborValue::Array(vec![relay(2, &subject_key)]),
             ),
             (
-                5,
+                stmt::KEY_TRANSITIONS,
                 frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                    (0, frank_cbor::CborValue::Bytes(transition_statement)),
-                    (1, frank_cbor::CborValue::Int(1)),
-                    (2, account(&prior_key)),
-                    (3, frank_cbor::CborValue::Bytes(corrupted)),
+                    (
+                        key_transition::STATEMENT_FRAME,
+                        frank_cbor::CborValue::Bytes(transition_statement),
+                    ),
+                    (
+                        key_transition::ALGORITHM,
+                        frank_cbor::CborValue::Int(signature_algorithm::SECP256K1_ECDSA_DER.into()),
+                    ),
+                    (key_transition::SIGNER, account(&prior_key)),
+                    (
+                        key_transition::SIGNATURE,
+                        frank_cbor::CborValue::Bytes(corrupted),
+                    ),
                 ])]),
             ),
-            (8, account(&subject_key)),
+            (stmt::STAMP_KEY, account(&subject_key)),
         ]),
     );
     let bad_digest = directory_signature_digest(NET, &bad_statement).expect("digest");
@@ -838,15 +879,24 @@ fn a_full_type2_transition_authorization_verifies() {
         .serialize_der()
         .to_vec();
     let bad_attestation = common::fr(
-        2,
+        TYPE_DIRECTORY_ATTESTATION,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Bytes(bad_statement)),
             (
-                1,
+                att::STATEMENT_FRAME,
+                frank_cbor::CborValue::Bytes(bad_statement),
+            ),
+            (
+                att::SIGNATURES,
                 frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                    (0, frank_cbor::CborValue::Int(1)),
-                    (1, account(&subject_key)),
-                    (2, frank_cbor::CborValue::Bytes(bad_signature)),
+                    (
+                        signature_entry::ALGORITHM,
+                        frank_cbor::CborValue::Int(signature_algorithm::SECP256K1_ECDSA_DER.into()),
+                    ),
+                    (signature_entry::SIGNER, account(&subject_key)),
+                    (
+                        signature_entry::SIGNATURE,
+                        frank_cbor::CborValue::Bytes(bad_signature),
+                    ),
                 ])]),
             ),
         ]),
@@ -879,26 +929,35 @@ fn directory_statement_canonical_username_valid_and_round_trip() {
 
     for handle in valid_handles {
         let statement = common::fr(
-            4,
+            TYPE_DIRECTORY_STATEMENT,
             &frank_cbor::cbor_map(vec![
-                (0, frank_cbor::CborValue::Text("frank-test".to_string())),
-                (1, common::acct1(1)),
-                (2, frank_cbor::CborValue::Int(1000)),
-                (3, common::ts(100, 0)),
                 (
-                    4,
+                    stmt::NETWORK,
+                    frank_cbor::CborValue::Text("frank-test".to_string()),
+                ),
+                (stmt::SUBJECT, common::acct1(1)),
+                (stmt::REVISION, frank_cbor::CborValue::Int(1000)),
+                (stmt::TIMESTAMP, common::ts(100, 0)),
+                (
+                    stmt::RELAYS,
                     frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                        (0, frank_cbor::CborValue::Bytes(vec![1; 16])),
                         (
-                            1,
+                            relay_binding::RELAY_ID,
+                            frank_cbor::CborValue::Bytes(vec![1; 16]),
+                        ),
+                        (
+                            relay_binding::ENDPOINT,
                             frank_cbor::CborValue::Text("https://relay.example".to_string()),
                         ),
-                        (2, common::acct1(1)),
-                        (3, common::ts(2000, 0)),
+                        (relay_binding::IDENTITY, common::acct1(1)),
+                        (relay_binding::EXPIRY, common::ts(2000, 0)),
                     ])]),
                 ),
-                (8, common::acct1(1)),
-                (14, frank_cbor::CborValue::Text(handle.to_string())),
+                (stmt::STAMP_KEY, common::acct1(1)),
+                (
+                    stmt::USERNAME,
+                    frank_cbor::CborValue::Text(handle.to_string()),
+                ),
             ]),
         );
 
@@ -934,26 +993,35 @@ fn directory_statement_canonical_username_semantic_rejections() {
 
     for handle in invalid_handles {
         let statement = common::fr(
-            4,
+            TYPE_DIRECTORY_STATEMENT,
             &frank_cbor::cbor_map(vec![
-                (0, frank_cbor::CborValue::Text("frank-test".to_string())),
-                (1, common::acct1(1)),
-                (2, frank_cbor::CborValue::Int(1000)),
-                (3, common::ts(100, 0)),
                 (
-                    4,
+                    stmt::NETWORK,
+                    frank_cbor::CborValue::Text("frank-test".to_string()),
+                ),
+                (stmt::SUBJECT, common::acct1(1)),
+                (stmt::REVISION, frank_cbor::CborValue::Int(1000)),
+                (stmt::TIMESTAMP, common::ts(100, 0)),
+                (
+                    stmt::RELAYS,
                     frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                        (0, frank_cbor::CborValue::Bytes(vec![1; 16])),
                         (
-                            1,
+                            relay_binding::RELAY_ID,
+                            frank_cbor::CborValue::Bytes(vec![1; 16]),
+                        ),
+                        (
+                            relay_binding::ENDPOINT,
                             frank_cbor::CborValue::Text("https://relay.example".to_string()),
                         ),
-                        (2, common::acct1(1)),
-                        (3, common::ts(2000, 0)),
+                        (relay_binding::IDENTITY, common::acct1(1)),
+                        (relay_binding::EXPIRY, common::ts(2000, 0)),
                     ])]),
                 ),
-                (8, common::acct1(1)),
-                (14, frank_cbor::CborValue::Text(handle.to_string())),
+                (stmt::STAMP_KEY, common::acct1(1)),
+                (
+                    stmt::USERNAME,
+                    frank_cbor::CborValue::Text(handle.to_string()),
+                ),
             ]),
         );
 
@@ -983,26 +1051,35 @@ fn directory_statement_canonical_username_schema_rejections() {
 
     for handle in invalid_length_handles {
         let statement = common::fr(
-            4,
+            TYPE_DIRECTORY_STATEMENT,
             &frank_cbor::cbor_map(vec![
-                (0, frank_cbor::CborValue::Text("frank-test".to_string())),
-                (1, common::acct1(1)),
-                (2, frank_cbor::CborValue::Int(1000)),
-                (3, common::ts(100, 0)),
                 (
-                    4,
+                    stmt::NETWORK,
+                    frank_cbor::CborValue::Text("frank-test".to_string()),
+                ),
+                (stmt::SUBJECT, common::acct1(1)),
+                (stmt::REVISION, frank_cbor::CborValue::Int(1000)),
+                (stmt::TIMESTAMP, common::ts(100, 0)),
+                (
+                    stmt::RELAYS,
                     frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                        (0, frank_cbor::CborValue::Bytes(vec![1; 16])),
                         (
-                            1,
+                            relay_binding::RELAY_ID,
+                            frank_cbor::CborValue::Bytes(vec![1; 16]),
+                        ),
+                        (
+                            relay_binding::ENDPOINT,
                             frank_cbor::CborValue::Text("https://relay.example".to_string()),
                         ),
-                        (2, common::acct1(1)),
-                        (3, common::ts(2000, 0)),
+                        (relay_binding::IDENTITY, common::acct1(1)),
+                        (relay_binding::EXPIRY, common::ts(2000, 0)),
                     ])]),
                 ),
-                (8, common::acct1(1)),
-                (14, frank_cbor::CborValue::Text(handle.to_string())),
+                (stmt::STAMP_KEY, common::acct1(1)),
+                (
+                    stmt::USERNAME,
+                    frank_cbor::CborValue::Text(handle.to_string()),
+                ),
             ]),
         );
 
@@ -1023,26 +1100,32 @@ fn directory_statement_canonical_username_schema_rejections() {
         frank_cbor::CborValue::Bytes(vec![1, 2, 3]),
     ] {
         let statement = common::fr(
-            4,
+            TYPE_DIRECTORY_STATEMENT,
             &frank_cbor::cbor_map(vec![
-                (0, frank_cbor::CborValue::Text("frank-test".to_string())),
-                (1, common::acct1(1)),
-                (2, frank_cbor::CborValue::Int(1000)),
-                (3, common::ts(100, 0)),
                 (
-                    4,
+                    stmt::NETWORK,
+                    frank_cbor::CborValue::Text("frank-test".to_string()),
+                ),
+                (stmt::SUBJECT, common::acct1(1)),
+                (stmt::REVISION, frank_cbor::CborValue::Int(1000)),
+                (stmt::TIMESTAMP, common::ts(100, 0)),
+                (
+                    stmt::RELAYS,
                     frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                        (0, frank_cbor::CborValue::Bytes(vec![1; 16])),
                         (
-                            1,
+                            relay_binding::RELAY_ID,
+                            frank_cbor::CborValue::Bytes(vec![1; 16]),
+                        ),
+                        (
+                            relay_binding::ENDPOINT,
                             frank_cbor::CborValue::Text("https://relay.example".to_string()),
                         ),
-                        (2, common::acct1(1)),
-                        (3, common::ts(2000, 0)),
+                        (relay_binding::IDENTITY, common::acct1(1)),
+                        (relay_binding::EXPIRY, common::ts(2000, 0)),
                     ])]),
                 ),
-                (8, common::acct1(1)),
-                (14, invalid_val),
+                (stmt::STAMP_KEY, common::acct1(1)),
+                (stmt::USERNAME, invalid_val),
             ]),
         );
 
@@ -1068,27 +1151,30 @@ fn directory_statement_canonical_username_signed_attestation() {
 
     let account = |key: &[u8]| common::stamp_account(&hex::encode(key));
     let statement = common::fr(
-        4,
+        TYPE_DIRECTORY_STATEMENT,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Text(NET.to_string())),
-            (1, account(&pub_key_bytes)),
-            (2, frank_cbor::CborValue::Int(500)),
-            (3, common::ts(100, 0)),
+            (stmt::NETWORK, frank_cbor::CborValue::Text(NET.to_string())),
+            (stmt::SUBJECT, account(&pub_key_bytes)),
+            (stmt::REVISION, frank_cbor::CborValue::Int(500)),
+            (stmt::TIMESTAMP, common::ts(100, 0)),
             (
-                4,
+                stmt::RELAYS,
                 frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                    (0, frank_cbor::CborValue::Bytes(vec![2; 16])),
                     (
-                        1,
+                        relay_binding::RELAY_ID,
+                        frank_cbor::CborValue::Bytes(vec![2; 16]),
+                    ),
+                    (
+                        relay_binding::ENDPOINT,
                         frank_cbor::CborValue::Text("https://relay.example/r".to_string()),
                     ),
-                    (2, account(&pub_key_bytes)),
-                    (3, common::ts(2000, 0)),
+                    (relay_binding::IDENTITY, account(&pub_key_bytes)),
+                    (relay_binding::EXPIRY, common::ts(2000, 0)),
                 ])]),
             ),
-            (8, account(&pub_key_bytes)),
+            (stmt::STAMP_KEY, account(&pub_key_bytes)),
             (
-                14,
+                stmt::USERNAME,
                 frank_cbor::CborValue::Text("valid_handle_99".to_string()),
             ),
         ]),
@@ -1101,15 +1187,24 @@ fn directory_statement_canonical_username_signed_attestation() {
         .to_vec();
 
     let attestation = common::fr(
-        2,
+        TYPE_DIRECTORY_ATTESTATION,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Bytes(statement)),
             (
-                1,
+                att::STATEMENT_FRAME,
+                frank_cbor::CborValue::Bytes(statement),
+            ),
+            (
+                att::SIGNATURES,
                 frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                    (0, frank_cbor::CborValue::Int(1)),
-                    (1, account(&pub_key_bytes)),
-                    (2, frank_cbor::CborValue::Bytes(signature.clone())),
+                    (
+                        signature_entry::ALGORITHM,
+                        frank_cbor::CborValue::Int(signature_algorithm::SECP256K1_ECDSA_DER.into()),
+                    ),
+                    (signature_entry::SIGNER, account(&pub_key_bytes)),
+                    (
+                        signature_entry::SIGNATURE,
+                        frank_cbor::CborValue::Bytes(signature.clone()),
+                    ),
                 ])]),
             ),
         ]),
@@ -1137,42 +1232,54 @@ fn directory_statement_canonical_username_signed_attestation() {
 
     // Tampering with the statement's username fails signature verification
     let tampered_statement = common::fr(
-        4,
+        TYPE_DIRECTORY_STATEMENT,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Text(NET.to_string())),
-            (1, account(&pub_key_bytes)),
-            (2, frank_cbor::CborValue::Int(500)),
-            (3, common::ts(100, 0)),
+            (stmt::NETWORK, frank_cbor::CborValue::Text(NET.to_string())),
+            (stmt::SUBJECT, account(&pub_key_bytes)),
+            (stmt::REVISION, frank_cbor::CborValue::Int(500)),
+            (stmt::TIMESTAMP, common::ts(100, 0)),
             (
-                4,
+                stmt::RELAYS,
                 frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                    (0, frank_cbor::CborValue::Bytes(vec![2; 16])),
                     (
-                        1,
+                        relay_binding::RELAY_ID,
+                        frank_cbor::CborValue::Bytes(vec![2; 16]),
+                    ),
+                    (
+                        relay_binding::ENDPOINT,
                         frank_cbor::CborValue::Text("https://relay.example/r".to_string()),
                     ),
-                    (2, account(&pub_key_bytes)),
-                    (3, common::ts(2000, 0)),
+                    (relay_binding::IDENTITY, account(&pub_key_bytes)),
+                    (relay_binding::EXPIRY, common::ts(2000, 0)),
                 ])]),
             ),
-            (8, account(&pub_key_bytes)),
+            (stmt::STAMP_KEY, account(&pub_key_bytes)),
             (
-                14,
+                stmt::USERNAME,
                 frank_cbor::CborValue::Text("tampered_handle".to_string()),
             ),
         ]),
     );
 
     let tampered_attestation = common::fr(
-        2,
+        TYPE_DIRECTORY_ATTESTATION,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Bytes(tampered_statement)),
             (
-                1,
+                att::STATEMENT_FRAME,
+                frank_cbor::CborValue::Bytes(tampered_statement),
+            ),
+            (
+                att::SIGNATURES,
                 frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                    (0, frank_cbor::CborValue::Int(1)),
-                    (1, account(&pub_key_bytes)),
-                    (2, frank_cbor::CborValue::Bytes(signature)),
+                    (
+                        signature_entry::ALGORITHM,
+                        frank_cbor::CborValue::Int(signature_algorithm::SECP256K1_ECDSA_DER.into()),
+                    ),
+                    (signature_entry::SIGNER, account(&pub_key_bytes)),
+                    (
+                        signature_entry::SIGNATURE,
+                        frank_cbor::CborValue::Bytes(signature),
+                    ),
                 ])]),
             ),
         ]),
@@ -1194,7 +1301,7 @@ fn directory_statement_account_type_and_bot_role_round_trip() {
     let ctx = default_context();
     let pub_key_bytes = vec![2u8; 33];
     let subj = frank_cbor::AccountRef {
-        key_type: 1,
+        key_type: key_type::SECP256K1,
         key_bytes: pub_key_bytes.clone(),
     };
     let relay = frank_cbor::RelayBinding {
@@ -1257,26 +1364,30 @@ fn directory_statement_account_type_and_bot_role_rejections() {
 
     // Out of bounds account_type (> 3) -> Schema error
     let invalid_type_cbor = common::fr(
-        4,
+        TYPE_DIRECTORY_STATEMENT,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Text(NET.to_string())),
-            (1, account(&pub_key_bytes)),
-            (2, frank_cbor::CborValue::Int(1)),
-            (3, common::ts(100, 0)),
+            (stmt::NETWORK, frank_cbor::CborValue::Text(NET.to_string())),
+            (stmt::SUBJECT, account(&pub_key_bytes)),
+            (stmt::REVISION, frank_cbor::CborValue::Int(1)),
+            (stmt::TIMESTAMP, common::ts(100, 0)),
             (
-                4,
+                stmt::RELAYS,
                 frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                    (0, frank_cbor::CborValue::Bytes(vec![2; 16])),
                     (
-                        1,
+                        relay_binding::RELAY_ID,
+                        frank_cbor::CborValue::Bytes(vec![2; 16]),
+                    ),
+                    (
+                        relay_binding::ENDPOINT,
                         frank_cbor::CborValue::Text("https://relay.example/r".to_string()),
                     ),
-                    (2, account(&pub_key_bytes)),
-                    (3, common::ts(2000, 0)),
+                    (relay_binding::IDENTITY, account(&pub_key_bytes)),
+                    (relay_binding::EXPIRY, common::ts(2000, 0)),
                 ])]),
             ),
-            (8, account(&pub_key_bytes)),
-            (15, frank_cbor::CborValue::Int(4)), // Invalid: > 3
+            (stmt::STAMP_KEY, account(&pub_key_bytes)),
+            // raw-cbor-key: account type 4 is deliberately unallocated
+            (stmt::ACCOUNT_TYPE, frank_cbor::CborValue::Int(4)),
         ]),
     );
     let err = validate_frame(&invalid_type_cbor, &ctx).expect_err("account_type > 3 must reject");
@@ -1289,27 +1400,34 @@ fn directory_statement_account_type_and_bot_role_rejections() {
 
     // Out of bounds bot_role (> 7) -> Schema error
     let invalid_role_cbor = common::fr(
-        4,
+        TYPE_DIRECTORY_STATEMENT,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Text(NET.to_string())),
-            (1, account(&pub_key_bytes)),
-            (2, frank_cbor::CborValue::Int(1)),
-            (3, common::ts(100, 0)),
+            (stmt::NETWORK, frank_cbor::CborValue::Text(NET.to_string())),
+            (stmt::SUBJECT, account(&pub_key_bytes)),
+            (stmt::REVISION, frank_cbor::CborValue::Int(1)),
+            (stmt::TIMESTAMP, common::ts(100, 0)),
             (
-                4,
+                stmt::RELAYS,
                 frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                    (0, frank_cbor::CborValue::Bytes(vec![2; 16])),
                     (
-                        1,
+                        relay_binding::RELAY_ID,
+                        frank_cbor::CborValue::Bytes(vec![2; 16]),
+                    ),
+                    (
+                        relay_binding::ENDPOINT,
                         frank_cbor::CborValue::Text("https://relay.example/r".to_string()),
                     ),
-                    (2, account(&pub_key_bytes)),
-                    (3, common::ts(2000, 0)),
+                    (relay_binding::IDENTITY, account(&pub_key_bytes)),
+                    (relay_binding::EXPIRY, common::ts(2000, 0)),
                 ])]),
             ),
-            (8, account(&pub_key_bytes)),
-            (15, frank_cbor::CborValue::Int(1)), // Bot
-            (16, frank_cbor::CborValue::Int(8)), // Invalid: > 7
+            (stmt::STAMP_KEY, account(&pub_key_bytes)),
+            (
+                stmt::ACCOUNT_TYPE,
+                frank_cbor::CborValue::Int(account_type::BOT.into()),
+            ),
+            // raw-cbor-key: bot role 8 is deliberately unallocated
+            (stmt::BOT_ROLE, frank_cbor::CborValue::Int(8)),
         ]),
     );
     let err = validate_frame(&invalid_role_cbor, &ctx).expect_err("bot_role > 7 must reject");
@@ -1322,27 +1440,37 @@ fn directory_statement_account_type_and_bot_role_rejections() {
 
     // bot_role on Person (account_type 0) -> Semantic error
     let semantic_err_cbor = common::fr(
-        4,
+        TYPE_DIRECTORY_STATEMENT,
         &frank_cbor::cbor_map(vec![
-            (0, frank_cbor::CborValue::Text(NET.to_string())),
-            (1, account(&pub_key_bytes)),
-            (2, frank_cbor::CborValue::Int(1)),
-            (3, common::ts(100, 0)),
+            (stmt::NETWORK, frank_cbor::CborValue::Text(NET.to_string())),
+            (stmt::SUBJECT, account(&pub_key_bytes)),
+            (stmt::REVISION, frank_cbor::CborValue::Int(1)),
+            (stmt::TIMESTAMP, common::ts(100, 0)),
             (
-                4,
+                stmt::RELAYS,
                 frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
-                    (0, frank_cbor::CborValue::Bytes(vec![2; 16])),
                     (
-                        1,
+                        relay_binding::RELAY_ID,
+                        frank_cbor::CborValue::Bytes(vec![2; 16]),
+                    ),
+                    (
+                        relay_binding::ENDPOINT,
                         frank_cbor::CborValue::Text("https://relay.example/r".to_string()),
                     ),
-                    (2, account(&pub_key_bytes)),
-                    (3, common::ts(2000, 0)),
+                    (relay_binding::IDENTITY, account(&pub_key_bytes)),
+                    (relay_binding::EXPIRY, common::ts(2000, 0)),
                 ])]),
             ),
-            (8, account(&pub_key_bytes)),
-            (15, frank_cbor::CborValue::Int(0)), // Person
-            (16, frank_cbor::CborValue::Int(1)), // Role on a person!
+            (stmt::STAMP_KEY, account(&pub_key_bytes)),
+            (
+                stmt::ACCOUNT_TYPE,
+                frank_cbor::CborValue::Int(account_type::PERSON.into()),
+            ),
+            // A role on a person is semantically invalid.
+            (
+                stmt::BOT_ROLE,
+                frank_cbor::CborValue::Int(bot_role::ASSISTANT.into()),
+            ),
         ]),
     );
     let err = validate_frame(&semantic_err_cbor, &ctx)

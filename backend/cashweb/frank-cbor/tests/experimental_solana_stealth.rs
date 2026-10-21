@@ -1,4 +1,6 @@
 //! Experimental cross-language proof only. No helper is installed in the generic parser.
+use frank_cbor::message_fields::stealth_asset_transfer;
+use frank_cbor::message_types::TYPE_STEALTH_MESSAGE_ITEM;
 use frank_cbor::{
     decode_canonical, default_context, encode_canonical, validate_frame, CborValue,
     StealthQuantity, TypedPayload, ValidationResult,
@@ -136,10 +138,14 @@ fn malformed_contexts_are_rejected_only_by_experimental_helper() {
     let CborValue::Map(entry) = &mut entries[0] else {
         panic!("map")
     };
-    entry.iter_mut().find(|(k, _)| *k == 4).unwrap().1 = CborValue::Bytes(vec![255]);
+    entry
+        .iter_mut()
+        .find(|(k, _)| *k == stealth_asset_transfer::DERIVATION_CONTEXT)
+        .unwrap()
+        .1 = CborValue::Bytes(vec![255]);
     let wire = frank_cbor::encode_frame(
         frank_cbor::EnvelopeFields {
-            type_id: 19,
+            type_id: TYPE_STEALTH_MESSAGE_ITEM,
             schema_version: 2,
             min_reader_version: 2,
         },

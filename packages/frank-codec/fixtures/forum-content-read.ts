@@ -9,6 +9,18 @@ import {
   Encodable,
   FrankValue,
 } from '../src'
+import {
+  FORUM_AGGREGATE,
+  FORUM_DISCOVERY_PAGE,
+  FORUM_SINGLE_VIEW,
+  FORUM_TOPIC_PAGE,
+  TOPIC_POST,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_OPERATION_STATUS,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_VIEW,
+  TYPE_TOPIC_POST,
+} from '../src/constants'
 
 export type Recipe =
   | null
@@ -71,8 +83,8 @@ export function buildForumCorpus() {
     payload: Encodable,
     valid: boolean,
     error?: string,
-    schema = type === 9 ? 2 : 1,
-    min = type === 9 ? 2 : 1,
+    schema = type === TYPE_TOPIC_POST ? 2 : 1,
+    min = type === TYPE_TOPIC_POST ? 2 : 1,
     context?: ForumFixture['context'],
     retained?: boolean,
   ) => {
@@ -103,21 +115,23 @@ export function buildForumCorpus() {
     ['long', 'm'.repeat(65)],
   ]) {
     for (const [type, id] of [
-      [9, 'typescript-origin'],
-      [12, 'view-large-aggregate'],
-      [13, 'equal-time-page'],
-      [14, 'discovery-u64'],
-      [15, 'confirmed-a'],
+      [TYPE_TOPIC_POST, 'typescript-origin'],
+      [TYPE_FORUM_VIEW, 'view-large-aggregate'],
+      [TYPE_FORUM_TOPIC_PAGE, 'equal-time-page'],
+      [TYPE_FORUM_DISCOVERY_PAGE, 'discovery-u64'],
+      [TYPE_FORUM_OPERATION_STATUS, 'confirmed-a'],
     ] as const) {
       const p = payloadOf(id)
+      // raw-cbor-key: field 0 is network in every forum type this loop covers
       p.set(0, network)
       add(`network-${type}-${label}`, type, p, false, 'schema@8.2')
     }
   }
+  // raw-cbor-key: schema-version list, not a map entry
   for (const schema of [2, 3])
     add(
       `min-reader-${schema}-one`,
-      9,
+      TYPE_TOPIC_POST,
       payloadOf('typescript-origin'),
       false,
       'unsupported@7',
@@ -126,7 +140,7 @@ export function buildForumCorpus() {
     )
   add(
     'per-type-schema-one-reject',
-    9,
+    TYPE_TOPIC_POST,
     payloadOf('typescript-origin'),
     false,
     'unsupported@7',
@@ -136,7 +150,7 @@ export function buildForumCorpus() {
   )
   add(
     'per-type-schema-one-retain',
-    9,
+    TYPE_TOPIC_POST,
     payloadOf('typescript-origin'),
     true,
     undefined,
@@ -147,7 +161,7 @@ export function buildForumCorpus() {
   )
   add(
     'reader-one-reject',
-    9,
+    TYPE_TOPIC_POST,
     payloadOf('typescript-origin'),
     false,
     'unsupported@7',
@@ -157,7 +171,7 @@ export function buildForumCorpus() {
   )
   add(
     'reader-one-retain',
-    9,
+    TYPE_TOPIC_POST,
     payloadOf('typescript-origin'),
     true,
     undefined,
@@ -168,7 +182,7 @@ export function buildForumCorpus() {
   )
   add(
     'required-child-per-type-one',
-    12,
+    TYPE_FORUM_VIEW,
     payloadOf('view-large-aggregate'),
     false,
     'unsupported@7',
@@ -178,21 +192,25 @@ export function buildForumCorpus() {
   )
   add(
     'opaque-schema-one-cbor',
-    9,
+    TYPE_TOPIC_POST,
     payloadOf('typescript-origin'),
     true,
     undefined,
     1,
     1,
   )
+  // raw-cbor-key: schema-version list, not a map entry
   for (const schema of [1, 2]) {
     const p = payloadOf('view-large-aggregate'),
-      agg = new Map(p.get(8) as Map<number, Encodable>)
+      agg = new Map(
+        p.get(FORUM_SINGLE_VIEW.aggregate) as Map<number, Encodable>,
+      )
+    // raw-cbor-key: key 2 is undeclared in the closed forum aggregate
     agg.set(2, true)
-    p.set(8, agg)
+    p.set(FORUM_SINGLE_VIEW.aggregate, agg)
     add(
       `closed-aggregate-schema-${schema}`,
-      12,
+      TYPE_FORUM_VIEW,
       p,
       false,
       'schema@8.2',
@@ -200,50 +218,66 @@ export function buildForumCorpus() {
       1,
     )
   }
+  // raw-cbor-key: byte-length list, not a map entry
   for (const length of [31, 33]) {
     const p = payloadOf('view-large-aggregate')
     p.set(
-      8,
+      FORUM_SINGLE_VIEW.aggregate,
       new Map<number, Encodable>([
-        [0, false],
-        [1, new Uint8Array(length)],
+        [FORUM_AGGREGATE.negative, false],
+        [FORUM_AGGREGATE.magnitude, new Uint8Array(length)],
       ]),
     )
-    add(`aggregate-size-${length}`, 12, p, false, 'schema@8.2')
+    add(`aggregate-size-${length}`, TYPE_FORUM_VIEW, p, false, 'schema@8.2')
   }
   const max = payloadOf('view-large-aggregate')
   max.set(
-    8,
+    FORUM_SINGLE_VIEW.aggregate,
     new Map<number, Encodable>([
-      [0, true],
-      [1, new Uint8Array(32).fill(255)],
+      [FORUM_AGGREGATE.negative, true],
+      [FORUM_AGGREGATE.magnitude, new Uint8Array(32).fill(255)],
     ]),
   )
-  add('aggregate-negative-max', 12, max, true)
+  add('aggregate-negative-max', TYPE_FORUM_VIEW, max, true)
   const sign = payloadOf('view-large-aggregate')
   sign.set(
-    8,
+    FORUM_SINGLE_VIEW.aggregate,
     new Map<number, Encodable>([
-      [0, 1],
-      [1, new Uint8Array(32).fill(1)],
+      [FORUM_AGGREGATE.negative, 1],
+      [FORUM_AGGREGATE.magnitude, new Uint8Array(32).fill(1)],
     ]),
   )
-  add('aggregate-nonboolean', 12, sign, false, 'schema@8.2')
-  for (const type of [13, 14]) {
-    const p = payloadOf(type === 13 ? 'equal-time-page' : 'discovery-u64')
-    p.set(type === 13 ? 4 : 2, [])
-    p.set(type === 13 ? 5 : 3, fromHex(proposal.cursors[type - 13].expected))
+  add('aggregate-nonboolean', TYPE_FORUM_VIEW, sign, false, 'schema@8.2')
+  for (const type of [TYPE_FORUM_TOPIC_PAGE, TYPE_FORUM_DISCOVERY_PAGE]) {
+    const p = payloadOf(
+      type === TYPE_FORUM_TOPIC_PAGE ? 'equal-time-page' : 'discovery-u64',
+    )
+    p.set(
+      type === TYPE_FORUM_TOPIC_PAGE
+        ? FORUM_TOPIC_PAGE.rows
+        : FORUM_DISCOVERY_PAGE.entries,
+      [],
+    )
+    p.set(
+      type === TYPE_FORUM_TOPIC_PAGE
+        ? FORUM_TOPIC_PAGE.nextCursor
+        : FORUM_DISCOVERY_PAGE.nextCursor,
+      fromHex(proposal.cursors[type - TYPE_FORUM_TOPIC_PAGE].expected),
+    )
     add(`empty-next-${type}`, type, p, false, 'semantic@9')
   }
   // Field-0 grammar must apply inside a required child even when the parent is valid.
   const child = payloadOf('typescript-origin')
-  child.set(0, 'UPPER')
+  child.set(TOPIC_POST.network, 'UPPER')
   const view = payloadOf('view-large-aggregate')
   view.set(
-    1,
-    encodeFrame({ typeId: 9, schemaVersion: 2, minReaderVersion: 2 }, child),
+    FORUM_SINGLE_VIEW.postFrame,
+    encodeFrame(
+      { typeId: TYPE_TOPIC_POST, schemaVersion: 2, minReaderVersion: 2 },
+      child,
+    ),
   )
-  add('nested-network-grammar', 12, view, false, 'schema@8.2')
+  add('nested-network-grammar', TYPE_FORUM_VIEW, view, false, 'schema@8.2')
   return {
     format: 'active-forum-content-read-v1',
     chainFacts: proposal.chainFacts,
@@ -256,11 +290,11 @@ export function buildForumCorpus() {
 /** Rewraps one exact nested body for targeted boundary probes. */
 export function contentPayload(body: FrankValue): Map<number, Encodable> {
   const p = payloadOf('typescript-origin')
-  p.set(3, encodeCanonical(body))
+  p.set(TOPIC_POST.body, encodeCanonical(body))
   return p
 }
 export function baseContent(): Map<bigint, FrankValue> {
   return decodeCanonical(
-    payloadOf('typescript-origin').get(3) as Uint8Array,
+    payloadOf('typescript-origin').get(TOPIC_POST.body) as Uint8Array,
   ) as Map<bigint, FrankValue>
 }

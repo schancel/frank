@@ -1,6 +1,9 @@
 import { decodeCanonical, encodeCanonical, type Encodable } from './cbor'
 import {
+  ACCOUNT_REF,
+  DM_CRYPTO_CONTEXT_V1,
   ENCRYPTION_SUITE_DM_AUTH_XCHACHA,
+  KEY_TYPE,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
 } from './constants'
 import type { AccountRef } from './types'
@@ -42,12 +45,15 @@ function account(value: AccountRef, name: string, secpOnly = false): Encodable {
   ) {
     throw new TypeError(`${name} must be an account reference`)
   }
-  if (secpOnly && (value.keyType !== 1 || !isCompressedPoint(value.keyBytes))) {
+  if (
+    secpOnly &&
+    (value.keyType !== KEY_TYPE.secp256k1 || !isCompressedPoint(value.keyBytes))
+  ) {
     throw new RangeError(`${name} must be a compressed secp256k1 account`)
   }
   return new Map<number, Encodable>([
-    [0, value.keyType],
-    [1, Uint8Array.from(value.keyBytes)],
+    [ACCOUNT_REF.keyType, value.keyType],
+    [ACCOUNT_REF.keyBytes, Uint8Array.from(value.keyBytes)],
   ])
 }
 
@@ -74,22 +80,43 @@ export function encodeDirectMessageCryptoContext(
   }
   return encodeCanonical(
     new Map<number, Encodable>([
-      [0, DM_CRYPTO_CONTEXT_DOMAIN],
-      [1, input.network],
-      [2, account(input.sender, 'sender')],
-      [3, account(input.recipient, 'recipient')],
-      [4, exact(input.senderDirectoryHash, 32, 'senderDirectoryHash')],
-      [5, exact(input.recipientDirectoryHash, 32, 'recipientDirectoryHash')],
-      [6, account(input.senderMessageKey, 'senderMessageKey', true)],
-      [7, account(input.recipientMessageKey, 'recipientMessageKey', true)],
-      [8, account(input.stampKey, 'stampKey', true)],
-      [9, point(input.ephemeralPoint, 'ephemeralPoint')],
-      [10, point(input.sharedPoint, 'sharedPoint')],
-      [11, proof(input.dleqProof)],
-      [12, ENCRYPTION_SUITE_DM_AUTH_XCHACHA],
-      [13, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD],
-      [14, DM_CRYPTO_SCHEMA_VERSION],
-      [15, DM_CRYPTO_MIN_READER_VERSION],
+      [DM_CRYPTO_CONTEXT_V1.domain, DM_CRYPTO_CONTEXT_DOMAIN],
+      [DM_CRYPTO_CONTEXT_V1.network, input.network],
+      [DM_CRYPTO_CONTEXT_V1.sender, account(input.sender, 'sender')],
+      [DM_CRYPTO_CONTEXT_V1.recipient, account(input.recipient, 'recipient')],
+      [
+        DM_CRYPTO_CONTEXT_V1.senderStatementHash,
+        exact(input.senderDirectoryHash, 32, 'senderDirectoryHash'),
+      ],
+      [
+        DM_CRYPTO_CONTEXT_V1.recipientStatementHash,
+        exact(input.recipientDirectoryHash, 32, 'recipientDirectoryHash'),
+      ],
+      [
+        DM_CRYPTO_CONTEXT_V1.senderMessageKey,
+        account(input.senderMessageKey, 'senderMessageKey', true),
+      ],
+      [
+        DM_CRYPTO_CONTEXT_V1.recipientMessageKey,
+        account(input.recipientMessageKey, 'recipientMessageKey', true),
+      ],
+      [
+        DM_CRYPTO_CONTEXT_V1.recipientStampKey,
+        account(input.stampKey, 'stampKey', true),
+      ],
+      [
+        DM_CRYPTO_CONTEXT_V1.ephemeralPoint,
+        point(input.ephemeralPoint, 'ephemeralPoint'),
+      ],
+      [
+        DM_CRYPTO_CONTEXT_V1.sharedPoint,
+        point(input.sharedPoint, 'sharedPoint'),
+      ],
+      [DM_CRYPTO_CONTEXT_V1.dleqProof, proof(input.dleqProof)],
+      [DM_CRYPTO_CONTEXT_V1.suite, ENCRYPTION_SUITE_DM_AUTH_XCHACHA],
+      [DM_CRYPTO_CONTEXT_V1.objectType, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD],
+      [DM_CRYPTO_CONTEXT_V1.schemaVersion, DM_CRYPTO_SCHEMA_VERSION],
+      [DM_CRYPTO_CONTEXT_V1.minReaderVersion, DM_CRYPTO_MIN_READER_VERSION],
     ]),
   )
 }
@@ -105,43 +132,75 @@ export function decodeDirectMessageCryptoContext(
   if (!(value instanceof Map)) {
     throw new TypeError('context must be a canonical CBOR map')
   }
-  const domain = value.get(0n)
+  const K = DM_CRYPTO_CONTEXT_V1
+  const get = (key: number): unknown => value.get(BigInt(key))
+  const domain = get(K.domain)
   if (domain !== DM_CRYPTO_CONTEXT_DOMAIN) {
     throw new RangeError('unexpected crypto context domain')
   }
-  const network = value.get(1n)
+  const network = get(K.network)
   if (typeof network !== 'string' || network.length === 0) {
     throw new TypeError('network must be a non-empty string')
   }
-  const parseAccount = (v: unknown, name: string, secpOnly = false): AccountRef => {
-    if (!(v instanceof Map)) throw new TypeError(`${name} must be an account map`)
-    const rawKeyType = v.get(0n)
-    const rawKeyBytes = v.get(1n)
-    if (typeof rawKeyType !== 'bigint' || !(rawKeyBytes instanceof Uint8Array)) {
+  const parseAccount = (
+    v: unknown,
+    name: string,
+    secpOnly = false,
+  ): AccountRef => {
+    if (!(v instanceof Map))
+      throw new TypeError(`${name} must be an account map`)
+    const rawKeyType = v.get(BigInt(ACCOUNT_REF.keyType))
+    const rawKeyBytes = v.get(BigInt(ACCOUNT_REF.keyBytes))
+    if (
+      typeof rawKeyType !== 'bigint' ||
+      !(rawKeyBytes instanceof Uint8Array)
+    ) {
       throw new TypeError(`${name} account invalid`)
     }
     const keyType = Number(rawKeyType)
     const keyBytes = Uint8Array.from(rawKeyBytes)
-    if (secpOnly && (keyType !== 1 || !isCompressedPoint(keyBytes))) {
+    if (
+      secpOnly &&
+      (keyType !== KEY_TYPE.secp256k1 || !isCompressedPoint(keyBytes))
+    ) {
       throw new RangeError(`${name} must be a compressed secp256k1 account`)
     }
     return { keyType, keyBytes }
   }
-  const sender = parseAccount(value.get(2n), 'sender')
-  const recipient = parseAccount(value.get(3n), 'recipient')
-  const senderDirectoryHash = exact(value.get(4n) as Uint8Array, 32, 'senderDirectoryHash')
-  const recipientDirectoryHash = exact(value.get(5n) as Uint8Array, 32, 'recipientDirectoryHash')
-  const senderMessageKey = parseAccount(value.get(6n), 'senderMessageKey', true)
-  const recipientMessageKey = parseAccount(value.get(7n), 'recipientMessageKey', true)
-  const stampKey = parseAccount(value.get(8n), 'stampKey', true)
-  const ephemeralPoint = point(value.get(9n) as Uint8Array, 'ephemeralPoint')
-  const sharedPoint = point(value.get(10n) as Uint8Array, 'sharedPoint')
-  const dleqProof = proof(value.get(11n) as Uint8Array)
+  const sender = parseAccount(get(K.sender), 'sender')
+  const recipient = parseAccount(get(K.recipient), 'recipient')
+  const senderDirectoryHash = exact(
+    get(K.senderStatementHash) as Uint8Array,
+    32,
+    'senderDirectoryHash',
+  )
+  const recipientDirectoryHash = exact(
+    get(K.recipientStatementHash) as Uint8Array,
+    32,
+    'recipientDirectoryHash',
+  )
+  const senderMessageKey = parseAccount(
+    get(K.senderMessageKey),
+    'senderMessageKey',
+    true,
+  )
+  const recipientMessageKey = parseAccount(
+    get(K.recipientMessageKey),
+    'recipientMessageKey',
+    true,
+  )
+  const stampKey = parseAccount(get(K.recipientStampKey), 'stampKey', true)
+  const ephemeralPoint = point(
+    get(K.ephemeralPoint) as Uint8Array,
+    'ephemeralPoint',
+  )
+  const sharedPoint = point(get(K.sharedPoint) as Uint8Array, 'sharedPoint')
+  const dleqProof = proof(get(K.dleqProof) as Uint8Array)
 
-  const suite = value.get(12n)
-  const typePayload = value.get(13n)
-  const schemaVer = value.get(14n)
-  const minReaderVer = value.get(15n)
+  const suite = get(K.suite)
+  const typePayload = get(K.objectType)
+  const schemaVer = get(K.schemaVersion)
+  const minReaderVer = get(K.minReaderVersion)
 
   if (
     suite !== BigInt(ENCRYPTION_SUITE_DM_AUTH_XCHACHA) ||

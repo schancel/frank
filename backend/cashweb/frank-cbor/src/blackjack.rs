@@ -1,4 +1,8 @@
 //! Pure typed blackjack writer/projection. No game, fairness or payment authority.
+use crate::message_fields::{
+    blackjack_action, blackjack_hand_action, blackjack_hand_item, blackjack_hand_v3_action,
+    blackjack_hand_v3_item, blackjack_item, blackjack_outcome, blackjack_role,
+};
 use crate::message_types::TYPE_BLACKJACK_MESSAGE_ITEM;
 use crate::{
     cbor_map, default_context, encode_frame, validate_frame, BlackjackAction, BlackjackFields,
@@ -73,14 +77,30 @@ fn cards(value: &[u32]) -> CborValue {
             .collect(),
     )
 }
+fn outcome_code(outcome: &BlackjackOutcome) -> u32 {
+    match outcome {
+        BlackjackOutcome::PlayerWin => blackjack_outcome::PLAYER_WIN,
+        BlackjackOutcome::DealerWin => blackjack_outcome::DEALER_WIN,
+        BlackjackOutcome::Push => blackjack_outcome::PUSH,
+        BlackjackOutcome::PlayerBlackjack => blackjack_outcome::PLAYER_BLACKJACK,
+    }
+}
+fn int(value: u32) -> CborValue {
+    CborValue::Int(i128::from(value))
+}
 /// Deterministically encode a closed input through the same active typed validator.
 pub fn encode_blackjack_item(item: &BlackjackItem) -> Result<Vec<u8>, Error> {
+    use blackjack_action as A;
+    use blackjack_item as K;
     use BlackjackAction::*;
-    let mut fields = vec![(0, CborValue::Text(item.game_id.clone()))];
+    let mut fields = vec![(K::GAME_ID, CborValue::Text(item.game_id.clone()))];
     let action = match &item.action {
         Bet { wager_tx_hash } => {
-            fields.push((2, CborValue::Bytes(hash(wager_tx_hash, true)?)));
-            0
+            fields.push((
+                K::WAGER_TX_HASH,
+                CborValue::Bytes(hash(wager_tx_hash, true)?),
+            ));
+            A::BET
         }
         Deal {
             server_seed_hash,
@@ -88,45 +108,45 @@ pub fn encode_blackjack_item(item: &BlackjackItem) -> Result<Vec<u8>, Error> {
             dealer_up_card,
         } => {
             fields.extend([
-                (4, CborValue::Bytes(hash(server_seed_hash, false)?)),
-                (5, cards(player_cards)),
-                (6, CborValue::Int(i128::from(*dealer_up_card))),
+                (
+                    K::SERVER_SEED_HASH,
+                    CborValue::Bytes(hash(server_seed_hash, false)?),
+                ),
+                (K::PLAYER_CARDS, cards(player_cards)),
+                (K::DEALER_UP_CARD, int(*dealer_up_card)),
             ]);
-            1
+            A::DEAL
         }
-        HitRequest => 2,
+        HitRequest => A::HIT,
         HitResponse { player_cards } => {
-            fields.push((5, cards(player_cards)));
-            2
+            fields.push((K::PLAYER_CARDS, cards(player_cards)));
+            A::HIT
         }
-        Stand => 3,
+        Stand => A::STAND,
         DoubleRequest {
             double_wager_tx_hash,
         } => {
-            fields.push((3, CborValue::Bytes(hash(double_wager_tx_hash, true)?)));
-            4
+            fields.push((
+                K::DOUBLE_WAGER_TX_HASH,
+                CborValue::Bytes(hash(double_wager_tx_hash, true)?),
+            ));
+            A::DOUBLE
         }
         DoubleResponse { player_cards } => {
-            fields.push((5, cards(player_cards)));
-            4
+            fields.push((K::PLAYER_CARDS, cards(player_cards)));
+            A::DOUBLE
         }
         Reveal {
             dealer_cards,
             server_seed,
             outcome,
         } => {
-            let n = match outcome {
-                BlackjackOutcome::PlayerWin => 0,
-                BlackjackOutcome::DealerWin => 1,
-                BlackjackOutcome::Push => 2,
-                BlackjackOutcome::PlayerBlackjack => 3,
-            };
             fields.extend([
-                (7, cards(dealer_cards)),
-                (8, CborValue::Text(server_seed.clone())),
-                (9, CborValue::Int(n)),
+                (K::DEALER_CARDS, cards(dealer_cards)),
+                (K::SERVER_SEED, CborValue::Text(server_seed.clone())),
+                (K::OUTCOME, int(outcome_code(outcome))),
             ]);
-            5
+            A::REVEAL
         }
         Welcome {
             min_wager_wei,
@@ -135,19 +155,19 @@ pub fn encode_blackjack_item(item: &BlackjackItem) -> Result<Vec<u8>, Error> {
             rules,
         } => {
             fields.extend([
-                (10, CborValue::Bytes(quantity(min_wager_wei)?)),
-                (11, CborValue::Bytes(quantity(max_wager_wei)?)),
+                (K::MIN_WAGER_WEI, CborValue::Bytes(quantity(min_wager_wei)?)),
+                (K::MAX_WAGER_WEI, CborValue::Bytes(quantity(max_wager_wei)?)),
             ]);
             if let Some(fee) = fee_hint_wei {
-                fields.push((12, CborValue::Bytes(quantity(fee)?)));
+                fields.push((K::FEE_HINT_WEI, CborValue::Bytes(quantity(fee)?)));
             }
             if let Some(rules) = rules {
-                fields.push((13, CborValue::Text(rules.clone())));
+                fields.push((K::RULES, CborValue::Text(rules.clone())));
             }
-            6
+            A::WELCOME
         }
     };
-    fields.push((1, CborValue::Int(action)));
+    fields.push((K::ACTION, int(action)));
     let payload = cbor_map(fields);
     let bytes = encode_frame(
         EnvelopeFields {
@@ -269,8 +289,10 @@ pub struct BlackjackHandProjection {
 }
 /// Deterministic writer for one hand item; the typed validator then enforces every wire rule.
 pub fn encode_blackjack_hand_item(item: &BlackjackHandItem) -> Result<Vec<u8>, Error> {
+    use blackjack_hand_action as A;
+    use blackjack_hand_item as K;
     use BlackjackHandAction::*;
-    let mut fields = vec![(0, CborValue::Text(item.game_id.clone()))];
+    let mut fields = vec![(K::GAME_ID, CborValue::Text(item.game_id.clone()))];
     // Wire action codes 16..25; challenge role 0 is the dealer, 1 the player.
     let action = match &item.action {
         ChallengeDealer {
@@ -278,71 +300,65 @@ pub fn encode_blackjack_hand_item(item: &BlackjackHandItem) -> Result<Vec<u8>, E
             commitment,
         } => {
             fields.extend([
-                (2, CborValue::Int(0)),
-                (3, CborValue::Bytes(quantity(max_bet_wei)?)),
-                (4, CborValue::Bytes(hash(commitment, false)?)),
+                (K::ROLE, int(blackjack_role::DEALER)),
+                (K::MAX_BET_WEI, CborValue::Bytes(quantity(max_bet_wei)?)),
+                (K::COMMITMENT, CborValue::Bytes(hash(commitment, false)?)),
             ]);
-            16
+            A::CHALLENGE
         }
         ChallengePlayer { max_bet_wei } => {
             fields.extend([
-                (2, CborValue::Int(1)),
-                (3, CborValue::Bytes(quantity(max_bet_wei)?)),
+                (K::ROLE, int(blackjack_role::PLAYER)),
+                (K::MAX_BET_WEI, CborValue::Bytes(quantity(max_bet_wei)?)),
             ]);
-            16
+            A::CHALLENGE
         }
         Accept {
             max_bet_wei,
             commitment,
         } => {
             fields.extend([
-                (3, CborValue::Bytes(quantity(max_bet_wei)?)),
-                (4, CborValue::Bytes(hash(commitment, false)?)),
+                (K::MAX_BET_WEI, CborValue::Bytes(quantity(max_bet_wei)?)),
+                (K::COMMITMENT, CborValue::Bytes(hash(commitment, false)?)),
             ]);
-            17
+            A::ACCEPT
         }
-        Bet => 18,
+        Bet => A::BET,
         Deal {
             player_cards,
             dealer_up_card,
         } => {
             fields.extend([
-                (5, cards(player_cards)),
-                (6, CborValue::Int(i128::from(*dealer_up_card))),
+                (K::PLAYER_CARDS, cards(player_cards)),
+                (K::DEALER_UP_CARD, int(*dealer_up_card)),
             ]);
-            19
+            A::DEAL
         }
-        Hit => 20,
-        Stand => 21,
-        Double => 22,
+        Hit => A::HIT,
+        Stand => A::STAND,
+        Double => A::DOUBLE,
         Card { player_cards } => {
-            fields.push((5, cards(player_cards)));
-            23
+            fields.push((K::PLAYER_CARDS, cards(player_cards)));
+            A::CARD
         }
         Reveal {
             dealer_cards,
             seed,
             outcome,
         } => {
-            let n = match outcome {
-                BlackjackOutcome::PlayerWin => 0,
-                BlackjackOutcome::DealerWin => 1,
-                BlackjackOutcome::Push => 2,
-                BlackjackOutcome::PlayerBlackjack => 3,
-            };
             fields.extend([
-                (7, cards(dealer_cards)),
-                (8, CborValue::Text(seed.clone())),
-                (9, CborValue::Int(n)),
+                (K::DEALER_CARDS, cards(dealer_cards)),
+                (K::SEED, CborValue::Text(seed.clone())),
+                (K::OUTCOME, int(outcome_code(outcome))),
             ]);
-            24
+            A::REVEAL
         }
         Refund { reference } => {
-            fields.push((10, CborValue::Bytes(hash(reference, false)?)));
-            25
+            fields.push((K::REF, CborValue::Bytes(hash(reference, false)?)));
+            A::REFUND
         }
     };
-    fields.push((1, CborValue::Int(action)));
+    fields.push((K::ACTION, int(action)));
     let payload = cbor_map(fields);
     let bytes = encode_frame(
         EnvelopeFields {
@@ -440,11 +456,13 @@ pub struct BlackjackHandV3Projection {
 /// Deterministic writer for one schema-3 hand item; the typed validator then enforces every
 /// wire rule, including the range of `seq`.
 pub fn encode_blackjack_hand_v3_item(item: &BlackjackHandV3Item) -> Result<Vec<u8>, Error> {
+    use blackjack_hand_v3_action as A;
+    use blackjack_hand_v3_item as K;
     use BlackjackHandV3Action::*;
     let bytes32 = |value: &str| Ok::<_, Error>(CborValue::Bytes(hash(value, false)?));
     let mut fields = vec![
-        (0, CborValue::Text(item.game_id.clone())),
-        (11, CborValue::Int(i128::from(item.seq))),
+        (K::GAME_ID, CborValue::Text(item.game_id.clone())),
+        (K::SEQ, int(item.seq)),
     ];
     // Wire action codes 32..41; challenge role 0 is the dealer, 1 the player.
     let action = match &item.action {
@@ -453,18 +471,18 @@ pub fn encode_blackjack_hand_v3_item(item: &BlackjackHandV3Item) -> Result<Vec<u
             commitment,
         } => {
             fields.extend([
-                (2, CborValue::Int(0)),
-                (3, CborValue::Bytes(quantity(max_bet_wei)?)),
-                (4, bytes32(commitment)?),
+                (K::ROLE, int(blackjack_role::DEALER)),
+                (K::MAX_BET_WEI, CborValue::Bytes(quantity(max_bet_wei)?)),
+                (K::COMMITMENT, bytes32(commitment)?),
             ]);
-            32
+            A::CHALLENGE
         }
         ChallengePlayer { max_bet_wei } => {
             fields.extend([
-                (2, CborValue::Int(1)),
-                (3, CborValue::Bytes(quantity(max_bet_wei)?)),
+                (K::ROLE, int(blackjack_role::PLAYER)),
+                (K::MAX_BET_WEI, CborValue::Bytes(quantity(max_bet_wei)?)),
             ]);
-            32
+            A::CHALLENGE
         }
         Accept {
             max_bet_wei,
@@ -472,33 +490,36 @@ pub fn encode_blackjack_hand_v3_item(item: &BlackjackHandV3Item) -> Result<Vec<u
             prev,
         } => {
             fields.extend([
-                (3, CborValue::Bytes(quantity(max_bet_wei)?)),
-                (4, bytes32(commitment)?),
-                (12, bytes32(prev)?),
+                (K::MAX_BET_WEI, CborValue::Bytes(quantity(max_bet_wei)?)),
+                (K::COMMITMENT, bytes32(commitment)?),
+                (K::PREV, bytes32(prev)?),
             ]);
-            33
+            A::ACCEPT
         }
         Bet { commitment, prev } => {
-            fields.extend([(4, bytes32(commitment)?), (12, bytes32(prev)?)]);
-            34
+            fields.extend([
+                (K::COMMITMENT, bytes32(commitment)?),
+                (K::PREV, bytes32(prev)?),
+            ]);
+            A::BET
         }
         Move { kind, link, prev } => {
-            fields.extend([(12, bytes32(prev)?), (13, bytes32(link)?)]);
+            fields.extend([(K::PREV, bytes32(prev)?), (K::LINK, bytes32(link)?)]);
             match kind {
-                BlackjackHandV3Move::Deal => 35,
-                BlackjackHandV3Move::Hit => 36,
-                BlackjackHandV3Move::Stand => 37,
-                BlackjackHandV3Move::Double => 38,
-                BlackjackHandV3Move::Card => 39,
-                BlackjackHandV3Move::Reveal => 40,
+                BlackjackHandV3Move::Deal => A::DEAL,
+                BlackjackHandV3Move::Hit => A::HIT,
+                BlackjackHandV3Move::Stand => A::STAND,
+                BlackjackHandV3Move::Double => A::DOUBLE,
+                BlackjackHandV3Move::Card => A::CARD,
+                BlackjackHandV3Move::Reveal => A::REVEAL,
             }
         }
         Refund { reference, prev } => {
-            fields.extend([(10, bytes32(reference)?), (12, bytes32(prev)?)]);
-            41
+            fields.extend([(K::REF, bytes32(reference)?), (K::PREV, bytes32(prev)?)]);
+            A::REFUND
         }
     };
-    fields.push((1, CborValue::Int(action)));
+    fields.push((K::ACTION, int(action)));
     let payload = cbor_map(fields);
     let bytes = encode_frame(
         EnvelopeFields {

@@ -187,6 +187,11 @@ export function deriveMonadStampChildPrivate(params: {
 }
 
 import {
+  ACCOUNT_REF,
+  DM_CRYPTO_CONTEXT_V1,
+  DM_CRYPTO_CONTEXT_V1_SHAPE,
+  ENCRYPTION_SUITE,
+  KEY_TYPE,
   validateFrame,
   defaultContext,
   decodeCanonical,
@@ -217,35 +222,42 @@ export function inspectCanonicalPreparedEnvelope(
     parsed.kind !== 'parsed' ||
     parsed.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
     parsed.typed.schemaVersion !== 2 ||
-    parsed.typed.suite !== 1
+    parsed.typed.suite !== ENCRYPTION_SUITE.dmAuthXchacha
   )
     throw new Error('canonical-stamp:payload')
   const fields = decodeCanonical(context)
-  if (!(fields instanceof Map) || fields.size !== 16)
+  if (
+    !(fields instanceof Map) ||
+    fields.size !== DM_CRYPTO_CONTEXT_V1_SHAPE.required.length
+  )
     throw new Error('canonical-stamp:context')
-  const account = (key: bigint): AccountRef => {
-    const value = fields.get(key)
+  const account = (key: number): AccountRef => {
+    const value = fields.get(BigInt(key))
+    const keyBytes =
+      value instanceof Map ? value.get(BigInt(ACCOUNT_REF.keyBytes)) : undefined
     if (
       !(value instanceof Map) ||
       value.size !== 2 ||
-      value.get(0n) !== 1n ||
-      !(value.get(1n) instanceof Uint8Array)
+      value.get(BigInt(ACCOUNT_REF.keyType)) !== BigInt(KEY_TYPE.secp256k1) ||
+      !(keyBytes instanceof Uint8Array)
     )
       throw new Error('canonical-stamp:role')
-    return { keyType: 1, keyBytes: new Uint8Array(value.get(1n) as Uint8Array) }
+    return { keyType: KEY_TYPE.secp256k1, keyBytes: new Uint8Array(keyBytes) }
   }
-  const bytes = (key: bigint): Uint8Array => {
-    const value = fields.get(key)
+  const bytes = (key: number): Uint8Array => {
+    const value = fields.get(BigInt(key))
     if (!(value instanceof Uint8Array) || value.length !== 32)
       throw new Error('canonical-stamp:T1')
     return new Uint8Array(value)
   }
+  const C = DM_CRYPTO_CONTEXT_V1
   const frame = parsed.typed,
-    senderT1 = bytes(4n),
-    recipientT1 = bytes(5n),
-    senderMessageKey = account(6n),
-    recipientMessageKey = account(7n),
-    stampKey = account(8n)
+    senderT1 = bytes(C.senderStatementHash),
+    recipientT1 = bytes(C.recipientStatementHash),
+    senderMessageKey = account(C.senderMessageKey),
+    recipientMessageKey = account(C.recipientMessageKey),
+    stampKey = account(C.recipientStampKey)
+
   const expected = encodeDirectMessageCryptoContext({
     network: frame.network,
     sender: frame.sender,

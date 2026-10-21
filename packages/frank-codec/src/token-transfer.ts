@@ -1,7 +1,11 @@
 // Encoding, decoding, and validation for Type 6 CBOR token transfers (docs/protocol/cbor).
 
 import { cborMap, decodeCanonical, encodeCanonical } from './cbor'
-import { TYPE_ENCRYPTED_MESSAGE_CONTENT } from './constants'
+import {
+  ENCRYPTED_MESSAGE_CONTENT,
+  TOKEN_TRANSFER,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+} from './constants'
 import { encodeFrame } from './frame'
 import { messageContentDigest } from './hash'
 import { tokenTransfer } from './schema'
@@ -19,14 +23,14 @@ export function encodeTokenTransferMap(
   checkTokenTransferSemantics(transfer, 'token-transfer')
 
   const entries: Array<[number, any]> = [
-    [1, transfer.chainNamespace],
-    [2, transfer.contractAddress],
-    [3, transfer.amount],
-    [4, transfer.decimals],
-    [5, transfer.symbol],
+    [TOKEN_TRANSFER.chainNamespace, transfer.chainNamespace],
+    [TOKEN_TRANSFER.contractAddress, transfer.contractAddress],
+    [TOKEN_TRANSFER.amount, transfer.amount],
+    [TOKEN_TRANSFER.decimals, transfer.decimals],
+    [TOKEN_TRANSFER.symbol, transfer.symbol],
   ]
   if (transfer.rawTxOrPermit !== undefined) {
-    entries.push([6, transfer.rawTxOrPermit])
+    entries.push([TOKEN_TRANSFER.rawTxOrPermit, transfer.rawTxOrPermit])
   }
   return cborMap(entries)
 }
@@ -58,17 +62,23 @@ export function encodeEncryptedMessageContent(
   const digest =
     fields.contentDigest ?? messageContentDigest(fields.revisionFrame)
   const entries: Array<[number, any]> = [
-    [0, fields.network],
-    [1, fields.messageId],
-    [2, fields.revisionFrame],
-    [3, digest],
-    [4, fields.conversationId],
+    [ENCRYPTED_MESSAGE_CONTENT.network, fields.network],
+    [ENCRYPTED_MESSAGE_CONTENT.messageId, fields.messageId],
+    [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, fields.revisionFrame],
+    [ENCRYPTED_MESSAGE_CONTENT.contentDigest, digest],
+    [ENCRYPTED_MESSAGE_CONTENT.conversationId, fields.conversationId],
   ]
   if (fields.conversationName !== undefined) {
-    entries.push([5, fields.conversationName])
+    entries.push([
+      ENCRYPTED_MESSAGE_CONTENT.conversationName,
+      fields.conversationName,
+    ])
   }
   if (fields.tokenTransfer !== undefined) {
-    entries.push([6, encodeTokenTransferMap(fields.tokenTransfer)])
+    entries.push([
+      ENCRYPTED_MESSAGE_CONTENT.tokenTransfer,
+      encodeTokenTransferMap(fields.tokenTransfer),
+    ])
   }
   const payload = encodeCanonical(cborMap(entries))
   return encodeFrame(

@@ -1,6 +1,10 @@
 //! Canonical Forum runtime: one lazy store owner and one serialized snapshot/publication boundary.
+use frank_cbor::message_fields::{
+    forum_aggregate, forum_discovery_entry, forum_discovery_page, forum_operation_state,
+    forum_operation_status, forum_single_view, forum_topic_page, forum_vote_direction,
+};
 use frank_cbor::message_types::{
-    TYPE_FORUM_DISCOVERY_PAGE, TYPE_FORUM_OPERATION_STATUS, TYPE_FORUM_TOPIC_PAGE,
+    TYPE_FORUM_DISCOVERY_PAGE, TYPE_FORUM_OPERATION_STATUS, TYPE_FORUM_TOPIC_PAGE, TYPE_FORUM_VIEW,
 };
 use std::{
     path::PathBuf,
@@ -294,74 +298,103 @@ impl State {
         if author_post.post_frame != post.frame {
             return Err(ForumError::Unavailable);
         }
+        use forum_single_view as V;
         encode_forum_read_frame(
-            12,
+            TYPE_FORUM_VIEW,
             &cbor_map(vec![
-                (0, CborValue::Text(self.store.network.clone())),
-                (1, CborValue::Bytes(post.frame.clone())),
+                (V::NETWORK, CborValue::Text(self.store.network.clone())),
+                (V::POST_FRAME, CborValue::Bytes(post.frame.clone())),
                 (
-                    2,
+                    V::AUTHOR,
                     CborValue::Bytes(author.checked.decoded.sender.0.to_vec()),
                 ),
-                (3, CborValue::Bytes(author.event.burn_tx().to_vec())),
                 (
-                    4,
+                    V::AUTHOR_BURN_TX,
+                    CborValue::Bytes(author.event.burn_tx().to_vec()),
+                ),
+                (
+                    V::TRANSACTION_HASH,
                     CborValue::Bytes(author.checked.decoded.tx_hash.0.to_vec()),
                 ),
-                (5, time_value(post.visible.ok_or(ForumError::Unavailable)?)),
-                (6, CborValue::Int(block.into())),
-                (7, CborValue::Int(index.into())),
                 (
-                    8,
+                    V::FIRST_VISIBLE,
+                    time_value(post.visible.ok_or(ForumError::Unavailable)?),
+                ),
+                (V::BLOCK, CborValue::Int(block.into())),
+                (V::TRANSACTION_INDEX, CborValue::Int(index.into())),
+                (
+                    V::AGGREGATE,
                     cbor_map(vec![
-                        (0, CborValue::Bool(post.aggregate.negative)),
-                        (1, CborValue::Bytes(post.aggregate.magnitude.0.to_vec())),
+                        (
+                            forum_aggregate::NEGATIVE,
+                            CborValue::Bool(post.aggregate.negative),
+                        ),
+                        (
+                            forum_aggregate::MAGNITUDE,
+                            CborValue::Bytes(post.aggregate.magnitude.0.to_vec()),
+                        ),
                     ]),
                 ),
-                (9, CborValue::Int(revision.into())),
-                (10, CborValue::Bytes(epoch.to_vec())),
+                (V::REVISION, CborValue::Int(revision.into())),
+                (V::EPOCH, CborValue::Bytes(epoch.to_vec())),
             ]),
         )
         .map_err(|_| ForumError::Unavailable)
     }
 
     fn status(&self, op: &Observation, retained: bool) -> Result<Vec<u8>> {
+        use forum_operation_status as S;
         let mut fields = vec![
-            (0, CborValue::Text(self.store.network.clone())),
-            (1, CborValue::Bytes(op.frame().to_vec())),
-            (2, CborValue::Bytes(op.event.target_hash().to_vec())),
-            (3, CborValue::Bytes(op.checked.decoded.tx_hash.0.to_vec())),
-            (4, CborValue::Bytes(op.checked.decoded.sender.0.to_vec())),
+            (S::NETWORK, CborValue::Text(self.store.network.clone())),
+            (S::SUBMITTED_FRAME, CborValue::Bytes(op.frame().to_vec())),
             (
-                5,
-                CborValue::Int(if op.checked.direction == VoteDirection::Up {
-                    1
-                } else {
-                    0
-                }),
+                S::TARGET_HASH,
+                CborValue::Bytes(op.event.target_hash().to_vec()),
             ),
             (
-                6,
+                S::TRANSACTION_HASH,
+                CborValue::Bytes(op.checked.decoded.tx_hash.0.to_vec()),
+            ),
+            (
+                S::SENDER,
+                CborValue::Bytes(op.checked.decoded.sender.0.to_vec()),
+            ),
+            (
+                S::DIRECTION,
+                CborValue::Int(
+                    if op.checked.direction == VoteDirection::Up {
+                        forum_vote_direction::UP
+                    } else {
+                        forum_vote_direction::DOWN
+                    }
+                    .into(),
+                ),
+            ),
+            (
+                S::VALUE,
                 CborValue::Int(op.checked.decoded.value_wei.try_into().map_err(invalid)?),
             ),
             (
-                7,
-                CborValue::Int(if !retained {
-                    0
-                } else if op.confirmed.is_some() {
-                    2
-                } else {
-                    1
-                }),
+                S::STATE,
+                CborValue::Int(
+                    if !retained {
+                        forum_operation_state::UNKNOWN
+                    } else if op.confirmed.is_some() {
+                        forum_operation_state::CONFIRMED
+                    } else {
+                        forum_operation_state::PENDING
+                    }
+                    .into(),
+                ),
             ),
-            (10, CborValue::Int(self.revision.into())),
-            (11, CborValue::Bytes(self.epoch.to_vec())),
+            (S::REVISION, CborValue::Int(self.revision.into())),
+            (S::EPOCH, CborValue::Bytes(self.epoch.to_vec())),
         ];
         if retained {
             if let Some((block, index, _)) = op.confirmed {
                 fields.extend([
-                    (8, CborValue::Int(block.into())),
-                    (9, CborValue::Int(index.into())),
+                    (S::BLOCK, CborValue::Int(block.into())),
+                    (S::TRANSACTION_INDEX, CborValue::Int(index.into())),
                 ]);
             }
         }
@@ -491,19 +524,20 @@ impl State {
                     None
                 };
 
+                use forum_topic_page as P;
                 let mut fields = vec![
-                    (0, CborValue::Text(self.store.network.clone())),
-                    (1, CborValue::Text(topic)),
-                    (2, time_value(since)),
-                    (3, CborValue::Int(page_revision.into())),
-                    (4, CborValue::Array(rows)),
-                    (6, CborValue::Bytes(page_epoch)),
+                    (P::NETWORK, CborValue::Text(self.store.network.clone())),
+                    (P::TOPIC, CborValue::Text(topic)),
+                    (P::SINCE, time_value(since)),
+                    (P::REVISION, CborValue::Int(page_revision.into())),
+                    (P::ROWS, CborValue::Array(rows)),
+                    (P::EPOCH, CborValue::Bytes(page_epoch)),
                 ];
                 if let Some(next) = next {
-                    fields.push((5, CborValue::Bytes(next)));
+                    fields.push((P::NEXT_CURSOR, CborValue::Bytes(next)));
                 }
                 if let Some(request) = raw {
-                    fields.push((7, CborValue::Bytes(request.to_vec())));
+                    fields.push((P::REQUEST_CURSOR, CborValue::Bytes(request.to_vec())));
                 }
                 encode_forum_read_frame(TYPE_FORUM_TOPIC_PAGE, &cbor_map(fields))
                     .map_err(|_| ForumError::RowTooLarge)
@@ -567,9 +601,9 @@ impl State {
                         topic: topic.clone(),
                     });
                     rows.push(cbor_map(vec![
-                        (0, CborValue::Text(topic)),
-                        (1, CborValue::Int(count.into())),
-                        (2, time_value(last)),
+                        (forum_discovery_entry::TOPIC, CborValue::Text(topic)),
+                        (forum_discovery_entry::COUNT, CborValue::Int(count.into())),
+                        (forum_discovery_entry::LAST_ACTIVITY, time_value(last)),
                     ]));
                 }
 
@@ -591,17 +625,18 @@ impl State {
                     None
                 };
 
+                use forum_discovery_page as P;
                 let mut fields = vec![
-                    (0, CborValue::Text(self.store.network.clone())),
-                    (1, CborValue::Int(page_revision.into())),
-                    (2, CborValue::Array(rows)),
-                    (4, CborValue::Bytes(page_epoch)),
+                    (P::NETWORK, CborValue::Text(self.store.network.clone())),
+                    (P::REVISION, CborValue::Int(page_revision.into())),
+                    (P::ENTRIES, CborValue::Array(rows)),
+                    (P::EPOCH, CborValue::Bytes(page_epoch)),
                 ];
                 if let Some(next) = next {
-                    fields.push((3, CborValue::Bytes(next)));
+                    fields.push((P::NEXT_CURSOR, CborValue::Bytes(next)));
                 }
                 if let Some(request) = raw {
-                    fields.push((5, CborValue::Bytes(request.to_vec())));
+                    fields.push((P::REQUEST_CURSOR, CborValue::Bytes(request.to_vec())));
                 }
                 encode_forum_read_frame(TYPE_FORUM_DISCOVERY_PAGE, &cbor_map(fields))
                     .map_err(|_| ForumError::RowTooLarge)

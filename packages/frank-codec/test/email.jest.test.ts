@@ -1,3 +1,4 @@
+import { EMAIL_MESSAGE_ITEM } from '../src/constants'
 import {
   FrankCodecError,
   defaultContext,
@@ -248,6 +249,7 @@ describe('Type 26: Email Message Item', () => {
           {
             filename: 'second',
             contentType: 'text/plain',
+            // raw-cbor-key: attachment bytes, not a map entry
             content: new Uint8Array([2, 3]),
           },
         ],
@@ -308,32 +310,32 @@ describe('Type 26: Email Message Item', () => {
     describe.each([
       {
         field: 'messageId',
-        wireKey: 0,
+        wireKey: EMAIL_MESSAGE_ITEM.messageId,
         set: (e: CanonicalEmailMessageItem, v: string) => {
           e.messageId = v
         },
         setRaw: (m: Map<number, unknown>, v: string) => {
-          m.set(0, v)
+          m.set(EMAIL_MESSAGE_ITEM.messageId, v)
         },
       },
       {
         field: 'inReplyTo',
-        wireKey: 7,
+        wireKey: EMAIL_MESSAGE_ITEM.inReplyTo,
         set: (e: CanonicalEmailMessageItem, v: string) => {
           e.inReplyTo = v
         },
         setRaw: (m: Map<number, unknown>, v: string) => {
-          m.set(7, v)
+          m.set(EMAIL_MESSAGE_ITEM.inReplyTo, v)
         },
       },
       {
         field: 'reference',
-        wireKey: 8,
+        wireKey: EMAIL_MESSAGE_ITEM.references,
         set: (e: CanonicalEmailMessageItem, v: string) => {
           e.references = ['<first@a.b>', v]
         },
         setRaw: (m: Map<number, unknown>, v: string) => {
-          m.set(8, ['<first@a.b>', v])
+          m.set(EMAIL_MESSAGE_ITEM.references, ['<first@a.b>', v])
         },
       },
     ])('RFC 5322 Message-ID grammar ($field)', ({ field, set, setRaw }) => {

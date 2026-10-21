@@ -15,6 +15,9 @@ import type { Encodable } from './cbor'
 import { encodeFrame } from './frame'
 import { contentHash, topicVoteCommitment } from './hash'
 import {
+  TOPIC_POST,
+  TOPIC_POST_SUBMISSION,
+  TOPIC_VOTE_SUBMISSION,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
@@ -136,12 +139,15 @@ export function encodeTopicPost(fields: TopicPostFields): Uint8Array {
   const topic = requireText(raw.topic, 'topic')
   const body = requireBytes(raw.body, 'body')
   const payload = new Map<number, Encodable>([
-    [0, network],
-    [1, topic],
-    [3, body],
+    [TOPIC_POST.network, network],
+    [TOPIC_POST.topic, topic],
+    [TOPIC_POST.body, body],
   ])
   if (raw.parentHash !== undefined)
-    payload.set(2, requireBytes(raw.parentHash, 'parentHash'))
+    payload.set(
+      TOPIC_POST.parentHash,
+      requireBytes(raw.parentHash, 'parentHash'),
+    )
   const frame = encodeFrame(
     { typeId: TYPE_TOPIC_POST, schemaVersion: 1, minReaderVersion: 1 },
     payload,
@@ -238,9 +244,9 @@ export function encodeTopicPostSubmission(
       minReaderVersion: 1,
     },
     new Map<number, Encodable>([
-      [0, network],
-      [1, post],
-      [2, tx],
+      [TOPIC_POST_SUBMISSION.network, network],
+      [TOPIC_POST_SUBMISSION.postFrame, post],
+      [TOPIC_POST_SUBMISSION.burnTx, tx],
     ]),
   )
   validated(frame, TYPE_TOPIC_POST_SUBMISSION)
@@ -264,9 +270,12 @@ export function encodeTopicVote(
       minReaderVersion: 1,
     },
     new Map<number, Encodable>([
-      [0, requireText(network, 'network')],
-      [1, requireBytes(targetHash, 'targetHash')],
-      [2, requireBytes(burnTx, 'burnTx')],
+      [TOPIC_VOTE_SUBMISSION.network, requireText(network, 'network')],
+      [
+        TOPIC_VOTE_SUBMISSION.targetHash,
+        requireBytes(targetHash, 'targetHash'),
+      ],
+      [TOPIC_VOTE_SUBMISSION.burnTx, requireBytes(burnTx, 'burnTx')],
     ]),
   )
   validated(frame, TYPE_TOPIC_VOTE_SUBMISSION)

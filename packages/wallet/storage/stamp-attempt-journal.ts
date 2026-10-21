@@ -12,6 +12,12 @@ import {
   paymentCommitment,
   TYPE_DIRECT_MESSAGE_DELIVERY,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  ACCOUNT_REF,
+  DM_CRYPTO_CONTEXT_DOMAIN,
+  DM_CRYPTO_CONTEXT_V1,
+  DM_CRYPTO_CONTEXT_V1_SHAPE,
+  ENCRYPTION_SUITE,
+  KEY_TYPE,
 } from '@frank/codec'
 import { hexlify, keccak256, Transaction, sha256, toUtf8Bytes } from 'ethers'
 import {
@@ -777,43 +783,51 @@ function assertPrepared(
     parsed.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
     parsed.typed.suite !== 1 ||
     parsed.typed.network !== prepared.network ||
-    parsed.typed.sender.keyType !== 1 ||
-    parsed.typed.recipient.keyType !== 1 ||
+    parsed.typed.sender.keyType !== KEY_TYPE.secp256k1 ||
+    parsed.typed.recipient.keyType !== KEY_TYPE.secp256k1 ||
     toHex(parsed.typed.sender.keyBytes) !== prepared.senderSubject ||
     toHex(parsed.typed.recipient.keyBytes) !== prepared.recipientSubject
   )
     canonicalFail('invalid')
   const context = decodeCanonical(prepared.context)
+  const C = DM_CRYPTO_CONTEXT_V1
+  const field = (key: number) =>
+    context instanceof Map ? context.get(BigInt(key)) : undefined
   if (
     !(context instanceof Map) ||
-    context.size !== 16 ||
-    context.get(0n) !== 'frank/dm-crypto-context/v1' ||
-    context.get(1n) !== prepared.network ||
-    context.get(12n) !== 1n ||
-    context.get(13n) !== BigInt(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD) ||
-    context.get(14n) !== 2n ||
-    context.get(15n) !== 2n
+    context.size !== DM_CRYPTO_CONTEXT_V1_SHAPE.required.length ||
+    field(C.domain) !== DM_CRYPTO_CONTEXT_DOMAIN ||
+    field(C.network) !== prepared.network ||
+    field(C.suite) !== BigInt(ENCRYPTION_SUITE.dmAuthXchacha) ||
+    field(C.objectType) !== BigInt(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD) ||
+    field(C.schemaVersion) !== 2n ||
+    field(C.minReaderVersion) !== 2n
   )
     canonicalFail('invalid')
   for (const [key, expected] of [
-    [2n, prepared.senderSubject],
-    [3n, prepared.recipientSubject],
+    [C.sender, prepared.senderSubject],
+    [C.recipient, prepared.recipientSubject],
   ] as const) {
-    const subject = context.get(key)
+    const subject = field(key)
+    const keyBytes =
+      subject instanceof Map
+        ? subject.get(BigInt(ACCOUNT_REF.keyBytes))
+        : undefined
     if (
       !(subject instanceof Map) ||
       subject.size !== 2 ||
-      subject.get(0n) !== 1n ||
-      !(subject.get(1n) instanceof Uint8Array) ||
-      toHex(subject.get(1n) as Uint8Array) !== expected
+      subject.get(BigInt(ACCOUNT_REF.keyType)) !== BigInt(KEY_TYPE.secp256k1) ||
+      !(keyBytes instanceof Uint8Array) ||
+      toHex(keyBytes) !== expected
     )
       canonicalFail('invalid')
   }
   for (const [key, expected] of [
-    [4n, prepared.senderT1],
-    [5n, prepared.recipientT1],
+    [C.senderStatementHash, prepared.senderT1],
+    [C.recipientStatementHash, prepared.recipientT1],
   ] as const) {
-    const t1 = context.get(key)
+    const t1 = field(key)
+
     if (!(t1 instanceof Uint8Array) || toHex(t1) !== expected)
       canonicalFail('invalid')
   }

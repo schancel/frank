@@ -2,6 +2,15 @@
 mod common;
 
 use common::{acct1, bytes_of, fr, int, unknown_item, NET, T3C_EPHEMERAL, T3C_PROOF, T3C_SHARED};
+use frank_cbor::message_fields::{
+    container_message_item, direct_message_delivery as dmd, encrypted_message_content as emc,
+    encryption_suite, message_content_revision as revision, recipient_encrypted_payload_v2 as rep2,
+    text_message_item,
+};
+use frank_cbor::message_types::{
+    TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT,
+    TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM,
+};
 use frank_cbor::{
     begin_direct_message_validation, cbor_map, default_context, encode_frame, parse_frame,
     CborValue, ChildFrame, DirectMessageValidatedContent, EnvelopeFields, Error, FramePayload,
@@ -21,23 +30,32 @@ fn frame(kind: u32, payload: &CborValue, schema: u32, min: u32) -> Vec<u8> {
 }
 fn encrypted_with(suite: i128, schema: u32, min: u32) -> Vec<u8> {
     frame(
-        5,
+        TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
         &cbor_map(vec![
-            (0, CborValue::Text(NET.into())),
-            (1, acct1(9)),
-            (2, acct1(3)),
-            (3, int(suite)),
-            (4, CborValue::Bytes(vec![0xa0])),
-            (5, CborValue::Bytes(hex::decode(T3C_EPHEMERAL).unwrap())),
-            (6, CborValue::Bytes(hex::decode(T3C_SHARED).unwrap())),
-            (7, CborValue::Bytes(hex::decode(T3C_PROOF).unwrap())),
+            (rep2::NETWORK, CborValue::Text(NET.into())),
+            (rep2::SENDER, acct1(9)),
+            (rep2::RECIPIENT, acct1(3)),
+            (rep2::SUITE, int(suite)),
+            (rep2::CRYPTO_BOX_ENVELOPE, CborValue::Bytes(vec![0xa0])),
+            (
+                rep2::EPHEMERAL_POINT,
+                CborValue::Bytes(hex::decode(T3C_EPHEMERAL).unwrap()),
+            ),
+            (
+                rep2::SHARED_POINT,
+                CborValue::Bytes(hex::decode(T3C_SHARED).unwrap()),
+            ),
+            (
+                rep2::DLEQ_PROOF,
+                CborValue::Bytes(hex::decode(T3C_PROOF).unwrap()),
+            ),
         ]),
         schema,
         min,
     )
 }
 fn encrypted() -> Vec<u8> {
-    encrypted_with(1, 2, 2)
+    encrypted_with(encryption_suite::DM_AUTH_XCHACHA.into(), 2, 2)
 }
 fn parsed(bytes: &[u8]) -> ParsedFrame {
     match parse_frame(bytes, &default_context()).unwrap() {
@@ -49,36 +67,40 @@ fn root(extra: Option<CborValue>) -> Vec<u8> {
     let CborValue::Map(mut fields) = parsed(&common::direct_message_frame()).payload else {
         panic!("map")
     };
-    fields.iter_mut().find(|(key, _)| *key == 2).unwrap().1 = CborValue::Bytes(encrypted());
+    fields
+        .iter_mut()
+        .find(|(key, _)| *key == dmd::PAYLOAD_FRAME)
+        .unwrap()
+        .1 = CborValue::Bytes(encrypted());
     let schema = if extra.is_some() { 2 } else { 1 };
     if let Some(extra) = extra {
-        fields.push((99, extra));
+        fields.push((99, extra)); // raw-cbor-key: an additive field no reader declares
     }
-    frame(1, &cbor_map(fields), schema, 1)
+    frame(TYPE_DIRECT_MESSAGE_DELIVERY, &cbor_map(fields), schema, 1)
 }
 fn content_items(extra: Option<CborValue>, items: Vec<Vec<u8>>) -> Vec<u8> {
     let revision = fr(
-        8,
+        TYPE_MESSAGE_CONTENT_REVISION,
         &cbor_map(vec![
-            (0, CborValue::Text("frank".into())),
+            (revision::NETWORK, CborValue::Text("frank".into())),
             (
-                1,
+                revision::ITEMS,
                 CborValue::Array(items.into_iter().map(CborValue::Bytes).collect()),
             ),
         ]),
     );
     let mut fields = vec![
-        (0, CborValue::Text(NET.into())),
-        (1, CborValue::Bytes(bytes_of(16, 7))),
-        (2, CborValue::Bytes(revision)),
-        (3, CborValue::Bytes(bytes_of(32, 8))),
-        (4, CborValue::Bytes(bytes_of(16, 8))),
+        (emc::NETWORK, CborValue::Text(NET.into())),
+        (emc::MESSAGE_ID, CborValue::Bytes(bytes_of(16, 7))),
+        (emc::REVISION_FRAME, CborValue::Bytes(revision)),
+        (emc::CONTENT_DIGEST, CborValue::Bytes(bytes_of(32, 8))),
+        (emc::CONVERSATION_ID, CborValue::Bytes(bytes_of(16, 8))),
     ];
     let schema = if extra.is_some() { 2 } else { 1 };
     if let Some(extra) = extra {
-        fields.push((99, extra));
+        fields.push((99, extra)); // raw-cbor-key: an additive field no reader declares
     }
-    frame(6, &cbor_map(fields), schema, 1)
+    frame(TYPE_ENCRYPTED_MESSAGE_CONTENT, &cbor_map(fields), schema, 1)
 }
 fn content(extra: Option<CborValue>) -> Vec<u8> {
     content_items(extra, vec![unknown_item(1)])
@@ -176,9 +198,9 @@ fn typed_only_and_production_payload_only() {
         );
     }
     for bad in [
-        encrypted_with(65535, 2, 2),
-        encrypted_with(1, 3, 2),
-        encrypted_with(1, 2, 1),
+        encrypted_with(encryption_suite::PROOF.into(), 2, 2),
+        encrypted_with(encryption_suite::DM_AUTH_XCHACHA.into(), 3, 2),
+        encrypted_with(encryption_suite::DM_AUTH_XCHACHA.into(), 2, 1),
     ] {
         let expected = outcome(parse_frame(&bad, &default_context()));
         assert_ne!(expected, "parsed");
@@ -204,10 +226,16 @@ fn required_content_and_first_error_order() {
     };
     for (bad, expected) in [
         (unknown_item(1), "semantic@8.4"),
-        (raw(17), "semantic@8.4"),
-        (raw(6), "malformed@7"),
-        (frame(6, &cbor_map(vec![]), 3, 3), "unsupported@7"),
-        (fr(6, &cbor_map(vec![])), "schema@8.2"),
+        (raw(TYPE_TEXT_MESSAGE_ITEM), "semantic@8.4"),
+        (raw(TYPE_ENCRYPTED_MESSAGE_CONTENT), "malformed@7"),
+        (
+            frame(TYPE_ENCRYPTED_MESSAGE_CONTENT, &cbor_map(vec![]), 3, 3),
+            "unsupported@7",
+        ),
+        (
+            fr(TYPE_ENCRYPTED_MESSAGE_CONTENT, &cbor_map(vec![])),
+            "schema@8.2",
+        ),
         (vec![0], "frame@2"),
     ] {
         assert_eq!(outcome(finish(&root(None), &bad)), expected);
@@ -318,9 +346,9 @@ fn actual_type5_position_sets_depth_boundary() {
 
 fn container(items: Vec<Vec<u8>>) -> Vec<u8> {
     fr(
-        16,
+        TYPE_CONTAINER_MESSAGE_ITEM,
         &cbor_map(vec![(
-            0,
+            container_message_item::ITEMS,
             CborValue::Array(items.into_iter().map(CborValue::Bytes).collect()),
         )]),
     )
@@ -328,7 +356,13 @@ fn container(items: Vec<Vec<u8>>) -> Vec<u8> {
 
 #[test]
 fn recursive_item_depth_and_256_item_budget() {
-    let mut item = fr(17, &cbor_map(vec![(0, CborValue::Text("hello".into()))]));
+    let mut item = fr(
+        TYPE_TEXT_MESSAGE_ITEM,
+        &cbor_map(vec![(
+            text_message_item::TEXT,
+            CborValue::Text("hello".into()),
+        )]),
+    );
     for _ in 0..7 {
         item = container(vec![item]);
     }

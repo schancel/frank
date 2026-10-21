@@ -4,6 +4,7 @@
 // `F` is the representation of a required-type framed field (the opened child frame once
 // validated, raw bytes in a draft) and `C` that of an open-field child.
 import type { FrankValue } from './cbor'
+import { ACCOUNT_TYPE, BOT_ROLE } from './message-fields.generated'
 import type {
   TYPE_BLACKJACK_MESSAGE_ITEM,
   TYPE_CHANNEL_UPDATE,
@@ -216,11 +217,11 @@ export interface DirectoryStatement<F> {
  * 2 = service (system/infrastructure daemon, e.g. faucet, bridge)
  * 3 = organization (team, DAO, collective)
  */
-export type AccountType = 0 | 1 | 2 | 3
-export const ACCOUNT_TYPE_PERSON = 0
-export const ACCOUNT_TYPE_BOT = 1
-export const ACCOUNT_TYPE_SERVICE = 2
-export const ACCOUNT_TYPE_ORGANIZATION = 3
+export type AccountType = (typeof ACCOUNT_TYPE)[keyof typeof ACCOUNT_TYPE]
+export const ACCOUNT_TYPE_PERSON = ACCOUNT_TYPE.person
+export const ACCOUNT_TYPE_BOT = ACCOUNT_TYPE.bot
+export const ACCOUNT_TYPE_SERVICE = ACCOUNT_TYPE.service
+export const ACCOUNT_TYPE_ORGANIZATION = ACCOUNT_TYPE.organization
 
 /**
  * Specialized bot or service role (ticket #1120).
@@ -233,15 +234,15 @@ export const ACCOUNT_TYPE_ORGANIZATION = 3
  * 6 = room or community moderator
  * 7 = broadcast or notification announcer
  */
-export type BotRole = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7
-export const BOT_ROLE_GENERIC = 0
-export const BOT_ROLE_ASSISTANT = 1
-export const BOT_ROLE_FAUCET = 2
-export const BOT_ROLE_GAME = 3
-export const BOT_ROLE_BRIDGE = 4
-export const BOT_ROLE_MERCHANT = 5
-export const BOT_ROLE_MODERATOR = 6
-export const BOT_ROLE_ANNOUNCER = 7
+export type BotRole = (typeof BOT_ROLE)[keyof typeof BOT_ROLE]
+export const BOT_ROLE_GENERIC = BOT_ROLE.generic
+export const BOT_ROLE_ASSISTANT = BOT_ROLE.assistant
+export const BOT_ROLE_FAUCET = BOT_ROLE.faucet
+export const BOT_ROLE_GAME = BOT_ROLE.game
+export const BOT_ROLE_BRIDGE = BOT_ROLE.bridge
+export const BOT_ROLE_MERCHANT = BOT_ROLE.merchant
+export const BOT_ROLE_MODERATOR = BOT_ROLE.moderator
+export const BOT_ROLE_ANNOUNCER = BOT_ROLE.announcer
 
 /** Required schema-4 fields, never inferred from the subject or a profile. */
 export interface PreviewDirectoryRoles {

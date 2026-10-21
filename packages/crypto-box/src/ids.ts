@@ -37,6 +37,16 @@ export const ENC_LENGTH = 33
 export const LEGACY_ENVELOPE_VERSION = 1
 /** Version emitted in the deterministic-CBOR envelope. */
 export const ENVELOPE_VERSION = 2
+/** Map keys of the deterministic-CBOR envelope, in their canonical order. */
+export const ENVELOPE_FIELDS = {
+  version: 0,
+  suite: 1,
+  kem: 2,
+  salt: 3,
+  enc: 4,
+  ciphertext: 5,
+} as const
+
 export const MAX_MESSAGE = 1_048_576
 export const MAX_PADDING = 65535
 

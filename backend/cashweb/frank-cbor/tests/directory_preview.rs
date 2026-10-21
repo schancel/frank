@@ -1,5 +1,10 @@
 //! Shared codec outcomes, exact reviewed bytes and the non-admission boundary.
 mod common;
+use frank_cbor::message_fields::{
+    account_ref, directory_attestation as att, directory_statement as stmt, key_type,
+    relay_binding, signature_algorithm, signature_entry, timestamp,
+};
+use frank_cbor::message_types::{TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT};
 use frank_cbor::{
     content_hash, decode_canonical, default_context, encode_canonical, encode_frame,
     preview_directory_context, validate_frame, verify_preview_directory_evidence, CborValue,
@@ -41,7 +46,7 @@ fn payload() -> CborValue {
 fn statement(p: &CborValue, schema: u32, floor: u32) -> Vec<u8> {
     encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: TYPE_DIRECTORY_STATEMENT,
             schema_version: schema,
             min_reader_version: floor,
         },
@@ -109,7 +114,7 @@ fn old_readers_and_full_admission_fail_closed() {
         default_context()
             .supported_schemas
             .iter()
-            .find(|s| s.type_id == 4)
+            .find(|s| s.type_id == TYPE_DIRECTORY_STATEMENT)
             .unwrap()
             .schema_version,
         3
@@ -179,6 +184,7 @@ fn role_fields_uint64_and_optional_bytes_are_preserved_without_lifecycle_claims(
     else {
         panic!("statement")
     };
+    // raw-cbor-key: additive future field carried by the optional-future vector
     assert!(unknown.iter().any(|(k, _)| *k == 100));
     assert_eq!(content_hash(e.statement_frame()).unwrap(), e.statement_hash);
     for id in [
@@ -198,7 +204,19 @@ fn role_fields_uint64_and_optional_bytes_are_preserved_without_lifecycle_claims(
 
 #[test]
 fn required_fields_old_schema_smuggling_and_future_unsupported_semantics_reject() {
-    for key in [0, 1, 2, 3, 4, 6, 8, 10, 11, 12, 13] {
+    for key in [
+        stmt::NETWORK,
+        stmt::SUBJECT,
+        stmt::REVISION,
+        stmt::TIMESTAMP,
+        stmt::RELAYS,
+        stmt::EXPIRY,
+        stmt::STAMP_KEY,
+        stmt::MESSAGE_DH_KEY,
+        stmt::MAILBOX_KEY_GENERATION,
+        stmt::STAMP_KEY_GENERATION,
+        stmt::PREDECESSOR_HASH,
+    ] {
         let CborValue::Map(mut entries) = payload() else {
             panic!("map")
         };
@@ -216,7 +234,11 @@ fn required_fields_old_schema_smuggling_and_future_unsupported_semantics_reject(
         )
         .is_err());
     }
-    for key in [5, 7, 9] {
+    for key in [
+        stmt::KEY_TRANSITIONS,
+        stmt::RECOVERY_AUTHORITIES,
+        stmt::PROFILE_ENTRIES,
+    ] {
         let mut p = payload();
         set(&mut p, key, CborValue::Array(vec![]));
         assert!(validate_frame(&statement(&p, 5, 4), &preview_directory_context()).is_err());
@@ -225,7 +247,7 @@ fn required_fields_old_schema_smuggling_and_future_unsupported_semantics_reject(
         let raw = hex::decode(hex).unwrap();
         let f = encode_frame(
             EnvelopeFields {
-                type_id: 4,
+                type_id: TYPE_DIRECTORY_STATEMENT,
                 schema_version: 4,
                 min_reader_version: 4,
             },
@@ -239,12 +261,15 @@ fn required_fields_old_schema_smuggling_and_future_unsupported_semantics_reject(
 #[test]
 fn preview_frame_boundary_does_not_tighten_legacy_projection() {
     let mut p = payload();
+    // raw-cbor-key: additive future field used as padding
     set(&mut p, 100, CborValue::Bytes(vec![0; 262_144]));
     let excess = statement(&p, 5, 4).len() - 262_144;
+    // raw-cbor-key: additive future field used as padding
     set(&mut p, 100, CborValue::Bytes(vec![0; 262_144 - excess]));
     let exact = statement(&p, 5, 4);
     assert_eq!(exact.len(), 262_144);
     assert!(validate_frame(&exact, &preview_directory_context()).is_ok());
+    // raw-cbor-key: additive future field used as padding
     set(&mut p, 100, CborValue::Bytes(vec![0; 262_145 - excess]));
     let Error::Codec(err) =
         validate_frame(&statement(&p, 5, 4), &preview_directory_context()).unwrap_err()
@@ -274,9 +299,12 @@ fn rust_independently_constructs_and_signs_the_reviewed_bootstrap() {
     };
     let key = |n| {
         cbor_map(vec![
-            (0, CborValue::Int(1)),
             (
-                1,
+                account_ref::KEY_TYPE,
+                CborValue::Int(key_type::SECP256K1.into()),
+            ),
+            (
+                account_ref::KEY_BYTES,
                 CborValue::Bytes(
                     PublicKey::from_secret_key(&secp, &secret(n))
                         .serialize()
@@ -285,25 +313,33 @@ fn rust_independently_constructs_and_signs_the_reviewed_bootstrap() {
             ),
         ])
     };
-    let time = |s| cbor_map(vec![(0, CborValue::Int(s)), (1, CborValue::Int(0))]);
+    let time = |s| {
+        cbor_map(vec![
+            (timestamp::SECONDS, CborValue::Int(s)),
+            (timestamp::NANOSECONDS, CborValue::Int(0)),
+        ])
+    };
     let relay = cbor_map(vec![
-        (0, CborValue::Bytes((0..16).collect())),
-        (1, CborValue::Text("https://relay.example.invalid".into())),
-        (2, key(4)),
-        (3, time(1_700_007_200)),
+        (relay_binding::RELAY_ID, CborValue::Bytes((0..16).collect())),
+        (
+            relay_binding::ENDPOINT,
+            CborValue::Text("https://relay.example.invalid".into()),
+        ),
+        (relay_binding::IDENTITY, key(4)),
+        (relay_binding::EXPIRY, time(1_700_007_200)),
     ]);
     let p = cbor_map(vec![
-        (0, CborValue::Text("monad-testnet".into())),
-        (1, key(1)),
-        (2, CborValue::Int(0)),
-        (3, time(1_700_000_000)),
-        (4, CborValue::Array(vec![relay])),
-        (6, time(1_700_003_600)),
-        (8, key(3)),
-        (10, key(2)),
-        (11, CborValue::Int(0)),
-        (12, CborValue::Int(0)),
-        (13, CborValue::Null),
+        (stmt::NETWORK, CborValue::Text("monad-testnet".into())),
+        (stmt::SUBJECT, key(1)),
+        (stmt::REVISION, CborValue::Int(0)),
+        (stmt::TIMESTAMP, time(1_700_000_000)),
+        (stmt::RELAYS, CborValue::Array(vec![relay])),
+        (stmt::EXPIRY, time(1_700_003_600)),
+        (stmt::STAMP_KEY, key(3)),
+        (stmt::MESSAGE_DH_KEY, key(2)),
+        (stmt::MAILBOX_KEY_GENERATION, CborValue::Int(0)),
+        (stmt::STAMP_KEY_GENERATION, CborValue::Int(0)),
+        (stmt::PREDECESSOR_HASH, CborValue::Null),
     ]);
     let type4 = statement(&p, 4, 4);
     let digest = directory_signature_digest("monad-testnet", &type4).unwrap();
@@ -312,19 +348,22 @@ fn rust_independently_constructs_and_signs_the_reviewed_bootstrap() {
         .serialize_der()
         .to_vec();
     let wrapper = cbor_map(vec![
-        (0, CborValue::Bytes(type4.clone())),
+        (att::STATEMENT_FRAME, CborValue::Bytes(type4.clone())),
         (
-            1,
+            att::SIGNATURES,
             CborValue::Array(vec![cbor_map(vec![
-                (0, CborValue::Int(1)),
-                (1, key(1)),
-                (2, CborValue::Bytes(signature)),
+                (
+                    signature_entry::ALGORITHM,
+                    CborValue::Int(signature_algorithm::SECP256K1_ECDSA_DER.into()),
+                ),
+                (signature_entry::SIGNER, key(1)),
+                (signature_entry::SIGNATURE, CborValue::Bytes(signature)),
             ])]),
         ),
     ]);
     let type2 = encode_frame(
         EnvelopeFields {
-            type_id: 2,
+            type_id: TYPE_DIRECTORY_ATTESTATION,
             schema_version: 1,
             min_reader_version: 1,
         },
@@ -348,10 +387,10 @@ fn unchanged_wrapper_limit_and_cross_schema_signature_replay_reject() {
     let c = corpus();
     let wrap = |child| {
         let mut p = parse(&bytes(record(&c, "bootstrap"), "type2_hex")).payload;
-        set(&mut p, 0, CborValue::Bytes(child));
+        set(&mut p, att::STATEMENT_FRAME, CborValue::Bytes(child));
         encode_frame(
             EnvelopeFields {
-                type_id: 2,
+                type_id: TYPE_DIRECTORY_ATTESTATION,
                 schema_version: 1,
                 min_reader_version: 1,
             },
@@ -368,8 +407,10 @@ fn unchanged_wrapper_limit_and_cross_schema_signature_replay_reject() {
     assert_eq!(err.category.to_string(), "cryptographic");
     assert_eq!(err.stage.to_string(), "10.6");
     let mut p = payload();
+    // raw-cbor-key: additive future field used as padding
     set(&mut p, 100, CborValue::Bytes(vec![0; 262_144]));
     let overhead = wrap(statement(&p, 5, 4)).len() - 262_144;
+    // raw-cbor-key: additive future field used as padding
     set(&mut p, 100, CborValue::Bytes(vec![0; 262_144 - overhead]));
     let exact = wrap(statement(&p, 5, 4));
     assert_eq!(exact.len(), 262_144);
@@ -379,6 +420,7 @@ fn unchanged_wrapper_limit_and_cross_schema_signature_replay_reject() {
         panic!("codec")
     };
     assert_eq!(err.stage.to_string(), "10.6");
+    // raw-cbor-key: additive future field used as padding
     set(&mut p, 100, CborValue::Bytes(vec![0; 262_145 - overhead]));
     let Error::Codec(err) =
         validate_frame(&wrap(statement(&p, 5, 4)), &preview_directory_context()).unwrap_err()
@@ -392,10 +434,18 @@ fn unchanged_wrapper_limit_and_cross_schema_signature_replay_reject() {
 #[test]
 fn uint64_generations_and_nanosecond_window_are_exact() {
     let mut p = payload();
-    for key in [2, 11, 12] {
+    for key in [
+        stmt::REVISION,
+        stmt::MAILBOX_KEY_GENERATION,
+        stmt::STAMP_KEY_GENERATION,
+    ] {
         set(&mut p, key, CborValue::Int(i128::from(u64::MAX)));
     }
-    set(&mut p, 13, CborValue::Bytes(vec![0; 32]));
+    set(
+        &mut p,
+        stmt::PREDECESSOR_HASH,
+        CborValue::Bytes(vec![0; 32]),
+    );
     let result = parse(&statement(&p, 4, 4));
     let Some(TypedPayload::DirectoryStatement {
         preview: Some(roles),
@@ -410,28 +460,33 @@ fn uint64_generations_and_nanosecond_window_are_exact() {
     // extended to cover both, so only the validity cap decides.
     let time = |seconds: i128, nanoseconds: i128| {
         frank_cbor::cbor_map(vec![
-            (0, CborValue::Int(seconds)),
-            (1, CborValue::Int(nanoseconds)),
+            (timestamp::SECONDS, CborValue::Int(seconds)),
+            (timestamp::NANOSECONDS, CborValue::Int(nanoseconds)),
         ])
     };
     let CborValue::Map(fields) = &p else {
         panic!("map")
     };
-    let Some((_, CborValue::Array(relays))) = fields.iter().find(|(key, _)| *key == 4) else {
+    let Some((_, CborValue::Array(relays))) = fields.iter().find(|(key, _)| *key == stmt::RELAYS)
+    else {
         panic!("relays")
     };
     let CborValue::Map(mut relay) = relays[0].clone() else {
         panic!("relay")
     };
     for (key, value) in &mut relay {
-        if *key == 3 {
+        if *key == relay_binding::EXPIRY {
             *value = time(1_700_000_000 + 31_626_000, 0);
         }
     }
-    set(&mut p, 4, CborValue::Array(vec![CborValue::Map(relay)]));
-    set(&mut p, 6, time(1_700_000_000 + 31_622_400, 0));
+    set(
+        &mut p,
+        stmt::RELAYS,
+        CborValue::Array(vec![CborValue::Map(relay)]),
+    );
+    set(&mut p, stmt::EXPIRY, time(1_700_000_000 + 31_622_400, 0));
     parse(&statement(&p, 4, 4));
-    set(&mut p, 6, time(1_700_000_000 + 31_622_400, 1));
+    set(&mut p, stmt::EXPIRY, time(1_700_000_000 + 31_622_400, 1));
     let Error::Codec(err) =
         validate_frame(&statement(&p, 4, 4), &preview_directory_context()).unwrap_err()
     else {
@@ -473,17 +528,31 @@ fn preview_priors_cannot_authorize_legacy_updates_or_changed_subject_transitions
     let CborValue::Map(fields) = &p else {
         panic!("map")
     };
-    let message = fields.iter().find(|(k, _)| *k == 1).unwrap().1.clone();
-    set(&mut p, 10, message);
+    let message = fields
+        .iter()
+        .find(|(k, _)| *k == stmt::SUBJECT)
+        .unwrap()
+        .1
+        .clone();
+    set(&mut p, stmt::MESSAGE_DH_KEY, message);
     set(
         &mut p,
-        1,
-        old_fields.iter().find(|(k, _)| *k == 1).unwrap().1.clone(),
+        stmt::SUBJECT,
+        old_fields
+            .iter()
+            .find(|(k, _)| *k == stmt::SUBJECT)
+            .unwrap()
+            .1
+            .clone(),
     );
-    set(&mut p, 2, CborValue::Int(i128::from(*revision)));
     set(
         &mut p,
-        13,
+        stmt::REVISION,
+        CborValue::Int(i128::from(*revision)),
+    );
+    set(
+        &mut p,
+        stmt::PREDECESSOR_HASH,
         if *revision == 0 {
             CborValue::Null
         } else {

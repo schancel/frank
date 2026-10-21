@@ -97,6 +97,16 @@ import type { MailboxAuthParams } from '@frank/cashweb/relay/mailbox-client'
 import { relayOriginHeader } from '@frank/cashweb/relay/origin-header'
 
 import {
+  ACCOUNT_REF,
+  DIRECTORY_ATTESTATION,
+  DIRECTORY_STATEMENT,
+  KEY_TYPE,
+  PROFILE_ENTRY,
+  PROFILE_HEADER,
+  RELAY_BINDING,
+  SIGNATURE_ALGORITHM,
+  SIGNATURE_ENTRY,
+  TIMESTAMP,
   AccountType,
   BotRole,
   ACCOUNT_TYPE_PERSON,
@@ -451,6 +461,17 @@ export function isCborFrame(bytes: Uint8Array): boolean {
  * (Type 2 DirectoryAttestation wrapping a Type 4 DirectoryStatement with schema 3).
  * Stage 10.6 signature is created using Algorithm 1 (secp256k1 ECDSA over SHA-256).
  */
+const secp256k1Account = (keyBytes: ArrayLike<number>): Encodable =>
+  cborMap([
+    [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+    [ACCOUNT_REF.keyBytes, Uint8Array.from(keyBytes)],
+  ])
+const timestamp = (seconds: bigint | number, nanoseconds: number): Encodable =>
+  cborMap([
+    [TIMESTAMP.seconds, seconds],
+    [TIMESTAMP.nanoseconds, nanoseconds],
+  ])
+
 export function buildSignedDirectoryStatement(
   identity: MonadIdentity,
   options: {
@@ -503,7 +524,7 @@ export function buildSignedDirectoryStatement(
     !rawSpendKeys.some(k => k.keyType === 1)
   ) {
     rawSpendKeys.push({
-      keyType: 1,
+      keyType: KEY_TYPE.secp256k1,
       keyBytes: new Uint8Array(identity.compressedPubKey),
     })
   }
@@ -514,22 +535,10 @@ export function buildSignedDirectoryStatement(
   // and federation topology (#107, #108, #110).
   const relayBindings: Encodable[] = [
     cborMap([
-      [0, new Uint8Array(16)],
-      [1, 'https://relay1.frank.example/monad-testnet'],
-      [
-        2,
-        cborMap([
-          [0, 1],
-          [1, Uint8Array.from(identity.compressedPubKey)],
-        ]),
-      ],
-      [
-        3,
-        cborMap([
-          [0, 2_000_000_000n],
-          [1, 0],
-        ]),
-      ],
+      [RELAY_BINDING.relayId, new Uint8Array(16)],
+      [RELAY_BINDING.endpoint, 'https://relay1.frank.example/monad-testnet'],
+      [RELAY_BINDING.identity, secp256k1Account(identity.compressedPubKey)],
+      [RELAY_BINDING.expiry, timestamp(2_000_000_000n, 0)],
     ]),
   ]
 
@@ -543,9 +552,9 @@ export function buildSignedDirectoryStatement(
   if (displayName !== undefined) {
     entries.push(
       cborMap([
-        [0, 'display_name'],
-        [1, []],
-        [2, new TextEncoder().encode(displayName)],
+        [PROFILE_ENTRY.kind, 'display_name'],
+        [PROFILE_ENTRY.headers, []],
+        [PROFILE_ENTRY.body, new TextEncoder().encode(displayName)],
       ]),
     )
   }
@@ -553,18 +562,18 @@ export function buildSignedDirectoryStatement(
   if (username !== undefined) {
     entries.push(
       cborMap([
-        [0, 'username'],
-        [1, []],
-        [2, new TextEncoder().encode(username)],
+        [PROFILE_ENTRY.kind, 'username'],
+        [PROFILE_ENTRY.headers, []],
+        [PROFILE_ENTRY.body, new TextEncoder().encode(username)],
       ]),
     )
   }
   if (options.profile?.bio !== undefined && options.profile.bio.length > 0) {
     entries.push(
       cborMap([
-        [0, 'bio'],
-        [1, []],
-        [2, new TextEncoder().encode(options.profile.bio)],
+        [PROFILE_ENTRY.kind, 'bio'],
+        [PROFILE_ENTRY.headers, []],
+        [PROFILE_ENTRY.body, new TextEncoder().encode(options.profile.bio)],
       ]),
     )
   }
@@ -574,9 +583,9 @@ export function buildSignedDirectoryStatement(
   ) {
     entries.push(
       cborMap([
-        [0, 'location'],
-        [1, []],
-        [2, new TextEncoder().encode(options.profile.location.trim())],
+        [PROFILE_ENTRY.kind, 'location'],
+        [PROFILE_ENTRY.headers, []],
+        [PROFILE_ENTRY.body, new TextEncoder().encode(options.profile.location.trim())],
       ]),
     )
   }
@@ -585,15 +594,15 @@ export function buildSignedDirectoryStatement(
       if (!link.url || link.url.trim().length === 0) continue
       const headersList: Encodable[] = [
         cborMap([
-          [0, 'type'],
-          [1, link.type || 'website'],
+          [PROFILE_HEADER.name, 'type'],
+          [PROFILE_HEADER.value, link.type || 'website'],
         ]),
       ]
       if (link.label && link.label.trim().length > 0) {
         headersList.push(
           cborMap([
-            [0, 'label'],
-            [1, link.label.trim()],
+            [PROFILE_HEADER.name, 'label'],
+            [PROFILE_HEADER.value, link.label.trim()],
           ]),
         )
       }
@@ -604,9 +613,9 @@ export function buildSignedDirectoryStatement(
       })
       entries.push(
         cborMap([
-          [0, 'link'],
-          [1, headersList],
-          [2, new TextEncoder().encode(link.url.trim())],
+          [PROFILE_ENTRY.kind, 'link'],
+          [PROFILE_ENTRY.headers, headersList],
+          [PROFILE_ENTRY.body, new TextEncoder().encode(link.url.trim())],
         ]),
       )
     }
@@ -614,9 +623,9 @@ export function buildSignedDirectoryStatement(
   if (options.profile?.bot) {
     entries.push(
       cborMap([
-        [0, MONAD_PROFILE_BOT_KIND],
-        [1, []],
-        [2, new TextEncoder().encode('1')],
+        [PROFILE_ENTRY.kind, MONAD_PROFILE_BOT_KIND],
+        [PROFILE_ENTRY.headers, []],
+        [PROFILE_ENTRY.body, new TextEncoder().encode('1')],
       ]),
     )
   }
@@ -625,17 +634,17 @@ export function buildSignedDirectoryStatement(
     if (match) {
       entries.push(
         cborMap([
-          [0, 'avatar'],
+          [PROFILE_ENTRY.kind, 'avatar'],
           [
-            1,
+            PROFILE_ENTRY.headers,
             [
               cborMap([
-                [0, 'content-type'],
-                [1, match[1]],
+                [PROFILE_HEADER.name, 'content-type'],
+                [PROFILE_HEADER.value, match[1]],
               ]),
             ],
           ],
-          [2, Uint8Array.from(Buffer.from(match[2], 'base64'))],
+          [PROFILE_ENTRY.body, Uint8Array.from(Buffer.from(match[2], 'base64'))],
         ]),
       )
     }
@@ -643,71 +652,54 @@ export function buildSignedDirectoryStatement(
 
   for (const sk of rawSpendKeys) {
     const curveName =
-      sk.keyType === 1 ? 'secp256k1' : sk.keyType === 2 ? 'ed25519' : 'unknown'
+      sk.keyType === KEY_TYPE.secp256k1
+        ? 'secp256k1'
+        : sk.keyType === KEY_TYPE.ed25519
+        ? 'ed25519'
+        : 'unknown'
     entries.push(
       cborMap([
-        [0, 'spend_key'],
+        [PROFILE_ENTRY.kind, 'spend_key'],
         [
-          1,
+          PROFILE_ENTRY.headers,
           [
             cborMap([
-              [0, 'curve'],
-              [1, curveName],
+              [PROFILE_HEADER.name, 'curve'],
+              [PROFILE_HEADER.value, curveName],
             ]),
             cborMap([
-              [0, 'key_type'],
-              [1, String(sk.keyType)],
+              [PROFILE_HEADER.name, 'key_type'],
+              [PROFILE_HEADER.value, String(sk.keyType)],
             ]),
           ],
         ],
-        [2, Uint8Array.from(sk.keyBytes)],
+        [PROFILE_ENTRY.body, Uint8Array.from(sk.keyBytes)],
       ]),
     )
   }
 
+  const S = DIRECTORY_STATEMENT
   const type4MapEntries: Array<[number, Encodable]> = [
-    [0, network],
-    [
-      1,
-      cborMap([
-        [0, 1],
-        [1, Uint8Array.from(identity.compressedPubKey)],
-      ]),
-    ],
-    [2, ts.revision],
-    [
-      3,
-      cborMap([
-        [0, ts.seconds],
-        [1, ts.nanoseconds],
-      ]),
-    ],
-    [4, relayBindings],
-    [
-      6,
-      cborMap([
-        [0, exp.seconds],
-        [1, exp.nanoseconds],
-      ]),
-    ],
-    [
-      8,
-      cborMap([
-        [0, 1],
-        [1, Uint8Array.from(stampKeyBytes)],
-      ]),
-    ],
+    [S.network, network],
+    [S.subject, secp256k1Account(identity.compressedPubKey)],
+    [S.revision, ts.revision],
+    [S.timestamp, timestamp(ts.seconds, ts.nanoseconds)],
+    [S.relays, relayBindings],
+    [S.expiry, timestamp(exp.seconds, exp.nanoseconds)],
+    [S.stampKey, secp256k1Account(stampKeyBytes)],
   ]
   if (entries.length > 0) {
-    type4MapEntries.push([9, entries])
+    type4MapEntries.push([S.profileEntries, entries])
   }
   if (rawSpendKeys.length > 0) {
+    // This writer puts the spend-key list in field 14, which the registry and CDDL name the
+    // username; readers accept both (an open discrepancy recorded for the protocol owner).
     type4MapEntries.push([
-      14,
+      S.username,
       rawSpendKeys.map(k =>
         cborMap([
-          [0, k.keyType],
-          [1, Uint8Array.from(k.keyBytes)],
+          [ACCOUNT_REF.keyType, k.keyType],
+          [ACCOUNT_REF.keyBytes, Uint8Array.from(k.keyBytes)],
         ]),
       ),
     ])
@@ -720,10 +712,10 @@ export function buildSignedDirectoryStatement(
       ? ACCOUNT_TYPE_BOT
       : undefined
   if (accountType !== undefined) {
-    type4MapEntries.push([15, BigInt(accountType)])
+    type4MapEntries.push([S.accountType, BigInt(accountType)])
   }
   if (options.profile?.botRole !== undefined) {
-    type4MapEntries.push([16, BigInt(options.profile.botRole)])
+    type4MapEntries.push([S.botRole, BigInt(options.profile.botRole)])
   }
 
   const type4Frame = encodeFrame(
@@ -735,15 +727,10 @@ export function buildSignedDirectoryStatement(
   const sig = identity.signHash(Buffer.from(digest))
 
   const sigEntry = cborMap([
-    [0, 1], // Algorithm 1: ECDSA secp256k1 over SHA-256
-    [
-      1,
-      cborMap([
-        [0, 1],
-        [1, Uint8Array.from(identity.compressedPubKey)],
-      ]),
-    ],
-    [2, Uint8Array.from(sig)],
+    // ECDSA secp256k1 over SHA-256
+    [SIGNATURE_ENTRY.algorithm, SIGNATURE_ALGORITHM.secp256k1EcdsaDer],
+    [SIGNATURE_ENTRY.signer, secp256k1Account(identity.compressedPubKey)],
+    [SIGNATURE_ENTRY.signature, Uint8Array.from(sig)],
   ])
 
   const type2Frame = encodeFrame(
@@ -753,8 +740,8 @@ export function buildSignedDirectoryStatement(
       minReaderVersion: 1,
     },
     cborMap([
-      [0, type4Frame],
-      [1, [sigEntry]],
+      [DIRECTORY_ATTESTATION.statementFrame, type4Frame],
+      [DIRECTORY_ATTESTATION.signatures, [sigEntry]],
     ]),
   )
 
@@ -924,9 +911,9 @@ export function decodeProfileBytes(
     if (stmt.spendKeys) {
       for (const sk of stmt.spendKeys) {
         spendKeys.push({ keyType: sk.keyType, keyBytes: sk.keyBytes })
-        if (sk.keyType === 1 && !curveKeys.secp256k1) {
+        if (sk.keyType === KEY_TYPE.secp256k1 && !curveKeys.secp256k1) {
           curveKeys.secp256k1 = sk.keyBytes
-        } else if (sk.keyType === 2 && !curveKeys.ed25519) {
+        } else if (sk.keyType === KEY_TYPE.ed25519 && !curveKeys.ed25519) {
           curveKeys.ed25519 = sk.keyBytes
         }
       }
@@ -973,18 +960,18 @@ export function decodeProfileBytes(
           const keyTypeHeader = entry.headers.find(
             h => h.name === 'key_type',
           )?.value
-          if (curveHeader === 'secp256k1' || keyTypeHeader === '1') {
+          if (curveHeader === 'secp256k1' || keyTypeHeader === String(KEY_TYPE.secp256k1)) {
             if (!curveKeys.secp256k1) {
               curveKeys.secp256k1 = entry.body
-              if (!spendKeys.some(k => k.keyType === 1)) {
-                spendKeys.push({ keyType: 1, keyBytes: entry.body })
+              if (!spendKeys.some(k => k.keyType === KEY_TYPE.secp256k1)) {
+                spendKeys.push({ keyType: KEY_TYPE.secp256k1, keyBytes: entry.body })
               }
             }
-          } else if (curveHeader === 'ed25519' || keyTypeHeader === '2') {
+          } else if (curveHeader === 'ed25519' || keyTypeHeader === String(KEY_TYPE.ed25519)) {
             if (!curveKeys.ed25519) {
               curveKeys.ed25519 = entry.body
-              if (!spendKeys.some(k => k.keyType === 2)) {
-                spendKeys.push({ keyType: 2, keyBytes: entry.body })
+              if (!spendKeys.some(k => k.keyType === KEY_TYPE.ed25519)) {
+                spendKeys.push({ keyType: KEY_TYPE.ed25519, keyBytes: entry.body })
               }
             }
           }
@@ -992,7 +979,7 @@ export function decodeProfileBytes(
       }
     }
     if (!username && stmt.unknownFields) {
-      const f14 = stmt.unknownFields.get(14n)
+      const f14 = stmt.unknownFields.get(BigInt(DIRECTORY_STATEMENT.username))
       if (typeof f14 === 'string') {
         username = f14
       }

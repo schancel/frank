@@ -96,6 +96,7 @@ describe('blackjack hand items with entropy from both sides (type 18, schema 3)'
   const base = { type: 'blackjack-hand', gameId: '0'.repeat(32) }
   const h = 'a'.repeat(64)
   it.each([
+    // raw-cbor-key: card list, not a map entry
     ['a card on a deal', { ...base, action: 'deal', seq: 3, prev: h, link: h, playerCards: [1, 2] }],
     ['an outcome on a reveal', { ...base, action: 'reveal', seq: 9, prev: h, link: h, outcome: 'push' }],
     ['an amount on a bet', { ...base, action: 'bet', seq: 2, prev: h, commitment: h, wagerWei: '5' }],

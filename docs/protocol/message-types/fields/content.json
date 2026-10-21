@@ -1,0 +1,388 @@
+{
+  "version": 1,
+  "structs": [
+    {
+      "key": "encrypted-message-content",
+      "fields": {
+        "network": 0,
+        "message-id": 1,
+        "revision-frame": 2,
+        "content-digest": 3,
+        "conversation-id": 4,
+        "conversation-name": 5,
+        "token-transfer": 6
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#encrypted-message-content",
+          "required": [
+            "network",
+            "message-id",
+            "revision-frame",
+            "content-digest"
+          ],
+          "optional": [
+            "conversation-id",
+            "conversation-name",
+            "token-transfer"
+          ],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "token-transfer",
+      "fields": {
+        "chain-namespace": 1,
+        "contract-address": 2,
+        "amount": 3,
+        "decimals": 4,
+        "symbol": 5,
+        "raw-tx-or-permit": 6
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#token-transfer",
+          "required": [
+            "chain-namespace",
+            "contract-address",
+            "amount",
+            "decimals",
+            "symbol"
+          ],
+          "optional": ["raw-tx-or-permit"],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "message-content-revision",
+      "fields": {
+        "network": 0,
+        "items": 1
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#message-content-revision",
+          "required": ["network", "items"],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "container-message-item",
+      "fields": {
+        "items": 0
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#container-message-item",
+          "required": ["items"],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "text-message-item",
+      "fields": {
+        "text": 0
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#text-message-item",
+          "required": ["text"],
+          "optional": [],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "stealth-message-item",
+      "description": "Type 19 schema 1.",
+      "fields": {
+        "network-tag": 0,
+        "ephemeral-pub-key": 1,
+        "transactions": 2,
+        "amount": 3,
+        "memo": 4
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#stealth-message-item",
+          "required": [
+            "network-tag",
+            "ephemeral-pub-key",
+            "transactions",
+            "amount"
+          ],
+          "optional": ["memo"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "stealth-asset-message-item",
+      "description": "Type 19 schema 2 and later.",
+      "fields": {
+        "transfers": 0,
+        "memo": 1
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#stealth-asset-message-item",
+          "required": ["transfers"],
+          "optional": ["memo"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "stealth-asset-transfer",
+      "fields": {
+        "transfer": 0,
+        "derivation-scheme": 1,
+        "recipient-spend-key": 2,
+        "token-program": 3,
+        "derivation-context": 4
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#stealth-asset-transfer",
+          "required": ["transfer", "derivation-scheme", "recipient-spend-key"],
+          "optional": ["token-program", "derivation-context"],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "channel-update-item",
+      "fields": {
+        "channel-id": 0,
+        "app-id": 1,
+        "sequence-number": 2,
+        "allocations": 3,
+        "app-state": 4,
+        "signatures": 5,
+        "settlement-ref": 6
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#channel-update-item",
+          "required": [
+            "channel-id",
+            "app-id",
+            "sequence-number",
+            "allocations",
+            "app-state",
+            "signatures"
+          ],
+          "optional": ["settlement-ref"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "chain-allocation",
+      "fields": {
+        "network-tag": 0,
+        "token": 1,
+        "balances": 2
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#chain-allocation",
+          "required": ["network-tag", "token", "balances"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "participant-balance",
+      "fields": {
+        "participant": 0,
+        "balance": 1
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#participant-balance",
+          "required": ["participant", "balance"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "dice-game-payload",
+      "fields": {
+        "round": 0,
+        "action": 1,
+        "seed-commitment": 2,
+        "reveal-seed": 3,
+        "target-roll": 4,
+        "wager": 5
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#dice-game-payload",
+          "required": ["round", "action", "seed-commitment", "wager"],
+          "optional": ["reveal-seed", "target-roll"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "poker-game-payload",
+      "fields": {
+        "hand-id": 0,
+        "phase": 1,
+        "action": 2,
+        "card-commitments": 3,
+        "keys": 4
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#poker-game-payload",
+          "required": ["hand-id", "phase", "action"],
+          "optional": ["card-commitments", "keys"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "swap-offer-payload",
+      "fields": {
+        "swap-id": 0,
+        "maker-asset": 1,
+        "maker-amount": 2,
+        "taker-asset": 3,
+        "taker-amount": 4,
+        "expiration": 5,
+        "htlc-hash": 6
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#swap-offer-payload",
+          "required": [
+            "swap-id",
+            "maker-asset",
+            "maker-amount",
+            "taker-asset",
+            "taker-amount",
+            "expiration"
+          ],
+          "optional": ["htlc-hash"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "raffle-payload",
+      "fields": {
+        "raffle-id": 0,
+        "ticket-price": 1,
+        "tickets-sold": 2,
+        "winning-hash": 3
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#raffle-payload",
+          "required": ["raffle-id", "ticket-price", "tickets-sold"],
+          "optional": ["winning-hash"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "email-message-item",
+      "fields": {
+        "message-id": 0,
+        "from": 1,
+        "to": 2,
+        "cc": 3,
+        "subject": 4,
+        "text-body": 5,
+        "html-body": 6,
+        "in-reply-to": 7,
+        "references": 8,
+        "attachments": 9,
+        "reply-to": 10
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#email-message-item",
+          "required": ["message-id", "from", "to", "subject", "text-body"],
+          "optional": [
+            "cc",
+            "html-body",
+            "in-reply-to",
+            "references",
+            "attachments",
+            "reply-to"
+          ],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "email-party",
+      "fields": {
+        "address": 0,
+        "name": 1,
+        "frank-account": 2
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#email-party",
+          "required": ["address"],
+          "optional": ["name", "frank-account"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "email-attachment",
+      "fields": {
+        "filename": 0,
+        "content-type": 1,
+        "content": 2,
+        "content-id": 3
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#email-attachment",
+          "required": ["filename", "content-type", "content"],
+          "optional": ["content-id"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "plugin-message-item",
+      "fields": {
+        "item-type": 0,
+        "data": 1
+      },
+      "shapes": [
+        {
+          "cddl": "docs/protocol/cbor/direct-message.cddl#plugin-message-item",
+          "required": ["item-type", "data"],
+          "optional": [],
+          "open": true
+        }
+      ]
+    }
+  ],
+  "enums": [
+    {
+      "key": "stealth-derivation-scheme",
+      "description": "stealth-asset-transfer field 1. Scheme 2 is the experimental Solana binding; the generic reader preserves it without executing it.",
+      "values": {
+        "secp256k1-ecdh-add-v1": 1,
+        "experimental-solana-ed25519": 2
+      }
+    }
+  ]
+}

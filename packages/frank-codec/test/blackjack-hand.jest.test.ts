@@ -99,6 +99,7 @@ describe('peer-to-peer blackjack hand items (type 18, schema 2)', () => {
     ['no payout on a reveal', {
       ...base,
       action: 'reveal',
+      // raw-cbor-key: card list, not a map entry
       dealerCards: [1, 2],
       seed: 'a'.repeat(64),
       outcome: 'push',
@@ -132,6 +133,7 @@ describe('peer-to-peer blackjack hand items (type 18, schema 2)', () => {
     ['uppercase seed', {
       ...base,
       action: 'reveal',
+      // raw-cbor-key: card list, not a map entry
       dealerCards: [1, 2],
       seed: 'A'.repeat(64),
       outcome: 'push',
@@ -139,6 +141,7 @@ describe('peer-to-peer blackjack hand items (type 18, schema 2)', () => {
     ['unknown outcome', {
       ...base,
       action: 'reveal',
+      // raw-cbor-key: card list, not a map entry
       dealerCards: [1, 2],
       seed: 'a'.repeat(64),
       outcome: 'tie',
@@ -148,6 +151,7 @@ describe('peer-to-peer blackjack hand items (type 18, schema 2)', () => {
     ['uppercase game id', { type: 'blackjack-hand', gameId: 'A'.repeat(32), action: 'bet' }],
     ['schema-1 type name', { type: 'blackjack-move', gameId: '0'.repeat(32), action: 'bet' }],
     ['missing game', { type: 'blackjack-hand', action: 'bet' }],
+    // raw-cbor-key: card list, not a map entry
     ['duplicate cards', { ...base, action: 'card', playerCards: [1, 1, 2] }],
     ['not an object', null],
   ])('the writer refuses: %s', (_name, input) => {

@@ -9,6 +9,7 @@ import {
   validateFrame,
 } from '../src/validate'
 import type { ManifestCase } from './manifest'
+import { TYPE_DIRECTORY_STATEMENT } from '../src/constants'
 
 export interface Manifest {
   format: string
@@ -188,7 +189,7 @@ export function checkManifest(m: Manifest, readme: string): string[] {
     if (prior) {
       try {
         const r = validateFrame(fromHex(prior), defaultContext())
-        if (r.kind !== 'parsed' || r.typeId !== 4)
+        if (r.kind !== 'parsed' || r.typeId !== TYPE_DIRECTORY_STATEMENT)
           at('prior statement is not a type-4 frame')
       } catch (e) {
         if (e instanceof FrankCodecError)

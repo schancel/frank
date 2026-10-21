@@ -1,0 +1,299 @@
+{
+  "version": 1,
+  "structs": [
+    {
+      "key": "blackjack-item",
+      "description": "Type 18 schema 1 (closed). Key 1 is the action code (blackjack-action); each action is one closed shape.",
+      "fields": {
+        "game-id": 0,
+        "action": 1,
+        "wager-tx-hash": 2,
+        "double-wager-tx-hash": 3,
+        "server-seed-hash": 4,
+        "player-cards": 5,
+        "dealer-up-card": 6,
+        "dealer-cards": 7,
+        "server-seed": 8,
+        "outcome": 9,
+        "min-wager-wei": 10,
+        "max-wager-wei": 11,
+        "fee-hint-wei": 12,
+        "rules": 13
+      },
+      "shapes": [
+        {
+          "name": "bet",
+          "cddl": "docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-bet",
+          "required": ["game-id", "action", "wager-tx-hash"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "deal",
+          "cddl": "docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-deal",
+          "required": [
+            "game-id",
+            "action",
+            "server-seed-hash",
+            "player-cards",
+            "dealer-up-card"
+          ],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "hit",
+          "required": ["game-id", "action"],
+          "optional": ["player-cards"],
+          "open": false
+        },
+        {
+          "name": "stand",
+          "cddl": "docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-stand",
+          "required": ["game-id", "action"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "double-request",
+          "cddl": "docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-double-request",
+          "required": ["game-id", "action", "double-wager-tx-hash"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "double-response",
+          "cddl": "docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-double-response",
+          "required": ["game-id", "action", "player-cards"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "reveal",
+          "cddl": "docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-reveal",
+          "required": [
+            "game-id",
+            "action",
+            "dealer-cards",
+            "server-seed",
+            "outcome"
+          ],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "welcome",
+          "cddl": "docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-welcome",
+          "required": ["game-id", "action", "min-wager-wei", "max-wager-wei"],
+          "optional": ["fee-hint-wei", "rules"],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "blackjack-hand-item",
+      "description": "Type 18 schema 2 (closed): one peer-to-peer hand. Key 1 is the action code (blackjack-hand-action).",
+      "fields": {
+        "game-id": 0,
+        "action": 1,
+        "role": 2,
+        "max-bet-wei": 3,
+        "commitment": 4,
+        "player-cards": 5,
+        "dealer-up-card": 6,
+        "dealer-cards": 7,
+        "seed": 8,
+        "outcome": 9,
+        "ref": 10
+      },
+      "shapes": [
+        {
+          "name": "challenge-dealer",
+          "required": [
+            "game-id",
+            "action",
+            "role",
+            "max-bet-wei",
+            "commitment"
+          ],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "challenge-player",
+          "required": ["game-id", "action", "role", "max-bet-wei"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "accept",
+          "required": ["game-id", "action", "max-bet-wei", "commitment"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "deal",
+          "required": ["game-id", "action", "player-cards", "dealer-up-card"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "card",
+          "required": ["game-id", "action", "player-cards"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "reveal",
+          "required": ["game-id", "action", "dealer-cards", "seed", "outcome"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "refund",
+          "required": ["game-id", "action", "ref"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "action-only",
+          "required": ["game-id", "action"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    },
+    {
+      "key": "blackjack-hand-v3-item",
+      "description": "Type 18 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action).",
+      "fields": {
+        "game-id": 0,
+        "action": 1,
+        "role": 2,
+        "max-bet-wei": 3,
+        "commitment": 4,
+        "ref": 10,
+        "seq": 11,
+        "prev": 12,
+        "link": 13
+      },
+      "shapes": [
+        {
+          "name": "challenge-dealer",
+          "required": [
+            "game-id",
+            "action",
+            "seq",
+            "role",
+            "max-bet-wei",
+            "commitment"
+          ],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "challenge-player",
+          "required": ["game-id", "action", "seq", "role", "max-bet-wei"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "accept",
+          "required": [
+            "game-id",
+            "action",
+            "seq",
+            "max-bet-wei",
+            "commitment",
+            "prev"
+          ],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "bet",
+          "required": ["game-id", "action", "seq", "commitment", "prev"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "refund",
+          "required": ["game-id", "action", "seq", "ref", "prev"],
+          "optional": [],
+          "open": false
+        },
+        {
+          "name": "move",
+          "required": ["game-id", "action", "seq", "prev", "link"],
+          "optional": [],
+          "open": false
+        }
+      ]
+    }
+  ],
+  "enums": [
+    {
+      "key": "blackjack-action",
+      "description": "blackjack-item key 1 (schema 1).",
+      "values": {
+        "bet": 0,
+        "deal": 1,
+        "hit": 2,
+        "stand": 3,
+        "double": 4,
+        "reveal": 5,
+        "welcome": 6
+      }
+    },
+    {
+      "key": "blackjack-hand-action",
+      "description": "blackjack-hand-item key 1 (schema 2); disjoint from schema 1's codes.",
+      "values": {
+        "challenge": 16,
+        "accept": 17,
+        "bet": 18,
+        "deal": 19,
+        "hit": 20,
+        "stand": 21,
+        "double": 22,
+        "card": 23,
+        "reveal": 24,
+        "refund": 25
+      }
+    },
+    {
+      "key": "blackjack-hand-v3-action",
+      "description": "blackjack-hand-v3-item key 1 (schema 3); disjoint from schemas 1 and 2.",
+      "values": {
+        "challenge": 32,
+        "accept": 33,
+        "bet": 34,
+        "deal": 35,
+        "hit": 36,
+        "stand": 37,
+        "double": 38,
+        "card": 39,
+        "reveal": 40,
+        "refund": 41
+      }
+    },
+    {
+      "key": "blackjack-outcome",
+      "description": "Reveal key 9 (schemas 1 and 2).",
+      "values": {
+        "player-win": 0,
+        "dealer-win": 1,
+        "push": 2,
+        "player-blackjack": 3
+      }
+    },
+    {
+      "key": "blackjack-role",
+      "description": "Challenge key 2 (schemas 2 and 3).",
+      "values": {
+        "dealer": 0,
+        "player": 1
+      }
+    }
+  ]
+}

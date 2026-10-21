@@ -5,6 +5,7 @@ use crate::error::UsageError;
 use crate::frame::{encode_frame, EnvelopeFields, FramePayload};
 use crate::hash::forwarding_payload_digest;
 use crate::limits::{MAX_FORWARDING_DELIVERY_FRAME_BYTES, MAX_PAYMENT_MEMBERS};
+use crate::message_fields as mf;
 use crate::message_types::TYPE_FORWARDING_DELIVERY_ENVELOPE;
 use crate::model::{AccountRef, ParsedFrame, PaymentMember, PaymentValue, TypedPayload};
 
@@ -34,37 +35,55 @@ pub struct ForwardingDeliveryEnvelope {
 }
 
 fn encode_account(acc: &AccountRef) -> Result<CborValue, UsageError> {
-    if acc.key_type != 1 {
+    if acc.key_type != mf::key_type::SECP256K1 {
         return Err(bad("destination account must be key type 1"));
     }
     if acc.key_bytes.len() != 33 {
         return Err(bad("key type 1 requires 33 key bytes"));
     }
     Ok(CborValue::Map(vec![
-        (0, CborValue::Int(i128::from(acc.key_type))),
-        (1, CborValue::Bytes(acc.key_bytes.clone())),
+        (
+            mf::account_ref::KEY_TYPE,
+            CborValue::Int(i128::from(acc.key_type)),
+        ),
+        (
+            mf::account_ref::KEY_BYTES,
+            CborValue::Bytes(acc.key_bytes.clone()),
+        ),
     ]))
 }
 
 fn encode_payment_member(p: &PaymentMember) -> CborValue {
     let mut entries = vec![
-        (0, CborValue::Int(i128::from(p.child_index))),
-        (1, CborValue::Bytes(p.transaction_id.clone())),
         (
-            2,
+            mf::payment_member::CHILD_INDEX,
+            CborValue::Int(i128::from(p.child_index)),
+        ),
+        (
+            mf::payment_member::TRANSACTION_ID,
+            CborValue::Bytes(p.transaction_id.clone()),
+        ),
+        (
+            mf::payment_member::VALUE,
             match &p.value {
                 PaymentValue::Quantity(b) => CborValue::Bytes(b.clone()),
                 PaymentValue::Satoshis(s) => CborValue::Int(i128::from(*s)),
             },
         ),
-        (3, CborValue::Bytes(p.address.clone())),
-        (4, CborValue::Bytes(p.commitment.clone())),
+        (
+            mf::payment_member::ADDRESS,
+            CborValue::Bytes(p.address.clone()),
+        ),
+        (
+            mf::payment_member::COMMITMENT,
+            CborValue::Bytes(p.commitment.clone()),
+        ),
     ];
     if let Some(vout) = p.vout {
-        entries.push((5, CborValue::Int(i128::from(vout))));
+        entries.push((mf::payment_member::VOUT, CborValue::Int(i128::from(vout))));
     }
     if let Some(ref raw) = p.raw_tx {
-        entries.push((6, CborValue::Bytes(raw.clone())));
+        entries.push((mf::payment_member::RAW_TX, CborValue::Bytes(raw.clone())));
     }
     CborValue::Map(entries)
 }
@@ -97,12 +116,24 @@ pub fn encode_forwarding_delivery(
     };
 
     let mut map_entries = vec![
-        (0, CborValue::Text(envelope.network.clone())),
-        (1, encode_account(&envelope.destination)?),
-        (2, CborValue::Bytes(envelope.payload_frame.clone())),
-        (3, CborValue::Bytes(digest)),
         (
-            4,
+            mf::forwarding_delivery_envelope::NETWORK,
+            CborValue::Text(envelope.network.clone()),
+        ),
+        (
+            mf::forwarding_delivery_envelope::DESTINATION,
+            encode_account(&envelope.destination)?,
+        ),
+        (
+            mf::forwarding_delivery_envelope::PAYLOAD_FRAME,
+            CborValue::Bytes(envelope.payload_frame.clone()),
+        ),
+        (
+            mf::forwarding_delivery_envelope::PAYLOAD_DIGEST,
+            CborValue::Bytes(digest),
+        ),
+        (
+            mf::forwarding_delivery_envelope::PAYMENTS,
             CborValue::Array(
                 envelope
                     .payments
@@ -117,14 +148,20 @@ pub fn encode_forwarding_delivery(
         if endpoint.is_empty() || endpoint.len() > 256 {
             return Err(bad("endpoint must be 1..256 characters"));
         }
-        map_entries.push((5, CborValue::Text(endpoint.clone())));
+        map_entries.push((
+            mf::forwarding_delivery_envelope::ENDPOINT,
+            CborValue::Text(endpoint.clone()),
+        ));
     }
 
     if let Some(expires_at) = envelope.expires_at {
         if expires_at > u32::MAX as u64 {
             return Err(bad("expires_at must fit in u32"));
         }
-        map_entries.push((6, CborValue::Int(i128::from(expires_at))));
+        map_entries.push((
+            mf::forwarding_delivery_envelope::EXPIRES_AT,
+            CborValue::Int(i128::from(expires_at)),
+        ));
     }
 
     for (k, v) in &envelope.unknown {

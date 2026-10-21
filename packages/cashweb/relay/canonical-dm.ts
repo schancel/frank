@@ -1,5 +1,11 @@
 /** Pure canonical DM preparation/opening. Admission and payment verification remain caller-owned. */
 import {
+  ACCOUNT_REF,
+  ENCRYPTED_MESSAGE_CONTENT,
+  ENCRYPTION_SUITE,
+  MESSAGE_CONTENT_REVISION,
+  RECIPIENT_ENCRYPTED_PAYLOAD_V2,
+  TEXT_MESSAGE_ITEM,
   beginDirectMessageValidation,
   cborMap,
   compareAccounts,
@@ -95,8 +101,8 @@ const accountEqual = (a: AccountRef, b: AccountRef): boolean =>
 const copy = (bytes: Uint8Array): Uint8Array => new Uint8Array(bytes)
 const account = (a: AccountRef): Encodable =>
   cborMap([
-    [0, a.keyType],
-    [1, a.keyBytes],
+    [ACCOUNT_REF.keyType, a.keyType],
+    [ACCOUNT_REF.keyBytes, a.keyBytes],
   ])
 const frame = (typeId: number, payload: Encodable, version = 1): Uint8Array =>
   encodeFrame(
@@ -106,7 +112,7 @@ const frame = (typeId: number, payload: Encodable, version = 1): Uint8Array =>
 
 /** Encode text directly as type 17; callers pass exact frames for containers/opaque items. */
 export function directMessageText(text: string): Uint8Array {
-  const bytes = frame(TYPE_TEXT_MESSAGE_ITEM, cborMap([[0, text]]))
+  const bytes = frame(TYPE_TEXT_MESSAGE_ITEM, cborMap([[TEXT_MESSAGE_ITEM.text, text]]))
   parseFrame(bytes)
   return bytes
 }
@@ -302,20 +308,22 @@ export function prepareDirectMessage(input: {
     const revision = frame(
       TYPE_MESSAGE_CONTENT_REVISION,
       cborMap([
-        [0, 'frank'],
-        [1, input.items.map(copy)],
+        [MESSAGE_CONTENT_REVISION.network, 'frank'],
+        [MESSAGE_CONTENT_REVISION.items, input.items.map(copy)],
       ]),
     )
     const contentDigest = messageContentDigest(revision)
+    const C = ENCRYPTED_MESSAGE_CONTENT
     const contentEntries: [number, Encodable][] = [
-      [0, input.network],
-      [1, messageId],
-      [2, revision],
-      [3, contentDigest],
+      [C.network, input.network],
+      [C.messageId, messageId],
+      [C.revisionFrame, revision],
+      [C.contentDigest, contentDigest],
     ]
-    if (conversationId !== undefined) contentEntries.push([4, conversationId])
+    if (conversationId !== undefined)
+      contentEntries.push([C.conversationId, conversationId])
     if (input.conversationName !== undefined) {
-      contentEntries.push([5, input.conversationName])
+      contentEntries.push([C.conversationName, input.conversationName])
     }
     plaintext = frame(TYPE_ENCRYPTED_MESSAGE_CONTENT, cborMap(contentEntries))
     // Reject invalid authoring before invoking the capability or consuming entropy.
@@ -342,15 +350,22 @@ export function prepareDirectMessage(input: {
     const payload = frame(
       TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
       cborMap([
-        [0, input.network],
-        [1, account(sender.statement.subject)],
-        [2, account(recipient.statement.subject)],
-        [3, 1],
-        [4, copy(sealed.value)],
-        [5, proof.ephemeralPoint],
-        [6, proof.sharedPoint],
-        [7, proof.dleqProof],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V2.network, input.network],
+        [
+          RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender,
+          account(sender.statement.subject),
+        ],
+        [
+          RECIPIENT_ENCRYPTED_PAYLOAD_V2.recipient,
+          account(recipient.statement.subject),
+        ],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V2.suite, ENCRYPTION_SUITE.dmAuthXchacha],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V2.cryptoBoxEnvelope, copy(sealed.value)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V2.ephemeralPoint, proof.ephemeralPoint],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sharedPoint, proof.sharedPoint],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V2.dleqProof, proof.dleqProof],
       ]),
+
       2,
     )
     // Production writer is subject to the same aggregate/depth budget across encryption.

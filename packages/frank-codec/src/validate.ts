@@ -8,35 +8,52 @@ import {
 } from './blackjack-schema'
 import { Counters, FrankValue, decodeSingleItem, newCounters } from './cbor'
 import {
+  ENCRYPTION_SUITE_DM_AUTH_XCHACHA,
+  CONTAINER_MESSAGE_ITEM,
+  DIRECTORY_ATTESTATION,
+  DIRECTORY_STATEMENT,
+  DIRECT_MESSAGE_DELIVERY,
+  ENCRYPTED_MESSAGE_CONTENT,
+  FORUM_DISCOVERY_PAGE,
+  FORUM_OPERATION_STATUS,
+  FORUM_SINGLE_VIEW,
+  FORUM_TOPIC_PAGE,
+  FORWARDING_DELIVERY_ENVELOPE,
   FRAME_HEADER_BYTES,
   FRAME_MAGIC,
   FRAME_VERSION,
+  FRANK_ENVELOPE,
+  FRANK_ENVELOPE_SHAPE,
+  KEY_TRANSITION,
   MAX_FRAME_BYTES,
   MAX_MESSAGE_ITEMS_TOTAL,
+  MESSAGE_CONTENT_REVISION,
+  OPEN_ITEM_FIELD_FORBIDDEN_TYPES,
+  TOPIC_POST,
+  TOPIC_POST_SUBMISSION,
+  TYPE_CHANNEL_UPDATE,
   TYPE_CONTAINER_MESSAGE_ITEM,
-  TYPE_DIRECT_MESSAGE_DELIVERY,
   TYPE_DIRECTORY_ATTESTATION,
   TYPE_DIRECTORY_STATEMENT,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_EMAIL_MESSAGE_ITEM,
   TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_OPERATION_STATUS,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_VIEW,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
   TYPE_KEY_TRANSITION_STATEMENT,
   TYPE_MAILBOX_CHECKPOINT,
   TYPE_MESSAGE_CONTENT_REVISION,
-  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
-  TYPE_TEXT_MESSAGE_ITEM,
-  TYPE_STEALTH_MESSAGE_ITEM,
-  TYPE_CHANNEL_UPDATE,
-  TYPE_FORWARDING_DELIVERY_ENVELOPE,
-  TYPE_EMAIL_MESSAGE_ITEM,
   TYPE_PLUGIN_MESSAGE_ITEM,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_STEALTH_MESSAGE_ITEM,
+  TYPE_TEXT_MESSAGE_ITEM,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
-  TYPE_FORUM_VIEW,
-  TYPE_FORUM_TOPIC_PAGE,
-  TYPE_FORUM_DISCOVERY_PAGE,
-  TYPE_FORUM_OPERATION_STATUS,
   U32_MAX,
-  OPEN_ITEM_FIELD_FORBIDDEN_TYPES,
 } from './constants'
 import {
   ErrorCategory,
@@ -52,7 +69,7 @@ import {
   parseForumContent,
   parseForumCursor,
 } from './schema'
-import type { FeatureCodecDescriptor } from './schema-primitives'
+import { at, atItem, type FeatureCodecDescriptor } from './schema-primitives'
 import { checkSemantics } from './semantic'
 import type {
   ChildFrame,
@@ -245,8 +262,10 @@ interface Envelope {
 function parseEnvelope(v: FrankValue, location: string): Envelope {
   const bad = (m: string) => fail('schema', '6', m, `${location}/envelope`)
   if (!(v instanceof Map)) throw bad('the envelope must be a map (E1)')
-  if (v.size !== 4) throw bad('the envelope must have exactly keys 0..3 (E1)')
-  for (const k of [0n, 1n, 2n, 3n])
+  if (v.size !== FRANK_ENVELOPE_SHAPE.required.length)
+    throw bad('the envelope must have exactly keys 0..3 (E1)')
+  const E = FRANK_ENVELOPE
+  for (const k of FRANK_ENVELOPE_SHAPE.required.map(BigInt))
     if (!v.has(k)) throw bad(`missing envelope key ${k} (E1)`)
   const u32 = (k: bigint, min: bigint): number => {
     const x = v.get(k)
@@ -256,10 +275,10 @@ function parseEnvelope(v: FrankValue, location: string): Envelope {
       throw bad(`envelope key ${k} out of range`)
     return Number(x)
   }
-  const typeId = u32(0n, 0n)
-  const schemaVersion = u32(1n, 1n)
-  const minReaderVersion = u32(2n, 1n)
-  const payloadBytes = v.get(3n)
+  const typeId = u32(BigInt(E.typeId), 0n)
+  const schemaVersion = u32(BigInt(E.schemaVersion), 1n)
+  const minReaderVersion = u32(BigInt(E.minReaderVersion), 1n)
+  const payloadBytes = v.get(BigInt(E.payload))
   if (!(payloadBytes instanceof Uint8Array))
     throw bad('envelope payload must be a byte string')
   if (minReaderVersion > schemaVersion) {
@@ -517,12 +536,7 @@ function processFrame(
     )
   }
   const draft = relocating(location, () => {
-    checkTypeLimits(
-      env.typeId,
-      payload,
-      env.schemaVersion,
-      sh.featureCodecs,
-    )
+    checkTypeLimits(env.typeId, payload, env.schemaVersion, sh.featureCodecs)
     // Stage 8.2 and 8.3: structure, then allocated identifiers.
     const d = parseDraft(
       env.typeId,
@@ -685,12 +699,12 @@ function openChildren(
         content: parseForumContent(
           decodeSingleItem(
             d.body,
-            { stage: '8.4', location: `${P}.3` },
+            { stage: '8.4', location: at(P, TOPIC_POST.body) },
             sh.counters,
             envDepth + 1,
           ),
           allowUnknown,
-          `${P}.3`,
+          at(P, TOPIC_POST.body),
         ),
       }
     case TYPE_FORUM_VIEW:
@@ -701,7 +715,7 @@ function openChildren(
           TYPE_TOPIC_POST,
           envDepth + 1,
           sh,
-          `${P}.1`,
+          at(P, FORUM_SINGLE_VIEW.postFrame),
         ),
       }
     case TYPE_FORUM_TOPIC_PAGE:
@@ -712,26 +726,38 @@ function openChildren(
           : parseForumCursor(
               decodeSingleItem(
                 bytes,
-                { stage: '8.4', location: `${P}.${key}` },
+                { stage: '8.4', location: at(P, key) },
                 sh.counters,
                 envDepth + 1,
               ),
               bytes,
-              `${P}.${key}`,
+              at(P, key),
             )
       if (d.type === TYPE_FORUM_TOPIC_PAGE)
         return {
           ...d,
           rows: d.rows.map((bytes, i) =>
-            required(bytes, TYPE_FORUM_VIEW, envDepth + 2, sh, `${P}.4[${i}]`),
+            required(
+              bytes,
+              TYPE_FORUM_VIEW,
+              envDepth + 2,
+              sh,
+              atItem(P, FORUM_TOPIC_PAGE.rows, i),
+            ),
           ),
-          nextCursor: cursor(d.nextCursor, 5),
-          requestCursor: cursor(d.requestCursor, 7),
+          nextCursor: cursor(d.nextCursor, FORUM_TOPIC_PAGE.nextCursor),
+          requestCursor: cursor(
+            d.requestCursor,
+            FORUM_TOPIC_PAGE.requestCursor,
+          ),
         }
       return {
         ...d,
-        nextCursor: cursor(d.nextCursor, 3),
-        requestCursor: cursor(d.requestCursor, 5),
+        nextCursor: cursor(d.nextCursor, FORUM_DISCOVERY_PAGE.nextCursor),
+        requestCursor: cursor(
+          d.requestCursor,
+          FORUM_DISCOVERY_PAGE.requestCursor,
+        ),
       }
     }
     case TYPE_FORUM_OPERATION_STATUS:
@@ -742,7 +768,7 @@ function openChildren(
           [TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION],
           envDepth + 1,
           sh,
-          `${P}.1`,
+          at(P, FORUM_OPERATION_STATUS.submittedFrame),
         ),
       }
     case TYPE_FORWARDING_DELIVERY_ENVELOPE:
@@ -753,7 +779,7 @@ function openChildren(
           TYPE_DIRECT_MESSAGE_DELIVERY,
           envDepth + 1,
           sh,
-          `${P}.2`,
+          at(P, FORWARDING_DELIVERY_ENVELOPE.payloadFrame),
         ),
       }
     case TYPE_DIRECT_MESSAGE_DELIVERY:
@@ -764,7 +790,7 @@ function openChildren(
           TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
           envDepth + 1,
           sh,
-          `${P}.2`,
+          at(P, DIRECT_MESSAGE_DELIVERY.payloadFrame),
         ),
       }
     case TYPE_DIRECTORY_ATTESTATION:
@@ -775,7 +801,7 @@ function openChildren(
           TYPE_DIRECTORY_STATEMENT,
           envDepth + 1,
           sh,
-          `${P}.0`,
+          at(P, DIRECTORY_ATTESTATION.statementFrame),
         ),
       }
     case TYPE_DIRECTORY_STATEMENT: {
@@ -791,7 +817,10 @@ function openChildren(
             TYPE_KEY_TRANSITION_STATEMENT,
             envDepth + 3,
             sh,
-            `${P}.5[${i}].0`,
+            at(
+              atItem(P, DIRECTORY_STATEMENT.keyTransitions, i),
+              KEY_TRANSITION.statementFrame,
+            ),
           ),
         })),
       }
@@ -804,7 +833,7 @@ function openChildren(
           TYPE_MESSAGE_CONTENT_REVISION,
           envDepth + 1,
           sh,
-          `${P}.2`,
+          at(P, ENCRYPTED_MESSAGE_CONTENT.revisionFrame),
         ),
       }
     case TYPE_TOPIC_POST_SUBMISSION:
@@ -815,13 +844,29 @@ function openChildren(
           TYPE_TOPIC_POST,
           envDepth + 1,
           sh,
-          `${P}.1`,
+          at(P, TOPIC_POST_SUBMISSION.postFrame),
         ),
       }
     case TYPE_MESSAGE_CONTENT_REVISION:
-      return { ...d, items: openItems(d.items, envDepth + 2, sh, `${P}.1`) }
+      return {
+        ...d,
+        items: openItems(
+          d.items,
+          envDepth + 2,
+          sh,
+          at(P, MESSAGE_CONTENT_REVISION.items),
+        ),
+      }
     case TYPE_CONTAINER_MESSAGE_ITEM:
-      return { ...d, items: openItems(d.items, envDepth + 2, sh, `${P}.0`) }
+      return {
+        ...d,
+        items: openItems(
+          d.items,
+          envDepth + 2,
+          sh,
+          at(P, CONTAINER_MESSAGE_ITEM.items),
+        ),
+      }
     default:
       return d
   }
@@ -1050,7 +1095,7 @@ export function beginDirectMessageValidation(
     point.payload.schemaVersion !== 2 ||
     point.payload.minReaderVersion !== 2 ||
     point.payload.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
-    point.payload.typed.suite !== 1
+    point.payload.typed.suite !== ENCRYPTION_SUITE_DM_AUTH_XCHACHA
   )
     throw new FrankContextError(
       'DM sessions require a type-1/type-5 root with schema-2 min-reader-2 suite-1 payload',

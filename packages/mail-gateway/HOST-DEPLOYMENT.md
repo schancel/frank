@@ -2,6 +2,22 @@
 
 The executable is `yarn --cwd packages/mail-gateway start`. It refuses startup unless the existing Monad testnet wallet and journal pass read-only identity and format admission. First-run provisioning is a separate explicit operator action; restarting this command never generates wallet roots, resets wallet state, or creates a missing journal. Keep a single writable wallet owner and persist the complete wallet, journal, blob, and directory volumes together.
 
+The journal is format 9. A format-8 journal with this gateway's identity is admitted once more. At open, the gateway does the following:
+
+1. It refuses, before writing anything, any journal whose rows format 9 cannot hold faithfully, naming those rows. It also refuses when less than twice the journal's size is free beside it, or when the backup path already exists.
+2. It holds SQLite's exclusive lock and writes a verified copy with `VACUUM INTO` to `<journal file>.format8-backup-<UTC timestamp>` beside the journal.
+3. It migrates the journal to format 9 in one transaction. A failure rolls the transaction back and leaves the journal unchanged; the verified backup is kept.
+
+Every other format is still refused.
+
+The migration is roll-forward only. It commits at open, before the first runtime pass. From that pass on, releasing held mail and recovering sends can send email and spend from the wallet. Once the new gateway has done any work, never restore the format-8 backup: the journal would forget mail that was already sent and paid for, while the wallet would not. Keep the backup only for inspection.
+
+Before the first start on a format-8 volume, check:
+
+- The relay is at or after 78212c9a4, which uses mailbox auth `frank:mailbox-http-auth:v3`. There is no v2 fallback, so a gateway and relay on different versions fail the first mailbox poll and abort startup.
+- The relay's directory endpoint is a bare origin, with no path or trailing slash. It must match the origin of `FRANK_MAIL_RELAY_URL` and the endpoint named in the gateway's published directory entry.
+- If any `FRANK_MAIL_STRIPE_LINK_TIER*` is set, `FRANK_MAIL_STRIPE_WEBHOOK_SECRET_FILE` or `FRANK_MAIL_STRIPE_WEBHOOK_SECRET` is set too. Otherwise config loading refuses to start.
+
 The host reads the following nonsecret environment variables:
 
 | Variable | Meaning |

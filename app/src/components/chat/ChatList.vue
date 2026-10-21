@@ -7,48 +7,16 @@
     >
       <q-list class="full-width">
         <q-separator />
-        <q-item>
-          <q-item-section>
-            <q-item-label v-if="showTitle">{{
-              $t('chatList.directMessages')
-            }}</q-item-label>
-          </q-item-section>
-          <q-space />
-          <q-btn
-            dense
-            flat
-            icon="qr_code_scanner"
-            :aria-label="$t('contactBookDialog.myQrCode')"
-            data-testid="chat-list-qr-btn"
-            data-test="chat-list-qr-btn"
-            @click="openQrPage"
-          />
-          <q-btn
-            dense
-            flat
-            icon="add"
-            :aria-label="$t('newContactDialog.startConversation')"
-            data-testid="start-conversation-btn"
-            @click="openNewConversation"
-          />
-        </q-item>
-        <q-separator />
-        <q-item
-          v-if="$status.setup && groupsAvailable"
-          clickable
-          data-testid="new-group-btn"
-          @click="newGroupOpen = true"
-        >
-          <q-item-section avatar><q-icon name="group_add" /></q-item-section>
-          <q-item-section>{{ $t('groupChat.newGroup') }}</q-item-section>
-        </q-item>
-
-        <!-- Full-Text E2EE Search Input & Paid-Stranger Screener Filter Chip -->
+        <!-- One bar: search (the remaining width; ⌘K focuses it), then new group, my QR code and
+        new chat. The All/Screener filter row stays under it. -->
         <div
-          v-if="!compact && $status.setup"
-          class="q-px-sm q-py-xs chat-list-triage-controls"
+          class="row items-center no-wrap q-px-sm q-py-xs chat-list-toolbar"
+          data-testid="chat-list-toolbar"
         >
-          <div class="chat-search-box row items-center no-wrap">
+          <div
+            v-if="!compact && $status.setup"
+            class="chat-search-box row items-center no-wrap col"
+          >
             <input
               ref="searchInputRef"
               v-model="searchQuery"
@@ -72,7 +40,53 @@
               >×</span
             >
           </div>
+          <q-space v-else />
+          <q-btn
+            v-if="$status.setup && groupsAvailable"
+            dense
+            flat
+            round
+            icon="group_add"
+            class="q-ml-xs"
+            :aria-label="$t('groupChat.newGroup')"
+            data-testid="new-group-btn"
+            @click="newGroupOpen = true"
+          >
+            <q-tooltip>{{ $t('groupChat.newGroup') }}</q-tooltip>
+          </q-btn>
+          <q-btn
+            dense
+            flat
+            round
+            icon="qr_code_scanner"
+            :aria-label="$t('contactBookDialog.myQrCode')"
+            data-testid="chat-list-qr-btn"
+            data-test="chat-list-qr-btn"
+            @click="openQrPage"
+          >
+            <q-tooltip>{{ $t('contactBookDialog.myQrCode') }}</q-tooltip>
+          </q-btn>
+          <q-btn
+            dense
+            flat
+            round
+            icon="add"
+            :aria-label="$t('newContactDialog.startConversation')"
+            data-testid="start-conversation-btn"
+            @click="openNewConversation"
+          >
+            <q-tooltip>{{
+              $t('newContactDialog.startConversation')
+            }}</q-tooltip>
+          </q-btn>
+        </div>
+        <q-separator />
 
+        <!-- Paid-Stranger Screener Filter Chips -->
+        <div
+          v-if="!compact && $status.setup"
+          class="q-px-sm chat-list-triage-controls"
+        >
           <div
             v-if="screenerSummary.count > 0 || activeFilter === 'screener'"
             class="row items-center q-gutter-xs q-mt-xs"
@@ -455,11 +469,6 @@ export default defineComponent({
       type: Boolean,
       required: true,
     },
-    // Off where the surrounding header already says "Direct Messages" (the phone chat list page).
-    showTitle: {
-      type: Boolean,
-      default: true,
-    },
   },
   components: {
     ChatListItem,
@@ -474,7 +483,12 @@ export default defineComponent({
   color: var(--q-primary);
 }
 
+.chat-list-toolbar {
+  gap: 2px;
+}
+
 .chat-search-box {
+  min-width: 0;
   border: 1px solid rgba(128, 128, 128, 0.3);
   border-radius: 8px;
   padding: 4px 8px;

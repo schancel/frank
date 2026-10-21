@@ -918,8 +918,17 @@ function freezePaidMessage(
  * cannot be reached from here, or the node shows a payment can never land (its nonce used by
  * another transaction, or its account short of value plus gas) and knows none of the set. On a
  * message's first submission, which nothing else has seen, they prove its payments unexposed.
+ *
+ * Tied to the relay's message handler (`backend/cashweb/cashweb-registry/src/http/
+ * monad_message_cbor.rs`, `handle_put`): there `undeliverable` (`deliverable_recipient` found
+ * no mailbox here) and `precheck_payments`' `stale_nonce` / `insufficient_total` are answered by
+ * `dead_response` before `owner.claim` stores anything. A change there must change this list.
+ *
+ * Only for a recipient whose mailbox is on the home relay. A message for a mailbox elsewhere goes
+ * through DM federation forwarding, where the home relay retains the request first and a later
+ * give-up answers `undeliverable` after that: no answer then proves the bytes unexposed.
  */
-const REFUSED_BEFORE_EXPOSURE: ReadonlySet<string> = new Set([
+export const REFUSED_BEFORE_EXPOSURE: ReadonlySet<string> = new Set([
   'undeliverable',
   'stale_nonce',
   'insufficient_total',
@@ -1987,9 +1996,11 @@ async function send(
         // These exact bytes went to the relay once, just now, and nowhere else: this wallet
         // broadcasts only after delivery. A refusal the relay gives before storing, delivering
         // or broadcasting anything (it does so only when the node knows none of the payments)
-        // means nothing of this payment set was ever exposed.
+        // means nothing of this payment set was ever exposed. Not through a forwarding relay,
+        // which keeps the request before it answers.
         const dead = submitted.dead
-        if (dead === undefined || !REFUSED_BEFORE_EXPOSURE.has(dead)) break
+        if (dead === undefined || elsewhere || !REFUSED_BEFORE_EXPOSURE.has(dead))
+          break
         const refused = signed
         // The record first: these bytes are never sent again, and nothing names their coins.
         row = {

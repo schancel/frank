@@ -8,7 +8,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { SigningKey, Transaction, hexlify } from 'ethers'
 import { toHex } from '@frank/codec'
-import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import {
+  CANONICAL_TERMINAL_REASONS,
+  restoreCanonicalRequest,
+} from '@frank/cashweb/relay/canonical-dm-transport'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import { evmWalletInternals } from '../evm-wallet'
 import {
@@ -40,6 +43,7 @@ import {
 } from '../evm-stamp-client'
 import {
   CanonicalRecipientUndeliverableError,
+  REFUSED_BEFORE_EXPOSURE,
   REPLACED_AFTER_MS,
   RESIGN_AFTER_MS,
   LevelOutgoingMessageStore,
@@ -1202,6 +1206,46 @@ describe('parallel paid messages', () => {
     relay.answer = undefined
     await send(2)
     expect(relayPayments()).toHaveLength(1)
+  })
+
+  it('the refusals taken as before exposure are exactly those the relay answers before it stores anything', () => {
+    const source = readFileSync(
+      join(
+        __dirname,
+        '../../../backend/cashweb/cashweb-registry/src/http/monad_message_cbor.rs',
+      ),
+      'utf8',
+    )
+    const handler = source.slice(source.indexOf('async fn handle_put'))
+    const beforeStore = handler.slice(0, handler.indexOf('owner.claim('))
+    expect(beforeStore).toContain('"undeliverable"')
+    expect(beforeStore).toContain('precheck_payments(')
+    for (const reason of ['stale_nonce', 'insufficient_total'])
+      expect(source).toContain(`=> "${reason}"`)
+    expect([...REFUSED_BEFORE_EXPOSURE].sort()).toEqual(
+      ['insufficient_total', 'stale_nonce', 'undeliverable'],
+    )
+    for (const reason of REFUSED_BEFORE_EXPOSURE)
+      expect(CANONICAL_TERMINAL_REASONS).toContain(reason)
+  })
+
+  it('through a forwarding relay, even a first refusal keeps the signed payment and its coin', async () => {
+    const [held] = await fundAccounts(1)
+    installCanonicalDirectory(alice, {
+      ...directory,
+      isHomeRelay: async () => false,
+      forwarding: async () => true,
+    })
+    refuseBeforeExposure('undeliverable')
+    const pending = await send(1).catch(error => error)
+    expect(pending).toBeInstanceOf(MonadStampPendingAttemptError)
+    expect(alice.pool.claimedBy(held.index)).toBeDefined()
+    expect(
+      f.chain.directMessages.paymentsOf?.({
+        wallet: alice,
+        payloadDigest: pending.payloadHashes[0],
+      }),
+    ).toEqual(['pending'])
   })
 
   it('a first submission refused as undeliverable before exposure frees its coin at once and across restart', async () => {

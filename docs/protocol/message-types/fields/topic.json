@@ -225,7 +225,7 @@
         "rows": 4,
         "next-cursor": 5,
         "epoch": 6,
-        "previous-cursor": 7
+        "request-cursor": 7
       },
       "shapes": [
         {
@@ -240,7 +240,7 @@
           ],
           "optional": [
             "next-cursor",
-            "previous-cursor"
+            "request-cursor"
           ],
           "open": true
         }
@@ -254,7 +254,7 @@
         "entries": 2,
         "next-cursor": 3,
         "epoch": 4,
-        "previous-cursor": 5
+        "request-cursor": 5
       },
       "shapes": [
         {
@@ -267,7 +267,7 @@
           ],
           "optional": [
             "next-cursor",
-            "previous-cursor"
+            "request-cursor"
           ],
           "open": true
         }
@@ -369,7 +369,7 @@
         "family": 1,
         "revision": 2,
         "epoch": 3,
-        "topic": 4,
+        "last": 4,
         "incarnation": 7
       },
       "shapes": [
@@ -380,7 +380,7 @@
             "family",
             "revision",
             "epoch",
-            "topic",
+            "last",
             "incarnation"
           ],
           "optional": [],
@@ -418,20 +418,20 @@
     },
     {
       "key": "forum-vote-direction",
-      "description": "forum-operation-status field 5.",
+      "description": "forum-operation-status field 5 (README forum read 15).",
       "values": {
-        "up": 0,
-        "down": 1
+        "down": 0,
+        "up": 1
       }
     },
     {
       "key": "forum-operation-state",
-      "description": "forum-operation-status field 7.",
+      "description": "forum-operation-status field 7: 0 and 3 echo an unverified request; 1 and 2 are relay observations.",
       "values": {
-        "pending": 0,
-        "confirmed": 1,
-        "failed": 2,
-        "expired": 3
+        "unknown": 0,
+        "pending": 1,
+        "confirmed": 2,
+        "rejected": 3
       }
     }
   ]

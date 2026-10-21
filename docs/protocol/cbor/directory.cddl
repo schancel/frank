@@ -38,6 +38,9 @@ directory-statement-v1 = {
   ? 5: [1*16 key-transition],
   ? 6: timestamp,
   ? 7: [1*8 account-ref],
+  ? 14: canonical-username, ; accepted at every schema by both codecs (ticket #972)
+  ? 15: account-type, ; accepted at every schema by both codecs (ticket #1120)
+  ? 16: bot-role, ; accepted at every schema by both codecs (ticket #1120)
   * uint => frank-value,
 }
 

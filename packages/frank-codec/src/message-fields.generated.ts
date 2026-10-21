@@ -213,6 +213,9 @@ export const DIRECTORY_STATEMENT_V1_SHAPE: MapShape = {
     DIRECTORY_STATEMENT.keyTransitions,
     DIRECTORY_STATEMENT.expiry,
     DIRECTORY_STATEMENT.recoveryAuthorities,
+    DIRECTORY_STATEMENT.username,
+    DIRECTORY_STATEMENT.accountType,
+    DIRECTORY_STATEMENT.botRole,
   ],
   open: true,
 }
@@ -456,7 +459,7 @@ export const FORUM_DISCOVERY_CURSOR = {
   family: 1,
   revision: 2,
   epoch: 3,
-  topic: 4,
+  last: 4,
   incarnation: 7,
 } as const
 /** `forum-discovery-cursor` map shape (docs/protocol/cbor/topic.cddl#forum-discovery-cursor). */
@@ -466,7 +469,7 @@ export const FORUM_DISCOVERY_CURSOR_SHAPE: MapShape = {
     FORUM_DISCOVERY_CURSOR.family,
     FORUM_DISCOVERY_CURSOR.revision,
     FORUM_DISCOVERY_CURSOR.epoch,
-    FORUM_DISCOVERY_CURSOR.topic,
+    FORUM_DISCOVERY_CURSOR.last,
     FORUM_DISCOVERY_CURSOR.incarnation,
   ],
   optional: [],
@@ -497,7 +500,7 @@ export const FORUM_DISCOVERY_PAGE = {
   entries: 2,
   nextCursor: 3,
   epoch: 4,
-  previousCursor: 5,
+  requestCursor: 5,
 } as const
 /** `forum-discovery-page` map shape (docs/protocol/cbor/topic.cddl#forum-discovery-page). */
 export const FORUM_DISCOVERY_PAGE_SHAPE: MapShape = {
@@ -509,7 +512,7 @@ export const FORUM_DISCOVERY_PAGE_SHAPE: MapShape = {
   ],
   optional: [
     FORUM_DISCOVERY_PAGE.nextCursor,
-    FORUM_DISCOVERY_PAGE.previousCursor,
+    FORUM_DISCOVERY_PAGE.requestCursor,
   ],
   open: true,
 }
@@ -680,7 +683,7 @@ export const FORUM_TOPIC_PAGE = {
   rows: 4,
   nextCursor: 5,
   epoch: 6,
-  previousCursor: 7,
+  requestCursor: 7,
 } as const
 /** `forum-topic-page` map shape (docs/protocol/cbor/topic.cddl#forum-topic-page). */
 export const FORUM_TOPIC_PAGE_SHAPE: MapShape = {
@@ -692,7 +695,7 @@ export const FORUM_TOPIC_PAGE_SHAPE: MapShape = {
     FORUM_TOPIC_PAGE.rows,
     FORUM_TOPIC_PAGE.epoch,
   ],
-  optional: [FORUM_TOPIC_PAGE.nextCursor, FORUM_TOPIC_PAGE.previousCursor],
+  optional: [FORUM_TOPIC_PAGE.nextCursor, FORUM_TOPIC_PAGE.requestCursor],
   open: true,
 }
 
@@ -1214,7 +1217,7 @@ export const TOKEN_TRANSFER_SHAPE: MapShape = {
     TOKEN_TRANSFER.symbol,
   ],
   optional: [TOKEN_TRANSFER.rawTxOrPermit],
-  open: true,
+  open: false,
 }
 
 /** `tombstone-fact-payload` field keys. */
@@ -1303,22 +1306,49 @@ export const BOT_ROLE = {
   announcer: 7,
 } as const
 
+/** `encryption-suite` values: Type 5 field 3 (README S2c). */
+export const ENCRYPTION_SUITE = {
+  dmAuthXchacha: 1,
+  proof: 65535,
+} as const
+
 /** `forum-entry-kind` values: forum-content entry field 0. */
 export const FORUM_ENTRY_KIND = {
   post: 1,
   game: 2,
 } as const
 
-/** `forum-operation-state` values: forum-operation-status field 7. */
+/** `forum-operation-state` values: forum-operation-status field 7: 0 and 3 echo an unverified request; 1 and 2 are relay observations. */
 export const FORUM_OPERATION_STATE = {
-  pending: 0,
-  confirmed: 1,
-  failed: 2,
-  expired: 3,
+  unknown: 0,
+  pending: 1,
+  confirmed: 2,
+  rejected: 3,
 } as const
 
-/** `forum-vote-direction` values: forum-operation-status field 5. */
+/** `forum-vote-direction` values: forum-operation-status field 5 (README forum read 15). */
 export const FORUM_VOTE_DIRECTION = {
-  up: 0,
-  down: 1,
+  down: 0,
+  up: 1,
+} as const
+
+/** `key-type` values: Account reference field 0 (README S2). */
+export const KEY_TYPE = {
+  secp256k1: 1,
+  ed25519: 2,
+  secp256k1XOnly: 3,
+} as const
+
+/** `signature-algorithm` values: Signature algorithm identifiers (README S2a/S2b). */
+export const SIGNATURE_ALGORITHM = {
+  secp256k1EcdsaDer: 1,
+  bip340Schnorr: 2,
+  bchSchnorr: 3,
+  ed25519: 16,
+} as const
+
+/** `stealth-derivation-scheme` values: stealth-asset-transfer field 1. Scheme 2 is the experimental Solana binding; the generic reader preserves it without executing it. */
+export const STEALTH_DERIVATION_SCHEME = {
+  secp256k1EcdhAddV1: 1,
+  experimentalSolanaEd25519: 2,
 } as const

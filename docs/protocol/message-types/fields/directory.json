@@ -55,7 +55,10 @@
           "optional": [
             "key-transitions",
             "expiry",
-            "recovery-authorities"
+            "recovery-authorities",
+            "username",
+            "account-type",
+            "bot-role"
           ],
           "open": true
         },

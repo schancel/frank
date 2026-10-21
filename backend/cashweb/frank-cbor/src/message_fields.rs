@@ -237,7 +237,7 @@ pub mod directory_statement {
     /// `directory-statement` v1 map shape (docs/protocol/cbor/directory.cddl#directory-statement-v1).
     pub const V1_SHAPE: MapShape = MapShape {
         required: &[NETWORK, SUBJECT, REVISION, TIMESTAMP, RELAYS],
-        optional: &[KEY_TRANSITIONS, EXPIRY, RECOVERY_AUTHORITIES],
+        optional: &[KEY_TRANSITIONS, EXPIRY, RECOVERY_AUTHORITIES, USERNAME, ACCOUNT_TYPE, BOT_ROLE],
         open: true,
     };
     /// `directory-statement` v2 map shape (docs/protocol/cbor/directory.cddl#directory-statement).
@@ -462,13 +462,13 @@ pub mod forum_discovery_cursor {
     pub const REVISION: u64 = 2;
     /// Field `epoch`.
     pub const EPOCH: u64 = 3;
-    /// Field `topic`.
-    pub const TOPIC: u64 = 4;
+    /// Field `last`.
+    pub const LAST: u64 = 4;
     /// Field `incarnation`.
     pub const INCARNATION: u64 = 7;
     /// `forum-discovery-cursor` map shape (docs/protocol/cbor/topic.cddl#forum-discovery-cursor).
     pub const SHAPE: MapShape = MapShape {
-        required: &[NETWORK, FAMILY, REVISION, EPOCH, TOPIC, INCARNATION],
+        required: &[NETWORK, FAMILY, REVISION, EPOCH, LAST, INCARNATION],
         optional: &[],
         open: false,
     };
@@ -506,12 +506,12 @@ pub mod forum_discovery_page {
     pub const NEXT_CURSOR: u64 = 3;
     /// Field `epoch`.
     pub const EPOCH: u64 = 4;
-    /// Field `previous-cursor`.
-    pub const PREVIOUS_CURSOR: u64 = 5;
+    /// Field `request-cursor`.
+    pub const REQUEST_CURSOR: u64 = 5;
     /// `forum-discovery-page` map shape (docs/protocol/cbor/topic.cddl#forum-discovery-page).
     pub const SHAPE: MapShape = MapShape {
         required: &[NETWORK, REVISION, ENTRIES, EPOCH],
-        optional: &[NEXT_CURSOR, PREVIOUS_CURSOR],
+        optional: &[NEXT_CURSOR, REQUEST_CURSOR],
         open: true,
     };
 }
@@ -698,12 +698,12 @@ pub mod forum_topic_page {
     pub const NEXT_CURSOR: u64 = 5;
     /// Field `epoch`.
     pub const EPOCH: u64 = 6;
-    /// Field `previous-cursor`.
-    pub const PREVIOUS_CURSOR: u64 = 7;
+    /// Field `request-cursor`.
+    pub const REQUEST_CURSOR: u64 = 7;
     /// `forum-topic-page` map shape (docs/protocol/cbor/topic.cddl#forum-topic-page).
     pub const SHAPE: MapShape = MapShape {
         required: &[NETWORK, TOPIC, SINCE, REVISION, ROWS, EPOCH],
-        optional: &[NEXT_CURSOR, PREVIOUS_CURSOR],
+        optional: &[NEXT_CURSOR, REQUEST_CURSOR],
         open: true,
     };
 }
@@ -1286,7 +1286,7 @@ pub mod token_transfer {
     pub const SHAPE: MapShape = MapShape {
         required: &[CHAIN_NAMESPACE, CONTRACT_ADDRESS, AMOUNT, DECIMALS, SYMBOL],
         optional: &[RAW_TX_OR_PERMIT],
-        open: true,
+        open: false,
     };
 }
 
@@ -1400,6 +1400,14 @@ pub mod bot_role {
     pub const ANNOUNCER: u32 = 7;
 }
 
+/// `encryption-suite` values: Type 5 field 3 (README S2c).
+pub mod encryption_suite {
+    /// `dm-auth-xchacha`.
+    pub const DM_AUTH_XCHACHA: u32 = 1;
+    /// `proof`.
+    pub const PROOF: u32 = 65535;
+}
+
 /// `forum-entry-kind` values: forum-content entry field 0.
 pub mod forum_entry_kind {
     /// `post`.
@@ -1408,22 +1416,52 @@ pub mod forum_entry_kind {
     pub const GAME: u32 = 2;
 }
 
-/// `forum-operation-state` values: forum-operation-status field 7.
+/// `forum-operation-state` values: forum-operation-status field 7: 0 and 3 echo an unverified request; 1 and 2 are relay observations.
 pub mod forum_operation_state {
+    /// `unknown`.
+    pub const UNKNOWN: u32 = 0;
     /// `pending`.
-    pub const PENDING: u32 = 0;
+    pub const PENDING: u32 = 1;
     /// `confirmed`.
-    pub const CONFIRMED: u32 = 1;
-    /// `failed`.
-    pub const FAILED: u32 = 2;
-    /// `expired`.
-    pub const EXPIRED: u32 = 3;
+    pub const CONFIRMED: u32 = 2;
+    /// `rejected`.
+    pub const REJECTED: u32 = 3;
 }
 
-/// `forum-vote-direction` values: forum-operation-status field 5.
+/// `forum-vote-direction` values: forum-operation-status field 5 (README forum read 15).
 pub mod forum_vote_direction {
-    /// `up`.
-    pub const UP: u32 = 0;
     /// `down`.
-    pub const DOWN: u32 = 1;
+    pub const DOWN: u32 = 0;
+    /// `up`.
+    pub const UP: u32 = 1;
+}
+
+/// `key-type` values: Account reference field 0 (README S2).
+pub mod key_type {
+    /// `secp256k1`.
+    pub const SECP256K1: u32 = 1;
+    /// `ed25519`.
+    pub const ED25519: u32 = 2;
+    /// `secp256k1-x-only`.
+    pub const SECP256K1_X_ONLY: u32 = 3;
+}
+
+/// `signature-algorithm` values: Signature algorithm identifiers (README S2a/S2b).
+pub mod signature_algorithm {
+    /// `secp256k1-ecdsa-der`.
+    pub const SECP256K1_ECDSA_DER: u32 = 1;
+    /// `bip340-schnorr`.
+    pub const BIP340_SCHNORR: u32 = 2;
+    /// `bch-schnorr`.
+    pub const BCH_SCHNORR: u32 = 3;
+    /// `ed25519`.
+    pub const ED25519: u32 = 16;
+}
+
+/// `stealth-derivation-scheme` values: stealth-asset-transfer field 1. Scheme 2 is the experimental Solana binding; the generic reader preserves it without executing it.
+pub mod stealth_derivation_scheme {
+    /// `secp256k1-ecdh-add-v1`.
+    pub const SECP256K1_ECDH_ADD_V1: u32 = 1;
+    /// `experimental-solana-ed25519`.
+    pub const EXPERIMENTAL_SOLANA_ED25519: u32 = 2;
 }

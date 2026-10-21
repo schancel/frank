@@ -108,6 +108,13 @@ export interface MapView {
 export const at = (path: string, key: number | bigint): string =>
   `${path}.${key}`
 
+/** Error path of element `index` of the list in field `key` of the map at `path`. */
+export const atItem = (
+  path: string,
+  key: number | bigint,
+  index: number,
+): string => `${path}.${key}[${index}]`
+
 /** Read a map through its registered shape (docs/protocol/message-types/fields/). */
 export function shaped(
   v: FrankValue | undefined,

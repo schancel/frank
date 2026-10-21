@@ -1,6 +1,7 @@
 /** Pure helpers for an UNALLOCATED experiment. These do not authorize execution. */
 import chains from '../../../docs/protocol/chains/v1.json'
 import { decodeCanonical, encodeCanonical, type Encodable } from './cbor'
+import { KEY_TYPE, STEALTH_DERIVATION_SCHEME } from './constants'
 import { fromHex } from './hash'
 import type { StealthAssetTransfer } from './types'
 
@@ -86,9 +87,10 @@ export function projectExperimentalSolanaStealthTransfer(
 ): ExperimentalSolanaStealthDescriptor {
   const transfer = entry.transfer
   if (
-    entry.derivationScheme !== 2 ||
-    entry.recipientSpendKey.keyType !== 2 ||
-    transfer.stealthMetadata?.ephemeralPubKey.keyType !== 2
+    entry.derivationScheme !==
+      STEALTH_DERIVATION_SCHEME.experimentalSolanaEd25519 ||
+    entry.recipientSpendKey.keyType !== KEY_TYPE.ed25519 ||
+    transfer.stealthMetadata?.ephemeralPubKey.keyType !== KEY_TYPE.ed25519
   )
     throw new RangeError(
       'expected experimental scheme 2 with Ed25519 references',

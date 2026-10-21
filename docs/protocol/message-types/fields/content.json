@@ -53,7 +53,7 @@
           "optional": [
             "raw-tx-or-permit"
           ],
-          "open": true
+          "open": false
         }
       ]
     },
@@ -447,6 +447,16 @@
           "open": true
         }
       ]
+    }
+  ],
+  "enums": [
+    {
+      "key": "stealth-derivation-scheme",
+      "description": "stealth-asset-transfer field 1. Scheme 2 is the experimental Solana binding; the generic reader preserves it without executing it.",
+      "values": {
+        "secp256k1-ecdh-add-v1": 1,
+        "experimental-solana-ed25519": 2
+      }
     }
   ]
 }

@@ -28,6 +28,7 @@ import {
   xOnlyPublicKeyFromBytes,
 } from '@frank/nakamoto'
 import { HDNodeWallet, Mnemonic, getAddress } from 'ethers'
+import { DAPP_PERSONA_SHARED_BRANCH, deriveDappPersona } from './persona-keys'
 import {
   deriveEd25519MasterNode,
   deriveEd25519PathNode,
@@ -89,7 +90,8 @@ export type DappAction =
  * disjoint from the user's primary messaging identity and `account = 0'` wallet/stamp pools.
  */
 export const MULTICHAIN_DAPP_PERSONA_PATH_PREFIXES = Object.freeze({
-  evm: "m/44'/60'/1'/0",
+  /** EVM personas use the hardened `m/1785'/60'/0'/<k>'` branch of `./persona-keys`. */
+  evm: DAPP_PERSONA_SHARED_BRANCH,
   solana: "m/44'/501'/1'",
   btcPayment: "m/84'/0'/1'/0",
   btcOrdinals: "m/86'/0'/1'/0",
@@ -285,8 +287,12 @@ export function deriveMultiChainDappPersona(
       : `${chainFamily.toUpperCase()} Burner Persona #${index}`)
 
   if (chainFamily === 'evm') {
-    const derivationPath = `${MULTICHAIN_DAPP_PERSONA_PATH_PREFIXES.evm}/${index}`
-    const hdNode = HDNodeWallet.fromSeed(seedBytes).derivePath(derivationPath)
+    const derived = deriveDappPersona(HDNodeWallet.fromSeed(seedBytes), {
+      kind: 'shared',
+      slot: index,
+    })
+    const derivationPath = derived.path
+    const hdNode = derived.node
     const privBytes = hexToBytes(hdNode.privateKey.slice(2))
     return {
       record: {

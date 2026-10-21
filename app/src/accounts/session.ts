@@ -11,6 +11,10 @@ import { reactive, readonly } from 'vue'
 import { HDNodeWallet, getAddress } from 'ethers'
 import { bip32MasterFromDomainRoot } from '@frank/wallet/bip32-domain-root'
 import { MONAD_IDENTITY_DERIVATION_PATH } from '@frank/wallet/evm-identity'
+import {
+  deriveDappPersona,
+  type DappPersonaRef,
+} from '@frank/wallet/dapp-bridge/persona-keys'
 import type { TempoPathUsdSigner } from '@frank/wallet/chain/tempo-pathusd-operation'
 import { toHex } from '@frank/codec'
 import {
@@ -125,6 +129,14 @@ export interface AccountSessionState {
  * stored before the app kept account roots: it runs on the roots saved at the time and cannot
  * derive one added since. Restoring it from its signup shares gives it every purpose.
  */
+/** Session-bound dApp persona capability: addresses and signatures, never keys. */
+export interface DappPersonaSigner {
+  readonly accountId: string
+  addresses(refs: readonly DappPersonaRef[]): Promise<string[]>
+  /** Signs a 32-byte digest with the persona key; returns the 65-byte serialized signature. */
+  signDigest(ref: DappPersonaRef, digest: string): Promise<string>
+}
+
 export class AccountPurposeUnavailableError extends Error {
   readonly code = 'account-purpose-unavailable'
 
@@ -1099,6 +1111,62 @@ export function createAccountSession(deps: {
           }
         },
       }
+    },
+    /**
+     * dApp persona addresses and signatures for the active account. Persona keys are hardened
+     * children of the account's EVM BIP-32 master (`@frank/wallet/dapp-bridge/persona-keys`);
+     * neither the master nor a persona private key leaves this capability.
+     */
+    async createDappPersonaSigner(): Promise<DappPersonaSigner> {
+      const checkCurrent = captureDerivation()
+      const owner = await session.getWallet()
+      checkCurrent()
+      const accountId = state.account?.receipt.context.accountId
+      if (!accountId) throw new CustodyError('locked')
+      const requireCurrent = () => {
+        checkCurrent()
+        if (
+          state.status !== 'ready' ||
+          wallet !== owner ||
+          state.account?.receipt.context.accountId !== accountId
+        )
+          throw new CustodyError('closed')
+      }
+      const withMaster = async <T>(
+        use: (master: HDNodeWallet) => T,
+      ): Promise<T> => {
+        requireCurrent()
+        const material = await session.getActiveFamilyMaterial('evm-wallet')
+        try {
+          requireCurrent()
+          const master =
+            'seed' in material
+              ? HDNodeWallet.fromSeed(material.seed)
+              : bip32MasterFromDomainRoot(material, 'evm-wallet')
+          const result = use(master)
+          requireCurrent()
+          return result
+        } finally {
+          if ('seed' in material) material.seed.fill(0)
+          else material.bytes.fill(0)
+        }
+      }
+      return Object.freeze({
+        accountId,
+        addresses: (refs: readonly DappPersonaRef[]) =>
+          withMaster(master =>
+            refs.map(ref => deriveDappPersona(master, ref).address),
+          ),
+        signDigest: (ref: DappPersonaRef, digest: string) => {
+          if (!/^0x[0-9a-f]{64}$/i.test(digest))
+            return Promise.reject(new Error('Invalid dApp persona digest'))
+          return withMaster(
+            master =>
+              deriveDappPersona(master, ref).node.signingKey.sign(digest)
+                .serialized,
+          )
+        },
+      })
     },
     /** Account-bound group authority. No account or scoped private key escapes. */
     async getGroupSigner(

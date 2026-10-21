@@ -1,7 +1,34 @@
 /** @jest-environment jsdom */
 
-import { shallowMount } from '@vue/test-utils'
+import { flushPromises, shallowMount } from '@vue/test-utils'
+import { HDNodeWallet, keccak256, toUtf8Bytes, verifyMessage } from 'ethers'
+import {
+  deriveDappPersona,
+  type DappPersonaRef,
+} from '@frank/wallet/dapp-bridge/persona-keys'
 import DappBridgePanel from './DappBridgePanel.vue'
+
+// Narrow seam: the session's persona capability, backed by a fixed test account master.
+const testMaster = HDNodeWallet.fromSeed(new Uint8Array(32).fill(7))
+jest.mock('src/accounts/session', () => ({
+  accountStatus: { status: 'ready' },
+  accountSession: {
+    getWallet: () => Promise.reject(new Error('no wallet in unit tests')),
+    createDappPersonaSigner: () =>
+      Promise.resolve({
+        accountId: 'test-account',
+        addresses: (refs: readonly DappPersonaRef[]) =>
+          Promise.resolve(
+            refs.map(ref => deriveDappPersona(testMaster, ref).address),
+          ),
+        signDigest: (ref: DappPersonaRef, digest: string) =>
+          Promise.resolve(
+            deriveDappPersona(testMaster, ref).node.signingKey.sign(digest)
+              .serialized,
+          ),
+      }),
+  },
+}))
 
 describe('DappBridgePanel (#1708, #1709, #1710)', () => {
   function mountPanel(props: Record<string, any> = {}) {
@@ -69,6 +96,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     expect(
       wrapper.find('[data-testid="dapp-download-safari-btn"]').exists(),
     ).toBe(true)
+    await flushPromises()
     await wrapper
       .find('[data-testid="dapp-download-firefox-btn"]')
       .trigger('click')
@@ -77,7 +105,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     ).toContain('about:debugging')
 
     expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
-      "m/44'/60'/1'/0/0",
+      "m/1785'/60'/0'/0'",
     )
     expect(
       wrapper.find('[data-testid="dapp-persona-balance"]').text(),
@@ -163,6 +191,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       initialPersonaBalanceMon: 5,
       initialPoolBalanceMon: 50,
     })
+    await flushPromises()
 
     await wrapper
       .find('[data-testid="dapp-topup-persona-btn"]')
@@ -195,7 +224,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       .find('[data-testid="dapp-create-burner-btn"]')
       .trigger('click')
     expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
-      "m/44'/60'/1'/0/1",
+      "m/1785'/60'/0'/1'",
     )
     expect(
       wrapper.find('[data-testid="dapp-persona-balance"]').text(),
@@ -207,7 +236,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       .find('[data-testid="dapp-select-persona-0"]')
       .trigger('click')
     expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
-      "m/44'/60'/1'/0/0",
+      "m/1785'/60'/0'/0'",
     )
     expect(
       wrapper.find('[data-testid="dapp-persona-balance"]').text(),
@@ -243,6 +272,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     expect(approvalCard.text()).toContain('+15.00 MON from Frank Pool')
 
     await wrapper.find('[data-testid="dapp-approve-btn"]').trigger('click')
+    await flushPromises()
     expect(wrapper.emitted('approve-request')).toHaveLength(1)
     expect(wrapper.find('[data-testid="dapp-pool-balance"]').text()).toContain(
       '85.00 MON',
@@ -284,13 +314,13 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
   })
 
   it('automatically discovers used burner personas on-chain and provides a dropdown selector', async () => {
-    const {
-      discoverUsedPersonasOnChain,
-      deriveAccountPersonaAddress,
-    } = await import('./DappBridgePanel.vue')
+    const { discoverUsedPersonasOnChain } = await import('./DappBridgePanel.vue')
 
-    const rootAddress = '0x71C00000000000000000000000000000000089A2'
-    const burner2Address = deriveAccountPersonaAddress(rootAddress, 2).toLowerCase()
+    const slotAddresses = Array.from(
+      { length: 11 },
+      (_, slot) => deriveDappPersona(testMaster, { kind: 'shared', slot }).address,
+    )
+    const burner2Address = slotAddresses[2].toLowerCase()
 
     const mockFetch = jest.fn(async (_url: string, init?: RequestInit) => {
       const batch = JSON.parse(String(init?.body ?? '[]')) as Array<{
@@ -315,10 +345,9 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       } as unknown as Response
     })
 
-    const discovered = await discoverUsedPersonasOnChain(rootAddress, {
+    const discovered = await discoverUsedPersonasOnChain(slotAddresses, {
       fetchImpl: mockFetch as unknown as typeof fetch,
       gapLimit: 3,
-      maxScan: 10,
     })
 
     const burner2Entry = discovered.find(item => item.index === 2)
@@ -340,7 +369,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
 
     await dropdown.setValue('1')
     expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
-      "m/44'/60'/1'/0/1",
+      "m/1785'/60'/0'/1'",
     )
     wrapper.unmount()
   })
@@ -358,6 +387,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       ],
     })
 
+    await flushPromises()
     const modeSelector = wrapper.find(
       '[data-testid="dapp-connect-persona-choice"]',
     )
@@ -367,7 +397,13 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       .find('[data-testid="dapp-connect-preview-address"]')
       .text()
       .trim()
-    expect(burnerAddrPreview).toMatch(/^0x[0-9a-fA-F]{40}$/)
+    // The per-site preview is the custody-derived site persona.
+    expect(burnerAddrPreview).toBe(
+      deriveDappPersona(testMaster, {
+        kind: 'site',
+        origin: 'https://app.uniswap.org',
+      }).address,
+    )
 
     // Switch to Shared Primary Persona and verify preview address changes to primary persona #0
     await wrapper
@@ -377,7 +413,9 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       .find('[data-testid="dapp-connect-preview-address"]')
       .text()
       .trim()
-    expect(primaryAddrPreview).toMatch(/^0x[0-9a-fA-F]{40}$/)
+    expect(primaryAddrPreview).toBe(
+      deriveDappPersona(testMaster, { kind: 'shared', slot: 0 }).address,
+    )
     expect(primaryAddrPreview.toLowerCase()).not.toBe(
       burnerAddrPreview.toLowerCase(),
     )
@@ -387,6 +425,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       .find('[data-testid="dapp-connect-mode-burner"]')
       .trigger('click')
     await wrapper.find('[data-testid="dapp-approve-btn"]').trigger('click')
+    await flushPromises()
 
     // Verify site now appears in Connected Sites list with its isolated burner persona badge
     const connectedList = wrapper.find(
@@ -416,6 +455,38 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
 
     wrapper.unmount()
   })
+
+  it('signs for a site with its custody-derived persona key, never a key computable from public data', async () => {
+    const origin = 'https://opensea.io'
+    const site = deriveDappPersona(testMaster, { kind: 'site', origin })
+    const wrapper = mountPanel({
+      initialOriginPersonas: {
+        [origin]: {
+          address: site.address,
+          index: 1,
+          label: 'opensea.io',
+          isBurner: true,
+        },
+      },
+      initialApprovals: [
+        { id: 'sign-1', origin, method: 'personal_sign', params: ['hello'] },
+      ],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="dapp-approve-btn"]').trigger('click')
+    await flushPromises()
+    const [[event]] = wrapper.emitted('approve-request') as any[][]
+    expect(verifyMessage('hello', event.result)).toBe(site.address)
+    // The removed public-input formula named a different key.
+    const oldKey = keccak256(
+      toUtf8Bytes(
+        `frank-dapp-origin-burner-v1:${deriveDappPersona(testMaster, {
+          kind: 'shared',
+          slot: 0,
+        }).address.toLowerCase()}:${origin}`,
+      ),
+    )
+    expect(oldKey).not.toBe(site.node.privateKey)
+    wrapper.unmount()
+  })
 })
-
-

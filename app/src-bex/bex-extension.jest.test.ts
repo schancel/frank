@@ -259,7 +259,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
 
     const bgState = createBackgroundBridgeState({
       chainIdHex: '0x279f',
-      activePersonaAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+      activePersonaAddress: '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
     })
     const bg = installBackgroundBridge(mockExtensionScope, bgState)
     await new Promise(r => setTimeout(r, 0))
@@ -331,19 +331,19 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     )
 
     const accounts = await connectPromise
-    expect(accounts).toEqual(['0x71C7656EC7ab88b098defB751B7401B5f6d8976F'])
+    expect(accounts).toEqual(['0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'])
     expect(p1!.selectedAddress).toBe(
-      '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+      '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
     )
     expect(connectEvents).toEqual([{ chainId: '0x279f' }])
     expect(accountsChangedEvents).toEqual([
-      ['0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
+      ['0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'],
     ])
 
     // Subsequent eth_accounts returns the approved account list
     const ethAccounts = await p1!.request<string[]>({ method: 'eth_accounts' })
     expect(ethAccounts).toEqual([
-      '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+      '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
     ])
 
     // wallet_switchEthereumChain and read-only RPC methods succeed for dApp compatibility
@@ -360,7 +360,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     // Signing requests hold RPC Promise open until companion approval resolves with hex signature
     const signPromise = p1!.request<string>({
       method: 'personal_sign',
-      params: ['0x48656c6c6f', '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
+      params: ['0x48656c6c6f', '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'],
     })
     await new Promise(resolve => setTimeout(resolve, 10))
     expect(bgState.pendingApprovals.size).toBe(1)
@@ -379,7 +379,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     )
     expect(resolved.result.approved).toBe(true)
     expect(resolved.result.accounts).toEqual([
-      '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+      '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
     ])
     const signRes = await signPromise
     expect(signRes).toBe('0xdeadbeefcafebabe1b')
@@ -1021,34 +1021,122 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     expect(container.contains(scriptEl)).toBe(true)
   })
 
-  it('isolates origins with deterministic per-origin burner personas by default and rejects with 4001 on user denial', async () => {
-    const { Wallet, computeAddress } = await import('ethers')
-    const {
-      deriveDeterministicOriginBurnerAddress,
-      deriveDeterministicOriginBurnerPrivateKey,
-    } = await import('./persona-derivation')
+  it('answers persona requests with an explicit not-ready error until Frank provisions a persona', async () => {
+    const { DAPP_PERSONA_NOT_READY_ERROR } = await import('./background')
+    const listeners: Array<
+      (msg: any, sender: any, sendResponse: (res: any) => void) => any
+    > = []
+    const mockScope = {
+      chrome: {
+        runtime: {
+          id: 'frank-test-ext',
+          sendMessage: (msg: any, cb?: (res: any) => void) => {
+            for (const fn of listeners) {
+              fn(msg, { tab: { id: 1, windowId: 2 } }, (res: any) => {
+                if (cb) cb(res)
+              })
+            }
+          },
+          onMessage: {
+            addListener: (fn: any) => listeners.push(fn),
+            removeListener: (fn: any) => {
+              const idx = listeners.indexOf(fn)
+              if (idx >= 0) listeners.splice(idx, 1)
+            },
+          },
+        },
+      },
+    }
+    // A fresh extension has no persona at all: no well-known placeholder address.
+    const state = createBackgroundBridgeState({
+      approvedOrigins: new Set(['https://app.uniswap.org']),
+    })
+    expect(state.activePersonaAddress).toBe('')
+    const bg = installBackgroundBridge(mockScope, state)
+    const rpc = (origin: string, method: string, params?: unknown) =>
+      sendRuntimeMessage<any, any>(
+        {
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'dapp-rpc-request',
+          origin,
+          payload: { method, params },
+        },
+        mockScope,
+      )
+    const notReady = { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
+    expect(DAPP_PERSONA_NOT_READY_ERROR.code).toBe(4900)
+    // Connected origin, nothing provisioned.
+    expect(await rpc('https://app.uniswap.org', 'eth_accounts')).toEqual(notReady)
+    expect(await rpc('https://app.uniswap.org', 'eth_requestAccounts')).toEqual(
+      notReady,
+    )
+    // New origins cannot even queue a connect or signing request.
+    expect(await rpc('https://opensea.io', 'eth_requestAccounts')).toEqual(
+      notReady,
+    )
+    expect(
+      await rpc('https://opensea.io', 'personal_sign', ['0x00', '0x00']),
+    ).toEqual(notReady)
+    expect(state.pendingApprovals.size).toBe(0)
+    // Unconnected origins still learn nothing.
+    expect((await rpc('https://tracker.example.com', 'eth_accounts')).result).toEqual(
+      [],
+    )
 
-    const rootAddr = '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'
-    const uniswapPrivKey = deriveDeterministicOriginBurnerPrivateKey(
-      rootAddr,
-      'https://app.uniswap.org',
+    // Once Frank provisions the shared persona, a connect is queued; approving a per-site
+    // persona without a custody-supplied address still fails explicitly.
+    await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'update-persona-state',
+        address: '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
+      },
+      mockScope,
     )
-    const uniswapBurner = deriveDeterministicOriginBurnerAddress(
-      rootAddr,
-      'https://app.uniswap.org',
+    expect(
+      (await rpc('https://app.uniswap.org', 'eth_accounts')).result,
+    ).toEqual(['0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'])
+    const pendingConnect = rpc('https://opensea.io', 'eth_requestAccounts')
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const approval = Array.from(state.pendingApprovals.values())[0]!
+    const approveBurner = () =>
+      sendRuntimeMessage<any, any>(
+        {
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'companion-resolve-approval',
+          requestId: approval.id,
+          approved: true,
+          useBurnerPersona: true,
+        },
+        mockScope,
+      )
+    expect((await approveBurner()).error).toEqual(DAPP_PERSONA_NOT_READY_ERROR)
+    expect(state.originPersonas['https://opensea.io']).toBeUndefined()
+    expect(state.pendingApprovals.has(approval.id)).toBe(true)
+    // Frank provides the custody-derived site persona; the same request now connects.
+    await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'provision-site-personas',
+        sitePersonas: {
+          'https://opensea.io': '0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB',
+        },
+      },
+      mockScope,
     )
-    const openseaBurner = deriveDeterministicOriginBurnerAddress(
-      rootAddr,
-      'https://opensea.io',
-    )
+    await approveBurner()
+    expect((await pendingConnect).result).toEqual([
+      '0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB',
+    ])
+    bg.dispose()
+  })
 
-    // Verify pure-TS secp256k1 + Keccak256 address derivation matches ethers.computeAddress 100%
-    expect(uniswapBurner).toBe(computeAddress(uniswapPrivKey))
-    expect( new Wallet(uniswapPrivKey).address).toBe(uniswapBurner)
-    // Anti-supercookie guarantee: Site A, Site B, and Primary Persona all have distinct addresses
-    expect(uniswapBurner.toLowerCase()).not.toBe(openseaBurner.toLowerCase())
-    expect(uniswapBurner.toLowerCase()).not.toBe(rootAddr.toLowerCase())
-    expect(openseaBurner.toLowerCase()).not.toBe(rootAddr.toLowerCase())
+  it('binds per-origin personas only to custody-supplied addresses and rejects with 4001 on user denial', async () => {
+    // Frank's custody derives these (hardened, keyed by an account-private HMAC of the origin);
+    // the extension only ever receives the addresses.
+    const rootAddr = '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'
+    const uniswapBurner = '0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359'
+    const openseaBurner = '0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB'
 
     const listeners: Array<
       (msg: any, sender: any, sendResponse: (res: any) => void) => any
@@ -1091,7 +1179,8 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     )
     await new Promise(resolve => setTimeout(resolve, 10))
     const siteAApproval = Array.from(state.pendingApprovals.values())[0]!
-    expect(siteAApproval.personaAddress).toBe(uniswapBurner)
+    // The background no longer computes a burner from public data.
+    expect(siteAApproval.personaAddress).toBeUndefined()
 
     await sendRuntimeMessage<any, any>(
       {
@@ -1100,6 +1189,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
         requestId: siteAApproval.id,
         approved: true,
         useBurnerPersona: true,
+        personaAddress: uniswapBurner,
       },
       mockScope,
     )
@@ -1124,6 +1214,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
         type: 'companion-resolve-approval',
         requestId: siteBApproval.id,
         approved: true,
+        personaAddress: openseaBurner,
       },
       mockScope,
     )
@@ -1281,7 +1372,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       },
     }
     const bgState = createBackgroundBridgeState({
-      activePersonaAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+      activePersonaAddress: '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
     })
     const bg = installBackgroundBridge(mockScope, bgState)
     const cleanupContent = installContentScriptBridge(window as any, mockScope)
@@ -1301,6 +1392,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
         type: 'companion-resolve-approval',
         requestId: btcApproval.id,
         approved: true,
+        personaAddress: '0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359',
       },
       mockScope,
     )
@@ -1337,6 +1429,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
         type: 'companion-resolve-approval',
         requestId: xecApproval.id,
         approved: true,
+        personaAddress: '0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359',
       },
       mockScope,
     )

@@ -37,7 +37,14 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, provide, ref, watch } from 'vue'
+import {
+  computed,
+  defineComponent,
+  onBeforeUnmount,
+  provide,
+  ref,
+  watch,
+} from 'vue'
 import { useNotificationPermissionOffer } from 'src/composables/useNotificationPermissionOffer'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
@@ -70,14 +77,15 @@ import {
 import { useAppOracleFeed } from 'src/composables/useOracleFeed'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../src-bex/inpage'
 import {
+  FRANK_DAPP_APPROVALS_CHANGED,
+  FRANK_DAPP_PROVISION_SITE_PERSONAS,
   getRawExtensionApi,
   isBrowserExtensionRuntime,
+  onRuntimeMessage,
   sendRuntimeMessage,
 } from '../src-bex/runtime-adapter'
+import type { PendingDappApproval } from '../src-bex/background'
 import { handlePageSyncPairingRequest } from 'src/utils/extension-account-sync'
-
-import { computeAddress, keccak256, toUtf8Bytes } from 'ethers'
-import { deriveDappPersonaKeypair } from '@frank/wallet/dapp-bridge'
 
 function isExtensionSurface(): boolean {
   if (typeof window === 'undefined') return false
@@ -90,52 +98,13 @@ function isExtensionSurface(): boolean {
   )
 }
 
-function deriveDefaultPersonaAddress(
-  seedOrAddress: string,
-  masterSeedOrMnemonic?: Uint8Array | string | null,
-): string {
-  if (masterSeedOrMnemonic) {
-    try {
-      return deriveDappPersonaKeypair(masterSeedOrMnemonic, 0).address
-    } catch {
-      // Fall through to deterministic address-seeded derivation
-    }
-  }
-  try {
-    let privKeyHex = keccak256(
-      toUtf8Bytes(`frank-dapp-persona-v1:${seedOrAddress.toLowerCase()}:0`),
-    )
-    if (
-      privKeyHex ===
-      '0x0000000000000000000000000000000000000000000000000000000000000000'
-    ) {
-      privKeyHex =
-        '0x0000000000000000000000000000000000000000000000000000000000000001'
-    }
-    return computeAddress(privKeyHex)
-  } catch {
-    return seedOrAddress
-  }
-}
-
 async function syncActivePersonaToExtension() {
   if (!isBrowserExtensionRuntime()) return
   try {
     const wallet = (await accountSession.getWallet()) as any
-    const rawAddress =
-      wallet?.mainAccount?.address ||
-      wallet?.identity?.address?.raw ||
-      wallet?.identity?.displayAddress ||
-      ''
-    const seed = String(rawAddress).trim()
-    const masterSeedOrMnemonic =
-      wallet?.masterSeed ??
-      wallet?.mnemonic ??
-      wallet?.seedHex ??
-      wallet?.mainAccount?.privateKey ??
-      null
-    if (!/^0x[a-fA-F0-9]{40}$/.test(seed) && !masterSeedOrMnemonic) return
-    const address = deriveDefaultPersonaAddress(seed, masterSeedOrMnemonic)
+    // The default shared persona is a hardened custody derivation; only its address leaves.
+    const personas = await accountSession.createDappPersonaSigner()
+    const [address] = await personas.addresses([{ kind: 'shared', slot: 0 }])
 
     let poolBalanceWeiHex = '0x0'
     try {
@@ -172,7 +141,7 @@ async function syncActivePersonaToExtension() {
     if (extApi?.storage?.local?.set) {
       void Promise.resolve(
         extApi.storage.local.set({
-          frankActivePersonaAddress: address,
+          frankDappPersonaAddress: address,
           frankPoolBalanceWeiHex: poolBalanceWeiHex,
           frankChainIdHex: '0x279f',
         }),
@@ -180,6 +149,50 @@ async function syncActivePersonaToExtension() {
     }
   } catch {
     // Wallet not unlocked or mocked in unit tests
+  }
+  await provideSitePersonasToExtension()
+}
+
+/**
+ * Gives the extension the per-site persona address of every site waiting on a connect
+ * decision. Custody derives them (hardened, keyed by an account-private HMAC of the origin);
+ * only the addresses leave this view.
+ */
+async function provideSitePersonasToExtension() {
+  if (!isBrowserExtensionRuntime() || accountStatus.status !== 'ready') return
+  try {
+    const res = await sendRuntimeMessage<
+      unknown,
+      { result?: { pendingApprovals?: PendingDappApproval[] } }
+    >({ channel: FRANK_DAPP_BRIDGE_CHANNEL, type: 'get-bridge-state' })
+    const origins = new Set(
+      (res?.result?.pendingApprovals ?? [])
+        .filter(
+          item =>
+            (item.kind === 'connect' || item.kind === 'permissions') &&
+            !item.suggestedBurnerAddress,
+        )
+        .map(item => item.origin),
+    )
+    if (origins.size === 0) return
+    const personas = await accountSession.createDappPersonaSigner()
+    const sitePersonas: Record<string, string> = {}
+    for (const origin of origins) {
+      try {
+        ;[sitePersonas[origin]] = await personas.addresses([
+          { kind: 'site', origin },
+        ])
+      } catch {
+        // An origin with no site persona (unsupported scheme) keeps only the shared choice.
+      }
+    }
+    await sendRuntimeMessage({
+      channel: FRANK_DAPP_BRIDGE_CHANNEL,
+      type: FRANK_DAPP_PROVISION_SITE_PERSONAS,
+      sitePersonas,
+    })
+  } catch {
+    // Account locked or background unreachable: the approval window says so.
   }
 }
 
@@ -218,6 +231,19 @@ export default defineComponent({
     } = storeToRefs(chatStore)
 
     const router = useRouter()
+    // A site waiting on a connect decision gets its custody-derived persona address.
+    const offApprovalsChanged = isBrowserExtensionRuntime()
+      ? onRuntimeMessage(message => {
+          const m = message as { channel?: unknown; type?: unknown } | null
+          if (
+            m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+            m?.type === FRANK_DAPP_APPROVALS_CHANGED
+          )
+            void provideSitePersonasToExtension()
+          return undefined
+        })
+      : undefined
+    onBeforeUnmount(() => offApprovalsChanged?.())
     const chatSearchShortcut = createChatSearchShortcut()
     provide(CHAT_SEARCH_SHORTCUT, chatSearchShortcut)
 

@@ -25,13 +25,13 @@ import {
   encryptDeviceSyncBundle,
   zeroizePairingKeys,
 } from '../device-pairing'
+import { deriveDappPersona } from './persona-keys'
 
 export const FRANK_EIP6963_RDNS = 'mx.signet.frank' as const
 export const FRANK_EIP6963_NAME = 'Frank' as const
 export const FRANK_EIP6963_ICON_DATA_URI =
   "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%230B0F17'/><path d='M20 16h26v8H28v8h14v8H28v10h-8V16z' fill='%2310B981'/></svg>" as const
 
-export const DAPP_PERSONA_BIP44_PATH_PREFIX = "m/44'/60'/1'/0" as const
 export const STAMP_POOL_BIP44_PATH_PREFIX = "m/44'/60'/0'/0" as const
 
 export const EIP1193_ERROR_CODES = {
@@ -121,26 +121,25 @@ function resolveMasterSeedBytes(masterSeedOrMnemonic: Uint8Array | string): Uint
 }
 
 /**
- * Derives a dedicated dApp Persona EOA keypair on BIP-44 account 1 (`m/44'/60'/1'/0/${index}`),
- * ensuring 100% cryptographic separation from both the Frank messaging identity key
- * and the `EvmStampPayer` sub-account pool (`m/44'/60'/0'/0/${i}`).
+ * Derives shared dApp persona slot `index` (`m/1785'/60'/0'/<index>'`, see `./persona-keys`)
+ * from a master seed or mnemonic. Hardened and disjoint from every wallet, identity and stamp
+ * pool path; the key is never computable from public data.
  */
 export function deriveDappPersonaKeypair(
   masterSeedOrMnemonic: Uint8Array | string,
   index: number,
 ): DerivedDappPersonaKeypair {
-  if (!Number.isSafeInteger(index) || index < 0) {
-    throw new Error(`Invalid dApp persona index: ${String(index)} (expected non-negative integer)`)
-  }
   const seedBytes = resolveMasterSeedBytes(masterSeedOrMnemonic)
-  const derivationPath = `${DAPP_PERSONA_BIP44_PATH_PREFIX}/${index}`
-  const hdNode = HDNodeWallet.fromSeed(seedBytes).derivePath(derivationPath)
+  const derived = deriveDappPersona(HDNodeWallet.fromSeed(seedBytes), {
+    kind: 'shared',
+    slot: index,
+  })
   return {
     index,
-    derivationPath,
-    address: getAddress(hdNode.address),
-    publicKeyHex: hdNode.publicKey,
-    privateKeyHex: hdNode.privateKey,
+    derivationPath: derived.path,
+    address: derived.address,
+    publicKeyHex: derived.node.publicKey,
+    privateKeyHex: derived.node.privateKey,
   }
 }
 
@@ -258,9 +257,9 @@ export interface DappPersonaKeyringOptions {
 }
 
 /**
- * Manages Frank's dedicated dApp Persona EOAs (`m/44'/60'/1'/0/k`) and origin-level permissions.
+ * Manages Frank's dedicated dApp Persona EOAs (`m/1785'/60'/0'/k'`) and origin-level permissions.
  *
- * - Index `0` is the primary dApp checking persona (`m/44'/60'/1'/0/0`).
+ * - Index `0` is the primary dApp checking persona (`m/1785'/60'/0'/0'`).
  * - Indices `1..N` are isolated per-origin burner personas so unfamiliar dApps cannot correlate
  *   addresses across sites (`app.uniswap.org` vs `opensea.io`).
  */
@@ -1974,4 +1973,5 @@ export function createExtensionOriginSyncHandshake(
 }
 
 export * from './multichain-providers'
+export * from './persona-keys'
 

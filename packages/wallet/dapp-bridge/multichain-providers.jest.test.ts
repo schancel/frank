@@ -50,7 +50,7 @@ describe('Unified Multi-Chain dApp Provider & Anti-Supercookie Persona Isolation
         expect(accountZeroSet.has(persona.address.toLowerCase())).toBe(false)
 
         if (family === 'evm') {
-          expect(persona.derivationPath).toBe("m/44'/60'/1'/0/1")
+          expect(persona.derivationPath).toBe("m/1785'/60'/0'/1'")
           expect(persona.address).toMatch(/^0x[0-9a-fA-F]{40}$/)
         } else if (family === 'solana') {
           expect(persona.derivationPath).toBe("m/44'/501'/1'/1'")

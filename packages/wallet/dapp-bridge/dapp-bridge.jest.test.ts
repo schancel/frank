@@ -1,6 +1,6 @@
 import { Transaction, TypedDataEncoder, Wallet, verifyMessage, verifyTypedData } from 'ethers'
 import {
-  DAPP_PERSONA_BIP44_PATH_PREFIX,
+  DAPP_PERSONA_SHARED_BRANCH,
   DappPersonaKeyring,
   EIP1193_ERROR_CODES,
   Eip1193ProviderRpcError,
@@ -37,7 +37,7 @@ describe('dApp Bridge (#1708, #1709, #1710)', () => {
   })
 
   describe('dApp Persona EOA Keyring & Cryptographic Isolation (#1708)', () => {
-    it('derives m/44\'/60\'/1\'/0/k completely disjoint from m/44\'/60\'/0\'/0/i stamp pool sub-accounts', () => {
+    it('derives hardened m/1785\'/60\'/0\'/k\' completely disjoint from m/44\'/60\'/0\'/0/i stamp pool sub-accounts', () => {
       const stampPoolAddresses = new Set<string>()
       for (let i = 0; i < 32; i++) {
         const sub = deriveStampPoolSubAccountAddress(TEST_MNEMONIC, i)
@@ -47,7 +47,7 @@ describe('dApp Bridge (#1708, #1709, #1710)', () => {
 
       for (let k = 0; k < 16; k++) {
         const persona = deriveDappPersonaKeypair(TEST_MNEMONIC, k)
-        expect(persona.derivationPath).toBe(`${DAPP_PERSONA_BIP44_PATH_PREFIX}/${k}`)
+        expect(persona.derivationPath).toBe(`${DAPP_PERSONA_SHARED_BRANCH}/${k}'`)
         expect(stampPoolAddresses.has(persona.address.toLowerCase())).toBe(false)
         expect(() =>
           assertNotIdentityOrStampPoolAddress(persona.address, stampPoolAddresses),

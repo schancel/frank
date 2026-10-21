@@ -29,6 +29,12 @@ export function isFrankWebAppOrigin(origin: unknown): boolean {
  * changes. It carries no approval data; views re-read `get-bridge-state`.
  */
 export const FRANK_DAPP_APPROVALS_CHANGED = 'approvals-changed'
+/**
+ * Sent by a Frank view to the background on FRANK_DAPP_BRIDGE_CHANNEL with
+ * `sitePersonas: { [origin]: address }`: custody-derived per-site persona
+ * addresses (never keys) for origins waiting on a decision.
+ */
+export const FRANK_DAPP_PROVISION_SITE_PERSONAS = 'provision-site-personas'
 
 export type RuntimeEnvironmentKind =
   | 'pwa'

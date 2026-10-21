@@ -1,8 +1,9 @@
 /**
- * Pure TypeScript Keccak-256 & secp256k1 Persona Derivation for Frank WebExtension (`src-bex`).
+ * Pure TypeScript Keccak-256 helpers for the Frank WebExtension background (`src-bex`).
  *
- * Self-contained with zero external npm dependencies so `build-extension.mjs` can bundle it
- * directly into `background.js`, while producing 100% identical Ethereum addresses to `ethers`.
+ * The background holds no persona keys and derives no persona addresses: dApp persona keys are
+ * hardened custody derivations (`@frank/wallet/dapp-bridge/persona-keys`) and Frank provisions
+ * only their addresses to the extension.
  */
 
 const KECCAK_ROUNDS = 24
@@ -117,16 +118,6 @@ export function bytesToHexBex(bytes: Uint8Array): string {
   return hex
 }
 
-export function hexToBytesBex(hex: string): Uint8Array {
-  const clean = hex.startsWith('0x') ? hex.slice(2) : hex
-  const padded = clean.length % 2 === 1 ? `0${clean}` : clean
-  const out = new Uint8Array(padded.length / 2)
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(padded.slice(i * 2, i * 2 + 2), 16) || 0
-  }
-  return out
-}
-
 export function keccak256Bytes(input: Uint8Array): Uint8Array {
   const rate = 136
   const state = new Array<bigint>(25).fill(0n)
@@ -155,130 +146,6 @@ export function keccak256Bytes(input: Uint8Array): Uint8Array {
     }
   }
   return out
-}
-
-export function keccak256Utf8Hex(text: string): string {
-  return '0x' + bytesToHexBex(keccak256Bytes(utf8ToBytesBex(text)))
-}
-
-// secp256k1 curve parameters
-const SECP_P =
-  0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn
-const SECP_N =
-  0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
-const SECP_GX =
-  0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n
-const SECP_GY =
-  0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n
-
-function modP(a: bigint): bigint {
-  const r = a % SECP_P
-  return r >= 0n ? r : r + SECP_P
-}
-
-function modInvP(a: bigint): bigint {
-  let t = 0n
-  let newT = 1n
-  let r = SECP_P
-  let newR = modP(a)
-  while (newR !== 0n) {
-    const q = r / newR
-    ;[t, newT] = [newT, t - q * newT]
-    ;[r, newR] = [newR, r - q * newR]
-  }
-  return t < 0n ? t + SECP_P : t
-}
-
-interface AffinePoint {
-  x: bigint
-  y: bigint
-}
-
-function pointAdd(p1: AffinePoint | null, p2: AffinePoint | null): AffinePoint | null {
-  if (!p1) return p2
-  if (!p2) return p1
-  if (p1.x === p2.x) {
-    if (modP(p1.y + p2.y) === 0n) return null
-    const s = modP(3n * p1.x * p1.x * modInvP(2n * p1.y))
-    const x3 = modP(s * s - 2n * p1.x)
-    const y3 = modP(s * (p1.x - x3) - p1.y)
-    return { x: x3, y: y3 }
-  }
-  const s = modP((p2.y - p1.y) * modInvP(p2.x - p1.x))
-  const x3 = modP(s * s - p1.x - p2.x)
-  const y3 = modP(s * (p1.x - x3) - p1.y)
-  return { x: x3, y: y3 }
-}
-
-function scalarMultiplyBase(k: bigint): AffinePoint {
-  let scalar = ((k % SECP_N) + SECP_N) % SECP_N
-  if (scalar === 0n) scalar = 1n
-  let result: AffinePoint | null = null
-  let addend: AffinePoint | null = { x: SECP_GX, y: SECP_GY }
-  while (scalar > 0n) {
-    if (scalar & 1n) {
-      result = pointAdd(result, addend)
-    }
-    addend = pointAdd(addend, addend)
-    scalar >>= 1n
-  }
-  if (!result) {
-    throw new Error('Invalid secp256k1 scalar multiplication')
-  }
-  return result
-}
-
-export function toChecksumEvmAddress(rawAddressHex: string): string {
-  const clean = rawAddressHex.replace(/^0x/i, '').toLowerCase()
-  if (!/^[0-9a-f]{40}$/.test(clean)) {
-    return rawAddressHex
-  }
-  const hashHex = bytesToHexBex(keccak256Bytes(utf8ToBytesBex(clean)))
-  let out = '0x'
-  for (let i = 0; i < 40; i++) {
-    const ch = clean[i]
-    if (Number.parseInt(hashHex[i], 16) >= 8) {
-      out += ch.toUpperCase()
-    } else {
-      out += ch
-    }
-  }
-  return out
-}
-
-export function computeEvmAddressFromPrivateKey(privateKeyHex: string): string {
-  const clean = privateKeyHex.replace(/^0x/i, '')
-  const privBig = BigInt(`0x${clean}`)
-  const pt = scalarMultiplyBase(privBig)
-  const pubBytes = new Uint8Array(64)
-  const xHex = pt.x.toString(16).padStart(64, '0')
-  const yHex = pt.y.toString(16).padStart(64, '0')
-  pubBytes.set(hexToBytesBex(xHex), 0)
-  pubBytes.set(hexToBytesBex(yHex), 32)
-  const addrBytes = keccak256Bytes(pubBytes).slice(12)
-  return toChecksumEvmAddress(bytesToHexBex(addrBytes))
-}
-
-export function deriveDeterministicOriginBurnerPrivateKey(
-  rootOrPrimaryAddress: string,
-  normalizedOrigin: string,
-): string {
-  const base = (rootOrPrimaryAddress || '0x71C7656EC7ab88b098defB751B7401B5f6d8976F')
-    .trim()
-    .toLowerCase()
-  const originClean = normalizedOrigin.trim().toLowerCase()
-  return keccak256Utf8Hex(`frank-dapp-origin-burner-v1:${base}:${originClean}`)
-}
-
-export function deriveDeterministicOriginBurnerAddress(
-  rootOrPrimaryAddress: string,
-  normalizedOrigin: string,
-): string {
-  const privKey = deriveDeterministicOriginBurnerPrivateKey(
-    rootOrPrimaryAddress,
-    normalizedOrigin,
-  )
-  return computeEvmAddressFromPrivateKey(privKey)
 }
 
 export function deriveDeterministicBtcAddress(personaEvmAddress: string): string {

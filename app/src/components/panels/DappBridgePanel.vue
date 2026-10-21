@@ -450,24 +450,31 @@ import {
   onMounted,
   PropType,
   ref,
+  shallowRef,
   watch,
 } from 'vue'
 import {
-  computeAddress,
   formatUnits,
   getBytes,
   hashMessage,
   isHexString,
   keccak256,
   parseUnits,
+  Signature,
   toUtf8Bytes,
   Transaction,
   TypedDataEncoder,
-  Wallet,
 } from 'ethers'
 import { activeChain } from '@frank/wallet/chain'
-import { deriveDappPersonaKeypair } from '@frank/wallet/dapp-bridge'
-import { accountSession, accountStatus } from 'src/accounts/session'
+import {
+  DAPP_PERSONA_SHARED_BRANCH,
+  type DappPersonaRef,
+} from '@frank/wallet/dapp-bridge/persona-keys'
+import {
+  accountSession,
+  accountStatus,
+  type DappPersonaSigner,
+} from 'src/accounts/session'
 import {
   getExtensionRuntime,
   onRuntimeMessage,
@@ -479,11 +486,7 @@ import {
   DappProviderAnnounceMode,
   FRANK_DAPP_BRIDGE_CHANNEL,
 } from '../../../src-bex/inpage'
-import {
-  createDeterministicRpcResultFallback,
-  deriveDeterministicOriginBurnerAddress,
-  deriveDeterministicOriginBurnerPrivateKey,
-} from '../../../src-bex/persona-derivation'
+import { createDeterministicRpcResultFallback } from '../../../src-bex/persona-derivation'
 import {
   normalizeBridgeOrigin,
   OriginPersonaBinding,
@@ -523,44 +526,6 @@ export interface DiscoveredPersonaActivity {
   used: boolean
 }
 
-const FALLBACK_PERSONA_ADDRESSES = [
-  '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
-  '0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7',
-  '0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db',
-  '0x78731D3Ca6b7E34aC0F824c42a7cC18A495cabaB',
-]
-
-export function deriveAccountPersonaPrivateKey(
-  seedOrAddress: string | null | undefined,
-  index: number,
-): string | null {
-  const clean = typeof seedOrAddress === 'string' ? seedOrAddress.trim() : ''
-  if (clean && /^0x[0-9a-fA-F]{40,64}$/.test(clean)) {
-    return keccak256(
-      toUtf8Bytes(`frank-dapp-persona-v1:${clean.toLowerCase()}:${index}`),
-    )
-  }
-  return null
-}
-
-export function deriveAccountPersonaAddress(
-  identityAddress: string | null | undefined,
-  index: number,
-): string {
-  const privKey = deriveAccountPersonaPrivateKey(identityAddress, index)
-  if (privKey) {
-    try {
-      return computeAddress(privKey)
-    } catch {
-      // Fall back below
-    }
-  }
-  return (
-    FALLBACK_PERSONA_ADDRESSES[index % FALLBACK_PERSONA_ADDRESSES.length] ??
-    FALLBACK_PERSONA_ADDRESSES[0]
-  )
-}
-
 function shortHexAddress(addr: string): string {
   if (!addr || addr.length < 12) return addr
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`
@@ -575,18 +540,24 @@ function resolveDefaultPersonaRpcUrl(): string {
   return 'https://testnet-rpc.monad.xyz'
 }
 
+/**
+ * Scans shared persona slots for on-chain activity. `slotAddresses[i]` is the custody-derived
+ * address of slot `i`; the scan covers exactly those slots.
+ */
 export async function discoverUsedPersonasOnChain(
-  rootAddress: string,
+  slotAddresses: readonly string[],
   options?: {
     rpcUrl?: string
-    maxScan?: number
     gapLimit?: number
     knownMaxIndex?: number
     fetchImpl?: typeof fetch
   },
 ): Promise<DiscoveredPersonaActivity[]> {
-  const clean = typeof rootAddress === 'string' ? rootAddress.trim() : ''
-  if (!/^0x[0-9a-fA-F]{40,64}$/.test(clean)) return []
+  if (
+    slotAddresses.length === 0 ||
+    !slotAddresses.every(addr => /^0x[0-9a-fA-F]{40}$/.test(addr))
+  )
+    return []
   const fetchFn =
     options?.fetchImpl ??
     (typeof globalThis.fetch === 'function'
@@ -595,7 +566,7 @@ export async function discoverUsedPersonasOnChain(
   if (!fetchFn) return []
 
   const rpcUrl = options?.rpcUrl || resolveDefaultPersonaRpcUrl()
-  const maxScan = Math.max(options?.maxScan ?? 10, options?.knownMaxIndex ?? 0)
+  const maxScan = slotAddresses.length - 1
   const gapLimit = options?.gapLimit ?? 5
   const discovered: DiscoveredPersonaActivity[] = []
 
@@ -607,7 +578,7 @@ export async function discoverUsedPersonasOnChain(
       params: unknown[]
     }> = []
     for (let i = 0; i <= maxScan; i += 1) {
-      const addr = deriveAccountPersonaAddress(clean, i)
+      const addr = slotAddresses[i]
       batchPayload.push({
         jsonrpc: '2.0',
         id: i * 2 + 2,
@@ -664,7 +635,7 @@ export async function discoverUsedPersonasOnChain(
         const balanceMon = Number.parseFloat(formatUnits(balWei, 18))
         discovered.push({
           index: i,
-          address: deriveAccountPersonaAddress(clean, i),
+          address: slotAddresses[i],
           balanceMon: Number.isFinite(balanceMon) ? balanceMon : 0,
           txCount,
           used,
@@ -733,7 +704,9 @@ export default defineComponent({
   setup(props, { emit }) {
     const { total: liveWalletBalanceWei } = useBalance()
     const ownCanonicalAddress = useReactiveOwnCanonicalAddress()
-    const bridgeDefaultAddress = ref('')
+    // Persona keys stay in custody: this capability yields addresses and signatures only.
+    const personaSigner = shallowRef<DappPersonaSigner | null>(null)
+    const personaAddressesBySlot = ref<Record<number, string>>({})
 
     const personaIndex = ref(0)
     const maxPersonaIndex = ref(0)
@@ -769,9 +742,40 @@ export default defineComponent({
     const wcUriInput = ref('')
     const pairedWcUri = ref('')
 
-    const resolvedRootAddress = computed(
-      () => ownCanonicalAddress.value || bridgeDefaultAddress.value || '',
-    )
+    const resolvedRootAddress = computed(() => ownCanonicalAddress.value || '')
+
+    async function requirePersonaSigner(): Promise<DappPersonaSigner> {
+      if (personaSigner.value) return personaSigner.value
+      const signer = await accountSession.createDappPersonaSigner()
+      personaSigner.value = signer
+      return signer
+    }
+
+    /** Custody-derived addresses of shared slots 0..maxSlot, cached per account. */
+    async function loadSlotAddresses(maxSlot: number): Promise<string[]> {
+      const signer = await requirePersonaSigner()
+      const missing: number[] = []
+      for (let slot = 0; slot <= maxSlot; slot += 1)
+        if (!personaAddressesBySlot.value[slot]) missing.push(slot)
+      if (missing.length > 0) {
+        const derived = await signer.addresses(
+          missing.map(slot => ({ kind: 'shared', slot }) as const),
+        )
+        const next = { ...personaAddressesBySlot.value }
+        missing.forEach((slot, i) => {
+          next[slot] = derived[i]
+        })
+        personaAddressesBySlot.value = next
+      }
+      return Array.from(
+        { length: maxSlot + 1 },
+        (_, slot) => personaAddressesBySlot.value[slot],
+      )
+    }
+
+    function slotAddress(slot: number): string {
+      return personaAddressesBySlot.value[slot] ?? ''
+    }
 
     function personaStorageKey(rootAddr: string): string {
       return `frank:dapp-personas:${rootAddr.toLowerCase()}`
@@ -827,7 +831,15 @@ export default defineComponent({
     async function runAutomaticPersonaDiscovery(root: string) {
       if (!root || !/^0x[0-9a-fA-F]{40,64}$/.test(root)) return
       restorePersonaMetadata(root)
-      const results = await discoverUsedPersonasOnChain(root, {
+      let slotAddresses: string[]
+      try {
+        slotAddresses = await loadSlotAddresses(
+          Math.max(10, maxPersonaIndex.value),
+        )
+      } catch {
+        return // No unlocked account: no persona addresses to scan.
+      }
+      const results = await discoverUsedPersonasOnChain(slotAddresses, {
         knownMaxIndex: maxPersonaIndex.value,
       })
       if (results.length === 0) return
@@ -874,11 +886,10 @@ export default defineComponent({
         dropdownLabel: string
         testId: string
       }> = []
-      const root = resolvedRootAddress.value
       for (let i = 0; i <= maxPersonaIndex.value; i += 1) {
         const bal = personaBalancesByIndex.value[i] ?? 0
         const used = Boolean(usedPersonasByIndex.value[i]) || bal > 0
-        const addr = deriveAccountPersonaAddress(root, i)
+        const addr = slotAddress(i)
         const name = i === 0 ? 'Default #0' : `Burner #${i}`
         const label =
           bal > 0
@@ -979,18 +990,21 @@ export default defineComponent({
     })
 
     const activeDerivationPath = computed(
-      () => `m/44'/60'/1'/0/${personaIndex.value}`,
+      () => `${DAPP_PERSONA_SHARED_BRANCH}/${personaIndex.value}'`,
     )
 
-    const primaryPersonaAddress = computed(() =>
-      deriveAccountPersonaAddress(resolvedRootAddress.value, 0),
-    )
+    const primaryPersonaAddress = computed(() => slotAddress(0))
 
-    const activePersonaAddress = computed(() =>
-      deriveAccountPersonaAddress(
-        resolvedRootAddress.value,
-        personaIndex.value,
-      ),
+    const activePersonaAddress = computed(() => slotAddress(personaIndex.value))
+
+    // Keep the selected slots' addresses derived for the open account.
+    watch(
+      [maxPersonaIndex, () => accountStatus.status],
+      ([maxSlot, status]) => {
+        if (status !== 'ready') return
+        void loadSlotAddresses(maxSlot).catch(() => {})
+      },
+      { immediate: true },
     )
 
     const personaTitleText = computed(() =>
@@ -1022,19 +1036,41 @@ export default defineComponent({
       )
     })
 
+    /** Custody-derived per-site persona address of the request being shown, by origin. */
+    const sitePersonaAddresses = ref<Record<string, string>>({})
+
+    async function resolveSitePersonaAddress(origin: string): Promise<string> {
+      const known = sitePersonaAddresses.value[origin]
+      if (known) return known
+      const signer = await requirePersonaSigner()
+      const [address] = await signer.addresses([{ kind: 'site', origin }])
+      sitePersonaAddresses.value = {
+        ...sitePersonaAddresses.value,
+        [origin]: address,
+      }
+      return address
+    }
+
     const previewConnectAddress = computed(() => {
       const req = currentApproval.value
-      if (!req) return primaryPersonaAddress.value
-      if (!useBurnerForConnect.value) {
+      if (!req || !useBurnerForConnect.value) {
         return primaryPersonaAddress.value
       }
       const normOrigin =
         normalizeBridgeOrigin(req.origin) || req.origin.trim().toLowerCase()
-      return deriveDeterministicOriginBurnerAddress(
-        primaryPersonaAddress.value,
-        normOrigin || 'https://dapp.local',
-      )
+      return sitePersonaAddresses.value[normOrigin] ?? ''
     })
+
+    watch(
+      [currentApproval, useBurnerForConnect, () => accountStatus.status],
+      ([req, useBurner]) => {
+        if (!req || !useBurner) return
+        const normOrigin =
+          normalizeBridgeOrigin(req.origin) || req.origin.trim().toLowerCase()
+        void resolveSitePersonaAddress(normOrigin).catch(() => {})
+      },
+      { immediate: true },
+    )
 
     const dappRequestsWaitingText = computed(() =>
       dappRequestsWaiting.value === 1
@@ -1204,14 +1240,6 @@ export default defineComponent({
           channel: FRANK_DAPP_BRIDGE_CHANNEL,
           type: 'get-bridge-state',
         })
-        const bgAddr = res?.result?.activePersonaAddress
-        if (
-          typeof bgAddr === 'string' &&
-          /^0x[0-9a-fA-F]{40}$/.test(bgAddr) &&
-          bgAddr.toLowerCase() !== FALLBACK_PERSONA_ADDRESSES[0].toLowerCase()
-        ) {
-          bridgeDefaultAddress.value = bgAddr
-        }
         if (
           res?.result?.announceMode === 'always' ||
           res?.result?.announceMode === 'connected-only' ||
@@ -1288,9 +1316,10 @@ export default defineComponent({
 
     function topUpFromPool() {
       const amount = Math.min(10, poolBalanceMon.value)
-      if (amount <= 0) return
       const targetIdx = personaIndex.value
       const targetAddress = activePersonaAddress.value
+      // Never fund an address custody has not derived for this account.
+      if (amount <= 0 || !targetAddress) return
       poolTransferDeltaMon.value -= amount
       personaBalanceMon.value += amount
       usedPersonasByIndex.value = {
@@ -1324,7 +1353,7 @@ export default defineComponent({
       const swept = personaBalanceMon.value
       if (swept <= 0) return
       const sourceIdx = personaIndex.value
-      const root = resolvedRootAddress.value
+      const sourceAddress = activePersonaAddress.value
       personaBalanceMon.value = 0
       poolTransferDeltaMon.value += swept
       persistPersonaMetadata()
@@ -1333,16 +1362,15 @@ export default defineComponent({
         personaBalanceMon: personaBalanceMon.value,
         poolBalanceMon: poolBalanceMon.value,
       })
-      if (accountStatus.status === 'ready' && root) {
+      if (accountStatus.status === 'ready' && sourceAddress) {
         void (async () => {
           try {
-            const privKey = deriveAccountPersonaPrivateKey(root, sourceIdx)
-            if (!privKey || typeof fetch !== 'function') return
+            if (typeof fetch !== 'function') return
+            const personas = await requirePersonaSigner()
             const wallet = await accountSession.getWallet()
             const receiveAddr = (await wallet.getReceiveAddress?.())?.raw
             if (!receiveAddr) return
             const rpcUrl = resolveDefaultPersonaRpcUrl()
-            const signer = new Wallet(privKey)
             const batchRes = await fetch(rpcUrl, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -1351,13 +1379,13 @@ export default defineComponent({
                   jsonrpc: '2.0',
                   id: 1,
                   method: 'eth_getBalance',
-                  params: [signer.address, 'latest'],
+                  params: [sourceAddress, 'latest'],
                 },
                 {
                   jsonrpc: '2.0',
                   id: 2,
                   method: 'eth_getTransactionCount',
-                  params: [signer.address, 'latest'],
+                  params: [sourceAddress, 'latest'],
                 },
                 {
                   jsonrpc: '2.0',
@@ -1383,7 +1411,7 @@ export default defineComponent({
             const gasPrice = BigInt(gasPriceHex)
             const feeWei = gasLimit * gasPrice
             if (balWei <= feeWei) return
-            const signedTx = await signer.signTransaction({
+            const sweepTx = Transaction.from({
               type: 2,
               chainId: 10143n,
               to: receiveAddr,
@@ -1394,6 +1422,13 @@ export default defineComponent({
               maxPriorityFeePerGas:
                 gasPrice > 2_000_000_000n ? 2_000_000_000n : gasPrice,
             })
+            sweepTx.signature = Signature.from(
+              await personas.signDigest(
+                { kind: 'shared', slot: sourceIdx },
+                sweepTx.unsignedHash,
+              ),
+            )
+            const signedTx = sweepTx.serialized
             await fetch(rpcUrl, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -1411,32 +1446,31 @@ export default defineComponent({
       }
     }
 
-    function resolvePersonaPrivateKeyForOrigin(normOrigin: string): string {
+    /** Which custody persona signs for an origin: its site persona, or the shared slot it uses. */
+    function personaRefForOrigin(normOrigin: string): DappPersonaRef {
       const binding = originPersonasMap.value[normOrigin]
-      if (binding?.isBurner) {
-        return deriveDeterministicOriginBurnerPrivateKey(
-          primaryPersonaAddress.value,
-          normOrigin || 'https://dapp.local',
-        )
+      if (binding?.isBurner) return { kind: 'site', origin: normOrigin }
+      const bound = binding?.address?.toLowerCase()
+      const slot = bound
+        ? Object.entries(personaAddressesBySlot.value).find(
+            ([, addr]) => addr.toLowerCase() === bound,
+          )?.[0]
+        : undefined
+      return {
+        kind: 'shared',
+        slot: slot !== undefined ? Number(slot) : personaIndex.value,
       }
-      const rootKey = deriveAccountPersonaPrivateKey(
-        resolvedRootAddress.value || primaryPersonaAddress.value,
-        binding?.index ?? personaIndex.value,
-      )
-      if (rootKey) return rootKey
-      return deriveDeterministicOriginBurnerPrivateKey(
-        primaryPersonaAddress.value,
-        normOrigin || 'https://dapp.local',
-      )
     }
 
-    function signOrExecuteApprovalRequest(
+    async function signOrExecuteApprovalRequest(
       req: DappApprovalItem,
       normOrigin: string,
-    ): string {
+    ): Promise<string> {
       try {
-        const privKey = resolvePersonaPrivateKeyForOrigin(normOrigin)
-        const signer = new Wallet(privKey)
+        const personas = await requirePersonaSigner()
+        const ref = personaRefForOrigin(normOrigin)
+        const sign = (digest: string) => personas.signDigest(ref, digest)
+        const [personaAddress] = await personas.addresses([ref])
         const paramsList = Array.isArray(req.params) ? req.params : []
 
         if (req.method === 'personal_sign' || req.method === 'eth_sign') {
@@ -1449,7 +1483,7 @@ export default defineComponent({
             isHexString(msgStr) && msgStr.length % 2 === 0
               ? getBytes(msgStr)
               : toUtf8Bytes(msgStr)
-          return signer.signingKey.sign(hashMessage(msgBytes)).serialized
+          return await sign(hashMessage(msgBytes))
         }
 
         if (
@@ -1469,11 +1503,11 @@ export default defineComponent({
               typesCopy,
               valueObj,
             )
-            return signer.signingKey.sign(digest).serialized
+            return await sign(digest)
           }
-          return signer.signingKey.sign(
+          return await sign(
             hashMessage(toUtf8Bytes(JSON.stringify(rawTyped ?? req.summary ?? {}))),
-          ).serialized
+          )
         }
 
         if (req.method === 'eth_sendTransaction') {
@@ -1484,7 +1518,7 @@ export default defineComponent({
           const toAddr =
             typeof txObj.to === 'string' && /^0x[0-9a-fA-F]{40}$/.test(txObj.to)
               ? txObj.to
-              : signer.address
+              : personaAddress
           const valBig =
             typeof txObj.value === 'string' && /^0x[0-9a-fA-F]+$/.test(txObj.value)
               ? BigInt(txObj.value)
@@ -1503,7 +1537,7 @@ export default defineComponent({
             maxFeePerGas: 2_000_000_000n,
             maxPriorityFeePerGas: 1_000_000_000n,
           })
-          tx.signature = signer.signingKey.sign(tx.unsignedHash)
+          tx.signature = Signature.from(await sign(tx.unsignedHash))
           return keccak256(tx.serialized)
         }
       } catch {
@@ -1517,10 +1551,25 @@ export default defineComponent({
       )
     }
 
-    function approveCurrentRequest() {
+    async function approveCurrentRequest() {
       const req = currentApproval.value
       if (!req) return
       const isConnect = isConnectApproval.value
+      const normOrigin =
+        normalizeBridgeOrigin(req.origin) || req.origin.trim().toLowerCase()
+      const chosenUseBurner = useBurnerForConnect.value
+      let chosenConnectAddr = ''
+      if (isConnect) {
+        // The connect address is a custody derivation; without one there is nothing to approve.
+        try {
+          chosenConnectAddr = chosenUseBurner
+            ? await resolveSitePersonaAddress(normOrigin)
+            : (await loadSlotAddresses(personaIndex.value))[0] ?? ''
+        } catch {
+          chosenConnectAddr = ''
+        }
+        if (!chosenConnectAddr || currentApproval.value !== req) return
+      }
       const shortfall = currentApprovalShortfall.value
       if (shortfall > 0 && poolBalanceMon.value >= shortfall) {
         poolTransferDeltaMon.value -= shortfall
@@ -1529,11 +1578,6 @@ export default defineComponent({
       if (req.requiredAmountMon && personaBalanceMon.value >= req.requiredAmountMon) {
         personaBalanceMon.value -= req.requiredAmountMon
       }
-
-      const normOrigin =
-        normalizeBridgeOrigin(req.origin) || req.origin.trim().toLowerCase()
-      const chosenUseBurner = useBurnerForConnect.value
-      const chosenConnectAddr = previewConnectAddress.value
 
       approvals.value.shift()
 
@@ -1568,7 +1612,10 @@ export default defineComponent({
         return
       }
 
-      const signatureOrTxHash = signOrExecuteApprovalRequest(req, normOrigin)
+      const signatureOrTxHash = await signOrExecuteApprovalRequest(
+        req,
+        normOrigin,
+      )
       emit('approve-request', {
         request: req,
         jitSweptMon: shortfall,

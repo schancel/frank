@@ -4,10 +4,11 @@
  * A received stamp is the payer's signed transfer. The bubble labels its amount as claimed until
  * the messaging wallet saw it arrive on chain (review finding A7).
  */
-import { flushPromises, shallowMount } from '@vue/test-utils'
+import { shallowMount } from '@vue/test-utils'
 
 import ChatMessage from './ChatMessage.vue'
 import enUS from '../../../i18n/en-us'
+import { RECEIVED_PAYMENT_RECHECK_MS } from '../../../composables/useReceivedPayment'
 
 jest.mock('../../../stores/chats', () => ({
   useChatStore: () => ({
@@ -22,11 +23,15 @@ jest.mock('../../dialogs/DeleteMessageDialog.vue', () => ({
 }))
 jest.mock('../../dialogs/TransactionDialog.vue', () => ({ template: '<i />' }))
 let mockStampStatus = 'pending'
-const mockCheck = jest.fn(async (_digest: string) => ({
+const mockRead = jest.fn((_digest: string) => ({
   stampStatus: mockStampStatus,
 }))
+const mockRefresh = jest.fn(async () => [])
 jest.mock('../../../utils/clients', () => ({
-  useMonadWallet: () => ({ checkMessagePayment: mockCheck }),
+  useMonadWallet: () => ({
+    getMessagePayment: mockRead,
+    refreshReceivedPayments: mockRefresh,
+  }),
 }))
 jest.mock('../../../composables/useActiveWallet', () => ({
   useActiveWallet: () => ({}),
@@ -50,13 +55,13 @@ const t = (key: string) =>
       enUS,
     ) as string
 
-async function stampShown(outbound: boolean): Promise<string> {
-  const wrapper = shallowMount(ChatMessage, {
+function mountStamp(outbound: boolean, digest = 'ab'.repeat(32)) {
+  return shallowMount(ChatMessage, {
     props: {
       address: '0xPEER',
       name: 'peer',
       chatWidth: 500,
-      payloadDigest: 'ab'.repeat(32),
+      payloadDigest: digest,
       message: {
         outbound,
         status: 'confirmed',
@@ -70,27 +75,80 @@ async function stampShown(outbound: boolean): Promise<string> {
     },
     global: { mocks: { $t: t } },
   })
-  await flushPromises()
-  const shown = (wrapper.vm as unknown as { stampAmount: string }).stampAmount
-  wrapper.unmount()
-  return shown
+}
+const shown = (wrapper: ReturnType<typeof mountStamp>) =>
+  (wrapper.vm as unknown as { stampAmount: string }).stampAmount
+
+/** One shared tick: the wallet's own read, then every waiting bubble reads from memory. */
+async function tick() {
+  jest.advanceTimersByTime(RECEIVED_PAYMENT_RECHECK_MS)
+  // The wallet's read resolves, then the bubbles read again: let that run out.
+  for (let i = 0; i < 5; i += 1)
+    await new Promise(resolve => process.nextTick(resolve))
 }
 
-beforeEach(() => mockCheck.mockClear())
+beforeEach(() => {
+  jest.useFakeTimers({ doNotFake: ['nextTick', 'queueMicrotask'] })
+  mockRead.mockClear()
+  mockRefresh.mockClear()
+})
+afterEach(async () => {
+  // Let any tick still scheduled run with nobody waiting, so tests stay independent.
+  await tick()
+  jest.useRealTimers()
+})
 
 it('labels a received stamp as claimed until the chain shows it', async () => {
   mockStampStatus = 'pending'
-  expect(await stampShown(false)).toBe('0.01 MON (claimed)')
-  expect(mockCheck).toHaveBeenCalledWith('ab'.repeat(32))
-})
-
-it('shows a settled received stamp without the label', async () => {
+  const wrapper = mountStamp(false)
+  expect(shown(wrapper)).toBe('0.01 MON (claimed)')
+  expect(mockRead).toHaveBeenCalledWith('ab'.repeat(32))
+  expect(mockRefresh).not.toHaveBeenCalled()
   mockStampStatus = 'received'
-  expect(await stampShown(false)).toBe('0.01 MON')
+  await tick()
+  expect(mockRefresh).toHaveBeenCalledTimes(1)
+  expect(shown(wrapper)).toBe('0.01 MON')
+  // Settled: nothing more is read.
+  await tick()
+  expect(mockRefresh).toHaveBeenCalledTimes(1)
+  wrapper.unmount()
 })
 
-it('never labels a stamp we paid', async () => {
+it('shows a settled stamp without the label from the first render, from memory', () => {
+  mockStampStatus = 'received'
+  const wrapper = mountStamp(false)
+  expect(shown(wrapper)).toBe('0.01 MON')
+  wrapper.unmount()
+})
+
+it('stops reading when the wallet holds no coin for the stamp', async () => {
+  mockStampStatus = 'none'
+  const wrapper = mountStamp(false)
+  expect(shown(wrapper)).toBe('0.01 MON (claimed)')
+  await tick()
+  await tick()
+  expect(mockRefresh).not.toHaveBeenCalled()
+  expect(mockRead).toHaveBeenCalledTimes(1)
+  wrapper.unmount()
+})
+
+it('serves every waiting bubble with one wallet read per tick', async () => {
   mockStampStatus = 'pending'
-  expect(await stampShown(true)).toBe('0.01 MON')
-  expect(mockCheck).not.toHaveBeenCalled()
+  const bubbles = ['01', '02', '03', '04', '05'].map(d =>
+    mountStamp(false, d.repeat(32)),
+  )
+  await tick()
+  await tick()
+  expect(mockRefresh).toHaveBeenCalledTimes(2)
+  bubbles.forEach(b => b.unmount())
+  await tick()
+  expect(mockRefresh).toHaveBeenCalledTimes(2)
+})
+
+it('never labels or reads a stamp we paid', () => {
+  mockStampStatus = 'pending'
+  const wrapper = mountStamp(true)
+  expect(shown(wrapper)).toBe('0.01 MON')
+  expect(mockRead).not.toHaveBeenCalled()
+  wrapper.unmount()
 })

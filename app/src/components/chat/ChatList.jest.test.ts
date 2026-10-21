@@ -60,7 +60,7 @@ const mockReceipts: Record<
   Array<{ chainIdentifier: string; baseUnits: bigint }>
 > = {}
 jest.mock('src/utils/message-receipts', () => ({
-  verifiedMessageReceipts: (digest: string) => mockReceipts[digest] ?? [],
+  verifiedReceiptsReader: () => (digest: string) => mockReceipts[digest] ?? [],
 }))
 jest.mock('./ChatListItem.vue', () => ({
   props: ['valueUnread', 'numUnread', 'screenerStamp'],

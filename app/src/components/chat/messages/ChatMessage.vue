@@ -241,7 +241,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, onBeforeUnmount, onMounted, PropType, ref } from 'vue'
+import { defineComponent, onBeforeUnmount, PropType, ref } from 'vue'
 import { RECEIVED_PAYMENT_RECHECK_MS } from '../../../composables/useReceivedPayment'
 
 import { useChatStore } from '../../../stores/chats'
@@ -301,6 +301,38 @@ import {
 } from '../../../utils/chat-attachments'
 import type { PostAttachment } from '../../../utils/post-editor'
 
+/**
+ * Received stamps still waiting to settle, across every mounted bubble. One wallet read per
+ * tick serves them all: `refreshReceivedPayments` is the wallet's own pass, which keeps its
+ * backoff for coins long overdue, instead of a chain check per message. Each waiter then reads
+ * its message from memory and says whether it is done.
+ */
+const stampWaiters = new Set<() => boolean>()
+let stampTick: ReturnType<typeof setTimeout> | undefined
+function scheduleStampTick(): void {
+  if (stampTick !== undefined || stampWaiters.size === 0) return
+  stampTick = setTimeout(() => {
+    void (async () => {
+      try {
+        // Every bubble that waited may have gone meanwhile: then nothing is read.
+        if (stampWaiters.size > 0)
+          await useMonadWallet().refreshReceivedPayments?.()
+      } catch {
+        // No wallet or node now: read again on the next tick.
+      }
+      stampTick = undefined
+      for (const waiter of Array.from(stampWaiters))
+        if (waiter()) stampWaiters.delete(waiter)
+      scheduleStampTick()
+    })()
+  }, RECEIVED_PAYMENT_RECHECK_MS)
+  ;(stampTick as { unref?: () => void }).unref?.()
+}
+function waitForStamp(read: () => boolean): void {
+  stampWaiters.add(read)
+  scheduleStampTick()
+}
+
 export default defineComponent({
   name: 'ChatMessage',
   components: {
@@ -347,43 +379,30 @@ export default defineComponent({
     )
     const chats = useChatStore()
     // A received stamp is the payer's signed transfer; it is shown as claimed until the
-    // messaging wallet saw it arrive on chain. Read again while it may still arrive.
+    // messaging wallet saw it arrive on chain. Read from memory now, then on the shared tick.
     const stampSettled = ref(false)
-    let stampTimer: ReturnType<typeof setTimeout> | undefined
-    let stopped = false
-    const checkStamp = async () => {
+    const readStamp = (): boolean => {
       const message = props.message
       if (
-        stopped ||
         message.outbound ||
         !props.payloadDigest ||
         !((message.stampValueWei ?? 0n) > 0n)
       )
-        return
+        return true
       let status: string | undefined
       try {
-        const wallet = useMonadWallet()
-        status = (
-          (await wallet.checkMessagePayment?.(props.payloadDigest)) ??
-          wallet.getMessagePayment?.(props.payloadDigest)
+        status = useMonadWallet().getMessagePayment?.(
+          props.payloadDigest,
         )?.stampStatus
       } catch {
-        // No wallet or node now: the stamp stays claimed and is read again.
+        // No wallet now: the stamp stays claimed and is read again.
       }
-      if (stopped) return
       stampSettled.value = status === 'received'
-      if (status === 'received' || status === 'failed') return
-      stampTimer = setTimeout(
-        () => void checkStamp(),
-        RECEIVED_PAYMENT_RECHECK_MS,
-      )
-      ;(stampTimer as { unref?: () => void }).unref?.()
+      // Settled, never landing, or no coin for it in this wallet: nothing more to wait for.
+      return status === 'received' || status === 'failed' || status === 'none'
     }
-    onMounted(() => void checkStamp())
-    onBeforeUnmount(() => {
-      stopped = true
-      if (stampTimer !== undefined) clearTimeout(stampTimer)
-    })
+    if (!readStamp()) waitForStamp(readStamp)
+    onBeforeUnmount(() => stampWaiters.delete(readStamp))
     return {
       stampSettled,
       applicationRenderer,

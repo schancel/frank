@@ -195,7 +195,7 @@ import { isNarrowWidth } from '../../utils/layout'
 import { activeChain } from '@frank/wallet/chain'
 import { formatAvu } from 'src/utils/avu-units'
 import { nativeAmountAvu } from 'src/utils/stamp-display'
-import { verifiedMessageReceipts } from 'src/utils/message-receipts'
+import { verifiedReceiptsReader } from 'src/utils/message-receipts'
 import {
   ChatSearchIndex,
   type SearchSnippet,
@@ -308,6 +308,11 @@ export default defineComponent({
       }, UNREAD_VALUE_REREAD_MS)
     })
     onBeforeUnmount(() => clearInterval(receiptsTimer))
+    // One read of each wallet's coins per tick, shared by every row and message.
+    const verifiedReceipts = computed(() => {
+      void receiptsRead.value
+      return verifiedReceiptsReader()
+    })
 
     const router = useRouter()
     const $q = useQuasar()
@@ -316,13 +321,12 @@ export default defineComponent({
        * saw arrive, each chain at its own price. Nothing when there is none, or when part of
        * it has no price: never a claimed amount, never a made-up figure. */
       unreadValueText(conversation: Conversation): string | undefined {
-        void receiptsRead.value
         const avu = unreadValueAvu(
           conversation,
           chatStore.activeConversationId ?? null,
           {
             stampChainIdentifier: activeChain.chainIdentifier,
-            verifiedReceipts: verifiedMessageReceipts,
+            verifiedReceipts: verifiedReceipts.value,
             toAvu: nativeAmountAvu,
           },
         )

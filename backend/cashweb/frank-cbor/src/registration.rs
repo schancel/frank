@@ -2,6 +2,7 @@
 //! and the Keccak-256 canonical address. Nothing here touches a frame; the claimed-address
 //! comparison is a consumer check that stays out of the codec (M6).
 
+use crate::message_fields as mf;
 use crate::message_types::TYPE_DIRECTORY_STATEMENT;
 use secp256k1_abc::PublicKey;
 
@@ -157,15 +158,27 @@ pub struct DirectoryStatementParams<'a> {
 
 fn encode_account(acc: &AccountRef) -> CborValue {
     CborValue::Map(vec![
-        (0, CborValue::Int(i128::from(acc.key_type))),
-        (1, CborValue::Bytes(acc.key_bytes.clone())),
+        (
+            mf::account_ref::KEY_TYPE,
+            CborValue::Int(i128::from(acc.key_type)),
+        ),
+        (
+            mf::account_ref::KEY_BYTES,
+            CborValue::Bytes(acc.key_bytes.clone()),
+        ),
     ])
 }
 
 fn encode_timestamp(ts: &Timestamp) -> CborValue {
     CborValue::Map(vec![
-        (0, CborValue::Int(i128::from(ts.seconds))),
-        (1, CborValue::Int(i128::from(ts.nanoseconds))),
+        (
+            mf::timestamp::SECONDS,
+            CborValue::Int(i128::from(ts.seconds)),
+        ),
+        (
+            mf::timestamp::NANOSECONDS,
+            CborValue::Int(i128::from(ts.nanoseconds)),
+        ),
     ])
 }
 
@@ -192,37 +205,44 @@ pub fn encode_directory_statement_payload(
         .iter()
         .map(|r| {
             CborValue::Map(vec![
-                (0, CborValue::Bytes(r.relay_id.clone())),
-                (1, CborValue::Text(r.endpoint.clone())),
-                (2, encode_account(&r.identity)),
-                (3, encode_timestamp(&r.expiry)),
+                (
+                    mf::relay_binding::RELAY_ID,
+                    CborValue::Bytes(r.relay_id.clone()),
+                ),
+                (
+                    mf::relay_binding::ENDPOINT,
+                    CborValue::Text(r.endpoint.clone()),
+                ),
+                (mf::relay_binding::IDENTITY, encode_account(&r.identity)),
+                (mf::relay_binding::EXPIRY, encode_timestamp(&r.expiry)),
             ])
         })
         .collect();
 
+    use mf::directory_statement as k;
     let mut entries = vec![
-        (0, CborValue::Text(params.network.to_string())),
-        (1, encode_account(params.subject)),
-        (2, CborValue::Int(i128::from(params.revision))),
-        (3, encode_timestamp(params.timestamp)),
-        (4, CborValue::Array(encoded_relays)),
+        (k::NETWORK, CborValue::Text(params.network.to_string())),
+        (k::SUBJECT, encode_account(params.subject)),
+        (k::REVISION, CborValue::Int(i128::from(params.revision))),
+        (k::TIMESTAMP, encode_timestamp(params.timestamp)),
+        (k::RELAYS, CborValue::Array(encoded_relays)),
     ];
 
     if let Some(exp) = params.expiry {
-        entries.push((6, encode_timestamp(exp)));
+        entries.push((k::EXPIRY, encode_timestamp(exp)));
     }
 
     if let Some(recovery) = params.recovery {
         if !recovery.is_empty() {
             entries.push((
-                7,
+                k::RECOVERY_AUTHORITIES,
                 CborValue::Array(recovery.iter().map(encode_account).collect()),
             ));
         }
     }
 
     if let Some(stamp) = params.stamp_key {
-        entries.push((8, encode_account(stamp)));
+        entries.push((k::STAMP_KEY, encode_account(stamp)));
     }
 
     if let Some(profiles) = params.profile_entries {
@@ -235,24 +255,27 @@ pub fn encode_directory_statement_payload(
                         .iter()
                         .map(|h| {
                             CborValue::Map(vec![
-                                (0, CborValue::Text(h.name.clone())),
-                                (1, CborValue::Text(h.value.clone())),
+                                (mf::profile_header::NAME, CborValue::Text(h.name.clone())),
+                                (mf::profile_header::VALUE, CborValue::Text(h.value.clone())),
                             ])
                         })
                         .collect();
                     CborValue::Map(vec![
-                        (0, CborValue::Text(p.kind.clone())),
-                        (1, CborValue::Array(encoded_headers)),
-                        (2, CborValue::Bytes(p.body.clone())),
+                        (mf::profile_entry::KIND, CborValue::Text(p.kind.clone())),
+                        (
+                            mf::profile_entry::HEADERS,
+                            CborValue::Array(encoded_headers),
+                        ),
+                        (mf::profile_entry::BODY, CborValue::Bytes(p.body.clone())),
                     ])
                 })
                 .collect();
-            entries.push((9, CborValue::Array(encoded_profiles)));
+            entries.push((k::PROFILE_ENTRIES, CborValue::Array(encoded_profiles)));
         }
     }
 
     if let Some(username) = params.canonical_username {
-        entries.push((14, CborValue::Text(username.to_string())));
+        entries.push((k::USERNAME, CborValue::Text(username.to_string())));
     }
 
     if params.bot_role.is_some()
@@ -265,11 +288,14 @@ pub fn encode_directory_statement_payload(
     }
 
     if let Some(account_type) = params.account_type {
-        entries.push((15, CborValue::Int(i128::from(account_type.to_u64()))));
+        entries.push((
+            k::ACCOUNT_TYPE,
+            CborValue::Int(i128::from(account_type.to_u64())),
+        ));
     }
 
     if let Some(bot_role) = params.bot_role {
-        entries.push((16, CborValue::Int(i128::from(bot_role.to_u64()))));
+        entries.push((k::BOT_ROLE, CborValue::Int(i128::from(bot_role.to_u64()))));
     }
 
     entries.sort_by_key(|(k, _)| *k);

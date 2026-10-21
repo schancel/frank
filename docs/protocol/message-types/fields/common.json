@@ -4,21 +4,11 @@
     {
       "key": "frank-envelope",
       "description": "The outer map of every frame after the FRNK header (README E1).",
-      "fields": {
-        "type-id": 0,
-        "schema-version": 1,
-        "min-reader-version": 2,
-        "payload": 3
-      },
+      "fields": { "type-id": 0, "schema-version": 1, "min-reader-version": 2, "payload": 3 },
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/common.cddl#frank-envelope",
-          "required": [
-            "type-id",
-            "schema-version",
-            "min-reader-version",
-            "payload"
-          ],
+          "required": ["type-id", "schema-version", "min-reader-version", "payload"],
           "optional": [],
           "open": false
         }
@@ -26,17 +16,11 @@
     },
     {
       "key": "timestamp",
-      "fields": {
-        "seconds": 0,
-        "nanoseconds": 1
-      },
+      "fields": { "seconds": 0, "nanoseconds": 1 },
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/common.cddl#timestamp",
-          "required": [
-            "seconds",
-            "nanoseconds"
-          ],
+          "required": ["seconds", "nanoseconds"],
           "optional": [],
           "open": false
         }
@@ -44,17 +28,11 @@
     },
     {
       "key": "account-ref",
-      "fields": {
-        "key-type": 0,
-        "key-bytes": 1
-      },
+      "fields": { "key-type": 0, "key-bytes": 1 },
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/common.cddl#account-ref",
-          "required": [
-            "key-type",
-            "key-bytes"
-          ],
+          "required": ["key-type", "key-bytes"],
           "optional": [],
           "open": false
         }
@@ -62,19 +40,11 @@
     },
     {
       "key": "signature-entry",
-      "fields": {
-        "algorithm": 0,
-        "signer": 1,
-        "signature": 2
-      },
+      "fields": { "algorithm": 0, "signer": 1, "signature": 2 },
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/common.cddl#signature-entry",
-          "required": [
-            "algorithm",
-            "signer",
-            "signature"
-          ],
+          "required": ["algorithm", "signer", "signature"],
           "optional": [],
           "open": false
         }
@@ -85,21 +55,12 @@
     {
       "key": "key-type",
       "description": "account-ref field 0 (README S2).",
-      "values": {
-        "secp256k1": 1,
-        "ed25519": 2,
-        "secp256k1-x-only": 3
-      }
+      "values": { "secp256k1": 1, "ed25519": 2, "secp256k1-x-only": 3 }
     },
     {
       "key": "signature-algorithm",
       "description": "signature-entry and key-transition algorithm (README S2a, S2b).",
-      "values": {
-        "secp256k1-ecdsa": 1,
-        "bip340-schnorr": 2,
-        "bch-schnorr": 3,
-        "ed25519": 16
-      }
+      "values": { "secp256k1-ecdsa": 1, "bip340-schnorr": 2, "bch-schnorr": 3, "ed25519": 16 }
     }
   ]
 }

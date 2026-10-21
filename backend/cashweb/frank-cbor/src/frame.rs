@@ -3,6 +3,7 @@
 use crate::cbor::{encode_canonical, CborValue};
 use crate::error::UsageError;
 use crate::limits::{FRAME_HEADER_BYTES, FRAME_MAGIC, FRAME_VERSION, MAX_BODY_BYTES};
+use crate::message_fields::frank_envelope as k;
 
 /// Envelope fields written by [`encode_frame`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,10 +62,16 @@ pub fn encode_frame(env: EnvelopeFields, payload: FramePayload<'_>) -> Result<Ve
         FramePayload::Value(value) => encode_canonical(value)?,
     };
     let body = encode_canonical(&CborValue::Map(vec![
-        (0, CborValue::Int(i128::from(env.type_id))),
-        (1, CborValue::Int(i128::from(env.schema_version))),
-        (2, CborValue::Int(i128::from(env.min_reader_version))),
-        (3, CborValue::Bytes(payload_bytes)),
+        (k::TYPE_ID, CborValue::Int(i128::from(env.type_id))),
+        (
+            k::SCHEMA_VERSION,
+            CborValue::Int(i128::from(env.schema_version)),
+        ),
+        (
+            k::MIN_READER_VERSION,
+            CborValue::Int(i128::from(env.min_reader_version)),
+        ),
+        (k::PAYLOAD, CborValue::Bytes(payload_bytes)),
     ]))?;
     wrap_frame(&body, FRAME_VERSION)
 }

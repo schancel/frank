@@ -94,7 +94,10 @@ describe('Forum.vue outage and degraded states (#533)', () => {
     return mount(Forum, {
       global: {
         mocks: {
-          $t: (key: string) => t(messages, key),
+          $t: (key: string, params?: Record<string, unknown>) =>
+            t(messages, key).replace(/\{(\w+)\}/g, (_, name: string) =>
+              String(params?.[name] ?? `{${name}}`),
+            ),
         },
         stubs: {
           ForumPost: {
@@ -412,5 +415,71 @@ describe('Forum.vue outage and degraded states (#533)', () => {
     await flushPromises()
 
     expect(store.selectedTopic).toBe('')
+  })
+
+  async function loadFeed(rows: ForumMessage[]) {
+    const store = useForumStore()
+    mockFetchByTopic.mockResolvedValue(rows)
+    await store.refreshMessages({
+      wallet: testWallet as unknown as WalletHandle,
+      topic: '',
+    })
+    return store
+  }
+
+  it('shows an active vote filter with its hidden count and clears it', async () => {
+    const store = await loadFeed([
+      makeMessage({ payloadDigest: 'root-1', voteWeightWei: '50' }),
+      makeMessage({ payloadDigest: 'root-2', voteWeightWei: '40' }),
+      makeMessage({ payloadDigest: 'root-3', voteWeightWei: '10' }),
+      makeMessage({
+        payloadDigest: 'reply-1',
+        parentDigest: 'root-3',
+        voteWeightWei: '5',
+      }),
+    ])
+
+    const unfiltered = mountForum()
+    await flushPromises()
+    expect(
+      unfiltered.find('[data-test="forum-vote-filter-banner"]').exists(),
+    ).toBe(false)
+    unfiltered.unmount()
+
+    // A saved percentile preset is reapplied silently on load; it must be visible.
+    store.setVotePercentile(95)
+    store.setVoteThreshold('50')
+    const wrapper = mountForum()
+    await flushPromises()
+
+    const banner = wrapper.get('[data-test="forum-vote-filter-banner"]')
+    expect(banner.get('[data-test="feed-vote-filter-chip"]').text()).toContain(
+      'Top 5%',
+    )
+    // Replies are feed items too, so the hidden count includes the reply below the threshold.
+    expect(banner.get('[data-test="feed-vote-filter-hidden"]').text()).toBe(
+      '3 hidden',
+    )
+    expect(wrapper.findAll('.forum-post-stub')).toHaveLength(1)
+
+    // A typed threshold reads as the amount.
+    store.setVotePercentile(null)
+    store.setVoteThreshold('40')
+    await flushPromises()
+    expect(banner.get('[data-test="feed-vote-filter-chip"]').text()).toContain(
+      '≥ 40 MON',
+    )
+    expect(banner.get('[data-test="feed-vote-filter-hidden"]').text()).toBe(
+      '2 hidden',
+    )
+
+    await banner.get('[data-test="clear-vote-filter"]').trigger('click')
+    await flushPromises()
+    expect(store.voteThreshold).toBe('0')
+    expect(store.votePercentile).toBeNull()
+    expect(
+      wrapper.find('[data-test="forum-vote-filter-banner"]').exists(),
+    ).toBe(false)
+    expect(wrapper.findAll('.forum-post-stub')).toHaveLength(4)
   })
 })

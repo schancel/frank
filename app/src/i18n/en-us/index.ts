@@ -116,6 +116,12 @@ export const rawEnUS = {
     clearTopicFilter: 'Clear filter',
     percentileFilter: 'Percentile Filter',
     allPosts: 'All posts',
+    voteFilter: 'Vote filter',
+    topPercent: 'Top {percent}%',
+    minVoteWeight: '≥ {amount} {unit}',
+    hiddenCount: '{count} hidden',
+    clearVoteFilter: 'Show all',
+    replyTo: 'Reply to {parent}',
     editor: {
       toolbar: 'Formatting tools',
       bold: 'Bold',

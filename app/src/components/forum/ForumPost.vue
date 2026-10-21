@@ -1,6 +1,12 @@
 <template>
   <q-card class="forum-post-card q-ma-sm" flat bordered>
     <q-card-section class="column q-pa-none post-main-content">
+      <forum-parent-link
+        v-if="parentDigest"
+        :digest="parentDigest"
+        :label="parentLabel"
+        class="q-px-md q-pt-sm"
+      />
       <div
         class="post-meta-header q-px-md q-pt-sm q-pb-xs row items-center justify-between wrap"
         style="gap: 4px"
@@ -59,7 +65,9 @@
         :key="index"
       >
         <div
-          v-if="entry.kind === 'post' && (displayTitle(entry.title) || entry.url)"
+          v-if="
+            entry.kind === 'post' && (displayTitle(entry.title) || entry.url)
+          "
           class="row items-center justify-between q-px-md q-pt-xs q-pb-xs"
         >
           <div class="col-grow post-title-wrap">
@@ -103,9 +111,7 @@
               :to="`/forum/${message.payloadDigest}`"
               class="post-title text-subtitle1 text-weight-bold"
               >{{
-                entry.title ||
-                getAnnouncement(entry)?.gameName ||
-                'Game Table'
+                entry.title || getAnnouncement(entry)?.gameName || 'Game Table'
               }}</router-link
             >
           </div>
@@ -223,6 +229,7 @@ import { renderMarkdown } from '../../utils/markdown'
 import { vExternalImages } from '../../utils/external-images'
 
 import AMessageReplies from './ForumMessageReplies.vue'
+import ForumParentLink from './ForumParentLink.vue'
 import GameAnnouncementCard from 'components/topic/GameAnnouncementCard.vue'
 import AccountBadge from 'src/components/contacts/AccountBadge.vue'
 import { authorDisplayProfile } from 'src/utils/author-display-profile'
@@ -314,6 +321,7 @@ export default defineComponent({
   directives: { externalImages: vExternalImages },
   components: {
     AMessageReplies,
+    ForumParentLink,
     GameAnnouncementCard,
     AccountBadge,
   },
@@ -693,6 +701,12 @@ export default defineComponent({
     },
     parentMessage() {
       return this.parentDigest ? this.getMessage(this.parentDigest) : null
+    },
+    parentLabel(): string {
+      const parent = this.parentMessage
+      if (!parent) return ''
+      const title = parent.entries.find(entry => entry.kind === 'post')?.title
+      return this.displayTitle(title) || this.authorName(parent)
     },
     messages() {
       return this.storeMessages.filter((message: MessageWithReplies) =>

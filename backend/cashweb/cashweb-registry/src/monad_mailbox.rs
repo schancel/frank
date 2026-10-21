@@ -170,6 +170,10 @@ pub(crate) enum MailboxResource {
     Mailbox,
     /// Authenticated websocket push of newly delivered both-direction mailbox records.
     MailboxStream,
+    /// Owner read of the mailbox notification policy (`GET .../notification-policy`).
+    NotificationPolicyRead,
+    /// Owner replacement of the mailbox notification policy (`PUT .../notification-policy`).
+    NotificationPolicyWrite,
 }
 
 impl MailboxResource {
@@ -178,6 +182,8 @@ impl MailboxResource {
             Self::Inbox => 1,
             Self::Mailbox => 4,
             Self::MailboxStream => 5,
+            Self::NotificationPolicyRead => 6,
+            Self::NotificationPolicyWrite => 7,
         }
     }
 }
@@ -251,6 +257,8 @@ impl MailboxRequestBinding {
             MailboxResource::Inbox => (b"GET", b"inbox/"),
             MailboxResource::Mailbox => (b"GET", b"mailbox/"),
             MailboxResource::MailboxStream => (b"GET", b"mailbox-ws/"),
+            MailboxResource::NotificationPolicyRead => (b"GET", b"notification-policy/"),
+            MailboxResource::NotificationPolicyWrite => (b"PUT", b"notification-policy/"),
         };
         bytes.extend_from_slice(method);
         bytes.extend_from_slice(b"\0/message/monad/");
@@ -387,7 +395,9 @@ impl MailboxAuthState {
     ) -> Option<MailboxCursor> {
         let position_len = match resource {
             MailboxResource::Inbox | MailboxResource::Mailbox => 8 + 32,
-            MailboxResource::MailboxStream => return None,
+            MailboxResource::MailboxStream
+            | MailboxResource::NotificationPolicyRead
+            | MailboxResource::NotificationPolicyWrite => return None,
         };
         let unsigned_len = 2 + 20 + position_len;
         let decoded_len = unsigned_len + 32;
@@ -419,7 +429,9 @@ impl MailboxAuthState {
                 timestamp: i64::from_be_bytes(bytes[22..30].try_into().ok()?),
                 payload_hash,
             },
-            MailboxResource::MailboxStream => return None,
+            MailboxResource::MailboxStream
+            | MailboxResource::NotificationPolicyRead
+            | MailboxResource::NotificationPolicyWrite => return None,
         })
     }
 }

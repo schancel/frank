@@ -16,9 +16,15 @@ import {
   buildNotificationPolicyAuthHeaders,
   getMailboxNotificationPolicy,
   putMailboxNotificationPolicy,
+  notificationPolicyAuthPreimage,
+  parseNotificationPolicyChallenge,
+  NOTIFICATION_POLICY_AUTH_DOMAIN,
   type MailboxNotificationPolicy,
   type NotificationPolicyAuthContext,
+  type NotificationPolicyChallenge,
 } from './notification-policy'
+import { secp256k1 } from '@noble/curves/secp256k1'
+import { sha256 } from '@noble/hashes/sha256'
 
 describe('notification-policy (#384, #1574)', () => {
   test('converts AVU threshold to micro-AVU and wei', () => {
@@ -97,24 +103,42 @@ describe('notification-policy (#384, #1574)', () => {
     ).toBe(true)
   })
 
-  test('reads and writes mailbox notification policy over authenticated HTTP', async () => {
+  test('signs the one relay signing string (shared vector with the relay)', () => {
+    // The same vector is asserted by the relay's
+    // `notification_policy_signing_string_matches_the_typescript_signer`.
+    const challenge: NotificationPolicyChallenge = {
+      epoch: '01'.repeat(32),
+      nonce: '02'.repeat(32),
+      expires_at_ms: 1_700_000_060_000,
+      token: '03'.repeat(32),
+      signing_domain: NOTIFICATION_POLICY_AUTH_DOMAIN,
+      network_tag: Buffer.from('MONT').toString('hex'),
+    }
+    const preimage = notificationPolicyAuthPreimage(
+      challenge,
+      'PUT',
+      '0x10239E8FBFD030DA11DF8F452984EBFB894D0DC3',
+      new TextEncoder().encode('{}'),
+    )
+    expect(Buffer.from(sha256(preimage)).toString('hex')).toBe(
+      'f9fe117f1707923d059de7aa48ae6d0a6332391d5df1b113518a206a09ace464',
+    )
+  })
+
+  test('reads and writes the policy by answering a single-use relay challenge', async () => {
+    const privateKey = new Uint8Array(32).fill(0x42)
+    const publicKeyHex = Buffer.from(
+      secp256k1.getPublicKey(privateKey, true),
+    ).toString('hex')
+    const address = '0x10239e8fbfd030da11df8f452984ebfb894d0dc3'
     const auth: NotificationPolicyAuthContext = {
-      address: '0x10239e8fbfd030da11df8f452984ebfb894d0dc3',
-      publicKeyHex: `02${'11'.repeat(32)}`,
-      signDigest: async (digest) => {
+      address,
+      publicKeyHex,
+      signDigest: (digest) => {
         expect(digest).toHaveLength(32)
-        return 'aa'.repeat(64)
+        return secp256k1.sign(digest, privateKey).toCompactRawBytes()
       },
     }
-
-    const headers = await buildNotificationPolicyAuthHeaders(
-      'GET',
-      auth,
-      1700000000000,
-    )
-    expect(headers['x-cashweb-auth-pubkey']).toBe(`02${'11'.repeat(32)}`)
-    expect(headers['x-cashweb-auth-timestamp']).toBe('1700000000000')
-    expect(headers['x-cashweb-auth-signature']).toBe('aa'.repeat(64))
 
     const storedPolicy = buildMailboxNotificationPolicy({
       avuThreshold: 0.5,
@@ -129,9 +153,57 @@ describe('notification-policy (#384, #1574)', () => {
       updatedAtMs: 1700000000000,
     })
 
-    const calls: Array<{ url: string; init?: RequestInit }> = []
-    const mockFetch = (async (url: string, init?: RequestInit) => {
-      calls.push({ url, init })
+    // A stub at the fetch seam that answers like the relay: 401 + a fresh challenge, then
+    // checks the signature over that challenge and the exact body, once.
+    let issued = 0
+    const live = new Map<string, NotificationPolicyChallenge>()
+    const accepted: Array<{ method: string; headers: Record<string, string> }> =
+      []
+    const mockFetch = (async (_url: string, init?: RequestInit) => {
+      const method = init?.method as 'GET' | 'PUT'
+      const headers = (init?.headers ?? {}) as Record<string, string>
+      const nonce = headers['x-frank-mailbox-nonce']
+      const challenge = nonce ? live.get(nonce) : undefined
+      if (!challenge) {
+        issued += 1
+        const fresh: NotificationPolicyChallenge = {
+          epoch: 'ee'.repeat(32),
+          nonce: issued.toString(16).padStart(64, '0'),
+          expires_at_ms: Date.now() + 60_000,
+          token: 'dd'.repeat(32),
+          signing_domain: NOTIFICATION_POLICY_AUTH_DOMAIN,
+          network_tag: Buffer.from('MONT').toString('hex'),
+        }
+        live.set(fresh.nonce, fresh)
+        return {
+          ok: false,
+          status: 401,
+          json: async () => ({
+            error: 'mailbox_auth_required',
+            challenge: fresh,
+          }),
+        } as Response
+      }
+      live.delete(nonce)
+      const digest = sha256(
+        notificationPolicyAuthPreimage(
+          challenge,
+          method,
+          address,
+          new TextEncoder().encode(String(init?.body ?? '')),
+        ),
+      )
+      const valid =
+        headers['x-frank-mailbox-subject'] === publicKeyHex &&
+        secp256k1.verify(
+          headers['x-frank-mailbox-signature'],
+          digest,
+          publicKeyHex,
+        )
+      if (!valid) {
+        return { ok: false, status: 401, json: async () => ({}) } as Response
+      }
+      accepted.push({ method, headers })
       return {
         ok: true,
         status: 200,
@@ -146,18 +218,71 @@ describe('notification-policy (#384, #1574)', () => {
       mockFetch,
     )
     expect(updated).toEqual(storedPolicy)
-    expect(calls[0].url).toBe(
-      'https://relay.frank.test/message/monad/mailbox/0x10239e8fbfd030da11df8f452984ebfb894d0dc3/notification-policy',
-    )
-    expect(calls[0].init?.method).toBe('PUT')
-
     const fetched = await getMailboxNotificationPolicy(
       'https://relay.frank.test/',
       auth,
       mockFetch,
     )
     expect(fetched).toEqual(storedPolicy)
-    expect(calls[1].init?.method).toBe('GET')
+    expect(accepted.map((request) => request.method)).toEqual(['PUT', 'GET'])
+    // Each request answered its own challenge; no timestamp-only headers remain.
+    expect(accepted[0].headers['x-frank-mailbox-nonce']).not.toBe(
+      accepted[1].headers['x-frank-mailbox-nonce'],
+    )
+    for (const { headers } of accepted) {
+      expect(
+        Object.keys(headers).some((name) => name.startsWith('x-cashweb-auth')),
+      ).toBe(false)
+    }
+
+    // The signature covers the body: the same headers over another body do not verify.
+    const challenge = parseNotificationPolicyChallenge({
+      challenge: {
+        epoch: 'ee'.repeat(32),
+        nonce: 'ab'.repeat(32),
+        expires_at_ms: 1,
+        token: 'dd'.repeat(32),
+        signing_domain: NOTIFICATION_POLICY_AUTH_DOMAIN,
+        network_tag: '4d4f4e54',
+      },
+    })!
+    const body = new TextEncoder().encode(JSON.stringify(storedPolicy))
+    const headers = await buildNotificationPolicyAuthHeaders(
+      'PUT',
+      auth,
+      challenge,
+      body,
+    )
+    const tampered = sha256(
+      notificationPolicyAuthPreimage(
+        challenge,
+        'PUT',
+        address,
+        new TextEncoder().encode('{}'),
+      ),
+    )
+    expect(
+      secp256k1.verify(
+        headers['x-frank-mailbox-signature'],
+        tampered,
+        publicKeyHex,
+      ),
+    ).toBe(false)
+  })
+
+  test('refuses a challenge under another signing domain', () => {
+    expect(() =>
+      parseNotificationPolicyChallenge({
+        challenge: {
+          epoch: 'ee'.repeat(32),
+          nonce: 'ab'.repeat(32),
+          expires_at_ms: 1,
+          token: 'dd'.repeat(32),
+          signing_domain: 'frank-notification-policy-auth-v1',
+          network_tag: '4d4f4e54',
+        },
+      }),
+    ).toThrow('signing domain')
   })
 
   test('derives deterministic per-peer wakeup tokens and revokes muted/deleted contacts', () => {
@@ -225,4 +350,3 @@ describe('notification-policy (#384, #1574)', () => {
     expect(key).toBe(samplePub)
   })
 })
-

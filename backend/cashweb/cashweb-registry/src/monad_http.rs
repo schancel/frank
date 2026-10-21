@@ -591,7 +591,7 @@ fn for_log(text: &str) -> std::borrow::Cow<'_, str> {
 
 /// Phrasings (lowercase) by which geth/Besu/reth/Nethermind-style nodes say they already hold the
 /// exact transaction. These mean the send is effectively accepted.
-const ALREADY_KNOWN_PHRASES: &[&str] = &[
+pub(crate) const ALREADY_KNOWN_PHRASES: &[&str] = &[
     "already known",
     "known transaction",
     "already imported",
@@ -599,8 +599,12 @@ const ALREADY_KNOWN_PHRASES: &[&str] = &[
     "already exists",
 ];
 
+/// Phrasings (lowercase) by which a node says the transaction's nonce is already used.
+pub(crate) const NONCE_TOO_LOW_PHRASES: &[&str] =
+    &["nonce too low", "nonce is too low", "noncetoolow"];
+
 /// Phrasing (lowercase) by which a node says it queued the transaction rather than rejecting it.
-const QUEUED_PHRASE: &str = "queued";
+pub(crate) const QUEUED_PHRASE: &str = "queued";
 
 /// Whether an error message says the node already holds (or queued) the transaction. Checked
 /// BEFORE every rejection classification: a message that also contains a rejection phrase (for
@@ -661,9 +665,9 @@ fn classify_rpc_error(method: &str, mut error: JsonRpcErrorBody) -> MonadRpcErro
                 data: error.data,
             }
         }
-    } else if lower.contains("nonce too low")
-        || lower.contains("nonce is too low")
-        || lower.contains("noncetoolow")
+    } else if NONCE_TOO_LOW_PHRASES
+        .iter()
+        .any(|phrase| lower.contains(phrase))
     {
         MonadRpcError::NonceTooLow {
             method,

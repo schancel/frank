@@ -26,8 +26,18 @@ jest.mock('@frank/wallet/chain', () => ({
       }
     },
   },
+  getChainRegistryEntry: (id: string) =>
+    id === 'monad-testnet' ? { kind: 'monad' } : undefined,
 }))
 let mockDecimals = false
+// The oracle's AVU figure for a stamp; '' (no rate) unless a test sets one.
+let mockAvuFigure = ''
+jest.mock('../../stores/oracle', () => ({
+  useSafeOracleStore: () => ({
+    formatAvuAmount: (asset: string, raw: bigint) =>
+      asset === 'monad' && raw > 0n ? mockAvuFigure : '',
+  }),
+}))
 
 const slotted = (tag: string) =>
   defineComponent({
@@ -324,6 +334,57 @@ describe('modernized chat input interface (#1003)', () => {
       expect(wrapper.get('[data-testid="stamp-tooltip-amount"]').text()).toBe(
         'Stamp: 0.01414 MON, ≈1.4142× the default',
       )
+    })
+
+    it('leads with the stamp’s AVU value, the coin amount beside it', () => {
+      mockAvuFigure = '≈ 52.3 mAVU · testnet'
+      try {
+        const wrapper = mount(ChatInput, {
+          props: {
+            minimumStampWei: 10n ** 16n,
+            defaultStampWei: 10n ** 16n,
+            defaultStampMode: false,
+            stampAmount: '0.014142135623730950',
+          },
+          global: globalOptions,
+        })
+        const pill = wrapper.get('.chat-stamp-btn')
+        expect(pill.get('[data-testid="stamp-pill-avu"]').text()).toBe(
+          '≈ 52.3 mAVU · testnet',
+        )
+        expect(pill.get('.chat-stamp-pill-text').text()).toBe('14.14 mMON')
+        // AVU is the figure people read; the multiple stays in the hover line.
+        expect(pill.find('[data-testid="stamp-pill-multiple"]').exists()).toBe(
+          false,
+        )
+        expect(wrapper.get('[data-testid="stamp-tooltip-amount"]').text()).toBe(
+          'Stamp: 0.01414 MON, ≈1.4142× the default',
+        )
+        expect(wrapper.get('[data-testid="stamp-tooltip-avu"]').text()).toBe(
+          'Worth ≈ 52.3 mAVU · testnet (1 AVU = 1 kWh)',
+        )
+      } finally {
+        mockAvuFigure = ''
+      }
+    })
+
+    it('without an AVU rate shows the coin amount alone, no AVU figure', () => {
+      const wrapper = mount(ChatInput, {
+        props: {
+          minimumStampWei: 10n ** 16n,
+          defaultStampWei: 10n ** 16n,
+          defaultStampMode: false,
+          stampAmount: '0.01',
+        },
+        global: globalOptions,
+      })
+      expect(wrapper.find('[data-testid="stamp-pill-avu"]').exists()).toBe(
+        false,
+      )
+      expect(wrapper.find('[data-testid="stamp-tooltip-avu"]').exists()).toBe(
+        false,
+      )
+      expect(wrapper.get('.chat-stamp-pill-text').text()).toBe('10 mMON')
     })
 
     it('a stamp of 0 reads "Free" on the chip and in its hover line', () => {

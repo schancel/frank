@@ -154,7 +154,9 @@
                   clickable
                   v-close-popup
                   data-testid="webrtc-call-menu-item"
-                  @click="emitAndClose('webrtcCallClicked', { withVideo: false })"
+                  @click="
+                    emitAndClose('webrtcCallClicked', { withVideo: false })
+                  "
                 >
                   <q-item-section avatar side>
                     <q-icon name="call" />
@@ -168,7 +170,9 @@
                   clickable
                   v-close-popup
                   data-testid="webrtc-video-call-menu-item"
-                  @click="emitAndClose('webrtcCallClicked', { withVideo: true })"
+                  @click="
+                    emitAndClose('webrtcCallClicked', { withVideo: true })
+                  "
                 >
                   <q-item-section avatar side>
                     <q-icon name="videocam" />
@@ -181,10 +185,7 @@
                 <div class="chat-menu-divider q-my-xs" role="separator" />
 
                 <!-- Submenu: Payments & Docs (Invoices, Swaps, Articles) -->
-                <q-item
-                  clickable
-                  data-testid="more-actions-submenu-item"
-                >
+                <q-item clickable data-testid="more-actions-submenu-item">
                   <q-item-section avatar side>
                     <q-icon name="apps" />
                   </q-item-section>
@@ -242,10 +243,7 @@
                 </q-item>
 
                 <!-- Submenu: Games (Blackjack, Satoshi Dice, Rock-Paper-Scissors, Heads-Up Poker) -->
-                <q-item
-                  clickable
-                  data-testid="games-submenu-item"
-                >
+                <q-item clickable data-testid="games-submenu-item">
                   <q-item-section avatar side>
                     <q-icon name="sports_esports" />
                   </q-item-section>
@@ -332,7 +330,18 @@
             :disable="disable"
           >
             <!-- What the message will carry, in the compact form: the chip is a tight place. -->
-            <span class="chat-stamp-pill-text q-ml-xs">{{ stampPillText }}</span>
+            <!-- AVU first, so people learn to read stamps in AVU; the coin amount beside it. -->
+            <span
+              v-if="stampAvuText"
+              class="chat-stamp-pill-avu q-ml-xs"
+              data-testid="stamp-pill-avu"
+              >{{ stampAvuText }}</span
+            >
+            <span
+              class="chat-stamp-pill-text q-ml-xs"
+              :class="{ 'chat-stamp-pill-text--secondary': stampAvuText }"
+              >{{ stampPillText }}</span
+            >
             <span
               v-if="defaultStampMode && suggestedIncrease"
               class="chat-stamp-pill-increase q-ml-xs text-warning text-weight-bold"
@@ -341,13 +350,16 @@
               >↑</span
             >
             <span
-              v-if="stampMultiplier && stampMultiplier !== '1'"
+              v-if="!stampAvuText && stampMultiplier && stampMultiplier !== '1'"
               class="chat-stamp-pill-multiple q-ml-xs"
               data-testid="stamp-pill-multiple"
               >{{ stampMultiplier }}×</span
             >
             <q-tooltip max-width="280px">
               <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
+              <div v-if="stampAvuText" data-testid="stamp-tooltip-avu">
+                {{ $t('chatInput.stampChipAvu', { value: stampAvuText }) }}
+              </div>
               <div
                 v-if="defaultStampMode && suggestedIncrease"
                 data-testid="stamp-tooltip-increase"
@@ -365,7 +377,10 @@
             <q-menu anchor="top left" self="bottom left">
               <div
                 class="q-pa-md"
-                style="min-width: min(300px, 88vw); max-width: calc(100vw - 24px)"
+                style="
+                  min-width: min(300px, 88vw);
+                  max-width: calc(100vw - 24px);
+                "
               >
                 <div class="row items-center justify-between q-mb-xs">
                   <div class="text-subtitle2 text-weight-medium">
@@ -533,6 +548,7 @@ import {
   type PostAttachment,
 } from '../../utils/post-editor'
 import { activeChain } from '@frank/wallet/chain'
+import { formatStampAvu, stampMultiplierText } from '../../utils/stamp-display'
 import { defaultStaticStampForChain } from '@frank/wallet/oracle'
 import {
   formatCompactAmount,
@@ -651,9 +667,7 @@ export default defineComponent({
       this.isInputFocused = false
     },
     closeAttachMenu() {
-      const menu = this.$refs.attachMenu as
-        | { hide?: () => void }
-        | undefined
+      const menu = this.$refs.attachMenu as { hide?: () => void } | undefined
       menu?.hide?.()
     },
     closeMenuAndEmit(
@@ -955,26 +969,14 @@ export default defineComponent({
           })
         : amount
     },
+    /** The stamp as a multiple of the default stamp ("≈1.0511"); the default is priced in
+     * AVU, so a fixed coin amount drifts from 1× as the coin's price moves. */
     stampMultiplier(): string {
-      const selected = this.stampWei
-      const reference = this.effectiveDefaultStampWei
-      if (
-        selected === undefined ||
-        selected === 0n ||
-        reference === undefined ||
-        reference <= 0n
-      )
-        return ''
-      const scaled = (selected * 10000n + reference / 2n) / reference
-      const whole = scaled / 10000n
-      const fraction = (scaled % 10000n)
-        .toString()
-        .padStart(4, '0')
-        .replace(/0+$/, '')
-      const approximate = (selected * 10000n) % reference !== 0n
-      return `${approximate ? '≈' : ''}${whole}${
-        fraction ? '.' + fraction : ''
-      }`
+      return stampMultiplierText(this.stampWei, this.effectiveDefaultStampWei)
+    },
+    /** What the stamp is worth in AVU ("≈ 52.3 mAVU"); empty with no rate. */
+    stampAvuText(): string {
+      return formatStampAvu(activeChain, this.stampWei)
     },
     /** The chosen stamp in base units; `undefined` while the field holds no amount. */
     stampWei(): bigint | undefined {

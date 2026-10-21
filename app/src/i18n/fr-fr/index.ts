@@ -203,6 +203,7 @@ export const rawFrFR = {
     stampChipFree: 'Sans timbre : ce message est gratuit',
     stampChip: 'Timbre : {amount}',
     stampChipMultiple: 'Timbre : {amount}, {multiplier}× le montant par défaut',
+    stampChipAvu: 'Vaut {value} (1 AVU = 1 kWh)',
     stampWhat:
       'Un timbre est un petit paiement envoyé avec votre message à la personne à qui vous écrivez. Il paie son attention.',
     stampWhy:

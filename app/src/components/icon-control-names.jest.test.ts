@@ -95,6 +95,7 @@ jest.mock('@frank/wallet/chain', () => ({
     toDisplayAmount: (amount: bigint) => amount.toString(),
     nativeTransfers: { getBalance: jest.fn(async () => 0n) },
   },
+  getChainRegistryEntry: () => undefined,
 }))
 jest.mock('bitcore-lib-xpi', () => ({
   PublicKey: { fromBuffer: jest.fn(() => ({ toString: () => 'pk' })) },

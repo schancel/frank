@@ -703,17 +703,28 @@
             :disable="sending"
             data-testid="email-stamp-btn"
           >
-            <span class="chat-stamp-pill-text q-ml-xs">{{
-              stampPillText
-            }}</span>
             <span
-              v-if="stampMultiplier && stampMultiplier !== '1'"
+              v-if="stampAvuText"
+              class="chat-stamp-pill-avu q-ml-xs"
+              data-testid="stamp-pill-avu"
+              >{{ stampAvuText }}</span
+            >
+            <span
+              class="chat-stamp-pill-text q-ml-xs"
+              :class="{ 'chat-stamp-pill-text--secondary': stampAvuText }"
+              >{{ stampPillText }}</span
+            >
+            <span
+              v-if="!stampAvuText && stampMultiplier && stampMultiplier !== '1'"
               class="chat-stamp-pill-multiple q-ml-xs"
               data-testid="stamp-pill-multiple"
               >{{ stampMultiplier }}×</span
             >
             <q-tooltip max-width="280px">
               <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
+              <div v-if="stampAvuText" data-testid="stamp-tooltip-avu">
+                {{ $t('chatInput.stampChipAvu', { value: stampAvuText }) }}
+              </div>
               <div>
                 {{
                   $t(
@@ -1181,7 +1192,11 @@
 
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
-import { useChatStore, type Conversation, type ChatMessage } from 'src/stores/chats'
+import {
+  useChatStore,
+  type Conversation,
+  type ChatMessage,
+} from 'src/stores/chats'
 import type { EmailItem, MessageItem } from '@frank/cashweb/types/messages'
 import type { EmailParty, EmailAttachment } from '@frank/codec'
 import {
@@ -1191,6 +1206,7 @@ import {
 import { STAMP_MULTIPLIER_TENTHS } from 'src/components/chat/ChatInput.vue'
 import { defaultStaticStampForChain } from '@frank/wallet/oracle'
 import { activeChain } from '@frank/wallet/chain'
+import { formatStampAvu, stampMultiplierText } from 'src/utils/stamp-display'
 import { purify, renderMarkdown } from 'src/utils/markdown'
 import {
   applyMarkdownFormat,
@@ -1456,26 +1472,14 @@ export default defineComponent({
           })
         : amount
     },
+    /** The stamp as a multiple of the default stamp ("≈1.0511"); the default is priced in
+     * AVU, so a fixed coin amount drifts from 1× as the coin's price moves. */
     stampMultiplier(): string {
-      const selected = this.stampWei
-      const reference = this.effectiveDefaultStampWei
-      if (
-        selected === undefined ||
-        selected === 0n ||
-        reference === undefined ||
-        reference <= 0n
-      )
-        return ''
-      const scaled = (selected * 10000n + reference / 2n) / reference
-      const whole = scaled / 10000n
-      const fraction = (scaled % 10000n)
-        .toString()
-        .padStart(4, '0')
-        .replace(/0+$/, '')
-      const approximate = (selected * 10000n) % reference !== 0n
-      return `${approximate ? '≈' : ''}${whole}${
-        fraction ? '.' + fraction : ''
-      }`
+      return stampMultiplierText(this.stampWei, this.effectiveDefaultStampWei)
+    },
+    /** What the stamp is worth in AVU ("≈ 52.3 mAVU"); empty with no rate. */
+    stampAvuText(): string {
+      return formatStampAvu(activeChain, this.stampWei)
     },
     stampWei(): bigint | undefined {
       try {
@@ -1722,11 +1726,13 @@ export default defineComponent({
         this.availableBalanceWei !== undefined &&
         this.stampWei > this.availableBalanceWei
       ) {
-        return `Not enough ${this.chainUnit}: need ${activeChain.toDisplayAmount(
-          this.stampWei,
-        )} ${this.chainUnit}, have ${activeChain.toDisplayAmount(
-          this.availableBalanceWei,
-        )} ${this.chainUnit}`
+        return `Not enough ${
+          this.chainUnit
+        }: need ${activeChain.toDisplayAmount(this.stampWei)} ${
+          this.chainUnit
+        }, have ${activeChain.toDisplayAmount(this.availableBalanceWei)} ${
+          this.chainUnit
+        }`
       }
       return null
     },

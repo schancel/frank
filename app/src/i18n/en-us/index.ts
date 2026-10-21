@@ -198,6 +198,7 @@ export const rawEnUS = {
     stampChipFree: 'No stamp: this message is free',
     stampChip: 'Stamp: {amount}',
     stampChipMultiple: 'Stamp: {amount}, {multiplier}× the default',
+    stampChipAvu: 'Worth {value} (1 AVU = 1 kWh)',
     stampWhat:
       'A stamp is a small payment sent with your message to the person you are writing to. It pays for their attention.',
     stampWhy:

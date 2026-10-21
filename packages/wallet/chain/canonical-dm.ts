@@ -1205,8 +1205,11 @@ async function repayReverted(
       owner.messages.get(consumerId)!.payments[index].rawTx,
     )
     let recorded = false
+    // This repayment's own coins: the holder also holds the coins of the message's other,
+    // already signed payments, and those stay held whatever happens here.
+    let claim: StampClaim | undefined
     try {
-      const claim = await payer.claim({
+      claim = await payer.claim({
         holder,
         stampValueWei: reverted.value,
         allowBelowFee: true,
@@ -1229,7 +1232,9 @@ async function repayReverted(
       noteHandOver(await payer.submitPaymentSet([signed.rawTx]))
     } catch (error) {
       // Nothing signed left the wallet unless the row has it; then the row keeps the claim.
-      if (!recorded) payer.release(holder)
+      // A failed claim let go of what it took itself.
+      if (!recorded && claim !== undefined)
+        for (const account of claim.accounts) payer.releasePayment(holder, account)
       console.warn(
         `[monad-canonical-dm] the reverted payment ${reverted.hash} of a delivered message is still owed; it is tried again later:`,
         error,

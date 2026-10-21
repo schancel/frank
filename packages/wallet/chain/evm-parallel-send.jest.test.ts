@@ -1091,6 +1091,38 @@ describe('parallel paid messages', () => {
     expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
   })
 
+  it('a repeat of a reverted payment that fails before it is recorded lets go of its own coin only, never the holder\'s other claims', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    offlineChain.revertNext = true
+    await send(1)
+    const release = jest.spyOn(EvmStampPayer.prototype, 'release')
+    const releasePayment = jest.spyOn(EvmStampPayer.prototype, 'releasePayment')
+    const sign = EvmStampPayer.prototype.sign
+    let failed = 0
+    const failing = jest
+      .spyOn(EvmStampPayer.prototype, 'sign')
+      .mockImplementation(async function (this: EvmStampPayer, ...args) {
+        if (failed++ === 0) throw new Error('signing failed')
+        return sign.apply(this, args)
+      })
+    try {
+      jest.spyOn(alice.provider, 'getBlockNumber').mockResolvedValue(3)
+      for (let i = 0; i < 3 && failed === 0; i++) await tick()
+      expect(failed).toBeGreaterThan(0)
+      // Not the holder-wide release: only the account this repeat claimed.
+      expect(release).not.toHaveBeenCalled()
+      expect(releasePayment).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ address: main }),
+      )
+    } finally {
+      failing.mockRestore()
+      release.mockRestore()
+      releasePayment.mockRestore()
+    }
+  })
+
   it('a repeated payment that itself reverts is not repeated; a payment only inferred to have failed is never repeated', async () => {
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     mockBalances.set(main, 10n ** 17n)

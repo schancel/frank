@@ -75,6 +75,7 @@ jest.mock('src/stores/appearance', () => ({
 jest.mock('src/stores/forum', () => ({ useForumStore: restoredStore }))
 jest.mock('src/stores/chats', () => ({ useChatStore: restoredStore }))
 jest.mock('src/stores/topics', () => ({ useTopicStore: restoredStore }))
+jest.mock('src/stores/settings', () => ({ useSettingsStore: restoredStore }))
 const mockTabCoordinatorInit = jest.fn(async () => undefined)
 jest.mock('../stores/tab-coordinator', () => ({
   useTabCoordinatorStore: () => ({

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { LevelDB } from 'level'
+import { readStoreJson } from 'src/boot/pinia'
 import { activeChain } from '@frank/wallet/chain'
 import {
   discoverEmailGateway,
@@ -179,19 +180,13 @@ export function saveSettings(
 export async function restoreSettings(
   storage: LevelDB,
 ): Promise<Partial<SettingsState>> {
-  let raw: string
-  try {
-    raw = await storage.get('settings')
-  } catch {
-    return {}
-  }
-  let stored: Record<string, unknown>
-  try {
-    stored = JSON.parse(raw) as Record<string, unknown>
-  } catch {
-    return {}
-  }
-  if (!stored || typeof stored !== 'object') return {}
+  const stored = await readStoreJson<Record<string, unknown>>(
+    storage,
+    'settings',
+  )
+  if (stored === undefined) return {}
+  if (!stored || typeof stored !== 'object')
+    throw new Error('Stored settings are not an object')
   return {
     ...(validIdentity(stored.emailGatewayOverride)
       ? { emailGatewayOverride: stored.emailGatewayOverride }

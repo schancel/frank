@@ -197,6 +197,9 @@ const { useChatStore } = require('./stores/chats')
 const { useContactStore } = require('./stores/contacts')
 const { useAppearanceStore } = require('./stores/appearance')
 const { useProfileStore } = require('./stores/my-profile')
+const { useForumStore } = require('./stores/forum')
+const { useTopicStore } = require('./stores/topics')
+const { useSettingsStore } = require('./stores/settings')
 const { useOracleStore } = require('./stores/oracle')
 const { testFeed } = require('./stores/oracle-test-feed')
 const {
@@ -351,6 +354,81 @@ describe('visible read-only startup failure', () => {
       wrapper.unmount()
     },
   )
+  const persistedStores = {
+    myProfile: () => useProfileStore(),
+    contacts: () => useContactStore(),
+    forum: () => useForumStore(),
+    topics: () => useTopicStore(),
+    settings: () => useSettingsStore(),
+  } as const
+  it.each(
+    Object.keys(persistedStores).flatMap(key =>
+      ['corrupt', 'read-error'].map(kind => [key, kind] as const),
+    ),
+  )(
+    'gates actual startup on %s %s without resetting or writing',
+    async (key, kind) => {
+      const failure = new Error(`${key} IO unavailable`)
+      const { app, pinia, storage } = await fixture('en-us')
+      // A real record is present; a read error must never turn it into a saved empty state.
+      storage.data.set(
+        key,
+        kind === 'corrupt' ? '{PRIVATE corrupt' : '{"PRIVATE":"stored"}',
+      )
+      const originalGet = storage.get.getMockImplementation()!
+      if (kind === 'read-error')
+        storage.get.mockImplementation(async (k: string) => {
+          if (k === key) throw failure
+          return originalGet(k)
+        })
+      const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+      try {
+        await setupApis({ app })
+      } finally {
+        storage.get.mockImplementation(originalGet)
+      }
+      const store = persistedStores[key]()
+      if (kind === 'read-error')
+        await expect(store.restored).rejects.toBe(failure)
+      else await expect(store.restored).rejects.toBeInstanceOf(SyntaxError)
+      expect(startupRestoration.value.phase).toBe('failed')
+      await messagingBoot({ app })
+      const router = createRouter()
+      await router.push('/wallet')
+      await router.isReady()
+      const wrapper = mountedRoot(
+        pinia,
+        router,
+        app.config.globalProperties.$status,
+      )
+      await flushPromises()
+      expect(wrapper.get('main h1').text()).toBe(
+        'Saved data could not be loaded',
+      )
+      expect(wrapper.text()).not.toContain('PRIVATE')
+      expect(wrapper.find('[data-test="route-content"]').exists()).toBe(false)
+      expect(mockInitialize).not.toHaveBeenCalled()
+      expect(mockRouteSetup).not.toHaveBeenCalled()
+      assertNoWrites(snapshot)
+      wrapper.unmount()
+    },
+  )
+  it('restores absent persisted store records as fresh state', async () => {
+    const { app, storage } = await fixture('en-us')
+    storage.data.delete('myProfile')
+    for (const key of Object.keys(persistedStores))
+      expect(storage.data.has(key)).toBe(false)
+    const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+    await setupApis({ app })
+    for (const store of Object.values(persistedStores))
+      await expect(store().restored).resolves.toBe(true)
+    expect(startupRestoration.value.phase).toBe('restored')
+    expect(useContactStore().contacts).toEqual({})
+    expect(useForumStore().messages).toEqual([])
+    expect(useTopicStore().messageIndex).toEqual({})
+    expect(useSettingsStore().notificationFeeThresholdAvu).toBe(0)
+    assertNoWrites(snapshot)
+  })
   it.each(['corrupt', 'read-error', 'version', 'network'])(
     'gates actual startup on metadata %s without resetting or writing',
     async kind => {

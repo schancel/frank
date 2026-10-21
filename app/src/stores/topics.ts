@@ -1,10 +1,16 @@
 import { toRaw } from 'vue'
 import assert from 'assert'
-import { forumSnapshot, stageForumQuery, useForumStore } from './forum'
+import {
+  forumSnapshot,
+  isCanonicalRestoredForumRow,
+  stageForumQuery,
+  useForumStore,
+} from './forum'
 import { accountStatus } from 'src/accounts/session'
 import { refreshAfterBurn } from 'src/utils/burn-refresh-error'
 import { notifyOwnAddressesChanged } from 'src/utils/own-address'
 import { defineStore } from 'pinia'
+import { readStoreJson } from 'src/boot/pinia'
 import { DEFAULT_TOPIC_NAMES } from 'src/stores/default-topics'
 
 import { activeChain, WalletHandle } from '@frank/wallet/chain'
@@ -422,7 +428,6 @@ export const useTopicStore = defineStore('topics', {
       const reducedState = reduceState()
       return storage.put('topics', JSON.stringify(reducedState))
     },
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage): Promise<Partial<State>> {
       const processSerializedTopics = (
         deserializedState: Partial<ReducedState>,
@@ -439,7 +444,12 @@ export const useTopicStore = defineStore('topics', {
             }),
           ),
         }
-        const messageIndex = hydratedState.messageIndex
+        // Restore the saved observations (replies are rebuilt) so topic rows can be reborn.
+        const savedRows = Object.values(
+          deserializedState.messageIndex ?? {},
+        ).filter(isCanonicalRestoredForumRow)
+        const messageIndex = forumSnapshot(savedRows).index
+        hydratedState.messageIndex = { ...messageIndex }
 
         if (!('topics' in deserializedState)) {
           deserializedState.topics = []
@@ -472,17 +482,12 @@ export const useTopicStore = defineStore('topics', {
         return hydratedState
       }
 
-      try {
-        const topics = await storage.get('topics')
-        const deserializedTopics = JSON.parse(topics) as Partial<ReducedState>
-        return processSerializedTopics(deserializedTopics)
-      } catch (err) {
-        console.log('Unable to load topics store', err)
-      }
-      return processSerializedTopics({
-        messageIndex: {},
-        topics: [],
-      })
+      return processSerializedTopics(
+        (await readStoreJson<Partial<ReducedState>>(storage, 'topics')) ?? {
+          messageIndex: {},
+          topics: [],
+        },
+      )
     },
   },
 })

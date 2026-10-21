@@ -8,7 +8,6 @@ import { accountSession } from '../accounts/session'
 import {
   defaultUpdateInterval,
   defaultRelayUrl,
-  displayNetwork,
   defaultAcceptancePrice,
 } from '../utils/constants'
 import { activeChain } from '@frank/wallet/chain'
@@ -27,7 +26,7 @@ import {
 } from '../utils/profile-pubkey'
 import { mapObjIndexed } from 'ramda'
 import assert from 'assert'
-import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
+import { readStoreJson } from 'src/boot/pinia'
 import { markRaw, toRaw } from 'vue'
 import { inferCuratedBotAttributes } from '../utils/curated-bots'
 import { setOutboundWakeupTokenProvider } from '@frank/cashweb/relay/canonical-dm-transport'
@@ -1387,36 +1386,26 @@ export const useContactStore = defineStore('contacts', {
         }),
       )
     },
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    async restore(storage, metadata): Promise<Partial<State>> {
-      let contacts = '{}'
-      try {
-        contacts = await storage.get('contacts')
-      } catch (err) {
-        //
-      }
-      const invalidStore =
-        metadata.networkName !== displayNetwork ||
-        metadata.version !== STORE_SCHEMA_VERSION
-      if (invalidStore) {
-        return freshContactsState()
-      }
-
-      const deserializedProfile = JSON.parse(contacts, (k, v) => {
-        switch (k) {
-          // Restore pubKey binary string to Uint8Array
-          case 'pubKey': {
-            if (!v) return null
-            // pubKey will be an object if not processed via JSON.stringify replacer function
-            const buf =
-              typeof v != 'string'
-                ? Object.values(v as object)
-                : Buffer.from(v, 'binary')
-            return new Uint8Array(buf)
+    async restore(storage): Promise<Partial<State>> {
+      const deserializedProfile = await readStoreJson<RestorableState>(
+        storage,
+        'contacts',
+        (k, v) => {
+          switch (k) {
+            // Restore pubKey binary string to Uint8Array
+            case 'pubKey': {
+              if (!v) return null
+              // pubKey will be an object if not processed via JSON.stringify replacer function
+              const buf =
+                typeof v != 'string'
+                  ? Object.values(v as object)
+                  : Buffer.from(v, 'binary')
+              return new Uint8Array(buf)
+            }
           }
-        }
-        return v
-      }) as RestorableState
+          return v
+        },
+      )
       const rehydratedContacts = await rehydrateContacts(deserializedProfile)
       return rehydratedContacts
     },

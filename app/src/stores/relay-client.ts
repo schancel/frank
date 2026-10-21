@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { readStoreJson } from 'src/boot/pinia'
 
 export interface State {
   token: string | null
@@ -15,16 +16,8 @@ export const useRelayClientStore = defineStore('relayClient', {
     save(storage, _mutation, state): Promise<void> {
       return storage.put('relayClient', JSON.stringify(state))
     },
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage): Promise<Partial<State>> {
-      let relayClient = '{}'
-      try {
-        relayClient = await storage.get('relayClient')
-      } catch (err) {
-        //
-      }
-      const deserializedRelayClient = JSON.parse(relayClient) as State
-      return deserializedRelayClient
+      return (await readStoreJson<State>(storage, 'relayClient')) ?? {}
     },
   },
 })

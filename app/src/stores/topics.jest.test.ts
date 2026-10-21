@@ -372,10 +372,83 @@ it('excludes old persisted observations and number inputs through actual restore
       }),
   })
   expect(restored).toMatchObject({
-    messageIndex: {},
     topics: { stamp: { messages: [], threshold: '0', offering: '100000000' } },
     discoveryStatus: 'unverified',
   })
+  expect((restored as { messageIndex: unknown }).messageIndex).toEqual({})
+})
+
+it('restores saved topic messages from the saved messageIndex', async () => {
+  let storageOptions:
+    | {
+        save(storage: unknown, mutation: unknown, state: unknown): Promise<void>
+        restore(storage: unknown): Promise<unknown>
+      }
+    | undefined
+  const pinia = createPinia()
+  pinia.use(({ options }) => {
+    storageOptions = options.storage as typeof storageOptions
+  })
+  createApp({}).use(pinia)
+  setActivePinia(pinia)
+  const store = useTopicStore()
+  const parent = makeMessage({ payloadDigest: 'parent' })
+  const reply = makeMessage({ payloadDigest: 'reply', parentDigest: 'parent' })
+  store.setEntries('stamp', [parent, reply], 1)
+  let saved = ''
+  await storageOptions!.save(
+    {
+      put: async (_key: string, value: string) => {
+        saved = value
+      },
+    },
+    undefined,
+    store.$state,
+  )
+  const restored = (await storageOptions!.restore({
+    get: async () => saved,
+  })) as {
+    topics: Record<string, { messages: { payloadDigest: string }[] }>
+    messageIndex: Record<string, { replies: { payloadDigest: string }[] }>
+  }
+  expect(
+    restored.topics.stamp.messages.map(row => row.payloadDigest).sort(),
+  ).toEqual(['parent', 'reply'])
+  expect(Object.keys(restored.messageIndex).sort()).toEqual(['parent', 'reply'])
+  expect(
+    restored.messageIndex.parent.replies.map(row => row.payloadDigest),
+  ).toEqual(['reply'])
+})
+
+it('rejects restore on a storage read error or unparseable topics record', async () => {
+  let storageOptions:
+    | { restore(storage: unknown): Promise<unknown> }
+    | undefined
+  const pinia = createPinia()
+  pinia.use(({ options }) => {
+    storageOptions = options.storage as typeof storageOptions
+  })
+  createApp({}).use(pinia)
+  setActivePinia(pinia)
+  useTopicStore()
+  const failure = new Error('IO unavailable')
+  await expect(
+    storageOptions!.restore({
+      get: async () => {
+        throw failure
+      },
+    }),
+  ).rejects.toBe(failure)
+  await expect(
+    storageOptions!.restore({ get: async () => '{corrupt' }),
+  ).rejects.toBeInstanceOf(SyntaxError)
+  const fresh = (await storageOptions!.restore({
+    get: async () => {
+      throw Object.assign(new Error('not found'), { notFound: true })
+    },
+  })) as { messageIndex: unknown; topics: Record<string, unknown> }
+  expect(fresh.messageIndex).toEqual({})
+  expect(Object.keys(fresh.topics).length).toBeGreaterThan(0)
 })
 
 it('retains the exact canonical u64-max discovery count and metadata', async () => {

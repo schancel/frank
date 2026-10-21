@@ -1,6 +1,11 @@
 /** Dedicated type-19 schema-2 recipient payments; never a wallet-sync item. */
 import { cborMap } from './cbor'
-import { TYPE_STEALTH_MESSAGE_ITEM } from './constants'
+import {
+  ACCOUNT_REF,
+  STEALTH_ASSET_MESSAGE_ITEM,
+  STEALTH_ASSET_TRANSFER,
+  TYPE_STEALTH_MESSAGE_ITEM,
+} from './constants'
 import { FrankCodecError } from './errors'
 import { encodeFrame } from './frame'
 import { paymentTransferToCborMap } from './stealth'
@@ -43,23 +48,31 @@ export function encodeStealthAssetMessageItem(
     )
   const transfers = item.transfers.map(entry => {
     const fields = cborMap([
-      [0, paymentTransferToCborMap(entry.transfer)],
-      [1, entry.derivationScheme],
       [
-        2,
+        STEALTH_ASSET_TRANSFER.transfer,
+        paymentTransferToCborMap(entry.transfer),
+      ],
+      [STEALTH_ASSET_TRANSFER.derivationScheme, entry.derivationScheme],
+      [
+        STEALTH_ASSET_TRANSFER.recipientSpendKey,
         cborMap([
-          [0, entry.recipientSpendKey.keyType],
-          [1, entry.recipientSpendKey.keyBytes],
+          [ACCOUNT_REF.keyType, entry.recipientSpendKey.keyType],
+          [ACCOUNT_REF.keyBytes, entry.recipientSpendKey.keyBytes],
         ]),
       ],
     ])
-    if (entry.tokenProgram !== undefined) fields.set(3, entry.tokenProgram)
+    if (entry.tokenProgram !== undefined)
+      fields.set(STEALTH_ASSET_TRANSFER.tokenProgram, entry.tokenProgram)
     if (entry.derivationContext !== undefined)
-      fields.set(4, entry.derivationContext)
+      fields.set(
+        STEALTH_ASSET_TRANSFER.derivationContext,
+        entry.derivationContext,
+      )
     return fields
   })
-  const payload = cborMap([[0, transfers]])
-  if (item.memo !== undefined) payload.set(1, item.memo)
+  const payload = cborMap([[STEALTH_ASSET_MESSAGE_ITEM.transfers, transfers]])
+  if (item.memo !== undefined)
+    payload.set(STEALTH_ASSET_MESSAGE_ITEM.memo, item.memo)
   const bytes = encodeFrame(
     {
       typeId: TYPE_STEALTH_MESSAGE_ITEM,

@@ -160,7 +160,9 @@ export function experimentalSolanaStealthTranscript(
   entry: StealthAssetTransfer,
 ): Uint8Array {
   const d = projectExperimentalSolanaStealthTransfer(entry)
+  // Proposal Q asset is a positional array (0 native, 1 SPL mint), not a map.
   const asset: Encodable =
+    // raw-cbor-key: positional array, not a map entry
     d.asset.kind === 'native' ? [0] : [1, d.asset.mint, d.asset.tokenProgram]
   return encodeCanonical([
     DOMAIN,

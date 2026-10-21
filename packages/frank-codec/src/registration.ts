@@ -14,7 +14,16 @@ import type {
 } from './types'
 import { cborMap, type Encodable } from './cbor'
 import { encodeFrame } from './frame'
-import { TYPE_DIRECTORY_STATEMENT } from './constants'
+import {
+  ACCOUNT_REF,
+  DIRECTORY_STATEMENT,
+  KEY_TYPE,
+  PROFILE_ENTRY,
+  PROFILE_HEADER,
+  RELAY_BINDING,
+  TIMESTAMP,
+  TYPE_DIRECTORY_STATEMENT,
+} from './constants'
 
 const MS = 1000n
 const NANOS_PER_MS = 1_000_000n
@@ -165,100 +174,91 @@ export function buildDirectoryStatementMap(
   const encAccount = (acc: AccountRef | Uint8Array): Encodable => {
     if (acc instanceof Uint8Array) {
       return cborMap([
-        [0, 1],
-        [1, acc],
+        [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+        [ACCOUNT_REF.keyBytes, acc],
       ])
     }
     return cborMap([
-      [0, acc.keyType],
-      [1, acc.keyBytes],
+      [ACCOUNT_REF.keyType, acc.keyType],
+      [ACCOUNT_REF.keyBytes, acc.keyBytes],
     ])
   }
 
+  const K = DIRECTORY_STATEMENT
+  const time = (t: Timestamp): Encodable =>
+    cborMap([
+      [TIMESTAMP.seconds, t.seconds],
+      [TIMESTAMP.nanoseconds, t.nanoseconds],
+    ])
   const entries: Array<[number | bigint, Encodable]> = [
-    [0, params.network],
-    [1, encAccount(params.subject)],
-    [2, BigInt(params.revision)],
+    [K.network, params.network],
+    [K.subject, encAccount(params.subject)],
+    [K.revision, BigInt(params.revision)],
+    [K.timestamp, time(params.timestamp)],
     [
-      3,
-      cborMap([
-        [0, params.timestamp.seconds],
-        [1, params.timestamp.nanoseconds],
-      ]),
-    ],
-    [
-      4,
+      K.relays,
       params.relays.map(r =>
         cborMap([
-          [0, r.relayId],
-          [1, r.endpoint],
-          [2, encAccount(r.identity)],
-          [
-            3,
-            cborMap([
-              [0, r.expiry.seconds],
-              [1, r.expiry.nanoseconds],
-            ]),
-          ],
+          [RELAY_BINDING.relayId, r.relayId],
+          [RELAY_BINDING.endpoint, r.endpoint],
+          [RELAY_BINDING.identity, encAccount(r.identity)],
+          [RELAY_BINDING.expiry, time(r.expiry)],
         ]),
       ),
     ],
   ]
 
   if (params.expiry !== undefined) {
-    entries.push([
-      6,
-      cborMap([
-        [0, params.expiry.seconds],
-        [1, params.expiry.nanoseconds],
-      ]),
-    ])
+    entries.push([K.expiry, time(params.expiry)])
   }
 
   if (
     params.recoveryAuthorities !== undefined &&
     params.recoveryAuthorities.length > 0
   ) {
-    entries.push([7, params.recoveryAuthorities.map(encAccount)])
+    entries.push([
+      K.recoveryAuthorities,
+      params.recoveryAuthorities.map(encAccount),
+    ])
   }
 
   if (params.stampKey !== undefined) {
-    entries.push([8, encAccount(params.stampKey)])
+    entries.push([K.stampKey, encAccount(params.stampKey)])
   }
 
   if (params.profileEntries !== undefined && params.profileEntries.length > 0) {
     entries.push([
-      9,
+      K.profileEntries,
       params.profileEntries.map(e =>
         cborMap([
-          [0, e.kind],
+          [PROFILE_ENTRY.kind, e.kind],
           [
-            1,
+            PROFILE_ENTRY.headers,
             e.headers.map(h =>
               cborMap([
-                [0, h.name],
-                [1, h.value],
+                [PROFILE_HEADER.name, h.name],
+                [PROFILE_HEADER.value, h.value],
               ]),
             ),
           ],
-          [2, e.body],
+          [PROFILE_ENTRY.body, e.body],
         ]),
       ),
     ])
   }
 
   if (params.canonicalUsername !== undefined) {
-    entries.push([14, params.canonicalUsername])
+    entries.push([K.username, params.canonicalUsername])
   } else if (params.spendKeys !== undefined && params.spendKeys.length > 0) {
-    entries.push([14, params.spendKeys.map(encAccount)])
+    entries.push([K.username, params.spendKeys.map(encAccount)])
   }
 
   if (params.accountType !== undefined) {
-    entries.push([15, BigInt(params.accountType)])
+    entries.push([K.accountType, BigInt(params.accountType)])
   }
 
   if (params.botRole !== undefined) {
-    entries.push([16, BigInt(params.botRole)])
+    entries.push([K.botRole, BigInt(params.botRole)])
   }
 
   return cborMap(entries)

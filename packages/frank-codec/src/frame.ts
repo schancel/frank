@@ -4,6 +4,7 @@ import {
   FRAME_HEADER_BYTES,
   FRAME_MAGIC,
   FRAME_VERSION,
+  FRANK_ENVELOPE,
   MAX_BODY_BYTES,
   U32_MAX,
 } from './constants'
@@ -68,10 +69,10 @@ export function encodeFrame(
       : encodeCanonical(payload as Encodable)
   const body = encodeCanonical(
     new Map<number, Encodable>([
-      [0, env.typeId],
-      [1, env.schemaVersion],
-      [2, env.minReaderVersion],
-      [3, payloadBytes],
+      [FRANK_ENVELOPE.typeId, env.typeId],
+      [FRANK_ENVELOPE.schemaVersion, env.schemaVersion],
+      [FRANK_ENVELOPE.minReaderVersion, env.minReaderVersion],
+      [FRANK_ENVELOPE.payload, payloadBytes],
     ]),
   )
   return wrapFrame(body)

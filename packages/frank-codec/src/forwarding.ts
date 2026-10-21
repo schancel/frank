@@ -2,8 +2,12 @@
 
 import { cborMap } from './cbor'
 import {
+  ACCOUNT_REF,
+  FORWARDING_DELIVERY_ENVELOPE,
+  KEY_TYPE,
   MAX_FORWARDING_DELIVERY_FRAME_BYTES,
   MAX_PAYMENT_MEMBERS,
+  PAYMENT_MEMBER,
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
 } from './constants'
 import { FrankCodecError } from './errors'
@@ -42,31 +46,31 @@ export interface CanonicalForwardingEnvelope {
 }
 
 function encodeAccount(acc: AccountRef): Map<number | bigint, any> {
-  if (acc.keyType !== 1) {
+  if (acc.keyType !== KEY_TYPE.secp256k1) {
     throw bad('destination account must be key type 1')
   }
   if (acc.keyBytes.length !== 33) {
     throw bad('key type 1 requires 33 key bytes')
   }
   return cborMap([
-    [0, acc.keyType],
-    [1, acc.keyBytes],
+    [ACCOUNT_REF.keyType, acc.keyType],
+    [ACCOUNT_REF.keyBytes, acc.keyBytes],
   ])
 }
 
 function encodePaymentMember(p: PaymentMember): Map<number | bigint, any> {
   const entries: Array<[number, any]> = [
-    [0, p.childIndex],
-    [1, p.transactionId],
-    [2, typeof p.value === 'bigint' ? p.value : p.value],
-    [3, p.address],
-    [4, p.commitment],
+    [PAYMENT_MEMBER.childIndex, p.childIndex],
+    [PAYMENT_MEMBER.transactionId, p.transactionId],
+    [PAYMENT_MEMBER.value, typeof p.value === 'bigint' ? p.value : p.value],
+    [PAYMENT_MEMBER.address, p.address],
+    [PAYMENT_MEMBER.commitment, p.commitment],
   ]
   if (p.vout !== undefined) {
-    entries.push([5, p.vout])
+    entries.push([PAYMENT_MEMBER.vout, p.vout])
   }
   if (p.rawTx !== undefined) {
-    entries.push([6, p.rawTx])
+    entries.push([PAYMENT_MEMBER.rawTx, p.rawTx])
   }
   return cborMap(entries)
 }
@@ -103,18 +107,24 @@ export function encodeForwardingEnvelope(
   }
 
   const entries: Array<[number, any]> = [
-    [0, envelope.network],
-    [1, encodeAccount(envelope.destination)],
-    [2, envelope.payloadFrame],
-    [3, digest],
-    [4, envelope.payments.map(encodePaymentMember)],
+    [FORWARDING_DELIVERY_ENVELOPE.network, envelope.network],
+    [
+      FORWARDING_DELIVERY_ENVELOPE.destination,
+      encodeAccount(envelope.destination),
+    ],
+    [FORWARDING_DELIVERY_ENVELOPE.payloadFrame, envelope.payloadFrame],
+    [FORWARDING_DELIVERY_ENVELOPE.payloadDigest, digest],
+    [
+      FORWARDING_DELIVERY_ENVELOPE.payments,
+      envelope.payments.map(encodePaymentMember),
+    ],
   ]
 
   if (envelope.endpoint !== undefined) {
     if (envelope.endpoint.length < 1 || envelope.endpoint.length > 256) {
       throw bad('endpoint must be 1..256 characters')
     }
-    entries.push([5, envelope.endpoint])
+    entries.push([FORWARDING_DELIVERY_ENVELOPE.endpoint, envelope.endpoint])
   }
 
   if (envelope.expiresAt !== undefined) {
@@ -125,7 +135,7 @@ export function encodeForwardingEnvelope(
     ) {
       throw bad('expiresAt must be in 0..4294967295')
     }
-    entries.push([6, envelope.expiresAt])
+    entries.push([FORWARDING_DELIVERY_ENVELOPE.expiresAt, envelope.expiresAt])
   }
 
   if (envelope.unknownFields) {

@@ -6,13 +6,24 @@ import {
   Encodable,
 } from './cbor'
 import {
+  ACCOUNT_REF,
+  FORUM_CONTENT,
+  FORUM_CURSOR_LAST,
+  FORUM_DISCOVERY_CURSOR,
+  FORUM_ENTRY_KIND,
+  FORUM_GAME_ENTRY,
+  FORUM_POST_ENTRY,
+  FORUM_TOPIC_CURSOR,
+  KEY_TYPE,
   MAX_FORUM_CURSOR_BYTES,
   MAX_FORUM_CURSOR_TRANSPORT,
-  TYPE_FORUM_TOPIC_PAGE,
+  TIMESTAMP,
+  TOPIC_POST,
+  TYPE_FORUM_DISCOVERY_PAGE,
   TYPE_FORUM_OPERATION_STATUS,
+  TYPE_FORUM_TOPIC_PAGE,
   TYPE_FORUM_VIEW,
   TYPE_TOPIC_POST,
-  TYPE_FORUM_DISCOVERY_PAGE,
 } from './constants'
 import { FrankCodecError } from './errors'
 import { encodeFrame } from './frame'
@@ -38,8 +49,8 @@ const fail = (message: string) =>
   new FrankCodecError('semantic', '9', message, 'root/forum-binding')
 const time = (t: Timestamp): Encodable =>
   new Map<number, Encodable>([
-    [0, t.seconds],
-    [1, t.nanoseconds],
+    [TIMESTAMP.seconds, t.seconds],
+    [TIMESTAMP.nanoseconds, t.nanoseconds],
   ])
 function checked(frame: Uint8Array): ParsedFrame {
   const result = validateFrame(frame, defaultContext())
@@ -83,42 +94,44 @@ export function encodeForumPostContent(
   entries: readonly ForumPostContentEntry[],
 ): Uint8Array {
   const content = new Map<number, Encodable>([
-    [0, time(authored)],
+    [FORUM_CONTENT.authored, time(authored)],
     [
-      1,
+      FORUM_CONTENT.entries,
       entries.map(entry => {
         if (entry.kind === 'game') {
           const m = new Map<number, Encodable>([
-            [0, 2],
-            [1, entry.gameType],
-            [2, entry.tableId],
-            [3, entry.hostAddress],
+            [FORUM_GAME_ENTRY.kind, FORUM_ENTRY_KIND.game],
+            [FORUM_GAME_ENTRY.gameType, entry.gameType],
+            [FORUM_GAME_ENTRY.tableId, entry.tableId],
+            [FORUM_GAME_ENTRY.hostAddress, entry.hostAddress],
           ])
           if (entry.buyInAmount !== undefined && entry.buyInAmount !== '') {
-            m.set(4, entry.buyInAmount)
+            m.set(FORUM_GAME_ENTRY.buyInAmount, entry.buyInAmount)
           }
           if (entry.currentPlayers !== undefined) {
-            m.set(5, BigInt(entry.currentPlayers))
+            m.set(FORUM_GAME_ENTRY.currentPlayers, BigInt(entry.currentPlayers))
           }
           if (entry.maxPlayers !== undefined) {
-            m.set(6, BigInt(entry.maxPlayers))
+            m.set(FORUM_GAME_ENTRY.maxPlayers, BigInt(entry.maxPlayers))
           }
           if (entry.botAddress !== undefined && entry.botAddress !== '') {
-            m.set(7, entry.botAddress)
+            m.set(FORUM_GAME_ENTRY.botAddress, entry.botAddress)
           }
           if (entry.title !== undefined && entry.title !== '') {
-            m.set(8, entry.title)
+            m.set(FORUM_GAME_ENTRY.title, entry.title)
           }
           if (entry.message !== undefined && entry.message !== '') {
-            m.set(9, entry.message)
+            m.set(FORUM_GAME_ENTRY.message, entry.message)
           }
           return m
         }
-        const m = new Map<number, Encodable>([[0, 1]])
+        const m = new Map<number, Encodable>([
+          [FORUM_POST_ENTRY.kind, FORUM_ENTRY_KIND.post],
+        ])
         for (const [key, value] of [
-          [1, entry.title],
-          [2, entry.url],
-          [3, entry.message],
+          [FORUM_POST_ENTRY.title, entry.title],
+          [FORUM_POST_ENTRY.url, entry.url],
+          [FORUM_POST_ENTRY.message, entry.message],
         ] as const)
           if (value !== undefined && value !== '') m.set(key, value)
         return m
@@ -150,25 +163,27 @@ export function encodeForumGameContent(
 export function encodeForumPost(fields: ForumPostFields): Uint8Array {
   const body = encodeForumPostContent(fields.authored, fields.entries)
   const payload = new Map<number, Encodable>([
-    [0, fields.network],
-    [1, fields.topic],
-    [3, body],
+    [TOPIC_POST.network, fields.network],
+    [TOPIC_POST.topic, fields.topic],
+    [TOPIC_POST.body, body],
   ])
-  if (fields.parentHash !== undefined) payload.set(2, fields.parentHash)
+  if (fields.parentHash !== undefined)
+    payload.set(TOPIC_POST.parentHash, fields.parentHash)
   if (fields.from !== undefined) {
     if (fields.from instanceof Uint8Array) {
-      payload.set(4, fields.from)
+      payload.set(TOPIC_POST.author, fields.from)
     } else {
       payload.set(
-        4,
+        TOPIC_POST.author,
         new Map<number, Encodable>([
-          [0, fields.from.keyType],
-          [1, fields.from.keyBytes],
+          [ACCOUNT_REF.keyType, fields.from.keyType],
+          [ACCOUNT_REF.keyBytes, fields.from.keyBytes],
         ]),
       )
     }
   }
-  if (fields.signature !== undefined) payload.set(5, fields.signature)
+  if (fields.signature !== undefined)
+    payload.set(TOPIC_POST.signature, fields.signature)
   const frame = encodeFrame(
     { typeId: TYPE_TOPIC_POST, schemaVersion: 2, minReaderVersion: 2 },
     payload,
@@ -192,7 +207,7 @@ export function verifyTopicPostAuthor(
     if (
       typeof post.from === 'object' &&
       'keyType' in post.from &&
-      post.from.keyType === 1 &&
+      post.from.keyType === KEY_TYPE.secp256k1 &&
       post.from.keyBytes.length === 33
     ) {
       if (verifyAlgorithm1(digest, post.signature, post.from.keyBytes)) {
@@ -261,23 +276,23 @@ type WithoutBytes<T> = T extends unknown ? Omit<T, 'bytes'> : never
 export type ForumCursorFields = WithoutBytes<ForumCursor>
 export function encodeForumCursor(cursor: ForumCursorFields): Uint8Array {
   const m = new Map<number, Encodable>([
-    [0, cursor.network],
-    [1, cursor.family],
-    [2, cursor.revision],
-    [3, cursor.epoch],
-    [7, cursor.incarnation],
+    [FORUM_TOPIC_CURSOR.network, cursor.network],
+    [FORUM_TOPIC_CURSOR.family, cursor.family],
+    [FORUM_TOPIC_CURSOR.revision, cursor.revision],
+    [FORUM_TOPIC_CURSOR.epoch, cursor.epoch],
+    [FORUM_TOPIC_CURSOR.incarnation, cursor.incarnation],
   ])
   if (cursor.family === TYPE_FORUM_TOPIC_PAGE) {
     m.set(
-      4,
+      FORUM_TOPIC_CURSOR.last,
       new Map<number, Encodable>([
-        [0, time(cursor.last.timestamp)],
-        [1, cursor.last.hash],
+        [FORUM_CURSOR_LAST.timestamp, time(cursor.last.timestamp)],
+        [FORUM_CURSOR_LAST.hash, cursor.last.hash],
       ]),
     )
-    m.set(5, cursor.topic)
-    m.set(6, time(cursor.since))
-  } else m.set(4, cursor.last)
+    m.set(FORUM_TOPIC_CURSOR.topic, cursor.topic)
+    m.set(FORUM_TOPIC_CURSOR.since, time(cursor.since))
+  } else m.set(FORUM_DISCOVERY_CURSOR.last, cursor.last)
   const bytes = encodeCanonical(m)
   decodeForumCursor(bytes)
   return bytes

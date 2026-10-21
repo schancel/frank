@@ -1,6 +1,13 @@
 import { cborMap, decodeCanonical, encodeCanonical } from './cbor'
 import type { FrankValue } from './cbor'
-import { TYPE_STEALTH_MESSAGE_ITEM } from './constants'
+import {
+  ACCOUNT_REF,
+  KEY_TYPE,
+  PAYMENT_TRANSFER,
+  STEALTH_MESSAGE_ITEM,
+  STEALTH_METADATA,
+  TYPE_STEALTH_MESSAGE_ITEM,
+} from './constants'
 import { FrankCodecError } from './errors'
 import { encodeFrame } from './frame'
 import { fromHex, toHex } from './hash'
@@ -57,7 +64,10 @@ export function encodeStealthMessageItem(
   if (typeof item.networkTag !== 'string' || item.networkTag.length === 0) {
     throw bad('networkTag must be a non-empty string')
   }
-  if (item.keyType !== 1 && item.keyType !== 2) {
+  if (
+    item.keyType !== KEY_TYPE.secp256k1 &&
+    item.keyType !== KEY_TYPE.ed25519
+  ) {
     throw bad('keyType must be 1 or 2')
   }
   if (
@@ -70,7 +80,7 @@ export function encodeStealthMessageItem(
     ? item.ephemeralPubKey.slice(2).toLowerCase()
     : item.ephemeralPubKey.toLowerCase()
   const pubKeyBytes = fromHex(pubHex)
-  const expectedLen = item.keyType === 1 ? 33 : 32
+  const expectedLen = item.keyType === KEY_TYPE.secp256k1 ? 33 : 32
   if (pubKeyBytes.length !== expectedLen) {
     throw bad(
       `ephemeralPubKey length mismatch: expected ${expectedLen} bytes for keyType ${item.keyType}, got ${pubKeyBytes.length}`,
@@ -99,19 +109,19 @@ export function encodeStealthMessageItem(
   }
 
   const entries: Array<[number, any]> = [
-    [0, item.networkTag],
+    [STEALTH_MESSAGE_ITEM.networkTag, item.networkTag],
     [
-      1,
+      STEALTH_MESSAGE_ITEM.ephemeralPubKey,
       cborMap([
-        [0, item.keyType],
-        [1, pubKeyBytes],
+        [ACCOUNT_REF.keyType, item.keyType],
+        [ACCOUNT_REF.keyBytes, pubKeyBytes],
       ]),
     ],
-    [2, txBytesList],
-    [3, amt],
+    [STEALTH_MESSAGE_ITEM.transactions, txBytesList],
+    [STEALTH_MESSAGE_ITEM.amount, amt],
   ]
   if (item.memo !== undefined && item.memo.length > 0) {
-    entries.push([4, item.memo])
+    entries.push([STEALTH_MESSAGE_ITEM.memo, item.memo])
   }
 
   const bytes = encodeFrame(
@@ -246,19 +256,19 @@ function parseStealthMetadata(
   if (!Number.isSafeInteger(keyType) || keyType < 0 || keyType > 65535) {
     throw bad('stealthMetadata keyType must be in 0..65535')
   }
-  if (keyType === 1 && keyBytes.length !== 33) {
+  if (keyType === KEY_TYPE.secp256k1 && keyBytes.length !== 33) {
     throw bad(`keyType 1 requires 33 key bytes, got ${keyBytes.length}`)
   }
-  if (keyType === 2 && keyBytes.length !== 32) {
+  if (keyType === KEY_TYPE.ed25519 && keyBytes.length !== 32) {
     throw bad(`keyType 2 requires 32 key bytes, got ${keyBytes.length}`)
   }
 
   const entries: Array<[number, any]> = [
     [
-      0,
+      STEALTH_METADATA.ephemeralPubKey,
       cborMap([
-        [0, keyType],
-        [1, keyBytes],
+        [ACCOUNT_REF.keyType, keyType],
+        [ACCOUNT_REF.keyBytes, keyBytes],
       ]),
     ],
   ]
@@ -286,7 +296,7 @@ function parseStealthMetadata(
     } else {
       throw bad('viewTag must be a number, hex string, or Uint8Array')
     }
-    entries.push([1, tagVal])
+    entries.push([STEALTH_METADATA.viewTag, tagVal])
   }
 
   return cborMap(entries)
@@ -339,25 +349,25 @@ export function encodePaymentTransfer(
       : undefined
 
   const entries: Array<[number, any]> = [
-    [0, transfer.networkTag],
-    [1, txIdBytes],
+    [PAYMENT_TRANSFER.networkTag, transfer.networkTag],
+    [PAYMENT_TRANSFER.txId, txIdBytes],
   ]
   if (transfer.vout !== undefined) {
-    entries.push([2, transfer.vout])
+    entries.push([PAYMENT_TRANSFER.vout, transfer.vout])
   }
-  entries.push([3, destBytes])
-  entries.push([4, valEnc])
+  entries.push([PAYMENT_TRANSFER.destination, destBytes])
+  entries.push([PAYMENT_TRANSFER.value, valEnc])
   if (tokenBytes !== undefined) {
-    entries.push([5, tokenBytes])
+    entries.push([PAYMENT_TRANSFER.token, tokenBytes])
   }
   if (stealthMap !== undefined) {
-    entries.push([6, stealthMap])
+    entries.push([PAYMENT_TRANSFER.stealthMetadata, stealthMap])
   }
   if (commitmentBytes !== undefined) {
-    entries.push([7, commitmentBytes])
+    entries.push([PAYMENT_TRANSFER.commitment, commitmentBytes])
   }
   if (rawTxBytes !== undefined) {
-    entries.push([8, rawTxBytes])
+    entries.push([PAYMENT_TRANSFER.rawTx, rawTxBytes])
   }
 
   const map = cborMap(entries)

@@ -23,6 +23,10 @@
       "icons/extension-32x32.png": "brand-plainspoken/raster/plainspoken-transparent-32.png",
       "icons/extension-64x64.png": "brand-plainspoken/raster/plainspoken-transparent-64.png",
       "icons/extension-128x128.png": "brand-plainspoken/raster/plainspoken-transparent-128.png",
+      "icons/extension-safari-16x16.png": "brand-plainspoken/raster/plainspoken-safari-toolbar-16.png",
+      "icons/extension-safari-32x32.png": "brand-plainspoken/raster/plainspoken-safari-toolbar-32.png",
+      "icons/extension-safari-64x64.png": "brand-plainspoken/raster/plainspoken-safari-toolbar-64.png",
+      "icons/extension-safari-128x128.png": "brand-plainspoken/raster/plainspoken-safari-toolbar-128.png",
       "icons/safari-pinned-tab.svg": "brand-plainspoken/plainspoken-mark.svg"
     }
   },
@@ -50,6 +54,10 @@
       "icons/extension-32x32.png": "brand-plainspoken/raster/plainspoken-transparent-32.png",
       "icons/extension-64x64.png": "brand-plainspoken/raster/plainspoken-transparent-64.png",
       "icons/extension-128x128.png": "brand-plainspoken/raster/plainspoken-transparent-128.png",
+      "icons/extension-safari-16x16.png": "brand-plainspoken/raster/plainspoken-safari-toolbar-16.png",
+      "icons/extension-safari-32x32.png": "brand-plainspoken/raster/plainspoken-safari-toolbar-32.png",
+      "icons/extension-safari-64x64.png": "brand-plainspoken/raster/plainspoken-safari-toolbar-64.png",
+      "icons/extension-safari-128x128.png": "brand-plainspoken/raster/plainspoken-safari-toolbar-128.png",
       "icons/safari-pinned-tab.svg": "brand-plainspoken/plainspoken-mark.svg"
     }
   },

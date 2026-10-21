@@ -2703,17 +2703,24 @@ export default defineComponent({
   opacity: 0.85;
 }
 
-.chat-footer,
-.chat-input-bar {
+// The composer sits in the chat column's flow (so the iOS keyboard pushes it up with the
+// column), not where Quasar would fix it. In flow it no longer gets Quasar's `left` offset, so it
+// starts after the open conversation-list drawer itself: a margin, not padding, so its box (top
+// border, background) stays under the conversation pane and never runs across the list.
+// Scoped, `.chat-container > .chat-footer` is (0,3,0): it must outrank the global
+// `.q-layout .q-footer { bottom: var(--frank-kb-offset) !important }` (0,2,0), or with the iOS
+// keyboard open that `bottom` would lift the in-flow composer a keyboard-height too high.
+.chat-container > .chat-footer,
+.chat-container > .chat-input-bar {
   position: relative !important;
   top: auto !important;
   bottom: auto !important;
   left: auto !important;
   right: auto !important;
   flex: 0 0 auto !important;
-  width: 100% !important;
+  width: auto !important;
   min-height: 64px;
-  padding-left: var(--frank-drawer-offset, 0px);
+  margin-left: var(--frank-drawer-offset, 0px);
   box-sizing: border-box;
   transform: none !important;
 }

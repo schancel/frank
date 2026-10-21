@@ -105,10 +105,10 @@ describe('Chat page bottom bar alignment and message bubble styling (#1043)', ()
     expect(sfc).toMatch(/<q-footer[^>]*:height-hint="64"/)
     expect(sfc).toMatch(/<q-footer[^>]*class="[^"]*chat-footer/)
     expect(sfc).toMatch(
-      /\.chat-footer,\s*\.chat-input-bar\s*\{[^}]*min-height:\s*64px/,
+      /\.chat-footer,\s*(\.chat-container > )?\.chat-input-bar\s*\{[^}]*min-height:\s*64px/,
     )
     expect(sfc).toMatch(
-      /\.chat-footer,\s*\.chat-input-bar\s*\{[^}]*box-sizing:\s*border-box/,
+      /\.chat-footer,\s*(\.chat-container > )?\.chat-input-bar\s*\{[^}]*box-sizing:\s*border-box/,
     )
   })
 

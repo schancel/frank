@@ -195,7 +195,7 @@
             />
             <template v-else-if="item.type == 'contact-card'">
               <chat-message-contact-card
-                v-if="item.uid !== 'frank-wakeup-capability'"
+                v-if="!isWakeupCapabilitySidecar(item)"
                 :item="item"
                 :address="address"
               />
@@ -242,6 +242,7 @@
 </template>
 
 <script lang="ts">
+import { isWakeupCapabilitySidecar } from '@frank/wallet/message-item-plugins/contact-card/plugin'
 import { defineComponent, onBeforeUnmount, PropType, ref } from 'vue'
 import { RECEIVED_PAYMENT_RECHECK_MS } from '../../../composables/useReceivedPayment'
 
@@ -411,6 +412,7 @@ export default defineComponent({
       deleteMessage: chats.deleteMessage,
       sendDirectMessage: chats.sendMessage,
       retryOutgoing: chats.retryOutgoing,
+      isWakeupCapabilitySidecar,
       getMessageItemPreview: (item: MessageItem) =>
         messageItems.previewText(item),
     }

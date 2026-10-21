@@ -1,7 +1,10 @@
 /**
  * The `contact-card` message item type (Issue #1573), installed by `initContactCardPlugin`.
  */
-import type { ContactCardItem } from '@frank/cashweb/types/messages'
+import type {
+  ContactCardItem,
+  MessageItem,
+} from '@frank/cashweb/types/messages'
 
 import {
   requirePluginCapabilities,
@@ -26,4 +29,16 @@ export function initContactCardPlugin(
     encode: contactCardCodec.encode,
     decode: contactCardCodec.decode,
   })
+}
+
+/** Reserved protocol sidecar appended to a human message for peer wakeup-token exchange.
+ * Its UID, not the user-editable contact name, identifies its purpose. Keep it in the
+ * message for token processing and replay, but exclude it from presentation. */
+export function isWakeupCapabilitySidecar(item: MessageItem): boolean {
+  return (
+    item.type === 'contact-card' &&
+    item.uid === 'frank-wakeup-capability' &&
+    typeof item.wakeupTokenHex === 'string' &&
+    /^[0-9a-fA-F]{64}$/.test(item.wakeupTokenHex)
+  )
 }

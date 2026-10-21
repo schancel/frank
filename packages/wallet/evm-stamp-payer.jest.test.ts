@@ -459,6 +459,58 @@ describe('what the list may be out of date about', () => {
     expect(f.list.get(at(main), 0)).toBeUndefined()
   })
 
+  it('an account waiting to be read again (another spender just let it go; its transfer is still in the mempool) is read again until known, not refused as "no funds"', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    await f.sync.refresh()
+    // A funding pass sent from main and let the account go: its transfer is not in a block yet,
+    // so a read leaves the account waiting to be read again.
+    f.node.pending = new Map([[at(main), 1]])
+    f.sync.markDirty(at(main))
+    const claiming = f.payer.claim({ holder: 'm', stampValueWei: MON / 2n })
+    let settled = false
+    void claiming.then(
+      () => (settled = true),
+      () => (settled = true),
+    )
+    await new Promise(resolve => setTimeout(resolve, 60))
+    expect(settled).toBe(false)
+    // The transfer is mined: main is at nonce 1 with what is left.
+    f.node.pending = undefined
+    f.node.nonces.set(at(main), 1)
+    f.node.balances.set(at(main), (MON * 9n) / 10n)
+    f.node.head += 1
+    const claim = await claiming
+    expect(claim.accounts).toEqual([
+      expect.objectContaining({ address: at(main), nonce: 1, paymentValueWei: MON / 2n }),
+    ])
+  })
+
+  it('an account that stays waiting to be read again is given up after a bounded number of looks; one read to hold too little is refused at once', async () => {
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    await f.sync.refresh()
+    f.node.pending = new Map([[at(main), 1]])
+    f.sync.markDirty(at(main))
+    await expect(
+      f.payer.claim({ holder: 'm', stampValueWei: MON / 2n }),
+    ).rejects.toBeInstanceOf(InsufficientStampFundsError)
+    expect(f.list.all().filter(coin => coin.holder === 'm')).toEqual([])
+
+    // Read again, the account holds too little: refused without waiting.
+    f.node.pending = undefined
+    f.node.nonces.set(at(main), 1)
+    f.node.balances.set(at(main), MON / 100n)
+    f.sync.markDirty(at(main))
+    const reads = f.node.calls.length
+    await expect(
+      f.payer.claim({ holder: 'n', stampValueWei: MON / 2n }),
+    ).rejects.toBeInstanceOf(InsufficientStampFundsError)
+    expect(
+      f.node.calls.slice(reads).filter(call => call === `balance:${at(main)}`).length,
+    ).toBeLessThanOrEqual(3)
+  })
+
   it('the next coin of a mined payment is what the account held at the block that included it, not what a lagging node says now', async () => {
     const f = await make()
     f.node.balances.set(at(main), MON)

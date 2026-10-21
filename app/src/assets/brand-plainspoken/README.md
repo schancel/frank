@@ -16,6 +16,7 @@ Plainspoken is Frank's active brand direction. Two people face one another insid
 ## Exports
 
 - `raster/`: app-ready sizes
+- `raster/plainspoken-safari-toolbar-{16,32,64,128}.png`: generated, the transparent mark in Carnelian (`#C8431E`) for the Safari extension toolbar (Safari tints a greyscale icon as a mask). Regenerate from `app/` with `node scripts/generate-safari-toolbar-icons.cjs`; `src-bex/safari-toolbar-icons.jest.test.ts` checks the committed files match.
 - `worlds-fair-upload/`: curated files for the project listing
 
 Use the ink-on-paper version for launcher icons and project listings. Use the transparent mark on controlled light surfaces.

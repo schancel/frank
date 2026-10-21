@@ -302,10 +302,10 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
         const label = sent.get(
           '[data-testid="outgoing-payment-summary"]',
         ).element
-        expect(label.parentElement).toBe(
+        expect(label.closest('[data-testid="outgoing-footer"]')).toBe(
           sent.get('[data-testid="outgoing-footer"]').element,
         )
-        expect(label.nextElementSibling).toBe(
+        expect(label.parentElement?.nextElementSibling).toBe(
           sent.get('[data-testid="outgoing-amount"]').element,
         )
         if (summary === 'pending') {
@@ -329,8 +329,12 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     const time = wrapper.get('[data-testid="outgoing-stamp"]').element
     const amount = wrapper.get('[data-testid="outgoing-amount"]').element
     const sending = wrapper.get('[data-testid="outgoing-sending"]').element
-    expect(sending.parentElement).toBe(footer)
-    expect(sending.nextElementSibling).toBe(time)
+    expect(sending.closest('[data-testid="outgoing-footer"]')).toBe(footer)
+    expect(sending.parentElement?.nextElementSibling).toBe(time)
+    // One row: status, time and amount in one group, the actions beside it (not under it).
+    expect(
+      [...footer.children].map(child => child.className.split(' ')[0]),
+    ).toEqual(['outgoing-meta', 'outgoing-actions'])
     expect(wrapper.findAll('.outgoing-status')).toHaveLength(0)
     for (const props of [
       { status: 'payment-pending' },
@@ -351,8 +355,8 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       ).toBe(false)
       if (props.status === 'error') {
         const failed = wrapper.get('[data-testid="outgoing-failed"]').element
-        expect(failed.parentElement).toBe(footer)
-        expect(failed.nextElementSibling).toBe(time)
+        expect(failed.closest('[data-testid="outgoing-footer"]')).toBe(footer)
+        expect(failed.parentElement?.nextElementSibling).toBe(time)
       } else {
         expect(
           wrapper
@@ -517,8 +521,10 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       )
       const footer = wrapper.get('[data-testid="outgoing-footer"]').element
       const failed = wrapper.get('[data-testid="outgoing-failed"]')
-      expect(failed.element.parentElement).toBe(footer)
-      expect(failed.element.nextElementSibling).toBe(
+      expect(failed.element.closest('[data-testid="outgoing-footer"]')).toBe(
+        footer,
+      )
+      expect(failed.element.parentElement?.nextElementSibling).toBe(
         wrapper.get('[data-testid="outgoing-stamp"]').element,
       )
       // The visible label is the short word only; the reason is not inline.

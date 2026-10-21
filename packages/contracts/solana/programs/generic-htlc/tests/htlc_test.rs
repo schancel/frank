@@ -7,11 +7,38 @@ use generic_htlc::{
 };
 use solana_program::{
     account_info::AccountInfo,
+    clock::Clock,
     hash::hash as sha256_hash,
     keccak::hash as keccak256_hash,
     program_error::ProgramError,
+    program_stubs::{set_syscall_stubs, SyscallStubs},
     pubkey::Pubkey,
 };
+use std::{cell::Cell, sync::Once};
+
+thread_local! {
+    static NOW: Cell<i64> = const { Cell::new(0) };
+}
+
+/// Serves the Clock sysvar off-chain from a per-thread time, so parallel tests do not interfere.
+struct ClockStub;
+
+impl SyscallStubs for ClockStub {
+    fn sol_get_clock_sysvar(&self, var_addr: *mut u8) -> u64 {
+        let clock = Clock { unix_timestamp: NOW.with(|n| n.get()), ..Clock::default() };
+        unsafe { *(var_addr as *mut Clock) = clock };
+        0
+    }
+}
+
+/// Sets the chain time the program sees on this thread.
+fn set_clock(unix_timestamp: i64) {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        set_syscall_stubs(Box::new(ClockStub));
+    });
+    NOW.with(|n| n.set(unix_timestamp));
+}
 
 fn create_account<'a>(
     key: &'a Pubkey,
@@ -35,6 +62,7 @@ fn create_account<'a>(
 
 #[test]
 fn test_lock_and_withdraw_sha256() {
+    set_clock(0);
     let program_id = Pubkey::new_unique();
     let funder_key = Pubkey::new_unique();
     let recipient_key = Pubkey::new_unique();
@@ -124,6 +152,7 @@ fn test_lock_and_withdraw_sha256() {
 
 #[test]
 fn test_lock_and_withdraw_keccak256() {
+    set_clock(0);
     let program_id = Pubkey::new_unique();
     let funder_key = Pubkey::new_unique();
     let recipient_key = Pubkey::new_unique();
@@ -206,6 +235,7 @@ fn test_lock_and_withdraw_keccak256() {
 
 #[test]
 fn test_batch_distribute_multi_winner_and_remainder() {
+    set_clock(0);
     let program_id = Pubkey::new_unique();
     let system_program_id = solana_program::system_program::id();
 
@@ -226,6 +256,8 @@ fn test_batch_distribute_multi_winner_and_remainder() {
     let carol = Pubkey::new_unique();
 
     let primary_refund = Pubkey::new_unique(); // Alice's cold refund address
+    // The table's arbiter: recipient of every lock, and the one who distributes the pot.
+    let caller_key = Pubkey::new_unique();
 
     let mut l1_lamports = 1_000_000u64;
     let mut l2_lamports = 1_000_000u64;
@@ -239,7 +271,7 @@ fn test_batch_distribute_multi_winner_and_remainder() {
         is_initialized: true,
         lock_id: lock_id1,
         sender: alice,
-        recipient: Pubkey::new_unique(),
+        recipient: caller_key,
         refund_address: primary_refund,
         hash_lock,
         amount: 1_000_000,
@@ -253,7 +285,7 @@ fn test_batch_distribute_multi_winner_and_remainder() {
         is_initialized: true,
         lock_id: lock_id2,
         sender: bob,
-        recipient: Pubkey::new_unique(),
+        recipient: caller_key,
         refund_address: bob,
         hash_lock,
         amount: 1_000_000,
@@ -267,7 +299,7 @@ fn test_batch_distribute_multi_winner_and_remainder() {
         is_initialized: true,
         lock_id: lock_id3,
         sender: carol,
-        recipient: Pubkey::new_unique(),
+        recipient: caller_key,
         refund_address: carol,
         hash_lock,
         amount: 1_000_000,
@@ -291,7 +323,6 @@ fn test_batch_distribute_multi_winner_and_remainder() {
     let mut eve_data = vec![];
     let mut refund_data = vec![];
 
-    let caller_key = Pubkey::new_unique();
     let mut caller_lamports = 100_000u64;
     let mut caller_data = vec![];
 
@@ -336,6 +367,7 @@ fn test_batch_distribute_multi_winner_and_remainder() {
 
 #[test]
 fn test_batch_withdraw() {
+    set_clock(0);
     let program_id = Pubkey::new_unique();
     let system_program_id = solana_program::system_program::id();
     let preimage = b"shared-batch-preimage";
@@ -414,6 +446,7 @@ fn test_batch_withdraw() {
 
 #[test]
 fn test_spl_token_htlc_escrow_compatibility() {
+    set_clock(0);
     let program_id = Pubkey::new_unique();
     let funder_key = Pubkey::new_unique();
     let recipient_key = Pubkey::new_unique();
@@ -501,3 +534,127 @@ fn test_spl_token_htlc_escrow_compatibility() {
     assert_eq!(computed_hash, state.hash_lock);
 }
 
+
+fn write_lock(data: &mut [u8], recipient: Pubkey, hash_lock: [u8; 32], amount: u64, expires_at: i64) {
+    LockState {
+        is_initialized: true,
+        lock_id: [7u8; 32],
+        sender: Pubkey::new_unique(),
+        recipient,
+        refund_address: Pubkey::new_unique(),
+        hash_lock,
+        amount,
+        expires_at,
+        withdrawn: false,
+        refunded: false,
+        bump: 0,
+    }
+    .serialize(&mut &mut data[..LockState::LEN])
+    .unwrap();
+}
+
+#[test]
+fn test_withdraw_refused_at_and_after_expiry() {
+    let program_id = Pubkey::new_unique();
+    let system_program_id = solana_program::system_program::id();
+    let preimage = b"late-reveal";
+    let recipient = Pubkey::new_unique();
+    let (lock_pda, _) = Pubkey::find_program_address(&[LOCK_SEED, [7u8; 32].as_ref()], &program_id);
+
+    let mut lock_lamports = 1_000u64;
+    let mut lock_data = vec![0u8; LockState::LEN];
+    write_lock(&mut lock_data, recipient, sha256_hash(preimage).to_bytes(), 1_000, 3_600);
+    let mut recipient_lamports = 0u64;
+    let mut recipient_data = vec![];
+    let caller_key = Pubkey::new_unique();
+    let mut caller_lamports = 0u64;
+    let mut caller_data = vec![];
+
+    let mut ix_data = vec![];
+    HtlcInstruction::Withdraw { preimage: preimage.to_vec() }.serialize(&mut ix_data).unwrap();
+
+    // At expiry and long after it the lock can only be refunded.
+    for now in [3_600, 36_000] {
+        set_clock(now);
+        let accounts = [
+            create_account(&caller_key, true, false, &mut caller_lamports, &mut caller_data, &system_program_id),
+            create_account(&lock_pda, false, true, &mut lock_lamports, &mut lock_data, &program_id),
+            create_account(&recipient, false, true, &mut recipient_lamports, &mut recipient_data, &system_program_id),
+        ];
+        let err = Processor::process(&program_id, &accounts, &ix_data).unwrap_err();
+        assert_eq!(err, ProgramError::Custom(HtlcError::LockExpired as u32));
+    }
+    assert_eq!(lock_lamports, 1_000);
+    assert_eq!(recipient_lamports, 0);
+    assert!(!LockState::try_from_slice(&lock_data).unwrap().withdrawn);
+
+    // One second before expiry it still pays.
+    set_clock(3_599);
+    let accounts = [
+        create_account(&caller_key, true, false, &mut caller_lamports, &mut caller_data, &system_program_id),
+        create_account(&lock_pda, false, true, &mut lock_lamports, &mut lock_data, &program_id),
+        create_account(&recipient, false, true, &mut recipient_lamports, &mut recipient_data, &system_program_id),
+    ];
+    Processor::process(&program_id, &accounts, &ix_data).unwrap();
+    assert_eq!(recipient_lamports, 1_000);
+}
+
+/// Runs a one-lock BatchDistribute that pays the whole lock to `winner`.
+fn distribute_one(caller: Pubkey, caller_signs: bool, recipient: Pubkey, now: i64) -> (Result<(), ProgramError>, u64) {
+    let program_id = Pubkey::new_unique();
+    let system_program_id = solana_program::system_program::id();
+    let preimage = b"pot-secret";
+    let (lock_pda, _) = Pubkey::find_program_address(&[LOCK_SEED, [7u8; 32].as_ref()], &program_id);
+    let winner = Pubkey::new_unique();
+
+    let mut lock_lamports = 1_000u64;
+    let mut lock_data = vec![0u8; LockState::LEN];
+    write_lock(&mut lock_data, recipient, sha256_hash(preimage).to_bytes(), 1_000, 3_600);
+    let mut caller_lamports = 0u64;
+    let mut caller_data = vec![];
+    let mut winner_lamports = 0u64;
+    let mut winner_data = vec![];
+
+    let mut ix_data = vec![];
+    HtlcInstruction::BatchDistribute {
+        preimage: preimage.to_vec(),
+        payouts: vec![Payout { recipient: winner, amount: 1_000 }],
+    }
+    .serialize(&mut ix_data)
+    .unwrap();
+
+    set_clock(now);
+    let accounts = [
+        create_account(&caller, caller_signs, false, &mut caller_lamports, &mut caller_data, &system_program_id),
+        create_account(&lock_pda, false, true, &mut lock_lamports, &mut lock_data, &program_id),
+        create_account(&winner, false, true, &mut winner_lamports, &mut winner_data, &system_program_id),
+    ];
+    let result = Processor::process(&program_id, &accounts, &ix_data);
+    drop(accounts);
+    (result, winner_lamports)
+}
+
+#[test]
+fn test_batch_distribute_refused_at_expiry() {
+    let arbiter = Pubkey::new_unique();
+    let (result, paid) = distribute_one(arbiter, true, arbiter, 3_600);
+    assert_eq!(result.unwrap_err(), ProgramError::Custom(HtlcError::LockExpired as u32));
+    assert_eq!(paid, 0);
+
+    let (result, paid) = distribute_one(arbiter, true, arbiter, 3_599);
+    result.unwrap();
+    assert_eq!(paid, 1_000);
+}
+
+#[test]
+fn test_batch_distribute_requires_the_signing_recipient() {
+    let arbiter = Pubkey::new_unique();
+    // Knowing the preimage is not enough: the caller picks who is paid.
+    let (result, paid) = distribute_one(Pubkey::new_unique(), true, arbiter, 0);
+    assert_eq!(result.unwrap_err(), ProgramError::Custom(HtlcError::Unauthorized as u32));
+    assert_eq!(paid, 0);
+
+    let (result, paid) = distribute_one(arbiter, false, arbiter, 0);
+    assert_eq!(result.unwrap_err(), ProgramError::MissingRequiredSignature);
+    assert_eq!(paid, 0);
+}

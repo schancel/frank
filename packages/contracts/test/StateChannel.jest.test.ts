@@ -353,6 +353,41 @@ describe('StateChannel on a local EVM node', () => {
     })
   })
 
+  describe('after the challenge window', () => {
+    it('settles only through closeAfterChallenge: no cooperative close, no checkpoint', async () => {
+      const id = await openFunded()
+      await mined(as(alice).startChallenge(id))
+      await anvil.advanceTime(10 * CHALLENGE)
+
+      // The dispute is decided; a late co-signed state cannot replace or restart it.
+      const late: Balances = [0n, ethers.parseEther('20')]
+      await expectRevert(
+        as(bob)[CLOSE](id, 0, late, await signClose(alice, id, 0, late), await signClose(bob, id, 0, late)),
+        'ChallengeExpired',
+      )
+      await expectRevert(
+        as(bob)[CLOSE_TO](
+          id,
+          0,
+          late,
+          payoutA.address,
+          payoutB.address,
+          await signClose(alice, id, 0, late, payoutA.address, payoutB.address),
+          await signClose(bob, id, 0, late, payoutA.address, payoutB.address),
+        ),
+        'ChallengeExpired',
+      )
+      await expectRevert(checkpoint(bob, id, 1, late), 'ChallengeExpired')
+      expect((await channel.channels(id)).settled).toBe(false)
+
+      const aliceBefore = await balance(alice)
+      const bobBefore = await balance(bob)
+      await mined(as(stranger).closeAfterChallenge(id))
+      expect((await balance(alice)) - aliceBefore).toBe(TEN)
+      expect((await balance(bob)) - bobBefore).toBe(TEN)
+    })
+  })
+
   describe('challenge without a checkpoint', () => {
     it('returns the opener\'s deposit after the window when the peer never joins', async () => {
       const id = ethers.id(`channel-${counter++}`)

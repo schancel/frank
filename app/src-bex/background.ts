@@ -9,8 +9,8 @@ import {
   isBrowserExtensionRuntime,
   isFrankWebAppOrigin,
   onRuntimeMessage,
+  focusOrOpenMainExtensionWindow,
   openCompanionPanel,
-  openExtensionInWindow,
   parseExtensionLaunchMode,
 } from './runtime-adapter'
 import { EXTENSION_POPUP_PATH } from './manifests'
@@ -23,7 +23,6 @@ import {
   type SyncSenderState,
 } from '../src/utils/sync-pairing'
 import {
-  createDeterministicRpcResultFallback,
   deriveDeterministicBtcAddress,
   deriveDeterministicBtcPubKey,
   deriveDeterministicXecAddress,
@@ -683,7 +682,7 @@ export async function handleToolbarClick(
       }
     }
   }
-  await openExtensionInWindow({}, runtimeScope)
+  await focusOrOpenMainExtensionWindow({}, runtimeScope)
 }
 
 export async function ensureOffscreenWarmup(
@@ -1390,6 +1389,13 @@ export async function handleBackgroundMessage(
     message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
     message.type === FRANK_DAPP_PROVISION_SITE_PERSONAS
   ) {
+    // Only Frank's own pages provide personas; a web page never chooses a site's address.
+    if (!isExtensionPageSender(sender, getRawExtensionApi(runtimeScope))) {
+      return {
+        ok: false,
+        error: { code: 4100, message: 'Unauthorized persona sender.' },
+      }
+    }
     const provided =
       message.sitePersonas && typeof message.sitePersonas === 'object'
         ? (message.sitePersonas as Record<string, unknown>)
@@ -1587,7 +1593,7 @@ export async function handleBackgroundMessage(
             runtimeScope,
           )
         } else if (mode === 'window') {
-          await openExtensionInWindow(message.options ?? {}, runtimeScope)
+          await focusOrOpenMainExtensionWindow(message.options ?? {}, runtimeScope)
         }
       } catch (err) {
         openError = err instanceof Error ? err.message : String(err)
@@ -1607,7 +1613,7 @@ export async function handleBackgroundMessage(
     message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
     message.type === 'open-extension-window'
   ) {
-    const res = await openExtensionInWindow(
+    const res = await focusOrOpenMainExtensionWindow(
       message.options ?? {},
       runtimeScope,
     )
@@ -1953,6 +1959,13 @@ export async function handleBackgroundMessage(
     (message.type === 'resolve-approval' ||
       message.type === 'companion-resolve-approval')
   ) {
+    // Only Frank's own pages decide; a web page or content script never answers for the user.
+    if (!isExtensionPageSender(sender, getRawExtensionApi(runtimeScope))) {
+      return {
+        ok: false,
+        error: { code: 4100, message: 'Unauthorized approval sender.' },
+      }
+    }
     const decision =
       message.payload && typeof message.payload === 'object'
         ? message.payload
@@ -2104,44 +2117,22 @@ export async function handleBackgroundMessage(
       }
     }
 
-    // Signing or transaction request
-    const originPersonaAddress = getOriginPersonaAddress(state, pending.origin)
-    const explicitResult =
-      decision.result ??
-      message.result ??
-      decision.signature ??
-      message.signature ??
-      decision.txHash ??
-      message.txHash
-    const fallbackResult = createDeterministicRpcResultFallback(
-      pending.method,
-      pending.origin,
-      originPersonaAddress,
-      pending.params,
-    )
-    const resolvedRpcResult =
-      explicitResult !== undefined
-        ? explicitResult
-        : pending.method === 'xec_cashtabRequest'
-        ? { txid: fallbackResult.replace(/^0x/, '') }
-        : pending.method === 'btc_signPsbts'
-        ? [fallbackResult]
-        : fallbackResult
-
-    if (waiter) {
-      waiter.resolve(resolvedRpcResult)
+    // Signing and transactions are not implemented: approving one must never hand the dApp a
+    // made-up signature or transaction hash. Answer it as unsupported instead.
+    const unsupported = {
+      code: 4200,
+      message: `Frank cannot complete ${pending.method} yet.`,
     }
-
+    waiter?.reject(unsupported)
     return {
-      ok: true,
+      ok: false,
+      error: unsupported,
       result: {
-        ok: true,
+        ok: false,
         requestId,
         approvalId: requestId,
-        approved: true,
+        approved: false,
         origin: pending.origin,
-        accounts: [originPersonaAddress],
-        result: resolvedRpcResult,
       },
     }
   }
@@ -2322,7 +2313,32 @@ export function installBackgroundBridge(
   }
 }
 
-if (typeof globalThis !== 'undefined' && isBrowserExtensionRuntime()) {
+/**
+ * Whether this script runs as the extension's background (service worker, or Firefox's
+ * background page). Extension pages import this module for its helpers; they must not
+ * install a second background bridge, or every open Frank page would answer background
+ * messages too (each "open window" request then opened one window per page).
+ */
+export function isExtensionBackgroundContext(
+  scope: Record<string, any> = globalThis as Record<string, any>,
+): boolean {
+  const workerScope = scope.ServiceWorkerGlobalScope
+  if (typeof workerScope === 'function' && scope instanceof workerScope) {
+    return true
+  }
+  try {
+    const page = getRawExtensionApi(scope)?.extension?.getBackgroundPage?.()
+    return Boolean(page) && page === (scope.window ?? scope)
+  } catch {
+    return false
+  }
+}
+
+if (
+  typeof globalThis !== 'undefined' &&
+  isBrowserExtensionRuntime() &&
+  isExtensionBackgroundContext()
+) {
   installBackgroundBridge(globalThis as Record<string, any>)
 }
 

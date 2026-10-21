@@ -1,5 +1,5 @@
 /** @jest-environment jsdom */
-import { setActivePinia, createPinia } from 'pinia'
+import { setActivePinia, createPinia, type Pinia } from 'pinia'
 import {
   useTabCoordinatorStore,
   generateTabId,
@@ -24,6 +24,15 @@ jest.mock('../accounts/session', () => ({
     yieldCustody: jest.fn(async () => undefined),
     setStandby: jest.fn(),
   },
+}))
+
+const mockExtension = {
+  isExtension: false,
+  raised: true,
+}
+jest.mock('../../src-bex/runtime-adapter', () => ({
+  isBrowserExtensionRuntime: () => mockExtension.isExtension,
+  focusOwnExtensionView: jest.fn(async () => mockExtension.raised),
 }))
 
 jest.mock('./leader', () => ({
@@ -376,5 +385,110 @@ describe('Find open tab', () => {
     store.requestTabFocus()
     jest.advanceTimersByTime(1800)
     expect(store.focusRequestStatus).toBe('unavailable')
+  })
+})
+
+describe('extension views share one instance', () => {
+  let close: jest.SpyInstance
+  let hasFocus: jest.SpyInstance
+  let piniaA: Pinia
+  let piniaB: Pinia
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    accountStatus.status = 'ready'
+    mockExtension.isExtension = true
+    mockExtension.raised = true
+    close = jest.spyOn(window, 'close').mockImplementation(() => undefined)
+    jest.spyOn(window, 'focus').mockImplementation(() => undefined)
+    hasFocus = jest.spyOn(document, 'hasFocus').mockReturnValue(false)
+    piniaA = createPinia()
+    piniaB = createPinia()
+  })
+
+  afterEach(() => {
+    useTabCoordinatorStore(piniaA).resetForTesting()
+    useTabCoordinatorStore(piniaB).resetForTesting()
+    mockExtension.isExtension = false
+    close.mockRestore()
+    hasFocus.mockRestore()
+    jest.restoreAllMocks()
+  })
+
+  /** The pop-out holding the account and a popup opened from the toolbar, wired as one channel. */
+  function popoutAndPopup() {
+    const popout = useTabCoordinatorStore(piniaA)
+    const popup = useTabCoordinatorStore(piniaB)
+    popout.tabId = 'popout'
+    popup.tabId = 'popup'
+    jest.spyOn(popout, 'broadcast').mockImplementation(msg => {
+      void popup.handleMessage(msg)
+    })
+    jest.spyOn(popup, 'broadcast').mockImplementation(msg => {
+      void popout.handleMessage(msg)
+    })
+    return { popout, popup }
+  }
+
+  async function settle() {
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+  }
+
+  it('a toolbar popup raises the open pop-out and closes instead of showing the lock', async () => {
+    const { popout, popup } = popoutAndPopup()
+    popup.broadcast({ type: 'TAB_PING', tabId: popup.tabId })
+    await settle()
+    expect(popup.otherTabActive).toBe(true)
+    expect(popup.activeTabId).toBe('popout')
+
+    await expect(popup.deferToActiveExtensionView()).resolves.toBe(true)
+    expect(close).toHaveBeenCalledTimes(1)
+    // The pop-out raised its own window through the extension API and kept the account.
+    const { focusOwnExtensionView } = jest.requireMock(
+      '../../src-bex/runtime-adapter',
+    )
+    expect(focusOwnExtensionView).toHaveBeenCalled()
+    expect(popout.isYielded).toBe(false)
+    expect(accountSession.yieldCustody).not.toHaveBeenCalled()
+  })
+
+  it('stays on standby when the holder cannot be raised, so two views never both hold the account', async () => {
+    mockExtension.raised = false
+    const { popout, popup } = popoutAndPopup()
+    popup.broadcast({ type: 'TAB_PING', tabId: popup.tabId })
+    await settle()
+    await expect(popup.deferToActiveExtensionView()).resolves.toBe(false)
+    expect(popup.focusRequestStatus).toBe('manual')
+    expect(close).not.toHaveBeenCalled()
+    expect(popup.otherTabActive).toBe(true)
+    expect(popout.isYielded).toBe(false)
+  })
+
+  it('does not close a web app tab', async () => {
+    mockExtension.isExtension = false
+    const { popup } = popoutAndPopup()
+    popup.otherTabActive = true
+    await expect(popup.deferToActiveExtensionView()).resolves.toBe(false)
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it('a view that wins a race to the account claims it alone and leaves no lock on itself', async () => {
+    const { popout, popup } = popoutAndPopup()
+    // The pop-out's answer arrived after the popup stopped waiting: both are now "ready".
+    await popup.handleMessage({
+      type: 'TAB_PONG',
+      tabId: 'popout',
+      hasCustody: true,
+    })
+    expect(popup.otherTabActive).toBe(true)
+    accountStatus.status = 'loading'
+    await popup.init({ pingTimeoutMs: 0 })
+    accountStatus.status = 'ready'
+    await settle()
+    // The claim cleared the popup's own lock and made the pop-out yield.
+    expect(popup.otherTabActive).toBe(false)
+    expect(popout.isYielded).toBe(true)
+    expect(popout.otherTabActive).toBe(true)
+    expect(accountSession.yieldCustody).toHaveBeenCalledTimes(1)
   })
 })

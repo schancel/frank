@@ -14,7 +14,10 @@ use crate::limits::{
     MAX_FORUM_CURSOR_BYTES, MAX_FORUM_ENTRIES, MAX_FORUM_PAGE_BYTES, MAX_FORUM_ROWS,
     MAX_FORUM_VIEW_BYTES,
 };
-use crate::message_fields::MapShape;
+use crate::message_fields::{
+    blackjack_action, blackjack_hand_action, blackjack_hand_item, blackjack_hand_v3_action,
+    blackjack_hand_v3_item, blackjack_item, blackjack_outcome, blackjack_role, MapShape,
+};
 use crate::message_types::{
     TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_KEY_TRANSITION_STATEMENT,
     TYPE_STEALTH_MESSAGE_ITEM, TYPE_TEXT_MESSAGE_ITEM,
@@ -1540,7 +1543,10 @@ pub(crate) fn parse_draft(
         TYPE_BLACKJACK_MESSAGE_ITEM
             if schema.effective >= 3
                 && schema.min_reader >= 2
-                && blackjack_action_code_at_least(payload, 32) =>
+                && blackjack_action_code_at_least(
+                    payload,
+                    i128::from(blackjack_hand_v3_action::CHALLENGE),
+                ) =>
         {
             Ok(Draft::BlackjackHandV3(blackjack_hand_v3_payload(
                 payload, path,
@@ -1728,34 +1734,36 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
 }
 
 fn blackjack_payload(payload: &CborValue, path: &str) -> Result<BlackjackMessageItem, CodecError> {
+    use blackjack_action as A;
+    use blackjack_item as K;
     let CborValue::Map(entries) = payload else {
         return Err(bad(path, "blackjack payload must be a map"));
     };
     let get = |key| entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v);
-    let action = u32_in(get(1), path, 0, 6)?;
-    let (required, optional): (&[u64], &[u64]) = match action {
-        0 => (&[0, 1, 2], &[]),
-        1 => (&[0, 1, 4, 5, 6], &[]),
-        2 => (&[0, 1], &[5]),
-        3 => (&[0, 1], &[]),
-        4 => {
-            if get(3).is_some() == get(5).is_some() {
+    let action = u32_in(get(K::ACTION), path, A::BET, A::WELCOME)?;
+    let shape = match action {
+        A::BET => &K::BET_SHAPE,
+        A::DEAL => &K::DEAL_SHAPE,
+        A::HIT => &K::HIT_SHAPE,
+        A::STAND => &K::STAND_SHAPE,
+        A::DOUBLE => {
+            if get(K::DOUBLE_WAGER_TX_HASH).is_some() == get(K::PLAYER_CARDS).is_some() {
                 return Err(bad(
                     path,
                     "double requires exactly one request/response form",
                 ));
             }
-            if get(3).is_some() {
-                (&[0, 1, 3], &[])
+            if get(K::DOUBLE_WAGER_TX_HASH).is_some() {
+                &K::DOUBLE_REQUEST_SHAPE
             } else {
-                (&[0, 1, 5], &[])
+                &K::DOUBLE_RESPONSE_SHAPE
             }
         }
-        5 => (&[0, 1, 7, 8, 9], &[]),
-        _ => (&[0, 1, 10, 11], &[12, 13]),
+        A::REVEAL => &K::REVEAL_SHAPE,
+        _ => &K::WELCOME_SHAPE,
     };
-    let m = fields(Some(payload), path, required, optional, false, false)?;
-    let game_id = tstr(m.get(0), path, 1, 128)?;
+    let m = shaped(Some(payload), path, shape, false)?;
+    let game_id = tstr(m.get(K::GAME_ID), path, 1, 128)?;
     let hand = |key, min, max| -> Result<Vec<u32>, CodecError> {
         as_list(m.get(key), path, min, max)?
             .iter()
@@ -1764,48 +1772,42 @@ fn blackjack_payload(payload: &CborValue, path: &str) -> Result<BlackjackMessage
     };
     let hash = |key| bstr(m.get(key), path, 32, 32);
     let action = match action {
-        0 => BlackjackAction::Bet {
-            wager_tx_hash: hash(2)?,
+        A::BET => BlackjackAction::Bet {
+            wager_tx_hash: hash(K::WAGER_TX_HASH)?,
         },
-        1 => BlackjackAction::Deal {
-            server_seed_hash: hash(4)?,
-            player_cards: hand(5, 2, 2)?,
-            dealer_up_card: u32_in(m.get(6), path, 0, 51)?,
+        A::DEAL => BlackjackAction::Deal {
+            server_seed_hash: hash(K::SERVER_SEED_HASH)?,
+            player_cards: hand(K::PLAYER_CARDS, 2, 2)?,
+            dealer_up_card: u32_in(m.get(K::DEALER_UP_CARD), path, 0, 51)?,
         },
-        2 if m.has(5) => BlackjackAction::HitResponse {
-            player_cards: hand(5, 3, 52)?,
+        A::HIT if m.has(K::PLAYER_CARDS) => BlackjackAction::HitResponse {
+            player_cards: hand(K::PLAYER_CARDS, 3, 52)?,
         },
-        2 => BlackjackAction::HitRequest,
-        3 => BlackjackAction::Stand,
-        4 if m.has(3) => BlackjackAction::DoubleRequest {
-            double_wager_tx_hash: hash(3)?,
+        A::HIT => BlackjackAction::HitRequest,
+        A::STAND => BlackjackAction::Stand,
+        A::DOUBLE if m.has(K::DOUBLE_WAGER_TX_HASH) => BlackjackAction::DoubleRequest {
+            double_wager_tx_hash: hash(K::DOUBLE_WAGER_TX_HASH)?,
         },
-        4 => BlackjackAction::DoubleResponse {
-            player_cards: hand(5, 3, 3)?,
+        A::DOUBLE => BlackjackAction::DoubleResponse {
+            player_cards: hand(K::PLAYER_CARDS, 3, 3)?,
         },
-        5 => {
-            let seed = tstr(m.get(8), path, 64, 64)?;
+        A::REVEAL => {
+            let seed = tstr(m.get(K::SERVER_SEED), path, 64, 64)?;
             if !seed
                 .bytes()
                 .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
             {
                 return Err(bad(path, "seed must be 64 lowercase ASCII hex characters"));
             }
-            let outcome = match u32_in(m.get(9), path, 0, 3)? {
-                0 => BlackjackOutcome::PlayerWin,
-                1 => BlackjackOutcome::DealerWin,
-                2 => BlackjackOutcome::Push,
-                _ => BlackjackOutcome::PlayerBlackjack,
-            };
             BlackjackAction::Reveal {
-                dealer_cards: hand(7, 2, 52)?,
+                dealer_cards: hand(K::DEALER_CARDS, 2, 52)?,
                 server_seed: seed,
-                outcome,
+                outcome: blackjack_outcome(m.get(K::OUTCOME), path)?,
             }
         }
         _ => {
-            let rules = if m.has(13) {
-                let text = tstr(m.get(13), path, 0, 1200)?;
+            let rules = if m.has(K::RULES) {
+                let text = tstr(m.get(K::RULES), path, 0, 1200)?;
                 if text.encode_utf16().count() > 400 {
                     return Err(bad(path, "rules exceed 400 UTF-16 units"));
                 }
@@ -1814,9 +1816,13 @@ fn blackjack_payload(payload: &CborValue, path: &str) -> Result<BlackjackMessage
                 None
             };
             BlackjackAction::Welcome {
-                min_wager_wei: hash(10)?,
-                max_wager_wei: hash(11)?,
-                fee_hint_wei: if m.has(12) { Some(hash(12)?) } else { None },
+                min_wager_wei: hash(K::MIN_WAGER_WEI)?,
+                max_wager_wei: hash(K::MAX_WAGER_WEI)?,
+                fee_hint_wei: if m.has(K::FEE_HINT_WEI) {
+                    Some(hash(K::FEE_HINT_WEI)?)
+                } else {
+                    None
+                },
                 rules,
             }
         }
@@ -1824,9 +1830,20 @@ fn blackjack_payload(payload: &CborValue, path: &str) -> Result<BlackjackMessage
     Ok(BlackjackFields { game_id, action })
 }
 
-/// True when the payload is a map whose action (key 1) is an integer of at least 16.
+/// Reveal outcome (schemas 1 and 2, key 9).
+fn blackjack_outcome(v: Option<&CborValue>, path: &str) -> Result<BlackjackOutcome, CodecError> {
+    use blackjack_outcome as O;
+    Ok(match u32_in(v, path, O::PLAYER_WIN, O::PLAYER_BLACKJACK)? {
+        O::PLAYER_WIN => BlackjackOutcome::PlayerWin,
+        O::DEALER_WIN => BlackjackOutcome::DealerWin,
+        O::PUSH => BlackjackOutcome::Push,
+        _ => BlackjackOutcome::PlayerBlackjack,
+    })
+}
+
+/// True when the payload is a map whose action (key 1) is a schema-2 hand code or later.
 fn is_blackjack_hand_action_code(payload: &CborValue) -> bool {
-    blackjack_action_code_at_least(payload, 16)
+    blackjack_action_code_at_least(payload, i128::from(blackjack_hand_action::CHALLENGE))
 }
 
 /// True when the payload is a map whose action (key 1) is an integer of at least `min`.
@@ -1835,36 +1852,16 @@ fn blackjack_action_code_at_least(payload: &CborValue, min: i128) -> bool {
         return false;
     };
     matches!(
-        entries.iter().find(|(k, _)| *k == 1),
+        entries.iter().find(|(k, _)| *k == blackjack_item::ACTION),
         Some((_, CborValue::Int(code))) if *code >= min
     )
 }
 
-/// Closed schema-2 shapes: one peer-to-peer hand. No shape carries an amount of money.
-fn blackjack_hand_payload(
-    payload: &CborValue,
-    path: &str,
-) -> Result<BlackjackHandMessageItem, CodecError> {
-    let CborValue::Map(entries) = payload else {
-        return Err(bad(path, "blackjack payload must be a map"));
-    };
-    let get = |key| entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v);
-    // Codes 16..25: disjoint from schema 1's 0..6, so no reader can take one for the other.
-    let action = u32_in(get(1), path, 16, 25)?;
-    let required: &[u64] = match action {
-        16 if u32_in(get(2), path, 0, 1)? == 0 => &[0, 1, 2, 3, 4],
-        16 => &[0, 1, 2, 3],
-        17 => &[0, 1, 3, 4],
-        19 => &[0, 1, 5, 6],
-        23 => &[0, 1, 5],
-        24 => &[0, 1, 7, 8, 9],
-        25 => &[0, 1, 10],
-        _ => &[0, 1],
-    };
-    let m = fields(Some(payload), path, required, &[], false, false)?;
-    // Fixed form, so a game id is always safe to use as a key: 32 lowercase hex characters.
-    let game_path = format!("{path}.0");
-    let game_id = tstr(m.get(0), &game_path, 32, 32)?;
+/// The fixed-form game id of schemas 2 and 3: 32 lowercase hex characters, so it is always
+/// safe to use as a key.
+fn blackjack_hand_game_id(m: &MapFields<'_>, key: u64, path: &str) -> Result<String, CodecError> {
+    let game_path = at(path, key);
+    let game_id = tstr(m.get(key), &game_path, 32, 32)?;
     if game_id.len() != 32
         || !game_id
             .bytes()
@@ -1875,6 +1872,43 @@ fn blackjack_hand_payload(
             "game id must be 32 lowercase ASCII hex characters",
         ));
     }
+    Ok(game_id)
+}
+
+/// Closed schema-2 shapes: one peer-to-peer hand. No shape carries an amount of money.
+fn blackjack_hand_payload(
+    payload: &CborValue,
+    path: &str,
+) -> Result<BlackjackHandMessageItem, CodecError> {
+    use blackjack_hand_action as A;
+    use blackjack_hand_item as K;
+    let CborValue::Map(entries) = payload else {
+        return Err(bad(path, "blackjack payload must be a map"));
+    };
+    let get = |key| entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v);
+    // Codes 16..25: disjoint from schema 1's 0..6, so no reader can take one for the other.
+    let action = u32_in(get(K::ACTION), path, A::CHALLENGE, A::REFUND)?;
+    let shape = match action {
+        A::CHALLENGE
+            if u32_in(
+                get(K::ROLE),
+                path,
+                blackjack_role::DEALER,
+                blackjack_role::PLAYER,
+            )? == blackjack_role::DEALER =>
+        {
+            &K::CHALLENGE_DEALER_SHAPE
+        }
+        A::CHALLENGE => &K::CHALLENGE_PLAYER_SHAPE,
+        A::ACCEPT => &K::ACCEPT_SHAPE,
+        A::DEAL => &K::DEAL_SHAPE,
+        A::CARD => &K::CARD_SHAPE,
+        A::REVEAL => &K::REVEAL_SHAPE,
+        A::REFUND => &K::REFUND_SHAPE,
+        _ => &K::ACTION_ONLY_SHAPE,
+    };
+    let m = shaped(Some(payload), path, shape, false)?;
+    let game_id = blackjack_hand_game_id(&m, K::GAME_ID, path)?;
     let hand = |key, min, max| -> Result<Vec<u32>, CodecError> {
         as_list(m.get(key), path, min, max)?
             .iter()
@@ -1883,43 +1917,38 @@ fn blackjack_hand_payload(
     };
     let hash = |key| bstr(m.get(key), path, 32, 32);
     let action = match action {
-        16 if m.has(4) => BlackjackHandAction::ChallengeDealer {
-            max_bet_wei: hash(3)?,
-            commitment: hash(4)?,
+        A::CHALLENGE if m.has(K::COMMITMENT) => BlackjackHandAction::ChallengeDealer {
+            max_bet_wei: hash(K::MAX_BET_WEI)?,
+            commitment: hash(K::COMMITMENT)?,
         },
-        16 => BlackjackHandAction::ChallengePlayer {
-            max_bet_wei: hash(3)?,
+        A::CHALLENGE => BlackjackHandAction::ChallengePlayer {
+            max_bet_wei: hash(K::MAX_BET_WEI)?,
         },
-        17 => BlackjackHandAction::Accept {
-            max_bet_wei: hash(3)?,
-            commitment: hash(4)?,
+        A::ACCEPT => BlackjackHandAction::Accept {
+            max_bet_wei: hash(K::MAX_BET_WEI)?,
+            commitment: hash(K::COMMITMENT)?,
         },
-        18 => BlackjackHandAction::Bet,
-        19 => BlackjackHandAction::Deal {
-            player_cards: hand(5, 2, 2)?,
-            dealer_up_card: u32_in(m.get(6), path, 0, 51)?,
+        A::BET => BlackjackHandAction::Bet,
+        A::DEAL => BlackjackHandAction::Deal {
+            player_cards: hand(K::PLAYER_CARDS, 2, 2)?,
+            dealer_up_card: u32_in(m.get(K::DEALER_UP_CARD), path, 0, 51)?,
         },
-        20 => BlackjackHandAction::Hit,
-        21 => BlackjackHandAction::Stand,
-        22 => BlackjackHandAction::Double,
-        23 => BlackjackHandAction::Card {
-            player_cards: hand(5, 3, 52)?,
+        A::HIT => BlackjackHandAction::Hit,
+        A::STAND => BlackjackHandAction::Stand,
+        A::DOUBLE => BlackjackHandAction::Double,
+        A::CARD => BlackjackHandAction::Card {
+            player_cards: hand(K::PLAYER_CARDS, 3, 52)?,
         },
-        24 => {
-            let seed = tstr(m.get(8), path, 64, 64)?;
+        A::REVEAL => {
+            let seed = tstr(m.get(K::SEED), path, 64, 64)?;
             if !seed
                 .bytes()
                 .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
             {
                 return Err(bad(path, "seed must be 64 lowercase ASCII hex characters"));
             }
-            let dealer_cards = hand(7, 2, 52)?;
-            let outcome = match u32_in(m.get(9), path, 0, 3)? {
-                0 => BlackjackOutcome::PlayerWin,
-                1 => BlackjackOutcome::DealerWin,
-                2 => BlackjackOutcome::Push,
-                _ => BlackjackOutcome::PlayerBlackjack,
-            };
+            let dealer_cards = hand(K::DEALER_CARDS, 2, 52)?;
+            let outcome = blackjack_outcome(m.get(K::OUTCOME), path)?;
             BlackjackHandAction::Reveal {
                 dealer_cards,
                 seed,
@@ -1927,7 +1956,7 @@ fn blackjack_hand_payload(
             }
         }
         _ => BlackjackHandAction::Refund {
-            reference: hash(10)?,
+            reference: hash(K::REF)?,
         },
     };
     Ok(BlackjackHandFields { game_id, action })
@@ -1939,70 +1968,78 @@ fn blackjack_hand_v3_payload(
     payload: &CborValue,
     path: &str,
 ) -> Result<BlackjackHandV3MessageItem, CodecError> {
+    use blackjack_hand_v3_action as A;
+    use blackjack_hand_v3_item as K;
     let CborValue::Map(entries) = payload else {
         return Err(bad(path, "blackjack payload must be a map"));
     };
     let get = |key| entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v);
     // Codes 32..41: disjoint from schema 1's 0..6 and schema 2's 16..25.
-    let action = u32_in(get(1), &format!("{path}.1"), 32, 41)?;
-    let required: &[u64] = match action {
-        32 if u32_in(get(2), &format!("{path}.2"), 0, 1)? == 0 => &[0, 1, 11, 2, 3, 4],
-        32 => &[0, 1, 11, 2, 3],
-        33 => &[0, 1, 11, 3, 4, 12],
-        34 => &[0, 1, 11, 4, 12],
-        41 => &[0, 1, 11, 10, 12],
-        _ => &[0, 1, 11, 12, 13],
+    let action = u32_in(
+        get(K::ACTION),
+        &at(path, K::ACTION),
+        A::CHALLENGE,
+        A::REFUND,
+    )?;
+    let shape = match action {
+        A::CHALLENGE
+            if u32_in(
+                get(K::ROLE),
+                &at(path, K::ROLE),
+                blackjack_role::DEALER,
+                blackjack_role::PLAYER,
+            )? == blackjack_role::DEALER =>
+        {
+            &K::CHALLENGE_DEALER_SHAPE
+        }
+        A::CHALLENGE => &K::CHALLENGE_PLAYER_SHAPE,
+        A::ACCEPT => &K::ACCEPT_SHAPE,
+        A::BET => &K::BET_SHAPE,
+        A::REFUND => &K::REFUND_SHAPE,
+        _ => &K::MOVE_SHAPE,
     };
-    let m = fields(Some(payload), path, required, &[], false, false)?;
-    // Fixed form, so a game id is always safe to use as a key: 32 lowercase hex characters.
-    let game_path = format!("{path}.0");
-    let game_id = tstr(m.get(0), &game_path, 32, 32)?;
-    if game_id.len() != 32
-        || !game_id
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-    {
-        return Err(bad(
-            &game_path,
-            "game id must be 32 lowercase ASCII hex characters",
-        ));
-    }
+    let m = shaped(Some(payload), path, shape, false)?;
+    let game_id = blackjack_hand_game_id(&m, K::GAME_ID, path)?;
     // A challenge is message 0 of its hand; every other message follows one.
-    let (seq_min, seq_max) = if action == 32 { (0, 0) } else { (1, 255) };
-    let seq = u32_in(m.get(11), &format!("{path}.11"), seq_min, seq_max)?;
-    let hash = |key: u64| bstr(m.get(key), &format!("{path}.{key}"), 32, 32);
+    let (seq_min, seq_max) = if action == A::CHALLENGE {
+        (0, 0)
+    } else {
+        (1, 255)
+    };
+    let seq = u32_in(m.get(K::SEQ), &at(path, K::SEQ), seq_min, seq_max)?;
+    let hash = |key: u64| bstr(m.get(key), &at(path, key), 32, 32);
     let action = match action {
-        32 if m.has(4) => BlackjackHandV3Action::ChallengeDealer {
-            max_bet_wei: hash(3)?,
-            commitment: hash(4)?,
+        A::CHALLENGE if m.has(K::COMMITMENT) => BlackjackHandV3Action::ChallengeDealer {
+            max_bet_wei: hash(K::MAX_BET_WEI)?,
+            commitment: hash(K::COMMITMENT)?,
         },
-        32 => BlackjackHandV3Action::ChallengePlayer {
-            max_bet_wei: hash(3)?,
+        A::CHALLENGE => BlackjackHandV3Action::ChallengePlayer {
+            max_bet_wei: hash(K::MAX_BET_WEI)?,
         },
-        33 => BlackjackHandV3Action::Accept {
-            max_bet_wei: hash(3)?,
-            commitment: hash(4)?,
-            prev: hash(12)?,
+        A::ACCEPT => BlackjackHandV3Action::Accept {
+            max_bet_wei: hash(K::MAX_BET_WEI)?,
+            commitment: hash(K::COMMITMENT)?,
+            prev: hash(K::PREV)?,
         },
-        34 => BlackjackHandV3Action::Bet {
-            commitment: hash(4)?,
-            prev: hash(12)?,
+        A::BET => BlackjackHandV3Action::Bet {
+            commitment: hash(K::COMMITMENT)?,
+            prev: hash(K::PREV)?,
         },
-        41 => BlackjackHandV3Action::Refund {
-            reference: hash(10)?,
-            prev: hash(12)?,
+        A::REFUND => BlackjackHandV3Action::Refund {
+            reference: hash(K::REF)?,
+            prev: hash(K::PREV)?,
         },
         code => BlackjackHandV3Action::Move {
             kind: match code {
-                35 => BlackjackHandV3Move::Deal,
-                36 => BlackjackHandV3Move::Hit,
-                37 => BlackjackHandV3Move::Stand,
-                38 => BlackjackHandV3Move::Double,
-                39 => BlackjackHandV3Move::Card,
+                A::DEAL => BlackjackHandV3Move::Deal,
+                A::HIT => BlackjackHandV3Move::Hit,
+                A::STAND => BlackjackHandV3Move::Stand,
+                A::DOUBLE => BlackjackHandV3Move::Double,
+                A::CARD => BlackjackHandV3Move::Card,
                 _ => BlackjackHandV3Move::Reveal,
             },
-            link: hash(13)?,
-            prev: hash(12)?,
+            link: hash(K::LINK)?,
+            prev: hash(K::PREV)?,
         },
     };
     Ok(BlackjackHandV3Fields {

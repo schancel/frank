@@ -268,8 +268,11 @@ impl DeadPayment {
 /// What the node says about one paying account.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SenderState {
-    /// The account's next nonce, counting transactions the node holds but has not mined.
+    /// The account's next nonce as `eth_getTransactionCount(pending)` reports it. On Monad
+    /// that is the nonce after the last included transaction: mempool transactions are not
+    /// counted.
     pub(crate) pending_nonce: u64,
+    /// The account's balance at `latest`.
     pub(crate) balance_wei: u128,
 }
 
@@ -335,7 +338,9 @@ pub(crate) async fn ask_node<T: crate::monad_http::JsonRpcTransport>(
         .into_iter()
         .collect();
     // A used nonce may be this very payment, already sent by the client or by an earlier
-    // submission of this message. Only the node's own record of the hash tells.
+    // submission of this message. Only the node's own record of the hash tells. On Monad
+    // `eth_getTransactionByHash` returns included transactions only, which matches a pending
+    // nonce that counts included transactions only.
     let used = payments
         .iter()
         .filter(|payment| payment.nonce < states[&payment.sender].pending_nonce);
@@ -357,6 +362,14 @@ pub(crate) async fn ask_node<T: crate::monad_http::JsonRpcTransport>(
 /// Whether a message's payments can still land, given what the node said. A message any of
 /// whose payments the node already holds is delivered as before: it is a retry, and that
 /// payment's cost is already out of the balance.
+///
+/// The balance check assumes a sender signs only from funds already in its `latest`
+/// balance: no nonce stacking (a second transaction from an account whose earlier one is not
+/// yet included), and no spending of unconfirmed incoming funds or change. Both the current
+/// wallet and the coin list hold to this. If either is ever added, this check must move to a
+/// pending balance or be softened, or it will refuse payments that would land. On Monad the
+/// `pending` tag behaves as `latest` (docs.monad.xyz/reference/rpc-differences), so asking for
+/// `pending` would not help there.
 pub(crate) fn judge_payments(
     payments: &[crate::monad_evm_tx::DecodedSignedTransaction],
     states: &std::collections::HashMap<Address, SenderState>,

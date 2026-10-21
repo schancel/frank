@@ -87,6 +87,8 @@ function mountRealPage(
 }
 
 beforeEach(() => {
+  // CreatePost restores its draft (topic included) from localStorage; each case starts blank.
+  window.localStorage.clear()
   HTMLElement.prototype.scrollTo = jest.fn()
   jest.clearAllMocks()
   jest

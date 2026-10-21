@@ -26,7 +26,7 @@ const BASELINE: Record<string, number> = {
   'components/chat/messages/ChatMessageRaffle.vue': 8,
   'components/context_menus/ChatMessageMenu.vue': 0,
   'components/dialogs/RelayConnectDialog.vue': 3,
-  'components/forum/ForumMessage.vue': 2,
+  'components/forum/ForumMessage.vue': 1,
   'components/forum/ForumPost.vue': 1,
   'components/panels/ForumDrawer.vue': 3,
   'components/panels/LeftDrawer.vue': 0,

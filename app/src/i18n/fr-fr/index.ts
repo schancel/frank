@@ -82,6 +82,12 @@ export const rawFrFR = {
     clearTopicFilter: 'Effacer le filtre',
     percentileFilter: 'Filtre par percentile',
     allPosts: 'Tous les messages',
+    voteFilter: 'Filtre par votes',
+    topPercent: 'Top {percent} %',
+    minVoteWeight: 'au moins {amount} {unit}',
+    hiddenCount: '{count} masqué(s)',
+    clearVoteFilter: 'Tout afficher',
+    replyTo: 'Réponse à {parent}',
     editor: {
       toolbar: 'Outils de mise en forme',
       bold: 'Gras',

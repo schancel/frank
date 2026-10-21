@@ -6,6 +6,12 @@
     bordered
   >
     <q-card-section class="column q-pa-none post-main-content">
+      <forum-parent-link
+        v-if="parentDigest && showParentLink"
+        :digest="parentDigest"
+        :label="parentLabel"
+        class="q-px-md q-pt-sm"
+      />
       <div
         class="post-meta-header q-px-md q-pt-sm q-pb-xs row items-center justify-between wrap"
         style="gap: 4px"
@@ -64,7 +70,9 @@
         :key="index"
       >
         <div
-          v-if="entry.kind === 'post' && (displayTitle(entry.title) || entry.url)"
+          v-if="
+            entry.kind === 'post' && (displayTitle(entry.title) || entry.url)
+          "
           class="row items-center justify-between q-px-md q-pt-xs q-pb-xs"
         >
           <div class="col-grow post-title-wrap">
@@ -90,7 +98,7 @@
         </div>
         <div
           class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
-          v-if="entry.kind === 'post' && renderBody"
+          v-if="entry.kind === 'post'"
         >
           <div
             class="mdstyle text-body2"
@@ -110,16 +118,14 @@
           <div class="col-grow post-title-wrap">
             <span class="text-subtitle1 text-weight-bold post-title-text">
               {{
-                entry.title ||
-                getAnnouncement(entry)?.gameName ||
-                'Game Table'
+                entry.title || getAnnouncement(entry)?.gameName || 'Game Table'
               }}
             </span>
           </div>
         </div>
         <div
           class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
-          v-if="entry.kind === 'game' && renderBody"
+          v-if="entry.kind === 'game'"
         >
           <div
             v-if="entry.message"
@@ -215,20 +221,6 @@
       </q-card-actions>
 
       <a-message-replies :messages="message.replies" v-if="showReplies" />
-      <q-separator v-if="showParent && parentDigest && parentMessage" />
-      <q-card-section
-        v-if="showParent && parentDigest && parentMessage"
-        class="q-pa-none"
-      >
-        <q-card-section class="q-pa-sm">In reply to:</q-card-section>
-        <forum-message
-          v-bind="$attrs"
-          class="q-ma-none"
-          :message="parentMessage"
-          :show-replies="false"
-          :render-body="false"
-        />
-      </q-card-section>
     </q-card-section>
   </q-card>
 </template>
@@ -244,6 +236,7 @@ import { renderMarkdown } from '../../utils/markdown'
 import { vExternalImages } from '../../utils/external-images'
 
 import AMessageReplies from './ForumMessageReplies.vue'
+import ForumParentLink from './ForumParentLink.vue'
 import GameAnnouncementCard from 'components/topic/GameAnnouncementCard.vue'
 import AccountBadge from 'src/components/contacts/AccountBadge.vue'
 import {
@@ -319,15 +312,12 @@ export default defineComponent({
       }),
       type: Object as PropType<MessageWithReplies>,
     },
-    showParent: {
-      default: false,
-      type: Boolean,
-    },
-    showReplies: {
+    // Nested replies sit inside their parent's card, so they skip the "reply to" link.
+    showParentLink: {
       default: true,
       type: Boolean,
     },
-    renderBody: {
+    showReplies: {
       default: true,
       type: Boolean,
     },
@@ -339,6 +329,7 @@ export default defineComponent({
   directives: { externalImages: vExternalImages },
   components: {
     AMessageReplies,
+    ForumParentLink,
     GameAnnouncementCard,
     AccountBadge,
   },
@@ -782,6 +773,12 @@ export default defineComponent({
     },
     parentMessage() {
       return this.parentDigest ? this.getMessage(this.parentDigest) : null
+    },
+    parentLabel(): string {
+      const parent = this.parentMessage
+      if (!parent) return ''
+      const title = parent.entries.find(entry => entry.kind === 'post')?.title
+      return this.displayTitle(title) || this.authorName(parent)
     },
     messages() {
       return this.storeMessages.filter((message: MessageWithReplies) =>

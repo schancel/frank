@@ -2,7 +2,7 @@
   <div class="forum-feed-container">
     <div
       v-if="selectedTopic"
-      class="row items-center q-px-sm q-py-xs q-mb-md active-topic-banner rounded-borders"
+      class="row items-center q-px-sm q-py-xs q-mx-sm q-mb-md active-topic-banner rounded-borders"
       data-test="forum-active-topic-banner"
     >
       <q-icon name="filter_alt" size="18px" class="q-mr-xs text-grey-6" />
@@ -31,6 +31,49 @@
         :label="$t('forum.clearTopicFilter')"
         data-test="clear-topic-filter"
         @click="clearFilter"
+      />
+    </div>
+    <div
+      v-if="voteFilterActive"
+      class="row items-center q-px-sm q-py-xs q-mx-sm q-mb-md active-topic-banner rounded-borders"
+      data-test="forum-vote-filter-banner"
+    >
+      <q-icon name="filter_list" size="18px" class="q-mr-xs text-grey-6" />
+      <q-chip
+        dense
+        removable
+        size="sm"
+        color="primary"
+        text-color="white"
+        class="text-weight-bold"
+        data-test="feed-vote-filter-chip"
+        :aria-label="$t('forum.voteFilter')"
+        @remove="clearVoteFilter"
+      >
+        {{
+          voteFilterTopPercent !== null
+            ? $t('forum.topPercent', { percent: voteFilterTopPercent })
+            : $t('forum.minVoteWeight', {
+                amount: voteThreshold,
+                unit: chainUnit,
+              })
+        }}
+      </q-chip>
+      <span
+        class="text-caption text-grey-7 q-ml-xs"
+        data-test="feed-vote-filter-hidden"
+        >{{ $t('forum.hiddenCount', { count: hiddenByVoteCount }) }}</span
+      >
+      <q-space />
+      <q-btn
+        flat
+        dense
+        no-caps
+        size="sm"
+        color="primary"
+        :label="$t('forum.clearVoteFilter')"
+        data-test="clear-vote-filter"
+        @click="clearVoteFilter"
       />
     </div>
     <template v-if="sortedPosts && sortedPosts.length > 0">
@@ -85,7 +128,6 @@
           v-show="showMessage(message.topic)"
           @set-topic="(...args) => $emit('set-topic', ...args)"
           :message="message"
-          :show-parent="true"
           :show-replies="false"
         />
       </template>
@@ -201,6 +243,7 @@ export default defineComponent({
       topics,
       selectedTopic,
       voteThreshold,
+      votePercentile,
       duration,
       hasFetchedOnce,
       outageStatus,
@@ -231,40 +274,51 @@ export default defineComponent({
         // Handled: store records outageStatus; no unhandled browser exception
       }
     }
-    const sortedPosts = computed(() => {
-      if (!messages) {
-        return
-      }
+    // Posts in the selected topic and time window, before the vote threshold. The topic is
+    // filtered here, not only by the template's v-show, so `sortedPosts.length` reflects what
+    // is visible and the empty state renders for a topic with no posts.
+    const feedPosts = computed(() => {
       const from = Date.now() - duration.value
-      const filteredMessages = messages.value.filter(message => {
-        // Real bug found live: this never filtered by `selectedTopic` at all -- only the
-        // template's `v-show="showMessage(...)"` did, per-rendered-item. That meant
-        // `sortedPosts.length > 0` (this computed's return) stayed true as long as *any* topic
-        // had posts, even when every single one was hidden for the currently selected topic --
-        // so the template's `v-if="sortedPosts?.length > 0"` branch won, and the `v-else`/
-        // `v-else-if` branches that show "No posts yet." or the loading spinner never got a
-        // chance to run. Net effect: switching to a topic with zero posts (but the relay having
-        // *any* posts at all, in any topic) rendered a fully blank page -- not even an empty
-        // state, since every v-for'd item existed in the DOM with `v-show="false"`. Filtering
-        // here too, matching `showMessage`, makes `.length` (and therefore the empty-state
-        // branching) reflect what's actually visible.
-        //
-        // FIXME: Something is converting the timestamp to a string.
-        return (
+      // FIXME: Something is converting the timestamp to a string.
+      return messages.value.filter(
+        message =>
           new Date(message.timestamp).valueOf() >= from &&
-          showMessage(message.topic)
-        )
-      })
-      let voteThresholdRaw: bigint
-      try {
-        voteThresholdRaw = activeChain.fromDisplayAmount(voteThreshold.value)
-      } catch {
-        return []
-      }
-      return sortPostsByMode(filteredMessages, sortMode.value).filter(
-        msg => BigInt(msg.voteWeightWei) >= voteThresholdRaw,
+          showMessage(message.topic),
       )
     })
+    const voteThresholdRaw = computed<bigint | undefined>(() => {
+      try {
+        return activeChain.fromDisplayAmount(voteThreshold.value)
+      } catch {
+        return undefined
+      }
+    })
+    const voteFilterActive = computed(
+      () => voteThresholdRaw.value !== undefined && voteThresholdRaw.value > 0n,
+    )
+    const sortedPosts = computed(() => {
+      const raw = voteThresholdRaw.value
+      if (raw === undefined) {
+        return []
+      }
+      return sortPostsByMode(feedPosts.value, sortMode.value).filter(
+        msg => BigInt(msg.voteWeightWei) >= raw,
+      )
+    })
+    const hiddenByVoteCount = computed(
+      () => feedPosts.value.length - sortedPosts.value.length,
+    )
+    // Percentile presets read as "Top N%"; a typed threshold reads as the amount itself.
+    const voteFilterTopPercent = computed(() => {
+      const percentile = votePercentile.value
+      return percentile !== null && percentile > 0
+        ? Math.max(1, 100 - percentile)
+        : null
+    })
+    const clearVoteFilter = () => {
+      forumStore.setVotePercentile(null)
+      forumStore.setVoteThreshold('0')
+    }
 
     const clearFilter = async () => {
       forumStore.setSelectedTopic('')
@@ -274,6 +328,11 @@ export default defineComponent({
     return {
       duration,
       sortedPosts,
+      voteFilterActive,
+      voteFilterTopPercent,
+      chainUnit: activeChain.unit,
+      hiddenByVoteCount,
+      clearVoteFilter,
       sortMode,
       topics,
       selectedTopic,
@@ -291,10 +350,9 @@ export default defineComponent({
 </script>
 
 <style lang="scss" scoped>
+// Width and side gutters come from ForumLayout's scroll area, shared with the thread view.
 .forum-feed-container {
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 8px 12px 32px;
+  padding: 8px 0 32px;
 }
 
 .active-topic-banner {

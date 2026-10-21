@@ -1,6 +1,6 @@
 <template>
   <template v-for="message in messages" :key="message.payloadDigest">
-    <a-message v-bind="$attrs" :message="message" />
+    <a-message v-bind="$attrs" :message="message" :show-parent-link="false" />
   </template>
 </template>
 

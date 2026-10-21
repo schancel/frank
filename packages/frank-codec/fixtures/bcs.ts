@@ -12,6 +12,13 @@ import type {
 import { BcsWriter } from './mini-bcs'
 import {
   TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_MAILBOX_CHECKPOINT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_TEXT_MESSAGE_ITEM,
 } from '../src/constants'
 
@@ -41,7 +48,7 @@ export function toBcs(p: ParsedFrame): Uint8Array {
   if (!t) throw new Error('typed projection required')
   const w = new BcsWriter()
   switch (t.type) {
-    case 1:
+    case TYPE_DIRECT_MESSAGE_DELIVERY:
       w.string(t.network)
       acct(w, t.destination)
       w.bytes(toBcs(t.payloadFrame)).fixed(t.payloadDigest)
@@ -54,23 +61,23 @@ export function toBcs(p: ParsedFrame): Uint8Array {
           .fixed(m.commitment)
       }
       return w.toBytes()
-    case 5:
+    case TYPE_RECIPIENT_ENCRYPTED_PAYLOAD:
       w.string(t.network)
       acct(w, t.sender)
       acct(w, t.recipient)
       w.u16(t.suite).bytes(t.nonce).bytes(t.ciphertext)
       return w.toBytes()
-    case 6:
+    case TYPE_ENCRYPTED_MESSAGE_CONTENT:
       w.string(t.network)
         .fixed(t.messageId)
         .bytes(toBcs(t.revisionFrame))
         .fixed(t.contentDigest)
       return w.toBytes()
-    case 8:
+    case TYPE_MESSAGE_CONTENT_REVISION:
       w.uleb(t.items.length)
       for (const i of t.items) child(w, i)
       return w.toBytes()
-    case 2:
+    case TYPE_DIRECTORY_ATTESTATION:
       w.bytes(toBcs(t.statementFrame))
       w.uleb(t.signatures.length)
       for (const s of t.signatures) {
@@ -79,7 +86,7 @@ export function toBcs(p: ParsedFrame): Uint8Array {
         w.bytes(s.signature)
       }
       return w.toBytes()
-    case 4:
+    case TYPE_DIRECTORY_STATEMENT:
       w.string(t.network)
       acct(w, t.subject)
       w.u64(t.revision)
@@ -100,7 +107,7 @@ export function toBcs(p: ParsedFrame): Uint8Array {
       if (t.recoveryAuthorities)
         throw new Error('authorities are not part of the fixtures')
       return w.toBytes()
-    case 3:
+    case TYPE_MAILBOX_CHECKPOINT:
       w.string(t.network)
       acct(w, t.owner)
       w.fixed(t.checkpointId)

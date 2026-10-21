@@ -1,4 +1,5 @@
 //! Offline independent byte/crypto evidence only; NOT a proposed state-policy implementation.
+use frank_cbor::message_types::{TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT};
 use frank_cbor::{
     cbor_map, common_transcript, decode_canonical, default_context, directory_signature_digest,
     encode_canonical, encode_frame, validate_frame, verify_algorithm_1, CborValue as V,
@@ -85,7 +86,11 @@ fn main() {
         let type2 = unhex(r, "type2_hex");
         let (env, statement) = open(&type4);
         let (_, wrapper) = open(&type2);
-        assert_eq!(integer(field(&env, 0)), 4, "{id}");
+        assert_eq!(
+            integer(field(&env, 0)),
+            TYPE_DIRECTORY_STATEMENT.into(),
+            "{id}"
+        );
         assert_eq!(
             bytes(field(&wrapper, 0)),
             type4,
@@ -152,7 +157,7 @@ fn main() {
     ]);
     let frame = encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: TYPE_DIRECTORY_STATEMENT,
             schema_version: 4,
             min_reader_version: 4,
         },
@@ -185,7 +190,7 @@ fn main() {
     ]);
     let signed = encode_frame(
         EnvelopeFields {
-            type_id: 2,
+            type_id: TYPE_DIRECTORY_ATTESTATION,
             schema_version: 1,
             min_reader_version: 1,
         },

@@ -164,11 +164,11 @@ pub struct CborStatementInfo {
     pub revision: u64,
     /// Statement timestamp in milliseconds (join_ms).
     pub timestamp_ms: i64,
-    /// Exact type-4 directory statement frame bytes, suitable as `PriorStatement::Frame`.
+    /// Exact type-1 directory statement frame bytes, suitable as `PriorStatement::Frame`.
     pub type_4_frame: Vec<u8>,
 }
 
-/// Extract the parsed inner Type-4 directory statement and its exact frame bytes from a
+/// Extract the parsed inner Type-1 directory statement and its exact frame bytes from a
 /// stored Type-2 directory attestation without running Stage 10 key-transition semantic
 /// assertions that require a `prior` statement.
 fn extract_cbor_directory_statement(
@@ -404,7 +404,7 @@ impl<'a> DbMonadProfiles<'a> {
         Ok(Some(signed.pubkey))
     }
 
-    /// Extract statement metadata (revision, timestamp_ms, and type-4 statement frame bytes)
+    /// Extract statement metadata (revision, timestamp_ms, and type-1 statement frame bytes)
     /// from a stored Frank-CBOR directory registration, for monotonic revision checks.
     pub fn get_cbor_statement_info(&self, address: &Address) -> Result<Option<CborStatementInfo>> {
         let raw = match self.get_raw(address)? {

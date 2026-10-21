@@ -5,7 +5,7 @@
 // The sealed recipient payload, the crypto context and the multipart boundary of each fixture
 // are kept byte for byte. Only the signed transactions are re-signed (same funding test key,
 // nonce, fees, destination and value; no calldata; 21000 gas) and the transaction hashes listed
-// in the type-1 delivery frame are updated to match. It also derives REPLAY_T_BODY_HEX: the
+// in the type-10 delivery frame are updated to match. It also derives REPLAY_T_BODY_HEX: the
 // genuine fixture with one ciphertext byte changed, listing the very same signed payment.
 //
 // The run is deterministic and idempotent (RFC 6979 signatures), so running it again on the
@@ -46,7 +46,7 @@ const deliveryFields = delivery => {
   return new Map(frame.payload)
 }
 const encodeDelivery = fields =>
-  codec.encodeFrame({ typeId: 1, schemaVersion: 1, minReaderVersion: 1 }, fields)
+  codec.encodeFrame({ typeId: codec.TYPE_DIRECT_MESSAGE_DELIVERY, schemaVersion: 1, minReaderVersion: 1 }, fields)
 
 async function plainTransfers(bodyHex, contentType) {
   const request = transport.restoreCanonicalRequest({ body: codec.fromHex(bodyHex), contentType })
@@ -89,7 +89,7 @@ function replayOf(request) {
   const box = Uint8Array.from(inner.get(4n))
   box[box.length - 1] ^= 1
   inner.set(4n, box)
-  const payload = codec.encodeFrame({ typeId: 5, schemaVersion: 2, minReaderVersion: 2 }, inner)
+  const payload = codec.encodeFrame({ typeId: codec.TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, schemaVersion: 2, minReaderVersion: 2 }, inner)
   const digest = codec.recipientPayloadDigest(fields.get(0n), payload)
   fields.set(2n, payload)
   fields.set(3n, digest)

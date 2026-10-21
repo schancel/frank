@@ -64,7 +64,7 @@ function payloadOf(bytes: Uint8Array): Map<bigint, unknown> {
   ) as Map<bigint, unknown>
 }
 
-describe('recipient asset payment type 19 schema 2', () => {
+describe('recipient asset payment type 24 schema 2', () => {
   test('generated shared corpus matches its source generator', () => {
     expect(JSON.parse(readFileSync(corpusPath, 'utf8'))).toEqual(
       stealthAssetCorpus(),

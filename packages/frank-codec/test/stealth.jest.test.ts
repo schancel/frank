@@ -11,7 +11,7 @@ import {
   toHex,
 } from '../src'
 
-describe('stealth message items (Type 19, schema 1)', () => {
+describe('stealth message items (Type 24, schema 1)', () => {
   const sampleSecpPub = '02' + '11'.repeat(32) // 33 bytes compressed secp256k1
   const sampleEdPub = '22'.repeat(32) // 32 bytes ed25519
   const sampleTx1 = 'aabbccddeeff00112233445566778899'
@@ -34,7 +34,7 @@ describe('stealth message items (Type 19, schema 1)', () => {
       expect(parsed.typeId).toBe(TYPE_STEALTH_MESSAGE_ITEM)
       expect(parsed.schemaVersion).toBe(1)
       expect(parsed.minReaderVersion).toBe(1)
-      expect(parsed.typed?.type).toBe(19)
+      expect(parsed.typed?.type).toBe(TYPE_STEALTH_MESSAGE_ITEM)
       if (isStealthMessageItemFrame(parsed)) {
         expect(parsed.typed.networkTag).toBe('MONT')
         expect(parsed.typed.ephemeralPubKey.keyType).toBe(1)

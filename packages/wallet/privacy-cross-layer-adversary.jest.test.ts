@@ -18,7 +18,7 @@ import {
   CrossLayerSurveillanceEvaluator,
   formatCrossLayerComparativeMarkdownReport,
 } from './privacy-simulation-engine'
-import { encodeTopicVote, validateFrame, defaultContext } from '@frank/codec'
+import { encodeTopicVote, validateFrame, defaultContext, TYPE_TOPIC_VOTE_SUBMISSION } from '@frank/codec'
 import { hexlify } from 'ethers'
 
 describe('Cross-Layer (On-Chain + Relay) Surveillance Analysis', () => {
@@ -132,7 +132,7 @@ describe('Cross-Layer (On-Chain + Relay) Surveillance Analysis', () => {
     }
   })
 
-  it('ensures type-11 TopicVoteSubmission frames strictly decouple identity signatures and keys', () => {
+  it('ensures TopicVoteSubmission frames strictly decouple identity signatures and keys', () => {
     const network = 'monad-testnet'
     const targetHash = new Uint8Array(32).fill(0xaa)
     const dummyBurnTx = new Uint8Array(64).fill(0xbb)
@@ -143,12 +143,12 @@ describe('Cross-Layer (On-Chain + Relay) Surveillance Analysis', () => {
     expect(parsed.kind).toBe('parsed')
     if (parsed.kind !== 'parsed') throw new Error('Failed to parse frame')
 
-    expect(parsed.typeId).toBe(11) // TYPE_TOPIC_VOTE_SUBMISSION
+    expect(parsed.typeId).toBe(TYPE_TOPIC_VOTE_SUBMISSION)
     expect(parsed.typed).toBeDefined()
-    expect(parsed.typed?.type).toBe(11)
+    expect(parsed.typed?.type).toBe(TYPE_TOPIC_VOTE_SUBMISSION)
 
     const voteSubmission = parsed.typed as {
-      type: 11
+      type: typeof TYPE_TOPIC_VOTE_SUBMISSION
       network: string
       targetHash: Uint8Array
       burnTx: Uint8Array

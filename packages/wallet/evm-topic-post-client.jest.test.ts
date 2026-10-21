@@ -12,6 +12,10 @@ import {
   topicBurnCommitment,
   toHex,
   verifyTopicPostAuthor,
+  TYPE_FORUM_OPERATION_STATUS,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
 } from '@frank/codec'
 import { createInMemoryMonadWalletBundle } from './storage/evm-wallet-bundle'
 import { MonadHdKeyring } from './secp256k1-hd-keyring'
@@ -99,11 +103,11 @@ async function fixture() {
     const parsed = validateFrame(params.data, defaultContext())
     if (parsed.kind !== 'parsed') throw new Error('Bad fixture request')
     const typed = parsed.typed!
-    if (typed.type !== 10 && typed.type !== 11)
+    if (typed.type !== TYPE_TOPIC_POST_SUBMISSION && typed.type !== TYPE_TOPIC_VOTE_SUBMISSION)
       throw new Error('Bad fixture family')
     const tx = Transaction.from(hexlify(typed.burnTx))
     const target =
-      typed.type === 10
+      typed.type === TYPE_TOPIC_POST_SUBMISSION
         ? topicBurnCommitment(typed.postFrame.frame).hash
         : typed.targetHash
     const payload = new Map<number, any>([
@@ -122,7 +126,7 @@ async function fixture() {
     ])
     return {
       data: encodeFrame(
-        { typeId: 15, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: TYPE_FORUM_OPERATION_STATUS, schemaVersion: 1, minReaderVersion: 1 },
         payload,
       ),
       headers: { 'content-type': 'application/cbor' },
@@ -143,7 +147,7 @@ const params = {
   voteWeightWei: 7n,
   timestampMs: -1,
 }
-test('public post writes schema2 type10, preserves parent and exact authored timestamp', async () => {
+test('public post writes a schema2 post submission, preserves parent and exact authored timestamp', async () => {
   const f = await fixture()
   const parent = new Uint8Array(32).fill(2)
   const result = await new MonadTopicPostClient(f.wallet).submitTopicPost({
@@ -153,7 +157,7 @@ test('public post writes schema2 type10, preserves parent and exact authored tim
   const parsed = validateFrame(result.postFrame, defaultContext())
   if (
     parsed.kind !== 'parsed' ||
-    parsed.typed?.type !== 9 ||
+    parsed.typed?.type !== TYPE_TOPIC_POST ||
     parsed.typed.schemaVersion !== 2
   )
     throw new Error('Expected canonical post')

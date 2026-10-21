@@ -241,7 +241,7 @@ fn transition_parts(frame: &ParsedFrame) -> TransitionParts<'_> {
             revision: *revision,
             new_key,
         },
-        _ => panic!("internal: expected an opened type-7 frame"),
+        _ => panic!("internal: expected an opened type-3 frame"),
     }
 }
 
@@ -387,11 +387,11 @@ pub(crate) fn check_semantics(
             )?;
             let child_network = match opened(payload_frame) {
                 TypedPayload::DirectMessage { network, .. } => network,
-                _ => panic!("internal: expected an opened type-1 frame"),
+                _ => panic!("internal: expected an opened type-10 frame"),
             };
             if network != child_network {
                 return Err(semantic(
-                    "forwarding network differs from the type-1 network",
+                    "forwarding network differs from the type-10 network",
                     &at(path, mf::forwarding_delivery_envelope::NETWORK),
                 ));
             }
@@ -467,16 +467,16 @@ pub(crate) fn check_semantics(
             )?;
             let child_network = match opened(payload_frame) {
                 TypedPayload::RecipientPayload { network, .. } => network,
-                _ => panic!("internal: expected an opened type-5 frame"),
+                _ => panic!("internal: expected an opened type-11 frame"),
             };
             if network != child_network {
                 return Err(semantic(
-                    "delivery network differs from the type-5 network (S8)",
+                    "delivery network differs from the type-11 network (S8)",
                     &at(path, mf::direct_message_delivery::NETWORK),
                 ));
             }
             // The destination is the stamp key P' and is deliberately not compared with the
-            // type-5 recipient (S8): the routing identity and the payment key are independent.
+            // type-11 recipient (S8): the routing identity and the payment key are independent.
             if destination.key_type != key_type::SECP256K1 {
                 return Err(semantic(
                     "destination account must be key type 1 (S9)",
@@ -553,10 +553,10 @@ pub(crate) fn check_semantics(
                 ..
             } if post_network == network => Ok(()),
             TypedPayload::TopicPost { .. } => Err(semantic(
-                "submission network differs from the type-9 network (S11)",
+                "submission network differs from the type-40 network (S11)",
                 &at(path, mf::topic_post_submission::NETWORK),
             )),
-            _ => panic!("internal: expected an opened type-9 frame"),
+            _ => panic!("internal: expected an opened type-40 frame"),
         },
         TypedPayload::DirectoryAttestation {
             statement,
@@ -590,7 +590,7 @@ pub(crate) fn check_semantics(
                         *schema_version,
                         key_transitions.as_deref(),
                     ),
-                    _ => panic!("internal: expected an opened type-4 frame"),
+                    _ => panic!("internal: expected an opened type-1 frame"),
                 };
             if !signatures
                 .iter()

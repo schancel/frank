@@ -1,4 +1,4 @@
-import { standaloneItemBudget, validateFrame } from '@frank/codec'
+import { standaloneItemBudget, validateFrame, TYPE_STEALTH_MESSAGE_ITEM } from '@frank/codec'
 import type { PreparedStealthPayment } from '../../stealth-payment'
 import { createDefaultMessageItemRegistry } from '../default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
@@ -41,7 +41,7 @@ function roundTrip(item: ReturnType<typeof recipientAssetPaymentFromPrepared>) {
   const children = frames.map(bytes => {
     const parsed = validateFrame(bytes)
     if (parsed.kind !== 'parsed') throw new Error('Expected parsed child')
-    expect([parsed.typeId, parsed.schemaVersion]).toEqual([19, 2])
+    expect([parsed.typeId, parsed.schemaVersion]).toEqual([TYPE_STEALTH_MESSAGE_ITEM, 2])
     return parsed
   })
   expect(decodeItemFrames(registry, children, standaloneItemBudget())).toEqual([

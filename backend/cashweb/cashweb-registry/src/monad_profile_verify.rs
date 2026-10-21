@@ -327,13 +327,13 @@ pub struct VerifiedCborRegistration {
     pub timestamp_ms: i64,
     /// First normalized display name, if any.
     pub display_name: Option<String>,
-    /// Exact type-4 directory statement frame bytes (can be used as prior).
+    /// Exact type-1 directory statement frame bytes (can be used as prior).
     pub type_4_frame: Vec<u8>,
 }
 
 /// Verify that `frame_bytes` is a valid Frank-CBOR type-2 account registration attestation for
 /// `claimed_address` on `expected_network`. Stage 10.6 signature verification is performed over
-/// the type-4 directory statement with `Operation::Full`.
+/// the type-1 directory statement with `Operation::Full`.
 pub fn verify_cbor_account_registration(
     claimed_address: Address,
     expected_network: &str,

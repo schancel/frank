@@ -191,7 +191,10 @@ describe('stage precedence', () => {
   it('a child failure precedes the parent stage 9 checks', () => {
     // Parent violations: network mismatch and unsorted payments (semantic at 9), but the child is
     // malformed at its stage 7, which is reported first.
-    const child = framePayload(hex('a1 00 1805'), 5)
+    const child = framePayload(
+      hex('a1 00 1805'),
+      TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+    )
     expect(
       outcome(deliveryFrame({ payloadFrame: child, net: 'other-net' })),
     ).toBe('noncanonical@7')
@@ -203,12 +206,16 @@ describe('stage precedence', () => {
     expect(outcome(deliveryFrame({ payloadFrame: wrong }))).toBe('frame@2')
     // ...and a wrong type beats the child payload it would otherwise fail at stage 7.
     expect(
-      outcome(deliveryFrame({ payloadFrame: framePayload(hex('780561'), 17) })),
+      outcome(
+        deliveryFrame({
+          payloadFrame: framePayload(hex('780561'), TYPE_TEXT_MESSAGE_ITEM),
+        }),
+      ),
     ).toBe('semantic@8.4')
   })
 
   it('an open-field child of an assigned type is a semantic error after its stage 6, before its payload', () => {
-    const c = framePayload(hex('780561'), 5)
+    const c = framePayload(hex('780561'), TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
     expect(
       outcome(
         fr(
@@ -436,7 +443,7 @@ describe('input aliasing', () => {
       parent.kind !== 'parsed' ||
       parent.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
     )
-      throw new Error('type 8 expected')
+      throw new Error('type 20 expected')
     const c0 = parent.typed.items[0]
     if (c0.kind !== 'retained') throw new Error('retained child expected')
     expect(Array.from(c0.frame)).toEqual(Array.from(unknown))

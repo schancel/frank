@@ -12,8 +12,8 @@ export type WireConversationFact =
   | { readonly kind: 'present'; readonly id: Uint8Array }
 
 /** Supplied by an authenticated opener/replay boundary. This helper checks representation,
- * not provenance. Missing optional app metadata cannot establish these facts. Canonical type 6
- * always carries a 16-byte message ID and a 32-byte content digest; type 8 is not an edit marker. */
+ * not provenance. Missing optional app metadata cannot establish these facts. Canonical type 12
+ * always carries a 16-byte message ID and a 32-byte content digest; type 20 is not an edit marker. */
 export interface AuthenticatedMessageVariantFacts {
   readonly chainIdentifier: string
   readonly sender: { readonly keyType: 1; readonly keyBytes: Uint8Array }

@@ -11,6 +11,12 @@ import {
   verifyPreviewDirectoryEvidence,
   cborMap,
   encodeFrame,
+  TYPE_BLACKJACK_MESSAGE_ITEM,
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_TOPIC_POST,
 } from '@frank/codec'
 import {
   open,
@@ -241,19 +247,31 @@ test('openOwnDirectMessage opens outbound message sealed with deterministic ephe
 const blackjackFrames = blackjackCorpus.frames.filter(record => record.frozen)
 const container = (items: Uint8Array[]) =>
   encodeFrame(
-    { typeId: 16, schemaVersion: 1, minReaderVersion: 1 },
+    {
+      typeId: TYPE_CONTAINER_MESSAGE_ITEM,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
     cborMap([[0, items]]),
   )
 function contentWithItems(items: Uint8Array[]): Uint8Array {
   const revision = encodeFrame(
-    { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+    {
+      typeId: TYPE_MESSAGE_CONTENT_REVISION,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
     cborMap([
       [0, 'frank'],
       [1, items],
     ]),
   )
   return encodeFrame(
-    { typeId: 6, schemaVersion: 2, minReaderVersion: 1 },
+    {
+      typeId: TYPE_ENCRYPTED_MESSAGE_CONTENT,
+      schemaVersion: 2,
+      minReaderVersion: 1,
+    },
     cborMap([
       [0, corpus.network],
       [1, new Uint8Array(16)],
@@ -283,7 +301,7 @@ function authenticatedItems(items: Uint8Array[]) {
   })
 }
 test.each(blackjackFrames)(
-  'suite1 retains closed type18 $id directly and nested with text and opaque bytes',
+  'suite1 retains closed blackjack $id directly and nested with text and opaque bytes',
   record => {
     const item = fromHex(record.frameHex)
     const nested = container([item])
@@ -296,7 +314,7 @@ test.each(blackjackFrames)(
       senderCurrent: current,
       recipientCurrent: current,
       messageId: new Uint8Array(16).fill(18),
-      items: [item, nested, directMessageText('type18 transport'), opaque],
+      items: [item, nested, directMessageText('blackjack transport'), opaque],
       roles: roles(),
     })
     item.fill(0)
@@ -311,13 +329,14 @@ test.each(blackjackFrames)(
       parent = result.items[1]
     if (direct.kind !== 'parsed' || parent.kind !== 'parsed')
       throw Error('known item retained')
-    expect(direct.typed?.type).toBe(18)
+    expect(direct.typed?.type).toBe(TYPE_BLACKJACK_MESSAGE_ITEM)
     const group = parent.typed
-    if (group?.type !== 16) throw Error('container not recognized')
+    if (group?.type !== TYPE_CONTAINER_MESSAGE_ITEM)
+      throw Error('container not recognized')
     expect(toHex(group.items[0].frame)).toBe(record.frameHex)
     const child = group.items[0]
     if (child.kind !== 'parsed') throw Error('known child retained')
-    expect(child.typed?.type).toBe(18)
+    expect(child.typed?.type).toBe(TYPE_BLACKJACK_MESSAGE_ITEM)
     expect(toHex(result.items[3].frame)).toBe(toHex(opaque))
     result.items[0].frame.fill(0)
     expect(toHex(result.items[0].frame)).toBe(record.frameHex)
@@ -334,7 +353,7 @@ test.each([
   'minimum-exceeds-schema',
   'invalid-utf8',
 ])(
-  'authenticated nested type18 %s rejects and disposes before returning items',
+  'authenticated nested blackjack %s rejects and disposes before returning items',
   id => {
     const record = blackjackCorpus.frames.find(value => value.id === id)
     if (!record) throw Error('missing reviewed hostile vector')
@@ -350,7 +369,7 @@ test.each([
     expect(recipient.dispose).toHaveBeenCalledTimes(1)
   },
 )
-test('authenticated type18 shares the 256-item graph cap across containers', () => {
+test('authenticated blackjack shares the 256-item graph cap across containers', () => {
   const item = fromHex(blackjackFrames[0].frameHex)
   for (const count of [255, 256]) {
     // The enclosing container itself consumes one of the total 256 items.
@@ -368,7 +387,8 @@ test('authenticated type18 shares the 256-item graph cap across containers', () 
       const item = run().items[0]
       if (item.kind !== 'parsed') throw Error('known container retained')
       const group = item.typed
-      if (group?.type !== 16) throw Error('container not recognized')
+      if (group?.type !== TYPE_CONTAINER_MESSAGE_ITEM)
+        throw Error('container not recognized')
       expect(group.items).toHaveLength(255)
     } else {
       expect(run).toThrow('resource')
@@ -376,7 +396,7 @@ test('authenticated type18 shares the 256-item graph cap across containers', () 
     }
   }
 })
-test('higher type18 minimum reader preserves exact closed fields with the actual reader2', () => {
+test('higher blackjack minimum reader preserves exact closed fields with the actual reader2', () => {
   // This historical vector rejects reader1; DM reader2 applies the supported closed projection.
   const record = blackjackCorpus.frames.find(
     value => value.id === 'higher-min-reader-reject',
@@ -392,14 +412,18 @@ test('higher type18 minimum reader preserves exact closed fields with the actual
   const item = result.items[0]
   if (item.kind !== 'parsed') throw Error('supported projection retained')
   expect(item.typed).toEqual({
-    type: 18,
+    type: TYPE_BLACKJACK_MESSAGE_ITEM,
     action: 'stand',
     gameId: 'bj-1',
   })
 })
-test('authenticated oversize type18 fails its 4096-byte frame cap', () => {
+test('authenticated oversize blackjack fails its 4096-byte frame cap', () => {
   const item = encodeFrame(
-    { typeId: 18, schemaVersion: 1, minReaderVersion: 1 },
+    {
+      typeId: TYPE_BLACKJACK_MESSAGE_ITEM,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
     cborMap([
       [0, 'bj'],
       [1, 3],
@@ -478,7 +502,7 @@ test('authenticated malformed plaintext rejects without semantic result', () => 
   ).toThrow()
   expect(recipient.dispose).toHaveBeenCalledTimes(1)
 })
-test('type1 delivery cannot be accepted as type5 facade input', () => {
+test('a delivery frame cannot be accepted as recipient-payload facade input', () => {
   const role = roles()
   expect(() =>
     openDirectMessage({ ...receive(role), payload: fromHex(v.delivery) }),
@@ -527,24 +551,25 @@ test.each(['deep', 'items'])(
     let item = directMessageText('leaf')
     let items: Uint8Array[]
     if (kind === 'deep') {
-      for (let i = 0; i < 9; i++) item = f(9, cborMap([[0, [item]]]))
+      for (let i = 0; i < 9; i++)
+        item = f(TYPE_TOPIC_POST, cborMap([[0, [item]]]))
       items = [item]
     } else {
       const group = f(
-        9,
+        TYPE_TOPIC_POST,
         cborMap([[0, Array.from({ length: 127 }, () => item)]]),
       )
       items = [group, group, item]
     }
     const revision = f(
-      8,
+      TYPE_MESSAGE_CONTENT_REVISION,
       cborMap([
         [0, 'frank'],
         [1, items],
       ]),
     )
     const content = f(
-      6,
+      TYPE_ENCRYPTED_MESSAGE_CONTENT,
       cborMap([
         [0, corpus.network],
         [1, new Uint8Array(16)],
@@ -593,7 +618,7 @@ test.each([
   const parsed = parseFrame(fromHex(v.payload))
   if (
     parsed.kind !== 'parsed' ||
-    parsed.typed?.type !== 5 ||
+    parsed.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
     parsed.typed.schemaVersion !== 2
   )
     throw new Error('fixture')
@@ -607,7 +632,7 @@ test.each([
   if (change === 'proof') proof[0] ^= 1
   const payload = encodeFrame(
     {
-      typeId: 5,
+      typeId: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
       schemaVersion: change === 'schema' ? 1 : 2,
       minReaderVersion: change === 'min-reader' || change === 'schema' ? 1 : 2,
     },
@@ -805,14 +830,22 @@ test('authenticated aggregate containers retain original ciphertext graph budget
   ]
   const text = directMessageText('aggregate')
   const revision = encodeFrame(
-    { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+    {
+      typeId: TYPE_MESSAGE_CONTENT_REVISION,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
     cborMap([
       [0, 'frank'],
       [1, [text]],
     ]),
   )
   const content = encodeFrame(
-    { typeId: 6, schemaVersion: 2, minReaderVersion: 1 },
+    {
+      typeId: TYPE_ENCRYPTED_MESSAGE_CONTENT,
+      schemaVersion: 2,
+      minReaderVersion: 1,
+    },
     cborMap([
       [0, corpus.network],
       [1, new Uint8Array(16)],
@@ -843,7 +876,7 @@ test('authenticated aggregate containers retain original ciphertext graph budget
   const parsed = parseFrame(prepared.payload)
   if (
     parsed.kind !== 'parsed' ||
-    parsed.typed?.type !== 5 ||
+    parsed.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
     parsed.typed.schemaVersion !== 2
   )
     throw new Error('fixture')
@@ -854,7 +887,11 @@ test('authenticated aggregate containers retain original ciphertext graph budget
         [1, key],
       ])
   const payload = encodeFrame(
-    { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+    {
+      typeId: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+      schemaVersion: 2,
+      minReaderVersion: 2,
+    },
     cborMap([
       [0, corpus.network],
       [1, a(t.sender.keyBytes)],
@@ -1033,8 +1070,11 @@ test('a message whose caller names no conversation carries none, never the messa
   })
   expect(prepared.conversationId).toBeUndefined()
   const content = parseFrame(prepared.content)
-  if (content.kind !== 'parsed' || content.typed?.type !== 6)
-    throw new Error('expected type 6 content')
+  if (
+    content.kind !== 'parsed' ||
+    content.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT
+  )
+    throw new Error('expected encrypted message content')
   expect(content.typed.conversationId).toBeUndefined()
   expect(toHex(content.typed.messageId)).toBe(toHex(messageId))
   const opened = openDirectMessage({
@@ -1058,14 +1098,22 @@ test('a message whose caller names no conversation carries none, never the messa
 test('a message from a client that sent no conversation ID opens with none', () => {
   // Our own writer always sends one; this is another client's message, sealed by hand.
   const revision = encodeFrame(
-    { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+    {
+      typeId: TYPE_MESSAGE_CONTENT_REVISION,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
     cborMap([
       [0, 'frank'],
       [1, [directMessageText('from a foreign client')]],
     ]),
   )
   const foreign = encodeFrame(
-    { typeId: 6, schemaVersion: 2, minReaderVersion: 1 },
+    {
+      typeId: TYPE_ENCRYPTED_MESSAGE_CONTENT,
+      schemaVersion: 2,
+      minReaderVersion: 1,
+    },
     cborMap([
       [0, corpus.network],
       [1, new Uint8Array(16).fill(0x21)],

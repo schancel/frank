@@ -46,8 +46,16 @@ fn anchor() -> Anchor {
             )
             .unwrap(),
         },
+        // The bootstrap record's T1, read from the corpus so it follows the committed frames.
         revision_zero: hex::decode(
-            "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+            source()["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == "bootstrap")
+                .unwrap()["t1"]
+                .as_str()
+                .unwrap(),
         )
         .unwrap()
         .try_into()
@@ -899,7 +907,7 @@ fn chain(count: usize, padding: usize) -> (Anchor, Vec<ExactFrames>) {
         );
         let statement = encode_frame(
             EnvelopeFields {
-                type_id: 4,
+                type_id: frank_cbor::message_types::TYPE_DIRECTORY_STATEMENT,
                 schema_version: if padding > 0 { 5 } else { 4 },
                 min_reader_version: 4,
             },
@@ -935,7 +943,7 @@ fn chain(count: usize, padding: usize) -> (Anchor, Vec<ExactFrames>) {
         ]);
         let wrapper = encode_frame(
             EnvelopeFields {
-                type_id: 2,
+                type_id: frank_cbor::message_types::TYPE_DIRECTORY_ATTESTATION,
                 schema_version: 1,
                 min_reader_version: 1,
             },
@@ -1015,7 +1023,7 @@ fn directory_preview_wrapper_heavy_advance_persists_more_than_ten_mib_atomically
         assert_eq!(field(&payload, 1), &signatures);
         *wrapper = encode_frame(
             EnvelopeFields {
-                type_id: 2,
+                type_id: frank_cbor::message_types::TYPE_DIRECTORY_ATTESTATION,
                 schema_version: 2,
                 min_reader_version: 1,
             },

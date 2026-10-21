@@ -1,7 +1,7 @@
 //! Clustered outbound bundle forwarding and worker coordination (Issue #998).
 //!
 //! When a direct message or topic event needs to be forwarded to a remote relay descriptor
-//! (Type 25 forwarding envelope), multi-node clusters coordinate so that exactly one node
+//! (Type 13 forwarding envelope), multi-node clusters coordinate so that exactly one node
 //! claims and executes the forwarding HTTP POST, avoiding redundant dispatch storms.
 
 use std::{
@@ -22,7 +22,7 @@ use crate::p2p::{cluster::ClusterError, descriptor::ClusterRelayDescriptor};
 /// Kind of payload contained within the outbound forwarding bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BundleKind {
-    /// Type 25 direct message forwarding envelope.
+    /// Type 13 direct message forwarding envelope.
     DirectMessage,
     /// Forum / topic event.
     TopicEvent,
@@ -39,7 +39,7 @@ pub struct OutboundBundle {
     pub target_descriptor_hash: [u8; 32],
     /// Remote destination URL (HTTP POST endpoint).
     pub target_endpoint: Url,
-    /// Encoded payload bytes (Type 25 frame or topic CBOR frame).
+    /// Encoded payload bytes (Type 13 frame or topic CBOR frame).
     pub payload: Vec<u8>,
     /// HTTP Content-Type header.
     pub content_type: String,
@@ -196,7 +196,7 @@ impl<S: BundleClaimStore> ClusteredBundleForwarder<S> {
         &self.claim_store
     }
 
-    /// Build a Type 25 forwarding envelope outbound bundle targeting a remote relay descriptor.
+    /// Build a Type 13 forwarding envelope outbound bundle targeting a remote relay descriptor.
     pub fn build_type25_bundle(
         bundle_id: String,
         network: String,
@@ -229,7 +229,7 @@ impl<S: BundleClaimStore> ClusteredBundleForwarder<S> {
         };
 
         let encoded = encode_forwarding_delivery(&envelope)
-            .map_err(|e| format!("Failed to encode Type 25 forwarding delivery envelope: {e}"))?;
+            .map_err(|e| format!("Failed to encode Type 13 forwarding delivery envelope: {e}"))?;
 
         Ok(OutboundBundle {
             bundle_id,
@@ -340,7 +340,7 @@ mod tests {
         let request_counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = Arc::clone(&request_counter);
 
-        // Ephemeral mock HTTP server receiving forwarded Type 25 envelopes
+        // Ephemeral mock HTTP server receiving forwarded Type 13 envelopes
         let app = Router::new().route(
             "/mailbox/delivery",
             post(move |body: Bytes| {
@@ -408,7 +408,7 @@ mod tests {
             1700086400,
         );
 
-        // Build Type 25 bundle
+        // Build Type 13 bundle
         let destination = AccountRef {
             key_type: 1,
             key_bytes: vec![2u8; 33],

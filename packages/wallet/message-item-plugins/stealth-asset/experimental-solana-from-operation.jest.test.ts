@@ -19,6 +19,8 @@ import {
   toHex,
   validateFrame,
   type Encodable,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_STEALTH_MESSAGE_ITEM,
 } from '@frank/codec'
 import { createDefaultMessageItemRegistry } from '../default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
@@ -244,14 +246,14 @@ const registry = createDefaultMessageItemRegistry(
 function children(frames: Uint8Array[]) {
   const result = validateFrame(
     encodeFrame(
-      { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: TYPE_MESSAGE_CONTENT_REVISION, schemaVersion: 1, minReaderVersion: 1 },
       new Map<number, Encodable>([
         [0, 'frank'],
         [1, frames],
       ]),
     ),
   )
-  if (result.kind !== 'parsed' || result.typed?.type !== 8)
+  if (result.kind !== 'parsed' || result.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION)
     throw new Error('expected revision')
   return result.typed.items
 }
@@ -285,12 +287,12 @@ it.each(['signed', 'exposed', 'settled'] as const)(
       expect(registry.tallyValue(received)).toBe(0)
       const parsed = validateFrame(frames[0])
       if (parsed.kind !== 'parsed' || !isStealthAssetMessageItemFrame(parsed))
-        throw new Error('expected type19 schema2')
+        throw new Error('expected stealth schema2')
       expect([
         parsed.typeId,
         parsed.schemaVersion,
         parsed.minReaderVersion,
-      ]).toEqual([19, 2, 2])
+      ]).toEqual([TYPE_STEALTH_MESSAGE_ITEM, 2, 2])
       for (const [index, entry] of parsed.typed.transfers.entries()) {
         const row = rows[index]
         const expectedAsset =

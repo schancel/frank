@@ -108,7 +108,7 @@ describe('type 27 vectors (docs/protocol/cbor/vectors/plugin-message-item.json)'
       parsed.kind !== 'parsed' ||
       parsed.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
     )
-      throw new Error('expected a type-8 revision')
+      throw new Error('expected a type-20 revision')
     expect(parsed.typed.items.map(i => i.kind)).toEqual(['parsed', 'parsed'])
     expect(isPluginMessageItemFrame(parsed.typed.items[1])).toBe(true)
   })
@@ -191,7 +191,7 @@ describe('type 27 writer and limits', () => {
   })
 })
 
-// A structural type-1 -> type-5 -> type-6 -> type-8 message whose items are plugin items.
+// A structural type-10 -> type-11 -> type-12 -> type-20 message whose items are plugin items.
 function session(items: Uint8Array[]): NestedItemBudget {
   const encrypted = fr(
     TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
@@ -279,7 +279,7 @@ describe('a plugin item is decoded under the enclosing budget', () => {
   })
 
   it('continues the enclosing depth instead of starting at zero', () => {
-    // The bytes sit eleven levels deep in a type-1 delivery, so 21 more levels reach MAX_DEPTH.
+    // The bytes sit eleven levels deep in a type-10 delivery, so 21 more levels reach MAX_DEPTH.
     const budget = session([pluginItem(0)])
     expect(() => budget.decodeCbor(encodeCanonical(nested(21)))).not.toThrow()
     expect(

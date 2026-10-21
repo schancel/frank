@@ -7,6 +7,7 @@ import {
   toHex,
   validateFrame,
   type Encodable,
+  TYPE_MESSAGE_CONTENT_REVISION,
 } from '@frank/codec'
 import { MessageItemDecodeError, MessageItemEncodeError } from '@frank/cashweb/message-items/registry'
 import {
@@ -131,14 +132,14 @@ describe('dice rejection schema', () => {
     )
     const revision = validateFrame(
       encodeFrame(
-        { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: TYPE_MESSAGE_CONTENT_REVISION, schemaVersion: 1, minReaderVersion: 1 },
         new Map<number, Encodable>([
           [0, 'frank'],
           [1, [frame]],
         ]),
       ),
     )
-    if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+    if (revision.kind !== 'parsed' || revision.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION)
       throw new Error('expected a revision')
     expect(
       decodeItemFrames(

@@ -180,29 +180,29 @@ function assertDirectNestedOpaque(
   >,
 ): void {
   const recipient = direct.payloadFrame.typed
-  expect(recipient?.type).toBe(5)
+  expect(recipient?.type).toBe(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
   if (recipient?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
-    throw new Error('type-5 payload expected')
+    throw new Error('type-11 payload expected')
   if (recipient.schemaVersion !== 1)
-    throw new Error('proof fixture must use type-5 schema 1')
+    throw new Error('proof fixture must use type-11 schema 1')
   const encrypted = validateFrame(recipient.ciphertext, defaultContext())
   expect(encrypted.kind).toBe('parsed')
   if (
     encrypted.kind !== 'parsed' ||
     encrypted.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT
   )
-    throw new Error('type-6 ciphertext expected')
+    throw new Error('type-12 ciphertext expected')
   const revision = encrypted.typed.revisionFrame.typed
-  expect(revision?.type).toBe(8)
+  expect(revision?.type).toBe(TYPE_MESSAGE_CONTENT_REVISION)
   if (revision?.type !== TYPE_MESSAGE_CONTENT_REVISION)
-    throw new Error('type-8 revision expected')
+    throw new Error('type-20 revision expected')
   const container = revision.items[1]
   expect(container.kind).toBe('parsed')
   if (
     container.kind !== 'parsed' ||
     container.typed?.type !== TYPE_CONTAINER_MESSAGE_ITEM
   )
-    throw new Error('type-16 container expected')
+    throw new Error('type-21 container expected')
   const opaque = container.typed.items[1]
   expect(opaque.kind).toBe('retained')
   if (opaque.kind !== 'retained') throw new Error('retained item expected')

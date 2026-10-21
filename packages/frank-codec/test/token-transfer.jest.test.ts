@@ -16,7 +16,7 @@ import {
 import type { TokenTransfer } from '../src'
 import { ENCRYPTED_MESSAGE_CONTENT, TOKEN_TRANSFER } from '../src/constants'
 
-describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
+describe('Type 12 CBOR token transfer (tickets #1152, #1153)', () => {
   const sampleTransfer: TokenTransfer = {
     chainNamespace: 'monad',
     contractAddress: '0xf817257fed379853cDe0fa4F97AB987181B1E5Ea',
@@ -59,12 +59,12 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
     })
   })
 
-  describe('Type 6 EncryptedMessageContent wire format with and without tokenTransfer', () => {
+  describe('Type 12 EncryptedMessageContent wire format with and without tokenTransfer', () => {
     const rev8 = rev8Frame([textItem('Hello with payment')])
     const convId = bytesOf(16, 42)
     const msgId = bytesOf(16, 7)
 
-    it('round-trips Type 6 message-content without tokenTransfer', () => {
+    it('round-trips Type 12 message-content without tokenTransfer', () => {
       const frameBytes = encodeEncryptedMessageContent({
         network: 'frank-test',
         messageId: msgId,
@@ -74,13 +74,13 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
       })
 
       const decoded = decodeEncryptedMessageContent(frameBytes)
-      expect(decoded.type).toBe(6)
+      expect(decoded.type).toBe(TYPE_ENCRYPTED_MESSAGE_CONTENT)
       expect(decoded.network).toBe('frank-test')
       expect(decoded.conversationName).toBe('General Chat')
       expect(decoded.tokenTransfer).toBeUndefined()
     })
 
-    it('round-trips Type 6 message-content with tokenTransfer', () => {
+    it('round-trips Type 12 message-content with tokenTransfer', () => {
       const frameBytes = encodeEncryptedMessageContent({
         network: 'frank-test',
         messageId: msgId,
@@ -91,14 +91,14 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
       })
 
       const decoded = decodeEncryptedMessageContent(frameBytes)
-      expect(decoded.type).toBe(6)
+      expect(decoded.type).toBe(TYPE_ENCRYPTED_MESSAGE_CONTENT)
       expect(decoded.network).toBe('frank-test')
       expect(decoded.conversationName).toBe('Token Transfer Chat')
       expect(decoded.tokenTransfer).toBeDefined()
       expect(decoded.tokenTransfer).toEqual(sampleTransfer)
     })
 
-    it('round-trips Type 6 message-content built via type6Frame fixture builder', () => {
+    it('round-trips Type 12 message-content built via type6Frame fixture builder', () => {
       const frameBytes = type6Frame(
         rev8,
         convId,
@@ -110,9 +110,9 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
       expect(parsed.kind).toBe('parsed')
       if (parsed.kind !== 'parsed') throw new Error('expected parsed')
 
-      expect(parsed.typed?.type).toBe(6)
+      expect(parsed.typed?.type).toBe(TYPE_ENCRYPTED_MESSAGE_CONTENT)
       if (parsed.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT)
-        throw new Error('expected type 6')
+        throw new Error('expected type 12')
 
       expect(parsed.typed.conversationName).toBe('Direct Payment')
       expect(parsed.typed.tokenTransfer).toBeDefined()
@@ -228,8 +228,8 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
       expect(() => decodeTokenTransfer(badBytes)).toThrow(/undeclared key 99/)
     })
 
-    it('rejects zero amount in Type 6 validation during semantic stage', () => {
-      // Construct raw Type 6 frame with amount = 0
+    it('rejects zero amount in Type 12 validation during semantic stage', () => {
+      // Construct raw Type 12 frame with amount = 0
       const transferMap = cborMap([
         [TOKEN_TRANSFER.chainNamespace, 'monad'],
         [

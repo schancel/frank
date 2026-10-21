@@ -5,6 +5,9 @@ import {
   parseFrame,
   decodeCanonical,
   verifyPreviewDirectoryEvidence,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
 } from '@frank/codec'
 import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
 import {
@@ -33,10 +36,16 @@ test('shared exact suite1 fixture opens through crypto-box and binds directory/T
   expect(toHex(directory.statementFrame.frame)).toBe(v.statement)
   expect(toHex(directory.statementHash)).toBe(v.t1)
   const result = parseFrame(fromHex(v.delivery))
-  if (result.kind !== 'parsed' || result.typed?.type !== 1)
+  if (
+    result.kind !== 'parsed' ||
+    result.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY
+  )
     throw new Error('delivery')
   const payload = result.typed.payloadFrame
-  if (payload.typed?.type !== 5 || payload.typed.schemaVersion !== 2)
+  if (
+    payload.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
+    payload.typed.schemaVersion !== 2
+  )
     throw new Error('payload')
   expect(toHex(payload.frame)).toBe(v.payload)
   expect(toHex(recipientPayloadDigest(corpus.network, payload.frame))).toBe(
@@ -52,7 +61,7 @@ test('shared exact suite1 fixture opens through crypto-box and binds directory/T
   if (!opened.ok) throw new Error(opened.error.code)
   expect(toHex(opened.value)).toBe(v.content)
   const decoded = decodeCanonical(opened.value.subarray(9)) as Map<bigint, any>
-  expect(Number(decoded.get(0n))).toBe(6)
+  expect(Number(decoded.get(0n))).toBe(TYPE_ENCRYPTED_MESSAGE_CONTENT)
   const badContext = fromHex(v.context)
   badContext[badContext.length - 1] ^= 1
   expect(

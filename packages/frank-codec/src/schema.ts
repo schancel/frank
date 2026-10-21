@@ -317,7 +317,7 @@ function directoryAccount(
   return key
 }
 
-/** A type-5 stamp point (T3b encoding rules): 33 compressed bytes on the curve. */
+/** A type-11 stamp point (T3b encoding rules): 33 compressed bytes on the curve. */
 function point(v: FrankValue | undefined, path: string): Uint8Array {
   const b = bstr(v, path, 33, 33)
   if (!isCompressedPoint(b))
@@ -325,7 +325,7 @@ function point(v: FrankValue | undefined, path: string): Uint8Array {
   return b
 }
 
-/** The type-5 DLEQ proof `c || s` (T3b encoding rules): 64 bytes, both scalars in 1..n-1. */
+/** The type-11 DLEQ proof `c || s` (T3b encoding rules): 64 bytes, both scalars in 1..n-1. */
 function proof(v: FrankValue | undefined, path: string): Uint8Array {
   const b = bstr(v, path, 64, 64)
   if (!isProofEncoding(b)) throw bad(path, 'proof scalar outside 1..n-1 (T3b)')
@@ -1393,7 +1393,7 @@ export function parseDraft(
                 ),
         }
       }
-      // Field 9 is interpreted only by a reader whose highest type-4 schema is 3; a schema-2
+      // Field 9 is interpreted only by a reader whose highest type-1 schema is 3; a schema-2
       // reader projects the statement through V6.3 and retains it as an unknown field.
       if (m.has(K.profileEntries) && schema.effective >= 3) {
         st.profileEntries = asList(
@@ -1803,7 +1803,7 @@ export function parseDraft(
       if (m.get(K.network) !== 'frank')
         throw bad(
           at(P, K.network),
-          'the type-8 domain must be the text "frank"',
+          'the type-20 domain must be the text "frank"',
         )
       return {
         type: TYPE_MESSAGE_CONTENT_REVISION,

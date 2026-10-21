@@ -1,4 +1,4 @@
-/** Dedicated type-19 schema-2 recipient payments; never a wallet-sync item. */
+/** Dedicated type-24 schema-2 recipient payments; never a wallet-sync item. */
 import { cborMap } from './cbor'
 import {
   ACCOUNT_REF,

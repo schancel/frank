@@ -6,6 +6,7 @@ import {
   encodeFrame,
   topicBurnCommitment,
   topicBurnCalldata,
+  TYPE_FORUM_OPERATION_STATUS,
 } from '@frank/codec'
 import { MonadHdKeyring } from './secp256k1-hd-keyring'
 import { createInMemoryMonadWalletBundle } from './storage/evm-wallet-bundle'
@@ -115,7 +116,7 @@ async function fixture() {
     for (const [k, v] of changes)
       v === undefined ? fields.delete(k) : fields.set(k, v)
     return encodeFrame(
-      { typeId: 15, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: TYPE_FORUM_OPERATION_STATUS, schemaVersion: 1, minReaderVersion: 1 },
       fields,
     )
   }

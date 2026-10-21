@@ -1,3 +1,6 @@
+import {
+  TYPE_TOPIC_POST,
+} from '../src/constants'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import {
   encodeForumPost,
@@ -64,7 +67,7 @@ describe('signed topic post author verification', () => {
     if (parsed.kind !== 'parsed') return
 
     const post = parsed.typed as any
-    expect(post.type).toBe(9)
+    expect(post.type).toBe(TYPE_TOPIC_POST)
     expect(post.from).toBeDefined()
     expect(post.signature).toBeDefined()
 

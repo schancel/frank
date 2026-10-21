@@ -75,9 +75,9 @@ pub(crate) const U64_MAX: i128 = u64::MAX as i128;
 /// Inclusive CBOR nint minimum (`-2^64`).
 pub(crate) const NINT_MIN: i128 = -1 - U64_MAX;
 
-/// Type18 frame limit at both root and nested positions.
+/// Type26 frame limit at both root and nested positions.
 pub(crate) const MAX_BLACKJACK_FRAME_BYTES: usize = 4096;
-/// Type 25 forwarding envelope frame limit (32 MiB).
+/// Type 13 forwarding envelope frame limit (32 MiB).
 pub const MAX_FORWARDING_DELIVERY_FRAME_BYTES: usize = 33_554_432;
 
 /// Types with a version-1 schema in this codec (E5). `0xffff0001` is not included.

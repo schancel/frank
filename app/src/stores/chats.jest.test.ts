@@ -4865,7 +4865,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       )
       expect(conv?.kind).toBe('direct')
 
-      // Now peer crafts and sends Type 26 email item
+      // Now peer crafts and sends Type 23 email item
       await chats.receiveMessages([
         {
           outbound: false,

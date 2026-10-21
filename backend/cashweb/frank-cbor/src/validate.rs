@@ -3,7 +3,7 @@
 //! Stage 10.6 verifies every type-2 signature entry and key-transition authorization.
 //! The separate DM session resumes only the structural required-child part of 10.1;
 //! it does not authenticate plaintext or perform the remaining stamp checks. Ordinary
-//! `full` type-1 validation remains a context error.
+//! `full` type-10 validation remains a context error.
 
 use crate::message_fields as mf;
 use crate::message_types::{
@@ -64,14 +64,14 @@ pub struct SupportedSchema {
     pub schema_version: u32,
 }
 
-/// Prior type-4 statement supplied with a type-2 validation.
+/// Prior type-1 statement supplied with a type-2 validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PriorStatement {
     /// The caller did not provide the slot.
     Absent,
     /// Bootstrap: there is no prior statement.
     None,
-    /// Exact bytes of the last accepted type-4 frame.
+    /// Exact bytes of the last accepted type-1 frame.
     Frame(Vec<u8>),
 }
 
@@ -98,7 +98,7 @@ pub fn default_context() -> ValidationContext {
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_FRAME_BYTES as u64,
-        // Reader version 2 reads type 4 at schema 3 and the production type-5 DM at schema 2.
+        // Reader version 2 reads type 1 at schema 3 and the production type-11 DM at schema 2.
         reader_version: 2,
         supported_schemas: KNOWN_TYPES
             .iter()
@@ -429,7 +429,7 @@ fn process_frame(
             return Err(fail(
                 ErrorCategory::Unsupported,
                 ErrorStage::S7,
-                "type 19 schema 2 requires min_reader_version at least 2",
+                "type 24 schema 2 requires min_reader_version at least 2",
                 location,
             ));
         }
@@ -445,14 +445,14 @@ fn process_frame(
             );
         }
     }
-    // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
+    // Suite 1 authenticates the complete schema-2 field set. A future type-11 schema needs an
     // updated authenticated context before this reader may project or retain its extensions.
     if env.type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD && env.schema_version > highest_schema {
         return Err(fail(
             ErrorCategory::Unsupported,
             ErrorStage::S7,
             format!(
-                "type 5 schema {} requires an updated authenticated context",
+                "type 11 schema {} requires an updated authenticated context",
                 env.schema_version
             ),
             location,
@@ -465,7 +465,7 @@ fn process_frame(
         return Err(fail(
             ErrorCategory::Unsupported,
             ErrorStage::S7,
-            "type 5 schema 2 requires min_reader_version 2",
+            "type 11 schema 2 requires min_reader_version 2",
             location,
         ));
     }
@@ -477,7 +477,7 @@ fn process_frame(
         return Err(fail(
             ErrorCategory::Unsupported,
             ErrorStage::S7,
-            "directory preview requires type-4 schema-4 support",
+            "directory preview requires type-1 schema-4 support",
             location,
         ));
     }
@@ -629,7 +629,7 @@ fn run_stage_10(parsed: &ParsedFrame) -> Result<(), Error> {
         }
         TypedPayload::DirectMessage { .. } | TypedPayload::ForwardingDelivery { .. } => {
             Err(Error::Context(ContextError(
-                "stages 10.1-10.5 (the type-1 stamp checks) are outside this slice; `full` runs \
+                "stages 10.1-10.5 (the type-10 stamp checks) are outside this slice; `full` runs \
              only the type-2 signature verification of stage 10.6"
                     .to_string(),
             )))
@@ -672,7 +672,7 @@ pub(crate) fn verify_attestation(
         return Err(fail(
             ErrorCategory::Cryptographic,
             ErrorStage::S106,
-            "internal: statement not a type-4 payload",
+            "internal: statement not a type-1 payload",
             &signatures_path,
         ));
     };
@@ -1420,11 +1420,11 @@ fn resolve_prior_view(ctx: &ValidationContext) -> Result<Option<PriorView>, Erro
                         recovery: recovery.clone().unwrap_or_default(),
                     })),
                     _ => Err(Error::Context(ContextError(
-                        "the prior directory statement is not a type-4 frame".to_string(),
+                        "the prior directory statement is not a type-1 frame".to_string(),
                     ))),
                 },
                 Ok(_) => Err(Error::Context(ContextError(
-                    "the prior directory statement is not a type-4 frame".to_string(),
+                    "the prior directory statement is not a type-1 frame".to_string(),
                 ))),
             }
         }
@@ -1489,7 +1489,7 @@ fn validate_root<'a>(
 pub struct DirectMessageValidatedContent {
     /// Original root, returned only after the required content child passes stages 1–9.
     pub root: ParsedFrame,
-    /// Structurally validated required type-6 plaintext.
+    /// Structurally validated required type-12 plaintext.
     pub content: ParsedFrame,
 }
 
@@ -1529,7 +1529,7 @@ impl DirectMessageValidationSession {
     }
 
     /// The caller MUST authenticate these bytes before calling. This resumes required
-    /// type-6 validation with the actual original graph counters and nesting depth.
+    /// type-12 validation with the actual original graph counters and nesting depth.
     /// The plaintext has its own MAX_FRAME_BYTES bound, not a second route-byte charge.
     pub fn complete_authenticated_content(
         self,
@@ -1579,9 +1579,9 @@ impl DirectMessageValidationSession {
     pub fn abort(self) {}
 }
 
-/// Begin structural stages 1–9 for an actual type-1/type-5 root containing a production
-/// type-5 schema-2/min-reader-2/suite-1 payload. Requires [`Operation::Typed`]; ordinary
-/// parsing and its unsupported full type-1 operation are unchanged. Owns the context.
+/// Begin structural stages 1–9 for an actual type-10/type-11 root containing a production
+/// type-11 schema-2/min-reader-2/suite-1 payload. Requires [`Operation::Typed`]; ordinary
+/// parsing and its unsupported full type-10 operation are unchanged. Owns the context.
 pub fn begin_direct_message_validation(
     bytes: &[u8],
     ctx: &ValidationContext,
@@ -1607,13 +1607,13 @@ pub fn begin_direct_message_validation(
         }
         _ => {
             return Err(Error::Context(ContextError(
-                "DM sessions require a type-1/type-5 root".into(),
+                "DM sessions require a type-10/type-11 root".into(),
             )))
         }
     };
     let (payload, depth, location) = shared.payload_position.take().ok_or_else(|| {
         Error::Context(ContextError(
-            "DM sessions require an opened type-5 payload".into(),
+            "DM sessions require an opened type-11 payload".into(),
         ))
     })?;
     if payload.schema_version != 2

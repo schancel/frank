@@ -303,7 +303,7 @@ export function createProgram(): Command {
 
   token
     .command('send <recipient> <amount> <token>')
-    .description('Send tokens to a recipient via Type 6 Encrypted DM')
+    .description('Send tokens to a recipient via Type 12 Encrypted DM')
     .option('-c, --chain <chain>', 'Chain identifier (default: monad)')
     .option('-r, --relay <url>', 'Override relay base URL')
     .option('-s, --stamp <amount>', 'Stamp payment amount')

@@ -15,7 +15,7 @@
 //! algorithms at `unsupported` before any verification). The separate DM validation session
 //! resumes the structural required-child part of 10.1 only, matching TypeScript; it does not
 //! authenticate plaintext or verify S8/T1a, T3, DLEQ, or payment observations. Ordinary `full`
-//! type-1 parsing is still unsupported. The pure-value M2/M3/M6 mappings of section 11 (lossless
+//! type-10 parsing is still unsupported. The pure-value M2/M3/M6 mappings of section 11 (lossless
 //! milliseconds, Keccak-256 address derivation) are in [`registration`]. Cashwebd consumes this
 //! crate for explicit CBOR account registration and opt-in CBOR topics. Direct-message and mailbox
 //! paths are not wired to it.

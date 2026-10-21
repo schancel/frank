@@ -110,7 +110,7 @@ const frame = (typeId: number, payload: Encodable, version = 1): Uint8Array =>
     payload,
   )
 
-/** Encode text directly as type 17; callers pass exact frames for containers/opaque items. */
+/** Encode text directly as type 22; callers pass exact frames for containers/opaque items. */
 export function directMessageText(text: string): Uint8Array {
   const bytes = frame(TYPE_TEXT_MESSAGE_ITEM, cborMap([[TEXT_MESSAGE_ITEM.text, text]]))
   parseFrame(bytes)

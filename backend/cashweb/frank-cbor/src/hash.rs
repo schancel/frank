@@ -138,13 +138,13 @@ pub fn content_hash(frame: &ParsedFrame) -> Result<[u8; 32], UsageError> {
     Ok(sha256(&transcript))
 }
 
-/// T1a digest of a complete type-8 frame. The network tag is the literal `frank`.
+/// T1a digest of a complete type-20 frame. The network tag is the literal `frank`.
 pub fn message_content_digest(type8_frame: &[u8]) -> Result<[u8; 32], UsageError> {
     let transcript = common_transcript("frank/message-content/v1", "frank", type8_frame, &[])?;
     Ok(sha256(&transcript))
 }
 
-/// T2: the 32-byte SHA-256 digest algorithm 1 signs, over the complete type-4 statement frame.
+/// T2: the 32-byte SHA-256 digest algorithm 1 signs, over the complete type-1 statement frame.
 /// The network argument is the statement's own field 0 (T5), never ambient state; the context
 /// is empty.
 pub fn directory_signature_digest(
@@ -175,7 +175,7 @@ pub fn topic_post_signature_digest(
     Ok(sha256(&transcript))
 }
 
-/// T2a: the digest of a key-transition authorization over the complete type-7 frame.
+/// T2a: the digest of a key-transition authorization over the complete type-3 frame.
 pub fn key_transition_signature_digest(
     network: &str,
     type7_frame: &[u8],
@@ -189,7 +189,7 @@ pub fn key_transition_signature_digest(
     Ok(sha256(&transcript))
 }
 
-/// T3 recipient-payload digest of a complete type-5 frame.
+/// T3 recipient-payload digest of a complete type-11 frame.
 pub fn recipient_payload_digest(network: &str, type5_frame: &[u8]) -> Result<[u8; 32], UsageError> {
     let transcript = common_transcript("frank/recipient-payload/v1", network, type5_frame, &[])?;
     Ok(sha256(&transcript))
@@ -224,8 +224,8 @@ pub fn storage_payment_commitment(digest: &[u8], child_index: u32) -> [u8; 32] {
 
 /// T7: `SHA256("frank:topic-vote:v1" || u16be(len(network)) || utf8(network) || target_hash)`.
 ///
-/// `target_hash` is the T1 hash of the type-9 frame the burn pays for: a type-11
-/// frame's field 1, or the content hash of the frame opened by a type 10.
+/// `target_hash` is the T1 hash of the type-40 frame the burn pays for: a type-42
+/// frame's field 1, or the content hash of the frame opened by a type 41.
 pub fn topic_vote_commitment(
     network: &str,
     target_hash: &[u8; 32],

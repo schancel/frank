@@ -7,6 +7,8 @@ import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/pl
 import { directMessageText } from '@frank/cashweb/relay/canonical-dm'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 import {
+  FORWARDING_DELIVERY_ENVELOPE,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
   TYPE_PLUGIN_MESSAGE_ITEM,
   encodeBlackjackHandV3Item,
   encodeCanonical,
@@ -402,6 +404,30 @@ describe('receiving', () => {
         frameType: 16,
         frame: toHex(container),
       },
+    ])
+  })
+
+  it('keeps a relay forwarding envelope sent as an item as unsupported, never acting on it, beside the others', () => {
+    // Anyone can write a client: the relay refuses this frame in an item field, a client ignores it (S8).
+    const envelope = encodeFrame(
+      {
+        typeId: TYPE_FORWARDING_DELIVERY_ENVELOPE,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
+      new Map<number, Encodable>([
+        [FORWARDING_DELIVERY_ENVELOPE.network, 'frank-test'],
+      ]),
+    )
+    expect(receive([text, envelope, text])).toEqual([
+      { type: 'text', text: 'still here' },
+      {
+        type: 'unsupported',
+        reason: 'unknown-type',
+        frameType: TYPE_FORWARDING_DELIVERY_ENVELOPE,
+        frame: toHex(envelope),
+      },
+      { type: 'text', text: 'still here' },
     ])
   })
 

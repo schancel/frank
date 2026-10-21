@@ -901,7 +901,7 @@ export const rawFrFR = {
       "Les frais du réseau ont dépassé ce timbre avant l'envoi. Rien n'a été payé. Réessayer l'envoie avec le timbre minimal actuel.",
     blockedBy: 'Il attend votre message « {preview} » ({time}).',
     reasonBlocked:
-      "Un message précédent dont le paiement est bloqué retient les fonds nécessaires à celui-ci. Réessayez d'abord ce message. Rien n'a été payé pour celui-ci.",
+      "Un message précédent dont le paiement est bloqué retient les fonds nécessaires à celui-ci. Rien n'a été payé pour celui-ci. Réessayez une fois ce message parti.",
     reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:

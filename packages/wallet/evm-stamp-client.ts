@@ -437,7 +437,7 @@ export class StampBlockedError extends MonadStampError {
     super(
       `This payment waits for an earlier message (${blockingPayloadDigest}) whose payment cannot finish by itself${
         blockingReason === undefined ? '' : ` (the relay answers ${blockingReason})`
-      }. Retry that message; its coin is not released while its payment could still land.`,
+      }. The background resend keeps trying it; its coin is not released while its payment could still land.`,
     )
     this.name = 'StampBlockedError'
     this.blockingPayloadDigest = blockingPayloadDigest

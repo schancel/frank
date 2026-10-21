@@ -657,10 +657,13 @@ import {
   openCompanionPanel,
   openExtensionTab,
   openExtensionWindow,
+  FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+  FRANK_WEB_APP_ORIGIN,
+  isFrankWebAppOrigin,
   RuntimeEnvironmentKind,
   sendRuntimeMessage,
 } from '../../../src-bex/runtime-adapter'
-import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../../src-bex/content'
+import { syncTransferCheckCode } from 'src/utils/extension-account-sync'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../../src-bex/inpage'
 
 function parseGiftAmountAtomic(raw: string): bigint {
@@ -727,7 +730,7 @@ export default defineComponent({
       default: '',
     },
   },
-  emits: ['update:modelValue', 'go-to-wallet', 'scan', 'extension-sync'],
+  emits: ['update:modelValue', 'go-to-wallet', 'scan'],
   setup(props, { emit }) {
     const instance = getCurrentInstance()
     const internalAddress = ref('')
@@ -741,7 +744,6 @@ export default defineComponent({
     const claimLinkNote = ref('')
     const generatedClaimLinkUrl = ref('')
     const alwaysOpenInSidePanel = ref(false)
-    const syncSasCode = ref('482910')
     const syncStatusMessage = ref('')
 
     const detectedRuntimeKind = computed<RuntimeEnvironmentKind>(() => {
@@ -1051,6 +1053,9 @@ export default defineComponent({
       })
     }
 
+    // Hands this account's backup shares to the other Frank surface: from the
+    // extension to the Frank web app tab, or from the web app to the extension.
+    // The receiver restores only after its user confirms the same check code.
     const syncAccountOverBridge = async () => {
       let backupShares: string[] = []
       try {
@@ -1065,35 +1070,48 @@ export default defineComponent({
           backupShares = exported.slice(0, 2)
         }
       } catch {
-        // Fallback if account custody is mocked or unavailable
+        // No account custody available
+      }
+      if (backupShares.length < 2) {
+        syncStatusMessage.value = 'No account to sync yet.'
+        return
       }
 
       const deviceSyncBundle = {
         version: 1,
-        schemaVersion: 1,
         exportedAtMs: Date.now(),
         accountAddress: resolvedAddress.value,
         displayName: displayName.value,
         username: displayUsername.value,
         backupShares,
       }
-
-      const syncPayload = {
-        sasCode: syncSasCode.value,
-        deviceSyncBundle,
-      }
+      const checkCode = syncTransferCheckCode(deviceSyncBundle)
 
       if (isExtensionMode.value) {
-        await sendRuntimeMessage({
+        const response = await sendRuntimeMessage<
+          Record<string, unknown>,
+          {
+            result?: {
+              ok?: boolean
+              deliveredToTabCount?: number
+            }
+          }
+        >({
           channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
           type: 'extension-push-sync-to-tab',
-          origin: 'frank-extension',
-          payload: syncPayload,
-        })
-        syncStatusMessage.value = `Synced to signet.mx (SAS: ${syncSasCode.value})`
+          payload: { deviceSyncBundle },
+        }).catch(() => null)
+        if (!response?.result?.ok) {
+          syncStatusMessage.value = 'Sync failed.'
+        } else if ((response.result.deliveredToTabCount ?? 0) > 0) {
+          syncStatusMessage.value = `Sent to your ${FRANK_WEB_APP_ORIGIN} tab. Check code: ${checkCode}`
+        } else {
+          // A tab that already has an account declines it, so say so plainly.
+          syncStatusMessage.value = `No ${FRANK_WEB_APP_ORIGIN} tab took the account (a tab that is already signed in does not). Open ${FRANK_WEB_APP_ORIGIN} without an account and choose Connect Browser Extension within 2 minutes. Check code: ${checkCode}`
+        }
       } else if (
         typeof window !== 'undefined' &&
-        typeof window.postMessage === 'function'
+        isFrankWebAppOrigin(window.location.origin)
       ) {
         window.postMessage(
           {
@@ -1101,14 +1119,14 @@ export default defineComponent({
             direction: 'to-extension',
             type: 'pwa-sync-handshake',
             id: `sync-${Date.now()}`,
-            payload: syncPayload,
+            payload: { deviceSyncBundle },
           },
-          '*',
+          window.location.origin,
         )
-        syncStatusMessage.value = `Synced with Extension (SAS: ${syncSasCode.value})`
+        syncStatusMessage.value = `Sent to the extension. Open it and choose Connect Browser Extension within 2 minutes. Check code: ${checkCode}`
+      } else {
+        syncStatusMessage.value = `Account sync works only on ${FRANK_WEB_APP_ORIGIN}.`
       }
-
-      emit('extension-sync', syncPayload)
     }
 
     const openDappBridge = () => {

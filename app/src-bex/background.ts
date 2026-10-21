@@ -4,8 +4,10 @@ import {
   FRANK_DAPP_BRIDGE_CHANNEL,
   FRANK_EXT_LAUNCH_MODE_KEY,
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+  FRANK_WEB_APP_ORIGIN,
   getRawExtensionApi,
   isBrowserExtensionRuntime,
+  isFrankWebAppOrigin,
   onRuntimeMessage,
   openCompanionPanel,
   openExtensionInWindow,
@@ -44,12 +46,24 @@ export interface PendingDappApproval {
 
 export type PendingDappApprovalRecord = PendingDappApproval
 
-export interface SyncedExtensionState {
-  sasCode: string
-  deviceSyncBundle?: unknown
-  syncedFromOrigin: string
-  syncedAt: number
+/**
+ * An account sync bundle the background is carrying between the extension and
+ * the Frank web app. It holds backup shares, so it is kept only in memory
+ * (`storage.session` where the browser has it, so it outlives a stopped service
+ * worker; otherwise the background's own state), handed out once, and expires
+ * after SYNC_TRANSFER_TTL_MS.
+ *  - 'to-extension': a Frank tab sent it; an extension page collects it.
+ *  - 'to-pwa': an extension page sent it while no Frank tab took it; a Frank tab
+ *    collects it.
+ */
+export interface PendingSyncTransfer {
+  direction: 'to-extension' | 'to-pwa'
+  deviceSyncBundle: Record<string, unknown>
+  createdAt: number
 }
+
+export const SYNC_TRANSFER_TTL_MS = 2 * 60_000
+const SYNC_TRANSFER_SESSION_KEY = 'frankPendingSyncTransfer'
 
 export interface PendingRpcWaiter {
   resolve: (value: unknown) => void
@@ -66,7 +80,7 @@ export interface BackgroundBridgeState {
   announceMode: DappProviderAnnounceMode
   pendingApprovals: Map<string, PendingDappApproval>
   pendingRpcWaiters: Map<string, PendingRpcWaiter>
-  syncedState: SyncedExtensionState | null
+  pendingSyncTransfer: PendingSyncTransfer | null
   openPanelOnActionClick: boolean
   launchMode: ExtensionLaunchMode
 }
@@ -477,7 +491,7 @@ export function createBackgroundBridgeState(
       overrides.pendingApprovals ?? new Map<string, PendingDappApproval>(),
     pendingRpcWaiters:
       overrides.pendingRpcWaiters ?? new Map<string, PendingRpcWaiter>(),
-    syncedState: overrides.syncedState ?? null,
+    pendingSyncTransfer: overrides.pendingSyncTransfer ?? null,
     openPanelOnActionClick:
       overrides.openPanelOnActionClick ?? launchMode === 'sidepanel',
     launchMode,
@@ -769,6 +783,215 @@ async function persistOriginStateToStorage(
     } catch {
       // Ignore storage errors
     }
+  }
+}
+
+/** True when the runtime message came from one of this extension's own pages. */
+function isExtensionPageSender(
+  sender: any,
+  extApi: Record<string, any> | null,
+): boolean {
+  const base =
+    typeof extApi?.runtime?.getURL === 'function'
+      ? String(extApi.runtime.getURL(''))
+      : ''
+  const url = typeof sender?.url === 'string' ? sender.url : ''
+  return Boolean(base) && url.startsWith(base)
+}
+
+/** The web origin a content-script sender runs in, as reported by the browser. */
+function senderWebOrigin(sender: any): string {
+  if (typeof sender?.origin === 'string' && sender.origin) return sender.origin
+  return urlOrigin(sender?.url)
+}
+
+function urlOrigin(url: unknown): string {
+  if (typeof url !== 'string' || !url) return ''
+  try {
+    return new URL(url).origin
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Memory-only extension storage that survives the MV3 service worker stopping.
+ * Chrome has it; where it is missing the bundle stays in the background state.
+ */
+function syncSessionStorage(
+  extApi: Record<string, any> | null,
+): Record<string, any> | null {
+  const session = extApi?.storage?.session
+  return typeof session?.get === 'function' &&
+    typeof session?.set === 'function' &&
+    typeof session?.remove === 'function'
+    ? session
+    : null
+}
+
+async function savePendingSyncTransfer(
+  state: BackgroundBridgeState,
+  extApi: Record<string, any> | null,
+  transfer: PendingSyncTransfer | null,
+): Promise<void> {
+  const session = syncSessionStorage(extApi)
+  if (!session) {
+    state.pendingSyncTransfer = transfer
+  } else if (transfer) {
+    await session.set({ [SYNC_TRANSFER_SESSION_KEY]: transfer })
+  } else {
+    await session.remove(SYNC_TRANSFER_SESSION_KEY)
+  }
+}
+
+// Takes run one at a time, so two requests cannot both receive the bundle.
+let syncTransferTakes: Promise<unknown> = Promise.resolve()
+
+/** Hands out the held bundle once, if it goes the asked direction and is not expired. */
+function takePendingSyncTransfer(
+  state: BackgroundBridgeState,
+  extApi: Record<string, any> | null,
+  direction: PendingSyncTransfer['direction'],
+): Promise<Record<string, unknown> | null> {
+  const take = syncTransferTakes.then(async () => {
+    const session = syncSessionStorage(extApi)
+    const pending: PendingSyncTransfer | null = session
+      ? (await session.get(SYNC_TRANSFER_SESSION_KEY))?.[
+          SYNC_TRANSFER_SESSION_KEY
+        ] ?? null
+      : state.pendingSyncTransfer
+    if (!pending) return null
+    const expired = Date.now() - pending.createdAt > SYNC_TRANSFER_TTL_MS
+    if (!expired && pending.direction !== direction) return null
+    await savePendingSyncTransfer(state, extApi, null)
+    return expired ? null : pending.deviceSyncBundle
+  })
+  syncTransferTakes = take.catch(() => null)
+  return take
+}
+
+/**
+ * Sends the bundle to the content script of every Frank web app tab. Counts only
+ * tabs whose page offered it to the user; a page that already has an account
+ * declines it.
+ */
+async function pushSyncBundleToFrankTabs(
+  extApi: Record<string, any> | null,
+  deviceSyncBundle: Record<string, unknown>,
+): Promise<number> {
+  if (
+    typeof extApi?.tabs?.query !== 'function' ||
+    typeof extApi.tabs.sendMessage !== 'function'
+  ) {
+    return 0
+  }
+  let tabs: unknown
+  try {
+    tabs = await extApi.tabs.query({ url: `${FRANK_WEB_APP_ORIGIN}/*` })
+  } catch {
+    return 0
+  }
+  let delivered = 0
+  for (const tab of Array.isArray(tabs) ? tabs : []) {
+    if (
+      typeof tab?.id !== 'number' ||
+      !isFrankWebAppOrigin(urlOrigin(tab.url))
+    ) {
+      continue
+    }
+    try {
+      const ack = await extApi.tabs.sendMessage(tab.id, {
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        type: 'extension-sync-push',
+        payload: { deviceSyncBundle },
+      })
+      if (ack && typeof ack === 'object' && ack.offered === true) delivered += 1
+    } catch {
+      // No content script in this tab
+    }
+  }
+  return delivered
+}
+
+/**
+ * Account sync between the extension and the Frank web app. The bundle carries
+ * backup shares: it is accepted only from an extension page or a Frank web app
+ * tab, delivered only to the other one, held only in memory, and handed out once.
+ */
+async function handleAccountSyncMessage(
+  message: any,
+  sender: any,
+  state: BackgroundBridgeState,
+  runtimeScope?: Record<string, any>,
+): Promise<any> {
+  const extApi = getRawExtensionApi(runtimeScope)
+  const fromExtensionPage = isExtensionPageSender(sender, extApi)
+  const fromFrankTab =
+    !fromExtensionPage && isFrankWebAppOrigin(senderWebOrigin(sender))
+  const bundle = message.payload?.deviceSyncBundle
+  const hasBundle =
+    Boolean(bundle) && typeof bundle === 'object' && !Array.isArray(bundle)
+  const rejected = (reason: string) => ({
+    ok: false,
+    error: { code: 4100, message: reason },
+  })
+
+  switch (message.type) {
+    case 'pwa-sync-handshake':
+      if (!fromFrankTab) return rejected('Sender is not the Frank web app')
+      if (!hasBundle) return rejected('Missing sync bundle')
+      await savePendingSyncTransfer(state, extApi, {
+        direction: 'to-extension',
+        deviceSyncBundle: bundle,
+        createdAt: Date.now(),
+      })
+      return { ok: true, result: { ok: true } }
+    case 'get-synced-state': {
+      if (!fromExtensionPage) return rejected('Sender is not an extension page')
+      const taken = await takePendingSyncTransfer(state, extApi, 'to-extension')
+      return {
+        ok: true,
+        result: { ok: Boolean(taken), deviceSyncBundle: taken },
+      }
+    }
+    case 'extension-push-sync-to-tab': {
+      if (!fromExtensionPage) return rejected('Sender is not an extension page')
+      if (!hasBundle) return rejected('Missing sync bundle')
+      const deliveredToTabCount = await pushSyncBundleToFrankTabs(
+        extApi,
+        bundle,
+      )
+      // No Frank tab offered it: hold it briefly for a Frank tab to collect.
+      await savePendingSyncTransfer(
+        state,
+        extApi,
+        deliveredToTabCount > 0
+          ? null
+          : {
+              direction: 'to-pwa',
+              deviceSyncBundle: bundle,
+              createdAt: Date.now(),
+            },
+      )
+      return {
+        ok: true,
+        result: {
+          ok: true,
+          deliveredToTabCount,
+          awaitingPickup: deliveredToTabCount === 0,
+        },
+      }
+    }
+    case 'pwa-request-sync': {
+      if (!fromFrankTab) return rejected('Sender is not the Frank web app')
+      const taken = await takePendingSyncTransfer(state, extApi, 'to-pwa')
+      return {
+        ok: true,
+        result: { ok: Boolean(taken), deviceSyncBundle: taken },
+      }
+    }
+    default:
+      return rejected('Unsupported sync message')
   }
 }
 
@@ -1674,141 +1897,7 @@ export async function handleBackgroundMessage(
   }
 
   if (message.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL) {
-    const extApi = getRawExtensionApi(runtimeScope)
-
-    if (
-      message.type === 'get-synced-state' ||
-      message.type === 'pwa-request-sync'
-    ) {
-      if (!state.syncedState && extApi?.storage?.local?.get) {
-        try {
-          const stored = await extApi.storage.local.get('frankSyncedState')
-          if (stored?.frankSyncedState) {
-            state.syncedState = stored.frankSyncedState
-          }
-        } catch {
-          // Ignore storage errors
-        }
-      }
-      return {
-        ok: Boolean(state.syncedState),
-        result: {
-          ok: Boolean(state.syncedState),
-          syncedState: state.syncedState,
-          sasCode: state.syncedState?.sasCode ?? null,
-          deviceSyncBundle: state.syncedState?.deviceSyncBundle ?? null,
-        },
-      }
-    }
-
-    const sasCode = String(message.payload?.sasCode ?? '482910')
-    const origin = String(
-      message.origin ??
-        (message.type === 'extension-push-sync-to-tab'
-          ? 'frank-extension'
-          : 'https://signet.mx'),
-    )
-    state.syncedState = {
-      sasCode,
-      deviceSyncBundle: message.payload?.deviceSyncBundle,
-      syncedFromOrigin: origin,
-      syncedAt: Date.now(),
-    }
-
-    if (extApi?.storage?.local?.set) {
-      try {
-        await extApi.storage.local.set({
-          frankSyncedState: state.syncedState,
-        })
-      } catch {
-        // Ignore storage errors in ephemeral environments
-      }
-    }
-
-    let pushedToTabCount = 0
-    if (
-      message.type === 'extension-push-sync-to-tab' &&
-      extApi?.tabs &&
-      typeof extApi.tabs.query === 'function'
-    ) {
-      try {
-        let tabs = await extApi.tabs.query({})
-        if (!Array.isArray(tabs) || tabs.length === 0) {
-          tabs = await extApi.tabs.query({ currentWindow: true })
-        }
-        if (Array.isArray(tabs)) {
-          for (const tab of tabs) {
-            if (tab && typeof tab.id === 'number') {
-              let sendMessageSucceeded = false
-              let contentAcked = false
-              if (typeof extApi.tabs.sendMessage === 'function') {
-                try {
-                  const res = await extApi.tabs.sendMessage(tab.id, {
-                    channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-                    type: 'extension-sync-push',
-                    payload: state.syncedState,
-                  })
-                  sendMessageSucceeded = true
-                  if (res && typeof res === 'object' && res.ok) {
-                    contentAcked = true
-                  }
-                } catch {
-                  // Tab may have been opened before extension reload
-                }
-              }
-              let scriptInjected = false
-              if (
-                !contentAcked &&
-                typeof extApi?.scripting?.executeScript === 'function'
-              ) {
-                try {
-                  await Promise.resolve(
-                    extApi.scripting.executeScript({
-                      target: { tabId: tab.id },
-                      files: ['content.js'],
-                    }),
-                  ).catch(() => {})
-                  await extApi.scripting.executeScript({
-                    target: { tabId: tab.id },
-                    func: (msg: unknown) => {
-                      window.postMessage(msg, '*')
-                    },
-                    args: [
-                      {
-                        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-                        direction: 'to-pwa',
-                        type: 'extension-sync-push',
-                        payload: state.syncedState,
-                      },
-                    ],
-                  })
-                  scriptInjected = true
-                } catch {
-                  // Scripting not permitted on restricted URLs
-                }
-              }
-              if (contentAcked || scriptInjected || sendMessageSucceeded) {
-                pushedToTabCount += 1
-              }
-            }
-          }
-        }
-      } catch {
-        // Ignore tab query errors
-      }
-    }
-
-    return {
-      ok: true,
-      result: {
-        ok: true,
-        sasCode,
-        syncedFromOrigin: origin,
-        syncedAt: state.syncedState.syncedAt,
-        syncedState: state.syncedState,
-        pushedToTabCount,
-      },
-    }
+    return await handleAccountSyncMessage(message, sender, state, runtimeScope)
   }
 
   return undefined
@@ -1826,12 +1915,33 @@ export function installBackgroundBridge(
   void reinjectContentScriptsIntoOpenTabs(runtimeScope)
 
   const api = getRawExtensionApi(runtimeScope)
+  // Only extension pages and the background may read a held sync bundle
+  // (this is the browser default; set it so nothing else can widen it).
+  const syncSession = syncSessionStorage(api)
+  if (typeof syncSession?.setAccessLevel === 'function') {
+    try {
+      void Promise.resolve(
+        syncSession.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
+      ).catch(() => undefined)
+    } catch {
+      // Ignore storage errors in restricted environments
+    }
+  }
+  // Earlier builds kept the last sync bundle, backup shares included, here.
+  if (typeof api?.storage?.local?.remove === 'function') {
+    try {
+      void Promise.resolve(api.storage.local.remove('frankSyncedState')).catch(
+        () => undefined,
+      )
+    } catch {
+      // Ignore storage errors in restricted environments
+    }
+  }
   if (api?.storage?.local?.get) {
     try {
       const maybeStored = api.storage.local.get([
         'frankOpenPanelOnActionClick',
         FRANK_EXT_LAUNCH_MODE_KEY,
-        'frankSyncedState',
         'frankActivePersonaAddress',
         'frankPoolBalanceWeiHex',
         'frankApprovedOrigins',
@@ -1863,20 +1973,6 @@ export function installBackgroundBridge(
             } else if (storedMode === 'sidepanel') {
               state.openPanelOnActionClick = true
               configureSidePanelBehavior(runtimeScope, true)
-            }
-            if (stored.frankSyncedState && !state.syncedState) {
-              state.syncedState = stored.frankSyncedState
-              const syncedAddr =
-                (stored.frankSyncedState.deviceSyncBundle as any)
-                  ?.activePersonaAddress ||
-                (stored.frankSyncedState.deviceSyncBundle as any)
-                  ?.accountAddress
-              if (
-                typeof syncedAddr === 'string' &&
-                /^0x[a-fA-F0-9]{40}$/.test(syncedAddr)
-              ) {
-                state.activePersonaAddress = syncedAddr
-              }
             }
             if (
               typeof stored.frankActivePersonaAddress === 'string' &&

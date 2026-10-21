@@ -142,11 +142,46 @@
           </div>
 
           <div
-            v-if="extensionSyncStatusText"
-            class="text-caption text-positive q-mt-sm"
-            data-test="welcome-extension-sync-status"
+            v-if="syncOffer"
+            class="q-mt-sm q-pa-sm rounded-borders"
+            data-test="welcome-extension-sync-offer"
           >
-            {{ extensionSyncStatusText }}
+            <div class="text-body2">{{ syncOfferText }}</div>
+            <div class="text-caption text-grey-7">
+              {{ extensionUi.syncCheckCodeHint }}
+              <strong data-test="welcome-extension-sync-code">{{
+                syncOffer.checkCode
+              }}</strong>
+            </div>
+            <div class="row justify-center q-gutter-xs q-mt-xs">
+              <q-btn
+                unelevated
+                dense
+                no-caps
+                color="primary"
+                :label="extensionUi.restoreSyncedAccountBtn"
+                :loading="syncRestoring"
+                data-test="btn-restore-synced-account"
+                @click="restoreSyncedAccount"
+              />
+              <q-btn
+                flat
+                dense
+                no-caps
+                color="grey-8"
+                :label="extensionUi.dismissSyncedAccountBtn"
+                :disable="syncRestoring"
+                data-test="btn-dismiss-synced-account"
+                @click="dismissSyncOffer"
+              />
+            </div>
+            <div
+              v-if="syncRestoreFailed"
+              class="text-caption text-negative q-mt-xs"
+              data-test="welcome-extension-sync-failed"
+            >
+              {{ extensionUi.syncRestoreFailed }}
+            </div>
           </div>
 
           <div class="q-mt-md">
@@ -270,25 +305,18 @@
 </template>
 
 <script lang="ts">
-import {
-  computed,
-  defineComponent,
-  getCurrentInstance,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-} from 'vue'
+import { computed, defineComponent, getCurrentInstance, ref } from 'vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
-import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/content'
 import {
+  FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   isBrowserExtensionRuntime,
   sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
 import {
-  extractValidBackupShares,
-  peekPendingExtensionSyncPayload,
+  clearExtensionSyncOffer,
+  offerExtensionSyncBundle,
+  pendingExtensionSyncOffer,
   restoreAccountFromExtensionBundle,
-  savePendingExtensionSyncPayload,
 } from '../utils/extension-account-sync'
 import {
   detectPreferredExtensionTarget,
@@ -302,8 +330,8 @@ export default defineComponent({
   emits: ['toggleMyDrawerOpen', 'setupCompleted'],
   setup(_, { emit }) {
     const instance = getCurrentInstance()
-    const syncedAddress = ref('')
-    const syncedSasCode = ref('')
+    const syncRestoring = ref(false)
+    const syncRestoreFailed = ref(false)
     const selectedExtensionTarget = ref<ExtensionTargetBrowser>(
       detectPreferredExtensionTarget(),
     )
@@ -319,82 +347,64 @@ export default defineComponent({
 
     const extensionUi = {
       connectExtensionBtn: 'Connect Browser Extension',
+      syncOfferTitle: 'Restore the account sent from your other Frank device',
+      syncCheckCodeHint:
+        'Continue only if the sending device shows the same code:',
+      restoreSyncedAccountBtn: 'Restore this account',
+      dismissSyncedAccountBtn: 'Dismiss',
+      syncRestoreFailed: 'Could not restore the account. Try syncing again.',
     }
 
-    const extensionSyncStatusText = computed(() => {
-      if (!syncedAddress.value) return ''
-      return syncedSasCode.value
-        ? `Extension Connected: ${syncedAddress.value} (SAS: ${syncedSasCode.value})`
-        : `Extension Connected: ${syncedAddress.value}`
+    const syncOffer = pendingExtensionSyncOffer
+    const syncOfferText = computed(() => {
+      const name = syncOffer.value?.deviceSyncBundle.displayName
+      return typeof name === 'string' && name.trim()
+        ? `${extensionUi.syncOfferTitle} (${name.trim()})?`
+        : `${extensionUi.syncOfferTitle}?`
     })
 
-    const applyIncomingSyncPayload = async (
-      payload: Record<string, any> | null | undefined,
-    ) => {
-      const bundle = payload?.deviceSyncBundle
-      if (!bundle || typeof bundle !== 'object') return
-      syncedAddress.value = String(
-        bundle.accountAddress || bundle.activePersonaAddress || '',
-      )
-      syncedSasCode.value = String(payload?.sasCode || '')
-      savePendingExtensionSyncPayload({
-        sasCode: syncedSasCode.value,
-        deviceSyncBundle: bundle,
-      })
+    const restoreSyncedAccount = async () => {
+      const offer = syncOffer.value
+      if (!offer || syncRestoring.value) return
+      syncRestoring.value = true
+      syncRestoreFailed.value = false
       const router = (
         instance?.proxy as
           | { $router?: { push: (path: string) => void } }
           | undefined
       )?.$router
-      const shares = extractValidBackupShares(bundle)
-      if (shares.length >= 2) {
-        const restored = await restoreAccountFromExtensionBundle(bundle, {
-          onActivated: () => {
-            emit('setupCompleted')
-            if (router) {
-              void router.push('/forum')
-            }
+      try {
+        const restored = await restoreAccountFromExtensionBundle(
+          offer.deviceSyncBundle,
+          {
+            onActivated: () => {
+              emit('setupCompleted')
+              if (router) {
+                void router.push('/forum')
+              }
+            },
           },
-        })
-        if (!restored && router) {
-          void router.push('/onboard')
-        }
+        )
+        syncRestoreFailed.value = !restored
+      } finally {
+        syncRestoring.value = false
       }
     }
 
-    const onExtensionMessage = (event: MessageEvent) => {
-      const data = event?.data
-      if (!data || typeof data !== 'object') return
-      if (
-        data.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
-        data.direction === 'to-pwa' &&
-        (data.type === 'extension-sync-push' || data.type === 'sync-response')
-      ) {
-        const payload = data.payload ?? data.result?.syncedState ?? data.result
-        void applyIncomingSyncPayload(payload)
-      }
+    const dismissSyncOffer = () => {
+      syncRestoreFailed.value = false
+      clearExtensionSyncOffer()
     }
-
-    onMounted(() => {
-      if (typeof window !== 'undefined') {
-        window.addEventListener('message', onExtensionMessage)
-      }
-      const pending = peekPendingExtensionSyncPayload()
-      if (pending?.deviceSyncBundle) {
-        void applyIncomingSyncPayload(pending)
-      }
-    })
-
-    onBeforeUnmount(() => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('message', onExtensionMessage)
-      }
-    })
 
     return {
       myDrawerOpen: useMyDrawerOpen(),
       extensionUi,
-      extensionSyncStatusText,
+      syncOffer,
+      syncOfferText,
+      syncRestoring,
+      syncRestoreFailed,
+      restoreSyncedAccount,
+      dismissSyncOffer,
       isExtensionRuntime,
       selectedExtensionTarget,
       selectedExtensionInfo,
@@ -410,21 +420,8 @@ export default defineComponent({
         emit('toggleMyDrawerOpen')
       },
       async connectBrowserExtension() {
-        if (
-          typeof window !== 'undefined' &&
-          typeof window.postMessage === 'function'
-        ) {
-          window.postMessage(
-            {
-              channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-              direction: 'to-extension',
-              type: 'pwa-request-sync',
-              id: `welcome-sync-${Date.now()}`,
-            },
-            '*',
-          )
-        }
         if (isBrowserExtensionRuntime()) {
+          // Collect an account the Frank web app handed to the extension.
           try {
             const response = await sendRuntimeMessage<Record<string, any>, any>(
               {
@@ -432,14 +429,22 @@ export default defineComponent({
                 type: 'get-synced-state',
               },
             )
-            const payload =
-              response?.result?.syncedState ?? response?.result ?? response
-            if (payload?.deviceSyncBundle) {
-              await applyIncomingSyncPayload(payload)
-            }
+            offerExtensionSyncBundle(response?.result?.deviceSyncBundle)
           } catch {
             // Ignore extension runtime query errors
           }
+        } else if (typeof window !== 'undefined') {
+          // Ask the extension's content script for an account it is holding;
+          // AppRuntime receives the reply.
+          window.postMessage(
+            {
+              channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+              direction: 'to-extension',
+              type: 'pwa-request-sync',
+              id: `welcome-sync-${Date.now()}`,
+            },
+            window.location.origin,
+          )
         }
       },
     }

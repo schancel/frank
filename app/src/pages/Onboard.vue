@@ -153,14 +153,40 @@
                 :disable="busy"
               />
               <q-banner
-                v-if="extensionSyncedAddress"
+                v-if="syncOffer"
                 dense
                 rounded
-                class="bg-positive text-white q-pa-sm q-mt-sm"
-                data-test="onboard-extension-sync-banner"
+                class="q-pa-sm q-mt-sm"
+                data-test="onboard-extension-sync-offer"
               >
+                <div class="text-body2">{{ syncOfferText }}</div>
                 <div class="text-caption">
-                  {{ extensionSyncBannerText }}
+                  {{ syncUi.checkCodeHint }}
+                  <strong data-test="onboard-extension-sync-code">{{
+                    syncOffer.checkCode
+                  }}</strong>
+                </div>
+                <div class="row q-gutter-xs q-mt-xs">
+                  <q-btn
+                    unelevated
+                    dense
+                    no-caps
+                    color="primary"
+                    :label="syncUi.restoreBtn"
+                    :loading="busy"
+                    :disable="busy"
+                    data-test="onboard-restore-synced-account"
+                    @click="restoreSyncedAccount"
+                  />
+                  <q-btn
+                    flat
+                    dense
+                    no-caps
+                    :label="syncUi.dismissBtn"
+                    :disable="busy"
+                    data-test="onboard-dismiss-synced-account"
+                    @click="clearExtensionSyncOffer"
+                  />
                 </div>
               </q-banner>
             </q-card-section>
@@ -244,15 +270,16 @@ import {
   parseClaimLink,
   type ParsedClaimLink,
 } from '../../../packages/wallet/claim-link'
-import { FRANK_PWA_EXTENSION_SYNC_CHANNEL } from '../../src-bex/content'
 import {
+  FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   isBrowserExtensionRuntime,
   sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
 import {
-  clearPendingExtensionSyncPayload,
-  peekPendingExtensionSyncPayload,
-  savePendingExtensionSyncPayload,
+  clearExtensionSyncOffer,
+  extractValidBackupShares,
+  offerExtensionSyncBundle,
+  pendingExtensionSyncOffer,
 } from '../utils/extension-account-sync'
 
 defineProps<{ myDrawerOpen?: boolean }>()
@@ -274,14 +301,19 @@ const bearerClaimUi = {
 
 const windowHash = ref(typeof window !== 'undefined' ? window.location.hash : '')
 const redeemedClaimIds = ref<string[]>([])
-const extensionSyncedAddress = ref('')
-const extensionSyncedSasCode = ref('')
-
-const extensionSyncBannerText = computed(() =>
-  extensionSyncedSasCode.value
-    ? `Synced from Frank Extension: ${extensionSyncedAddress.value} (SAS: ${extensionSyncedSasCode.value})`
-    : `Synced from Frank Extension: ${extensionSyncedAddress.value}`,
-)
+const syncUi = {
+  offerTitle: 'Restore the account sent from your other Frank device',
+  checkCodeHint: 'Continue only if the sending device shows the same code:',
+  restoreBtn: 'Restore this account',
+  dismissBtn: 'Dismiss',
+}
+const syncOffer = pendingExtensionSyncOffer
+const syncOfferText = computed(() => {
+  const name = syncOffer.value?.deviceSyncBundle.displayName
+  return typeof name === 'string' && name.trim()
+    ? `${syncUi.offerTitle} (${name.trim()})?`
+    : `${syncUi.offerTitle}?`
+})
 
 function onWindowHashChange() {
   if (typeof window !== 'undefined') {
@@ -289,66 +321,38 @@ function onWindowHashChange() {
   }
 }
 
-async function handleIncomingExtensionBundle(
-  bundle: Record<string, any> | undefined,
-  sasCode?: string,
-) {
-  if (!bundle || typeof bundle !== 'object') return
-  const addr = String(
-    bundle.accountAddress || bundle.activePersonaAddress || '',
-  ).trim()
-  if (addr) {
-    extensionSyncedAddress.value = addr
-  }
-  if (sasCode) {
-    extensionSyncedSasCode.value = String(sasCode)
-  }
-  if (bundle.displayName && typeof bundle.displayName === 'string') {
-    displayName.value = bundle.displayName
-  }
-  savePendingExtensionSyncPayload({
-    sasCode: extensionSyncedSasCode.value || undefined,
-    deviceSyncBundle: bundle,
+/** Restores the offered account. Runs only from the user's confirm click. */
+function restoreSyncedAccount() {
+  const offer = syncOffer.value
+  if (!offer || account.status === 'ready') return
+  const shares = extractValidBackupShares(offer.deviceSyncBundle)
+  return runOnboardAction(async () => {
+    await ceremony.beginRestore()
+    const outcome = await ceremony.confirm(
+      shares,
+      displayName.value.trim() || 'Frank User',
+    )
+    if (!alive) return
+    clearExtensionSyncOffer()
+    await activateStagedAndMigrate(outcome)
   })
-  const shares = Array.isArray(bundle.backupShares)
-    ? bundle.backupShares.filter((s: unknown) => typeof s === 'string' && s.trim())
-    : []
-  if (
-    shares.length >= 2 &&
-    account.status !== 'ready' &&
-    typeof (ceremony as any).beginRestore === 'function' &&
-    typeof (ceremony as any).confirm === 'function'
-  ) {
-    await runOnboardAction(async () => {
-      await (ceremony as any).beginRestore()
-      const outcome = await (ceremony as any).confirm(
-        shares,
-        displayName.value.trim() || 'Frank User',
-      )
-      if (!alive) return
-      clearPendingExtensionSyncPayload()
-      await activateStagedAndMigrate(outcome)
-    })
-  }
-}
-
-function onExtensionBridgeMessage(event: MessageEvent) {
-  const data = event?.data
-  if (!data || typeof data !== 'object') return
-  if (
-    data.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
-    data.direction === 'to-pwa' &&
-    (data.type === 'extension-sync-push' || data.type === 'sync-response')
-  ) {
-    const payload = data.payload ?? data.result?.syncedState ?? data.result
-    const bundle = payload?.deviceSyncBundle
-    const sas = payload?.sasCode
-    void handleIncomingExtensionBundle(bundle, sas)
-  }
 }
 
 async function connectBrowserExtension() {
-  if (typeof window !== 'undefined' && typeof window.postMessage === 'function') {
+  if (isBrowserExtensionRuntime()) {
+    // Collect an account the Frank web app handed to the extension.
+    try {
+      const response = await sendRuntimeMessage<Record<string, any>, any>({
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        type: 'get-synced-state',
+      })
+      offerExtensionSyncBundle(response?.result?.deviceSyncBundle)
+    } catch {
+      // Ignore runtime query errors
+    }
+  } else if (typeof window !== 'undefined') {
+    // Ask the extension's content script for an account it is holding;
+    // AppRuntime receives the reply.
     window.postMessage(
       {
         channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
@@ -356,26 +360,8 @@ async function connectBrowserExtension() {
         type: 'pwa-request-sync',
         id: `onboard-sync-${Date.now()}`,
       },
-      '*',
+      window.location.origin,
     )
-  }
-  if (isBrowserExtensionRuntime()) {
-    try {
-      const response = await sendRuntimeMessage<Record<string, any>, any>({
-        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-        type: 'get-synced-state',
-      })
-      const payload =
-        response?.result?.syncedState ?? response?.result ?? response
-      if (payload?.deviceSyncBundle) {
-        await handleIncomingExtensionBundle(
-          payload.deviceSyncBundle,
-          payload.sasCode,
-        )
-      }
-    } catch {
-      // Ignore runtime query errors
-    }
   }
 }
 
@@ -383,14 +369,6 @@ onMounted(() => {
   if (typeof window !== 'undefined') {
     windowHash.value = window.location.hash
     window.addEventListener('hashchange', onWindowHashChange)
-    window.addEventListener('message', onExtensionBridgeMessage)
-  }
-  const pending = peekPendingExtensionSyncPayload()
-  if (pending?.deviceSyncBundle) {
-    void handleIncomingExtensionBundle(
-      pending.deviceSyncBundle,
-      pending.sasCode,
-    )
   }
 })
 
@@ -503,6 +481,22 @@ watch([nameParam, emailParam], ([newName, newEmail]) => {
     displayName.value = deriveDefaultDisplayName(newName, newEmail)
   }
 })
+
+// Suggest the sent account's own name, unless the user already chose one.
+watch(
+  syncOffer,
+  offer => {
+    const name = offer?.deviceSyncBundle.displayName
+    if (
+      typeof name === 'string' &&
+      name.trim() &&
+      (!displayName.value.trim() || displayName.value === 'Frank User')
+    ) {
+      displayName.value = name.trim()
+    }
+  },
+  { immediate: true },
+)
 
 const peerDisplayLabel = computed(() => {
   if (peerNameParam.value) return peerNameParam.value
@@ -796,7 +790,6 @@ onBeforeUnmount(() => {
   alive = false
   if (typeof window !== 'undefined') {
     window.removeEventListener('hashchange', onWindowHashChange)
-    window.removeEventListener('message', onExtensionBridgeMessage)
   }
   ceremony.cancel()
 })
@@ -804,7 +797,6 @@ onBeforeUnmount(() => {
 defineExpose({
   bearerClaim,
   redeemedClaimIds,
-  extensionSyncedAddress,
 })
 </script>
 

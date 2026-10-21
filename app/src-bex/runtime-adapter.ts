@@ -1,6 +1,26 @@
 export const FRANK_DAPP_BRIDGE_CHANNEL = 'frank-dapp-bridge-v1'
 export const FRANK_PWA_EXTENSION_SYNC_CHANNEL = 'frank-pwa-extension-sync-v1'
 /**
+ * The one web origin that may take part in extension <-> web app account sync.
+ * A sync bundle carries account backup shares, so the extension delivers it only
+ * to pages whose origin equals this exactly. The extension build has no dev mode,
+ * so localhost pages are never a sync peer.
+ */
+export const FRANK_WEB_APP_ORIGIN = 'https://signet.mx'
+/**
+ * Sync message types a Frank web page may send through the content script:
+ * hand its account to the extension, or collect an account the extension pushed
+ * while no Frank tab was open. Everything else on the sync channel is dropped.
+ */
+export const FRANK_SYNC_PAGE_MESSAGE_TYPES: ReadonlySet<string> = new Set([
+  'pwa-sync-handshake',
+  'pwa-request-sync',
+])
+
+export function isFrankWebAppOrigin(origin: unknown): boolean {
+  return origin === FRANK_WEB_APP_ORIGIN
+}
+/**
  * Sent by the background to open extension pages (popup, side panel, window)
  * on FRANK_DAPP_BRIDGE_CHANNEL whenever the pending dApp approval queue
  * changes. It carries no approval data; views re-read `get-bridge-state`.

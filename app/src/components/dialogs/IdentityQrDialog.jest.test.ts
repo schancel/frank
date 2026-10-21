@@ -30,6 +30,19 @@ jest.mock('src/utils/own-address', () => ({
   getOwnCanonicalAddress: () => mockCanonicalAddress(),
 }))
 
+const mockBackupCodex32 = jest.fn(async () => [
+  'ms12frankshareone',
+  'ms12franksharetwo',
+  'ms12franksharethree',
+])
+jest.mock('src/accounts/session', () => ({
+  accountStatus: { status: 'ready' },
+  accountSession: {
+    initialize: jest.fn(async () => undefined),
+    backupCodex32: (...args: unknown[]) => mockBackupCodex32(...args),
+  },
+}))
+
 function translator(messages: unknown) {
   return (key: string, params?: Record<string, unknown>) => {
     let value: unknown = key
@@ -210,56 +223,58 @@ describe('IdentityQrDialog', () => {
   })
 
   it('renders 1-click account sync without cluttered Extension View bar when in extension mode', async () => {
-    const wrapper = mountDialog({
-      inline: true,
-      runtimeKindOverride: 'chrome-extension',
-    })
-    await flushPromises()
+    const sendMessage = jest.fn(async () => ({
+      ok: true,
+      result: { ok: true, deliveredToTabCount: 1 },
+    }))
+    const g = globalThis as Record<string, unknown>
+    g.chrome = { runtime: { id: 'frank-test-ext', sendMessage } }
+    try {
+      const wrapper = mountDialog({
+        inline: true,
+        runtimeKindOverride: 'chrome-extension',
+      })
+      await flushPromises()
 
-    expect(wrapper.find('[data-test="extension-view-bar"]').exists()).toBe(
-      false,
-    )
+      expect(wrapper.find('[data-test="extension-view-bar"]').exists()).toBe(
+        false,
+      )
 
-    await wrapper.find('[data-test="sync-account-bridge-btn"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.emitted('extension-sync')).toHaveLength(1)
-    expect(
-      wrapper.find('[data-test="identity-qr-sync-status"]').text(),
-    ).toContain('Synced to signet.mx')
+      await wrapper
+        .find('[data-test="sync-account-bridge-btn"]')
+        .trigger('click')
+      await flushPromises()
 
-    expect(wrapper.find('.identity-qr-action-grid').exists()).toBe(true)
-    expect(wrapper.find('.identity-qr-sync-grid').exists()).toBe(true)
-  })
+      // The push names no target origin and carries no constant SAS code.
+      expect(sendMessage).toHaveBeenCalledTimes(1)
+      const sent = (sendMessage.mock.calls[0] as unknown[])[0] as Record<
+        string,
+        any
+      >
+      expect(sent.type).toBe('extension-push-sync-to-tab')
+      expect(sent.payload).toEqual({
+        deviceSyncBundle: expect.objectContaining({
+          backupShares: ['ms12frankshareone', 'ms12franksharetwo'],
+        }),
+      })
+      expect(JSON.stringify(sent)).not.toContain('482910')
 
-  it('persists and consumes pending extension sync bundles via extension-account-sync helper', async () => {
-    const {
-      clearPendingExtensionSyncPayload,
-      extractValidBackupShares,
-      peekPendingExtensionSyncPayload,
-      savePendingExtensionSyncPayload,
-    } = await import('../../utils/extension-account-sync')
+      const { syncTransferCheckCode } = await import(
+        '../../utils/extension-account-sync'
+      )
+      const code = syncTransferCheckCode(sent.payload.deviceSyncBundle)
+      expect(code).toMatch(/^\d{6}$/)
+      const status = wrapper
+        .find('[data-test="identity-qr-sync-status"]')
+        .text()
+      expect(status).toContain('Sent to your https://signet.mx tab')
+      expect(status).toContain(`Check code: ${code}`)
 
-    clearPendingExtensionSyncPayload()
-    expect(peekPendingExtensionSyncPayload()).toBeNull()
-
-    const payload = {
-      sasCode: '482910',
-      deviceSyncBundle: {
-        version: 1,
-        accountAddress: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3',
-        displayName: 'Shammah',
-        backupShares: ['ms1share1', 'ms1share2'],
-      },
+      expect(wrapper.find('.identity-qr-action-grid').exists()).toBe(true)
+      expect(wrapper.find('.identity-qr-sync-grid').exists()).toBe(true)
+    } finally {
+      delete g.chrome
     }
-    savePendingExtensionSyncPayload(payload)
-    expect(peekPendingExtensionSyncPayload()).toEqual(payload)
-    expect(extractValidBackupShares(payload.deviceSyncBundle)).toEqual([
-      'ms1share1',
-      'ms1share2',
-    ])
-
-    clearPendingExtensionSyncPayload()
-    expect(peekPendingExtensionSyncPayload()).toBeNull()
   })
 })
 

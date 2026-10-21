@@ -902,6 +902,56 @@ describe('stores/contacts.ts (ticket #42)', () => {
       },
     )
 
+    it('retries both accepted peers when simultaneous directory failures settle together', async () => {
+      const contacts = useContactStore()
+      const other = toDisplay('0x4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f')
+      const peers = [ADDRESS, other]
+      for (const address of peers) contacts.addContact({ address, contact: {} })
+      const rejectLookups: Array<(error: Error & { code: string }) => void> = []
+      const directory = jest.fn(
+        () =>
+          new Promise<{ subject: string }>((_resolve, reject) => {
+            rejectLookups.push(reject)
+          }),
+      )
+      setDirectoryLookup(directory)
+      try {
+        const first = contacts.refreshPeerProfiles(peers)
+        while (rejectLookups.length !== 2) await Promise.resolve()
+        // Settle in the same turn: a shared last-failure slot loses the first peer's reason.
+        for (const reject of rejectLookups)
+          reject(Object.assign(new Error('offline'), { code: 'unreachable' }))
+        await first
+        for (const address of peers) {
+          expect(contacts.getContact(address).lastUpdateTime).toBe(0)
+          expect(contacts.getContactProfile(address).signedName).toBeUndefined()
+        }
+
+        setDirectoryLookup(async () => ({ subject: PUB_KEY_HEX }))
+        const display = jest
+          .spyOn(activeChain, 'fetchProfile')
+          .mockImplementation(
+            async address =>
+              ({
+                address,
+                pubKey: PUB_KEY_BYTES,
+                name: `Recovered ${address.raw}`,
+                avatar: 'sender.png',
+              } as Awaited<ReturnType<typeof activeChain.fetchProfile>>),
+          )
+        await contacts.refreshPeerProfiles(peers)
+        expect(display).toHaveBeenCalledTimes(2)
+        for (const address of peers) {
+          expect(contacts.getContactProfile(address).name).toBe(
+            `Recovered ${address}`,
+          )
+          expect(contacts.getContact(address).lastUpdateTime).toBeGreaterThan(0)
+        }
+      } finally {
+        setDirectoryLookup(null)
+      }
+    })
+
     it('drops lookup results after a store/session reset', async () => {
       const contacts = useContactStore()
       let resolve!: (

@@ -82,33 +82,51 @@ export function contactLookupFailure(
     : null
 }
 
-/** Profile used to create or refresh a contact. `undefined` when the address cannot be used.
- * A failed optional display read preserves authenticated identity but must not make an empty
- * display profile fresh: callers can still use the key and retry display enrichment later. */
+export interface ContactProfileResult {
+  profile: (ProfileInfo & { displayLookupFailed?: true }) | undefined
+  /** Request-local reason: concurrent lookups cannot overwrite a refresh retry decision. */
+  failure: ContactLookupFailure | null
+}
+
+/** Convenience API for existing profile consumers and their last-lookup diagnostics. */
 export async function fetchContactProfile(
   address: ChainAddress,
   options?: { relayBaseUrl?: string },
-): Promise<(ProfileInfo & { displayLookupFailed?: true }) | undefined> {
+): Promise<ContactProfileResult['profile']> {
+  const result = await fetchContactProfileResult(address, options)
+  const key = address.raw.toLowerCase()
+  if (result.failure) lastFailure = { address: key, reason: result.failure }
+  else if (lastFailure?.address === key) lastFailure = null
+  return result.profile
+}
+
+/** Profile used to create or refresh a contact. `undefined` when the address cannot be used.
+ * A failed optional display read preserves authenticated identity but must not make an empty
+ * display profile fresh: callers can still use the key and retry display enrichment later. */
+export async function fetchContactProfileResult(
+  address: ChainAddress,
+  options?: { relayBaseUrl?: string },
+): Promise<ContactProfileResult> {
   if (lookup === 'pending') {
     await waitForDirectoryLookup(3000)
   }
-  if (lookup === null)
-    return options
+  if (lookup === null) {
+    const profile = await (options
       ? activeChain.fetchProfile(address, options)
-      : activeChain.fetchProfile(address)
-  const key = address.raw.toLowerCase()
+      : activeChain.fetchProfile(address))
+    return { profile, failure: null }
+  }
   if (lookup === 'pending') {
-    lastFailure = { address: key, reason: 'messaging-off' }
-    return undefined
+    return { profile: undefined, failure: 'messaging-off' }
   }
   let pubKey: Uint8Array
   try {
     pubKey = fromHex((await lookup(address.raw)).subject)
   } catch (error) {
     const code = (error as { code?: string } | null)?.code
-    lastFailure = {
-      address: key,
-      reason:
+    return {
+      profile: undefined,
+      failure:
         code === 'not-published'
           ? 'not-published'
           : code === 'clock'
@@ -119,9 +137,7 @@ export async function fetchContactProfile(
           ? 'unreachable'
           : 'refused',
     }
-    return undefined
   }
-  if (lastFailure?.address === key) lastFailure = null
   let display: ProfileInfo | undefined
   let displayLookupFailed: true | undefined
   try {
@@ -134,10 +150,13 @@ export async function fetchContactProfile(
   }
   // The key is the directory's, whatever a display profile claims.
   return {
-    ...(display ?? {}),
-    address,
-    pubKey,
-    ...(displayLookupFailed ? { displayLookupFailed } : {}),
+    failure: null,
+    profile: {
+      ...(display ?? {}),
+      address,
+      pubKey,
+      ...(displayLookupFailed ? { displayLookupFailed } : {}),
+    },
   }
 }
 

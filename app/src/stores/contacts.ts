@@ -1,5 +1,5 @@
 import {
-  contactLookupFailure,
+  fetchContactProfileResult,
   fetchContactProfile,
 } from '../utils/directory-peer'
 import { relayHandleOf } from '../utils/contact-username'
@@ -1428,9 +1428,9 @@ export const useContactStore = defineStore('contacts', {
                   handleConflictWarning: null,
                   unverifiedHandleResolution: null,
                 }
-          const profileInfo = await fetchContactProfile(chainAddress)
+          const { profile: profileInfo, failure } =
+            await fetchContactProfileResult(chainAddress)
           if (!current() || profileInfo?.displayLookupFailed) return
-          const failure = contactLookupFailure(chainAddress)
           if (!profileInfo && failure && failure !== 'not-published') return
           if (!profileInfo) {
             console.debug(`No registered profile found for ${address}`)

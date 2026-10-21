@@ -40,6 +40,7 @@ import {
   type RafflePayload,
   type SwapOfferPayload,
 } from '../src'
+import { MESSAGE_CONTENT_REVISION } from '../src/constants'
 
 describe('universal state channel update item (Type 24, schema 1)', () => {
   // Keypairs for participants Alice and Bob
@@ -116,7 +117,7 @@ describe('universal state channel update item (Type 24, schema 1)', () => {
         expect(parsed.minReaderVersion).toBe(1)
         expect(parsed.typed?.type).toBe(24)
 
-        if (parsed.typed?.type === 24) {
+        if (parsed.typed?.type === TYPE_CHANNEL_UPDATE) {
           expect(toHex(parsed.typed.channelId)).toBe(sampleChannelId)
           expect(parsed.typed.appId).toBe('dice')
           expect(parsed.typed.sequenceNumber).toBe(0)
@@ -227,7 +228,7 @@ describe('universal state channel update item (Type 24, schema 1)', () => {
       const parsed = parseFrame(frameBytes)
 
       expect(parsed.kind).toBe('parsed')
-      if (parsed.kind === 'parsed' && parsed.typed?.type === 24) {
+      if (parsed.kind === 'parsed' && parsed.typed?.type === TYPE_CHANNEL_UPDATE) {
         expect(parsed.typed.allocations).toHaveLength(2)
         expect(parsed.typed.allocations[0].networkTag).toBe('mont')
         expect(toHex(parsed.typed.allocations[0].token)).toBe(sampleTokenId)
@@ -840,14 +841,14 @@ describe('universal state channel update item (Type 24, schema 1)', () => {
           minReaderVersion: 1,
         },
         cborMap([
-          [0, 'frank'],
-          [1, [channelFrame]],
+          [MESSAGE_CONTENT_REVISION.network, 'frank'],
+          [MESSAGE_CONTENT_REVISION.items, [channelFrame]],
         ]),
       )
 
       const parsed = validateFrame(type8Frame)
       expect(parsed.kind).toBe('parsed')
-      if (parsed.kind === 'parsed' && parsed.typed?.type === 8) {
+      if (parsed.kind === 'parsed' && parsed.typed?.type === TYPE_MESSAGE_CONTENT_REVISION) {
         expect(parsed.typed.items).toHaveLength(1)
         const child = parsed.typed.items[0]
         expect(child.kind).toBe('parsed')

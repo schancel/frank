@@ -15,6 +15,7 @@ import {
   bytesOf,
   textItem,
 } from '../fixtures/builders'
+import { TYPE_ENCRYPTED_MESSAGE_CONTENT } from '../src/constants'
 
 describe('ticket #818: conversation identifiers and names in encrypted message content', () => {
   it('parses conversation_id and optional conversation_name on type 6', () => {
@@ -28,7 +29,8 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
     expect(parsed.kind).toBe('parsed')
     if (parsed.kind !== 'parsed') throw new Error('expected parsed')
     expect(parsed.typed?.type).toBe(6)
-    if (parsed.typed?.type !== 6) throw new Error('expected type 6')
+    if (parsed.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT)
+      throw new Error('expected type 6')
     expect(parsed.typed.conversationId).toEqual(convId)
     expect(parsed.typed.conversationName).toBe('Project Discussion')
   })
@@ -39,7 +41,8 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
     const parsed = parseFrame(frame, defaultContext())
     expect(parsed.kind).toBe('parsed')
     if (parsed.kind !== 'parsed') throw new Error('expected parsed')
-    if (parsed.typed?.type !== 6) throw new Error('expected type 6')
+    if (parsed.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT)
+      throw new Error('expected type 6')
     expect(parsed.typed.conversationId).toEqual(convId)
     expect(parsed.typed.conversationName).toBeUndefined()
   })
@@ -52,11 +55,18 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
       [3, messageContentDigest(rev8Frame([textItem('test')]))],
     ])
     const frame = encodeFrame(
-      { typeId: 6, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_ENCRYPTED_MESSAGE_CONTENT,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       rawMap,
     )
     const parsed = parseFrame(frame, defaultContext())
-    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 6)
+    if (
+      parsed.kind !== 'parsed' ||
+      parsed.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT
+    )
       throw new Error('expected parsed type 6')
     expect(parsed.typed.conversationId).toBeUndefined()
 
@@ -68,7 +78,10 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
       revisionFrame: rev8Frame([textItem('test')]),
     })
     const reopened = parseFrame(named, defaultContext())
-    if (reopened.kind !== 'parsed' || reopened.typed?.type !== 6)
+    if (
+      reopened.kind !== 'parsed' ||
+      reopened.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT
+    )
       throw new Error('expected parsed type 6')
     expect(reopened.typed.conversationId).toEqual(bytesOf(16, 9))
     // The two differ by exactly field 4.
@@ -86,7 +99,11 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
         [4, bytesOf(len, 4)],
       ])
       const frame = encodeFrame(
-        { typeId: 6, schemaVersion: 1, minReaderVersion: 1 },
+        {
+          typeId: TYPE_ENCRYPTED_MESSAGE_CONTENT,
+          schemaVersion: 1,
+          minReaderVersion: 1,
+        },
         rawMap,
       )
       expect(() => parseFrame(frame, defaultContext())).toThrow(FrankCodecError)

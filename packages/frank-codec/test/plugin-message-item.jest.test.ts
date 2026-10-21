@@ -32,6 +32,17 @@ import {
   rev8Frame,
   textItem,
 } from '../fixtures/builders'
+import {
+  ENCRYPTED_MESSAGE_CONTENT,
+  ENCRYPTION_SUITE,
+  PLUGIN_MESSAGE_ITEM,
+  RECIPIENT_ENCRYPTED_PAYLOAD_V1,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_PROOF_UNKNOWN_ITEM,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+} from '../src/constants'
 
 interface FrameCase {
   id: string
@@ -93,7 +104,10 @@ describe('type 27 vectors (docs/protocol/cbor/vectors/plugin-message-item.json)'
       f => f.id === 'revision-with-text-and-plugin-item',
     )!
     const parsed = validateFrame(fromHex(c.frameHex))
-    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 8)
+    if (
+      parsed.kind !== 'parsed' ||
+      parsed.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
+    )
       throw new Error('expected a type-8 revision')
     expect(parsed.typed.items.map(i => i.kind)).toEqual(['parsed', 'parsed'])
     expect(isPluginMessageItemFrame(parsed.typed.items[1])).toBe(true)
@@ -148,10 +162,13 @@ describe('type 27 writer and limits', () => {
     })
     expect(validateFrame(at).kind).toBe('parsed')
     const over = fr(
-      27,
+      TYPE_PLUGIN_MESSAGE_ITEM,
       M([
-        [0, 'image'],
-        [1, new Uint8Array(MAX_PLUGIN_ITEM_PAYLOAD_BYTES + 1)],
+        [PLUGIN_MESSAGE_ITEM.itemType, 'image'],
+        [
+          PLUGIN_MESSAGE_ITEM.data,
+          new Uint8Array(MAX_PLUGIN_ITEM_PAYLOAD_BYTES + 1),
+        ],
       ]),
     )
     expect(outcome(() => validateFrame(over))).toEqual({
@@ -176,29 +193,34 @@ describe('type 27 writer and limits', () => {
 // A structural type-1 -> type-5 -> type-6 -> type-8 message whose items are plugin items.
 function session(items: Uint8Array[]): NestedItemBudget {
   const encrypted = fr(
-    5,
+    TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
     M([
-      [0, NET],
-      [1, acct1(9)],
-      [2, acct1(3)],
-      [3, 1],
-      [4, Uint8Array.of(0xa0)],
-      [5, T3C.ephemeral],
-      [6, T3C.shared],
-      [7, T3C.proof],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.network, NET],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sender, acct1(9)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.recipient, acct1(3)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.suite, ENCRYPTION_SUITE.dmAuthXchacha],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.nonce, Uint8Array.of(0xa0)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ciphertext, T3C.ephemeral],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ephemeralPoint, T3C.shared],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sharedPoint, T3C.proof],
     ]),
     2,
     2,
   )
-  const root = fr(1, deliveryPayload({ payloadFrame: encrypted }), 1, 1)
+  const root = fr(
+    TYPE_DIRECT_MESSAGE_DELIVERY,
+    deliveryPayload({ payloadFrame: encrypted }),
+    1,
+    1,
+  )
   const content = fr(
-    6,
+    TYPE_ENCRYPTED_MESSAGE_CONTENT,
     M([
-      [0, NET],
-      [1, bytesOf(16, 7)],
-      [2, rev8Frame(items)],
-      [3, bytesOf(32, 8)],
-      [4, bytesOf(16, 8)],
+      [ENCRYPTED_MESSAGE_CONTENT.network, NET],
+      [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 7)],
+      [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8Frame(items)],
+      [ENCRYPTED_MESSAGE_CONTENT.contentDigest, bytesOf(32, 8)],
+      [ENCRYPTED_MESSAGE_CONTENT.conversationId, bytesOf(16, 8)],
     ]),
   )
   return beginDirectMessageValidation(
@@ -279,7 +301,7 @@ describe('a plugin item is decoded under the enclosing budget', () => {
   })
 
   it('returns an unknown nested frame retained, never interpreted', () => {
-    const unknown = fr(0xffff0001, M([[0, 1]]))
+    const unknown = fr(TYPE_PROOF_UNKNOWN_ITEM, M([[0, 1]]))
     const opened = standaloneItemBudget().openFrame(unknown)
     expect(opened.kind).toBe('retained')
     expect(toHex(opened.frame)).toBe(toHex(unknown))

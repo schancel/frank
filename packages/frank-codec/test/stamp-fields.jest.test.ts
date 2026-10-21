@@ -11,6 +11,10 @@ import {
   type5Payload,
   acct1,
 } from '../fixtures/builders'
+import {
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+} from '../src/constants'
 
 const ctx = defaultContext()
 const outcome = (f: Uint8Array, c = ctx): string => {
@@ -78,13 +82,21 @@ describe('type-5 stamp point encoding (T3b)', () => {
 
 describe('typed exposure of the stamp fields', () => {
   it("reads E, X and the proof from a type-5 frame, and P' from a statement", () => {
-    const r = validateFrame(fr(5, type5Payload()), ctx)
-    if (r.kind !== 'parsed' || r.typed?.type !== 5) throw new Error('not typed')
+    const r = validateFrame(
+      fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, type5Payload()),
+      ctx,
+    )
+    if (
+      r.kind !== 'parsed' ||
+      r.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+    )
+      throw new Error('not typed')
     expect(r.typed.ephemeralPoint).toEqual(T3C.ephemeral)
     expect(r.typed.sharedPoint).toEqual(T3C.shared)
     expect(r.typed.dleqProof).toEqual(T3C.proof)
     const s = validateFrame(statementFrame(), ctx)
-    if (s.kind !== 'parsed' || s.typed?.type !== 4) throw new Error('not typed')
+    if (s.kind !== 'parsed' || s.typed?.type !== TYPE_DIRECTORY_STATEMENT)
+      throw new Error('not typed')
     expect(s.typed.stampKey).toEqual({ keyType: 1, keyBytes: T3C.stampKey })
     expect(s.typed.schemaVersion).toBe(2)
   })
@@ -100,20 +112,34 @@ describe('typed exposure of the stamp fields', () => {
       [6, T3C.shared],
       [7, T3C.proof],
     ])
-    const parsed = validateFrame(fr(5, payload, 2, 2), ctx)
-    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 5)
+    const parsed = validateFrame(
+      fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, payload, 2, 2),
+      ctx,
+    )
+    if (
+      parsed.kind !== 'parsed' ||
+      parsed.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+    )
       throw new Error('not typed')
     expect(parsed.typed.schemaVersion).toBe(2)
     if (parsed.typed.schemaVersion !== 2) throw new Error('not schema 2')
     expect(parsed.typed.cryptoBoxEnvelope).toEqual(Uint8Array.of(0xa0))
-    expect(outcome(fr(5, payload, 1, 1))).toBe('schema@8.2')
+    expect(outcome(fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, payload, 1, 1))).toBe(
+      'schema@8.2',
+    )
     const proofSuite = new Map(payload)
     proofSuite.set(3, 65535)
-    expect(outcome(fr(5, proofSuite, 2, 2))).toBe('unsupported@8.3')
-    expect(outcome(fr(5, payload, 2, 1))).toBe('unsupported@7')
+    expect(
+      outcome(fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, proofSuite, 2, 2)),
+    ).toBe('unsupported@8.3')
+    expect(outcome(fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, payload, 2, 1))).toBe(
+      'unsupported@7',
+    )
     const future = new Map(payload)
     future.set(8, Uint8Array.of(1))
-    expect(outcome(fr(5, future, 3, 2))).toBe('unsupported@7')
+    expect(outcome(fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, future, 3, 2))).toBe(
+      'unsupported@7',
+    )
   })
 
   it('does not compare the stamp key with the routing recipient (S8)', () => {
@@ -127,28 +153,53 @@ describe('typed exposure of the stamp fields', () => {
 describe('type-4 schema versions (S10a.1)', () => {
   it('requires field 8 exactly from schema 2', () => {
     const noKey = statementPayload({ stampKey: null })
-    expect(outcome(fr(4, noKey, 1, 1))).toBe('parsed')
-    expect(outcome(fr(4, noKey, 2, 2))).toBe('schema@8.2')
-    expect(outcome(fr(4, statementPayload(), 1, 1))).toBe('schema@8.2')
-    expect(outcome(fr(4, statementPayload(), 2, 2))).toBe('parsed')
+    expect(outcome(fr(TYPE_DIRECTORY_STATEMENT, noKey, 1, 1))).toBe('parsed')
+    expect(outcome(fr(TYPE_DIRECTORY_STATEMENT, noKey, 2, 2))).toBe(
+      'schema@8.2',
+    )
+    expect(
+      outcome(fr(TYPE_DIRECTORY_STATEMENT, statementPayload(), 1, 1)),
+    ).toBe('schema@8.2')
+    expect(
+      outcome(fr(TYPE_DIRECTORY_STATEMENT, statementPayload(), 2, 2)),
+    ).toBe('parsed')
   })
 
   it("reads a newer statement schema through the reader's highest one", () => {
     // Schema 3 read by a reader whose highest type-4 schema is 2: field 8 is still required.
-    expect(outcome(fr(4, statementPayload({ stampKey: null }), 3, 1))).toBe(
-      'schema@8.2',
-    )
-    expect(outcome(fr(4, statementPayload(), 3, 1))).toBe('parsed')
+    expect(
+      outcome(
+        fr(
+          TYPE_DIRECTORY_STATEMENT,
+          statementPayload({ stampKey: null }),
+          3,
+          1,
+        ),
+      ),
+    ).toBe('schema@8.2')
+    expect(
+      outcome(fr(TYPE_DIRECTORY_STATEMENT, statementPayload(), 3, 1)),
+    ).toBe('parsed')
     // A reader that only knows schema 1 sees field 8 as an unknown field and keeps it (V6.3).
     const v1Reader = defaultContext({
       supportedSchemas: ctx.supportedSchemas.map(s =>
-        s.typeId === 4 ? { ...s, schemaVersion: 1 } : s,
+        s.typeId === TYPE_DIRECTORY_STATEMENT ? { ...s, schemaVersion: 1 } : s,
       ),
     })
-    expect(outcome(fr(4, statementPayload(), 2, 1), v1Reader)).toBe('parsed')
+    expect(
+      outcome(fr(TYPE_DIRECTORY_STATEMENT, statementPayload(), 2, 1), v1Reader),
+    ).toBe('parsed')
     // ...and does not require it, since field 8 is not part of the schema it reads.
     expect(
-      outcome(fr(4, statementPayload({ stampKey: null }), 2, 1), v1Reader),
+      outcome(
+        fr(
+          TYPE_DIRECTORY_STATEMENT,
+          statementPayload({ stampKey: null }),
+          2,
+          1,
+        ),
+        v1Reader,
+      ),
     ).toBe('parsed')
   })
 })

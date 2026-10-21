@@ -10,6 +10,7 @@ import {
   toHex,
   type DirectMessageCryptoContext,
 } from '../src'
+import { TYPE_RECIPIENT_ENCRYPTED_PAYLOAD } from '../src/constants'
 
 const bytes = (length: number, value: number) =>
   new Uint8Array(length).fill(value)
@@ -90,7 +91,11 @@ describe('DM crypto context v1', () => {
     expect(
       toHex(
         encodeFrame(
-          { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+          {
+            typeId: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+            schemaVersion: 2,
+            minReaderVersion: 2,
+          },
           payload,
         ),
       ),

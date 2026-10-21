@@ -33,6 +33,15 @@ import {
   unknownItem,
   withLength,
 } from '../fixtures/builders'
+import {
+  DIRECT_MESSAGE_DELIVERY,
+  MESSAGE_CONTENT_REVISION,
+  TEXT_MESSAGE_ITEM,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_TEXT_MESSAGE_ITEM,
+} from '../src/constants'
 
 function outcome(f: Uint8Array, ctx: Partial<ValidationContext> = {}): string {
   try {
@@ -111,7 +120,7 @@ describe('stage precedence', () => {
   })
 
   it('stage 7 ends a generic operation; stage 8 problems are invisible to it', () => {
-    const f = fr(17, M([[0, 5]])) // wrong type for field 0: a stage 8.2 schema error
+    const f = fr(TYPE_TEXT_MESSAGE_ITEM, M([[TEXT_MESSAGE_ITEM.text, 5]])) // wrong type for field 0: a stage 8.2 schema error
     expect(outcome(f, { operation: 'generic' })).toBe('parsed')
     expect(outcome(f, { operation: 'typed' })).toBe('schema@8.2')
     expect(outcome(WORKED_TEXT_HI, { operation: 'frame' })).toBe('frame')
@@ -120,12 +129,27 @@ describe('stage precedence', () => {
   it('8.1 precedes 8.2, 8.2 precedes 8.3, and 8.3 precedes 8.4', () => {
     // 65 members of the wrong shape: resource (8.1), not schema.
     expect(
-      outcome(fr(1, M([[4, Array.from({ length: 65 }, () => M([]))]]))),
+      outcome(
+        fr(
+          TYPE_DIRECT_MESSAGE_DELIVERY,
+          M([
+            [
+              DIRECT_MESSAGE_DELIVERY.payments,
+              Array.from({ length: 65 }, () => M([])),
+            ],
+          ]),
+        ),
+      ),
     ).toBe('resource@8.1')
     // Unallocated suite plus a bad network tag: schema (8.2) wins over unsupported (8.3).
-    expect(outcome(fr(5, type5Payload({ net: 'BAD', suite: 1 })))).toBe(
-      'schema@8.2',
-    )
+    expect(
+      outcome(
+        fr(
+          TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+          type5Payload({ net: 'BAD', suite: 1 }),
+        ),
+      ),
+    ).toBe('schema@8.2')
     // Unallocated suite plus a wrong-typed child field would surface at 8.4 only after 8.3.
     const d = deliveryFrame({
       payloadFrame: textItem(),
@@ -141,12 +165,16 @@ describe('stage precedence', () => {
   })
 
   it('children open depth-first in array order and the first failure wins', () => {
-    const items = [textItem('ok'), fr(17, M([[0, 1]])), body('780561')]
+    const items = [
+      textItem('ok'),
+      fr(TYPE_TEXT_MESSAGE_ITEM, M([[TEXT_MESSAGE_ITEM.text, 1]])),
+      body('780561'),
+    ]
     const f = fr(
-      8,
+      TYPE_MESSAGE_CONTENT_REVISION,
       M([
-        [0, 'frank'],
-        [1, items],
+        [MESSAGE_CONTENT_REVISION.network, 'frank'],
+        [MESSAGE_CONTENT_REVISION.items, items],
       ]),
     )
     let err: FrankCodecError | undefined
@@ -183,10 +211,10 @@ describe('stage precedence', () => {
     expect(
       outcome(
         fr(
-          8,
+          TYPE_MESSAGE_CONTENT_REVISION,
           M([
-            [0, 'frank'],
-            [1, [c]],
+            [MESSAGE_CONTENT_REVISION.network, 'frank'],
+            [MESSAGE_CONTENT_REVISION.items, [c]],
           ]),
         ),
       ),
@@ -196,10 +224,13 @@ describe('stage precedence', () => {
     expect(
       outcome(
         fr(
-          8,
+          TYPE_MESSAGE_CONTENT_REVISION,
           M([
-            [0, 'frank'],
-            [1, [framePayload(hex('780561'), 65535)]],
+            [MESSAGE_CONTENT_REVISION.network, 'frank'],
+            [
+              MESSAGE_CONTENT_REVISION.items,
+              [framePayload(hex('780561'), 65535)],
+            ],
           ]),
         ),
       ),
@@ -208,10 +239,10 @@ describe('stage precedence', () => {
 
   it('root retention flag governs only the root: children retain regardless', () => {
     const f = fr(
-      8,
+      TYPE_MESSAGE_CONTENT_REVISION,
       M([
-        [0, 'frank'],
-        [1, [unknownItem()]],
+        [MESSAGE_CONTENT_REVISION.network, 'frank'],
+        [MESSAGE_CONTENT_REVISION.items, [unknownItem()]],
       ]),
     )
     expect(outcome(f, { opaqueRetentionAllowed: false })).toBe('parsed')
@@ -231,18 +262,18 @@ describe('stage precedence', () => {
         0xffff0001,
       )
     const alone = fr(
-      8,
+      TYPE_MESSAGE_CONTENT_REVISION,
       M([
-        [0, 'frank'],
-        [1, [heavy()]],
+        [MESSAGE_CONTENT_REVISION.network, 'frank'],
+        [MESSAGE_CONTENT_REVISION.items, [heavy()]],
       ]),
     )
     expect(outcome(alone)).toBe('parsed')
     const three = fr(
-      8,
+      TYPE_MESSAGE_CONTENT_REVISION,
       M([
-        [0, 'frank'],
-        [1, [heavy(), heavy(), heavy()]],
+        [MESSAGE_CONTENT_REVISION.network, 'frank'],
+        [MESSAGE_CONTENT_REVISION.items, [heavy(), heavy(), heavy()]],
       ]),
     )
     expect(outcome(three)).toBe('resource@7')
@@ -256,18 +287,18 @@ describe('stage precedence', () => {
         0xffff0001,
       )
     const ok = fr(
-      8,
+      TYPE_MESSAGE_CONTENT_REVISION,
       M([
-        [0, 'frank'],
-        [1, Array.from({ length: 15 }, child)],
+        [MESSAGE_CONTENT_REVISION.network, 'frank'],
+        [MESSAGE_CONTENT_REVISION.items, Array.from({ length: 15 }, child)],
       ]),
     )
     expect(outcome(ok)).toBe('parsed')
     const over = fr(
-      8,
+      TYPE_MESSAGE_CONTENT_REVISION,
       M([
-        [0, 'frank'],
-        [1, Array.from({ length: 16 }, child)],
+        [MESSAGE_CONTENT_REVISION.network, 'frank'],
+        [MESSAGE_CONTENT_REVISION.items, Array.from({ length: 16 }, child)],
       ]),
     )
     expect(outcome(over)).toBe('resource@7')
@@ -326,7 +357,12 @@ describe('frame encoder', () => {
       ) =>
       () =>
         encodeFrame(
-          { typeId: 1, schemaVersion: 1, minReaderVersion: 1, ...o },
+          {
+            typeId: TYPE_DIRECT_MESSAGE_DELIVERY,
+            schemaVersion: 1,
+            minReaderVersion: 1,
+            ...o,
+          },
           0,
         )
     expect(e({ typeId: -1 })).toThrow(RangeError)
@@ -341,17 +377,17 @@ describe('frame encoder', () => {
 
   it('encodes the envelope canonically regardless of how fields are supplied', () => {
     const a = encodeFrame(
-      { typeId: 17, schemaVersion: 1, minReaderVersion: 1 },
-      M([[0, 'hi']]),
+      { typeId: TYPE_TEXT_MESSAGE_ITEM, schemaVersion: 1, minReaderVersion: 1 },
+      M([[TEXT_MESSAGE_ITEM.text, 'hi']]),
     )
     const b = encodeFrame(
-      { minReaderVersion: 1, schemaVersion: 1, typeId: 17 },
-      new Map([[0, 'hi']]),
+      { minReaderVersion: 1, schemaVersion: 1, typeId: TYPE_TEXT_MESSAGE_ITEM },
+      new Map([[TEXT_MESSAGE_ITEM.text, 'hi']]),
     )
     expect(a).toEqual(b)
     // An already-encoded payload (for exact retention) is embedded verbatim.
     const c = encodeFrame(
-      { typeId: 17, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: TYPE_TEXT_MESSAGE_ITEM, schemaVersion: 1, minReaderVersion: 1 },
       { bytes: hex('a100626869') },
     )
     expect(c).toEqual(a)
@@ -386,16 +422,19 @@ describe('input aliasing', () => {
 
     const child = Buffer.from(
       fr(
-        8,
+        TYPE_MESSAGE_CONTENT_REVISION,
         M([
-          [0, 'frank'],
-          [1, [unknown]],
+          [MESSAGE_CONTENT_REVISION.network, 'frank'],
+          [MESSAGE_CONTENT_REVISION.items, [unknown]],
         ]),
       ),
     )
     const parent = validateFrame(child, defaultContext())
     child.fill(0)
-    if (parent.kind !== 'parsed' || parent.typed?.type !== 8)
+    if (
+      parent.kind !== 'parsed' ||
+      parent.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
+    )
       throw new Error('type 8 expected')
     const c0 = parent.typed.items[0]
     if (c0.kind !== 'retained') throw new Error('retained child expected')

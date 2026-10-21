@@ -10,6 +10,10 @@ import type {
   Timestamp,
 } from '../src'
 import { BcsWriter } from './mini-bcs'
+import {
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_TEXT_MESSAGE_ITEM,
+} from '../src/constants'
 
 const acct = (w: BcsWriter, a: AccountRef) => w.u16(a.keyType).bytes(a.keyBytes)
 // The BCS spec defines i64 as two's-complement little-endian; the mini writer has no i64, so it
@@ -25,8 +29,8 @@ function child(w: BcsWriter, c: ChildFrame): void {
     return
   }
   const t = c.typed
-  if (t?.type === 17) w.uleb(0).string(t.text)
-  else if (t?.type === 16) {
+  if (t?.type === TYPE_TEXT_MESSAGE_ITEM) w.uleb(0).string(t.text)
+  else if (t?.type === TYPE_CONTAINER_MESSAGE_ITEM) {
     w.uleb(1).uleb(t.items.length)
     for (const i of t.items) child(w, i)
   } else throw new Error('unexpected message item')

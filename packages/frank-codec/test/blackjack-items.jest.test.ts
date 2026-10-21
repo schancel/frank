@@ -33,6 +33,7 @@ import {
   deriveDeck,
   sha256Hex,
 } from '../../wallet/message-item-plugins/blackjack/deck'
+import { BLACKJACK_ITEM, ENCRYPTED_MESSAGE_CONTENT, ENCRYPTION_SUITE, RECIPIENT_ENCRYPTED_PAYLOAD_V1, TYPE_BLACKJACK_MESSAGE_ITEM, TYPE_CONTAINER_MESSAGE_ITEM, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_ENCRYPTED_MESSAGE_CONTENT, TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TEXT_MESSAGE_ITEM } from '../src/constants'
 
 interface FrameCase {
   id: string
@@ -200,13 +201,13 @@ describe('closed shapes and independently reachable boundaries', () => {
           continue
         const missing = new Map(value)
         missing.delete(key)
-        expect(outcome(() => parseFrame(fr(18, missing)))).toBe('schema@8.2')
+        expect(outcome(() => parseFrame(fr(TYPE_BLACKJACK_MESSAGE_ITEM, missing)))).toBe('schema@8.2')
       }
       for (let key = 2n; key <= 14n; key++) {
         if (value.has(key) || (f.id === 'hit-request' && key === 5n)) continue
         const extra = new Map(value)
         extra.set(key, 0)
-        expect(outcome(() => parseFrame(fr(18, extra)))).toBe('schema@8.2')
+        expect(outcome(() => parseFrame(fr(TYPE_BLACKJACK_MESSAGE_ITEM, extra)))).toBe('schema@8.2')
       }
     }
   })
@@ -229,7 +230,7 @@ describe('closed shapes and independently reachable boundaries', () => {
         for (const bad of [null, true] as const) {
           const changed = new Map(value)
           changed.set(key, bad)
-          expect(outcome(() => parseFrame(fr(18, changed)))).toBe('schema@8.2')
+          expect(outcome(() => parseFrame(fr(TYPE_BLACKJACK_MESSAGE_ITEM, changed)))).toBe('schema@8.2')
         }
       const input = f.application
       if (!input) throw Error(`missing application ${f.id}`)
@@ -284,7 +285,7 @@ describe('closed shapes and independently reachable boundaries', () => {
       for (const bad of badValues) {
         const changed = mapOf(id)
         changed.set(BigInt(key), bad)
-        expect(outcome(() => parseFrame(fr(18, changed)))).toBe('schema@8.2')
+        expect(outcome(() => parseFrame(fr(TYPE_BLACKJACK_MESSAGE_ITEM, changed)))).toBe('schema@8.2')
       }
     }
   })
@@ -293,10 +294,10 @@ describe('closed shapes and independently reachable boundaries', () => {
       let bytes = new Uint8Array()
       for (let n = size - 100; n < size; n++) {
         bytes = fr(
-          18,
+          TYPE_BLACKJACK_MESSAGE_ITEM,
           M([
-            [0, 'x'],
-            [1, 3],
+            [BLACKJACK_ITEM.gameId, 'x'],
+            [BLACKJACK_ITEM.action, 3],
             [14, new Uint8Array(n)],
           ]),
         )
@@ -313,14 +314,14 @@ describe('closed shapes and independently reachable boundaries', () => {
     const old = defaultContext({
       readerVersion: 99,
       supportedSchemas: [
-        { typeId: 16, schemaVersion: 1 },
-        { typeId: 17, schemaVersion: 1 },
+        { typeId: TYPE_CONTAINER_MESSAGE_ITEM, schemaVersion: 1 },
+        { typeId: TYPE_TEXT_MESSAGE_ITEM, schemaVersion: 1 },
       ],
     })
     const welcome = raw('welcome'),
       text = textItem('last')
     const p = parsed(containerItem([welcome, text]), old)
-    if (p.typed?.type !== 16) throw Error('container')
+    if (p.typed?.type !== TYPE_CONTAINER_MESSAGE_ITEM) throw Error('container')
     expect(p.typed.items.map(c => c.kind)).toEqual(['retained', 'parsed'])
     expect(p.typed.items.map(c => c.frame)).toEqual([welcome, text])
     expect(outcome(() => parseFrame(welcome, old))).toBe('unsupported@7')
@@ -332,13 +333,13 @@ describe('closed shapes and independently reachable boundaries', () => {
         outcome(() => parseFrame(containerItem([fr(typeId, M([]))]))),
       ).toBe('semantic@8.4')
     const badRequired = fr(
-      6,
+      TYPE_ENCRYPTED_MESSAGE_CONTENT,
       M([
-        [0, NET],
-        [1, bytesOf(16, 1)],
-        [2, welcome],
-        [3, bytesOf(32, 2)],
-        [4, bytesOf(16, 4)],
+        [ENCRYPTED_MESSAGE_CONTENT.network, NET],
+        [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 1)],
+        [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, welcome],
+        [ENCRYPTED_MESSAGE_CONTENT.contentDigest, bytesOf(32, 2)],
+        [ENCRYPTED_MESSAGE_CONTENT.conversationId, bytesOf(16, 4)],
       ]),
     )
     expect(outcome(() => parseFrame(badRequired))).toBe('semantic@8.4')
@@ -356,30 +357,30 @@ describe('closed shapes and independently reachable boundaries', () => {
   })
   it('continues type18 through the public opaque DM session with inherited depth and terminal ownership', () => {
     const payload = fr(
-      5,
+      TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
       M([
-        [0, NET],
-        [1, acct1(9)],
-        [2, acct1(3)],
-        [3, 1],
-        [4, Uint8Array.of(0xa0)],
-        [5, T3C.ephemeral],
-        [6, T3C.shared],
-        [7, T3C.proof],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.network, NET],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sender, acct1(9)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.recipient, acct1(3)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.suite, ENCRYPTION_SUITE.dmAuthXchacha],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.nonce, Uint8Array.of(0xa0)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ciphertext, T3C.ephemeral],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ephemeralPoint, T3C.shared],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sharedPoint, T3C.proof],
       ]),
       2,
       2,
     )
-    const root = fr(1, deliveryPayload({ payloadFrame: payload }))
+    const root = fr(TYPE_DIRECT_MESSAGE_DELIVERY, deliveryPayload({ payloadFrame: payload }))
     const content = (item: Uint8Array) =>
       fr(
-        6,
+        TYPE_ENCRYPTED_MESSAGE_CONTENT,
         M([
-          [0, NET],
-          [1, bytesOf(16, 1)],
-          [2, rev8Frame([item])],
-          [3, bytesOf(32, 2)],
-          [4, bytesOf(16, 3)],
+          [ENCRYPTED_MESSAGE_CONTENT.network, NET],
+          [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 1)],
+          [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8Frame([item])],
+          [ENCRYPTED_MESSAGE_CONTENT.contentDigest, bytesOf(32, 2)],
+          [ENCRYPTED_MESSAGE_CONTENT.conversationId, bytesOf(16, 3)],
         ]),
       )
     let item = stand()
@@ -422,31 +423,31 @@ it.each(['containers', 'items'] as const)(
       return groups
     }
     const payload = fr(
-      5,
+      TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
       M([
-        [0, NET],
-        [1, acct1(9)],
-        [2, acct1(3)],
-        [3, 1],
-        [4, Uint8Array.of(0xa0)],
-        [5, T3C.ephemeral],
-        [6, T3C.shared],
-        [7, T3C.proof],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.network, NET],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sender, acct1(9)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.recipient, acct1(3)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.suite, ENCRYPTION_SUITE.dmAuthXchacha],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.nonce, Uint8Array.of(0xa0)],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ciphertext, T3C.ephemeral],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ephemeralPoint, T3C.shared],
+        [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sharedPoint, T3C.proof],
       ]),
       2,
       2,
     )
     const fields = deliveryPayload({ payloadFrame: payload })
     fields.set(99, grouped(kind === 'containers' ? 8000 : 60000))
-    const root = fr(1, fields, 3, 1)
+    const root = fr(TYPE_DIRECT_MESSAGE_DELIVERY, fields, 3, 1)
     const content = fr(
-      6,
+      TYPE_ENCRYPTED_MESSAGE_CONTENT,
       M([
-        [0, NET],
-        [1, bytesOf(16, 1)],
-        [2, rev8Frame([stand()])],
-        [3, bytesOf(32, 2)],
-        [4, bytesOf(16, 3)],
+        [ENCRYPTED_MESSAGE_CONTENT.network, NET],
+        [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 1)],
+        [ENCRYPTED_MESSAGE_CONTENT.revisionFrame, rev8Frame([stand()])],
+        [ENCRYPTED_MESSAGE_CONTENT.contentDigest, bytesOf(32, 2)],
+        [ENCRYPTED_MESSAGE_CONTENT.conversationId, bytesOf(16, 3)],
         [99, grouped(kind === 'containers' ? 9000 : 75000)],
       ]),
       2,
@@ -488,15 +489,15 @@ describe('composable FeatureCodecDescriptor boundaries', () => {
     // Open container retains uninstalled feature item while parsing sibling core items
     const rev = rev8Frame([item, textItem('hello')])
     const parsedRev = parsed(rev, uninstalledCtx)
-    if (parsedRev.typed?.type !== 8) throw Error('expected type 8')
+    if (parsedRev.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION) throw Error('expected type 8')
     expect(parsedRev.typed.items[0]).toMatchObject({
       kind: 'retained',
       reason: 'unknown-type',
-      typeId: 18,
+      typeId: TYPE_BLACKJACK_MESSAGE_ITEM,
     })
     expect(parsedRev.typed.items[1]).toMatchObject({
       kind: 'parsed',
-      typeId: 17,
+      typeId: TYPE_TEXT_MESSAGE_ITEM,
     })
 
     // Malformed CBOR inside an uninstalled feature frame still fails Stage 7

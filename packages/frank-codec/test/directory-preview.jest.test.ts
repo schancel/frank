@@ -17,6 +17,10 @@ import {
   wrapFrame,
 } from '../src'
 import type { Encodable } from '../src'
+import {
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
+} from '../src/constants'
 
 const root = resolve(__dirname, '../../..')
 const corpus = JSON.parse(
@@ -54,7 +58,11 @@ const statement = (
   payload: Map<bigint, Encodable>,
   schemaVersion = 4,
   minReaderVersion = 4,
-) => encodeFrame({ typeId: 4, schemaVersion, minReaderVersion }, payload)
+) =>
+  encodeFrame(
+    { typeId: TYPE_DIRECTORY_STATEMENT, schemaVersion, minReaderVersion },
+    payload,
+  )
 const expectError = (f: () => unknown, category: string, stage: string) => {
   try {
     f()
@@ -133,8 +141,9 @@ describe('provisional directory codec, not directory admission', () => {
   test('default reader and explicitly old readers reject the required v4 child', () => {
     expect(defaultContext().readerVersion).toBe(2)
     expect(
-      defaultContext().supportedSchemas.find(s => s.typeId === 4)
-        ?.schemaVersion,
+      defaultContext().supportedSchemas.find(
+        s => s.typeId === TYPE_DIRECTORY_STATEMENT,
+      )?.schemaVersion,
     ).toBe(3)
     for (const readerVersion of [1, 2, 3])
       for (const field of ['type4_hex', 'type2_hex'] as const) {
@@ -236,7 +245,8 @@ describe('provisional directory codec, not directory admission', () => {
       oldPriorBytes,
       defaultContext(),
     ) as ParsedFrame
-    if (oldPrior.typed?.type !== 4) throw new Error('legacy prior')
+    if (oldPrior.typed?.type !== TYPE_DIRECTORY_STATEMENT)
+      throw new Error('legacy prior')
     const p = bootstrap()
     // Use public fixture roles distinct from the legacy authority (scalar 2).
     p.set(10n, p.get(1n) as Encodable)
@@ -254,8 +264,8 @@ describe('provisional directory codec, not directory admission', () => {
         ctx,
       ) as ParsedFrame
       if (
-        control.typed?.type !== 2 ||
-        control.typed.statementFrame.typed?.type !== 4
+        control.typed?.type !== TYPE_DIRECTORY_ATTESTATION ||
+        control.typed.statementFrame.typed?.type !== TYPE_DIRECTORY_STATEMENT
       )
         throw new Error('transition')
       expect(control.typed.statementFrame.typed.subject.keyBytes).not.toEqual(
@@ -328,7 +338,11 @@ describe('provisional directory codec, not directory admission', () => {
       fromHex('a100'),
     ]) {
       const f = encodeFrame(
-        { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+        {
+          typeId: TYPE_DIRECTORY_STATEMENT,
+          schemaVersion: 4,
+          minReaderVersion: 4,
+        },
         { bytes: payload },
       )
       expect(() => validateFrame(f, previewDirectoryContext())).toThrow(
@@ -370,7 +384,11 @@ describe('provisional directory codec, not directory admission', () => {
       )
       p.set(0n, child)
       return encodeFrame(
-        { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+        {
+          typeId: TYPE_DIRECTORY_ATTESTATION,
+          schemaVersion: 1,
+          minReaderVersion: 1,
+        },
         p,
       )
     }
@@ -413,7 +431,8 @@ describe('provisional directory codec, not directory admission', () => {
       statement(p),
       previewDirectoryContext(),
     ) as ParsedFrame
-    if (result.typed?.type !== 4) throw new Error('statement')
+    if (result.typed?.type !== TYPE_DIRECTORY_STATEMENT)
+      throw new Error('statement')
     expect(result.typed.preview?.mailboxKeyGeneration).toBe(
       18446744073709551615n,
     )

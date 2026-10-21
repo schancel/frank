@@ -110,7 +110,8 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
       if (parsed.kind !== 'parsed') throw new Error('expected parsed')
 
       expect(parsed.typed?.type).toBe(6)
-      if (parsed.typed?.type !== 6) throw new Error('expected type 6')
+      if (parsed.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT)
+        throw new Error('expected type 6')
 
       expect(parsed.typed.conversationName).toBe('Direct Payment')
       expect(parsed.typed.tokenTransfer).toBeDefined()

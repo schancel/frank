@@ -7,6 +7,7 @@ import {
   encodeFrame,
   encodeCanonical,
 } from '../src'
+import { TYPE_TOPIC_POST } from '../src/constants'
 
 describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
   const authored = { seconds: 1700000000n, nanoseconds: 0 }
@@ -75,7 +76,7 @@ describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
       [3, body],
     ])
     const frame = encodeFrame(
-      { typeId: 9, schemaVersion: 2, minReaderVersion: 2 },
+      { typeId: TYPE_TOPIC_POST, schemaVersion: 2, minReaderVersion: 2 },
       rawPayload,
     )
 
@@ -156,7 +157,7 @@ describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
       [3, body],
     ])
     const frame = encodeFrame(
-      { typeId: 9, schemaVersion: 2, minReaderVersion: 2 },
+      { typeId: TYPE_TOPIC_POST, schemaVersion: 2, minReaderVersion: 2 },
       payload,
     )
 
@@ -189,7 +190,7 @@ describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
       [3, body],
     ])
     const frame = encodeFrame(
-      { typeId: 9, schemaVersion: 2, minReaderVersion: 2 },
+      { typeId: TYPE_TOPIC_POST, schemaVersion: 2, minReaderVersion: 2 },
       payload,
     )
 

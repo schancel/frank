@@ -17,6 +17,10 @@ import {
   verifyAlgorithm1,
 } from '../../src'
 import type { Encodable } from '../../src'
+import {
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
+} from '../../src/constants'
 
 const ROOT = resolve(__dirname, '../../../..')
 const FILE = resolve(
@@ -136,7 +140,11 @@ function generate(): Corpus {
     corrupt = false,
   ): RecordVector {
     const frame = encodeFrame(
-      { typeId: 4, schemaVersion: schema, minReaderVersion: floor },
+      {
+        typeId: TYPE_DIRECTORY_STATEMENT,
+        schemaVersion: schema,
+        minReaderVersion: floor,
+      },
       payload,
     )
     const network = payload.get(0) as string
@@ -147,7 +155,11 @@ function generate(): Corpus {
     if (corrupt) signature[signature.length - 1] ^= 1
     const signer = secp256k1.getPublicKey(scalar(signWith), true)
     const wrapper = encodeFrame(
-      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_DIRECTORY_ATTESTATION,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       map([0, frame], [1, [map([0, 1], [1, key(signWith)], [2, signature])]]),
     )
     const r = {
@@ -297,7 +309,11 @@ function generate(): Corpus {
   ).payload
   tampered.type2_hex = toHex(
     encodeFrame(
-      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_DIRECTORY_ATTESTATION,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       map([0, fromHex(tampered.type4_hex)], [1, at(originalWrapper, 1)]),
     ),
   )

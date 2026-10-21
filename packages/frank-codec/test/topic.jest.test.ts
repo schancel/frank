@@ -26,6 +26,11 @@ import {
 import { CASES, PRE_TOPIC_SCHEMAS } from '../fixtures/cases'
 import { contextOf } from '../fixtures/manifest'
 import { buildTopicCommitments } from '../fixtures/topic-commitments'
+import {
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+} from '../src/constants'
 
 const COMMITMENTS_PATH = path.resolve(
   __dirname,
@@ -56,15 +61,18 @@ describe('topic event projections', () => {
     const parent = bytesOf(32, 9)
     const top = parsed(topicPostFrame()).typed
     const reply = parsed(topicPostFrame({ parent })).typed
-    expect(top).toMatchObject({ type: 9, topic: 'frank.demo' })
+    expect(top).toMatchObject({ type: TYPE_TOPIC_POST, topic: 'frank.demo' })
     expect(top && 'parentHash' in top).toBe(false)
-    expect(reply && reply.type === 9 && reply.parentHash).toEqual(parent)
+    expect(reply && reply.type === TYPE_TOPIC_POST && reply.parentHash).toEqual(
+      parent,
+    )
   })
 
   it('opens the type-9 post inside a type-10 submission and keeps the burn bytes exact', () => {
     const post = topicPostFrame()
     const sub = parsed(topicSubmissionFrame({ post, burnTx: burnTx(7) })).typed
-    if (sub?.type !== 10) throw new Error('not a submission')
+    if (sub?.type !== TYPE_TOPIC_POST_SUBMISSION)
+      throw new Error('not a submission')
     expect(sub.postFrame.frame).toEqual(post)
     expect(sub.postFrame.typed?.type).toBe(9)
     expect(sub.burnTx).toEqual(burnTx(7))
@@ -72,7 +80,7 @@ describe('topic event projections', () => {
 
   it('projects a type-11 vote with no direction, weight, or sender field', () => {
     const t = parsed(topicVoteFrame({ target: bytesOf(32, 3) })).typed
-    if (t?.type !== 11) throw new Error('not a vote')
+    if (t?.type !== TYPE_TOPIC_VOTE_SUBMISSION) throw new Error('not a vote')
     expect(Object.keys(t).sort()).toEqual(
       ['burnTx', 'network', 'targetHash', 'type', 'unknownFields'].sort(),
     )
@@ -118,7 +126,7 @@ describe('R6 limits', () => {
     })
     expect(wrapper.length).toBeLessThanOrEqual(1_048_576)
     const padded = fr(
-      10,
+      TYPE_TOPIC_POST_SUBMISSION,
       new Map([
         ...(M([
           [0, 'frank-test'],
@@ -134,7 +142,7 @@ describe('R6 limits', () => {
 
   it('caps a type-11 vote frame at 64 KiB while a type-9 or type-10 frame may be larger', () => {
     const over = fr(
-      11,
+      TYPE_TOPIC_VOTE_SUBMISSION,
       new Map([
         ...(M([
           [0, 'frank-test'],
@@ -223,17 +231,17 @@ describe('committed topic-commitments.json', () => {
       const frame = fromHex(c.frame_hex)
       const p = parsed(frame)
       expect(contentHashNetwork(p)).toBe(c.network)
-      if (p.typeId === 9) {
+      if (p.typeId === TYPE_TOPIC_POST) {
         expect(toHex(contentHash(p))).toBe(c.t1_hex)
-      } else if (p.typeId === 10) {
+      } else if (p.typeId === TYPE_TOPIC_POST_SUBMISSION) {
         const typed = p.typed
-        if (typed?.type !== 10) throw new Error(c.id)
+        if (typed?.type !== TYPE_TOPIC_POST_SUBMISSION) throw new Error(c.id)
         const target = contentHash(typed.postFrame)
         expect(toHex(target)).toBe(c.target_hash_hex)
         expect(toHex(topicVoteCommitment(c.network, target))).toBe(c.t7_hex)
       } else {
         const typed = p.typed
-        if (typed?.type !== 11) throw new Error(c.id)
+        if (typed?.type !== TYPE_TOPIC_VOTE_SUBMISSION) throw new Error(c.id)
         expect(toHex(typed.targetHash)).toBe(c.target_hash_hex)
         expect(toHex(topicVoteCommitment(c.network, typed.targetHash))).toBe(
           c.t7_hex,

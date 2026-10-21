@@ -27,19 +27,27 @@ import {
   type5Payload,
   unknownItem,
 } from '../fixtures/builders'
+import {
+  RECIPIENT_ENCRYPTED_PAYLOAD_V1,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_TEXT_MESSAGE_ITEM,
+} from '../src/constants'
 
 function encrypted(suite = 1, schema = 2, min = 2): Uint8Array {
   return fr(
-    5,
+    TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
     M([
-      [0, NET],
-      [1, acct1(9)],
-      [2, acct1(3)],
-      [3, suite],
-      [4, Uint8Array.of(0xa0)],
-      [5, T3C.ephemeral],
-      [6, T3C.shared],
-      [7, T3C.proof],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.network, NET],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sender, acct1(9)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.recipient, acct1(3)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.suite, suite],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.nonce, Uint8Array.of(0xa0)],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ciphertext, T3C.ephemeral],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ephemeralPoint, T3C.shared],
+      [RECIPIENT_ENCRYPTED_PAYLOAD_V1.sharedPoint, T3C.proof],
     ]),
     schema,
     min,
@@ -49,7 +57,12 @@ function root(extra?: Encodable): Uint8Array {
   const payload = deliveryPayload({ payloadFrame: encrypted() })
   if (extra !== undefined) payload.set(99, extra)
   // Newer than the reader's type-1 schema (2), so the extra field is retained (V6.3).
-  return fr(1, payload, extra === undefined ? 1 : 3, 1)
+  return fr(
+    TYPE_DIRECT_MESSAGE_DELIVERY,
+    payload,
+    extra === undefined ? 1 : 3,
+    1,
+  )
 }
 function content(extra?: Encodable, items = [unknownItem()]): Uint8Array {
   const payload = M([
@@ -60,7 +73,12 @@ function content(extra?: Encodable, items = [unknownItem()]): Uint8Array {
     [4, bytesOf(16, 8)],
   ])
   if (extra !== undefined) payload.set(99, extra)
-  return fr(6, payload, extra === undefined ? 1 : 2, 1)
+  return fr(
+    TYPE_ENCRYPTED_MESSAGE_CONTENT,
+    payload,
+    extra === undefined ? 1 : 2,
+    1,
+  )
 }
 function grouped(n: number, containers: boolean): Encodable[] {
   const groups: Encodable[] = []
@@ -134,8 +152,8 @@ describe('opaque DM structural continuation', () => {
       ])
       const parsed = finish(r, c).content
       if (
-        parsed.typed?.type !== 6 ||
-        parsed.typed.revisionFrame.typed?.type !== 8
+        parsed.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT ||
+        parsed.typed.revisionFrame.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION
       )
         throw new Error('not typed content')
       expect(parsed.typed.revisionFrame.typed.items[0].kind).toBe('retained')
@@ -162,7 +180,10 @@ describe('opaque DM structural continuation', () => {
     ).toBe('context')
     expect(
       outcome(() =>
-        beginDirectMessageValidation(fr(5, type5Payload()), defaultContext()),
+        beginDirectMessageValidation(
+          fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, type5Payload()),
+          defaultContext(),
+        ),
       ),
     ).toBe('context')
     for (const bad of [
@@ -180,10 +201,13 @@ describe('opaque DM structural continuation', () => {
   it('requires type6, never retains an unsupported required child, and preserves first errors', () => {
     for (const [bad, expected] of [
       [unknownItem(), 'semantic@8.4'],
-      [frRaw(17, Uint8Array.of(0xff)), 'semantic@8.4'],
-      [frRaw(6, Uint8Array.of(0xff)), 'malformed@7'],
-      [fr(6, M([]), 3, 3), 'unsupported@7'],
-      [fr(6, M([])), 'schema@8.2'],
+      [frRaw(TYPE_TEXT_MESSAGE_ITEM, Uint8Array.of(0xff)), 'semantic@8.4'],
+      [
+        frRaw(TYPE_ENCRYPTED_MESSAGE_CONTENT, Uint8Array.of(0xff)),
+        'malformed@7',
+      ],
+      [fr(TYPE_ENCRYPTED_MESSAGE_CONTENT, M([]), 3, 3), 'unsupported@7'],
+      [fr(TYPE_ENCRYPTED_MESSAGE_CONTENT, M([])), 'schema@8.2'],
       [Uint8Array.of(0), 'frame@2'],
     ] as const)
       expect(outcome(() => finish(root(), bad))).toBe(expected)
@@ -209,7 +233,8 @@ describe('opaque DM structural continuation', () => {
     copy.frame.fill(0)
     copy.payloadBytes.fill(0)
     ;(copy.payload as Map<bigint, Encodable>).clear()
-    if (copy.typed?.type !== 5) throw new Error('not payload')
+    if (copy.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
+      throw new Error('not payload')
     copy.typed.ephemeralPoint.fill(0)
     expect(session.payload).toEqual(parseFrame(encrypted()))
     expect(session.completeAuthenticatedContent(content()).root.frame).toEqual(

@@ -9,6 +9,7 @@ import {
   validateFrame,
 } from '../src'
 import { WORKED_RETAINED, WORKED_TEXT_HI, hex, M } from '../fixtures/builders'
+import { TEXT_MESSAGE_ITEM, TYPE_TEXT_MESSAGE_ITEM } from '../src/constants'
 
 function failure(f: () => unknown): FrankCodecError {
   try {
@@ -23,8 +24,8 @@ function failure(f: () => unknown): FrankCodecError {
 describe('README section 1 worked examples', () => {
   it('encodes the 23-byte type-17 frame exactly', () => {
     const f = encodeFrame(
-      { typeId: 17, schemaVersion: 1, minReaderVersion: 1 },
-      M([[0, 'hi']]),
+      { typeId: TYPE_TEXT_MESSAGE_ITEM, schemaVersion: 1, minReaderVersion: 1 },
+      M([[TEXT_MESSAGE_ITEM.text, 'hi']]),
     )
     expect(f.length).toBe(23)
     expect(toHex(f)).toBe('46524e4b010000000ea40011010102010345a100626869')
@@ -36,7 +37,7 @@ describe('README section 1 worked examples', () => {
     expect(r.kind).toBe('parsed')
     if (r.kind !== 'parsed') return
     expect(r.typeId).toBe(17)
-    expect(r.typed).toMatchObject({ type: 17, text: 'hi' })
+    expect(r.typed).toMatchObject({ type: TYPE_TEXT_MESSAGE_ITEM, text: 'hi' })
     expect(r.frame).toEqual(WORKED_TEXT_HI)
     expect(toHex(contentHash(r))).toMatch(/^[0-9a-f]{64}$/)
   })

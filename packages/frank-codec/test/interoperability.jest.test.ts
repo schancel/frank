@@ -16,6 +16,14 @@ import {
   exactFrameObservation,
 } from '../fixtures/interoperability'
 import type { ManifestCase } from '../fixtures/manifest'
+import {
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_MAILBOX_CHECKPOINT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+} from '../src/constants'
 
 const VECTORS = path.resolve(__dirname, '../../../docs/protocol/cbor/vectors')
 const manifest = JSON.parse(
@@ -93,8 +101,9 @@ describe('complete-frame TypeScript/Rust interoperability', () => {
       expect(parsed.projection).toBe('newer-schema')
       expect(parsed.typed?.type).toBe(expected[index][0])
       expect(parsed.typed?.unknownFields.get(100n)).toBe(expected[index][1])
-      if (parsed.typed?.type === 1) assertDirectNestedOpaque(parsed.typed)
-      if (parsed.typed?.type === 3) {
+      if (parsed.typed?.type === TYPE_DIRECT_MESSAGE_DELIVERY)
+        assertDirectNestedOpaque(parsed.typed)
+      if (parsed.typed?.type === TYPE_MAILBOX_CHECKPOINT) {
         expect(parsed.typed.facts[1].payload).toEqual(unknownItem(2))
         expect(parsed.typed.sections?.[1].value).toEqual(unknownItem(3))
       }
@@ -125,7 +134,11 @@ describe('complete-frame TypeScript/Rust interoperability', () => {
   it('converges independent source insertion orders on the complete frame', () => {
     const forward = type5Payload()
     const reverse = new Map([...forward.entries()].reverse())
-    const fields = { typeId: 5, schemaVersion: 1, minReaderVersion: 1 }
+    const fields = {
+      typeId: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    }
     expect(toHex(encodeFrame(fields, reverse))).toBe(
       toHex(encodeFrame(fields, forward)),
     )
@@ -161,24 +174,32 @@ function assertDirectNestedOpaque(
     NonNullable<
       Extract<ReturnType<typeof validateFrame>, { kind: 'parsed' }>['typed']
     >,
-    { type: 1 }
+    { type: typeof TYPE_DIRECT_MESSAGE_DELIVERY }
   >,
 ): void {
   const recipient = direct.payloadFrame.typed
   expect(recipient?.type).toBe(5)
-  if (recipient?.type !== 5) throw new Error('type-5 payload expected')
+  if (recipient?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
+    throw new Error('type-5 payload expected')
   if (recipient.schemaVersion !== 1)
     throw new Error('proof fixture must use type-5 schema 1')
   const encrypted = validateFrame(recipient.ciphertext, defaultContext())
   expect(encrypted.kind).toBe('parsed')
-  if (encrypted.kind !== 'parsed' || encrypted.typed?.type !== 6)
+  if (
+    encrypted.kind !== 'parsed' ||
+    encrypted.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT
+  )
     throw new Error('type-6 ciphertext expected')
   const revision = encrypted.typed.revisionFrame.typed
   expect(revision?.type).toBe(8)
-  if (revision?.type !== 8) throw new Error('type-8 revision expected')
+  if (revision?.type !== TYPE_MESSAGE_CONTENT_REVISION)
+    throw new Error('type-8 revision expected')
   const container = revision.items[1]
   expect(container.kind).toBe('parsed')
-  if (container.kind !== 'parsed' || container.typed?.type !== 16)
+  if (
+    container.kind !== 'parsed' ||
+    container.typed?.type !== TYPE_CONTAINER_MESSAGE_ITEM
+  )
     throw new Error('type-16 container expected')
   const opaque = container.typed.items[1]
   expect(opaque.kind).toBe('retained')

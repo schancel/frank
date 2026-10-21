@@ -11,6 +11,7 @@ import {
   type BlackjackHandItem,
   type Encodable,
 } from '../src'
+import { TYPE_BLACKJACK_MESSAGE_ITEM } from '../src/constants'
 
 /** A game id is exactly 32 lowercase hex characters. */
 const GAME = '00112233445566778899aabbccddeeff'
@@ -71,7 +72,7 @@ const quantity = (n: bigint) => bytes32(n.toString(16).padStart(64, '0'))
 type Fields = [number, Encodable][]
 const raw = (fields: Fields, schemaVersion = 2, minReaderVersion = 2) =>
   encodeFrame(
-    { typeId: 18, schemaVersion, minReaderVersion },
+    { typeId: TYPE_BLACKJACK_MESSAGE_ITEM, schemaVersion, minReaderVersion },
     new Map<number, Encodable>(fields),
   )
 const g: [number, Encodable] = [0, GAME]
@@ -142,7 +143,7 @@ const MALFORMED: readonly { id: string; frame: Uint8Array; context?: 'schema1' }
 
 const SCHEMA1_READER = {
   readerVersion: 2,
-  supportedSchemas: [{ typeId: 18, schemaVersion: 1 }],
+  supportedSchemas: [{ typeId: TYPE_BLACKJACK_MESSAGE_ITEM, schemaVersion: 1 }],
   opaqueRetentionAllowed: false,
 }
 
@@ -150,7 +151,7 @@ export function blackjackHandCorpus() {
   return {
     format: 'blackjack-hand-v2',
     allocation: {
-      typeId: 18,
+      typeId: TYPE_BLACKJACK_MESSAGE_ITEM,
       schemaVersion: 2,
       minReaderVersion: 2,
       maximumFrameBytes: 4096,

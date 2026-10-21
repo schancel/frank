@@ -26,6 +26,18 @@ import {
   statementPayload,
   type5Payload,
 } from '../fixtures/builders'
+import {
+  DIRECTORY_STATEMENT,
+  MAILBOX_CHECKPOINT,
+  RECIPIENT_ENCRYPTED_PAYLOAD_V1,
+  TEXT_MESSAGE_ITEM,
+  TIMESTAMP,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_MAILBOX_CHECKPOINT,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_TEXT_MESSAGE_ITEM,
+} from '../src/constants'
 
 function outcome(f: Uint8Array, ctx = {}): string {
   try {
@@ -165,20 +177,50 @@ describe('global limits', () => {
   })
 
   it('accepts a 262,144-byte text and rejects 262,145 as resource, not malformed', () => {
-    const ok = fr(17, M([[0, 'a'.repeat(262_144)]]))
+    const ok = fr(
+      TYPE_TEXT_MESSAGE_ITEM,
+      M([[TEXT_MESSAGE_ITEM.text, 'a'.repeat(262_144)]]),
+    )
     const t = (validateFrame(ok, defaultContext()) as ParsedFrame).typed
-    expect(t).toMatchObject({ type: 17 })
-    expect(outcome(fr(17, M([[0, 'a'.repeat(262_145)]])))).toBe('resource@7')
+    expect(t).toMatchObject({ type: TYPE_TEXT_MESSAGE_ITEM })
+    expect(
+      outcome(
+        fr(
+          TYPE_TEXT_MESSAGE_ITEM,
+          M([[TEXT_MESSAGE_ITEM.text, 'a'.repeat(262_145)]]),
+        ),
+      ),
+    ).toBe('resource@7')
     // Text size counts UTF-8 bytes, not characters.
-    expect(outcome(fr(17, M([[0, '€'.repeat(87_381)]])))).toBe('parsed') // 262,143 bytes
-    expect(outcome(fr(17, M([[0, '€'.repeat(87_382)]])))).toBe('resource@7') // 262,146 bytes
+    expect(
+      outcome(
+        fr(
+          TYPE_TEXT_MESSAGE_ITEM,
+          M([[TEXT_MESSAGE_ITEM.text, '€'.repeat(87_381)]]),
+        ),
+      ),
+    ).toBe('parsed') // 262,143 bytes
+    expect(
+      outcome(
+        fr(
+          TYPE_TEXT_MESSAGE_ITEM,
+          M([[TEXT_MESSAGE_ITEM.text, '€'.repeat(87_382)]]),
+        ),
+      ),
+    ).toBe('resource@7') // 262,146 bytes
   })
 })
 
 describe('type-specific limits (R2-R4)', () => {
   it('bounds the ciphertext at 524,288 bytes (resource at 8.1)', () => {
     const p = (n: number) =>
-      fr(5, new Map([...type5Payload(), [5, new Uint8Array(n)]]))
+      fr(
+        TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+        new Map([
+          ...type5Payload(),
+          [RECIPIENT_ENCRYPTED_PAYLOAD_V1.ciphertext, new Uint8Array(n)],
+        ]),
+      )
     expect(outcome(p(524_288))).toBe('parsed')
     expect(outcome(p(524_289))).toBe('resource@8.1')
   })
@@ -186,7 +228,9 @@ describe('type-specific limits (R2-R4)', () => {
   it('classifies schema-1 nonce length before applying schema-2 envelope limits', () => {
     const legacy = new Map(type5Payload())
     legacy.set(4, new Uint8Array(524_377))
-    expect(outcome(fr(5, legacy, 1, 1))).toBe('schema@8.2')
+    expect(outcome(fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, legacy, 1, 1))).toBe(
+      'schema@8.2',
+    )
 
     const production = new Map<number, Encodable>([
       [0, NET],
@@ -198,14 +242,16 @@ describe('type-specific limits (R2-R4)', () => {
       [6, T3C.shared],
       [7, T3C.proof],
     ])
-    expect(outcome(fr(5, production, 2, 2))).toBe('resource@8.1')
+    expect(
+      outcome(fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, production, 2, 2)),
+    ).toBe('resource@8.1')
   })
 
   /** A newer type-1 root (schema 3) projected through the reader's schema 2 with one padding field. */
   const paddedDelivery = (pad: number): Uint8Array => {
     const payload = deliveryPayload({ payments: 2 })
     payload.set(7, new Uint8Array(pad))
-    return fr(1, payload, 3, 1)
+    return fr(TYPE_DIRECT_MESSAGE_DELIVERY, payload, 3, 1)
   }
 
   it('bounds a type-1 frame at 1 MiB (R2) using the root frame length', () => {
@@ -223,10 +269,10 @@ describe('type-specific limits (R2-R4)', () => {
   it('bounds a type-2 frame at 256 KiB (R3)', () => {
     const stmt = (pad: number) =>
       fr(
-        4,
+        TYPE_DIRECTORY_STATEMENT,
         new Map<number, Encodable>([
           ...statementPayload(),
-          [9, new Uint8Array(pad)],
+          [DIRECTORY_STATEMENT.profileEntries, new Uint8Array(pad)],
         ]),
         3,
         1,
@@ -239,7 +285,7 @@ describe('type-specific limits (R2-R4)', () => {
     const opts = {
       priorDirectoryStatementFrame: null as Uint8Array | null,
       supportedSchemas: defaultContext().supportedSchemas.map(s =>
-        s.typeId === 4 ? { ...s, schemaVersion: 2 } : s,
+        s.typeId === TYPE_DIRECTORY_STATEMENT ? { ...s, schemaVersion: 2 } : s,
       ),
     }
     expect(att(pad).length).toBe(262_144)
@@ -262,20 +308,20 @@ describe('type-specific limits (R2-R4)', () => {
       section(i, 1, new Uint8Array(0)),
     )
     const cp = fr(
-      3,
+      TYPE_MAILBOX_CHECKPOINT,
       M([
-        [0, NET],
-        [1, acct1(5)],
-        [2, bytesOf(16, 77)],
+        [MAILBOX_CHECKPOINT.network, NET],
+        [MAILBOX_CHECKPOINT.owner, acct1(5)],
+        [MAILBOX_CHECKPOINT.checkpointId, bytesOf(16, 77)],
         [
-          3,
+          MAILBOX_CHECKPOINT.timestamp,
           M([
-            [0, 1],
-            [1, 0],
+            [TIMESTAMP.seconds, 1],
+            [TIMESTAMP.nanoseconds, 0],
           ]),
         ],
-        [4, withIds],
-        [5, sections],
+        [MAILBOX_CHECKPOINT.facts, withIds],
+        [MAILBOX_CHECKPOINT.sections, sections],
       ]),
     )
     const r = validateFrame(
@@ -285,11 +331,16 @@ describe('type-specific limits (R2-R4)', () => {
     expect(r.kind).toBe('parsed')
     expect(contentHash(r as ParsedFrame)).toHaveLength(32)
     const t = (r as ParsedFrame).typed
-    if (t?.type !== 3) throw new Error('type 3 expected')
+    if (t?.type !== TYPE_MAILBOX_CHECKPOINT) throw new Error('type 3 expected')
     expect(t.facts).toHaveLength(4096)
     expect(t.sections).toHaveLength(4096)
     // One more fact is a resource error at 8.1.
-    const over = fr(3, M([[4, Array.from({ length: 4097 }, () => M([]))]]))
+    const over = fr(
+      TYPE_MAILBOX_CHECKPOINT,
+      M([
+        [MAILBOX_CHECKPOINT.facts, Array.from({ length: 4097 }, () => M([]))],
+      ]),
+    )
     expect(outcome(over)).toBe('resource@8.1')
   })
 })

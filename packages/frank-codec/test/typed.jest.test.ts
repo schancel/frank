@@ -38,6 +38,19 @@ import {
   body,
   ts,
 } from '../fixtures/builders'
+import {
+  DIRECTORY_STATEMENT,
+  MESSAGE_CONTENT_REVISION,
+  TEXT_MESSAGE_ITEM,
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_MAILBOX_CHECKPOINT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_TEXT_MESSAGE_ITEM,
+} from '../src/constants'
 
 const parse = (f: Uint8Array, o = {}): ParsedFrame => {
   const r = validateFrame(f, defaultContext(o))
@@ -60,30 +73,50 @@ describe('typed conversion and exact-byte retention', () => {
       priorDirectoryStatementFrame: null,
     })
     const t = p.typed
-    if (t?.type !== 2) throw new Error('type 2 expected')
+    if (t?.type !== TYPE_DIRECTORY_ATTESTATION)
+      throw new Error('type 2 expected')
     const st = asParsed(t.statementFrame).typed
-    if (st?.type !== 4) throw new Error('type 4 expected')
+    if (st?.type !== TYPE_DIRECTORY_STATEMENT)
+      throw new Error('type 4 expected')
     expect(st.revision).toBe(18446744073709551615n)
     expect(typeof st.revision).toBe('bigint')
     expect(typeof st.timestamp.seconds).toBe('bigint')
 
     for (const seconds of [I64_MIN, I64_MAX, 0n, -1n]) {
       const f = fr(
-        4,
-        new Map([...statementPayload(), [3, ts(seconds, 999_999_999)]]),
+        TYPE_DIRECTORY_STATEMENT,
+        new Map([
+          ...statementPayload(),
+          [DIRECTORY_STATEMENT.timestamp, ts(seconds, 999_999_999)],
+        ]),
       )
       const q = parse(f, { priorDirectoryStatementFrame: null }).typed
-      if (q?.type !== 4) throw new Error('type 4 expected')
+      if (q?.type !== TYPE_DIRECTORY_STATEMENT)
+        throw new Error('type 4 expected')
       expect(q.timestamp.seconds).toBe(seconds)
       expect(q.timestamp.nanoseconds).toBe(999_999_999)
     }
     // One outside the i64 range is a schema error at 8.2, one below u64 zero likewise.
     for (const bad of [I64_MAX + 1n, I64_MIN - 1n]) {
-      const f = fr(4, new Map([...statementPayload(), [3, ts(bad, 0)]]))
+      const f = fr(
+        TYPE_DIRECTORY_STATEMENT,
+        new Map([
+          ...statementPayload(),
+          [DIRECTORY_STATEMENT.timestamp, ts(bad, 0)],
+        ]),
+      )
       expect(() => parse(f)).toThrow(/i64/)
     }
     expect(() =>
-      parse(fr(4, new Map([...statementPayload(), [2, U64_MAX + 1n]]))),
+      parse(
+        fr(
+          TYPE_DIRECTORY_STATEMENT,
+          new Map([
+            ...statementPayload(),
+            [DIRECTORY_STATEMENT.revision, U64_MAX + 1n],
+          ]),
+        ),
+      ),
     ).toThrow(RangeError)
   })
 
@@ -95,7 +128,8 @@ describe('typed conversion and exact-byte retention', () => {
     input.fill(0) // caller mutates its buffer after parsing
     expect(p.frame).toEqual(original)
     const t = p.typed
-    if (t?.type !== 1) throw new Error('type 1 expected')
+    if (t?.type !== TYPE_DIRECT_MESSAGE_DELIVERY)
+      throw new Error('type 1 expected')
     const child = asParsed(t.payloadFrame)
     // The child's bytes are exactly the byte string carried in field 2 of the parent.
     expect(child.frame).toEqual(type5Frame())
@@ -110,24 +144,28 @@ describe('typed conversion and exact-byte retention', () => {
     const rev = rev8Frame([textItem('hello'), middle])
     const p = parse(type6Frame(rev))
     const t6 = p.typed
-    if (t6?.type !== 6) throw new Error('type 6 expected')
+    if (t6?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT)
+      throw new Error('type 6 expected')
     const r8 = asParsed(t6.revisionFrame)
     expect(r8.frame).toEqual(rev)
     const t8 = r8.typed
-    if (t8?.type !== 8) throw new Error('type 8 expected')
+    if (t8?.type !== TYPE_MESSAGE_CONTENT_REVISION)
+      throw new Error('type 8 expected')
     expect(t8.items).toHaveLength(2)
     const c16 = asParsed(t8.items[1])
     expect(c16.frame).toEqual(middle)
     const t16 = c16.typed
-    if (t16?.type !== 16) throw new Error('type 16 expected')
+    if (t16?.type !== TYPE_CONTAINER_MESSAGE_ITEM)
+      throw new Error('type 16 expected')
     const kept = asRetained(t16.items[1])
     expect(kept.reason).toBe('unknown-type')
     expect(kept.typeId).toBe(UNKNOWN_TYPE)
     expect(kept.frame).toEqual(unknown)
     const deep = asParsed(t16.items[2]).typed
-    if (deep?.type !== 16) throw new Error('type 16 expected')
+    if (deep?.type !== TYPE_CONTAINER_MESSAGE_ITEM)
+      throw new Error('type 16 expected')
     expect(asParsed(deep.items[0]).typed).toMatchObject({
-      type: 17,
+      type: TYPE_TEXT_MESSAGE_ITEM,
       text: 'two levels down',
     })
   })
@@ -136,15 +174,16 @@ describe('typed conversion and exact-byte retention', () => {
     const weird = body('ffff', 9) // version 9, nonsense after
     const p = parse(
       fr(
-        8,
+        TYPE_MESSAGE_CONTENT_REVISION,
         M([
-          [0, 'frank'],
-          [1, [textItem(), weird]],
+          [MESSAGE_CONTENT_REVISION.network, 'frank'],
+          [MESSAGE_CONTENT_REVISION.items, [textItem(), weird]],
         ]),
       ),
     )
     const t = p.typed
-    if (t?.type !== 8) throw new Error('type 8 expected')
+    if (t?.type !== TYPE_MESSAGE_CONTENT_REVISION)
+      throw new Error('type 8 expected')
     const kept = asRetained(t.items[1])
     expect(kept.reason).toBe('unsupported-frame-version')
     expect(kept.frame).toEqual(weird)
@@ -163,7 +202,7 @@ describe('typed conversion and exact-byte retention', () => {
     })
     const p = parse(cp)
     const t = p.typed
-    if (t?.type !== 3) throw new Error('type 3 expected')
+    if (t?.type !== TYPE_MAILBOX_CHECKPOINT) throw new Error('type 3 expected')
     expect(t.facts[1].payload).toEqual(unknownInFact)
     expect(t.sections?.[1].value).toEqual(unknownInSection)
     expect(t.sections?.[1].sectionType).toBe(0x7fff0001)
@@ -172,9 +211,9 @@ describe('typed conversion and exact-byte retention', () => {
 
   it('retains unknown fields of a newer compatible schema and the original frame (V6.3)', () => {
     const f = fr(
-      17,
+      TYPE_TEXT_MESSAGE_ITEM,
       M([
-        [0, 'x'],
+        [TEXT_MESSAGE_ITEM.text, 'x'],
         [5, new Uint8Array([1, 2])],
         [9, M([[1, 'y']])],
       ]),
@@ -185,7 +224,7 @@ describe('typed conversion and exact-byte retention', () => {
     expect(p.projection).toBe('newer-schema')
     expect(p.schemaVersion).toBe(3)
     const t = p.typed
-    if (t?.type !== 17) throw new Error('type 17 expected')
+    if (t?.type !== TYPE_TEXT_MESSAGE_ITEM) throw new Error('type 17 expected')
     expect(t.text).toBe('x')
     expect([...t.unknownFields.keys()]).toEqual([5n, 9n])
     expect(p.frame).toEqual(f)
@@ -195,10 +234,16 @@ describe('typed conversion and exact-byte retention', () => {
 
   it('returns no partial typed object when a later child fails', () => {
     const bad = fr(
-      8,
+      TYPE_MESSAGE_CONTENT_REVISION,
       M([
-        [0, 'frank'],
-        [1, [textItem(), fr(17, M([[0, 5]]))]],
+        [MESSAGE_CONTENT_REVISION.network, 'frank'],
+        [
+          MESSAGE_CONTENT_REVISION.items,
+          [
+            textItem(),
+            fr(TYPE_TEXT_MESSAGE_ITEM, M([[TEXT_MESSAGE_ITEM.text, 5]])),
+          ],
+        ],
       ]),
     )
     let result: unknown
@@ -325,7 +370,8 @@ describe('T1/T1a content hashes and one-byte mutation', () => {
     expect(toHex(contentHash(one))).not.toBe(toHex(contentHash(two)))
     const child = (p: ParsedFrame) => {
       const t = p.typed
-      if (t?.type !== 2) throw new Error('type 2 expected')
+      if (t?.type !== TYPE_DIRECTORY_ATTESTATION)
+        throw new Error('type 2 expected')
       return asParsed(t.statementFrame)
     }
     expect(toHex(contentHash(child(one)))).toBe(toHex(contentHash(child(two))))

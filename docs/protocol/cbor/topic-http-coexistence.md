@@ -5,11 +5,11 @@ discovery and operation status. The historical filename is retained for existing
 
 | Route | Canonical response |
 | --- | --- |
-| `PUT /message/monad/topics` | type-10/schema-2 submission; type-15 exact operation status |
-| `PUT /message/monad/topics/vote` | canonical type-11 submission; type-15 exact operation status |
-| `GET /message/monad/topics/:hash` | type-12 canonical view for the exact 32-byte T1 target |
-| topic list/discovery reads | type-13/type-14 complete bounded pages |
-| `POST /message/monad/topics/status` | exact type-10/11 request; read-only type-15 status |
+| `PUT /message/monad/topics` | type-41/schema-2 submission; type-46 exact operation status |
+| `PUT /message/monad/topics/vote` | canonical type-42 submission; type-46 exact operation status |
+| `GET /message/monad/topics/:hash` | type-43 canonical view for the exact 32-byte T1 target |
+| topic list/discovery reads | type-44/type-45 complete bounded pages |
+| `POST /message/monad/topics/status` | exact type-41/42 request; read-only type-46 status |
 
 Writes require bare `application/cbor`; missing, parameterized and protobuf content
 types receive415. Bodies are never sniffed or retried through another decoder.

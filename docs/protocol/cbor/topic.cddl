@@ -2,44 +2,44 @@
 ; Imports common.cddl names conceptually; each implementation compiles a
 ; combined schema/module.
 ;
-; Type 9 is the post itself. Types 10 and 11 wrap a burn transaction. A burn
+; Type 40 is the post itself. Types 41 and 42 wrap a burn transaction. A burn
 ; transaction commits to the identity of the object it pays for (README T7),
 ; and a frame cannot contain a commitment to itself, so the burn lives in a
-; wrapper frame rather than inside the post (compare types 2 and 4).
+; wrapper frame rather than inside the post (compare types 2 and 1).
 ;
 ; Neither wrapper carries a vote direction, a burned value, or a sender: all
 ; three are read from the verified chain transaction (README T8), never from an
 ; encoded assertion.
 
-; Type 9. `topic` is exact UTF-8 with no normalization (README S12). `body` is
+; Type 40. `topic` is exact UTF-8 with no normalization (README S12). `body` is
 ; opaque at schema 1. Schema 2/min-reader 2 opens field 3 as forum-content below.
 topic-post = {
   0: network-tag,
   1: tstr .size (1..512), ; topic name
-  ? 2: digest-32, ; T1 hash of the parent type-9 frame; absent for a top-level post
+  ? 2: digest-32, ; T1 hash of the parent type-40 frame; absent for a top-level post
   3: bstr .size (1..524288), ; opaque post body (R6)
   ? 4: account-ref / forum-address, ; author identity (account-ref with key-type 1 or 20-byte address)
   ? 5: bstr .size (1..512), ; author cryptographic signature over the post transcript digest
   * uint => frank-value,
 }
 
-; Type 10. The initial vote of the post is its own burn transaction.
+; Type 41. The initial vote of the post is its own burn transaction.
 topic-post-submission = {
-  0: network-tag, ; MUST equal the opened type-9 network (README S11)
-  1: framed-object, ; type-9 topic-post frame
+  0: network-tag, ; MUST equal the opened type-40 network (README S11)
+  1: framed-object, ; type-40 topic-post frame
   2: bstr .size (1..16384), ; raw signed chain transaction that burns for the post
   * uint => frank-value,
 }
 
-; Type 11. A further vote on an already-posted type-9 frame.
+; Type 42. A further vote on an already-posted type-40 frame.
 topic-vote-submission = {
   0: network-tag,
-  1: digest-32, ; T1 hash of the target type-9 frame
+  1: digest-32, ; T1 hash of the target type-40 frame
   2: bstr .size (1..16384), ; raw signed chain transaction that burns for the vote
   * uint => frank-value,
 }
 
-; Type 9 schema 2/min-reader 2 uses the same outer field IDs as topic-post.
+; Type 40 schema 2/min-reader 2 uses the same outer field IDs as topic-post.
 ; Exact schema 2 permits only declared keys/kind 1 and kind 2. Compatible later schemas
 ; retain optional unknown fields and bounded unsupported-entry placeholders.
 forum-content = { 0: timestamp, 1: [1*64 forum-entry], * uint => frank-value }
@@ -67,14 +67,14 @@ forum-address = bstr .size 20
 forum-aggregate = { 0: bool, 1: bstr .size 32 } ; closed; big endian; no negative zero
 forum-cursor-bytes = bstr .size (1..2048)
 
-; Types 12–15 are schema 1/min-reader 1. All observations are relay claims.
-; Note: "page" in types 13 and 14 refers to cursor-paginated database query result
+; Types 43–46 are schema 1/min-reader 1. All observations are relay claims.
+; Note: "page" in types 44 and 45 refers to cursor-paginated database query result
 ; batches (holding up to 128 verified post observation frames), not HTML web pages.
 forum-single-view = { ; complete frame <=2MiB
   0: network-tag, 1: framed-object, 2: forum-address, 3: forum-raw-burn,
   4: digest-32, 5: timestamp, 6: forum-u64, 7: forum-u64, 8: forum-aggregate,
   9: forum-u64, 10: forum-epoch, * uint => frank-value }
-forum-topic-page = { ; complete frame <=4MiB; field 4 requires type-12 children
+forum-topic-page = { ; complete frame <=4MiB; field 4 requires type-43 children
   0: network-tag, 1: tstr .size (1..512), 2: timestamp,
   3: forum-u64, 4: [*128 framed-object], ? 5: forum-cursor-bytes, 6: forum-epoch,
   ? 7: forum-cursor-bytes, * uint => frank-value }
@@ -83,14 +83,14 @@ forum-discovery-page = { ; complete frame <=4MiB
   ? 3: forum-cursor-bytes, 4: forum-epoch, ? 5: forum-cursor-bytes, * uint => frank-value }
 forum-discovery-entry = { 0: tstr .size (1..512), 1: forum-u64, 2: timestamp,
   * uint => frank-value }
-forum-operation-status = { ; complete frame <=2MiB; field 1 requires type 10 or 11
+forum-operation-status = { ; complete frame <=2MiB; field 1 requires type 41 or 42
   0: network-tag, 1: framed-object, 2: digest-32, 3: digest-32,
   4: forum-address, 5: 0..1, 6: forum-u64, 7: 0..3, ? 8: forum-u64, ? 9: forum-u64,
   10: forum-u64, 11: forum-epoch, * uint => frank-value }
 ; Position 8/9 both present iff state 2. States 0/3 are unverified request echoes.
 ; States 1/2 are relay-observed; individual admitted value remains 1..i64::MAX.
-forum-topic-cursor = { 0: network-tag, 1: 13, 2: forum-u64, 3: forum-epoch,
+forum-topic-cursor = { 0: network-tag, 1: 44, 2: forum-u64, 3: forum-epoch,
   4: { 0: timestamp, 1: digest-32 }, 5: tstr .size (1..512), 6: timestamp,
   7: forum-u64 }
-forum-discovery-cursor = { 0: network-tag, 1: 14, 2: forum-u64, 3: forum-epoch,
+forum-discovery-cursor = { 0: network-tag, 1: 45, 2: forum-u64, 3: forum-epoch,
   4: tstr .size (1..512), 7: forum-u64 }

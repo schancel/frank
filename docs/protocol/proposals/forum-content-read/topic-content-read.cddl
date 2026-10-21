@@ -2,7 +2,7 @@
 ; Prose adds version/unknown-key, cumulative resource and economic validation.
 forum-post = { 0: network-tag, 1: tstr .size (1..512), ? 2: digest-32,
   3: bstr .size (1..524288), * uint => frank-value }
-; field 3 opens this canonical item, type9 schema2/min2:
+; field 3 opens this canonical item, type40 schema2/min2:
 forum-content = { 0: timestamp, 1: [1*64 forum-entry], * uint => frank-value }
 forum-entry = known-forum-entry / future-forum-entry
 known-forum-entry = { 0: 1, ? 1: tstr, ? 2: tstr, ? 3: tstr, * uint => frank-value }
@@ -36,8 +36,8 @@ operation-status = { ; candidate15; complete frame <=2MiB
 ; 8/9 both present iff state2. States0/3: 1..6 UNVERIFIED REQUEST ECHOES.
 ; States1/2: transaction-derived observed facts; value 1..i64::MAX.
 
-topic-cursor = { 0: network-tag, 1: 13, 2: u64, 3: epoch,
+topic-cursor = { 0: network-tag, 1: 44, 2: u64, 3: epoch,
   4: { 0: timestamp, 1: digest-32 }, 5: tstr .size (1..512), 6: timestamp,
   7: u64 } ; non-reused snapshot incarnation within epoch; not revision
-discovery-cursor = { 0: network-tag, 1: 14, 2: u64, 3: epoch,
+discovery-cursor = { 0: network-tag, 1: 45, 2: u64, 3: epoch,
   4: tstr .size (1..512), 7: u64 }

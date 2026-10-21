@@ -17,14 +17,14 @@ Every independently stored, signed, hashed, or forwarded Frank object is seriali
 | **5** | 4 bytes | Body Length | Big-endian uint32 payload length (bytes `9..N`) |
 | **9** | $N$ bytes | CBOR Envelope | Canonical CBOR map `{ 0: type_id, 1: schema_version, 2: min_reader_version, 3: payload_bytes }` |
 
-Worked example: a Type 17 text item `{0: "hi"}` (23 bytes total):
+Worked example: a Type 22 text item `{0: "hi"}` (23 bytes total):
 
 ```text
 46 52 4e 4b            FRNK (magic)
 01                     frame version 1
 00 00 00 0e            CBOR body length 14
 a4                     envelope map, 4 entries
-  00 11                  0: type_id = 17 (text-message-item)
+  00 16                  0: type_id = 22 (text-message-item)
   01 01                  1: schema_version = 1
   02 01                  2: min_reader_version = 1
   03 45                  3: payload = 5-byte string
@@ -81,7 +81,7 @@ Generated from `docs/protocol/message-types/v1.json`, the authoritative list (se
 <!-- END GENERATED: message-types -->
 
 > [!NOTE]
-> **Database Pagination vs. Web Pages**: In Types 13 and 14 (`forum-topic-page` and `forum-discovery-page`), the term **"Page"** refers strictly to cursor-based database query result sets (holding up to 128 verified post observations with continuation cursors), not HTML documents or rendered web pages.
+> **Database Pagination vs. Web Pages**: In Types 44 and 45 (`forum-topic-page` and `forum-discovery-page`), the term **"Page"** refers strictly to cursor-based database query result sets (holding up to 128 verified post observations with continuation cursors), not HTML documents or rendered web pages.
 
 ---
 

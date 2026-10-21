@@ -191,7 +191,7 @@
                 no-caps
                 icon="extension"
                 class="full-width q-py-sm text-weight-medium"
-                :label="bearerClaimUi.connectExtensionBtn"
+                :label="$t('accountSync.receive')"
                 data-test="onboard-connect-extension"
                 :loading="busy"
                 :disable="busy"
@@ -260,7 +260,6 @@ const bearerClaimUi = {
   amountLabel: 'Gift Amount (wei): ',
   bearerAccountLabel: 'Bearer EOA: ',
   noteLabel: 'Welcome Note: ',
-  connectExtensionBtn: 'Connect Browser Extension',
 }
 
 const windowHash = ref(typeof window !== 'undefined' ? window.location.hash : '')

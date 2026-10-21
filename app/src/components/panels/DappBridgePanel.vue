@@ -394,42 +394,29 @@
       </q-card-section>
     </q-card>
 
-    <!-- Standalone PWA Pairing & Extension Sync Section (#1710) -->
     <q-card flat bordered data-testid="dapp-pwa-sync-section">
       <q-card-section>
-        <div class="text-subtitle2 text-weight-medium">
-          {{ ui.pwaSyncTitle }}
-        </div>
-
-        <div class="row items-center q-col-gutter-sm q-mt-xs">
-          <div class="col">
-            <q-input
-              v-model="wcUriInput"
-              dense
-              outlined
-              data-testid="dapp-wc-uri-input"
-              :label="ui.wcInputLabel"
-              :placeholder="ui.wcInputPlaceholder"
-            />
-          </div>
-          <div class="col-auto">
-            <q-btn
-              unelevated
-              color="primary"
-              data-testid="dapp-wc-connect-btn"
-              :label="ui.wcConnectBtn"
-              @click="connectWalletConnectUri"
-            />
-          </div>
-        </div>
-
-        <div
-          v-if="pairedWcUri"
-          class="text-caption text-positive q-mt-xs"
-          data-testid="dapp-wc-paired-status"
+        <div class="text-subtitle2 text-weight-medium">Account sync</div>
+        <p
+          class="text-body2 q-mt-sm q-mb-none"
+          data-testid="dapp-account-sync-help"
         >
-          {{ pairedWcStatusText }}
+          To copy your account between this browser's extension and
+          {{ frankWebAppOrigin }}, open Profile in the window with your account
+          and choose Sync this account. In the other window, choose Sync existing
+          account on the welcome screen and enter the PIN. The receiving window
+          must not already have an account.
+        </p>
+        <div class="text-subtitle2 text-weight-medium q-mt-md">
+          WalletConnect
         </div>
+        <p
+          class="text-body2 q-mt-sm q-mb-none"
+          data-testid="dapp-wc-unsupported"
+        >
+          WalletConnect URI pairing is not supported yet. It does not sync your
+          Frank account with the browser extension.
+        </p>
       </q-card-section>
     </q-card>
   </div>
@@ -455,6 +442,7 @@ import {
   type DappPersonaSigner,
 } from 'src/accounts/session'
 import {
+  FRANK_WEB_APP_ORIGIN,
   getExtensionRuntime,
   onRuntimeMessage,
   RuntimeEnvironmentKind,
@@ -675,7 +663,6 @@ export default defineComponent({
     'reject-request',
     'disconnect-origin',
     'update-announce-mode',
-    'wc-connect',
   ],
   setup(props, { emit }) {
     const { total: liveWalletBalanceWei } = useBalance()
@@ -715,8 +702,6 @@ export default defineComponent({
     const poolTransferDeltaMon = ref(0)
     const approvals = ref<DappApprovalItem[]>([...props.initialApprovals])
     const dappRequestsWaiting = ref(0)
-    const wcUriInput = ref('')
-    const pairedWcUri = ref('')
 
     const resolvedRootAddress = computed(() => ownCanonicalAddress.value || '')
 
@@ -919,10 +904,7 @@ export default defineComponent({
       connectedSitesTitle: 'Connected Sites',
       noConnectedSitesText: 'No sites connected yet.',
       disconnectSiteBtn: 'Disconnect',
-      pwaSyncTitle: 'Standalone PWA Pairing & Extension Sync',
-      wcInputLabel: 'WalletConnect or dApp URI',
-      wcInputPlaceholder: 'wc:00e46b69-d0cc-4b3e-b6a2-...',
-      wcConnectBtn: 'Pair URI',
+
     })
 
     const plugIcon = FA_PLUG_CIRCLE_PLUS_ICON
@@ -1098,10 +1080,6 @@ export default defineComponent({
         ? `${req.method} — ${req.summary}`
         : `Method: ${req.method}`
     })
-
-    const pairedWcStatusText = computed(
-      () => `Paired dApp URI: ${pairedWcUri.value}`,
-    )
 
     function setConnectBurnerMode(useBurner: boolean) {
       useBurnerForConnect.value = useBurner
@@ -1459,22 +1437,8 @@ export default defineComponent({
       })
     }
 
-    function connectWalletConnectUri() {
-      const trimmed = wcUriInput.value.trim()
-      if (!trimmed) return
-      pairedWcUri.value = trimmed
-      approvals.value.unshift({
-        id: `wc-${Date.now()}`,
-        kind: 'connect',
-        origin: 'wc://paired-dapp',
-        method: 'connect',
-        summary: `Pair session (${trimmed.slice(0, 18)}...)`,
-      })
-      emit('wc-connect', { uri: trimmed })
-      wcUriInput.value = ''
-    }
-
     return {
+      frankWebAppOrigin: FRANK_WEB_APP_ORIGIN,
       ui,
       plugIcon,
       selectedExtensionTarget,
@@ -1488,8 +1452,6 @@ export default defineComponent({
       announceModeBadgeLabel,
       announceModeBadgeColor,
       connectedSiteItems,
-      wcUriInput,
-      pairedWcUri,
       isExtensionRuntime,
       runtimeBadgeLabel,
       activeDerivationPath,
@@ -1504,7 +1466,6 @@ export default defineComponent({
       dappRequestsWaitingText,
       connectAddressSharedCaption,
       approvalMethodSummary,
-      pairedWcStatusText,
       setConnectBurnerMode,
       setAnnounceMode,
       disconnectOrigin,
@@ -1515,7 +1476,6 @@ export default defineComponent({
       sweepBackToPool,
       approveCurrentRequest,
       rejectCurrentRequest,
-      connectWalletConnectUri,
     }
   },
 })

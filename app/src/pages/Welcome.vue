@@ -79,7 +79,7 @@
               no-caps
               class="welcome-action"
               icon="extension"
-              :label="extensionUi.connectExtensionBtn"
+              :label="$t('accountSync.receive')"
               data-test="btn-connect-extension"
               @click="connectBrowserExtension"
             />
@@ -93,6 +93,24 @@
               to="/forum"
               data-test="btn-browse-forum"
             />
+          </div>
+
+          <div
+            v-if="syncPinEntryOpen"
+            class="welcome-sync q-mt-sm q-pa-sm rounded-borders"
+            data-test="welcome-extension-sync"
+          >
+            <SyncPinEntry
+              :busy="syncRestoring"
+              @received="restoreSyncedAccount"
+            />
+            <div
+              v-if="syncRestoreFailed"
+              class="text-caption text-negative q-mt-xs"
+              data-test="welcome-extension-sync-failed"
+            >
+              {{ $t('accountSync.restoreFailed') }}
+            </div>
           </div>
 
           <!-- Bundled Browser Extension Download Card (when viewing on web/PWA) -->
@@ -138,24 +156,6 @@
               data-test="welcome-extension-install-hint"
             >
               {{ selectedExtensionInfo.installHint }}
-            </div>
-          </div>
-
-          <div
-            v-if="syncPinEntryOpen"
-            class="welcome-sync q-mt-sm q-pa-sm rounded-borders"
-            data-test="welcome-extension-sync"
-          >
-            <SyncPinEntry
-              :busy="syncRestoring"
-              @received="restoreSyncedAccount"
-            />
-            <div
-              v-if="syncRestoreFailed"
-              class="text-caption text-negative q-mt-xs"
-              data-test="welcome-extension-sync-failed"
-            >
-              {{ $t('accountSync.restoreFailed') }}
             </div>
           </div>
 
@@ -313,9 +313,6 @@ export default defineComponent({
       EXTENSION_DOWNLOAD_TARGETS.safari,
     ]
 
-    const extensionUi = {
-      connectExtensionBtn: 'Connect Browser Extension',
-    }
     const syncPinEntryOpen = ref(false)
 
     // The user typed the PIN, so the received account is restored right away.
@@ -345,7 +342,6 @@ export default defineComponent({
 
     return {
       myDrawerOpen: useMyDrawerOpen(),
-      extensionUi,
       syncPinEntryOpen,
       syncRestoring,
       syncRestoreFailed,

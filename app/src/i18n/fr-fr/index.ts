@@ -2165,6 +2165,16 @@ export const rawFrFR = {
     saveVcf: 'Enregistrer la vCard (.vcf)',
   },
   accountSync: {
+    send: 'Synchroniser ce compte',
+    sendHint:
+      'Copiez ce compte vers votre extension ou application web. Dans l’autre fenêtre, choisissez Synchroniser un compte existant, puis saisissez le code affiché ici.',
+    receive: 'Synchroniser un compte existant',
+    sourceStep:
+      'Dans la fenêtre qui contient déjà votre compte, ouvrez Profil et choisissez Synchroniser ce compte.',
+    pinStep:
+      'Saisissez ci-dessous le code à six chiffres affiché. Aucune demande n’est envoyée automatiquement à l’autre fenêtre.',
+    close: 'Fermer',
+
     cancel: 'Annuler',
     hasAccount:
       'Cet appareil a déjà un compte. Synchronisez uniquement vers un appareil sans compte.',

@@ -107,6 +107,24 @@ describe('IdentityQrDialog', () => {
     })
   }
 
+  it.each([true, false])(
+    'exposes source sync without a runtime override (inline=%s)',
+    async inline => {
+      const wrapper = mountDialog({ inline })
+      await flushPromises()
+      expect(
+        wrapper
+          .get('[data-test="sync-account-bridge-btn"]')
+          .attributes('label'),
+      ).toBe('Sync Account with Extension')
+      expect(wrapper.find('[data-test="identity-qr-sync-pin"]').exists()).toBe(
+        false,
+      )
+      expect(mockBackupCodex32).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+
   it('shows no username when the relay has not confirmed one, whatever the profile has saved', async () => {
     setOwnUsername(null)
     const wrapper = mountDialog()
@@ -412,8 +430,10 @@ describe('IdentityQrDialog', () => {
       return (pin: string) => receiveSyncBundle(pin, send as any)
     }
 
-    async function startSync() {
-      const wrapper = mountDialog({ inline: true, runtimeKindOverride: 'pwa' })
+    async function startSync(
+      props: Record<string, unknown> = { inline: true },
+    ) {
+      const wrapper = mountDialog(props)
       await flushPromises()
       await wrapper
         .find('[data-test="sync-account-bridge-btn"]')
@@ -421,6 +441,20 @@ describe('IdentityQrDialog', () => {
       await flushPromises()
       return wrapper
     }
+
+    it('compact profile sender shows its PIN without starting the QR scanner', async () => {
+      const wrapper = await startSync({ syncOnly: true })
+      expect(
+        wrapper.get('[data-test="account-sync-sender-dialog"]').exists(),
+      ).toBe(true)
+      expect(wrapper.get('[data-test="identity-qr-sync-pin"]').text()).toMatch(
+        /^\d{6}$/,
+      )
+      expect(wrapper.find('[data-test="identity-qr-scanner"]').exists()).toBe(
+        false,
+      )
+      wrapper.unmount()
+    })
 
     it('with the right PIN the extension gets the account; the page window only ever carries ciphertext', async () => {
       const wrapper = await startSync()

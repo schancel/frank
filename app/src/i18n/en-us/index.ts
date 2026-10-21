@@ -2102,6 +2102,16 @@ export const rawEnUS = {
     saveVcf: 'Save vCard (.vcf)',
   },
   accountSync: {
+    send: 'Sync this account',
+    sendHint:
+      'Copy this account to your browser extension or web app. In the other window, choose Sync existing account, then enter the PIN shown here.',
+    receive: 'Sync existing account',
+    sourceStep:
+      'In the window that already has your account, open Profile and choose Sync this account.',
+    pinStep:
+      'Enter the six-digit PIN it shows below. No request is sent to the other window automatically.',
+    close: 'Close',
+
     cancel: 'Cancel',
     hasAccount:
       'This device already has an account. Sync only into a device without one.',

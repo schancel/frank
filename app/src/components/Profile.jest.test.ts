@@ -1,5 +1,5 @@
 /** @jest-environment jsdom */
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import ProfileComponent from './Profile.vue'
 
 const defaultStubs = {
@@ -80,6 +80,34 @@ describe('Profile.vue component avatar handling', () => {
 
   afterEach(() => {
     window.Image = originalImage
+  })
+
+  it('starts the existing account sender from the visible profile action', async () => {
+    const startSync = jest.fn(async () => undefined)
+    const wrapper = mount(ProfileComponent, {
+      global: {
+        mocks: { $t: (key: string) => key },
+        stubs: {
+          ...defaultStubs,
+          IdentityQrDialog: {
+            props: { syncOnly: Boolean },
+            template:
+              '<div data-test="profile-sync-dialog" :data-sync-only="syncOnly" />',
+            methods: { syncAccountOverBridge: startSync },
+          },
+        },
+      },
+    })
+    expect(startSync).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="profile-sync-account"]').trigger('click')
+    await flushPromises()
+    expect(
+      wrapper
+        .get('[data-test="profile-sync-dialog"]')
+        .attributes('data-sync-only'),
+    ).toBe('true')
+    expect(startSync).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
   })
 
   it('shows the username plainly in the editor and identity card', () => {

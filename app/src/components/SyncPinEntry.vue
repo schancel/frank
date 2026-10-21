@@ -1,13 +1,21 @@
 <template>
   <form
+    ref="form"
     class="sync-pin-entry"
     data-test="sync-pin-entry"
     @submit.prevent="connect"
   >
-    <div class="text-body2">{{ $t('accountSync.enterPin') }}</div>
+    <ol
+      class="text-body2 q-pl-md q-my-xs"
+      data-test="account-sync-instructions"
+    >
+      <li>{{ $t('accountSync.sourceStep') }}</li>
+      <li>{{ $t('accountSync.pinStep') }}</li>
+    </ol>
     <div class="row items-start q-gutter-sm q-mt-xs no-wrap">
       <q-input
         v-model="pin"
+        autofocus
         dense
         outlined
         class="sync-pin-entry__input"
@@ -31,6 +39,7 @@
     </div>
     <div
       v-if="error"
+      role="alert"
       class="text-caption text-negative q-mt-xs"
       data-test="sync-pin-error"
     >
@@ -40,7 +49,7 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref } from 'vue'
+import { computed, defineComponent, nextTick, onMounted, ref } from 'vue'
 import { useTranslate } from 'src/composables/useTranslate'
 import { receiveAccountOverBridge } from 'src/utils/extension-account-sync'
 import { normalizeSyncPin, SYNC_PIN_DIGITS } from 'src/utils/sync-pairing'
@@ -57,6 +66,11 @@ export default defineComponent({
   emits: ['received'],
   setup(_, { emit }) {
     const t = useTranslate()
+    const form = ref<HTMLFormElement | null>(null)
+    onMounted(async () => {
+      await nextTick()
+      form.value?.scrollIntoView?.({ block: 'nearest' })
+    })
     const pin = ref('')
     const pending = ref(false)
     const error = ref('')
@@ -85,12 +99,14 @@ export default defineComponent({
         } else {
           error.value = t('accountSync.failed')
         }
+      } catch {
+        error.value = t('accountSync.failed')
       } finally {
         pending.value = false
       }
     }
 
-    return { pin, pending, error, pinComplete, connect, SYNC_PIN_DIGITS }
+    return { form, pin, pending, error, pinComplete, connect, SYNC_PIN_DIGITS }
   },
 })
 </script>

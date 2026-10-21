@@ -303,16 +303,11 @@ import { useRouter } from 'vue-router'
 import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
 import { useCodex32Backup } from '../composables/useCodex32Backup'
 import { navigateBack } from '../utils/navigate-back'
-import { markAccountBackedUp } from '../accounts/backup-status'
-import { accountStatus } from '../accounts/session'
-import { useWalletStore } from '../stores/wallet'
 import {
-  parseAccountBackupShareInput,
-  recoverAccountBackupShares,
-  decodeRecoveryDescriptor,
-  destroyRecoveredBackup,
-  type PublicRecoveryDescriptor,
-} from '@frank/account-recovery'
+  isAccountBackedUp,
+  verifyAccountBackup,
+} from '../accounts/backup-status'
+import { accountStatus } from '../accounts/session'
 import { recoveryErrorMessage } from '../accounts/ceremony'
 
 defineEmits<{
@@ -390,29 +385,10 @@ function applyCustom() {
   void generateShares()
 }
 
-watch(backupShares, shares => {
-  if (shares && shares.length > 0) {
-    const id = accountStatus.account?.receipt.context.accountId
-    markAccountBackedUp(id)
-    try {
-      useWalletStore().setBackedUp(true)
-    } catch {
-      // ignore
-    }
-  }
-})
-
 async function copyShare(share: string, index: number) {
   try {
     await navigator.clipboard.writeText(share)
     copyStatus.value = `Share ${index + 1} copied.`
-    const id = accountStatus.account?.receipt.context.accountId
-    markAccountBackedUp(id)
-    try {
-      useWalletStore().setBackedUp(true)
-    } catch {
-      // ignore
-    }
   } catch {
     copyStatus.value = 'Failed to copy share.'
   }
@@ -422,7 +398,11 @@ function cancel() {
   navigateBack(router)
 }
 
-const showVerifySection = ref(false)
+// Shown and copied shares are not a backup until the user proves they saved them, so the
+// verification step stays open until this account has passed it.
+const showVerifySection = ref(
+  !isAccountBackedUp(accountStatus.account?.receipt.context.accountId),
+)
 const verifyInput = ref('')
 const verifyLoading = ref(false)
 const verifySuccess = ref(false)
@@ -441,29 +421,9 @@ async function verifyShards() {
   verifySuccess.value = false
   verifyError.value = ''
   try {
-    const shards = parseAccountBackupShareInput(input)
-    let expectedDescriptor: PublicRecoveryDescriptor | undefined
-    if (accountStatus.account?.descriptor) {
-      try {
-        expectedDescriptor = decodeRecoveryDescriptor(
-          accountStatus.account.descriptor,
-        )
-      } catch {
-        // Ignored if not a Frank descriptor (e.g. BIP39)
-      }
-    }
-    const recovery = recoverAccountBackupShares(shards, expectedDescriptor)
-    if (recovery.candidates.length === 0) {
-      throw new Error('No account reconstructed from the entered shards.')
-    }
-    recovery.candidates.forEach(c => destroyRecoveredBackup(c.account))
-    const id = accountStatus.account?.receipt.context.accountId
-    markAccountBackedUp(id)
-    try {
-      useWalletStore().setBackedUp(true)
-    } catch {
-      // ignore
-    }
+    const account = accountStatus.account
+    if (!account) throw new Error('No active account to verify.')
+    verifyAccountBackup(account, input)
     verifySuccess.value = true
   } catch (err) {
     verifyError.value = recoveryErrorMessage(err)

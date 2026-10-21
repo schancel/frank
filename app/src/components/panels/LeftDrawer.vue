@@ -428,7 +428,6 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 import { accountStatus } from '../../accounts/session'
-import { useWalletStore } from 'src/stores/wallet'
 import { isAccountBackedUp } from '../../accounts/backup-status'
 import { FA_PLUG_CIRCLE_PLUS_ICON } from '../../utils/extension-download'
 
@@ -692,24 +691,9 @@ export default defineComponent({
       }
     }
 
-    const walletStore = useWalletStore()
-    const accountBackedUp = computed(() => {
-      const account = accountStatus.account
-      const accountId = account?.receipt.context.accountId
-      if (!accountId) {
-        return (
-          Boolean((account as any)?.backedUp) ||
-          Boolean((accountStatus as any).backedUp) ||
-          Boolean(walletStore.backedUp)
-        )
-      }
-      return (
-        isAccountBackedUp(accountId) ||
-        Boolean((account as any)?.backedUp) ||
-        Boolean((accountStatus as any).backedUp) ||
-        Boolean(walletStore.backedUp)
-      )
-    })
+    const accountBackedUp = computed(() =>
+      isAccountBackedUp(accountStatus.account?.receipt.context.accountId),
+    )
 
     function openBackupFlow() {
       if (isNarrow.value) {

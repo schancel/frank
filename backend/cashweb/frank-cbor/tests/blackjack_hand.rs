@@ -1,6 +1,8 @@
 //! Shared peer-to-peer hand corpus (type 18, schema 2 / min reader 2) through the public facade.
 //! No game runtime, fairness or payment authority.
 mod common;
+use frank_cbor::message_fields::container_message_item;
+use frank_cbor::message_types::TYPE_CONTAINER_MESSAGE_ITEM;
 use frank_cbor::*;
 use serde_json::{json, Value};
 
@@ -333,9 +335,9 @@ fn schema1_items_are_not_hand_items_and_nested_hand_items_are_typed() {
     };
     let frame = encode_blackjack_hand_item(&hit).unwrap();
     let nested = common::fr(
-        16,
+        TYPE_CONTAINER_MESSAGE_ITEM,
         &cbor_map(vec![(
-            0,
+            container_message_item::ITEMS,
             CborValue::Array(vec![CborValue::Bytes(frame.clone())]),
         )]),
     );

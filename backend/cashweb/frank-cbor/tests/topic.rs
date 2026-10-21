@@ -4,6 +4,14 @@
 
 mod common;
 
+use frank_cbor::message_fields::{
+    key_type, message_content_revision as revision, topic_post as post_k,
+    topic_post_submission as sub_k, topic_vote_submission as vote_k,
+};
+use frank_cbor::message_types::{
+    TYPE_MESSAGE_CONTENT_REVISION, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, TYPE_TOPIC_POST,
+    TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
+};
 use frank_cbor::{
     cbor_map, content_hash, content_hash_network, encode_frame, topic_vote_commitment,
     validate_frame, CborValue, EnvelopeFields, Error, ErrorCategory, FramePayload, ParsedFrame,
@@ -25,11 +33,11 @@ fn bytes(b: Vec<u8>) -> CborValue {
 
 fn post_with(body: Vec<u8>) -> Vec<u8> {
     fr(
-        9,
+        TYPE_TOPIC_POST,
         &cbor_map(vec![
-            (0, text(NET)),
-            (1, text("frank.demo")),
-            (3, bytes(body)),
+            (post_k::NETWORK, text(NET)),
+            (post_k::TOPIC, text("frank.demo")),
+            (post_k::BODY, bytes(body)),
         ]),
     )
 }
@@ -90,12 +98,12 @@ fn projects_a_post_a_submission_and_a_vote() {
 fn a_reply_carries_its_parent_and_a_null_parent_is_a_schema_error() {
     let parent = topic_post_hash();
     let reply = fr(
-        9,
+        TYPE_TOPIC_POST,
         &cbor_map(vec![
-            (0, text(NET)),
-            (1, text("frank.demo")),
-            (2, bytes(parent.clone())),
-            (3, bytes(bytes_of(8, 1))),
+            (post_k::NETWORK, text(NET)),
+            (post_k::TOPIC, text("frank.demo")),
+            (post_k::PARENT_HASH, bytes(parent.clone())),
+            (post_k::BODY, bytes(bytes_of(8, 1))),
         ]),
     );
     match parsed(&reply).typed.as_deref() {
@@ -105,12 +113,12 @@ fn a_reply_carries_its_parent_and_a_null_parent_is_a_schema_error() {
         other => panic!("{other:?}"),
     }
     let null_parent = fr(
-        9,
+        TYPE_TOPIC_POST,
         &cbor_map(vec![
-            (0, text(NET)),
-            (1, text("frank.demo")),
-            (2, CborValue::Null),
-            (3, bytes(bytes_of(8, 1))),
+            (post_k::NETWORK, text(NET)),
+            (post_k::TOPIC, text("frank.demo")),
+            (post_k::PARENT_HASH, CborValue::Null),
+            (post_k::BODY, bytes(bytes_of(8, 1))),
         ]),
     );
     assert_eq!(outcome(&null_parent), "schema@8.2");
@@ -125,14 +133,14 @@ fn r6_body_limit_is_resource_at_8_1() {
 
 fn submission_with(post: Vec<u8>, pad: usize) -> Vec<u8> {
     let mut entries = vec![
-        (0, text(NET)),
-        (1, bytes(post)),
-        (2, bytes(bytes_of(110, 31))),
+        (sub_k::NETWORK, text(NET)),
+        (sub_k::POST_FRAME, bytes(post)),
+        (sub_k::BURN_TX, bytes(bytes_of(110, 31))),
     ];
     if pad > 0 {
-        entries.push((9, bytes(vec![0; pad])));
+        entries.push((9, bytes(vec![0; pad]))); // raw-cbor-key: additive padding field
     }
-    fr(10, &cbor_map(entries))
+    fr(TYPE_TOPIC_POST_SUBMISSION, &cbor_map(entries))
 }
 
 #[test]
@@ -145,12 +153,12 @@ fn r6_frame_limits_bound_complete_roots() {
     assert_eq!(outcome(&padded), "resource@8.1");
     // A type-11 frame is bounded at 64 KiB.
     let vote = fr(
-        11,
+        TYPE_TOPIC_VOTE_SUBMISSION,
         &cbor_map(vec![
-            (0, text(NET)),
-            (1, bytes(bytes_of(32, 1))),
-            (2, bytes(bytes_of(110, 32))),
-            (9, bytes(vec![0; 65_536])),
+            (vote_k::NETWORK, text(NET)),
+            (vote_k::TARGET_HASH, bytes(bytes_of(32, 1))),
+            (vote_k::BURN_TX, bytes(bytes_of(110, 32))),
+            (9, bytes(vec![0; 65_536])), // raw-cbor-key: additive padding field
         ]),
     );
     assert!(vote.len() > 65_536);
@@ -161,11 +169,11 @@ fn r6_frame_limits_bound_complete_roots() {
 #[test]
 fn a_submission_must_share_its_posts_network() {
     let other = fr(
-        10,
+        TYPE_TOPIC_POST_SUBMISSION,
         &cbor_map(vec![
-            (0, text("other-net")),
-            (1, bytes(topic_post_frame())),
-            (2, bytes(bytes_of(110, 31))),
+            (sub_k::NETWORK, text("other-net")),
+            (sub_k::POST_FRAME, bytes(topic_post_frame())),
+            (sub_k::BURN_TX, bytes(bytes_of(110, 31))),
         ]),
     );
     assert_eq!(outcome(&other), "semantic@9");
@@ -175,10 +183,10 @@ fn a_submission_must_share_its_posts_network() {
 fn assigned_topic_types_are_not_message_items_but_an_unassigned_sentinel_is_open() {
     let item = |frame: Vec<u8>| {
         fr(
-            8,
+            TYPE_MESSAGE_CONTENT_REVISION,
             &cbor_map(vec![
-                (0, text("frank")),
-                (1, CborValue::Array(vec![bytes(frame)])),
+                (revision::NETWORK, text("frank")),
+                (revision::ITEMS, CborValue::Array(vec![bytes(frame)])),
             ]),
         )
     };
@@ -191,10 +199,11 @@ fn assigned_topic_types_are_not_message_items_but_an_unassigned_sentinel_is_open
     }
     let unassigned = encode_frame(
         EnvelopeFields {
-            type_id: 65535,
+            type_id: 65535, // raw-cbor-key: an unassigned sentinel type id
             schema_version: 1,
             min_reader_version: 1,
         },
+        // raw-cbor-key: the unassigned type has no schema
         FramePayload::Value(&cbor_map(vec![(0, int(1))])),
     )
     .unwrap();
@@ -294,14 +303,14 @@ fn the_pre_topic_corpus_behaves_identically_when_topic_types_are_listed() {
     pre_topic_context
         .supported_schemas
         .iter_mut()
-        .find(|schema| schema.type_id == 5)
+        .find(|schema| schema.type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
         .expect("type 5")
         .schema_version = 1; // The frozen corpus predates the production DM schema.
     let mut topic_only_context = topic_context();
     topic_only_context
         .supported_schemas
         .iter_mut()
-        .find(|schema| schema.type_id == 5)
+        .find(|schema| schema.type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
         .expect("type 5")
         .schema_version = 1;
     let mut checked = 0;
@@ -380,7 +389,7 @@ fn signed_topic_post_encodes_and_verifies_author() {
     let der_sig = sig.serialize_der().to_vec();
 
     let author = TopicPostAuthor::Account(AccountRef {
-        key_type: 1,
+        key_type: key_type::SECP256K1,
         key_bytes: pubkey_bytes.to_vec(),
     });
 

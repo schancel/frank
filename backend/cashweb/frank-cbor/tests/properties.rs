@@ -1,6 +1,8 @@
 //! Deterministic sweep of truncation, length, order, depth, count, and size.
 //! No extra fuzzing dependency: every input below is generated in-process.
 
+use frank_cbor::message_fields::text_message_item;
+use frank_cbor::message_types::TYPE_TEXT_MESSAGE_ITEM;
 use frank_cbor::{
     cbor_map, decode_canonical, encode_canonical, encode_frame, validate_frame, CborValue,
     CodecError, EnvelopeFields, Error, ErrorCategory, FramePayload, MAX_ARRAY_ELEMENTS,
@@ -23,12 +25,13 @@ fn category_of(bytes: &[u8]) -> ErrorCategory {
 
 #[test]
 fn truncating_a_canonical_item_is_malformed() {
+    // raw-cbor-key: a generic canonical-CBOR map, not a Frank schema
     let item = encode_canonical(&cbor_map(vec![
-        (0, CborValue::Text("hi".to_string())),
-        (1, CborValue::Int(1)),
-        (2, CborValue::Bytes(vec![1, 2, 3, 4])),
+        (0, CborValue::Text("hi".to_string())), // raw-cbor-key: generic map
+        (1, CborValue::Int(1)),                 // raw-cbor-key: generic map
+        (2, CborValue::Bytes(vec![1, 2, 3, 4])), // raw-cbor-key: generic map
         (
-            3,
+            3, // raw-cbor-key: generic map
             CborValue::Array(vec![CborValue::Null, CborValue::Bool(false)]),
         ),
     ]))
@@ -57,10 +60,13 @@ fn corrupting_a_string_length_is_malformed() {
 
 #[test]
 fn corrupting_the_frame_length_is_a_frame_error() {
-    let payload = cbor_map(vec![(0, CborValue::Text("hi".to_string()))]);
+    let payload = cbor_map(vec![(
+        text_message_item::TEXT,
+        CborValue::Text("hi".to_string()),
+    )]);
     let frame = encode_frame(
         EnvelopeFields {
-            type_id: 17,
+            type_id: TYPE_TEXT_MESSAGE_ITEM,
             schema_version: 1,
             min_reader_version: 1,
         },
@@ -83,9 +89,10 @@ fn corrupting_the_frame_length_is_a_frame_error() {
 
 #[test]
 fn map_order_and_duplicates_are_noncanonical() {
+    // raw-cbor-key: generic map keys checked against literal canonical bytes
     let sorted = encode_canonical(&cbor_map(vec![
-        (1, CborValue::Int(0)),
-        (0, CborValue::Int(0)),
+        (1, CborValue::Int(0)), // raw-cbor-key: generic map
+        (0, CborValue::Int(0)), // raw-cbor-key: generic map
     ]))
     .unwrap();
     assert_eq!(sorted, vec![0xa2, 0x00, 0x00, 0x01, 0x00]);

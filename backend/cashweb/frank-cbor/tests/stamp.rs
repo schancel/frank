@@ -5,6 +5,14 @@
 
 mod common;
 
+use frank_cbor::message_fields::{
+    account_ref, directory_attestation as att, directory_statement as stmt, encryption_suite,
+    key_type, recipient_encrypted_payload_v1 as rep1, recipient_encrypted_payload_v2 as rep2,
+    relay_binding, signature_algorithm, signature_entry,
+};
+use frank_cbor::message_types::{
+    TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+};
 use frank_cbor::{
     cbor_map, encode_frame, validate_frame, CborValue, EnvelopeFields, Error, ErrorCategory,
     FramePayload, PriorStatement, TypedPayload, ValidationResult,
@@ -30,7 +38,7 @@ fn type5_with(key: u64, value: Option<CborValue>) -> Vec<u8> {
         fields.push((key, value));
         fields.sort_by_key(|(k, _)| *k);
     }
-    fr(5, &cbor_map(fields))
+    fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, &cbor_map(fields))
 }
 
 fn outcome(frame: &[u8]) -> String {
@@ -44,18 +52,18 @@ fn outcome(frame: &[u8]) -> String {
 
 fn production_type5(suite: u32) -> Vec<u8> {
     let payload = cbor_map(vec![
-        (0, CborValue::Text(NET.to_string())),
-        (1, acct1(9)),
-        (2, acct1(3)),
-        (3, int(i128::from(suite))),
-        (4, CborValue::Bytes(vec![0xa0])),
-        (5, hex_bytes(T3C_EPHEMERAL)),
-        (6, hex_bytes(T3C_SHARED)),
-        (7, hex_bytes(T3C_PROOF)),
+        (rep2::NETWORK, CborValue::Text(NET.to_string())),
+        (rep2::SENDER, acct1(9)),
+        (rep2::RECIPIENT, acct1(3)),
+        (rep2::SUITE, int(i128::from(suite))),
+        (rep2::CRYPTO_BOX_ENVELOPE, CborValue::Bytes(vec![0xa0])),
+        (rep2::EPHEMERAL_POINT, hex_bytes(T3C_EPHEMERAL)),
+        (rep2::SHARED_POINT, hex_bytes(T3C_SHARED)),
+        (rep2::DLEQ_PROOF, hex_bytes(T3C_PROOF)),
     ]);
     encode_frame(
         EnvelopeFields {
-            type_id: 5,
+            type_id: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
             schema_version: 2,
             min_reader_version: 2,
         },
@@ -76,7 +84,10 @@ const FIVE: &str = "000000000000000000000000000000000000000000000000000000000000
 
 #[test]
 fn point_encoding_boundaries() {
-    assert_eq!(outcome(&type5_with(6, Some(point(2, ONE)))), "parsed");
+    assert_eq!(
+        outcome(&type5_with(rep1::EPHEMERAL_POINT, Some(point(2, ONE)))),
+        "parsed"
+    );
     for (name, value) in [
         ("x = p + 1", point(2, P_PLUS_1)),
         ("off curve", point(2, FIVE)),
@@ -89,7 +100,7 @@ fn point_encoding_boundaries() {
             CborValue::Bytes(hex::decode(&T3C_EPHEMERAL[2..]).unwrap()),
         ),
     ] {
-        for key in [6, 7] {
+        for key in [rep1::EPHEMERAL_POINT, rep1::SHARED_POINT] {
             assert_eq!(
                 outcome(&type5_with(key, Some(value.clone()))),
                 "Schema@S82",
@@ -106,7 +117,7 @@ fn proof_scalars_are_bounded_independently() {
     let good_s = &T3C_PROOF[64..];
     let proof = |c: &str, s: &str| Some(hex_bytes(&format!("{c}{s}")));
     assert_eq!(
-        outcome(&type5_with(8, proof(&n_minus_1, &n_minus_1))),
+        outcome(&type5_with(rep1::DLEQ_PROOF, proof(&n_minus_1, &n_minus_1))),
         "parsed"
     );
     for (name, c, s) in [
@@ -116,12 +127,12 @@ fn proof_scalars_are_bounded_independently() {
         ("s = n", good_c.to_string(), N.to_string()),
     ] {
         assert_eq!(
-            outcome(&type5_with(8, proof(&c, &s))),
+            outcome(&type5_with(rep1::DLEQ_PROOF, proof(&c, &s))),
             "Schema@S82",
             "{name}"
         );
     }
-    for key in [6, 7, 8] {
+    for key in [rep1::EPHEMERAL_POINT, rep1::SHARED_POINT, rep1::DLEQ_PROOF] {
         assert_eq!(
             outcome(&type5_with(key, None)),
             "Schema@S82",
@@ -132,7 +143,7 @@ fn proof_scalars_are_bounded_independently() {
 
 #[test]
 fn typed_projection_carries_the_stamp_fields() {
-    let frame = type5_with(6, Some(hex_bytes(T3C_EPHEMERAL)));
+    let frame = type5_with(rep1::EPHEMERAL_POINT, Some(hex_bytes(T3C_EPHEMERAL)));
     let Ok(ValidationResult::Parsed(parsed)) = validate_frame(&frame, &typed_context()) else {
         panic!("type 5 did not parse");
     };
@@ -165,22 +176,25 @@ fn production_suite_one_is_typed_only_in_schema_two() {
         }) => assert_eq!(envelope, &[0xa0]),
         other => panic!("unexpected {other:?}"),
     }
-    assert_eq!(outcome(&production_type5(65_535)), "Unsupported@S83");
+    assert_eq!(
+        outcome(&production_type5(encryption_suite::PROOF)),
+        "Unsupported@S83"
+    );
 
     let payload = cbor_map(vec![
-        (0, CborValue::Text(NET.to_string())),
-        (1, acct1(9)),
-        (2, acct1(3)),
-        (3, int(1)),
-        (4, CborValue::Bytes(vec![0xa0])),
-        (5, hex_bytes(T3C_EPHEMERAL)),
-        (6, hex_bytes(T3C_SHARED)),
-        (7, hex_bytes(T3C_PROOF)),
-        (8, CborValue::Bytes(vec![1])),
+        (rep2::NETWORK, CborValue::Text(NET.to_string())),
+        (rep2::SENDER, acct1(9)),
+        (rep2::RECIPIENT, acct1(3)),
+        (rep2::SUITE, int(encryption_suite::DM_AUTH_XCHACHA.into())),
+        (rep2::CRYPTO_BOX_ENVELOPE, CborValue::Bytes(vec![0xa0])),
+        (rep2::EPHEMERAL_POINT, hex_bytes(T3C_EPHEMERAL)),
+        (rep2::SHARED_POINT, hex_bytes(T3C_SHARED)),
+        (rep2::DLEQ_PROOF, hex_bytes(T3C_PROOF)),
+        (8, CborValue::Bytes(vec![1])), // raw-cbor-key: a field schema 2 does not declare
     ]);
     let wrong_min_reader = encode_frame(
         EnvelopeFields {
-            type_id: 5,
+            type_id: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
             schema_version: 2,
             min_reader_version: 1,
         },
@@ -190,7 +204,7 @@ fn production_suite_one_is_typed_only_in_schema_two() {
     assert_eq!(outcome(&wrong_min_reader), "Unsupported@S7");
     let future = encode_frame(
         EnvelopeFields {
-            type_id: 5,
+            type_id: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
             schema_version: 3,
             min_reader_version: 2,
         },
@@ -202,29 +216,29 @@ fn production_suite_one_is_typed_only_in_schema_two() {
 
 fn statement(schema: u32, subject: CborValue, revision: u64, key: Option<CborValue>) -> Vec<u8> {
     let mut fields = vec![
-        (0, CborValue::Text(NET.to_string())),
-        (1, subject),
-        (2, int(i128::from(revision))),
-        (3, ts(1_700_000_000, 0)),
+        (stmt::NETWORK, CborValue::Text(NET.to_string())),
+        (stmt::SUBJECT, subject),
+        (stmt::REVISION, int(i128::from(revision))),
+        (stmt::TIMESTAMP, ts(1_700_000_000, 0)),
         (
-            4,
+            stmt::RELAYS,
             CborValue::Array(vec![cbor_map(vec![
-                (0, CborValue::Bytes(bytes_of(16, 1))),
+                (relay_binding::RELAY_ID, CborValue::Bytes(bytes_of(16, 1))),
                 (
-                    1,
+                    relay_binding::ENDPOINT,
                     CborValue::Text("https://relay.example/frank".to_string()),
                 ),
-                (2, acct1(21)),
-                (3, ts(1_800_000_000, 0)),
+                (relay_binding::IDENTITY, acct1(21)),
+                (relay_binding::EXPIRY, ts(1_800_000_000, 0)),
             ])]),
         ),
     ];
     if let Some(key) = key {
-        fields.push((8, key));
+        fields.push((stmt::STAMP_KEY, key));
     }
     encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: TYPE_DIRECTORY_STATEMENT,
             schema_version: schema,
             min_reader_version: schema,
         },
@@ -235,15 +249,21 @@ fn statement(schema: u32, subject: CborValue, revision: u64, key: Option<CborVal
 
 fn attestation(statement: Vec<u8>, signer: CborValue) -> Vec<u8> {
     fr(
-        2,
+        TYPE_DIRECTORY_ATTESTATION,
         &cbor_map(vec![
-            (0, CborValue::Bytes(statement)),
+            (att::STATEMENT_FRAME, CborValue::Bytes(statement)),
             (
-                1,
+                att::SIGNATURES,
                 CborValue::Array(vec![cbor_map(vec![
-                    (0, int(16)),
-                    (1, signer),
-                    (2, CborValue::Bytes(bytes_of(64, 1))),
+                    (
+                        signature_entry::ALGORITHM,
+                        int(signature_algorithm::ED25519.into()),
+                    ),
+                    (signature_entry::SIGNER, signer),
+                    (
+                        signature_entry::SIGNATURE,
+                        CborValue::Bytes(bytes_of(64, 1)),
+                    ),
                 ])]),
             ),
         ]),
@@ -310,6 +330,9 @@ fn stamp_key_shape() {
         "Schema@S82"
     );
     // Key type 2 is allocated but is not a stamp key.
-    let ed = cbor_map(vec![(0, int(2)), (1, CborValue::Bytes(bytes_of(32, 5)))]);
+    let ed = cbor_map(vec![
+        (account_ref::KEY_TYPE, int(key_type::ED25519.into())),
+        (account_ref::KEY_BYTES, CborValue::Bytes(bytes_of(32, 5))),
+    ]);
     assert_eq!(outcome(&statement(2, acct2(1), 5, Some(ed))), "Semantic@S9");
 }

@@ -936,11 +936,11 @@ function scheduleSyncPairingPurge(
   } catch {
     // Fall back to the timer
   }
-  const timer: any = setTimeout(
+  const timer = setTimeout(
     () => void purgeExpiredSyncPairing(state, extApi).catch(() => undefined),
     Math.max(0, at - Date.now()) + 1_000,
   )
-  timer?.unref?.()
+  ;(timer as unknown as { unref?: () => void }).unref?.()
 }
 
 /** Tells open extension pages how the extension's sending session is going. */

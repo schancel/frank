@@ -1127,20 +1127,27 @@ export default defineComponent({
         : ''
     })
 
-    const stopSyncSenderUpdates = onRuntimeMessage((message: any) => {
-      if (
-        message?.channel !== FRANK_PWA_EXTENSION_SYNC_CHANNEL ||
-        message.type !== 'sync-sender-update' ||
-        !extSyncSender.value
-      ) {
+    const stopSyncSenderUpdates = onRuntimeMessage(
+      (message: {
+        channel?: unknown
+        type?: unknown
+        status: SyncSenderView['status']
+        pin?: unknown
+      }) => {
+        if (
+          message?.channel !== FRANK_PWA_EXTENSION_SYNC_CHANNEL ||
+          message.type !== 'sync-sender-update' ||
+          !extSyncSender.value
+        ) {
+          return undefined
+        }
+        extSyncSender.value = {
+          pin: message.status === 'new-pin' ? String(message.pin ?? '') : '',
+          status: message.status,
+        }
         return undefined
-      }
-      extSyncSender.value = {
-        pin: message.status === 'new-pin' ? String(message.pin ?? '') : '',
-        status: message.status,
-      }
-      return undefined
-    })
+      },
+    )
     onBeforeUnmount(() => {
       stopSyncSenderUpdates()
       if (extSyncExpiry) clearTimeout(extSyncExpiry)

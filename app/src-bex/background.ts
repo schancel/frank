@@ -5,6 +5,8 @@ import {
   FRANK_DAPP_PROVISION_SITE_PERSONAS,
   FRANK_EXT_LAUNCH_MODE_KEY,
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+  FRANK_SYNC_NAVIGATION_TIMEOUT_MS,
+  type SyncSenderNavigationResult,
   getRawExtensionApi,
   isBrowserExtensionRuntime,
   isFrankWebAppOrigin,
@@ -21,6 +23,8 @@ import {
   syncSenderHello,
   SYNC_PAIRING_TTL_MS,
   type SyncSenderState,
+  type SyncHelloReply,
+  type SyncConfirmReply,
 } from '../src/utils/sync-pairing'
 import { createApprovalWindow, type ApprovalWindow } from './approval-window'
 
@@ -65,6 +69,7 @@ export type PendingDappApprovalRecord = PendingDappApproval
  */
 export interface PendingSyncPairing {
   sender: SyncSenderState | null
+  senderOfferId: string | null
   offerTab: { tabId: number; createdAt: number } | null
 }
 
@@ -252,7 +257,8 @@ export function assignOriginPersona(
     label?: string
   },
 ): OriginPersonaBinding {
-  const norm = normalizeBridgeOrigin(rawOrigin) || rawOrigin.trim().toLowerCase()
+  const norm =
+    normalizeBridgeOrigin(rawOrigin) || rawOrigin.trim().toLowerCase()
   const useBurner =
     options?.personaIndex === 0
       ? false
@@ -350,7 +356,9 @@ function getReadOnlyRpcFallback(method: string): unknown {
   }
 }
 
-function getKnownPersonaAddressesLower(state: BackgroundBridgeState): Set<string> {
+function getKnownPersonaAddressesLower(
+  state: BackgroundBridgeState,
+): Set<string> {
   const set = new Set<string>()
   const primary = (state.activePersonaAddress || '').toLowerCase()
   if (/^0x[0-9a-f]{40}$/.test(primary)) {
@@ -383,7 +391,10 @@ function applySpendablePoolFallback(
   }
   let poolWei = 0n
   try {
-    if (state.poolBalanceWeiHex && /^0x[0-9a-fA-F]+$/.test(state.poolBalanceWeiHex)) {
+    if (
+      state.poolBalanceWeiHex &&
+      /^0x[0-9a-fA-F]+$/.test(state.poolBalanceWeiHex)
+    ) {
       poolWei = BigInt(state.poolBalanceWeiHex)
     }
   } catch {
@@ -398,7 +409,10 @@ function applySpendablePoolFallback(
     if (knownAddrs.has(queriedAddr)) {
       let onChainWei = 0n
       try {
-        if (typeof rpcResult === 'string' && /^0x[0-9a-fA-F]+$/.test(rpcResult)) {
+        if (
+          typeof rpcResult === 'string' &&
+          /^0x[0-9a-fA-F]+$/.test(rpcResult)
+        ) {
           onChainWei = BigInt(rpcResult)
         }
       } catch {
@@ -506,9 +520,7 @@ export function createBackgroundBridgeState(
     ...(overrides.originPersonas ?? {}),
   }
   const sharedOriginsSet =
-    overrides.approvedOrigins ??
-    overrides.connectedOrigins ??
-    new Set<string>()
+    overrides.approvedOrigins ?? overrides.connectedOrigins ?? new Set<string>()
   for (const raw of Array.from(sharedOriginsSet)) {
     const norm = normalizeBridgeOrigin(raw)
     if (norm && norm !== raw) {
@@ -543,7 +555,11 @@ export function createBackgroundBridgeState(
       overrides.pendingApprovals ?? new Map<string, PendingDappApproval>(),
     pendingRpcWaiters:
       overrides.pendingRpcWaiters ?? new Map<string, PendingRpcWaiter>(),
-    syncPairing: overrides.syncPairing ?? { sender: null, offerTab: null },
+    syncPairing: overrides.syncPairing ?? {
+      sender: null,
+      senderOfferId: null,
+      offerTab: null,
+    },
     launchMode: overrides.launchMode ?? 'popup',
   }
 }
@@ -597,7 +613,9 @@ export function configureSidePanelBehavior(
         openPanelOnActionClick: Boolean(openPanelOnActionClick),
       })
       if (maybePromise && typeof maybePromise.catch === 'function') {
-        maybePromise.catch(() => {})
+        maybePromise.catch(() => {
+          // Browser capabilities and tab broadcasts are best effort.
+        })
       }
       return true
     } catch {
@@ -709,8 +727,7 @@ export async function ensureOffscreenWarmup(
 
   // 2. Safari (WebKit) & Firefox (Gecko) background DOM window fallback (<iframe id="frank-warmup-frame">)
   const doc =
-    scope.document ??
-    (typeof document !== 'undefined' ? document : undefined)
+    scope.document ?? (typeof document !== 'undefined' ? document : undefined)
   if (doc && typeof doc.createElement === 'function') {
     const container = doc.body ?? doc.documentElement
     if (container && typeof container.appendChild === 'function') {
@@ -736,10 +753,7 @@ export async function ensureOffscreenWarmup(
           iframe.style.border = '0'
         }
         if (typeof iframe.setAttribute === 'function') {
-          iframe.setAttribute(
-            'style',
-            'display:none;width:0;height:0;border:0',
-          )
+          iframe.setAttribute('style', 'display:none;width:0;height:0;border:0')
           iframe.setAttribute('aria-hidden', 'true')
         }
         container.appendChild(iframe)
@@ -785,14 +799,18 @@ export async function reinjectContentScriptsIntoOpenTabs(
             target: { tabId: tab.id },
             files: ['content.js'],
           }),
-        ).catch(() => {})
+        ).catch(() => {
+          // Browser capabilities and tab broadcasts are best effort.
+        })
         await Promise.resolve(
           api.scripting.executeScript({
             target: { tabId: tab.id },
             files: ['inpage.js'],
             world: 'MAIN',
           }),
-        ).catch(() => {})
+        ).catch(() => {
+          // Browser capabilities and tab broadcasts are best effort.
+        })
         reinjectedCount += 1
       } catch {
         // Ignore tabs where scripting is restricted
@@ -824,12 +842,16 @@ function broadcastToTabs(
               if (msg) {
                 void Promise.resolve(
                   extApi.tabs.sendMessage(tab.id, msg),
-                ).catch(() => {})
+                ).catch(() => {
+                  // Browser capabilities and tab broadcasts are best effort.
+                })
               }
             }
           }
         })
-        .catch(() => {})
+        .catch(() => {
+          // Browser capabilities and tab broadcasts are best effort.
+        })
     } catch {
       // Ignore tab broadcast errors
     }
@@ -899,6 +921,129 @@ function urlOrigin(url: unknown): string {
   }
 }
 
+function isSyncOfferId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value)
+}
+
+/** Navigation is an extension UI capability, never a web-page sync command. */
+function isSyncNavigationRequester(
+  sender: any,
+  api: Record<string, any> | null,
+): boolean {
+  if (
+    !isExtensionPageSender(sender, api) ||
+    sender?.id !== api?.runtime?.id ||
+    (sender?.frameId !== undefined && sender.frameId !== 0)
+  )
+    return false
+  try {
+    const actual = new URL(sender.url)
+    const expected = new URL(api!.runtime.getURL(EXTENSION_POPUP_PATH))
+    return (
+      actual.protocol === expected.protocol &&
+      actual.host === expected.host &&
+      actual.pathname === expected.pathname
+    )
+  } catch {
+    return false
+  }
+}
+
+const syncNavigationRequests = new WeakMap<
+  BackgroundBridgeState,
+  {
+    pending: Promise<SyncSenderNavigationResult>
+    until: number
+  }
+>()
+
+async function openExistingSyncSender(
+  api: Record<string, any> | null,
+  deadline: number,
+): Promise<SyncSenderNavigationResult> {
+  if (
+    typeof api?.tabs?.query !== 'function' ||
+    typeof api.tabs.get !== 'function' ||
+    typeof api.tabs.sendMessage !== 'function'
+  )
+    return { ok: false, reason: 'unavailable' }
+  try {
+    const tabs: Array<{ id?: number; url?: string; active?: boolean }> =
+      await api.tabs.query({ url: 'https://signet.mx/*' })
+    if (Date.now() >= deadline) return { ok: false, reason: 'timeout' }
+    const candidates = tabs
+      .filter(
+        tab =>
+          Number.isInteger(tab.id) && isFrankWebAppOrigin(urlOrigin(tab.url)),
+      )
+      .sort((a, b) => Number(!!b.active) - Number(!!a.active) || a.id! - b.id!)
+    for (const candidate of candidates) {
+      // Browser query results can already be stale; never relay to a navigated tab.
+      const tab = await api.tabs.get(candidate.id)
+      if (Date.now() >= deadline) return { ok: false, reason: 'timeout' }
+      if (!isFrankWebAppOrigin(urlOrigin(tab?.url))) continue
+      const id =
+        'sync-navigation-' +
+        Array.from(crypto.getRandomValues(new Uint8Array(16)), byte =>
+          byte.toString(16).padStart(2, '0'),
+        ).join('')
+      const response = await api.tabs.sendMessage(
+        candidate.id,
+        {
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          type: 'open-sync-sender',
+          id,
+        },
+        { frameId: 0 },
+      )
+      if (response?.ok === true) return { ok: true }
+      if (response?.ok === false && response.reason === 'not-ready') continue
+      return {
+        ok: false,
+        reason: response?.reason === 'timeout' ? 'timeout' : 'unavailable',
+      }
+    }
+    return { ok: false, reason: candidates.length ? 'not-ready' : 'no-tab' }
+  } catch {
+    return { ok: false, reason: 'unavailable' }
+  }
+}
+
+function requestSyncSenderNavigation(
+  state: BackgroundBridgeState,
+  api: Record<string, any> | null,
+): Promise<SyncSenderNavigationResult> {
+  const prior = syncNavigationRequests.get(state)
+  if (prior && prior.until > Date.now()) return prior.pending
+  let timer: ReturnType<typeof setTimeout>
+  const entry: { until: number; pending: Promise<SyncSenderNavigationResult> } =
+    {
+      until: Infinity,
+      pending: Promise.race([
+        openExistingSyncSender(
+          api,
+          Date.now() + FRANK_SYNC_NAVIGATION_TIMEOUT_MS,
+        ),
+        new Promise<SyncSenderNavigationResult>(resolve => {
+          timer = setTimeout(
+            () => resolve({ ok: false, reason: 'timeout' }),
+            FRANK_SYNC_NAVIGATION_TIMEOUT_MS,
+          )
+        }),
+      ]).then(result => {
+        clearTimeout(timer)
+        // Concurrent requests share one navigation; a short successful cooldown prevents clicks
+        // from repeatedly navigating the page. Failures may be retried after the user fixes them.
+        if (result.ok) entry.until = Date.now() + 1_000
+        else if (syncNavigationRequests.get(state) === entry)
+          syncNavigationRequests.delete(state)
+        return result
+      }),
+    }
+  syncNavigationRequests.set(state, entry)
+  return entry.pending
+}
+
 /**
  * Memory-only extension storage that survives the MV3 service worker stopping.
  * Chrome has it; where it is missing the pairing stays in the background state.
@@ -919,11 +1064,15 @@ function pruneSyncPairing(
   pairing: PendingSyncPairing,
   now = Date.now(),
 ): PendingSyncPairing {
+  const sender =
+    pairing.sender &&
+    isSyncOfferId(pairing.senderOfferId) &&
+    !syncSenderExpired(pairing.sender, now)
+      ? pairing.sender
+      : null
   return {
-    sender:
-      pairing.sender && !syncSenderExpired(pairing.sender, now)
-        ? pairing.sender
-        : null,
+    sender,
+    senderOfferId: sender ? pairing.senderOfferId : null,
     offerTab:
       pairing.offerTab &&
       now - pairing.offerTab.createdAt <= SYNC_PAIRING_TTL_MS
@@ -940,7 +1089,7 @@ function pruneSyncPairing(
 async function readSyncPairing(
   state: BackgroundBridgeState,
   extApi: Record<string, any> | null,
-): Promise<{ pairing: PendingSyncPairing; senderExpired: boolean }> {
+): Promise<{ pairing: PendingSyncPairing; expiredOfferId: string | null }> {
   const session = syncSessionStorage(extApi)
   const held = session
     ? (await session.get(SYNC_PAIRING_SESSION_KEY))?.[SYNC_PAIRING_SESSION_KEY]
@@ -948,9 +1097,16 @@ async function readSyncPairing(
   const sender = held?.sender ?? null
   const pairing = pruneSyncPairing({
     sender,
+    senderOfferId: held?.senderOfferId ?? null,
     offerTab: held?.offerTab ?? null,
   })
-  return { pairing, senderExpired: !!sender && !pairing.sender }
+  return {
+    pairing,
+    expiredOfferId:
+      sender && !pairing.sender && isSyncOfferId(held?.senderOfferId)
+        ? held.senderOfferId
+        : null,
+  }
 }
 
 async function saveSyncPairing(
@@ -977,8 +1133,8 @@ function withSyncPairing<T>(
   step: (pairing: PendingSyncPairing) => Promise<[PendingSyncPairing, T]>,
 ): Promise<T> {
   const run = syncPairingSteps.then(async () => {
-    const { pairing, senderExpired } = await readSyncPairing(state, extApi)
-    if (senderExpired) announceSyncSender(extApi, 'expired')
+    const { pairing, expiredOfferId } = await readSyncPairing(state, extApi)
+    if (expiredOfferId) announceSyncSender(extApi, 'expired', expiredOfferId)
     // Whatever the step returns is saved, so expired entries are wiped here too.
     const [next, result] = await step(pairing)
     await saveSyncPairing(state, extApi, next)
@@ -1035,6 +1191,7 @@ function scheduleSyncPairingPurge(
 function announceSyncSender(
   extApi: Record<string, any> | null,
   status: 'new-pin' | 'sent' | 'ended' | 'expired',
+  offerId: string,
   pin = '',
 ): void {
   if (typeof extApi?.runtime?.sendMessage !== 'function') return
@@ -1043,6 +1200,7 @@ function announceSyncSender(
       extApi.runtime.sendMessage({
         channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
         type: 'sync-sender-update',
+        offerId,
         status,
         pin,
       }),
@@ -1109,15 +1267,28 @@ async function handleAccountSyncMessage(
   })
 
   switch (message.type) {
+    case 'request-sync-sender': {
+      if (!isSyncNavigationRequester(sender, extApi))
+        return rejected('Sender is not a trusted extension view')
+      if (Object.keys(message).some(key => key !== 'channel' && key !== 'type'))
+        return rejected('Unexpected navigation payload')
+      return {
+        ok: true,
+        result: await requestSyncSenderNavigation(state, extApi),
+      }
+    }
     case 'extension-sync-offer': {
       if (!fromExtensionPage) return rejected('Sender is not an extension page')
+      const offerId = message.payload?.offerId
+      if (!isSyncOfferId(offerId))
+        return rejected('Missing sync offer identity')
       const bundle = message.payload?.deviceSyncBundle
       if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
         return rejected('Missing sync bundle')
       }
       const created = createSyncSender(bundle)
       await withSyncPairing(state, extApi, async pairing => [
-        { ...pairing, sender: created },
+        { ...pairing, sender: created, senderOfferId: offerId },
         null,
       ])
       scheduleSyncPairingPurge(
@@ -1130,6 +1301,7 @@ async function handleAccountSyncMessage(
         result: {
           ok: true,
           pin: created.pin,
+          offerId,
           expiresAt: created.createdAt + SYNC_PAIRING_TTL_MS,
         },
       }
@@ -1137,13 +1309,15 @@ async function handleAccountSyncMessage(
     case 'extension-sync-status': {
       // An extension page reopened: show the session's current PIN, if any.
       if (!fromExtensionPage) return rejected('Sender is not an extension page')
-      const current = (await currentSyncPairing(state, extApi)).sender
+      const pairing = await currentSyncPairing(state, extApi)
+      const current = pairing.sender
       return {
         ok: true,
         result: current
           ? {
               ok: true,
               pin: current.pin,
+              offerId: pairing.senderOfferId,
               status: current.failures > 0 ? 'new-pin' : 'waiting',
               expiresAt: current.createdAt + SYNC_PAIRING_TTL_MS,
             }
@@ -1152,11 +1326,16 @@ async function handleAccountSyncMessage(
     }
     case 'extension-sync-cancel': {
       if (!fromExtensionPage) return rejected('Sender is not an extension page')
-      await withSyncPairing(state, extApi, async pairing => [
-        { ...pairing, sender: null },
-        null,
+      const offerId = message.payload?.offerId
+      if (!isSyncOfferId(offerId))
+        return rejected('Missing sync offer identity')
+      const cancelled = await withSyncPairing(state, extApi, async pairing => [
+        pairing.senderOfferId === offerId
+          ? { ...pairing, sender: null, senderOfferId: null }
+          : pairing,
+        pairing.senderOfferId === offerId,
       ])
-      return { ok: true, result: { ok: true } }
+      return { ok: true, result: { ok: cancelled, offerId } }
     }
     case 'pwa-sync-offer': {
       const tabId = sender?.tab?.id
@@ -1196,26 +1375,51 @@ async function handleAccountSyncMessage(
         return { ok: true, result }
       }
       if (!fromFrankTab) return rejected('Sender is not the Frank web app')
-      const result = await withSyncPairing(state, extApi, async pairing => {
-        if (!pairing.sender) {
-          return [pairing, { ok: false, reason: 'no-sender' }]
-        }
-        if (message.type === 'pair-hello') {
-          const next = syncSenderHello(pairing.sender)
-          if (!next.state) announceSyncSender(extApi, 'expired')
-          return [{ ...pairing, sender: next.state }, next.reply]
-        }
-        const next = syncSenderConfirm(pairing.sender, message.payload)
-        if (next.outcome === 'new-pin' && next.state) {
-          announceSyncSender(extApi, 'new-pin', next.state.pin)
-        } else if (next.outcome !== 'stale') {
-          announceSyncSender(
-            extApi,
-            next.outcome as 'sent' | 'ended' | 'expired',
-          )
-        }
-        return [{ ...pairing, sender: next.state }, next.reply]
-      })
+      const result = await withSyncPairing<SyncHelloReply | SyncConfirmReply>(
+        state,
+        extApi,
+        async pairing => {
+          if (!pairing.sender) {
+            return [pairing, { ok: false, reason: 'no-sender' }]
+          }
+          if (message.type === 'pair-hello') {
+            const next = syncSenderHello(pairing.sender)
+            if (!next.state)
+              announceSyncSender(extApi, 'expired', pairing.senderOfferId!)
+            return [
+              {
+                ...pairing,
+                sender: next.state,
+                senderOfferId: next.state ? pairing.senderOfferId : null,
+              },
+              next.reply,
+            ]
+          }
+          const next = syncSenderConfirm(pairing.sender, message.payload)
+          if (next.outcome === 'new-pin' && next.state) {
+            announceSyncSender(
+              extApi,
+              'new-pin',
+              pairing.senderOfferId!,
+              next.state.pin,
+            )
+          } else if (next.outcome !== 'stale') {
+            announceSyncSender(
+              extApi,
+              next.outcome as 'sent' | 'ended' | 'expired',
+              pairing.senderOfferId!,
+            )
+          }
+          return [
+            {
+              ...pairing,
+              sender: next.state,
+              senderOfferId: next.state ? pairing.senderOfferId : null,
+            },
+            next.reply,
+          ]
+        },
+      )
       return { ok: true, result }
     }
     default:
@@ -1318,9 +1522,7 @@ export async function handleBackgroundMessage(
       message.announceMode ?? message.payload?.announceMode ?? 'always',
     )
     const mode: DappProviderAnnounceMode =
-      rawMode === 'connected-only' || rawMode === 'stealth'
-        ? rawMode
-        : 'always'
+      rawMode === 'connected-only' || rawMode === 'stealth' ? rawMode : 'always'
     state.announceMode = mode
     const extApi = getRawExtensionApi(runtimeScope)
     if (extApi?.storage?.local?.set) {
@@ -1394,7 +1596,10 @@ export async function handleBackgroundMessage(
       if (!norm || !isPersonaAddress(address)) continue
       state.sitePersonaAddresses[norm] = address
       for (const pending of state.pendingApprovals.values()) {
-        if (pending.origin === norm && pending.suggestedBurnerAddress !== address) {
+        if (
+          pending.origin === norm &&
+          pending.suggestedBurnerAddress !== address
+        ) {
           pending.suggestedBurnerAddress = address
           pendingChanged = true
         }
@@ -1442,7 +1647,11 @@ export async function handleBackgroundMessage(
     let nextPoolHex = ''
     if (typeof rawPool === 'bigint' && rawPool >= 0n) {
       nextPoolHex = '0x' + rawPool.toString(16)
-    } else if (typeof rawPool === 'number' && Number.isFinite(rawPool) && rawPool >= 0) {
+    } else if (
+      typeof rawPool === 'number' &&
+      Number.isFinite(rawPool) &&
+      rawPool >= 0
+    ) {
       nextPoolHex = '0x' + BigInt(Math.floor(rawPool)).toString(16)
     } else if (typeof rawPool === 'string') {
       const trimmedPool = rawPool.trim()
@@ -1587,7 +1796,10 @@ export async function handleBackgroundMessage(
             runtimeScope,
           )
         } else if (mode === 'window') {
-          await focusOrOpenMainExtensionWindow(message.options ?? {}, runtimeScope)
+          await focusOrOpenMainExtensionWindow(
+            message.options ?? {},
+            runtimeScope,
+          )
         }
       } catch (err) {
         openError = err instanceof Error ? err.message : String(err)
@@ -1633,7 +1845,8 @@ export async function handleBackgroundMessage(
     const normalizedOrigin = normalizeBridgeOrigin(rawOrigin)
     const href = String(message.href ?? sender?.url ?? rawOrigin)
     const id = String(
-      message.id ?? `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      message.id ??
+        `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     )
 
     if (method === 'eth_chainId') {
@@ -1651,7 +1864,8 @@ export async function handleBackgroundMessage(
     // A website's connect action needs the extension's account, independently
     // of the PWA login. Show an actionable notice before answering it.
     if (
-      (method === 'eth_requestAccounts' || method === 'wallet_requestPermissions') &&
+      (method === 'eth_requestAccounts' ||
+        method === 'wallet_requestPermissions') &&
       !isPersonaAddress(state.activePersonaAddress)
     ) {
       try {
@@ -1819,7 +2033,8 @@ export async function handleBackgroundMessage(
       method === 'wallet_requestPermissions' ||
       APPROVAL_REQUIRED_METHODS.has(method)
     ) {
-      const effectiveOrigin = normalizedOrigin || rawOrigin || 'https://dapp.local'
+      const effectiveOrigin =
+        normalizedOrigin || rawOrigin || 'https://dapp.local'
       const isConnectMethod =
         method === 'eth_requestAccounts' ||
         method === 'wallet_requestPermissions'
@@ -1835,7 +2050,8 @@ export async function handleBackgroundMessage(
           ok: false,
           error: {
             code: 4100,
-            message: 'The requested method and/or account has not been authorized by the user.',
+            message:
+              'The requested method and/or account has not been authorized by the user.',
           },
         }
       }
@@ -1888,7 +2104,8 @@ export async function handleBackgroundMessage(
           state.pendingRpcWaiters.delete(id)
           waiter.reject({
             code: 4900,
-            message: 'Frank could not open the connection approval. Open the extension and try again.',
+            message:
+              'Frank could not open the connection approval. Open the extension and try again.',
           })
           notifyExtensionViewsOfApprovals(runtimeScope)
         })
@@ -2138,9 +2355,12 @@ export async function restoreStoredBridgeState(
     stored.frankDappSitePersonas &&
     typeof stored.frankDappSitePersonas === 'object'
   ) {
-    for (const [orig, address] of Object.entries(stored.frankDappSitePersonas)) {
+    for (const [orig, address] of Object.entries(
+      stored.frankDappSitePersonas,
+    )) {
       if (isPersonaAddress(address)) {
-        state.sitePersonaAddresses[normalizeBridgeOrigin(orig) || orig] = address
+        state.sitePersonaAddresses[normalizeBridgeOrigin(orig) || orig] =
+          address
       }
     }
   }
@@ -2148,7 +2368,9 @@ export async function restoreStoredBridgeState(
     stored.frankDappOriginPersonas &&
     typeof stored.frankDappOriginPersonas === 'object'
   ) {
-    for (const [orig, binding] of Object.entries(stored.frankDappOriginPersonas)) {
+    for (const [orig, binding] of Object.entries(
+      stored.frankDappOriginPersonas,
+    )) {
       if (binding && typeof binding === 'object') {
         const norm = normalizeBridgeOrigin(orig) || orig
         state.originPersonas[norm] = binding as OriginPersonaBinding
@@ -2288,4 +2510,3 @@ if (
 ) {
   installBackgroundBridge(globalThis as Record<string, any>)
 }
-

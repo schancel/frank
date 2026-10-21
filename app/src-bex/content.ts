@@ -2,6 +2,8 @@ import {
   FRANK_DAPP_BRIDGE_CHANNEL,
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   FRANK_SYNC_PAGE_MESSAGE_TYPES,
+  FRANK_SYNC_NAVIGATION_TIMEOUT_MS,
+  type SyncSenderNavigationResult,
   getExtensionResourceUrl,
   getRawExtensionApi,
   isBrowserExtensionRuntime,
@@ -69,7 +71,9 @@ export function installContentScriptBridge(
   runtimeScope?: Record<string, any>,
 ): () => void {
   if (!win || typeof win.addEventListener !== 'function') {
-    return () => {}
+    return () => {
+      // No bridge was installed in this context.
+    }
   }
 
   if (typeof win.__FRANK_CONTENT_BRIDGE_CLEANUP__ === 'function') {
@@ -84,7 +88,10 @@ export function installContentScriptBridge(
 
   if (win.location && isAllowedSyncOrigin(win.location)) {
     win.__FRANK_EXTENSION_BRIDGE_READY__ = true
-    if (typeof win.dispatchEvent === 'function' && typeof Event === 'function') {
+    if (
+      typeof win.dispatchEvent === 'function' &&
+      typeof Event === 'function'
+    ) {
       try {
         win.dispatchEvent(new Event('frank:extension-bridge-ready'))
       } catch {
@@ -95,6 +102,14 @@ export function installContentScriptBridge(
 
   // Pairing messages relayed to the page, waiting for its 'pair-reply', by id.
   const pageReplies = new Map<string, (result: unknown) => void>()
+  const navigationReplies = new Map<
+    string,
+    (result: SyncSenderNavigationResult) => void
+  >()
+  const navigationRequests = new Map<
+    string,
+    Promise<SyncSenderNavigationResult>
+  >()
   let pageReplySeq = 0
 
   const handleWindowMessage = async (event: MessageEvent) => {
@@ -161,6 +176,26 @@ export function installContentScriptBridge(
             },
           },
           '*',
+        )
+      }
+      return
+    }
+
+    if (
+      data.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
+      data.direction === 'to-extension' &&
+      data.type === 'sync-navigation-reply'
+    ) {
+      if (
+        event.source === win &&
+        event.origin === win.location?.origin &&
+        isAllowedSyncOrigin(win.location) &&
+        typeof data.result?.ok === 'boolean'
+      ) {
+        // Navigation returns one boolean. Never relay account, PIN or export fields supplied
+        // by a page response, and never accept a pairing reply as a navigation reply.
+        navigationReplies.get(data.id)?.(
+          data.result.ok ? { ok: true } : { ok: false, reason: 'not-ready' },
         )
       }
       return
@@ -275,7 +310,55 @@ export function installContentScriptBridge(
 
   void syncProviderPrivacyFromBackground(false)
 
-  const unsubscribeRuntime = onRuntimeMessage((message: any) => {
+  const unsubscribeRuntime = onRuntimeMessage((message: any, sender: any) => {
+    if (
+      message?.channel === FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
+      message.type === 'open-sync-sender'
+    ) {
+      if (
+        sender?.id !== getRawExtensionApi(runtimeScope)?.runtime?.id ||
+        sender?.tab ||
+        win.top !== win ||
+        !isAllowedSyncOrigin(win.location) ||
+        typeof message.id !== 'string' ||
+        !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id) ||
+        Object.keys(message).some(
+          key => !['channel', 'type', 'id'].includes(key),
+        )
+      ) {
+        return { ok: false, reason: 'unavailable' }
+      }
+      const prior = navigationRequests.get(message.id)
+      if (prior) return prior
+      if (navigationReplies.size >= 8)
+        return { ok: false, reason: 'unavailable' }
+      const id = message.id
+      const replied = new Promise<SyncSenderNavigationResult>(resolve => {
+        const timer = setTimeout(
+          () => settle({ ok: false, reason: 'timeout' }),
+          FRANK_SYNC_NAVIGATION_TIMEOUT_MS,
+        )
+        const settle = (result: SyncSenderNavigationResult) => {
+          clearTimeout(timer)
+          navigationReplies.delete(id)
+          resolve(result)
+        }
+        navigationReplies.set(id, settle)
+      })
+      if (navigationRequests.size >= 32)
+        navigationRequests.delete(navigationRequests.keys().next().value!)
+      navigationRequests.set(id, replied)
+      win.postMessage(
+        {
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          direction: 'to-pwa',
+          type: 'open-sync-sender',
+          id,
+        },
+        win.location.origin,
+      )
+      return replied
+    }
     if (
       message &&
       message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
@@ -374,6 +457,9 @@ export function installContentScriptBridge(
   }
 
   const cleanup = () => {
+    for (const reply of navigationReplies.values())
+      reply({ ok: false, reason: 'unavailable' })
+    navigationRequests.clear()
     win.removeEventListener('message', handleWindowMessage)
     unsubscribeRuntime()
     if (typeof api?.storage?.onChanged?.removeListener === 'function') {
@@ -390,4 +476,3 @@ export function installContentScriptBridge(
 if (typeof window !== 'undefined' && isBrowserExtensionRuntime()) {
   installContentScriptBridge(window as Window & Record<string, any>)
 }
-

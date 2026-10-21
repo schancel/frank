@@ -107,7 +107,10 @@ function harness(options: { session?: boolean } = {}) {
       storage: { local: { set: localSet }, ...(session ? { session } : {}) },
       tabs: {
         sendMessage: toTab,
-        get: jest.fn(async (tabId: number) => ({ id: tabId, url: tabUrls[tabId] })),
+        get: jest.fn(async (tabId: number) => ({
+          id: tabId,
+          url: tabUrls[tabId],
+        })),
       },
       alarms: {
         create: alarmsCreate,
@@ -215,7 +218,7 @@ describe('extension -> web app account sync by PIN pairing', () => {
       {
         channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
         type: 'extension-sync-offer',
-        payload: { deviceSyncBundle: bundle() },
+        payload: { deviceSyncBundle: bundle(), offerId: 'offer-a' },
       },
       EXT_PAGE,
       h.state,
@@ -280,7 +283,10 @@ describe('extension -> web app account sync by PIN pairing', () => {
     })
     expect(h.state.syncPairing.sender).toBeNull()
     expect(h.toExtensionPages).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'sync-sender-update', status: 'expired' }),
+      expect.objectContaining({
+        type: 'sync-sender-update',
+        status: 'expired',
+      }),
     )
     expect(h.observable()).not.toContain('ciphertext')
   })
@@ -313,7 +319,11 @@ describe('extension -> web app account sync by PIN pairing', () => {
     const pin = await offer(h)
     const cancel = (sender: unknown) =>
       handleBackgroundMessage(
-        { channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL, type: 'extension-sync-cancel' },
+        {
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          type: 'extension-sync-cancel',
+          payload: { offerId: 'offer-a' },
+        },
         sender,
         h.state,
         h.bgScope,
@@ -331,9 +341,15 @@ describe('extension -> web app account sync by PIN pairing', () => {
   it('tells a reopened extension page the current PIN after a wrong one', async () => {
     const h = harness()
     const pin = await offer(h)
-    await receiveAccountOverBridge(pin === '000000' ? '000001' : '000000', h.win)
+    await receiveAccountOverBridge(
+      pin === '000000' ? '000001' : '000000',
+      h.win,
+    )
     const status = await handleBackgroundMessage(
-      { channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL, type: 'extension-sync-status' },
+      {
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        type: 'extension-sync-status',
+      },
       EXT_PAGE,
       h.state,
       h.bgScope,
@@ -343,7 +359,10 @@ describe('extension -> web app account sync by PIN pairing', () => {
     expect(status.result.pin).not.toBe(pin)
     // A web page cannot read it.
     const fromTab = await handleBackgroundMessage(
-      { channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL, type: 'extension-sync-status' },
+      {
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        type: 'extension-sync-status',
+      },
       FRANK_TAB,
       h.state,
       h.bgScope,
@@ -405,7 +424,10 @@ describe('extension -> web app account sync by PIN pairing', () => {
         return seen
       })
       status = handleBackgroundMessage(
-        { channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL, type: 'extension-sync-status' },
+        {
+          channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+          type: 'extension-sync-status',
+        },
         EXT_PAGE,
         h.state,
         h.bgScope,
@@ -448,7 +470,7 @@ describe('extension -> web app account sync by PIN pairing', () => {
       {
         channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
         type: 'extension-sync-offer',
-        payload: { deviceSyncBundle: bundle() },
+        payload: { deviceSyncBundle: bundle(), offerId: 'offer-a' },
       },
       FRANK_TAB,
       h.state,
@@ -466,9 +488,20 @@ describe('extension -> web app account sync by PIN pairing', () => {
     const pin = await offer(h)
     expect(h.state.syncPairing.sender).toBeNull()
     expect(h.held.frankSyncPairing.sender.pin).toBe(pin)
+    expect(h.held.frankSyncPairing.senderOfferId).toBe('offer-a')
 
     // The service worker restarted: fresh background state, same session storage.
     const after = createBackgroundBridgeState()
+    const status = await handleBackgroundMessage(
+      {
+        channel: FRANK_PWA_EXTENSION_SYNC_CHANNEL,
+        type: 'extension-sync-status',
+      },
+      EXT_PAGE,
+      after,
+      h.bgScope,
+    )
+    expect(status.result.offerId).toBe('offer-a')
     const send: SyncPairingSend = async (type, payload) =>
       (
         await handleBackgroundMessage(
@@ -555,7 +588,8 @@ describe('web app -> extension account sync by PIN pairing', () => {
     const view = startPageSyncSender(bundle(), h.win)
     await new Promise(resolve => setTimeout(resolve, 0))
     await receiveSyncBundle(view.pin, h.fromExtensionPage)
-    for (const call of h.toTab.mock.calls) expect(call[2]).toEqual({ frameId: 0 })
+    for (const call of h.toTab.mock.calls)
+      expect(call[2]).toEqual({ frameId: 0 })
 
     const again = startPageSyncSender(bundle(), h.win)
     await new Promise(resolve => setTimeout(resolve, 0))

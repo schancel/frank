@@ -753,7 +753,7 @@ async function run() {
         return evaluate(
           `(() => { const l = document.querySelector('.chat-message-list'); const mine = [...l.querySelectorAll('.q-message-sent')].filter(e => e.innerText.includes(${JSON.stringify(
             text,
-          )})); return { copies: mine.length, sending: mine.some(e => e.innerText.includes('Sending')), failed: mine.some(e => /Failed to send/.test(e.innerText)) } })()`,
+          )})); return { copies: mine.length, sending: mine.some(e => e.innerText.includes('Sending')), failed: mine.some(e => e.querySelector('[data-testid="outgoing-failed"]') !== null) } })()`,
         )
       }
       let a = await settled(qwen, `quick A ${tag}`)
@@ -803,7 +803,7 @@ async function run() {
           `[...document.querySelectorAll('.chat-message-list .q-btn')].find(e => e.innerText.includes('replay'))?.click()`,
         )
         await until(
-          `!/Failed to send/.test(document.querySelector('.chat-message-list').innerText)`,
+          `document.querySelector('.chat-message-list [data-testid="outgoing-failed"]') === null`,
           30000,
           'resend',
         )

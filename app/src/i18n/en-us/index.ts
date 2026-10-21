@@ -1598,6 +1598,16 @@ export const rawEnUS = {
     coldVaultAddressLabel: 'External Vault Address (EVM / Solana)',
     coldVaultAddressHint:
       'Hardware or browser wallet address (0x... or Solana base58) receiving swept excess funds',
+    coldVaultUseAddress: 'Use this address',
+    coldVaultAddressUnconfirmed:
+      'Not saved yet: confirm it with "Use this address".',
+    coldVaultConfirmTitle: 'Send swept funds to this address?',
+    coldVaultConfirmBody:
+      'Check every character against your vault wallet. Funds swept to a wrong address cannot be recovered.',
+    coldVaultConfirmChain: 'Chain',
+    coldVaultChainEvm: 'EVM',
+    coldVaultChainSolana: 'Solana',
+    coldVaultConfirmCancel: 'Cancel',
     coldVaultMaxHotBalanceLabel: 'Max Hot-Wallet Float Ceiling (MON)',
     coldVaultMaxHotBalanceHint:
       'Default: 1,500 MON (~150 AVU, +20% hysteresis trigger at 1,800 MON)',

@@ -52,13 +52,16 @@ const passthrough = defineComponent({
   },
 })
 
-function mountAt(width: number, push = jest.fn()) {
+function mountAt(
+  width: number,
+  router: Record<string, jest.Mock> = { push: jest.fn() },
+) {
   mockOwnAddress.value = null
   return mount(ChatLayout, {
     global: {
       mocks: {
         $route: { params: { address: OWN_ADDRESS.toLowerCase() } },
-        $router: { push },
+        $router: router,
         $t: (key: string) => key,
         $q: { screen: { width } },
       },
@@ -91,14 +94,41 @@ function mountAt(width: number, push = jest.fn()) {
 }
 
 describe('ChatLayout back arrow on phones', () => {
-  it('an open conversation on a phone has a back arrow to the chat list', async () => {
-    const push = jest.fn()
-    const wrapper = mountAt(375, push)
+  afterEach(() => {
+    window.history.replaceState(null, '')
+  })
+
+  function phoneRouter() {
+    return { push: jest.fn(), back: jest.fn(), replace: jest.fn() }
+  }
+
+  it('opened from the chat list, the back arrow goes back in history', async () => {
+    window.history.replaceState({ back: '/chat' }, '')
+    const router = phoneRouter()
+    const wrapper = mountAt(375, router)
     await flushPromises()
     const back = wrapper.get('[data-testid="chat-back"]')
     expect(back.attributes('aria-label')).toBe('a11y.backToChats')
     await back.trigger('click')
-    expect(push).toHaveBeenCalledWith('/chat')
+    expect(router.back).toHaveBeenCalledTimes(1)
+    expect(router.replace).not.toHaveBeenCalled()
+    expect(router.push).not.toHaveBeenCalled()
+  })
+
+  it('opened from elsewhere (a deep link), the back arrow replaces with the chat list', async () => {
+    window.history.replaceState({ back: '/forum' }, '')
+    const router = phoneRouter()
+    const wrapper = mountAt(375, router)
+    await flushPromises()
+    await wrapper.get('[data-testid="chat-back"]').trigger('click')
+    expect(router.replace).toHaveBeenCalledWith('/chat')
+    expect(router.back).not.toHaveBeenCalled()
+    expect(router.push).not.toHaveBeenCalled()
+
+    window.history.replaceState(null, '')
+    await wrapper.get('[data-testid="chat-back"]').trigger('click')
+    expect(router.replace).toHaveBeenCalledTimes(2)
+    expect(router.back).not.toHaveBeenCalled()
   })
 
   it('a wide layout keeps the list in the sidebar and shows no back arrow', async () => {

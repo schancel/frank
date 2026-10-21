@@ -7,6 +7,7 @@ import {
   useSettingsStore,
   saveSettings,
   restoreSettings,
+  externalVaultAddressChain,
   isValidExternalVaultAddress,
 } from './settings'
 import { discoverEmailGateway } from '@frank/cashweb/relay/email-gateway-discovery'
@@ -365,14 +366,28 @@ describe('external vault address validation', () => {
     expect(isValidExternalVaultAddress('1'.repeat(32))).toBe(true)
   })
 
-  it('rejects a well-formed prefix of a Solana address', () => {
-    // 32-43 base58 characters pass the shape regex but decode to fewer than 32 bytes.
+  it('rejects a Solana-shaped string that does not decode to 32 bytes', () => {
+    // The 42-character prefix of the 43-character wrapped-SOL mint decodes to 31 bytes.
     expect(
       isValidExternalVaultAddress('So1111111111111111111111111111111111111111'),
     ).toBe(false)
     expect(
       isValidExternalVaultAddress('So111111111111111111111111111111'),
     ).toBe(false)
+  })
+
+  it('does NOT reject every truncated Solana address: the byte check is shape only', () => {
+    // The USDC mint is 44 characters and its 43-character prefix also decodes to 32 bytes,
+    // so validation cannot tell a half-paste from an address. The Settings page therefore
+    // never saves a vault address without an explicit confirm.
+    const usdcMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+    expect(isValidExternalVaultAddress(usdcMint)).toBe(true)
+    expect(isValidExternalVaultAddress(usdcMint.slice(0, 43))).toBe(true)
+    expect(externalVaultAddressChain(usdcMint)).toBe('solana')
+    expect(
+      externalVaultAddressChain('0x8888888888888888888888888888888888888888'),
+    ).toBe('evm')
+    expect(externalVaultAddressChain('not-an-address')).toBeNull()
   })
 })
 

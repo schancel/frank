@@ -263,10 +263,33 @@
                   outlined
                   :error="!!coldVaultError"
                   data-test="cold-vault-address-input"
-                  class="full-width q-mb-sm"
-                  @update:model-value="coldVaultField.markDirty()"
-                  @blur="coldVaultField.commitNow()"
+                  class="full-width q-mb-xs"
+                  @update:model-value="coldVaultError = ''"
                 />
+                <!-- A pasted address is never saved implicitly: a truncated Solana address is often
+                still a well-formed one, so the user confirms the full address first. -->
+                <div
+                  v-if="coldVaultAddressChanged"
+                  class="row items-center no-wrap q-gutter-x-sm q-mb-sm"
+                >
+                  <div
+                    class="col text-caption settings-muted"
+                    data-test="cold-vault-address-unconfirmed"
+                  >
+                    {{ $t('settings.coldVaultAddressUnconfirmed') }}
+                  </div>
+                  <q-btn
+                    unelevated
+                    dense
+                    no-caps
+                    size="sm"
+                    color="primary"
+                    class="q-px-sm"
+                    :label="$t('settings.coldVaultUseAddress')"
+                    data-test="cold-vault-address-use-btn"
+                    @click="reviewColdVaultAddress"
+                  />
+                </div>
                 <q-input
                   v-model="coldVaultMaxHotBalanceInput"
                   :label="$t('settings.coldVaultMaxHotBalanceLabel')"
@@ -301,6 +324,54 @@
                   />
                 </div>
               </div>
+              <q-dialog
+                v-model="coldVaultConfirmOpen"
+                data-test="cold-vault-confirm-dialog"
+              >
+                <q-card class="cold-vault-confirm-card">
+                  <q-card-section class="text-h6">
+                    {{ $t('settings.coldVaultConfirmTitle') }}
+                  </q-card-section>
+                  <q-card-section class="q-pt-none">
+                    <div class="text-caption settings-muted">
+                      {{ $t('settings.coldVaultConfirmChain') }}
+                    </div>
+                    <div class="q-mb-sm" data-test="cold-vault-confirm-chain">
+                      {{
+                        coldVaultPendingChainKey
+                          ? $t(coldVaultPendingChainKey)
+                          : ''
+                      }}
+                    </div>
+                    <div
+                      class="cold-vault-confirm-address q-pa-sm q-mb-sm"
+                      data-test="cold-vault-confirm-address"
+                    >
+                      {{ coldVaultPendingAddress }}
+                    </div>
+                    <div class="text-caption">
+                      {{ $t('settings.coldVaultConfirmBody') }}
+                    </div>
+                  </q-card-section>
+                  <q-card-actions align="right">
+                    <q-btn
+                      flat
+                      no-caps
+                      :label="$t('settings.coldVaultConfirmCancel')"
+                      data-test="cold-vault-confirm-cancel"
+                      @click="coldVaultConfirmOpen = false"
+                    />
+                    <q-btn
+                      unelevated
+                      no-caps
+                      color="primary"
+                      :label="$t('settings.coldVaultUseAddress')"
+                      data-test="cold-vault-confirm-accept"
+                      @click="confirmColdVaultAddress"
+                    />
+                  </q-card-actions>
+                </q-card>
+              </q-dialog>
             </template>
 
             <template v-else-if="activeSection === 'appearance'">
@@ -589,7 +660,10 @@ import { computed, defineComponent, onBeforeUnmount, ref, watch } from 'vue'
 
 import { useAppearanceStore } from 'src/stores/appearance'
 import { useContactStore } from 'src/stores/contacts'
-import { useSettingsStore } from 'src/stores/settings'
+import {
+  externalVaultAddressChain,
+  useSettingsStore,
+} from 'src/stores/settings'
 import { useProfileStore } from 'src/stores/my-profile'
 import { storeToRefs } from 'pinia'
 import NotificationPermissionPanel from 'src/components/settings/NotificationPermissionPanel.vue'
@@ -806,7 +880,8 @@ export default defineComponent({
     // page), not at every typing pause.
     let syncedThresholdAvu = settingsStore.notificationFeeThresholdAvu
     function syncThresholdIfChanged() {
-      if (settingsStore.notificationFeeThresholdAvu === syncedThresholdAvu) return
+      if (settingsStore.notificationFeeThresholdAvu === syncedThresholdAvu)
+        return
       syncedThresholdAvu = settingsStore.notificationFeeThresholdAvu
       syncNotificationPolicy(
         settingsStore.notificationFeeThresholdAvu,
@@ -887,7 +962,11 @@ export default defineComponent({
       }
     })
 
-    // --- Cold-wallet auto-sweep: one setting of three fields, saved only when all are valid ---
+    // --- Cold-wallet auto-sweep ---
+    // The toggle and the ceiling apply themselves (blur, leaving). The vault address never does:
+    // base58 has no checksum and a truncated Solana address is often still well formed, so a
+    // changed address is saved only through the explicit confirm dialog. Leaving with an
+    // unconfirmed address drops it.
     const coldVaultEnabled = ref(settingsStore.coldVaultSweep?.enabled ?? false)
     const coldVaultAddressInput = ref(
       settingsStore.coldVaultSweep?.externalVaultAddress ?? '',
@@ -896,30 +975,48 @@ export default defineComponent({
       settingsStore.coldVaultSweep?.maxHotBalanceDisplay ?? '1500',
     )
     const coldVaultError = ref('')
+    const coldVaultConfirmOpen = ref(false)
+    const coldVaultPendingAddress = ref('')
+    const savedColdVaultAddress = () =>
+      settingsStore.coldVaultSweep?.externalVaultAddress ?? ''
+    // An emptied field is not an address to confirm; Reset is how the vault is cleared.
+    const coldVaultAddressChanged = computed(() => {
+      const typed = String(coldVaultAddressInput.value ?? '').trim()
+      return typed !== '' && typed !== savedColdVaultAddress()
+    })
+    const coldVaultPendingChainKey = computed(() => {
+      const chain = externalVaultAddressChain(coldVaultPendingAddress.value)
+      if (chain === 'evm') return 'settings.coldVaultChainEvm'
+      if (chain === 'solana') return 'settings.coldVaultChainSolana'
+      return ''
+    })
     watch(
       () => settingsStore.coldVaultSweep,
-      newVal => {
+      (newVal, oldVal) => {
         if (!newVal) return
         coldVaultEnabled.value = newVal.enabled
-        coldVaultAddressInput.value = newVal.externalVaultAddress
         coldVaultMaxHotBalanceInput.value = newVal.maxHotBalanceDisplay
+        // Saving the toggle or ceiling must not wipe an address still awaiting confirmation.
+        const typed = String(coldVaultAddressInput.value ?? '').trim()
+        if (typed === (oldVal?.externalVaultAddress ?? '')) {
+          coldVaultAddressInput.value = newVal.externalVaultAddress
+        }
       },
       { deep: true },
     )
     const coldVaultField = blurField(() => {
       coldVaultError.value = ''
+      const current = settingsStore.coldVaultSweep
       const next = {
         enabled: coldVaultEnabled.value,
-        externalVaultAddress: String(coldVaultAddressInput.value ?? '').trim(),
+        externalVaultAddress: savedColdVaultAddress(),
         maxHotBalanceDisplay: String(
           coldVaultMaxHotBalanceInput.value ?? '1500',
         ).trim(),
       }
-      const current = settingsStore.coldVaultSweep
       if (
         current &&
         current.enabled === next.enabled &&
-        current.externalVaultAddress === next.externalVaultAddress &&
         current.maxHotBalanceDisplay === next.maxHotBalanceDisplay
       ) {
         return
@@ -931,6 +1028,34 @@ export default defineComponent({
           err?.message || 'Invalid Cold-Wallet Auto-Sweep configuration'
       }
     })
+    function reviewColdVaultAddress() {
+      const typed = String(coldVaultAddressInput.value ?? '').trim()
+      if (!externalVaultAddressChain(typed)) {
+        coldVaultError.value = `Invalid external vault address: "${typed}". Expected an EVM (0x...) or Solana base58 address.`
+        return
+      }
+      coldVaultError.value = ''
+      coldVaultPendingAddress.value = typed
+      coldVaultConfirmOpen.value = true
+    }
+    function confirmColdVaultAddress() {
+      const address = coldVaultPendingAddress.value
+      coldVaultConfirmOpen.value = false
+      coldVaultPendingAddress.value = ''
+      try {
+        settingsStore.setColdVaultSweep({ externalVaultAddress: address })
+        coldVaultAddressInput.value = savedColdVaultAddress()
+      } catch (err: unknown) {
+        coldVaultError.value =
+          (err instanceof Error && err.message) ||
+          'Invalid Cold-Wallet Auto-Sweep configuration'
+      }
+    }
+    function dropUnconfirmedColdVaultAddress() {
+      coldVaultConfirmOpen.value = false
+      coldVaultPendingAddress.value = ''
+      coldVaultAddressInput.value = savedColdVaultAddress()
+    }
     function resetColdVaultSweep() {
       coldVaultField.cancel()
       coldVaultError.value = ''
@@ -940,14 +1065,17 @@ export default defineComponent({
       coldVaultMaxHotBalanceInput.value = '1500'
     }
 
-    // Leaving the page (or section) with a pending edit applies it, when valid.
-    onBeforeUnmount(() => {
+    // Leaving the page, or switching section on a wide layout (the page stays mounted), applies
+    // any pending edit that is valid and drops an unconfirmed vault address.
+    function flushPendingEdits() {
       updateIntervalField.flush()
       notificationFeeThresholdField.flush()
       syncThresholdIfChanged()
       emailGatewayField.flush()
       coldVaultField.flush()
-    })
+      dropUnconfirmedColdVaultAddress()
+    }
+    onBeforeUnmount(flushPendingEdits)
 
     // Stated, not chosen: the toggle shows the network the app is running on and cannot be
     // flipped. Swapping the chain under an open wallet breaks every call that wallet makes.
@@ -995,7 +1123,14 @@ export default defineComponent({
       coldVaultMaxHotBalanceInput,
       coldVaultError,
       coldVaultField,
+      coldVaultAddressChanged,
+      coldVaultConfirmOpen,
+      coldVaultPendingAddress,
+      coldVaultPendingChainKey,
+      reviewColdVaultAddress,
+      confirmColdVaultAddress,
       resetColdVaultSweep,
+      flushPendingEdits,
       getWalletNetworkLabel,
       supportedChains: WALLET_CONFIGS.filter(c => c.enabled !== false),
       chainStatus,
@@ -1064,6 +1199,14 @@ export default defineComponent({
     },
   },
   watch: {
+    // Wide: another section replaces the pane without unmounting the page, so pending edits
+    // are applied (or an unconfirmed address dropped) here rather than on unmount.
+    'activeSection'(
+      next: SettingsSectionId | null,
+      previous: SettingsSectionId | null,
+    ) {
+      if (previous && next !== previous) this.flushPendingEdits()
+    },
     '$router.currentRoute.value.params.section': {
       handler(param: unknown) {
         // An unknown /settings/<name> goes back to the list instead of an empty page.
@@ -1168,6 +1311,16 @@ export default defineComponent({
 .settings-section-body {
   max-width: 760px;
   padding-bottom: 24px;
+}
+.cold-vault-confirm-card {
+  width: 100%;
+  max-width: 480px;
+}
+.cold-vault-confirm-address {
+  font-family: monospace;
+  word-break: break-all;
+  border-radius: 8px;
+  background: var(--q-color-bg-surface);
 }
 .settings-muted {
   opacity: 0.7;

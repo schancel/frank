@@ -218,134 +218,6 @@ export class FrankInpageProvider {
   }
 }
 
-export interface FrankSolanaStandardAccount {
-  readonly address: string
-  readonly publicKey: Uint8Array
-  readonly chains: readonly ['solana:mainnet', 'solana:devnet']
-  readonly features: readonly [
-    'solana:signMessage',
-    'solana:signTransaction',
-    'solana:signAndSendTransaction',
-    'solana:signIn',
-  ]
-}
-
-export interface FrankSolanaStandardWallet {
-  readonly version: '1.0.0'
-  readonly name: 'Frank'
-  readonly icon: string
-  readonly chains: readonly ['solana:mainnet', 'solana:devnet']
-  readonly features: Record<string, any>
-  accounts: readonly FrankSolanaStandardAccount[]
-}
-
-function addressToSolanaStandardAccount(
-  addr: string,
-): FrankSolanaStandardAccount {
-  const pubKey = new Uint8Array(32)
-  const clean = addr.replace(/^0x/i, '')
-  for (let i = 0; i < 32; i += 1) {
-    const hexPair = clean.slice((i * 2) % Math.max(2, clean.length), ((i * 2) % Math.max(2, clean.length)) + 2)
-    const parsed = Number.parseInt(hexPair || '00', 16)
-    pubKey[i] = Number.isNaN(parsed) ? (i * 17 + 3) & 0xff : parsed
-  }
-  return Object.freeze({
-    address: addr,
-    publicKey: pubKey,
-    chains: ['solana:mainnet', 'solana:devnet'] as const,
-    features: [
-      'solana:signMessage',
-      'solana:signTransaction',
-      'solana:signAndSendTransaction',
-      'solana:signIn',
-    ] as const,
-  })
-}
-
-export function createFrankSolanaStandardWallet(
-  provider: FrankInpageProvider,
-): FrankSolanaStandardWallet {
-  const wallet: FrankSolanaStandardWallet = {
-    version: '1.0.0',
-    name: 'Frank',
-    icon: FRANK_EIP6963_INFO.icon,
-    chains: ['solana:mainnet', 'solana:devnet'],
-    accounts: [],
-    features: {
-      'standard:connect': {
-        version: '1.0.0',
-        connect: async (input?: { silent?: boolean }) => {
-          const res = await provider.request<unknown>({
-            method: 'solana_connect',
-            params: input ? [input] : [],
-          })
-          const rawList = Array.isArray(res)
-            ? res
-            : Array.isArray((res as any)?.accounts)
-            ? (res as any).accounts
-            : []
-          const accounts: FrankSolanaStandardAccount[] = rawList
-            .filter((item: unknown) => typeof item === 'string' && item.length > 0)
-            .map((addr: string) => addressToSolanaStandardAccount(addr))
-          wallet.accounts = accounts
-          return { accounts }
-        },
-      },
-      'standard:disconnect': {
-        version: '1.0.0',
-        disconnect: async () => {
-          wallet.accounts = []
-          return await provider.request({
-            method: 'solana_disconnect',
-          })
-        },
-      },
-      'standard:events': {
-        version: '1.0.0',
-        on: (event: string, listener: ProviderEventListener) => {
-          provider.on(`solana:${event}`, listener)
-          return () => provider.off(`solana:${event}`, listener)
-        },
-      },
-      'solana:signMessage': {
-        version: '1.0.0',
-        signMessage: async (input: unknown) =>
-          await provider.request({
-            method: 'solana_signMessage',
-            params: [input],
-          }),
-      },
-      'solana:signTransaction': {
-        version: '1.0.0',
-        supportedTransactionVersions: ['legacy', 0],
-        signTransaction: async (input: unknown) =>
-          await provider.request({
-            method: 'solana_signTransaction',
-            params: [input],
-          }),
-      },
-      'solana:signAndSendTransaction': {
-        version: '1.0.0',
-        supportedTransactionVersions: ['legacy', 0],
-        signAndSendTransaction: async (...inputs: unknown[]) =>
-          await provider.request({
-            method: 'solana_signAndSendTransaction',
-            params: inputs,
-          }),
-      },
-      'solana:signIn': {
-        version: '1.0.0',
-        signIn: async (...inputs: unknown[]) =>
-          await provider.request({
-            method: 'solana_signIn',
-            params: inputs,
-          }),
-      },
-    },
-  }
-  return wallet
-}
-
 export interface FrankBitcoinProvider {
   readonly isFrank: true
   requestAccounts: () => Promise<string[]>
@@ -474,8 +346,6 @@ export function shouldAnnounceEip6963Provider(
   return true
 }
 
-export const createFrankSolanaWalletStandard = createFrankSolanaStandardWallet
-
 export function announceEip6963Provider(
   win: Window,
   provider: FrankInpageProvider,
@@ -507,60 +377,6 @@ export function announceEip6963Provider(
     }),
   )
   return detail
-}
-
-export function announceSolanaWalletStandard(
-  win: Window,
-  wallet: FrankSolanaStandardWallet,
-): void {
-  const w = win as Window & Record<string, any>
-  if (isIsolatedExtensionWorld(w) || !shouldAnnounceEip6963Provider(w)) {
-    return
-  }
-  const registerPayload = {
-    register: (...callbacks: Array<(w: FrankSolanaStandardWallet) => void>) => {
-      for (const cb of callbacks) {
-        if (typeof cb === 'function') cb(wallet)
-      }
-    },
-  }
-
-  try {
-    win.dispatchEvent(
-      new CustomEvent('wallet-standard:register-wallet', {
-        detail: (api: { register?: (w: FrankSolanaStandardWallet) => void }) => {
-          if (api && typeof api.register === 'function') {
-            api.register(wallet)
-          }
-        },
-      }),
-    )
-    win.dispatchEvent(
-      new CustomEvent('wallet-standard:app-ready', {
-        detail: registerPayload,
-      }),
-    )
-  } catch {
-    // Ignore environments restricting custom event dispatch
-  }
-
-  win.addEventListener('wallet-standard:app-ready', (event: Event) => {
-    if (!shouldAnnounceEip6963Provider(w)) return
-    const customEvent = event as CustomEvent
-    if (typeof customEvent.detail?.register === 'function') {
-      customEvent.detail.register(wallet)
-    }
-  })
-
-  win.addEventListener('wallet-standard:register-wallet', (event: Event) => {
-    if (!shouldAnnounceEip6963Provider(w)) return
-    const customEvent = event as CustomEvent
-    if (typeof customEvent.detail === 'function') {
-      customEvent.detail({
-        register: () => wallet,
-      })
-    }
-  })
 }
 
 export function installInpageProvider(
@@ -623,12 +439,10 @@ export function installInpageProvider(
   }
 
   const provider = new FrankInpageProvider(win)
-  const solanaWallet = createFrankSolanaStandardWallet(provider)
   const btcProvider = createFrankBitcoinProvider(provider)
 
   win.__FRANK_INPAGE_PROVIDER_INSTALLED__ = true
   win.frankEthereum = provider
-  win.frankSolana = solanaWallet
   win.frankBitcoin = btcProvider
   if (!win.ethereum) {
     win.ethereum = provider
@@ -662,8 +476,6 @@ export function installInpageProvider(
   win.addEventListener('eip6963:requestProvider', () => {
     announceEip6963Provider(win, provider, instanceUuid)
   })
-
-  announceSolanaWalletStandard(win, solanaWallet)
   return provider
 }
 

@@ -76,13 +76,12 @@
           </div>
           <span v-else>{{ $t('leftDrawer.forum') }}</span>
         </q-toolbar-title>
-        <!-- Narrow: pull the list down to refresh instead of this button. -->
         <q-btn
-          v-if="!narrow"
           icon="refresh"
           :aria-label="$t('a11y.forumRefresh')"
           flat
           class="q-mx-none q-pa-sm no-shrink"
+          data-test="forum-refresh"
           :loading="isRefreshing"
           @click="refreshContent"
         />
@@ -110,9 +109,12 @@
         <q-scroll-area
           ref="chatScroll"
           class="q-px-sm absolute full-width full-height"
+          :content-style="{ display: 'flex', flexDirection: 'column' }"
+          :content-active-style="{ display: 'flex', flexDirection: 'column' }"
         >
           <q-pull-to-refresh
-            :disable="!narrow"
+            no-mouse
+            class="forum-refresh-surface"
             data-test="forum-pull-to-refresh"
             @refresh="pullToRefresh"
           >
@@ -253,6 +255,10 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.forum-refresh-surface {
+  flex: 1;
+}
+
 .forum-toolbar-title {
   min-width: 0;
 }

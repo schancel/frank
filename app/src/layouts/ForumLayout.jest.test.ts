@@ -95,7 +95,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
           QPage: { template: '<div><slot /></div>' },
           QScrollArea: { template: '<div><slot /></div>' },
           QPullToRefresh: {
-            props: ['disable'],
+            props: ['disable', 'noMouse'],
             emits: ['refresh'],
             template:
               '<div data-test="forum-pull-to-refresh" :data-disable="String(disable)"><slot /></div>',
@@ -285,7 +285,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     expect(mockRouterPush).toHaveBeenCalledWith('/forum')
   })
 
-  it('on a phone the title is only "#topic", the refresh button gives way to pull-to-refresh', async () => {
+  it('on a phone keeps both the compact title and manual refresh alongside pull-to-refresh', async () => {
     const store = useForumStore()
     store.setSelectedTopic('memes')
     const wrapper = mountLayout({ width: 375 })
@@ -297,19 +297,40 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     expect(wrapper.find('[data-test="forum-breadcrumb-root"]').exists()).toBe(
       false,
     )
-    expect(wrapper.find('button[data-icon="refresh"]').exists()).toBe(false)
+    expect(wrapper.find('button[data-icon="refresh"]').exists()).toBe(true)
     const pull = wrapper.getComponent('[data-test="forum-pull-to-refresh"]')
-    expect(pull.attributes('data-disable')).toBe('false')
+    expect(pull.props('disable')).toBeUndefined()
+    expect(pull.props('noMouse')).toBe('')
 
     mockFetchByTopic.mockClear()
     const done = jest.fn()
     pull.vm.$emit('refresh', done)
     await flushPromises()
     expect(mockFetchByTopic).toHaveBeenCalled()
-    expect(done).toHaveBeenCalled()
+    expect(done).toHaveBeenCalledTimes(1)
+
+    mockFetchByTopic.mockRejectedValue(create503Error())
+    const failedDone = jest.fn()
+    pull.vm.$emit('refresh', failedDone)
+    await flushPromises()
+    expect(failedDone).toHaveBeenCalledTimes(1)
+    expect(store.isRefreshing).toBe(false)
   })
 
-  it('on desktop keeps the breadcrumb and the refresh button, with pull-to-refresh off', async () => {
+  it.each([320, 390, 590, 1280])(
+    'keeps a working refresh action at %ipx',
+    async width => {
+      useForumStore().setSelectedTopic('memes')
+      const wrapper = mountLayout({ width })
+      await flushPromises()
+      mockFetchByTopic.mockClear()
+      await wrapper.get('[data-test="forum-refresh"]').trigger('click')
+      await flushPromises()
+      expect(mockFetchByTopic).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('on desktop keeps the breadcrumb and refresh button with touch refresh available', async () => {
     const store = useForumStore()
     store.setSelectedTopic('memes')
     const wrapper = mountLayout({ width: 1280 })
@@ -326,6 +347,6 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
       wrapper
         .get('[data-test="forum-pull-to-refresh"]')
         .attributes('data-disable'),
-    ).toBe('true')
+    ).toBe('undefined')
   })
 })

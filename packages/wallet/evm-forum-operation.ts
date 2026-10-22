@@ -137,7 +137,68 @@ export function bindForumAuthority(
   return { request, target, transaction, record }
 }
 
-export class ForumOperationPendingError extends Error {}
+export class ForumOperationPendingError extends Error {
+  constructor(message: string, readonly cause?: unknown) {
+    super(message)
+  }
+}
+
+/** A relay response is diagnostic only; it never authorizes another payment. */
+class ForumRelayResponseError extends Error {
+  constructor(
+    readonly status: number,
+    readonly cause: unknown,
+    readonly code?: string,
+    readonly detail?: string,
+  ) {
+    super(
+      `Forum relay HTTP ${status}${code ? ` (${code})` : ''}${
+        detail ? `: ${detail}` : ''
+      }. Original operation retained; receipt verification may still be pending.`,
+    )
+  }
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function forumRelayError(cause: unknown): unknown {
+  const response = record(record(cause)?.response)
+  const status = response?.status
+  if (typeof status !== 'number' || !Number.isInteger(status) || status < 400 || status > 599)
+    return cause
+  const fallback = new ForumRelayResponseError(status, cause)
+  const media = record(response?.headers)?.['content-type']
+  if (typeof media !== 'string' || media.split(';')[0].trim().toLowerCase() !== 'application/json')
+    return fallback
+  const data = response?.data
+  // Axios browser responses use ArrayBuffer; Node Buffer is a Uint8Array view.
+  // Respect a view's offset/length and bound bytes before decoding or parsing.
+  const bytes = data instanceof ArrayBuffer
+    ? new Uint8Array(data)
+    : data instanceof Uint8Array ? data : undefined
+  if (!bytes || bytes.byteLength > 4096) return fallback
+  try {
+    const body = record(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)))
+    const code = body?.error
+    const detail = body?.detail
+    if (
+      typeof code !== 'string' || !/^[a-z][a-z0-9_]{0,79}$/.test(code) ||
+      typeof detail !== 'string' || detail.length > 1024
+    ) return fallback
+    const safeDetail = detail
+      .replace(/https?:\/\/[^\s]+/gi, '[URL redacted]')
+      .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ')
+      .trim()
+      .slice(0, 1024)
+    return new ForumRelayResponseError(status, cause, code, safeDetail)
+  } catch {
+    return fallback
+  }
+}
 
 async function exchange(
   wallet: EvmWalletHandle,
@@ -160,6 +221,8 @@ async function exchange(
     responseType: 'arraybuffer',
     maxContentLength: 4 * 1024 * 1024,
     maxBodyLength: 4 * 1024 * 1024,
+  }).catch((cause: unknown) => {
+    throw forumRelayError(cause)
   })
   const bytes = new Uint8Array(response.data)
   if (
@@ -378,6 +441,7 @@ async function submitForumOperationAdmitted(
       `Forum operation retained pending: ${
         error instanceof Error ? error.message : String(error)
       }`,
+      error,
     )
   }
   await settle(wallet, operation, admission, handle)

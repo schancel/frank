@@ -1,5 +1,6 @@
 // node app/src/layouts/ForumLayout.refresh.browser.mjs [--source-ref=<revision>]
 import assert from 'node:assert/strict'
+import { Buffer } from 'node:buffer'
 import { spawn, execFileSync } from 'node:child_process'
 import { readFile, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -21,10 +22,13 @@ const baselinePaths = ['app/src/layouts/ForumLayout.vue']
 const styles = []
 // Synthetic read-only store input; real ForumLayout, Quasar scroll area and touch directive.
 const storeInputs = {
-  'src/stores/forum': `import {reactive} from 'vue'; export const store=reactive({topics:[],selectedTopic:'a-very-long-topic-that-must-yield-to-actions',isRefreshing:false, async refreshMessages(){globalThis.refreshes=(globalThis.refreshes??0)+1;store.isRefreshing=true;try{await new Promise(r=>setTimeout(r,150));if(globalThis.failRefresh)throw Error('fixture outage')}finally{store.isRefreshing=false}},setSelectedTopic(value){store.selectedTopic=value}});export const useForumStore=()=>store`,
-  'pinia': `import {toRefs} from 'vue'; export const storeToRefs=toRefs`,
-  'src/stores/topics': `export const useTopicStore=()=>({refreshDiscoveredTopics:async()=>{}})`,
-  'src/composables/useActiveWallet': `export const useActiveWallet=async()=>undefined`,
+  'src/stores/forum':
+    "import {reactive} from 'vue'; export const store=reactive({topics:[],selectedTopic:'a-very-long-topic-that-must-yield-to-actions',isRefreshing:false, async refreshMessages(){globalThis.refreshes=(globalThis.refreshes??0)+1;store.isRefreshing=true;try{await new Promise(r=>setTimeout(r,150));if(globalThis.failRefresh)throw Error('fixture outage')}finally{store.isRefreshing=false}},setSelectedTopic(value){store.selectedTopic=value}});export const useForumStore=()=>store",
+  'pinia': "import {toRefs} from 'vue'; export const storeToRefs=toRefs",
+  'src/stores/topics':
+    'export const useTopicStore=()=>({refreshDiscoveredTopics:async()=>{}})',
+  'src/composables/useActiveWallet':
+    'export const useActiveWallet=async()=>undefined',
 }
 const bundle = await build({
   stdin: {
@@ -77,7 +81,7 @@ const bundle = await build({
           { filter: /(?:ForumDrawer|ExtensionPopoutBtn)\.vue$/ },
           args => ({
             contents: args.path.endsWith('ExtensionPopoutBtn.vue')
-              ? `import {h} from 'vue';import {QBtn} from 'quasar';export default {render:()=>h(QBtn,{icon:'open_in_new',flat:true,round:true,dense:true,'aria-label':'Pop Out Window'})}`
+              ? "import {h} from 'vue';import {QBtn} from 'quasar';export default {render:()=>h(QBtn,{icon:'open_in_new',flat:true,round:true,dense:true,'aria-label':'Pop Out Window'})}"
               : 'export default {render: () => null}',
             loader: 'js',
           }),
@@ -226,7 +230,7 @@ try {
     evaluate(`new Promise(resolve=>setTimeout(resolve,${ms}))`)
   const gesture = async () => {
     const point = await evaluate(
-      `(()=>{const r=document.querySelector('.q-scrollarea__container').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+Math.min(160,r.height/2)}})()`,
+      "(()=>{const r=document.querySelector('.q-scrollarea__container').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+Math.min(160,r.height/2)}})()",
     )
     await call(
       'Input.dispatchTouchEvent',
@@ -256,7 +260,7 @@ try {
     )
     await pause(350)
     const geometry = await evaluate(
-      `(()=>{const e=document.querySelector('[aria-label="a11y.forumRefresh"]');const r=e?.getBoundingClientRect();const pull=document.querySelector('[data-test="forum-pull-to-refresh"]').getBoundingClientRect();const scroll=document.querySelector('.q-scrollarea__container').getBoundingClientRect();return {button:r&&{left:r.left,right:r.right,width:r.width,height:r.height},pullHeight:pull.height,scrollHeight:scroll.height,overflow:document.documentElement.scrollWidth>innerWidth}})()`,
+      "(()=>{const e=document.querySelector('[aria-label=\"a11y.forumRefresh\"]');const r=e?.getBoundingClientRect();const pull=document.querySelector('[data-test=\"forum-pull-to-refresh\"]').getBoundingClientRect();const scroll=document.querySelector('.q-scrollarea__container').getBoundingClientRect();return {button:r&&{left:r.left,right:r.right,width:r.width,height:r.height},pullHeight:pull.height,scrollHeight:scroll.height,overflow:document.documentElement.scrollWidth>innerWidth}})()",
     )
     console.log(JSON.stringify({ width, ...geometry }))
     const shot = await call(
@@ -286,12 +290,12 @@ try {
       'one physical pull produces one read refresh',
     )
     assert.equal(
-      await evaluate(`!!document.querySelector('.q-spinner')`),
+      await evaluate("!!document.querySelector('.q-spinner')"),
       false,
       'spinner completes',
     )
     await evaluate(
-      `document.querySelector('[aria-label="a11y.forumRefresh"]').click()`,
+      'document.querySelector(\'[aria-label="a11y.forumRefresh"]\').click()',
     )
     await pause(250)
     assert.equal(
@@ -299,21 +303,21 @@ try {
       before + 2,
       'manual refresh works at every width',
     )
-    await evaluate(`router.push('/new-post')`)
+    await evaluate("router.push('/new-post')")
     await pause(150)
     assert.equal(
-      await evaluate(`document.documentElement.scrollWidth>innerWidth`),
+      await evaluate('document.documentElement.scrollWidth>innerWidth'),
       false,
       'back + refresh + compose + popout + settings fit',
     )
     const actions = await evaluate(
-      `Array.from(document.querySelectorAll('header button')).map(e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width}})`,
+      "Array.from(document.querySelectorAll('header button')).map(e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width}})",
     )
     assert.ok(
       actions.every(r => r.left >= 0 && r.right <= width && r.width > 0),
       'every action remains in view',
     )
-    await evaluate(`router.push('/forum')`)
+    await evaluate("router.push('/forum')")
     await pause(150)
   }
   await evaluate('failRefresh=true')
@@ -321,14 +325,14 @@ try {
   await gesture()
   assert.equal(await evaluate('refreshes'), beforeFailure + 1)
   assert.equal(
-    await evaluate(`!!document.querySelector('.q-spinner')`),
+    await evaluate("!!document.querySelector('.q-spinner')"),
     false,
     'failed refresh releases spinner',
   )
   await evaluate('failRefresh=false;setTall(true)')
   await pause(350)
   await evaluate(
-    `document.querySelector('.q-scrollarea__container').scrollTop=350`,
+    "document.querySelector('.q-scrollarea__container').scrollTop=350",
   )
   await pause(350)
   const beforeScrolled = await evaluate('refreshes')
@@ -339,7 +343,7 @@ try {
     'pull while scrolled never refreshes',
   )
   await evaluate(
-    `document.querySelector('.q-scrollarea__container').scrollTop=0`,
+    "document.querySelector('.q-scrollarea__container').scrollTop=0",
   )
   await pause(350)
   await gesture()
@@ -371,11 +375,11 @@ try {
     beforeMouse,
     'mouse drag never triggers refresh',
   )
-  await evaluate(`router.push('/new-post')`)
+  await evaluate("router.push('/new-post')")
   await pause(350)
   await gesture()
   assert.equal(
-    await evaluate(`router.currentRoute.value.path`),
+    await evaluate('router.currentRoute.value.path'),
     '/new-post',
     'gesture does not navigate or submit post',
   )

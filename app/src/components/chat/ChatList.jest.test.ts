@@ -366,7 +366,6 @@ describe('ChatList toolbar', () => {
             QBtn: passthrough,
             QTooltip: passthrough,
           },
-          stubs: { NewGroupDialog: true },
           mocks: { $status: { setup: true }, $t: (k: string) => k },
         },
       })
@@ -413,7 +412,6 @@ describe('ChatList toolbar', () => {
           QBtn: passthrough,
           QTooltip: passthrough,
         },
-        stubs: { NewGroupDialog: true },
         mocks: { $status: { setup: true }, $t: (k: string) => k },
       },
     })
@@ -432,9 +430,11 @@ describe('ChatList toolbar', () => {
     expect(newGroup.attributes('aria-label')).toBe('groupChat.newGroup')
     expect(newGroup.text()).toContain('groupChat.newGroup')
     await newGroup.trigger('click')
-    expect(
-      wrapper.findComponent({ name: 'NewGroupDialog' }).props('modelValue'),
-    ).toBe(true)
+    expect(mockPush).toHaveBeenCalledWith({
+      path: '/new-group',
+      query: { from: '/' },
+    })
+    expect(wrapper.emitted('closeDrawer')).toHaveLength(1)
     // The clear button is still there once something is typed.
     await bar.get('[data-testid="chat-search-input"]').setValue('hello')
     expect(bar.find('[data-test="chat-search-clear"]').exists()).toBe(true)

@@ -95,14 +95,6 @@ stubs.QScrollArea = defineComponent({
   },
 })
 const Blank = defineComponent({ setup: () => () => h('div') })
-const NewGroupStub = defineComponent({
-  name: 'NewGroupDialog',
-  props: {
-    modelValue: { type: Boolean, default: false },
-    initialMembers: { type: Array, default: () => [] },
-  },
-  setup: () => () => h('div'),
-})
 // Shows what Chat.vue tells each bubble: `sender | name? | avatar?`, or `plain`.
 const MessageStub = defineComponent({
   inheritAttrs: false,
@@ -216,14 +208,16 @@ async function openConversation(
       components: stubs,
       stubs: {
         ChatInput: Blank,
-        NewGroupDialog: NewGroupStub,
         ChatMessageComponent: MessageStub,
         ChatMessageReply: Blank,
         ChatBannerStack: Blank,
         QResizeObserver: Blank,
       },
       mocks: {
-        $route: { params: { address: CONVERSATION } },
+        $route: {
+          params: { address: CONVERSATION },
+          fullPath: `/chat/${CONVERSATION}`,
+        },
         $router: { push },
         $q: { dark: { isActive: false } },
         $t: translator(table),
@@ -346,9 +340,10 @@ describe('a closed direct conversation referenced by a third party', () => {
     await chat.wrapper
       .get('[data-testid="participant-request-group"]')
       .trigger('click')
-    const dialog = chat.wrapper.findComponent(NewGroupStub)
-    expect(dialog.props('modelValue')).toBe(true)
-    expect(dialog.props('initialMembers')).toEqual([ALICE, BOB])
+    expect(chat.push).toHaveBeenCalledWith({
+      path: '/new-group',
+      query: { member: [ALICE, BOB], from: `/chat/${CONVERSATION}` },
+    })
     expect(chat.chats.conversations[CONVERSATION].participants).toEqual(before)
     expect(chat.chats.conversations[CONVERSATION].kind).toBe('direct')
   })

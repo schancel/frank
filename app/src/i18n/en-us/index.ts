@@ -2268,6 +2268,11 @@ export const rawEnUS = {
     invalidPayload: 'Invalid article fields',
   },
   groupChat: {
+    unavailableNetwork: 'Group messaging is unavailable on this network.',
+    messagingNotReady:
+      'Group messaging is not ready. Return to chats and try again once connected.',
+    invalidMembers:
+      'One or more group member addresses are invalid for this network.',
     close: 'Close',
     participantRequest:
       '{address} referenced this direct conversation. Their message is in a separate 1:1 conversation.',

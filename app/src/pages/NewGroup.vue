@@ -88,6 +88,5 @@ export default defineComponent({
   max-width: 100%;
   overflow-x: hidden;
   overflow-y: auto;
-  padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
 }
 </style>

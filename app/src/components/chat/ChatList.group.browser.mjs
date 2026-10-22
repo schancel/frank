@@ -42,6 +42,7 @@ const storeInputs = {
 const bundle = await build({
   stdin: {
     contents: `import {createApp,h,nextTick} from 'vue'; import {createRouter,createMemoryHistory,RouterView} from 'vue-router'; import * as q from 'quasar'; import messages from './app/src/i18n/en-us/index.ts'; import ChatList from './app/src/components/chat/ChatList.vue'; import NewGroup from './app/src/pages/NewGroup.vue';
+    globalThis.fetch=async url=>{if(url!=='https://relay.example/peers')throw new Error('Unexpected fixture network');return new Response(JSON.stringify({relays:['https://foreign.example','https://relay.example','https://foreign.example','http://unsafe.example']}))};
     const router=createRouter({history:createMemoryHistory(),routes:[{path:'/chat',component:ChatList},{path:'/new-group',component:NewGroup},{path:'/chat/:address',component:{template:'<div>Group conversation</div>'}}]});
     const app=createApp({render:()=>h(q.QLayout,()=>h(RouterView,{style:"height:100vh;flex:none"}))}); app.use(router);app.use(q.Quasar,{components:Object.fromEntries(Object.entries(q).filter(([name])=>/^Q[A-Z]/.test(name)))});app.config.globalProperties.$status={setup:true};app.config.globalProperties.$t=(key,params={})=>Object.entries(params).reduce((text,[name,value])=>text.replaceAll('{'+name+'}',String(value)),String(key.split('.').reduce((value,part)=>value?.[part],messages)??key));globalThis.router=router;globalThis.ready=(async()=>{await router.push('/chat');await router.isReady();document.body.innerHTML='<main id="host"></main>';app.mount('#host');await nextTick()})();`,
     resolveDir: root,
@@ -63,6 +64,10 @@ const bundle = await build({
       name: 'production-vue-and-store-inputs',
       setup(builder) {
         builder.onResolve({ filter: /.*/ }, args => {
+          if (args.path === '@frank/cashweb/relay/relay-discovery')
+            return {
+              path: resolve(root, 'packages/cashweb/relay/relay-discovery.ts'),
+            }
           let key = args.path
           if (args.path.startsWith('.')) {
             const abs = resolve(args.resolveDir, args.path)
@@ -290,6 +295,41 @@ try {
       await evaluate(`document.documentElement.scrollWidth>innerWidth`),
       false,
     )
+    await evaluate(
+      `document.querySelector('[data-testid="group-relay-select"]').click()`,
+    )
+    await evaluate('new Promise(resolve=>setTimeout(resolve,150))')
+    assert.equal(
+      await evaluate(
+        `document.querySelector('.q-menu').textContent.includes('https://foreign.example')`,
+      ),
+      true,
+    )
+    assert.equal(
+      await evaluate(
+        `document.querySelector('.q-menu').textContent.includes('unsafe.example')`,
+      ),
+      false,
+    )
+    const dropdownshot = await call(
+      'Page.captureScreenshot',
+      { format: 'png' },
+      sessionId,
+    )
+    await writeFile(
+      join(directory, `relay-options-${width}.png`),
+      Buffer.from(dropdownshot.data, 'base64'),
+    )
+    assert.equal(
+      await evaluate(
+        `(()=>{const r=document.querySelector('.q-menu').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.bottom<=innerHeight})()`,
+      ),
+      true,
+    )
+    await evaluate(
+      `Array.from(document.querySelectorAll('.q-menu .q-item')).find(e=>e.textContent.includes('https://foreign.example')).click()`,
+    )
+    await evaluate('new Promise(resolve=>setTimeout(resolve,150))')
     const formshot = await call(
       'Page.captureScreenshot',
       { format: 'png' },
@@ -321,6 +361,14 @@ try {
   )
   await evaluate('new Promise(resolve=>setTimeout(resolve,150))')
   await evaluate(
+    `document.querySelector('[data-testid="group-relay-select"]').click()`,
+  )
+  await evaluate('new Promise(resolve=>setTimeout(resolve,150))')
+  await evaluate(
+    `Array.from(document.querySelectorAll('.q-menu .q-item')).find(e=>e.textContent.includes('https://foreign.example')).click()`,
+  )
+  await evaluate('new Promise(resolve=>setTimeout(resolve,150))')
+  await evaluate(
     `document.querySelector('[data-test="create-group-submit"]').click()`,
   )
   await evaluate('new Promise(resolve=>setTimeout(resolve,150))')
@@ -329,6 +377,7 @@ try {
     '/chat/created-group',
   )
   assert.equal(await evaluate('selected'), 'created-group')
+  assert.equal(await evaluate('created.relayUrl'), 'https://foreign.example')
   assert.deepEqual(await evaluate('created.memberAddresses'), [
     '0x1111111111111111111111111111111111111111',
   ])

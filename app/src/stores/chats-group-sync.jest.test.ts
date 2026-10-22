@@ -199,6 +199,54 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     jest.spyOn(contacts, 'refresh').mockResolvedValue(undefined)
   })
 
+  it('shares group runtime ownership across per-action proxies and isolates stale cleanup', () => {
+    const chats = useChatStore()
+    const first = new Proxy(chats, {})
+    const second = new Proxy(chats, {})
+    const removeOld = first.configureGroupHomeRelay('https://home.example')
+    expect(second.getGroupHomeRelay()).toBe('https://home.example')
+    const foreign = first.getGroupRelayClient('https://foreign.example')
+    expect(second.getGroupRelayClient('https://foreign.example')).toBe(foreign)
+    expect(second.getGroupHomeRelay()).toBe('https://home.example')
+    const removeNew = second.configureGroupHomeRelay('https://next.example')
+    removeOld()
+    expect(first.getGroupHomeRelay()).toBe('https://next.example')
+    expect(first.getGroupRelayClient('https://foreign.example')).not.toBe(
+      foreign,
+    )
+    removeNew()
+    expect(() => second.getGroupHomeRelay()).toThrow(
+      'Group messaging is not configured',
+    )
+  })
+
+  it('excludes a duplicate group creation through a different action proxy', async () => {
+    const chats = useChatStore()
+    let finish!: (value: unknown) => void
+    const once = jest
+      .spyOn(chats, 'createGroupConversationOnce')
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            finish = resolve
+          }),
+      )
+    const first = new Proxy(chats, {})
+    const second = new Proxy(chats, {})
+    const pending = first.createGroupConversation({
+      groupName: 'one',
+      memberAddresses: [],
+    })
+    await Promise.resolve()
+    await expect(
+      second.createGroupConversation({ groupName: 'two', memberAddresses: [] }),
+    ).rejects.toThrow('Group operation already in progress')
+    expect(once).toHaveBeenCalledTimes(1)
+    finish({ id: 'existing-operation' })
+    await pending
+    once.mockRestore()
+  })
+
   it('creates a group on relay, quarantines welcome invite for Bob until approved, and syncs sealed multi-sender messages', async () => {
     const relayClient = createSharedMockGroupRelay()
 

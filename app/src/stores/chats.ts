@@ -13,7 +13,7 @@ import { fetchContactProfile } from '../utils/directory-peer'
 import { directoryAddress } from '@frank/cashweb/relay/open-directory'
 import assert from 'assert'
 import { defineStore } from 'pinia'
-import { shallowRef, watch } from 'vue'
+import { shallowRef, toRaw, watch } from 'vue'
 
 import { displayNetwork } from '../utils/constants'
 import { randomBytes } from '@noble/hashes/utils'
@@ -2301,6 +2301,9 @@ function groupRun<T>(
   operation: () => Promise<T>,
   join = true,
 ): Promise<T> {
+  // Pinia's action instrumentation supplies a fresh Proxy for each action invocation.
+  // Runtime ownership belongs to the underlying store, across those action contexts.
+  owner = toRaw(owner)
   let running = groupRuns.get(owner)
   if (!running) {
     running = new Map()
@@ -2345,6 +2348,7 @@ const groupRelayClientRegistries = new WeakMap<
   Map<string, GroupRelayClient>
 >()
 function groupRelayClients(owner: object): Map<string, GroupRelayClient> {
+  owner = toRaw(owner)
   let clients = groupRelayClientRegistries.get(owner)
   if (!clients) {
     clients = new Map()
@@ -6248,7 +6252,7 @@ export const useChatStore = defineStore('chats', {
     },
     /** Session-scoped bounded subscriptions. Reconnect/startup always replay the durable range. */
     startGroupLiveDelivery(): () => void {
-      groupLiveStops.get(this)?.()
+      groupLiveStops.get(toRaw(this))?.()
       const revision = accountSession.state.revision
       const account = accountSession.state.account
       const chainIdentifier = activeChain.chainIdentifier
@@ -6343,27 +6347,27 @@ export const useChatStore = defineStore('chats', {
         for (const subscription of subscriptions.values()) subscription.close()
         subscriptions.clear()
       }
-      groupLiveStops.set(this, stop)
+      groupLiveStops.set(toRaw(this), stop)
       return stop
     },
     configureGroupHomeRelay(homeRelayUrl: string): () => void {
       const url = normalizeGroupRelayOrigin(homeRelayUrl)
-      groupLiveStops.get(this)?.()
-      groupRelayClientRegistries.delete(this)
-      groupHomeRelays.set(this, url)
+      groupLiveStops.get(toRaw(this))?.()
+      groupRelayClientRegistries.delete(toRaw(this))
+      groupHomeRelays.set(toRaw(this), url)
       const stopLive = this.startGroupLiveDelivery()
-      groupLiveStops.set(this, stopLive)
+      groupLiveStops.set(toRaw(this), stopLive)
       return () => {
         stopLive()
-        if (groupLiveStops.get(this) === stopLive) {
-          groupLiveStops.delete(this)
-          groupHomeRelays.delete(this)
-          groupRelayClientRegistries.delete(this)
+        if (groupLiveStops.get(toRaw(this)) === stopLive) {
+          groupLiveStops.delete(toRaw(this))
+          groupHomeRelays.delete(toRaw(this))
+          groupRelayClientRegistries.delete(toRaw(this))
         }
       }
     },
     getGroupHomeRelay(): string {
-      const url = groupHomeRelays.get(this)
+      const url = groupHomeRelays.get(toRaw(this))
       if (!url) throw new Error('Group messaging is not configured')
       return url
     },
@@ -7011,13 +7015,13 @@ export const useChatStore = defineStore('chats', {
         return 0
 
       const checkContext = captureGroupContext(this, conv)
-      const expectedHome = groupHomeRelays.get(this)
+      const expectedHome = groupHomeRelays.get(toRaw(this))
       // A live subscription's lease ends when its epoch or capability changes; polling has none.
       const checkGroup = () => {
         checkContext()
         if (
           options.lease?.isCancelled() ||
-          groupHomeRelays.get(this) !== expectedHome ||
+          groupHomeRelays.get(toRaw(this)) !== expectedHome ||
           !this.shouldPollGroupMailbox(conversationId)
         )
           throw new Error('Group subscription changed')

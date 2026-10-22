@@ -17,6 +17,11 @@ const quasar = runtime.Quasar
 const { QLayout, QInput, QBtn } = quasar
 import ChatList from './ChatList.vue'
 import NewGroup from '../../pages/NewGroup.vue'
+import NewGroupForm from './NewGroupForm.vue'
+const mockDiscover = jest.fn(async () => ['https://foreign.example'])
+jest.mock('@frank/cashweb/relay/relay-discovery', () => ({
+  discoverRelayOrigins: (...args: unknown[]) => mockDiscover(...args),
+}))
 
 const mockCreate = jest.fn()
 const mockSelect = jest.fn()
@@ -44,8 +49,13 @@ jest.mock('../../stores/contacts', () => ({
     refreshPeerProfiles: jest.fn(),
   }),
 }))
+const mockSession = reactive({ status: 'ready', revision: 1, account: null })
 jest.mock('../../accounts/session', () => ({
-  accountSession: { state: { status: 'ready', revision: 1 } },
+  accountSession: {
+    get state() {
+      return mockSession
+    },
+  },
 }))
 const mockMessaging = reactive({ status: 'ready' })
 jest.mock('../../utils/messaging-state', () => ({
@@ -122,6 +132,8 @@ async function start(path = '/chat') {
 beforeEach(() => {
   jest.clearAllMocks()
   mockCreate.mockReset()
+  mockDiscover.mockReset().mockResolvedValue(['https://foreign.example'])
+  mockSession.revision = 1
   mockRelay.mockReturnValue('https://relay.example')
   mockCapabilities.directMessages = true
   mockMessaging.status = 'ready'
@@ -279,3 +291,101 @@ it.each(['unsupported', 'loading'])(
     }
   },
 )
+
+it('prefers the installed home, offers discovered hosts, and selecting a foreign host never changes home', async () => {
+  const { wrapper } = await start('/new-group')
+  try {
+    const form = wrapper.getComponent(NewGroupForm)
+    expect(form.vm.relayBaseUrl).toBe('https://relay.example')
+    expect(form.vm.relayOptions).toEqual([
+      'https://relay.example',
+      'https://foreign.example',
+    ])
+    expect(mockDiscover).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseUrl: 'https://relay.example',
+        signal: expect.any(AbortSignal),
+      }),
+    )
+    await form.getComponent(quasar.QSelect).setValue('https://foreign.example')
+    expect(mockRelay()).toBe('https://relay.example')
+    mockCreate.mockResolvedValueOnce({ id: 'foreign-group' })
+    await wrapper.get('[data-test="group-name-input"]').setValue('Foreign team')
+    await wrapper.get('[data-test="create-group-submit"]').trigger('click')
+    await flushPromises()
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ relayUrl: 'https://foreign.example' }),
+    )
+  } finally {
+    wrapper.unmount()
+  }
+})
+
+it('keeps the current home usable when relay discovery fails', async () => {
+  mockDiscover.mockRejectedValueOnce(new Error('offline'))
+  const { wrapper } = await start('/new-group')
+  try {
+    const form = wrapper.getComponent(NewGroupForm)
+    expect(form.vm.relayBaseUrl).toBe('https://relay.example')
+    expect(form.vm.relayOptions).toEqual(['https://relay.example'])
+    expect(
+      wrapper.get('[data-test="group-relay-discovery-error"]').text(),
+    ).toBe('groupChat.discoveryFailed')
+  } finally {
+    wrapper.unmount()
+  }
+})
+
+it.each(['leave', 'session'])(
+  'cancels relay discovery and ignores stale hints on %s',
+  async change => {
+    let finish!: (value: string[]) => void
+    mockDiscover.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        }),
+    )
+    const { wrapper, router } = await start('/new-group')
+    try {
+      const signal = mockDiscover.mock.calls[0][0].signal as AbortSignal
+      const form = wrapper.getComponent(NewGroupForm)
+      if (change === 'leave') await router.push('/chat')
+      else mockSession.revision += 1
+      await flushPromises()
+      expect(signal.aborted).toBe(true)
+      finish(['https://late.example'])
+      await flushPromises()
+      if (change === 'session') {
+        expect(form.vm.relayOptions).toEqual([])
+        expect(wrapper.get('[role="alert"]').text()).toBe(
+          'groupChat.sessionChanged',
+        )
+        await wrapper.get('[data-test="create-group-submit"]').trigger('click')
+        expect(mockCreate).not.toHaveBeenCalled()
+      }
+    } finally {
+      wrapper.unmount()
+    }
+  },
+)
+
+it('uses a manually typed relay origin even when Create is clicked without pressing Enter', async () => {
+  mockCreate.mockResolvedValueOnce({ id: 'manual-host' })
+  const { wrapper } = await start('/new-group')
+  try {
+    await wrapper.get('[data-test="group-name-input"]').setValue('Manual host')
+    await wrapper
+      .getComponent(NewGroupForm)
+      .getComponent(quasar.QSelect)
+      .get('input')
+      .setValue('https://manual.example/')
+    await wrapper.get('[data-test="create-group-submit"]').trigger('click')
+    await flushPromises()
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ relayUrl: 'https://manual.example' }),
+    )
+  } finally {
+    wrapper.unmount()
+  }
+})

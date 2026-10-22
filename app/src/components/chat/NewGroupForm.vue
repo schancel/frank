@@ -103,13 +103,31 @@
         </q-item>
       </q-list>
 
-      <q-input
+      <q-select
         v-model="relayBaseUrl"
+        :options="relayOptions"
+        use-input
+        fill-input
+        hide-selected
+        input-debounce="0"
+        new-value-mode="add-unique"
+        :loading="discoveringRelays"
+        @new-value="addRelayOrigin"
+        @input-value="relayInput = $event"
         filled
         dense
         :label="$t('groupChat.hostingRelayLabel')"
         data-test="group-relay-input"
+        data-testid="group-relay-select"
       />
+      <div
+        v-if="discoveryFailed"
+        class="text-caption"
+        role="status"
+        data-test="group-relay-discovery-error"
+      >
+        {{ $t('groupChat.discoveryFailed') }}
+      </div>
     </q-card-section>
 
     <q-banner
@@ -117,7 +135,11 @@
       class="text-negative"
       role="alert"
       data-test="group-creation-error"
-      >{{ creationError }}</q-banner
+      >{{
+        creationError.startsWith('groupChat.')
+          ? $t(creationError)
+          : creationError
+      }}</q-banner
     >
     <q-card-actions align="right" class="q-px-md q-pb-md">
       <q-btn
@@ -152,9 +174,16 @@ import {
   defineComponent,
   ref,
   onBeforeUnmount,
+  onMounted,
+  watch,
   type PropType,
 } from 'vue'
 import { useRouter } from 'vue-router'
+import { activeChain } from '@frank/wallet/chain'
+import { discoverRelayOrigins } from '@frank/cashweb/relay/relay-discovery'
+import { normalizeGroupRelayOrigin } from '@frank/cashweb/groups'
+import { accountSession } from '../../accounts/session'
+import { messagingState } from '../../utils/messaging-state'
 import { useChatStore } from '../../stores/chats'
 import { useContactStore, type ContactState } from '../../stores/contacts'
 import {
@@ -183,20 +212,94 @@ export default defineComponent({
     const router = useRouter()
     const groupName = ref('')
     const memberFilter = ref('')
-    const selectedAddresses = ref<string[]>([...new Set(props.initialMembers)])
+    const selectedAddresses = ref<string[]>(
+      Array.from(new Set(props.initialMembers)),
+    )
     const relayBaseUrl = ref('')
+    const relayInput = ref('')
+    const relayOptions = ref<string[]>([])
+    const discoveringRelays = ref(false)
+    const discoveryFailed = ref(false)
     const creating = ref(false)
     const creationError = ref('')
+    const revision = accountSession.state.revision
+    const account = accountSession.state.account
+    const chainIdentifier = activeChain.chainIdentifier
+    let installedHome = ''
+    let active = true
+    const discovery = new AbortController()
+    const sameSession = () =>
+      active &&
+      accountSession.state.revision === revision &&
+      accountSession.state.account === account &&
+      activeChain.chainIdentifier === chainIdentifier &&
+      messagingState.status === 'ready'
+    const currentHome = () => {
+      if (!sameSession()) return false
+      try {
+        return chatStore.getGroupHomeRelay() === installedHome
+      } catch {
+        return false
+      }
+    }
     try {
-      relayBaseUrl.value = chatStore.getGroupHomeRelay()
+      installedHome = chatStore.getGroupHomeRelay()
+      relayBaseUrl.value = installedHome
+      relayOptions.value = [installedHome]
     } catch (error) {
       creationError.value =
         error instanceof Error ? error.message : String(error)
     }
-    let active = true
+    watch(
+      () => [
+        accountSession.state.revision,
+        accountSession.state.account,
+        activeChain.chainIdentifier,
+        messagingState.status,
+      ],
+      () => {
+        if (!sameSession()) {
+          active = false
+          discovery.abort()
+          discoveringRelays.value = false
+          relayOptions.value = []
+          creationError.value = 'groupChat.sessionChanged'
+        }
+      },
+    )
+    onMounted(async () => {
+      if (!installedHome) return
+      discoveringRelays.value = true
+      try {
+        const hints = await discoverRelayOrigins({
+          baseUrl: installedHome,
+          fetch: (...args) => fetch(...args),
+          signal: discovery.signal,
+        })
+        if (currentHome())
+          relayOptions.value = Array.from(new Set([installedHome, ...hints]))
+      } catch {
+        if (currentHome()) discoveryFailed.value = true
+      } finally {
+        if (sameSession()) discoveringRelays.value = false
+      }
+    })
     onBeforeUnmount(() => {
       active = false
+      discovery.abort()
     })
+    const addRelayOrigin = (
+      value: string,
+      done: (value?: string, mode?: 'add-unique') => void,
+    ) => {
+      try {
+        const origin = normalizeGroupRelayOrigin(value.trim())
+        done(origin, 'add-unique')
+      } catch {
+        creationError.value = 'groupChat.invalidRelay'
+        done()
+      }
+    }
 
     const allContacts = computed<Array<{ address: string; name: string }>>(
       () => {
@@ -256,7 +359,9 @@ export default defineComponent({
     }
 
     const canSubmit = computed(() => {
-      return Boolean(groupName.value.trim().length > 0)
+      return Boolean(
+        groupName.value.trim().length > 0 && installedHome && sameSession(),
+      )
     })
 
     const formatShort = (addr: string) => {
@@ -278,11 +383,16 @@ export default defineComponent({
 
     const cancel = () => {
       active = false
+      discovery.abort()
       emit('cancel')
     }
 
     const submitCreateGroup = async () => {
       if (!canSubmit.value || creating.value) return
+      if (!currentHome()) {
+        creationError.value = 'groupChat.sessionChanged'
+        return
+      }
       creating.value = true
       creationError.value = ''
       try {
@@ -293,14 +403,16 @@ export default defineComponent({
         const conv = await chatStore.createGroupConversation({
           groupName: groupName.value.trim(),
           memberAddresses: members,
-          relayUrl: relayBaseUrl.value.trim() || undefined,
+          relayUrl: normalizeGroupRelayOrigin(
+            relayInput.value.trim() || relayBaseUrl.value.trim(),
+          ),
         })
         // Leaving the page must not redirect a newer draft when creation settles.
-        if (!active) return
+        if (!currentHome()) return
         chatStore.setActiveConversation(conv.id)
         await openChat(router, conv.id, { replace: true })
       } catch (err) {
-        if (active) {
+        if (currentHome()) {
           creationError.value = err instanceof Error ? err.message : String(err)
           errorNotify(err instanceof Error ? err : new Error(String(err)))
         }
@@ -314,6 +426,11 @@ export default defineComponent({
       memberFilter,
       selectedAddresses,
       relayBaseUrl,
+      relayInput,
+      relayOptions,
+      discoveringRelays,
+      discoveryFailed,
+      addRelayOrigin,
       creating,
       filteredContacts,
       isSelected,

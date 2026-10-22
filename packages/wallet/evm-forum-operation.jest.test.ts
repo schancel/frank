@@ -383,3 +383,115 @@ test('submitForumOperation retries with bounded gas limit when signer throws CAL
   await f.bundle.close()
 })
 
+
+const relayError = (status: number, data: unknown, contentType = 'application/json') =>
+  Object.assign(new Error(`Request failed with status code ${status}`), {
+    response: { status, data, headers: { 'content-type': contentType } },
+  })
+
+// Exercise the production arraybuffer exchange, including retained authority on failure.
+test.each(['arraybuffer', 'buffer', 'uint8array'] as const)(
+  'Forum 503 JSON diagnostics survive %s responses without changing retained authority',
+  async representation => {
+    const f = await fixture()
+    const bytes = Buffer.from(JSON.stringify({
+      error: 'topic_burn_outcome_unknown',
+      detail: 'ConfirmationTimedOut: receipt not observed',
+    }))
+    const data = representation === 'arraybuffer'
+      ? Uint8Array.from(bytes).buffer
+      : representation === 'uint8array' ? Uint8Array.from(bytes) : bytes
+    const original = relayError(503, data, 'application/json; charset=utf-8')
+    http.mockRejectedValue(original)
+    const before = f.bundle.topicOperationJournal.getAll()
+    const error = await reconcileForumOperations(f.wallet, 'post').catch(error => error)
+    expect(error.message).toContain('HTTP 503')
+    expect(error.message).toContain('topic_burn_outcome_unknown')
+    expect(error.message).toContain('ConfirmationTimedOut: receipt not observed')
+    expect(error.message).toContain('pending')
+    expect(error).toMatchObject({
+      status: 503,
+      code: 'topic_burn_outcome_unknown',
+      detail: 'ConfirmationTimedOut: receipt not observed',
+      cause: original,
+    })
+    expect(f.bundle.topicOperationJournal.getAll()).toEqual(before)
+    expect(f.bundle.pool.getRecord(0)!.status).toBe('in-use')
+    await f.bundle.close()
+  },
+)
+
+test.each([
+  [400, Buffer.from('{"error":"invalid_forum_request","detail":"invalid burn"}'), 'application/json', 'invalid_forum_request'],
+  [503, Buffer.from('not JSON'), 'application/json', undefined],
+  [503, Uint8Array.from([0xff]), 'application/json', undefined],
+  [503, Buffer.from('null'), 'application/json', undefined],
+  [503, Buffer.from('{"error":"unsafe code\\n","detail":"wait"}'), 'application/json', undefined],
+  [429, Buffer.from('{"error":"rate_limited","detail":"wait"}'), 'text/html', undefined],
+  [502, Buffer.alloc(4097, 32), 'application/json', undefined],
+  [503, Buffer.from('{"error":[],"detail":{}}'), 'application/json', undefined],
+  [503, Buffer.from(JSON.stringify({ error: 'forum_unavailable', detail: 'x'.repeat(1025) })), 'application/json', undefined],
+  [503, { error: 'forum_unavailable', detail: 'object is not a byte response' }, 'application/json', undefined],
+] as const)('Forum HTTP %s uses bounded diagnostics or a status-preserving fallback', async (status, data, media, code) => {
+  const f = await fixture()
+  const original = relayError(status, data, media)
+  http.mockRejectedValue(original)
+  const error = await reconcileForumOperations(f.wallet, 'post').catch(error => error)
+  expect(error.message).toContain(`HTTP ${status}`)
+  expect(error.cause).toBe(original)
+  expect(error.code).toBe(code)
+  expect(error.message.length).toBeLessThan(1400)
+  expect(error.message).not.toContain('payment failed')
+  await f.bundle.close()
+})
+
+test('Forum diagnostics redact upstream URLs and normalize control characters', async () => {
+  const f = await fixture()
+  http.mockRejectedValue(relayError(503, Buffer.from(JSON.stringify({
+    error: 'topic_burn_outcome_unknown',
+    detail: 'RPC https://upstream.invalid/private-token failed\nreceipt pending',
+  }))))
+  const error = await reconcileForumOperations(f.wallet, 'post').catch(error => error)
+  expect(error.detail).toBe('RPC [URL redacted] failed receipt pending')
+  expect(error.message).not.toContain('private-token')
+  await f.bundle.close()
+})
+
+test('Forum JSON decoding respects a byte view offset and length', async () => {
+  const f = await fixture()
+  const payload = Buffer.from('{"error":"forum_unavailable","detail":"wait"}')
+  const padded = Buffer.concat([Buffer.from('not JSON'), payload, Buffer.from('trailing')])
+  http.mockRejectedValue(relayError(503, padded.subarray(8, 8 + payload.length)))
+  const error = await reconcileForumOperations(f.wallet, 'post').catch(error => error)
+  expect(error.code).toBe('forum_unavailable')
+  expect(error.detail).toBe('wait')
+  await f.bundle.close()
+})
+
+test('initial Forum submission retains diagnostic cause and signed operation after HTTP 503', async () => {
+  const f = await fixture()
+  f.bundle.leaseManager.releaseLease(f.lease, 'unused')
+  await f.bundle.topicOperationJournal.delete(f.operation)
+  jest.spyOn(f.bundle.pool, 'getSigner').mockReturnValue({
+    buildAndSignCall: jest.fn(async () => ({
+      rawTx: f.operation.rawTx,
+      txHash: f.operation.txHash,
+      from: f.key.address,
+      value: 7n,
+    })),
+  } as any)
+  const original = relayError(503, Uint8Array.from(Buffer.from(JSON.stringify({
+    error: 'topic_burn_outcome_unknown', detail: 'ConfirmationTimedOut',
+  }))).buffer)
+  http.mockRejectedValue(original)
+  const error = await submitForumOperation(f.wallet, {
+    kind: 'post', target: f.hash, direction: 'up', burnAddress: burn, value: 7n,
+    encode: raw => encodeTopicPostSubmission(f.post, raw),
+  }).catch(error => error)
+  expect(error.message).toContain('HTTP 503 (topic_burn_outcome_unknown): ConfirmationTimedOut')
+  expect(error.cause.cause).toBe(original)
+  expect(http).toHaveBeenCalledTimes(1)
+  expect(f.bundle.topicOperationJournal.getAll()).toEqual([f.operation])
+  expect(f.bundle.pool.getRecord(0)!.status).toBe('in-use')
+  await f.bundle.close()
+})

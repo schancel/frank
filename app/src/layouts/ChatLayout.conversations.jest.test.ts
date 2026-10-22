@@ -837,19 +837,9 @@ it('offers no unsigned group subject editor and rejects a headless rename withou
   }
 })
 
-it('gives the icon close controls in both group dialogs an accessible name', async () => {
+it('gives the group info close control an accessible name', async () => {
   const app = await mountedConversations()
   try {
-    jest
-      .spyOn(app.chats, 'getGroupHomeRelay')
-      .mockReturnValue('https://relay.example')
-    app.root.getComponent(ChatList).vm.newGroupOpen = true
-    await settle()
-    const newGroup = app.root.getComponent({ name: 'NewGroupDialog' })
-    expect(newGroup.get('button[icon="close"]').attributes('aria-label')).toBe(
-      'Close',
-    )
-    await newGroup.get('button[icon="close"]').trigger('click')
     const group = admittedGroup(app.chats, 'a', 'Protocol Team')
     await settle()
     await app.select(group.id)

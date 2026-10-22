@@ -128,10 +128,6 @@
         />
       </template>
     </q-banner>
-    <new-group-dialog
-      v-model="participantGroupOpen"
-      :initial-members="participantGroupMembers"
-    />
     <!-- Tollbooth Screener Triage Banner for Inbound Paid-Stranger Requests -->
     <div
       v-if="isScreenerThread"
@@ -505,7 +501,6 @@ import {
 import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
 import ForwardMessageDialog from '../components/dialogs/ForwardMessageDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
-import NewGroupDialog from '../components/dialogs/NewGroupDialog.vue'
 import { openChat, openContactProfile } from '../utils/routes'
 import {
   attributeMessages,
@@ -612,7 +607,6 @@ const scrollDuration = 0
 
 export default defineComponent({
   components: {
-    NewGroupDialog,
     ChatMessageComponent,
     ChatMessageWebRtcCall,
     EmailThreadView,
@@ -672,8 +666,6 @@ export default defineComponent({
     const initialAddress = (this.$route.params.address as string) || ''
     const initialDraft = loadChatDraft(initialAddress)
     return {
-      participantGroupOpen: false,
-      participantGroupMembers: [] as string[],
       address: initialAddress,
       restoringDraft: false,
       lastHandledFocusNonce: 0,
@@ -844,8 +836,13 @@ export default defineComponent({
       if (target) openChat(this.$router, target.id)
     },
     createGroupFromRequest(senderAddress: string) {
-      this.participantGroupMembers = [this.conversation!.address, senderAddress]
-      this.participantGroupOpen = true
+      void this.$router.push({
+        path: '/new-group',
+        query: {
+          member: [this.conversation!.address, senderAddress],
+          from: this.$route.fullPath,
+        },
+      })
     },
     // Opening a chat (mount or a reused route) places the caret (#411). On this
     // turn, before MainLayout's narrow-overlay restore (one tick later) treats a
@@ -1275,7 +1272,9 @@ export default defineComponent({
     sanitizeStaleEmailStampOverride() {
       if (!this.isEmailThread) return
       const target = this.conversation?.id || this.recipientAddress
-      const explicit = target ? this.chatStore?.getStampWei?.(target) : undefined
+      const explicit = target
+        ? this.chatStore?.getStampWei?.(target)
+        : undefined
       if (explicit === undefined || explicit <= 0n) return
       const available = this.availableBalanceWei
       const base = this.defaultStampWei ?? 0n
@@ -1378,7 +1377,9 @@ export default defineComponent({
           conversationId: this.conversation?.id,
           items,
           stampValue,
-          onPreparationProgress: (progress: DirectMessagePreparationProgress) => {
+          onPreparationProgress: (
+            progress: DirectMessagePreparationProgress,
+          ) => {
             this.showStampPreparation(progress)
             if (
               progress.stage === 'waiting-for-chain' ||
@@ -1503,7 +1504,9 @@ export default defineComponent({
           conversationId: conversation.id,
           items: payload.items,
           stampValue,
-          onPreparationProgress: (progress: DirectMessagePreparationProgress) => {
+          onPreparationProgress: (
+            progress: DirectMessagePreparationProgress,
+          ) => {
             this.showStampPreparation(progress)
             if (
               progress.stage === 'waiting-for-chain' ||

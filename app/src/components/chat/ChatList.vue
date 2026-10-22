@@ -10,7 +10,7 @@
         <!-- One bar: search (the remaining width; ⌘K focuses it), then new group, my QR code and
         new chat. The All/Screener filter row stays under it. -->
         <div
-          class="row items-center no-wrap q-px-sm q-py-xs chat-list-toolbar"
+          class="row items-center no-wrap chat-list-toolbar"
           data-testid="chat-list-toolbar"
         >
           <div
@@ -47,10 +47,10 @@
             flat
             round
             icon="group_add"
-            class="q-ml-xs"
+            class="chat-toolbar-action"
             :aria-label="$t('groupChat.newGroup')"
             data-testid="new-group-btn"
-            @click="newGroupOpen = true"
+            @click="openNewGroup"
           >
             <q-tooltip>{{ $t('groupChat.newGroup') }}</q-tooltip>
           </q-btn>
@@ -59,6 +59,7 @@
             flat
             round
             icon="qr_code_scanner"
+            class="chat-toolbar-action"
             :aria-label="$t('contactBookDialog.myQrCode')"
             data-testid="chat-list-qr-btn"
             data-test="chat-list-qr-btn"
@@ -71,6 +72,7 @@
             flat
             round
             icon="add"
+            class="chat-toolbar-action"
             :aria-label="$t('newContactDialog.startConversation')"
             data-testid="start-conversation-btn"
             @click="openNewConversation"
@@ -83,12 +85,9 @@
         <q-separator />
 
         <!-- Paid-Stranger Screener Filter Chips -->
-        <div
-          v-if="!compact && $status.setup"
-          class="q-px-sm chat-list-triage-controls"
-        >
+        <div v-if="!compact && $status.setup" class="chat-list-triage-controls">
           <div
-            class="row items-center q-gutter-xs q-mt-xs"
+            class="row items-center chat-list-filters"
             data-test="screener-filter-bar"
           >
             <div
@@ -198,7 +197,6 @@
         </q-item>
       </q-list>
     </q-scroll-area>
-    <new-group-dialog v-model="newGroupOpen" @created="selectConversation" />
   </div>
 </template>
 
@@ -214,7 +212,6 @@ import {
 import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
-import NewGroupDialog from '../dialogs/NewGroupDialog.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
 import { unreadValueAvu } from '../../stores/chats-domain'
 import { useContactStore } from '../../stores/contacts'
@@ -383,7 +380,6 @@ export default defineComponent({
           messagingState.status === 'ready' &&
           activeChain.capabilities.directMessages,
       ),
-      newGroupOpen: ref(false),
       /** What the unread received messages brought, in AVU: stamps plus payments the wallets
        * saw arrive, each chain at its own price. Nothing when there is none, or when part of
        * it has no price: never a claimed amount, never a made-up figure. */
@@ -434,6 +430,11 @@ export default defineComponent({
         if (isNarrowWidth($q.screen.width)) {
           emit('closeDrawer')
         }
+      },
+      openNewGroup() {
+        const from = router.currentRoute.value.fullPath
+        void router.push({ path: '/new-group', query: { from } })
+        if (isNarrowWidth($q.screen.width)) emit('closeDrawer')
       },
       openNewConversation() {
         const from =
@@ -507,7 +508,6 @@ export default defineComponent({
   },
   components: {
     ChatListItem,
-    NewGroupDialog,
   },
 })
 </script>
@@ -519,11 +519,32 @@ export default defineComponent({
 }
 
 .chat-list-toolbar {
-  gap: 2px;
+  gap: 4px;
+  padding: 8px;
+}
+
+.chat-toolbar-action {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+}
+
+.chat-list-triage-controls {
+  padding: 8px;
+}
+.chat-list-filters {
+  gap: 6px;
+}
+
+.chat-list-filters .screener-chip {
+  min-height: 32px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .chat-search-box {
   min-width: 0;
+  min-height: 44px;
   border: 1px solid rgba(128, 128, 128, 0.3);
   border-radius: 8px;
   padding: 4px 8px;

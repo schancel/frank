@@ -2341,6 +2341,12 @@ export const rawFrFR = {
     invalidPayload: 'Champs de l’article invalides',
   },
   groupChat: {
+    unavailableNetwork:
+      'La messagerie de groupe est indisponible sur ce réseau.',
+    messagingNotReady:
+      'La messagerie de groupe n’est pas prête. Revenez aux conversations et réessayez une fois connecté.',
+    invalidMembers:
+      'Une ou plusieurs adresses des membres sont invalides pour ce réseau.',
     close: 'Fermer',
     participantRequest:
       '{address} a référencé cette conversation directe. Son message reste dans une conversation individuelle distincte.',

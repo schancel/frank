@@ -229,9 +229,25 @@ try {
   const pause = ms =>
     evaluate(`new Promise(resolve=>setTimeout(resolve,${ms}))`)
   const gesture = async selector => {
-    const point = await evaluate(
-      "(()=>{const r=document.querySelector('.q-scrollarea__container').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+Math.min(160,r.height/2)}})()",
-    )
+    const point = selector
+      ? await evaluate(
+          `(()=>{const r=document.querySelector(${JSON.stringify(
+            selector,
+          )}).getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`,
+        )
+      : await evaluate(
+          "(()=>{const r=document.querySelector('.q-scrollarea__container').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+Math.min(160,r.height/2)}})()",
+        )
+    if (selector)
+      assert.equal(
+        await evaluate(
+          `document.elementFromPoint(${point.x},${
+            point.y
+          }).matches(${JSON.stringify(selector)})`,
+        ),
+        true,
+        'physical gesture starts on actual selected media/link',
+      )
     await call(
       'Input.dispatchTouchEvent',
       { type: 'touchStart', touchPoints: [point] },
@@ -355,7 +371,7 @@ try {
       'touch restores exact original drag attribute',
     )
   }
-  await evaluate(`document.querySelector('[data-test="feed-link"]').click()`)
+  await evaluate('document.querySelector(\'[data-test="feed-link"]\').click()')
   assert.equal(
     await evaluate('linkClicks'),
     1,

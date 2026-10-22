@@ -116,6 +116,9 @@
             no-mouse
             class="forum-refresh-surface"
             data-test="forum-pull-to-refresh"
+            @touchstart.capture="prepareTouchRefresh"
+            @touchend.capture="restoreTouchDrag"
+            @touchcancel.capture="restoreTouchDrag"
             @refresh="pullToRefresh"
           >
             <router-view @set-topic="setTopic" />
@@ -127,7 +130,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue'
+import { defineComponent, onBeforeUnmount } from 'vue'
 
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { storeToRefs } from 'pinia'
@@ -149,11 +152,38 @@ export default defineComponent({
     }
   },
   setup() {
+    // Quasar ignores a pan that starts on a natively draggable image/link,
+    // including touch pans. Suspend native drag for this touch only; mouse
+    // dragging and the element's original attribute survive the gesture.
+    let touchDragTarget: HTMLElement | undefined
+    let touchDragAttribute: string | null = null
+    function restoreTouchDrag() {
+      if (!touchDragTarget) return
+      if (touchDragAttribute === null) {
+        touchDragTarget.removeAttribute('draggable')
+      } else {
+        touchDragTarget.setAttribute('draggable', touchDragAttribute)
+      }
+      touchDragTarget = undefined
+    }
+    function prepareTouchRefresh(event: TouchEvent) {
+      restoreTouchDrag()
+      const target = event.target
+      if (target instanceof HTMLElement && target.draggable) {
+        touchDragTarget = target
+        touchDragAttribute = target.getAttribute('draggable')
+        target.draggable = false
+      }
+    }
+    onBeforeUnmount(restoreTouchDrag)
+
     const forumStore = useForumStore()
     const topicStore = useTopicStore()
     const { topics, selectedTopic, isRefreshing } = storeToRefs(forumStore)
 
     return {
+      prepareTouchRefresh,
+      restoreTouchDrag,
       myDrawerOpen: useMyDrawerOpen(),
       refreshMessages: forumStore.refreshMessages,
       setSelectedTopic: forumStore.setSelectedTopic,

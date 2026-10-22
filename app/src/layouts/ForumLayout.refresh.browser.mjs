@@ -33,8 +33,8 @@ const storeInputs = {
 const bundle = await build({
   stdin: {
     contents: `import {createApp,h,nextTick,ref} from 'vue';import {createRouter,createMemoryHistory,RouterView} from 'vue-router';import * as q from 'quasar';import ForumLayout from './app/src/layouts/ForumLayout.vue';
-    const tall=ref(false);globalThis.setTall=value=>tall.value=value;
-    const Content={render:()=>h('div',{style:{height:tall.value?'1800px':'40px'},'data-test':'feed'},'Read-only Forum content')};
+    const tall=ref(false),media=ref(false);globalThis.setTall=value=>tall.value=value;globalThis.setMedia=value=>media.value=value;globalThis.linkClicks=0;
+    const Content={render:()=>h('div',{style:{height:tall.value?'1800px':'40px'},'data-test':'feed'},media.value?[h('img',{'data-test':'feed-image',src:'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%2280%22%3E%3C/svg%3E',alt:'Forum media',style:{display:'block',width:'100%',height:'80px'}}),h('a',{'data-test':'feed-link',href:'https://example.invalid/read',draggable:'true',style:{display:'block',height:'80px'},onClick:e=>{e.preventDefault();globalThis.linkClicks++}},'Linked Forum content')]: 'Read-only Forum content')};
     const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:ForumLayout,children:[{path:'forum',component:Content},{path:'new-post',component:Content}]}]});
     const app=createApp({render:()=>h(q.QLayout,()=>h(RouterView))});app.use(router);app.use(q.Quasar,{components:Object.fromEntries(Object.entries(q).filter(([name])=>/^Q[A-Z]/.test(name)))});app.config.globalProperties.$t=key=>key;globalThis.router=router;globalThis.ready=(async()=>{await router.push('/forum');await router.isReady();document.body.innerHTML='<main id="host"></main>';app.mount('#host');await nextTick()})();`,
     resolveDir: root,
@@ -228,7 +228,7 @@ try {
   await evaluate('ready')
   const pause = ms =>
     evaluate(`new Promise(resolve=>setTimeout(resolve,${ms}))`)
-  const gesture = async () => {
+  const gesture = async selector => {
     const point = await evaluate(
       "(()=>{const r=document.querySelector('.q-scrollarea__container').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+Math.min(160,r.height/2)}})()",
     )
@@ -320,6 +320,48 @@ try {
     await evaluate("router.push('/forum')")
     await pause(150)
   }
+  await evaluate('setMedia(true)')
+  await pause(350)
+  for (const selector of [
+    '[data-test="feed-image"]',
+    '[data-test="feed-link"]',
+  ]) {
+    const originalAttribute = await evaluate(
+      `document.querySelector(${JSON.stringify(
+        selector,
+      )}).getAttribute('draggable')`,
+    )
+    assert.equal(
+      await evaluate(
+        `document.querySelector(${JSON.stringify(selector)}).draggable`,
+      ),
+      true,
+      'native media/link starts draggable',
+    )
+    const beforeMedia = await evaluate('refreshes')
+    await gesture(selector)
+    assert.equal(
+      await evaluate('refreshes'),
+      beforeMedia + 1,
+      'physical pull on image/link refreshes',
+    )
+    assert.equal(
+      await evaluate(
+        `document.querySelector(${JSON.stringify(
+          selector,
+        )}).getAttribute('draggable')`,
+      ),
+      originalAttribute,
+      'touch restores exact original drag attribute',
+    )
+  }
+  await evaluate(`document.querySelector('[data-test="feed-link"]').click()`)
+  assert.equal(
+    await evaluate('linkClicks'),
+    1,
+    'normal link click still reaches its handler',
+  )
+  await evaluate('setMedia(false)')
   await evaluate('failRefresh=true')
   const beforeFailure = await evaluate('refreshes')
   await gesture()

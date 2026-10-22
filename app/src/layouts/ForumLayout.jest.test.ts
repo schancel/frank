@@ -330,6 +330,29 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     },
   )
 
+  it('suspends only the touched draggable target and restores it on cancel/unmount', async () => {
+    const wrapper = mountLayout()
+    await flushPromises()
+    const pull = wrapper.get('[data-test="forum-pull-to-refresh"]')
+    const image = document.createElement('img')
+    pull.element.appendChild(image)
+    expect(image.draggable).toBe(true)
+    image.dispatchEvent(new Event('touchstart', { bubbles: true }))
+    expect(image.draggable).toBe(false)
+    image.dispatchEvent(new Event('touchcancel', { bubbles: true }))
+    expect(image.hasAttribute('draggable')).toBe(false)
+    expect(image.draggable).toBe(true)
+
+    const link = document.createElement('a')
+    link.href = 'https://example.invalid/read'
+    link.setAttribute('draggable', 'true')
+    pull.element.appendChild(link)
+    link.dispatchEvent(new Event('touchstart', { bubbles: true }))
+    expect(link.draggable).toBe(false)
+    wrapper.unmount()
+    expect(link.getAttribute('draggable')).toBe('true')
+  })
+
   it('on desktop keeps the breadcrumb and refresh button with touch refresh available', async () => {
     const store = useForumStore()
     store.setSelectedTopic('memes')

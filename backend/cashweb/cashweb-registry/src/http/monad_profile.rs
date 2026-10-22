@@ -363,7 +363,14 @@ mod tests {
     fn test_registry(name: &str) -> (tempdir::TempDir, Registry) {
         let tempdir = tempdir::TempDir::new(name).unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
-        let registry = Registry::new(db, Arc::new(NeverCalledChainAdapter), Net::Regtest);
+        let registry = Registry::new(
+            db,
+            Arc::new(NeverCalledChainAdapter),
+            Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         (tempdir, registry)
     }
 

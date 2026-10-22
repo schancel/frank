@@ -190,6 +190,7 @@ async fn main() -> Result<()> {
         chain_adapter,
         conf.registry.net,
         Arc::clone(&event_bus),
+        conf.registry.groups,
     ));
     // Every upstream proves it is its chain before it carries traffic; startup waits briefly for
     // the first round and the rest are checked again in the background.

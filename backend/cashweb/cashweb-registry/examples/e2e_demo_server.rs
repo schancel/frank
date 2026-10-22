@@ -161,7 +161,14 @@ async fn main() -> Result<()> {
     let db = Db::open(db_dir.path().join("db.rocksdb"))?;
 
     let chain_adapter: Arc<dyn ChainAdapter> = Arc::new(DemoChainAdapter);
-    let registry = Arc::new(Registry::new(db, chain_adapter, Net::Regtest));
+    let registry = Arc::new(Registry::new(
+        db,
+        chain_adapter,
+        Net::Regtest,
+        cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        },
+    ));
     let peers = Arc::new(Peers::new(format!("http://{bind_addr}"), vec![]));
     let pop_gate = Arc::new(PopGate::from_conf_if_enabled(&demo_pop_conf()));
     info!("POP protection is disabled for this demo (ticket #35 default) -- identity registration needs no payment");

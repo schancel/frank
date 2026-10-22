@@ -2268,6 +2268,12 @@ export const rawEnUS = {
     invalidPayload: 'Invalid article fields',
   },
   groupChat: {
+    discoveryFailed:
+      'Could not load other relays. You can still use your current relay or enter a relay origin.',
+    sessionChanged:
+      'The messaging session changed. Return to chats and open this page again.',
+    invalidRelay:
+      'Enter a valid relay origin without a path, credentials, query or fragment.',
     unavailableNetwork: 'Group messaging is unavailable on this network.',
     messagingNotReady:
       'Group messaging is not ready. Return to chats and try again once connected.',

@@ -2341,6 +2341,12 @@ export const rawFrFR = {
     invalidPayload: 'Champs de l’article invalides',
   },
   groupChat: {
+    discoveryFailed:
+      'Impossible de charger les autres relais. Vous pouvez utiliser votre relais actuel ou saisir une origine de relais.',
+    sessionChanged:
+      'La session de messagerie a changé. Revenez aux conversations et rouvrez cette page.',
+    invalidRelay:
+      'Saisissez une origine de relais valide, sans chemin, identifiants, requête ni fragment.',
     unavailableNetwork:
       'La messagerie de groupe est indisponible sur ce réseau.',
     messagingNotReady:

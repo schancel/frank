@@ -100,6 +100,10 @@ export const rawEnUS = {
       'Your vote was sent, but refreshing failed. Reload to see it. Do not vote again.',
   },
   forum: {
+    pullToRefresh: 'Pull down to refresh',
+    releaseToRefresh: 'Release to refresh',
+    refreshing: 'Refreshing…',
+
     postsLabel: 'posts',
     noPosts: 'No posts yet.',
     outageTitle: 'Forum unavailable',

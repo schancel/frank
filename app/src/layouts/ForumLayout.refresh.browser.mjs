@@ -378,6 +378,172 @@ try {
     'normal link click still reaches its handler',
   )
   await evaluate('setMedia(false)')
+  const wheel = async (deltaY, deltaX = 0, modifiers = 0) => {
+    const point = await evaluate(
+      "(()=>{const r=document.querySelector('.q-scrollarea__container').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+160}})()",
+    )
+    await call(
+      'Input.dispatchMouseEvent',
+      { type: 'mouseWheel', ...point, deltaX, deltaY, modifiers },
+      sessionId,
+    )
+    await pause(30)
+  }
+  const wheelBurst = async (dy = -40, dx = 0, modifiers = 0) => {
+    for (let n = 0; n < 3; n++) await wheel(dy, dx, modifiers)
+  }
+  let beforeWheel = await evaluate('refreshes')
+  await wheel(-30)
+  assert.ok(
+    await evaluate(
+      "document.querySelector('[data-test=\"forum-wheel-refresh\"]')?.textContent.includes('forum.pullToRefresh')",
+    ),
+    'small motion shows pull feedback',
+  )
+  await pause(400)
+  assert.equal(
+    await evaluate('refreshes'),
+    beforeWheel,
+    'small wheel noise does not refresh',
+  )
+  await wheel(-120)
+  assert.ok(
+    await evaluate(
+      "document.querySelector('[data-test=\"forum-wheel-refresh\"]')?.textContent.includes('forum.releaseToRefresh')",
+    ),
+    'one coalesced event with enough distance arms release',
+  )
+  await pause(600)
+  assert.equal(
+    await evaluate('refreshes'),
+    beforeWheel + 1,
+    'coalesced large event refreshes once',
+  )
+  await pause(1100)
+  beforeWheel = await evaluate('refreshes')
+  await wheel(-40)
+  assert.ok(
+    await evaluate(
+      "document.querySelector('[data-test=\"forum-wheel-refresh\"]')?.textContent.includes('forum.pullToRefresh')",
+    ),
+    'pull shows immediate feedback',
+  )
+  await wheel(-40)
+  await wheel(-40)
+  assert.ok(
+    await evaluate(
+      "document.querySelector('[data-test=\"forum-wheel-refresh\"]')?.textContent.includes('forum.releaseToRefresh')",
+    ),
+    'distance threshold arms release feedback',
+  )
+  await pause(180)
+  assert.ok(
+    await evaluate(
+      "document.querySelector('[data-test=\"forum-wheel-refresh\"]')?.textContent.includes('forum.refreshing')",
+    ),
+    'release shows loading feedback',
+  )
+  await pause(400)
+  assert.equal(
+    await evaluate('refreshes'),
+    beforeWheel + 1,
+    'one deliberate wheel burst refreshes once',
+  )
+  assert.equal(
+    await evaluate(
+      '!!document.querySelector(\'[data-test="forum-wheel-refresh"]\')',
+    ),
+    false,
+    'completion clears feedback',
+  )
+  await wheelBurst()
+  await pause(400)
+  assert.equal(
+    await evaluate('refreshes'),
+    beforeWheel + 1,
+    'cooldown prevents repeat momentum refresh',
+  )
+  await pause(1100)
+  beforeWheel = await evaluate('refreshes')
+  await wheelBurst(-40, 80)
+  await pause(400)
+  await wheelBurst(-40, 0, 2)
+  await pause(400)
+  assert.equal(
+    await evaluate('refreshes'),
+    beforeWheel,
+    'horizontal and pinch input never refresh',
+  )
+  await evaluate('setTall(true)')
+  await pause(350)
+  await evaluate(
+    "document.querySelector('.q-scrollarea__container').scrollTop=350",
+  )
+  for (let n = 0; n < 14; n++) await wheel(-40)
+  await pause(400)
+  assert.equal(
+    await evaluate(
+      "document.querySelector('.q-scrollarea__container').scrollTop",
+    ),
+    0,
+    'ordinary upward scrolling reached top',
+  )
+  assert.equal(
+    await evaluate('refreshes'),
+    beforeWheel,
+    'scroll begun below top does not become a refresh',
+  )
+  await wheelBurst()
+  await evaluate("router.push('/new-post')")
+  await pause(400)
+  assert.equal(
+    await evaluate('refreshes'),
+    beforeWheel,
+    'route change cancels uncommitted wheel pull',
+  )
+  await evaluate("router.push('/forum');failRefresh=true")
+  await pause(350)
+  await wheelBurst()
+  await pause(600)
+  assert.equal(
+    await evaluate('refreshes'),
+    beforeWheel + 1,
+    'failed wheel refresh was attempted once',
+  )
+  assert.equal(
+    await evaluate(
+      '!!document.querySelector(\'[data-test="forum-wheel-refresh"]\')',
+    ),
+    false,
+    'failure clears feedback',
+  )
+  await evaluate('failRefresh=false;setTall(false)')
+  await pause(1100)
+  const beforeRouteRead = await evaluate('refreshes')
+  await wheelBurst()
+  await pause(180)
+  assert.ok(
+    await evaluate(
+      "document.querySelector('[data-test=\"forum-wheel-refresh\"]')?.textContent.includes('forum.refreshing')",
+    ),
+    'read is active before navigation',
+  )
+  await evaluate("router.push('/new-post')")
+  assert.equal(
+    await evaluate(
+      '!!document.querySelector(\'[data-test="forum-wheel-refresh"]\')',
+    ),
+    false,
+    'navigation immediately removes old route loading feedback',
+  )
+  await pause(250)
+  assert.equal(
+    await evaluate('refreshes'),
+    beforeRouteRead + 1,
+    'navigation leaves authorized read running without restarting it',
+  )
+  await evaluate("router.push('/forum')")
+  await pause(1100)
   await evaluate('failRefresh=true')
   const beforeFailure = await evaluate('refreshes')
   await gesture()

@@ -65,6 +65,10 @@ export const rawFrFR = {
   },
   accountRecovery,
   forum: {
+    pullToRefresh: 'Tirez vers le bas pour actualiser',
+    releaseToRefresh: 'Relâchez pour actualiser',
+    refreshing: 'Actualisation…',
+
     postsLabel: 'messages',
     noPosts: 'Aucun message pour le moment.',
     outageTitle: 'Forum indisponible',

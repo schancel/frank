@@ -109,6 +109,7 @@
         <q-scroll-area
           ref="chatScroll"
           class="q-px-sm absolute full-width full-height"
+          @wheel.capture="pullWithWheel"
           :content-style="{ display: 'flex', flexDirection: 'column' }"
           :content-active-style="{ display: 'flex', flexDirection: 'column' }"
         >
@@ -124,6 +125,29 @@
             <router-view @set-topic="setTopic" />
           </q-pull-to-refresh>
         </q-scroll-area>
+        <div
+          v-if="wheelPullDistance > 0 || wheelRefreshing"
+          class="forum-wheel-refresh row no-wrap items-center text-primary shadow-2"
+          :class="$q.dark?.isActive ? 'bg-grey-10' : 'bg-white'"
+          data-test="forum-wheel-refresh"
+          role="status"
+          aria-live="polite"
+        >
+          <q-spinner v-if="wheelRefreshing" size="24px" />
+          <q-circular-progress
+            v-else
+            :value="Math.min(100, wheelPullDistance)"
+            size="24px"
+            :thickness="0.2"
+          />
+          <span>{{
+            wheelRefreshing
+              ? $t('forum.refreshing')
+              : wheelPullReady
+              ? $t('forum.releaseToRefresh')
+              : $t('forum.pullToRefresh')
+          }}</span>
+        </div>
       </q-page>
     </q-page-container>
   </div>
@@ -149,6 +173,13 @@ export default defineComponent({
     return {
       showForumDrawer: false,
       drawerBreakpoint: DRAWER_BREAKPOINT,
+      wheelPullDistance: 0,
+      wheelStartedAtTop: false,
+      wheelLastAt: 0,
+      wheelCooldownUntil: 0,
+      wheelRefreshing: false,
+      wheelRefreshRevision: 0,
+      wheelReleaseTimer: undefined as ReturnType<typeof setTimeout> | undefined,
     }
   },
   setup() {
@@ -210,7 +241,81 @@ export default defineComponent({
     // `refreshContent`'s own un-awaited call just above.
     this.refreshDiscoveredTopics()
   },
+  beforeUnmount() {
+    this.clearWheelFeedback()
+  },
+  watch: {
+    '$route.fullPath'() {
+      this.clearWheelFeedback()
+    },
+  },
   methods: {
+    clearWheelFeedback() {
+      this.resetWheelPull()
+      this.wheelRefreshRevision++
+      this.wheelRefreshing = false
+    },
+    resetWheelPull() {
+      if (this.wheelReleaseTimer !== undefined)
+        clearTimeout(this.wheelReleaseTimer)
+      this.wheelReleaseTimer = undefined
+      this.wheelPullDistance = 0
+      this.wheelStartedAtTop = false
+      this.wheelLastAt = 0
+    },
+    pullWithWheel(event: WheelEvent) {
+      const scroll = (
+        this.$refs.chatScroll as { getScrollTarget(): HTMLElement } | undefined
+      )?.getScrollTarget()
+      if (!scroll) return
+      const now = performance.now()
+      // A wheel burst has no release event. A quiet interval marks finger lift;
+      // a burst that began below the top never turns into a refresh on reaching it.
+      if (this.wheelLastAt === 0 || now - this.wheelLastAt > 160) {
+        this.resetWheelPull()
+        this.wheelStartedAtTop = scroll.scrollTop === 0
+      }
+      this.wheelLastAt = now
+      if (this.wheelReleaseTimer !== undefined)
+        clearTimeout(this.wheelReleaseTimer)
+      this.wheelReleaseTimer = undefined
+      if (
+        event.ctrlKey ||
+        (event.target instanceof Element &&
+          Boolean(
+            event.target.closest('input, textarea, [contenteditable="true"]'),
+          )) ||
+        event.deltaMode !== 0 ||
+        event.deltaY >= 0 ||
+        Math.abs(event.deltaX) >= Math.abs(event.deltaY) ||
+        scroll.scrollTop !== 0 ||
+        this.wheelRefreshing ||
+        this.isRefreshing ||
+        now < this.wheelCooldownUntil
+      ) {
+        this.wheelStartedAtTop = false
+        this.wheelPullDistance = 0
+        return
+      }
+      if (!this.wheelStartedAtTop) return
+      event.preventDefault()
+      this.wheelPullDistance = Math.min(
+        140,
+        this.wheelPullDistance - event.deltaY,
+      )
+      this.wheelReleaseTimer = setTimeout(() => {
+        const ready = this.wheelPullReady
+        this.resetWheelPull()
+        if (!ready || this.isRefreshing || this.wheelRefreshing) return
+        this.wheelCooldownUntil = performance.now() + 1000
+        this.wheelRefreshing = true
+        const revision = ++this.wheelRefreshRevision
+        void this.refreshContent().finally(() => {
+          if (this.wheelRefreshRevision === revision)
+            this.wheelRefreshing = false
+        })
+      }, 160)
+    },
     toggleSettingsDrawerOpen() {
       this.$emit('toggleMyDrawerOpen')
     },
@@ -251,6 +356,9 @@ export default defineComponent({
     },
   },
   computed: {
+    wheelPullReady(): boolean {
+      return this.wheelPullDistance >= 100
+    },
     narrow(): boolean {
       const raw =
         this.$q?.screen?.width ??
@@ -285,6 +393,19 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.forum-wheel-refresh {
+  gap: 8px;
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 32px);
+  padding: 8px 12px;
+  border-radius: 24px;
+  pointer-events: none;
+}
+
 .forum-refresh-surface {
   flex: 1;
 }

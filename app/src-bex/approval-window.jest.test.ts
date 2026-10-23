@@ -9,6 +9,7 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js'
 import { ed25519 } from '@noble/curves/ed25519'
+import { Interface } from 'ethers'
 import {
   DAPP_PERSONA_NOT_READY_ERROR,
   createBackgroundBridgeState,
@@ -748,10 +749,102 @@ describe('approval window page', () => {
     bg.dispose()
   })
 
-  it('shows the Solana chain, account, program, and complete unknown instruction data', async () => {
+  it.each([
+    {
+      label: 'unknown system instruction',
+      program: SystemProgram.programId,
+      data: [1, 2, 3, 4, 5, 6],
+      dataHex: '0x010203040506',
+    },
+    {
+      label: 'unknown program',
+      program: new PublicKey(new Uint8Array(32).fill(13)),
+      data: [7, 8, 9, 10],
+      dataHex: '0x0708090a',
+    },
+  ])(
+    'disables approval for $label and shows its raw program data',
+    async ({ program, data, dataHex }) => {
+      const { scope } = createExtensionScope()
+      const account = new PublicKey(new Uint8Array(32).fill(8)).toBase58()
+      const instructionData = new Uint8Array(data)
+      const transaction = new VersionedTransaction(
+        new MessageV0({
+          header: {
+            numRequiredSignatures: 1,
+            numReadonlySignedAccounts: 0,
+            numReadonlyUnsignedAccounts: 1,
+          },
+          staticAccountKeys: [new PublicKey(account), program],
+          recentBlockhash: PublicKey.default.toBase58(),
+          compiledInstructions: [
+            {
+              programIdIndex: 1,
+              accountKeyIndexes: Uint8Array.of(0),
+              data: instructionData,
+            },
+          ],
+          addressTableLookups: [],
+        }),
+      ).serialize()
+      const request = {
+        id: 'sol-review',
+        kind: 'sign' as const,
+        chainFamily: 'solana' as const,
+        origin: 'https://solana.example',
+        href: 'https://solana.example',
+        method: 'solana_signTransaction',
+        params: {
+          account,
+          chain: 'solana:devnet',
+          transaction: Array.from(transaction),
+        },
+        chainIdentifier: 'solana-devnet',
+        solanaAccountAddress: account,
+        createdAt: Date.now(),
+        requiresCompanionApproval: true,
+      }
+      const state = createBackgroundBridgeState({
+        pendingApprovals: new Map([[request.id, request]]),
+      })
+      const bg = installBackgroundBridge(scope, state)
+      const root = document.createElement('main')
+      const page = mountApprovalPage(root, {
+        globalScope: scope,
+        closeWindow: () => undefined,
+      })
+      await page.refresh()
+      const summary =
+        root.querySelector('.approval-review-summary')?.textContent ?? ''
+      expect(summary).toContain('solana:devnet')
+      expect(summary).toContain(`Account: ${account}`)
+      expect(summary).toContain(program.toBase58())
+      expect(summary).toContain(dataHex)
+      expect(summary).toContain('approval is disabled')
+      expect(
+        root.querySelector<HTMLButtonElement>(
+          '[data-testid="approval-approve"]',
+        )?.disabled,
+      ).toBe(true)
+      root
+        .querySelector<HTMLButtonElement>('[data-testid="approval-reject"]')!
+        .click()
+      page.dispose()
+      bg.dispose()
+    },
+  )
+
+  it('shows a well-understood Solana transfer before enabling approval', async () => {
     const { scope } = createExtensionScope()
     const account = new PublicKey(new Uint8Array(32).fill(8)).toBase58()
-    const instructionData = new Uint8Array([1, 2, 3, 4, 5, 6])
+    const recipient = new PublicKey(new Uint8Array(32).fill(12)).toBase58()
+    const lamports = 1_500_000_000n
+    const instructionData = new Uint8Array(12)
+    instructionData.set([2, 0, 0, 0])
+    for (let index = 0; index < 8; index += 1)
+      instructionData[4 + index] = Number(
+        (lamports >> BigInt(index * 8)) & 0xffn,
+      )
     const transaction = new VersionedTransaction(
       new MessageV0({
         header: {
@@ -759,12 +852,16 @@ describe('approval window page', () => {
           numReadonlySignedAccounts: 0,
           numReadonlyUnsignedAccounts: 1,
         },
-        staticAccountKeys: [new PublicKey(account), SystemProgram.programId],
+        staticAccountKeys: [
+          new PublicKey(account),
+          new PublicKey(recipient),
+          SystemProgram.programId,
+        ],
         recentBlockhash: PublicKey.default.toBase58(),
         compiledInstructions: [
           {
-            programIdIndex: 1,
-            accountKeyIndexes: Uint8Array.of(0),
+            programIdIndex: 2,
+            accountKeyIndexes: Uint8Array.of(0, 1),
             data: instructionData,
           },
         ],
@@ -772,7 +869,7 @@ describe('approval window page', () => {
       }),
     ).serialize()
     const request = {
-      id: 'sol-review',
+      id: 'sol-transfer-review',
       kind: 'sign' as const,
       chainFamily: 'solana' as const,
       origin: 'https://solana.example',
@@ -798,15 +895,11 @@ describe('approval window page', () => {
       closeWindow: () => undefined,
     })
     await page.refresh()
-    const summary =
-      root.querySelector('.approval-review-summary')?.textContent ?? ''
-    expect(summary).toContain('solana:devnet')
-    expect(summary).toContain(`Solana account: ${account}`)
-    expect(summary).toContain(`Program: ${SystemProgram.programId.toBase58()}`)
-    expect(summary).toContain('Data (hex): 0x010203040506')
-    expect(summary).toContain(
-      'Unknown instruction; review the full program and data.',
+    expect(root.textContent).toContain(
+      `Transfer 1.5 SOL (${lamports} lamports)`,
     )
+    expect(root.textContent).toContain(`From: ${account}`)
+    expect(root.textContent).toContain(`To: ${recipient}`)
     expect(
       root.querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')
         ?.disabled,
@@ -814,6 +907,67 @@ describe('approval window page', () => {
     root
       .querySelector<HTMLButtonElement>('[data-testid="approval-reject"]')!
       .click()
+    page.dispose()
+    bg.dispose()
+  })
+
+  it('labels decoded ERC-20 transfer amount as base units and shows contract identity', async () => {
+    const { scope } = createExtensionScope()
+    const origin = 'https://app.uniswap.org'
+    const tokenInterface = new Interface([
+      'function transfer(address to,uint256 value)',
+    ])
+    const amount = 123456789n
+    const state = createBackgroundBridgeState({
+      activePersonaAddress: PRIMARY,
+      approvedOrigins: new Set([origin]),
+      originPersonas: {
+        [origin]: {
+          address: PRIMARY,
+          index: 0,
+          label: 'Shared',
+          isBurner: false,
+        },
+      },
+    })
+    const bg = installBackgroundBridge(scope, state)
+    const pending = rpc(
+      state,
+      scope,
+      'review-erc20-tx',
+      'eth_sendTransaction',
+      origin,
+      [
+        {
+          from: PRIMARY,
+          to: SITE,
+          value: '0x0',
+          gas: '0x5208',
+          gasPrice: '0x3b9aca00',
+          data: tokenInterface.encodeFunctionData('transfer', [
+            PRIMARY,
+            amount,
+          ]),
+        },
+      ],
+    )
+    await tick()
+    const root = document.createElement('main')
+    const page = mountApprovalPage(root, {
+      globalScope: scope,
+      closeWindow: () => undefined,
+    })
+    await page.refresh()
+    expect(root.textContent).toContain(`ERC-20 contract: ${SITE}`)
+    expect(root.textContent).toContain(`ERC-20 recipient: ${PRIMARY}`)
+    expect(root.textContent).toContain(
+      `ERC-20 transfer amount: ${amount} base units (token decimals and symbol are not resolved)`,
+    )
+    expect(root.textContent).not.toContain(`${amount} tokens`)
+    root
+      .querySelector<HTMLButtonElement>('[data-testid="approval-reject"]')!
+      .click()
+    expect((await pending).error.code).toBe(4001)
     page.dispose()
     bg.dispose()
   })

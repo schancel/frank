@@ -15,7 +15,11 @@ import {
 } from './runtime-adapter'
 import type { PendingDappApproval } from './background'
 import { formatUnits, getBytes, hexlify, Interface, keccak256 } from 'ethers'
-import { Transaction, VersionedTransaction } from '@solana/web3.js'
+import {
+  SystemProgram,
+  Transaction,
+  VersionedTransaction,
+} from '@solana/web3.js'
 import {
   getChainRegistryEntry,
   PROTOCOL_CHAINS,
@@ -106,7 +110,69 @@ function decodedText(bytes: Uint8Array): string | undefined {
   }
 }
 
-function solanaTransactionReview(value: unknown): string {
+interface SolanaReviewAccount {
+  readonly address: string
+  readonly signer: boolean
+  readonly writable: boolean
+}
+
+function describeSolanaInstruction(
+  index: number,
+  programId: string,
+  accounts: readonly SolanaReviewAccount[],
+  data: Uint8Array,
+  approvedAccount: string | undefined,
+): string {
+  if (programId !== SystemProgram.programId.toBase58())
+    throw new Error(
+      `Unsupported Solana program ${programId}; instruction ${index} data is ${hexlify(
+        data,
+      )}. Frank cannot explain its effects, so approval is disabled.`,
+    )
+  if (data.length !== 12)
+    throw new Error(
+      `Unsupported Solana System Program instruction ${index} (program ${programId}); data is ${hexlify(
+        data,
+      )}. Only a standard native SOL transfer can be reviewed, so approval is disabled.`,
+    )
+  const instructionType =
+    data[0]! | (data[1]! << 8) | (data[2]! << 16) | (data[3]! << 24)
+  if (instructionType !== 2)
+    throw new Error(
+      `Unsupported Solana System Program instruction type ${instructionType}; data is ${hexlify(
+        data,
+      )}. Approval is disabled.`,
+    )
+  if (
+    accounts.length !== 2 ||
+    !accounts[0]!.signer ||
+    !accounts[0]!.writable ||
+    !accounts[1]!.writable
+  )
+    throw new Error(
+      `Malformed Solana native transfer instruction ${index}; approval is disabled.`,
+    )
+  if (!approvedAccount || accounts[0]!.address !== approvedAccount)
+    throw new Error(
+      `Solana transfer source ${
+        accounts[0]!.address
+      } does not match the approved Frank account; approval is disabled.`,
+    )
+  let lamports = 0n
+  for (let byte = 0; byte < 8; byte += 1)
+    lamports |= BigInt(data[4 + byte]!) << BigInt(byte * 8)
+  return `Instruction ${index}\nProgram: ${programId} (System Program)\nEffect: Transfer ${formatUnits(
+    lamports,
+    9,
+  )} SOL (${lamports} lamports)\nFrom: ${accounts[0]!.address}\nTo: ${
+    accounts[1]!.address
+  }`
+}
+
+function solanaTransactionReview(
+  value: unknown,
+  approvedAccount?: string,
+): string {
   const bytes = bytesForReview(value)
   let versioned: VersionedTransaction | undefined
   try {
@@ -135,34 +201,40 @@ function solanaTransactionReview(value: unknown): string {
     message = instructions
       .map((ix, index) => {
         const program = keys[ix.programIdIndex]
-        const accounts = ix.accountKeyIndexes.map(i => keys[i]!.toBase58())
-        return `Instruction ${
-          index + 1
-        }\nProgram: ${program!.toBase58()}\nAccounts: ${
-          accounts.join(', ') || '(none)'
-        }\nData (hex): ${hexlify(
+        const accounts = ix.accountKeyIndexes.map(accountIndex => ({
+          address: keys[accountIndex]!.toBase58(),
+          signer: versioned!.message.isAccountSigner(accountIndex),
+          writable: versioned!.message.isAccountWritable(accountIndex),
+        }))
+        return describeSolanaInstruction(
+          index + 1,
+          program!.toBase58(),
+          accounts,
           ix.data,
-        )}\nInterpretation: Unknown instruction; review the full program and data.`
+          approvedAccount,
+        )
       })
       .join('\n\n')
   } else {
     const tx = Transaction.from(bytes)
     message = tx.instructions
-      .map(
-        (ix, index) =>
-          `Instruction ${
-            index + 1
-          }\nProgram: ${ix.programId.toBase58()}\nAccounts: ${
-            ix.keys.map(k => k.pubkey.toBase58()).join(', ') || '(none)'
-          }\nData (base58): ${
-            ix.data
-          }\nInterpretation: Unknown instruction; review the full program and data.`,
+      .map((ix, index) =>
+        describeSolanaInstruction(
+          index + 1,
+          ix.programId.toBase58(),
+          ix.keys.map(key => ({
+            address: key.pubkey.toBase58(),
+            signer: key.isSigner,
+            writable: key.isWritable,
+          })),
+          ix.data,
+          approvedAccount,
+        ),
       )
       .join('\n\n')
   }
-  return `Transaction bytes (hex): ${hexlify(bytes)}\n\n${
-    message || 'No instructions.'
-  }`
+  if (!message) throw new Error('Empty Solana transactions cannot be approved.')
+  return `Transaction bytes (hex): ${hexlify(bytes)}\n\n${message}`
 }
 
 function approvalReview(request: PendingDappApproval): string {
@@ -273,16 +345,22 @@ function approvalReview(request: PendingDappApproval): string {
       const data = typeof tx.data === 'string' ? tx.data : '0x'
       lines.push(`Calldata: ${data}`)
       lines.push(`Calldata hash: ${keccak256(data)}`)
-      if (data.startsWith('0xa9059cbb')) {
+      if (
+        data.startsWith('0xa9059cbb') &&
+        typeof tx.to === 'string' &&
+        /^0x[0-9a-f]{40}$/i.test(tx.to)
+      ) {
         try {
           const iface = new Interface([
             'function transfer(address to,uint256 value)',
           ])
           const decoded = iface.decodeFunctionData('transfer', data)
           lines.push(
-            `Decoded ERC-20 transfer: ${String(decoded[1])} tokens to ${String(
-              decoded[0],
-            )}`,
+            `ERC-20 contract: ${String(tx.to ?? '(unknown contract)')}`,
+            `ERC-20 recipient: ${String(decoded[0])}`,
+            `ERC-20 transfer amount: ${String(
+              decoded[1],
+            )} base units (token decimals and symbol are not resolved)`,
           )
         } catch {
           lines.push(
@@ -333,7 +411,12 @@ function approvalReview(request: PendingDappApproval): string {
       request.method === 'solana_signTransaction' ||
       request.method === 'solana_signAndSendTransaction'
     ) {
-      lines.push(solanaTransactionReview(p?.transaction))
+      lines.push(
+        solanaTransactionReview(
+          p?.transaction,
+          request.solanaAccountAddress ?? String(p?.account ?? ''),
+        ),
+      )
       return lines.join('\n\n')
     }
     throw new Error(`No safe review is available for ${request.method}`)
@@ -651,8 +734,19 @@ export function mountApprovalPage(
             ? error.message
             : 'Request details cannot be safely displayed.'
       }
+      const failureContext = [
+        request.chainFamily === 'solana'
+          ? `Chain: ${String(
+              (request.params as any)?.chain ?? 'Solana network not specified',
+            )}`
+          : `Chain: ${nativeChain(request)?.name ?? 'Unknown EVM chain'}`,
+        request.chainFamily === 'solana'
+          ? `Account: ${request.solanaAccountAddress ?? 'unknown'}`
+          : `Account: ${request.personaAddress ?? 'unknown'}`,
+        reviewError,
+      ].join('\n\n')
       root.append(
-        el(doc, 'pre', 'approval-review-summary', summary || reviewError),
+        el(doc, 'pre', 'approval-review-summary', summary || failureContext),
       )
       const approve = el(doc, 'button', 'approval-approve', 'Approve')
       approve.type = 'button'

@@ -1,3 +1,4 @@
+import { createEvmTopicOperations } from './evm-topic-operations'
 /** Real wallet construction and codec; external node/relay observations are scripted. */
 import axios from 'axios'
 import { Wallet, Transaction, getBytes, hexlify, type Provider } from 'ethers'
@@ -14,10 +15,13 @@ import { EvmCoinList, type StoredEvmListCoin } from './evm-coin-list'
 import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
 import type { EvmWalletHandle } from './evm-wallet-handle'
-import {
-  MonadTopicVoteClient,
-  MonadTopicVoteAbandonedError,
-} from './evm-topic-vote-client'
+import { TopicVoteClient, TopicVoteAbandonedError } from './topic-vote-client'
+function topicWallet(wallet: EvmWalletHandle) {
+  return {
+    chainIdentifier: wallet.cborNetwork!,
+    topicOperations: createEvmTopicOperations(wallet),
+  }
+}
 jest.mock('axios')
 const http = axios as jest.MockedFunction<typeof axios>
 const burn = '0x000000000000000000000000000000000000dEaD'
@@ -236,20 +240,19 @@ afterEach(() => {
 const params = {
   targetPayloadHash: new Uint8Array(32).fill(4),
   direction: 'down' as const,
-  burnAddress: burn,
-  voteWeightWei: 1000000n,
+  amountAtomic: 1000000n,
 }
 test.each(['up', 'down'] as const)(
   'canonical type11 %s vote requires the confirmed scalar burn',
   async direction => {
     const f = await fixture()
     try {
-      const result = await new MonadTopicVoteClient(f.wallet).castVote({
+      const result = await new TopicVoteClient(topicWallet(f.wallet)).castVote({
         ...params,
         direction,
       })
       expect(result.status.direction).toBe(direction === 'up' ? 1 : 0)
-      expect(result.status.value).toBe(params.voteWeightWei)
+      expect(result.status.value).toBe(params.amountAtomic)
       expect(result.status.state).toBe(2)
       expect(result.transactionHashes[0]).toMatch(/^0x[0-9a-f]{64}$/)
       expect(http.mock.calls[0][0]).toMatchObject({
@@ -273,9 +276,9 @@ test.each([0n, -1n, 1n << 63n])(
     const f = await fixture()
     try {
       await expect(
-        new MonadTopicVoteClient(f.wallet).castVote({
+        new TopicVoteClient(topicWallet(f.wallet)).castVote({
           ...params,
-          voteWeightWei: value,
+          amountAtomic: value,
         }),
       ).rejects.toThrow()
       expect(f.construct).not.toHaveBeenCalled()
@@ -294,9 +297,9 @@ test('204 shape-only success remains uncertain and replay preserves the full exa
       status: 204,
       headers: {},
     } as never)
-    const client = new MonadTopicVoteClient(f.wallet)
+    const client = new TopicVoteClient(topicWallet(f.wallet))
     await expect(client.castVote(params)).rejects.toBeInstanceOf(
-      MonadTopicVoteAbandonedError,
+      TopicVoteAbandonedError,
     )
     const retained = f.bundle.topicOperationJournal.getAll()[0]!
     expect(retained.version).toBe(2)
@@ -322,16 +325,16 @@ test('concurrent independent pending votes reserve disjoint coins instead of blo
   const f = await fixture()
   try {
     http.mockRejectedValue(new Error('offline'))
-    const client = new MonadTopicVoteClient(f.wallet)
+    const client = new TopicVoteClient(topicWallet(f.wallet))
     const results = await Promise.allSettled([
       client.castVote({
         ...params,
-        voteWeightWei: 500000n,
+        amountAtomic: 500000n,
         operationId: 'vote-first',
       }),
       client.castVote({
         ...params,
-        voteWeightWei: 500000n,
+        amountAtomic: 500000n,
         operationId: 'vote-second',
       }),
     ])
@@ -342,7 +345,7 @@ test('concurrent independent pending votes reserve disjoint coins instead of blo
     for (const result of results) {
       if (result.status !== 'rejected')
         throw new Error('Expected pending operation')
-      expect(result.reason).toBeInstanceOf(MonadTopicVoteAbandonedError)
+      expect(result.reason).toBeInstanceOf(TopicVoteAbandonedError)
     }
     expect(f.construct.mock.calls.length).toBeGreaterThanOrEqual(2)
     expect(http).toHaveBeenCalledTimes(2)
@@ -373,8 +376,8 @@ test('HTTP rejection after exposure retains signed authority and input reservati
       response: { status: 400, data: 'rejected' },
     })
     await expect(
-      new MonadTopicVoteClient(f.wallet).castVote(params),
-    ).rejects.toBeInstanceOf(MonadTopicVoteAbandonedError)
+      new TopicVoteClient(topicWallet(f.wallet)).castVote(params),
+    ).rejects.toBeInstanceOf(TopicVoteAbandonedError)
     const rows = f.bundle.topicOperationJournal.getAll()
     expect(rows).toHaveLength(1)
     const authority = f.preparer.getOperation(
@@ -418,8 +421,8 @@ test('confirmed relay status with one missing burn receipt retains every origina
         : originalReceipt(hash)
     })
     await expect(
-      new MonadTopicVoteClient(f.wallet).castVote(params),
-    ).rejects.toBeInstanceOf(MonadTopicVoteAbandonedError)
+      new TopicVoteClient(topicWallet(f.wallet)).castVote(params),
+    ).rejects.toBeInstanceOf(TopicVoteAbandonedError)
     const retained = f.bundle.topicOperationJournal.getAll()[0]!
     expect(retained.rawTransactions).toHaveLength(1)
     expect(f.construct).toHaveBeenCalledTimes(1)

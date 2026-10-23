@@ -3,11 +3,20 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import * as bip39 from 'bip39'
 
-import { MonadSubAccountPool } from '@frank/wallet/evm-account-pool'
 import * as monadIdentityModule from '@frank/wallet/evm-identity'
-import * as monadTopicPostClientModule from '@frank/wallet/evm-topic-post-client'
+import * as topicPostClientModule from '@frank/wallet/topic-post-client'
 import * as monadTopicTallyClientModule from '@frank/wallet/evm-topic-tally-client'
 
+jest.mock('@frank/wallet/chain/evm-chain', () => ({
+  createEvmChain: jest.fn(() => ({
+    createWallet: jest.fn(async () => ({
+      chainIdentifier: 'monad-testnet',
+      getBalanceParts: jest.fn(async () => undefined),
+      close: jest.fn(async () => undefined),
+    })),
+  })),
+  loadMonadChainConfigFromEnv: jest.fn(() => ({})),
+}))
 import { topicPostCommand, topicReadCommand } from '../src/commands/topic'
 import { saveIdentity } from '../src/config'
 
@@ -47,19 +56,10 @@ describe('Topic Commands', () => {
 
   it('broadcasts topic post and outputs human-readable summary', async () => {
     jest
-      .spyOn(monadTopicPostClientModule, 'quoteMonadTopicBurnGasReserve')
-      .mockResolvedValue(50000n)
-    jest
-      .spyOn(MonadSubAccountPool.prototype, 'prepareBurnAccount')
-      .mockResolvedValue({ index: 0 } as any)
-    jest
-      .spyOn(
-        monadTopicPostClientModule.MonadTopicPostClient.prototype,
-        'submitTopicPost',
-      )
+      .spyOn(topicPostClientModule.TopicPostClient.prototype, 'submitTopicPost')
       .mockResolvedValue({
         payloadHashHex: '0xposthash123',
-        txHash: '0xburntx123',
+        transactionHashes: ['0xburntx123'],
       } as any)
 
     await topicPostCommand('general', 'Hello world topic!', {
@@ -77,19 +77,10 @@ describe('Topic Commands', () => {
 
   it('outputs JSON result when --json flag is provided for topic post', async () => {
     jest
-      .spyOn(monadTopicPostClientModule, 'quoteMonadTopicBurnGasReserve')
-      .mockResolvedValue(50000n)
-    jest
-      .spyOn(MonadSubAccountPool.prototype, 'prepareBurnAccount')
-      .mockResolvedValue({ index: 1 } as any)
-    jest
-      .spyOn(
-        monadTopicPostClientModule.MonadTopicPostClient.prototype,
-        'submitTopicPost',
-      )
+      .spyOn(topicPostClientModule.TopicPostClient.prototype, 'submitTopicPost')
       .mockResolvedValue({
         payloadHashHex: '0xposthash456',
-        txHash: '0xburntx456',
+        transactionHashes: ['0xburntx456'],
       } as any)
 
     await topicPostCommand('news', 'Latest news announcement', {

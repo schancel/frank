@@ -1,8 +1,9 @@
-import { createEvmChain, loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
-import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import {
-  MonadTopicPostClient,
-} from '@frank/wallet/evm-topic-post-client'
+  createEvmChain,
+  loadMonadChainConfigFromEnv,
+} from '@frank/wallet/chain/evm-chain'
+import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
+import { TopicPostClient } from '@frank/wallet/topic-post-client'
 import { fetchMonadTopicPostsSince } from '@frank/wallet/evm-topic-tally-client'
 
 import { loadConfig, loadIdentity, resolveDataDir } from '../config'
@@ -54,16 +55,18 @@ export async function topicPostCommand(
       walletStorageLocation: walletDir,
       subAccountPoolSize: 1,
     })
-    wallet = await chain.createWallet({ mnemonic, passphrase: '' }) as EvmChainWalletHandle
+    wallet = (await chain.createWallet({
+      mnemonic,
+      passphrase: '',
+    })) as EvmChainWalletHandle
     await wallet.getBalanceParts?.()
-    const client = new MonadTopicPostClient(wallet)
+    const client = new TopicPostClient(wallet)
 
     const postResult = await client.submitTopicPost({
       topic,
       entries: [{ kind: 'post', message: content }],
       direction: 'up',
-      burnAddress: config.stampBurnAddress,
-      voteWeightWei: burnValueWei,
+      amountAtomic: burnValueWei,
     })
 
     const result = {
@@ -119,7 +122,6 @@ export async function topicReadCommand(
       policy: {
         network,
         chainId: BigInt(config.chainId),
-        burnAddress: config.stampBurnAddress,
       },
     })
 

@@ -1,3 +1,4 @@
+import { createEvmTopicOperations } from './evm-topic-operations'
 /** Real wallet construction and codec; external node/relay observations are scripted. */
 import axios from 'axios'
 import {
@@ -24,10 +25,13 @@ import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
 import { MonadIdentity } from './evm-identity'
 import type { EvmWalletHandle } from './evm-wallet-handle'
-import {
-  MonadTopicPostClient,
-  MonadTopicPostAbandonedError,
-} from './evm-topic-post-client'
+import { TopicPostClient, TopicPostAbandonedError } from './topic-post-client'
+function topicWallet(wallet: EvmWalletHandle) {
+  return {
+    chainIdentifier: wallet.cborNetwork!,
+    topicOperations: createEvmTopicOperations(wallet),
+  }
+}
 jest.mock('axios')
 const http = axios as jest.MockedFunction<typeof axios>
 const burn = '0x000000000000000000000000000000000000dEaD'
@@ -247,15 +251,16 @@ const params = {
   topic: 'test',
   entries: [{ kind: 'post' as const, title: 'hello', message: 'world' }],
   direction: 'up' as const,
-  burnAddress: burn,
-  voteWeightWei: 1000000n,
+  amountAtomic: 1000000n,
   timestampMs: -1,
 }
 test('public post writes schema2 type10 with all burns, parent and exact authored timestamp', async () => {
   const f = await fixture()
   try {
     const parent = new Uint8Array(32).fill(2)
-    const result = await new MonadTopicPostClient(f.wallet).submitTopicPost({
+    const result = await new TopicPostClient(
+      topicWallet(f.wallet),
+    ).submitTopicPost({
       ...params,
       parentPostHash: parent,
     })
@@ -291,9 +296,9 @@ test.each([0n, -1n, 1n << 63n])(
     const f = await fixture()
     try {
       await expect(
-        new MonadTopicPostClient(f.wallet).submitTopicPost({
+        new TopicPostClient(topicWallet(f.wallet)).submitTopicPost({
           ...params,
-          voteWeightWei: value,
+          amountAtomic: value,
         }),
       ).rejects.toThrow()
       expect(f.construct).not.toHaveBeenCalled()
@@ -307,7 +312,7 @@ test.each([0n, -1n, 1n << 63n])(
 test('down post and bad parent fail before shared preparation', async () => {
   const f = await fixture()
   try {
-    const client = new MonadTopicPostClient(f.wallet)
+    const client = new TopicPostClient(topicWallet(f.wallet))
     await expect(
       client.submitTopicPost({ ...params, direction: 'down' }),
     ).rejects.toThrow()
@@ -322,11 +327,11 @@ test('down post and bad parent fail before shared preparation', async () => {
 test('transport loss retains the full original request and explicit resume does not construct again', async () => {
   const f = await fixture()
   try {
-    const client = new MonadTopicPostClient(f.wallet)
+    const client = new TopicPostClient(topicWallet(f.wallet))
     const normal = http.getMockImplementation()!
     http.mockRejectedValueOnce(new Error('lost after send'))
     await expect(client.submitTopicPost(params)).rejects.toBeInstanceOf(
-      MonadTopicPostAbandonedError,
+      TopicPostAbandonedError,
     )
     const pending = f.bundle.topicOperationJournal.getAll()[0]!
     expect(pending.version).toBe(2)
@@ -366,9 +371,11 @@ test('maximum admitted amount remains exact through signing and status', async (
   const value = (1n << 63n) - 1n
   const f = await fixture(value + 60000n)
   try {
-    const result = await new MonadTopicPostClient(f.wallet).submitTopicPost({
+    const result = await new TopicPostClient(
+      topicWallet(f.wallet),
+    ).submitTopicPost({
       ...params,
-      voteWeightWei: value,
+      amountAtomic: value,
     })
     expect(result.status.value).toBe(value)
     expect(
@@ -390,7 +397,7 @@ test('preparation interruption retains the host construction intent without a fa
   try {
     f.construct.mockRejectedValueOnce(new Error('sign failed'))
     await expect(
-      new MonadTopicPostClient(f.wallet).submitTopicPost(params),
+      new TopicPostClient(topicWallet(f.wallet)).submitTopicPost(params),
     ).rejects.toThrow('sign failed')
     const pending = f.bundle.topicOperationJournal.getAll()[0]!
     expect(pending.construction?.postFrameHex).toBeTruthy()
@@ -408,10 +415,12 @@ test('signs the authored post with wallet.identity independently of transaction 
   const f = await fixture()
   try {
     const identity = MonadIdentity.generate()
-    const result = await new MonadTopicPostClient({
-      ...f.wallet,
-      identity,
-    }).submitTopicPost(params)
+    const result = await new TopicPostClient(
+      topicWallet({
+        ...f.wallet,
+        identity,
+      }),
+    ).submitTopicPost(params)
     const parsed = validateFrame(result.postFrame, defaultContext())
     if (parsed.kind !== 'parsed' || parsed.typed?.type !== 9)
       throw new Error('Expected signed post')
@@ -435,11 +444,11 @@ test('signs the authored post with wallet.identity independently of transaction 
 test('uses cached gas policy and the shared preparer without a probe-sign or fee estimation RPC', async () => {
   const f = await fixture()
   try {
-    await new MonadTopicPostClient(f.wallet).submitTopicPost(params)
+    await new TopicPostClient(topicWallet(f.wallet)).submitTopicPost(params)
     expect(f.construct).toHaveBeenCalledTimes(1)
     expect(f.construct).toHaveBeenCalledWith(
       expect.objectContaining({
-        amountWei: params.voteWeightWei,
+        amountWei: params.amountAtomic,
         kdf: expect.any(Function),
         calldata: expect.stringMatching(/^0x/),
       }),

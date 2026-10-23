@@ -75,6 +75,7 @@ export interface ReceivedCoinOwner {
    * anything, if one of them is a released payment. Otherwise the items are in flight (never
    * released) until the returned function is called. */
   beginContactSend(ephemeralPubKeys: readonly string[]): Promise<() => void>;
+  contactPaymentOperation?(ephemeralPubKeys: readonly string[]): string | undefined;
   /** Releases the payments among these of which no byte ever left the device. True if any. */
   releaseUnsentContactPayments(
     ephemeralPubKeys: readonly string[]
@@ -121,6 +122,8 @@ export class EvmWalletInternals {
   recoverStampFunding?: () => Promise<void>;
   mainAccountAdmission?: MainAccountAdmission;
   receivedCoinOwner?: ReceivedCoinOwner;
+  /** Resolve an authorized local payment/stamp binding without exposing signing material. */
+  resolveMessagePayment?: (paymentOperationId: string, stampValue: bigint) => Promise<string>;
   heldTransferSources?: () => Set<string>;
   nativeOperationOwner?: EvmLegacyConsolidator;
   runningMainTasks = 0;
@@ -195,6 +198,9 @@ export class EvmWallet implements EvmChainWalletHandle {
   readonly networkId!: string;
   readonly identity!: MonadIdentity;
   readonly spendPool!: EvmSpendPool;
+  readonly transactionSetSubmission!: EvmChainWalletHandle["transactionSetSubmission"];
+  readonly constructTransactionSet!: EvmChainWalletHandle["constructTransactionSet"];
+  readonly sendTransaction!: EvmChainWalletHandle["sendTransaction"];
   readonly transactionSetPreparer!: EvmChainWalletHandle["transactionSetPreparer"];
   readonly transactionSetLifecycle!: EvmChainWalletHandle["transactionSetLifecycle"];
   readonly refreshTransactionSetInventory!: EvmChainWalletHandle["refreshTransactionSetInventory"];

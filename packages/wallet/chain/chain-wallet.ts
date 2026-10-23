@@ -300,17 +300,13 @@ export interface NativeWalletHandle {
     mainAccountWaitMs?: number;
   }): Promise<ChainTransaction>;
 
-  /** Pays a contact at a one-time address and delivers the message that lets the contact's wallet
-   * find the money. Paid from the wallet's spendable funds through the same recorded path as
-   * `sendNative`. The signed transfer and its message item are saved, the message (which carries
-   * the signed transfer) is delivered, and only when the relay has confirmed it is the transfer
-   * broadcast. Rejects with `ContactPaymentPendingError` while the relay has not confirmed. */
+  /** Pays a contact at a one-time address. The wallet persists the encrypted message and
+   * complete signed transaction set before submitting recipient and owned-change transactions.
+   * Chain settlement and relay delivery are reconciled separately under the original operation. */
   sendToContact?(params: ContactSendParams): Promise<ContactSendResult>;
-  /** The same payment for a host that sends the message itself (a chat, with its own outgoing
-   * bubble and retry): signs and saves the transfer, holds its source, broadcasts nothing, and
-   * returns the item. The host then sends a message carrying that item with
-   * `directMessages.send`; when the relay has stored it the wallet broadcasts the transfer. The
-   * item may be sent again (a retry, a new message): the transfer is always the same one. */
+  /** Prepares and reserves a contact payment without broadcasting. A host passes the returned
+   * item to `directMessages.send`, which attaches its stamp to the same operation and durably
+   * stores the encrypted message before submitting the complete transaction wrapper. */
   prepareContactPayment?(
     params: ContactSendParams
   ): Promise<PreparedContactPayment>;
@@ -677,6 +673,9 @@ export interface ContactPaymentInfo {
 /** Minimum identity surface accepted by profile, message, and topic capabilities. */
 export interface WalletHandle {
   readonly chainIdentifier: string;
+  constructTransactionSet?: import("../transaction-set").TransactionSetCapability["constructTransactionSet"];
+  /** Submit the complete prepared wrapper, including wallet-owned change transactions. */
+  sendTransaction?: import("../transaction-set").TransactionSetCapability["sendTransaction"];
   readonly topicOperations?: import("../topic-operations").TopicOperationCapability;
   readonly identity: FrankIdentityHandle;
 }

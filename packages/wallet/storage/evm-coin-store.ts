@@ -531,6 +531,8 @@ export interface ContactPayment {
   readonly deliveredBy?: 'wallet' | 'host'
   /** From `prepared` on: the native operation that holds the signed transfer. */
   readonly operationId?: string
+  /** Shared construction identity; the journal operationId remains its durable native row. */
+  readonly transactionSetOperationId?: string
   readonly rawTransaction?: string
   readonly txHash?: string
   readonly payloadDigest?: string

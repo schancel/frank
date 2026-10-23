@@ -1293,7 +1293,8 @@ export class EvmLegacyConsolidator {
       let incomplete = false
       const { classifyLocalMember: classify, applyLocalMember: apply } =
         this.config
-      const rows = this.config.journal.list()
+      const rows = this.config.journal.list().filter(row => row.kind !== 'transaction-set')
+      // Shared transaction-set inventory is projected only by its own lifecycle.
       // The journal state a hold was taken under: per source address, and for the whole journal.
       const byAddress = new Map<string, string>()
       let whole = ''
@@ -1459,7 +1460,7 @@ export class EvmLegacyConsolidator {
   private reobserveDue(now: number): ReobserveCandidate[] {
     const candidates: ReobserveCandidate[] = []
     for (const row of this.config.journal.list()) {
-      if (row.cancelled) continue
+      if (row.cancelled || row.kind === 'transaction-set') continue
       row.members.forEach((member, index) => {
         const state = member.observation.state
         if (

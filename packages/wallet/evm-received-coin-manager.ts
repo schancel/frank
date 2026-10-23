@@ -36,10 +36,12 @@ import {
   type PreparedContactPayment,
   type ReceivedCoinSweep,
 } from "./chain/chain-wallet";
+import type { EvmNativeOperation } from "./storage/evm-native-operation-journal";
 import type { EvmLegacyConsolidator } from "./chain/evm-legacy-consolidator";
 import {
   configuredEvmStealthToken,
   createEvmStealthPayments,
+  evmStealthTransactionSetOperationId,
   type EvmStealthPreparation,
 } from "./chain/evm-stealth-payments";
 import {
@@ -743,8 +745,10 @@ export function createEvmReceivedCoinAndContactManager(
         (row) =>
           !row.cancelled &&
           row.recipient === address &&
-          row.members.length === 1 &&
-          row.members[0]!.signed
+          (row.kind === "transaction-set"
+            ? row.members.filter(member => member.transactionSet?.role === "payment" && member.transactionSet.stageId === undefined).length === 1
+            : row.members.length === 1) &&
+          row.members.every(member => member.signed)
       );
 
   const newMessageId = (): string => {
@@ -759,12 +763,14 @@ export function createEvmReceivedCoinAndContactManager(
   };
 
   const openedAtMs = Date.now();
+  const primaryMember = (row: EvmNativeOperation | undefined) => row?.kind === "transaction-set"
+    ? row.members.find(member => member.transactionSet?.role === "payment" && member.transactionSet.stageId === undefined)
+    : row?.members[0];
   const transferMember = (payment: ContactPayment) =>
     payment.operationId === undefined
       ? undefined
-      : getTopicOwner()
-          .nativeJournal!.list()
-          .find((row) => row.operationId === payment.operationId)?.members[0];
+      : primaryMember(getTopicOwner().nativeJournal!.list()
+          .find((row) => row.operationId === payment.operationId));
   const transferIncluded = (payment: ContactPayment): boolean =>
     transferMember(payment)?.observation.state === "included-success";
 
@@ -804,6 +810,10 @@ export function createEvmReceivedCoinAndContactManager(
             .find((r) => r.operationId === payment.operationId)) ??
       signedTransferTo(payment.stealthAddress);
     if (row === undefined || row.cancelled) return;
+    if (payment.transactionSetOperationId) {
+      await wallet.transactionSetPreparer!.releaseUnexposed(payment.transactionSetOperationId);
+      return;
+    }
     await runWalletExclusive(wallet, (admission) =>
       nativeOwner().releaseUnexposed(row.operationId, admission)
     );
@@ -839,15 +849,17 @@ export function createEvmReceivedCoinAndContactManager(
   ): Promise<ContactPayment> => {
     const wallet = getWallet();
     const operationId = payment.operationId!;
-    await runWalletExclusive(wallet, (admission) =>
-      runMainAccountExclusive(wallet, () =>
-        nativeOwner().resumeOperation(operationId, admission)
-      )
-    ).catch(() => undefined);
+    if (payment.transactionSetOperationId) {
+      await wallet.transactionSetSubmission!.sendTransaction(
+        wallet.transactionSetPreparer!.getTransactionSet(payment.transactionSetOperationId)
+      );
+    } else {
+      await runWalletExclusive(wallet, (admission) =>
+        runMainAccountExclusive(wallet, () => nativeOwner().resumeOperation(operationId, admission))
+      );
+    }
     invalidateBalanceRead();
-    const member = getTopicOwner()
-      .nativeJournal!.list()
-      .find((row) => row.operationId === operationId)?.members[0];
+    const member = transferMember(payment);
     if (member?.observation.state !== "included-success") return payment;
     const paid: ContactPayment = { ...payment, state: "paid" };
     await paymentStore.put(payment.stealthAddress, paid);
@@ -895,8 +907,8 @@ export function createEvmReceivedCoinAndContactManager(
         ...payment,
         state: "prepared",
         operationId: row.operationId,
-        rawTransaction: row.members[0]!.signed!.rawTransaction,
-        txHash: row.members[0]!.signed!.transactionHash,
+        rawTransaction: primaryMember(row)!.signed!.rawTransaction,
+        txHash: primaryMember(row)!.signed!.transactionHash,
       };
       await paymentStore.put(stealthAddress, payment);
     }
@@ -954,6 +966,7 @@ export function createEvmReceivedCoinAndContactManager(
           recipient: { raw: getAddress(payment.recipientAddress) },
           items: [itemOf(payment)],
           messageId: payment.messageId,
+          ...(payment.transactionSetOperationId ? { paymentOperationId: payment.transactionSetOperationId } : {}),
           ...(payment.conversationId === undefined
             ? {}
             : { conversationId: payment.conversationId }),
@@ -1067,8 +1080,10 @@ export function createEvmReceivedCoinAndContactManager(
     return contactExclusive(async () => {
       requireOpenWallet(wallet);
       const messageId = newMessageId();
+      const transactionSetOperationId = `contact-${messageId.replace(/-/g, "")}`;
       await paymentStore.put(stealthAddress, {
         messageId,
+        transactionSetOperationId,
         stealthAddress,
         ephemeralPubKey: hexlify(destination.ephemeralPubKey).slice(2),
         recipientAddress,
@@ -1084,14 +1099,15 @@ export function createEvmReceivedCoinAndContactManager(
       });
       contactParams.onProgress?.({ stage: "signing" });
       try {
-        await runWalletExclusive(wallet, (admission) =>
-          runMainAccountExclusive(wallet, () =>
-            nativeOwner().signNative(
-              { recipient: { raw: stealthAddress }, value: contactParams.value },
-              admission
-            )
-          )
-        );
+        await wallet.refreshTransactionSetInventory!();
+        const policy = wallet.transactionSetPreparer!.transactionSetPolicy();
+        await getTopicOwner().runLifetime(() => wallet.transactionSetPreparer!.constructLegacyTransactionSet({
+          operationId: transactionSetOperationId,
+          amountWei: contactParams.value,
+          kdf: () => stealthAddress,
+          ...(stampWei! > 0n ? { reserveForContinuationWei:
+            stampWei! + policy.paymentGasLimit("0x") * policy.gasPriceWei } : {}),
+        }));
       } catch (error) {
         if (signedTransferTo(stealthAddress) === undefined) {
           await paymentStore.delete(stealthAddress);
@@ -1608,7 +1624,11 @@ export function createEvmReceivedCoinAndContactManager(
         ),
       submit: (id) => {
         const row = topicOwner.nativeJournal!.get(id);
-        if (row.kind === "transaction-set") return topicOwner.runLifetime(() => wallet.transactionSetLifecycle!.replay(row.preparationId!.slice("evm-transaction-set:".length), { payments: true }));
+        if (row.kind === "transaction-set") return topicOwner.runLifetime(async () => {
+          await wallet.transactionSetSubmission!.sendTransaction(
+            wallet.transactionSetPreparer!.getTransactionSet(row.preparationId!.slice("evm-transaction-set:".length))
+          );
+        });
         return topicOwner.runLifetime(lifetime => owner.resumeIndependentPayment(id, lifetime));
       },
       observe: (id) =>
@@ -1773,7 +1793,8 @@ export function createEvmReceivedCoinAndContactManager(
           intended += value;
         }
       }
-      if (intended !== claim.amountAtomic) {
+      // Native residual gifts may exceed the intended amount; they never satisfy a shortfall.
+      if (claim.asset.kind === "native" ? intended < claim.amountAtomic : intended !== claim.amountAtomic) {
         throw new Error("Receipt transaction set differs from intended amount");
       }
       return {
@@ -2092,6 +2113,21 @@ export function createEvmReceivedCoinAndContactManager(
       return held;
     };
 
+    walletInternals.resolveMessagePayment = async (id, amount) => {
+      await preparations.refresh();
+      const row = preparations.get(id);
+      if (row) {
+        if (row.asset.kind !== "native" || row.released || !row.messageStamp ||
+            BigInt(row.messageStamp.amountAtomic) !== amount || !(await financialPayments.get(id)))
+          throw new Error("Message stamp differs from authorized stealth operation");
+        return evmStealthTransactionSetOperationId(id);
+      }
+      const contact = paymentStore.all().find(payment => payment.transactionSetOperationId === id);
+      if (!contact || contact.state === "released" || contact.stampValueWei !== amount.toString())
+        throw new Error("Message payment operation is unavailable");
+      return id;
+    };
+
     walletInternals.receivedCoinOwner = {
       recordStampCoin,
       async recordStampPayments(message) {
@@ -2144,6 +2180,12 @@ export function createEvmReceivedCoinAndContactManager(
       mailboxScan: () =>
         scanState.get("scan") ?? { complete: false, sinceMs: 0 },
       recordMailboxScan: (progress) => scanState.put("scan", progress),
+      contactPaymentOperation: (ephemeralPubKeys) => {
+        const ids = [...new Set(paymentStore.all().filter(payment => ephemeralPubKeys.includes(payment.ephemeralPubKey))
+          .map(payment => payment.transactionSetOperationId).filter((id): id is string => id !== undefined))];
+        if (ids.length > 1) throw new Error("A message must use one combined contact payment operation");
+        return ids[0];
+      },
       beginContactSend: (ephemeralPubKeys) =>
         exposureExclusive(async () => {
           for (const payment of paymentStore.all()) {

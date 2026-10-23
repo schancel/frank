@@ -20,6 +20,11 @@ export interface StealthPaymentIntent {
   /** Native transaction fees are separate from the transferred asset and message stamp. */
   readonly maxNativeFeeAtomic: bigint
   readonly sourceAddress?: string
+  /** Same-chain message stamp reserved within this original payment operation. */
+  readonly messageStamp?: {
+    readonly amountAtomic: bigint
+    readonly maxNativeFeeAtomic: bigint
+  }
 }
 
 export interface PreparedStealthPayment {
@@ -76,6 +81,8 @@ export interface StealthPaymentQuote {
 }
 
 export interface StealthPaymentCapability {
+  /** Native payment and same-chain stamp can share one immutable signed operation. */
+  readonly supportsCombinedStamp?: true
   /** Read-only chain observation; retains the operation's unsigned intent/derivation.
    * Does not sign, expose, submit, reserve funds, or authorize a fee ceiling. */
   quote?(

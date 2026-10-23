@@ -437,6 +437,8 @@ export interface DirectMessageClient {
      * (or {@link DirectMessageAttemptUnlinkedError}) before anything else is looked at.
      * Omitted: the wallet draws a random one. */
     messageId?: string | Uint8Array;
+    /** Original same-wallet stealth operation whose private change funds this stamp. */
+    paymentOperationId?: string;
     /** Raw native-chain value attached as the mandatory stamp payment. */
     stampValue?: bigint;
     onPreparationProgress?: (

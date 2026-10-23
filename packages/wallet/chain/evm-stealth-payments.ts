@@ -60,6 +60,7 @@ export interface EvmStealthPreparation {
   ephemeralPublicKey: string
   journalOperationId?: string
   payloadDigest?: string
+  messageStamp?: { amountAtomic: string; maxNativeFeeAtomic: string }
   released?: true
 }
 export interface EvmStealthPaymentDriver {
@@ -126,6 +127,12 @@ function validateFeeAuthorization(row: EvmStealthPreparation): void {
     throw new Error(
       'Unsupported EVM stealth preparation format; development financial preparation reset requires explicit review, never key or wallet deletion',
     )
+  if (row.messageStamp && (row.asset.kind !== 'native' ||
+      !/^[1-9][0-9]{0,77}$/.test(row.messageStamp.amountAtomic) ||
+      !/^(0|[1-9][0-9]{0,77})$/.test(row.messageStamp.maxNativeFeeAtomic) ||
+      BigInt(row.messageStamp.amountAtomic) >= 1n << 256n ||
+      BigInt(row.messageStamp.maxNativeFeeAtomic) >= 1n << 256n))
+    throw new Error('Invalid combined message stamp authorization')
   if (row.allocation) validateAllocation(row)
   const authorization = row.feeAuthorization
   if (
@@ -223,7 +230,7 @@ function matches(
     )
       return false
     const payments = row.members.filter(
-      (member) => member.transactionSet?.role === 'payment',
+      (member) => (member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined),
     )
     if (!payments.length || row.members.some((member) => !member.signed))
       return false
@@ -233,7 +240,7 @@ function matches(
       0n,
     )
     return (
-      totalFee <= BigInt(preparation.feeAuthorization.maxNativeFeeAtomic) &&
+      totalFee <= BigInt(preparation.feeAuthorization.maxNativeFeeAtomic) + BigInt(preparation.messageStamp?.maxNativeFeeAtomic ?? 0) &&
       payments.every((member) => {
         const tx = Transaction.from(member.signed!.rawTransaction)
         return (
@@ -371,14 +378,14 @@ export function createEvmStealthPayments(
       .filter(
         (member) =>
           row.asset.kind !== 'native' ||
-          member.transactionSet?.role === 'payment',
+          (member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined),
       )
       .map((member, index) => ({
         rawTransaction: member.signed!.rawTransaction,
         txHash: member.signed!.transactionHash,
         recipientAmountAtomic: BigInt(
           row.asset.kind === 'native'
-            ? Transaction.from(member.signed!.rawTransaction).value
+            ? BigInt(member.transactionSet!.intendedValueWei ?? Transaction.from(member.signed!.rawTransaction).value)
             : row.allocation!.sources[index]!.recipientAmountAtomic,
         ),
       })),
@@ -395,14 +402,14 @@ export function createEvmStealthPayments(
       failed = 0
     let feeKnown = false
     for (const member of journal.members)
-      if ('feeWei' in member.observation) {
+      if ('feeWei' in member.observation && member.transactionSet?.stageId === undefined) {
         feeKnown = true
         fee += BigInt(member.observation.feeWei)
       }
     const paymentMembers = journal.members.filter(
       (member) =>
         row.asset.kind !== 'native' ||
-        member.transactionSet?.role === 'payment',
+        (member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined),
     )
     for (let i = 0; i < paymentMembers.length; i++) {
       const member = paymentMembers[i]!,
@@ -532,6 +539,7 @@ export function createEvmStealthPayments(
     return allocated
   }
   return {
+    supportsCombinedStamp: true,
     quote: (input) => {
       const intent = {
         ...input,
@@ -606,7 +614,17 @@ export function createEvmStealthPayments(
         )
           throw new Error('Invalid stealth fee ceiling')
         let row = await ensureAllocation(await ensureIntent(intent))
+        const messageStamp = intent.messageStamp === undefined ? undefined : {
+          amountAtomic: intent.messageStamp.amountAtomic.toString(),
+          maxNativeFeeAtomic: intent.messageStamp.maxNativeFeeAtomic.toString(),
+        }
+        if (messageStamp && (row.asset.kind !== 'native' || intent.messageStamp!.amountAtomic <= 0n ||
+            intent.messageStamp!.amountAtomic >= 1n << 256n || intent.messageStamp!.maxNativeFeeAtomic < 0n ||
+            intent.messageStamp!.maxNativeFeeAtomic >= 1n << 256n))
+          throw new Error('Invalid combined message stamp authorization')
         if (row.feeAuthorization.status === 'approved') {
+          if (JSON.stringify(row.messageStamp) !== JSON.stringify(messageStamp))
+            throw new Error('Stealth message stamp authorization conflict')
           if (
             BigInt(row.feeAuthorization.maxNativeFeeAtomic) !==
             intent.maxNativeFeeAtomic
@@ -615,6 +633,7 @@ export function createEvmStealthPayments(
         } else {
           const approved = {
             ...row,
+            ...(messageStamp ? { messageStamp } : {}),
             feeAuthorization: {
               status: 'approved' as const,
               maxNativeFeeAtomic: intent.maxNativeFeeAtomic.toString(),
@@ -651,7 +670,9 @@ export function createEvmStealthPayments(
                   ),
                   amountWei: BigInt(row.amountAtomic),
                   kdf: () => row.recipientAddress,
-                  maxFeeWei: intent.maxNativeFeeAtomic,
+                  maxFeeWei: intent.maxNativeFeeAtomic + (intent.messageStamp?.maxNativeFeeAtomic ?? 0n),
+                  ...(intent.messageStamp ? { reserveForContinuationWei:
+                    intent.messageStamp.amountAtomic + intent.messageStamp.maxNativeFeeAtomic } : {}),
                 })
               : await driver.signIndependentPayment({
                   preparationId: `stealth-payment:${intent.operationId}`,

@@ -307,6 +307,9 @@ export interface StoredMessage {
   payments: StoredPayment[]
   /** Stable link to the wallet-owned EVM construction journal. Present on shared-set sends. */
   transactionSetOperationId?: string
+  /** A stamp stage inside an already prepared same-wallet payment operation. */
+  transactionSetStageId?: string
+  paymentOperationId?: string
   /** Wallet-owned signed change transactions, never included in recipient message evidence. */
   otherTransactions: StoredPayment[]
   /** Immutable encrypted construction intent, persisted before the shared preparer signs. */
@@ -457,8 +460,10 @@ function validateSharedStoredMessage(row: StoredMessage): void {
   if (
     row.version !== 2 ||
     typeof row.transactionSetOperationId !== 'string' ||
-    row.transactionSetOperationId !==
-      `stamp-${row.consumerId.slice('frank-dm:'.length)}` ||
+    (row.transactionSetStageId === undefined
+      ? row.transactionSetOperationId !== `stamp-${row.consumerId.slice('frank-dm:'.length)}` || row.paymentOperationId !== undefined
+      : row.transactionSetStageId !== `stamp-${row.consumerId.slice('frank-dm:'.length)}` ||
+        typeof row.paymentOperationId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(row.paymentOperationId)) ||
     !/^[0-9a-f]{64}$/i.test(row.digest) ||
     !/^[0-9a-f]{66}$/i.test(row.recipientSubject) ||
     !Array.isArray(row.payments) ||
@@ -595,6 +600,8 @@ export interface CanonicalMessagingOwner {
     lifecycle: import('../evm-transaction-set-lifecycle').EvmTransactionSetLifecycle
     provider: import('ethers').Provider
     refresh: () => Promise<void>
+    resolvePaymentOperation?: (id: string, amount: bigint) => Promise<string>
+    sendTransaction: (prepared: import('../evm-transaction-set-types').PreparedEvmTransactionSet) => Promise<import('../transaction-set').TransactionSetSubmission>
   }
   signDigest(digest: Uint8Array): Uint8Array
   /** Runs `operation` as part of the open wallet: close waits for it. Not a queue. */
@@ -1060,6 +1067,25 @@ async function submitStored(
     row.outcome !== undefined ||
     row.request === undefined
   ) return { row }
+  if (row.transactionSetOperationId && owner.transactionSets) {
+    const shared = owner.transactionSets
+    await shared.sendTransaction(shared.preparer.getTransactionSet(row.transactionSetOperationId))
+  }
+  if (row.transactionSetOperationId) {
+    const shared = owner.transactionSets
+    if (!shared || !row.transactionSetOperationId) throw new Error('Shared stamp operation unavailable')
+    if (!shared.lifecycle.canSubmitPayments(row.transactionSetOperationId, row.transactionSetStageId))
+      return { row, error: new MonadStampPendingAttemptError([row.digest]) }
+  }
+  if (row.transactionSetOperationId && owner.transactionSets) {
+    const operation = owner.transactionSets.preparer.getOperation(row.transactionSetOperationId)
+    if (!operation) throw new Error('Shared stamp operation unavailable')
+    for (const payment of row.payments) {
+      const index = operation.members.findIndex(member => member.signed?.rawTransaction === payment.rawTx)
+      if (index < 0) throw new Error('Stamp bytes differ from original operation')
+      await owner.transactionSets.preparer.markExposed(row.transactionSetOperationId, index)
+    }
+  }
   const request = row.request
   let unexposed = false
   if (row.unexposed) {
@@ -1344,8 +1370,11 @@ async function finishSharedConstruction(
   const intent = row.construction!
   const operationId = row.transactionSetOperationId
   const shared = owner.transactionSets
-  if (!operationId || operationId !== `stamp-${row.consumerId.slice('frank-dm:'.length)}`)
-    throw new Error('Stored stamp operation identity mismatch')
+  validateSharedStoredMessage(row)
+  if (!operationId) throw new Error('Stored stamp operation identity mismatch')
+  if (row.transactionSetStageId && (!shared?.resolvePaymentOperation ||
+      await shared.resolvePaymentOperation(row.paymentOperationId!, BigInt(intent.amountWei)) !== operationId))
+    throw new Error('Stored payment/stamp operation identity mismatch')
   if (!shared) throw new Error('Shared stamp transaction preparation is unavailable')
   // The list is authoritative but observations are an off-construction view. Refresh the
   // wallet-owned sources first so deposits since the previous pass are eligible here.
@@ -1358,31 +1387,35 @@ async function finishSharedConstruction(
       toHex(inspected.payload.recipient.keyBytes) !== row.recipientSubject ||
       toHex(recipientPayloadDigest(intent.network, sealed.payload)) !== row.digest)
     throw new Error('Stored stamp construction identity mismatch')
-  const prepared = await shared.preparer.constructTransactionSet({
+  const request = {
     operationId,
     amountWei: BigInt(intent.amountWei),
-    kdf: childIndex => hexlify(canonicalStampDestination({
+    kdf: (childIndex: number) => hexlify(canonicalStampDestination({
       network: intent.network,
       stampKey: inspected.stampKey,
       sharedPoint: inspected.payload.sharedPoint,
       childIndex,
     }).address),
-  })
-  const request = freezePaidMessage(
+  }
+  const prepared = row.transactionSetStageId
+    ? await shared.preparer.appendTransactionSet({ ...request, stageId: row.transactionSetStageId })
+    : await shared.preparer.constructTransactionSet(request)
+  const frozenRequest = freezePaidMessage(
     intent.network, sealed, fromHex(row.digest),
     prepared.bundle.map(payment => payment.rawTransaction), intent.boundary,
   )
   const next: StoredMessage = {
     ...row,
-    request: { body: toHex(request.body), contentType: request.contentType },
+    request: { body: toHex(frozenRequest.body), contentType: frozenRequest.contentType },
     payments: prepared.bundle.map(payment => ({
       source: 'coin', address: payment.sourceAccount,
       rawTx: payment.rawTransaction, state: 'pending',
     })),
-    otherTransactions: prepared.otherTransactions.map(payment => ({
-      source: 'coin', address: payment.sourceAccount,
-      rawTx: payment.rawTransaction, state: 'pending',
-    })),
+    // Track every owned movement so primary change keeps recovering after the stamp settles.
+    otherTransactions: shared.preparer.getOperation(operationId)!.members
+      .filter(member => member.transactionSet?.role !== 'payment')
+      .map(member => ({ source: 'coin', address: member.source.address,
+        rawTx: member.signed!.rawTransaction, state: 'pending' })),
   }
   await owner.messages.put(next)
   return next
@@ -1391,14 +1424,13 @@ async function finishSharedConstruction(
 async function settleSharedPayments(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
-  broadcast: boolean,
 ): Promise<StoredMessage> {
   const shared = owner.transactionSets
   const operationId = row.transactionSetOperationId
   if (!shared || !operationId) throw new Error('Stored stamp transaction set is unavailable')
   await shared.lifecycle.observe(operationId, shared.provider)
   if (!row.exposurePending)
-    await shared.lifecycle.replay(operationId, { payments: broadcast })
+    await shared.sendTransaction(shared.preparer.getTransactionSet(operationId))
   const operation = shared.preparer.getOperation(operationId)
   if (!operation) throw new Error('Stored stamp transaction set is unavailable')
   const stateOf = (payment: StoredPayment): StoredPayment => {
@@ -1431,7 +1463,7 @@ async function settlePayments(
   row: StoredMessage,
   broadcast: boolean,
 ): Promise<StoredMessage> {
-  if (row.version === 2) return settleSharedPayments(owner, row, broadcast)
+  if (row.version === 2) return settleSharedPayments(owner, row)
   const payer = owner.payer()
   const holder = holderOf(owner, row.consumerId)
   const resubmit: string[] = []
@@ -1846,15 +1878,16 @@ export async function restoreOutgoingClaims(
       if (sharedConstructionPending(row))
         row = await finishSharedConstruction(owner, row)
       const operationId = row.transactionSetOperationId
-      if (!operationId || operationId !== `stamp-${row.consumerId.slice('frank-dm:'.length)}`)
-        throw new Error('Stored stamp operation identity mismatch')
+      validateSharedStoredMessage(row)
+      if (!operationId) throw new Error('Stored stamp operation identity mismatch')
       const operation = owner.transactionSets?.preparer.getOperation(operationId)
       if (!operation && !sharedConstructionPending(row))
         throw new Error('Stored message is missing its durable signed transaction set')
       if (operation) {
         const roleMembers = (role: 'payment' | 'change') => operation.members
-          .filter(member => member.transactionSet?.role === role)
-          .sort((a, b) => a.transactionSet!.logicalIndex - b.transactionSet!.logicalIndex)
+          .filter(member => role === 'payment'
+            ? member.transactionSet?.stageId === row.transactionSetStageId && member.transactionSet?.role === 'payment'
+            : member.transactionSet !== undefined && member.transactionSet.role !== 'payment')
         const payments = roleMembers('payment')
         const changes = roleMembers('change')
         if (payments.length !== row.payments.length || changes.length !== row.otherTransactions.length ||
@@ -2201,7 +2234,10 @@ async function send(
     const payload = parseFrame(sealed.payload)
     if (payload.kind !== 'parsed' || payload.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
       throw new Error('canonical-wallet:payload-required')
-    const operationId = `stamp-${toHex(messageId)}`
+    const stageId = `stamp-${toHex(messageId)}`
+    const operationId = params.paymentOperationId === undefined ? stageId
+      : await sharedSets.resolvePaymentOperation?.(params.paymentOperationId, stampValueWei!)
+    if (!operationId) throw new Error('Combined payment and stamp capability is unavailable')
     const construction = {
       network: directory.network,
       payload: toHex(sealed.payload),
@@ -2212,6 +2248,9 @@ async function send(
     let row: StoredMessage = {
       version: 2,
       transactionSetOperationId: operationId,
+      ...(params.paymentOperationId === undefined ? {} : {
+        transactionSetStageId: stageId, paymentOperationId: params.paymentOperationId,
+      }),
       consumerId,
       digest,
       recipientSubject: toHex(payload.typed.recipient.keyBytes),
@@ -2241,9 +2280,8 @@ async function send(
     try {
       if (params.onEnvelopeDurable)
         row = await authorizeEnvelope(owner, row, params.onEnvelopeDurable)
+      await params.onBeforeExposure?.(digest)
       await params.onAttemptCreated?.(digest)
-      // Self-owned change is durable and may be replayed independently of relay delivery.
-      await owner.lifetime(() => sharedSets.lifecycle.replay(operationId, { payments: false }))
       const submitted = await owner.lifetime(() => submitStored(owner, directory, row))
       row = submitted.row
       if (row.outcome === 'dead') {
@@ -2256,8 +2294,7 @@ async function send(
       }
       if (row.outcome !== 'delivered')
         throw new MonadStampPendingAttemptError([digest])
-      await owner.lifetime(() => sharedSets.lifecycle.replay(operationId, { payments: true }))
-      row = await owner.lifetime(() => settleSharedPayments(owner, row, true))
+      row = await owner.lifetime(() => settleSharedPayments(owner, row))
     } finally {
       work.busy = undefined
       ended()

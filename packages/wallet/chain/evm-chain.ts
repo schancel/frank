@@ -37,6 +37,9 @@ import {
   type EvmStealthPreparation,
 } from "./evm-stealth-payments";
 import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
+import { createLegacyTransactionSetPayments } from "./evm-legacy-transaction-set";
+import { createEvmTransactionSetSubmission } from "../evm-transaction-set-submission";
+import { evmTransactionSetCapability } from "../evm-transaction-set-public";
 import {
   EVM_COIN_LIST_NAMESPACE,
   EvmCoinList,
@@ -1154,8 +1157,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const endSend = await coinOwner.beginContactSend(carried);
       let result: DirectMessageSendResult;
       try {
+        const carriedOperation = coinOwner.contactPaymentOperation?.(carried);
+        if (params.paymentOperationId && carriedOperation && params.paymentOperationId !== carriedOperation)
+          throw new Error("Message carries conflicting payment operation identities");
         result = await canonical.send({
           ...params,
+          ...(carriedOperation ? { paymentOperationId: carriedOperation } : {}),
           onBeforeExposure: async (payloadDigest) => {
             await coinOwner.contactMessageAttempted(carried, payloadDigest);
             await params.onBeforeExposure?.(payloadDigest);
@@ -1502,9 +1509,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       });
     },
     async estimateLegacyFee({ wallet, recipient, value }) {
-      return nativeOperationOwner(
-        asMonadWallet(wallet, config.networkId)
-      ).estimateLegacyFee(recipient, value);
+      return asMonadWallet(wallet, config.networkId).estimateLegacyFee!({ recipient, value });
     },
 
     async sendToContact({ wallet, ...params }) {
@@ -2072,7 +2077,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             paymentPollIntervalMs: config.paymentPollIntervalMs,
             policy: config.transactionSetPolicy,
           });
+          const transactionOwner = topicOwner;
           const { transactionSetPreparer, transactionSetLifecycle } = transactionSetRuntime;
+          const transactionSetSubmission = createEvmTransactionSetSubmission({
+            preparer: transactionSetPreparer, lifecycle: transactionSetLifecycle, provider,
+            refresh: transactionSetRuntime.refresh,
+            operations: () => transactionOwner.nativeJournal!.list(),
+          });
+          const publicTransactionSets = evmTransactionSetCapability(transactionSetPreparer, prepared => transactionSetSubmission.sendTransaction(prepared));
+          const legacyTransactions = createLegacyTransactionSetPayments({
+            preparer: transactionSetPreparer,
+            sendTransaction: prepared => transactionSetSubmission.sendTransaction(prepared),
+            refresh: transactionSetRuntime.refresh,
+            operations: () => transactionOwner.nativeJournal!.list(),
+            getCoins: () => coinList.all().filter(coin => transactionOwner.nativeJournal!.canSelect(coin.account, coin.nonce) &&
+              !transactionSetRuntime.coinListSync.isDirty(coin.account) && pool.accountClaimedBy(coin.account) === undefined),
+          });
           const paymentStore = contactPayments;
           const spendPool = new EvmSpendPool({
             identity,
@@ -2296,6 +2316,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             networkId: config.networkId,
             identity,
             spendPool,
+            transactionSetSubmission,
+            constructTransactionSet: async request => transactionOwner.runLifetime(async () => {
+              await transactionSetRuntime.refresh();
+              return publicTransactionSets.constructTransactionSet(request);
+            }),
+            sendTransaction: prepared => transactionOwner.runLifetime(() => publicTransactionSets.sendTransaction(prepared)),
             transactionSetPreparer,
             transactionSetLifecycle,
             refreshTransactionSetInventory: () => transactionSetRuntime.refresh(),
@@ -2440,6 +2466,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   )
                 )
                 .then(() => owner.resendMissingContractCalls())
+                .then(() => transactionOwner.runLifetime(() => transactionSetSubmission.reconcileAuthorized()))
                 .then(() => internals.recoverStampFunding?.())
                 // What those looks showed frees the main account for whoever waits for it.
                 .then(() => releaseSettledMainAccounts(wallet, false))
@@ -2546,31 +2573,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
             async sendLegacy(params) {
               requirePeerSyncDelivery();
-              params = { ...params, recipient: { ...params.recipient } };
               const owner = nativeOperationOwner(wallet);
-              const result = await runWalletExclusive(wallet, (admission) =>
-                runMainAccountExclusive(
-                  wallet,
-                  () => owner.sendLegacy(params, admission),
-                  { waitMs: params.mainAccountWaitMs }
-                )
-              );
-              invalidateBalanceRead();
-              if (!evmWalletInternals(wallet).closed) {
-                {
-                  const noteOf = 
-                  owner
-                    .listOperations()
-                    .find(
-                      (row) =>
-                        row.members[row.members.length - 1]?.signed
-                          ?.transactionHash === result.txHash
-                    )!.operationId
-                ;
-                  retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
+              try {
+                const result = await transactionOwner.runLifetime(() => legacyTransactions.sendLegacy({ ...params, recipient: { ...params.recipient } }));
+                if (!evmWalletInternals(wallet).closed) {
+                  const operation = transactionOwner.nativeJournal!.list().find(row => row.members.some(member => member.signed?.transactionHash === result.txHash));
+                  if (operation) retryEarlierNotes(owner, operation.operationId, await owner.startSync(operation.operationId));
                 }
-              }
-              return result;
+                return result;
+              } finally { invalidateBalanceRead(); }
             },
             // Contract calls (a swap and its approvals). Same queues, journal and recovery as a
             // native send; see `EvmLegacyConsolidator.sendContractCall`.
@@ -2623,28 +2634,20 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               }
               return result;
             },
-            estimateLegacyFee: (params) =>
-              nativeOperationOwner(wallet).estimateLegacyFee(
-                params.recipient,
-                params.value
-              ),
-            getUnresolvedLegacySend: () =>
-              nativeOperationOwner(wallet).getUnresolvedLegacySend(),
+            estimateLegacyFee: params => transactionOwner.runLifetime(() => legacyTransactions.estimateLegacyFee(params)),
+            getUnresolvedLegacySend: () => [...new Map([
+              ...nativeOperationOwner(wallet).getUnresolvedLegacySend(), ...legacyTransactions.getUnresolvedLegacySend(),
+            ].map(row => [row.operationId, row])).values()],
             async resumeLegacySend(operationId) {
               const owner = nativeOperationOwner(wallet);
-              const result = await runWalletExclusive(wallet, (admission) =>
-                runMainAccountExclusive(wallet, () =>
-                  owner.resumeLegacySend(operationId, admission)
-                )
-              );
-              invalidateBalanceRead();
-              if (!evmWalletInternals(wallet).closed) {
-                {
-                  const noteOf = operationId;
-                  retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
-                }
-              }
-              return result;
+              try {
+                const result = legacyTransactions.isSharedLegacyOperation(operationId)
+                  ? await transactionOwner.runLifetime(() => legacyTransactions.resumeLegacySend(operationId))
+                  : await runWalletExclusive(wallet, admission => runMainAccountExclusive(wallet, () => owner.resumeLegacySend(operationId, admission)));
+                if (!evmWalletInternals(wallet).closed)
+                  retryEarlierNotes(owner, operationId, await owner.startSync(operationId));
+                return result;
+              } finally { invalidateBalanceRead(); }
             },
             pool,
             leaseManager,
@@ -2943,6 +2946,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 lifecycle: transactionSetLifecycle,
                 provider,
                 refresh: () => transactionSetRuntime.refresh(),
+                sendTransaction: prepared => transactionSetSubmission.sendTransaction(prepared),
+                resolvePaymentOperation: async (id, amount) => {
+                  const resolve = walletInternals.resolveMessagePayment;
+                  if (!resolve) throw new Error("Combined payment and stamp capability is unavailable");
+                  return resolve(id, amount);
+                },
               },
               lifetime: (operation) => topicOwner!.runLifetime(() => operation()),
               settleOtherHolder: (holder) =>

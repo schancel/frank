@@ -221,7 +221,7 @@ test('restart after core persistence finishes the original encrypted message and
   }
 })
 
-test('ambiguous relay submission reopens with the same signed recipient and change transactions reserved', async () => {
+test('ambiguous relay submission reopens with the original signed recipient and change transactions', async () => {
   const f = await setup()
   let active: EvmChainWalletHandle = f.alice
   try {
@@ -253,17 +253,15 @@ test('ambiguous relay submission reopens with the same signed recipient and chan
     expect(original.members.filter(member => member.transactionSet?.role === 'change'))
       .toHaveLength(stored.otherTransactions.length)
     expect(original.members.filter(member => member.transactionSet?.role === 'payment')
-      .some(member => !member.exposed)).toBe(true)
-    expect(evmWalletInternals(active).coinList!.heldBy(operationId).length)
-      .toBe(original.members.length)
-    // Lower-nonce private change may precede the payment. Recipient bytes and
-    // successor change must remain withheld until the original relay attempt resolves.
+      .every(member => member.exposed)).toBe(true)
+    expect(original.members.every(member => member.observation.state === 'included-success')).toBe(true)
+    expect(evmWalletInternals(active).coinList!.heldBy(operationId)).toHaveLength(0)
+    // Wallet submission owns both lists even when relay delivery is ambiguous.
+    // Every broadcast must reuse bytes from this original operation.
+    expect(original.submissionAuthorized).toBe(true)
+    expect(offlineChain.walletBroadcasts.length).toBeGreaterThan(0)
     for (const raw of offlineChain.walletBroadcasts) {
-      expect(stored.otherTransactions.some(change => change.rawTx === raw)).toBe(true)
-      const change = Transaction.from(raw)
-      const payment = stored.payments.map(item => Transaction.from(item.rawTx))
-        .find(item => item.from === change.from)!
-      expect(change.nonce).toBeLessThan(payment.nonce)
+      expect(originalBytes).toContain(raw)
     }
     await active.close()
     active = (await f.chain.createWallet(roots())) as EvmChainWalletHandle

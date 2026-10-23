@@ -404,6 +404,8 @@ export class EvmTransactionSetPreparer {
       capacityWei: (coin, fee) => {
         const capacity = coin.valueWei - fee, rule = policy.spendRule
         if (!rule?.waitBlocks || coin.nonce === 0 || (coin.lastSpentInBlock !== undefined && policy.head >= coin.lastSpentInBlock + rule.waitBlocks)) return capacity
+        // Fan-in moves the complete source, so partial above-reserve capacity is insufficient.
+        if (fanIn) return 0n
         return capacity > rule.belowWei ? capacity - rule.belowWei : 0n
       },
     })

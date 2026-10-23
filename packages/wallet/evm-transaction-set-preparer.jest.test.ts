@@ -1032,3 +1032,15 @@ it('broadcasts every delayed change with original bytes after recipient success 
     await journal.Close(); await store.close(); await rm(directory, { recursive: true, force: true })
   }
 })
+
+it('does not use above-reserve partial capacity as permission for a full fan-in drain', async () => {
+  const current = { ...policy, head: 100, spendRule: { belowWei: 2000000n, waitBlocks: 3 } }
+  const f = await setup([3000000n,3000000n], current)
+  for (const coin of f.coins.all()) await f.coins.put({ ...coin, lastSpentInBlock: 99 })
+  const request = { operationId: 'mature-fan-in', amountWei: 1500000n, kdf }
+  await expect(f.preparer.constructLegacyTransactionSet(request)).rejects.toThrow('Insufficient')
+  expect(f.journal.list()).toHaveLength(0)
+  expect(f.coins.heldBy(request.operationId)).toHaveLength(0)
+  current.head = 102
+  expect((await f.preparer.constructLegacyTransactionSet(request)).bundle).toHaveLength(1)
+})

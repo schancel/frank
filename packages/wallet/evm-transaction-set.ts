@@ -422,8 +422,8 @@ export class EvmTransactionSetPreparer {
         const capacity = coin.valueWei - fee, rule = policy.spendRule
         if (continuation && capacity < policy.dustWei) return 0n
         if (!rule?.waitBlocks || coin.nonce === 0 || (coin.lastSpentInBlock !== undefined && policy.head >= coin.lastSpentInBlock + rule.waitBlocks)) return capacity
-        // Fan-in moves the complete source, so partial above-reserve capacity is insufficient.
-        if (fanIn) return 0n
+        // Fan-in and change-only continuation move the complete source; partial capacity is insufficient.
+        if (fanIn || continuation) return 0n
         return capacity > rule.belowWei ? capacity - rule.belowWei : 0n
       },
     })
@@ -463,7 +463,7 @@ export class EvmTransactionSetPreparer {
         const maxCoins = Math.min(remainingMembers, (request.maxPaymentParts ?? 64) - parts.length)
         if (maxCoins <= 0) throw new Error('Insufficient private change for continuation')
         const additional = select(false, { deficit: reserve - privateValue(), maxCoins })
-        if (!additional) throw new Error('Insufficient private change for continuation')
+        if (!additional) throw new EvmTransactionSetInsufficientFundsError()
         parts.push(...additional)
         for (const part of additional)
           members.push(...await this.prepareSource(
@@ -623,6 +623,13 @@ export class EvmTransactionSetPreparer {
       changeFee = policy.changeGasLimit * policy.gasPriceWei
     let payment = part.paymentValueWei
     const hasPayment = payment > 0n || (request.calldata ?? '0x') !== '0x'
+    // Initial selection can also reserve a whole input solely for continuation. Its
+    // above-reserve partial capacity never authorizes a first change that drains below
+    // the threshold before this source's own quiet window has elapsed.
+    const rule = policy.spendRule
+    if (!hasPayment && rule?.waitBlocks && part.coin.nonce > 0 &&
+        (part.coin.lastSpentInBlock === undefined || policy.head < part.coin.lastSpentInBlock + rule.waitBlocks))
+      throw new EvmTransactionSetInsufficientFundsError()
     let remainder = part.coin.valueWei - payment - (hasPayment ? paymentFee : 0n)
     const destination = context.destination
     let outputs: bigint[] = []

@@ -42,6 +42,7 @@ export const en = {
     'Account keys opened, but saved wallet state could not be loaded. Your saved account has not been replaced. Retry opening the account.',
   application_restore_failed:
     'Account keys and wallet opened, but application data could not be restored. Your saved account has not been replaced. Retry opening the account.',
+  app_updates: 'App updates',
   retry_opening_account: 'Retry',
   reset_account_storage: 'Reset storage',
   reset_account_storage_confirm:
@@ -259,6 +260,7 @@ export const fr = {
     'Les clés du compte ont été ouvertes, mais les données du portefeuille n’ont pas pu être chargées. Votre compte enregistré n’a pas été remplacé. Réessayez d’ouvrir le compte.',
   application_restore_failed:
     'Les clés et le portefeuille ont été ouverts, mais les données de l’application n’ont pas pu être restaurées. Votre compte enregistré n’a pas été remplacé. Réessayez d’ouvrir le compte.',
+  app_updates: 'Mises à jour de l’application',
   retry_opening_account: 'Réessayer',
   reset_account_storage: 'Réinitialiser le stockage',
   reset_account_storage_confirm:

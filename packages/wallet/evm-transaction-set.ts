@@ -363,6 +363,7 @@ export class EvmTransactionSetPreparer {
     const payments = members.filter(member => member.transactionSet!.role === 'payment')
     if (row.cancelled || !payments.length ||
         (stage?.intendedValueWei ?? row.intendedValueWei) !== request.amountWei.toString() ||
+        (stage?.minimumPaymentWei ?? '0') !== (request.minimumPaymentWei ?? 0n).toString() ||
         (stage?.reserveForContinuationWei ?? '0') !== (request.reserveForContinuationWei ?? 0n).toString() ||
         (stage !== undefined && Boolean(stage.legacy) !== legacy) ||
         (request.maxPaymentParts !== undefined && payments.length > request.maxPaymentParts) ||
@@ -399,6 +400,8 @@ export class EvmTransactionSetPreparer {
     if (stageId !== undefined && (!existing || !existing.transactionSetStages || existing.cancelled || existing.submissionAuthorized || existing.members.some(member => member.exposed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))))
       throw new Error('Cannot append to an exposed or unavailable operation')
     const data = request.calldata ?? '0x', reserve = request.reserveForContinuationWei ?? 0n
+    const minimum = request.minimumPaymentWei ?? 0n
+    if (minimum < 0n || request.amountWei < minimum) throw new Error('Invalid transaction-set minimum payment')
     if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(data) || request.amountWei < 0n || reserve < 0n ||
         request.amountWei + reserve >= 1n << 256n || (request.amountWei === 0n && data === '0x')) throw new Error('Invalid transaction-set payment')
     const policy = this.options.policy(), contexts = new Map<number, PaymentContext>()
@@ -417,6 +420,7 @@ export class EvmTransactionSetPreparer {
       // Independent selection funds recipients only. Actual private change determines the
       // later continuation deficit; reserve-only inputs use full-source eligibility there.
       amountWei: continuation?.deficit ?? (request.amountWei + (fanIn ? reserve + context(0).gas * policy.gasPriceWei : 0n)),
+      minimumPaymentWei: fanIn || continuation ? undefined : minimum,
       feeWei: index => (fanIn || continuation ? policy.changeGasLimit : context(index).gas) * policy.gasPriceWei,
       head: policy.head, sourceOrder: policy.sourceOrder, maxCoins: continuation?.maxCoins ?? (legacy && !fanIn ? 1 : request.maxPaymentParts),
       canSelect: coin => journal.canSelect(coin.account, coin.nonce) && (this.options.canSelectCoin?.(coin) ?? true) && this.dependencyReady(coin, policy),
@@ -500,6 +504,7 @@ export class EvmTransactionSetPreparer {
       ...(stageId === undefined ? {} : { stageId }), startIndex: existing?.members.length ?? 0, memberCount: members.length,
       intendedValueWei: request.amountWei.toString(), calldata: data.toLowerCase(), destinations: payments.map(member => Transaction.from(member.raw).to!.toLowerCase()),
       ...(request.maxFeeWei === undefined ? {} : { maxFeeWei: request.maxFeeWei.toString() }),
+      ...(request.minimumPaymentWei === undefined ? {} : { minimumPaymentWei: minimum.toString() }),
       ...(request.reserveForContinuationWei === undefined ? {} : { reserveForContinuationWei: reserve.toString() }),
       ...(legacy ? { legacy: true } : {}),
     }

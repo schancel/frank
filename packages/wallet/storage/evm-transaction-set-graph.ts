@@ -19,7 +19,7 @@ export function validateTransactionSetGraph(
   let offset = 0
   const stageNames = new Set<string>()
   for (const [index, stage] of (stages ?? []).entries()) {
-    if (!stage || Object.keys(stage).some(key => !['stageId','startIndex','memberCount','intendedValueWei','calldata','destinations','maxFeeWei','reserveForContinuationWei','legacy'].includes(key))) fail()
+    if (!stage || Object.keys(stage).some(key => !['stageId','startIndex','memberCount','intendedValueWei','calldata','destinations','maxFeeWei','reserveForContinuationWei','minimumPaymentWei','legacy'].includes(key))) fail()
     const key = stage.stageId ?? ''
     if ((index === 0 ? stage.stageId !== undefined : !/^[a-zA-Z0-9_-]{1,128}$/.test(key)) || stageNames.has(key) ||
         integer(stage.startIndex) !== offset || integer(stage.memberCount) === 0 ||
@@ -27,6 +27,7 @@ export function validateTransactionSetGraph(
         !Array.isArray(stage.destinations) || !stage.destinations.length ||
         stage.destinations.some(destination => !/^0x[0-9a-f]{40}$/.test(destination)) ||
         (stage.legacy !== undefined && stage.legacy !== true)) fail()
+    if (stage.minimumPaymentWei !== undefined && uint(stage.minimumPaymentWei) > uint(stage.intendedValueWei)) fail()
     stageNames.add(key)
     if (index === 0 && uint(stage.intendedValueWei) !== intended) fail()
     offset += stage.memberCount
@@ -72,6 +73,7 @@ export function validateTransactionSetGraph(
     if (stages && (!stage || stage.stageId !== meta.stageId)) fail()
     const key = meta.stageId ?? ''
     if (meta.role === 'payment') {
+      if (stage?.minimumPaymentWei !== undefined && tx.value < uint(stage.minimumPaymentWei)) fail()
       const indexes = paymentIndexes.get(key) ?? new Set<number>()
       if (meta.changeIndex !== undefined || indexes.has(meta.logicalIndex) ||
           (stage && (stage.destinations[meta.logicalIndex] !== tx.to!.toLowerCase() || tx.data !== stage.calldata))) fail()

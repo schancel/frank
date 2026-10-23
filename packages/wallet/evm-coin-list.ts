@@ -450,6 +450,7 @@ export class EvmCoinList {
     sourceOrder: readonly EvmCoinListOrigin[]
     maxCoins?: number
     canSelect?: (coin: EvmListCoin) => boolean
+    minimumPaymentWei?: bigint
     capacityWei?: (coin: EvmListCoin, feeWei: bigint) => bigint
   }): CoinPart[] | undefined {
     if (
@@ -485,11 +486,17 @@ export class EvmCoinList {
           : 0) ||
         (a.valueWei > b.valueWei ? -1 : a.valueWei < b.valueWei ? 1 : 0),
     )
+    const minimum = params.minimumPaymentWei ?? 0n
+    if (minimum < 0n) throw new EvmCoinListError('Invalid minimum payment')
+    if (params.amountWei < minimum) return undefined
+    const maxCoins = minimum > 0n
+      ? Math.min(params.maxCoins ?? Number.MAX_SAFE_INTEGER, Number(params.amountWei / minimum))
+      : params.maxCoins ?? Number.MAX_SAFE_INTEGER
     let remaining = params.amountWei
     const picked: CoinPart[] = [],
       accounts = new Set<string>()
     for (const coin of free) {
-      if (picked.length >= (params.maxCoins ?? Number.MAX_SAFE_INTEGER)) break
+      if (picked.length >= maxCoins) break
       if (accounts.has(coin.account)) continue
       const fee =
         typeof params.feeWei === 'bigint'
@@ -501,8 +508,8 @@ export class EvmCoinList {
       const capacity = params.capacityWei?.(coin, fee) ?? available
       if (capacity < 0n || capacity > available)
         throw new EvmCoinListError('Invalid source capacity')
-      if (capacity === 0n && remaining > 0n) continue
-      if (picked.length + 1 === params.maxCoins && capacity < remaining) continue
+      if (capacity < minimum || (capacity === 0n && remaining > 0n)) continue
+      if (picked.length + 1 === maxCoins && capacity < remaining) continue
       const paymentValueWei = capacity < remaining ? capacity : remaining
       picked.push({ coin, paymentValueWei })
       accounts.add(coin.account)
@@ -510,6 +517,20 @@ export class EvmCoinList {
       if (remaining === 0n) break
     }
     if (remaining > 0n || picked.length === 0) return undefined
+    // Keep the intended total exact: move a small final tail out of earlier parts.
+    // The part-count bound guarantees enough surplus without adding another input.
+    const last = picked.at(-1)!
+    if (last.paymentValueWei < minimum) {
+      let deficit = minimum - last.paymentValueWei
+      for (let index = picked.length - 2; index >= 0 && deficit > 0n; index--) {
+        const part = picked[index]!, surplus = part.paymentValueWei - minimum
+        const moved = surplus < deficit ? surplus : deficit
+        picked[index] = { ...part, paymentValueWei: part.paymentValueWei - moved }
+        deficit -= moved
+      }
+      if (deficit > 0n) return undefined
+      picked[picked.length - 1] = { ...last, paymentValueWei: minimum }
+    }
     const reserved = picked.map(part => {
       const coin: EvmListCoin = {
         ...part.coin,

@@ -192,6 +192,7 @@ export interface EvmTransactionSetStage {
   /** Whole-operation authorization; appending may tighten but never raise it. */
   maxFeeWei?: string
   reserveForContinuationWei?: string
+  minimumPaymentWei?: string
   legacy?: true
 }
 export interface EvmNativeOperation {

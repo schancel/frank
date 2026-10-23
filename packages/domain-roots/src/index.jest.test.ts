@@ -146,14 +146,19 @@ describe('frank-domain-roots-v1', () => {
       interpretation: 'openpgp-ed25519-x25519-master-seed',
     })
 
-    const seedA = Uint8Array.from({ length: 32 }, (_, idx) => (idx * 13 + 5) & 0xff)
+    const seedA = Uint8Array.from(
+      { length: 32 },
+      (_, idx) => (idx * 13 + 5) & 0xff,
+    )
     const seedB = Uint8Array.from(seedA)
     const derivedA = deriveOpenPgpSeeds(seedA)
     const derivedB = deriveOpenPgpSeeds(seedB)
 
     expect(derivedA.primarySigningSeed).toHaveLength(32)
     expect(derivedA.encryptionSubkeySeed).toHaveLength(32)
-    expect(derivedA.creationTimestamp).toBe(OPENPGP_CANONICAL_CREATION_TIMESTAMP)
+    expect(derivedA.creationTimestamp).toBe(
+      OPENPGP_CANONICAL_CREATION_TIMESTAMP,
+    )
     expect(derivedA.primarySigningSeed).toEqual(derivedB.primarySigningSeed)
     expect(derivedA.encryptionSubkeySeed).toEqual(derivedB.encryptionSubkeySeed)
     expect(derivedA.creationTimestamp).toBe(derivedB.creationTimestamp)
@@ -163,7 +168,9 @@ describe('frank-domain-roots-v1', () => {
 
     const openPgpDomainRoot = deriveDomainRoot(seedA, 'openpgp')
     const allDerived = [
-      ...DOMAIN_PURPOSES.map(purpose => hex(deriveDomainRoot(seedA, purpose).bytes)),
+      ...DOMAIN_PURPOSES.map(purpose =>
+        hex(deriveDomainRoot(seedA, purpose).bytes),
+      ),
       hex(openPgpDomainRoot.bytes),
       hex(derivedA.primarySigningSeed),
       hex(derivedA.encryptionSubkeySeed),

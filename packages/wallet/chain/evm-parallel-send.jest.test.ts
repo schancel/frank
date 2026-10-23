@@ -228,6 +228,11 @@ describe('parallel paid messages', () => {
       ),
     )
   const graphBytes = () => alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))
+  async function operationBytes(operationId: string) {
+    const operation = await alice.readNativeOperation!(operationId)
+    expect(operation).toBeDefined()
+    return operation!.members.map(member => member.signed!.rawTransaction)
+  }
   const constructOnly = (operationId: string) => alice.constructTransactionSet!({ operationId, amountAtomic: STAMP, kdf: () => getBytes(f.bob.identity.address.raw) })
   async function reopen() {
     await alice.close()
@@ -715,7 +720,8 @@ describe('parallel paid messages', () => {
     offlineChain.relayBroadcasts = false
     await expect(send(1, alice, () => { offlineChain.nodeDown = true })).rejects.toThrow('node unreachable')
     const attempt = await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(1) })
-    const original = alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))
+    const [operation] = alice.getNativeOperations!()
+    const original = await operationBytes(operation.operationId)
     expect(original).toHaveLength(1)
     const sent = { payloadDigest: attempt!.payloadDigest, stampPayments: [{ txHash: Transaction.from(original[0]).hash! }] }
     offlineChain.nodeDown = false
@@ -739,7 +745,8 @@ describe('parallel paid messages', () => {
     const requestsBefore = relay.bodies.length
     for (let pass = 0; pass < 4; pass++) await tick()
     expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(false)
-    expect(alice.getNativeOperations!().flatMap(operation => operation.members.map(member => member.signed!.rawTransaction))).toEqual(original)
+    expect(alice.getNativeOperations!()).toEqual([])
+    expect(await operationBytes(operation.operationId)).toEqual(original)
     expect(
       f.chain.directMessages.paymentsOf?.({
         wallet: alice,
@@ -910,10 +917,21 @@ describe('parallel paid messages', () => {
     offlineChain.relayBroadcasts = false
     // Before selection, a consumed nonce is a legitimate successor coin. Consume it only
     // after this message signs nonce zero, preserving the failed-original-payment race.
-    const raced = await send(2, alice, () => { offlineChain.mine(stolen.rawTx) }).catch(error => error)
+    let racedOperationId!: string
+    let racedBytes!: string[]
+    const raced = await send(2, alice, () => {
+      const operation = alice.getNativeOperations!().find(row => row.members.some(member =>
+        Transaction.from(member.signed!.rawTransaction).from!.toLowerCase() === victim.address.toLowerCase(),
+      ))!
+      racedOperationId = operation.operationId
+      racedBytes = operation.members.map(member => member.signed!.rawTransaction)
+      offlineChain.mine(stolen.rawTx)
+    }).catch(error => error)
     expect(raced).toBeInstanceOf(MonadStampPendingAttemptError)
     const settled = await Promise.allSettled([Promise.resolve(raced), send(3), send(4)])
-    const original = graphBytes().map(raw => Transaction.from(raw)).filter(tx => tx.from!.toLowerCase() === victim.address.toLowerCase())
+    expect(await operationBytes(racedOperationId)).toEqual(racedBytes)
+    expect(alice.getNativeOperations!().some(row => row.operationId === racedOperationId)).toBe(false)
+    const original = racedBytes.map(raw => Transaction.from(raw)).filter(tx => tx.from!.toLowerCase() === victim.address.toLowerCase())
     expect(original).toHaveLength(1)
     expect(original[0].nonce).toBe(0)
     expect(offlineChain.mined.has(original[0].hash!)).toBe(false)
@@ -1322,6 +1340,7 @@ describe('parallel paid messages', () => {
     offlineChain.revertNext = true
     const sent = await send(1)
     const original = relayPayments()[0]
+    const [operation] = alice.getNativeOperations!()
     expect(offlineChain.reverted.has(original.hash!)).toBe(true)
     await tick()
     expect(f.chain.directMessages.paymentsOf!({ wallet: alice, payloadDigest: sent.payloadDigest })).toEqual(['pending'])
@@ -1331,7 +1350,8 @@ describe('parallel paid messages', () => {
     expect(f.chain.directMessages.paymentsOf!({ wallet: alice, payloadDigest: sent.payloadDigest })).toEqual(['reverted'])
     await reopen()
     for (let pass = 0; pass < 4; pass++) await tick()
-    expect(alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))).toEqual([original.serialized])
+    expect(alice.getNativeOperations!()).toEqual([])
+    expect(await operationBytes(operation.operationId)).toEqual([original.serialized])
     expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set([original.serialized]))
     expect(mockBalances.get(original.to!.toLowerCase()) ?? 0n).toBe(0n)
   })
@@ -1344,14 +1364,19 @@ describe('parallel paid messages', () => {
     offlineChain.relayBroadcasts = false
     await send(2)
     expect(alice.transactionSetPreparer!.isSourceReserved(other.address)).toBe(true)
-    const original = alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))
+    const operations = alice.getNativeOperations!()
+    const pendingOperation = operations.find(row => row.members.some(member =>
+      Transaction.from(member.signed!.rawTransaction).from!.toLowerCase() === other.address.toLowerCase(),
+    ))!
+    const original = operations.flatMap(row => row.members.map(member => member.signed!.rawTransaction))
     const construct = jest.spyOn(alice.transactionSetPreparer!, 'constructTransactionSet')
     jest.spyOn(alice.provider, 'getBlockNumber').mockResolvedValue(3)
     await tick([reverted.payloadDigest])
     expect(construct).not.toHaveBeenCalled()
     expect(alice.transactionSetPreparer!.isSourceReserved(first.address)).toBe(false)
     expect(alice.transactionSetPreparer!.isSourceReserved(other.address)).toBe(true)
-    expect(alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))).toEqual(original)
+    expect(alice.getNativeOperations!().map(row => row.operationId)).toEqual([pendingOperation.operationId])
+    expect((await Promise.all(operations.map(row => operationBytes(row.operationId)))).flat()).toEqual(original)
   })
 
   it('a payment superseded by an external nonce spend is never repeated on another account', async () => {
@@ -1360,11 +1385,13 @@ describe('parallel paid messages', () => {
     offlineChain.broadcastDown = true
     const sent = await send(1)
     const original = relayPayments()[0]
+    const [operation] = alice.getNativeOperations!()
     spendElsewhere(coin)
     offlineChain.broadcastDown = false
     for (let pass = 0; pass < 4; pass++) await tick()
     expect(f.chain.directMessages.paymentsOf!({ wallet: alice, payloadDigest: sent.payloadDigest })).toEqual(['failed'])
-    expect(alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))).toEqual([original.serialized])
+    expect(alice.getNativeOperations!()).toEqual([])
+    expect(await operationBytes(operation.operationId)).toEqual([original.serialized])
     expect(offlineChain.mined.has(original.hash!)).toBe(false)
     expect(mockBalances.get(original.to!.toLowerCase()) ?? 0n).toBe(0n)
   })

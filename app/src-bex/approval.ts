@@ -14,7 +14,14 @@ import {
   sendRuntimeMessage,
 } from './runtime-adapter'
 import type { PendingDappApproval } from './background'
-import { formatUnits, getBytes, hexlify, Interface, keccak256 } from 'ethers'
+import {
+  formatUnits,
+  getBytes,
+  hexlify,
+  Interface,
+  keccak256,
+  parseUnits,
+} from 'ethers'
 import {
   SystemProgram,
   Transaction,
@@ -445,6 +452,7 @@ export function mountApprovalPage(
   const { globalScope } = options
   const closeWindow = options.closeWindow ?? (() => window.close())
   let useBurner = true
+  let fundingAmount = ''
   let shownId: string | null = null
   let busy = false
   let errorMessage = ''
@@ -528,6 +536,17 @@ export function mountApprovalPage(
     if (busy) return
     busy = true
     try {
+      const chain = nativeChain(request)
+      const fundingAmountAtomic =
+        approved &&
+        isConnectRequest(request) &&
+        request.chainFamily !== 'solana' &&
+        fundingAmount.trim()
+          ? parseUnits(
+              fundingAmount.trim(),
+              chain?.nativeDecimals ?? 18,
+            ).toString()
+          : undefined
       const response = await sendRuntimeMessage<
         unknown,
         { ok?: boolean; error?: { code?: number; message?: string } }
@@ -538,7 +557,12 @@ export function mountApprovalPage(
           approvalId: request.id,
           approved,
           ...(approved && isConnectRequest(request)
-            ? { useBurnerPersona: useBurner }
+            ? {
+                useBurnerPersona: useBurner,
+                ...(fundingAmountAtomic === undefined
+                  ? {}
+                  : { fundingAmountAtomic }),
+              }
             : {}),
         },
         globalScope,
@@ -568,6 +592,7 @@ export function mountApprovalPage(
     if (shownId !== request.id) {
       shownId = request.id
       useBurner = true
+      fundingAmount = ''
       errorMessage = ''
     }
     root.replaceChildren()
@@ -721,6 +746,34 @@ export function mountApprovalPage(
         choices.append(label)
       }
       root.append(choices)
+      const funding = el(doc, 'label', 'approval-funding')
+      funding.append(
+        el(
+          doc,
+          'span',
+          'approval-funding-label',
+          `Fund this address from Frank (${chain?.unit ?? 'native asset'})`,
+        ),
+      )
+      const amount = el(doc, 'input', 'approval-funding-input')
+      amount.type = 'text'
+      amount.inputMode = 'decimal'
+      amount.placeholder = 'Amount (optional)'
+      amount.value = fundingAmount
+      amount.dataset.testid = 'approval-funding-amount'
+      amount.addEventListener('input', () => {
+        fundingAmount = amount.value
+      })
+      funding.append(amount)
+      funding.append(
+        el(
+          doc,
+          'span',
+          'approval-persona-hint',
+          'Enter an amount to move into this site address now. Leave blank to connect without funds; transactions from this address will need a top-up.',
+        ),
+      )
+      root.append(funding)
       syncApprove()
       actions.append(approve)
     } else {

@@ -99,6 +99,16 @@ export interface EvmChainWalletHandle
     maxPriorityFeePerGasWei?: bigint;
     maxFeeWei?: bigint;
   }): Promise<ContractCallHandle>;
+  /** Reconciles a signed attempt retained by the previous extension format before that
+   * account may create a new operation. The caller only supplies stored bytes; custody
+   * verifies ownership, chain, nonce and hash before rebroadcasting those exact bytes. */
+  reconcileLegacySubAccountAttempt(params: {
+    source: DappPersonaRef;
+    account: string;
+    nonce: number;
+    signedTransaction: string;
+    transactionHash: string;
+  }): Promise<{ status: "pending" | "included"; transactionHash: string }>;
   /** Records the one-time account of a stealth payment made to this wallet as a coin in its
    * durable coin list. Recording a known one changes nothing. A mailbox read does this itself for
    * every stealth item it returns; this is for a payment learned of some other way. */

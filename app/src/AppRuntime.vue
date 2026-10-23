@@ -87,8 +87,11 @@ import {
 import type { PendingDappApproval } from '../src-bex/background'
 import {
   executeApprovedDappRequest,
+  fundDappPersona,
   type ApprovedDappRequest,
 } from './accounts/dapp-request-executor'
+import { openEvmWallet } from './accounts/evm-wallets'
+import type { EvmChainWalletHandle } from '@frank/wallet/chain'
 import {
   handlePageSyncNavigationRequest,
   handlePageSyncPairingRequest,
@@ -309,6 +312,125 @@ export default defineComponent({
                     error instanceof Error ? error.message : String(error),
                 },
               }))
+          }
+          if (
+            m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+            m?.type === 'fund-dapp-persona'
+          ) {
+            const extensionApi = getRawExtensionApi()
+            const backgroundUrl =
+              extensionApi?.runtime?.getURL?.('background.js')
+            if (
+              !backgroundUrl ||
+              sender?.id !== extensionApi?.runtime?.id ||
+              sender?.url !== backgroundUrl
+            )
+              return undefined
+            if (accountStatus.status !== 'ready')
+              return {
+                ok: false,
+                error: {
+                  code: 4900,
+                  message: 'Unlock Frank before funding this address.',
+                },
+              }
+            return (async () => {
+              try {
+                const funding = m as {
+                  chainIdentifier?: unknown
+                  origin?: unknown
+                  useBurnerPersona?: unknown
+                  address?: unknown
+                  amountAtomic?: unknown
+                }
+                if (
+                  typeof funding.chainIdentifier !== 'string' ||
+                  typeof funding.origin !== 'string' ||
+                  typeof funding.address !== 'string' ||
+                  typeof funding.amountAtomic !== 'string' ||
+                  !/^[1-9][0-9]*$/.test(funding.amountAtomic)
+                )
+                  throw new Error('Invalid dApp funding request')
+                const source =
+                  funding.useBurnerPersona === false
+                    ? { kind: 'shared' as const, slot: 0 }
+                    : { kind: 'site' as const, origin: funding.origin }
+                const txHash = await fundDappPersona({
+                  chainIdentifier: funding.chainIdentifier,
+                  source,
+                  expectedAddress: funding.address,
+                  amountAtomic: BigInt(funding.amountAtomic),
+                })
+                return { ok: true, result: txHash }
+              } catch (error) {
+                return {
+                  ok: false,
+                  error: {
+                    code: -32603,
+                    message:
+                      error instanceof Error ? error.message : String(error),
+                  },
+                }
+              }
+            })()
+          }
+          if (
+            m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+            m?.type === 'read-only-evm-rpc'
+          ) {
+            const extensionApi = getRawExtensionApi()
+            const backgroundUrl =
+              extensionApi?.runtime?.getURL?.('background.js')
+            if (
+              !backgroundUrl ||
+              sender?.id !== extensionApi?.runtime?.id ||
+              sender?.url !== backgroundUrl
+            )
+              return undefined
+            if (accountStatus.status !== 'ready')
+              return {
+                ok: false,
+                error: {
+                  code: 4900,
+                  message: 'Unlock Frank to read this chain.',
+                },
+              }
+            return (async () => {
+              try {
+                const request = m as {
+                  chainIdentifier?: unknown
+                  method?: unknown
+                  params?: unknown
+                }
+                if (
+                  typeof request.chainIdentifier !== 'string' ||
+                  typeof request.method !== 'string' ||
+                  !Array.isArray(request.params)
+                )
+                  throw new Error('Invalid read-only RPC request')
+                const { wallet } = await openEvmWallet(request.chainIdentifier)
+                const provider = (wallet as EvmChainWalletHandle)
+                  .provider as unknown as {
+                  send?: (method: string, params: unknown[]) => Promise<unknown>
+                }
+                if (typeof provider.send !== 'function')
+                  throw new Error('Wallet relay RPC is unavailable')
+                const result = await provider.send(
+                  request.method,
+                  request.params,
+                )
+                return { ok: true, result }
+              } catch (error) {
+                return {
+                  ok: false,
+                  error: {
+                    code: -32603,
+                    message:
+                      error instanceof Error ? error.message : String(error),
+                  },
+                }
+              }
+            })()
           }
           if (
             m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&

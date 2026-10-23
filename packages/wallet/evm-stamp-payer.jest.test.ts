@@ -651,6 +651,22 @@ describe('restart and repeated sync', () => {
 })
 
 describe('read-only stamp affordability', () => {
+  it('does not quote or claim a funded legacy dApp subaccount for stamps', async () => {
+    const f = await make()
+    const persona = new Wallet(key(8))
+    f.node.balances.set(at(persona), MON)
+    await f.list.put({
+      account: persona.address,
+      nonce: 0,
+      privateKey: persona.privateKey,
+      valueWei: MON,
+      origin: 'legacy-subaccount',
+    })
+    expect((await f.payer.quote({ stampValueWei: MON / 10n })).status).toBe('insufficient')
+    await expect(f.payer.claim({ holder: 'message', stampValueWei: MON / 10n }))
+      .rejects.toThrow(InsufficientStampFundsError)
+  })
+
   it('quotes what the free coins can pay, without taking anything; held coins are not counted', async () => {
     const f = await make()
     f.node.balances.set(at(main), MON / 10n)

@@ -2282,9 +2282,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               } else {
                 const readAddress = (address: string): Promise<bigint> =>
                   transactionBuilder.getBalance({ address, provider });
+                // Both change and dApp subaccounts remain wallet-owned value, even though
+                // ordinary payment selection may only spend the former.
                 const changeAddressSet = new Set<string>();
                 for (const coin of coinList.all()) {
-                  if (coin.origin === "change") changeAddressSet.add(coin.account.toLowerCase());
+                  if (coin.origin === "change" || coin.origin === "legacy-subaccount")
+                    changeAddressSet.add(coin.account.toLowerCase());
                 }
                 for (const rec of changePool.records()) {
                   changeAddressSet.add(rec.address.toLowerCase());
@@ -2708,6 +2711,39 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 throw new Error('Persona address belongs to another wallet coin origin');
               }
               return { raw: persona.address };
+            },
+            async reconcileLegacySubAccountAttempt(params) {
+              requireOpenWallet(wallet);
+              const owned = deriveDappPersona(keyring.masterNode, params.source).address.toLowerCase();
+              if (getAddress(params.account).toLowerCase() !== owned)
+                throw new Error('Legacy dApp attempt does not belong to this wallet');
+              const tx = Transaction.from(params.signedTransaction);
+              if (!tx.signature || !tx.hash ||
+                  tx.from?.toLowerCase() !== owned ||
+                  tx.chainId !== BigInt(config.chainId) ||
+                  tx.nonce !== params.nonce ||
+                  tx.hash.toLowerCase() !== params.transactionHash.toLowerCase())
+                throw new Error('Legacy dApp attempt has invalid signed bytes');
+              await wallet.ensureLegacySubAccount!(params.source);
+              let receipt = await provider.getTransactionReceipt(tx.hash);
+              if (!receipt) {
+                const known = await provider.getTransaction(tx.hash);
+                if (!known) {
+                  try {
+                    const sent = await provider.broadcastTransaction(params.signedTransaction);
+                    if (sent.hash.toLowerCase() !== tx.hash.toLowerCase())
+                      throw new Error('Legacy dApp broadcast returned a different hash');
+                  } catch (error) {
+                    receipt = await provider.getTransactionReceipt(tx.hash);
+                    const observed = receipt ?? await provider.getTransaction(tx.hash);
+                    if (!observed) throw error;
+                  }
+                }
+              }
+              transactionSetRuntime.coinListSync.markDirty(owned);
+              await transactionSetRuntime.coinListSync.refreshAccounts([owned]);
+              invalidateBalanceRead();
+              return { status: receipt ? 'included' : 'pending', transactionHash: tx.hash };
             },
             async sendLegacyFromSubAccount(params) {
               requirePeerSyncDelivery();

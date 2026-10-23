@@ -304,6 +304,7 @@ export class EvmStampPayer {
     seen?: { held?: boolean; claimedBy?: Set<string> },
   ): boolean {
     const { pool, sync } = this.config
+    if (coin.origin === 'legacy-subaccount') return false
     const source = stampSourceOf(coin.origin)
     if (!allowed(source) || sync.isDirty(coin.account)) return false
     if (this.config.accountHeld?.(coin.account)) {
@@ -657,7 +658,7 @@ export class EvmStampPayer {
         coin.valueWei > feeReserveWei ? coin.valueWei - feeReserveWei : 0n
       const sum = (list: readonly EvmListCoin[]) =>
         list.reduce((total, coin) => total + capacity(coin), 0n)
-      const all = coins.all()
+      const all = coins.all().filter(coin => coin.origin !== 'legacy-subaccount')
       const ready = all.filter(
         coin =>
           free(coin) &&

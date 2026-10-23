@@ -2,7 +2,10 @@ import { HDNodeWallet, Wallet, verifyMessage } from 'ethers'
 import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js'
 import { ed25519 } from '@noble/curves/ed25519'
 import { deriveDappPersona } from '@frank/wallet/dapp-bridge/persona-keys'
-import { executeApprovedDappRequest } from './dapp-request-executor'
+import {
+  executeApprovedDappRequest,
+  fundDappPersona,
+} from './dapp-request-executor'
 
 const ORIGIN = 'https://dapp.example'
 const MASTER = HDNodeWallet.fromSeed(new Uint8Array(32).fill(19))
@@ -37,6 +40,41 @@ function fakeSession() {
 }
 
 describe('approved dApp request executor', () => {
+  it('funds the approved persona through ordinary legacy send with a stable operation ID', async () => {
+    const sendLegacy = jest.fn(async () => ({ txHash: '0x' + 'ab'.repeat(32) }))
+    const openEvmWallet = jest.fn(async () => ({
+      wallet: {
+        chainIdentifier: 'ethereum-mainnet',
+        sendLegacy,
+        ensureLegacySubAccount: jest.fn(async () => ({
+          raw: EVM_PERSONA.address,
+        })),
+      },
+    })) as any
+    const params = {
+      chainIdentifier: 'ethereum-mainnet',
+      source: REF,
+      expectedAddress: EVM_PERSONA.address,
+      amountAtomic: 10n ** 17n,
+    }
+    await fundDappPersona(params, { openEvmWallet })
+    await fundDappPersona(params, { openEvmWallet })
+    expect(sendLegacy).toHaveBeenCalledTimes(2)
+    expect(sendLegacy.mock.calls[0]![0]).toMatchObject({
+      recipient: { raw: EVM_PERSONA.address },
+      value: 10n ** 17n,
+      operationId: expect.stringMatching(/^legacy-dappfund-[0-9a-f]{64}$/),
+    })
+    expect(sendLegacy.mock.calls[1]![0].operationId).toBe(
+      sendLegacy.mock.calls[0]![0].operationId,
+    )
+    await expect(
+      fundDappPersona(
+        { ...params, expectedAddress: Wallet.createRandom().address },
+        { openEvmWallet },
+      ),
+    ).rejects.toThrow('does not belong')
+  })
   it('signs EVM personal messages with the site persona and returns a verifiable signature', async () => {
     const signature = (await executeApprovedDappRequest(
       {
@@ -141,6 +179,78 @@ describe('approved dApp request executor', () => {
       ),
     ).rejects.toThrow('sender')
     expect(openEvmWallet).not.toHaveBeenCalled()
+  })
+
+  it('reconciles an old signed extension attempt before admitting a different request', async () => {
+    const previousChrome = (globalThis as any).chrome
+    const signedTransaction = '0x1234'
+    const transactionHash = '0x' + 'ab'.repeat(32)
+    ;(globalThis as any).chrome = {
+      runtime: { id: 'frank-test' },
+      storage: {
+        local: {
+          get: jest.fn(async () => ({
+            frankDappEvmAttemptsV1: [
+              {
+                requestId: 'earlier',
+                chainIdentifier: 'ethereum-mainnet',
+                account: EVM_PERSONA.address,
+                nonce: 0,
+                intentHash: '0x' + 'cd'.repeat(32),
+                signedTransaction,
+                transactionHash,
+              },
+            ],
+          })),
+        },
+      },
+    }
+    const sendLegacyFromSubAccount = jest.fn()
+    const reconcileLegacySubAccountAttempt = jest.fn(async () => ({
+      status: 'pending',
+      transactionHash,
+    }))
+    const openEvmWallet = jest.fn(async () => ({
+      wallet: {
+        chainIdentifier: 'ethereum-mainnet',
+        sendLegacyFromSubAccount,
+        reconcileLegacySubAccountAttempt,
+      },
+    })) as any
+    try {
+      await expect(
+        executeApprovedDappRequest(
+          {
+            id: 'new-request',
+            origin: ORIGIN,
+            method: 'eth_sendTransaction',
+            chainIdHex: '0x1',
+            personaRef: REF,
+            personaAddress: EVM_PERSONA.address,
+            params: [
+              {
+                from: EVM_PERSONA.address,
+                to: Wallet.createRandom().address,
+                value: '0x1',
+              },
+            ],
+          },
+          fakeSession(),
+          { openEvmWallet },
+        ),
+      ).rejects.toThrow('earlier transaction')
+      expect(reconcileLegacySubAccountAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: REF,
+          account: EVM_PERSONA.address,
+          signedTransaction,
+          transactionHash,
+        }),
+      )
+      expect(sendLegacyFromSubAccount).not.toHaveBeenCalled()
+    } finally {
+      ;(globalThis as any).chrome = previousChrome
+    }
   })
 
   it('returns the actual Solana key and signs a message with its matching Ed25519 key', async () => {

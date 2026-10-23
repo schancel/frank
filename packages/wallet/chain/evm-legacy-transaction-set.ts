@@ -219,6 +219,7 @@ export function createLegacyTransactionSetPayments(options: {
         SendLegacyParams,
         | 'recipient'
         | 'value'
+        | 'operationId'
         | 'maxFee'
         | 'onProgress'
         | 'onSigned'
@@ -228,7 +229,9 @@ export function createLegacyTransactionSetPayments(options: {
       const request = { ...params, recipient: { ...params.recipient } }
       request.onProgress?.({ status: { stage: 'planning' } })
       await options.refresh()
-      const operationId = `legacy-${hexlify(randomBytes(16)).slice(2)}`
+      const operationId = request.operationId ?? `legacy-${hexlify(randomBytes(16)).slice(2)}`
+      if (!/^legacy-[a-zA-Z0-9_-]{1,121}$/.test(operationId))
+        throw new Error('Invalid legacy send operation ID')
       let prepared
       try {
         prepared = await options.preparer.constructLegacyTransactionSet({

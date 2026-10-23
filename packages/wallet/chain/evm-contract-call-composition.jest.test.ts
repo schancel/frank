@@ -167,6 +167,8 @@ test('a dApp legacy subaccount sends through the composed wallet journal from it
     expect(node.broadcast).not.toHaveBeenCalled()
     const account = await wallet.ensureLegacySubAccount!(source)
     node.fund(account.raw, 500_000n)
+    wallet.invalidateBalanceCache?.()
+    expect(await wallet.getBalance()).toBe(550_000n)
     await expect(wallet.sendLegacy!({
       recipient: { raw: ROUTER }, value: 100_000n,
     })).rejects.toThrow('Insufficient')
@@ -184,6 +186,14 @@ test('a dApp legacy subaccount sends through the composed wallet journal from it
     expect(tx.nonce).toBe(0)
     expect(tx.to?.toLowerCase()).toBe(ROUTER.toLowerCase())
     expect(tx.data).toBe('0x1234')
+    await expect(wallet.reconcileLegacySubAccountAttempt({
+      source, account: account.raw, nonce: tx.nonce,
+      signedTransaction: raw, transactionHash: '0x' + '00'.repeat(32),
+    })).rejects.toThrow('invalid signed bytes')
+    expect(await wallet.reconcileLegacySubAccountAttempt({
+      source, account: account.raw, nonce: tx.nonce,
+      signedTransaction: raw, transactionHash: sent.txHash,
+    })).toEqual({ status: 'included', transactionHash: sent.txHash })
     expect(wallet.transactionSetPreparer!.getOperation('uniswap-call-one')).toBeDefined()
     await wallet.sendLegacyFromSubAccount!({
       operationId: 'uniswap-native-two', source,
@@ -195,6 +205,27 @@ test('a dApp legacy subaccount sends through the composed wallet journal from it
     expect(native.from?.toLowerCase()).toBe(account.raw.toLowerCase())
     expect(native.nonce).toBe(1)
     expect(native.data).toBe('0x')
+  } finally {
+    await wallet.close()
+  }
+})
+
+test('the existing legacy send funds a persona once under a stable operation ID', async () => {
+  const wallet = (await createEvmChain(config).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const node = stubNode(wallet, 5n * 10n ** 18n)
+    const address = await wallet.ensureLegacySubAccount!({ kind: 'site', origin: 'https://app.uniswap.org' })
+    const request = {
+      operationId: 'legacy-site-uniswap-funding-one',
+      recipient: address,
+      value: 10n ** 18n,
+    }
+    const first = await wallet.sendLegacy!(request)
+    const count = node.broadcast.mock.calls.length
+    expect(count).toBeGreaterThan(0)
+    expect(await wallet.sendLegacy!(request)).toMatchObject({ txHash: first.txHash })
+    expect(node.broadcast).toHaveBeenCalledTimes(count)
+    expect(await wallet.getBalance()).toBeGreaterThan(0n)
   } finally {
     await wallet.close()
   }

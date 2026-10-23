@@ -348,129 +348,11 @@ export function assignOriginPersona(
   return binding
 }
 
-function getReadOnlyRpcFallback(method: string): unknown {
-  switch (method) {
-    case 'eth_blockNumber':
-      return '0x1'
-    case 'eth_getBalance':
-    case 'eth_getTransactionCount':
-      return '0x0'
-    case 'eth_getCode':
-    case 'eth_getStorageAt':
-    case 'eth_call':
-      return '0x'
-    case 'eth_estimateGas':
-      return '0x5208'
-    case 'eth_gasPrice':
-      return '0x3b9aca00'
-    case 'eth_maxPriorityFeePerGas':
-      return '0x59682f00'
-    case 'eth_feeHistory':
-      return {
-        oldestBlock: '0x1',
-        baseFeePerGas: ['0x3b9aca00', '0x3b9aca00'],
-        gasUsedRatio: [0.5],
-        reward: [['0x59682f00']],
-      }
-    case 'eth_getLogs':
-      return []
-    default:
-      return null
-  }
-}
-
-function getKnownPersonaAddressesLower(
-  state: BackgroundBridgeState,
-): Set<string> {
-  const set = new Set<string>()
-  const primary = (state.activePersonaAddress || '').toLowerCase()
-  if (/^0x[0-9a-f]{40}$/.test(primary)) {
-    set.add(primary)
-  }
-  for (const binding of Object.values(state.originPersonas || {})) {
-    const addr = (binding?.address || '').toLowerCase()
-    if (/^0x[0-9a-f]{40}$/.test(addr)) {
-      set.add(addr)
-    }
-  }
-  return set
-}
-
-function applySpendablePoolFallback(
-  chainIdHex: string,
-  method: string,
-  params: unknown,
-  rpcResult: unknown,
-  state?: BackgroundBridgeState,
-): unknown {
-  if (!state) return rpcResult
-  const normChain = chainIdHex.toLowerCase()
-  if (normChain !== '0x279f' && normChain !== '0x8f') {
-    return rpcResult
-  }
-  const knownAddrs = getKnownPersonaAddressesLower(state)
-  if (knownAddrs.size === 0) {
-    return rpcResult
-  }
-  let poolWei = 0n
-  try {
-    if (
-      state.poolBalanceWeiHex &&
-      /^0x[0-9a-fA-F]+$/.test(state.poolBalanceWeiHex)
-    ) {
-      poolWei = BigInt(state.poolBalanceWeiHex)
-    }
-  } catch {
-    poolWei = 0n
-  }
-  if (poolWei <= 0n) return rpcResult
-
-  if (method === 'eth_getBalance') {
-    const queriedAddr = Array.isArray(params)
-      ? String(params[0] ?? '').toLowerCase()
-      : ''
-    if (knownAddrs.has(queriedAddr)) {
-      let onChainWei = 0n
-      try {
-        if (
-          typeof rpcResult === 'string' &&
-          /^0x[0-9a-fA-F]+$/.test(rpcResult)
-        ) {
-          onChainWei = BigInt(rpcResult)
-        }
-      } catch {
-        onChainWei = 0n
-      }
-      if (onChainWei === 0n) {
-        return '0x' + poolWei.toString(16)
-      }
-    }
-  } else if (method === 'eth_call') {
-    const callObj = (Array.isArray(params) ? params[0] : params) as
-      | Record<string, unknown>
-      | undefined
-    const callData = String(callObj?.data ?? callObj?.input ?? '').toLowerCase()
-    // Multicall3.getEthBalance(address) selector is 0x4d2301cc
-    if (
-      callData.startsWith('0x4d2301cc') &&
-      (typeof rpcResult !== 'string' || /^0x0*$/.test(rpcResult))
-    ) {
-      for (const addr of knownAddrs) {
-        const addrNoPrefix = addr.slice(2)
-        if (callData.includes(addrNoPrefix)) {
-          return '0x' + poolWei.toString(16).padStart(64, '0')
-        }
-      }
-    }
-  }
-  return rpcResult
-}
-
 async function forwardReadOnlyRpc(
   chainIdHex: string,
   method: string,
   params: unknown,
-  state?: BackgroundBridgeState,
+  runtimeScope?: Record<string, any>,
 ): Promise<{
   ok: boolean
   result?: unknown
@@ -488,71 +370,40 @@ async function forwardReadOnlyRpc(
       chain.nativeChainId !== undefined &&
       BigInt(chain.nativeChainId) === nativeId,
   )
-  const rpcUrl = entry?.rpcUrl ?? entry?.rpcUrls?.[0]
-  if (!entry || !rpcUrl) {
+  if (!entry || !entry.allowedProxyCapabilities.includes('json-rpc')) {
     return {
       ok: false,
       error: {
         code: 4901,
-        message: 'No configured RPC is available for this chain.',
+        message: 'No relay RPC is available for this chain.',
       },
     }
   }
-  if (typeof fetch === 'function') {
-    try {
-      const response = await fetch(rpcUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method,
-          params: Array.isArray(params) ? params : [],
-        }),
-      })
-      if (response && response.ok) {
-        const json = await response.json()
-        if (json && typeof json === 'object') {
-          if ('result' in json) {
-            return {
-              ok: true,
-              result: applySpendablePoolFallback(
-                chainIdHex,
-                method,
-                params,
-                json.result,
-                state,
-              ),
-            }
-          }
-          if (json.error && typeof json.error === 'object') {
-            return {
-              ok: false,
-              error: {
-                code:
-                  typeof json.error.code === 'number'
-                    ? json.error.code
-                    : -32603,
-                message: String(json.error.message || 'RPC error'),
-                data: json.error.data,
-              },
-            }
-          }
-        }
-      }
-    } catch {
-      // Fall back to safe offline response below
+  try {
+    const response: any = await sendRuntimeMessage(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'read-only-evm-rpc',
+        chainIdentifier: entry.id,
+        method,
+        params: Array.isArray(params) ? params : [],
+      },
+      runtimeScope,
+    )
+    if (response?.ok === true && 'result' in response)
+      return { ok: true, result: response.result }
+    return {
+      ok: false,
+      error: response?.error ?? {
+        code: 4900,
+        message: 'Unlock Frank to read this chain.',
+      },
     }
-  }
-  return {
-    ok: true,
-    result: applySpendablePoolFallback(
-      chainIdHex,
-      method,
-      params,
-      getReadOnlyRpcFallback(method),
-      state,
-    ),
+  } catch {
+    return {
+      ok: false,
+      error: { code: 4900, message: 'Frank wallet is unavailable.' },
+    }
   }
 }
 
@@ -2107,7 +1958,12 @@ export async function handleBackgroundMessage(
     }
 
     if (READONLY_RPC_METHODS.has(method)) {
-      return await forwardReadOnlyRpc(state.chainIdHex, method, params, state)
+      return await forwardReadOnlyRpc(
+        state.chainIdHex,
+        method,
+        params,
+        runtimeScope,
+      )
     }
 
     if (
@@ -2307,6 +2163,79 @@ export async function handleBackgroundMessage(
       )
     ) {
       return { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
+    }
+
+    const fundingAmountAtomic =
+      decision.fundingAmountAtomic ?? message.fundingAmountAtomic
+    if (
+      approved &&
+      isConnectMethod &&
+      !SOLANA_CONNECT_METHODS.has(pending.method) &&
+      fundingAmountAtomic !== undefined
+    ) {
+      if (
+        typeof fundingAmountAtomic !== 'string' ||
+        !/^[1-9][0-9]*$/.test(fundingAmountAtomic)
+      )
+        return {
+          ok: false,
+          error: { code: -32602, message: 'Invalid site funding amount.' },
+        }
+      const chainId = BigInt(pending.chainIdHex ?? state.chainIdHex)
+      const chain = Object.values(PROTOCOL_CHAINS).find(
+        entry =>
+          entry.family === 'evm' &&
+          entry.nativeChainId !== undefined &&
+          BigInt(entry.nativeChainId) === chainId,
+      )
+      if (
+        !chain ||
+        (pending.chainIdentifier && pending.chainIdentifier !== chain.id)
+      )
+        return {
+          ok: false,
+          error: { code: 4901, message: 'The approved chain changed.' },
+        }
+      const address = connectPersonaAddress(
+        state,
+        normalizeBridgeOrigin(pending.origin) ||
+          pending.origin.trim().toLowerCase(),
+        useBurnerPersona,
+        suppliedPersonaAddress,
+      )
+      try {
+        const funded: any = await sendRuntimeMessage(
+          {
+            channel: FRANK_DAPP_BRIDGE_CHANNEL,
+            type: 'fund-dapp-persona',
+            chainIdentifier: chain.id,
+            origin: pending.origin,
+            useBurnerPersona,
+            address,
+            amountAtomic: fundingAmountAtomic,
+          },
+          runtimeScope,
+        )
+        if (funded?.ok !== true)
+          return {
+            ok: false,
+            error: funded?.error ?? {
+              code: 4900,
+              message: 'Unlock Frank to fund this address.',
+            },
+          }
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            code: 4900,
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Frank wallet is unavailable.',
+          },
+        }
+      }
     }
 
     state.pendingApprovals.delete(requestId)

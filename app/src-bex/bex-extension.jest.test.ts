@@ -860,7 +860,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     }
   })
 
-  it('advertises Monad Testnet (0x279f) in wallet_getCapabilities and reports spendable Frank Pool balance when persona EOA balance is 0 on Monad', async () => {
+  it('advertises Monad Testnet and does not invent a persona balance without the wallet relay', async () => {
     const listeners: Array<
       (msg: any, sender: any, sendResponse: (res: any) => void) => any
     > = []
@@ -917,33 +917,20 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       (capsRes.result as Record<string, unknown>)?.['0x279f'],
     ).toBeDefined()
 
-    const origFetch = globalThis.fetch
-    globalThis.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        jsonrpc: '2.0',
-        id: 1,
-        result: '0x0',
-      }),
-    }) as unknown as typeof fetch
-
-    try {
-      const balRes = await sendRuntimeMessage<any, any>(
-        {
-          channel: FRANK_DAPP_BRIDGE_CHANNEL,
-          type: 'dapp-rpc-request',
-          origin: 'https://app.uniswap.org',
-          payload: {
-            method: 'eth_getBalance',
-            params: [personaAddr, 'latest'],
-          },
+    const balRes = await sendRuntimeMessage<any, any>(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'dapp-rpc-request',
+        origin: 'https://app.uniswap.org',
+        payload: {
+          method: 'eth_getBalance',
+          params: [personaAddr, 'latest'],
         },
-        mockScope,
-      )
-      expect(balRes.result).toBe('0x4d8c55aefb8c05b5c0')
-    } finally {
-      globalThis.fetch = origFetch
-    }
+      },
+      mockScope,
+    )
+    expect(balRes.ok).toBe(false)
+    expect(balRes.result).toBeUndefined()
   })
 
   it('persists and restores the last visited route when reopening the extension', async () => {

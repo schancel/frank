@@ -6,10 +6,92 @@ import {
   toUtf8Bytes,
 } from 'ethers'
 import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
-import { canonicalDappPersonaOrigin } from '@frank/wallet/dapp-bridge/persona-keys'
+import {
+  canonicalDappPersonaOrigin,
+  type DappPersonaRef,
+} from '@frank/wallet/dapp-bridge/persona-keys'
 import type { EvmChainWalletHandle } from '@frank/wallet/chain'
 import type { accountSession } from './session'
 import { openEvmWallet } from './evm-wallets'
+import { getRawExtensionApi } from '../../src-bex/runtime-adapter'
+
+interface PriorDappEvmAttempt {
+  requestId?: string
+  chainIdentifier: string
+  account: string
+  nonce: number
+  intentHash: string
+  signedTransaction: string
+  transactionHash: string
+}
+
+/** The old extension store is read only during cutover. It retains signed attempts until
+ * the wallet has checked their chain outcome, so an upgrade cannot authorize a second pay. */
+async function priorDappAttempts(): Promise<readonly PriorDappEvmAttempt[]> {
+  const extension = getRawExtensionApi()
+  if (!extension) return []
+  const storage = extension.storage?.local
+  if (typeof storage?.get !== 'function')
+    throw new Error('Previous dApp transaction recovery storage is unavailable')
+  const stored = await storage.get('frankDappEvmAttemptsV1')
+  const rows: unknown = stored?.frankDappEvmAttemptsV1
+  if (rows === undefined) return []
+  if (
+    !Array.isArray(rows) ||
+    rows.some(
+      row =>
+        !row ||
+        typeof row !== 'object' ||
+        (row.requestId !== undefined && typeof row.requestId !== 'string') ||
+        typeof row.chainIdentifier !== 'string' ||
+        typeof row.account !== 'string' ||
+        !Number.isSafeInteger(row.nonce) ||
+        typeof row.intentHash !== 'string' ||
+        !/^0x[0-9a-f]{64}$/i.test(row.intentHash) ||
+        typeof row.signedTransaction !== 'string' ||
+        !/^0x[0-9a-f]+$/i.test(row.signedTransaction) ||
+        typeof row.transactionHash !== 'string' ||
+        !/^0x[0-9a-f]{64}$/i.test(row.transactionHash),
+    )
+  )
+    throw new Error('Stored dApp transaction recovery state is invalid')
+  return rows as PriorDappEvmAttempt[]
+}
+
+function priorIntentValue(value: unknown): string | null {
+  if (value === undefined || value === null) return null
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'bigint'
+  )
+    return BigInt(value).toString(10)
+  throw new Error('Invalid EVM transaction intent field')
+}
+
+function priorIntentHash(
+  chainIdentifier: string,
+  tx: Record<string, unknown>,
+): string {
+  return keccak256(
+    toUtf8Bytes(
+      JSON.stringify({
+        chainIdentifier,
+        from: typeof tx.from === 'string' ? tx.from.toLowerCase() : '',
+        to: typeof tx.to === 'string' ? tx.to.toLowerCase() : null,
+        value: priorIntentValue(tx.value ?? '0x0'),
+        data: typeof tx.data === 'string' ? tx.data.toLowerCase() : '0x',
+        requestedNonce: priorIntentValue(tx.nonce),
+        requestedType: priorIntentValue(tx.type),
+        gas: priorIntentValue(tx.gas ?? tx.gasLimit),
+        gasPrice: priorIntentValue(tx.gasPrice),
+        maxFeePerGas: priorIntentValue(tx.maxFeePerGas),
+        maxPriorityFeePerGas: priorIntentValue(tx.maxPriorityFeePerGas),
+        accessList: Array.isArray(tx.accessList) ? tx.accessList : null,
+      }),
+    ),
+  )
+}
 
 export interface ApprovedDappRequest {
   readonly id: string
@@ -27,6 +109,61 @@ export interface ApprovedDappRequest {
 
 export interface DappRequestExecutorOptions {
   readonly openEvmWallet?: typeof openEvmWallet
+}
+
+/** A user-chosen top-up on connection uses the ordinary wallet send. The deterministic ID
+ * means retrying the same approval cannot authorize a second transfer after a lost reply. */
+export async function fundDappPersona(
+  params: {
+    chainIdentifier: string
+    source: DappPersonaRef
+    expectedAddress: string
+    amountAtomic: bigint
+  },
+  options: DappRequestExecutorOptions = {},
+): Promise<string> {
+  const entry = PROTOCOL_CHAINS[params.chainIdentifier]
+  if (
+    !entry ||
+    entry.family !== 'evm' ||
+    !entry.wallet ||
+    params.amountAtomic <= 0n
+  )
+    throw new Error('Invalid dApp persona funding request')
+  const wallet = (await (options.openEvmWallet ?? openEvmWallet)(entry.id))
+    .wallet as EvmChainWalletHandle
+  if (wallet.chainIdentifier !== entry.id || !wallet.sendLegacy)
+    throw new Error('This wallet cannot fund a dApp subaccount')
+  const address = await wallet.ensureLegacySubAccount(params.source)
+  if (address.raw.toLowerCase() !== params.expectedAddress.toLowerCase())
+    throw new Error('Approved dApp subaccount does not belong to this wallet')
+  for (const attempt of await priorDappAttempts()) {
+    if (
+      attempt.chainIdentifier !== entry.id ||
+      attempt.account.toLowerCase() !== address.raw.toLowerCase()
+    )
+      continue
+    const recovered = await wallet.reconcileLegacySubAccountAttempt({
+      source: params.source,
+      account: attempt.account,
+      nonce: attempt.nonce,
+      signedTransaction: attempt.signedTransaction,
+      transactionHash: attempt.transactionHash,
+    })
+    if (recovered.status === 'pending')
+      throw new Error(
+        'An earlier transaction from this address is still pending; funding is paused',
+      )
+  }
+  const operationId = `legacy-dappfund-${keccak256(
+    toUtf8Bytes(JSON.stringify([entry.id, address.raw.toLowerCase()])),
+  ).slice(2)}`
+  const result = await wallet.sendLegacy({
+    operationId,
+    recipient: address,
+    value: params.amountAtomic,
+  })
+  return result.txHash
 }
 
 function paramsArray(params: unknown): any[] {
@@ -203,6 +340,33 @@ export async function executeApprovedDappRequest(
       !wallet.sendLegacyFromSubAccount
     )
       throw new Error('This wallet cannot send from a legacy subaccount')
+    let anotherPriorAttemptIsPending = false
+    const previousIntent = priorIntentHash(chainEntry.id, tx)
+    for (const attempt of await priorDappAttempts()) {
+      if (
+        attempt.chainIdentifier !== chainEntry.id ||
+        attempt.account.toLowerCase() !== expected.toLowerCase()
+      )
+        continue
+      if (
+        attempt.requestId === request.id &&
+        attempt.intentHash !== previousIntent
+      )
+        throw new Error('Approved request ID was reused for another intent')
+      const recovered = await wallet.reconcileLegacySubAccountAttempt({
+        source: ref,
+        account: attempt.account,
+        nonce: attempt.nonce,
+        signedTransaction: attempt.signedTransaction,
+        transactionHash: attempt.transactionHash,
+      })
+      if (attempt.requestId === request.id) return recovered.transactionHash
+      if (recovered.status === 'pending') anotherPriorAttemptIsPending = true
+    }
+    if (anotherPriorAttemptIsPending)
+      throw new Error(
+        'An earlier transaction from this account is still pending; retry its original request',
+      )
     const operationId = `dapp-${keccak256(
       toUtf8Bytes(
         JSON.stringify({

@@ -53,6 +53,7 @@ import {
 export interface SendLegacyParams {
   recipient: ChainAddress
   value: bigint
+  operationId?: string
   maxFee?: bigint
   minimumRemainingBalance?: bigint
   onProgress?: (progress: LegacySendProgress) => void

@@ -97,6 +97,7 @@ export interface EvmStealthPaymentDriver {
     params: ConstructEvmTransactionSetRequest,
   ): Promise<EvmNativeOperation>
   operations(): EvmNativeOperation[]
+  readPreparation(preparationId: string): Promise<EvmNativeOperation | undefined>
   signIndependentPayment(
     params: PreparedIndependentPaymentParams,
   ): Promise<EvmNativeOperation>
@@ -335,32 +336,29 @@ export function createEvmStealthPayments(
     validateFeeAuthorization(row)
     return row
   }
-  const operation = (
-    row: EvmStealthPreparation,
-  ): EvmNativeOperation | undefined => {
-    const candidates = driver
-      .operations()
-      .filter(
-        (candidate) =>
-          candidate.preparationId ===
-            (row.asset.kind === 'native'
-              ? `evm-transaction-set:${evmStealthTransactionSetOperationId(
-                  row.operationId,
-                )}`
-              : `stealth-payment:${row.operationId}`) &&
-          matches(candidate, row, driver.nativeChainId),
-      )
-    if (row.journalOperationId !== undefined) {
-      const linked = candidates.find(
-        (candidate) => candidate.operationId === row.journalOperationId,
-      )
-      if (!linked && !row.released)
-        throw new Error('Stealth preparation journal mismatch')
-      return linked
-    }
-    if (candidates.length > 1)
-      throw new Error('Ambiguous stealth preparation journal link')
-    return candidates[0]
+  const preparationId = (row: EvmStealthPreparation): string => row.asset.kind === 'native'
+    ? `evm-transaction-set:${evmStealthTransactionSetOperationId(row.operationId)}`
+    : `stealth-payment:${row.operationId}`
+  // Only active journal rows own input holds; historical evidence is resolved asynchronously.
+  const activeOperation = (row: EvmStealthPreparation): EvmNativeOperation | undefined => {
+    const candidate = driver.operations().find(candidate => candidate.preparationId === preparationId(row))
+    if (candidate?.cancelled && row.released) return undefined
+    if (candidate && (!matches(candidate, row, driver.nativeChainId) ||
+        (row.journalOperationId !== undefined && candidate.operationId !== row.journalOperationId)))
+      throw new Error('Stealth preparation journal mismatch')
+    return candidate
+  }
+  const operation = async (row: EvmStealthPreparation): Promise<EvmNativeOperation | undefined> => {
+    const candidate = await driver.readPreparation(preparationId(row))
+    driver.assertActive()
+    if (candidate?.cancelled && row.released &&
+        (row.journalOperationId === undefined || candidate.operationId === row.journalOperationId)) return undefined
+    if (candidate && (!matches(candidate, row, driver.nativeChainId) ||
+        (row.journalOperationId !== undefined && candidate.operationId !== row.journalOperationId)))
+      throw new Error('Stealth preparation journal mismatch')
+    if (!candidate && row.journalOperationId !== undefined && !row.released)
+      throw new Error('Stealth preparation journal mismatch')
+    return candidate
   }
   const manifest = (
     row: EvmStealthPreparation,
@@ -393,7 +391,7 @@ export function createEvmStealthPayments(
   const progress = async (
     row: EvmStealthPreparation,
   ): Promise<StealthPaymentProgress> => {
-    const journal = operation(row)
+    const journal = await operation(row)
     const amount = BigInt(row.amountAtomic)
     if (!journal) return { status: 'pending', intendedAmountAtomic: amount }
     let received = 0n,
@@ -647,7 +645,7 @@ export function createEvmStealthPayments(
           row = approved
         }
         const asset = row.asset
-        let journal = operation(row)
+        let journal = await operation(row)
         if (!journal || journal.members.some((member) => !member.signed)) {
           if (row.payloadDigest !== undefined)
             throw new Error('Exposed preparation lost its signed operation')
@@ -711,7 +709,7 @@ export function createEvmStealthPayments(
         if (!/^[0-9a-fA-F]{64}$/.test(binding.payloadDigest))
           throw new Error('Invalid sealed payload digest')
         const row = read(binding.operationId)
-        const journal = operation(row)
+        const journal = await operation(row)
         if (
           row.released ||
           !journal ||
@@ -741,7 +739,7 @@ export function createEvmStealthPayments(
           throw new Error(
             'Stealth payment has no durable host exposure binding',
           )
-        const journal = operation(row)
+        const journal = await operation(row)
         if (!journal) throw new Error('Stealth signed operation unavailable')
         // Transport uncertainty is reconciled through the original journal. No replacement payment.
         try {
@@ -755,7 +753,7 @@ export function createEvmStealthPayments(
     reconcile: (id) =>
       exclusive(id, async () => {
         const row = read(id)
-        const journal = operation(row)
+        const journal = await operation(row)
         if (journal && row.payloadDigest !== undefined)
           await driver.observe(journal.operationId)
         return progress(read(id))
@@ -764,7 +762,7 @@ export function createEvmStealthPayments(
       exclusive(id, async () => {
         const row = read(id)
         if (row.payloadDigest !== undefined) return false
-        const journal = operation(row)
+        const journal = await operation(row)
         if (journal?.members.some((member) => member.exposed)) return false
         if (
           !row.released &&
@@ -798,8 +796,8 @@ export function createEvmStealthPayments(
       driver.assertActive()
       for (const row of driver.store.all()) {
         validateFeeAuthorization(row)
+        const journal = await operation(row)
         if (!row.released) continue
-        const journal = operation(row)
         if (journal) await driver.release(journal.operationId)
       }
     },
@@ -807,7 +805,7 @@ export function createEvmStealthPayments(
       exclusive(id, async () => {
         const row = driver.store.get(id)
         if (!row || row.released) return undefined
-        const journal = operation(row)
+        const journal = await operation(row)
         return journal === undefined ||
           journal.members.some((member) => !member.signed)
           ? undefined
@@ -817,7 +815,7 @@ export function createEvmStealthPayments(
       const held = new Set<string>()
       for (const row of driver.store.all()) {
         if (row.released) continue
-        const journal = operation(row)
+        const journal = activeOperation(row)
         if (journal)
           for (const member of journal.members)
             if (
@@ -836,7 +834,7 @@ export function createEvmStealthPayments(
           (row) =>
             !row.released &&
             row.payloadDigest === undefined &&
-            operation(row)?.operationId === id,
+            activeOperation(row)?.operationId === id,
         )
     },
   }

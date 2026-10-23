@@ -12,6 +12,7 @@ import {
 import { LevelRecordStore } from '../storage/evm-coin-store'
 import {
   EvmNativeOperationJournal,
+  evmNativeOperationDigest,
   type EvmNativePlan,
 } from '../storage/evm-native-operation-journal'
 import { EvmCoinList, type StoredEvmListCoin } from '../evm-coin-list'
@@ -110,6 +111,7 @@ function runtime(
   const operationId = (id: string) =>
     journal.get(id).preparationId!.slice('evm-transaction-set:'.length)
   return {
+    preparer,
     constructNativePayment: async (
       request: Parameters<typeof preparer.constructTransactionSet>[0]
     ) => {
@@ -208,6 +210,7 @@ test('two stale Level capabilities share one business preparation while another 
           ephemeralPubKey: getBytes(destination.signingKey.compressedPublicKey),
         }),
         operations: () => journal.list(),
+      readPreparation: id => journal.refreshPreparation(id),
         ...runtime(journal, coins, provider),
         tokenBalance: async () => 0n,
         tokenReceipt: async () => undefined,
@@ -378,6 +381,7 @@ test('a shared multi-source preparation recovers its original signed set through
         ephemeralPubKey: getBytes(destination.signingKey.compressedPublicKey),
       }),
       operations: () => journal.list(),
+      readPreparation: id => journal.refreshPreparation(id),
       ...runtime(journal, coins, provider),
       quoteNative: quote,
       tokenBalance: async () => 0n,
@@ -493,6 +497,32 @@ test('a shared multi-source preparation recovers its original signed set through
     expect(journal.canSelect(a.address.toLowerCase(), 0)).toBe(false)
     expect(journal.canSelect(b.address.toLowerCase(), 0)).toBe(false)
     expect(quote).toHaveBeenCalledTimes(2)
+    const settlement = runtime(journal, coins, provider).preparer
+    const logicalId = originals.length && journal.get(originalOperationId).preparationId!.slice('evm-transaction-set:'.length)
+    if (!logicalId) throw new Error('Missing logical operation')
+    const blockHash = '0x' + 'cd'.repeat(32)
+    for (const [index, member] of journal.get(originalOperationId).members.entries())
+      await settlement.recordObservation(logicalId, index, {
+        state: 'included-success', transactionHash: member.signed!.transactionHash,
+        blockHash, blockNumber: 2, transactionIndex: index, feeWei: '21000',
+      }, { blockHash, blockNumber: 2, nonce: 1, balanceWei: '0' })
+    const completed = journal.get(originalOperationId)
+    await journal.archiveCompleted(originalOperationId, {
+      expectedOperationHash: evmNativeOperationDigest(completed), ownerReference: 'test:stealth-history',
+      sync: 'not-required', delivery: 'complete', dependencies: 'complete',
+    })
+    await store.close(); await journal.Close(); await coinStore.close()
+    coinStore = await LevelRecordStore.open(root, 'test-native-inventory')
+    coins = await EvmCoinList.open(coinStore)
+    store = await LevelRecordStore.open(root, EVM_STEALTH_PREPARATION_NAMESPACE)
+    journal = new EvmNativeOperationJournal({ location: root, binding }); await journal.Open()
+    payment = capability()
+    await payment.recoverReleases()
+    expect((await payment.get(request.operationId))!.members.map(member => member.rawTransaction)).toEqual(originals)
+    expect((await payment.prepare(request)).members.map(member => member.rawTransaction)).toEqual(originals)
+    expect(payment.heldSources()).toEqual(new Set())
+    expect(signing).toHaveBeenCalledTimes(2)
+    expect(journal.list()).toEqual([])
   } finally {
     signing.mockRestore()
     await coinStore.close()

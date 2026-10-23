@@ -2471,22 +2471,26 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             async resumeNativeOperation(operationId) {
               invalidateBalanceRead();
               try {
+                const original = await transactionOwner.runLifetime(() => transactionOwner.nativeJournal!.readOperation(operationId));
+                if (!original) throw new Error("Unknown native operation");
+                if (!transactionOwner.nativeJournal!.list().some(row => row.operationId === operationId)) return original;
                 // A payment to a contact is broadcast only once the relay has its message.
                 if (coinAndContactManager.heldForItsMessage(operationId))
                   throw new Error(
                     "This transfer pays a contact and is broadcast once its message is delivered"
                   );
                 const owner = nativeOperationOwner(wallet);
-                const original = transactionOwner.nativeJournal!.get(operationId);
                 let result: typeof original;
                 if (original.kind === "transaction-set") {
                   if (!original.submissionAuthorized)
                     throw new Error("Submit the original transaction wrapper before resuming it");
                   const logicalId = original.preparationId!.slice("evm-transaction-set:".length);
-                  await transactionOwner.runLifetime(() => transactionSetSubmission.sendTransaction(
-                    transactionSetPreparer.getTransactionSet(logicalId)
+                  await transactionOwner.runLifetime(async () => transactionSetSubmission.sendTransaction(
+                    await transactionSetPreparer.readTransactionSet(logicalId)
                   ));
-                  result = transactionOwner.nativeJournal!.get(operationId);
+                  const settled = await transactionOwner.nativeJournal!.readOperation(operationId);
+                  if (!settled) throw new Error("Missing durable native operation");
+                  result = settled;
                 } else {
                   result = await runWalletExclusive(wallet, (admission) =>
                     runMainAccountExclusive(wallet, () => owner.resumeOperation(operationId, admission))
@@ -2494,7 +2498,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 }
                 // The note to this account's other devices is started, not waited for: a native
                 // send or resume never waits on the relay or on a message being sent.
-                if (!evmWalletInternals(wallet).closed) {
+                if (!evmWalletInternals(wallet).closed && transactionOwner.nativeJournal!.list().some(row => row.operationId === operationId)) {
                   {
                     const noteOf = operationId;
                     retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
@@ -2550,6 +2554,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
             async watchNativeOperation(operationId) {
               requireOpenWallet(wallet);
+              const original = await transactionOwner.runLifetime(() => transactionOwner.nativeJournal!.readOperation(operationId));
+              if (!original) throw new Error("Unknown native operation");
+              if (!transactionOwner.nativeJournal!.list().some(row => row.operationId === operationId)) return;
               const owner = nativeOperationOwner(wallet);
               const watcher = evmWalletInternals(wallet).blockWatcher;
               // The wallet's one block watcher paces the looks; a wallet without one waits a
@@ -2557,6 +2564,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               if (watcher) await watcher.next().catch(() => undefined);
               else await new Promise((resolve) => setTimeout(resolve, 1_000));
               requireOpenWallet(wallet);
+              if (!transactionOwner.nativeJournal!.list().some(row => row.operationId === operationId)) return;
               await owner.lookAtOperation(operationId);
               invalidateBalanceRead();
               // What the look showed frees the main account for whoever waits for it.

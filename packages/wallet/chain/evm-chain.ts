@@ -2135,6 +2135,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             sendTransaction: prepared => transactionSetSubmission.sendTransaction(prepared),
             refresh: transactionSetRuntime.refresh,
             operations: () => transactionOwner.nativeJournal!.list(),
+            readOperation: id => transactionOwner.nativeJournal!.readOperation(id),
             getCoins: () => coinList.all().filter(coin => transactionOwner.nativeJournal!.canSelect(coin.account, coin.nonce) &&
               !transactionSetRuntime.coinListSync.isDirty(coin.account) && pool.accountClaimedBy(coin.account) === undefined),
           });
@@ -2723,10 +2724,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             async resumeLegacySend(operationId) {
               const owner = nativeOperationOwner(wallet);
               try {
-                const result = legacyTransactions.isSharedLegacyOperation(operationId)
+                const shared = await transactionOwner.runLifetime(() => legacyTransactions.isSharedLegacyOperation(operationId));
+                const result = shared
                   ? await transactionOwner.runLifetime(() => legacyTransactions.resumeLegacySend(operationId))
                   : await runWalletExclusive(wallet, admission => runMainAccountExclusive(wallet, () => owner.resumeLegacySend(operationId, admission)));
-                if (!evmWalletInternals(wallet).closed)
+                if (!evmWalletInternals(wallet).closed && transactionOwner.nativeJournal!.list().some(row => row.operationId === operationId))
                   retryEarlierNotes(owner, operationId, await owner.startSync(operationId));
                 return result;
               } finally { invalidateBalanceRead(); }

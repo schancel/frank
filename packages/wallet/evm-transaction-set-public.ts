@@ -82,7 +82,7 @@ export function evmTransactionSetCapability(
     constructTransactionSet(
       request: ConstructEvmTransactionSetRequest,
     ): Promise<PreparedEvmTransactionSet>
-    getTransactionSet?(operationId: string): PreparedEvmTransactionSet
+    readTransactionSet?(operationId: string): Promise<PreparedEvmTransactionSet>
   },
   submit?: (
     prepared: PreparedEvmTransactionSet,
@@ -112,11 +112,11 @@ export function evmTransactionSetCapability(
       return project(result)
     },
     async sendTransaction(prepared): Promise<TransactionSetSubmission> {
-      if (!submit || !preparer.getTransactionSet)
+      if (!submit || !preparer.readTransactionSet)
         throw new Error(
           'Transaction-set submission is unavailable for this wallet',
         )
-      const authoritative = preparer.getTransactionSet(prepared.operationId)
+      const authoritative = await preparer.readTransactionSet(prepared.operationId)
       assertPublicWrapper(prepared, project(authoritative))
       return submit(authoritative)
     },

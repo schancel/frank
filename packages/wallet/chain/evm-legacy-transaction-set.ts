@@ -57,24 +57,17 @@ export function createLegacyTransactionSetPayments(options: {
   ): Promise<TransactionSetSubmission>
   refresh(): Promise<void>
   operations(): readonly EvmNativeOperation[]
+  readOperation(operationId: string): Promise<EvmNativeOperation | undefined>
   /** Snapshot already filtered by journal/owned staging admission. No key derivation. */
   getCoins(): readonly EvmListCoin[]
 }) {
-  const isSharedLegacyOperation = (operationId: string): boolean =>
-    options
-      .operations()
-      .some(
-        row =>
-          row.operationId === operationId &&
-          row.kind === 'transaction-set' &&
-          row.preparationId?.startsWith(preparationPrefix),
-      )
-  const read = (operationId: string): EvmNativeOperation => {
-    if (!isSharedLegacyOperation(operationId))
-      throw new Error('Unknown shared legacy operation')
-    const row = options
-      .operations()
-      .find(row => row.operationId === operationId)!
+  const isSharedLegacy = (row: EvmNativeOperation | undefined): row is EvmNativeOperation =>
+    row?.kind === 'transaction-set' && row.preparationId?.startsWith(preparationPrefix) === true
+  const isSharedLegacyOperation = async (operationId: string): Promise<boolean> =>
+    isSharedLegacy(await options.readOperation(operationId))
+  const read = async (operationId: string): Promise<EvmNativeOperation> => {
+    const row = await options.readOperation(operationId)
+    if (!isSharedLegacy(row)) throw new Error('Unknown shared legacy operation')
     if (row.cancelled) throw new Error('Legacy operation was cancelled')
     return row
   }
@@ -97,14 +90,18 @@ export function createLegacyTransactionSetPayments(options: {
   const resumeLegacySend = async (
     operationId: string,
   ): Promise<LegacySendResult> => {
-    const original = read(operationId)
+    const original = await read(operationId)
     const id = original.preparationId!.slice('evm-transaction-set:'.length)
-    try {
-      await options.sendTransaction(options.preparer.getTransactionSet(id))
-    } catch (error) {
-      throw new LegacyTransactionSetPendingError(read(operationId), error)
+    // Completed history already carries the original financial result. Active rows still
+    // pass through submission so pending owned change and inventory projection can finish.
+    if (options.operations().some(row => row.operationId === operationId)) {
+      try {
+        await options.sendTransaction(await options.preparer.readTransactionSet(id))
+      } catch (error) {
+        throw new LegacyTransactionSetPendingError(await read(operationId), error)
+      }
     }
-    const row = read(operationId)
+    const row = await read(operationId)
     if (failed(row)) throw new LegacyTransactionSetFailedError(row)
     if (
       row.members.some(
@@ -241,12 +238,13 @@ export function createLegacyTransactionSetPayments(options: {
           maxFeeWei: request.maxFee,
         })
       } catch (error) {
-        const retained = options.preparer.getOperation(operationId)
+        const retained = await options.preparer.readOperation(operationId)
         if (retained)
           throw new LegacyTransactionSetPendingError(retained, error)
         throw error
       }
-      const row = options.preparer.getOperation(operationId)!
+      const row = await options.preparer.readOperation(operationId)
+      if (!row) throw new Error('Missing durable shared legacy operation')
       const final = recipient(row)
       // The complete graph is already durable. A callback failure cannot authorize a new payment.
       try {

@@ -196,6 +196,7 @@ async function fixture(
     sendTransaction: prepared => submission.sendTransaction(prepared),
     refresh: async () => undefined,
     operations: () => journal.list(),
+    readOperation: id => journal.readOperation(id),
     getCoins: () =>
       coins.all().filter(coin => journal.canSelect(coin.account, coin.nonce)),
   })

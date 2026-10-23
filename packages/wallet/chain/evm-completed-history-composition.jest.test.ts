@@ -1,4 +1,5 @@
 /** Actual wallet composition and LevelDB; only network effects and capacity are configured. */
+import { getBytes, SigningKey } from 'ethers'
 import { fixture, mockBalances, offlineChain, roots, useProviderStandIns } from './canonical-two-wallets.testutil'
 import { installCanonicalDirectory } from './evm-chain'
 import { LevelOutgoingMessageStore, type StoredMessage } from './canonical-dm'
@@ -143,5 +144,66 @@ test('settled wallet history does not complete or discard an undelivered message
     expect(stored!.digest).toBe(digest)
     expect(offlineChain.walletBroadcasts).toEqual(before)
     expect((await wallet.readNativeOperation!(history[0]!.operationId))!.members.map(member => member.signed!.rawTransaction)).toEqual(original)
+  } finally { await wallet.close(); await f.close() }
+})
+
+
+test('public transaction wrappers retain their original result after archive and reopen', async () => {
+  const f = await setup()
+  let wallet = f.alice
+  try {
+    const destination = f.bob.mainAccount!.address
+    const wrapper = await wallet.constructTransactionSet!({
+      operationId: 'public-history-replay', amountAtomic: 1000n,
+      kdf: () => getBytes(destination),
+    })
+    const sent = await wallet.sendTransaction!(wrapper)
+    expect(sent.status).toBe('confirmed')
+    await wallet.flushNativeSync!()
+    expect(wallet.getNativeOperations!()).toEqual([])
+    const broadcast = [...offlineChain.walletBroadcasts]
+    await wallet.close()
+    wallet = await f.chain.createWallet(roots(0)) as EvmChainWalletHandle
+    const sign = jest.spyOn(SigningKey.prototype, 'sign')
+    expect((await wallet.sendTransaction!(wrapper)).status).toBe('confirmed')
+    expect(offlineChain.walletBroadcasts).toEqual(broadcast)
+    expect(sign).not.toHaveBeenCalled()
+    await expect(wallet.sendTransaction!({ ...wrapper, bundle: wrapper.bundle.map(member => ({
+      ...member, recipientOutputs: member.recipientOutputs.map(output => ({ ...output, amountAtomic: output.amountAtomic + 1n })),
+    })) })).rejects.toThrow('differs from wallet authority')
+  } finally { await wallet.close(); await f.close() }
+})
+
+test('public shared legacy resumes archived original IDs without broadcasting or paying again', async () => {
+  const f = await setup()
+  let wallet = f.alice
+  try {
+    const submit = wallet.transactionSetSubmission!.sendTransaction.bind(wallet.transactionSetSubmission)
+    // Complete archival while the legacy caller is still awaiting its original submission.
+    jest.spyOn(wallet.transactionSetSubmission!, 'sendTransaction').mockImplementationOnce(async wrapper => {
+      const result = await submit(wrapper)
+      await wallet.flushNativeSync!()
+      expect(wallet.getNativeOperations!()).toEqual([])
+      return result
+    })
+    const result = await wallet.sendLegacy!({
+      recipient: { raw: f.bob.mainAccount!.address }, value: 1000n,
+    })
+    await wallet.flushNativeSync!()
+    const history = (await wallet.getNativeOperationHistory!({ limit: 100 })).operations
+    expect(history).toHaveLength(1)
+    const row = history[0]!
+    const originalBytes = row.members.map(member => member.signed!.rawTransaction)
+    expect(wallet.getUnresolvedLegacySend!()).toEqual([])
+    const broadcasts = [...offlineChain.walletBroadcasts]
+    await wallet.close()
+    wallet = await f.chain.createWallet(roots(0)) as EvmChainWalletHandle
+    const sign = jest.spyOn(SigningKey.prototype, 'sign')
+    expect(await wallet.resumeLegacySend!(row.operationId)).toEqual(result)
+    expect(await wallet.resumeLegacySend!(row.operationId)).toEqual(result)
+    expect((await wallet.readNativeOperation!(row.operationId))!.members.map(member => member.signed!.rawTransaction)).toEqual(originalBytes)
+    expect(offlineChain.walletBroadcasts).toEqual(broadcasts)
+    expect(sign).not.toHaveBeenCalled()
+    expect(wallet.getUnresolvedLegacySend!()).toEqual([])
   } finally { await wallet.close(); await f.close() }
 })

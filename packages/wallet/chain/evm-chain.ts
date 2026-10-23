@@ -1509,7 +1509,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       });
     },
     async estimateLegacyFee({ wallet, recipient, value }) {
-      return asMonadWallet(wallet, config.networkId).estimateLegacyFee!({ recipient, value });
+      const active = asMonadWallet(wallet, config.networkId);
+      if (!active.estimateLegacyFee)
+        throw new Error("Legacy fee estimation requires a durable native-operation owner");
+      return active.estimateLegacyFee({ recipient, value });
     },
 
     async sendToContact({ wallet, ...params }) {

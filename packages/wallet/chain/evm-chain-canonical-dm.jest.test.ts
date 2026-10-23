@@ -81,7 +81,6 @@ import {
   installCanonicalDirectory,
   canonicalMonadStampClient,
   createCanonicalMessageRoles,
-  prepareCanonicalStampInventory,
   prepareMonadRevisionZeroExport,
   prepareMonadNextRevisionExport,
   type CanonicalDirectory,
@@ -290,6 +289,19 @@ function roots(index: number): MonadRootBundle {
     authentication: root('identity-authentication'),
     messaging: root('messaging-encryption'),
   }
+}
+
+/** Test deposits establish owned inventory without invoking a funding workflow. */
+async function depositStampAccounts(wallet: EvmChainWalletHandle, amount: bigint) {
+  const before = wallet.pool.records().length
+  const records = wallet.pool.ensureSize(before + 2).slice(before)
+  for (const [index, record] of records.entries()) {
+    const value = index === 0 ? amount * 3n / 8n : amount - amount * 3n / 8n
+    mockBalances.set(record.address.toLowerCase(), value + 63_000n)
+    wallet.pool.setStatus(record.index, 'available')
+  }
+  await wallet.pool.flush()
+  await wallet.refreshTransactionSetInventory?.()
 }
 
 async function fixture(funded = true) {
@@ -1298,10 +1310,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     const peer = (await directory.peerCurrent({
       address: f.bob.identity.address.raw,
     }))!
-    await prepareCanonicalStampInventory(f.alice, {
-      stampValueWei: 400_000n,
-      recipientStampKey: peer.current.stampKey.keyBytes,
-    })
+    await depositStampAccounts(f.alice, 400_000n)
     await f.alice.refreshTransactionSetInventory?.()
     f.setPhase('lost')
     const prepare = jest.spyOn(f.alice.transactionSetPreparer!, 'constructTransactionSet')
@@ -1620,68 +1629,23 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     }
   })
 
-  it('funds an unfunded typed wallet through the public bridge so a canonical intent can be paid', async () => {
-    const main = (await f.alice.getReceiveAddress()).raw.toLowerCase()
-    mockBalances.set(main, 10n ** 18n)
+  it('spends externally deposited inventory through the shared preparer without prefunding', async () => {
     expect(f.alice.pool.records()).toHaveLength(0)
-    const aliceDirectory = await f.directoryFor('alice', f.alice, f.bob)
-    const peer = (await aliceDirectory.peerCurrent({
-      address: f.bob.identity.address.raw,
-    }))!
-    const hashes = await prepareCanonicalStampInventory(f.alice, {
-      stampValueWei: 1_000n,
-      recipientStampKey: peer.current.stampKey.keyBytes,
+    await depositStampAccounts(f.alice, 100_000n)
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, directory)
+    const prepare = jest.spyOn(f.alice.transactionSetPreparer!, 'constructTransactionSet')
+    const result = await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      stampValue: 100_000n,
+      items: text('spend existing inventory'),
     })
-    expect(hashes.length).toBeGreaterThan(0)
-    expect(mockFunded.length).toBe(hashes.length)
-    expect(mockFunded.every(tx => tx.from === main)).toBe(true)
-    const available = f.alice.pool
-      .records()
-      .filter(record => record.status === 'available')
-    expect(available.map(r => r.address.toLowerCase()).sort()).toEqual(
-      mockFunded.map(tx => tx.to).sort(),
-    )
-    // A second call finds the inventory sufficient and funds nothing more.
-    expect(
-      await prepareCanonicalStampInventory(f.alice, {
-        stampValueWei: 1_000n,
-        recipientStampKey: peer.current.stampKey.keyBytes,
-      }),
-    ).toEqual([])
-    // The bridged roles seal for the live wallet, and its own client can pay from the inventory.
-    const senderCurrent = await aliceDirectory.selfCurrent()
-    const roles = createCanonicalMessageRoles(f.alice, senderCurrent)
-    const sealed = prepareDirectMessage({
-      network: 'monad-testnet',
-      senderCurrent,
-      recipientCurrent: peer.current,
-      messageId: new Uint8Array(16).fill(7),
-      items: [directMessageText('funded')],
-      roles,
-    })
-    roles.dispose()
-    const client = canonicalMonadStampClient(f.alice)
-    const intent = await client.prepareIntent({
-      prepared: client.bindPrepared({
-        payload: sealed.payload,
-        context: sealed.context,
-        stampValueWei: 1_000n,
-        economicBinding: Uint8Array.of(1),
-      }),
-      consumerId: 'bridge-test',
-      stampValueWei: 1_000n,
-      senderCurrent,
-      recipientCurrent: peer.current,
-      onIntentDurable: async () => undefined,
-    })
-    expect(intent.members.length).toBeGreaterThan(0)
+    expect(result.stampValueWei).toBe(100_000n)
+    expect(prepare).toHaveBeenCalledTimes(1)
+    expect(mockFunded).toEqual([])
+    const senderCurrent = await directory.selfCurrent()
     await f.alice.close()
-    expect(() =>
-      prepareCanonicalStampInventory(f.alice, {
-        stampValueWei: 1n,
-        recipientStampKey: peer.current.stampKey.keyBytes,
-      }),
-    ).toThrow('live typed persistent custody')
     expect(() => createCanonicalMessageRoles(f.alice, senderCurrent)).toThrow(
       'live typed wallet custody',
     )
@@ -4303,7 +4267,7 @@ describe('two typed wallets on the open directory', () => {
 
 /**
  * #1235 Stage R, at the canonical boundary: typed wallets, real journals, pool and admission. Two
- * stamp accounts are funded through the production on-demand path for a stamp that needs both, so
+ * stamp accounts receive external deposits for a stamp that needs both, so
  * a send that may select the reserved one does. A native send then spends from the larger one, X,
  * because main cannot pay. `pending`: the broadcast reply is lost, so the member is signed and
  * exposed but unobserved. `included`: it is mined and observed only by a fee estimate. In both,
@@ -4360,10 +4324,7 @@ describe('a stamp account a native send spends from (#1235)', () => {
     const peer = (await directory.peerCurrent({
       address: f.bob.identity.address.raw,
     }))!
-    await prepareCanonicalStampInventory(f.alice, {
-      stampValueWei: STAMP,
-      recipientStampKey: peer.current.stampKey.keyBytes,
-    })
+    await depositStampAccounts(f.alice, STAMP)
     const funded = f.alice.pool
       .records()
       .filter(record => record.status === 'available')
@@ -4515,17 +4476,12 @@ describe('a stamp account a native send spends from (#1235)', () => {
   // account a native member spends from, the admission then held the address for the pool against
   // the native claim: `conflicting-authorization` for every send, also after reopen.
   it.each(['pending', 'included'] as const)(
-    '%s: inventory preparation leaves the reserved account alone, so admission stays ready and native and canonical sends still work, also after reopen',
+    '%s: inventory refresh leaves the reserved account alone, so admission stays ready and native and canonical sends still work, also after reopen',
     async window => {
       const r = await reserved(window, true)
-      // The canonical send's own preparation, for a stamp the current inventory cannot cover.
-      const funding = await prepareCanonicalStampInventory(f.alice, {
-        stampValueWei: 4n * STAMP,
-        recipientStampKey: r.peer.current.stampKey.keyBytes,
-      })
-      await f.alice.refreshTransactionSetInventory?.()
-      expect(funding.length).toBeGreaterThan(0)
-      expect(mockFunded.map(tx => tx.to)).not.toContain(r.xAddress)
+      // Refresh sees external deposits without taking the native operation's reservation.
+      await depositStampAccounts(f.alice, 4n * STAMP)
+      expect(mockFunded).toEqual([])
       expect(f.alice.pool.getRecord(r.x.index)).toEqual({
         index: r.x.index,
         address: r.x.address,

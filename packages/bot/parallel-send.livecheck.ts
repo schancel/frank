@@ -29,7 +29,7 @@
  *      account: all delivered, each payment mined once, nonces consecutive, each mined in a
  *      later block than the one before (nothing signed over an unmined payment), wall time
  *   c  (inside a) one native send issued while those are in flight: it waits its turn and lands
- *   b  FUNDED (default 3) single-use accounts funded ahead, then that many messages together:
+ *   b  FUNDED (default 3) single-use accounts receiving external deposits, then that many messages together:
  *      wall time, each paid from its own account, the main account's nonce unchanged
  *   d  a message the relay refuses outright, then at once a paid send and a native send: the
  *      main account is not held. Two refusals: an address with no directory entry (refused
@@ -647,46 +647,16 @@ async function main() {
         !(await affordable("b", BigInt(funded) * (each + txFee)))
       )
         return;
-      // First the wallet's own fund-ahead (one message's accounts, from the main account):
-      // what it funds is read back from the pool and from chain.
-      await ensureMain(stack, alice, each + txFee + floor / 4n);
-      const usable = async () =>
-        (
-          await alice.handle.pool.fundedCapacities(provider, reserve, {
-            fromBalance: true,
-            maxCacheAgeMs: 0,
-          })
-        ).filter((account) => account.capacityWei >= floor);
-      const usableBefore = (await usable()).map((account) => account.index);
-      const aheadStarted = Date.now();
-      const ahead = await alice.chain.directMessages.fundAhead!({
-        wallet: alice.handle,
-      });
-      const aheadMs = Date.now() - aheadStarted;
-      const fundedAhead = (await usable()).filter(
-        (account) => !usableBefore.includes(account.index)
-      );
-      const aheadTransfers = await Promise.all(
-        ahead.fundingTxHashes.map(async (hash) => {
-          const receipt = await provider.getTransactionReceipt(hash);
-          const tx = await provider.getTransaction(hash);
-          return `${tx?.to} value ${tx ? mon(tx.value) : "?"} nonce ${
-            tx?.nonce
-          } block ${receipt?.blockNumber} status ${receipt?.status}`;
-        })
-      );
-      // Then accounts funded from outside, up to FUNDED in all.
-      const direct = Math.max(0, funded - fundedAhead.length);
+      // Seed owned accounts with external deposits; ordinary sends construct their
+      // recipient and change transactions directly from the resulting inventory.
+      const direct = funded;
       const before = alice.handle.pool.records().length;
       const added = alice.handle.pool.ensureSize(before + direct).slice(before);
       await alice.handle.pool.flush();
       const fundingStarted = Date.now();
       for (const row of added) await stack.fund(row.address, each);
       const fundingMs = Date.now() - fundingStarted;
-      const targets = [
-        ...fundedAhead.map((account) => ({ address: account.address })),
-        ...added,
-      ];
+      const targets = added;
       const nonce0 = await mainNonce(stack, alice);
       const started = Date.now();
       const sent = await Promise.all(
@@ -709,13 +679,6 @@ async function main() {
         )
       ).flat();
       results.b = {
-        fundAhead: {
-          outcome: ahead.outcome,
-          reason: ahead.reason,
-          ms: aheadMs,
-          transfers: aheadTransfers,
-          accountsItMadeUsableForAFloorStamp: fundedAhead.length,
-        },
         fundedAccounts: targets.length,
         fundingMs,
         wallMs,
@@ -1316,15 +1279,6 @@ async function main() {
       const fundedAt = await provider.getBlockNumber();
       // As a person would: the money has arrived and been seen before the first message.
       while ((await provider.getBlockNumber()) < fundedAt + 6) await sleep(100);
-      const spreadMs = Number(process.env.SPREAD_WAIT_MS ?? "0");
-      const spreadStarted = Date.now();
-      const passes: string[] = [];
-      while (Date.now() - spreadStarted < spreadMs) {
-        const pass = await wallet.chain.directMessages.fundAhead?.({ wallet: wallet.handle });
-        passes.push(`${pass?.outcome}${pass?.reason ? `(${pass.reason})` : ""}:${pass?.fundingTxHashes.length ?? 0}`);
-        if (pass?.outcome === "ready") break;
-        await sleep(1000);
-      }
       const partsBefore = await wallet.handle.getBalanceParts?.();
       const burstTap = intercept(wallet);
       const started = Date.now();
@@ -1374,7 +1328,6 @@ async function main() {
         parts ? mon(parts.main + parts.profile + parts.received + parts.sending) : "?";
       results[phase] = {
         funded: `${mon(fundWei)} at the ${where} address`,
-        backgroundFunding: spreadMs > 0 ? { waitedMs: Date.now() - spreadStarted - wallMs, passes, transfers: txs.filter((tx) => tx.toOwn).length } : "not given time",
         balanceBeforeBurst: total(partsBefore),
         wallMs,
         settledMs,

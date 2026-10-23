@@ -176,17 +176,12 @@ test.each([
     })
     const original = prototype.Open
     // Nothing funds as a side effect of opening: no pass ahead, no preparation, no signer.
-    const ahead = jest.spyOn(
-      MonadSubAccountPool.prototype,
-      'fundStampInventoryAhead',
-    )
     const prepare = jest.spyOn(
       MonadSubAccountPool.prototype,
       'prepareStampInventory',
     )
     jest.mocked(MonadAccountTxSigner).mockClear()
     const nothingFunded = () => {
-      expect(ahead).not.toHaveBeenCalled()
       expect(prepare).not.toHaveBeenCalled()
       expect(jest.mocked(MonadAccountTxSigner)).not.toHaveBeenCalled()
     }
@@ -2883,29 +2878,7 @@ test('retiring a pool account on a normally opened wallet builds and submits no 
   }
 })
 
-// #1235 Q4. `fundAhead` does not exist on main 8c656f32.
-test('fundAhead answers unavailable, having built nothing, for a wallet with no canonical sender accounts, and rejects once it is closed', async () => {
-  const chain = createEvmChain(config)
-  const wallet = await chain.createWallet(roots())
-  try {
-    jest.mocked(MonadAccountTxSigner).mockClear()
-    const read = jest.spyOn(
-      (wallet as EvmChainWalletHandle).provider,
-      'getBalance',
-    )
-    await expect(chain.directMessages.fundAhead!({ wallet })).resolves.toEqual({
-      outcome: 'unavailable',
-      fundingTxHashes: [],
-    })
-    expect(jest.mocked(MonadAccountTxSigner)).not.toHaveBeenCalled()
-    expect(read).not.toHaveBeenCalled()
-  } finally {
-    await wallet.close()
-  }
-  await expect(chain.directMessages.fundAhead!({ wallet })).rejects.toThrow(
-    'closed',
-  )
-})
+
 
 test('close drains an admitted plan that has not reached signing yet', async () => {
   const wallet = (await createEvmChain(config).createWallet(
@@ -3570,11 +3543,6 @@ describe('recorded native spend evidence is applied once at wallet open, with no
       ),
       // Stage 3: open never starts a re-observation, whatever is pending in the journal.
       reobserve: jest.spyOn(EvmLegacyConsolidator.prototype, 'reobservePending'),
-      // Q4: open never funds, ahead or otherwise. Only a host's explicit call does.
-      fundAhead: jest.spyOn(
-        MonadSubAccountPool.prototype,
-        'fundStampInventoryAhead',
-      ),
       prepareInventory: jest.spyOn(
         MonadSubAccountPool.prototype,
         'prepareStampInventory',

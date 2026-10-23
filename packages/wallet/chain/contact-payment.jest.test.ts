@@ -404,12 +404,6 @@ describe('a payment to a contact', () => {
       'is broadcast once its message is delivered',
     )
     expect(alice.getUnresolvedNativeTransaction!()?.txHash).not.toBe(saved.txHash)
-    // Background stamp funding does not spend from it either:
-    const fundedBefore = mockFunded.length
-    expect(await f.chain.directMessages.fundAhead!({ wallet: alice })).toMatchObject({
-      fundingTxHashes: [],
-    })
-    expect(mockFunded).toHaveLength(fundedBefore)
     expect(node.broadcasts).toEqual([])
     expect(node.nonces.get(aliceMain) ?? 0).toBe(0)
     // Nor does a sweep of anything reach it (the journal holds the account for every spender).

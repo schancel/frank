@@ -124,9 +124,6 @@ describe('the tick after a reload', () => {
       held.resends.push(Date.now() - started)
       if (held.relayDelivers) held.delivered = true
     }
-    jest
-      .spyOn(directMessages, 'fundAhead')
-      .mockResolvedValue({ outcome: 'ready', fundingTxHashes: [] })
     // Reports every payment no message accounts for, delivered ones included, as the wallet does.
     jest
       .spyOn(directMessages, 'unattributedAttempts')

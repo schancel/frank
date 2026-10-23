@@ -81,7 +81,6 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
   let unattributedAttempts: jest.SpiedFunction<
     typeof directMessages.unattributedAttempts
   >
-  let fundAhead: jest.SpiedFunction<typeof directMessages.fundAhead>
   let stop: (() => void) | undefined
 
   /** Every request that left the wallet: node RPC, chain HTTP, and payment sets to the relay. */
@@ -157,9 +156,6 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
       .mockImplementation(params =>
         f.chain.directMessages.unattributedAttempts(params),
       )
-    fundAhead = jest
-      .spyOn(directMessages, 'fundAhead')
-      .mockImplementation(params => f.chain.directMessages.fundAhead!(params))
     providerRequests.length = 0
     chainHttpRequests.length = 0
   })
@@ -212,9 +208,8 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
       }),
     ).resolves.toEqual({ [digest]: 'delivered' })
     expect(f.requests).toHaveLength(sent)
-    // What moved on the chain since is the funding of the NEXT message, never a second payment
-    // for this one: at most the two accounts one message spends.
-    expect(mockFunded.length - funded).toBeLessThanOrEqual(2)
+    // Recovery must not create a new prefunding transfer.
+    expect(mockFunded.length).toBe(funded)
   })
 
   // Removed: the pin that an unanswered relay request held the tick. The wallet no longer makes
@@ -223,31 +218,20 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
 
   // The wallet here is not empty: it holds one delivered payment no message accounts for, which
   // it goes on reporting. Paying for and delivering that message is the positive control: all
-  // three counters move. After that, with the next message's accounts ready, nothing does.
+  // relay and provider counters move. Recovery creates no separate funding request.
   it('an idle wallet: twenty ticks make no relay and no node request', async () => {
     await paidMessageWithNoRow('delivered before the wallet idles')
     f.setPhase('delivered')
-    const outcomes: string[] = []
-    fundAhead.mockImplementation(async params => {
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      const result = await f.chain.directMessages.fundAhead!(params)
-      outcomes.push(result.outcome)
-      return result
-    })
     start()
     await until(() => bobInbox.length === 1, 'the earlier message to deliver')
-    await until(
-      () => outcomes.at(-1) === 'ready',
-      'the next message to have its accounts',
-    )
     let quiet = -1
     await until(() => {
       const still = requests() === quiet
       quiet = requests()
       return still && asked() >= 6
-    }, 'the funding to settle')
+    }, 'recovery to settle')
     expect(providerRequests.length).toBeGreaterThan(0)
-    expect(chainHttpRequests.length).toBeGreaterThan(0)
+    expect(chainHttpRequests).toEqual([])
     expect(f.requests.length).toBeGreaterThan(0)
 
     providerRequests.length = 0
@@ -297,6 +281,6 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
       }),
     ).resolves.toEqual({ [digest]: 'delivered' })
     expect(f.requests).toHaveLength(sent)
-    expect(mockFunded.length - funded).toBeLessThanOrEqual(2)
+    expect(mockFunded.length).toBe(funded)
   })
 })

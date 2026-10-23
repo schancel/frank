@@ -776,7 +776,7 @@ describe('a payment to a contact', () => {
       // The wallet keeps no copy of the signed transfer: not on the payment, not in the journal.
       expect(alice.getContactPayments!()[0].txHash).toBeUndefined()
       expect(
-        alice.getNativeOperations!()
+        (await alice.getNativeOperationHistory!({ limit: 100 })).operations
           .filter((row) => row.recipient === prepared.stealthAddress.toLowerCase())
           .map((row) => ({ cancelled: row.cancelled, signed: row.members[0]!.signed })),
       ).toEqual([{ cancelled: true, signed: null }])
@@ -951,7 +951,7 @@ describe('a payment to a contact', () => {
           'released',
         )
         expect(
-          reopened.getNativeOperations!()
+          (await reopened.getNativeOperationHistory!({ limit: 100 })).operations
             .filter((row) => row.recipient === prepared.stealthAddress.toLowerCase())
             .map((row) => row.cancelled),
         ).toEqual([true])

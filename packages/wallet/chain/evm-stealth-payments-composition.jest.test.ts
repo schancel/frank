@@ -817,11 +817,13 @@ test('a crash after signing before the manifest journal link recovers the origin
       roots(),
     )) as EvmChainWalletHandle
     state = stubNode(wallet, 1_000_000n)
-    expect(
-      wallet.getNativeOperations!().find(
-        row => row.operationId === signed.operationId,
-      )!.cancelled,
-    ).toBe(true)
+    const cancelled = await wallet.readNativeOperation!(signed.operationId)
+    expect(cancelled).toMatchObject({
+      operationId: signed.operationId,
+      preparationId: signed.preparationId,
+      cancelled: true,
+    })
+    expect(wallet.getNativeOperations!().some(row => row.operationId === signed.operationId)).toBe(false)
     expect(await wallet.stealthPayments!.list()).toEqual([])
     expect(await wallet.stealthPayments!.release(intent.operationId)).toBe(true)
     expect(state.broadcast).not.toHaveBeenCalled()

@@ -128,6 +128,7 @@ it("retains the authorized stamp reserve despite caller mutation during persiste
     assertActive() {},
     refreshJournal: async () => {},
     operations: () => f.journal.list(),
+    readPreparation: (id: string) => f.journal.refreshPreparation(id),
     derive: () => ({
       stealthAddress: signer(50).address,
       ephemeralPubKey: getBytes(signer(50).signingKey.compressedPublicKey),

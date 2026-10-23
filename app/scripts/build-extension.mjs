@@ -476,8 +476,12 @@ export const APPROVAL_PAGE_HTML = `<!DOCTYPE html>
         display: flex;
         flex-direction: column;
         gap: 14px;
-        min-height: 100%;
+        height: 100%;
+        min-height: 0;
+        overflow-y: auto;
         padding: 16px;
+        padding-bottom: max(16px, env(safe-area-inset-bottom));
+        overscroll-behavior: contain;
       }
       .approval-header { display: flex; justify-content: space-between; align-items: center; }
       .approval-brand { font-weight: 700; }
@@ -497,7 +501,7 @@ export const APPROVAL_PAGE_HTML = `<!DOCTYPE html>
       .approval-persona-hint { color: var(--muted); font-size: 12px; }
       .approval-address { font-size: 11px; word-break: break-all; }
       .approval-details pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; max-height: 220px; overflow: auto; background: var(--card); padding: 8px; border-radius: 8px; }
-      .approval-actions { margin-top: auto; display: flex; gap: 10px; }
+      .approval-actions { position: sticky; bottom: 0; flex: 0 0 auto; margin-top: auto; display: flex; gap: 10px; padding-top: 8px; background: var(--bg); }
       .approval-actions button { flex: 1; padding: 10px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; }
       .approval-reject { background: transparent; color: var(--danger); border: 1px solid var(--line); }
       .approval-approve { background: var(--accent); color: var(--accent-fg); border: 0; }

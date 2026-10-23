@@ -38,6 +38,31 @@ function mockSenderFor(msg: any): Record<string, unknown> {
 }
 
 describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #1710)', () => {
+  it('keeps dApp approval decisions reachable when the Safari popup viewport is short', async () => {
+    const { execFileSync } = await import('node:child_process')
+    const path = await import('node:path')
+    const { pathToFileURL } = await import('node:url')
+    const scriptUrl = pathToFileURL(
+      path.resolve(__dirname, '../scripts/build-extension.mjs'),
+    ).href
+    const html = execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `import { APPROVAL_PAGE_HTML } from ${JSON.stringify(
+          scriptUrl,
+        )}; process.stdout.write(APPROVAL_PAGE_HTML);`,
+      ],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+
+    expect(html).toMatch(/#frank-approval-root\s*\{[^}]*height:\s*100%/s)
+    expect(html).toMatch(/#frank-approval-root\s*\{[^}]*overflow-y:\s*auto/s)
+    expect(html).toMatch(/\.approval-actions\s*\{[^}]*position:\s*sticky/s)
+    expect(html).toMatch(/\.approval-actions\s*\{[^}]*bottom:\s*0/s)
+  })
+
   it('builds Chrome MV3 manifest with sidePanel, service_worker, and MAIN + ISOLATED content scripts', () => {
     const manifest = buildExtensionManifest('chrome', '0.3.0')
     expect(manifest.manifest_version).toBe(3)

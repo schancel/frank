@@ -489,32 +489,75 @@ export class EvmCoinList {
     const minimum = params.minimumPaymentWei ?? 0n
     if (minimum < 0n) throw new EvmCoinListError('Invalid minimum payment')
     if (params.amountWei < minimum) return undefined
-    const maxCoins = minimum > 0n
-      ? Math.min(params.maxCoins ?? Number.MAX_SAFE_INTEGER, Number(params.amountWei / minimum))
-      : params.maxCoins ?? Number.MAX_SAFE_INTEGER
+    const maxCoins = Math.min(free.length, params.maxCoins ?? free.length,
+      minimum > 0n ? Number(params.amountWei / minimum) : free.length)
+    const fees = new Map<number, bigint>()
+    const capacities = new Map<EvmListCoin, Map<number, bigint>>()
+    const capacityAt = (coin: EvmListCoin, paymentIndex: number): bigint => {
+      let fee = fees.get(paymentIndex)
+      if (fee === undefined) {
+        fee = typeof params.feeWei === 'bigint' ? params.feeWei : params.feeWei(paymentIndex)
+        if (fee <= 0n) throw new EvmCoinListError('Invalid per-payment fee')
+        fees.set(paymentIndex, fee)
+      }
+      const cached = capacities.get(coin)?.get(paymentIndex)
+      if (cached !== undefined) return cached
+      const available = coin.valueWei - fee
+      const capacity = available < 0n ? -1n : params.capacityWei?.(coin, fee) ?? available
+      if (available >= 0n && (capacity < 0n || capacity > available))
+        throw new EvmCoinListError('Invalid source capacity')
+      const byIndex = capacities.get(coin) ?? new Map<number, bigint>()
+      byIndex.set(paymentIndex, capacity)
+      capacities.set(coin, byIndex)
+      return capacity
+    }
+    const eligible = (capacity: bigint) => capacity >= minimum &&
+      (capacity > 0n || params.amountWei === 0n)
     let remaining = params.amountWei
-    const picked: CoinPart[] = [],
-      accounts = new Set<string>()
+    const picked: CoinPart[] = [], accounts = new Set<string>()
     for (const coin of free) {
       if (picked.length >= maxCoins) break
       if (accounts.has(coin.account)) continue
-      const fee =
-        typeof params.feeWei === 'bigint'
-          ? params.feeWei
-          : params.feeWei(picked.length)
-      if (fee <= 0n) throw new EvmCoinListError('Invalid per-payment fee')
-      if (coin.valueWei < fee) continue
-      const available = coin.valueWei - fee
-      const capacity = params.capacityWei?.(coin, fee) ?? available
-      if (capacity < 0n || capacity > available)
-        throw new EvmCoinListError('Invalid source capacity')
-      if (capacity < minimum || (capacity === 0n && remaining > 0n)) continue
+      const capacity = capacityAt(coin, picked.length)
+      if (!eligible(capacity)) continue
       if (picked.length + 1 === maxCoins && capacity < remaining) continue
       const paymentValueWei = capacity < remaining ? capacity : remaining
       picked.push({ coin, paymentValueWei })
       accounts.add(coin.account)
       remaining -= paymentValueWei
       if (remaining === 0n) break
+    }
+    if (remaining > 0n && maxCoins > 0) {
+      // A preferred small source can consume a part slot needed by a larger source.
+      // Suffix feasibility reconsiders that choice without permuting source priority.
+      // Each cell uses the recipient index's own fee/capacity, not index zero's quote.
+      // One live coin per account is the inventory invariant; never count it twice.
+      const unique = new Set<string>()
+      const candidates = free.filter(coin => {
+        if (unique.has(coin.account)) return false
+        unique.add(coin.account)
+        return true
+      })
+      const suffix: bigint[][] = Array.from({ length: candidates.length + 1 },
+        () => Array<bigint>(maxCoins + 1).fill(0n))
+      for (let offset = candidates.length - 1; offset >= 0; offset--)
+        for (let index = maxCoins - 1; index >= 0; index--) {
+          const capacity = capacityAt(candidates[offset]!, index)
+          const take = eligible(capacity) ? capacity + suffix[offset + 1]![index + 1]! : 0n
+          const skip = suffix[offset + 1]![index]!
+          suffix[offset]![index] = take > skip ? take : skip
+        }
+      if (suffix[0]![0]! < params.amountWei) return undefined
+      picked.length = 0
+      remaining = params.amountWei
+      for (const [offset, coin] of candidates.entries()) {
+        if (picked.length >= maxCoins || remaining === 0n) break
+        const capacity = capacityAt(coin, picked.length)
+        if (!eligible(capacity) || capacity + suffix[offset + 1]![picked.length + 1]! < remaining) continue
+        const paymentValueWei = capacity < remaining ? capacity : remaining
+        picked.push({ coin, paymentValueWei })
+        remaining -= paymentValueWei
+      }
     }
     if (remaining > 0n || picked.length === 0) return undefined
     // Keep the intended total exact: move a small final tail out of earlier parts.

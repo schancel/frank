@@ -1,3 +1,5 @@
+import { createEvmTopicOperations } from './evm-topic-operations'
+import { TopicPostClient, TopicPostAbandonedError } from './topic-post-client'
 import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
 /** Real shared preparation, signed authority and codec status matching; node/relay effects are scripted. */
 import axios from 'axios'
@@ -630,4 +632,72 @@ test('initial shared Forum submission retains diagnostic cause and the complete 
   } finally {
     await f.close()
   }
+})
+
+
+test('insufficient funds after durable intent stays pending through the generic client and restart recovers only that burn', async () => {
+  const location = await mkdtemp(join(tmpdir(), 'forum-intent-recovery-'))
+  let f = await fixture(location)
+  const clientFor = () => new TopicPostClient({
+    chainIdentifier: 'monad-testnet', topicOperations: createEvmTopicOperations(f.wallet),
+  })
+  try {
+    const originalCoins = f.coins.all()
+    for (const coin of originalCoins) await f.coins.put({ ...coin, valueWei: 1n })
+    const error = await clientFor().submitTopicPost({
+      topic: 'test', entries: [{ kind: 'post', message: 'hello' }],
+      direction: 'up', amountAtomic: 1000000n, timestampMs: 0,
+    }).catch(error => error)
+    expect(error).toBeInstanceOf(TopicPostAbandonedError)
+    expect(f.bundle.topicOperationJournal.getAll()).toHaveLength(1)
+    const original = f.retained()
+    expect(original.construction).toBeDefined()
+    expect(error.payloadHashHex).toBe(original.kind === 'post' && original.payloadHashHex)
+    expect(f.provider.broadcastTransaction).not.toHaveBeenCalled()
+    expect(http).not.toHaveBeenCalled()
+    for (const coin of originalCoins) await f.coins.put(coin)
+    await f.close()
+    f = await fixture(location)
+    http.mockRejectedValue(new Error('relay offline'))
+    await clientFor().resumePendingOperations().catch(() => undefined)
+    const recovered = f.retained()
+    expect(recovered.transactionSetOperationId).toBe(original.transactionSetOperationId)
+    expect(recovered.construction).toBeUndefined()
+    expect(recovered.rawTransactions).toHaveLength(1)
+    expect(recovered.kind === 'post' && recovered.payloadHashHex)
+      .toBe(original.kind === 'post' && original.payloadHashHex)
+    const raw = recovered.rawTransactions[0]
+    expect(Transaction.from(raw).to?.toLowerCase()).toBe(burn.toLowerCase())
+    await clientFor().resumePendingOperations().catch(() => undefined)
+    expect(f.bundle.topicOperationJournal.getAll()).toEqual([recovered])
+    expect(f.preparer.getOperation(original.transactionSetOperationId)?.members
+      .filter(member => member.transactionSet?.role === 'payment')
+      .map(member => member.signed?.rawTransaction)).toEqual([raw])
+    const burnBytes = f.provider.broadcastTransaction.mock.calls
+      .map(([bytes]) => bytes).filter(bytes => Transaction.from(bytes).to?.toLowerCase() === burn.toLowerCase())
+    expect(burnBytes.length).toBeGreaterThan(0)
+    expect(new Set(burnBytes)).toEqual(new Set([raw]))
+  } finally {
+    await f.close()
+    await rm(location, { recursive: true, force: true })
+  }
+})
+
+test('an intent write that commits then rejects is pending to the generic client', async () => {
+  const f = await fixture()
+  try {
+    const put = f.bundle.topicOperationJournal.put.bind(f.bundle.topicOperationJournal)
+    jest.spyOn(f.bundle.topicOperationJournal, 'put').mockImplementationOnce(async operation => {
+      await put(operation)
+      throw new Error('commit acknowledgement lost')
+    })
+    const client = new TopicPostClient({ chainIdentifier: 'monad-testnet',
+      topicOperations: createEvmTopicOperations(f.wallet) })
+    await expect(client.submitTopicPost({ topic: 'test', entries: [{ kind: 'post', message: 'hello' }],
+      direction: 'up', amountAtomic: 1000000n, timestampMs: 0 }))
+      .rejects.toBeInstanceOf(TopicPostAbandonedError)
+    expect(f.bundle.topicOperationJournal.getAll()).toHaveLength(1)
+    expect(f.retained().construction).toBeDefined()
+    expect(f.provider.broadcastTransaction).not.toHaveBeenCalled()
+  } finally { await f.close() }
 })

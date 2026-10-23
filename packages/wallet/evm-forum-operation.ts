@@ -751,16 +751,21 @@ async function submitForumOperationAdmitted(
       throw new Error(
         'Forum operation identity conflicts with its original intent',
       )
-  } else
-    await wallet.forumOperationMutation!(() =>
-      wallet.topicOperationJournal!.put(intent),
-    )
-  const operation = await finishForumConstruction(wallet, prior ?? intent)
-  // Every signed byte and its original public payload are now durable before external handoff.
-  await prepareForumHandoff(wallet, operation)
-  let status: MatchedForumStatus
+  }
+  // Once persistence is attempted, even a failed acknowledgement may leave an accepted
+  // intent. Construction failures must retain the caller's duplicate barrier: recovery
+  // can still fund and submit this original operation when funds become available.
   try {
-    status = await exchange(wallet, operation, 'put')
+    if (!prior)
+      await wallet.forumOperationMutation!(() =>
+        wallet.topicOperationJournal!.put(intent),
+      )
+    const operation = await finishForumConstruction(wallet, prior ?? intent)
+    // Every signed byte and its original public payload are durable before external handoff.
+    await prepareForumHandoff(wallet, operation)
+    const status = await exchange(wallet, operation, 'put')
+    await settle(wallet, operation)
+    return { operation, status }
   } catch (error) {
     throw new ForumOperationPendingError(
       `Forum operation retained pending: ${
@@ -769,8 +774,6 @@ async function submitForumOperationAdmitted(
       error,
     )
   }
-  await settle(wallet, operation)
-  return { operation, status }
 }
 
 export async function submitForumOperation(

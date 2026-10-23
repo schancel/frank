@@ -412,14 +412,15 @@ export class EvmTransactionSetPreparer {
       const value = { destination, gas, feeIsExact }; contexts.set(index, value); return value
     }
     context(0)
-    const select = (fanIn: boolean) => coins.reserveTransactionSetSources({
+    const select = (fanIn: boolean, continuation?: { deficit: bigint; maxCoins: number }) => coins.reserveTransactionSetSources({
       holder: request.operationId, ownedCandidates: existing ? this.privateOutputs(existing) : undefined,
-      amountWei: request.amountWei + reserve + (fanIn ? context(0).gas * policy.gasPriceWei : 0n),
-      feeWei: index => (fanIn ? policy.changeGasLimit : context(index).gas) * policy.gasPriceWei,
-      head: policy.head, sourceOrder: policy.sourceOrder, maxCoins: legacy && !fanIn ? 1 : request.maxPaymentParts,
+      amountWei: continuation?.deficit ?? (request.amountWei + reserve + (fanIn ? context(0).gas * policy.gasPriceWei : 0n)),
+      feeWei: index => (fanIn || continuation ? policy.changeGasLimit : context(index).gas) * policy.gasPriceWei,
+      head: policy.head, sourceOrder: policy.sourceOrder, maxCoins: continuation?.maxCoins ?? (legacy && !fanIn ? 1 : request.maxPaymentParts),
       canSelect: coin => journal.canSelect(coin.account, coin.nonce) && (this.options.canSelectCoin?.(coin) ?? true) && this.dependencyReady(coin, policy),
       capacityWei: (coin, fee) => {
         const capacity = coin.valueWei - fee, rule = policy.spendRule
+        if (continuation && capacity < policy.dustWei) return 0n
         if (!rule?.waitBlocks || coin.nonce === 0 || (coin.lastSpentInBlock !== undefined && policy.head >= coin.lastSpentInBlock + rule.waitBlocks)) return capacity
         // Fan-in moves the complete source, so partial above-reserve capacity is insufficient.
         if (fanIn) return 0n
@@ -442,6 +443,26 @@ export class EvmTransactionSetPreparer {
           members.push(...await this.prepareSource(request, policy, context(paymentIndex), { ...part, paymentValueWei: payment }, paymentIndex))
           if (payment > 0n || data !== '0x') paymentIndex++
         }
+      }
+      // Selection budgets the recipient transfer first. Geometric change has its own
+      // actual fees, so a nominal continuation balance is not yet a usable reserve.
+      // Keep the completed source plans and add change-only sources for any shortfall;
+      // never replace their destinations or expose a partly constructed operation.
+      const privateValue = () => members.reduce((sum, member) =>
+        member.plan.transactionSet!.role === 'change'
+          ? sum + Transaction.from(member.raw).value : sum, 0n)
+      while (privateValue() < reserve) {
+        const remainingMembers = 64 - (existing?.members.length ?? 0) - members.length
+        const maxCoins = Math.min(remainingMembers, (request.maxPaymentParts ?? 64) - parts.length)
+        if (maxCoins <= 0) throw new Error('Insufficient private change for continuation')
+        const additional = select(false, { deficit: reserve - privateValue(), maxCoins })
+        if (!additional) throw new Error('Insufficient private change for continuation')
+        parts.push(...additional)
+        for (const part of additional)
+          members.push(...await this.prepareSource(
+            { ...request, calldata: undefined }, policy, context(0),
+            { ...part, paymentValueWei: 0n }, 0,
+          ))
       }
       const offset = existing?.members.length ?? 0
       const all = [...(existing?.members.map(member => ({ plan: member })) ?? []), ...members]
@@ -600,10 +621,14 @@ export class EvmTransactionSetPreparer {
     let outputs: bigint[] = []
     // Absorb uneconomic dust only when no change output can carry it. The splitter
     // conserves the entire larger remainder, including residuals, across change outputs.
-    if (remainder > 0n && remainder < policy.dustWei + changeFee) {
+    if (remainder > 0n && remainder < policy.dustWei + changeFee &&
+        (request.reserveForContinuationWei ?? 0n) === 0n) {
       payment += remainder
       remainder = 0n
     }
+    // A continuation request must not donate its earmarked residual. If it cannot
+    // fund change here, keep it on the source successor and fund the private reserve
+    // from another input. Settlement already projects that residual at the next nonce.
     if (remainder >= policy.dustWei + changeFee) {
       outputs = computeGeometricRadixChangeSplits({
         totalAvailableWei: remainder,

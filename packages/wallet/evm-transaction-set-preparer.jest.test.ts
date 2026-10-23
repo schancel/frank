@@ -1176,3 +1176,50 @@ it.each([false, true])('retains uncertain durable stage writes until reopen and 
     expect(journal.list()).toHaveLength(1)
   } finally { jest.restoreAllMocks(); await journal.Close(); await store.close(); await rm(directory, { recursive: true, force: true }) }
 })
+
+it.each([1100000n, 1121000n, 1142000n])('funds the actual continuation reserve after change fees from %s and a second source', async first => {
+  const f = await setup([first, 1000000n], { ...policy, dustWei: 210000n })
+  const request = { operationId: 'fee-funded-reserve', amountWei: 300000n, reserveForContinuationWei: 800000n, maxFeeWei: 600000n, kdf }
+  const primary = await f.preparer.constructTransactionSet(request)
+  expect(primary.bundle.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBe(300000n)
+  expect(primary.otherTransactions.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBeGreaterThanOrEqual(800000n)
+  expect(new Set([...primary.bundle, ...primary.otherTransactions].map(tx => tx.sourceAccount)).size).toBe(2)
+  expect([...primary.bundle, ...primary.otherTransactions].reduce((sum, tx) => sum + tx.valueWei + tx.gasLimit, 0n)).toBe(first + 1000000n)
+  const original = f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)
+  const stamp = await f.preparer.appendTransactionSet({ operationId: request.operationId, stageId: 'stamp', amountWei: 600000n, maxFeeWei: 600000n, kdf: index => signer(70 + index).address })
+  expect(stamp.bundle.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBeGreaterThanOrEqual(600000n)
+  expect(stamp.bundle.every(tx => primary.otherTransactions.some(change => change.destination === tx.sourceAccount))).toBe(true)
+  expect(f.journal.list()).toHaveLength(1)
+  expect(f.journal.list()[0]!.members.slice(0, original.length).map(member => member.signed!.rawTransaction)).toEqual(original)
+  expect(await f.preparer.constructTransactionSet(request)).toEqual(primary)
+})
+
+it.each([{ maxPaymentParts: 1 }, { maxFeeWei: 21000n }])('rolls back all continuation inputs when the authorized bound %p prevents construction', async bound => {
+  const f = await setup([1121000n, 1000000n], { ...policy, dustWei: 210000n })
+  await expect(f.preparer.constructTransactionSet({ operationId: 'bounded-reserve', amountWei: 300000n, reserveForContinuationWei: 800000n, kdf, ...bound })).rejects.toThrow()
+  expect(f.journal.list()).toHaveLength(0)
+  expect(f.coins.all().every(coin => coin.state === 'unspent' && coin.holder === undefined)).toBe(true)
+})
+
+it('adds only owned transfers when a calldata payment needs more continuation funding', async () => {
+  const f = await setup([1121004n, 1000000n], { ...policy, dustWei: 210000n, paymentGasLimit: () => 21004n })
+  const primary = await f.preparer.constructTransactionSet({ operationId: 'calldata-reserve', amountWei: 300000n, reserveForContinuationWei: 800000n, calldata: '0x00', kdf })
+  expect(primary.bundle).toHaveLength(1)
+  expect(Transaction.from(primary.bundle[0]!.rawTransaction).data).toBe('0x00')
+  expect(primary.otherTransactions.every(tx => Transaction.from(tx.rawTransaction).data === '0x')).toBe(true)
+  expect(primary.otherTransactions.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBeGreaterThanOrEqual(800000n)
+})
+
+it('retains a sub-threshold continuation residual instead of gifting it while adding another source', async () => {
+  const f = await setup([321001n, 1000000n], { ...policy, dustWei: 210000n })
+  const root = f.coins.all().find(coin => coin.account === signer(2).address.toLowerCase())!
+  await f.coins.put({ ...root, origin: 'root' })
+  const prepared = await f.preparer.constructTransactionSet({ operationId: 'retain-residual', amountWei: 300000n, reserveForContinuationWei: 1n, kdf })
+  expect(prepared.bundle).toHaveLength(1)
+  expect(prepared.bundle[0]!.valueWei).toBe(300000n)
+  expect(prepared.otherTransactions.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBeGreaterThanOrEqual(1n)
+  const source = f.journal.list()[0]!.members.find(member => member.source.address === signer(1).address.toLowerCase())!
+  expect(source.transactionSet!.balanceAfterWei).toBe('1')
+  await f.preparer.recordObservation('retain-residual', 0, { state: 'included-success', transactionHash: source.signed!.transactionHash, blockNumber: 101, blockHash: '0x' + '11'.repeat(32), transactionIndex: 0, feeWei: '21000' }, { blockNumber: 101, blockHash: '0x' + '11'.repeat(32), nonce: 5, balanceWei: '1' })
+  expect(f.coins.get(signer(1).address, 5)?.valueWei).toBe(1n)
+})

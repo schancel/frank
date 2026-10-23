@@ -11,10 +11,12 @@ This is the worker's literal prompt. Include, plainly, with no rationale attache
 - Item and accepted outcome: user-facing, refactoring, deletion, or downstream-enabling work.
 - Compact [solution contract](solution-contract.md) or equivalent accepted behavior, already authored — never ask a non-`strong` worker to write its own.
 - Repository, branch/worktree, starting commit, and exact allowed files.
+- For a backlog wrapper, the portable ASCII recovery locator (`remote-name:refs/...`), checkpoint-push authority, and terminal ref-disposition owner, deletion authority, and removal trigger. If recovery or push authority is absent, state that work remains local-only and cannot survive loss of the machine; do not describe it as crash-recoverable. Push authority never implies delete authority.
 - Dependencies, known risks, and work that must remain untouched.
 - Required regression and outcome-appropriate proof: user-visible, equivalence/integration/dependency, reference/reachability plus tests, or usable downstream seam.
 - For a staged replacement: current stage, integration switch, predecessor-deletion owner, immediate successor, temporary-coexistence removal trigger, and proof that closes the parent outcome.
 - When architecture is in scope: subsystem facade, private internals, dependency direction, co-located context/tests, boundary integration checks, and the [shape questions](engineering-judgment.md) the worker must not collapse.
+- When the repository has opted into [boundary-load evidence](boundary-load.md): the primary subsystem ID; `single_subsystem` or `cross_subsystem` scope; whether inspected paths are `not_observed`, `partial`, or `complete`; and the named collector to use. Never imply complete coverage merely because a harness produces some tool events.
 - Who owns implementation, review, integration, and unresolved decisions.
 - Explicit permission or prohibition for edits, prototypes, external messages, push, merge, item closure, claim termination, and cleanup.
 - Model lane (`cheap` / `default` / `strong`) — never a vendor model or agent type.
@@ -38,6 +40,8 @@ gates ci     not run — no workflow or script change
 ```
 
 A worker that touched a subsystem facade and never ran the architecture stage has not finished, whatever its summary says.
+
+An opted-in boundary-load record is completion evidence, not a readiness or authority field. The packet may request it only when the repository has a valid manifest; absent harness telemetry is `not_observed` and does not block otherwise-complete work.
 
 - Authority comes from the responsible person or controlling instruction, not from this packet, a role name, a status label, review, or CI. Tooling is advisory mechanical lint, never an authority engine.
 - DO say so and ask, rather than manufacture a proof structure, when authority is unclear.

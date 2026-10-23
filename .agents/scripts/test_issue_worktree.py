@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""issue_worktree.sh add stdout is exactly the absolute worktree path."""
+"""issue_worktree.sh adds predictably and refuses context-free removal."""
 
 from __future__ import annotations
 
@@ -50,9 +50,37 @@ def test_add_stdout_is_absolute_path(tmp_path: Path) -> None:
     assert "HEAD is now" not in result.stdout
 
 
+def test_remove_refuses_destructive_cleanup(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    added = subprocess.run(
+        [str(SCRIPT), "add", "99", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert added.returncode == 0, added.stderr
+    worktree = Path(added.stdout.strip())
+    (worktree / "uncommitted").write_text("valuable\n")
+    removed = subprocess.run(
+        [str(SCRIPT), "remove", "99"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert removed.returncode == 2
+    assert "refusing destructive local cleanup" in removed.stderr
+    assert worktree.is_dir()
+    assert (worktree / "uncommitted").read_text() == "valuable\n"
+    git(tmp_path, "show-ref", "--verify", "refs/heads/issue-99")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as directory:
         test_add_stdout_is_absolute_path(Path(directory))
+    with tempfile.TemporaryDirectory() as directory:
+        test_remove_refuses_destructive_cleanup(Path(directory))
     print("ok")
     return 0
 

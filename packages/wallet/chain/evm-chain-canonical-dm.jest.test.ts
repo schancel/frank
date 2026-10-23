@@ -1,3 +1,4 @@
+import { LevelRecordStore, EVM_COIN_NAMESPACE } from '../storage/evm-coin-store'
 import { NegotiationRecovery, type NegotiationScan } from '../../swap-protocol/src/runtime'
 import { createNativeNegotiationJournalStore } from '../../swap-protocol/src/storage/negotiation-native'
 import { createNegotiationMessagePlugin } from '../../swap-protocol/src/message-plugin'
@@ -4555,4 +4556,99 @@ describe('a stamp account a native send spends from (#1235)', () => {
       expect(await admission()).toMatchObject({ status: 'ready' })
     },
   )
+})
+
+
+describe('stamp quote and send share chain-authoritative legacy inventory', () => {
+  let f: Awaited<ReturnType<typeof fixture>> | undefined
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockChainReset()
+    mockFunded.length = 0
+  })
+  afterEach(async () => {
+    await f?.close()
+    f = undefined
+    jest.restoreAllMocks()
+  })
+
+  it.each([
+    ['received', 'failed'], ['received', 'spent'], ['received', 'pending'],
+    ['pool', 'spent'], ['pool', 'retired'], ['pool', 'unfunded'],
+  ] as const)('quotes and spends confirmed %s %s funds without rewriting legacy status', async (kind, status) => {
+    const key = new Wallet('0x' + '47'.repeat(32))
+    let seeded = false
+    const open = LevelRecordStore.open
+    if (kind === 'received') {
+      jest.spyOn(LevelRecordStore, 'open').mockImplementation(async (location, namespace) => {
+        const store = await open(location, namespace)
+        if (namespace === EVM_COIN_NAMESPACE && !seeded) {
+          seeded = true
+          await store.put(key.address.toLowerCase(), {
+            address: key.address.toLowerCase(), privateKey: key.privateKey,
+            origin: 'stealth', state: status, amountWei: '0', claimedAmountWei: '0',
+            transactions: [], discoveredAtMs: 1,
+          })
+          mockBalances.set(key.address.toLowerCase(), 1_000_000n)
+        }
+        return store
+      })
+    }
+    f = await fixture(false)
+    let account = key.address.toLowerCase()
+    if (kind === 'pool') {
+      const record = f.alice.pool.ensureSize(1)[0]!
+      account = record.address.toLowerCase()
+      if (status === 'spent' || status === 'retired') {
+        const prior = await new Wallet(f.alice.pool.privateKeyOf(record.index)).signTransaction({
+          type: 2, chainId: 10143, nonce: 0, to: key.address, value: 1n,
+          gasLimit: 21_000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n,
+        })
+        mockBalances.set(account, 1_000_001n)
+        mockMine(prior)
+        f.alice.pool.commitSpend(record.index, prior)
+      }
+      f.alice.pool.setStatus(record.index, status as 'spent' | 'retired' | 'unfunded')
+      await f.alice.pool.flush()
+      mockBalances.set(account, 1_000_000n)
+    }
+    await f.alice.refreshTransactionSetInventory!()
+    let list = evmWalletInternals(f.alice).coinList!
+    const before = list.all().filter(coin => coin.account === account)
+    expect(before).toHaveLength(1)
+    expect(before[0]).toMatchObject({ state: 'unspent', nonce: kind === 'pool' && status !== 'unfunded' ? 1 : 0, valueWei: 1_000_000n })
+    await f.alice.refreshTransactionSetInventory!()
+    expect(list.all().filter(coin => coin.account === account)).toEqual(before)
+    await f.alice.close()
+    f.alice = await f.chain.createWallet(roots(0)) as EvmChainWalletHandle
+    await f.alice.refreshTransactionSetInventory!()
+    list = evmWalletInternals(f.alice).coinList!
+    expect(list.all().filter(coin => coin.account === account)).toEqual(before)
+    const quote = await f.chain.directMessages.quoteStamp!({ wallet: f.alice, stampValue: 100_000n })
+    expect(quote.status).toBe('available')
+    if (kind === 'pool') expect(f.alice.pool.getRecord(0)!.status).toBe(status)
+    expect(mockWalletBroadcasts).toHaveLength(0)
+    installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
+    await f.chain.directMessages.send({
+      wallet: f.alice, recipient: f.bob.identity.address,
+      stampValue: 100_000n, items: text('chain-confirmed inventory'),
+    })
+    const payments = restoreCanonicalRequest(f.requests[0]!).parts.transactions
+    expect(payments.length).toBeGreaterThan(0)
+    expect(payments.every(raw => Transaction.from('0x' + toHex(raw)).from!.toLowerCase() === account)).toBe(true)
+  })
+
+  it('does not quote chain-confirmed legacy inventory claimed by another operation', async () => {
+    f = await fixture(false)
+    const record = f.alice.pool.ensureSize(1)[0]!
+    mockBalances.set(record.address.toLowerCase(), 1_000_000n)
+    await f.alice.pool.flush()
+    await f.alice.refreshTransactionSetInventory!()
+    expect(f.alice.pool.claim('other-operation', () => [record.index])).toEqual([record.index])
+    const quote = await f.chain.directMessages.quoteStamp!({ wallet: f.alice, stampValue: 100_000n })
+    expect(quote.status).toBe('insufficient')
+    expect(f.alice.pool.claimedBy(record.index)).toBe('other-operation')
+    expect(mockWalletBroadcasts).toHaveLength(0)
+  })
+
 })

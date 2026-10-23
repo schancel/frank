@@ -3,10 +3,10 @@ import { type Provider, type Wallet } from "ethers";
 import {
   DirectMessageStampBelowFeeError,
 } from "./chain/active-chain";
-import { EvmBlockWatcher } from "./evm-block-watcher";
+import type { EvmBlockWatcher } from "./evm-block-watcher";
 import { EvmStampPayer, waitForSpendSpacing } from "./evm-stamp-payer";
 import type { EvmCoinList } from "./evm-coin-list";
-import { EvmCoinListSync, type CoinListSource } from "./evm-coin-list-sync";
+import type { EvmCoinListSync } from "./evm-coin-list-sync";
 import {
   evmWalletInternals,
 } from "./evm-wallet";
@@ -17,10 +17,8 @@ import {
 } from "./evm-account-pool";
 import { MonadAccountTxSigner } from "./evm-account-tx";
 import type { MonadHttpClient } from "./evm-http";
-import type { MonadIdentity } from "./evm-identity";
 import { MonadCanonicalStampClient } from "./evm-stamp-client";
 import type { MonadWalletMaterial } from "./evm-wallet-material";
-import { type EvmCoin, type RecordStore } from "./storage/evm-coin-store";
 import type {
   EvmWalletOperationAdmission,
   EvmWalletPersistenceBundle,
@@ -100,17 +98,14 @@ export interface InstallEvmStampCoordinatorParams {
   readonly installedNetworkTag: "MONT" | "MON1" | "MONR";
   readonly networkId: string;
   readonly mainAccount: Wallet;
-  readonly identity: MonadIdentity;
   readonly pool: MonadSubAccountPool;
   readonly provider: Provider;
   readonly httpClient: MonadHttpClient;
-  readonly coinStore: RecordStore<EvmCoin>;
   /** The wallet's coin list for this chain (`EvmCoinList`), open. */
   readonly coinList: EvmCoinList;
-  readonly readCoins: () => Promise<void>;
-  readonly invalidateCoinsRead: () => void;
+  readonly coinListSync: EvmCoinListSync;
+  readonly blockWatcher: EvmBlockWatcher;
   readonly spendSpacingBlocks?: number;
-  readonly paymentPollIntervalMs?: number;
   readonly reserveBalanceWei?: bigint;
   readonly sourceIsHeld: (wallet: object, address: string) => boolean;
   readonly sourceHeldRefusalMessage: string;
@@ -120,11 +115,7 @@ export interface InstallEvmStampCoordinatorParams {
     task: (admission?: EvmWalletOperationAdmission) => Promise<T>,
     canonical?: boolean
   ) => Promise<T>;
-  readonly runMainAccountExclusive: <T>(
-    wallet: EvmChainWalletHandle,
-    task: () => Promise<T>,
-    options?: MainAccountWait
-  ) => Promise<T>;
+
 }
 
 /**
@@ -140,22 +131,18 @@ export function installEvmStampCoordinator(
     installedNetworkTag,
     networkId,
     mainAccount,
-    identity,
     pool,
     provider,
     httpClient,
-    coinStore,
     coinList,
-    readCoins,
-    invalidateCoinsRead,
+    coinListSync,
+    blockWatcher,
     spendSpacingBlocks,
-    paymentPollIntervalMs,
     reserveBalanceWei,
     sourceIsHeld,
     sourceHeldRefusalMessage,
     requireOpenWallet,
     runWalletExclusive,
-    runMainAccountExclusive,
   } = params;
   const walletInternals = evmWalletInternals(wallet);
 
@@ -186,86 +173,10 @@ export function installEvmStampCoordinator(
       spendValueWei,
     })
   );
-  const blockWatcher = new EvmBlockWatcher({
-    provider,
-    ...(paymentPollIntervalMs === undefined
-      ? {}
-      : { intervalMs: paymentPollIntervalMs }),
-  });
+  // Quotes and construction share one chain-observation owner, including legacy keys.
   walletInternals.blockWatcher = blockWatcher;
-
-  // The wallet's coin list: every account it may pay a stamp from, with its key, at its nonce.
-  // Learned from the chain off the send path; a send reads none of it from the chain.
-  const listedPoolStatuses = new Set(["available", "spent", "retired"]);
-  const coinListSync = new EvmCoinListSync({
-    list: coinList,
-    provider,
-    watcher: blockWatcher,
-    ...(spendSpacingBlocks === undefined ? {} : { spendSpacingBlocks }),
-    sources: () => {
-      const sources: CoinListSource[] = [
-        {
-          account: mainAccount.address.toLowerCase(),
-          origin: "root",
-          privateKey: () => mainAccount.privateKey,
-        },
-      ];
-      if (
-        identity.address.raw.toLowerCase() !==
-        mainAccount.address.toLowerCase()
-      )
-        sources.push({
-          account: identity.address.raw.toLowerCase(),
-          origin: "identity",
-          privateKey: () => identity.toPrivateKeyHex(),
-        });
-      for (const record of pool.records()) {
-        const account = record.address.toLowerCase();
-        // A funded row, or a spent one whose later coin only the list holds.
-        if (
-          record.status === "available" ||
-          (listedPoolStatuses.has(record.status) &&
-            coinList.latestOf(account) !== undefined)
-        )
-          sources.push({
-            account,
-            origin: "deterministic",
-            privateKey: () => pool.privateKeyOf(record.index),
-          });
-      }
-      for (const coin of coinStore.all()) {
-        const account = coin.address.toLowerCase();
-        if (
-          coin.state === "unspent" ||
-          (coin.state === "spent" && coinList.latestOf(account) !== undefined)
-        )
-          sources.push({
-            account,
-            origin: "stealth",
-            privateKey: () => coin.privateKey,
-          });
-      }
-      return sources;
-    },
-  });
   walletInternals.coinList = coinList;
   walletInternals.coinListSync = coinListSync;
-  // What other spenders do to these accounts makes the list's coin of them stale: it is read
-  // again before it is chosen (by the next payment the list does not cover, or a quote). No
-  // request is made here: a wallet nobody uses reads nothing.
-  pool.onChange((change) => {
-    if (change.kind === "record") {
-      coinListSync.markDirty(change.record.address);
-      return;
-    }
-    const ownedByHolder = coinList
-      .all()
-      .some(
-        (coin) =>
-          coin.account === change.address && coin.holder === change.holder
-      );
-    if (!ownedByHolder) coinListSync.markDirty(change.address);
-  });
 
   const stampPayer = new EvmStampPayer({
     pool,
@@ -281,8 +192,7 @@ export function installEvmStampCoordinator(
       const selectable =
         topicOwner.nativeJournal!.canSelect(address, nonce) &&
         walletInternals.nativeOperationOwner?.holdsSource(address) !== true;
-      const received = coinStore.get(address.toLowerCase());
-      return selectable && received?.state !== "failed";
+      return selectable;
     },
     heldRefusal: () => new Error(sourceHeldRefusalMessage),
   });

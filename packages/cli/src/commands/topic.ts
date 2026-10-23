@@ -122,6 +122,7 @@ export async function topicReadCommand(
       policy: {
         network,
         chainId: BigInt(config.chainId),
+        burnAddress: config.stampBurnAddress,
       },
     })
 

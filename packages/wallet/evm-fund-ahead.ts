@@ -20,7 +20,7 @@ import { MonadAccountTxSigner } from "./evm-account-tx";
 import type { MonadHttpClient } from "./evm-http";
 import type { MonadIdentity } from "./evm-identity";
 import { MonadCanonicalStampClient } from "./evm-stamp-client";
-import { quoteMonadTopicBurnGasReserve } from "./evm-topic-post-client";
+import { quoteEvmTopicBurnGasReserve } from "./evm-topic-operations";
 import type { MonadWalletMaterial } from "./evm-wallet-material";
 import { spendableCoins, type EvmCoin, type RecordStore } from "./storage/evm-coin-store";
 import type {
@@ -157,7 +157,7 @@ export async function prepareEvmTopicBurnAccount(
     const burnAddress = creatorBurnAddress(
       internals.privateTopicWallet ?? wallet
     );
-    const gasReserveWei = await quoteMonadTopicBurnGasReserve({
+    const gasReserveWei = await quoteEvmTopicBurnGasReserve({
       signer: mainAccountSigner,
       burnAddress,
     });

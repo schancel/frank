@@ -191,11 +191,11 @@ import {
 } from "../evm-stamp-client";
 import { MailboxAuthParams } from "@frank/cashweb/relay/mailbox-client";
 import {
-  MonadTopicPostClient,
-  MonadTopicPostAbandonedError,
-  quoteMonadTopicBurnGasReserve,
-} from "../evm-topic-post-client";
-import { MonadTopicVoteClient } from "../evm-topic-vote-client";
+  TopicPostClient,
+  TopicPostAbandonedError,
+} from "../topic-post-client";
+import { TopicVoteClient } from "../topic-vote-client";
+import { createEvmTopicOperations } from "../evm-topic-operations";
 import {
   fetchDiscoveredTopics,
   fetchMonadTopicPostView,
@@ -1512,34 +1512,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     },
   };
 
-  // The normal handle stays unchanged for DM callers. Only topic code receives this owner.
-  const runTopicExclusive = <T>(
+  // Network waits retain the wallet lifetime, not its mutation queue. The shared
+  // inventory reserves inputs atomically; each journal mutation takes its own short gate.
+  const withTopicWallet = <T>(
     wallet: EvmChainWalletHandle,
     task: (topicWallet: EvmWalletHandle) => Promise<T>
-  ): Promise<T> =>
-    runWalletExclusive(wallet, async (admission) => {
-      const internals = evmWalletInternals(wallet);
-      internals.enclosingTopicAdmission = true;
-      try {
-        const topicWallet = internals.privateTopicWallet ?? wallet;
-        if (!topicWallet.walletState)
-          throw new Error(
-            "Canonical topics require coherent wallet persistence"
-          );
-        return await task(
-          admission === undefined
-            ? topicWallet
-            : {
-                ...topicWallet,
-                walletState:
-                  topicWallet.walletState.delegateAdmission(admission),
-                walletOperationAdmission: admission,
-              }
-        );
-      } finally {
-        internals.enclosingTopicAdmission = false;
-      }
-    });
+  ): Promise<T> => {
+    requireOpenWallet(wallet);
+    const topicWallet = evmWalletInternals(wallet).privateTopicWallet ?? wallet;
+    if (!topicWallet.walletState) throw new Error("Topics require coherent wallet persistence");
+    return topicWallet.walletState.runLifetime(() => task(topicWallet));
+  };
   const forumPolicy: ForumReadPolicy = {
     network:
       config.networkTag === "MON1"
@@ -1557,29 +1540,26 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     chainId: wallet.forumChainId ?? forumPolicy.chainId,
     burnAddress: wallet.forumBurnAddress ?? forumPolicy.burnAddress,
   });
-  const reconcileTopicOperations = async (
-    wallet: EvmWalletHandle,
-    admission?: EvmWalletOperationAdmission
-  ) => {
-    await new MonadTopicPostClient(wallet).resumePendingOperations(admission);
-    await new MonadTopicVoteClient(wallet).resumePendingOperations(admission);
+  const reconcileTopicOperations = async (wallet: EvmWalletHandle) => {
+    const operations = createEvmTopicOperations(wallet);
+    await operations.reconcile("post");
+    await operations.reconcile("vote");
   };
   const topics: TopicBroadcastClient = {
     async reconcileOperations(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      await runTopicExclusive(wallet, async (topicWallet) => {
-        await topicWallet.walletState!.runOperation((admission) =>
-          reconcileTopicOperations(topicWallet, admission)
+      await withTopicWallet(wallet, async (topicWallet) => {
+        await topicWallet.walletState!.runLifetime(() =>
+          reconcileTopicOperations(topicWallet)
         );
       });
     },
     async post(params): Promise<{ payloadDigest: string }> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      return runTopicExclusive(wallet, async (topicWallet) => {
-        const client = new MonadTopicPostClient(topicWallet);
+      return withTopicWallet(wallet, async (topicWallet) => {
+        const client = new TopicPostClient({ chainIdentifier: config.networkId, topicOperations: createEvmTopicOperations(topicWallet) });
         const policy = creatorForumPolicy(topicWallet);
-        return topicWallet.walletState!.runOperation(async (admission) => {
-          await reconcileTopicOperations(topicWallet, admission);
+        return topicWallet.walletState!.runLifetime(async () => {
           if (
             params.direction !== "up" ||
             params.voteWeightWei < 1n ||
@@ -1613,14 +1593,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   ? getBytes(`0x${params.parentDigest}`)
                   : undefined,
                 direction: params.direction,
-                burnAddress: policy.burnAddress,
-                voteWeightWei: params.voteWeightWei,
-              },
-              admission
+                amountAtomic: params.voteWeightWei,
+              }
             )
             // Leased (the row's own status holds it now) or never used: the claim is over.
             .catch((err: unknown) => {
-              if (err instanceof MonadTopicPostAbandonedError) {
+              if (err instanceof TopicPostAbandonedError) {
                 throw new TopicPostOutcomeUnknownError(err.message, err);
               }
               return asNothingSent(err);
@@ -1632,11 +1610,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
 
     async vote(params): Promise<void> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      await runTopicExclusive(wallet, async (topicWallet) => {
-        const client = new MonadTopicVoteClient(topicWallet);
+      await withTopicWallet(wallet, async (topicWallet) => {
+        const client = new TopicVoteClient({ chainIdentifier: config.networkId, topicOperations: createEvmTopicOperations(topicWallet) });
         const policy = creatorForumPolicy(topicWallet);
-        await topicWallet.walletState!.runOperation(async (admission) => {
-          await reconcileTopicOperations(topicWallet, admission);
+        await topicWallet.walletState!.runLifetime(async () => {
           if (
             (params.direction !== "up" && params.direction !== "down") ||
             params.voteWeightWei < 1n ||
@@ -1651,10 +1628,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               {
                 targetPayloadHash,
                 direction: params.direction,
-                burnAddress: policy.burnAddress,
-                voteWeightWei: params.voteWeightWei,
-              },
-              admission
+                amountAtomic: params.voteWeightWei,
+              }
             )
             // Leased (the row's own status holds it now) or never used: the claim is over.
             .catch(asNothingSent);
@@ -2886,6 +2861,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             walletState: topicOwner,
             topicOperationJournal: topicOwner.topicOperationJournal,
           };
+          Object.defineProperty(wallet, "topicOperations", {
+            value: createEvmTopicOperations(walletInternals.privateTopicWallet),
+            enumerable: true,
+          });
           if (topicOwner.canonicalUnavailable !== undefined)
             walletInternals.canonicalUnavailable = topicOwner.canonicalUnavailable;
           else if (

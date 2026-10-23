@@ -676,6 +676,8 @@ export interface ContactPaymentInfo {
 
 /** Minimum identity surface accepted by profile, message, and topic capabilities. */
 export interface WalletHandle {
+  readonly chainIdentifier: string;
+  readonly topicOperations?: import("../topic-operations").TopicOperationCapability;
   readonly identity: FrankIdentityHandle;
 }
 export type ChainFamily = "evm" | "bitcoin" | "solana";

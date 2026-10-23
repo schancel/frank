@@ -75,7 +75,7 @@ export interface ReceivedCoinOwner {
    * anything, if one of them is a released payment. Otherwise the items are in flight (never
    * released) until the returned function is called. */
   beginContactSend(ephemeralPubKeys: readonly string[]): Promise<() => void>;
-  contactPaymentOperation?(ephemeralPubKeys: readonly string[]): string | undefined;
+  contactMessageIdentity?(ephemeralPubKeys: readonly string[]): { messageId: string; operationId?: string } | undefined;
   /** Releases the payments among these of which no byte ever left the device. True if any. */
   releaseUnsentContactPayments(
     ephemeralPubKeys: readonly string[]

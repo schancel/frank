@@ -899,6 +899,26 @@ export function createEvmReceivedCoinAndContactManager(
       };
       await paymentStore.put(stealthAddress, payment);
     }
+    // Chain inclusion and delivery are separate facts. Shared submission can settle
+    // the recipient transfer before the dependent stamp/encrypted message is delivered.
+    if (payment.transactionSetOperationId && payment.payloadDigest &&
+        (payment.state === "prepared" || payment.state === "paid")) {
+      const statuses = await directMessages.reconcileAttempts({
+        wallet, payloadDigests: [payment.payloadDigest],
+      });
+      if (statuses[payment.payloadDigest] === "delivered") {
+        payment = { ...payment, state: "delivered" };
+        await paymentStore.put(stealthAddress, payment);
+        return broadcastContactTransfer(payment);
+      }
+      // Repair already-persisted early `paid` projections without changing the original
+      // operation, message identity, ciphertext, or signed transaction bytes.
+      if (payment.state === "paid" && statuses[payment.payloadDigest] !== "unknown") {
+        payment = { ...payment, state: "prepared" };
+        await paymentStore.put(stealthAddress, payment);
+      }
+      return payment;
+    }
     if (payment.state === "failed") {
       throw new ContactPaymentFailedError(
         payment.messageId,
@@ -1160,7 +1180,8 @@ export function createEvmReceivedCoinAndContactManager(
           payment.state !== "planned" &&
           payment.state !== "prepared" &&
           payment.state !== "delivered" &&
-          payment.state !== "failed"
+          payment.state !== "failed" &&
+          !(payment.state === "paid" && payment.transactionSetOperationId !== undefined)
         ) {
           continue;
         }
@@ -1179,7 +1200,8 @@ export function createEvmReceivedCoinAndContactManager(
         if (
           operationId !== undefined &&
           payment.state !== "delivered" &&
-          payment.payloadDigest !== undefined
+          payment.payloadDigest !== undefined &&
+          !payment.transactionSetOperationId
         ) {
           await getTopicOwner()
             .runLifetime((lifetime) =>
@@ -1239,7 +1261,8 @@ export function createEvmReceivedCoinAndContactManager(
       if (
         payment.state === "planned" ||
         payment.state === "prepared" ||
-        payment.state === "delivered"
+        payment.state === "delivered" ||
+        (payment.state === "paid" && payment.transactionSetOperationId !== undefined)
       ) {
         await finishContactPayment(address, undefined, true).catch(
           () => undefined
@@ -2180,11 +2203,12 @@ export function createEvmReceivedCoinAndContactManager(
       mailboxScan: () =>
         scanState.get("scan") ?? { complete: false, sinceMs: 0 },
       recordMailboxScan: (progress) => scanState.put("scan", progress),
-      contactPaymentOperation: (ephemeralPubKeys) => {
-        const ids = [...new Set(paymentStore.all().filter(payment => ephemeralPubKeys.includes(payment.ephemeralPubKey))
-          .map(payment => payment.transactionSetOperationId).filter((id): id is string => id !== undefined))];
-        if (ids.length > 1) throw new Error("A message must use one combined contact payment operation");
-        return ids[0];
+      contactMessageIdentity: (ephemeralPubKeys) => {
+        const payments = paymentStore.all().filter(payment => ephemeralPubKeys.includes(payment.ephemeralPubKey));
+        const messageIds = new Set(payments.map(payment => payment.messageId));
+        if (messageIds.size > 1) throw new Error("A message must use one combined contact payment operation");
+        const payment = payments[0];
+        return payment ? { messageId: payment.messageId, operationId: payment.transactionSetOperationId } : undefined;
       },
       beginContactSend: (ephemeralPubKeys) =>
         exposureExclusive(async () => {

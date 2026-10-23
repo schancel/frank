@@ -203,3 +203,34 @@ test('public construction snapshots the requested amount before refreshing inven
     expect(offlineChain.walletBroadcasts).toHaveLength(0)
   } finally { await f.close() }
 })
+
+test.each([false, true])('contact resume completes original delivery after the payment settles (retained early paid=%s)', async earlyPaid => {
+  offlineChain.reset(); mockBalances.clear(); useProviderStandIns()
+  const f = await fixture({ transactionSetPolicy: () => policy, spendSpacingBlocks: undefined, reserveBalanceWei: undefined })
+  try {
+    installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
+    mockBalances.set(f.alice.mainAccount!.address.toLowerCase(), 1000000n)
+    const mailbox: import('./canonical-two-wallets.testutil').InboxRecord[] = []
+    f.setMailbox(mailbox)
+    if (earlyPaid) {
+      const { LevelRecordStore } = await import('../storage/evm-coin-store')
+      const put = LevelRecordStore.prototype.put
+      jest.spyOn(LevelRecordStore.prototype, 'put').mockImplementation(async function(key, value) {
+        const row = value as import('../storage/evm-coin-store').ContactPayment
+        return put.call(this, key, row.transactionSetOperationId && row.state === 'prepared' && row.payloadDigest
+          ? { ...row, state: 'paid' } : value)
+      })
+    }
+    await f.alice.sendToContact!({ recipient: f.bob.identity.address, value: 300000n, stampValue: stamp })
+      .catch(error => { expect(error.name).toBe('ContactPaymentPendingError') })
+    const original = f.alice.getContactPayments!()[0]!
+    const graph = f.alice.getNativeOperations!().find(row => row.kind === 'transaction-set')!
+    const bytes = graph.members.map(member => member.signed!.rawTransaction)
+    for (let i = 0; i < 8 && mailbox.length === 0; i++) await f.alice.resumeContactPayments!()
+    expect(mailbox).toHaveLength(1)
+    await f.alice.retryContactPayment!(original.messageId)
+    expect(mailbox).toHaveLength(1)
+    expect(f.alice.getContactPayments!()[0]).toMatchObject({ messageId: original.messageId, state: 'paid' })
+    expect(f.alice.getNativeOperations!().find(row => row.operationId === graph.operationId)!.members.map(member => member.signed!.rawTransaction)).toEqual(bytes)
+  } finally { await f.close() }
+})

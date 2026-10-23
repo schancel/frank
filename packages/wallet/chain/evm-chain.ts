@@ -1157,12 +1157,20 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const endSend = await coinOwner.beginContactSend(carried);
       let result: DirectMessageSendResult;
       try {
-        const carriedOperation = coinOwner.contactPaymentOperation?.(carried);
+        const contactIdentity = coinOwner.contactMessageIdentity?.(carried);
+        const carriedOperation = contactIdentity?.operationId;
         if (params.paymentOperationId && carriedOperation && params.paymentOperationId !== carriedOperation)
           throw new Error("Message carries conflicting payment operation identities");
         result = await canonical.send({
           ...params,
           ...(carriedOperation ? { paymentOperationId: carriedOperation } : {}),
+          ...(contactIdentity ? {
+            messageId: params.messageId ?? contactIdentity.messageId,
+            onEnvelopeDurable: async (payloadDigest: string) => {
+              await coinOwner.contactMessageAttempted(carried, payloadDigest);
+              await params.onEnvelopeDurable?.(payloadDigest);
+            },
+          } : {}),
           onBeforeExposure: async (payloadDigest) => {
             await coinOwner.contactMessageAttempted(carried, payloadDigest);
             await params.onBeforeExposure?.(payloadDigest);

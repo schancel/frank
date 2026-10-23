@@ -46,8 +46,8 @@ function memoryAttemptStore() {
   let attempts: readonly DappEvmAttempt[] = []
   const store: DappEvmAttemptStore = {
     read: async () => attempts,
-    write: async rows => {
-      attempts = [...rows]
+    append: async attempt => {
+      attempts = [...attempts, attempt]
     },
   }
   return { store, getAttempts: () => attempts }
@@ -329,6 +329,136 @@ describe('approved dApp request executor', () => {
       }
     },
   )
+
+  it('serializes different EVM intents for the same chain and account', async () => {
+    const attemptStore = memoryAttemptStore()
+    const sentTransactions: string[] = []
+    let nonceCalls = 0
+    let signatureCalls = 0
+    const session = fakeSession()
+    const originalCreateSigner = session.createDappPersonaSigner
+    session.createDappPersonaSigner = async () => {
+      const signer = await originalCreateSigner()
+      const originalSign = signer.signDigest
+      signer.signDigest = async (...args: any[]) => {
+        signatureCalls += 1
+        return originalSign(...args)
+      }
+      return signer
+    }
+    const evmRpc = async () => ({
+      async send(method: string, params: unknown[]) {
+        if (method === 'eth_getTransactionCount') {
+          nonceCalls += 1
+          return '0x0'
+        }
+        if (method === 'eth_estimateGas') return '0x5208'
+        if (method === 'eth_gasPrice') return '0x3b9aca00'
+        if (method === 'eth_sendRawTransaction') {
+          sentTransactions.push(params[0] as string)
+          return Transaction.from(params[0] as string).hash
+        }
+        if (method === 'eth_getTransactionReceipt') return null
+        throw new Error(`unexpected RPC ${method}`)
+      },
+    })
+    const request = (id: string, value: string) => ({
+      id,
+      origin: ORIGIN,
+      method: 'eth_sendTransaction',
+      params: [
+        {
+          from: EVM_PERSONA.address,
+          to: Wallet.createRandom().address,
+          value,
+        },
+      ],
+      chainIdHex: '0x1',
+      personaRef: REF,
+      personaAddress: EVM_PERSONA.address,
+    })
+
+    const results = await Promise.allSettled([
+      executeApprovedDappRequest(request('concurrent-a', '0x10'), session, {
+        attemptStore: attemptStore.store,
+        evmRpc,
+      }),
+      executeApprovedDappRequest(request('concurrent-b', '0x20'), session, {
+        attemptStore: attemptStore.store,
+        evmRpc,
+      }),
+    ])
+
+    expect(
+      results.filter(result => result.status === 'fulfilled'),
+    ).toHaveLength(1)
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(
+      1,
+    )
+    expect(nonceCalls).toBe(2)
+    expect(signatureCalls).toBe(1)
+    expect(sentTransactions).toHaveLength(1)
+    expect(attemptStore.getAttempts()).toHaveLength(1)
+  })
+
+  it('admits a different chain while one chain/account RPC is waiting', async () => {
+    const attemptStore = memoryAttemptStore()
+    let releaseFirstNonce!: () => void
+    let markFirstNonceStarted!: () => void
+    const firstNonceStarted = new Promise<void>(resolve => {
+      markFirstNonceStarted = resolve
+    })
+    const firstNonceGate = new Promise<void>(resolve => {
+      releaseFirstNonce = resolve
+    })
+    const evmRpc = async (chainIdentifier: string) => ({
+      async send(method: string, params: unknown[]) {
+        if (method === 'eth_getTransactionCount') {
+          if (chainIdentifier === 'ethereum-mainnet') {
+            markFirstNonceStarted()
+            await firstNonceGate
+          }
+          return '0x0'
+        }
+        if (method === 'eth_estimateGas') return '0x5208'
+        if (method === 'eth_gasPrice') return '0x3b9aca00'
+        if (method === 'eth_sendRawTransaction')
+          return Transaction.from(params[0] as string).hash
+        throw new Error(`unexpected RPC ${method}`)
+      },
+    })
+    const request = (id: string, chainIdHex: string) => ({
+      id,
+      origin: ORIGIN,
+      method: 'eth_sendTransaction',
+      params: [
+        {
+          from: EVM_PERSONA.address,
+          to: Wallet.createRandom().address,
+          value: '0x1',
+        },
+      ],
+      chainIdHex,
+      personaRef: REF,
+      personaAddress: EVM_PERSONA.address,
+    })
+
+    const first = executeApprovedDappRequest(
+      request('chain-a', '0x1'),
+      fakeSession(),
+      { attemptStore: attemptStore.store, evmRpc },
+    )
+    await firstNonceStarted
+    const second = executeApprovedDappRequest(
+      request('chain-b', '0x279f'),
+      fakeSession(),
+      { attemptStore: attemptStore.store, evmRpc },
+    )
+    await expect(second).resolves.toMatch(/^0x[0-9a-f]{64}$/i)
+    releaseFirstNonce()
+    await expect(first).resolves.toMatch(/^0x[0-9a-f]{64}$/i)
+    expect(attemptStore.getAttempts()).toHaveLength(2)
+  })
 
   it('returns the actual Solana key and signs a message with its matching Ed25519 key', async () => {
     const account = (await executeApprovedDappRequest(

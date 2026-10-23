@@ -541,7 +541,8 @@ describe('parallel paid messages', () => {
         items: [{ type: 'text', text: 'one piece' }],
         stampValue: 50_000n,
       })
-      expect(sent.stampPayments.map(p => p.valueWei)).toEqual([50_000n])
+      // Keep assertion failures serializable when Jest reports from a worker process.
+      expect(sent.stampPayments.map(p => p.valueWei.toString())).toEqual(['50000'])
       expect(relayPayments()[0].from!.toLowerCase()).toBe(
         (await alice.getReceiveAddress()).raw.toLowerCase(),
       )

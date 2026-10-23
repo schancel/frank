@@ -687,11 +687,10 @@ export function buildExtensions(argv = process.argv.slice(2)) {
     console.log(
       '[build:extension] Detected source changes newer than dist/pwa; rebuilding dist/pwa first...',
     )
-    const res = spawnSync(
-      process.execPath,
-      [path.join(__dirname, 'build-pwa.mjs'), '--skip-extensions'],
-      { cwd: appDir, stdio: 'inherit' },
-    )
+    const res = spawnSync('yarn', ['build:pwa', '--skip-extensions'], {
+      cwd: appDir,
+      stdio: 'inherit',
+    })
     if ((res.status ?? 0) !== 0) {
       process.exit(res.status ?? 1)
     }

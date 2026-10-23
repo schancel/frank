@@ -4,9 +4,9 @@
     class="bg-negative text-white"
     data-test="dapp-recovery-error"
   >
-    A previous dApp transaction still needs recovery: {{ dappRecoveryError }}
+    {{ $t('dappRecovery.pending') }} {{ dappRecoveryError }}
     <template #action
-      ><q-btn flat label="Retry" @click="retryDappRecovery"
+      ><q-btn flat :label="$t('dappRecovery.retry')" @click="retryDappRecovery"
     /></template>
   </q-banner>
   <q-dialog v-model="contactBookOpen">

@@ -5,6 +5,10 @@ import { applyBrandToLocaleMessages } from '../../config/brand'
 import { en as accountRecovery } from '../account-recovery'
 
 export const rawEnUS = {
+  dappRecovery: {
+    pending: 'A previous dApp transaction still needs recovery:',
+    retry: 'Retry',
+  },
   negotiationRecovery: {
     'restoring': 'Restoring swap history',
     'scanning': 'Checking swap history',

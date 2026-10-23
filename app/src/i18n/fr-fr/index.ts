@@ -5,6 +5,10 @@ import { applyBrandToLocaleMessages } from '../../config/brand'
 import { fr as accountRecovery } from '../account-recovery'
 
 export const rawFrFR = {
+  dappRecovery: {
+    pending: 'Une transaction dApp précédente doit encore être récupérée :',
+    retry: 'Réessayer',
+  },
   negotiationRecovery: {
     'restoring': 'Restauration des échanges',
     'scanning': 'Vérification des échanges',

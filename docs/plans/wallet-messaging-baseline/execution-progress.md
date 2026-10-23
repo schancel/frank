@@ -45,7 +45,7 @@ The first optimized RPC artifact ran successfully under the parent-owned supervi
 
 Canonical retained requests live in the sibling `registry.monad-dm-cbor-v1` store. The first backup of `registry.rocksdb` alone was insufficient; the parent later stopped the supervisor cleanly and preserved the entire relay directory, including canonical sidecars, before restarting. Custody, funded account state and the failing browser profile remain intact.
 
-## Current execution order
+## Execution order at this historical checkpoint
 
 1. The strict mailbox-direction predecessor landed as `bf0423609206507748988da2c45d178a3ace1c59` through PR1264 after four fail-before regressions and 117 independently rerun tests. The app existing-attempt guard landed through PR1265 as `d8b0d556e5fa9db42c7af6797e4d8279c0c6e5c5`; authenticated historical delivery proof landed through PR1269 as `7c6f290c924e3e403626d0e75c64ba2a67282156`. Both passed independent review and hosted gates; the proof includes an independently verified expired-recipient-history correction and 57 passing DM tests. Parent completed the reviewed guarded restoration, normal reconciliation and persistence reload without a replacement payment, then independently verified a separate ordinary Qwen exchange.
 2. Complete the accepted single `conversations[id]` authority, derived indexes, independent same-peer creation and visible subjects. Preserve authenticated conversation IDs and existing payment/message links; gateway reply relationships remain recipient-scoped.
@@ -139,3 +139,12 @@ Incoming containment PR1291 landed as `e2fd90f3568cf1fe7c720c74c9761a27f25c263b`
 Direct conversation UI passed both preintegration reviews at `c06fc4675836e6e7872c88351a0987cbb6ed6d3f`, with 1,402 tests across 34 suites. Its clean UI-only rebase `b774c0ef9d31b5073291bf673f4e3528fc80a871` is undergoing final exact-tip refresh. It adds explicit fresh equal/blank-subject threads, default-thread lookup and exact-ID subject editing. The parent will use a separate fresh profile and isolated safe Qwen host for actual thread/context acceptance; gateway scope remains open.
 
 Native outcome U0 is published as PR1293 at `f40af365ddab27b3aaeaa8e2e04beb402142a043`, with two independent SAFE reviews and 99 focused passing tests. It preserves truthful original-operation outcomes without recovery execution. Full-app TypeScript comparison has 226 identical baseline/candidate diagnostics and does not cover Vue semantic checking; fast22 is not a full-app strict-clean gate.
+
+## Later repository checkpoint — 2026-10-22
+
+This checkpoint supersedes the earlier planning-time use of “current” in this file; it is still a dated status record, not a live queue.
+
+- DM history scroll restoration landed through [PR #1790](https://github.com/schancel/frank/pull/1790) as `43f4035300bfc9e7a01cb88f339f79d852768184`.
+- Repository agent-process docs were reconciled with `~/repos/software-factory` through [PR #1791](https://github.com/schancel/frank/pull/1791), landed as `1ec7eda75f72625ed1639da7a9e14476f0de95e7`. The repo’s delivery lifecycle is now worktree + branch from current `main`, PR to `main`, exact-candidate review, squash merge, then associated branch/worktree cleanup.
+- Multi-chain dApp providers remain in [PR #1792](https://github.com/schancel/frank/pull/1792), targeting `main`. Its published head is `d0bb75716393a56df98b434d9fdb995417ef9973`; review found unresolved retry idempotency, user-visible signing approval details, and configured RPC ownership. Do not treat the published candidate as ready to merge; refresh this status from the PR before acting.
+- The EVM coin-list/shared transaction-set implementation is being developed separately on a branch from `43f4035300bfc9e7a01cb88f339f79d852768184`. At this checkpoint it has no PR and is not reviewed or landed. Existing coin preservation/adoption and recovery correctness remain acceptance evidence to establish before merge; no migration or wipe has been authorized.

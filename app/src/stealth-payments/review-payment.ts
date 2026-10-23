@@ -81,6 +81,13 @@ export async function reviewStealthPayment({
     binding.wallet.stealthPayments
   if (!payments?.quote)
     throw new Error('Stealth payment quoting is unavailable for this wallet')
+  const sharedNative =
+    payments.supportsCombinedStamp === true && request.asset.kind === 'native'
+  const combinedStamp =
+    sharedNative &&
+    stampValue > 0n &&
+    binding.wallet === messagingWallet &&
+    request.chainIdentifier === messagingChain.chainIdentifier
   const intent = {
     operationId: globalThis.crypto.randomUUID(),
     chainIdentifier: request.chainIdentifier,
@@ -107,7 +114,7 @@ export async function reviewStealthPayment({
       'Payment quote does not match the requested amount or available funds',
     )
   const sources = quote.sources
-  if (sources !== undefined) {
+  if (sources !== undefined && !(sharedNative && sources.length === 0)) {
     const sum = (
       field: keyof Omit<
         NonNullable<StealthPaymentQuote['sources']>[number],
@@ -144,7 +151,9 @@ export async function reviewStealthPayment({
     quote.sources?.map(source => source.sourceAddress) ??
     (quote.sourceAddress === undefined ? [] : [quote.sourceAddress])
   const excludedAddresses =
-    stampValue > 0n && quote.chainIdentifier === messagingChain.chainIdentifier
+    !combinedStamp &&
+    stampValue > 0n &&
+    quote.chainIdentifier === messagingChain.chainIdentifier
       ? [...new Set(paymentSources)]
       : undefined
   if (excludedAddresses?.length === 0)
@@ -184,9 +193,28 @@ export async function reviewStealthPayment({
     return stamp
   }
   const stampQuote = await quoteStamp()
+  if (
+    combinedStamp &&
+    quote.nativeBalanceAtomic <
+      quote.amountAtomic +
+        quote.estimatedNativeFeeAtomic +
+        stampValue +
+        stampQuote.maximumNativeFeeAtomic
+  )
+    throw new Error(
+      'Insufficient funds for the payment, message stamp, and their fees',
+    )
   const approved: StealthPaymentIntent = {
     ...intent,
     maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
+    ...(combinedStamp
+      ? {
+          messageStamp: {
+            amountAtomic: stampValue,
+            maxNativeFeeAtomic: stampQuote.maximumNativeFeeAtomic,
+          },
+        }
+      : {}),
     ...(quote.sourceAddress === undefined
       ? {}
       : { sourceAddress: quote.sourceAddress }),
@@ -237,9 +265,13 @@ export async function reviewStealthPayment({
         !equalBytes(prepared.ephemeralPublicKey, quote.ephemeralPublicKey)
       )
         throw new Error('Prepared payment differs from the reviewed payment')
-      const stamp = await quoteStamp()
-      if (stamp.maximumNativeFeeAtomic > stampQuote.maximumNativeFeeAtomic)
-        throw new Error('Message stamp fee changed; review the payment again')
+      // Combined preparation already reserves the approved stamp budget in this operation.
+      // An independent post-prepare quote would exclude its own reserved inputs.
+      if (!combinedStamp) {
+        const stamp = await quoteStamp()
+        if (stamp.maximumNativeFeeAtomic > stampQuote.maximumNativeFeeAtomic)
+          throw new Error('Message stamp fee changed; review the payment again')
+      }
       return prepared
     },
   }

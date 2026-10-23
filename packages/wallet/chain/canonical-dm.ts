@@ -2266,6 +2266,9 @@ async function send(
       amountWei: stampValueWei!.toString(),
       boundary: `frank-${toHex(randomBytes(24))}`,
     }
+    // Approval must precede the recoverable intent: replay can finish and submit it
+    // without this caller after a restart, even if construction has not signed yet.
+    await params.onBeforeExposure?.(digest)
     let row: StoredMessage = {
       version: 2,
       transactionSetOperationId: operationId,
@@ -2301,7 +2304,6 @@ async function send(
     try {
       if (params.onEnvelopeDurable)
         row = await authorizeEnvelope(owner, row, params.onEnvelopeDurable)
-      await params.onBeforeExposure?.(digest)
       await params.onAttemptCreated?.(digest)
       const submitted = await owner.lifetime(() => submitStored(owner, directory, row))
       row = submitted.row

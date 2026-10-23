@@ -862,6 +862,243 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     await flushPromises()
   }
 
+  it('shows the original included outcome when the operation archives before send returns', async () => {
+    const fixture = await includedNativeTransfer()
+    let active = true
+    const readNativeOperation = jest.fn((id: string) =>
+      fixture.journal.readOperation(id),
+    )
+    mockCaptureWallet.mockResolvedValue({
+      wallet: {
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        getNativeOperations: () => (active ? fixture.journal.list() : []),
+        readNativeOperation,
+      },
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
+    })
+    mockSend.mockImplementation(async ({ onSigned }) => {
+      await onSigned({ txHash: fixture.hash })
+      active = false
+      return { txHash: fixture.hash }
+    })
+    const wrapper = mountSend()
+    try {
+      await reviewNative(wrapper)
+      await (
+        wrapper.vm as unknown as { confirmSend(): Promise<void> }
+      ).confirmSend()
+      await flushPromises()
+      expect(
+        wrapper.get('[data-test="native-operation-outcome"]').text(),
+      ).toContain('Sent on Monad Testnet.')
+      expect(wrapper.get('[data-test="native-operation-id"]').text()).toBe(
+        fixture.operationId,
+      )
+      expect(readNativeOperation).toHaveBeenCalledWith(fixture.operationId)
+      expect(sentTransactionNotify).toHaveBeenCalledWith(fixture.hash)
+      expect(mockSend).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.unmount()
+      await fixture.close()
+    }
+  })
+
+  it('reads the original archived operation when a pending watch completes', async () => {
+    const fixture = await includedNativeTransfer(false, { observed: false })
+    let active = true
+    let finish!: () => void
+    const watchNativeOperation = jest.fn(
+      () =>
+        new Promise<void>(resolve => {
+          finish = resolve
+        }),
+    )
+    const readNativeOperation = jest.fn((id: string) =>
+      fixture.journal.readOperation(id),
+    )
+    mockCaptureWallet.mockResolvedValue({
+      wallet: {
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        getNativeOperations: () => (active ? fixture.journal.list() : []),
+        readNativeOperation,
+        watchNativeOperation,
+      },
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
+    })
+    mockSend.mockImplementation(async ({ onSigned }) => {
+      await onSigned({ txHash: fixture.hash })
+      return { txHash: fixture.hash }
+    })
+    const wrapper = mountSend()
+    try {
+      await reviewNative(wrapper)
+      await (
+        wrapper.vm as unknown as { confirmSend(): Promise<void> }
+      ).confirmSend()
+      await flushPromises()
+      expect(watchNativeOperation).toHaveBeenCalledWith(fixture.operationId)
+      await fixture.journal.recordObservation(
+        fixture.journal.beginCapture(fixture.operationId, 0),
+        {
+          state: 'included-success',
+          transactionHash: fixture.hash,
+          blockHash: '0x' + '12'.repeat(32),
+          blockNumber: 69526801,
+          transactionIndex: 0,
+          feeWei: '2142000000000000',
+        },
+        null,
+      )
+      active = false
+      finish()
+      await flushPromises()
+      expect(readNativeOperation).toHaveBeenCalledWith(fixture.operationId)
+      await readNativeOperation.mock.results[0].value
+      await flushPromises()
+      expect(
+        wrapper.get('[data-test="native-operation-outcome"]').text(),
+      ).toContain('Sent on Monad Testnet.')
+      expect(
+        wrapper.get('[data-test="native-operation-outcome"]').text(),
+      ).toContain('Block 69526801')
+      expect(readNativeOperation).toHaveBeenCalledWith(fixture.operationId)
+      expect(sentTransactionNotify).toHaveBeenCalledTimes(1)
+      expect(watchNativeOperation).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.unmount()
+      await fixture.close()
+    }
+  })
+
+  it.each([
+    'read-failure',
+    'wrong-chain',
+    'wrong-id',
+    'wrong-hash',
+    'wrong-recipient',
+    'wrong-amount',
+  ])(
+    'keeps an archived %s outcome unresolved without allowing another payment',
+    async mode => {
+      const fixture = await includedNativeTransfer()
+      let active = true
+      const readNativeOperation = jest.fn(async () => {
+        if (mode === 'read-failure') throw new Error('history unavailable')
+        const row = fixture.journal.list()[0]!
+        return {
+          ...row,
+          ...(mode === 'wrong-chain'
+            ? { binding: { ...row.binding, chainIdentifier: 'monad-mainnet' } }
+            : {}),
+          ...(mode === 'wrong-id' ? { operationId: 'another-operation' } : {}),
+          ...(mode === 'wrong-recipient'
+            ? { recipient: '0x' + '42'.repeat(20) }
+            : {}),
+          ...(mode === 'wrong-amount' ? { intendedValueWei: '1' } : {}),
+          ...(mode === 'wrong-hash'
+            ? {
+                members: row.members.map(member => ({
+                  ...member,
+                  signed: {
+                    ...member.signed!,
+                    transactionHash: '0x' + 'ab'.repeat(32),
+                  },
+                })),
+              }
+            : {}),
+        }
+      })
+      mockCaptureWallet.mockResolvedValue({
+        wallet: {
+          family: 'evm',
+          chainIdentifier: 'monad-testnet',
+          getNativeOperations: () => (active ? fixture.journal.list() : []),
+          readNativeOperation,
+        },
+        assertCurrent: mockAssertCurrent,
+        isCurrent: () => mockCurrent.value,
+      })
+      mockSend.mockImplementation(async ({ onSigned }) => {
+        await onSigned({ txHash: fixture.hash })
+        active = false
+        return { txHash: fixture.hash }
+      })
+      const wrapper = mountSend()
+      try {
+        await reviewNative(wrapper)
+        await wrapper
+          .get('[data-test="review-confirm-button"]')
+          .trigger('click')
+        await flushPromises()
+        expect(readNativeOperation).toHaveBeenCalledWith(fixture.operationId)
+        expect(
+          wrapper.get('[data-test="native-operation-outcome"]').text(),
+        ).toContain('Payment outcome is unresolved')
+        expect(wrapper.find('[data-test="native-operation-id"]').exists()).toBe(
+          false,
+        )
+        expect(
+          wrapper.find('[data-test="review-confirm-button"]').exists(),
+        ).toBe(false)
+        expect(sentTransactionNotify).not.toHaveBeenCalled()
+        expect(mockSend).toHaveBeenCalledTimes(1)
+      } finally {
+        wrapper.unmount()
+        await fixture.close()
+      }
+    },
+  )
+
+  it('ignores an archived read that resolves after the captured account changes', async () => {
+    const fixture = await includedNativeTransfer()
+    let active = true
+    let finish!: () => void
+    const readNativeOperation = jest.fn(async () => {
+      await new Promise<void>(resolve => {
+        finish = resolve
+      })
+      return fixture.journal.list()[0]!
+    })
+    mockCaptureWallet.mockResolvedValue({
+      wallet: {
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        getNativeOperations: () => (active ? fixture.journal.list() : []),
+        readNativeOperation,
+      },
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
+    })
+    mockSend.mockImplementation(async ({ onSigned }) => {
+      await onSigned({ txHash: fixture.hash })
+      active = false
+      return { txHash: fixture.hash }
+    })
+    const wrapper = mountSend()
+    try {
+      await reviewNative(wrapper)
+      await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      expect(readNativeOperation).toHaveBeenCalledWith(fixture.operationId)
+      mockCurrent.value = false
+      await flushPromises()
+      finish()
+      await flushPromises()
+      expect(sentTransactionNotify).not.toHaveBeenCalled()
+      expect(wrapper.find('[data-test="native-operation-id"]').exists()).toBe(
+        false,
+      )
+      expect(mockCaptureWallet).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.unmount()
+      await fixture.close()
+    }
+  })
+
   it.each(
     [enUS, frFR].flatMap(messages =>
       (['not-shared', 'failed', 'shared'] as const).map(

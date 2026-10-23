@@ -10,6 +10,7 @@ import {
 import {
   createNativeTransferContext,
   inspectNativeTransferOperations,
+  inspectNativeTransferOperation,
 } from './native-transfer'
 import protocol from '../../../docs/protocol/chains/v1.json'
 
@@ -358,4 +359,46 @@ it('captures one configured peer EVM owner and never reopens or replaces it when
   } finally {
     Object.assign(activeChain, { chainIdentifier: original })
   }
+})
+
+it('reads only the captured operation ID without opening custody, enumerating history or recovering', async () => {
+  const effects = jest.fn(() => {
+    throw new Error('unexpected effect')
+  })
+  const readNativeOperation = jest.fn(async () => undefined)
+  const wallet = {
+    family: 'evm',
+    chainIdentifier: 'monad-testnet',
+    readNativeOperation,
+    getNativeOperations: effects,
+    sendNative: effects,
+    resumeNativeOperation: effects,
+  } as unknown as import('@frank/wallet/chain').NativeWalletHandle
+  await expect(
+    inspectNativeTransferOperation(
+      wallet,
+      'monad-testnet',
+      'original-operation',
+    ),
+  ).resolves.toEqual({ status: 'available', operations: [] })
+  expect(readNativeOperation).toHaveBeenCalledWith('original-operation')
+  await expect(
+    inspectNativeTransferOperation(
+      wallet,
+      'monad-mainnet',
+      'original-operation',
+    ),
+  ).resolves.toEqual({ status: 'unavailable' })
+  await expect(
+    inspectNativeTransferOperation(
+      { ...wallet, family: 'solana' },
+      'monad-testnet',
+      'original-operation',
+    ),
+  ).resolves.toEqual({ status: 'unsupported' })
+  expect(readNativeOperation).toHaveBeenCalledTimes(1)
+  expect(effects).not.toHaveBeenCalled()
+  expect(mockGetWallet).not.toHaveBeenCalled()
+  expect(mockGetRoot).not.toHaveBeenCalled()
+  expect(mockOpenEvmWallet).not.toHaveBeenCalled()
 })

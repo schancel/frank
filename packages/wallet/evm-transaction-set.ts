@@ -440,8 +440,15 @@ export class EvmTransactionSetPreparer {
         for (const part of parts) {
           const payment = part.paymentValueWei < remaining ? part.paymentValueWei : remaining
           remaining -= payment
-          members.push(...await this.prepareSource(request, policy, context(paymentIndex), { ...part, paymentValueWei: payment }, paymentIndex))
-          if (payment > 0n || data !== '0x') paymentIndex++
+          // Only recipient-bearing sources execute calldata. A genuine zero-value
+          // call executes once; additional inputs exist solely to fund private change.
+          const hasPayment = payment > 0n || (request.amountWei === 0n && paymentIndex === 0 && data !== '0x')
+          members.push(...await this.prepareSource(
+            hasPayment ? request : { ...request, calldata: undefined },
+            policy, context(hasPayment ? paymentIndex : 0),
+            { ...part, paymentValueWei: payment }, paymentIndex,
+          ))
+          if (hasPayment) paymentIndex++
         }
       }
       // Selection budgets the recipient transfer first. Geometric change has its own

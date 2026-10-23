@@ -1201,8 +1201,8 @@ it.each([{ maxPaymentParts: 1 }, { maxFeeWei: 21000n }])('rolls back all continu
   expect(f.coins.all().every(coin => coin.state === 'unspent' && coin.holder === undefined)).toBe(true)
 })
 
-it('adds only owned transfers when a calldata payment needs more continuation funding', async () => {
-  const f = await setup([1121004n, 1000000n], { ...policy, dustWei: 210000n, paymentGasLimit: () => 21004n })
+it.each([1100000n, 1121004n])('adds only owned transfers when a calldata payment needs more continuation funding from %s', async first => {
+  const f = await setup([first, 1000000n], { ...policy, dustWei: 210000n, paymentGasLimit: () => 21004n })
   const primary = await f.preparer.constructTransactionSet({ operationId: 'calldata-reserve', amountWei: 300000n, reserveForContinuationWei: 800000n, calldata: '0x00', kdf })
   expect(primary.bundle).toHaveLength(1)
   expect(Transaction.from(primary.bundle[0]!.rawTransaction).data).toBe('0x00')
@@ -1222,4 +1222,15 @@ it('retains a sub-threshold continuation residual instead of gifting it while ad
   expect(source.transactionSet!.balanceAfterWei).toBe('1')
   await f.preparer.recordObservation('retain-residual', 0, { state: 'included-success', transactionHash: source.signed!.transactionHash, blockNumber: 101, blockHash: '0x' + '11'.repeat(32), transactionIndex: 0, feeWei: '21000' }, { blockNumber: 101, blockHash: '0x' + '11'.repeat(32), nonce: 5, balanceWei: '1' })
   expect(f.coins.get(signer(1).address, 5)?.valueWei).toBe(1n)
+})
+
+
+it('executes a genuine zero-value calldata call once when several initial inputs fund its continuation', async () => {
+  const f = await setup([600000n, 600000n], { ...policy, dustWei: 210000n, paymentGasLimit: () => 21004n })
+  const prepared = await f.preparer.constructTransactionSet({ operationId: 'zero-call-reserve', amountWei: 0n, reserveForContinuationWei: 800000n, calldata: '0x00', kdf })
+  expect(prepared.bundle).toHaveLength(1)
+  expect(prepared.bundle[0]!.valueWei).toBe(0n)
+  expect(Transaction.from(prepared.bundle[0]!.rawTransaction).data).toBe('0x00')
+  expect(prepared.otherTransactions.every(tx => Transaction.from(tx.rawTransaction).data === '0x')).toBe(true)
+  expect(prepared.otherTransactions.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBeGreaterThanOrEqual(800000n)
 })

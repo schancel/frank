@@ -11,7 +11,7 @@ import { MonadChangePool } from '../evm-change-pool'
 import { SubAccountLeaseManager } from '../evm-account-lease'
 import { LevelSubAccountPoolStore } from './level-sub-account-pool-store'
 import { LevelChangePoolStore } from './level-change-pool-store'
-import { type OutgoingTopicOperation } from './topic-operation-journal'
+import { type OutgoingTopicOperation, type RetainedTopicOperation, TOPIC_OPERATION_KEY_PREFIX } from './topic-operation-journal'
 import { LevelTopicOperationJournal } from './topic-operation-journal'
 import { EvmNativeOperationJournal } from './evm-native-operation-journal'
 import { LevelCanonicalStampAttemptJournal } from './stamp-attempt-journal'
@@ -302,6 +302,31 @@ describe('MonadWalletPersistenceBundle', () => {
   })
 })
 
+async function retainedForumRows(): Promise<RetainedTopicOperation[]> {
+  return Promise.all(([undefined, 'protobuf', 'cbor'] as const).map(async (writeFormat, index) => {
+    const signer = new Wallet(MonadHdKeyring.fromMnemonic(TEST_MNEMONIC).deriveSubAccount(index).privateKey)
+    const rawTx = await signer.signTransaction({
+      chainId: 10143, nonce: 1, to: '0x000000000000000000000000000000000000dEaD',
+      value: 7n, gasLimit: 21_000n, gasPrice: 1n,
+    })
+    return {
+      version: 1, kind: 'post', requestBytes: [255, index],
+      ...(writeFormat ? { writeFormat } : {}), leaseIndex: index,
+      senderAddress: signer.address, rawTx, txHash: Transaction.from(rawTx).hash!,
+      valueWei: '7', direction: 'up', payloadHashHex: 'ab'.repeat(32),
+    } satisfies RetainedTopicOperation
+  })).then(rows => rows.sort((a, b) => a.txHash.localeCompare(b.txHash)))
+}
+
+/** Historical data is seeded on disk; the current writer intentionally accepts only v2. */
+async function seedRetainedForumRows(location: string, rows: RetainedTopicOperation[]) {
+  const db = level(join(location, 'wallet-manifest'))
+  try {
+    for (const row of rows)
+      await db.put(`${TOPIC_OPERATION_KEY_PREFIX}${row.kind}:${row.txHash.slice(2)}`, JSON.stringify(row), { sync: true })
+  } finally { await db.close() }
+}
+
 // Historical topic authority is a reference even when no runtime supports its request bytes.
 describe('Forum retention-only journal obligations', () => {
   it('preserves old rows through actual reopen, orphan checking and terminal compaction', async () => {
@@ -314,32 +339,17 @@ describe('Forum retention-only journal obligations', () => {
         mode: 'create',
       })
       bundle.pool.ensureSize(4)
-      const formats = [undefined, 'protobuf', 'cbor'] as const
-      const rows = formats.map((writeFormat, index) => ({
-        version: 1 as const,
-        kind: 'post' as const,
-        requestBytes: [255, index],
-        ...(writeFormat ? { writeFormat } : {}),
-        leaseIndex: index,
-        senderAddress: bundle!.pool.getRecord(index)!.address,
-        rawTx: 'old signed authority',
-        txHash: '0x' + index.toString(16).padStart(64, '0'),
-        valueWei: '7',
-        direction: 'up' as const,
-        payloadHashHex: 'ab'.repeat(32),
-      }))
-      for (const row of rows) {
-        bundle.leaseManager.acquireForIndex(row.leaseIndex)
-        await bundle.topicOperationJournal.put(row)
-      }
+      const rows = await retainedForumRows()
+      for (const row of rows) bundle.leaseManager.acquireForIndex(row.leaseIndex)
       await bundle.pool.flush()
-      const prior = JSON.stringify(bundle.topicOperationJournal.getAll())
+      const prior = JSON.stringify(rows)
       await bundle.close()
+      await seedRetainedForumRows(location, rows)
       bundle = await openMonadWalletBundle({
         location,
         seed: { mnemonic: TEST_MNEMONIC },
       })
-      expect(JSON.stringify(bundle.topicOperationJournal.getAll())).toBe(prior)
+      expect(JSON.stringify(bundle.topicOperationJournal.getRetainedLegacy!())).toBe(prior)
       expect(() => bundle!.assertNoOrphanedLeases()).not.toThrow()
       // All three historical formats pin their indices even when already terminal.
       for (let index = 0; index < 4; index++) {
@@ -381,7 +391,7 @@ describe('Forum retention-only journal obligations', () => {
       await bundle.pool.flush()
       expect(await bundle.compactTerminalAccounts(8)).toBe(1)
       expect(bundle.pool.getRecord(3)).toBeUndefined()
-      expect(JSON.stringify(bundle.topicOperationJournal.getAll())).toBe(prior)
+      expect(JSON.stringify(bundle.topicOperationJournal.getRetainedLegacy!())).toBe(prior)
       expect(bundle.pool.records().map(r => r.status)).toEqual([
         'retired',
         'retired',
@@ -392,7 +402,7 @@ describe('Forum retention-only journal obligations', () => {
         location,
         seed: { mnemonic: TEST_MNEMONIC },
       })
-      expect(JSON.stringify(bundle.topicOperationJournal.getAll())).toBe(prior)
+      expect(JSON.stringify(bundle.topicOperationJournal.getRetainedLegacy!())).toBe(prior)
       expect(bundle.pool.records().map(r => r.status)).toEqual([
         'retired',
         'retired',
@@ -431,6 +441,41 @@ describe('existing-pool private topic owner', () => {
       }),
     },
   })
+  it('keeps retained signed sources unavailable across reopen while unrelated inputs remain usable', async () => {
+    const location = mkdtempSync(join(tmpdir(), 'retained-source-admission-'))
+    const params = { ...readyParams(), location }
+    params.pool.ensureSize(4)
+    const rows = await retainedForumRows()
+    await seedRetainedForumRows(location, rows)
+    let owner: MonadWalletPersistenceBundle | undefined
+    try {
+      for (let reopened = 0; reopened < 2; reopened++) {
+        owner = await openExistingPoolMonadTopicOwner(params)
+        const held = rows[0]!
+        expect(owner.nativeJournal!.canSelect(held.senderAddress.toLowerCase(), 1)).toBe(false)
+        const free = params.pool.getRecord(3)!
+        expect(owner.nativeJournal!.canSelect(free.address.toLowerCase(), 0)).toBe(true)
+        await owner.runLifetime(async lifetime => {
+          const plan = (index: number, nonce: number) => ({
+            kind: 'native' as const, recipient: '0x' + '12'.repeat(20), intendedValueWei: '7',
+            members: [{ source: { kind: 'spend' as const, index, address: params.pool.getRecord(index)!.address.toLowerCase() },
+              dependencies: [], unsignedTransaction: Transaction.from({ chainId: 10143, nonce,
+                to: '0x' + '12'.repeat(20), value: 7n, gasLimit: 21_000n, gasPrice: 1n }).unsignedSerialized }],
+          })
+          const journal = nativeAdmissionJournal(owner!.inputAdmission, lifetime)
+          await expect(journal.prepare(plan(held.leaseIndex, 1))).rejects.toThrow('conflicting-authorization')
+          const independent = await journal.prepare(plan(3, 0))
+          await journal.cancelUnsigned(independent.operationId)
+        })
+        expect(owner.topicOperationJournal.getRetainedLegacy!()).toEqual(rows)
+        await owner.close()
+      }
+    } finally {
+      await owner?.close()
+      rmSync(location, { recursive: true, force: true })
+    }
+  })
+
   function barrier() {
     let resolve!: () => void
     const promise = new Promise<void>(done => {
@@ -768,17 +813,13 @@ describe('existing-pool private topic owner', () => {
       finish = resolve
     })
     const row: OutgoingTopicOperation = {
-      version: 1,
-      kind: 'post',
-      requestBytes: [255],
-      leaseIndex: 0,
-      senderAddress: original.pool.getRecord(0)!.address,
-      rawTx: 'retained',
-      txHash: '0x' + 'ab'.repeat(32),
-      valueWei: '7',
-      direction: 'up',
+      version: 2, kind: 'post', writeFormat: 'forum-cbor', requestBytes: [],
+      transactionSetOperationId: 'close-drain', funders: [], rawTransactions: [],
+      transactionSetHash: '', intendedValueWei: '7', valueWei: '7', direction: 'up',
       payloadHashHex: 'cd'.repeat(32),
+      construction: { burnAddress: '0x000000000000000000000000000000000000dEaD', postFrameHex: 'ff' },
     }
+
     const operation = owner.runOperation(async () => {
       started()
       await paused
@@ -839,32 +880,14 @@ describe('existing-pool private topic owner', () => {
         mode: 'create',
       })
       old.pool.ensureSize(5)
-      const rows: OutgoingTopicOperation[] = [
-        undefined,
-        'protobuf',
-        'cbor',
-      ].map((format, index) => ({
-        version: 1,
-        kind: 'post',
-        requestBytes: [255, index],
-        ...(format ? { writeFormat: format as 'protobuf' | 'cbor' } : {}),
-        leaseIndex: index,
-        senderAddress: old.pool.getRecord(index)!.address,
-        rawTx: 'retained old authority',
-        txHash: '0x' + String(index).padStart(64, '0'),
-        valueWei: '7',
-        direction: 'up',
-        payloadHashHex: 'ab'.repeat(32),
-      }))
-      for (const row of rows) {
-        old.pool.setStatus(row.leaseIndex, 'in-use')
-        await old.topicOperationJournal.put(row)
-      }
+      const rows = await retainedForumRows()
+      for (const row of rows) old.pool.setStatus(row.leaseIndex, 'in-use')
       old.pool.setStatus(3, 'in-use')
       await old.pool.flush()
       const records = old.pool.records(),
         highWater = old.pool.nextUnusedIndex()
       await old.close()
+      await seedRetainedForumRows(location, rows)
       const prior = await readNamespace()
       store = new LevelSubAccountPoolStore(location)
       changeStore = new LevelChangePoolStore(location)
@@ -889,7 +912,7 @@ describe('existing-pool private topic owner', () => {
       owner = await openExistingPoolMonadTopicOwner(params)
       expect(pool.records()).toEqual(records)
       expect(pool.nextUnusedIndex()).toBe(highWater)
-      expect(owner.topicOperationJournal.getAll()).toEqual(rows)
+      expect(owner.topicOperationJournal.getRetainedLegacy!()).toEqual(rows)
       expect(() => owner!.assertNoOrphanedLeases()).not.toThrow()
       await expect(
         openExistingPoolMonadTopicOwner({ ...params, ...existingPools() }),
@@ -935,11 +958,11 @@ describe('existing-pool private topic owner', () => {
       expect(await owner.compactTerminalAccounts(8)).toBe(1)
       expect(pool.getRecord(4)).toBeUndefined()
       expect(pool.nextUnusedIndex()).toBe(highWater)
-      expect(owner.topicOperationJournal.getAll()).toEqual(rows)
+      expect(owner.topicOperationJournal.getRetainedLegacy!()).toEqual(rows)
       await owner.close()
       expect(await readNamespace()).toEqual(prior)
       owner = await openExistingPoolMonadTopicOwner(params)
-      expect(owner.topicOperationJournal.getAll()).toEqual(rows)
+      expect(owner.topicOperationJournal.getRetainedLegacy!()).toEqual(rows)
     } finally {
       await owner?.close()
       await changeStore?.Close()

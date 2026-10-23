@@ -398,13 +398,19 @@ function makeBundle(params: {
   const leaseManager =
     params.leaseManager ?? new SubAccountLeaseManager(params.pool)
 
+  const referencesLease = (index: number): boolean =>
+    (params.topicJournal
+      .getRetainedLegacy?.()
+      .some(row => row.leaseIndex === index) ?? false) ||
+    (params.additionalLeaseReference?.(index) ?? false)
+
   const assertNoOrphanedLeases = (): void => {
     const orphaned = params.pool
       .records()
       .filter(
         record =>
           record.status === 'in-use' &&
-          !params.additionalLeaseReference?.(record.index),
+          !referencesLease(record.index),
       )
       .map(record => record.index)
     if (orphaned.length > 0) throw new MonadWalletOrphanedAccountError(orphaned)
@@ -444,7 +450,7 @@ function makeBundle(params: {
     changePool: params.changePool,
     topicOperationJournal: params.topicJournal,
     nativeJournal: params.nativeJournal
-      ? nativeJournalReader(params.nativeJournal)
+      ? nativeJournalReader(params.nativeJournal, params.topicJournal)
       : undefined,
     inputAdmission,
     canonicalJournal: params.canonicalJournal
@@ -515,7 +521,7 @@ function makeBundle(params: {
           limit,
           isReferenced: index =>
             index === pendingChange ||
-            (params.additionalLeaseReference?.(index) ?? false),
+            referencesLease(index),
         })
       }, admission)
     },

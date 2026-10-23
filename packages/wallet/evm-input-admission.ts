@@ -53,6 +53,11 @@ export type OwnerEvidence =
       readonly member: number
       readonly poolIndex: number
     }
+  | {
+      readonly kind: 'retained-topic'
+      readonly poolIndex: number
+      readonly transactionHash: string
+    }
   | { readonly kind: 'live-lease'; readonly poolIndex: number }
   | {
       readonly kind: 'pool-funding' | 'pool-retained'
@@ -378,6 +383,29 @@ class AdmissionOwner implements EvmInputAdmission {
         )
       })
     }
+    // Historical signed Forum operations remain financial owners until exact recovery
+    // removes their records. They are not new-format payload-only references.
+    for (const row of o.topic.getRetainedLegacy?.() ?? []) {
+      const source =
+        o.pool.getRecord(row.leaseIndex) ??
+        o.pool.terminalCheckpoints().find(record => record.index === row.leaseIndex)
+      if (!source || address(source.address) !== address(row.senderAddress))
+        invalid()
+      add(
+        {
+          kind: 'retained-topic',
+          poolIndex: row.leaseIndex,
+          transactionHash: row.txHash,
+        },
+        `retained-topic:${row.kind}:${row.txHash.toLowerCase()}`,
+        row.rawTx,
+        row.senderAddress,
+        [
+          { kind: 'address', address: address(row.senderAddress) },
+          { kind: 'allocation', pool: 'spend', index: row.leaseIndex },
+        ],
+      )
+    }
     // Forum payloads link to the native journal; they never own a second nonce/pool claim.
     for (const row of o.topic.getAll()) {
       if (row.construction) continue
@@ -394,7 +422,8 @@ class AdmissionOwner implements EvmInputAdmission {
             ? evidence.source.index
             : undefined
           : evidence.kind === 'canonical-intent' ||
-            evidence.kind === 'canonical-attempt'
+            evidence.kind === 'canonical-attempt' ||
+            evidence.kind === 'retained-topic'
           ? evidence.poolIndex
           : undefined
       if (index !== undefined) {
@@ -418,7 +447,8 @@ class AdmissionOwner implements EvmInputAdmission {
       if (role === 'spend') {
         const related = (poolAuthorities.get(index) ?? []).filter(
           c =>
-            (c.provenance.kind === 'native' &&
+            ((c.provenance.kind === 'native' ||
+              c.provenance.kind === 'retained-topic') &&
               c.transaction?.sender === tx.sender &&
               c.transaction.nonce === tx.nonce) ||
             c.provenance.kind === 'canonical-attempt',
@@ -883,6 +913,7 @@ function ownerOf(admission: EvmInputAdmission): AdmissionOwner {
 }
 export function nativeJournalReader(
   journal: EvmNativeOperationJournal,
+  topic?: TopicOperationJournal,
 ): NativeJournalReader {
   return Object.freeze({
     binding: Object.freeze({ ...journal.binding }),
@@ -890,7 +921,8 @@ export function nativeJournalReader(
     get: id => journal.get(id),
     sourceReferences: () => journal.sourceReferences(),
     referencesSpendIndex: index => journal.referencesSpendIndex(index),
-    canSelect: (source, nonce) => journal.canSelect(source, nonce),
+    canSelect: (source, nonce) =>
+      !topic?.holdsRetainedSource?.(source) && journal.canSelect(source, nonce),
   } satisfies NativeJournalReader)
 }
 export function canonicalJournalReader(
@@ -935,7 +967,7 @@ export function nativeAdmissionJournal(
   const mutation = <T>(operation: () => Promise<T>) =>
     owner.mutate(lifetime, operation)
   return {
-    ...nativeJournalReader(journal),
+    ...nativeJournalReader(journal, owner.owners.topic),
     refreshPreparation: id =>
       mutation(async () => {
         const row = await journal.refreshPreparation(id)

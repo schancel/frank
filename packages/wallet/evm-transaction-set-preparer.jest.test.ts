@@ -5,6 +5,7 @@ import { Transaction, Wallet } from 'ethers'
 import { EvmCoinList } from './evm-coin-list'
 import { MemoryRecordStore, LevelRecordStore } from './storage/evm-coin-store'
 import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
+import * as durability from './storage/level-durability'
 import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import type { EvmTransactionSetPolicy } from './evm-transaction-set-types'
 const signer = (index: number) =>
@@ -1112,4 +1113,66 @@ it('refuses to cancel exposed bytes and serializes cancellation behind an in-fli
   expect(f.coins.all()).toEqual(before)
   expect(f.preparer.getTransactionSet('exposed')).toEqual(graph)
   expect(await f.preparer.releaseUnexposed('unknown')).toBe(false)
+})
+
+it.each([0n, 70000n, 800000n])('releases only uncommitted stage reservations after a journal precommit failure (append amount=%s)', async appendAmount => {
+  const append = appendAmount > 0n
+  const f = await setup(), operationId = 'precommit-fault'
+  if (append) await f.preparer.constructTransactionSet({ operationId, amountWei: 300000n, reserveForContinuationWei: 200000n, kdf })
+  const prior = f.preparer.getOperation(operationId), before = f.coins.all()
+  const request = { operationId, amountWei: appendAmount || 300000n, kdf }
+  if (append) jest.spyOn(f.journal, 'appendTransactionSet').mockRejectedValueOnce(new Error('precommit failure'))
+  else jest.spyOn(f.journal, 'prepare').mockRejectedValueOnce(new Error('precommit failure'))
+  const construct = () => append ? f.preparer.appendTransactionSet({ ...request, stageId: 'stamp' }) : f.preparer.constructTransactionSet(request)
+  await expect(construct()).rejects.toThrow('precommit failure')
+  expect(f.coins.all()).toEqual(before)
+  expect(f.preparer.getOperation(operationId)).toEqual(prior)
+  const allocation = f.coins.nextChangeIndex()
+  expect(allocation).toBeGreaterThan(0)
+  const result = await construct()
+  expect(result.bundle.length).toBeGreaterThan(0)
+  expect(f.coins.nextChangeIndex()).toBeGreaterThan(allocation)
+  if (prior) expect(f.preparer.getOperation(operationId)!.members.slice(0, prior.members.length)).toEqual(prior.members)
+})
+
+it.each([false, true])('retains uncertain durable stage writes until reopen and restores their original signed bytes (append=%s)', async append => {
+  const directory = await mkdtemp(join(tmpdir(), 'transaction-uncertain-stage-'))
+  const binding = { chainIdentifier: 'monad-testnet', nativeChainId: '10143', publicTuple: 'uncertain-stage' }
+  let store = await LevelRecordStore.open<import('./evm-coin-list').StoredEvmListCoin>(directory, 'coins')
+  let coins = await EvmCoinList.open(store)
+  let journal = new EvmNativeOperationJournal({ location: directory, binding })
+  await journal.Open()
+  const deriveChange = (index: number) => ({ account: signer(100 + index).address.toLowerCase(), privateKey: signer(100 + index).privateKey, changeIndex: index })
+  try {
+    await coins.put({ account: signer(1).address, privateKey: signer(1).privateKey, nonce: 0, valueWei: 1000000n, origin: 'stealth' })
+    let preparer = new EvmTransactionSetPreparer({ coins, journal, policy: () => policy, deriveChange, random: () => 0.01 })
+    if (append) await preparer.constructTransactionSet({ operationId: 'uncertain', amountWei: 300000n, reserveForContinuationWei: 200000n, kdf })
+    let signed: readonly string[] = []
+    if (append) {
+      const original = journal.appendTransactionSet.bind(journal)
+      jest.spyOn(journal, 'appendTransactionSet').mockImplementationOnce(async (...args) => { signed = args[3]; return original(...args) })
+      const put = durability.durablePut
+      jest.spyOn(durability, 'durablePut').mockImplementationOnce(async (...args) => { await put(...args); throw new Error('write result uncertain') })
+    } else {
+      const original = journal.prepare.bind(journal)
+      jest.spyOn(journal, 'prepare').mockImplementationOnce(async (...args) => { signed = args[1]!; return original(...args) })
+      const batch = durability.durableBatch
+      jest.spyOn(durability, 'durableBatch').mockImplementationOnce(async (...args) => { await batch(...args); throw new Error('write result uncertain') })
+    }
+    const request = { operationId: 'uncertain', amountWei: append ? 70000n : 300000n, kdf }
+    const construct = () => append ? preparer.appendTransactionSet({ ...request, stageId: 'stamp' }) : preparer.constructTransactionSet(request)
+    await expect(construct()).rejects.toThrow('write result uncertain')
+    expect(() => journal.list()).toThrow('uncertain')
+    expect(coins.heldBy('uncertain').some(coin => coin.state === 'spend_pending')).toBe(true)
+    await expect(construct()).rejects.toThrow('uncertain')
+    jest.restoreAllMocks()
+    await journal.Close(); await store.close()
+    store = await LevelRecordStore.open(directory, 'coins'); coins = await EvmCoinList.open(store)
+    journal = new EvmNativeOperationJournal({ location: directory, binding }); await journal.Open()
+    preparer = new EvmTransactionSetPreparer({ coins, journal, policy: () => { throw new Error('recovery must not sign') }, deriveChange })
+    const recovered = await construct()
+    expect([...recovered.bundle, ...recovered.otherTransactions].map(tx => tx.rawTransaction).sort()).toEqual([...signed].sort())
+    expect(coins.heldBy('uncertain').every(coin => coin.state !== 'spend_pending')).toBe(true)
+    expect(journal.list()).toHaveLength(1)
+  } finally { jest.restoreAllMocks(); await journal.Close(); await store.close(); await rm(directory, { recursive: true, force: true }) }
 })

@@ -578,3 +578,28 @@ test('an append winning the validation-to-authorization race rejects the stale w
     await f.close()
   }
 })
+
+test.each([[false, false], [true, false], [false, true], [true, true]])('reconciles terminal chain state with unfinished inventory without rebroadcast (reopen=%s, projection=%s)', async (reopen, projection) => {
+  const chain = node()
+  let wallet = await fixture(location, chain)
+  try {
+    const prepared = await wallet.preparer.constructTransactionSet({ operationId: 'projection-fault', amountWei: 979000n, kdf: () => key(50).address })
+    expect(prepared.bundle).toHaveLength(1)
+    expect(prepared.otherTransactions).toHaveLength(0)
+    if (projection) chain.beforeBroadcast(() => { jest.spyOn(wallet.coins, 'projectTransactionSetAccount').mockRejectedValueOnce(new Error('transient inventory projection failure')) })
+    else jest.spyOn(wallet.journal, 'markTransactionSetInventoryApplied').mockRejectedValueOnce(new Error('transient inventory checkpoint failure'))
+    const report = await wallet.submission.sendTransaction(prepared)
+    expect(report.status).toBe('pending')
+    expect(report.pendingTransactionIds).toEqual([prepared.bundle[0]!.txHash])
+    expect(wallet.preparer.getOperation('projection-fault')!.members[0]!.transactionSet!.inventoryApplied).toBeUndefined()
+    const broadcasts = [...chain.raws]
+    if (reopen) { await wallet.close(); wallet = await fixture(location, chain) }
+    const reports = await wallet.submission.reconcileAuthorized()
+    expect(reports).toHaveLength(1)
+    expect(reports[0]!.status).toBe('confirmed')
+    expect(wallet.preparer.getOperation('projection-fault')!.members[0]!.transactionSet!.inventoryApplied).toBe(true)
+    expect(wallet.coins.isAccountReserved(prepared.bundle[0]!.sourceAccount)).toBe(false)
+    expect(chain.raws).toEqual(broadcasts)
+    expect(await wallet.submission.reconcileAuthorized()).toEqual([])
+  } finally { await wallet.close() }
+})

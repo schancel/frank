@@ -428,6 +428,7 @@ export class EvmTransactionSetPreparer {
         return capacity > rule.belowWei ? capacity - rule.belowWei : 0n
       },
     })
+    const beforeSelection = coins.all()
     let parts = select(false), fanIn = false
     if (!parts && legacy) { parts = select(true); fanIn = true }
     if (!parts) throw new Error('Insufficient available EVM coins')
@@ -462,7 +463,10 @@ export class EvmTransactionSetPreparer {
       if ((request.maxFeeWei !== undefined && totalFee > request.maxFeeWei) || existing?.transactionSetStages?.some(stage => stage.maxFeeWei !== undefined && totalFee > BigInt(stage.maxFeeWei))) throw new Error('Transaction-set fee exceeds authorized bound')
       if (all.length > 64) throw new Error('Transaction-set exceeds member capacity')
       if (members.filter(member => member.plan.transactionSet!.role === 'change').reduce((sum, member) => sum + Transaction.from(member.raw).value, 0n) < reserve) throw new Error('Insufficient private change for continuation')
-    } catch (error) { coins.abandon(request.operationId); throw error }
+    } catch (error) {
+      coins.abandonTransactionSetSources(request.operationId, parts.map(part => part.coin), beforeSelection)
+      throw error
+    }
     const payments = members.filter(member => member.plan.transactionSet!.role === 'payment').sort((a,b) => a.plan.transactionSet!.logicalIndex - b.plan.transactionSet!.logicalIndex)
     const stage: EvmTransactionSetStage = {
       ...(stageId === undefined ? {} : { stageId }), startIndex: existing?.members.length ?? 0, memberCount: members.length,
@@ -471,10 +475,22 @@ export class EvmTransactionSetPreparer {
       ...(request.reserveForContinuationWei === undefined ? {} : { reserveForContinuationWei: reserve.toString() }),
       ...(legacy ? { legacy: true } : {}),
     }
-    const row = existing ? await journal.appendTransactionSet(existing.operationId, stage, members.map(member => member.plan), members.map(member => member.raw)) : await journal.prepare({
+    let row: EvmNativeOperation
+    try {
+      row = existing ? await journal.appendTransactionSet(existing.operationId, stage, members.map(member => member.plan), members.map(member => member.raw)) : await journal.prepare({
       kind: 'transaction-set', preparationId: prefix + request.operationId, recipient: stage.destinations[0]!, intendedValueWei: request.amountWei.toString(),
       transactionSetStages: [stage], members: members.map(member => member.plan),
     }, members.map(member => member.raw))
+    } catch (error) {
+      let authority: EvmNativeOperation | undefined
+      try { authority = await journal.refreshPreparation(prefix + request.operationId) }
+      catch { throw error } // Uncertain writes keep every reservation fenced until reopen.
+      if (authority && (stageId === undefined || authority.transactionSetStages?.some(stage => stage.stageId === stageId)))
+        this.restoreRow(authority) // Commit-then-throw: the original durable signed bytes win.
+      else
+        coins.abandonTransactionSetSources(request.operationId, parts.map(part => part.coin), beforeSelection)
+      throw error
+    }
     this.restoreRow(row)
     await coins.checkpointTransactionSetReservations(request.operationId)
     return this.result(row, stageId)

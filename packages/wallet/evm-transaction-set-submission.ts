@@ -9,6 +9,7 @@ import type {
 import {
   nativeMemberSuperseded,
   type EvmNativeOperation,
+  type EvmNativeMember,
 } from './storage/evm-native-operation-journal'
 import type { TransactionSetSubmission } from './transaction-set'
 
@@ -82,6 +83,15 @@ function assertComplete(
   )
 }
 
+/** Chain settlement and the durable inventory projection are separate completion facts. */
+function needsRecovery(member: EvmNativeMember): boolean {
+  return member.transactionSet?.inventoryApplied !== true || (
+    member.observation.state !== 'included-success' &&
+    member.observation.state !== 'included-revert' &&
+    !nativeMemberSuperseded(member)
+  )
+}
+
 export function createEvmTransactionSetSubmission(options: {
   preparer: EvmTransactionSetPreparer
   lifecycle: EvmTransactionSetLifecycle
@@ -105,11 +115,7 @@ export function createEvmTransactionSetSubmission(options: {
         member.observation.state === 'included-revert' ||
         nativeMemberSuperseded(member),
     )
-    const pending = operation.members.filter(
-      member =>
-        member.observation.state !== 'included-success' &&
-        !failed.includes(member),
-    )
+    const pending = operation.members.filter(needsRecovery)
     const status = pending.length
       ? 'pending'
       : failed.length
@@ -188,12 +194,7 @@ export function createEvmTransactionSetSubmission(options: {
             operation.kind === 'transaction-set' &&
             operation.submissionAuthorized &&
             !operation.cancelled &&
-            operation.members.some(
-              member =>
-                member.observation.state !== 'included-success' &&
-                member.observation.state !== 'included-revert' &&
-                !nativeMemberSuperseded(member),
-            ),
+            operation.members.some(needsRecovery),
         )
       // No wallet-wide queue: one slow operation never prevents another from entering replay.
       return Promise.all(

@@ -750,6 +750,27 @@ export class EvmCoinList {
     if (any) this.notify()
   }
 
+  /** Roll back only this stage's unsigned selection after the journal proves no commit.
+   * Restore exact prior entries; virtual inputs without a prior entry disappear. Derivation
+   * target ownership remains allocated even when construction did not commit. */
+  abandonTransactionSetSources(
+    holder: string,
+    selected: readonly { account: string; nonce: number }[],
+    originals: readonly EvmListCoin[],
+  ): void {
+    const prior = new Map(originals.map(coin => [coinKey(coin.account, coin.nonce), coin]))
+    let changed = false
+    for (const source of selected) {
+      const key = coinKey(source.account, source.nonce), current = this.coinsByKey.get(key)
+      if (current?.holder !== holder || current.state !== 'spend_pending') continue
+      const original = prior.get(key)
+      if (original) this.coinsByKey.set(key, original)
+      else this.coinsByKey.delete(key)
+      changed = true
+    }
+    if (changed) this.notify()
+  }
+
   /**
    * The signed transaction spending a coin `holder` took goes onto the coin, durably, BEFORE
    * the transaction is handed to anything that can broadcast it. From here only the chain frees

@@ -219,7 +219,10 @@ jest.mock('./components/panels/SettingsPanel.vue', () => ({
 jest.mock('./components/panels/WalletPanel.vue', () => ({
   template: '<div />',
 }))
-jest.mock('./accounts/session', () => ({ accountStatus: { status: 'ready' } }))
+jest.mock('./accounts/session', () => ({
+  accountStatus: { status: 'ready' },
+  accountSession: { state: { status: 'ready', revision: 1 } },
+}))
 jest.mock('src/stores/appearance', () => ({
   useAppearanceStore: () =>
     jest
@@ -377,4 +380,65 @@ describe('runtime search shortcut with the real chat drawer', () => {
       wrapper.unmount()
     }
   })
+})
+
+it('runtime adapter leaves unrelated extension messages unanswered and awaits account previews', async () => {
+  const scope = globalThis as typeof globalThis & { chrome?: unknown }
+  const previousChrome = scope.chrome
+  const addListener = jest.fn()
+  const removeListener = jest.fn()
+  scope.chrome = {
+    runtime: {
+      id: 'test-extension',
+      getURL: (path: string) => `chrome-extension://test-extension/${path}`,
+      onMessage: { addListener, removeListener },
+    },
+  }
+  const session = jest.requireMock('./accounts/session').accountSession
+  session.createDappSolanaSigner = jest.fn(async () => ({
+    publicKey: 'solana-account',
+  }))
+  let wrapper: Awaited<ReturnType<typeof mountReal>>['wrapper'] | undefined
+  try {
+    wrapper = (await mountReal(1024)).wrapper
+    expect(addListener).toHaveBeenCalledTimes(1)
+    const listener = addListener.mock.calls[0][0]
+    const sender = {
+      id: 'test-extension',
+      url: 'chrome-extension://test-extension/background.js',
+    }
+    const respond = jest.fn()
+    const { FRANK_DAPP_BRIDGE_CHANNEL } = jest.requireActual(
+      '../src-bex/runtime-adapter',
+    )
+    for (const type of ['get-bridge-state', 'resolve-approval', 'unrelated']) {
+      expect(
+        listener({ channel: FRANK_DAPP_BRIDGE_CHANNEL, type }, sender, respond),
+      ).toBe(false)
+    }
+    await flushPromises()
+    expect(respond).not.toHaveBeenCalled()
+    expect(
+      listener(
+        {
+          channel: FRANK_DAPP_BRIDGE_CHANNEL,
+          type: 'preview-dapp-account',
+          family: 'solana',
+        },
+        sender,
+        respond,
+      ),
+    ).toBe(true)
+    await flushPromises()
+    expect(respond).toHaveBeenCalledTimes(1)
+    expect(respond).toHaveBeenCalledWith({
+      ok: true,
+      account: { address: 'solana-account' },
+    })
+  } finally {
+    wrapper?.unmount()
+    if (previousChrome === undefined) delete scope.chrome
+    else scope.chrome = previousChrome
+    delete session.createDappSolanaSigner
+  }
 })

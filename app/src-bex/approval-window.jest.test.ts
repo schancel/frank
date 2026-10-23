@@ -2,6 +2,8 @@
 
 import { FRANK_DAPP_BRIDGE_CHANNEL, installInpageProvider } from './inpage'
 import { installContentScriptBridge } from './content'
+import { PublicKey } from '@solana/web3.js'
+import { ed25519 } from '@noble/curves/ed25519'
 import {
   DAPP_PERSONA_NOT_READY_ERROR,
   createBackgroundBridgeState,
@@ -64,14 +66,16 @@ function createExtensionScope() {
         getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
         sendMessage: (msg: any, cb?: (res: any) => void) => {
           let answered = false
+          let pending = false
           for (const fn of [...listeners]) {
             const keepOpen = fn(msg, mockSenderFor(msg), res => {
               if (answered) return
               answered = true
               cb?.(res)
             })
-            void keepOpen
+            if (keepOpen) pending = true
           }
+          if (!answered && !pending) cb?.(null)
         },
         onMessage: {
           addListener: (fn: any) => listeners.push(fn),
@@ -180,7 +184,9 @@ describe('dApp approval window lifecycle', () => {
     })
     // No site persona until Frank's custody provides one: approving fails explicitly and
     // the request stays queued.
-    expect(state.pendingApprovals.get('r1')!.suggestedBurnerAddress).toBeUndefined()
+    expect(
+      state.pendingApprovals.get('r1')!.suggestedBurnerAddress,
+    ).toBeUndefined()
     expect(
       await decide(state, scope, 'r1', true, { useBurnerPersona: true }),
     ).toEqual({ ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } })
@@ -264,11 +270,12 @@ describe('dApp approval window lifecycle', () => {
     ['eth_signTypedData_v4', [PRIMARY, '{}']],
     ['eth_sendTransaction', [{ from: PRIMARY, to: PRIMARY, value: '0x1' }]],
   ])(
-    'never resolves an approved %s with a signature or hash',
+    'returns an explicit unavailable-session error for approved %s instead of caller-supplied fake output',
     async (method, params) => {
       const { scope } = createExtensionScope()
       const state = createBackgroundBridgeState({
         activePersonaAddress: PRIMARY,
+        approvedOrigins: new Set(['https://app.uniswap.org']),
       })
       const pending = rpc(
         state,
@@ -284,10 +291,10 @@ describe('dApp approval window lifecycle', () => {
         signature: '0xdeadbeef',
         txHash: '0xdeadbeef',
       })
-      expect(res).toMatchObject({ ok: false, error: { code: 4200 } })
+      expect(res).toMatchObject({ ok: false, error: { code: 4900 } })
       const answer = await pending
       expect(answer.ok).toBe(false)
-      expect(answer.error.code).toBe(4200)
+      expect(answer.error.code).toBe(4900)
       expect(JSON.stringify(answer)).not.toContain('deadbeef')
     },
   )
@@ -318,9 +325,52 @@ describe('dApp approval window lifecycle', () => {
     },
   )
 
+  it('returns only a custody-backed Solana account after explicit approval', async () => {
+    const { scope } = createExtensionScope()
+    const publicKey = new Uint8Array(32).fill(7)
+    const address = new PublicKey(publicKey).toBase58()
+    scope.chrome.runtime.onMessage.addListener(
+      (message: any, _sender: any, respond: (value: unknown) => void) => {
+        if (message.type === 'execute-approved-dapp-request') {
+          respond({
+            ok: true,
+            result: { address, publicKey: Array.from(publicKey) },
+          })
+        }
+      },
+    )
+    const state = createBackgroundBridgeState()
+    const pending = rpc(state, scope, 'solana-connect', 'solana_connect')
+    await tick()
+    expect(
+      (
+        await rpc(
+          state,
+          scope,
+          'solana-sign-blocked',
+          'solana_signMessage',
+          undefined,
+          {
+            message: [1, 2, 3],
+            account: address,
+          },
+        )
+      ).error.code,
+    ).toBe(4100)
+    const result = await decide(state, scope, 'solana-connect', true)
+    expect(result.ok).toBe(true)
+    expect(await pending).toMatchObject({
+      result: { address, publicKey: Array.from(publicKey) },
+    })
+    expect(
+      (await rpc(state, scope, 'evm-accounts', 'eth_accounts')).result,
+    ).toEqual([])
+  })
+
   it('rejects every waiting request with 4001 when the user closes the window', async () => {
     const { scope, windows, userCloses } = createExtensionScope()
     const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
+    state.approvedOrigins.add('https://other.example')
     const first = rpc(state, scope, 'r1', 'eth_requestAccounts')
     const second = rpc(
       state,
@@ -578,9 +628,10 @@ describe('approval window page', () => {
     bg.dispose()
   })
 
-  it('offers no approval for signing and rejects it with 4001', async () => {
+  it('shows explicit review and rejection for signing requests', async () => {
     const { scope } = createExtensionScope()
     const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
+    state.approvedOrigins.add('https://app.uniswap.org')
     const bg = installBackgroundBridge(scope, state)
     const pending = rpc(state, scope, 's1', 'personal_sign', undefined, [
       '0x68656c6c6f',
@@ -595,7 +646,9 @@ describe('approval window page', () => {
     })
     await tick(5)
     expect(root.textContent).toContain('Sign a message')
-    expect(root.querySelector('[data-testid="approval-approve"]')).toBeNull()
+    expect(
+      root.querySelector('[data-testid="approval-approve"]'),
+    ).not.toBeNull()
 
     root
       .querySelector<HTMLButtonElement>('[data-testid="approval-reject"]')!
@@ -609,6 +662,7 @@ describe('approval window page', () => {
     const { scope } = createExtensionScope()
     const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
     const bg = installBackgroundBridge(scope, state)
+    state.approvedOrigins.add('https://evil.example')
     void rpc(state, scope, 'x1', 'personal_sign', 'https://evil.example', [
       '<img src=x onerror=alert(1)>',
     ])
@@ -665,26 +719,101 @@ describe('dApp provider end to end (inpage -> content -> background -> approval 
     bg.dispose()
   })
 
-  it('does not register a Solana wallet, which Frank cannot back with a Solana account', async () => {
+  it('connects and signs Solana through page, content, approval, and the session executor bridge', async () => {
+    const { scope, windows } = createExtensionScope()
+    const state = createBackgroundBridgeState()
+    const secretKey = new Uint8Array(32).fill(33)
+    const publicKeyBytes = ed25519.getPublicKey(secretKey)
+    const address = new PublicKey(publicKeyBytes).toBase58()
+    scope.chrome.runtime.onMessage.addListener(
+      (message: any, _sender: any, respond: (value: unknown) => void) => {
+        if (message.type !== 'execute-approved-dapp-request') return
+        if (message.request.method === 'solana_connect') {
+          respond({
+            ok: true,
+            result: {
+              address,
+              publicKey: Array.from(publicKeyBytes),
+            },
+          })
+        } else if (message.request.method === 'solana_signMessage') {
+          const content = Uint8Array.from(message.request.params.message)
+          respond({
+            ok: true,
+            result: {
+              signature: Array.from(ed25519.sign(content, secretKey)),
+            },
+          })
+        }
+      },
+    )
+    const bg = installBackgroundBridge(scope, state)
+    const cleanupContent = installContentScriptBridge(window as any, scope)
+    const provider = installInpageProvider(window as any)!
+    const root = document.createElement('main')
+    const page = mountApprovalPage(root, {
+      globalScope: scope,
+      closeWindow: () => undefined,
+    })
+
+    const connecting = provider.request<any>({ method: 'solana_connect' })
+    await tick(10)
+    expect(windows.create).toHaveBeenCalledTimes(1)
+    await page.refresh()
+    expect(root.textContent).toContain('Connect a Solana account')
+    root
+      .querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')!
+      .click()
+    const account = await connecting
+    expect(account.address).toBe(address)
+    expect(account.publicKey).toEqual(Array.from(publicKeyBytes))
+
+    const message = new Uint8Array([2, 4, 6, 8])
+    const signing = provider.request<any>({
+      method: 'solana_signMessage',
+      params: { message: Array.from(message), account: account.address },
+    })
+    await tick(10)
+    await page.refresh()
+    expect(root.textContent).toContain('Sign a Solana message')
+    root
+      .querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')!
+      .click()
+    const result = await signing
+    expect(
+      ed25519.verify(
+        Uint8Array.from(result.signature),
+        message,
+        publicKeyBytes,
+      ),
+    ).toBe(true)
+    page.dispose()
+    cleanupContent()
+    bg.dispose()
+  })
+
+  it('discovers Frank through Wallet Standard without exposing an account before approval', async () => {
     const registered: unknown[] = []
     window.addEventListener('wallet-standard:register-wallet', event => {
-      registered.push((event as CustomEvent).detail)
+      ;(event as CustomEvent<(wallet: unknown) => void>).detail(wallet =>
+        registered.push(wallet),
+      )
     })
     const win = window as any
     delete win.__FRANK_INPAGE_PROVIDER_INSTALLED__
     delete win.frankEthereum
     installInpageProvider(win)
-    expect(registered).toEqual([])
-    expect(win.frankSolana).toBeUndefined()
-
-    const { scope } = createExtensionScope()
-    const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
-    state.approvedOrigins.add('https://app.uniswap.org')
-    // Even for a connected site, Solana methods are unsupported, never an EVM
-    // address dressed up as a Solana key.
-    expect(await rpc(state, scope, 's', 'solana_connect')).toEqual({
-      ok: false,
-      error: { code: 4200, message: 'Unsupported method: solana_connect' },
+    expect(registered).toHaveLength(1)
+    expect(registered[0]).toMatchObject({
+      name: 'Frank',
+      chains: ['solana:mainnet', 'solana:devnet'],
+      features: expect.objectContaining({
+        'standard:connect': expect.any(Object),
+        'solana:signMessage': expect.any(Object),
+        'solana:signTransaction': expect.any(Object),
+        'solana:signAndSendTransaction': expect.any(Object),
+      }),
     })
+    expect(win.frankSolana).toBeUndefined()
   })
 })

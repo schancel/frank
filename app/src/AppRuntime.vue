@@ -86,6 +86,10 @@ import {
 } from '../src-bex/runtime-adapter'
 import type { PendingDappApproval } from '../src-bex/background'
 import {
+  executeApprovedDappRequest,
+  type ApprovedDappRequest,
+} from './accounts/dapp-request-executor'
+import {
   handlePageSyncNavigationRequest,
   handlePageSyncPairingRequest,
 } from 'src/utils/extension-account-sync'
@@ -148,7 +152,7 @@ async function syncActivePersonaToExtension() {
           frankPoolBalanceWeiHex: poolBalanceWeiHex,
           frankChainIdHex: '0x279f',
         }),
-      ).catch(() => {})
+      ).catch(() => undefined)
     }
   } catch {
     // Wallet not unlocked or mocked in unit tests
@@ -173,6 +177,7 @@ async function provideSitePersonasToExtension() {
         .filter(
           item =>
             (item.kind === 'connect' || item.kind === 'permissions') &&
+            item.chainFamily !== 'solana' &&
             !item.suggestedBurnerAddress,
         )
         .map(item => item.origin),
@@ -236,8 +241,51 @@ export default defineComponent({
     const router = useRouter()
     // A site waiting on a connect decision gets its custody-derived persona address.
     const offApprovalsChanged = isBrowserExtensionRuntime()
-      ? onRuntimeMessage(message => {
-          const m = message as { channel?: unknown; type?: unknown } | null
+      ? onRuntimeMessage((message, sender) => {
+          const m = message as {
+            channel?: unknown
+            type?: unknown
+            request?: ApprovedDappRequest
+          } | null
+          if (
+            m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+            m?.type === 'execute-approved-dapp-request'
+          ) {
+            const extensionApi = getRawExtensionApi()
+            const backgroundUrl =
+              extensionApi?.runtime?.getURL?.('background.js')
+            if (
+              !backgroundUrl ||
+              sender?.id !== extensionApi?.runtime?.id ||
+              sender?.url !== backgroundUrl
+            )
+              return undefined
+            const request = m.request
+            if (!request)
+              return {
+                ok: false,
+                error: {
+                  code: -32600,
+                  message: 'Invalid approved dApp request.',
+                },
+              }
+            if (accountStatus.status !== 'ready') {
+              return {
+                ok: false,
+                error: { code: 4900, message: 'Unlock Frank before signing.' },
+              }
+            }
+            return executeApprovedDappRequest(request, accountSession)
+              .then(result => ({ ok: true, result }))
+              .catch(error => ({
+                ok: false,
+                error: {
+                  code: 4200,
+                  message:
+                    error instanceof Error ? error.message : String(error),
+                },
+              }))
+          }
           if (
             m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
             m?.type === FRANK_DAPP_APPROVALS_CHANGED

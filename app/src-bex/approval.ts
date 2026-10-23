@@ -26,6 +26,10 @@ const METHOD_LABELS: Record<string, string> = {
   eth_signTypedData_v3: 'Sign typed data',
   eth_signTypedData_v4: 'Sign typed data',
   eth_sendTransaction: 'Send a transaction',
+  solana_connect: 'Connect a Solana account',
+  solana_signMessage: 'Sign a Solana message',
+  solana_signTransaction: 'Sign a Solana transaction',
+  solana_signAndSendTransaction: 'Sign and send a Solana transaction',
 }
 
 export function isConnectRequest(request: PendingDappApproval): boolean {
@@ -239,7 +243,7 @@ export function mountApprovalPage(
     reject.addEventListener('click', () => void decide(request, false))
     actions.append(reject)
 
-    if (isConnectRequest(request)) {
+    if (isConnectRequest(request) && request.chainFamily !== 'solana') {
       root.append(
         el(
           doc,
@@ -326,20 +330,23 @@ export function mountApprovalPage(
       syncApprove()
       actions.append(approve)
     } else {
-      // Frank has no safe signer for websites yet; the request can only be
-      // declined. The site receives a user-rejected (4001) answer.
       root.append(
         el(
           doc,
           'p',
-          'approval-text approval-unsupported',
-          'Frank cannot sign or send for websites yet. Reject this request to let the site know.',
+          'approval-text',
+          'Review the request details. Approving will use the account shown for this site.',
         ),
       )
       const details = el(doc, 'details', 'approval-details')
       details.append(el(doc, 'summary', undefined, 'Request details'))
       details.append(el(doc, 'pre', undefined, requestDetails(request)))
       root.append(details)
+      const approve = el(doc, 'button', 'approval-approve', 'Approve')
+      approve.type = 'button'
+      approve.dataset.testid = 'approval-approve'
+      approve.addEventListener('click', () => void decide(request, true))
+      actions.append(approve)
     }
 
     root.append(actions)

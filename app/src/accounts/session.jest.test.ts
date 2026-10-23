@@ -1,4 +1,5 @@
 import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { ed25519 } from '@noble/curves/ed25519'
 import { deriveIdentityMemberEpochPublicKey } from '@frank/cashweb/groups/group-crypto'
 // Load the pinned SDK's real embedded WASM in Jest/CommonJS. Only the unused async
 // URL loader needs import.meta removal; initSync and every cryptographic export stay real.
@@ -2569,7 +2570,10 @@ test('dApp persona signer derives hardened personas from the custody evm-wallet 
       ]),
     ).toEqual(expected)
     const digest = keccak256(new Uint8Array([1, 2, 3]))
-    const signature = await personas.signDigest({ kind: 'site', origin }, digest)
+    const signature = await personas.signDigest(
+      { kind: 'site', origin },
+      digest,
+    )
     expect(recoverAddress(digest, signature)).toBe(expected[1])
     await expect(
       personas.signDigest({ kind: 'site', origin }, '0x1234'),
@@ -2583,4 +2587,34 @@ test('dApp persona signer derives hardened personas from the custody evm-wallet 
     ).rejects.toBeInstanceOf(CustodyError)
     await f.session.close()
   }
+})
+
+test('dApp Solana signer uses the account Solana key and exposes only signing methods', async () => {
+  const f = fixture()
+  f.capability.takeRoots.mockImplementation(() =>
+    DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 1),
+    })),
+  )
+  await f.session.initialize()
+  const accountSigner = await f.session.getSolanaSigner()
+  const dappSigner = await f.session.createDappSolanaSigner()
+  expect(Object.keys(dappSigner).sort()).toEqual([
+    'publicKey',
+    'signMessage',
+    'signTransaction',
+  ])
+  expect(dappSigner.publicKey).toBe(accountSigner.publicKey.toBase58())
+  const message = new Uint8Array([1, 2, 3, 4])
+  const signature = await dappSigner.signMessage(message)
+  expect(
+    ed25519.verify(signature, message, accountSigner.publicKey.toBytes()),
+  ).toBe(true)
+  await f.session.yieldCustody()
+  await expect(dappSigner.signMessage(message)).rejects.toBeInstanceOf(
+    CustodyError,
+  )
+  await f.session.close()
 })

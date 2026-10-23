@@ -16,7 +16,7 @@ import type {
   MessageItem,
   WalletSyncItem,
 } from '@frank/cashweb/types/messages'
-import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import { restoreCanonicalRequest, type CanonicalFetch } from '@frank/cashweb/relay/canonical-dm-transport'
 import { encodePluginMessageItem, parseFrame, toHex } from '@frank/codec'
 import {
   Transaction,
@@ -111,6 +111,7 @@ describe("a wallet's sync note to itself", () => {
   let mailbox: InboxRecord[]
   let bobMailbox: InboxRecord[]
   let applied: jest.SpyInstance
+  let routeByRecipient = false
 
   /** A directory in which the wallet can also find itself, as a relay answers for any key. */
   async function selfAware(f: Fixture) {
@@ -119,6 +120,17 @@ describe("a wallet's sync note to itself", () => {
     const address = f.alice.identity.address.raw.toLowerCase()
     return {
       ...base,
+      fetch: async (url: string, init: Parameters<CanonicalFetch>[1]) => {
+        if (routeByRecipient && f === one) {
+          const request = restoreCanonicalRequest({
+            body: new Uint8Array(init.body!), contentType: init.headers['Content-Type'],
+          })
+          const recipient = request.identity.recipient
+          expect([f.alice.identity.address.raw.toLowerCase(), f.bob.identity.address.raw.toLowerCase()]).toContain(recipient)
+          f.setMailbox(recipient === f.alice.identity.address.raw.toLowerCase() ? mailbox : bobMailbox)
+        }
+        return base.fetch!(url, init)
+      },
       peerCurrent: async (
         wanted: { address: string } | { subject: string },
       ) =>
@@ -135,6 +147,7 @@ describe("a wallet's sync note to itself", () => {
   }
 
   beforeEach(async () => {
+    routeByRecipient = false
     mockBalances.clear()
     mockFunded.length = 0
     mailboxes.clear()
@@ -589,6 +602,8 @@ describe("a wallet's sync note to itself", () => {
 
     it('resolves with the relay down and a paid chat message unresolved; the note is sent on a later flush, and neither holds the other', async () => {
       minesNativeTransfers(one.alice)
+      // Route by the signed request recipient, including self-notes emitted during recovery.
+      routeByRecipient = true
       // A chat message whose delivery is not known, paid from a funded single-use account. (One
       // paid from the main account holds that account until the chain shows its payment, and a
       // native send from it waits for that.)
@@ -652,15 +667,30 @@ describe("a wallet's sync note to itself", () => {
         payloadDigests: [],
       })
       expect(bobMailbox).toHaveLength(2)
-      expect(mailbox).toHaveLength(status().row.members.length)
-
-      const members = status().row.members
+      expect(new Set(bobMailbox.map(record => record.submissionIdentity)).size).toBe(2)
+      for (const record of bobMailbox) {
+        const request = one.requests.map(restoreCanonicalRequest).find(request =>
+          request.identity.submission_identity === record.submissionIdentity)!
+        expect(request.identity.recipient).toBe(one.bob.identity.address.raw.toLowerCase())
+        expect(request.parts.transactions.length).toBeGreaterThan(0)
+      }
+      await expect(one.alice.flushNativeSync!()).resolves.toEqual([])
+      const members = one.alice.getNativeOperations!().flatMap(row => row.members)
+        .filter(member => member.observation.state === 'included-success')
+      expect(members.every(member => member.syncApplied)).toBe(true)
+      expect(mailbox).toHaveLength(members.length)
       const other = await otherDevice()
       one.setMailbox(undefined)
+      const first = await read(other, other.alice)
+      expect(first.held).toEqual([])
+      expect(first.messages).toEqual([])
+      expect(applied).toHaveBeenCalledTimes(members.length)
+      expect(applied.mock.calls.map(([, item]) => item.rawTx).sort())
+        .toEqual(members.map(member => member.signed!.rawTransaction).sort())
+      expect(applied.mock.calls.map(([, item]) => item.txHash)).toContain(sent.txHash)
+      for (const result of applied.mock.results) await expect(result.value).resolves.toBeDefined()
       await read(other, other.alice)
       expect(applied).toHaveBeenCalledTimes(members.length)
-      expect(applied.mock.calls.map(([, item]) => item.rawTx)).toEqual(members.map(member => member.signed!.rawTransaction))
-      expect(applied.mock.calls.map(([, item]) => item.txHash)).toContain(sent.txHash)
     })
   })
 })

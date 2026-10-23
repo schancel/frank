@@ -1630,8 +1630,8 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
   })
 
   it('spends externally deposited inventory through the shared preparer without prefunding', async () => {
-    expect(f.alice.pool.records()).toHaveLength(0)
-    await depositStampAccounts(f.alice, 100_000n)
+    const inventory = f.alice.pool.records()
+    expect(inventory.length).toBeGreaterThan(0)
     const directory = await f.directoryFor('alice', f.alice, f.bob)
     installCanonicalDirectory(f.alice, directory)
     const prepare = jest.spyOn(f.alice.transactionSetPreparer!, 'constructTransactionSet')
@@ -1644,6 +1644,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(result.stampValueWei).toBe(100_000n)
     expect(prepare).toHaveBeenCalledTimes(1)
     expect(mockFunded).toEqual([])
+    expect(f.alice.pool.records()).toEqual(inventory)
     const senderCurrent = await directory.selfCurrent()
     await f.alice.close()
     expect(() => createCanonicalMessageRoles(f.alice, senderCurrent)).toThrow(

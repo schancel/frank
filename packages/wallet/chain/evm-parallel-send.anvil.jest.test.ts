@@ -349,84 +349,110 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
   // From here the node mines only when told to, so "not mined yet" lasts as long as a test needs.
   const automine = (on: boolean) => chain.send('evm_setAutomine', [on])
   const mine = () => chain.send('evm_mine', [])
-  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
   const NATIVE_HOLDER = /:main-account$/
-  /** Runs `started` and reports, after `ms`, whether it has finished. */
-  async function stillWaiting<T>(started: Promise<T>, ms: number) {
-    let done = false
-    void started.then(
-      () => (done = true),
-      () => (done = true),
-    )
-    await pause(ms)
-    return !done
-  }
 
-  it('a native send waits for a message payment from the main account to be mined, then holds the account itself until its own transfer is mined', async () => {
+  it('a pending stamp reserves its shared graph; a later legacy payment spends distributed change with original bytes', async () => {
     const main = (await alice.getReceiveAddress()).raw
     await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
-    const nonce = await chain.getTransactionCount(main, 'latest')
     await automine(false)
     try {
-      // Only the main account covers this stamp: this message is paid from it.
       const first = await send(3, 0, MAIN_STAMP)
-      expect(alice.pool.accountClaimedBy(main)).toBeDefined()
-      expect(alice.pool.accountClaimedBy(main)).not.toMatch(NATIVE_HOLDER)
-      expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 1)
-
-      const recipient = Wallet.createRandom().address
-      const native = alice.sendNative({
-        recipient: { raw: recipient },
-        value: 12_345n,
-      })
-      // It waits its turn: no error, and no second transaction signed over the first.
-      expect(await stillWaiting(native, 2_500)).toBe(true)
-      expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 1)
-      await mine()
-      const transfer = await native
-      expect((await chain.getTransaction(transfer.txHash))!.nonce).toBe(
-        nonce + 1,
+      const id = `stamp-${ID(3, 0).replace(/-/g, '')}`
+      const original = alice.transactionSetPreparer!.getOperation(id)!
+      const originalBytes = original.members.map(
+        member => member.signed!.rawTransaction,
       )
+      expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
+      expect(
+        evmWalletInternals(alice).coinList!.heldBy(id).length,
+      ).toBeGreaterThan(0)
+      const pendingNonce = await chain.getTransactionCount(main, 'pending')
+      const recipient = Wallet.createRandom().address
+      const onSigned = jest.fn()
+      await expect(
+        alice.sendLegacy!({
+          recipient: { raw: recipient },
+          value: 12_345n,
+          onSigned,
+        }),
+      ).rejects.toThrow(/Insufficient available EVM coins/)
+      expect(onSigned).not.toHaveBeenCalled()
+      expect(await chain.getTransactionCount(main, 'pending')).toBe(
+        pendingNonce,
+      )
+      expect(await chain.getBalance(recipient)).toBe(0n)
+      expect(
+        alice
+          .transactionSetPreparer!.getOperation(id)!
+          .members.map(member => member.signed!.rawTransaction),
+      ).toEqual(originalBytes)
 
-      // The send has returned and its transfer is not mined: the account is still held, and
-      // the next message waits for it instead of signing at a third nonce.
-      expect(alice.pool.accountClaimedBy(main)).toMatch(NATIVE_HOLDER)
-      const second = send(3, 1, MAIN_STAMP)
-      expect(await stillWaiting(second, 2_500)).toBe(true)
-      expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 2)
-      await mine()
-      const sent = await second
       await mine()
       await automine(true)
-      await settle([first.payloadDigest, sent.payloadDigest])
+      await settle([first.payloadDigest])
+      const rootNonce = await chain.getTransactionCount(main, 'latest')
+      const transfer = await alice.sendLegacy!({
+        recipient: { raw: recipient },
+        value: 12_345n,
+        onSigned,
+      })
+      expect(onSigned).toHaveBeenCalledTimes(1)
       expect((await chain.getTransactionReceipt(transfer.txHash))!.status).toBe(
         1,
       )
-      expect(await chain.getBalance(recipient)).toBe(12_345n)
+      const mined = (await chain.getTransaction(transfer.txHash))!
+      expect(mined.from.toLowerCase()).not.toBe(main.toLowerCase())
+      const policy = alice.transactionSetPreparer!.transactionSetPolicy()
+      expect(mined.value).toBeGreaterThanOrEqual(12_345n)
+      expect(mined.value - 12_345n).toBeLessThan(
+        policy.dustWei + policy.changeGasLimit * policy.gasPriceWei,
+      )
+      expect(await chain.getBalance(recipient)).toBe(mined.value)
+      expect(await chain.getTransactionCount(main, 'latest')).toBe(rootNonce)
+      const row = alice.getNativeOperations!().find(row =>
+        row.members.some(
+          member => member.signed?.transactionHash === transfer.txHash,
+        ),
+      )!
+      expect(row.kind).toBe('transaction-set')
       expect(
-        (await chain.getTransaction(sent.stampPayments[0]!.txHash))!.nonce,
-      ).toBe(nonce + 2)
-      expect(await chain.getTransactionCount(main, 'latest')).toBe(nonce + 3)
+        row.members.find(member => member.transactionSet?.role === 'payment')!
+          .transactionSet!.intendedValueWei,
+      ).toBe('12345')
+      const signed = row.members.map(member => member.signed!.rawTransaction)
+      await alice.transactionSetSubmission!.reconcileAuthorized()
+      expect(
+        alice.getNativeOperations!()
+          .find(candidate => candidate.operationId === row.operationId)!
+          .members.map(member => member.signed!.rawTransaction),
+      ).toEqual(signed)
+      expect(await chain.getBalance(recipient)).toBe(mined.value)
     } finally {
       await automine(true)
     }
   })
 
-  it('a native send given a deadline gives up when it passes, having signed nothing', async () => {
+  it('native transfer admission rejects reserved shared inputs without signing or waiting for a wallet-wide turn', async () => {
     const main = (await alice.getReceiveAddress()).raw
     await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
-    const nonce = await chain.getTransactionCount(main, 'latest')
     await automine(false)
     try {
       const message = await send(4, 0, MAIN_STAMP)
+      const before = alice.getNativeOperations!()
+      const nonce = await chain.getTransactionCount(main, 'pending')
+      const onSigned = jest.fn()
       await expect(
         alice.sendNative({
           recipient: { raw: Wallet.createRandom().address },
           value: 1n,
           mainAccountWaitMs: 1_500,
+          onSigned,
         }),
-      ).rejects.toThrow(/wait given for it ran out/)
-      expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 1)
+      ).rejects.toThrow(/Insufficient unreserved native funds/)
+      expect(onSigned).not.toHaveBeenCalled()
+      expect(alice.getNativeOperations!()).toEqual(before)
+      expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
+      expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce)
       await mine()
       await automine(true)
       await settle([message.payloadDigest])
@@ -435,7 +461,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     }
   })
 
-  it('a contract call takes the main account like every other spender and holds it until the chain decides; one that is never handed to the network holds nothing', async () => {
+  it('a pending contract call excludes its source from stamps; an unexposed rejected call releases its own reservation', async () => {
     const main = (await alice.getReceiveAddress()).raw
     await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
     const nonce = await chain.getTransactionCount(main, 'latest')
@@ -449,21 +475,19 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
         gasLimit: 60_000n,
       })
       expect(alice.pool.accountClaimedBy(main)).toMatch(NATIVE_HOLDER)
-      const message = send(5, 0, MAIN_STAMP)
-      expect(await stillWaiting(message, 2_500)).toBe(true)
+      const original = alice.getNativeOperations!()
+      await expect(send(5, 0, MAIN_STAMP)).rejects.toThrow(
+        /No funds cover a stamp/,
+      )
+      expect(alice.getNativeOperations!()).toEqual(original)
       expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 1)
       await mine()
-      const sent = await message
-      await mine()
       await automine(true)
-      await settle([sent.payloadDigest])
       expect((await chain.getTransactionReceipt(call.txHash))!.status).toBe(1)
-      expect(
-        (await chain.getTransaction(sent.stampPayments[0]!.txHash))!.nonce,
-      ).toBe(nonce + 1)
-
-      // Signed, and the caller could not record it: it is discarded before any broadcast, the
-      // main account is free at once, and the next message does not wait.
+      expect(await chain.getBalance(target)).toBe(7n)
+      await alice.reobserveNativeOperations!()
+      // Exercise this main-account call's prebroadcast cancellation before a stamp drains it.
+      const before = alice.getNativeOperations!()
       await expect(
         alice.sendContractCall!({
           to: { raw: target },
@@ -475,10 +499,28 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
           },
         }),
       ).rejects.toThrow('the caller could not record it')
+      const discarded = alice.getNativeOperations!().filter(
+        row => !before.some(prior => prior.operationId === row.operationId),
+      )
+      expect(discarded).toHaveLength(1)
+      expect(discarded[0]!.cancelled).toBe(true)
+      expect(
+        discarded[0]!.members.every(
+          member => !member.signed && !member.exposed,
+        ),
+      ).toBe(true)
+      expect(await chain.getBalance(target)).toBe(7n)
+      expect(await chain.getTransactionCount(main, 'latest')).toBe(nonce + 1)
       expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
-      const after = await send(5, 1, MAIN_STAMP)
+      const sent = await send(5, 1, MAIN_STAMP)
+      await settle([sent.payloadDigest])
+      const after = await send(5, 2, MAIN_STAMP)
       await settle([after.payloadDigest])
-      expect(await chain.getTransactionCount(main, 'latest')).toBe(nonce + 3)
+      expect(
+        (await onChain([sent, after])).receipts.every(
+          receipt => receipt?.status === 1,
+        ),
+      ).toBe(true)
     } finally {
       await automine(true)
     }

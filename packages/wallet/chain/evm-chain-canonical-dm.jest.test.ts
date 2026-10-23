@@ -3726,11 +3726,24 @@ describe('two typed wallets on the open directory', () => {
     await online('alice', f.alice)
     const bobDir = await online('bob', f.bob)
     await fund(f.alice)
+    // Self-addressed control traffic legitimately shares this relay request stream.
+    // Put it first deterministically so request index zero cannot stand for Bob's message.
+    const control = await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.alice.identity.address,
+      items: text('own mailbox control'),
+      stampValue: 0n,
+    })
+    expect(restoreCanonicalRequest(f.requests[0]).identity.payload_hash).toBe(control.payloadDigest)
+    expect(restoreCanonicalRequest(f.requests[0]).identity.recipient).toBe(
+      f.alice.identity.address.raw.toLowerCase(),
+    )
     const sent = await f.chain.directMessages.send({
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('recover original'),
     })
+    expect(sent.payloadDigest).not.toBe(control.payloadDigest)
     clock += 345n * 24n * 3600n * SECOND
     await bobDir.publish()
     const original = inboxRecordForMessage(sent.payloadDigest, 20)

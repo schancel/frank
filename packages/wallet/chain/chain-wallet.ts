@@ -384,8 +384,13 @@ export interface NativeWalletHandle {
   /** Recovers or resumes any in-flight staging intent interrupted by an app/browser crash. */
   getUnresolvedLegacySend?(): readonly EvmNativeOperation[];
   resumeLegacySend?(operationId: string): Promise<LegacySendResult>;
-  /** EVM operation evidence; delivery and inclusion do not release its input claims. */
+  /** Active EVM operation evidence; completed records are available through history. */
   getNativeOperations?(): readonly EvmNativeOperation[];
+  readNativeOperation?(operationId: string): Promise<EvmNativeOperation | undefined>;
+  getNativeOperationHistory?(options: { after?: string; limit: number }): Promise<{
+    operations: EvmNativeOperation[];
+    next?: string;
+  }>;
   /** Whether this session's last attempt to tell the account's other devices about the operation
    * failed. It is tried again on a later send or resume; the payment itself is unaffected. */
   nativeOperationSyncFailed?(operationId: string): boolean;

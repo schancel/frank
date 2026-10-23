@@ -238,6 +238,8 @@ export class EvmWallet implements EvmChainWalletHandle {
   settleContactPayment!: EvmChainWalletHandle["settleContactPayment"];
   retryContactPayment!: EvmChainWalletHandle["retryContactPayment"];
   recordStealthPayment!: EvmChainWalletHandle["recordStealthPayment"];
+  readNativeOperation!: EvmChainWalletHandle["readNativeOperation"];
+  getNativeOperationHistory!: EvmChainWalletHandle["getNativeOperationHistory"];
   getNativeOperations!: EvmChainWalletHandle["getNativeOperations"];
   nativeOperationSyncFailed!: EvmChainWalletHandle["nativeOperationSyncFailed"];
   flushNativeSync!: EvmChainWalletHandle["flushNativeSync"];

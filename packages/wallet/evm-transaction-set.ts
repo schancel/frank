@@ -89,6 +89,17 @@ export class EvmTransactionSetPreparer {
       )
   }
 
+  /** Resolve the original signed graph in active storage or immutable completed history. */
+  async readOperation(operationId: string): Promise<EvmNativeOperation | undefined> {
+    return this.options.journal.refreshPreparation(prefix + operationId)
+  }
+
+  async readTransactionSet(operationId: string): Promise<PreparedEvmTransactionSet> {
+    const row = await this.readOperation(operationId)
+    if (!row || row.cancelled) throw new Error('Unknown transaction set')
+    return this.result(row, null)
+  }
+
   /** Complete graph snapshot for the wallet submission boundary; never signs or broadcasts. */
   getTransactionSet(operationId: string): PreparedEvmTransactionSet {
     const row = this.getOperation(operationId)
@@ -97,8 +108,15 @@ export class EvmTransactionSetPreparer {
   }
 
   async authorizeSubmission(operationId: string, expectedRawTransactions?: readonly string[]): Promise<void> {
-    const row = this.getOperation(operationId)
-    if (!row) throw new Error('Unknown transaction-set operation')
+    const row = await this.readOperation(operationId)
+    if (!row || row.cancelled || row.members.some(member => !member.signed))
+      throw new Error('Unknown transaction-set operation')
+    if (expectedRawTransactions && JSON.stringify([...expectedRawTransactions].sort()) !==
+        JSON.stringify(row.members.map(member => member.signed!.rawTransaction).sort()))
+      throw new Error('Transaction-set signed bytes conflict with original operation')
+    if (row.submissionAuthorized) return
+    // A completed historical row must never acquire new submission authorization.
+    if (!this.getOperation(operationId)) throw new Error('Completed transaction set is not authorized')
     await this.options.journal.authorizeTransactionSet(row.operationId, expectedRawTransactions)
   }
 
@@ -111,6 +129,7 @@ export class EvmTransactionSetPreparer {
     return this.options.coins.runTransactionSetExclusive(operationId, async () => {
       let row = await this.options.journal.refreshPreparation(prefix + operationId)
       if (!row || row.submissionAuthorized || row.members.some(member => member.exposed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))) return false
+      if (row.cancelled && !this.getOperation(operationId)) return true
       const originals = this.cancellationSources(row)
       if (!row.cancelled) row = await this.options.journal.discardUnexposed(row.operationId)
       this.options.coins.restoreTransactionSetCancellation(operationId, originals)
@@ -351,8 +370,10 @@ export class EvmTransactionSetPreparer {
     } }
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(request.operationId)) return Promise.reject(new Error('Invalid transaction-set operation ID'))
     return this.options.coins.constructTransactionSetOnce(request.operationId,
-      () => this.construct(request, stageId, legacy), stageId).then(result => {
-        this.validateReplay(request, this.getOperation(request.operationId)!, stageId, legacy)
+      () => this.construct(request, stageId, legacy), stageId).then(async result => {
+        const row = await this.readOperation(request.operationId)
+        if (!row) throw new Error('Missing durable transaction set')
+        this.validateReplay(request, row, stageId, legacy)
         return result
       })
   }
@@ -394,7 +415,8 @@ export class EvmTransactionSetPreparer {
     if (existing && (stageId === undefined || existing.transactionSetStages?.some(stage => stage.stageId === stageId))) {
       this.validateReplay(request, existing, stageId, legacy)
       if (existing.members.some(member => !member.signed)) throw new Error('Incomplete transaction-set journal record')
-      this.restoreRow(existing)
+      // History is evidence of the original operation, never a construction inventory.
+      if (this.getOperation(request.operationId)) this.restoreRow(existing)
       return this.result(existing, stageId)
     }
     if (stageId !== undefined && (!existing || !existing.transactionSetStages || existing.cancelled || existing.submissionAuthorized || existing.members.some(member => member.exposed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))))
@@ -518,9 +540,9 @@ export class EvmTransactionSetPreparer {
       let authority: EvmNativeOperation | undefined
       try { authority = await journal.refreshPreparation(prefix + request.operationId) }
       catch { throw error } // Uncertain writes keep every reservation fenced until reopen.
-      if (authority && (stageId === undefined || authority.transactionSetStages?.some(stage => stage.stageId === stageId)))
-        this.restoreRow(authority) // Commit-then-throw: the original durable signed bytes win.
-      else
+      if (authority && (stageId === undefined || authority.transactionSetStages?.some(stage => stage.stageId === stageId))) {
+        if (this.getOperation(request.operationId)) this.restoreRow(authority) // Commit-then-throw: the original durable signed bytes win.
+      } else
         coins.abandonTransactionSetSources(request.operationId, parts.map(part => part.coin), beforeSelection)
       throw error
     }

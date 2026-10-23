@@ -2409,6 +2409,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 payloadDigest: origin?.payloadDigest,
                 timestampMs: origin?.timestampMs ?? Date.now(),
               }),
+            readNativeOperation(operationId) {
+              requireOpenWallet(wallet);
+              return transactionOwner.runLifetime(() => transactionOwner.nativeJournal!.readOperation(operationId));
+            },
+            getNativeOperationHistory(options) {
+              requireOpenWallet(wallet);
+              return transactionOwner.runLifetime(() => transactionOwner.nativeJournal!.historyPage(options));
+            },
             getNativeOperations() {
               return nativeOperationOwner(wallet).listOperations();
             },

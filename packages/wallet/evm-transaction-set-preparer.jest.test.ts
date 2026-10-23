@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { Transaction, Wallet } from 'ethers'
 import { EvmCoinList } from './evm-coin-list'
 import { MemoryRecordStore, LevelRecordStore } from './storage/evm-coin-store'
-import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
+import { EvmNativeOperationJournal, evmNativeOperationDigest } from './storage/evm-native-operation-journal'
 import * as durability from './storage/level-durability'
 import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import type { EvmTransactionSetPolicy } from './evm-transaction-set-types'
@@ -1291,4 +1291,50 @@ describe('captured per-recipient stamp minimum', () => {
     expect(f.preparer.getOperation(request.operationId)!.transactionSetStages![1]!.minimumPaymentWei).toBe('42000')
     expect(await new EvmTransactionSetPreparer(f.options).appendTransactionSet(request)).toEqual(stamp)
   })
+})
+
+
+it('reopens completed history and returns original bytes without restoring stale inventory or signing again', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'evm-completed-retry-'))
+  const binding = { chainIdentifier: 'monad-testnet', nativeChainId: '10143', publicTuple: 'history-retry' }
+  let store = await LevelRecordStore.open<import('./evm-coin-list').StoredEvmListCoin>(directory, 'coins')
+  let journal = new EvmNativeOperationJournal({ location: directory, binding })
+  try {
+    await journal.Open()
+    let coins = await EvmCoinList.open(store)
+    await coins.put({ account: signer(1).address, privateKey: signer(1).privateKey, nonce: 4, valueWei: 1000000n, origin: 'stealth' })
+    const deriveChange = (index: number) => ({ account: signer(100 + index).address.toLowerCase(), privateKey: signer(100 + index).privateKey, changeIndex: index })
+    let preparer = new EvmTransactionSetPreparer({ coins, journal, policy: () => policy, deriveChange })
+    const request = { operationId: 'completed-retry', amountWei: 979000n, kdf }
+    const signed = await preparer.constructTransactionSet(request)
+    const original = preparer.getOperation(request.operationId)!
+    expect(original.members).toHaveLength(1)
+    const blockHash = '0x' + 'ab'.repeat(32)
+    await preparer.recordObservation(request.operationId, 0, {
+      state: 'included-success', transactionHash: original.members[0]!.signed!.transactionHash,
+      blockHash, blockNumber: 101, transactionIndex: 0, feeWei: '21000',
+    }, { blockHash, blockNumber: 101, nonce: 5, balanceWei: '0' })
+    const completed = preparer.getOperation(request.operationId)!
+    await journal.archiveCompleted(completed.operationId, {
+      expectedOperationHash: evmNativeOperationDigest(completed), ownerReference: 'test:completed-retry',
+      sync: 'not-required', delivery: 'not-required', dependencies: 'complete',
+    })
+    const inventory = coins.all()
+    expect(journal.list()).toEqual([])
+    await journal.Close(); await store.close()
+    store = await LevelRecordStore.open(directory, 'coins')
+    journal = new EvmNativeOperationJournal({ location: directory, binding }); await journal.Open()
+    coins = await EvmCoinList.open(store)
+    preparer = new EvmTransactionSetPreparer({ coins, journal, policy: () => policy, deriveChange })
+    const prepare = jest.spyOn(journal, 'prepare')
+    expect(await preparer.readOperation(request.operationId)).toEqual(completed)
+    expect(await preparer.readTransactionSet(request.operationId)).toEqual(signed)
+    expect(await preparer.constructTransactionSet(request)).toEqual(signed)
+    expect(coins.all()).toEqual(inventory)
+    expect(prepare).not.toHaveBeenCalled()
+    expect(journal.list()).toEqual([])
+    await expect(preparer.constructTransactionSet({ ...request, amountWei: 978000n })).rejects.toThrow('conflicts with original intent')
+  } finally {
+    await journal.Close(); await store.close(); await rm(directory, { recursive: true, force: true })
+  }
 })

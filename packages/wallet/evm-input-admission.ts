@@ -1,4 +1,4 @@
-import { getAddress, hexlify, Transaction } from 'ethers'
+import { getAddress, hexlify, keccak256, toUtf8Bytes, Transaction } from 'ethers'
 import type { MonadSubAccountPool } from './evm-account-pool'
 import type { MonadChangePool } from './evm-change-pool'
 import type {
@@ -142,6 +142,8 @@ export type NativeJournalReader = Pick<
   | 'binding'
   | 'list'
   | 'get'
+  | 'readOperation'
+  | 'historyPage'
   | 'sourceReferences'
   | 'referencesSpendIndex'
   | 'canSelect'
@@ -168,6 +170,7 @@ interface Owners {
     getAll(): CanonicalJournalAttempt[]
   }
   readonly canonicalBinding?: { readonly id: string; readonly tuple: string }
+  readonly validatedTopicReferences?: ReadonlySet<string>
   readonly topic: TopicOperationJournal
   readonly pool: MonadSubAccountPool
   readonly change: MonadChangePool
@@ -223,9 +226,11 @@ class AdmissionOwner implements EvmInputAdmission {
     number,
     { handle: AccountLeaseHandle; authorization: string }
   >()
+  validatedTopicReferences: ReadonlySet<string>
   uncertain = false
   private invokingMutation = false
   constructor(readonly owners: Owners) {
+    this.validatedTopicReferences = owners.validatedTopicReferences ?? new Set()
     internals.set(this, this)
   }
   private assertLifetime(lifetime: WalletOperationLifetime): void {
@@ -411,7 +416,9 @@ class AdmissionOwner implements EvmInputAdmission {
       if (row.construction) continue
       const native = o.native.list().find(candidate => candidate.preparationId === `evm-transaction-set:${row.transactionSetOperationId}`)
       const payments = native?.members.filter(member => member.transactionSet?.role === 'payment')
-      if (!native || native.kind !== 'transaction-set' || native.intendedValueWei !== row.intendedValueWei || !payments || payments.length !== row.rawTransactions.length || payments.some((member, index) => member.signed?.rawTransaction !== row.rawTransactions[index] || member.source.address !== row.funders[index]?.toLowerCase())) invalid()
+      // An absent active row needs an exact reference validated against durable history.
+      if (!native && !this.validatedTopicReferences.has(topicReferenceKey(row))) invalid()
+      if (native && (native.kind !== 'transaction-set' || native.intendedValueWei !== row.intendedValueWei || !payments || payments.length !== row.rawTransactions.length || payments.some((member, index) => member.signed?.rawTransaction !== row.rawTransactions[index] || member.source.address !== row.funders[index]?.toLowerCase()))) invalid()
     }
     const poolAuthorities = new Map<number, Claim[]>()
     for (const claim of claims) {
@@ -919,6 +926,8 @@ export function nativeJournalReader(
     binding: Object.freeze({ ...journal.binding }),
     list: () => journal.list(),
     get: id => journal.get(id),
+    readOperation: id => journal.readOperation(id),
+    historyPage: options => journal.historyPage(options),
     sourceReferences: () => journal.sourceReferences(),
     referencesSpendIndex: index => journal.referencesSpendIndex(index),
     canSelect: (source, nonce) =>
@@ -945,6 +954,7 @@ export type NativeExecutionJournal = NativeJournalReader &
   Pick<
     EvmNativeOperationJournal,
     | 'prepare'
+    | 'archiveCompleted'
     | 'refreshPreparation'
     | 'checkpointSigned'
     | 'markExposed'
@@ -970,6 +980,10 @@ export function nativeAdmissionJournal(
     owner.mutate(lifetime, operation)
   return {
     ...nativeJournalReader(journal, owner.owners.topic),
+    archiveCompleted: (id, receipt) => mutation(async () => {
+      owner.validatedTopicReferences = await validateNativeTopicReferences(journal, owner.owners.topic)
+      return journal.archiveCompleted(id, receipt)
+    }),
     authorizeTransactionSet: (id, expected) => mutation(() => journal.authorizeTransactionSet(id, expected)),
     appendTransactionSet: (id, stage, members, signed) => mutation(async () => {
       const row = journal.get(id)
@@ -1362,4 +1376,28 @@ export function validateEvmInputAdmission(admission: EvmInputAdmission): void {
     )
       throw error
   }
+}
+
+function topicReferenceKey(row: ReturnType<TopicOperationJournal['getAll']>[number]): string {
+  return keccak256(toUtf8Bytes(JSON.stringify([row.transactionSetOperationId, row.intendedValueWei, row.rawTransactions, row.funders])))
+}
+
+/** Validate payload references without materializing completed history in the admission view. */
+export async function validateNativeTopicReferences(
+  native: Pick<EvmNativeOperationJournal, 'refreshPreparation'>,
+  topic: TopicOperationJournal,
+): Promise<ReadonlySet<string>> {
+  const validated = new Set<string>()
+  for (const row of topic.getAll()) {
+    if (row.construction) continue
+    const operation = await native.refreshPreparation(`evm-transaction-set:${row.transactionSetOperationId}`)
+    const payments = operation?.members.filter(member => member.transactionSet?.role === 'payment')
+    if (!operation || operation.cancelled || operation.kind !== 'transaction-set' ||
+        operation.intendedValueWei !== row.intendedValueWei || !payments ||
+        payments.length !== row.rawTransactions.length || payments.some((member, index) =>
+          member.signed?.rawTransaction !== row.rawTransactions[index] ||
+          member.source.address !== row.funders[index]?.toLowerCase())) invalid()
+    validated.add(topicReferenceKey(row))
+  }
+  return validated
 }

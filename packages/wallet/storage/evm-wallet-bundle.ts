@@ -3,6 +3,7 @@ import {
   nativeJournalReader,
   canonicalJournalReader,
   validateEvmInputAdmission,
+  validateNativeTopicReferences,
   type EvmInputAdmission,
   type NativeJournalReader,
   type CanonicalJournalReader,
@@ -297,6 +298,7 @@ export function hasUncorrelatedCanonicalPreSignIntent(
 
 function makeBundle(params: {
   durability: 'persistent' | 'test-only-ephemeral'
+  validatedTopicReferences?: ReadonlySet<string>
   bindingId: string
   pool: MonadSubAccountPool
   changePool: MonadChangePool
@@ -419,6 +421,7 @@ function makeBundle(params: {
   const inputAdmission = createEvmInputAdmission({
     binding: params.nativeJournal?.binding,
     native: params.nativeJournal,
+    validatedTopicReferences: params.validatedTopicReferences,
     canonical: params.canonicalJournal,
     retained: canonicalRetained,
     canonicalBinding: params.canonicalBinding,
@@ -709,7 +712,9 @@ export async function openExistingPoolMonadTopicOwner(params: {
         await foreign.Close()
       }
     }
+    const validatedTopicReferences = nativeJournal ? await validateNativeTopicReferences(nativeJournal, topicJournal) : undefined
     return makeBundle({
+      validatedTopicReferences,
       durability:
         params.location === undefined ? 'test-only-ephemeral' : 'persistent',
       // This identifier is session-local: existing manifest/root/binding bytes are never rewritten.
@@ -1019,7 +1024,9 @@ export async function openMonadWalletBundle(
       await nativeJournal.Open()
     }
 
+    const validatedTopicReferences = nativeJournal ? await validateNativeTopicReferences(nativeJournal, topicJournal) : undefined
     const bundle = makeBundle({
+      validatedTopicReferences,
       nativeJournal,
       durability: 'persistent',
       bindingId,

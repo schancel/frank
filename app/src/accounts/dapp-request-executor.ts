@@ -29,6 +29,7 @@ export interface ApprovedDappRequest {
 }
 
 export interface DappEvmAttempt {
+  readonly requestId?: string
   readonly chainIdentifier: string
   readonly account: string
   readonly nonce: number
@@ -112,6 +113,7 @@ function extensionAttemptStore(): DappEvmAttemptStore {
       if (
         !row ||
         typeof row !== 'object' ||
+        (row.requestId !== undefined && typeof row.requestId !== 'string') ||
         typeof row.chainIdentifier !== 'string' ||
         typeof row.account !== 'string' ||
         !Number.isSafeInteger(row.nonce) ||
@@ -423,23 +425,41 @@ export async function executeApprovedDappRequest(
         const attemptStore = options.attemptStore ?? extensionAttemptStore()
         const attempts = [...(await attemptStore.read())]
         const intentHash = dappTransactionIntentHash(chainEntry.id, txData)
-        const priorIntent = attempts.find(
+        const requestAttempt = attempts.find(
+          item =>
+            item.chainIdentifier === chainEntry.id &&
+            item.account.toLowerCase() === expected.toLowerCase() &&
+            item.requestId === request.id,
+        )
+        if (requestAttempt && requestAttempt.intentHash !== intentHash)
+          throw new Error('Approved request ID was reused for another intent')
+        if (requestAttempt) {
+          const receipt = await send('eth_getTransactionReceipt', [
+            requestAttempt.transactionHash,
+          ])
+          if (receipt === null || receipt === undefined) {
+            return await retryExactEvmAttempt(send, requestAttempt)
+          }
+          const receiptStatus = (receipt as { status?: unknown }).status
+          if (receiptStatus !== '0x1' && receiptStatus !== '0x0')
+            throw new Error('EVM RPC returned a malformed transaction receipt')
+          return requestAttempt.transactionHash
+        }
+        const matchingIntents = attempts.filter(
           item =>
             item.chainIdentifier === chainEntry.id &&
             item.account.toLowerCase() === expected.toLowerCase() &&
             item.intentHash === intentHash,
         )
-        if (priorIntent) {
+        for (const priorIntent of matchingIntents) {
           const receipt = await send('eth_getTransactionReceipt', [
             priorIntent.transactionHash,
           ])
-          if (receipt === null || receipt === undefined) {
+          if (receipt === null || receipt === undefined)
             return await retryExactEvmAttempt(send, priorIntent)
-          }
           const receiptStatus = (receipt as { status?: unknown }).status
           if (receiptStatus !== '0x1' && receiptStatus !== '0x0')
             throw new Error('EVM RPC returned a malformed transaction receipt')
-          return priorIntent.transactionHash
         }
         const chainId = BigInt(chainIdHex)
         if (
@@ -554,6 +574,7 @@ export async function executeApprovedDappRequest(
         if (!transactionHash)
           throw new Error('Could not compute the signed transaction hash')
         const attempt: DappEvmAttempt = {
+          requestId: request.id,
           chainIdentifier: chainEntry.id,
           account: expected,
           nonce,

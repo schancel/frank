@@ -108,24 +108,44 @@ function decodedText(bytes: Uint8Array): string | undefined {
 
 function solanaTransactionReview(value: unknown): string {
   const bytes = bytesForReview(value)
-  let message: string
+  let versioned: VersionedTransaction | undefined
   try {
-    const tx = VersionedTransaction.deserialize(bytes)
-    const keys = tx.message.staticAccountKeys
-    message = tx.message.compiledInstructions
+    versioned = VersionedTransaction.deserialize(bytes)
+  } catch {
+    versioned = undefined
+  }
+  let message: string
+  if (versioned) {
+    if (versioned.message.addressTableLookups.length > 0)
+      throw new Error(
+        'This Solana v0 transaction uses address lookup tables. Frank cannot resolve every account before approval, so approval is disabled.',
+      )
+    const keys = versioned.message.staticAccountKeys
+    const instructions = versioned.message.compiledInstructions
+    if (
+      instructions.some(
+        ix =>
+          ix.programIdIndex >= keys.length ||
+          ix.accountKeyIndexes.some(index => index >= keys.length),
+      )
+    )
+      throw new Error(
+        'This Solana v0 transaction contains unresolved account indexes, so approval is disabled.',
+      )
+    message = instructions
       .map((ix, index) => {
         const program = keys[ix.programIdIndex]
-        const accounts = ix.accountKeyIndexes.map(
-          i => keys[i]?.toBase58() ?? `index:${i}`,
-        )
-        return `Instruction ${index + 1}\nProgram: ${
-          program?.toBase58() ?? `index:${ix.programIdIndex}`
-        }\nAccounts: ${accounts.join(', ') || '(none)'}\nData (hex): ${hexlify(
+        const accounts = ix.accountKeyIndexes.map(i => keys[i]!.toBase58())
+        return `Instruction ${
+          index + 1
+        }\nProgram: ${program!.toBase58()}\nAccounts: ${
+          accounts.join(', ') || '(none)'
+        }\nData (hex): ${hexlify(
           ix.data,
         )}\nInterpretation: Unknown instruction; review the full program and data.`
       })
       .join('\n\n')
-  } catch {
+  } else {
     const tx = Transaction.from(bytes)
     message = tx.instructions
       .map(
@@ -205,30 +225,50 @@ function approvalReview(request: PendingDappApproval): string {
         throw new Error('Transaction cannot be summarized')
       const value = BigInt(String(tx.value ?? '0x0'))
       const unit = chain.unit || 'native units'
+      const decimals = chain.nativeDecimals ?? 0
       lines.push(
         `Account: ${request.personaAddress ?? String(tx.from ?? 'unknown')}`,
       )
       lines.push(`Recipient: ${String(tx.to ?? '(contract creation)')}`)
       lines.push(
-        `Value: ${formatUnits(
-          value,
-          chain.nativeDecimals ?? 0,
-        )} ${unit} (${value} base units)`,
+        `Value: ${formatUnits(value, decimals)} ${unit} (${value} base units)`,
+      )
+      const gasLimitValue = tx.gas ?? tx.gasLimit
+      const gasPriceValue = tx.maxFeePerGas ?? tx.gasPrice
+      if (gasLimitValue === undefined || gasPriceValue === undefined)
+        throw new Error(
+          'Gas limit or fee cap is missing. Frank cannot show the maximum native fee and total transaction cost before approval, so approval is disabled.',
+        )
+      const gasLimit = BigInt(String(gasLimitValue))
+      const maxFeePerGas = BigInt(String(gasPriceValue))
+      const maxGasFee = gasLimit * maxFeePerGas
+      lines.push(`Gas limit: ${gasLimit.toString()}`)
+      lines.push(
+        `Maximum fee per gas: ${formatUnits(
+          maxFeePerGas,
+          decimals,
+        )} ${unit} (${maxFeePerGas} base units)`,
+      )
+      if (tx.maxPriorityFeePerGas !== undefined) {
+        const priorityFee = BigInt(String(tx.maxPriorityFeePerGas))
+        lines.push(
+          `Priority fee cap: ${formatUnits(
+            priorityFee,
+            decimals,
+          )} ${unit} (${priorityFee} base units)`,
+        )
+      }
+      lines.push(
+        `Maximum gas fee: ${formatUnits(
+          maxGasFee,
+          decimals,
+        )} ${unit} (${maxGasFee} base units)`,
       )
       lines.push(
-        `Gas limit: ${String(
-          tx.gas ?? tx.gasLimit ?? '(not specified; RPC estimate required)',
-        )}`,
-      )
-      lines.push(
-        `Gas price: ${String(
-          tx.gasPrice ??
-            tx.maxFeePerGas ??
-            '(not specified; RPC quote required)',
-        )}`,
-      )
-      lines.push(
-        `Priority fee: ${String(tx.maxPriorityFeePerGas ?? '(not specified)')}`,
+        `Maximum total cost: ${formatUnits(
+          value + maxGasFee,
+          decimals,
+        )} ${unit} (${value + maxGasFee} base units)`,
       )
       const data = typeof tx.data === 'string' ? tx.data : '0x'
       lines.push(`Calldata: ${data}`)
@@ -262,7 +302,7 @@ function approvalReview(request: PendingDappApproval): string {
     const lines = [
       `Chain: ${
         request.method === 'solana_connect'
-          ? 'Solana'
+          ? 'Solana mainnet-beta and devnet (Frank supports both networks)'
           : String(
               (request.params as any)?.chain ?? 'Solana network not specified',
             )
@@ -500,6 +540,20 @@ export function mountApprovalPage(
       approve.addEventListener('click', () => void decide(request, true))
       actions.append(approve)
     } else if (isConnectRequest(request) && request.chainFamily !== 'solana') {
+      const chain = nativeChain(request)
+      const networkKnown = chain?.family === 'evm'
+      root.append(
+        el(
+          doc,
+          'pre',
+          'approval-review-summary',
+          networkKnown
+            ? `Active EVM chain: ${chain.name} (${chain.id}, chain ID ${
+                request.chainIdHex ?? 'unknown'
+              })`
+            : 'Active EVM chain is unknown; connection approval is disabled.',
+        ),
+      )
       root.append(
         el(
           doc,
@@ -548,8 +602,9 @@ export function mountApprovalPage(
       approve.addEventListener('click', () => void decide(request, true))
       // Persona addresses come from Frank's custody; without one there is nothing to connect.
       const syncApprove = () => {
-        approve.disabled = !options.find(option => option.burner === useBurner)
-          ?.address
+        approve.disabled =
+          !networkKnown ||
+          !options.find(option => option.burner === useBurner)?.address
       }
       for (const option of options) {
         const label = el(doc, 'label', 'approval-persona')

@@ -579,6 +579,9 @@ describe('approval window page', () => {
 
     expect(root.textContent).toContain('app.uniswap.org')
     expect(root.textContent).toContain('Connect to this site')
+    expect(root.textContent).toContain(
+      'Active EVM chain: Monad Testnet (monad-testnet, chain ID 0x279f)',
+    )
     const burner = state.pendingApprovals.get('r1')!.suggestedBurnerAddress!
     expect(root.textContent).toContain(burner)
     expect(root.textContent).toContain(PRIMARY)
@@ -721,8 +724,16 @@ describe('approval window page', () => {
     expect(summary?.textContent).toContain(`Account: ${PRIMARY}`)
     expect(summary?.textContent).toContain(`Recipient: ${SITE}`)
     expect(summary?.textContent).toContain('Value: 1.0 MONT')
-    expect(summary?.textContent).toContain('Gas limit: 0x5208')
-    expect(summary?.textContent).toContain('Gas price: 0x3b9aca00')
+    expect(summary?.textContent).toContain('Gas limit: 21000')
+    expect(summary?.textContent).toContain(
+      'Maximum fee per gas: 0.000000001 MONT (1000000000 base units)',
+    )
+    expect(summary?.textContent).toContain(
+      'Maximum gas fee: 0.000021 MONT (21000000000000 base units)',
+    )
+    expect(summary?.textContent).toContain(
+      'Maximum total cost: 1.000021 MONT (1000021000000000000 base units)',
+    )
     expect(summary?.textContent).toContain('Calldata: 0xdeadbeef00112233')
     expect(summary?.textContent).toContain('Calldata interpretation: undecoded')
     expect(
@@ -803,6 +814,110 @@ describe('approval window page', () => {
     root
       .querySelector<HTMLButtonElement>('[data-testid="approval-reject"]')!
       .click()
+    page.dispose()
+    bg.dispose()
+  })
+
+  it('disables approval when a Solana v0 instruction uses unresolved lookup-table keys', async () => {
+    const { scope } = createExtensionScope()
+    const account = new PublicKey(new Uint8Array(32).fill(9)).toBase58()
+    const lookupTable = new PublicKey(new Uint8Array(32).fill(10))
+    const transaction = new VersionedTransaction(
+      new MessageV0({
+        header: {
+          numRequiredSignatures: 1,
+          numReadonlySignedAccounts: 0,
+          numReadonlyUnsignedAccounts: 1,
+        },
+        staticAccountKeys: [new PublicKey(account), SystemProgram.programId],
+        recentBlockhash: PublicKey.default.toBase58(),
+        compiledInstructions: [
+          {
+            programIdIndex: 1,
+            accountKeyIndexes: Uint8Array.of(2),
+            data: Uint8Array.of(7, 8, 9),
+          },
+        ],
+        addressTableLookups: [
+          {
+            accountKey: lookupTable,
+            writableIndexes: Uint8Array.of(0),
+            readonlyIndexes: new Uint8Array(),
+          },
+        ],
+      }),
+    ).serialize()
+    const request = {
+      id: 'sol-lookup-review',
+      kind: 'sign' as const,
+      chainFamily: 'solana' as const,
+      origin: 'https://solana.example',
+      href: 'https://solana.example',
+      method: 'solana_signTransaction',
+      params: {
+        account,
+        chain: 'solana:devnet',
+        transaction: Array.from(transaction),
+      },
+      chainIdentifier: 'solana-devnet',
+      solanaAccountAddress: account,
+      createdAt: Date.now(),
+      requiresCompanionApproval: true,
+    }
+    const state = createBackgroundBridgeState({
+      pendingApprovals: new Map([[request.id, request]]),
+    })
+    const bg = installBackgroundBridge(scope, state)
+    const root = document.createElement('main')
+    const page = mountApprovalPage(root, {
+      globalScope: scope,
+      closeWindow: () => undefined,
+    })
+    await page.refresh()
+    expect(root.textContent).toContain('approval is disabled')
+    expect(
+      root.querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')
+        ?.disabled,
+    ).toBe(true)
+    root
+      .querySelector<HTMLButtonElement>('[data-testid="approval-reject"]')!
+      .click()
+    page.dispose()
+    bg.dispose()
+  })
+
+  it('disables EVM transaction approval when fee bounds cannot be shown', async () => {
+    const { scope } = createExtensionScope()
+    const origin = 'https://app.uniswap.org'
+    const state = createBackgroundBridgeState({
+      activePersonaAddress: PRIMARY,
+      approvedOrigins: new Set([origin]),
+    })
+    const bg = installBackgroundBridge(scope, state)
+    const pending = rpc(
+      state,
+      scope,
+      'review-tx-no-fees',
+      'eth_sendTransaction',
+      origin,
+      [{ from: PRIMARY, to: SITE, value: '0x1' }],
+    )
+    await tick()
+    const root = document.createElement('main')
+    const page = mountApprovalPage(root, {
+      globalScope: scope,
+      closeWindow: () => undefined,
+    })
+    await page.refresh()
+    expect(root.textContent).toContain('maximum native fee and total')
+    expect(
+      root.querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')
+        ?.disabled,
+    ).toBe(true)
+    root
+      .querySelector<HTMLButtonElement>('[data-testid="approval-reject"]')!
+      .click()
+    expect((await pending).error.code).toBe(4001)
     page.dispose()
     bg.dispose()
   })
@@ -914,6 +1029,9 @@ describe('dApp provider end to end (inpage -> content -> background -> approval 
     expect(windows.create).toHaveBeenCalledTimes(1)
     await page.refresh()
     expect(root.textContent).toContain('Connect a Solana account')
+    expect(root.textContent).toContain(
+      'Solana mainnet-beta and devnet (Frank supports both networks)',
+    )
     expect(root.textContent).toContain(`Solana account: ${address}`)
     expect(
       root.querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')

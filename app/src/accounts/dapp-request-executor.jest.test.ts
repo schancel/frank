@@ -246,10 +246,14 @@ describe('approved dApp request executor', () => {
         }),
       ).rejects.toThrow('timed out')
       expect(attemptStore.getAttempts()).toHaveLength(1)
-      const hash = await executeApprovedDappRequest(request, fakeSession(), {
-        attemptStore: attemptStore.store,
-        evmRpc: injectedEvmRpc(),
-      })
+      const hash = await executeApprovedDappRequest(
+        { ...request, id: 'ambiguous-retry-approval' },
+        fakeSession(),
+        {
+          attemptStore: attemptStore.store,
+          evmRpc: injectedEvmRpc(),
+        },
+      )
       expect(hash).toBe(attemptStore.getAttempts()[0]?.transactionHash)
       expect(sendCalls).toBe(2)
       expect(attemptStore.getAttempts()).toHaveLength(1)
@@ -329,6 +333,56 @@ describe('approved dApp request executor', () => {
       }
     },
   )
+
+  it('treats a separately approved identical EVM send as a new operation', async () => {
+    const attemptStore = memoryAttemptStore()
+    const transaction = {
+      from: EVM_PERSONA.address,
+      to: Wallet.createRandom().address,
+      value: '0x4',
+    }
+    let nonce = 0
+    let sends = 0
+    const evmRpc = async () => ({
+      async send(method: string, params: unknown[]) {
+        if (method === 'eth_getTransactionCount') return `0x${nonce++}`
+        if (method === 'eth_getTransactionReceipt') return { status: '0x1' }
+        if (method === 'eth_estimateGas') return '0x5208'
+        if (method === 'eth_gasPrice') return '0x3b9aca00'
+        if (method === 'eth_sendRawTransaction') {
+          sends += 1
+          return Transaction.from(params[0] as string).hash
+        }
+        throw new Error(`unexpected RPC ${method}`)
+      },
+    })
+    const createRequest = (id: string) => ({
+      id,
+      origin: ORIGIN,
+      method: 'eth_sendTransaction',
+      params: [transaction],
+      chainIdHex: '0x1',
+      personaRef: REF,
+      personaAddress: EVM_PERSONA.address,
+    })
+    const firstHash = await executeApprovedDappRequest(
+      createRequest('approved-send-1'),
+      fakeSession(),
+      { attemptStore: attemptStore.store, evmRpc },
+    )
+    const secondHash = await executeApprovedDappRequest(
+      createRequest('approved-send-2'),
+      fakeSession(),
+      { attemptStore: attemptStore.store, evmRpc },
+    )
+
+    expect(secondHash).not.toBe(firstHash)
+    expect(sends).toBe(2)
+    expect(attemptStore.getAttempts()).toHaveLength(2)
+    expect(
+      attemptStore.getAttempts().map(attempt => attempt.requestId),
+    ).toEqual(['approved-send-1', 'approved-send-2'])
+  })
 
   it('serializes different EVM intents for the same chain and account', async () => {
     const attemptStore = memoryAttemptStore()

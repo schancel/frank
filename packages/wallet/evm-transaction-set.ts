@@ -312,8 +312,6 @@ export class EvmTransactionSetPreparer {
           })
         }
       }
-      if (observation.state === 'included-success')
-        await journal.markSyncApplied(row.operationId, memberIndex)
       if (account && account.nonce > tx.nonce) {
         await journal.markTransactionSetInventoryApplied(
           row.operationId,

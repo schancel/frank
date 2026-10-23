@@ -1795,7 +1795,10 @@ export class EvmLegacyConsolidator {
           member.observation.state === 'included-success' &&
           !member.syncApplied
         ) {
-          if (this.localResults.get(`${id}:${i}`) !== 'applied') {
+          const localApplied = row.kind === 'transaction-set'
+            ? member.transactionSet?.inventoryApplied === true
+            : this.localResults.get(`${id}:${i}`) === 'applied'
+          if (!localApplied) {
             unapplied ??= id
             continue
           }

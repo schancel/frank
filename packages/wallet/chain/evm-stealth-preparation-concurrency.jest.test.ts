@@ -119,7 +119,7 @@ function runtime(
     submit: (id: string) =>
       lifecycle.replay(operationId(id), { payments: true }),
     observe: (id: string) => lifecycle.observe(operationId(id), provider),
-    release: (id: string) => preparer.releaseUnexposed(id),
+    release: (id: string) => preparer.releaseUnexposed(operationId(id)),
     signIndependentPayment: async () => {
       throw new Error('Native payment entered token executor')
     },

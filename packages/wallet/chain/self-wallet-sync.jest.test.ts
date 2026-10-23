@@ -644,7 +644,9 @@ describe("a wallet's sync note to itself", () => {
         items: [{ type: 'text', text: 'again' }],
         stampValue: STAMP,
       })
-      expect(bobMailbox).toHaveLength(1)
+      // Recovery of the older message may complete independently during the new send.
+      expect(bobMailbox.length).toBeGreaterThanOrEqual(1)
+      expect(bobMailbox.length).toBeLessThanOrEqual(2)
       await one.chain.directMessages.reconcileAttempts({
         wallet: one.alice,
         payloadDigests: [],

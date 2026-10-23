@@ -502,7 +502,7 @@ export class EvmCoinList {
       if (capacity < 0n || capacity > available)
         throw new EvmCoinListError('Invalid source capacity')
       if (capacity === 0n && remaining > 0n) continue
-      if (params.maxCoins === 1 && capacity < remaining) continue
+      if (picked.length + 1 === params.maxCoins && capacity < remaining) continue
       const paymentValueWei = capacity < remaining ? capacity : remaining
       picked.push({ coin, paymentValueWei })
       accounts.add(coin.account)

@@ -670,6 +670,7 @@ export function createEvmStealthPayments(
                     intent.operationId,
                   ),
                   amountWei: BigInt(row.amountAtomic),
+                  maxPaymentParts: 16,
                   kdf: () => row.recipientAddress,
                   maxFeeWei: intent.maxNativeFeeAtomic + (intent.messageStamp?.maxNativeFeeAtomic ?? 0n),
                   ...(intent.messageStamp ? { reserveForContinuationWei:

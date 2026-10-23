@@ -2082,11 +2082,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           });
           const transactionOwner = topicOwner;
           const { transactionSetPreparer, transactionSetLifecycle } = transactionSetRuntime;
-          const transactionSetSubmission = createEvmTransactionSetSubmission({
+          const transactionSetSender = createEvmTransactionSetSubmission({
             preparer: transactionSetPreparer, lifecycle: transactionSetLifecycle, provider,
             refresh: transactionSetRuntime.refresh,
             operations: () => transactionOwner.nativeJournal!.list(),
           });
+          const transactionSetSubmission = {
+            sendTransaction: (prepared: Parameters<typeof transactionSetSender.sendTransaction>[0]) =>
+              transactionSetSender.sendTransaction(prepared).finally(() => invalidateBalanceRead()),
+            reconcileAuthorized: () =>
+              transactionSetSender.reconcileAuthorized().finally(() => invalidateBalanceRead()),
+          };
           const publicTransactionSets = evmTransactionSetCapability(transactionSetPreparer, prepared => transactionSetSubmission.sendTransaction(prepared));
           const legacyTransactions = createLegacyTransactionSetPayments({
             preparer: transactionSetPreparer,
@@ -2432,11 +2438,21 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     "This transfer pays a contact and is broadcast once its message is delivered"
                   );
                 const owner = nativeOperationOwner(wallet);
-                const result = await runWalletExclusive(wallet, (admission) =>
-                  runMainAccountExclusive(wallet, () =>
-                    owner.resumeOperation(operationId, admission)
-                  )
-                );
+                const original = transactionOwner.nativeJournal!.get(operationId);
+                let result: typeof original;
+                if (original.kind === "transaction-set") {
+                  if (!original.submissionAuthorized)
+                    throw new Error("Submit the original transaction wrapper before resuming it");
+                  const logicalId = original.preparationId!.slice("evm-transaction-set:".length);
+                  await transactionOwner.runLifetime(() => transactionSetSubmission.sendTransaction(
+                    transactionSetPreparer.getTransactionSet(logicalId)
+                  ));
+                  result = transactionOwner.nativeJournal!.get(operationId);
+                } else {
+                  result = await runWalletExclusive(wallet, (admission) =>
+                    runMainAccountExclusive(wallet, () => owner.resumeOperation(operationId, admission))
+                  );
+                }
                 // The note to this account's other devices is started, not waited for: a native
                 // send or resume never waits on the relay or on a message being sent.
                 if (!evmWalletInternals(wallet).closed) {

@@ -17,6 +17,14 @@ export interface Eip6963ProviderDetail {
   provider: FrankInpageProvider
 }
 
+export interface FrankSolanaWalletStandard {
+  readonly version: '1.0.0'
+  readonly name: 'Frank'
+  readonly icon: string
+  readonly chains: readonly string[]
+  readonly features: Record<string, any>
+}
+
 export type ProviderEventListener = (...args: any[]) => void
 
 export const FRANK_EIP6963_INFO: Eip6963ProviderInfo = {
@@ -376,6 +384,7 @@ export function installInpageProvider(
     } catch {
       // Ignore prototype upgrade errors
     }
+    installSolanaWalletStandard(win, win.frankEthereum as FrankInpageProvider)
     return win.frankEthereum as FrankInpageProvider
   }
 
@@ -387,14 +396,150 @@ export function installInpageProvider(
     win.ethereum = provider
   }
   announceEip6963Provider(win, provider, instanceUuid)
+  installSolanaWalletStandard(win, provider)
   win.addEventListener('eip6963:requestProvider', () => {
     announceEip6963Provider(win, provider, instanceUuid)
   })
   return provider
 }
 
+/** Register a Wallet Standard provider backed by real Solana account requests. */
+export function installSolanaWalletStandard(
+  win: Window & Record<string, any>,
+  provider: FrankInpageProvider,
+): FrankSolanaWalletStandard {
+  const existing = win.__FRANK_SOLANA_WALLET__ as
+    | FrankSolanaWalletStandard
+    | undefined
+  if (existing) {
+    registerSolanaWallet(win, existing)
+    return existing
+  }
+  const account = (raw: any) => ({
+    address: String(raw.address),
+    publicKey: new Uint8Array(raw.publicKey),
+    chains: ['solana:mainnet', 'solana:devnet'],
+    features: [
+      'solana:signMessage',
+      'solana:signTransaction',
+      'solana:signAndSendTransaction',
+    ],
+  })
+  const features = {
+    'standard:connect': {
+      version: '1.0.0',
+      connect: async () => {
+        const result = await provider.request<any>({ method: 'solana_connect' })
+        return { accounts: [account(result)] }
+      },
+    },
+    'standard:disconnect': {
+      version: '1.0.0',
+      disconnect: async () => {
+        await provider.request({ method: 'solana_disconnect' })
+      },
+    },
+    'standard:events': { version: '1.0.0', on: () => () => undefined },
+    'solana:signMessage': {
+      version: '1.0.0',
+      signMessage: async (...inputs: any[]) => {
+        const results = []
+        for (const input of inputs) {
+          const signature = await provider.request<any>({
+            method: 'solana_signMessage',
+            params: {
+              message: Array.from(input.message),
+              account: input.account?.address,
+            },
+          })
+          results.push({
+            signedMessage: input.message,
+            signature: new Uint8Array(signature.signature),
+            account: input.account,
+          })
+        }
+        return results
+      },
+    },
+    'solana:signTransaction': {
+      version: '1.0.0',
+      supportedTransactionVersions: ['legacy', 0],
+      signTransaction: async (...inputs: any[]) => {
+        const results = []
+        for (const input of inputs) {
+          const transaction = await provider.request<any>({
+            method: 'solana_signTransaction',
+            params: {
+              transaction: Array.from(input.transaction),
+              account: input.account?.address,
+              chain: input.chain,
+            },
+          })
+          results.push({
+            signedTransaction: new Uint8Array(transaction.transaction),
+            account: input.account,
+            chain: input.chain,
+          })
+        }
+        return results
+      },
+    },
+    'solana:signAndSendTransaction': {
+      version: '1.0.0',
+      supportedTransactionVersions: ['legacy', 0],
+      signAndSendTransaction: async (...inputs: any[]) => {
+        const results = []
+        for (const input of inputs) {
+          const signature = await provider.request<string>({
+            method: 'solana_signAndSendTransaction',
+            params: {
+              transaction: Array.from(input.transaction),
+              account: input.account?.address,
+              chain: input.chain,
+            },
+          })
+          const { default: bs58 } = await import('bs58')
+          results.push({
+            signature: bs58.decode(signature),
+            account: input.account,
+            chain: input.chain,
+          })
+        }
+        return results
+      },
+    },
+  }
+  const wallet: FrankSolanaWalletStandard = Object.freeze({
+    version: '1.0.0',
+    name: 'Frank',
+    icon: FRANK_EIP6963_INFO.icon,
+    chains: Object.freeze(['solana:mainnet', 'solana:devnet']),
+    features,
+  })
+  win.__FRANK_SOLANA_WALLET__ = wallet
+  registerSolanaWallet(win, wallet)
+  return wallet
+}
+
+function registerSolanaWallet(
+  win: Window & Record<string, any>,
+  wallet: FrankSolanaWalletStandard,
+) {
+  const register = () => {
+    win.dispatchEvent(
+      new CustomEvent('wallet-standard:register-wallet', {
+        detail: (callback: (wallet: FrankSolanaWalletStandard) => void) =>
+          callback(wallet),
+      }),
+    )
+  }
+  register()
+  if (!win.__FRANK_SOLANA_WALLET_READY_LISTENER__) {
+    win.__FRANK_SOLANA_WALLET_READY_LISTENER__ = true
+    win.addEventListener('wallet-standard:app-ready', register)
+  }
+}
+
 if (typeof window !== 'undefined') {
   installInpageProvider(window as Window & Record<string, any>)
 }
-
-

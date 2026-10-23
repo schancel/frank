@@ -137,6 +137,13 @@ export interface DappPersonaSigner {
   signDigest(ref: DappPersonaRef, digest: string): Promise<string>
 }
 
+/** A session-bound Solana signing capability; the Ed25519 secret never leaves custody. */
+export interface DappSolanaSigner {
+  readonly publicKey: string
+  signMessage(message: Uint8Array): Promise<Uint8Array>
+  signTransaction(serialized: Uint8Array): Promise<Uint8Array>
+}
+
 export class AccountPurposeUnavailableError extends Error {
   readonly code = 'account-purpose-unavailable'
 
@@ -1165,6 +1172,55 @@ export function createAccountSession(deps: {
               deriveDappPersona(master, ref).node.signingKey.sign(digest)
                 .serialized,
           )
+        },
+      })
+    },
+    /** Solana dApps use the account's real Solana key, never an EVM persona. */
+    async createDappSolanaSigner(): Promise<DappSolanaSigner> {
+      const checkCurrent = captureDerivation()
+      const signer = await session.getSolanaSigner()
+      checkCurrent()
+      const publicKey = signer.publicKey.toBase58()
+      const requireCurrent = () => {
+        checkCurrent()
+        if (state.status !== 'ready') throw new CustodyError('closed')
+      }
+      return Object.freeze({
+        publicKey,
+        async signMessage(message: Uint8Array) {
+          if (!(message instanceof Uint8Array))
+            throw new Error('Invalid Solana message')
+          requireCurrent()
+          const { ed25519 } = await import('@noble/curves/ed25519')
+          const signature = ed25519.sign(message, signer.secretKey.slice(0, 32))
+          requireCurrent()
+          return new Uint8Array(signature)
+        },
+        async signTransaction(serialized: Uint8Array) {
+          if (!(serialized instanceof Uint8Array) || serialized.length === 0)
+            throw new Error('Invalid Solana transaction')
+          requireCurrent()
+          const { Transaction, VersionedTransaction } = await import(
+            '@solana/web3.js'
+          )
+          let versioned: InstanceType<typeof VersionedTransaction> | undefined
+          try {
+            versioned = VersionedTransaction.deserialize(serialized)
+          } catch {
+            // Try the legacy transaction format below.
+          }
+          if (versioned) {
+            await versioned.sign([signer])
+            requireCurrent()
+            return versioned.serialize()
+          }
+          const tx = Transaction.from(serialized)
+          await tx.partialSign(signer)
+          requireCurrent()
+          return tx.serialize({
+            requireAllSignatures: false,
+            verifySignatures: false,
+          })
         },
       })
     },

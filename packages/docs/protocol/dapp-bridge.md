@@ -22,7 +22,7 @@ When an extension updates or reloads in development or production, `installConte
 
 ## 2. dApp Personas: hardened custody derivation
 
-> Status: the `@frank/wallet/dapp-bridge` keyrings and routers (`DappPersonaKeyring`, `MultiChainDappPersonaKeyring`, `FrankDappBridgeRouter`, `UnifiedMultiChainDappRouter` and the Bitcoin/Cashtab bridges) were removed: nothing in production used them and they derived keys from a raw seed outside custody. Sections 3, 6 and 7 describe that removed design. The extension answers Bitcoin and eCash methods as unsupported (`4200`).
+> Current support: EVM sites can connect to the custody-derived origin persona and explicitly approve `personal_sign`, `eth_sign`, `eth_signTypedData[_v3|_v4]`, and `eth_sendTransaction`. Solana Wallet Standard connect, message signing, transaction signing, and sign-and-send use the account's real Solana key through a session-bound custody capability. EVM and Solana connection grants are stored separately. Bitcoin-family and eCash dApp methods remain unsupported (`4200`). Sections 3, 6, and 7 preserve historical designs, not current behavior.
 
 dApp persona keys are hardened BIP-32 children of the account's EVM BIP-32 master (the `evm-wallet` domain root; the BIP39 seed for historical accounts), derived only inside custody (`packages/wallet/dapp-bridge/persona-keys.ts`, exposed through `accountSession.createDappPersonaSigner()`):
 
@@ -32,7 +32,7 @@ dApp persona keys are hardened BIP-32 children of the account's EVM BIP-32 maste
 | `m/1785'/60'/1'` | Site-index key; its private key keys the per-site HMAC |
 | `m/1785'/60'/2'/<a>'/<b>'` | Per-site persona; `(a, b)` are the first two u32 words (top bit cleared) of `HMAC-SHA256(site-index key, "frank/dapp-persona/site/v1" \|\| 0x00 \|\| canonical origin)` |
 
-Purpose `1785'` is used by no other Frank role. Every frontend of an account computes the same persona for a site without sync; nobody without the account secret can derive a persona key or link two sites. The extension background never derives personas: Frank views provide the addresses (`update-persona-state`, `provision-site-personas`), and until they have, persona requests fail with `4900`.
+Purpose `1785'` is used by no other Frank role. Every frontend of an account computes the same EVM persona for a site without sync; nobody without the account secret can derive a persona key or link two sites. The extension background never derives personas: Frank views provide the addresses (`update-persona-state`, `provision-site-personas`), and until they have, EVM persona requests fail with `4900`. Solana uses the account's actual Solana address and public key; it does not present an EVM persona as a Solana account.
 
 ---
 
@@ -137,7 +137,17 @@ On Lotus V2 (`bip122:000000000abc0cde58ee7e919d3d4de1`, `bip122:00000000080a6c96
 
 ---
 
-## 6. Unified Multi-Chain Legacy Compatibility Shims (`UnifiedMultiChainDappRouter`)
+## 6. Current provider APIs and unsupported methods
+
+Current injected providers are routed through `app/src-bex/inpage.ts`, `content.ts`, and `background.ts`. User approval is shown in the dedicated approval window; signing and transaction requests execute only through the unlocked Frank app session.
+
+- **EVM:** EIP-1193 and EIP-6963 account discovery; message and typed-data signatures from the selected origin persona; signed transaction broadcast through the selected supported EVM chain RPC. The submitted transaction hash is checked against the signed bytes. Ambiguous submissions retain the signed bytes and retry the same transaction.
+- **Solana:** Wallet Standard discovery, connect/disconnect, message signing, legacy and v0 transaction signing, and sign-and-send on Solana mainnet or devnet. Accounts and signatures use the account's actual Ed25519 Solana key. Each signing/submission request requires approval.
+- **Bitcoin-family and eCash:** No injected provider methods are advertised; method requests fail explicitly with `4200`.
+
+The compatibility designs below describe removed implementations and are not active capabilities.
+
+## 6. Historical Unified Multi-Chain Legacy Compatibility Shims (`UnifiedMultiChainDappRouter`)
 
 All legacy browser wallet protocols translate into the exact same internal `UnifiedDappRequest` and `MultiChainDappPersonaKeyring` architecture:
 
@@ -158,7 +168,7 @@ All legacy browser wallet protocols translate into the exact same internal `Unif
 
 ## 7. Just-In-Time (JIT) EVM Pool Consolidation & Zero-Dust Return Sweeps (`#1708`)
 
-When a connected EVM dApp requests `eth_sendTransaction({ from: personaAddress, to, value, data })` or `wallet_fulfillIntent`:
+The removed JIT implementation described how a connected EVM dApp might have requested `eth_sendTransaction({ from: personaAddress, to, value, data })` or `wallet_fulfillIntent`:
 
 1. **Shortfall Calculation (`calculateDappJitSweepRequirement`)**:
    $$

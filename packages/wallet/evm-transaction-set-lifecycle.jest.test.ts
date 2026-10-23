@@ -71,6 +71,7 @@ async function fixture(paymentNonce: number) {
   })
   const authority = {
     getOperation: () => operation,
+    readOperation: async () => operation,
     markExposed,
     recordObservation: jest.fn(async () => undefined),
   }

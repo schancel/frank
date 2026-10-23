@@ -311,7 +311,7 @@ test.each(['funder', 'raw', 'amount', 'network'] as const)(
       if (field === 'amount') operation.valueWei = '1'
       if (field === 'network') f.wallet.cborNetwork = 'monad-mainnet'
       const before = f.provider.getNetwork.mock.calls.length
-      expect(() => bindForumAuthority(f.wallet, operation)).toThrow()
+      await expect(bindForumAuthority(f.wallet, operation)).rejects.toThrow()
       expect(f.provider.getNetwork).toHaveBeenCalledTimes(before)
       expect(http).toHaveBeenCalledTimes(1)
     } finally {

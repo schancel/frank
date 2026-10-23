@@ -62,7 +62,7 @@ export function requireForumWallet(wallet: EvmWalletHandle): void {
 }
 
 /** Pure authority binding before transport or any chain repair. */
-export function bindForumAuthority(
+export async function bindForumAuthority(
   wallet: EvmWalletHandle,
   operation: OutgoingTopicOperation,
 ) {
@@ -101,7 +101,7 @@ export function bindForumAuthority(
   const expectedData = hexlify(
     topicBurnCalldata(operation.direction, commitment),
   )
-  const journal = wallet.transactionSetPreparer!.getOperation(
+  const journal = await wallet.transactionSetPreparer!.readOperation(
     operation.transactionSetOperationId,
   )
   const members = journal?.members.filter(
@@ -465,7 +465,7 @@ async function exchange(
   const bound =
     operation.version === 1
       ? bindRetainedForumAuthority(wallet, operation)
-      : bindForumAuthority(wallet, operation)
+      : await bindForumAuthority(wallet, operation)
   if ((await wallet.provider.getNetwork()).chainId !== wallet.forumChainId)
     throw new Error('Forum provider chain mismatch')
   const response = await axios({
@@ -561,12 +561,12 @@ async function prepareForumHandoff(
 ): Promise<void> {
   try {
     await wallet.transactionSetSubmission!.sendTransaction(
-      wallet.transactionSetPreparer!.getTransactionSet(
+      await wallet.transactionSetPreparer!.readTransactionSet(
         operation.transactionSetOperationId,
       ),
     )
     if (
-      !wallet.transactionSetLifecycle!.canSubmitPayments(
+      !await wallet.transactionSetLifecycle!.readCanSubmitPayments(
         operation.transactionSetOperationId,
       )
     )
@@ -587,13 +587,14 @@ async function settle(
   operation: OutgoingTopicOperation,
 ): Promise<void> {
   await wallet.transactionSetSubmission!.sendTransaction(
-    wallet.transactionSetPreparer!.getTransactionSet(
+    await wallet.transactionSetPreparer!.readTransactionSet(
       operation.transactionSetOperationId,
     ),
   )
-  const journal = wallet.transactionSetPreparer!.getOperation(
+  const journal = await wallet.transactionSetPreparer!.readOperation(
     operation.transactionSetOperationId,
-  )!
+  )
+  if (!journal) throw new Error('Forum operation is missing durable signed authority')
   if (
     journal.members.every(
       member =>
@@ -628,7 +629,7 @@ export async function reconcileForumOperations(
         .filter(retained => retained.kind === kind)
         .map(async retained => {
           const operation = await finishForumConstruction(wallet, retained)
-          bindForumAuthority(wallet, operation)
+          await bindForumAuthority(wallet, operation)
           await prepareForumHandoff(wallet, operation)
           try {
             await exchange(wallet, operation, 'post')
@@ -694,7 +695,7 @@ async function finishForumConstruction(
       .reduce((sum, tx) => sum + tx.valueWei, 0n)
       .toString(),
   }
-  bindForumAuthority(wallet, operation)
+  await bindForumAuthority(wallet, operation)
   await wallet.forumOperationMutation!(() =>
     wallet.topicOperationJournal!.put(operation),
   )

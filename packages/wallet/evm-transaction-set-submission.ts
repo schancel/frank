@@ -99,17 +99,17 @@ export function createEvmTransactionSetSubmission(options: {
   refresh(): Promise<void>
   operations(): readonly EvmNativeOperation[]
 }) {
-  const row = (id: string): EvmNativeOperation => {
-    const operation = options.preparer.getOperation(id)
+  const row = async (id: string): Promise<EvmNativeOperation> => {
+    const operation = await options.preparer.readOperation(id)
     if (!operation || operation.cancelled)
       throw new Error('Unknown active transaction set')
     return operation
   }
-  const report = (
+  const report = async (
     id: string,
     reason: TransactionSetSubmission['pendingReason'] = 'dependency-pending',
-  ): TransactionSetSubmission => {
-    const operation = row(id)
+  ): Promise<TransactionSetSubmission> => {
+    const operation = await row(id)
     const failed = operation.members.filter(
       member =>
         member.observation.state === 'included-revert' ||
@@ -135,8 +135,10 @@ export function createEvmTransactionSetSubmission(options: {
     }
   }
   const resume = async (id: string): Promise<TransactionSetSubmission> => {
-    if (!row(id).submissionAuthorized)
+    const operation = await row(id)
+    if (!operation.submissionAuthorized)
       throw new Error('Transaction set has not been authorized for submission')
+    if (!operation.members.some(needsRecovery)) return report(id)
     let observationUnavailable = false
     try {
       await options.refresh()
@@ -175,8 +177,10 @@ export function createEvmTransactionSetSubmission(options: {
       prepared: PreparedEvmTransactionSet,
     ): Promise<TransactionSetSubmission> {
       const id = prepared.operationId
-      const expected = options.preparer.getTransactionSet(id)
-      assertComplete(prepared, expected, row(id))
+      const expected = await options.preparer.readTransactionSet(id)
+      const operation = await row(id)
+      assertComplete(prepared, expected, operation)
+      if (operation.submissionAuthorized && !operation.members.some(needsRecovery)) return report(id)
       // Atomic journal comparison rejects any concurrent append between validation and this write.
       await options.preparer.authorizeSubmission(
         id,

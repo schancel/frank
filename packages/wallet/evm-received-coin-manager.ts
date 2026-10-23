@@ -1632,7 +1632,7 @@ export function createEvmReceivedCoinAndContactManager(
         if (!preparer) throw new Error("Shared native transaction preparation is unavailable");
         await wallet.refreshTransactionSetInventory?.();
         await topicOwner.runLifetime(() => preparer.constructTransactionSet(request));
-        const row = preparer.getOperation(request.operationId);
+        const row = await preparer.readOperation(request.operationId);
         if (!row) throw new Error("Prepared native operation was not retained");
         return row;
       },
@@ -1641,18 +1641,20 @@ export function createEvmReceivedCoinAndContactManager(
         topicOwner.runLifetime((lifetime) =>
           owner.signIndependentPayment(signParams, lifetime)
         ),
-      submit: (id) => {
-        const row = topicOwner.nativeJournal!.get(id);
+      submit: async (id) => {
+        const row = await topicOwner.nativeJournal!.readOperation(id);
+        if (!row) throw new Error("Native payment operation is missing");
         if (row.kind === "transaction-set") return topicOwner.runLifetime(async () => {
           await wallet.transactionSetSubmission!.sendTransaction(
-            wallet.transactionSetPreparer!.getTransactionSet(row.preparationId!.slice("evm-transaction-set:".length))
+            await wallet.transactionSetPreparer!.readTransactionSet(row.preparationId!.slice("evm-transaction-set:".length))
           );
         });
         return topicOwner.runLifetime(lifetime => owner.resumeIndependentPayment(id, lifetime));
       },
       observe: (id) =>
         topicOwner.runLifetime(async (lifetime) => {
-          const row = topicOwner.nativeJournal!.get(id);
+          const row = await topicOwner.nativeJournal!.readOperation(id);
+          if (!row) throw new Error("Native payment operation is missing");
           if (row.kind === "transaction-set") return wallet.transactionSetLifecycle!.observe(row.preparationId!.slice("evm-transaction-set:".length), provider);
           for (
             let index = 0;

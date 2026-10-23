@@ -1114,6 +1114,9 @@ export class EvmNativeOperationJournal {
         throw error
       }
       this.rows.delete(id)
+      // Successful retirement ends only this operation's observation fences. Keep all
+      // tokens on uncertain writes, and preserve captures belonging to active operations.
+      row.members.forEach((_, index) => this.captures.delete(`${id}:${index}`))
       this.archivedCount++
     }))
   }

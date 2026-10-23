@@ -132,12 +132,15 @@ it('rejects stale snapshot or incomplete obligation receipts without retiring an
 
 it.each(['before', 'after'] as const)('reopens the whole local archival transition after a write interruption %s the batch', async moment => {
   const row = await complete(await prepare(0))
+  const capture = journal.beginCapture(row.operationId, 0)
+  const captures = (journal as unknown as { captures: Map<string, object> }).captures
   const write = durability.durableBatch
   jest.spyOn(durability, 'durableBatch').mockImplementationOnce(async (...args) => {
     if (moment === 'after') await write(...args)
     throw new Error('interrupted local write acknowledgement')
   })
   await expect(journal.archiveCompleted(row.operationId, receipt(row))).rejects.toThrow('interrupted')
+  expect(captures.get(`${row.operationId}:0`)).toBe(capture.token)
   await reopen()
   expect(journal.list()).toHaveLength(moment === 'before' ? 1 : 0)
   expect(await journal.readOperation(row.operationId)).toEqual(row)
@@ -176,12 +179,32 @@ it('preserves old manifests and every existing row without a rewrite on open', a
   expect(journal.get(row.operationId)).toEqual(row)
 })
 
+it('releases only the archived row captures while preserving active observation fencing', async () => {
+  await journal.Close()
+  journal = new EvmNativeOperationJournal({ ...options(), maxRecords: 2 })
+  await journal.Open()
+  const completed = await complete(await prepare(0))
+  const active = await prepare(1)
+  const stale = journal.beginCapture(completed.operationId, 0)
+  const current = journal.beginCapture(active.operationId, 0)
+  const captures = (journal as unknown as { captures: Map<string, object> }).captures
+  expect(captures.size).toBe(2)
+  await journal.archiveCompleted(completed.operationId, receipt(completed))
+  expect(captures.size).toBe(1)
+  expect(captures.get(`${active.operationId}:0`)).toBe(current.token)
+  await expect(journal.recordObservation(stale, { state: 'pending' }, null)).rejects.toThrow('conflict')
+  expect(await journal.readOperation(completed.operationId)).toEqual(completed)
+  await expect(journal.recordObservation(current, { state: 'pending' }, null)).resolves.toBe(true)
+  expect(journal.get(active.operationId).members[0]!.observation).toEqual({ state: 'pending' })
+})
+
 it('passes the 1024 lifetime boundary with one active slot and bounded history pages/scans', async () => {
   let last!: EvmNativeOperation
   for (let nonce = 0; nonce < 1025; nonce++) {
     last = await complete(await prepare(nonce))
     await journal.archiveCompleted(last.operationId, receipt(last))
   }
+  expect((journal as unknown as { captures: Map<string, object> }).captures.size).toBe(0)
   scans.length = 0
   await reopen()
   expect(journal.list()).toEqual([])

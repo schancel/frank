@@ -295,3 +295,40 @@ test('ambiguous relay submission reopens with the same signed recipient and chan
     await f.close()
   }
 })
+
+
+test('a later message spends geometric change after the first spend exhausts the root', async () => {
+  const f = await setup()
+  try {
+    // This assertion needs node fee accounting; the general relay fixture moves value only.
+    const mine = offlineChain.mine.bind(offlineChain)
+    jest.spyOn(offlineChain, 'mine').mockImplementation(raw => {
+      const tx = Transaction.from(raw)
+      const alreadyMined = offlineChain.mined.has(tx.hash!)
+      const hash = mine(raw)
+      if (!alreadyMined) {
+        const from = tx.from!.toLowerCase()
+        mockBalances.set(from, mockBalances.get(from)! - tx.gasLimit * policy.gasPriceWei)
+      }
+      return hash
+    })
+    const send = (messageId: string, stampValue: bigint) => f.chain.directMessages.send({
+      wallet: f.alice, recipient: f.bob.identity.address, messageId, stampValue,
+      items: [{ type: 'text', text: 'spend change' }],
+    })
+    await send(id, 300000n)
+    await f.chain.directMessages.reconcileAttempts({ wallet: f.alice, payloadDigests: [] })
+    await f.alice.refreshTransactionSetInventory!()
+    expect(await f.alice.provider.getBalance(f.alice.mainAccount!.address)).toBe(0n)
+    const coins = evmWalletInternals(f.alice).coinList!
+    const change = coins.all().filter(coin => coin.origin === 'change' && coin.state === 'unspent')
+    expect(change.length).toBeGreaterThan(0)
+    const next = '22222222-2222-4333-8444-555555555555'
+    await send(next, 30000n)
+    const operation = f.alice.transactionSetPreparer!.getOperation(`stamp-${next.replace(/-/g, '')}`)!
+    expect(operation.members.every(member => change.some(coin => coin.account === member.source.address))).toBe(true)
+    expect(f.alice.pool.records().some(record => record.status === 'funding')).toBe(false)
+  } finally {
+    await f.close()
+  }
+})

@@ -28,9 +28,9 @@
  *     inside that synchronous call chain without restructuring callers this ticket doesn't own.
  *     Ticket #79 wires production DMs through `prepareStampInventory()` only after the user presses
  *     Send. `topUpPool()` remains an explicit API for non-DM callers; neither path moves funds merely
- *     because a wallet was opened. `fundStampInventoryAhead()` (#1235) is that same preparation
- *     asked for by a host between messages, for the one next message; nothing calls it at open
- *     either. Every one of these funds through `fundAccount`, which stores the signed transfer
+ *     because a wallet was opened. Proactive funding has been removed; recorded funding
+ *     attempts retain recovery of their original signed bytes. Explicit legacy funding uses
+ *     `fundAccount`, which stores the signed transfer
  *     before it submits it: there is no other way value reaches a sub-account.
  *
  *     Buffer size is a caller-supplied `bufferSize` (default `DEFAULT_TOPUP_BUFFER_SIZE = 5`,

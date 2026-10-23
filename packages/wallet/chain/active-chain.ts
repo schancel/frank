@@ -21,16 +21,10 @@ import type { DefaultStampQuote } from "../oracle/stamp-policy";
  * (`../wallet/monad-*.ts`) are checked against it -- per the ticket's own instructions. Three real
  * deviations, each forced by an actual signature/type mismatch, not stylistic preference:
  *
- * 1. **`WalletHandle` needed to grow past `{ identity }`.** `directMessages.send`/`topics.post`/
- *    `.vote` all need a *sender-specific* signing/leasing/HTTP bundle to actually build and submit
- *    a stamp transaction (`MonadStampClient`/`MonadTopicPostClient`/`MonadTopicVoteClient` all take
- *    the same `{ pool, leaseManager, provider, httpClient, relayBaseUrl }` shape, formalized as
- *    `EvmWalletHandle` in `../evm-wallet-handle.ts`). The generic `WalletHandle` below
- *    still only *promises* `identity` -- it's `MonadChain`'s own concrete `EvmChainWalletHandle`
- *    (`../evm-wallet-handle.ts`) that adds the rest. This is safe under the compile-time seam: in a
- *    Monad-only build, `MonadChain.createWallet` is the only producer of `WalletHandle` values, so
- *    every handle reaching `MonadChain`'s other methods already carries the extra fields (see
- *    `./monad-chain.ts`'s `asMonadWallet`).
+ * 1. **`WalletHandle` carries canonical chain identity and optional capabilities.**
+ *    `TopicPostClient` and `TopicVoteClient` consume its chain-neutral `topicOperations`
+ *    capability. Each family adapter owns transaction construction, submission, and recovery;
+ *    the Forum clients do not require a provider, account pool, or EVM wallet implementation.
  * 2. **`DirectMessageClient.fetchSince` returns `DirectMessageReceived[]`, not
  *    `ReceivedMessageWrapper[]`** (`../types/user-interface.ts`, the issue's own sketched return
  *    type). That type is UTXO/Lotus-pubkey-shaped (`outpoints: Utxo[]`, `copartyPubKey: PublicKey`

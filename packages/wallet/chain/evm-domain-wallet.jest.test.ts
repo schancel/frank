@@ -66,7 +66,7 @@ import {
   EvmNativeOperationPendingError,
 } from './evm-legacy-consolidator'
 import { LevelStampPaymentJournal } from '../storage/stamp-payment-journal'
-import * as topicModule from '../evm-topic-post-client'
+import * as topicModule from '../topic-post-client'
 import { MonadHttpClient } from '../evm-http'
 import * as coinStoreModule from '../storage/evm-coin-store'
 import { createServer } from 'http'
@@ -847,12 +847,9 @@ test.each([false, true])(
         .spyOn(wallet.pool, 'prepareBurnAccount')
         .mockResolvedValue({ index: 0, fundingTxHashes: [] })
       jest
-        .spyOn(topicModule, 'quoteMonadTopicBurnGasReserve')
-        .mockResolvedValue(1n)
-      jest
-        .spyOn(topicModule.MonadTopicPostClient.prototype, 'submitTopicPost')
+        .spyOn(topicModule.TopicPostClient.prototype, 'submitTopicPost')
         .mockResolvedValue({ payloadHashHex: 'aa' } as Awaited<
-          ReturnType<topicModule.MonadTopicPostClient['submitTopicPost']>
+          ReturnType<topicModule.TopicPostClient['submitTopicPost']>
         >)
       await expect(
         (anotherFacade ? createEvmChain(config) : chain).topics.post({
@@ -863,10 +860,7 @@ test.each([false, true])(
           voteWeightWei: 1n,
         }),
       ).resolves.toEqual({ payloadDigest: 'aa' })
-      expect(prepare).toHaveBeenCalled()
-      expect(MonadAccountTxSigner).toHaveBeenLastCalledWith(
-        expect.objectContaining({ privateKey: expected[0].mainSecret }),
-      )
+      expect(prepare).not.toHaveBeenCalled()
     } finally {
       await wallet.close()
     }

@@ -51,7 +51,7 @@ import {
   asNothingSent,
   installEvmStampCoordinator,
   type MainAccountWait,
-} from "../evm-fund-ahead";
+} from "../evm-stamp-coordinator";
 import {
   PENDING_COIN_PROBES_PER_PASS,
   SELF_NOTE_RETRY_MS,
@@ -567,7 +567,7 @@ export function installCanonicalDirectory(
 export {
   MainAccountBusyError,
   TopicBurnPreparationError,
-} from "../evm-fund-ahead";
+} from "../evm-stamp-coordinator";
 export {
   PENDING_COIN_PROBES_PER_PASS,
   SELF_NOTE_RETRY_MS,
@@ -1972,6 +1972,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               .filter((attempt) => !attempt.cleanupComplete)
               .flatMap((attempt) => attempt.reservations.map((r) => r.index)) ??
               []),
+            ...(topicOwner.topicOperationJournal.getRetainedLegacy?.().map(row => row.leaseIndex) ?? []),
             ...stampAttemptJournal
               .getAll()
               .flatMap((attempt) => attempt.leaseIndices),
@@ -2177,7 +2178,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
 
           const readBalanceParts = async (): Promise<BalanceParts> => {
             requireOpenWallet(wallet);
-            await transactionSetRuntime.refresh();
             const generation = balanceReadGeneration;
             try {
               const now = Date.now();
@@ -2226,9 +2226,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   ]);
                 mainBalance = nextMain;
                 identityBalance = nextIdentity;
-                const SIGNIFICANT_CHANGE_WEI = 10_000_000_000_000_000n;
                 changeBalance = changeBalances.reduce(
-                  (sum, b) => (b > SIGNIFICANT_CHANGE_WEI ? sum + b : sum),
+                  (sum, b) => sum + b,
                   0n
                 );
                 if (generation === balanceReadGeneration) {

@@ -1,8 +1,7 @@
 import { CANONICAL_DM_MAX_TRANSACTIONS } from "@frank/cashweb/relay/canonical-dm-transport";
-import { hexlify, randomBytes, type Provider, type Wallet } from "ethers";
+import { type Provider, type Wallet } from "ethers";
 import {
   DirectMessageStampBelowFeeError,
-  type DirectMessagePreparationProgress,
 } from "./chain/active-chain";
 import { EvmBlockWatcher } from "./evm-block-watcher";
 import { EvmStampPayer, waitForSpendSpacing } from "./evm-stamp-payer";
@@ -11,7 +10,7 @@ import { EvmCoinListSync, type CoinListSource } from "./evm-coin-list-sync";
 import {
   evmWalletInternals,
 } from "./evm-wallet";
-import type { EvmChainWalletHandle, EvmWalletHandle } from "./evm-wallet-handle";
+import type { EvmChainWalletHandle } from "./evm-wallet-handle";
 import { BurnNotSentError } from "./evm-account-lease";
 import {
   type EvmSubAccountPool as MonadSubAccountPool,
@@ -20,9 +19,8 @@ import { MonadAccountTxSigner } from "./evm-account-tx";
 import type { MonadHttpClient } from "./evm-http";
 import type { MonadIdentity } from "./evm-identity";
 import { MonadCanonicalStampClient } from "./evm-stamp-client";
-import { quoteEvmTopicBurnGasReserve } from "./evm-topic-operations";
 import type { MonadWalletMaterial } from "./evm-wallet-material";
-import { spendableCoins, type EvmCoin, type RecordStore } from "./storage/evm-coin-store";
+import { type EvmCoin, type RecordStore } from "./storage/evm-coin-store";
 import type {
   EvmWalletOperationAdmission,
   EvmWalletPersistenceBundle,
@@ -47,12 +45,6 @@ export interface MainAccountWait {
   /** Specific account addresses to claim/wait on instead of both main and identity. */
   addresses?: readonly string[];
 }
-
-/**
- * A funding pass signs from the main account outside the native journal: it waits for whatever
- * the wallet signed from that account earlier, a native operation's transaction included.
- */
-export const FUNDING_FROM_MAIN: MainAccountWait = { waitForOwn: true };
 
 /**
  * The caller's own deadline passed while the main account was still spent by an earlier payment
@@ -99,309 +91,6 @@ export function asNothingSent(err: unknown): never {
     });
   }
   throw err;
-}
-
-export interface PrepareEvmTopicBurnAccountParams {
-  readonly wallet: EvmChainWalletHandle;
-  readonly voteWeightWei: bigint;
-  readonly onProgress?: (progress: DirectMessagePreparationProgress) => void;
-  readonly mainPrivateKey: (wallet: EvmChainWalletHandle) => string;
-  readonly creatorBurnAddress: (wallet: EvmWalletHandle) => string;
-  readonly sourceIsHeld: (wallet: object, address: string) => boolean;
-  readonly sourceHeldRefusalMessage: string;
-  /** The holder `runMainAccountExclusive` claims funding accounts under. Its own claim does
-   * not make an account ineligible: the exclusive run waits for its own earlier transfer. */
-  readonly mainAccountHolder: (wallet: EvmChainWalletHandle) => string;
-  readonly runMainAccountExclusive: <T>(
-    wallet: EvmChainWalletHandle,
-    task: () => Promise<T>,
-    options?: MainAccountWait
-  ) => Promise<T>;
-}
-
-/**
- * Funds (or reuses) one sub-account able to burn `voteWeightWei` in a single transaction and
- * returns its pool index for the caller to lease. Admission conservatively holds reuse too:
- * even its fee quote signs with the main account. See `MonadSubAccountPool.prepareBurnAccount`.
- */
-export async function prepareEvmTopicBurnAccount(
-  params: PrepareEvmTopicBurnAccountParams
-): Promise<{ leaseIndex: number; leaseHolder: string }> {
-  const {
-    wallet,
-    voteWeightWei,
-    onProgress,
-    mainPrivateKey,
-    creatorBurnAddress,
-    sourceIsHeld,
-    sourceHeldRefusalMessage,
-    mainAccountHolder,
-    runMainAccountExclusive,
-  } = params;
-  const leaseHolder = `${wallet.identity.address.raw.toLowerCase()}:topic:${hexlify(
-    randomBytes(8)
-  )}`;
-  const mainPrivateKeyHex = mainPrivateKey(wallet);
-  const mainAccountSigner = new MonadAccountTxSigner({
-    privateKey: mainPrivateKeyHex,
-    provider: wallet.provider,
-    httpClient: wallet.httpClient,
-  });
-  const internals = evmWalletInternals(wallet);
-  const mainAddress =
-    internals.material?.mainAccount.address ?? wallet.identity.address.raw;
-
-  try {
-    onProgress?.({ stage: "checking" });
-
-    const burnAddress = creatorBurnAddress(
-      internals.privateTopicWallet ?? wallet
-    );
-    const gasReserveWei = await quoteEvmTopicBurnGasReserve({
-      signer: mainAccountSigner,
-      burnAddress,
-    });
-
-    const feeData =
-      typeof wallet.provider?.getFeeData === "function"
-        ? await wallet.provider.getFeeData().catch(() => undefined)
-        : undefined;
-    const gasPrice = feeData?.maxFeePerGas ?? feeData?.gasPrice ?? 0n;
-    const fundingGasLimit =
-      typeof wallet.provider?.estimateGas === "function"
-        ? await wallet.provider
-            .estimateGas({ from: mainAddress, to: mainAddress, value: 1n })
-            .catch(() => 21000n)
-        : 21000n;
-    const fundingGasFee = fundingGasLimit * gasPrice;
-    const requiredTotalWei = voteWeightWei + gasReserveWei + fundingGasFee;
-    const neededTargetBalance = voteWeightWei + gasReserveWei;
-
-    const getBal = async (addr: string) =>
-      typeof wallet.provider?.getBalance === "function"
-        ? await wallet.provider.getBalance(addr, "pending").catch(() => 0n)
-        : 0n;
-
-    const candidateGetter = internals.fundingCandidates;
-    const candidates = candidateGetter
-      ? candidateGetter()
-      : [
-          {
-            source: "main" as const,
-            address: mainAddress,
-            privateKey: () => mainPrivateKeyHex,
-          },
-        ];
-
-    const isEligible = (address: string) => {
-      if (sourceIsHeld(wallet, address)) return false;
-      if (typeof wallet.pool?.accountClaimedBy !== "function") return true;
-      const claimant = wallet.pool.accountClaimedBy(address);
-      return claimant === undefined || claimant === mainAccountHolder(wallet);
-    };
-
-    // 1. Check mainAccount first (if not held and balance >= requiredTotalWei -> fast path)
-    const mainCandidate = candidates.find((c) => c.source === "main");
-    let mainBalance = 0n;
-    if (mainCandidate && isEligible(mainCandidate.address)) {
-      mainBalance = await getBal(mainCandidate.address);
-    }
-
-    if (
-      mainCandidate &&
-      isEligible(mainCandidate.address) &&
-      mainBalance >= requiredTotalWei
-    ) {
-      const preparation = await runMainAccountExclusive(
-        wallet,
-        async () => {
-          return wallet.pool.prepareBurnAccount({
-            mainAccountSigner,
-            mainAccountAddress: mainAddress,
-            provider: wallet.provider,
-            burnValueWei: voteWeightWei,
-            gasReserveWei,
-            onProgress,
-            claimFor: leaseHolder,
-          });
-        },
-        {
-          ...FUNDING_FROM_MAIN,
-          onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
-        }
-      );
-      return { leaseIndex: preparation.index, leaseHolder };
-    }
-
-    // 2. If mainAccount balance < requiredTotalWei, check remaining candidates (identity, then received coins)
-    const otherCandidates = candidates.filter((c) => c.source !== "main");
-    let singleChosen: (typeof candidates)[number] | undefined;
-    const candidateBalances = new Map<string, bigint>();
-    if (mainCandidate) {
-      candidateBalances.set(mainCandidate.address.toLowerCase(), mainBalance);
-    }
-
-    for (const candidate of otherCandidates) {
-      if (!isEligible(candidate.address)) continue;
-      const bal = await getBal(candidate.address);
-      candidateBalances.set(candidate.address.toLowerCase(), bal);
-      if (bal >= requiredTotalWei) {
-        singleChosen = candidate;
-        break;
-      }
-    }
-
-    if (singleChosen !== undefined) {
-      const funderSigner = new MonadAccountTxSigner({
-        privateKey: singleChosen.privateKey(),
-        provider: wallet.provider,
-        httpClient: wallet.httpClient,
-      });
-      // The funder is claimed like the main account is: no stamp payment or other spender
-      // signs from it at the same nonce while the funding transfer is out.
-      const preparation = await runMainAccountExclusive(
-        wallet,
-        () =>
-          wallet.pool.prepareBurnAccount({
-            mainAccountSigner: funderSigner,
-            mainAccountAddress: mainAddress,
-            provider: wallet.provider,
-            burnValueWei: voteWeightWei,
-            gasReserveWei,
-            onProgress,
-            claimFor: leaseHolder,
-          }),
-        {
-          ...FUNDING_FROM_MAIN,
-          addresses: [singleChosen.address],
-          onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
-        }
-      );
-      if (singleChosen.source === "coin") {
-        wallet.invalidateBalanceCache?.();
-      }
-      return { leaseIndex: preparation.index, leaseHolder };
-    }
-
-    // 3. Multi-transaction aggregation across candidates
-    const contributableCandidates: Array<{
-      candidate: (typeof candidates)[number];
-      capacity: bigint;
-    }> = [];
-
-    for (const candidate of candidates) {
-      if (!isEligible(candidate.address)) continue;
-      let bal = candidateBalances.get(candidate.address.toLowerCase());
-      if (bal === undefined) {
-        bal = await getBal(candidate.address);
-        candidateBalances.set(candidate.address.toLowerCase(), bal);
-      }
-      if (bal > fundingGasFee) {
-        contributableCandidates.push({
-          candidate,
-          capacity: bal - fundingGasFee,
-        });
-      }
-    }
-
-    contributableCandidates.sort((a, b) =>
-      a.capacity > b.capacity ? -1 : 1
-    );
-
-    let remaining = neededTargetBalance;
-    const selectedFunders: Array<{
-      candidate: (typeof candidates)[number];
-      amountWei: bigint;
-    }> = [];
-
-    for (const item of contributableCandidates) {
-      if (remaining === 0n) break;
-      const contribution =
-        item.capacity < remaining ? item.capacity : remaining;
-      if (contribution <= 0n) continue;
-      selectedFunders.push({
-        candidate: item.candidate,
-        amountWei: contribution,
-      });
-      remaining -= contribution;
-    }
-
-    if (remaining === 0n && selectedFunders.length > 0) {
-      const funders = selectedFunders.map((f) => ({
-        signer: new MonadAccountTxSigner({
-          privateKey: f.candidate.privateKey(),
-          provider: wallet.provider,
-          httpClient: wallet.httpClient,
-        }),
-        amountWei: f.amountWei,
-        source: f.candidate.source,
-      }));
-
-      const hasCoin = funders.some((f) => f.source === "coin");
-
-      const executeMultiFund = async () => {
-        return wallet.pool.prepareBurnAccount({
-          mainAccountSigner: funders[0].signer,
-          mainAccountAddress: mainAddress,
-          funders,
-          provider: wallet.provider,
-          burnValueWei: voteWeightWei,
-          gasReserveWei,
-          onProgress,
-          claimFor: leaseHolder,
-        });
-      };
-
-      // Every funder is claimed for the funding, not only the main account.
-      const preparation = await runMainAccountExclusive(
-        wallet,
-        executeMultiFund,
-        {
-          ...FUNDING_FROM_MAIN,
-          addresses: selectedFunders.map((f) => f.candidate.address),
-          onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
-        }
-      );
-
-      if (hasCoin) {
-        wallet.invalidateBalanceCache?.();
-      }
-      return { leaseIndex: preparation.index, leaseHolder };
-    }
-
-    // 4. Fallback to mainAccountSigner within runMainAccountExclusive so deficit error is surfaced cleanly
-    if (sourceIsHeld(wallet, mainAddress)) {
-      throw new Error(sourceHeldRefusalMessage);
-    }
-
-    const preparation = await runMainAccountExclusive(
-      wallet,
-      async () => {
-        return wallet.pool.prepareBurnAccount({
-          mainAccountSigner,
-          mainAccountAddress: mainAddress,
-          provider: wallet.provider,
-          burnValueWei: voteWeightWei,
-          gasReserveWei,
-          onProgress,
-          claimFor: leaseHolder,
-        });
-      },
-      {
-        ...FUNDING_FROM_MAIN,
-        onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
-      }
-    );
-    return { leaseIndex: preparation.index, leaseHolder };
-  } catch (err) {
-    const reason =
-      typeof (err as { shortMessage?: unknown })?.shortMessage === "string"
-        ? (err as { shortMessage: string }).shortMessage
-        : err instanceof Error
-        ? err.message
-        : String(err);
-    throw new TopicBurnPreparationError(reason, { cause: err });
-  }
 }
 
 export interface InstallEvmStampCoordinatorParams {

@@ -99,7 +99,7 @@ import type {
   EvmWalletPersistenceBundle,
 } from "./storage/evm-wallet-bundle";
 import { applyWalletSyncItem } from "./sync-dispatcher";
-import type { MainAccountWait } from "./evm-fund-ahead";
+import type { MainAccountWait } from "./evm-stamp-coordinator";
 
 /** The most pending coins one background pass asks the chain about. */
 export const PENDING_COIN_PROBES_PER_PASS = 8;

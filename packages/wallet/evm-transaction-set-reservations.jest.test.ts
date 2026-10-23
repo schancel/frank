@@ -87,3 +87,20 @@ it('selects change in index order before valid root and identity fallbacks', asy
     1200n,
   )
 })
+
+
+it('finds a sufficient one-burn source after smaller change coins without reserving them', async () => {
+  const coins = await EvmCoinList.open(new MemoryRecordStore())
+  for (const [index, valueWei] of [100n, 1000n].entries()) {
+    const signer = new Wallet('0x' + (index + 40).toString(16).padStart(64, '0'))
+    await coins.put({ account: signer.address, privateKey: signer.privateKey,
+      nonce: 0, valueWei, origin: index === 0 ? 'change' : 'root',
+      ...(index === 0 ? { changeIndex: 0 } : {}) })
+  }
+  const selected = coins.reserveTransactionSetSources({ holder: 'one-burn',
+    amountWei: 500n, feeWei: 10n, head: 1, maxCoins: 1,
+    sourceOrder: ['change', 'root'] })
+  expect(selected).toHaveLength(1)
+  expect(selected![0]!.coin.origin).toBe('root')
+  expect(coins.all().find(coin => coin.origin === 'change')!.state).toBe('unspent')
+})

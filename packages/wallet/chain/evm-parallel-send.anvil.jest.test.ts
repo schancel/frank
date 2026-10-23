@@ -21,6 +21,7 @@ import { dirname, join } from 'path'
 import { JsonRpcProvider, Transaction, Wallet, hexlify } from 'ethers'
 import { toHex } from '@frank/codec'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import { evmWalletInternals } from '../evm-wallet'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import {
   fixture,
@@ -111,15 +112,30 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
   const relayed: Transaction[][] = []
   let relayBroadcast = 0
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     const port = await freePort()
     mockNode.url = `http://127.0.0.1:${port}`
+    // The node charges a stable real 1 gwei price; policy still comes from its RPC.
+    // This permits exact single-payment funding without residual gifts or change.
     node = spawn(
       anvilBin!,
-      ['--port', String(port), '--chain-id', '10143', '--silent'],
+      [
+        '--port',
+        String(port),
+        '--chain-id',
+        '10143',
+        '--base-fee',
+        '0',
+        '--gas-price',
+        '1000000000',
+        '--silent',
+      ],
       { stdio: 'ignore' },
     )
-    chain = new JsonRpcProvider(mockNode.url, 10143, { staticNetwork: true })
+    chain = new JsonRpcProvider(mockNode.url, 10143, {
+      staticNetwork: true,
+      cacheTimeout: -1,
+    })
     for (let attempt = 0; ; attempt++) {
       try {
         await chain.getBlockNumber()
@@ -134,7 +150,9 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     offlineChain.reset()
     offlineChain.relayBroadcasts = false
     mailboxes.clear()
-    f = await fixture()
+    relayed.length = 0
+    relayBroadcast = 0
+    f = await fixture({ transactionSetPolicy: undefined })
     alice = f.alice
     bobMailbox = []
     mailboxes.set(toHex(f.bob.identity.compressedPubKey), bobMailbox)
@@ -154,13 +172,15 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
         if (relayed.length % 2 === 0)
           for (const tx of payments) {
             relayBroadcast++
-            void chain.broadcastTransaction(tx.serialized).catch(() => undefined)
+            void chain
+              .broadcastTransaction(tx.serialized)
+              .catch(() => undefined)
           }
         return answer
       },
     })
   })
-  afterAll(async () => {
+  afterEach(async () => {
     await alice?.close().catch(() => undefined)
     await f?.close().catch(() => undefined)
     chain?.destroy()
@@ -214,65 +234,53 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     }
   }
 
-  it('with money only in the main account, ten messages started together are each paid once from it: ten nonces, all mined, nothing funded', async () => {
+  it('spending root funds distributes change that pays subsequent messages without reusing the root', async () => {
     const main = (await alice.getReceiveAddress()).raw
-    await (
-      await dev.sendTransaction({ to: main, value: 10n ** 18n })
-    ).wait()
-    const mainBefore = await chain.getBalance(main)
-    const blockBefore = await chain.getBlockNumber()
-
-    const start = Date.now()
-    const sent = await Promise.all(
-      Array.from({ length: 10 }, (_, n) => send(1, n)),
+    await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
+    const first = await send(1, 0)
+    await settle([first.payloadDigest])
+    const original = alice.transactionSetPreparer!.getOperation(
+      `stamp-${ID(1, 0).replace(/-/g, '')}`,
+    )!
+    const changes = original.members.filter(
+      member => member.transactionSet?.role === 'change',
     )
-    const elapsed = Date.now() - start
-    await settle(sent.map(result => result.payloadDigest))
-    const seen = await onChain(sent)
-
-    // Every payment is in a block and succeeded, each the whole stamp in one transfer.
-    expect(seen.payments).toHaveLength(10)
+    expect(changes.length).toBeGreaterThan(0)
+    for (const member of changes)
+      expect(
+        (await chain.getTransactionReceipt(member.signed!.transactionHash))
+          ?.status,
+      ).toBe(1)
+    const rootNonce = await chain.getTransactionCount(main, 'latest')
+    const later = await send(1, 1)
+    await settle([later.payloadDigest])
+    const seen = await onChain([first, later])
     expect(seen.receipts.every(receipt => receipt?.status === 1)).toBe(true)
-    expect(new Set(seen.senders)).toEqual(new Set([main.toLowerCase()]))
-    seen.payments.forEach((payment, i) => {
-      expect(payment.valueWei).toBe(STAMP)
-      expect(seen.destinationBalances[i]).toBe(STAMP)
-    })
-    expect(new Set(sent.map(result => result.payloadDigest)).size).toBe(10)
-    expect(bobMailbox).toHaveLength(10)
-    // The main account is one coin: ten payments, ten consecutive nonces, no collision, and no
-    // transaction besides them (nothing was funded).
-    expect(sent.flatMap(result => result.preparationTxHashes)).toEqual([])
-    expect(await chain.getTransactionCount(main, 'latest')).toBe(10)
-    const nonces = (
-      await Promise.all(
-        seen.payments.map(payment => chain.getTransaction(payment.txHash)),
-      )
-    ).map(tx => tx!.nonce)
-    expect(nonces.sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
-    // A message costs its stamp plus the gas of one transfer, nothing more.
-    const fees = seen.receipts.reduce(
-      (sum, receipt) => sum + receipt!.gasUsed * receipt!.gasPrice,
-      0n,
+    expect(seen.senders[0]).toBe(main.toLowerCase())
+    expect(
+      seen.senders
+        .slice(first.stampPayments.length)
+        .every(account => account !== main.toLowerCase()),
+    ).toBe(true)
+    expect(await chain.getTransactionCount(main, 'latest')).toBe(rootNonce)
+    expect(bobMailbox).toHaveLength(2)
+    const originalBytes = original.members.map(
+      member => member.signed!.rawTransaction,
     )
-    expect(seen.receipts.every(receipt => receipt!.gasUsed === 21_000n)).toBe(
-      true,
-    )
-    expect(await chain.getBalance(main)).toBe(mainBefore - 10n * STAMP - fees)
-    // eslint-disable-next-line no-console
-    console.log(
-      `anvil round 1 (main account only): 10 messages, 10 payments mined in blocks ${
-        blockBefore + 1
-      }..${await chain.getBlockNumber()}, ${elapsed} ms, ${
-        fees / 10n
-      } wei of gas per message; ${relayBroadcast} payments broadcast by the relay stand-in, the rest by the wallet`,
-    )
+    await settle([first.payloadDigest, later.payloadDigest])
+    expect(
+      alice
+        .transactionSetPreparer!.getOperation(
+          `stamp-${ID(1, 0).replace(/-/g, '')}`,
+        )!
+        .members.map(member => member.signed!.rawTransaction),
+    ).toEqual(originalBytes)
   })
 
-  it('with ten accounts funded ahead, ten messages started together are paid in about the time of one', async () => {
+  it('ten externally funded accounts pay independent messages concurrently on the real node', async () => {
     // Ten single-use accounts, funded from outside the wallet's main account, one stamp each.
     // Each keeps back more than any fee the wallet may quote (its quote is a few seconds old).
-    const reserve = 21_000n * 10n ** 10n
+    const reserve = 21_000n * (await chain.getFeeData()).gasPrice!
     const before = alice.pool.records().length
     const rows = alice.pool.ensureSize(before + 10).slice(before)
     await alice.pool.flush()
@@ -316,12 +324,21 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     // Nothing was funded: the main account did not move.
     expect(all.flatMap(result => result.preparationTxHashes)).toEqual([])
     expect(await chain.getTransactionCount(main, 'latest')).toBe(mainNonce)
-    expect(bobMailbox).toHaveLength(20)
-    for (const row of rows)
-      expect(alice.pool.getRecord(row.index)?.status).toBe('spent')
+    expect(bobMailbox).toHaveLength(10)
+    for (const row of rows) {
+      expect(
+        evmWalletInternals(alice)
+          .coinList!.all()
+          .find(
+            coin =>
+              coin.account === row.address.toLowerCase() && coin.nonce === 0,
+          )?.state,
+      ).toBe('spent')
+      expect(await chain.getBalance(row.address)).toBe(0n)
+    }
     // eslint-disable-next-line no-console
     console.log(
-      `anvil round 2 (funded ahead): one send ${oneMs} ms; nine together ${nineMs} ms`,
+      `anvil independently funded sources: one send ${oneMs} ms; nine together ${nineMs} ms`,
     )
     // Sealing and signing are CPU work on one thread (about 0.1 to 0.2 s a message here), so
     // nine together are not as fast as one; the bound only catches a return to one-at-a-time
@@ -332,8 +349,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
   // From here the node mines only when told to, so "not mined yet" lasts as long as a test needs.
   const automine = (on: boolean) => chain.send('evm_setAutomine', [on])
   const mine = () => chain.send('evm_mine', [])
-  const pause = (ms: number) =>
-    new Promise(resolve => setTimeout(resolve, ms))
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
   const NATIVE_HOLDER = /:main-account$/
   /** Runs `started` and reports, after `ms`, whether it has finished. */
   async function stillWaiting<T>(started: Promise<T>, ms: number) {
@@ -348,6 +364,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
 
   it('a native send waits for a message payment from the main account to be mined, then holds the account itself until its own transfer is mined', async () => {
     const main = (await alice.getReceiveAddress()).raw
+    await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
     const nonce = await chain.getTransactionCount(main, 'latest')
     await automine(false)
     try {
@@ -397,6 +414,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
 
   it('a native send given a deadline gives up when it passes, having signed nothing', async () => {
     const main = (await alice.getReceiveAddress()).raw
+    await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
     const nonce = await chain.getTransactionCount(main, 'latest')
     await automine(false)
     try {
@@ -419,6 +437,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
 
   it('a contract call takes the main account like every other spender and holds it until the chain decides; one that is never handed to the network holds nothing', async () => {
     const main = (await alice.getReceiveAddress()).raw
+    await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
     const nonce = await chain.getTransactionCount(main, 'latest')
     const target = Wallet.createRandom().address
     await automine(false)

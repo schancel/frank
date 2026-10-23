@@ -95,6 +95,17 @@ describe('Multi-brand whitebox configuration', () => {
     }
   })
 
+  it('uses opaque paper artwork for Frank iOS home-screen icons', () => {
+    for (const slug of ['frank', 'plainspoken']) {
+      const icons = BUILTIN_BRANDS[slug]!.publicIcons
+      for (const size of [120, 152, 167, 180]) {
+        expect(icons[`icons/apple-icon-${size}x${size}.png`]).toBe(
+          `brand-plainspoken/raster/plainspoken-paper-${size}.png`,
+        )
+      }
+    }
+  })
+
   it('synthesizes valid brand profiles for arbitrary custom project names', () => {
     const fromSlug = resolveAppBrand({ APP_BRAND: 'custom-project' })
     expect(fromSlug).toEqual({

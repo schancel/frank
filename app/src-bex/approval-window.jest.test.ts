@@ -2,7 +2,12 @@
 
 import { FRANK_DAPP_BRIDGE_CHANNEL, installInpageProvider } from './inpage'
 import { installContentScriptBridge } from './content'
-import { PublicKey } from '@solana/web3.js'
+import {
+  MessageV0,
+  PublicKey,
+  SystemProgram,
+  VersionedTransaction,
+} from '@solana/web3.js'
 import { ed25519 } from '@noble/curves/ed25519'
 import {
   DAPP_PERSONA_NOT_READY_ERROR,
@@ -331,6 +336,10 @@ describe('dApp approval window lifecycle', () => {
     const address = new PublicKey(publicKey).toBase58()
     scope.chrome.runtime.onMessage.addListener(
       (message: any, _sender: any, respond: (value: unknown) => void) => {
+        if (message.type === 'preview-dapp-account') {
+          respond({ ok: true, account: { address } })
+          return
+        }
         if (message.type === 'execute-approved-dapp-request') {
           respond({
             ok: true,
@@ -357,6 +366,9 @@ describe('dApp approval window lifecycle', () => {
         )
       ).error.code,
     ).toBe(4100)
+    expect(
+      state.pendingApprovals.get('solana-connect')?.solanaAccountAddress,
+    ).toBe(address)
     const result = await decide(state, scope, 'solana-connect', true)
     expect(result.ok).toBe(true)
     expect(await pending).toMatchObject({
@@ -646,6 +658,9 @@ describe('approval window page', () => {
     })
     await tick(5)
     expect(root.textContent).toContain('Sign a message')
+    expect(root.textContent).toContain(`Account: ${PRIMARY}`)
+    expect(root.textContent).toContain('Message UTF-8: hello')
+    expect(root.textContent).toContain('Message bytes (hex): 0x68656c6c6f')
     expect(
       root.querySelector('[data-testid="approval-approve"]'),
     ).not.toBeNull()
@@ -654,6 +669,140 @@ describe('approval window page', () => {
       .querySelector<HTMLButtonElement>('[data-testid="approval-reject"]')!
       .click()
     expect((await pending).error.code).toBe(4001)
+    page.dispose()
+    bg.dispose()
+  })
+
+  it('shows the complete EVM transaction review before enabling approval', async () => {
+    const { scope } = createExtensionScope()
+    const origin = 'https://app.uniswap.org'
+    const state = createBackgroundBridgeState({
+      activePersonaAddress: PRIMARY,
+      approvedOrigins: new Set([origin]),
+      originPersonas: {
+        [origin]: {
+          address: PRIMARY,
+          index: 0,
+          label: 'Shared',
+          isBurner: false,
+        },
+      },
+    })
+    const bg = installBackgroundBridge(scope, state)
+    const pending = rpc(
+      state,
+      scope,
+      'review-tx',
+      'eth_sendTransaction',
+      origin,
+      [
+        {
+          from: PRIMARY,
+          to: SITE,
+          value: '0xde0b6b3a7640000',
+          gas: '0x5208',
+          maxFeePerGas: '0x3b9aca00',
+          maxPriorityFeePerGas: '0x1',
+          data: '0xdeadbeef00112233',
+        },
+      ],
+    )
+    await tick()
+    const root = document.createElement('main')
+    const page = mountApprovalPage(root, {
+      globalScope: scope,
+      closeWindow: () => undefined,
+    })
+    await page.refresh()
+    const summary = root.querySelector('.approval-review-summary')
+    expect(summary?.textContent).toContain(
+      'Monad Testnet (monad-testnet, chain ID 0x279f)',
+    )
+    expect(summary?.textContent).toContain(`Account: ${PRIMARY}`)
+    expect(summary?.textContent).toContain(`Recipient: ${SITE}`)
+    expect(summary?.textContent).toContain('Value: 1.0 MONT')
+    expect(summary?.textContent).toContain('Gas limit: 0x5208')
+    expect(summary?.textContent).toContain('Gas price: 0x3b9aca00')
+    expect(summary?.textContent).toContain('Calldata: 0xdeadbeef00112233')
+    expect(summary?.textContent).toContain('Calldata interpretation: undecoded')
+    expect(
+      root.querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')
+        ?.disabled,
+    ).toBe(false)
+    root
+      .querySelector<HTMLButtonElement>('[data-testid="approval-reject"]')!
+      .click()
+    expect((await pending).error.code).toBe(4001)
+    page.dispose()
+    bg.dispose()
+  })
+
+  it('shows the Solana chain, account, program, and complete unknown instruction data', async () => {
+    const { scope } = createExtensionScope()
+    const account = new PublicKey(new Uint8Array(32).fill(8)).toBase58()
+    const instructionData = new Uint8Array([1, 2, 3, 4, 5, 6])
+    const transaction = new VersionedTransaction(
+      new MessageV0({
+        header: {
+          numRequiredSignatures: 1,
+          numReadonlySignedAccounts: 0,
+          numReadonlyUnsignedAccounts: 1,
+        },
+        staticAccountKeys: [new PublicKey(account), SystemProgram.programId],
+        recentBlockhash: PublicKey.default.toBase58(),
+        compiledInstructions: [
+          {
+            programIdIndex: 1,
+            accountKeyIndexes: Uint8Array.of(0),
+            data: instructionData,
+          },
+        ],
+        addressTableLookups: [],
+      }),
+    ).serialize()
+    const request = {
+      id: 'sol-review',
+      kind: 'sign' as const,
+      chainFamily: 'solana' as const,
+      origin: 'https://solana.example',
+      href: 'https://solana.example',
+      method: 'solana_signTransaction',
+      params: {
+        account,
+        chain: 'solana:devnet',
+        transaction: Array.from(transaction),
+      },
+      chainIdentifier: 'solana-devnet',
+      solanaAccountAddress: account,
+      createdAt: Date.now(),
+      requiresCompanionApproval: true,
+    }
+    const state = createBackgroundBridgeState({
+      pendingApprovals: new Map([[request.id, request]]),
+    })
+    const bg = installBackgroundBridge(scope, state)
+    const root = document.createElement('main')
+    const page = mountApprovalPage(root, {
+      globalScope: scope,
+      closeWindow: () => undefined,
+    })
+    await page.refresh()
+    const summary =
+      root.querySelector('.approval-review-summary')?.textContent ?? ''
+    expect(summary).toContain('solana:devnet')
+    expect(summary).toContain(`Solana account: ${account}`)
+    expect(summary).toContain(`Program: ${SystemProgram.programId.toBase58()}`)
+    expect(summary).toContain('Data (hex): 0x010203040506')
+    expect(summary).toContain(
+      'Unknown instruction; review the full program and data.',
+    )
+    expect(
+      root.querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')
+        ?.disabled,
+    ).toBe(false)
+    root
+      .querySelector<HTMLButtonElement>('[data-testid="approval-reject"]')!
+      .click()
     page.dispose()
     bg.dispose()
   })
@@ -727,6 +876,10 @@ describe('dApp provider end to end (inpage -> content -> background -> approval 
     const address = new PublicKey(publicKeyBytes).toBase58()
     scope.chrome.runtime.onMessage.addListener(
       (message: any, _sender: any, respond: (value: unknown) => void) => {
+        if (message.type === 'preview-dapp-account') {
+          respond({ ok: true, account: { address } })
+          return
+        }
         if (message.type !== 'execute-approved-dapp-request') return
         if (message.request.method === 'solana_connect') {
           respond({
@@ -761,6 +914,11 @@ describe('dApp provider end to end (inpage -> content -> background -> approval 
     expect(windows.create).toHaveBeenCalledTimes(1)
     await page.refresh()
     expect(root.textContent).toContain('Connect a Solana account')
+    expect(root.textContent).toContain(`Solana account: ${address}`)
+    expect(
+      root.querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')
+        ?.disabled,
+    ).toBe(false)
     root
       .querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')!
       .click()

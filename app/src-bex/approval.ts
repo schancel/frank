@@ -14,6 +14,12 @@ import {
   sendRuntimeMessage,
 } from './runtime-adapter'
 import type { PendingDappApproval } from './background'
+import { formatUnits, getBytes, hexlify, Interface, keccak256 } from 'ethers'
+import { Transaction, VersionedTransaction } from '@solana/web3.js'
+import {
+  getChainRegistryEntry,
+  PROTOCOL_CHAINS,
+} from '@frank/wallet/chain/chains-registry'
 
 const CONNECT_KINDS = new Set(['connect', 'permissions'])
 
@@ -61,13 +67,238 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node
 }
 
-function requestDetails(request: PendingDappApproval): string {
+function nativeChain(request: PendingDappApproval) {
+  if (request.chainIdentifier)
+    return getChainRegistryEntry(request.chainIdentifier)
+  const id = request.chainIdHex
+  if (!id) return undefined
   try {
-    const text = JSON.stringify(request.params ?? null, null, 2)
-    return text.length > 2000 ? `${text.slice(0, 2000)}…` : text
+    const nativeId = BigInt(id)
+    return Object.values(PROTOCOL_CHAINS).find(
+      chain =>
+        chain.family === 'evm' &&
+        chain.nativeChainId !== undefined &&
+        BigInt(chain.nativeChainId) === nativeId,
+    )
   } catch {
-    return String(request.params)
+    return undefined
   }
+}
+
+function bytesForReview(value: unknown): Uint8Array {
+  if (typeof value === 'string') {
+    if (/^0x(?:[0-9a-f]{2})*$/i.test(value)) return getBytes(value)
+    return new TextEncoder().encode(value)
+  }
+  if (
+    Array.isArray(value) &&
+    value.every(n => Number.isInteger(n) && n >= 0 && n <= 255)
+  )
+    return Uint8Array.from(value)
+  throw new Error('The request bytes cannot be safely displayed')
+}
+
+function decodedText(bytes: Uint8Array): string | undefined {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return undefined
+  }
+}
+
+function solanaTransactionReview(value: unknown): string {
+  const bytes = bytesForReview(value)
+  let message: string
+  try {
+    const tx = VersionedTransaction.deserialize(bytes)
+    const keys = tx.message.staticAccountKeys
+    message = tx.message.compiledInstructions
+      .map((ix, index) => {
+        const program = keys[ix.programIdIndex]
+        const accounts = ix.accountKeyIndexes.map(
+          i => keys[i]?.toBase58() ?? `index:${i}`,
+        )
+        return `Instruction ${index + 1}\nProgram: ${
+          program?.toBase58() ?? `index:${ix.programIdIndex}`
+        }\nAccounts: ${accounts.join(', ') || '(none)'}\nData (hex): ${hexlify(
+          ix.data,
+        )}\nInterpretation: Unknown instruction; review the full program and data.`
+      })
+      .join('\n\n')
+  } catch {
+    const tx = Transaction.from(bytes)
+    message = tx.instructions
+      .map(
+        (ix, index) =>
+          `Instruction ${
+            index + 1
+          }\nProgram: ${ix.programId.toBase58()}\nAccounts: ${
+            ix.keys.map(k => k.pubkey.toBase58()).join(', ') || '(none)'
+          }\nData (base58): ${
+            ix.data
+          }\nInterpretation: Unknown instruction; review the full program and data.`,
+      )
+      .join('\n\n')
+  }
+  return `Transaction bytes (hex): ${hexlify(bytes)}\n\n${
+    message || 'No instructions.'
+  }`
+}
+
+function approvalReview(request: PendingDappApproval): string {
+  const chain = nativeChain(request)
+  if (request.chainFamily === 'evm') {
+    if (!chain || chain.family !== 'evm')
+      throw new Error('Unknown EVM chain identity')
+    const lines = [
+      `Chain: ${chain.name} (${chain.id}, chain ID ${
+        request.chainIdHex ?? 'unknown'
+      })`,
+    ]
+    if (
+      request.method === 'eth_requestAccounts' ||
+      request.method === 'wallet_requestPermissions'
+    )
+      throw new Error('Connection uses the account selection controls')
+    const params = Array.isArray(request.params)
+      ? request.params
+      : [request.params]
+    if (request.method === 'personal_sign' || request.method === 'eth_sign') {
+      const message = request.method === 'eth_sign' ? params[1] : params[0]
+      const bytes = bytesForReview(message)
+      lines.push(`Account: ${request.personaAddress ?? 'unknown'}`)
+      const text = decodedText(bytes)
+      lines.push(
+        `Message UTF-8: ${text === undefined ? '(not valid UTF-8)' : text}`,
+      )
+      lines.push(`Message bytes (hex): ${hexlify(bytes)}`)
+      return lines.join('\n\n')
+    }
+    if (/^eth_signTypedData(?:_v[34])?$/.test(request.method)) {
+      const raw = params[1]
+      const data =
+        typeof raw === 'string' ? JSON.parse(raw) : (raw as Record<string, any>)
+      if (
+        !data ||
+        typeof data !== 'object' ||
+        !data.domain ||
+        !data.types ||
+        !data.message
+      )
+        throw new Error('Typed data cannot be safely summarized')
+      const primaryType =
+        data.primaryType ??
+        Object.keys(data.types).find(k => k !== 'EIP712Domain')
+      if (typeof primaryType !== 'string')
+        throw new Error('Typed data primary type is missing')
+      lines.push(
+        `Account: ${request.personaAddress ?? String(params[0] ?? 'unknown')}`,
+      )
+      lines.push(`Domain:\n${JSON.stringify(data.domain, null, 2)}`)
+      lines.push(`Primary type: ${primaryType}`)
+      lines.push(`Message:\n${JSON.stringify(data.message, null, 2)}`)
+      return lines.join('\n\n')
+    }
+    if (request.method === 'eth_sendTransaction') {
+      const tx = params[0] as Record<string, unknown> | undefined
+      if (!tx || typeof tx !== 'object')
+        throw new Error('Transaction cannot be summarized')
+      const value = BigInt(String(tx.value ?? '0x0'))
+      const unit = chain.unit || 'native units'
+      lines.push(
+        `Account: ${request.personaAddress ?? String(tx.from ?? 'unknown')}`,
+      )
+      lines.push(`Recipient: ${String(tx.to ?? '(contract creation)')}`)
+      lines.push(
+        `Value: ${formatUnits(
+          value,
+          chain.nativeDecimals ?? 0,
+        )} ${unit} (${value} base units)`,
+      )
+      lines.push(
+        `Gas limit: ${String(
+          tx.gas ?? tx.gasLimit ?? '(not specified; RPC estimate required)',
+        )}`,
+      )
+      lines.push(
+        `Gas price: ${String(
+          tx.gasPrice ??
+            tx.maxFeePerGas ??
+            '(not specified; RPC quote required)',
+        )}`,
+      )
+      lines.push(
+        `Priority fee: ${String(tx.maxPriorityFeePerGas ?? '(not specified)')}`,
+      )
+      const data = typeof tx.data === 'string' ? tx.data : '0x'
+      lines.push(`Calldata: ${data}`)
+      lines.push(`Calldata hash: ${keccak256(data)}`)
+      if (data.startsWith('0xa9059cbb')) {
+        try {
+          const iface = new Interface([
+            'function transfer(address to,uint256 value)',
+          ])
+          const decoded = iface.decodeFunctionData('transfer', data)
+          lines.push(
+            `Decoded ERC-20 transfer: ${String(decoded[1])} tokens to ${String(
+              decoded[0],
+            )}`,
+          )
+        } catch {
+          lines.push(
+            'Calldata interpretation: undecoded; complete calldata is shown above.',
+          )
+        }
+      } else if (data !== '0x') {
+        lines.push(
+          'Calldata interpretation: undecoded; complete calldata is shown above.',
+        )
+      }
+      return lines.join('\n\n')
+    }
+    throw new Error(`No safe review is available for ${request.method}`)
+  }
+  if (request.chainFamily === 'solana') {
+    const lines = [
+      `Chain: ${
+        request.method === 'solana_connect'
+          ? 'Solana'
+          : String(
+              (request.params as any)?.chain ?? 'Solana network not specified',
+            )
+      }`,
+    ]
+    if (request.method === 'solana_connect') {
+      if (!request.solanaAccountAddress)
+        throw new Error('Unlock Frank to show the Solana account')
+      lines.push(`Solana account: ${request.solanaAccountAddress}`)
+      return lines.join('\n\n')
+    }
+    const p = request.params as Record<string, unknown>
+    lines.push(
+      `Solana account: ${
+        request.solanaAccountAddress ?? String(p?.account ?? 'unknown')
+      }`,
+    )
+    if (request.method === 'solana_signMessage') {
+      const bytes = bytesForReview(p?.message)
+      const text = decodedText(bytes)
+      lines.push(
+        `Message UTF-8: ${text === undefined ? '(not valid UTF-8)' : text}`,
+      )
+      lines.push(`Message bytes (hex): ${hexlify(bytes)}`)
+      return lines.join('\n\n')
+    }
+    if (
+      request.method === 'solana_signTransaction' ||
+      request.method === 'solana_signAndSendTransaction'
+    ) {
+      lines.push(solanaTransactionReview(p?.transaction))
+      return lines.join('\n\n')
+    }
+    throw new Error(`No safe review is available for ${request.method}`)
+  }
+  throw new Error(`No safe review is available for ${request.method}`)
 }
 
 export interface ApprovalPage {
@@ -243,7 +474,32 @@ export function mountApprovalPage(
     reject.addEventListener('click', () => void decide(request, false))
     actions.append(reject)
 
-    if (isConnectRequest(request) && request.chainFamily !== 'solana') {
+    if (request.method === 'solana_connect') {
+      let summary = ''
+      try {
+        summary = approvalReview(request)
+      } catch (error) {
+        summary =
+          error instanceof Error
+            ? error.message
+            : 'Unlock Frank to show the Solana account.'
+      }
+      root.append(
+        el(
+          doc,
+          'p',
+          'approval-text',
+          'Frank will share this Solana account with this site.',
+        ),
+        el(doc, 'pre', 'approval-review-summary', summary),
+      )
+      const approve = el(doc, 'button', 'approval-approve', 'Connect')
+      approve.type = 'button'
+      approve.dataset.testid = 'approval-approve'
+      approve.disabled = !request.solanaAccountAddress || !summary
+      approve.addEventListener('click', () => void decide(request, true))
+      actions.append(approve)
+    } else if (isConnectRequest(request) && request.chainFamily !== 'solana') {
       root.append(
         el(
           doc,
@@ -330,21 +586,24 @@ export function mountApprovalPage(
       syncApprove()
       actions.append(approve)
     } else {
+      let summary = ''
+      let reviewError = ''
+      try {
+        summary = approvalReview(request)
+      } catch (error) {
+        reviewError =
+          error instanceof Error
+            ? error.message
+            : 'Request details cannot be safely displayed.'
+      }
       root.append(
-        el(
-          doc,
-          'p',
-          'approval-text',
-          'Review the request details. Approving will use the account shown for this site.',
-        ),
+        el(doc, 'pre', 'approval-review-summary', summary || reviewError),
       )
-      const details = el(doc, 'details', 'approval-details')
-      details.append(el(doc, 'summary', undefined, 'Request details'))
-      details.append(el(doc, 'pre', undefined, requestDetails(request)))
-      root.append(details)
       const approve = el(doc, 'button', 'approval-approve', 'Approve')
       approve.type = 'button'
       approve.dataset.testid = 'approval-approve'
+      approve.disabled =
+        !summary || !root.querySelector('.approval-review-summary')
       approve.addEventListener('click', () => void decide(request, true))
       actions.append(approve)
     }

@@ -249,6 +249,28 @@ export default defineComponent({
           } | null
           if (
             m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+            m?.type === 'preview-dapp-account'
+          ) {
+            const extensionApi = getRawExtensionApi()
+            const backgroundUrl =
+              extensionApi?.runtime?.getURL?.('background.js')
+            if (
+              !backgroundUrl ||
+              sender?.id !== extensionApi?.runtime?.id ||
+              sender?.url !== backgroundUrl ||
+              (m as { family?: unknown }).family !== 'solana' ||
+              accountStatus.status !== 'ready'
+            )
+              return { ok: false }
+            try {
+              const signer = await accountSession.createDappSolanaSigner()
+              return { ok: true, account: { address: signer.publicKey } }
+            } catch {
+              return { ok: false }
+            }
+          }
+          if (
+            m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
             m?.type === 'execute-approved-dapp-request'
           ) {
             const extensionApi = getRawExtensionApi()

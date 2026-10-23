@@ -2,7 +2,9 @@ import { HDNodeWallet, Transaction, Wallet, verifyMessage } from 'ethers'
 import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js'
 import { ed25519 } from '@noble/curves/ed25519'
 import { deriveDappPersona } from '@frank/wallet/dapp-bridge/persona-keys'
+import { PROTOCOL_CHAINS } from '@frank/wallet/chain'
 import {
+  createConfiguredDappEvmRpc,
   executeApprovedDappRequest,
   type DappEvmAttempt,
   type DappEvmAttemptStore,
@@ -51,7 +53,72 @@ function memoryAttemptStore() {
   return { store, getAttempts: () => attempts }
 }
 
+function injectedEvmRpc(chainIds: string[] = []) {
+  return async (chainIdentifier: string) => {
+    chainIds.push(chainIdentifier)
+    return {
+      async send(method: string, params: unknown[]) {
+        const response = await (global.fetch as any)('https://rpc.test', {
+          body: JSON.stringify({ method, params }),
+        })
+        const body = await response.json()
+        if (body.error) throw new Error(body.error.message)
+        return body.result
+      },
+    }
+  }
+}
+
 describe('approved dApp request executor', () => {
+  it('routes EVM RPC through the canonical registry endpoint and verifies chain identity first', async () => {
+    const originalFetch = global.fetch
+    const entry = PROTOCOL_CHAINS['monad-testnet']
+    const checkpoint = entry.identityProbes.find(
+      probe => probe.kind === 'block-hash',
+    )
+    if (!checkpoint || checkpoint.kind !== 'block-hash')
+      throw new Error('fixture checkpoint missing')
+    const calls: string[] = []
+    global.fetch = jest.fn(async (url: any, init: any) => {
+      expect(url).toBe(entry.rpcUrls?.[0])
+      const call = JSON.parse(init.body)
+      calls.push(call.method)
+      const result =
+        call.method === 'eth_chainId'
+          ? '0x279f'
+          : call.method === 'eth_getBlockByNumber'
+          ? { hash: checkpoint.expected }
+          : null
+      return { ok: true, json: async () => ({ result }) } as any
+    }) as any
+    try {
+      const rpc = await createConfiguredDappEvmRpc('monad-testnet')
+      expect(calls).toEqual(['eth_chainId', 'eth_getBlockByNumber'])
+      expect(await rpc.send('eth_getBlockByNumber', ['0x0', false])).toEqual({
+        hash: checkpoint.expected,
+      })
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  it('refuses EVM signing RPC when registry chain identity does not match', async () => {
+    const originalFetch = global.fetch
+    let calls = 0
+    global.fetch = jest.fn(async () => {
+      calls += 1
+      return { ok: true, json: async () => ({ result: '0x1' }) } as any
+    }) as any
+    try {
+      await expect(createConfiguredDappEvmRpc('monad-testnet')).rejects.toThrow(
+        'identity mismatch',
+      )
+      expect(calls).toBe(1)
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
   it('signs EVM personal messages with the site persona and returns a verifiable signature', async () => {
     const signature = (await executeApprovedDappRequest(
       {
@@ -71,6 +138,7 @@ describe('approved dApp request executor', () => {
   it('signs and broadcasts an EVM transaction, returning the matching chain hash', async () => {
     const originalFetch = global.fetch
     const methods: string[] = []
+    const chainIds: string[] = []
     const attemptStore = memoryAttemptStore()
     const transaction = {
       from: EVM_PERSONA.address,
@@ -105,7 +173,7 @@ describe('approved dApp request executor', () => {
           personaAddress: EVM_PERSONA.address,
         },
         fakeSession(),
-        { attemptStore: attemptStore.store },
+        { attemptStore: attemptStore.store, evmRpc: injectedEvmRpc(chainIds) },
       )
       expect(hash).toMatch(/^0x[0-9a-f]{64}$/i)
       expect(methods).toEqual([
@@ -115,6 +183,7 @@ describe('approved dApp request executor', () => {
         'eth_sendRawTransaction',
       ])
       expect(attemptStore.getAttempts()).toHaveLength(1)
+      expect(chainIds).toEqual(['ethereum-mainnet'])
     } finally {
       global.fetch = originalFetch
     }
@@ -173,11 +242,13 @@ describe('approved dApp request executor', () => {
       await expect(
         executeApprovedDappRequest(request, fakeSession(), {
           attemptStore: attemptStore.store,
+          evmRpc: injectedEvmRpc(),
         }),
       ).rejects.toThrow('timed out')
       expect(attemptStore.getAttempts()).toHaveLength(1)
       const hash = await executeApprovedDappRequest(request, fakeSession(), {
         attemptStore: attemptStore.store,
+        evmRpc: injectedEvmRpc(),
       })
       expect(hash).toBe(attemptStore.getAttempts()[0]?.transactionHash)
       expect(sendCalls).toBe(2)
@@ -186,6 +257,78 @@ describe('approved dApp request executor', () => {
       global.fetch = originalFetch
     }
   })
+
+  it.each(['0x1', '0x0'])(
+    'replays a confirmed EVM intent with receipt status %s without creating another transaction',
+    async receiptStatus => {
+      const originalFetch = global.fetch
+      const attemptStore = memoryAttemptStore()
+      const transaction = {
+        from: EVM_PERSONA.address,
+        to: Wallet.createRandom().address,
+        value: '0x3',
+      }
+      let sendCalls = 0
+      let nonceCalls = 0
+      global.fetch = jest.fn(async (_url: unknown, init: { body: string }) => {
+        const call = JSON.parse(init.body)
+        if (call.method === 'eth_getTransactionCount') {
+          nonceCalls += 1
+          return { json: async () => ({ result: '0x0' }) } as Response
+        }
+        if (call.method === 'eth_estimateGas')
+          return { json: async () => ({ result: '0x5208' }) } as Response
+        if (call.method === 'eth_gasPrice')
+          return { json: async () => ({ result: '0x3b9aca00' }) } as Response
+        if (call.method === 'eth_sendRawTransaction') {
+          sendCalls += 1
+          return {
+            json: async () => ({
+              result: Transaction.from(call.params[0]).hash,
+            }),
+          } as Response
+        }
+        if (call.method === 'eth_getTransactionReceipt')
+          return {
+            json: async () => ({ result: { status: receiptStatus } }),
+          } as Response
+        throw new Error(`unexpected RPC ${call.method}`)
+      }) as typeof fetch
+      try {
+        const request = {
+          id: `confirmed-${receiptStatus}`,
+          origin: ORIGIN,
+          method: 'eth_sendTransaction',
+          params: [transaction],
+          chainIdHex: '0x1',
+          personaRef: REF,
+          personaAddress: EVM_PERSONA.address,
+        }
+        const firstHash = await executeApprovedDappRequest(
+          request,
+          fakeSession(),
+          {
+            attemptStore: attemptStore.store,
+            evmRpc: injectedEvmRpc(),
+          },
+        )
+        const replayHash = await executeApprovedDappRequest(
+          request,
+          fakeSession(),
+          {
+            attemptStore: attemptStore.store,
+            evmRpc: injectedEvmRpc(),
+          },
+        )
+        expect(replayHash).toBe(firstHash)
+        expect(sendCalls).toBe(1)
+        expect(nonceCalls).toBe(1)
+        expect(attemptStore.getAttempts()).toHaveLength(1)
+      } finally {
+        global.fetch = originalFetch
+      }
+    },
+  )
 
   it('returns the actual Solana key and signs a message with its matching Ed25519 key', async () => {
     const account = (await executeApprovedDappRequest(

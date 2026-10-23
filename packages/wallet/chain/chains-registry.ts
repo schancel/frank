@@ -173,6 +173,7 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       unit: "MONT",
       nativeDecimals: 18,
       networkTag: "MONT",
+      rpcUrls: Object.freeze(["https://testnet-rpc.monad.xyz"]),
       ...deployedContracts("monad-testnet"),
       gasChargedOn: "limit",
       reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
@@ -205,6 +206,7 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       unit: "MON",
       nativeDecimals: 18,
       networkTag: "MON1",
+      rpcUrls: Object.freeze(["https://rpc.monad.xyz"]),
       ...deployedContracts("monad-mainnet"),
       gasChargedOn: "limit",
       reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
@@ -304,6 +306,7 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       unit: "ETH",
       nativeDecimals: 18,
       networkTag: "ETH1",
+      rpcUrls: Object.freeze(["https://eth.llamarpc.com"]),
       ...deployedContracts("ethereum-mainnet"),
     }),
     "hyperliquid-mainnet": Object.freeze({
@@ -454,6 +457,7 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       unit: "BNB",
       nativeDecimals: 18,
       networkTag: "BSC1",
+      rpcUrls: Object.freeze(["https://bsc-dataseed.binance.org"]),
     }),
     "bnb-testnet": Object.freeze({
       wallet: JSON_RPC_WALLET,
@@ -474,6 +478,7 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       unit: "POL",
       nativeDecimals: 18,
       networkTag: "POL1",
+      rpcUrls: Object.freeze(["https://polygon-rpc.com"]),
     }),
     "polygon-amoy": Object.freeze({
       wallet: JSON_RPC_WALLET,
@@ -494,6 +499,7 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       unit: "ETH",
       nativeDecimals: 18,
       networkTag: "BASE",
+      rpcUrls: Object.freeze(["https://mainnet.base.org"]),
     }),
     "base-sepolia": Object.freeze({
       wallet: JSON_RPC_WALLET,
@@ -514,6 +520,7 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       unit: "ETH",
       nativeDecimals: 18,
       networkTag: "ARB1",
+      rpcUrls: Object.freeze(["https://arb1.arbitrum.io/rpc"]),
     }),
     "arbitrum-sepolia": Object.freeze({
       wallet: JSON_RPC_WALLET,

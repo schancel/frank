@@ -1,4 +1,5 @@
 import {
+  hexlify,
   Signature,
   Transaction,
   TypedDataEncoder,
@@ -8,7 +9,10 @@ import {
   toUtf8Bytes,
 } from 'ethers'
 import { getRawExtensionApi } from '../../src-bex/runtime-adapter'
-import { PROTOCOL_CHAINS } from '@frank/wallet/chain'
+import {
+  getChainRegistryEntry,
+  PROTOCOL_CHAINS,
+} from '@frank/wallet/chain/chains-registry'
 import type { accountSession } from './session'
 
 export interface ApprovedDappRequest {
@@ -17,7 +21,9 @@ export interface ApprovedDappRequest {
   readonly method: string
   readonly params: unknown
   readonly chainIdHex?: string
+  readonly chainIdentifier?: string
   readonly personaAddress?: string
+  readonly solanaAccountAddress?: string
   readonly personaRef?:
     | { kind: 'shared'; slot: number }
     | { kind: 'site'; origin: string }
@@ -39,6 +45,10 @@ export interface DappEvmAttemptStore {
 
 export interface DappRequestExecutorOptions {
   readonly attemptStore?: DappEvmAttemptStore
+  readonly evmRpc?: (chainIdentifier: string) => Promise<{
+    send(method: string, params: unknown[]): Promise<unknown>
+    close?(): void
+  }>
 }
 
 const DAPP_EVM_ATTEMPTS_STORAGE_KEY = 'frankDappEvmAttemptsV1'
@@ -78,19 +88,6 @@ function extensionAttemptStore(): DappEvmAttemptStore {
       await storage.set({ [DAPP_EVM_ATTEMPTS_STORAGE_KEY]: attempts })
     },
   }
-}
-
-const EVM_RPC: Record<string, string> = {
-  '0x1': 'https://eth.llamarpc.com',
-  '0x279f': 'https://testnet-rpc.monad.xyz',
-  '0x8f': 'https://rpc.monad.xyz',
-  '0xa': 'https://mainnet.optimism.io',
-  '0x89': 'https://polygon-rpc.com',
-  '0x2105': 'https://mainnet.base.org',
-  '0xa4b1': 'https://arb1.arbitrum.io/rpc',
-  '0x38': 'https://bsc-dataseed.binance.org',
-  '0xa86a': 'https://api.avax.network/ext/bc/C/rpc',
-  '0xaa36a7': 'https://ethereum-sepolia-rpc.publicnode.com',
 }
 
 function paramsArray(params: unknown): any[] {
@@ -187,11 +184,11 @@ function dappTransactionIntentHash(
 }
 
 async function retryExactEvmAttempt(
-  url: string,
+  send: (method: string, params: unknown[]) => Promise<unknown>,
   attempt: DappEvmAttempt,
 ): Promise<string> {
   try {
-    const hash = await rpc(url, 'eth_sendRawTransaction', [
+    const hash = await send('eth_sendRawTransaction', [
       attempt.signedTransaction,
     ])
     if (
@@ -203,7 +200,7 @@ async function retryExactEvmAttempt(
       'EVM RPC returned a hash that does not match the stored transaction',
     )
   } catch (sendError) {
-    const observed = await rpc(url, 'eth_getTransactionByHash', [
+    const observed = await send('eth_getTransactionByHash', [
       attempt.transactionHash,
     ])
     if (observed && typeof observed === 'object') return attempt.transactionHash
@@ -211,22 +208,77 @@ async function retryExactEvmAttempt(
   }
 }
 
-async function rpc(
+export async function createConfiguredDappEvmRpc(chainIdentifier: string) {
+  const entry = getChainRegistryEntry(chainIdentifier)
+  if (
+    !entry ||
+    entry.id !== chainIdentifier ||
+    entry.family !== 'evm' ||
+    !entry.wallet ||
+    !entry.allowedProxyCapabilities.includes('json-rpc') ||
+    entry.nativeChainId === undefined
+  )
+    throw new Error(
+      `No configured EVM JSON-RPC capability for ${chainIdentifier}`,
+    )
+  const rpcUrl = entry.rpcUrl ?? entry.rpcUrls?.[0]
+  if (!rpcUrl) throw new Error(`No configured EVM RPC endpoint for ${entry.id}`)
+  const send = (method: string, params: unknown[]) =>
+    configuredJsonRpc(rpcUrl, method, params)
+  try {
+    const actualChainId = BigInt((await send('eth_chainId', [])) as string)
+    if (actualChainId !== BigInt(entry.nativeChainId))
+      throw new Error(`EVM RPC identity mismatch for ${entry.id}`)
+    for (const probe of entry.identityProbes) {
+      if (probe.capability !== 'json-rpc') continue
+      if (probe.kind === 'evm-chain-id') {
+        if (actualChainId !== BigInt(probe.expected))
+          throw new Error(`EVM RPC identity mismatch for ${entry.id}`)
+      } else if (probe.kind === 'block-hash') {
+        const block = (await send('eth_getBlockByNumber', [
+          `0x${probe.height.toString(16)}`,
+          false,
+        ])) as { hash?: unknown } | null
+        if (
+          typeof block?.hash !== 'string' ||
+          block.hash.toLowerCase() !== probe.expected.toLowerCase()
+        )
+          throw new Error(`EVM RPC checkpoint mismatch for ${entry.id}`)
+      } else {
+        throw new Error(
+          `EVM RPC requires a configured operator checkpoint for ${entry.id}`,
+        )
+      }
+    }
+    return { send }
+  } catch (error) {
+    throw error
+  }
+}
+
+async function configuredJsonRpc(
   url: string,
   method: string,
   params: unknown[],
-): Promise<any> {
+): Promise<unknown> {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
   })
   if (!response.ok)
-    throw new Error(`RPC ${method} failed with HTTP ${response.status}`)
-  const body = await response.json()
-  if (body?.error)
-    throw new Error(String(body.error.message || `RPC ${method} failed`))
-  return body?.result
+    throw new Error(
+      `Configured RPC ${method} failed with HTTP ${response.status}`,
+    )
+  const body = (await response.json()) as {
+    error?: { message?: unknown }
+    result?: unknown
+  }
+  if (body.error)
+    throw new Error(
+      String(body.error.message ?? `Configured RPC ${method} failed`),
+    )
+  return body.result
 }
 
 /** Executes only a request already approved by the extension approval page. */
@@ -290,175 +342,185 @@ export async function executeApprovedDappRequest(
       throw new Error('Invalid transaction')
     const txData = rawTx as Record<string, unknown>
     const chainIdHex = (request.chainIdHex ?? '').toLowerCase()
-    const url = EVM_RPC[chainIdHex]
-    if (!url)
-      throw new Error(`Unsupported EVM chain: ${chainIdHex || 'unknown'}`)
-    const signer = await session.createDappPersonaSigner()
-    const ref = request.personaRef ?? {
-      kind: 'site' as const,
-      origin: request.origin,
-    }
-    const [expected] = await signer.addresses([ref])
-    requireApprovedPersonaAddress(request, expected)
-    if (
-      typeof txData.from !== 'string' ||
-      txData.from.toLowerCase() !== expected.toLowerCase()
-    )
-      throw new Error('Transaction sender does not match this site persona')
+    const chainId = BigInt(chainIdHex || '0x0')
     const chainEntry = Object.values(PROTOCOL_CHAINS).find(
       entry =>
         entry.family === 'evm' &&
         entry.nativeChainId !== undefined &&
-        BigInt(entry.nativeChainId) === BigInt(chainIdHex),
+        BigInt(entry.nativeChainId) === chainId,
     )
-    if (!chainEntry) throw new Error(`Unregistered EVM chain: ${chainIdHex}`)
-    const attemptStore = options.attemptStore ?? extensionAttemptStore()
-    let attempts = [...(await attemptStore.read())]
-    const intentHash = dappTransactionIntentHash(chainEntry.id, txData)
-    const priorIntent = attempts.find(
-      item =>
-        item.chainIdentifier === chainEntry.id &&
-        item.account.toLowerCase() === expected.toLowerCase() &&
-        item.intentHash === intentHash,
-    )
-    if (priorIntent) {
-      const receipt = await rpc(url, 'eth_getTransactionReceipt', [
-        priorIntent.transactionHash,
-      ])
-      if (receipt === null || receipt === undefined) {
-        return await retryExactEvmAttempt(url, priorIntent)
+    if (!chainEntry)
+      throw new Error(`Unsupported EVM chain: ${chainIdHex || 'unknown'}`)
+    const rpcClient = await (
+      options.evmRpc ?? (id => createConfiguredDappEvmRpc(id))
+    )(chainEntry.id)
+    const send = rpcClient.send
+    try {
+      const signer = await session.createDappPersonaSigner()
+      const ref = request.personaRef ?? {
+        kind: 'site' as const,
+        origin: request.origin,
       }
-      attempts = attempts.filter(item => item !== priorIntent)
-      await attemptStore.write(attempts)
-    }
-    const chainId = BigInt(chainIdHex)
-    if (
-      txData.chainId !== undefined &&
-      quantity(txData.chainId, 'transaction chain ID') !== chainId
-    )
-      throw new Error('Transaction chain does not match the selected chain')
-    const requestedType =
-      txData.type === undefined ? undefined : Number(txData.type)
-    if (
-      requestedType !== undefined &&
-      requestedType !== 0 &&
-      requestedType !== 2
-    )
-      throw new Error(`Unsupported EVM transaction type: ${requestedType}`)
-    const nonce =
-      txData.nonce === undefined
-        ? Number.parseInt(
-            rpcQuantity(
-              await rpc(url, 'eth_getTransactionCount', [expected, 'pending']),
-              'eth_getTransactionCount',
-            ),
-            16,
+      const [expected] = await signer.addresses([ref])
+      requireApprovedPersonaAddress(request, expected)
+      if (
+        typeof txData.from !== 'string' ||
+        txData.from.toLowerCase() !== expected.toLowerCase()
+      )
+        throw new Error('Transaction sender does not match this site persona')
+      const attemptStore = options.attemptStore ?? extensionAttemptStore()
+      let attempts = [...(await attemptStore.read())]
+      const intentHash = dappTransactionIntentHash(chainEntry.id, txData)
+      const priorIntent = attempts.find(
+        item =>
+          item.chainIdentifier === chainEntry.id &&
+          item.account.toLowerCase() === expected.toLowerCase() &&
+          item.intentHash === intentHash,
+      )
+      if (priorIntent) {
+        const receipt = await send('eth_getTransactionReceipt', [
+          priorIntent.transactionHash,
+        ])
+        if (receipt === null || receipt === undefined) {
+          return await retryExactEvmAttempt(send, priorIntent)
+        }
+        const receiptStatus = (receipt as { status?: unknown }).status
+        if (receiptStatus !== '0x1' && receiptStatus !== '0x0')
+          throw new Error('EVM RPC returned a malformed transaction receipt')
+        return priorIntent.transactionHash
+      }
+      const chainId = BigInt(chainIdHex)
+      if (
+        txData.chainId !== undefined &&
+        quantity(txData.chainId, 'transaction chain ID') !== chainId
+      )
+        throw new Error('Transaction chain does not match the selected chain')
+      const requestedType =
+        txData.type === undefined ? undefined : Number(txData.type)
+      if (
+        requestedType !== undefined &&
+        requestedType !== 0 &&
+        requestedType !== 2
+      )
+        throw new Error(`Unsupported EVM transaction type: ${requestedType}`)
+      const nonce =
+        txData.nonce === undefined
+          ? Number.parseInt(
+              rpcQuantity(
+                await send('eth_getTransactionCount', [expected, 'pending']),
+                'eth_getTransactionCount',
+              ),
+              16,
+            )
+          : Number(txData.nonce)
+      const priorNonce = attempts.find(
+        item =>
+          item.chainIdentifier === chainEntry.id &&
+          item.account.toLowerCase() === expected.toLowerCase() &&
+          item.nonce === nonce,
+      )
+      if (priorNonce) {
+        const receipt = await send('eth_getTransactionReceipt', [
+          priorNonce.transactionHash,
+        ])
+        if (receipt === null || receipt === undefined)
+          throw new Error(
+            'An earlier transaction with this nonce is unresolved; retry its original request',
           )
-        : Number(txData.nonce)
-    const priorNonce = attempts.find(
-      item =>
-        item.chainIdentifier === chainEntry.id &&
-        item.account.toLowerCase() === expected.toLowerCase() &&
-        item.nonce === nonce,
-    )
-    if (priorNonce) {
-      const receipt = await rpc(url, 'eth_getTransactionReceipt', [
-        priorNonce.transactionHash,
-      ])
-      if (receipt === null || receipt === undefined)
         throw new Error(
-          'An earlier transaction with this nonce is unresolved; retry its original request',
+          'A transaction already used this nonce; reconcile it before sending another request',
         )
-      attempts = attempts.filter(item => item !== priorNonce)
-      await attemptStore.write(attempts)
+      }
+      const gasLimit =
+        txData.gas ??
+        txData.gasLimit ??
+        (await send('eth_estimateGas', [{ ...txData, from: expected }]))
+      const tx: {
+        chainId: bigint
+        nonce: number
+        to: string | null
+        value: bigint
+        data: string
+        gasLimit: bigint
+        type?: number
+        accessList?: readonly unknown[]
+        gasPrice?: bigint
+        maxFeePerGas?: bigint
+        maxPriorityFeePerGas?: bigint
+      } = {
+        chainId,
+        nonce,
+        to:
+          txData.to === undefined || txData.to === null
+            ? null
+            : stringValue(txData.to, 'transaction recipient'),
+        value: quantity(txData.value ?? '0x0', 'transaction value'),
+        data:
+          txData.data === undefined
+            ? '0x'
+            : stringValue(txData.data, 'transaction data'),
+        gasLimit: quantity(gasLimit, 'transaction gas limit'),
+        ...(requestedType !== undefined ? { type: requestedType } : {}),
+        ...(Array.isArray(txData.accessList)
+          ? { accessList: txData.accessList }
+          : {}),
+      }
+      if (
+        requestedType === 2 ||
+        txData.maxFeePerGas !== undefined ||
+        txData.maxPriorityFeePerGas !== undefined
+      ) {
+        tx.type = 2
+        const gasPrice = quantity(
+          txData.gasPrice ??
+            rpcQuantity(await send('eth_gasPrice', []), 'eth_gasPrice'),
+          'transaction gas price',
+        )
+        tx.maxFeePerGas = quantity(
+          txData.maxFeePerGas ?? gasPrice,
+          'maximum fee per gas',
+        )
+        tx.maxPriorityFeePerGas = quantity(
+          txData.maxPriorityFeePerGas ?? gasPrice,
+          'maximum priority fee per gas',
+        )
+      } else {
+        tx.type = 0
+        tx.gasPrice = quantity(
+          txData.gasPrice ??
+            rpcQuantity(await send('eth_gasPrice', []), 'eth_gasPrice'),
+          'transaction gas price',
+        )
+      }
+      const unsigned = Transaction.from(
+        tx as Parameters<typeof Transaction.from>[0],
+      )
+      unsigned.signature = Signature.from(
+        await signer.signDigest(ref, unsigned.unsignedHash),
+      )
+      const transactionHash = unsigned.hash
+      if (!transactionHash)
+        throw new Error('Could not compute the signed transaction hash')
+      const attempt: DappEvmAttempt = {
+        chainIdentifier: chainEntry.id,
+        account: expected,
+        nonce,
+        intentHash,
+        signedTransaction: unsigned.serialized,
+        transactionHash,
+      }
+      await attemptStore.write([...attempts, attempt])
+      const hash = await send('eth_sendRawTransaction', [unsigned.serialized])
+      if (typeof hash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(hash))
+        throw new Error('EVM RPC returned an invalid transaction hash')
+      if (hash.toLowerCase() !== transactionHash.toLowerCase())
+        throw new Error(
+          'EVM RPC returned a transaction hash that does not match the signed transaction',
+        )
+      return hash
+    } finally {
+      rpcClient.close?.()
     }
-    const gasLimit =
-      txData.gas ??
-      txData.gasLimit ??
-      (await rpc(url, 'eth_estimateGas', [{ ...txData, from: expected }]))
-    const tx: {
-      chainId: bigint
-      nonce: number
-      to: string | null
-      value: bigint
-      data: string
-      gasLimit: bigint
-      type?: number
-      accessList?: readonly unknown[]
-      gasPrice?: bigint
-      maxFeePerGas?: bigint
-      maxPriorityFeePerGas?: bigint
-    } = {
-      chainId,
-      nonce,
-      to:
-        txData.to === undefined || txData.to === null
-          ? null
-          : stringValue(txData.to, 'transaction recipient'),
-      value: quantity(txData.value ?? '0x0', 'transaction value'),
-      data:
-        txData.data === undefined
-          ? '0x'
-          : stringValue(txData.data, 'transaction data'),
-      gasLimit: quantity(gasLimit, 'transaction gas limit'),
-      ...(requestedType !== undefined ? { type: requestedType } : {}),
-      ...(Array.isArray(txData.accessList)
-        ? { accessList: txData.accessList }
-        : {}),
-    }
-    if (
-      requestedType === 2 ||
-      txData.maxFeePerGas !== undefined ||
-      txData.maxPriorityFeePerGas !== undefined
-    ) {
-      tx.type = 2
-      const gasPrice = quantity(
-        txData.gasPrice ??
-          rpcQuantity(await rpc(url, 'eth_gasPrice', []), 'eth_gasPrice'),
-        'transaction gas price',
-      )
-      tx.maxFeePerGas = quantity(
-        txData.maxFeePerGas ?? gasPrice,
-        'maximum fee per gas',
-      )
-      tx.maxPriorityFeePerGas = quantity(
-        txData.maxPriorityFeePerGas ?? gasPrice,
-        'maximum priority fee per gas',
-      )
-    } else {
-      tx.type = 0
-      tx.gasPrice = quantity(
-        txData.gasPrice ??
-          rpcQuantity(await rpc(url, 'eth_gasPrice', []), 'eth_gasPrice'),
-        'transaction gas price',
-      )
-    }
-    const unsigned = Transaction.from(
-      tx as Parameters<typeof Transaction.from>[0],
-    )
-    unsigned.signature = Signature.from(
-      await signer.signDigest(ref, unsigned.unsignedHash),
-    )
-    const transactionHash = unsigned.hash
-    if (!transactionHash)
-      throw new Error('Could not compute the signed transaction hash')
-    const attempt: DappEvmAttempt = {
-      chainIdentifier: chainEntry.id,
-      account: expected,
-      nonce,
-      intentHash,
-      signedTransaction: unsigned.serialized,
-      transactionHash,
-    }
-    await attemptStore.write([...attempts, attempt])
-    const hash = await rpc(url, 'eth_sendRawTransaction', [unsigned.serialized])
-    if (typeof hash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(hash))
-      throw new Error('EVM RPC returned an invalid transaction hash')
-    if (hash.toLowerCase() !== transactionHash.toLowerCase())
-      throw new Error(
-        'EVM RPC returned a transaction hash that does not match the signed transaction',
-      )
-    return hash
   }
 
   if (request.method.startsWith('solana_')) {
@@ -499,8 +561,11 @@ export async function executeApprovedDappRequest(
           ? 'solana-devnet'
           : undefined
       if (!chain) throw new Error('Unsupported Solana chain')
-      const { getChainRegistryEntry, DEFAULT_SOLANA_RPC_URLS } = await import(
-        '@frank/wallet/chain'
+      const { getChainRegistryEntry } = await import(
+        '@frank/wallet/chain/chains-registry'
+      )
+      const { DEFAULT_SOLANA_RPC_URLS } = await import(
+        '@frank/wallet/chain/solana-balance'
       )
       const config = getChainRegistryEntry(chain)
       const endpoint =

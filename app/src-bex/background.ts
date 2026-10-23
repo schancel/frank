@@ -28,6 +28,7 @@ import {
   type SyncConfirmReply,
 } from '../src/utils/sync-pairing'
 import { createApprovalWindow, type ApprovalWindow } from './approval-window'
+import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
 
 export type DappProviderAnnounceMode = 'always' | 'connected-only' | 'stealth'
 
@@ -47,6 +48,8 @@ export interface PendingDappApproval {
   method: string
   params?: unknown
   chainIdHex?: string
+  chainIdentifier?: string
+  solanaAccountAddress?: string
   createdAt: number
   requiresCompanionApproval: boolean
   personaAddress?: string
@@ -133,17 +136,24 @@ const APPROVAL_REQUIRED_METHODS = new Set([
 
 const SOLANA_CONNECT_METHODS = new Set(['solana_connect'])
 
-const CHAIN_RPC_URLS: Record<string, string> = {
-  '0x1': 'https://eth.llamarpc.com',
-  '0x279f': 'https://testnet-rpc.monad.xyz',
-  '0x8f': 'https://rpc.monad.xyz',
-  '0xa': 'https://mainnet.optimism.io',
-  '0x89': 'https://polygon-rpc.com',
-  '0x2105': 'https://mainnet.base.org',
-  '0xa4b1': 'https://arb1.arbitrum.io/rpc',
-  '0x38': 'https://bsc-dataseed.binance.org',
-  '0xa86a': 'https://api.avax.network/ext/bc/C/rpc',
-  '0xaa36a7': 'https://ethereum-sepolia-rpc.publicnode.com',
+async function previewSolanaAccount(
+  runtimeScope?: Record<string, any>,
+): Promise<string | undefined> {
+  try {
+    const response: any = await sendRuntimeMessage(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'preview-dapp-account',
+        family: 'solana',
+      },
+      runtimeScope,
+    )
+    if (response?.ok === true && typeof response.account?.address === 'string')
+      return response.account.address
+  } catch {
+    // Locked or unavailable sessions cannot provide an account to approve.
+  }
+  return undefined
 }
 
 const READONLY_RPC_METHODS = new Set([
@@ -466,9 +476,29 @@ async function forwardReadOnlyRpc(
   result?: unknown
   error?: { code: number; message: string; data?: unknown }
 }> {
-  const rpcUrl =
-    CHAIN_RPC_URLS[chainIdHex.toLowerCase()] ?? CHAIN_RPC_URLS['0x279f']
-  if (rpcUrl && typeof fetch === 'function') {
+  let nativeId: bigint
+  try {
+    nativeId = BigInt(chainIdHex)
+  } catch {
+    return { ok: false, error: { code: 4901, message: 'Unsupported chain.' } }
+  }
+  const entry = Object.values(PROTOCOL_CHAINS).find(
+    chain =>
+      chain.family === 'evm' &&
+      chain.nativeChainId !== undefined &&
+      BigInt(chain.nativeChainId) === nativeId,
+  )
+  const rpcUrl = entry?.rpcUrl ?? entry?.rpcUrls?.[0]
+  if (!entry || !rpcUrl) {
+    return {
+      ok: false,
+      error: {
+        code: 4901,
+        message: 'No configured RPC is available for this chain.',
+      },
+    }
+  }
+  if (typeof fetch === 'function') {
     try {
       const response = await fetch(rpcUrl, {
         method: 'POST',
@@ -2154,6 +2184,9 @@ export async function handleBackgroundMessage(
         suggestedBurnerAddress: state.sitePersonaAddresses[effectiveOrigin],
         primaryPersonaAddress: state.activePersonaAddress,
       }
+      if (isSolanaMethod) {
+        pending.solanaAccountAddress = await previewSolanaAccount(runtimeScope)
+      }
       state.pendingApprovals.set(id, pending)
       // Hold the RPC Promise open until resolved/rejected via resolve-approval.
       // The waiter is registered before any UI work so a fast decision, or a
@@ -2318,7 +2351,8 @@ export async function handleBackgroundMessage(
           !connection ||
           !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(connection.address) ||
           !Array.isArray(connection.publicKey) ||
-          connection.publicKey.length !== 32
+          connection.publicKey.length !== 32 ||
+          connection.address !== pending.solanaAccountAddress
         ) {
           const error = {
             code: -32603,

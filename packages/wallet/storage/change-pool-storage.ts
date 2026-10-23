@@ -241,8 +241,10 @@ export function assertFinalizedIntent(
     ) {
       throw new Error('Change finalization requires the exact pending intent')
     }
-    if (intent.index !== store.getNextIndex()) {
-      throw new Error('Pending change index must equal the next unused index')
+    // New allocations reserve the index before signing, and unrelated operations may
+    // advance it again. An exact durable legacy intent may still occupy nextIndex itself.
+    if (intent.index > store.getNextIndex()) {
+      throw new Error('Pending change index exceeds the allocated derivation range')
     }
     if (existing !== undefined || bySource !== undefined) {
       throw new Error(

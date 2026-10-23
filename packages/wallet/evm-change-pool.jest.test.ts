@@ -235,7 +235,29 @@ describe('LevelChangePoolStore', () => {
         index: 1,
         txHash: '0xpending',
       })
+      const pending = storeB.getPendingIntent()!
+      // Other operations may reserve later children before this sweep settles.
+      storeB.setNextIndex(3)
+      const { signer } = makeBurnAccountSigner()
+      const restoredPool = new MonadChangePool({
+        keyring: MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC), store: storeB,
+      })
+      await expect(restoredPool.sweepToChange({
+        burnIndex: pending.sourceBurnIndex, burnAddress: pending.sourceBurnAddress,
+        burnAccountSigner: signer, provider: makeReadProvider({ balanceWei: 0n, maxFeePerGas: 1n }),
+      })).resolves.toMatchObject({ swept: true })
       await storeB.Close()
+      const storeC = new LevelChangePoolStore(dir)
+      await storeC.Open()
+      expect(storeC.getNextIndex()).toBe(3)
+      expect(storeC.getPendingIntent()).toBeUndefined()
+      expect(storeC.getRecord(1)).toEqual(pending)
+      expect(storeC.getAll()).toHaveLength(2)
+      // Repeated completion must preserve later claims and the original signed bytes.
+      storeC.finalizePendingIntent(pending, storeC.getRecord(1)!)
+      expect(storeC.getNextIndex()).toBe(3)
+      expect(storeC.getAll()).toHaveLength(2)
+      await storeC.Close()
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
@@ -298,11 +320,11 @@ describe('MonadChangePool', () => {
       expect(pool.nextUnusedIndex()).toBe(5)
     })
 
-    it('allows moving backward when no records exist locally (the recovery use case)', () => {
+    it('preserves derivation claims even when no completed records exist locally', () => {
       const pool = makePool()
       pool.setNextUnusedIndex(5)
-      pool.setNextUnusedIndex(2)
-      expect(pool.nextUnusedIndex()).toBe(2)
+      expect(() => pool.setNextUnusedIndex(2)).toThrow(/Refusing to rewind/)
+      expect(pool.nextUnusedIndex()).toBe(5)
     })
 
     it('refuses to rewind past existing records without force', async () => {
@@ -470,7 +492,7 @@ describe('MonadChangePool', () => {
         }),
       ).rejects.toThrow('relay down')
 
-      expect(pool.nextUnusedIndex()).toBe(0)
+      expect(pool.nextUnusedIndex()).toBe(1)
       expect(pool.records()).toEqual([])
       expect(
         (
@@ -479,6 +501,11 @@ describe('MonadChangePool', () => {
           }
         ).store.getPendingIntent(),
       ).toMatchObject({ index: 0, sourceBurnIndex: 0 })
+
+      // A shared transaction set can reserve another child while this exact sweep is pending.
+      const later = await pool.reserveFreshChange()
+      expect(later.changeIndex).toBe(1)
+      expect(pool.nextUnusedIndex()).toBe(2)
 
       httpClient.getTransactionReceipt.mockResolvedValueOnce({
         status: 'success',
@@ -491,13 +518,13 @@ describe('MonadChangePool', () => {
         overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
       })
       expect(recovered.swept).toBe(true)
-      expect(pool.nextUnusedIndex()).toBe(1)
+      expect(pool.nextUnusedIndex()).toBe(2)
       expect(pool.records()).toHaveLength(1)
       expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
     })
 
     it(
-      'does not advance the change pointer until the sweep receipt succeeds',
+      'reserves the change index before submission and retains it until settlement',
       async () => {
         const pool = makePool()
         const { signer, httpClient } = makeBurnAccountSigner()
@@ -517,7 +544,7 @@ describe('MonadChangePool', () => {
             overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
           }),
         ).resolves.toMatchObject({ swept: false, reason: 'sweep-pending' })
-        expect(pool.nextUnusedIndex()).toBe(0)
+        expect(pool.nextUnusedIndex()).toBe(1)
         expect(pool.records()).toEqual([])
 
         httpClient.getTransactionReceipt.mockResolvedValue({

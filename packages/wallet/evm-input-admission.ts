@@ -954,6 +954,7 @@ export type NativeExecutionJournal = NativeJournalReader &
     | 'discardUnexposed'
     | 'beginCapture'
     | 'recordObservation'
+    | 'appendTransactionSet'
   >
 /** Internal executor capability. Every completion rechecks the captured lifetime; no raw owner escapes. */
 export function nativeAdmissionJournal(
@@ -968,6 +969,12 @@ export function nativeAdmissionJournal(
     owner.mutate(lifetime, operation)
   return {
     ...nativeJournalReader(journal, owner.owners.topic),
+    appendTransactionSet: (id, stage, members, signed) => mutation(async () => {
+      const row = journal.get(id)
+      owner.check(members.map(member => ({ kind: 'pair' as const, address: member.source.address, nonce: Transaction.from(member.unsignedTransaction).nonce })), `native:${id}`)
+      if (row.kind !== 'transaction-set') throw new EvmInputAdmissionError('invalid-provenance')
+      return journal.appendTransactionSet(id, stage, members, signed)
+    }),
     refreshPreparation: id =>
       mutation(async () => {
         const row = await journal.refreshPreparation(id)

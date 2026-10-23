@@ -21,6 +21,8 @@ export function evmTransactionSetJournal(
           signed,
         ),
       ),
+    appendTransactionSet: (id, stage, members, signed) => owner.runLifetime(lifetime =>
+      nativeAdmissionJournal(owner.inputAdmission, lifetime).appendTransactionSet(id, stage, members, signed)),
     refreshPreparation: id =>
       owner.runLifetime(lifetime =>
         nativeAdmissionJournal(

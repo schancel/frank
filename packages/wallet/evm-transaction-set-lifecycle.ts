@@ -23,7 +23,9 @@ export interface EvmTransactionSetAuthority {
 type ReplayProvider = Pick<Provider, 'getTransaction' | 'broadcastTransaction'>
 interface MemberMetadata {
   transactionSet?: {
-    role: 'payment' | 'change'
+    role: 'payment' | 'change' | 'funding'
+    stageId?: string
+    fundingWaitBlocks?: number
     predecessorWaitBlocks?: number
   }
 }
@@ -51,80 +53,69 @@ export class EvmTransactionSetLifecycle {
     return row
   }
 
-  /** The host calls only after its complete encrypted envelope and binding are durable.
-   * `payments` becomes true only after relay acceptance (or explicit financial release). */
+  private ready(row: EvmNativeOperation, index: number): boolean {
+    const member = row.members[index]!, meta = member.transactionSet!
+    return member.dependencies.every(dependency => {
+      const prior = row.members[dependency]!, observation = prior.observation
+      const funding = prior.source.address !== member.source.address
+      if (funding) return observation.state === 'included-success' && this.options.head() >= observation.blockNumber + (meta.fundingWaitBlocks ?? 0)
+      if (meta.predecessorWaitBlocks !== undefined)
+        return (observation.state === 'included-success' || observation.state === 'included-revert') && this.options.head() >= observation.blockNumber + meta.predecessorWaitBlocks
+      return prior.exposed || observation.state === 'included-success' || observation.state === 'included-revert'
+    })
+  }
+
+  /** Cached readiness only. Relays must not receive a payment whose funding is still private. */
+  canSubmitPayments(id: string, stageId?: string): boolean {
+    const row = this.operation(id)
+    const indexes = row.members.flatMap((member, index) => member.transactionSet!.role === 'payment' && member.transactionSet!.stageId === stageId ? [index] : [])
+    return indexes.length > 0 && indexes.every(index => !nativeMemberSuperseded(row.members[index]!) && row.members[index]!.observation.state !== 'included-revert' && this.ready(row, index))
+  }
+
+  /** Called only after the complete encrypted message and signed graph are durable. */
+  async replayDependencies(id: string, stageId: string): Promise<void> {
+    const row = this.operation(id), selected = new Set<number>()
+    const visit = (index: number) => {
+      if (selected.has(index)) return
+      selected.add(index)
+      for (const dependency of row.members[index]!.dependencies) visit(dependency)
+    }
+    const targets = row.members.flatMap((member, index) => member.transactionSet!.role === 'payment' && member.transactionSet!.stageId === stageId ? [index] : [])
+    if (!targets.length) throw new Error('Unknown transaction-set stage')
+    for (const index of targets) for (const dependency of row.members[index]!.dependencies) visit(dependency)
+    await this.replayMembers(id, selected)
+  }
+
+  /** Existing standalone consumers may withhold recipient transactions until acceptance. */
   async replay(id: string, input: { payments: boolean }): Promise<void> {
     const row = this.operation(id)
-    const groups = new Map<string, number[]>()
-    row.members.forEach((member, index) => {
-      const key = member.source.address.toLowerCase()
-      const indexes = groups.get(key) ?? []
-      indexes.push(index)
-      groups.set(key, indexes)
-    })
-    const results = await Promise.allSettled(
-      [...groups.values()].map(async (indexes) => {
-        indexes.sort(
-          (a, b) =>
-            Transaction.from(row.members[a]!.signed!.rawTransaction).nonce -
-            Transaction.from(row.members[b]!.signed!.rawTransaction).nonce,
-        )
-        for (const index of indexes) {
-          const member = this.operation(id).members[index]!
-          const metadata = (member as EvmNativeMember & MemberMetadata)
-            .transactionSet!
-          if (
-            member.observation.state === 'included-success' ||
-            member.observation.state === 'included-revert'
-          )
-            continue
-          if (nativeMemberSuperseded(member)) return
-          if (metadata.role === 'payment' && !input.payments) return
-          if (metadata.predecessorWaitBlocks !== undefined) {
-            const predecessor = row.members[member.dependencies[0]!]
-            const observation = predecessor?.observation
-            if (
-              !observation ||
-              (observation.state !== 'included-success' &&
-                observation.state !== 'included-revert') ||
-              this.options.head() <
-                observation.blockNumber + metadata.predecessorWaitBlocks
-            )
-              return
-          }
-          const signed = member.signed!
-          if (
-            await this.options.provider.getTransaction(signed.transactionHash)
-          ) {
-            await this.options.authority.markExposed(id, index)
-            continue
-          }
+    await this.replayMembers(id, new Set(row.members.flatMap((member, index) => input.payments || member.transactionSet!.role !== 'payment' ? [index] : [])))
+  }
+
+  private async replayMembers(id: string, selected: Set<number>): Promise<void> {
+    // Member order is a validated topological order. Independent sources still proceed when
+    // one source is awaiting inclusion; no network wait owns a wallet-wide reservation lock.
+    const failures: unknown[] = []
+    for (const index of [...selected].sort((a,b) => a-b)) {
+      const row = this.operation(id), member = row.members[index]!
+      if (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member) || !this.ready(row, index)) continue
+      const signed = member.signed!
+      try {
+        if (await this.options.provider.getTransaction(signed.transactionHash)) {
           await this.options.authority.markExposed(id, index)
-          try {
-            const response = await this.options.provider.broadcastTransaction(
-              signed.rawTransaction,
-            )
-            if (
-              response.hash.toLowerCase() !== signed.transactionHash.toLowerCase()
-            )
-              throw new Error('Unexpected transaction-set broadcast hash')
-          } catch (error) {
-            // The relay may have broadcast this exact recipient transaction before
-            // delivery was recorded locally. Confirm by hash before treating a node's
-            // duplicate-submission response as a failure.
-            const alreadyKnown =
-              error instanceof Error &&
-              /already known|known transaction/i.test(error.message)
-            if (
-              !alreadyKnown &&
-              !(await this.options.provider.getTransaction(signed.transactionHash))
-            ) throw error
-          }
+          continue
         }
-      }),
-    )
-    const failure = results.find((result) => result.status === 'rejected')
-    if (failure?.status === 'rejected') throw failure.reason
+        await this.options.authority.markExposed(id, index)
+        try {
+          const response = await this.options.provider.broadcastTransaction(signed.rawTransaction)
+          if (response.hash.toLowerCase() !== signed.transactionHash.toLowerCase()) throw new Error('Unexpected transaction-set broadcast hash')
+        } catch (error) {
+          const alreadyKnown = error instanceof Error && /already known|known transaction/i.test(error.message)
+          if (!alreadyKnown && !(await this.options.provider.getTransaction(signed.transactionHash))) throw error
+        }
+      } catch (error) { failures.push(error) }
+    }
+    if (failures.length) throw failures[0]
   }
 
   /** Read one canonical block's account state; never update inventory from relay answers. */

@@ -7,6 +7,7 @@ import type {
 } from './evm-coin-list'
 import type {
   EvmNativeMemberPlan,
+  EvmTransactionSetStage,
   EvmNativeOperation,
   EvmNativeObservation,
   EvmNativeAccountObservation,
@@ -130,6 +131,10 @@ export class EvmTransactionSetPreparer {
           'Transaction-set predecessor quiet window is not satisfied',
         )
     }
+    if (member.transactionSet?.fundingWaitBlocks !== undefined && member.dependencies.some(index => {
+      const prior = row.members[index]!
+      return prior.observation.state !== 'included-success' || this.options.policy().head < prior.observation.blockNumber + member.transactionSet!.fundingWaitBlocks!
+    })) throw new Error('Transaction-set funding maturity is not satisfied')
     await this.options.journal.markExposed(row.operationId, memberIndex)
   }
 
@@ -291,160 +296,174 @@ export class EvmTransactionSetPreparer {
     return true
   }
 
-  constructTransactionSet(
-    request: ConstructEvmTransactionSetRequest,
-  ): Promise<PreparedEvmTransactionSet> {
-    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(request.operationId))
-      return Promise.reject(new Error('Invalid transaction-set operation ID'))
-    return this.options.coins
-      .constructTransactionSetOnce(request.operationId, () =>
-        this.construct(request),
-      )
-      .then(result => {
-        this.validateReplay(request, this.getOperation(request.operationId)!)
+  constructTransactionSet(request: ConstructEvmTransactionSetRequest): Promise<PreparedEvmTransactionSet> {
+    return this.buildOnce(request)
+  }
+
+  appendTransactionSet(request: ConstructEvmTransactionSetRequest & { stageId: string }): Promise<PreparedEvmTransactionSet> {
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(request.stageId)) return Promise.reject(new Error('Invalid transaction-set stage ID'))
+    return this.buildOnce(request, request.stageId)
+  }
+
+  constructLegacyTransactionSet(request: ConstructEvmTransactionSetRequest): Promise<PreparedEvmTransactionSet> {
+    return this.buildOnce(request, undefined, true)
+  }
+
+  private buildOnce(request: ConstructEvmTransactionSetRequest, stageId?: string, legacy = false): Promise<PreparedEvmTransactionSet> {
+    const suppliedKdf = request.kdf, destinations = new Map<number, string>()
+    request = { ...request, kdf: index => {
+      const known = destinations.get(index)
+      if (known !== undefined) return known
+      const destination = suppliedKdf(index)
+      destinations.set(index, destination)
+      return destination
+    } }
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(request.operationId)) return Promise.reject(new Error('Invalid transaction-set operation ID'))
+    return this.options.coins.constructTransactionSetOnce(request.operationId,
+      () => this.construct(request, stageId, legacy), stageId).then(result => {
+        this.validateReplay(request, this.getOperation(request.operationId)!, stageId, legacy)
         return result
       })
   }
 
-  private validateReplay(
-    request: ConstructEvmTransactionSetRequest,
-    row: EvmNativeOperation,
-  ): void {
-    if (
-      row.cancelled ||
-      row.intendedValueWei !== request.amountWei.toString() ||
-      row.members.some(
-        member =>
-          member.transactionSet?.role === 'payment' &&
-          Transaction.from(member.unsignedTransaction).data !==
-            (request.calldata ?? '0x').toLowerCase(),
-      ) ||
-      (request.maxFeeWei !== undefined &&
-        BigInt(row.maximumFeeWei) > request.maxFeeWei)
-    )
-      throw new Error(
-        'Transaction-set operation ID conflicts with original intent',
-      )
+  private validateReplay(request: ConstructEvmTransactionSetRequest, row: EvmNativeOperation, stageId?: string, legacy = false): void {
+    const stage = row.transactionSetStages?.find(item => item.stageId === stageId)
+    const members = row.members.filter(member => member.transactionSet?.stageId === stageId)
+    const payments = members.filter(member => member.transactionSet!.role === 'payment')
+    if (row.cancelled || !payments.length ||
+        (stage?.intendedValueWei ?? row.intendedValueWei) !== request.amountWei.toString() ||
+        (stage?.reserveForContinuationWei ?? '0') !== (request.reserveForContinuationWei ?? 0n).toString() ||
+        (stage !== undefined && Boolean(stage.legacy) !== legacy) ||
+        (request.maxPaymentParts !== undefined && payments.length > request.maxPaymentParts) ||
+        payments.some(member => {
+          const tx = Transaction.from(member.unsignedTransaction)
+          return tx.data !== (request.calldata ?? '0x').toLowerCase() ||
+            tx.to!.toLowerCase() !== getAddress(request.kdf(member.transactionSet!.logicalIndex)).toLowerCase()
+        }) || (request.maxFeeWei !== undefined && BigInt(row.maximumFeeWei) > request.maxFeeWei))
+      throw new Error('Transaction-set operation ID conflicts with original intent')
   }
 
-  private async construct(
-    request: ConstructEvmTransactionSetRequest,
-  ): Promise<PreparedEvmTransactionSet> {
+  private privateOutputs(row: EvmNativeOperation): EvmListCoin[] {
+    const sources = new Set(row.members.map(member => member.source.address))
+    return row.members.flatMap(member => {
+      const meta = member.transactionSet!, tx = Transaction.from(member.unsignedTransaction)
+      if (meta.role !== 'change' || sources.has(tx.to!.toLowerCase())) return []
+      const key = this.options.deriveChange(meta.changeIndex!)
+      if (key.account.toLowerCase() !== tx.to!.toLowerCase()) throw new Error('Private change ownership mismatch')
+      return [{ account: key.account.toLowerCase(), privateKey: key.privateKey, origin: 'change' as const,
+        changeIndex: meta.changeIndex!, nonce: 0, valueWei: tx.value, state: 'unspent' as const,
+        holder: row.preparationId!.slice(prefix.length), after: { account: member.source.address, nonce: tx.nonce } }]
+    })
+  }
+
+  private async construct(request: ConstructEvmTransactionSetRequest, stageId?: string, legacy = false): Promise<PreparedEvmTransactionSet> {
     const { journal, coins } = this.options
-    const existing = await journal.refreshPreparation(
-      prefix + request.operationId,
-    )
-    if (existing) {
-      this.validateReplay(request, existing)
-      if (existing.members.some(member => !member.signed))
-        throw new Error('Incomplete transaction-set journal record')
+    const existing = await journal.refreshPreparation(prefix + request.operationId)
+    if (existing && (stageId === undefined || existing.transactionSetStages?.some(stage => stage.stageId === stageId))) {
+      this.validateReplay(request, existing, stageId, legacy)
+      if (existing.members.some(member => !member.signed)) throw new Error('Incomplete transaction-set journal record')
       this.restoreRow(existing)
-      return this.result(existing)
+      return this.result(existing, stageId)
     }
-    const data = request.calldata ?? '0x'
-    if (
-      !/^0x(?:[0-9a-fA-F]{2})*$/.test(data) ||
-      request.amountWei < 0n ||
-      request.amountWei >= 1n << 256n ||
-      (request.amountWei === 0n && data === '0x')
-    )
-      throw new Error('Invalid transaction-set payment')
-    const policy = this.options.policy()
-    const contexts = new Map<number, PaymentContext>()
+    if (stageId !== undefined && (!existing || !existing.transactionSetStages || existing.cancelled || existing.members.some(member => member.exposed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))))
+      throw new Error('Cannot append to an exposed or unavailable operation')
+    const data = request.calldata ?? '0x', reserve = request.reserveForContinuationWei ?? 0n
+    if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(data) || request.amountWei < 0n || reserve < 0n ||
+        request.amountWei + reserve >= 1n << 256n || (request.amountWei === 0n && data === '0x')) throw new Error('Invalid transaction-set payment')
+    const policy = this.options.policy(), contexts = new Map<number, PaymentContext>()
     const context = (index: number): PaymentContext => {
       const known = contexts.get(index)
       if (known) return known
-      const destination = getAddress(request.kdf(index)).toLowerCase()
-      const gas = policy.paymentGasLimit(data, destination)
+      const destination = getAddress(request.kdf(index)).toLowerCase(), gas = policy.paymentGasLimit(data, destination)
       this.validatePolicy(policy, gas, data)
-      const feeIsExact =
-        typeof policy.paymentFeeIsExact === 'function'
-          ? policy.paymentFeeIsExact(destination, data)
-          : policy.paymentFeeIsExact
-      if (typeof feeIsExact !== 'boolean')
-        throw new Error('Invalid reviewed fee semantics')
-      const value = { destination, gas, feeIsExact }
-      contexts.set(index, value)
-      return value
+      const feeIsExact = typeof policy.paymentFeeIsExact === 'function' ? policy.paymentFeeIsExact(destination, data) : policy.paymentFeeIsExact
+      if (typeof feeIsExact !== 'boolean') throw new Error('Invalid reviewed fee semantics')
+      const value = { destination, gas, feeIsExact }; contexts.set(index, value); return value
     }
     context(0)
-    const parts = coins.reserveTransactionSetSources({
-      holder: request.operationId,
-      amountWei: request.amountWei,
-      feeWei: index => context(index).gas * policy.gasPriceWei,
-      head: policy.head,
-      sourceOrder: policy.sourceOrder,
-      maxCoins: request.maxPaymentParts,
-      canSelect: coin =>
-        journal.canSelect(coin.account, coin.nonce) &&
-        (this.options.canSelectCoin?.(coin) ?? true) &&
-        this.dependencyReady(coin, policy),
+    const select = (fanIn: boolean) => coins.reserveTransactionSetSources({
+      holder: request.operationId, ownedCandidates: existing ? this.privateOutputs(existing) : undefined,
+      amountWei: request.amountWei + reserve + (fanIn ? context(0).gas * policy.gasPriceWei : 0n),
+      feeWei: index => (fanIn ? policy.changeGasLimit : context(index).gas) * policy.gasPriceWei,
+      head: policy.head, sourceOrder: policy.sourceOrder, maxCoins: legacy && !fanIn ? 1 : request.maxPaymentParts,
+      canSelect: coin => journal.canSelect(coin.account, coin.nonce) && (this.options.canSelectCoin?.(coin) ?? true) && this.dependencyReady(coin, policy),
       capacityWei: (coin, fee) => {
-        const capacity = coin.valueWei - fee,
-          rule = policy.spendRule
-        if (
-          !rule?.waitBlocks ||
-          coin.nonce === 0 ||
-          (coin.lastSpentInBlock !== undefined &&
-            policy.head >= coin.lastSpentInBlock + rule.waitBlocks)
-        )
-          return capacity
+        const capacity = coin.valueWei - fee, rule = policy.spendRule
+        if (!rule?.waitBlocks || coin.nonce === 0 || (coin.lastSpentInBlock !== undefined && policy.head >= coin.lastSpentInBlock + rule.waitBlocks)) return capacity
         return capacity > rule.belowWei ? capacity - rule.belowWei : 0n
       },
     })
+    let parts = select(false), fanIn = false
+    if (!parts && legacy) { parts = select(true); fanIn = true }
     if (!parts) throw new Error('Insufficient available EVM coins')
     let members: LocalMember[]
     try {
-      members = (
-        await Promise.all(
-          parts.map((part, index) =>
-            this.prepareSource(request, policy, context(index), part, index),
-          ),
-        )
-      ).flat()
-      const previous = new Map<string, number>()
-      let changeIndex = 0
-      members.forEach((member, index) => {
-        const prior = previous.get(member.plan.source.address)
-        member.plan.dependencies = prior === undefined ? [] : [prior]
+      if (fanIn) members = await this.prepareFanIn(request, policy, context(0), parts)
+      else {
+        let remaining = request.amountWei, paymentIndex = 0
+        members = []
+        for (const part of parts) {
+          const payment = part.paymentValueWei < remaining ? part.paymentValueWei : remaining
+          remaining -= payment
+          members.push(...await this.prepareSource(request, policy, context(paymentIndex), { ...part, paymentValueWei: payment }, paymentIndex))
+          if (payment > 0n || data !== '0x') paymentIndex++
+        }
+      }
+      const offset = existing?.members.length ?? 0
+      const all = [...(existing?.members.map(member => ({ plan: member })) ?? []), ...members]
+      const previous = new Map<string, number>(), incoming = new Map<string, number[]>()
+      all.forEach((member, index) => {
+        const meta = member.plan.transactionSet!, tx = Transaction.from(member.plan.unsignedTransaction)
+        if (index >= offset) {
+          const prior = previous.get(member.plan.source.address), funding = incoming.get(member.plan.source.address)
+          member.plan.dependencies = prior !== undefined ? [prior] : funding ?? []
+          if (prior === undefined && funding) meta.fundingWaitBlocks = policy.spendRule?.waitBlocks ? policy.spendRule.waitBlocks + 1 : 0
+          if (stageId !== undefined) meta.stageId = stageId
+        }
         previous.set(member.plan.source.address, index)
-        if (member.plan.transactionSet!.role === 'change')
-          member.plan.transactionSet!.logicalIndex = changeIndex++
+        if (meta.role !== 'payment') incoming.set(tx.to!.toLowerCase(), [...(incoming.get(tx.to!.toLowerCase()) ?? []), index])
       })
-      const totalFee = members.reduce(
-        (sum, member) =>
-          sum +
-          Transaction.from(member.plan.unsignedTransaction).gasLimit *
-            policy.gasPriceWei,
-        0n,
-      )
-      if (request.maxFeeWei !== undefined && totalFee > request.maxFeeWei)
-        throw new Error('Transaction-set fee exceeds authorized bound')
-      if (members.length > 64)
-        throw new Error('Transaction-set exceeds member capacity')
-    } catch (error) {
-      coins.abandon(request.operationId)
-      throw error
+      const totalFee = all.reduce((sum, member) => { const tx = Transaction.from(member.plan.unsignedTransaction); return sum + tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!) }, 0n)
+      if ((request.maxFeeWei !== undefined && totalFee > request.maxFeeWei) || existing?.transactionSetStages?.some(stage => stage.maxFeeWei !== undefined && totalFee > BigInt(stage.maxFeeWei))) throw new Error('Transaction-set fee exceeds authorized bound')
+      if (all.length > 64) throw new Error('Transaction-set exceeds member capacity')
+      if (members.filter(member => member.plan.transactionSet!.role === 'change').reduce((sum, member) => sum + Transaction.from(member.raw).value, 0n) < reserve) throw new Error('Insufficient private change for continuation')
+    } catch (error) { coins.abandon(request.operationId); throw error }
+    const payments = members.filter(member => member.plan.transactionSet!.role === 'payment').sort((a,b) => a.plan.transactionSet!.logicalIndex - b.plan.transactionSet!.logicalIndex)
+    const stage: EvmTransactionSetStage = {
+      ...(stageId === undefined ? {} : { stageId }), startIndex: existing?.members.length ?? 0, memberCount: members.length,
+      intendedValueWei: request.amountWei.toString(), calldata: data.toLowerCase(), destinations: payments.map(member => Transaction.from(member.raw).to!.toLowerCase()),
+      ...(request.maxFeeWei === undefined ? {} : { maxFeeWei: request.maxFeeWei.toString() }),
+      ...(request.reserveForContinuationWei === undefined ? {} : { reserveForContinuationWei: reserve.toString() }),
+      ...(legacy ? { legacy: true } : {}),
     }
-    // Once this write starts, a rejected promise is not evidence the signed set was not stored.
-    // Keep reservations held on uncertainty; reopen restores the authoritative journal row.
-    const row = await journal.prepare(
-      {
-        kind: 'transaction-set',
-        preparationId: prefix + request.operationId,
-        recipient: Transaction.from(
-          members.find(
-            member => member.plan.transactionSet!.role === 'payment',
-          )!.plan.unsignedTransaction,
-        ).to!.toLowerCase(),
-        intendedValueWei: request.amountWei.toString(),
-        members: members.map(member => member.plan),
-      },
-      members.map(member => member.raw),
-    )
+    const row = existing ? await journal.appendTransactionSet(existing.operationId, stage, members.map(member => member.plan), members.map(member => member.raw)) : await journal.prepare({
+      kind: 'transaction-set', preparationId: prefix + request.operationId, recipient: stage.destinations[0]!, intendedValueWei: request.amountWei.toString(),
+      transactionSetStages: [stage], members: members.map(member => member.plan),
+    }, members.map(member => member.raw))
     this.restoreRow(row)
     await coins.checkpointTransactionSetReservations(request.operationId)
-    return this.result(row)
+    return this.result(row, stageId)
+  }
+
+  private async prepareFanIn(request: ConstructEvmTransactionSetRequest, policy: EvmTransactionSetPolicy, context: PaymentContext, parts: CoinPart[]): Promise<LocalMember[]> {
+    const { coins } = this.options, minimum = coins.nextChangeIndex()
+    const target = this.options.reserveChange ? await this.options.reserveChange(request.operationId, minimum) : this.options.deriveChange(minimum)
+    if (!Number.isSafeInteger(target.changeIndex) || target.changeIndex < minimum || target.changeIndex >= 0x80000000 || target.account.toLowerCase() === context.destination || computeAddress(target.privateKey).toLowerCase() !== target.account.toLowerCase()) throw new Error('Invalid fan-in destination')
+    coins.reserveChangeTarget(request.operationId, target.changeIndex, target.account)
+    let balance = 0n
+    const members = parts.map((part, index): LocalMember => {
+      const value = part.coin.valueWei - policy.changeGasLimit * policy.gasPriceWei
+      balance += value
+      const tx = Transaction.from({ type: 0, chainId: BigInt(this.options.journal.binding.nativeChainId), nonce: part.coin.nonce,
+        to: target.account, value, gasLimit: policy.changeGasLimit, gasPrice: policy.gasPriceWei })
+      tx.signature = new SigningKey(part.coin.privateKey).sign(tx.unsignedHash)
+      return { raw: tx.serialized, plan: { source: { kind: 'coin', address: part.coin.account }, unsignedTransaction: tx.unsignedSerialized, dependencies: [], transactionSet: {
+        role: 'funding', logicalIndex: index, changeIndex: target.changeIndex, balanceBeforeWei: part.coin.valueWei.toString(), balanceAfterWei: '0',
+      } } }
+    })
+    const coin: EvmListCoin = { account: target.account.toLowerCase(), privateKey: target.privateKey, changeIndex: target.changeIndex, origin: 'change', nonce: 0, valueWei: balance, state: 'spend_pending', holder: request.operationId }
+    members.push(...await this.prepareSource(request, policy, context, { coin, paymentValueWei: request.amountWei }, 0))
+    return members
   }
 
   private validatePolicy(
@@ -526,7 +545,8 @@ export class EvmTransactionSetPreparer {
     const paymentFee = paymentGas * policy.gasPriceWei,
       changeFee = policy.changeGasLimit * policy.gasPriceWei
     let payment = part.paymentValueWei
-    let remainder = part.coin.valueWei - payment - paymentFee
+    const hasPayment = payment > 0n || (request.calldata ?? '0x') !== '0x'
+    let remainder = part.coin.valueWei - payment - (hasPayment ? paymentFee : 0n)
     const destination = context.destination
     let outputs: bigint[] = []
     // Absorb uneconomic dust only when no change output can carry it. The splitter
@@ -538,7 +558,7 @@ export class EvmTransactionSetPreparer {
     if (remainder >= policy.dustWei + changeFee) {
       outputs = computeGeometricRadixChangeSplits({
         totalAvailableWei: remainder,
-        recipientAmountWei: payment,
+        recipientAmountWei: hasPayment ? payment : request.amountWei,
         dustThresholdWei: policy.dustWei,
         minFeePerTxWei: changeFee,
         maxOutputs: policy.maxChangeOutputs,
@@ -547,6 +567,7 @@ export class EvmTransactionSetPreparer {
         random: () => this.entropy(),
       })
     }
+    if (!hasPayment && !outputs.length) throw new Error('Insufficient private change for continuation')
     type Move = {
       role: 'payment' | 'change'
       logicalIndex: number
@@ -556,7 +577,7 @@ export class EvmTransactionSetPreparer {
       data: string
       changeIndex?: number
     }
-    let moves: Move[] = [
+    let moves: Move[] = hasPayment ? [
       {
         role: 'payment',
         logicalIndex: paymentIndex,
@@ -565,7 +586,7 @@ export class EvmTransactionSetPreparer {
         gas: paymentGas,
         data: request.calldata ?? '0x',
       },
-    ]
+    ] : []
     const planned = outputs.map(value => ({
       role: 'change' as const,
       logicalIndex: 0,
@@ -647,6 +668,7 @@ export class EvmTransactionSetPreparer {
         dependencies: [],
         transactionSet: {
           role: move.role,
+          ...(move.role === 'payment' ? { intendedValueWei: part.paymentValueWei.toString() } : {}),
           logicalIndex: move.logicalIndex,
           ...(move.changeIndex === undefined
             ? {}
@@ -682,15 +704,23 @@ export class EvmTransactionSetPreparer {
       if (!member.signed) continue
       const tx = Transaction.from(member.signed.rawTransaction),
         meta = member.transactionSet!
-      if (meta.role === 'change')
+      if (meta.role !== 'payment')
         coins.reserveChangeTarget(
           logicalId,
           meta.changeIndex!,
           tx.to!.toLowerCase(),
         )
-      const source = coins
+      let source = coins
         .all()
         .find(coin => coin.account === member.source.address)
+      if (!source) {
+        const creator = row.members.find(candidate => candidate.transactionSet?.role !== 'payment' && Transaction.from(candidate.unsignedTransaction).to!.toLowerCase() === member.source.address)
+        if (creator) {
+          const key = this.options.deriveChange(creator.transactionSet!.changeIndex!)
+          if (key.account.toLowerCase() !== member.source.address) throw new Error('Private source key restoration mismatch')
+          source = { account: member.source.address, nonce: tx.nonce, privateKey: key.privateKey, origin: 'change', changeIndex: key.changeIndex, valueWei: BigInt(meta.balanceBeforeWei), state: 'unspent' }
+        }
+      }
       const reconciled = meta.inventoryApplied === true
       if (
         !reconciled &&
@@ -768,7 +798,7 @@ export class EvmTransactionSetPreparer {
     }
   }
 
-  private result(row: EvmNativeOperation): PreparedEvmTransactionSet {
+  private result(row: EvmNativeOperation, stageId?: string): PreparedEvmTransactionSet {
     const entries = row.members.map((member): PreparedEvmTransaction => {
       if (!member.signed) throw new Error('Incomplete signed transaction set')
       const tx = Transaction.from(member.signed.rawTransaction)
@@ -784,8 +814,8 @@ export class EvmTransactionSetPreparer {
         ...(member.dependencies.length
           ? {
               predecessor: {
-                account: member.source.address,
-                nonce: tx.nonce - 1,
+                account: row.members[member.dependencies[0]!]!.source.address,
+                nonce: Transaction.from(row.members[member.dependencies[0]!]!.unsignedTransaction).nonce,
               },
             }
           : {}),
@@ -796,11 +826,11 @@ export class EvmTransactionSetPreparer {
       chainIdentifier: row.binding.chainIdentifier,
       bundle: entries
         .filter(
-          (_, index) => row.members[index]!.transactionSet!.role === 'payment',
+          (_, index) => row.members[index]!.transactionSet!.role === 'payment' && row.members[index]!.transactionSet!.stageId === stageId,
         )
         .sort((a, b) => a.logicalIndex - b.logicalIndex),
       otherTransactions: entries.filter(
-        (_, index) => row.members[index]!.transactionSet!.role === 'change',
+        (_, index) => row.members[index]!.transactionSet!.role !== 'payment' && row.members[index]!.transactionSet!.stageId === stageId,
       ),
     }
   }

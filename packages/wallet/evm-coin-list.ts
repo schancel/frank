@@ -442,6 +442,7 @@ export class EvmCoinList {
 
   /** Selection and ownership change form one synchronous section; no provider work occurs. */
   reserveTransactionSetSources(params: {
+    ownedCandidates?: readonly EvmListCoin[]
     holder: string
     amountWei: bigint
     feeWei: bigint | ((paymentIndex: number) => bigint)
@@ -459,17 +460,24 @@ export class EvmCoinList {
     const rank = new Map(
       params.sourceOrder.map((origin, index) => [origin, index]),
     )
-    const free = this.all().filter(
+    const privateCandidates = (params.ownedCandidates ?? []).filter(coin => {
+      const target = coin.changeIndex === undefined ? undefined : this.changeTargets.get(coin.changeIndex)
+      if (!target || target.operationId !== params.holder || target.account !== coin.account || coin.holder !== params.holder || !coin.after || coin.nonce !== 0)
+        throw new EvmCoinListError('Invalid operation-private source')
+      const existing = this.get(coin.account, coin.nonce)
+      return !existing || (existing.state === 'unspent' && (!existing.holder || existing.holder === params.holder))
+    })
+    const privateAccounts = new Set(privateCandidates.map(coin => coin.account))
+    const free = [...privateCandidates, ...this.all().filter(
       coin =>
-        coin.state === 'unspent' &&
-        this.accountSelectable(coin.account) &&
-        rank.has(coin.origin) &&
-        (coin.spendableFromBlock === undefined ||
-          coin.spendableFromBlock <= params.head) &&
+        !privateAccounts.has(coin.account) && coin.state === 'unspent' &&
+        this.accountSelectable(coin.account) && rank.has(coin.origin) &&
+        (coin.spendableFromBlock === undefined || coin.spendableFromBlock <= params.head) &&
         (params.canSelect?.(coin) ?? coin.after === undefined),
-    )
+    )]
     free.sort(
       (a, b) =>
+        Number(privateAccounts.has(b.account)) - Number(privateAccounts.has(a.account)) ||
         rank.get(a.origin)! - rank.get(b.origin)! ||
         (a.origin === 'change' && b.origin === 'change'
           ? (a.changeIndex ?? Number.MAX_SAFE_INTEGER) -
@@ -515,6 +523,7 @@ export class EvmCoinList {
     return reserved
   }
 
+  private readonly transactionSetTails = new Map<string, Promise<void>>()
   private readonly transactionSetBuilds = new Map<
     string,
     Promise<PreparedEvmTransactionSet>
@@ -522,13 +531,21 @@ export class EvmCoinList {
   constructTransactionSetOnce(
     operationId: string,
     build: () => Promise<PreparedEvmTransactionSet>,
+    stageId = '',
   ): Promise<PreparedEvmTransactionSet> {
-    const pending = this.transactionSetBuilds.get(operationId)
+    const key = JSON.stringify([operationId, stageId])
+    const pending = this.transactionSetBuilds.get(key)
     if (pending) return pending
-    const result = build()
-    this.transactionSetBuilds.set(operationId, result)
+    const previous = this.transactionSetTails.get(operationId) ?? Promise.resolve()
+    const result = previous.then(build)
+    const tail = result.then(() => undefined, () => undefined)
+    this.transactionSetTails.set(operationId, tail)
+    void tail.then(() => {
+      if (this.transactionSetTails.get(operationId) === tail) this.transactionSetTails.delete(operationId)
+    })
+    this.transactionSetBuilds.set(key, result)
     void result
-      .finally(() => this.transactionSetBuilds.delete(operationId))
+      .finally(() => this.transactionSetBuilds.delete(key))
       .catch(() => undefined)
     return result
   }

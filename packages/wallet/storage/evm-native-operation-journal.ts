@@ -4,6 +4,7 @@ import { getAddress, keccak256, Transaction } from 'ethers'
 import { PROTOCOL_CHAINS } from '../chain/chains-registry'
 import { runNativeTransactionExclusive } from '../chain/chain-wallet'
 import { durableBatch, durablePut, openDurableLevel } from './level-durability'
+import { validateTransactionSetGraph } from './evm-transaction-set-graph'
 
 /** Public derivation provenance only. Custody resolves and address-checks these references. */
 export type EvmNativeSource =
@@ -92,7 +93,10 @@ export type EvmNativeOperationKind =
 export interface EvmTransactionSetMember {
   /** Durable checkpoint of terminal inventory application, independent of payment success. */
   inventoryApplied?: true
-  role: 'payment' | 'change'
+  role: 'payment' | 'change' | 'funding'
+  intendedValueWei?: string
+  stageId?: string
+  fundingWaitBlocks?: number
   logicalIndex: number
   changeIndex?: number
   balanceBeforeWei: string
@@ -177,7 +181,21 @@ function validateRecord(value: unknown, kind: unknown): EvmContractCallRecord {
   if (encodedBytes(value) > MAX_RECORD_BYTES) fail('capacity')
   return clone(value) as EvmContractCallRecord
 }
+export interface EvmTransactionSetStage {
+  /** Absent only for the original recipient leg. */
+  stageId?: string
+  startIndex: number
+  memberCount: number
+  intendedValueWei: string
+  calldata: string
+  destinations: string[]
+  /** Whole-operation authorization; appending may tighten but never raise it. */
+  maxFeeWei?: string
+  reserveForContinuationWei?: string
+  legacy?: true
+}
 export interface EvmNativeOperation {
+  transactionSetStages?: EvmTransactionSetStage[]
   version: 1
   operationId: string
   binding: EvmNativeBinding
@@ -202,6 +220,7 @@ export interface EvmNativeOperation {
   record?: EvmContractCallRecord
 }
 export interface EvmNativePlan {
+  transactionSetStages?: EvmTransactionSetStage[]
   kind: EvmNativeOperationKind
   submissionPolicy?: 'explicit'
   /** Stable financial intent identity; distinct from this journal's sequential operation ID. */
@@ -468,6 +487,7 @@ function validateRow(
     'cancelled',
     'reservedBytes',
     ...(hasPreparationId ? ['preparationId'] : []),
+    ...('transactionSetStages' in (value as object) ? ['transactionSetStages'] : []),
     ...(hasRecord ? ['record'] : []),
     ...(hasSubmissionPolicy ? ['submissionPolicy'] : []),
   ])
@@ -603,6 +623,7 @@ function validateRow(
     validateTransactionSet(
       row.members as EvmNativeMember[],
       uint(row.intendedValueWei),
+      row.transactionSetStages,
     )
   if (
     row.members.length > 1 &&
@@ -675,94 +696,10 @@ function validateRow(
 function validateTransactionSet(
   members: EvmNativeMember[],
   intended: bigint,
+  stages?: unknown,
 ): void {
-  const latest = new Map<
-    string,
-    { index: number; nonce: number; balance: bigint }
-  >()
-  const payments = new Set<number>(),
-    changes = new Set<number>(),
-    destinations = new Set<string>()
-  let paid = 0n
-  for (const [index, member] of members.entries()) {
-    const meta = member.transactionSet
-    if (!meta) fail()
-    object(meta, [
-      'role',
-      'logicalIndex',
-      'balanceBeforeWei',
-      'balanceAfterWei',
-      ...('changeIndex' in meta ? ['changeIndex'] : []),
-      ...('inventoryApplied' in meta ? ['inventoryApplied'] : []),
-      ...('predecessorWaitBlocks' in meta ? ['predecessorWaitBlocks'] : []),
-      ...('remainderSpendableFromBlock' in meta
-        ? ['remainderSpendableFromBlock']
-        : []),
-      ...('refundPending' in meta ? ['refundPending'] : []),
-    ])
-    integer(meta.logicalIndex)
-    if (
-      meta.inventoryApplied !== undefined &&
-      (meta.inventoryApplied !== true || !terminalInventoryEvidence(member))
-    )
-      fail()
-    if (meta.predecessorWaitBlocks !== undefined) {
-      integer(meta.predecessorWaitBlocks)
-      if (
-        meta.predecessorWaitBlocks === 0 ||
-        meta.role !== 'change' ||
-        member.dependencies.length !== 1
-      )
-        fail()
-    }
-    if (meta.remainderSpendableFromBlock !== undefined)
-      integer(meta.remainderSpendableFromBlock)
-    if (meta.refundPending !== undefined && meta.refundPending !== true) fail()
-    const before = uint(meta.balanceBeforeWei),
-      after = uint(meta.balanceAfterWei)
-    const tx = Transaction.from(member.unsignedTransaction)
-    if (before !== tx.value + nativeMaximumFee(tx) + after) fail()
-    const previous = latest.get(member.source.address)
-    if (previous) {
-      if (
-        tx.nonce !== previous.nonce + 1 ||
-        before !== previous.balance ||
-        JSON.stringify(member.dependencies) !== JSON.stringify([previous.index])
-      )
-        fail()
-    } else if (member.dependencies.length) fail()
-    latest.set(member.source.address, {
-      index,
-      nonce: tx.nonce,
-      balance: after,
-    })
-    if (meta.role === 'payment') {
-      if (meta.changeIndex !== undefined || payments.has(meta.logicalIndex))
-        fail()
-      payments.add(meta.logicalIndex)
-      paid += tx.value
-    } else if (meta.role === 'change') {
-      integer(meta.changeIndex)
-      if (
-        meta.changeIndex >= 0x80000000 ||
-        changes.has(meta.changeIndex) ||
-        destinations.has(tx.to!.toLowerCase()) ||
-        tx.data !== '0x' ||
-        tx.value === 0n
-      )
-        fail()
-      changes.add(meta.changeIndex)
-      destinations.add(tx.to!.toLowerCase())
-    } else fail()
-  }
-  if (!payments.size || paid < intended) fail()
-  if (
-    [...payments].sort((a, b) => a - b).some((value, index) => value !== index)
-  )
-    fail()
-  for (const target of destinations) if (latest.has(target)) fail()
-  const signed = members.filter(member => member.signed !== null).length
-  if (signed !== 0 && signed !== members.length) fail()
+  validateTransactionSetGraph(members, intended, stages, () => fail())
+
 }
 
 export interface EvmNativeCapture {
@@ -1078,6 +1015,7 @@ export class EvmNativeOperationJournal {
             .padStart(16, '0')}`,
           binding: this.binding,
           kind: frozen.kind,
+          ...(frozen.transactionSetStages ? { transactionSetStages: frozen.transactionSetStages } : {}),
           ...(frozen.preparationId === undefined
             ? {}
             : { preparationId: frozen.preparationId }),
@@ -1156,6 +1094,42 @@ export class EvmNativeOperationJournal {
       }),
     )
   }
+  appendTransactionSet(
+    id: string,
+    stage: EvmTransactionSetStage,
+    members: readonly EvmNativeMemberPlan[],
+    signedTransactions: readonly string[],
+  ): Promise<EvmNativeOperation> {
+    const input = clone({ stage, members, signedTransactions })
+    return this.mutate(id, row => {
+      if (row.kind !== 'transaction-set' || row.cancelled || !input.stage.stageId ||
+          row.members.some(member => member.exposed || !member.signed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))) fail('conflict')
+      const known = row.transactionSetStages?.find(item => item.stageId === input.stage.stageId)
+      if (known) {
+        if (JSON.stringify(known) !== JSON.stringify(input.stage) ||
+            JSON.stringify(row.members.slice(known.startIndex, known.startIndex + known.memberCount).map(member => member.signed!.rawTransaction)) !== JSON.stringify(input.signedTransactions)) fail('conflict')
+        return false
+      }
+      if (!row.transactionSetStages || input.stage.startIndex !== row.members.length ||
+          input.stage.memberCount !== input.members.length || !input.members.length ||
+          input.members.length !== input.signedTransactions.length) fail('conflict')
+      for (const member of input.members)
+        for (const other of this.rows.values())
+          if (other.operationId !== id && !other.cancelled && other.members.some(candidate =>
+              candidate.source.address === member.source.address &&
+              !nativeMemberSuperseded(candidate) &&
+              candidate.observation.state !== 'included-success' && candidate.observation.state !== 'included-revert')) fail('conflict')
+      row.transactionSetStages.push(input.stage)
+      row.members.push(...input.members.map((member, index) => ({
+        ...member, signed: { rawTransaction: input.signedTransactions[index]!, transactionHash: keccak256(input.signedTransactions[index]!) },
+        exposed: false, observation: { state: 'unknown' as const }, account: null, syncApplied: false,
+      })))
+      row.maximumFeeWei = row.members.reduce((sum, member) => sum + nativeMaximumFee(Transaction.from(member.unsignedTransaction)), 0n).toString()
+      row.reservedBytes = reservation(row)
+      if (row.members.length > MAX_MEMBERS || [...this.rows.values()].filter(other => !other.cancelled && other.operationId !== id).reduce((sum, other) => sum + other.reservedBytes, 0) + row.reservedBytes > this.maxBytes) fail('capacity')
+    })
+  }
+
   private async mutate(
     id: string,
     change: (row: EvmNativeOperation) => void | boolean,
@@ -1219,6 +1193,8 @@ export class EvmNativeOperationJournal {
         )
       )
         fail('conflict')
+      if (row.kind === 'transaction-set' && m.dependencies.some(index =>
+          row.members[index]!.source.address !== m.source.address && row.members[index]!.observation.state !== 'included-success')) fail('conflict')
       if (
         row.kind === 'transaction-set' &&
         m.transactionSet?.predecessorWaitBlocks !== undefined &&

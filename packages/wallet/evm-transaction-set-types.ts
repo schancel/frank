@@ -26,6 +26,8 @@ export interface ConstructEvmTransactionSetRequest {
   readonly kdf: (paymentIndex: number) => string
   readonly calldata?: string
   readonly maxFeeWei?: bigint
+  /** Value kept in private change for a later leg of this same operation. */
+  readonly reserveForContinuationWei?: bigint
   /** Internal protocol constraint for consumers that require one on-chain payment. */
   readonly maxPaymentParts?: number
 }
@@ -77,6 +79,7 @@ export type EvmTransactionSetJournal = Pick<
   | 'canSelect'
   | 'refreshPreparation'
   | 'prepare'
+  | 'appendTransactionSet'
   | 'markExposed'
   | 'markSyncApplied'
   | 'markTransactionSetInventoryApplied'

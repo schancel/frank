@@ -83,7 +83,7 @@ it('constructs one complete signed set with private change, exact source conserv
   })
   expect(result.bundle).toHaveLength(1)
   expect(result.otherTransactions.length).toBeGreaterThan(1)
-  expect(derive.mock.calls).toEqual([[0]])
+  expect(derive.mock.calls.every(([index]) => index === 0)).toBe(true)
   const all = [...result.bundle, ...result.otherTransactions]
   expect(all.reduce((sum, tx) => sum + tx.valueWei + tx.gasLimit, 0n)).toBe(
     1000000n,
@@ -105,17 +105,9 @@ it('constructs one complete signed set with private change, exact source conserv
       typeof value === 'bigint' ? String(value) : value,
     ),
   ).not.toContain('privateKey')
-  const neverDerive = jest.fn(() => {
-    throw new Error('replay must not derive')
-  })
-  expect(
-    await preparer.constructTransactionSet({
-      operationId: 'one',
-      amountWei: 300000n,
-      kdf: neverDerive,
-    }),
-  ).toEqual(result)
-  expect(neverDerive).not.toHaveBeenCalled()
+  expect(await preparer.constructTransactionSet({ operationId: 'one', amountWei: 300000n, kdf })).toEqual(result)
+  await expect(preparer.constructTransactionSet({ operationId: 'one', amountWei: 300000n, kdf: () => signer(70).address })).rejects.toThrow('conflicts with original intent')
+
 })
 
 it('reserves disjoint inputs and fresh targets across concurrent operations and a reopened preparer', async () => {
@@ -806,4 +798,174 @@ it('rejects a construction override that diverges from static network recovery r
     }),
   ).rejects.toThrow('must match the static network recovery rule')
   expect(coins.all()[0]!.state).toBe('unspent')
+})
+
+
+it('appends a private stamp leg to the original signed operation and retains independent inputs', async () => {
+  const f = await setup()
+  const request = { operationId: 'composed', amountWei: 300000n, reserveForContinuationWei: 200000n, maxFeeWei: 600000n, kdf }
+  const primary = await f.preparer.constructTransactionSet(request)
+  const prefix = f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)
+  const stampRequest = { operationId: 'composed', stageId: 'stamp-message', amountWei: 70000n, maxFeeWei: 600000n, kdf: (index: number) => signer(70 + index).address }
+  const stamp = await f.preparer.appendTransactionSet(stampRequest)
+  expect(f.journal.list()).toHaveLength(1)
+  const row = f.journal.list()[0]!
+  expect(row.intendedValueWei).toBe('300000')
+  expect(row.members.slice(0, prefix.length).map(member => member.signed!.rawTransaction)).toEqual(prefix)
+  expect(stamp.bundle.every(payment => primary.otherTransactions.some(change => change.destination === payment.sourceAccount))).toBe(true)
+  expect(stamp.bundle.reduce((sum,payment) => sum + payment.valueWei, 0n)).toBeGreaterThanOrEqual(70000n)
+  expect(await f.preparer.constructTransactionSet(request)).toEqual(primary)
+  expect(await f.preparer.appendTransactionSet(stampRequest)).toEqual(stamp)
+  await expect(f.preparer.appendTransactionSet({ ...stampRequest, kdf })).rejects.toThrow('conflicts')
+  await expect(f.preparer.appendTransactionSet({ ...stampRequest, amountWei: 1n })).rejects.toThrow('conflicts')
+  const independent = await f.preparer.constructTransactionSet({ operationId: 'independent', amountWei: 300000n, kdf })
+  expect(independent.bundle[0]!.sourceAccount).not.toBe(primary.bundle[0]!.sourceAccount)
+  expect(stamp.bundle.map(payment => payment.sourceAccount)).not.toContain(independent.bundle[0]!.sourceAccount)
+})
+
+it('recovers an ambiguously persisted append with identical bytes and rejects extension after exposure', async () => {
+  const f = await setup([1000000n])
+  await f.preparer.constructTransactionSet({ operationId: 'recover-stage', amountWei: 300000n, reserveForContinuationWei: 200000n, kdf })
+  const append = f.journal.appendTransactionSet.bind(f.journal)
+  jest.spyOn(f.journal, 'appendTransactionSet').mockImplementationOnce(async (...args) => {
+    await append(...args)
+    throw new Error('reply lost after durable write')
+  })
+  const request = { operationId: 'recover-stage', stageId: 'stamp-recovered', amountWei: 70000n, kdf }
+  await expect(f.preparer.appendTransactionSet(request)).rejects.toThrow('reply lost')
+  const original = f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)
+  const reopened = new EvmTransactionSetPreparer({ ...f.options, random: () => 0.99 })
+  await reopened.appendTransactionSet(request)
+  expect(f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)).toEqual(original)
+  await reopened.markExposed('recover-stage', 0)
+  await expect(reopened.appendTransactionSet({ ...request, stageId: 'different-stamp' })).rejects.toThrow('exposed')
+  expect(await reopened.appendTransactionSet(request)).toBeDefined()
+})
+
+it('honors whole-operation fee caps and never gifts the continuation budget', async () => {
+  const f = await setup([321000n])
+  await expect(f.preparer.constructTransactionSet({ operationId: 'no-budget', amountWei: 300000n, reserveForContinuationWei: 1n, kdf })).rejects.toThrow('Insufficient')
+  expect(f.journal.list()).toHaveLength(0)
+  const g = await setup([1000000n])
+  const primary = await g.preparer.constructTransactionSet({ operationId: 'bounded', amountWei: 300000n, reserveForContinuationWei: 200000n, maxFeeWei: 147000n, kdf })
+  expect(primary.otherTransactions.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBeGreaterThanOrEqual(200000n)
+  await expect(g.preparer.appendTransactionSet({ operationId: 'bounded', stageId: 'stamp', amountWei: 70000n, maxFeeWei: 999999n, kdf })).rejects.toThrow('fee exceeds')
+})
+
+it('constructs a single-recipient fan-in graph without exposing or selecting its private account', async () => {
+  const f = await setup([350000n,350000n])
+  const result = await f.preparer.constructLegacyTransactionSet({ operationId: 'one-recipient', amountWei: 600000n, kdf })
+  expect(result.bundle).toHaveLength(1)
+  const row = f.journal.list()[0]!, funding = row.members.filter(member => member.transactionSet!.role === 'funding')
+  expect(funding).toHaveLength(2)
+  const first = row.members.find(member => member.source.address === result.bundle[0]!.sourceAccount)!
+  expect(first.dependencies).toEqual([0,1])
+  expect(row.members.every(member => !member.exposed)).toBe(true)
+  expect(result.otherTransactions).toHaveLength(row.members.length - 1)
+  await expect(f.preparer.constructTransactionSet({ operationId: 'steal-private', amountWei: 1000n, kdf })).rejects.toThrow('Insufficient')
+  expect(await f.preparer.constructLegacyTransactionSet({ operationId: 'one-recipient', amountWei: 600000n, kdf })).toEqual(result)
+})
+
+it('requires every fan-in inclusion and the incoming-funds delay before recipient exposure', async () => {
+  const { EvmTransactionSetLifecycle } = await import('./evm-transaction-set-lifecycle')
+  const current = { ...policy, head: 100, spendRule: { belowWei: 1_000_000n, waitBlocks: 2 } }
+  const f = await setup([350000n,350000n], current)
+  const result = await f.preparer.constructLegacyTransactionSet({ operationId: 'funded-call', amountWei: 600000n, kdf })
+  const broadcast = jest.fn(async (raw: string) => ({ hash: Transaction.from(raw).hash! }))
+  const lifecycle = new EvmTransactionSetLifecycle({ authority: f.preparer, provider: { getTransaction: async () => null, broadcastTransaction: broadcast }, head: () => current.head })
+  expect(lifecycle.canSubmitPayments('funded-call')).toBe(false)
+  await lifecycle.replay('funded-call', { payments: false })
+  expect(broadcast).toHaveBeenCalledTimes(2)
+  const row = f.journal.list()[0]!
+  const include = async (index: number, blockNumber: number) => {
+    const member = row.members[index]!, tx = Transaction.from(member.signed!.rawTransaction)
+    await f.journal.recordObservation(f.journal.beginCapture(row.operationId, index), {
+      state: 'included-success', transactionHash: tx.hash!, blockHash: '0x' + 'ab'.repeat(32), blockNumber, transactionIndex: index, feeWei: '21000',
+    }, { nonce: tx.nonce + 1, balanceWei: '0', blockNumber, blockHash: '0x' + 'ab'.repeat(32) })
+  }
+  await include(0, 100)
+  current.head = 1000
+  expect(lifecycle.canSubmitPayments('funded-call')).toBe(false)
+  await include(1, 1000)
+  current.head = 1002
+  expect(lifecycle.canSubmitPayments('funded-call')).toBe(false)
+  await expect(f.preparer.markExposed('funded-call', 2)).rejects.toThrow('maturity')
+  current.head = 1003
+  await lifecycle.replay('funded-call', { payments: false })
+  expect(lifecycle.canSubmitPayments('funded-call')).toBe(true)
+  await lifecycle.replay('funded-call', { payments: true })
+  expect(broadcast.mock.calls.some(([raw]) => raw === result.bundle[0]!.rawTransaction)).toBe(true)
+})
+
+it('replays original recipient dependencies for a stamp while withholding the stamp itself', async () => {
+  const { EvmTransactionSetLifecycle } = await import('./evm-transaction-set-lifecycle')
+  const f = await setup([1000000n])
+  await f.preparer.constructTransactionSet({ operationId: 'envelope', amountWei: 300000n, reserveForContinuationWei: 200000n, kdf })
+  const stamp = await f.preparer.appendTransactionSet({ operationId: 'envelope', stageId: 'stamp-message', amountWei: 70000n, kdf })
+  const broadcast = jest.fn(async (raw: string) => ({ hash: Transaction.from(raw).hash! }))
+  const lifecycle = new EvmTransactionSetLifecycle({ authority: f.preparer, provider: { getTransaction: async () => null, broadcastTransaction: broadcast }, head: () => 100 })
+  await lifecycle.replayDependencies('envelope', 'stamp-message')
+  expect(broadcast.mock.calls.length).toBeGreaterThan(0)
+  expect(broadcast.mock.calls.some(([raw]) => stamp.bundle.some(payment => payment.rawTransaction === raw))).toBe(false)
+  expect(lifecycle.canSubmitPayments('envelope', 'stamp-message')).toBe(false)
+  for (const [index, member] of f.journal.list()[0]!.members.entries()) {
+    if (!member.exposed) continue
+    const tx = Transaction.from(member.signed!.rawTransaction), row = f.journal.list()[0]!
+    await f.journal.recordObservation(f.journal.beginCapture(row.operationId, index), {
+      state: 'included-success', transactionHash: tx.hash!, blockHash: '0x' + 'ab'.repeat(32), blockNumber: 90, transactionIndex: index, feeWei: '21000',
+    }, { nonce: tx.nonce + 1, balanceWei: member.transactionSet!.balanceAfterWei, blockNumber: 90, blockHash: '0x' + 'ab'.repeat(32) })
+  }
+  await lifecycle.replayDependencies('envelope', 'stamp-message')
+  expect(lifecycle.canSubmitPayments('envelope', 'stamp-message')).toBe(true)
+  expect(broadcast.mock.calls.some(([raw]) => stamp.bundle.some(payment => payment.rawTransaction === raw))).toBe(false)
+})
+
+it('restores an appended graph after durable write but interrupted inventory checkpoint', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'transaction-graph-reopen-'))
+  const binding = { chainIdentifier: 'monad-testnet', nativeChainId: '10143', publicTuple: 'graph-reopen' }
+  let store = await LevelRecordStore.open<import('./evm-coin-list').StoredEvmListCoin>(directory, 'coins')
+  let coins = await EvmCoinList.open(store)
+  let journal = new EvmNativeOperationJournal({ location: directory, binding })
+  await journal.Open()
+  const deriveChange = (index: number) => ({ account: signer(100 + index).address.toLowerCase(), privateKey: signer(100 + index).privateKey, changeIndex: index })
+  const primary = { operationId: 'durable-graph', amountWei: 300000n, reserveForContinuationWei: 200000n, kdf }
+  const stamp = { operationId: 'durable-graph', stageId: 'stamp', amountWei: 70000n, kdf }
+  try {
+    await coins.put({ account: signer(1).address, privateKey: signer(1).privateKey, nonce: 0, valueWei: 1000000n, origin: 'root' })
+    let preparer = new EvmTransactionSetPreparer({ coins, journal, policy: () => policy, deriveChange, random: () => 0.01 })
+    const recipient = await preparer.constructTransactionSet(primary)
+    jest.spyOn(coins, 'checkpointTransactionSetReservations').mockRejectedValueOnce(new Error('checkpoint interrupted'))
+    await expect(preparer.appendTransactionSet(stamp)).rejects.toThrow('checkpoint interrupted')
+    const original = journal.list()[0]!.members.map(member => member.signed!.rawTransaction)
+    await journal.Close(); await store.close()
+    store = await LevelRecordStore.open(directory, 'coins')
+    coins = await EvmCoinList.open(store)
+    journal = new EvmNativeOperationJournal({ location: directory, binding }); await journal.Open()
+    preparer = new EvmTransactionSetPreparer({ coins, journal, policy: () => { throw new Error('cold policy must not sign again') }, deriveChange })
+    expect(await preparer.constructTransactionSet(primary)).toEqual(recipient)
+    const restored = await preparer.appendTransactionSet(stamp)
+    expect(restored.bundle.length).toBeGreaterThan(0)
+    expect(journal.list()).toHaveLength(1)
+    expect(journal.list()[0]!.members.map(member => member.signed!.rawTransaction)).toEqual(original)
+    expect(restored.bundle.every(payment => coins.get(payment.sourceAccount, payment.nonce)?.holder === primary.operationId)).toBe(true)
+  } finally {
+    await journal.Close(); await store.close(); await rm(directory, { recursive: true, force: true })
+  }
+})
+
+it.each(['missing-funder', 'invented-balance', 'cycle', 'wrong-stage-amount'] as const)('rejects a forged graph with %s before storing signed authority', async defect => {
+  const f = await setup([350000n,350000n])
+  await f.preparer.constructLegacyTransactionSet({ operationId: 'graph', amountWei: 600000n, kdf })
+  const row = f.journal.list()[0]!, index = row.members.findIndex(member => member.source.address !== row.members[0]!.source.address && member.transactionSet!.role !== 'funding')
+  const member = row.members[index]!
+  if (defect === 'missing-funder') member.dependencies = [0]
+  if (defect === 'invented-balance') { member.transactionSet!.balanceBeforeWei = (BigInt(member.transactionSet!.balanceBeforeWei) + 1n).toString(); member.transactionSet!.balanceAfterWei = (BigInt(member.transactionSet!.balanceAfterWei) + 1n).toString() }
+  if (defect === 'cycle') row.members[0]!.dependencies = [index]
+  if (defect === 'wrong-stage-amount') row.transactionSetStages![0]!.intendedValueWei = '1'
+  const other = new EvmNativeOperationJournal({ testOnlyEphemeral: true, binding: row.binding }); await other.Open()
+  await expect(other.prepare({ kind: row.kind, preparationId: row.preparationId, recipient: row.recipient, intendedValueWei: row.intendedValueWei,
+    transactionSetStages: row.transactionSetStages,
+    members: row.members.map(({ source, unsignedTransaction, dependencies, transactionSet }) => ({ source, unsignedTransaction, dependencies, transactionSet })),
+  }, row.members.map(item => item.signed!.rawTransaction))).rejects.toThrow()
+  expect(other.list()).toHaveLength(0)
 })

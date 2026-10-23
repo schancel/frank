@@ -163,3 +163,15 @@ test('waits for the actual predecessor inclusion and quiet-block eligibility bef
     f.broadcast.mock.calls.map(([raw]) => Transaction.from(raw).nonce),
   ).toEqual([0, 1])
 })
+
+test.each(['included-revert', 'superseded'] as const)('never declares a %s payment ready for relay exposure', async failure => {
+  const f = await fixture(0)
+  const member = f.operation.members[0]!, tx = Transaction.from(member.signed!.rawTransaction)
+  member.observation = failure === 'included-revert' ? {
+    state: 'included-revert', transactionHash: tx.hash!, blockHash: '0x' + '11'.repeat(32), blockNumber: 1, transactionIndex: 0, feeWei: '21000',
+  } : { state: 'missing' }
+  member.account = { blockHash: '0x' + '11'.repeat(32), blockNumber: 1, nonce: tx.nonce + 1, balanceWei: '0' }
+  expect(f.lifecycle.canSubmitPayments('message')).toBe(false)
+  member.observation = { state: 'included-success', transactionHash: tx.hash!, blockHash: '0x' + '11'.repeat(32), blockNumber: 1, transactionIndex: 0, feeWei: '21000' }
+  expect(f.lifecycle.canSubmitPayments('message')).toBe(true)
+})

@@ -2111,21 +2111,39 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             refresh: transactionSetRuntime.refresh,
             operations: () => transactionOwner.nativeJournal!.list(),
           });
+          // Shared-set reconciliation must not flush legacy native operations: their
+          // send/re-observation owners decide when those notes may be transported.
+          const startTransactionSetSync = async (logicalId?: string) => {
+            if (evmWalletInternals(wallet).closed) return;
+            const operations = transactionOwner.nativeJournal!.list().filter(operation =>
+              operation.kind === "transaction-set" && !operation.cancelled && operation.submissionAuthorized &&
+              (logicalId === undefined || operation.preparationId === `evm-transaction-set:${logicalId}`) &&
+              !operation.members.some(member => member.observation.state === "included-success" && !member.transactionSet?.inventoryApplied) &&
+              (operation.members.some(member => member.observation.state === "included-success" && !member.syncApplied) ||
+                transactionSetFinancialCompletionReceipt(operation) !== undefined));
+            for (const operation of operations) {
+              if (evmWalletInternals(wallet).closed) return;
+              try {
+                const started = await nativeOperationOwner(wallet).startSync(operation.operationId);
+                void started.transported.catch(() => undefined);
+              } catch (error) {
+                // A probe may finish after close. Do not acquire another wallet lifetime
+                // then; genuine checkpoint failures while open remain observable.
+                if (evmWalletInternals(wallet).closed) return;
+                throw error;
+              }
+            }
+          };
           const transactionSetSubmission = {
             sendTransaction: (prepared: Parameters<typeof transactionSetSender.sendTransaction>[0]) =>
               transactionSetSender.sendTransaction(prepared).then(async result => {
-                const operation = await transactionSetPreparer.readOperation(prepared.operationId);
-                if (operation && transactionOwner.nativeJournal!.list().some(row => row.operationId === operation.operationId)) {
-                  const owner = nativeOperationOwner(wallet);
-                  retryEarlierNotes(owner, operation.operationId, await owner.startSync(operation.operationId));
-                }
+                await startTransactionSetSync(prepared.operationId);
                 return result;
               }).finally(() => invalidateBalanceRead()),
             reconcileAuthorized: () =>
               transactionSetSender.reconcileAuthorized().then(async results => {
-                const owner = nativeOperationOwner(wallet);
-                const started = await owner.startSync();
-                void started.transported.catch(() => undefined);
+                // Terminal sets with an owed sync checkpoint are absent from results.
+                await startTransactionSetSync();
                 return results;
               }).finally(() => invalidateBalanceRead()),
           };

@@ -7,6 +7,7 @@ import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
  */
 import {
   Transaction,
+  SigningKey,
   getBytes,
   Wallet,
   Interface,
@@ -15,7 +16,7 @@ import {
   type TransactionReceipt,
   type TransactionResponse,
 } from 'ethers'
-import { mkdtemp, rm } from 'fs/promises'
+import { mkdtemp, rm, readdir } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import vectors from '../../domain-roots/vectors/domain-roots-v1.json'
@@ -31,7 +32,7 @@ import { LevelRecordStore } from '../storage/evm-coin-store'
 import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
 import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
 import { applyWalletSyncItem } from '../sync-dispatcher'
-import { evmStealthTransactionSetOperationId } from './evm-stealth-payments'
+import { evmStealthTransactionSetOperationId, EVM_STEALTH_PREPARATION_NAMESPACE, type EvmStealthPreparation } from './evm-stealth-payments'
 import {
   EVM_TRANSACTION_SET_SOURCE_ORDER,
   type EvmTransactionSetPolicy,
@@ -884,3 +885,111 @@ test('native quote reads the authoritative inventory without selecting a single 
   }
 })
 
+
+
+test("reopens a wallet with retained deployed v2 unsigned native quotes without rewriting or signing them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "frank-legacy-quote-open-"));
+  const location = join(dir, "wallet");
+  const cfg = {
+    ...config,
+    walletStorageLocation: location,
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  };
+  let wallet: EvmChainWalletHandle | undefined;
+  const destination = new Wallet("0x" + "61".repeat(32));
+  try {
+    wallet = (await createEvmChain(cfg).createWallet(
+      roots()
+    )) as EvmChainWalletHandle;
+    await wallet.close();
+    wallet = undefined;
+    const persistedLocation = join(
+      dir,
+      (await readdir(dir)).find((name) => name.startsWith("wallet-"))!
+    );
+    const store = await LevelRecordStore.open<EvmStealthPreparation>(
+      persistedLocation,
+      EVM_STEALTH_PREPARATION_NAMESPACE
+    );
+    const retained: EvmStealthPreparation[] = [false, true].map(
+      (approved, index) => ({
+        version: 2,
+        operationId: `deployed-quote-${index}`,
+        chainIdentifier: config.networkId,
+        asset: { kind: "native" },
+        amountAtomic: "1000",
+        recipientSpendPublicKey: destination.signingKey.compressedPublicKey,
+        recipientAddress: destination.address.toLowerCase(),
+        ephemeralPublicKey: destination.signingKey.compressedPublicKey,
+        feeAuthorization: approved
+          ? { status: "approved", maxNativeFeeAtomic: "21000" }
+          : { status: "unapproved" },
+        allocation: {
+          sources: [
+            {
+              sourceAddress: MAIN.toLowerCase(),
+              recipientAmountAtomic: "1000",
+              nativeBalanceAtomic: "22000",
+              assetBalanceAtomic: "22000",
+              estimatedNativeFeeAtomic: "21000",
+            },
+          ],
+        },
+      })
+    );
+    for (const row of retained) await store.put(row.operationId, row);
+    await store.close();
+    const signing = jest.spyOn(SigningKey.prototype, "sign");
+    wallet = (await createEvmChain(cfg).createWallet(
+      roots()
+    )) as EvmChainWalletHandle;
+    expect(signing).not.toHaveBeenCalled();
+    expect(await wallet.stealthPayments!.list()).toEqual(
+      retained.map((row) => ({ operationId: row.operationId }))
+    );
+    await wallet.close();
+    wallet = undefined;
+    const reopened = await LevelRecordStore.open<EvmStealthPreparation>(
+      persistedLocation,
+      EVM_STEALTH_PREPARATION_NAMESPACE
+    );
+    try {
+      expect(reopened.all()).toEqual(retained);
+    } finally {
+      await reopened.close();
+    }
+    wallet = (await createEvmChain(cfg).createWallet(
+      roots()
+    )) as EvmChainWalletHandle;
+    const node = stubNode(wallet, 1_000_000n);
+    const original = retained[0]!;
+    const prepared = await wallet.stealthPayments!.prepare({
+      operationId: original.operationId,
+      chainIdentifier: original.chainIdentifier,
+      asset: original.asset,
+      recipientSpendPublicKey: getBytes(original.recipientSpendPublicKey),
+      amountAtomic: 1000n,
+      maxNativeFeeAtomic: 21000n,
+    });
+    const operation = wallet.getNativeOperations!().find(
+      (row) => row.preparationId === `stealth-payment:${original.operationId}`
+    )!;
+    expect(operation.kind).toBe("native");
+    expect(prepared.members.map((member) => member.rawTransaction)).toEqual(
+      operation.members.map((member) => member.signed!.rawTransaction)
+    );
+    expect(node.broadcast).not.toHaveBeenCalled();
+    const signatures = signing.mock.calls.length;
+    await wallet.close();
+    wallet = (await createEvmChain(cfg).createWallet(
+      roots()
+    )) as EvmChainWalletHandle;
+    expect(
+      (await wallet.stealthPayments!.get(original.operationId))!.members
+    ).toEqual(prepared.members);
+    expect(signing).toHaveBeenCalledTimes(signatures);
+  } finally {
+    await wallet?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

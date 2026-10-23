@@ -44,7 +44,8 @@ export interface EvmStealthSourceAllocation {
   estimatedNativeFeeAtomic: string
 }
 export interface EvmStealthPreparation {
-  version: 3
+  /** Version 2 retains the deployed independent-payment identity and allocation. */
+  version: 2 | 3
   allocation?: { sources: EvmStealthSourceAllocation[] }
 
   operationId: string
@@ -123,11 +124,22 @@ export function configuredEvmStealthToken(
     throw new Error('Unsupported configured ERC20 asset')
   return normalized
 }
+/** New native intents use transaction sets; retained v2 intents keep independent transfers. */
+function sharedNativePreparation(row: EvmStealthPreparation): boolean {
+  return row.version === 3 && row.asset.kind === 'native'
+}
+function preparationId(row: EvmStealthPreparation): string {
+  return sharedNativePreparation(row)
+    ? `evm-transaction-set:${evmStealthTransactionSetOperationId(row.operationId)}`
+    : `stealth-payment:${row.operationId}`
+}
 function validateFeeAuthorization(row: EvmStealthPreparation): void {
-  if (row.version !== 3)
+  if (row.version !== 2 && row.version !== 3)
     throw new Error(
       'Unsupported EVM stealth preparation format; development financial preparation reset requires explicit review, never key or wallet deletion',
     )
+  if (row.version === 2 && row.messageStamp !== undefined)
+    throw new Error('Legacy stealth preparation cannot authorize a combined message stamp')
   if (row.messageStamp && (row.asset.kind !== 'native' ||
       !/^[1-9][0-9]{0,77}$/.test(row.messageStamp.amountAtomic) ||
       !/^(0|[1-9][0-9]{0,77})$/.test(row.messageStamp.maxNativeFeeAtomic) ||
@@ -147,7 +159,7 @@ function validateFeeAuthorization(row: EvmStealthPreparation): void {
     throw new Error('Unsupported stealth preparation fee authorization format')
   if (
     authorization.status === 'approved' &&
-    row.asset.kind !== 'native' &&
+    !sharedNativePreparation(row) &&
     !row.allocation
   )
     throw new Error('Approved EVM preparation has no frozen source allocation')
@@ -221,7 +233,7 @@ function matches(
   chainId: bigint,
 ): boolean {
   validateFeeAuthorization(preparation)
-  if (preparation.asset.kind === 'native') {
+  if (sharedNativePreparation(preparation)) {
     if (
       row.cancelled ||
       row.kind !== 'transaction-set' ||
@@ -281,7 +293,11 @@ function matches(
         tx.from?.toLowerCase() !== member.source.address)
     )
       return false
-    if (
+    if (preparation.asset.kind === 'native') {
+      if (row.kind !== 'native' || tx.data !== '0x' ||
+          tx.to?.toLowerCase() !== preparation.recipientAddress ||
+          tx.value !== BigInt(allocation.recipientAmountAtomic)) return false
+    } else if (
       row.kind !== 'contract' ||
       row.submissionPolicy !== 'explicit' ||
       tx.to?.toLowerCase() !== preparation.asset.contractAddress ||
@@ -315,11 +331,7 @@ export function createEvmStealthPayments(
         await driver.store.refresh()
         const retained = driver.store.get(id)
         if (retained)
-          await driver.refreshJournal(
-            retained.asset.kind === 'native'
-              ? `evm-transaction-set:${evmStealthTransactionSetOperationId(id)}`
-              : `stealth-payment:${id}`,
-          )
+          await driver.refreshJournal(preparationId(retained))
         driver.assertActive()
         return work()
       },
@@ -336,9 +348,6 @@ export function createEvmStealthPayments(
     validateFeeAuthorization(row)
     return row
   }
-  const preparationId = (row: EvmStealthPreparation): string => row.asset.kind === 'native'
-    ? `evm-transaction-set:${evmStealthTransactionSetOperationId(row.operationId)}`
-    : `stealth-payment:${row.operationId}`
   // Only active journal rows own input holds; historical evidence is resolved asynchronously.
   const activeOperation = (row: EvmStealthPreparation): EvmNativeOperation | undefined => {
     const candidate = driver.operations().find(candidate => candidate.preparationId === preparationId(row))
@@ -349,12 +358,15 @@ export function createEvmStealthPayments(
     return candidate
   }
   const operation = async (row: EvmStealthPreparation): Promise<EvmNativeOperation | undefined> => {
+    read(row.operationId)
     const candidate = await driver.readPreparation(preparationId(row))
     driver.assertActive()
-    if (candidate?.cancelled && row.released &&
-        (row.journalOperationId === undefined || candidate.operationId === row.journalOperationId)) return undefined
-    if (candidate && (!matches(candidate, row, driver.nativeChainId) ||
+    if (candidate && (candidate.preparationId !== preparationId(row) ||
+        candidate.binding.chainIdentifier !== driver.chainIdentifier ||
         (row.journalOperationId !== undefined && candidate.operationId !== row.journalOperationId)))
+      throw new Error('Stealth preparation journal mismatch')
+    if (candidate?.cancelled && row.released) return undefined
+    if (candidate && !matches(candidate, row, driver.nativeChainId))
       throw new Error('Stealth preparation journal mismatch')
     if (!candidate && row.journalOperationId !== undefined && !row.released)
       throw new Error('Stealth preparation journal mismatch')
@@ -375,14 +387,14 @@ export function createEvmStealthPayments(
     members: journal.members
       .filter(
         (member) =>
-          row.asset.kind !== 'native' ||
+          !sharedNativePreparation(row) ||
           (member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined),
       )
       .map((member, index) => ({
         rawTransaction: member.signed!.rawTransaction,
         txHash: member.signed!.transactionHash,
         recipientAmountAtomic: BigInt(
-          row.asset.kind === 'native'
+          sharedNativePreparation(row)
             ? BigInt(member.transactionSet!.intendedValueWei ?? Transaction.from(member.signed!.rawTransaction).value)
             : row.allocation!.sources[index]!.recipientAmountAtomic,
         ),
@@ -406,7 +418,7 @@ export function createEvmStealthPayments(
       }
     const paymentMembers = journal.members.filter(
       (member) =>
-        row.asset.kind !== 'native' ||
+        !sharedNativePreparation(row) ||
         (member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined),
     )
     for (let i = 0; i < paymentMembers.length; i++) {
@@ -461,7 +473,8 @@ export function createEvmStealthPayments(
     )
       throw new Error('Invalid stealth payment intent')
     const asset = assetOf(driver.chainIdentifier, intent.asset)
-    if (asset.kind === 'native' && intent.sourceAddress !== undefined)
+    let row = driver.store.get(intent.operationId)
+    if (asset.kind === 'native' && row?.version !== 2 && intent.sourceAddress !== undefined)
       throw new Error(
         'Shared native payments do not support a caller-selected source',
       )
@@ -477,7 +490,6 @@ export function createEvmStealthPayments(
             sourceAddress: getAddress(intent.sourceAddress).toLowerCase(),
           }),
     }
-    let row = driver.store.get(intent.operationId)
     if (row === undefined) {
       const derived = driver.derive(intent.recipientSpendPublicKey)
       driver.assertActive()
@@ -511,7 +523,9 @@ export function createEvmStealthPayments(
   const ensureAllocation = async (
     row: EvmStealthPreparation,
   ): Promise<EvmStealthPreparation> => {
-    if (row.asset.kind === 'native' || row.allocation) return row
+    if (sharedNativePreparation(row) || row.allocation) return row
+    if (row.version === 2)
+      throw new Error('Legacy stealth preparation has no frozen source allocation')
     const facts = await driver.quote({
       asset: row.asset,
       recipientAddress: row.recipientAddress,
@@ -546,11 +560,8 @@ export function createEvmStealthPayments(
       }
       return exclusive(intent.operationId, async () => {
         const intentRow = await ensureIntent(intent)
-        const row =
-          intentRow.asset.kind === 'native'
-            ? intentRow
-            : await ensureAllocation(intentRow)
-        if (row.asset.kind === 'native')
+        const row = await ensureAllocation(intentRow)
+        if (sharedNativePreparation(row))
           return {
             operationId: row.operationId,
             chainIdentifier: row.chainIdentifier,
@@ -612,7 +623,10 @@ export function createEvmStealthPayments(
           intent.maxNativeFeeAtomic >= 1n << 256n
         )
           throw new Error('Invalid stealth fee ceiling')
-        let row = await ensureAllocation(await ensureIntent(intent))
+        let row = await ensureIntent(intent)
+        if (row.version === 2 && intent.messageStamp !== undefined)
+          throw new Error('Legacy stealth preparation cannot authorize a combined message stamp')
+        row = await ensureAllocation(row)
         const messageStamp = intent.messageStamp === undefined ? undefined : {
           amountAtomic: intent.messageStamp.amountAtomic.toString(),
           maxNativeFeeAtomic: intent.messageStamp.maxNativeFeeAtomic.toString(),
@@ -662,7 +676,7 @@ export function createEvmStealthPayments(
                 )
             }
           journal =
-            asset.kind === 'native'
+            sharedNativePreparation(row)
               ? await driver.constructNativePayment({
                   operationId: evmStealthTransactionSetOperationId(
                     intent.operationId,
@@ -676,16 +690,17 @@ export function createEvmStealthPayments(
                 })
               : await driver.signIndependentPayment({
                   preparationId: `stealth-payment:${intent.operationId}`,
-                  kind: 'contract',
-                  recipient: { raw: asset.contractAddress },
+                  kind: asset.kind === 'native' ? 'native' : 'contract',
+                  recipient: { raw: asset.kind === 'native' ? row.recipientAddress : asset.contractAddress },
                   maxNativeFeeWei: intent.maxNativeFeeAtomic,
                   members: row.allocation!.sources.map((source) => ({
                     sourceAddress: source.sourceAddress,
-                    value: 0n,
-                    data: erc20.encodeFunctionData('transfer', [
-                      row.recipientAddress,
-                      BigInt(source.recipientAmountAtomic),
-                    ]),
+                    value: asset.kind === 'native' ? BigInt(source.recipientAmountAtomic) : 0n,
+                    ...(asset.kind === 'native' ? { gasLimit: 21_000n } : {
+                      data: erc20.encodeFunctionData('transfer', [
+                        row.recipientAddress, BigInt(source.recipientAmountAtomic),
+                      ]),
+                    }),
                   })),
                 })
           driver.assertActive()

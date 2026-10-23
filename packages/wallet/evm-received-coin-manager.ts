@@ -800,7 +800,7 @@ export function createEvmReceivedCoinAndContactManager(
 
   const cancelReleasedTransfer = async (
     payment: ContactPayment
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     const wallet = getWallet();
     const row =
       (payment.operationId === undefined
@@ -809,14 +809,14 @@ export function createEvmReceivedCoinAndContactManager(
             .nativeJournal!.list()
             .find((r) => r.operationId === payment.operationId)) ??
       signedTransferTo(payment.stealthAddress);
-    if (row === undefined || row.cancelled) return;
+    if (row === undefined || row.cancelled) return true;
     if (payment.transactionSetOperationId) {
-      await wallet.transactionSetPreparer!.releaseUnexposed(payment.transactionSetOperationId);
-      return;
+      return wallet.transactionSetPreparer!.releaseUnexposed(payment.transactionSetOperationId);
     }
-    await runWalletExclusive(wallet, (admission) =>
+    const released = await runWalletExclusive(wallet, (admission) =>
       nativeOwner().releaseUnexposed(row.operationId, admission)
     );
+    return released.cancelled === true;
   };
 
   const releaseContactPayment = (stealthAddress: string): Promise<boolean> =>
@@ -830,6 +830,8 @@ export function createEvmReceivedCoinAndContactManager(
       ) {
         return false;
       }
+      // Financial cancellation must succeed before the contact projection drops signed bytes.
+      if (!(await cancelReleasedTransfer(payment))) return false;
       const {
         rawTransaction: _raw,
         txHash: _hash,
@@ -840,7 +842,6 @@ export function createEvmReceivedCoinAndContactManager(
         state: "released",
       };
       await paymentStore.put(stealthAddress, released);
-      await cancelReleasedTransfer(payment);
       return true;
     });
 
@@ -950,6 +951,9 @@ export function createEvmReceivedCoinAndContactManager(
       ) {
         return payment;
       }
+      // A shared graph is bound to the original encrypted host message and stamp stage.
+      // Reconciliation above is the only replay path; takeover cannot create another envelope.
+      if (payment.transactionSetOperationId) return payment;
       payment = {
         ...payment,
         deliveredBy: "wallet",
@@ -1230,6 +1234,12 @@ export function createEvmReceivedCoinAndContactManager(
       const address = found.stealthAddress;
       if (await releaseContactPayment(address)) return "released";
       let payment = paymentStore.get(address)!;
+      if (payment.state === "failed" && payment.transactionSetOperationId) {
+        if (payment.payloadDigest) await directMessages.reconcileAttempts({
+          wallet, payloadDigests: [payment.payloadDigest],
+        });
+        return paymentStore.get(address)?.state ?? "failed";
+      }
       if (payment.state === "failed") {
         const { failure: _failure, payloadDigest: _digest, ...rest } = payment;
         payment = {
@@ -1649,7 +1659,10 @@ export function createEvmReceivedCoinAndContactManager(
           if (operation?.kind === 'transaction-set') {
             if (!wallet.transactionSetPreparer)
               throw new Error('Shared transaction-set release is unavailable')
-            await wallet.transactionSetPreparer.releaseUnexposed(id)
+            const released = await wallet.transactionSetPreparer.releaseUnexposed(
+              operation.preparationId!.slice('evm-transaction-set:'.length)
+            )
+            if (!released) throw new Error('Submitted transaction set cannot be released')
             return
           }
           await owner.releaseUnexposed(id, lifetime)

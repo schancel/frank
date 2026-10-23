@@ -123,6 +123,7 @@ test('stamp amount changes cannot consume a prepared payment reservation', async
 
 test('contact payment submits the original payment, stamp, and all owned change through one wrapper', async () => {
   offlineChain.reset(); mockBalances.clear(); useProviderStandIns()
+  offlineChain.relayBroadcasts = false
   const f = await fixture({ transactionSetPolicy: () => policy, spendSpacingBlocks: undefined, reserveBalanceWei: undefined })
   try {
     installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
@@ -146,5 +147,41 @@ test('contact payment submits the original payment, stamp, and all owned change 
     expect(graph.members.every(member => member.observation.state === 'included-success')).toBe(true)
     for (const member of [...wrapper.bundle, ...wrapper.otherTransactions])
       expect(offlineChain.walletBroadcasts).toContain(member.rawTransaction)
+  } finally { await f.close() }
+})
+
+test('host contact recovery preserves its original message identity when the relay attempt is unknown', async () => {
+  offlineChain.reset(); mockBalances.clear(); useProviderStandIns()
+  const f = await fixture({ transactionSetPolicy: () => policy, spendSpacingBlocks: undefined, reserveBalanceWei: undefined })
+  try {
+    installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
+    mockBalances.set(f.alice.mainAccount!.address.toLowerCase(), 1000000n)
+    await f.alice.refreshTransactionSetInventory!()
+    const prepared = await f.alice.prepareContactPayment!({ recipient: f.bob.identity.address, value: 300000n, stampValue: stamp })
+    const contacts = evmWalletInternals(f.alice).receivedCoinOwner!
+    const ephemeral = prepared.item.ephemeralPubKey.replace(/^0x/, '')
+    const digest = 'ab'.repeat(32)
+    await contacts.contactMessageAttempted([ephemeral], digest)
+    const original = f.alice.getContactPayments!()[0]!
+    jest.spyOn(f.chain.directMessages, 'reconcileAttempts').mockResolvedValue({ [digest]: 'unknown' })
+    await f.alice.settleContactPayment!(ephemeral)
+    expect(f.alice.getContactPayments!()[0]).toEqual(original)
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+  } finally { await f.close() }
+})
+
+test('refused financial cancellation leaves the contact payment and its signed bytes intact', async () => {
+  offlineChain.reset(); mockBalances.clear(); useProviderStandIns()
+  const f = await fixture({ transactionSetPolicy: () => policy, spendSpacingBlocks: undefined, reserveBalanceWei: undefined })
+  try {
+    installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
+    mockBalances.set(f.alice.mainAccount!.address.toLowerCase(), 1000000n)
+    await f.alice.refreshTransactionSetInventory!()
+    const prepared = await f.alice.prepareContactPayment!({ recipient: f.bob.identity.address, value: 300000n, stampValue: stamp })
+    const original = f.alice.getContactPayments!()[0]!
+    jest.spyOn(f.alice.transactionSetPreparer!, 'releaseUnexposed').mockResolvedValue(false)
+    await f.alice.settleContactPayment!(prepared.item.ephemeralPubKey.replace(/^0x/, ''))
+    expect(f.alice.getContactPayments!()[0]).toEqual(original)
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
   } finally { await f.close() }
 })

@@ -839,7 +839,7 @@ function validateNativePaymentSet(
     value += tx.value
     return tx.serialized.slice(2).toLowerCase()
   })
-  if (!options?.allowClaimedMismatch && value !== payment.amountWei)
+  if (!options?.allowClaimedMismatch && value < payment.amountWei)
     throw new Error('Native transaction set does not match the claimed amount')
   if (!/^[0-9a-fA-F]{64}$/.test(payment.payloadDigest))
     throw new Error('Invalid native payment digest')

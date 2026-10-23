@@ -113,6 +113,8 @@ const mockBalances = new Map<string, bigint>()
 const mockMined = new Map<string, string>()
 /** Raw transactions the wallet's own provider was asked to broadcast, in order. */
 const mockWalletBroadcasts: string[] = []
+/** Submission and inclusion are independent: selected recovery tests leave broadcasts pending. */
+let mockMineWalletBroadcasts = true
 /** Puts a signed transfer in a block, once: moves its value and consumes its nonce. */
 function mockMine(raw: string): string {
   const tx = Transaction.from(raw)
@@ -130,6 +132,7 @@ function mockChainReset() {
   mockBalances.clear()
   mockMined.clear()
   mockWalletBroadcasts.length = 0
+  mockMineWalletBroadcasts = true
 }
 jest.mock('../evm-provider', () => {
   const actual = jest.requireActual('../evm-provider')
@@ -158,7 +161,9 @@ jest.mock('../evm-provider', () => {
           mockWalletBroadcasts.push(raw)
           if (mockMined.has(ethers.Transaction.from(raw).hash))
             throw new Error('already known')
-          return mockMine(raw)
+          return mockMineWalletBroadcasts
+            ? mockMine(raw)
+            : ethers.Transaction.from(raw).hash!
         }
         if (request.method === 'getTransactionReceipt') {
           const hash = (request as unknown as { hash: string }).hash
@@ -1197,6 +1202,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
   );
 
   it('keeps one payment set across an unknown outcome and re-sends the same bytes', async () => {
+    mockMineWalletBroadcasts = false
     installCanonicalDirectory(
       f.alice,
       await f.directoryFor('alice', f.alice, f.bob),
@@ -1219,9 +1225,9 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       digest,
     ])
     expect(f.requests).toHaveLength(1)
-    // Recipient payments wait for relay delivery. Change remains a separate wallet-owned set.
+    // Wallet submission can precede relay delivery; neither proves chain inclusion.
     const storedPending = (await rowsOf(f.alice)).find(row => row.digest === digest)!
-    expect(storedPending.payments.some(payment => mockWalletBroadcasts.includes(payment.rawTx))).toBe(false)
+    expect(storedPending.payments.every(payment => mockWalletBroadcasts.includes(payment.rawTx))).toBe(true)
     expect(paymentStates(f.alice, digest)).toEqual(['pending'])
     const operationId = storedPending.transactionSetOperationId!
     expect(evmWalletInternals(f.alice).coinList!.heldBy(operationId).length)
@@ -1395,6 +1401,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
   it.each(['lost'] as const)(
     'retains exact payments after %s responses, exhaustion, discard, partial broadcast and restart',
     async response => {
+      mockMineWalletBroadcasts = false
       const { directory, digest, row } = await exposedAttempt()
       // A relay has the exact signed bytes, and one member lands before the response is known.
       f.broadcast(0, [0])
@@ -1431,12 +1438,23 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
           knownDigests: [],
         }),
       ).toEqual([digest])
+      // The wallet's original private predecessor must mine before a later-nonce payment.
+      // Delivering a message does not let the simulated chain skip that nonce.
+      for (const change of row.otherTransactions) {
+        const tx = Transaction.from(change.rawTx)
+        if (row.payments.some(payment => {
+          const recipientTx = Transaction.from(payment.rawTx)
+          return recipientTx.from === tx.from && recipientTx.nonce > tx.nonce
+        })) mockMine(change.rawTx)
+      }
       // The recipient can broadcast the remaining original bytes after exhaustion/discard.
       f.broadcast(0)
       f.broadcast(0)
       expect([...f.broadcastPayments.values()].reduce((a, b) => a + b, 0n)).toBe(
         400_000n,
       )
+      // The node now includes retries of the original owned-change transactions too.
+      mockMineWalletBroadcasts = true
       f.setPhase('delivered')
       const prepare = jest.spyOn(f.alice.transactionSetPreparer!, 'constructTransactionSet')
       try {
@@ -1453,6 +1471,8 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         prepare.mockRestore()
       }
       expect(new Set(f.requests.map(r => toHex(r.body))).size).toBe(1)
+      // Host recovery also completes the original private change after recipient settlement.
+      await f.alice.reobserveNativeOperations!()
       // Finished: delivered, both payments seen on chain, both accounts spent and let go.
       const finished = await retainedAttempt(f.alice, row)
       expect(finished.outcome).toBe('delivered')
@@ -4411,7 +4431,12 @@ describe('a stamp account a native send spends from (#1235)', () => {
     replyLost = false
     mockBalances.set(main, 10n ** 18n)
     if (window === 'included')
-      await f.alice.estimateLegacyFee!({ recipient, value: 1n })
+      // Observe the old native owner without its local application pass. The public legacy
+      // quote now reads the separate shared inventory and does not observe native rows.
+      await evmWalletInternals(f.alice).nativeOperationOwner!.estimateLegacyFee(
+        recipient,
+        1n,
+      )
     const operation = f.alice.getNativeOperations!()[0]!
     const member = operation.members[0]!
     expect(member.source).toEqual({

@@ -1,3 +1,4 @@
+import { evmWalletInternals } from '../evm-wallet'
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import {
   FetchRequest,
@@ -64,6 +65,7 @@ import type { WalletSyncItem } from '@frank/cashweb/types/messages'
 import {
   EvmLegacyConsolidator,
   EvmNativeOperationPendingError,
+  type SendLegacyParams,
 } from './evm-legacy-consolidator'
 import { LevelStampPaymentJournal } from '../storage/stamp-payment-journal'
 import * as topicModule from '../topic-post-client'
@@ -987,9 +989,9 @@ test('cached callers serialize signing through the same durable native owner', a
   }
 })
 
-test.each(['sendNative', 'sendLegacy'] as const)(
-  'snapshots %s authorization before the public wallet queue',
-  async method => {
+test(
+  'snapshots sendNative authorization before the public wallet queue',
+  async () => {
     const chain = createEvmChain(config)
     const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
     const rpc = mockNativeRpc(wallet, { [expected[0].main]: 500000n })
@@ -1015,7 +1017,7 @@ test.each(['sendNative', 'sendLegacy'] as const)(
       })
       await started
       const params = { recipient: { raw: expected[1].main }, value: 100000n }
-      const second = wallet[method]!(params)
+      const second = wallet.sendNative(params)
       params.recipient.raw = expected[1].auth
       params.value = 150000n
       release()
@@ -1032,6 +1034,57 @@ test.each(['sendNative', 'sendLegacy'] as const)(
     }
   },
 )
+
+test('snapshots sendLegacy authorization before shared inventory refresh', async () => {
+  const chain = createEvmChain(config)
+  const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
+  const rpc = mockNativeRpc(wallet, { [expected[0].main]: 500000n })
+  jest.spyOn(wallet.provider, 'getBlockNumber').mockResolvedValue(1)
+  jest
+    .spyOn(chain.directMessages, 'send')
+    .mockResolvedValue({ payloadDigest: 'aa' } as never)
+  let entered!: () => void
+  let release!: () => void
+  const started = new Promise<void>(resolve => {
+    entered = resolve
+  })
+  const wait = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const readBalance = jest.mocked(wallet.provider.getBalance).getMockImplementation()!
+  jest.mocked(wallet.provider.getBalance).mockImplementationOnce(async (...args) => {
+    entered()
+    await wait
+    return readBalance(...args)
+  })
+  let sending: ReturnType<NonNullable<EvmChainWalletHandle['sendLegacy']>> | undefined
+  try {
+    const params = { recipient: { raw: expected[1].main }, value: 100000n }
+    sending = wallet.sendLegacy!(params)
+    await started
+    expect(rpc.broadcast).not.toHaveBeenCalled()
+    params.recipient.raw = expected[1].auth
+    params.value = 150000n
+    release()
+    const sent = await sending
+    const row = wallet.getNativeOperations!().find(operation =>
+      operation.members.some(member => member.signed?.transactionHash === sent.txHash),
+    )!
+    const payment = row.members.find(
+      member => member.transactionSet?.role === 'payment',
+    )!
+    const tx = Transaction.from(payment.signed!.rawTransaction)
+    expect(tx.to).toBe(expected[1].main)
+    expect(tx.value).toBe(100000n)
+    expect(row.recipient).toBe(expected[1].main.toLowerCase())
+    expect(row.intendedValueWei).toBe('100000')
+    expect(rpc.broadcast.mock.calls.map(([raw]) => raw)).toContain(tx.serialized)
+  } finally {
+    release?.()
+    await sending?.catch(() => undefined)
+    await wallet.close()
+  }
+})
 
 test.each(['main', 'identity'] as const)(
   'retains the pending %s funding admission hold through timeout and reopen',
@@ -1109,6 +1162,7 @@ test.each(['main', 'identity'] as const)(
           )) as EvmChainWalletHandle
         }
         const rpc = mockNativeRpc(wallet, { [source]: 500000n })
+        jest.spyOn(wallet.provider, 'getBlockNumber').mockResolvedValue(1)
         const signed = jest.fn(async () => undefined)
         for (const method of ['sendNative', 'sendLegacy'] as const)
           await expect(
@@ -1117,7 +1171,7 @@ test.each(['main', 'identity'] as const)(
               value: 100000n,
               onSigned: signed,
             }),
-          ).rejects.toThrow('funding')
+          ).rejects.toThrow(method === 'sendNative' ? 'funding' : 'evm-input-admission:conflicting-authorization')
         expect(signed).not.toHaveBeenCalled()
         expect(rpc.broadcast).not.toHaveBeenCalled()
         expect(wallet.getNativeOperations!()).toEqual(originalOperations)
@@ -1625,9 +1679,30 @@ afterEach(async () => {
     await opened.close().catch(() => undefined)
 })
 
+/** Exercise the retained native journal owner and its pool projection, not the public
+ * shared transaction-set sendLegacy path. The composed admission and transport remain real. */
+async function sendThroughRetainedLegacyOwner(
+  wallet: EvmChainWalletHandle,
+  params: SendLegacyParams,
+) {
+  const internals = evmWalletInternals(wallet)
+  const owner = internals.nativeOperationOwner!
+  const topicWallet = internals.privateTopicWallet!
+  const result = await topicWallet.forumOperationMutation!(() =>
+    topicWallet.walletState!.runLifetime(lifetime => owner.sendLegacy(params, lifetime)),
+  )
+  if (!internals.closed) {
+    const operation = wallet.getNativeOperations!().find(row =>
+      row.members.some(member => member.signed?.transactionHash === result.txHash),
+    )!
+    await owner.startSync(operation.operationId)
+  }
+  return result
+}
+
 /** Stage 0 of #1235. Row 0 is funded through the pool's own on-demand path, then out-holds main,
  * so the legacy send selects it as its single source and the mocked RPC includes it in-call. */
-async function sendLegacyFromProductionFundedPoolRow(dir: string) {
+async function sendRetainedLegacyFromProductionFundedPoolRow(dir: string) {
   const bundleModule = jest.requireActual(
     '../storage/evm-wallet-bundle',
   ) as typeof import('../storage/evm-wallet-bundle')
@@ -1711,8 +1786,9 @@ async function sendLegacyFromProductionFundedPoolRow(dir: string) {
   rpc.balances.set(expected[0].main.toLowerCase(), 50000n)
   rpc.broadcast.mockClear()
   const processed = jest.spyOn(wallet.pool, 'processSyncTransaction')
-  const sent = await wallet
-    .sendLegacy!({ recipient: { raw: expected[1].main }, value: 100000n })
+  const sent = await sendThroughRetainedLegacyOwner(
+    wallet, { recipient: { raw: expected[1].main }, value: 100000n },
+  )
     .then(
       value => ({ value, error: undefined }),
       (error: unknown) => ({ value: undefined, error }),
@@ -1776,11 +1852,11 @@ function expectNoSpendRecordWithoutItsTransaction(wallet: EvmChainWalletHandle) 
   }
 }
 
-test('a pool-sourced legacy send included in-call leaves a wallet that reopens (#1235)', async () => {
+test('a pool-sourced retained-owner legacy send included in-call leaves a wallet that reopens (#1235)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-1235-spend-record-reopen-'))
   let wallet: EvmChainWalletHandle | undefined
   try {
-    const first = await sendLegacyFromProductionFundedPoolRow(dir)
+    const first = await sendRetainedLegacyFromProductionFundedPoolRow(dir)
     wallet = first.wallet
     await wallet.close()
     wallet = undefined
@@ -1851,11 +1927,11 @@ test('a pool-sourced legacy send included in-call leaves a wallet that reopens (
   }
 })
 
-test('a pool-sourced legacy send included in-call keeps admission ready in the same session (#1235)', async () => {
+test('a pool-sourced retained-owner legacy send included in-call keeps admission ready in the same session (#1235)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-1235-spend-record-session-'))
   let wallet: EvmChainWalletHandle | undefined
   try {
-    const first = await sendLegacyFromProductionFundedPoolRow(dir)
+    const first = await sendRetainedLegacyFromProductionFundedPoolRow(dir)
     wallet = first.wallet
     expect(await first.admission()).toMatchObject({ status: 'ready' })
     // Stage 1 of #1235 changed this assertion on purpose: the row was pinned `available` here
@@ -1890,14 +1966,14 @@ test('a pool-sourced legacy send included in-call keeps admission ready in the s
 // refusal, with the row recorded spent. The wallet no longer transports a note at all (it is a
 // paid message), so a send whose transfer is included RESOLVES: there is no step left to refuse
 // it. The row is still recorded, and resuming still changes nothing and signs nothing.
-test('a pool-sourced legacy send whose transfer is included resolves, with the row recorded spent and no note sent; resuming changes nothing and signs nothing (#1235)', async () => {
+test('a pool-sourced retained-owner legacy send whose transfer is included resolves, with the row recorded spent and no note sent; resuming changes nothing and signs nothing (#1235)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-1235-spend-record-pending-'))
   let wallet: EvmChainWalletHandle | undefined
   const unhandled: unknown[] = []
   const onUnhandled = (reason: unknown) => unhandled.push(reason)
   process.on('unhandledRejection', onUnhandled)
   try {
-    const first = await sendLegacyFromProductionFundedPoolRow(dir)
+    const first = await sendRetainedLegacyFromProductionFundedPoolRow(dir)
     wallet = first.wallet
     expect(first.sent.error).toBeUndefined()
     expect(first.sent.value).toMatchObject({
@@ -2043,9 +2119,9 @@ async function composedWithProductionFundedPoolRow(dir: string) {
             maxPriorityFeePerGas: 1n,
           },
         }),
-      /** A legacy send that only the pool account can cover (main holds 40000). */
+      /** A retained-owner legacy send only the pool account can cover (main holds 40000). */
       sendFromPool: () =>
-        wallet.sendLegacy!({
+        sendThroughRetainedLegacyOwner(wallet, {
           recipient: { raw: expected[1].main },
           value: 100000n,
         }),
@@ -2116,7 +2192,7 @@ const settled = (promise: Promise<unknown>) =>
     (error: unknown) => ({ error }),
   )
 
-describe('recording a native spend from the journal under the input admission (#1235 Stage 1)', () => {
+describe('retained native owner: recording a spend from the journal under the input admission (#1235 Stage 1)', () => {
   let dir: string
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'frank-1235-stage-1-'))
@@ -2314,10 +2390,9 @@ describe('recording a native spend from the journal under the input admission (#
       await heldByJournal()
       expect(await f.admission()).toMatchObject({ status: 'ready' })
       // A fee estimate observes inclusion and applies nothing.
-      await wallet.estimateLegacyFee!({
-        recipient: { raw: expected[1].main },
-        value: 1n,
-      })
+      await evmWalletInternals(wallet).nativeOperationOwner!.estimateLegacyFee(
+        { raw: expected[1].main }, 1n,
+      )
       expect(
         wallet.getNativeOperations!()[0]!.members[0]!.observation.state,
       ).toBe('included-success')
@@ -2676,10 +2751,9 @@ async function nativeSendFromProductionFundedPoolRow(
     expect(
       wallet.getNativeOperations!()[0]!.members[0]!.observation.state,
     ).toBe('missing')
-    await wallet.estimateLegacyFee!({
-      recipient: { raw: expected[1].main },
-      value: 1n,
-    })
+    await evmWalletInternals(wallet).nativeOperationOwner!.estimateLegacyFee(
+      { raw: expected[1].main }, 1n,
+    )
   }
   const operation = wallet.getNativeOperations!()[0]!
   const member = operation.members[0]!
@@ -3329,7 +3403,7 @@ describe('a native plan that never signed is cancelled (#1235 Stage C)', () => {
           : real.call(this, tx)
       })
     const failed = await outcome(
-      wallet.sendLegacy!({ recipient: { raw: recipient }, value: 150000n }),
+      sendThroughRetainedLegacyOwner(wallet, { recipient: { raw: recipient }, value: 150000n }),
     )
     sign.mockRestore()
     expect((failed.error as Error).message).toBe(
@@ -3470,7 +3544,7 @@ describe('a native plan that never signed is cancelled (#1235 Stage C)', () => {
   })
 })
 
-describe('recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2)', () => {
+describe('retained native owner: recorded spend evidence is applied once at wallet open, with no network (#1235 Stage 2)', () => {
   let dir: string
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'frank-1235-stage-2-'))
@@ -3638,7 +3712,7 @@ describe('recorded native spend evidence is applied once at wallet open, with no
     }
     if (state !== 'pending') {
       f.withholdReceipts(false)
-      await wallet.estimateLegacyFee!({ recipient: { raw: recipient }, value: 1n })
+      await evmWalletInternals(wallet).nativeOperationOwner!.estimateLegacyFee({ raw: recipient }, 1n)
     }
     const operations = wallet.getNativeOperations!()
     const operation = operations[operations.length - 1]!
@@ -4038,7 +4112,7 @@ describe('recorded native spend evidence is applied once at wallet open, with no
       const time = clock()
       // A main-sourced send, recorded included: a terminal member, which is never looked up.
       await f.sendFromMain()
-      await wallet.estimateLegacyFee!({ recipient: { raw: recipient }, value: 1n })
+      await evmWalletInternals(wallet).nativeOperationOwner!.estimateLegacyFee({ raw: recipient }, 1n)
       expect(
         wallet.getNativeOperations!().map(row => row.members[0]!.observation.state),
       ).toEqual(['included-success'])

@@ -414,7 +414,9 @@ export class EvmTransactionSetPreparer {
     context(0)
     const select = (fanIn: boolean, continuation?: { deficit: bigint; maxCoins: number }) => coins.reserveTransactionSetSources({
       holder: request.operationId, ownedCandidates: existing ? this.privateOutputs(existing) : undefined,
-      amountWei: continuation?.deficit ?? (request.amountWei + reserve + (fanIn ? context(0).gas * policy.gasPriceWei : 0n)),
+      // Independent selection funds recipients only. Actual private change determines the
+      // later continuation deficit; reserve-only inputs use full-source eligibility there.
+      amountWei: continuation?.deficit ?? (request.amountWei + (fanIn ? reserve + context(0).gas * policy.gasPriceWei : 0n)),
       feeWei: index => (fanIn || continuation ? policy.changeGasLimit : context(index).gas) * policy.gasPriceWei,
       head: policy.head, sourceOrder: policy.sourceOrder, maxCoins: continuation?.maxCoins ?? (legacy && !fanIn ? 1 : request.maxPaymentParts),
       canSelect: coin => journal.canSelect(coin.account, coin.nonce) && (this.options.canSelectCoin?.(coin) ?? true) && this.dependencyReady(coin, policy),

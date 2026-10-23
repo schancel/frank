@@ -1225,7 +1225,7 @@ it('retains a sub-threshold continuation residual instead of gifting it while ad
 })
 
 
-it('executes a genuine zero-value calldata call once when several initial inputs fund its continuation', async () => {
+it('executes a genuine zero-value calldata call once when several inputs fund its continuation', async () => {
   const f = await setup([600000n, 600000n], { ...policy, dustWei: 210000n, paymentGasLimit: () => 21004n })
   const prepared = await f.preparer.constructTransactionSet({ operationId: 'zero-call-reserve', amountWei: 0n, reserveForContinuationWei: 800000n, calldata: '0x00', kdf })
   expect(prepared.bundle).toHaveLength(1)
@@ -1233,4 +1233,17 @@ it('executes a genuine zero-value calldata call once when several initial inputs
   expect(Transaction.from(prepared.bundle[0]!.rawTransaction).data).toBe('0x00')
   expect(prepared.otherTransactions.every(tx => Transaction.from(tx.rawTransaction).data === '0x')).toBe(true)
   expect(prepared.otherTransactions.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBeGreaterThanOrEqual(800000n)
+})
+
+it('keeps single-recipient fan-in funding and its actual continuation inside the total fee cap', async () => {
+  const f = await setup([350000n, 350000n, 100000n])
+  const request = { operationId: 'fanin-reserve', amountWei: 600000n, reserveForContinuationWei: 50000n, maxFeeWei: 200000n, kdf }
+  const result = await f.preparer.constructLegacyTransactionSet(request)
+  const row = f.journal.list()[0]!
+  expect(result.bundle).toHaveLength(1)
+  expect(result.bundle[0]!.valueWei).toBe(600000n)
+  expect(row.members.filter(member => member.transactionSet!.role === 'funding')).toHaveLength(3)
+  expect(row.members.filter(member => member.transactionSet!.role === 'change').reduce((sum, member) => sum + Transaction.from(member.unsignedTransaction).value, 0n)).toBeGreaterThanOrEqual(50000n)
+  expect(BigInt(row.maximumFeeWei)).toBeLessThanOrEqual(200000n)
+  expect(await f.preparer.constructLegacyTransactionSet(request)).toEqual(result)
 })

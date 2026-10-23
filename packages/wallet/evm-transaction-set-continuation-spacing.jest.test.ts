@@ -18,6 +18,7 @@ async function fixture(
   historyAvailable: boolean,
   maxChangeOutputs = 16,
   onlySecondary = false,
+  matureAlternative = false,
 ) {
   let head = 100
   const secondary = key(2).address.toLowerCase()
@@ -27,7 +28,9 @@ async function fixture(
   const provider = {
     getBlockNumber: jest.fn(async () => head),
     getBalance: jest.fn(async (address: string) =>
-      address.toLowerCase() === secondary ? 1000000n : 321001n,
+      address.toLowerCase() === key(1).address.toLowerCase()
+        ? 321001n
+        : 1000000n,
     ),
     getTransactionCount: jest.fn(
       async (address: string, block?: number | string) => {
@@ -48,11 +51,18 @@ async function fixture(
     watcher,
     spendSpacingBlocks: 2,
     sources: () =>
-      (onlySecondary ? [2] : [1, 2]).map(index => ({
-        account: key(index).address,
-        origin: index === 1 ? ('stealth' as const) : ('root' as const),
-        privateKey: () => key(index).privateKey,
-      })),
+      (onlySecondary ? [2] : matureAlternative ? [1, 2, 3] : [1, 2]).map(
+        index => ({
+          account: key(index).address,
+          origin:
+            index === 1
+              ? ('stealth' as const)
+              : index === 2
+              ? ('root' as const)
+              : ('identity' as const),
+          privateKey: () => key(index).privateKey,
+        }),
+      ),
   })
   await sync.refresh({ all: true })
   const journal = new EvmNativeOperationJournal({
@@ -128,8 +138,8 @@ it.each([
       expect(source.spendableFromBlock).toBe(history ? 102 : undefined)
       expect(source.after).toBeUndefined()
       const before = f.coins.all()
-      // reserve1 reaches the additional-input loop; reserve10000 selects a reserve-only
-      // second input in the original selection. Both ultimately redistribute that whole input.
+      // Both continuation amounts must wait for full-source eligibility, independent
+      // of how much nominal reserve could have fitted above this account's threshold.
       const request = {
         operationId: 'quiet-continuation',
         amountWei: 300000n,
@@ -192,3 +202,45 @@ it('permits an above-reserve recipient payment before the quiet window and delay
     await f.close()
   }
 })
+
+it.each([false, true])(
+  'funds actual continuation from a mature alternative instead of reserving an immature input (legacy=%s)',
+  async legacy => {
+    const f = await fixture(false, 16, false, true)
+    try {
+      const before = f.coins.latestOf(f.secondary)!
+      const request = {
+        operationId: 'mature-alternative',
+        amountWei: 300000n,
+        reserveForContinuationWei: 10000n,
+        maxFeeWei: 300000n,
+        kdf: () => key(50).address,
+      }
+      const construct = () =>
+        legacy
+          ? f.preparer.constructLegacyTransactionSet(request)
+          : f.preparer.constructTransactionSet(request)
+      const prepared = await construct()
+      expect(prepared.bundle).toHaveLength(1)
+      expect(prepared.bundle[0]!.sourceAccount).toBe(
+        key(1).address.toLowerCase(),
+      )
+      expect(prepared.bundle[0]!.valueWei).toBe(request.amountWei)
+      expect(
+        prepared.otherTransactions.every(
+          tx => tx.sourceAccount === key(3).address.toLowerCase(),
+        ),
+      ).toBe(true)
+      expect(
+        prepared.otherTransactions.reduce((sum, tx) => sum + tx.valueWei, 0n),
+      ).toBeGreaterThanOrEqual(request.reserveForContinuationWei)
+      expect(f.coins.latestOf(f.secondary)).toEqual(before)
+      expect(BigInt(f.journal.list()[0]!.maximumFeeWei)).toBeLessThanOrEqual(
+        request.maxFeeWei,
+      )
+      expect(await construct()).toEqual(prepared)
+    } finally {
+      await f.close()
+    }
+  },
+)

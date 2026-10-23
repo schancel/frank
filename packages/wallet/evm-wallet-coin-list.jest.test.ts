@@ -26,7 +26,7 @@ it('registers root, identity, deterministic, received and change sources without
   pool.setStatus(0, 'available')
   pool.restoreTerminalEvidence({ ...legacy[1]!, status: 'spent' })
   pool.restoreTerminalEvidence({ ...legacy[2]!, status: 'retired' })
-  const received = [2, 3, 4].map(
+  const received = [2, 3, 4, 5].map(
     index => new Wallet('0x' + index.toString(16).padStart(64, '0')),
   )
   const coinStore = new MemoryRecordStore<EvmCoin>()
@@ -34,13 +34,13 @@ it('registers root, identity, deterministic, received and change sources without
     await coinStore.put(account.address.toLowerCase(), {
       address: account.address,
       privateKey: account.privateKey,
-      state: (['unspent', 'pending', 'failed'] as const)[index],
+      state: (['unspent', 'pending', 'failed', 'spent'] as const)[index],
       origin: index === 2 ? 'stamp' : 'stealth',
     } as EvmCoin)
   const coinList = await EvmCoinList.open(new MemoryRecordStore())
   const provider = {
     getBalance: jest.fn(async () => 1000000n),
-    getTransactionCount: jest.fn(async () => 0),
+    getTransactionCount: jest.fn(async () => 7),
   }
   const watcher = { current: async () => 100 } as EvmBlockWatcher
   const sync = installEvmWalletCoinList({
@@ -60,11 +60,12 @@ it('registers root, identity, deterministic, received and change sources without
     new Set(['root', 'identity', 'deterministic', 'stealth', 'stamp', 'change']),
   )
   expect(received.map(account => coinList.latestOf(account.address)?.valueWei)).toEqual([
-    1000000n, 1000000n, 1000000n,
+    1000000n, 1000000n, 1000000n, 1000000n,
   ])
   expect(legacy.map(record => coinList.latestOf(record.address)?.valueWei)).toEqual([
     1000000n, 1000000n, 1000000n,
   ])
+  expect(coinList.all().every(coin => coin.nonce === 7)).toBe(true)
   const count = coinList.all().length
   await sync.refresh({ all: true })
   expect(coinList.all()).toHaveLength(count)

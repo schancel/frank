@@ -6,7 +6,7 @@ import type { ActiveChain } from './chain/active-chain'
 import type { EvmChainWalletHandle } from './evm-wallet-handle'
 import type { BotContext } from '../bot-framework/src/types'
 import { FrankBotHost } from '../bot-framework/src/bot-host'
-import { fixture, mockBalances } from './chain/canonical-two-wallets.testutil'
+import { fixture, mockBalances, offlineChain, useProviderStandIns } from './chain/canonical-two-wallets.testutil'
 
 let mockHostChain: ActiveChain
 let mockDirectoryFor: (wallet: EvmChainWalletHandle) => Promise<unknown>
@@ -55,12 +55,16 @@ it('activates shared wallet observations before a funded ordinary bot accepts pa
   ])
     delete process.env[key]
   const location = mkdtempSync(join(tmpdir(), 'frank-bot-activation-'))
+  useProviderStandIns()
   const f = await fixture()
+  offlineChain.gasPrice = 1n
   const createWallet = f.chain.createWallet.bind(f.chain)
+  let activeWallet: EvmChainWalletHandle | undefined
   mockHostChain = {
     ...f.chain,
     createWallet: async roots => {
       const wallet = (await createWallet(roots)) as EvmChainWalletHandle
+      activeWallet = wallet
       // The host receives already funded custody, exactly as a restored bot does.
       mockBalances.set(
         wallet.identity.address.raw.toLowerCase(),
@@ -92,6 +96,7 @@ it('activates shared wallet observations before a funded ordinary bot accepts pa
       onMessage: async () => undefined,
     })
     expect(context).toBeDefined()
+    expect(await f.chain.directMessages.minimumStamp!({ wallet: activeWallet! })).toBeGreaterThan(0n)
     // This is the actual dealer/outbox capability, not a replacement wallet implementation.
     // A zero result means the host masked an uninitialized fee quote as an unavailable floor.
     expect(await context!.minimumStampWei!()).toBeGreaterThan(0n)
@@ -108,6 +113,7 @@ it('activates shared wallet observations before a funded ordinary bot accepts pa
   } finally {
     await host.stop()
     await f.close()
+    useProviderStandIns(false)
     process.env = previousEnv
     rmSync(location, { recursive: true, force: true })
   }

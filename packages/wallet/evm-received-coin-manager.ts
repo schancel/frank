@@ -1580,7 +1580,9 @@ export function createEvmReceivedCoinAndContactManager(
       assertActive: assertFinancialActive,
       derive: (recipientSpendPubKey) =>
         deriveEvmStealthAddress({ recipientSpendPubKey }),
-      quoteNative: (_amountWei) => {
+      quoteNative: async (_amountWei) => {
+        await wallet.refreshTransactionSetInventory?.();
+        assertFinancialActive();
         const preparer = wallet.transactionSetPreparer;
         const coins = evmWalletInternals(wallet).coinList;
         if (!preparer || !coins) throw new Error("Shared native transaction preparation is unavailable");

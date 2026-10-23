@@ -3088,7 +3088,10 @@ export function canonicalDirectMessages(
       return owner.lifetime(() => resolveDefaultStamp(floor))
     },
     /** The smallest paid stamp right now: one transfer's fee at the node's gas price. */
-    minimumStamp: () => owner.lifetime(() => owner.payer().minimumPaymentWei()),
+    minimumStamp: () => owner.lifetime(async () => {
+      await owner.transactionSets?.refresh()
+      return owner.payer().minimumPaymentWei()
+    }),
     /** What the chain has shown of the payments of one sent message. No request is made. */
     paymentsOf: (payloadDigest: string): StoredPayment['state'][] | undefined =>
       owner.messages

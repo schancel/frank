@@ -87,11 +87,11 @@ export interface EvmStealthPaymentDriver {
     stealthAddress: string
     ephemeralPubKey: Uint8Array
   }
-  quoteNative(amountWei: bigint): {
+  quoteNative(amountWei: bigint): Promise<{
     nativeBalanceAtomic: bigint
     assetBalanceAtomic: bigint
     estimatedNativeFeeAtomic: bigint
-  }
+  }>
   constructNativePayment(
     params: ConstructEvmTransactionSetRequest,
   ): Promise<EvmNativeOperation>
@@ -555,7 +555,7 @@ export function createEvmStealthPayments(
             recipientSpendPublicKey: getBytes(row.recipientSpendPublicKey),
             ephemeralPublicKey: getBytes(row.ephemeralPublicKey),
             sources: [],
-            ...driver.quoteNative(BigInt(row.amountAtomic)),
+            ...await driver.quoteNative(BigInt(row.amountAtomic)),
           } satisfies StealthPaymentQuote
         const sources = row.allocation!.sources.map((source) => ({
           sourceAddress: source.sourceAddress,

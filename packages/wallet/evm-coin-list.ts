@@ -959,6 +959,7 @@ export class EvmCoinList {
     for (const coin of this.all())
       if (
         coin.state === 'pending_receipt' &&
+        !this.transactionSetKeyReferences.has(coinKey(coin.account, coin.nonce)) &&
         !referenced(coin.account, coin.nonce)
       ) {
         const { holder: _holder, spendingTx: _tx, ...rest } = coin

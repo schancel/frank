@@ -171,8 +171,13 @@ export function computeGeometricRadixChangeSplits(
           const minimum = lo > remaining - tailHi ? lo : remaining - tailHi;
           const maximum = hi < remaining - tailLo ? hi : remaining - tailLo;
           if (minimum > maximum) continue;
-          const candidate =
-            target < minimum ? minimum : target > maximum ? maximum : target;
+          // Clamping to a boundary repeatedly emits recognizable dust/bucket values.
+          // When the geometric proposal is outside a feasible interval, retain entropy
+          // inside that interval rather than forcing its endpoint (the tail still fits).
+          const candidate = target < minimum || target > maximum
+            ? minimum + (BigInt(Math.floor(entropy() * Number(entropyScale))) *
+                (maximum - minimum + 1n)) / entropyScale
+            : target;
           const delta =
             candidate > target ? candidate - target : target - candidate;
           if (distance === undefined || delta < distance) {

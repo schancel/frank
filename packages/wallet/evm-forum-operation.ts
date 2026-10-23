@@ -52,6 +52,7 @@ export function requireForumWallet(wallet: EvmWalletHandle): void {
     !wallet.forumChainId ||
     !wallet.transactionSetPreparer ||
     !wallet.transactionSetLifecycle ||
+    !wallet.transactionSetSubmission ||
     !wallet.forumOperationMutation
   )
     throw new Error(
@@ -559,13 +560,10 @@ async function prepareForumHandoff(
   operation: OutgoingTopicOperation,
 ): Promise<void> {
   try {
-    await wallet.transactionSetLifecycle!.replay(
-      operation.transactionSetOperationId,
-      { payments: false },
-    )
-    await wallet.transactionSetLifecycle!.observe(
-      operation.transactionSetOperationId,
-      wallet.provider,
+    await wallet.transactionSetSubmission!.sendTransaction(
+      wallet.transactionSetPreparer!.getTransactionSet(
+        operation.transactionSetOperationId,
+      ),
     )
     if (
       !wallet.transactionSetLifecycle!.canSubmitPayments(
@@ -588,13 +586,10 @@ async function settle(
   wallet: EvmWalletHandle,
   operation: OutgoingTopicOperation,
 ): Promise<void> {
-  await wallet.transactionSetLifecycle!.observe(
-    operation.transactionSetOperationId,
-    wallet.provider,
-  )
-  await wallet.transactionSetLifecycle!.replay(
-    operation.transactionSetOperationId,
-    { payments: true },
+  await wallet.transactionSetSubmission!.sendTransaction(
+    wallet.transactionSetPreparer!.getTransactionSet(
+      operation.transactionSetOperationId,
+    ),
   )
   const journal = wallet.transactionSetPreparer!.getOperation(
     operation.transactionSetOperationId,

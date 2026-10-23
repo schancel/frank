@@ -1,7 +1,8 @@
 /** User-requested single-recipient payments. The shared graph owns all signed funds. */
-import { hexlify, randomBytes, Transaction, type Provider } from 'ethers'
+import { hexlify, randomBytes, Transaction } from 'ethers'
 import type { EvmTransactionSetPreparer } from '../evm-transaction-set'
-import type { EvmTransactionSetLifecycle } from '../evm-transaction-set-lifecycle'
+import type { PreparedEvmTransactionSet } from '../evm-transaction-set-types'
+import type { TransactionSetSubmission } from '../transaction-set'
 import {
   nativeMemberSuperseded,
   type EvmNativeOperation,
@@ -51,8 +52,9 @@ export class LegacyTransactionSetPendingError extends EvmNativeOperationPendingE
 
 export function createLegacyTransactionSetPayments(options: {
   preparer: EvmTransactionSetPreparer
-  lifecycle: EvmTransactionSetLifecycle
-  provider: Provider
+  sendTransaction(
+    prepared: PreparedEvmTransactionSet,
+  ): Promise<TransactionSetSubmission>
   refresh(): Promise<void>
   operations(): readonly EvmNativeOperation[]
   /** Snapshot already filtered by journal/owned staging admission. No key derivation. */
@@ -97,16 +99,9 @@ export function createLegacyTransactionSetPayments(options: {
   ): Promise<LegacySendResult> => {
     const original = read(operationId)
     const id = original.preparationId!.slice('evm-transaction-set:'.length)
-    await options.refresh()
     try {
-      await options.lifecycle.observe(id, options.provider)
-      // A failed recipient does not cancel eligible wallet-owned redistribution.
-      await options.lifecycle.replay(id, {
-        payments: !failed(read(operationId)),
-      })
-      await options.lifecycle.observe(id, options.provider)
+      await options.sendTransaction(options.preparer.getTransactionSet(id))
     } catch (error) {
-      if (error instanceof LegacyTransactionSetFailedError) throw error
       throw new LegacyTransactionSetPendingError(read(operationId), error)
     }
     const row = read(operationId)
@@ -155,7 +150,9 @@ export function createLegacyTransactionSetPayments(options: {
     /** Host-driven recovery; no timer or proactive funding is installed here. */
     async reconcileLegacySends(): Promise<readonly EvmNativeOperation[]> {
       const results = await Promise.allSettled(
-        getUnresolvedLegacySend().map(row => resumeLegacySend(row.operationId)),
+        getUnresolvedLegacySend()
+          .filter(row => row.submissionAuthorized)
+          .map(row => resumeLegacySend(row.operationId)),
       )
       const failure = results.find(
         result =>

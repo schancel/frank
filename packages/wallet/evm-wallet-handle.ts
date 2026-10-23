@@ -27,6 +27,7 @@ export interface EvmWalletHandle {
   /** One native financial constructor shared by stamps, stealth and Forum. */
   transactionSetPreparer?: import("./evm-transaction-set").EvmTransactionSetPreparer;
   transactionSetLifecycle?: import("./evm-transaction-set-lifecycle").EvmTransactionSetLifecycle;
+  transactionSetSubmission?: import("./evm-transaction-set-submission").EvmTransactionSetSubmission;
   refreshTransactionSetInventory?(): Promise<void>;
   observeRetainedForumSpend?(rawTx: string): Promise<void>;
   /** Master / author identity for signing messages and topic posts. */

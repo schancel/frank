@@ -1,3 +1,4 @@
+import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
 /** Real shared preparation, signed authority and codec status matching; node/relay effects are scripted. */
 import axios from 'axios'
 import level from 'level'
@@ -152,6 +153,13 @@ async function fixture(location?: string) {
     provider: provider as unknown as Provider,
     head: () => 100,
   })
+  const submission = createEvmTransactionSetSubmission({
+    preparer,
+    lifecycle,
+    provider: provider as unknown as Provider,
+    refresh: async () => undefined,
+    operations: () => journal.list(),
+  })
   const wallet: EvmWalletHandle = {
     pool: bundle.pool,
     leaseManager: bundle.leaseManager,
@@ -167,6 +175,7 @@ async function fixture(location?: string) {
     forumChainId: 10143n,
     transactionSetPreparer: preparer,
     transactionSetLifecycle: lifecycle,
+    transactionSetSubmission: submission,
     forumOperationMutation: task => task(),
   }
   const post = encodeForumPost({

@@ -1,3 +1,4 @@
+import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
 import { createEvmTopicOperations } from './evm-topic-operations'
 /** Real wallet construction and codec; external node/relay observations are scripted. */
 import axios from 'axios'
@@ -149,6 +150,13 @@ async function fixture(valueWei = 1700000n) {
     provider: provider as unknown as Provider,
     head: () => 100,
   })
+  const submission = createEvmTransactionSetSubmission({
+    preparer,
+    lifecycle,
+    provider: provider as unknown as Provider,
+    refresh: async () => undefined,
+    operations: () => journal.list(),
+  })
   const wallet: EvmWalletHandle = {
     pool: bundle.pool,
     leaseManager: bundle.leaseManager,
@@ -162,6 +170,7 @@ async function fixture(valueWei = 1700000n) {
     forumChainId: 10143n,
     transactionSetPreparer: preparer,
     transactionSetLifecycle: lifecycle,
+    transactionSetSubmission: submission,
     forumOperationMutation: task => task(),
   }
   http.mockImplementation(async params => {

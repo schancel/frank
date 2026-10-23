@@ -1,3 +1,4 @@
+import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
 /** Fragmented Forum funding keeps one burn and one durable operation across network waits/reopen. */
 import axios from 'axios'
 import level from 'level'
@@ -165,6 +166,13 @@ async function fixture(
     provider: chain.provider,
     head: chain.head,
   })
+  const submission = createEvmTransactionSetSubmission({
+    preparer,
+    lifecycle,
+    provider: chain.provider,
+    refresh: async () => undefined,
+    operations: () => journal.list(),
+  })
   const wallet: EvmWalletHandle = {
     pool: bundle.pool,
     leaseManager: bundle.leaseManager,
@@ -180,12 +188,12 @@ async function fixture(
     forumChainId: 10143n,
     transactionSetPreparer: preparer,
     transactionSetLifecycle: lifecycle,
+    transactionSetSubmission: submission,
     forumOperationMutation: task => task(),
   }
   const legacy = createLegacyTransactionSetPayments({
     preparer,
-    lifecycle,
-    provider: chain.provider,
+    sendTransaction: prepared => submission.sendTransaction(prepared),
     refresh: async () => undefined,
     operations: () => journal.list(),
     getCoins: () =>
@@ -283,6 +291,7 @@ test('all funding must confirm and mature before one Forum burn leaves the walle
       /funding.*pending/i,
     )
     expect(http).not.toHaveBeenCalled()
+    expect(chain.broadcasts).not.toContain(payment[0]!.signed!.rawTransaction)
     chain.advance(23)
     http.mockRejectedValue(new Error('ambiguous relay response'))
     await expect(reconcileForumOperations(f.wallet, 'post')).rejects.toThrow(
@@ -300,7 +309,7 @@ test('all funding must confirm and mature before one Forum burn leaves the walle
         .members.map(member => member.signed!.rawTransaction),
     ).toEqual(bytes)
     expect(f.journal.list()).toHaveLength(1)
-    expect(chain.broadcasts).not.toContain(payment[0]!.signed!.rawTransaction)
+    expect(chain.broadcasts).toContain(payment[0]!.signed!.rawTransaction)
     expect(f.coins.isAccountReserved(payment[0]!.source.address)).toBe(true)
   } finally {
     await f.close()
@@ -508,6 +517,42 @@ test('recipient inclusion does not discard delayed owned change; host ticks afte
     }
     await f.legacy.reconcileLegacySends()
     expect(f.legacy.getUnresolvedLegacySend()).toEqual([])
+    expect(
+      f.journal
+        .get(original.operationId)
+        .members.map(member => member.signed!.rawTransaction),
+    ).toEqual(original.members.map(member => member.signed!.rawTransaction))
+  } finally {
+    await f.close()
+    await rm(location, { recursive: true, force: true })
+  }
+})
+
+test('failed legacy onSigned persistence never authorizes automatic submission after restart', async () => {
+  const location = await mkdtemp(join(tmpdir(), 'legacy-unsubmitted-'))
+  const chain = network()
+  let f = await fixture(location, chain, false)
+  try {
+    await expect(
+      f.legacy.sendLegacy({
+        recipient: { raw: key(50).address },
+        value: 600000n,
+        onSigned: async () => {
+          throw new Error('host persistence failed')
+        },
+      }),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    const original = f.legacy.getUnresolvedLegacySend()[0]!
+    expect(original.submissionAuthorized).not.toBe(true)
+    expect(chain.broadcasts).toEqual([])
+    await f.legacy.reconcileLegacySends()
+    await f.close()
+    f = await fixture(location, chain, false)
+    await f.legacy.reconcileLegacySends()
+    expect(
+      await f.wallet.transactionSetSubmission!.reconcileAuthorized(),
+    ).toEqual([])
+    expect(chain.broadcasts).toEqual([])
     expect(
       f.journal
         .get(original.operationId)

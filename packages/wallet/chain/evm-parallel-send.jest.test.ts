@@ -58,6 +58,7 @@ jest.mock('@frank/cashweb/relay/mailbox-client', () =>
 const mockMessageWrite: {
   mode: 'ok' | 'dropped' | 'written-then-reported-failed'
   written: string[]
+  omitMinimumOnce?: boolean
 } = { mode: 'ok', written: [] }
 jest.mock('../storage/level-durability', () => {
   const actual = jest.requireActual<
@@ -72,6 +73,12 @@ jest.mock('../storage/level-durability', () => {
         typeof args[2] === 'string' &&
         args[2].includes('"consumerId":"frank-dm:')
       if (!isMessage) return actual.durablePut(...args)
+      if (mockMessageWrite.omitMinimumOnce) {
+        mockMessageWrite.omitMinimumOnce = false
+        const row = JSON.parse(args[2] as string)
+        delete row.construction.minimumPaymentWei
+        args[2] = JSON.stringify(row)
+      }
       if (mockMessageWrite.mode === 'ok') {
         await actual.durablePut(...args)
         mockMessageWrite.written.push(args[2] as string)
@@ -523,6 +530,15 @@ describe('parallel paid messages', () => {
       ).toBeUndefined()
     })
 
+    it('refuses a below-floor settlement without increasing the owed amount', async () => {
+      await expect(f.chain.directMessages.send({
+        wallet: alice, recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'owed' }], stampValue: 1000n, settlement: true,
+      })).rejects.toBeInstanceOf(DirectMessageStampBelowFeeError)
+      expect(relay.bodies).toHaveLength(0)
+      expect(graphBytes()).toHaveLength(0)
+    })
+
     it('raises the wallet\'s own default stamp to the floor', async () => {
       const sent = await f.chain.directMessages.send({
         wallet: alice,
@@ -543,7 +559,10 @@ describe('parallel paid messages', () => {
         stampValue: 50_000n,
       })
       // Keep assertion failures serializable when Jest reports from a worker process.
-      expect(sent.stampPayments.map(p => p.valueWei.toString())).toEqual(['50000'])
+      expect(sent.stampPayments).toHaveLength(1)
+      expect(sent.stampPayments.every(p => p.valueWei >= FLOOR)).toBe(true)
+      expect(sent.stampPayments.reduce((sum, p) => sum + p.valueWei, 0n) >= 50_000n).toBe(true)
+      expect(sent.stampPayments.map(p => p.valueWei.toString())).toEqual(relayPayments().map(tx => tx.value.toString()))
       expect(relayPayments()[0].from!.toLowerCase()).toBe(
         (await alice.getReceiveAddress()).raw.toLowerCase(),
       )
@@ -1638,6 +1657,26 @@ describe('parallel paid messages', () => {
       })
     }
 
+    it.each([false, true])('captures a missing unsigned-intent minimum before signing, or refuses when the floor rose (%s)', async raised => {
+      await fundAccounts(1)
+      mockMessageWrite.omitMinimumOnce = true
+      jest.spyOn(alice.transactionSetPreparer!, 'constructTransactionSet').mockRejectedValueOnce(new Error('crash before signing'))
+      await expect(send(1)).rejects.toThrow('crash before signing')
+      expect(JSON.parse(mockMessageWrite.written.at(-1)!).construction.minimumPaymentWei).toBeUndefined()
+      if (raised) offlineChain.gasPrice = 2n
+      await reopen()
+      if (raised) await expect(tick()).rejects.toBeInstanceOf(DirectMessageStampBelowFeeError)
+      else await tick()
+      if (raised) {
+        expect(signedBytes()).toEqual([])
+        expect(relay.bodies).toEqual([])
+      } else {
+        expect(signedBytes()).toHaveLength(1)
+        expect(mockMessageWrite.written.some(value => JSON.parse(value).construction.minimumPaymentWei !== undefined)).toBe(true)
+        expect(bobMailbox).toHaveLength(1)
+      }
+    })
+
     it('before signing: durable construction intent survives restart and produces only one payment', async () => {
       const [row] = await fundAccounts(1)
       jest.spyOn(alice.transactionSetPreparer!, 'constructTransactionSet').mockRejectedValueOnce(new Error('crash before signing'))
@@ -1663,6 +1702,7 @@ describe('parallel paid messages', () => {
       expect(offlineChain.walletBroadcasts).toEqual([])
       expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(true)
       await expect(send(1)).rejects.toBeInstanceOf(DirectMessageAlreadyAttemptedError)
+      offlineChain.gasPrice = 2n // Existing signatures and captured minimum survive new live fees.
       await reopen()
       expect(signedBytes()).toEqual(original)
       expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(true)

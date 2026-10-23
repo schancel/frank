@@ -1247,3 +1247,48 @@ it('keeps single-recipient fan-in funding and its actual continuation inside the
   expect(BigInt(row.maximumFeeWei)).toBeLessThanOrEqual(200000n)
   expect(await f.preparer.constructLegacyTransactionSet(request)).toEqual(result)
 })
+
+
+describe('captured per-recipient stamp minimum', () => {
+  it('skips a subminimum source for the last-resort root without reserving it', async () => {
+    const f = await setup([51000n])
+    const root = signer(9)
+    await f.coins.put({ account: root.address, privateKey: root.privateKey, nonce: 0, valueWei: 100000n, origin: 'root' })
+    const set = await f.preparer.constructTransactionSet({ operationId: 'minimum-root', amountWei: 50000n, minimumPaymentWei: 42000n, kdf })
+    expect(set.bundle).toHaveLength(1)
+    expect(set.bundle[0]!.sourceAccount).toBe(root.address.toLowerCase())
+    expect(set.bundle[0]!.valueWei >= 50000n).toBe(true)
+    expect(f.coins.latestOf(signer(1).address)!.state).toBe('unspent')
+  })
+
+  it('redistributes a small final tail while preserving intended total and replay bytes', async () => {
+    const f = await setup([81000n, 81000n])
+    const request = { operationId: 'minimum-tail', amountWei: 100000n, minimumPaymentWei: 42000n, kdf }
+    const set = await f.preparer.constructTransactionSet(request)
+    expect(set.bundle).toHaveLength(2)
+    expect(set.bundle.every(tx => tx.valueWei >= 42000n)).toBe(true)
+    const row = f.preparer.getOperation(request.operationId)!
+    expect(row.transactionSetStages![0]!.minimumPaymentWei).toBe('42000')
+    expect(row.members.reduce((sum, member) => sum + BigInt(member.transactionSet!.intendedValueWei ?? '0'), 0n)).toBe(100000n)
+    const reopened = new EvmTransactionSetPreparer({ ...f.options, policy: () => { throw new Error('live fees unavailable') } })
+    expect(await reopened.constructTransactionSet(request)).toEqual(set)
+    await expect(reopened.constructTransactionSet({ ...request, minimumPaymentWei: 43000n })).rejects.toThrow('conflicts')
+  })
+
+  it('refuses an impossible partition without leaking reservations', async () => {
+    const f = await setup([71000n, 71000n, 71000n])
+    await expect(f.preparer.constructTransactionSet({ operationId: 'minimum-impossible', amountWei: 110000n, minimumPaymentWei: 42000n, kdf })).rejects.toThrow('Insufficient')
+    expect(f.coins.all().every(coin => coin.state === 'unspent' && !coin.holder)).toBe(true)
+    expect(f.journal.list()).toHaveLength(0)
+  })
+
+  it('captures and enforces the minimum on an appended stamp stage', async () => {
+    const f = await setup()
+    await f.preparer.constructTransactionSet({ operationId: 'minimum-stage', amountWei: 300000n, reserveForContinuationWei: 200000n, kdf })
+    const request = { operationId: 'minimum-stage', stageId: 'stamp', amountWei: 100000n, minimumPaymentWei: 42000n, kdf }
+    const stamp = await f.preparer.appendTransactionSet(request)
+    expect(stamp.bundle.every(tx => tx.valueWei >= 42000n)).toBe(true)
+    expect(f.preparer.getOperation(request.operationId)!.transactionSetStages![1]!.minimumPaymentWei).toBe('42000')
+    expect(await new EvmTransactionSetPreparer(f.options).appendTransactionSet(request)).toEqual(stamp)
+  })
+})

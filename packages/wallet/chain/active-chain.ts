@@ -449,10 +449,9 @@ export interface DirectMessageClient {
      * Lets the caller tie its own pending message to the attempt for `reconcileAttempts`. */
     onAttemptCreated?: (payloadDigest: string) => void | Promise<void>;
     /**
-     * The stamp is money the sender OWES the recipient (a bot's payout or refund), not a price
-     * the sender chose: it is paid whatever its size, even below the chain's fee floor, where
-     * moving it costs more than it is. The floor exists to stop a user picking an uneconomic
-     * stamp, not to stop a debt being settled. Used only by the bot outbox.
+     * Marks money owed to the recipient (for example a bot payout or refund).
+     * The aggregate and each stamp transaction must still meet the captured fee floor.
+     * Below-floor settlements are refused; this flag never authorizes increasing a debt.
      */
     settlement?: boolean;
     /** Cancels a send that is still waiting (for the chain to be reachable, for an earlier

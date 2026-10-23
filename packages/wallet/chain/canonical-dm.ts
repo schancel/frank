@@ -319,6 +319,7 @@ export interface StoredMessage {
     payload: string
     context: string
     amountWei: string
+    minimumPaymentWei?: string
     boundary: string
   }
   /** `delivered`: the relay confirmed storing this exact message. `dead`: the relay refused its
@@ -477,6 +478,8 @@ function validateSharedStoredMessage(row: StoredMessage): void {
     !/^(?:[0-9a-f]{2})+$/i.test(intent.context) ||
     typeof intent.amountWei !== 'string' ||
     !/^[1-9][0-9]*$/.test(intent.amountWei) ||
+    (intent.minimumPaymentWei !== undefined && (typeof intent.minimumPaymentWei !== 'string' ||
+      !/^[0-9]+$/.test(intent.minimumPaymentWei) || BigInt(intent.minimumPaymentWei) > BigInt(intent.amountWei))) ||
     typeof intent.boundary !== 'string' ||
     !/^frank-[0-9a-f]{48}$/i.test(intent.boundary)
   )
@@ -1371,7 +1374,7 @@ async function finishSharedConstruction(
   mode: 'construct' | 'restore' = 'construct',
 ): Promise<StoredMessage> {
   if (!sharedConstructionPending(row)) return row
-  const intent = row.construction!
+  let intent = row.construction!
   const operationId = row.transactionSetOperationId
   const shared = owner.transactionSets
   validateSharedStoredMessage(row)
@@ -1402,9 +1405,23 @@ async function finishSharedConstruction(
   } else {
     await shared.refresh()
   }
+  // Existing signed stages replay exactly. An older unfinished intent captures its
+  // floor durably before the first signature, without changing the authorized amount.
+  const operation = shared.preparer.getOperation(operationId)
+  const signedStage = operation?.members.some(member =>
+    member.transactionSet?.stageId === row.transactionSetStageId && member.signed !== null)
+  if (intent.minimumPaymentWei === undefined && !signedStage && mode === 'construct') {
+    const minimum = await owner.payer().minimumPaymentWei()
+    if (BigInt(intent.amountWei) < minimum)
+      throw new DirectMessageStampBelowFeeError(BigInt(intent.amountWei), minimum)
+    intent = { ...intent, minimumPaymentWei: minimum.toString() }
+    row = { ...row, construction: intent }
+    await owner.messages.put(row)
+  }
   const request = {
     operationId,
     amountWei: BigInt(intent.amountWei),
+    ...(intent.minimumPaymentWei === undefined ? {} : { minimumPaymentWei: BigInt(intent.minimumPaymentWei) }),
     kdf: (childIndex: number) => hexlify(canonicalStampDestination({
       network: intent.network,
       stampKey: inspected.stampKey,
@@ -2219,7 +2236,7 @@ async function send(
       requestedWei = quote.amount
     }
     stampValueWei = requestedWei
-    if (stampValueWei < floorWei && params.settlement !== true)
+    if (stampValueWei < floorWei)
       throw new DirectMessageStampBelowFeeError(stampValueWei, floorWei)
     attempted = true
     // Fresh snapshots after any wait: the message is sealed to the Current pair in force.
@@ -2257,6 +2274,7 @@ async function send(
       payload: toHex(sealed.payload),
       context: toHex(sealed.context),
       amountWei: stampValueWei!.toString(),
+      minimumPaymentWei: floorWei.toString(),
       boundary: `frank-${toHex(randomBytes(24))}`,
     }
     // Approval must precede the recoverable intent: replay can finish and submit it

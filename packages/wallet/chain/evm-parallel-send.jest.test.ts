@@ -199,14 +199,15 @@ describe('parallel paid messages', () => {
     for (const row of rows) mockBalances.set(row.address.toLowerCase(), valueWei)
     return rows
   }
-  const send = (n: number, wallet = alice, onBeforeExposure?: () => void) =>
+  // Inject interruptions after the signed graph is durable, before submission.
+  const send = (n: number, wallet = alice, onAttemptCreated?: () => void) =>
     f.chain.directMessages.send({
       wallet,
       recipient: f.bob.identity.address,
       items: [{ type: 'text', text: `message ${n}` }],
       stampValue: STAMP,
       messageId: ID(n),
-      onBeforeExposure,
+      onAttemptCreated,
     })
   const tick = (digests: string[] = [], wallet = alice) =>
     f.chain.directMessages.reconcileAttempts({ wallet, payloadDigests: digests })

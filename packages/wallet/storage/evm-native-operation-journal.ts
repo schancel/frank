@@ -1257,7 +1257,7 @@ export class EvmNativeOperationJournal {
    */
   discardUnexposed(id: string): Promise<EvmNativeOperation> {
     return this.mutate(id, row => {
-      if (row.submissionAuthorized || row.members.some(m => m.exposed)) fail('conflict')
+      if (row.submissionAuthorized || row.members.some(m => m.exposed || (row.kind === 'transaction-set' && (nativeMemberSuperseded(m) || !['unknown', 'missing'].includes(m.observation.state))))) fail('conflict')
       for (const m of row.members) {
         m.signed = null
         m.observation = { state: 'unknown' }

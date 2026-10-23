@@ -528,6 +528,17 @@ export class EvmCoinList {
     string,
     Promise<PreparedEvmTransactionSet>
   >()
+  runTransactionSetExclusive<T>(operationId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.transactionSetTails.get(operationId) ?? Promise.resolve()
+    const result = previous.then(task)
+    const tail = result.then(() => undefined, () => undefined)
+    this.transactionSetTails.set(operationId, tail)
+    void tail.then(() => {
+      if (this.transactionSetTails.get(operationId) === tail) this.transactionSetTails.delete(operationId)
+    })
+    return result
+  }
+
   constructTransactionSetOnce(
     operationId: string,
     build: () => Promise<PreparedEvmTransactionSet>,
@@ -536,13 +547,7 @@ export class EvmCoinList {
     const key = JSON.stringify([operationId, stageId])
     const pending = this.transactionSetBuilds.get(key)
     if (pending) return pending
-    const previous = this.transactionSetTails.get(operationId) ?? Promise.resolve()
-    const result = previous.then(build)
-    const tail = result.then(() => undefined, () => undefined)
-    this.transactionSetTails.set(operationId, tail)
-    void tail.then(() => {
-      if (this.transactionSetTails.get(operationId) === tail) this.transactionSetTails.delete(operationId)
-    })
+    const result = this.runTransactionSetExclusive(operationId, build)
     this.transactionSetBuilds.set(key, result)
     void result
       .finally(() => this.transactionSetBuilds.delete(key))
@@ -932,6 +937,57 @@ export class EvmCoinList {
     this.coinsByKey.set(key, next)
     this.notify()
     return this.persist(next)
+  }
+
+  /** A cancelled journal proves these transitions never happened. Restore only external
+   * inputs, never signed successors or operation-private destinations. No persistence here:
+   * reopen reconstructs this derived view before any caller can select from it. */
+  restoreTransactionSetCancellation(holder: string, originals: readonly EvmListCoin[]): void {
+    const originalByAccount = new Map(originals.map(coin => [coin.account, coin]))
+    const affected = new Set<string>()
+    for (const [key, coin] of this.coinsByKey) {
+      if (coin.holder !== holder) continue
+      affected.add(coin.account)
+      this.coinsByKey.delete(key)
+      this.transactionSetKeyReferences.delete(key)
+    }
+    for (const account of affected) {
+      const original = originalByAccount.get(account)
+      if (!original) continue
+      // A later confirmed nonce or another operation is authoritative over old cancellation.
+      if (this.all().some(coin => coin.account === account && (coin.holder !== undefined || coin.nonce > original.nonce))) continue
+      const { holder: _holder, spendingTx: _tx, after: _after, spentInBlock: _spent, ...source } = original
+      this.coinsByKey.set(coinKey(account, original.nonce), { ...source, state: 'unspent' })
+    }
+    // Keep change allocation high-water ownership; cancelled targets are never reused.
+    if (affected.size) this.notify()
+  }
+
+  /** Journal cancellation is committed first. Per-account write guards prevent a new
+   * selection from racing projection cleanup; interrupted persistence is replayable. */
+  async checkpointTransactionSetCancellation(holder: string, originals: readonly EvmListCoin[]): Promise<void> {
+    const accounts = new Set([
+      ...originals.map(coin => coin.account),
+      ...this.store.all().filter(coin => coin.holder === holder).map(coin => coin.account),
+    ])
+    await Promise.all([...accounts].map(account => this.accountMutation(account, async () => {
+      const reference = `cancelled:${holder}`
+      try {
+        const original = originals.find(coin => coin.account === account)
+        const restored = original && this.get(account, original.nonce)
+        if (restored?.state === 'unspent' && restored.holder === undefined) await this.persist(restored)
+        for (const stored of this.store.all()) {
+          if (stored.account !== account || stored.holder !== holder) continue
+          const current = this.get(account, stored.nonce)
+          if (current && current.holder !== holder) continue
+          await this.store.delete(coinKey(account, stored.nonce))
+        }
+        this.completeTransactionSetProjection(account, reference)
+      } catch (error) {
+        this.requireTransactionSetProjection(account, reference)
+        throw error
+      }
+    })))
   }
 
   /**

@@ -67,7 +67,16 @@ export class EvmTransactionSetPreparer {
 
   restoreReservations(): void {
     for (const row of this.options.journal.list())
-      if (row.kind === 'transaction-set' && !row.cancelled) this.restoreRow(row)
+      if (row.kind === 'transaction-set') {
+        if (row.cancelled) {
+          const logicalId = row.preparationId!.slice(prefix.length)
+          for (const member of row.members)
+            if (member.transactionSet!.role !== 'payment')
+              this.options.coins.reserveChangeTarget(logicalId, member.transactionSet!.changeIndex!, Transaction.from(member.unsignedTransaction).to!)
+          this.options.coins.restoreTransactionSetCancellation(logicalId, this.cancellationSources(row))
+        }
+        else this.restoreRow(row)
+      }
   }
 
   getOperation(operationId: string): EvmNativeOperation | undefined {
@@ -97,22 +106,32 @@ export class EvmTransactionSetPreparer {
     return this.options.policy()
   }
 
-  /** Release a signed set only while no member has been handed to an external broadcaster. */
-  async releaseUnexposed(operationId: string): Promise<boolean> {
-    const row = this.options.journal.get(operationId)
-    if (
-      !row ||
-      row.kind !== 'transaction-set' ||
-      row.cancelled ||
-      row.submissionAuthorized ||
-      row.members.some(member => member.exposed)
-    )
-      return false
-    // Cancel the durable journal authority first. If inventory persistence is interrupted,
-    // wallet reopen sees the cancelled operation and can safely release its stale projection.
-    await this.options.journal.discardUnexposed(operationId)
-    await this.options.coins.releaseUnexposed(operationId)
-    return true
+  /** Uses the same logical ID as construction. Authorization/exposure is never cancelled. */
+  releaseUnexposed(operationId: string): Promise<boolean> {
+    return this.options.coins.runTransactionSetExclusive(operationId, async () => {
+      let row = await this.options.journal.refreshPreparation(prefix + operationId)
+      if (!row || row.submissionAuthorized || row.members.some(member => member.exposed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))) return false
+      const originals = this.cancellationSources(row)
+      if (!row.cancelled) row = await this.options.journal.discardUnexposed(row.operationId)
+      this.options.coins.restoreTransactionSetCancellation(operationId, originals)
+      await this.options.coins.checkpointTransactionSetCancellation(operationId, originals)
+      return true
+    })
+  }
+
+  private cancellationSources(row: EvmNativeOperation): EvmListCoin[] {
+    const privateAccounts = new Set(row.members.filter(member => member.transactionSet?.role !== 'payment').map(member => Transaction.from(member.unsignedTransaction).to!.toLowerCase()))
+    const first = new Set<string>(), originals: EvmListCoin[] = []
+    for (const member of row.members) {
+      const account = member.source.address
+      if (first.has(account) || privateAccounts.has(account)) continue
+      first.add(account)
+      const source = this.options.coins.all().find(coin => coin.account === account)
+      if (!source) continue // Already reconciled and pruned; never resurrect a prior nonce.
+      originals.push({ ...source, nonce: Transaction.from(member.unsignedTransaction).nonce,
+        valueWei: BigInt(member.transactionSet!.balanceBeforeWei), state: 'unspent' })
+    }
+    return originals
   }
 
   /** RPC-free admission view for account-based maintenance. Inventory owns provisional

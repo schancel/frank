@@ -2169,6 +2169,13 @@ export const rawFrFR = {
     saveVcf: 'Enregistrer la vCard (.vcf)',
   },
   accountSync: {
+    title: 'Synchronisation du compte',
+    browserHelp:
+      'Pour copier votre compte entre l’extension de ce navigateur et {origin}, ouvrez Profil dans la fenêtre contenant votre compte, puis choisissez Synchroniser ce compte et Afficher le code PIN. Dans l’autre fenêtre, choisissez Synchroniser un compte existant sur l’écran d’accueil et saisissez le code PIN. La fenêtre de destination ne doit pas déjà contenir de compte.',
+    walletConnectTitle: 'WalletConnect',
+    walletConnectUnsupported:
+      'L’association par URI WalletConnect n’est pas encore prise en charge. Elle ne synchronise pas votre compte avec l’extension du navigateur.',
+
     send: 'Synchroniser ce compte',
     sendHint:
       'Copiez ce compte vers votre extension ou application web. Dans l’autre fenêtre, choisissez Synchroniser un compte existant, puis saisissez le code affiché ici.',

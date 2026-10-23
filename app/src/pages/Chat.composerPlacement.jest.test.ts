@@ -58,21 +58,37 @@ const layoutVars = (MainLayout as any).computed.layoutVarsStyle as (
 it('wide screens publish the open drawer width as the composer offset; phones publish none', () => {
   expect(
     layoutVars.call({
+      $q: { platform: { is: { mobile: false } } },
       myDrawerOpen: true,
       screenWidth: 1280,
       drawerWidth: 325,
     }),
-  ).toEqual({ '--frank-drawer-offset': '325px' })
+  ).toEqual({
+    '--frank-drawer-offset': '325px',
+    '--frank-bottom-nav-inset': '0px',
+  })
   expect(
     layoutVars.call({
+      $q: { platform: { is: { mobile: false } } },
       myDrawerOpen: false,
       screenWidth: 1280,
       drawerWidth: 325,
     }),
-  ).toEqual({ '--frank-drawer-offset': '0px' })
+  ).toEqual({
+    '--frank-drawer-offset': '0px',
+    '--frank-bottom-nav-inset': '0px',
+  })
   expect(
-    layoutVars.call({ myDrawerOpen: true, screenWidth: 375, drawerWidth: 325 }),
-  ).toEqual({ '--frank-drawer-offset': '0px' })
+    layoutVars.call({
+      $q: { platform: { is: { mobile: true } } },
+      myDrawerOpen: true,
+      screenWidth: 375,
+      drawerWidth: 325,
+    }),
+  ).toEqual({
+    '--frank-drawer-offset': '0px',
+    '--frank-bottom-nav-inset': 'max(8px, env(safe-area-inset-bottom, 0px))',
+  })
 })
 
 it('the composer box starts after the drawer (margin), not under it (full width + padding)', () => {

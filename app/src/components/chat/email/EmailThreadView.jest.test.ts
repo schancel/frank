@@ -1556,7 +1556,7 @@ describe('EmailThreadView', () => {
         const notifications = await import('src/utils/notifications')
         const errorSpy = jest
           .spyOn(notifications, 'errorNotify')
-          .mockImplementation(() => {})
+          .mockImplementation(() => undefined)
         const wrapper = mountView({
           stampAmount: '20.6019',
           defaultStampWei: 468_700_000_000_000_000n,

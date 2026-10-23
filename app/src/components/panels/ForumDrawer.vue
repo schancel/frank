@@ -98,7 +98,9 @@
                   isVoteAmountPresetActive(preset.value) ? 'primary' : 'grey-7'
                 "
                 :label="preset.label"
-                :data-test="`forum-vote-amount-preset-${preset.value || 'default'}`"
+                :data-test="`forum-vote-amount-preset-${
+                  preset.value || 'default'
+                }`"
                 @click="onSelectVoteAmount(preset.value)"
               />
             </div>

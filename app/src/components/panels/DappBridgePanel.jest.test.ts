@@ -7,6 +7,7 @@ import {
   type DappPersonaRef,
 } from '@frank/wallet/dapp-bridge/persona-keys'
 import DappBridgePanel from './DappBridgePanel.vue'
+import enUS from '../../i18n/en-us'
 
 // Narrow seam: the session's persona capability, backed by a fixed test account master.
 const testMaster = HDNodeWallet.fromSeed(new Uint8Array(32).fill(7))
@@ -36,8 +37,19 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       props,
       global: {
         mocks: {
-          $t: (key: string) =>
-            key === 'accountSync.send' ? 'Sync this account' : key,
+          $t: (key: string, params: Record<string, unknown> = {}) => {
+            const value = key
+              .split('.')
+              .reduce<unknown>(
+                (node, part) => (node as Record<string, unknown>)?.[part],
+                enUS,
+              )
+            return typeof value === 'string'
+              ? value.replace(/\{(\w+)\}/g, (_match, name: string) =>
+                  String(params[name]),
+                )
+              : key
+          },
         },
         stubs: {
           QIcon: true,

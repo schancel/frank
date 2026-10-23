@@ -23,7 +23,7 @@ function topicWallet(wallet: EvmWalletHandle) {
   }
 }
 jest.mock('axios')
-const http = axios as jest.MockedFunction<typeof axios>
+const http = axios as unknown as jest.MockedFunction<typeof axios.request>
 const burn = '0x000000000000000000000000000000000000dEaD'
 const key = (n: number) => new Wallet('0x' + n.toString(16).padStart(64, '0'))
 const blockHash = '0x' + 'ab'.repeat(32)
@@ -81,7 +81,7 @@ async function fixture(valueWei = 1700000n) {
       changeIndex: index,
     }),
   })
-  const construct = jest.spyOn(preparer, 'constructTransactionSet')
+  const construct = jest.spyOn(preparer, 'constructLegacyTransactionSet')
   const legacySigner = jest.spyOn(bundle.pool, 'getSigner')
   const included = new Map<string, { tx: Transaction; index: number }>()
   const provider = {
@@ -118,7 +118,11 @@ async function fixture(valueWei = 1700000n) {
     }),
     getBlock: jest.fn(async () => ({ hash: blockHash, number: 12 })),
     getBlockNumber: jest.fn(async () => 100),
-    getTransactionCount: jest.fn(async () => 20),
+    getTransactionCount: jest.fn(async (address: string) =>
+      [...included.values()]
+        .filter(item => item.tx.from!.toLowerCase() === address.toLowerCase())
+        .reduce((nonce, item) => Math.max(nonce, item.tx.nonce + 1), 0),
+    ),
     getBalance: jest.fn(async () => 0n),
     getFeeData: jest.fn(async () => {
       throw new Error('unexpected construction fee RPC')
@@ -132,7 +136,7 @@ async function fixture(valueWei = 1700000n) {
   }
   const lifecycle = new EvmTransactionSetLifecycle({
     authority: preparer,
-    provider,
+    provider: provider as unknown as Provider,
     head: () => 100,
   })
   const wallet: EvmWalletHandle = {
@@ -149,21 +153,12 @@ async function fixture(valueWei = 1700000n) {
     transactionSetPreparer: preparer,
     transactionSetLifecycle: lifecycle,
     forumOperationMutation: task => task(),
-    prepareForumSource: async () => {
-      const available = coins
-        .all()
-        .find(
-          coin =>
-            coin.state === 'unspent' &&
-            !coin.holder &&
-            !preparer.isSourceReserved(coin.account),
-        )
-      if (!available) throw new Error('No available Forum source')
-      return available.account
-    },
   }
   http.mockImplementation(async params => {
-    const parsed = validateFrame(new Uint8Array(params.data), defaultContext())
+    const parsed = validateFrame(
+      new Uint8Array(params.data as Uint8Array),
+      defaultContext(),
+    )
     if (
       parsed.kind !== 'parsed' ||
       (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)

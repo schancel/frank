@@ -31,7 +31,7 @@ import {
 import type { OutgoingTopicOperation } from './storage/topic-operation-journal'
 import type { EvmWalletHandle } from './evm-wallet-handle'
 jest.mock('axios')
-const http = axios as jest.MockedFunction<typeof axios>
+const http = axios as unknown as jest.MockedFunction<typeof axios.request>
 const burn = '0x000000000000000000000000000000000000dEaD'
 const key = (n: number) => new Wallet('0x' + n.toString(16).padStart(64, '0'))
 const blockHash = '0x' + 'ab'.repeat(32)
@@ -137,7 +137,11 @@ async function fixture(location?: string) {
     }),
     getBlock: jest.fn(async () => ({ hash: blockHash, number: 12 })),
     getBlockNumber: jest.fn(async () => 100),
-    getTransactionCount: jest.fn(async () => 20),
+    getTransactionCount: jest.fn(async (address: string) =>
+      [...included.values()]
+        .filter(item => item.tx.from!.toLowerCase() === address.toLowerCase())
+        .reduce((nonce, item) => Math.max(nonce, item.tx.nonce + 1), 0),
+    ),
     getBalance: jest.fn(async () => 0n),
     broadcastTransaction: jest.fn(async (raw: string) => ({
       hash: Transaction.from(raw).hash!,
@@ -145,7 +149,7 @@ async function fixture(location?: string) {
   }
   const lifecycle = new EvmTransactionSetLifecycle({
     authority: preparer,
-    provider,
+    provider: provider as unknown as Provider,
     head: () => 100,
   })
   const wallet: EvmWalletHandle = {
@@ -164,18 +168,6 @@ async function fixture(location?: string) {
     transactionSetPreparer: preparer,
     transactionSetLifecycle: lifecycle,
     forumOperationMutation: task => task(),
-    prepareForumSource: async () => {
-      const available = coins
-        .all()
-        .find(
-          coin =>
-            coin.state === 'unspent' &&
-            !coin.holder &&
-            !preparer.isSourceReserved(coin.account),
-        )
-      if (!available) throw new Error('No available Forum source')
-      return available.account
-    },
   }
   const post = encodeForumPost({
     network: 'monad-testnet',
@@ -347,7 +339,7 @@ test('failure between host intent and core retains the original complete post, t
   const f = await fixture()
   try {
     const prepare = jest
-      .spyOn(f.preparer, 'constructTransactionSet')
+      .spyOn(f.preparer, 'constructLegacyTransactionSet')
       .mockRejectedValueOnce(new Error('interrupted before signing'))
     await expect(submitForumOperation(f.wallet, f.params)).rejects.toThrow(
       'interrupted',
@@ -466,7 +458,7 @@ test.each(['arraybuffer', 'buffer', 'uint8array'] as const)(
     http.mockRejectedValue(original)
     await submitForumOperation(f.wallet, f.params).catch(() => undefined)
     const before = f.bundle.topicOperationJournal.getAll()
-    const construct = jest.spyOn(f.preparer, 'constructTransactionSet')
+    const construct = jest.spyOn(f.preparer, 'constructLegacyTransactionSet')
     const error = await reconcileForumOperations(f.wallet, 'post').catch(
       error => error,
     )

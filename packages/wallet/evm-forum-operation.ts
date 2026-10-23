@@ -553,6 +553,37 @@ async function exchange(
   return status
 }
 
+/** A relay can broadcast every byte it receives, so funding must settle before handoff. */
+async function prepareForumHandoff(
+  wallet: EvmWalletHandle,
+  operation: OutgoingTopicOperation,
+): Promise<void> {
+  try {
+    await wallet.transactionSetLifecycle!.replay(
+      operation.transactionSetOperationId,
+      { payments: false },
+    )
+    await wallet.transactionSetLifecycle!.observe(
+      operation.transactionSetOperationId,
+      wallet.provider,
+    )
+    if (
+      !wallet.transactionSetLifecycle!.canSubmitPayments(
+        operation.transactionSetOperationId,
+      )
+    )
+      throw new ForumOperationPendingError(
+        'Forum funding is pending the selected network confirmation delay',
+      )
+  } catch (error) {
+    if (error instanceof ForumOperationPendingError) throw error
+    throw new ForumOperationPendingError(
+      'Forum funding retained pending reconciliation',
+      error,
+    )
+  }
+}
+
 async function settle(
   wallet: EvmWalletHandle,
   operation: OutgoingTopicOperation,
@@ -603,10 +634,7 @@ export async function reconcileForumOperations(
         .map(async retained => {
           const operation = await finishForumConstruction(wallet, retained)
           bindForumAuthority(wallet, operation)
-          await wallet.transactionSetLifecycle!.replay(
-            operation.transactionSetOperationId,
-            { payments: false },
-          )
+          await prepareForumHandoff(wallet, operation)
           try {
             await exchange(wallet, operation, 'post')
           } catch {
@@ -646,33 +674,13 @@ async function finishForumConstruction(
   )
   const commitment = topicVoteCommitment(wallet.cborNetwork!, target)
   const calldata = hexlify(topicBurnCalldata(retained.direction, commitment))
-  const prepare = async () =>
-    wallet.transactionSetPreparer!.constructTransactionSet({
+  const prepared =
+    await wallet.transactionSetPreparer!.constructLegacyTransactionSet({
       operationId: retained.transactionSetOperationId,
       amountWei: BigInt(retained.intendedValueWei),
       kdf: () => intent.burnAddress,
       calldata,
-      maxPaymentParts: 1,
     })
-  let prepared
-  // Another independent send may claim the candidate between the asynchronous funding view
-  // and atomic reservation. Retry selection only while no signed operation exists.
-  for (let attempt = 0; ; attempt++) {
-    try {
-      prepared = await prepare()
-      break
-    } catch (error) {
-      if (
-        attempt >= 63 ||
-        !(error instanceof Error) ||
-        error.message !== 'Insufficient available EVM coins' ||
-        wallet.transactionSetPreparer!.getOperation(
-          retained.transactionSetOperationId,
-        )
-      )
-        throw error
-    }
-  }
   if (prepared.bundle.length !== 1)
     throw new Error('Forum requires exactly one burn transaction')
   const raw = getBytes(prepared.bundle[0]!.rawTransaction)
@@ -754,10 +762,7 @@ async function submitForumOperationAdmitted(
     )
   const operation = await finishForumConstruction(wallet, prior ?? intent)
   // Every signed byte and its original public payload are now durable before external handoff.
-  await wallet.transactionSetLifecycle!.replay(
-    operation.transactionSetOperationId,
-    { payments: false },
-  )
+  await prepareForumHandoff(wallet, operation)
   let status: MatchedForumStatus
   try {
     status = await exchange(wallet, operation, 'put')

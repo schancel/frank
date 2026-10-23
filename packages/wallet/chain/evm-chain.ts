@@ -2884,7 +2884,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             material.mainAccount.address.toLowerCase(),
             identity.address.raw.toLowerCase(),
           ]))
-            if (sourceIsHeld(wallet, address) || walletInternals.nativeOperationOwner!.holdsSource(address))
+            // Shared graphs restore their own nonce reservations. Giving an unexposed contact
+            // graph a second legacy claim would outlive its cancellation and block later sends.
+            // Genuine legacy operations still retain their claim independently of shared state.
+            if (
+              (sourceIsHeld(wallet, address) &&
+                !transactionSetPreparer.isSourceReserved(address)) ||
+              walletInternals.nativeOperationOwner!.holdsSource(address)
+            )
               try {
                 pool.restoreAccountClaim(mainAccountHolder(wallet), address);
               } catch (error) {

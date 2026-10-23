@@ -94,6 +94,7 @@ export function useProviderStandIns(enabled = true) {
  */
 export const offlineChain = {
   mined: new Map<string, string>(),
+  signedTransactions: new Map<string, string>(),
   nodeDown: false,
   /** Only broadcasts fail; reads answer. */
   broadcastDown: false,
@@ -118,6 +119,7 @@ export const offlineChain = {
     this.refuseNext = false
     this.refused.clear()
     this.mined.clear()
+    this.signedTransactions.clear()
     this.nodeDown = false
     this.broadcastDown = false
     this.relayBroadcasts = true
@@ -141,6 +143,7 @@ export const offlineChain = {
       mockBalances.set(from, (mockBalances.get(from) ?? 0n) - tx.value)
     }
     this.mined.set(tx.hash, from)
+    this.signedTransactions.set(tx.hash, raw)
     return tx.hash
   },
 }
@@ -197,28 +200,46 @@ export function offlineProviderModule() {
           const hash = (request as unknown as { hash: string }).hash
           const from = offlineChain.mined.get(hash)
           if (from === undefined) return null
+          const tx = ethers.Transaction.from(offlineChain.signedTransactions.get(hash))
           return {
             transactionHash: hash,
             transactionIndex: '0x0',
             blockHash: '0x' + '11'.repeat(32),
             blockNumber: '0x1',
             from,
-            to: '0x' + '00'.repeat(20),
+            to: tx.to,
             contractAddress: null,
-            cumulativeGasUsed: '0x5208',
-            gasUsed: '0x5208',
-            effectiveGasPrice: '0x2',
+            cumulativeGasUsed: ethers.toQuantity(tx.gasLimit),
+            gasUsed: ethers.toQuantity(tx.gasLimit),
+            effectiveGasPrice: ethers.toQuantity(offlineChain.gasPrice),
             logs: [],
             logsBloom: '0x' + '00'.repeat(256),
             status: offlineChain.reverted.has(hash) ? '0x0' : '0x1',
-            type: '0x2',
+            type: ethers.toQuantity(tx.type),
           }
         }
         if (request.method === 'getBlockNumber') return 1
-        // The offline node keeps no transaction bodies: one it has not mined it does not know.
+        // Return the exact signed body of a mined transaction; unknown hashes stay unknown.
         if (request.method === 'getTransaction') {
           if (offlineChain.nodeDown) throw new Error('node unreachable')
-          return null
+          const hash = (request as unknown as { hash: string }).hash
+          const raw = offlineChain.signedTransactions.get(hash)
+          if (!raw) return null
+          const tx = ethers.Transaction.from(raw)
+          return {
+            ...tx.toJSON(),
+            hash,
+            // Mining already recovered and checked the sender of these exact bytes.
+            from: offlineChain.mined.get(hash),
+            input: tx.data,
+            gas: ethers.toQuantity(tx.gasLimit),
+            blockHash: '0x' + '11'.repeat(32),
+            blockNumber: '0x1',
+            transactionIndex: '0x0',
+            v: ethers.toQuantity(tx.signature.v),
+            r: tx.signature.r,
+            s: tx.signature.s,
+          }
         }
         if (request.method === 'getTransactionCount') {
           if (offlineChain.nodeDown) throw new Error('node unreachable')
@@ -255,7 +276,6 @@ export function offlineProviderModule() {
 export function offlineHttpModule() {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const ethers = require('ethers')
-  const mined = new Set<string>()
   return {
     ...jest.requireActual('../evm-http'),
     MonadHttpClient: class {
@@ -263,16 +283,16 @@ export function offlineHttpModule() {
         chainHttpRequests.push('submitRawTransaction')
         const tx = ethers.Transaction.from(raw)
         const to = tx.to.toLowerCase()
-        mockBalances.set(to, (mockBalances.get(to) ?? 0n) + tx.value)
-        const from = tx.from.toLowerCase()
-        mockBalances.set(from, (mockBalances.get(from) ?? 0n) - tx.value)
-        mockFunded.push({ from: tx.from.toLowerCase(), to, value: tx.value })
-        mined.add(tx.hash)
+        const newlyMined = !offlineChain.mined.has(tx.hash)
+        offlineChain.mine(raw)
+        if (newlyMined) mockFunded.push({ from: tx.from.toLowerCase(), to, value: tx.value })
         return tx.hash
       }
       async getTransactionReceipt(hash: string) {
         chainHttpRequests.push('getTransactionReceipt')
-        return mined.has(hash) ? { status: 'success' } : undefined
+        return offlineChain.mined.has(hash)
+          ? { status: offlineChain.reverted.has(hash) ? 'reverted' : 'success' }
+          : undefined
       }
       destroy() {
         return undefined
@@ -290,6 +310,11 @@ export function offlineMailboxModule() {
   })
   return {
     ...jest.requireActual('@frank/cashweb/relay/mailbox-client'),
+    fetchCanonicalMailboxPage: jest.fn(async (auth: { subject: string; sinceMs?: number }) => ({
+      records: (mailboxes.get(auth.subject) ?? [])
+        .filter(record => record.timestampMs >= (auth.sinceMs ?? 0))
+        .map(record => ({ ...record, direction: 'in' as const })),
+    })),
     fetchCanonicalInboxPage: jest.fn(getInbox),
     fetchCanonicalRecoveryPage: jest.fn(async () => ({ records: [] })),
   }

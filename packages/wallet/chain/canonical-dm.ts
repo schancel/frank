@@ -1095,7 +1095,9 @@ async function submitStored(
       owner.messages.get(row.consumerId)!
     await owner.messages.put(possiblyOut)
     row = possiblyOut
-    unexposed = true
+    // Shared sets have already crossed the wallet's node submission boundary above.
+    // A first relay refusal says nothing about their financial effect or delivery obligation.
+    unexposed = row.version === 1
   }
   let accepted: CanonicalAcceptedBody
   try {
@@ -1839,17 +1841,8 @@ async function resend(
             row = submitted.row
             // Refused before exposure, as every submission before it: nothing of it left the
             // wallet, so it ends and its coins are free.
-            if (submitted.refusedUnexposed) {
-              if (row.version === 2) {
-                // The journal may also contain already exposed wallet change. Keep the
-                // whole operation reserved and reconcile it; never route this through the
-                // legacy payer's release/replan path.
-                row = { ...row, outcome: 'dead' }
-                await owner.lifetime(() => owner.messages.put(row))
-              } else {
-                row = await endRefusedUnexposed(owner, row)
-              }
-            }
+            if (submitted.refusedUnexposed)
+              row = await endRefusedUnexposed(owner, row)
             // Just delivered: its payments are broadcast in this same pass.
             if (row.outcome === 'delivered')
               work.chain = { passes: 0, next: 1, gap: 0 }

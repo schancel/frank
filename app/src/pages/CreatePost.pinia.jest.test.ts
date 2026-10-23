@@ -8,7 +8,7 @@ import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import type { ForumMessage } from '@frank/wallet/forum-model'
 import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
-import { MonadTopicPostAbandonedError } from '@frank/wallet/evm-topic-post-client'
+import { TopicPostAbandonedError } from '@frank/wallet/topic-post-client'
 
 const mockTopicPost = jest.fn()
 const mockFetchOne = jest.fn()
@@ -246,7 +246,7 @@ it('keeps an unknown paid outcome reserved across a Pinia remount and rebuilt wa
     },
   }
   jest.mocked(useActiveWallet).mockResolvedValue(originalWallet as never)
-  const abandoned = new MonadTopicPostAbandonedError(
+  const abandoned = new TopicPostAbandonedError(
     'The paid post outcome is unknown',
     'feedface',
   )

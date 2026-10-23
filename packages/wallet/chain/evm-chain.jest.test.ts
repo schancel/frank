@@ -4,8 +4,8 @@ import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
 /**
  * Unit tests for `monad-chain.ts` (ticket #41): verifies `MonadChain` (via `createEvmChain`)
  * wires the real Monad wallet clients together correctly. Per the ticket's own instructions, this
- * mocks the underlying Monad clients (`MonadTopicPostClient`,
- * `MonadTopicVoteClient`, `monad-message-feed.ts`, `monad-topic-tally-client.ts`, and
+ * mocks the underlying Monad clients (`TopicPostClient`,
+ * `TopicVoteClient`, `monad-message-feed.ts`, `monad-topic-tally-client.ts`, and
  * `monad-identity.ts`'s HTTP-touching `fetchMonadProfile`) rather than `axios` directly -- those
  * clients already have their own tested HTTP layer (see each client's own `*.jest.test.ts`); this
  * file only tests that `MonadChain` calls them with the right arguments and adapts their results
@@ -15,14 +15,15 @@ import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
  * crypto with no network dependency, and exercising them for real is a stronger check that
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
-import { Wallet, Transaction, getBytes, hexlify } from "ethers";
+import { Wallet, Transaction, FeeData, getBytes, hexlify } from "ethers";
+import { NativeEvmTransactionBuilder } from "./evm-transaction-builder";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import level from "level";
 import {
   LevelTopicOperationJournal,
-  type OutgoingTopicOperation,
+  type RetainedTopicOperation,
 } from "../storage/topic-operation-journal";
 import { LevelStampAttemptJournal } from "../storage/stamp-attempt-journal";
 import {
@@ -37,7 +38,7 @@ import { verifyEcdsa } from "@frank/nakamoto";
 
 import { MonadIdentity } from "../evm-identity";
 import { StoredMonadMessageProto } from "../evm-stamp-client";
-import { MonadTopicPostAbandonedError } from "../evm-topic-post-client";
+import { TopicPostAbandonedError } from "../topic-post-client";
 import { MessageItem, TextItem } from "@frank/cashweb/types/messages";
 import {
   buildEnvelope,
@@ -80,27 +81,34 @@ jest.mock("../evm-stamp-client", () => {
     quoteMonadStampPaymentGasReserve: jest.fn().mockResolvedValue(100n),
   };
 });
-jest.mock("../evm-topic-post-client", () => {
-  const actual = jest.requireActual("../evm-topic-post-client");
+jest.mock("../topic-post-client", () => {
+  const actual = jest.requireActual("../topic-post-client");
   return {
     ...actual,
-    MonadTopicPostClient: jest.fn().mockImplementation(() => ({
+    TopicPostClient: jest.fn().mockImplementation(() => ({
       submitTopicPost: jest.fn(),
       resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     })),
-    quoteMonadTopicBurnGasReserve: jest.fn().mockResolvedValue(100n),
   };
 });
-jest.mock("../evm-topic-vote-client", () => {
-  const actual = jest.requireActual("../evm-topic-vote-client");
+jest.mock("../topic-vote-client", () => {
+  const actual = jest.requireActual("../topic-vote-client");
   return {
     ...actual,
-    MonadTopicVoteClient: jest.fn().mockImplementation(() => ({
+    TopicVoteClient: jest.fn().mockImplementation(() => ({
       castVote: jest.fn(),
       resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     })),
   };
 });
+jest.mock("../evm-topic-operations", () => ({
+  createEvmTopicOperations: jest.fn((wallet) => ({
+    chainIdentifier: wallet.cborNetwork ?? "monad-testnet",
+    submit: jest.fn(),
+    reconcile: jest.fn().mockResolvedValue(undefined),
+  })),
+  quoteEvmTopicBurnGasReserve: jest.fn().mockResolvedValue(100n),
+}));
 // Explicit factories, not automocks: automock generation loads the real modules in an isolated
 // registry, which makes `bitcore-lib-xpi`'s "more than one instance" guard throw.
 jest.mock("../evm-topic-tally-client");
@@ -121,10 +129,11 @@ jest.mock("../evm-account-tx", () => {
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { MonadTopicPostClient } = jest.requireMock("../evm-topic-post-client");
+const { TopicPostClient } = jest.requireMock("../topic-post-client");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { MonadTopicVoteClient } = jest.requireMock("../evm-topic-vote-client");
+const { TopicVoteClient } = jest.requireMock("../topic-vote-client");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const { createEvmTopicOperations } = jest.requireMock("../evm-topic-operations");
 const { MonadAccountTxSigner } = jest.requireMock("../evm-account-tx");
 import {
   fetchDiscoveredTopics,
@@ -177,7 +186,7 @@ function makeWallet(identity: MonadIdentity): EvmChainWalletHandle {
     sendNative: jest.fn(),
     close: jest.fn(),
     // These are never dereferenced by real logic in this test file: every client that would
-    // actually use them (`MonadStampClient`/`MonadTopicPostClient`/`MonadTopicVoteClient`) is
+    // actually use them (`MonadStampClient`/`TopicPostClient`/`TopicVoteClient`) is
     // mocked above, so `MonadChain` only ever passes this bundle through to a mock constructor.
     pool: {
       prepareStampInventory: jest.fn().mockResolvedValue({
@@ -208,6 +217,11 @@ function withItems(wallet: EvmChainWalletHandle): EvmChainWalletHandle {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  createEvmTopicOperations.mockImplementation((wallet: EvmWalletHandle) => ({
+    chainIdentifier: wallet.cborNetwork ?? "monad-testnet",
+    submit: jest.fn(),
+    reconcile: jest.fn().mockResolvedValue(undefined),
+  }));
 });
 
 describe("createEvmChain: basic chain properties", () => {
@@ -562,35 +576,34 @@ describe("createEvmChain: createWallet", () => {
     expect(MonadAccountTxSigner).not.toHaveBeenCalled();
   });
 
-  it("caches getBalance across repeated calls within TTL and invalidates upon invalidateBalanceCache", async () => {
-    const uniqueSeed = {
-      mnemonic:
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-    };
-    const wallet = (await chain.createWallet(
-      uniqueSeed
-    )) as EvmChainWalletHandle;
-
+  it("caches primary balance reads within TTL while inventory refresh observes its own chain state", async () => {
+    const builder = new NativeEvmTransactionBuilder();
+    const readPrimary = jest.spyOn(builder, "getBalance");
+    const localChain = createEvmChain({ ...TEST_CONFIG, transactionBuilder: builder });
+    const wallet = (await localChain.createWallet({
+      mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    })) as EvmChainWalletHandle;
     let balance = 100_000n;
-    const getBalance = jest.fn(async () => balance);
-    wallet.provider.getBalance = getBalance;
-
-    // First call: queries provider
-    const bal1 = await wallet.getBalance();
-    expect(bal1).toBe(100_000n);
-    expect(getBalance).toHaveBeenCalledTimes(1);
-
-    // Second call within TTL: served from cache without RPC call
-    const bal2 = await wallet.getBalance();
-    expect(bal2).toBe(100_000n);
-    expect(getBalance).toHaveBeenCalledTimes(1);
-
-    // invalidateBalanceCache clears cached balance
-    wallet.invalidateBalanceCache?.();
-    balance = 250_000n;
-    const bal3 = await wallet.getBalance();
-    expect(bal3).toBe(250_000n);
-    expect(getBalance).toHaveBeenCalledTimes(2);
+    const main = wallet.mainAccount!.address.toLowerCase();
+    wallet.provider.getBalance = jest.fn(async address =>
+      String(address).toLowerCase() === main ? balance : 0n,
+    );
+    wallet.provider.getTransactionCount = jest.fn(async () => 0);
+    wallet.provider.getBlockNumber = jest.fn(async () => 100);
+    wallet.provider.getFeeData = jest.fn(async () => new FeeData(1n, 1n, 1n));
+    try {
+      expect(await wallet.getBalance()).toBe(100_000n);
+      expect(readPrimary).toHaveBeenCalledTimes(1);
+      expect(await wallet.getBalance()).toBe(100_000n);
+      expect(readPrimary).toHaveBeenCalledTimes(1);
+      wallet.invalidateBalanceCache?.();
+      balance = 250_000n;
+      expect(await wallet.getBalance()).toBe(250_000n);
+      expect(readPrimary).toHaveBeenCalledTimes(2);
+    } finally {
+      readPrimary.mockRestore();
+      await wallet.close();
+    }
   });
 
   it("preserves old hash-only evidence even when a receipt exists", async () => {
@@ -867,12 +880,18 @@ describe("createEvmChain: directMessages", () => {
 
 });
 
-describe("createEvmChain: one per-wallet queue for every account-spending operation", () => {
-  it("sequential topic operations run one at a time through the wallet queue", async () => {
+describe("createEvmChain: independent Forum operations", () => {
+  it("a pending topic post does not block an independent post", async () => {
     const chain = createEvmChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
     allowMockTopicAdmission(wallet);
+    const reconcile = jest.fn(() => new Promise<void>(() => undefined));
+    createEvmTopicOperations.mockImplementation(() => ({
+      chainIdentifier: TEST_CONFIG.networkId,
+      submit: jest.fn(),
+      reconcile,
+    }));
     const events: string[] = [];
     let running = 0;
     let maxRunning = 0;
@@ -892,7 +911,7 @@ describe("createEvmChain: one per-wallet queue for every account-spending operat
       finishFirst = resolve;
     });
     let callCount = 0;
-    (MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
+    (TopicPostClient as jest.Mock).mockImplementation(() => ({
       resumePendingOperations: jest.fn().mockResolvedValue(undefined),
       submitTopicPost: () =>
         track("topic-post", async () => {
@@ -925,27 +944,25 @@ describe("createEvmChain: one per-wallet queue for every account-spending operat
       voteWeightWei: 5_000n,
     });
     await new Promise((resolve) => setImmediate(resolve));
-    expect(events).toEqual([
-      "start:burn-prepare",
-      "end:burn-prepare",
-      "start:topic-post",
-    ]);
+    expect(events).toEqual(["start:topic-post", "start:topic-post", "end:topic-post"]);
+    expect(wallet.pool.prepareBurnAccount).not.toHaveBeenCalled();
     finishFirst();
     await Promise.all([post1, post2]);
-    expect(maxRunning).toBe(1);
+    expect(maxRunning).toBe(2);
+    expect(reconcile).not.toHaveBeenCalled();
   });
 });
 
 function allowMockTopicAdmission(wallet: ReturnType<typeof makeWallet>) {
   Object.assign(wallet, {
     walletState: {
-      runOperation: (work: (admission: object) => Promise<unknown>) =>
+      runLifetime: (work: (admission: object) => Promise<unknown>) =>
         work({ walletBindingId: "topic-test" }),
     },
   });
 }
 describe("createEvmChain: topics.post", () => {
-  it("submits a topic post via MonadTopicPostClient and returns its payloadDigest", async () => {
+  it("submits a topic post via TopicPostClient and returns its payloadDigest", async () => {
     const chain = createEvmChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
@@ -957,7 +974,7 @@ describe("createEvmChain: topics.post", () => {
       txHash: "0xtx",
       leaseIndex: 0,
     });
-    (MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
+    (TopicPostClient as jest.Mock).mockImplementation(() => ({
       submitTopicPost,
       resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     }));
@@ -972,19 +989,20 @@ describe("createEvmChain: topics.post", () => {
     });
 
     expect(result).toEqual({ payloadDigest: "feedface" });
-    expect(MonadTopicPostClient).toHaveBeenCalledWith(wallet);
+    expect(TopicPostClient).toHaveBeenCalledWith({
+      chainIdentifier: TEST_CONFIG.networkId,
+      topicOperations: expect.objectContaining({ chainIdentifier: TEST_CONFIG.networkId }),
+    });
+    expect(createEvmTopicOperations).toHaveBeenCalledWith(wallet);
     expect(submitTopicPost).toHaveBeenCalledTimes(1);
     const call = submitTopicPost.mock.calls[0][0];
     expect(call.topic).toBe("general");
     expect(call.direction).toBe("up");
-    expect(call.voteWeightWei).toBe(5_000n);
-    expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress);
+    expect(call.amountAtomic).toBe(5_000n);
+    expect(call).not.toHaveProperty("burnAddress");
     expect(hexlify(call.parentPostHash)).toBe("0x" + "aa".repeat(32));
-    // #273: the burn account is prepared (funded) first and that exact account is leased.
-    expect(wallet.pool.prepareBurnAccount).toHaveBeenCalledWith(
-      expect.objectContaining({ burnValueWei: 5_000n, gasReserveWei: 100n })
-    );
-    expect(call.leaseIndex).toBe(4);
+    expect(wallet.pool.prepareBurnAccount).not.toHaveBeenCalled();
+    expect(call).not.toHaveProperty("leaseIndex");
   });
 
   it("preserves an abandoned Monad post as a typed chain-neutral unknown outcome", async () => {
@@ -993,11 +1011,11 @@ describe("createEvmChain: topics.post", () => {
       MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
     );
     allowMockTopicAdmission(wallet);
-    const abandoned = new MonadTopicPostAbandonedError(
+    const abandoned = new TopicPostAbandonedError(
       "The paid post outcome is unknown",
       "feedface"
     );
-    (MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
+    (TopicPostClient as jest.Mock).mockImplementation(() => ({
       submitTopicPost: jest.fn().mockRejectedValue(abandoned),
       resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     }));
@@ -1018,7 +1036,7 @@ describe("createEvmChain: topics.post", () => {
 });
 
 describe("createEvmChain: topics.vote", () => {
-  it("casts a vote via MonadTopicVoteClient", async () => {
+  it("casts a vote via TopicVoteClient", async () => {
     const chain = createEvmChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
@@ -1030,7 +1048,7 @@ describe("createEvmChain: topics.vote", () => {
       txHash: "0xtx",
       leaseIndex: 0,
     });
-    (MonadTopicVoteClient as jest.Mock).mockImplementation(() => ({
+    (TopicVoteClient as jest.Mock).mockImplementation(() => ({
       castVote,
       resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     }));
@@ -1042,17 +1060,19 @@ describe("createEvmChain: topics.vote", () => {
       direction: "down",
     });
 
-    expect(MonadTopicVoteClient).toHaveBeenCalledWith(wallet);
+    expect(TopicVoteClient).toHaveBeenCalledWith({
+      chainIdentifier: TEST_CONFIG.networkId,
+      topicOperations: expect.objectContaining({ chainIdentifier: TEST_CONFIG.networkId }),
+    });
+    expect(createEvmTopicOperations).toHaveBeenCalledWith(wallet);
     expect(castVote).toHaveBeenCalledTimes(1);
     const call = castVote.mock.calls[0][0];
     expect(hexlify(call.targetPayloadHash)).toBe("0x" + "bb".repeat(32));
     expect(call.direction).toBe("down");
-    expect(call.voteWeightWei).toBe(7_000n);
-    expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress);
-    expect(wallet.pool.prepareBurnAccount).toHaveBeenCalledWith(
-      expect.objectContaining({ burnValueWei: 7_000n })
-    );
-    expect(call.leaseIndex).toBe(4);
+    expect(call.amountAtomic).toBe(7_000n);
+    expect(call).not.toHaveProperty("burnAddress");
+    expect(wallet.pool.prepareBurnAccount).not.toHaveBeenCalled();
+    expect(call).not.toHaveProperty("leaseIndex");
   });
 });
 
@@ -1169,7 +1189,7 @@ describe("canonical topic owner production composition", () => {
           maxFeePerGas: 2n, maxPriorityFeePerGas: 1n, type: 2 });
       }));
       material.dispose();
-      const rows: OutgoingTopicOperation[] = [
+      const rows: RetainedTopicOperation[] = [
         undefined,
         "protobuf",
         "cbor",
@@ -1187,7 +1207,12 @@ describe("canonical topic owner production composition", () => {
         payloadHashHex: "ab".repeat(32),
       }));
       try {
-        for (const row of rows) await journal.put(row);
+        // Historical rows are seeded in their original format. The current writer
+        // correctly refuses creating new version-1 operations.
+        for (const row of rows) await database.put(
+          `topic-operation:${row.kind}:${row.txHash.toLowerCase().replace(/^0x/, "")}`,
+          JSON.stringify(row),
+        );
       } finally {
         await database.close();
       }
@@ -1219,17 +1244,18 @@ describe("canonical topic owner production composition", () => {
       expect(wallet.walletState).toBeUndefined();
       expect(wallet.topicOperationJournal).toBeUndefined();
       expect(MonadAccountTxSigner).not.toHaveBeenCalled();
-      expect(MonadTopicPostClient).not.toHaveBeenCalled();
-      expect(MonadTopicVoteClient).not.toHaveBeenCalled();
+      expect(TopicPostClient).not.toHaveBeenCalled();
+      expect(TopicVoteClient).not.toHaveBeenCalled();
       await expect(createEvmChain(config).createWallet(seed)).rejects.toThrow(
         "manifest already has an owner"
       );
       // A rejected second opener must leave all original stores and the owner usable.
       expect(wallet.pool.records()).toHaveLength(5);
       await chain.topics.reconcileOperations({ wallet });
-      const privateHandle = (MonadTopicPostClient as jest.Mock).mock
-        .calls[0][0] as EvmWalletHandle;
-      expect(privateHandle.topicOperationJournal!.getAll()).toEqual(rows);
+      const privateHandle = createEvmTopicOperations.mock.calls[
+        createEvmTopicOperations.mock.calls.length - 1
+      ][0] as EvmWalletHandle;
+      expect(privateHandle.topicOperationJournal!.getRetainedLegacy()).toEqual(rows);
       await wallet.close();
       const reopened = level(join(location, "wallet-manifest"));
       const reopenedJournal = new LevelTopicOperationJournal(
@@ -1238,7 +1264,7 @@ describe("canonical topic owner production composition", () => {
       );
       try {
         await reopenedJournal.Open();
-        expect(reopenedJournal.getAll()).toEqual(rows);
+        expect(reopenedJournal.getRetainedLegacy()).toEqual(rows);
       } finally {
         await reopened.close();
       }
@@ -1276,20 +1302,19 @@ describe("canonical topic owner production composition", () => {
     const paused = new Promise<void>((resolve) => {
       finish = resolve;
     });
-    (MonadTopicPostClient as jest.Mock).mockImplementation(
-      (handle: EvmWalletHandle) => {
-        privateHandle = handle;
-        return {
-          resumePendingOperations: async () => {
+    createEvmTopicOperations.mockImplementation((handle: EvmWalletHandle) => {
+      privateHandle = handle;
+      return {
+        chainIdentifier: handle.cborNetwork,
+        submit: jest.fn(),
+        reconcile: async (kind: string) => {
+          if (kind === "post") {
             entered();
             await paused;
-          },
-        };
-      }
-    );
-    (MonadTopicVoteClient as jest.Mock).mockImplementation(() => ({
-      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
-    }));
+          }
+        },
+      };
+    });
     try {
       expect(wallet.identity.address.raw).toBe(expected.identity.address.raw);
       expect((await wallet.getReceiveAddress()).raw).toBe(
@@ -1394,8 +1419,8 @@ it("public revision-zero bridge rejects a valid foreign network descriptor witho
       })
     ).toThrow("actual installed wallet descriptor");
     expect(MonadAccountTxSigner).not.toHaveBeenCalled();
-    expect(MonadTopicPostClient).not.toHaveBeenCalled();
-    expect(MonadTopicVoteClient).not.toHaveBeenCalled();
+    expect(TopicPostClient).not.toHaveBeenCalled();
+    expect(TopicVoteClient).not.toHaveBeenCalled();
     expect(wallet.pool.records()).toEqual(statuses);
     const output = prepareMonadRevisionZeroExport(wallet, input);
     expect(output.network).toBe("monad-testnet");

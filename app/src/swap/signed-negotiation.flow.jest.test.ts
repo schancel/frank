@@ -209,6 +209,7 @@ let f: any,
   root: string,
   recovery: any,
   directories: any[] = []
+const flowSpies: jest.SpyInstance[] = []
 const mounted: any[] = [],
   reopenedWallets: any[] = []
 const previousChain = { ...activeChain }
@@ -329,6 +330,7 @@ beforeEach(async () => {
 })
 afterEach(async () => {
   mounted.splice(0).forEach(w => w.unmount())
+  flowSpies.splice(0).forEach(spy => spy.mockRestore())
   await recovery?.stop()
   recovery = undefined
   await mockStore.Close()
@@ -345,6 +347,23 @@ test.each([
 ])(
   'mounted composer signs exact offer and authenticated card signs response (stamp %s, %s)',
   async (stamp, decision) => {
+    // DOM trigger awaits Vue's render tick, not the async event handler. Observe the
+    // real handlers so signing/Level I/O completes before inspecting durable results.
+    const propose = jest.spyOn(Form.methods, 'propose')
+    const respond = jest.spyOn(Card.methods, 'respond')
+    flowSpies.push(propose, respond)
+    if (stamp > 0n) {
+      const send = f.chain.directMessages.send.bind(f.chain.directMessages)
+      flowSpies.push(
+        jest
+          .spyOn(f.chain.directMessages, 'send')
+          .mockImplementationOnce(async (...args: unknown[]) => {
+            // Exercise valid slow delivery beyond the former 300 x 5ms polling budget.
+            await new Promise(resolve => setTimeout(resolve, 2000))
+            return send(...args)
+          }),
+      )
+    }
     const chats = useChatStore(),
       address = f.bob.identity.displayAddress,
       conversationId = '01010101-0101-4101-8101-010101010101'
@@ -392,7 +411,10 @@ test.each([
     expect(form.find('[data-testid="swap-review-panel"]').exists()).toBe(true)
     expect(form.text()).toContain(conversationId)
     await form.find('[data-testid="swap-propose"]').trigger('click')
-    await until(() => f.requests.length > 0 && !negotiationCommandStatus.busy)
+    expect(propose).toHaveBeenCalledTimes(1)
+    await propose.mock.results[0].value
+    expect(f.requests).toHaveLength(1)
+    expect(negotiationCommandStatus.busy).toBe(false)
     await flushPromises()
     expect(negotiationCommandStatus.error).toBe('')
     const records = await mockStore.outgoingApplicationMessages({
@@ -526,7 +548,10 @@ test.each([
       confirmation.trigger('click'),
       confirmation.trigger('click'),
     ])
-    await until(() => f.requests.length >= 2 && !negotiationCommandStatus.busy)
+    expect(respond).toHaveBeenCalled()
+    await Promise.all(respond.mock.results.map(result => result.value))
+    expect(f.requests).toHaveLength(2)
+    expect(negotiationCommandStatus.busy).toBe(false)
     await flushPromises()
     expect(negotiationCommandStatus.error).toBe('')
     expect(

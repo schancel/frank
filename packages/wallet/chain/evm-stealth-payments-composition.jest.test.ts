@@ -993,3 +993,68 @@ test("reopens a wallet with retained deployed v2 unsigned native quotes without 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('retained v2 multi-source retry after a persisted first signature signs only the remaining original member', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-legacy-partial-sign-'))
+  const cfg = { ...config, walletStorageLocation: join(dir, 'wallet'), nativeAttemptStore: new InMemoryNativeTransactionAttemptStore() }
+  const destination = new Wallet('0x' + '62'.repeat(32))
+  let wallet: EvmChainWalletHandle | undefined
+  try {
+    wallet = await createEvmChain(cfg).createWallet(roots()) as EvmChainWalletHandle
+    const identityAddress = wallet.identity!.address.raw.toLowerCase()
+    expect(identityAddress).not.toBe(MAIN.toLowerCase())
+    await wallet.close()
+    wallet = undefined
+    const location = join(dir, (await readdir(dir)).find(name => name.startsWith('wallet-'))!)
+    const store = await LevelRecordStore.open<EvmStealthPreparation>(location, EVM_STEALTH_PREPARATION_NAMESPACE)
+    // Persist the allocation/authorization shape of the deployed 735176a3 writer.
+    const row: EvmStealthPreparation = {
+      version: 2, operationId: 'legacy-partial-sign', chainIdentifier: config.networkId,
+      asset: { kind: 'native' }, amountAtomic: '2000',
+      recipientSpendPublicKey: destination.signingKey.compressedPublicKey,
+      recipientAddress: destination.address.toLowerCase(), ephemeralPublicKey: destination.signingKey.compressedPublicKey,
+      feeAuthorization: { status: 'approved', maxNativeFeeAtomic: '42000' },
+      allocation: { sources: [MAIN.toLowerCase(), identityAddress].map(sourceAddress => ({ sourceAddress, recipientAmountAtomic: '1000', nativeBalanceAtomic: '22000', assetBalanceAtomic: '22000', estimatedNativeFeeAtomic: '21000' })) },
+    }
+    await store.put(row.operationId, row)
+    await store.close()
+    wallet = await createEvmChain(cfg).createWallet(roots()) as EvmChainWalletHandle
+    const firstNode = stubNode(wallet, 22000n, { [identityAddress]: 22000n })
+    const signing = jest.spyOn(SigningKey.prototype, 'sign')
+    const checkpoint = EvmNativeOperationJournal.prototype.checkpointSigned
+    const interruption = jest.spyOn(EvmNativeOperationJournal.prototype, 'checkpointSigned').mockImplementationOnce(async function (...args) {
+      await checkpoint.apply(this, args)
+      throw new Error('synthetic interruption after first durable signature')
+    })
+    const request = { operationId: row.operationId, chainIdentifier: row.chainIdentifier, asset: row.asset, recipientSpendPublicKey: getBytes(row.recipientSpendPublicKey), amountAtomic: 2000n, maxNativeFeeAtomic: 42000n }
+    await expect(wallet.stealthPayments!.prepare(request)).rejects.toThrow('synthetic interruption')
+    interruption.mockRestore()
+    const partial = wallet.getNativeOperations!().find(operation => operation.preparationId === `stealth-payment:${row.operationId}`)!
+    expect(partial.members).toHaveLength(2)
+    expect(partial.members[0]!.signed).not.toBeNull()
+    expect(partial.members[1]!.signed).toBeNull()
+    const firstSignature = partial.members[0]!.signed!
+    const originalUnsigned = partial.members.map(member => member.unsignedTransaction)
+    expect(signing).toHaveBeenCalledTimes(1)
+    expect(firstNode.broadcast).not.toHaveBeenCalled()
+    await wallet.close()
+    wallet = await createEvmChain(cfg).createWallet(roots()) as EvmChainWalletHandle
+    expect(signing).toHaveBeenCalledTimes(1)
+    const retryNode = stubNode(wallet, 22000n, { [identityAddress]: 22000n })
+    const completed = await wallet.stealthPayments!.prepare(request)
+    const original = wallet.getNativeOperations!().find(operation => operation.operationId === partial.operationId)!
+    expect(original.preparationId).toBe(partial.preparationId)
+    expect(original.members.map(member => member.unsignedTransaction)).toEqual(originalUnsigned)
+    expect(original.members[0]!.signed).toEqual(firstSignature)
+    expect(original.members[1]!.signed).not.toBeNull()
+    expect(completed.members.map(member => member.rawTransaction)).toEqual(original.members.map(member => member.signed!.rawTransaction))
+    expect(signing).toHaveBeenCalledTimes(2)
+    expect(wallet.getNativeOperations!()).toHaveLength(1)
+    expect(retryNode.broadcast).not.toHaveBeenCalled()
+    expect((await wallet.stealthPayments!.prepare(request)).members).toEqual(completed.members)
+    expect(signing).toHaveBeenCalledTimes(2)
+  } finally {
+    await wallet?.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

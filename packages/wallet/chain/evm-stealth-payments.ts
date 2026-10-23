@@ -376,6 +376,10 @@ export function createEvmStealthPayments(
     row: EvmStealthPreparation,
     journal: EvmNativeOperation,
   ): PreparedStealthPayment => ({
+    ...(sharedNativePreparation(row) && row.messageStamp ? { messageStamp: {
+      amountAtomic: BigInt(row.messageStamp.amountAtomic),
+      maxNativeFeeAtomic: BigInt(row.messageStamp.maxNativeFeeAtomic),
+    } } : {}),
     operationId: row.operationId,
     chainIdentifier: row.chainIdentifier,
     asset: { ...row.asset },

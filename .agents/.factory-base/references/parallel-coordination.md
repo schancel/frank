@@ -23,13 +23,13 @@ Start bounded workers with a fresh, context-minimized session and a self-contain
 
 Prefer a shallow topology: coordinator to subsystem workers, followed by explicit integration and verification. A worker may further delegate only a truly independent subproblem while preserving the same scope, authority, and handoff obligations.
 
-Track worker outcomes as `running`, `evidence_returned`, or `scheduling_failed`, and rebuild the wait set from the live agent registry before each wait. An ended worker with no evidence becomes `scheduling_failed` and leaves the wait set; never resume it. Reconstruct the same authorized task from the frozen revision and observable invariant in a fresh context. The parent is blocked only when the same concrete impasse recurs for at least three consecutive parent-goal turns after fresh assignment, safe local execution, and every other ready dependency are exhausted.
+Track worker outcomes as `running`, `evidence_returned`, or `scheduling_failed`, and rebuild the wait set for workers this coordinator launched from its live agent registry before each wait. That registry is not a cross-harness ownership inventory; reconcile repository-wide durable claims through [work-claims](work-claims.md) before dispatch. An ended worker with no evidence becomes `scheduling_failed` and leaves the wait set; never resume it. Reconstruct the same authorized task from the frozen revision and observable invariant in a fresh context. The parent is blocked only when the same concrete impasse recurs for at least three consecutive parent-goal turns after fresh assignment, safe local execution, and every other ready dependency are exhausted.
 
 Do not delegate duplicate investigations or overlapping file or semantic scopes. While workers run, the coordinator advances independent integration, verification, or ready work rather than narrating or polling.
 
 ## Workspace isolation
 
-Parallel production edits use separate worktrees or equivalently isolated workspaces based on the same exact revision. Never let multiple workers edit one shared checkout concurrently. Before assignment, inspect active workers, worktrees, branches, and claimed file and semantic scopes for overlap.
+Parallel production edits use separate worktrees or equivalently isolated workspaces based on the same exact revision. Never let multiple workers edit one shared checkout concurrently. Before assignment, inspect active workers, worktrees, branches, claimed file and semantic scopes, and the clone's shared [local workspace state](local-workspace-state.md) for overlap.
 
 Record each worker's bounded scope, base revision, and non-secret workspace identity on the item as a [claim](work-claims.md). Branch names and worker messages alone are not durable ownership.
 

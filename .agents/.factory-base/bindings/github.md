@@ -16,6 +16,8 @@ Skills speak this binding when `.agents/binding` sets `tracker: github` (the def
 | packet | Posted on the issue or handed to a worker; not a substitute for the issue |
 | land | `gh pr merge --squash`. The squash message carries the reviewed tip SHA and, for a fix, the base revision and both outcomes. Distinct features are not combined into one squash. |
 
+When a consuming repository opts into [boundary-load evidence](../references/boundary-load.md), post or link the separate `software-factory/boundary-load-evidence/v1` JSON from the terminal issue comment or pull request. Do not place it inside `work-claim:v1`; ownership parsers must remain unaffected. The emitter reports locally and never posts by itself.
+
 ## Scripts
 
 - `.agents/scripts/ticket_poset.py` reads open issues and native `blockedBy` edges, prints dependency waves. Pass `--repo owner/name` (defaults to `gh repo view`).
@@ -62,7 +64,7 @@ Review the candidate that will land. GitHub's squash button rewrites SHAs; that 
 
 If a consuming repo treats commit identity as evidence (see [pyramid.md](pyramid.md)), it must not use this land rule.
 
-GitHub's native [Stacked Pull Requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) feature auto-retargets the next PR in a stack on merge — but only when the PRs are backed by that formal stack (created via its own tooling; merging one through the ordinary REST/CLI merge path errors, asking for the async stack-merge API instead). An ordinary pull request whose `--base` simply happens to be another branch is not that — `gh pr create --base <branch>`, which is what a coordinator or `$implement` worker normally does, never creates a formal stack. `gh pr merge --delete-branch` deletes the head branch immediately, and for an ordinary (non-formal-stack) base relationship GitHub does not retarget the dependent pull request to the default branch — it closes it, irrecoverably. Land or retarget every dependent pull request before deleting a branch anything else is based on; see [work-claims.md](../references/work-claims.md#workspace-cleanup).
+GitHub's native [Stacked Pull Requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) feature auto-retargets the next PR in a stack on merge — but only when the PRs are backed by that formal stack (created via its own tooling; merging one through the ordinary REST/CLI merge path errors, asking for the async stack-merge API instead). An ordinary pull request whose `--base` simply happens to be another branch is not that — `gh pr create --base <branch>`, which is what a coordinator or `$implement` worker normally does, never creates a formal stack. `gh pr merge --delete-branch` deletes the head branch immediately, and for an ordinary (non-formal-stack) base relationship GitHub does not retarget the dependent pull request to the default branch — it closes it, irrecoverably. Land or retarget every dependent pull request before deleting a branch anything else is based on; see [work-claims.md](../references/work-claims.md#post-integration-synchronization-and-cleanup).
 
 ## Publishing boundary
 

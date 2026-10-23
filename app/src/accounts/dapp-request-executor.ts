@@ -605,14 +605,23 @@ export async function executeApprovedDappRequest(
       request.params && typeof request.params === 'object'
         ? (request.params as any)
         : {}
+    const approvedAccount = request.solanaAccountAddress
+    if (approvedAccount && approvedAccount !== signer.publicKey)
+      throw new Error(
+        'The approved Solana account changed before signing; reject and reconnect.',
+      )
     if (request.method === 'solana_connect') {
       const { PublicKey } = await import('@solana/web3.js')
       const publicKey = new PublicKey(signer.publicKey).toBytes()
       return { address: signer.publicKey, publicKey: Array.from(publicKey) }
     }
+    if (!approvedAccount)
+      throw new Error('No Solana account was captured for this approval')
+    if (p.account && p.account !== approvedAccount)
+      throw new Error(
+        'Requested Solana account does not match the approved account',
+      )
     if (request.method === 'solana_signMessage') {
-      if (p.account && p.account !== signer.publicKey)
-        throw new Error('Requested Solana account does not match Frank')
       const signature = await signer.signMessage(
         asBytes(p.message, 'Solana message'),
       )
@@ -622,8 +631,6 @@ export async function executeApprovedDappRequest(
       request.method === 'solana_signTransaction' ||
       request.method === 'solana_signAndSendTransaction'
     ) {
-      if (p.account && p.account !== signer.publicKey)
-        throw new Error('Requested Solana account does not match Frank')
       const signed = await signer.signTransaction(
         asBytes(p.transaction, 'Solana transaction'),
       )

@@ -535,6 +535,7 @@ describe('approved dApp request executor', () => {
         origin: ORIGIN,
         method: 'solana_signMessage',
         params: { message: Array.from(message), account: account.address },
+        solanaAccountAddress: account.address,
       },
       fakeSession(),
     )) as { signature: number[] }
@@ -545,6 +546,31 @@ describe('approved dApp request executor', () => {
         Uint8Array.from(account.publicKey),
       ),
     ).toBe(true)
+  })
+
+  it('refuses to sign when the Solana account changes after approval preview, even without params.account', async () => {
+    const otherKey = await Keypair.fromSeed(new Uint8Array(32).fill(42))
+    const signMessage = jest.fn(async () => new Uint8Array(64))
+    const session = fakeSession()
+    session.createDappSolanaSigner = async () => ({
+      publicKey: otherKey.publicKey.toBase58(),
+      signMessage,
+      signTransaction: async (bytes: Uint8Array) => bytes,
+    })
+
+    await expect(
+      executeApprovedDappRequest(
+        {
+          id: 'sol-account-switch',
+          origin: ORIGIN,
+          method: 'solana_signMessage',
+          params: { message: [1, 2, 3] },
+          solanaAccountAddress: SOLANA_KEY.publicKey.toBase58(),
+        },
+        session,
+      ),
+    ).rejects.toThrow('approved Solana account changed')
+    expect(signMessage).not.toHaveBeenCalled()
   })
 
   it('signs and submits a serialized Solana transfer through the configured chain RPC', async () => {
@@ -603,6 +629,7 @@ describe('approved dApp request executor', () => {
             account: SOLANA_KEY.publicKey.toBase58(),
             chain: 'solana:devnet',
           },
+          solanaAccountAddress: SOLANA_KEY.publicKey.toBase58(),
         },
         fakeSession(),
       )

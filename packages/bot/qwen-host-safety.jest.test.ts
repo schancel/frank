@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import { randomBytes } from "crypto";
-import { Wallet, computeAddress, getBytes } from "ethers";
+import { Wallet, computeAddress, getBytes, hexlify } from "ethers";
 import { toHex } from "@frank/codec";
 import { deriveDomainRoot } from "@frank/domain-roots";
 import {
@@ -26,6 +26,8 @@ import { FrankBotHost } from "../bot-framework/src/bot-host";
 import { LevelBotStateStore } from "../bot-framework/src/state-store";
 import { PassThrough } from "stream";
 import { MODEL_FAILED_TEXT, QwenBot } from "./src/bots/qwen-bot";
+import { Outbox } from "./src/bots/money";
+import { LevelOutgoingMessageStore, type StoredMessage } from "@frank/wallet/chain/canonical-dm";
 import { FAILED_REPLY_TEXT } from "../bot-framework/src/bot-host";
 import {
   replyMessageId,
@@ -33,6 +35,8 @@ import {
 } from "../bot-framework/src/inbound-operation-store";
 import type { BotContext } from "../bot-framework/src/types";
 import {
+  DirectMessageAlreadyAttemptedError,
+  DirectMessageStampBelowFeeError,
   directMessageNotAttempted,
   isDirectMessageNotAttempted,
   type DirectMessageReceived,
@@ -1399,6 +1403,7 @@ describe("with the real canonical wallet", () => {
       phase: "delivered",
     };
     const submitted: string[] = [];
+    const submittedBodies: string[] = [];
     const fetch: CanonicalFetch = async (url, init) => {
       const request = {
         body: new Uint8Array(init.body!),
@@ -1406,6 +1411,7 @@ describe("with the real canonical wallet", () => {
       };
       const identity = restoreCanonicalRequest(request).identity;
       submitted.push(identity.payload_hash);
+      submittedBodies.push(hexlify(request.body));
       const phase = relayState.phase;
       if (phase === "down") throw new Error("connect ECONNREFUSED");
       const answer = new TextEncoder().encode(
@@ -1552,6 +1558,7 @@ describe("with the real canonical wallet", () => {
       botWallet,
       relayState,
       submitted,
+      submittedBodies,
       rejections,
       prompt,
       pass,
@@ -1595,23 +1602,35 @@ describe("with the real canonical wallet", () => {
     expect(new Set(submitted)).toEqual(new Set([first]));
   }, 60_000);
 
-  // The dry wallet. On 05c93db0 this throw came after the wallet withdrew its not-attempted
-  // label, so the host held the generated answer for good, also after the wallet was funded.
-  it("pays nothing while the wallet has no funds, and delivers the reply once, for one payment, after funds arrive", async () => {
-    const { botWallet, submitted, rejections, prompt, pass, intents } =
+  it("retains the original encrypted reply while unfunded and delivers that message after funding", async () => {
+    const { botWallet, submitted, submittedBodies, rejections, prompt, pass, intents } =
       await setUp(false);
+    const writes: StoredMessage[] = [];
+    const put = LevelOutgoingMessageStore.prototype.put;
+    jest
+      .spyOn(LevelOutgoingMessageStore.prototype, "put")
+      .mockImplementation(async function (this: LevelOutgoingMessageStore, row) {
+        await put.call(this, row);
+        writes.push(structuredClone(this.get(row.consumerId)!));
+      });
+    await pass();
+    const original = writes.find((row) => row.construction)!;
+    expect(original.construction?.payload).toBeTruthy();
+    expect(original.request).toBeUndefined();
+    expect(original.payments).toEqual([]);
+    expect(botWallet.getNativeOperations!()).toEqual([]);
     await pass();
     await pass();
-    await pass();
-    // What the throw leaves behind in the wallet: no intent, no link, nothing at the relay.
+    expect(String(rejections[0])).toMatch(/No funds cover a stamp/);
     expect(rejections.length).toBeGreaterThanOrEqual(2);
-    for (const refusal of rejections) {
-      expect(String(refusal)).toMatch(/No funds cover a stamp/);
-      // The wallet does not label it "not attempted", although it created nothing.
-      expect(isDirectMessageNotAttempted(refusal)).toBe(false);
-    }
+    expect(
+      rejections
+        .slice(1)
+        .every((error) => error instanceof DirectMessageAlreadyAttemptedError)
+    ).toBe(true);
+    expect(rejections.every((error) => !isDirectMessageNotAttempted(error))).toBe(true);
     expect(submitted).toEqual([]);
-    expect(await intents()).toEqual([]);
+    expect(await intents()).toEqual([original.digest]);
     expect(await done(prompt)).toBe(false);
     expect(reply).toHaveBeenCalledTimes(1);
     expect(await stagedText(prompt.payloadDigest)).toBe("re:P1");
@@ -1621,38 +1640,71 @@ describe("with the real canonical wallet", () => {
     await pass();
     expect(await done(prompt)).toBe(true);
     expect(reply).toHaveBeenCalledTimes(1);
-    expect(new Set(submitted).size).toBe(1);
-    expect(await intents()).toEqual([submitted[0]]);
+    const completed = writes.find((row) => row.request)!;
+    expect(completed.construction).toEqual(original.construction);
+    expect(completed.consumerId).toBe(original.consumerId);
+    expect(completed.digest).toBe(original.digest);
+    expect(submitted.length).toBeGreaterThan(0);
+    expect(new Set(submitted)).toEqual(new Set([original.digest]));
+    expect(new Set(submittedBodies)).toEqual(new Set(["0x" + completed.request!.body]));
+    const signed = botWallet.getNativeOperations!().flatMap((row) =>
+      row.members.map((member) => member.signed!.rawTransaction)
+    );
+    expect(signed.length).toBeGreaterThan(0);
+    expect(await intents()).toEqual([original.digest]);
     await pass();
-    expect(new Set(submitted).size).toBe(1);
+    expect(new Set(submitted)).toEqual(new Set([original.digest]));
+    expect(
+      botWallet.getNativeOperations!().flatMap((row) =>
+        row.members.map((member) => member.signed!.rawTransaction)
+      )
+    ).toEqual(signed);
   }, 60_000);
 
-  // The fee floor, on the real wallet: money a bot OWES is paid whatever its size; anything
-  // else below the floor is not.
-  it("pays an owed amount below the chain's fee floor as a settlement, and refuses the same amount when it is not one", async () => {
-    const { chain, botWallet, prompt } = await setUp(true);
-    const floor = await chain.directMessages.minimumStamp!({
-      wallet: botWallet,
+  it("retains an owed amount below the wallet fee floor without inflating it or marking it delivered", async () => {
+    const { chain, botWallet, prompt, submitted } = await setUp(true);
+    expect(await chain.directMessages.minimumStamp!({ wallet: botWallet })).toBe(42_000n);
+    const ctx = qwen().context;
+    const outbox = new Outbox("fee-floor-debt");
+    await outbox.owe(ctx, "refund", {
+      to: prompt.senderAddress.raw,
+      items: [{ type: "text", text: "yours" }],
+      valueWei: 10n,
     });
-    expect(floor).toBe(42_000n);
-    const to = prompt.senderAddress.raw;
-    const say = (stampValueWei: bigint, settlement: boolean) =>
-      qwen().context.sendMessage(to, [{ type: "text", text: "yours" }], undefined, {
-        stampValueWei,
-        ...(settlement ? { settlement: true } : {}),
-      });
+    await outbox.settle(ctx);
+    expect(await outbox.owedWei(ctx)).toBe(10n);
+    expect(await outbox.sent(ctx, "refund")).toBe(false);
+    expect(await outbox.failed(ctx, "refund")).toBe(false);
+    expect(mockSend.mock.calls.at(-1)![0]).toMatchObject({
+      stampValue: 10n,
+      settlement: true,
+    });
+    const attempted = mockSend.mock.calls.at(-1)![0] as Send;
+    await expect(chain.directMessages.send(attempted)).rejects.toBeInstanceOf(
+      DirectMessageStampBelowFeeError
+    );
+    expect(botWallet.getNativeOperations!()).toEqual([]);
+    expect(submitted).toEqual([]);
+    // Reopening the outbox does not erase the debt or increase the requested payment.
+    const reopened = new Outbox("fee-floor-debt");
+    await reopened.settle(ctx);
+    expect(await reopened.owedWei(ctx)).toBe(10n);
+    expect(await reopened.sent(ctx, "refund")).toBe(false);
+    expect(mockSend.mock.calls.every(([sent]) => (sent as Send).stampValue === 10n)).toBe(
+      true
+    );
+    expect(submitted).toEqual([]);
 
-    // A refund of 10 wei the bot owes: paid, in one transfer of 10 wei.
-    const owed = await say(10n, true);
-    expect(owed.stampValueWei).toBe(10n);
-    expect(owed.stampPayments.map((payment) => payment.valueWei)).toEqual([10n]);
-    const sent = mockSend.mock.calls[mockSend.mock.calls.length - 1][0] as Send;
-    expect(sent).toMatchObject({ stampValue: 10n, settlement: true });
-
-    // The same amount named without being a settlement goes out with no stamp.
-    const named = await say(10n, false);
+    // An optional below-floor stamp is still omitted, rather than becoming a debt.
+    const named = await ctx.sendMessage(
+      prompt.senderAddress.raw,
+      [{ type: "text", text: "yours" }],
+      undefined,
+      { stampValueWei: 10n }
+    );
     expect(named.stampValueWei).toBe(0n);
     expect(named.stampPayments).toEqual([]);
+    expect(await reopened.owedWei(ctx)).toBe(10n);
   }, 60_000);
 
   // Restart recovery of a PAID reply on the real wallet (stubbed RPC and relay HTTP; no real

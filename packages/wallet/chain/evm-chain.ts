@@ -163,6 +163,7 @@ import type { HDSeed } from "./active-chain";
 import { EvmChangePool } from "../evm-change-pool";
 import { EvmSubAccountPool } from "../evm-account-pool";
 import { EvmSpendPool } from "../evm-spend-pool";
+import { deriveDappPersona } from "../dapp-bridge/persona-keys";
 import {
   EvmWallet,
   evmWalletInternals,
@@ -2154,7 +2155,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             refresh: transactionSetRuntime.refresh,
             operations: () => transactionOwner.nativeJournal!.list(),
             readOperation: id => transactionOwner.nativeJournal!.readOperation(id),
-            getCoins: () => coinList.all().filter(coin => transactionOwner.nativeJournal!.canSelect(coin.account, coin.nonce) &&
+            getCoins: () => coinList.all().filter(coin => coin.origin !== 'legacy-subaccount' && transactionOwner.nativeJournal!.canSelect(coin.account, coin.nonce) &&
               !transactionSetRuntime.coinListSync.isDirty(coin.account) && pool.accountClaimedBy(coin.account) === undefined),
           });
           const paymentStore = contactPayments;
@@ -2683,6 +2684,72 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 }
                 return result;
               } finally { invalidateBalanceRead(); }
+            },
+            async ensureLegacySubAccount(ref) {
+              const persona = deriveDappPersona(keyring.masterNode, ref);
+              const address = persona.address.toLowerCase();
+              const latest = coinList.latestOf(address);
+              if (!latest || latest.state === 'spent') {
+                const [nonce, balance] = await Promise.all([
+                  provider.getTransactionCount(address, 'latest'),
+                  provider.getBalance(address, 'latest'),
+                ]);
+                const current = coinList.latestOf(address);
+                if (!current || (current.state === 'spent' && nonce > current.nonce)) {
+                  await coinList.put({
+                    account: address,
+                    nonce,
+                    privateKey: persona.node.privateKey,
+                    valueWei: balance,
+                    origin: 'legacy-subaccount',
+                  });
+                }
+              } else if (latest.origin !== 'legacy-subaccount') {
+                throw new Error('Persona address belongs to another wallet coin origin');
+              }
+              return { raw: persona.address };
+            },
+            async sendLegacyFromSubAccount(params) {
+              requirePeerSyncDelivery();
+              if (getAddress(params.expectedSourceAddress).toLowerCase() !==
+                  deriveDappPersona(keyring.masterNode, params.source).address.toLowerCase())
+                throw new Error('Approved subaccount does not belong to this wallet');
+              const source = await wallet.ensureLegacySubAccount!(params.source);
+              const prior = await transactionSetPreparer.readOperation(params.operationId);
+              if (!prior) {
+                transactionSetRuntime.coinListSync.markDirty(source.raw);
+                await transactionSetRuntime.coinListSync.refreshAccounts([source.raw]);
+                await transactionSetRuntime.refresh();
+              }
+              const gasLimit = params.gasLimit ??
+                (prior ? Transaction.from(prior.members[0]!.unsignedTransaction).gasLimit :
+                  ((await provider.estimateGas({
+                    from: source.raw,
+                    to: params.recipient.raw,
+                    value: params.value,
+                    data: params.data ?? '0x',
+                  })) * 115n / 100n));
+              const prepared = await transactionOwner.runLifetime(() =>
+                transactionSetPreparer.constructLegacySubAccountTransaction({
+                  operationId: params.operationId,
+                  sourceAddress: source.raw,
+                  destination: params.recipient.raw,
+                  valueWei: params.value,
+                  ...(params.data === undefined ? {} : { calldata: params.data }),
+                  ...(params.nonce === undefined ? {} : { nonce: params.nonce }),
+                  gasLimit,
+                  ...(params.type === undefined ? {} : { type: params.type }),
+                  ...(params.gasPriceWei === undefined ? {} : { gasPriceWei: params.gasPriceWei }),
+                  ...(params.maxFeePerGasWei === undefined ? {} : { maxFeePerGasWei: params.maxFeePerGasWei }),
+                  ...(params.maxPriorityFeePerGasWei === undefined ? {} : { maxPriorityFeePerGasWei: params.maxPriorityFeePerGasWei }),
+                  ...(params.maxFeeWei === undefined ? {} : { maxFeeWei: params.maxFeeWei }),
+                })
+              );
+              await transactionSetSubmission.sendTransaction(prepared);
+              invalidateBalanceRead();
+              const row = await transactionSetPreparer.readOperation(params.operationId);
+              if (!row) throw new Error('Missing durable subaccount operation');
+              return { operationId: row.operationId, txHash: prepared.bundle[0]!.txHash };
             },
             // Contract calls (a swap and its approvals). Same queues, journal and recovery as a
             // native send; see `EvmLegacyConsolidator.sendContractCall`.

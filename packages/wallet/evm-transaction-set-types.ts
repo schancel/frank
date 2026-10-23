@@ -34,6 +34,22 @@ export interface ConstructEvmTransactionSetRequest {
   /** Captured minimum for each recipient transaction; never recomputed during replay. */
   readonly minimumPaymentWei?: bigint
 }
+/** One approved transaction from an owned legacy subaccount. Its source is never in ordinary
+ * bundle selection; the wallet reserves exactly this account and nonce. */
+export interface ConstructLegacySubAccountRequest {
+  readonly operationId: string
+  readonly sourceAddress: string
+  readonly destination: string
+  readonly valueWei: bigint
+  readonly calldata?: string
+  readonly nonce?: number
+  readonly gasLimit?: bigint
+  readonly type?: 0 | 2
+  readonly gasPriceWei?: bigint
+  readonly maxFeePerGasWei?: bigint
+  readonly maxPriorityFeePerGasWei?: bigint
+  readonly maxFeeWei?: bigint
+}
 export interface PreparedEvmTransactionSet {
   readonly operationId: string
   readonly chainIdentifier: string

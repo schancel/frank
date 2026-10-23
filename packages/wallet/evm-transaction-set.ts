@@ -16,6 +16,7 @@ import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsErr
 import { EvmNativeJournalError, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import type {
   ConstructEvmTransactionSetRequest,
+  ConstructLegacySubAccountRequest,
   EvmTransactionSetPreparerOptions,
   EvmTransactionSetPolicy,
   PreparedEvmTransaction,
@@ -23,6 +24,7 @@ import type {
 } from './evm-transaction-set-types'
 export type {
   ConstructEvmTransactionSetRequest,
+  ConstructLegacySubAccountRequest,
   EvmTransactionSetPreparerOptions,
   EvmTransactionSetPolicy,
   PreparedEvmTransaction,
@@ -395,6 +397,136 @@ export class EvmTransactionSetPreparer {
 
   constructLegacyTransactionSet(request: ConstructEvmTransactionSetRequest): Promise<PreparedEvmTransactionSet> {
     return this.buildOnce(request, undefined, true)
+  }
+
+  /** A dApp/legacy subaccount spends only its own current coin. The signed member uses the
+   * existing transaction-set journal and submission path, with no separate nonce or retry log. */
+  constructLegacySubAccountTransaction(request: ConstructLegacySubAccountRequest): Promise<PreparedEvmTransactionSet> {
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(request.operationId))
+      return Promise.reject(new Error('Invalid legacy subaccount operation ID'))
+    return this.options.coins.constructTransactionSetOnce(request.operationId, async () => {
+      const { coins, journal } = this.options
+      const sourceAddress = getAddress(request.sourceAddress).toLowerCase()
+      const destination = getAddress(request.destination).toLowerCase()
+      const data = (request.calldata ?? '0x').toLowerCase()
+      if (!/^0x(?:[0-9a-f]{2})*$/.test(data) || request.valueWei < 0n ||
+          (request.valueWei === 0n && data === '0x'))
+        throw new Error('Invalid legacy subaccount transaction')
+      const prior = await journal.refreshPreparation(prefix + request.operationId)
+      if (prior) {
+        this.validateLegacySubAccountReplay(request, prior, sourceAddress, destination, data)
+        if (this.getOperation(request.operationId)) this.restoreRow(prior)
+        return this.result(prior, null)
+      }
+      await this.recoverCancelledOperations(request.operationId)
+      const policy = this.options.policy()
+      const gasLimit = request.gasLimit ?? policy.paymentGasLimit(data, destination)
+      this.validatePolicy(policy, gasLimit, data)
+      const type = request.type ?? (request.maxFeePerGasWei !== undefined ||
+        request.maxPriorityFeePerGasWei !== undefined ? 2 : 0)
+      if (type === 0 && (request.maxFeePerGasWei !== undefined || request.maxPriorityFeePerGasWei !== undefined))
+        throw new Error('Legacy gas price conflicts with EIP-1559 fees')
+      if (type === 2 && request.gasPriceWei !== undefined)
+        throw new Error('EIP-1559 fees conflict with legacy gas price')
+      const gasPrice = request.gasPriceWei ?? policy.gasPriceWei
+      const maxFeePerGas = request.maxFeePerGasWei ?? policy.gasPriceWei
+      const priorityFee = request.maxPriorityFeePerGasWei ?? maxFeePerGas
+      const feeCap = type === 2 ? maxFeePerGas : gasPrice
+      if (gasLimit <= 0n || feeCap <= 0n || priorityFee < 0n || priorityFee > maxFeePerGas)
+        throw new Error('Invalid legacy subaccount fee')
+      const maximumFee = gasLimit * feeCap
+      if (request.maxFeeWei !== undefined && maximumFee > request.maxFeeWei)
+        throw new Error('Legacy subaccount fee exceeds authorized bound')
+      const beforeSelection = coins.all()
+      const selected = coins.reserveTransactionSetSources({
+        holder: request.operationId,
+        amountWei: request.valueWei,
+        feeWei: maximumFee,
+        head: policy.head,
+        sourceOrder: ['legacy-subaccount'],
+        maxCoins: 1,
+        canSelect: coin => coin.account === sourceAddress && journal.canSelect(coin.account, coin.nonce) &&
+          (this.options.canSelectCoin?.(coin) ?? true) && this.dependencyReady(coin, policy),
+      })
+      if (!selected || selected.length !== 1)
+        throw new EvmTransactionSetInsufficientFundsError()
+      const source = selected[0]!.coin
+      try {
+        if (request.nonce !== undefined && request.nonce !== source.nonce)
+          throw new Error('Requested nonce differs from the wallet subaccount nonce')
+        const tx = Transaction.from({
+          type,
+          chainId: BigInt(journal.binding.nativeChainId),
+          nonce: source.nonce,
+          to: destination,
+          value: request.valueWei,
+          data,
+          gasLimit,
+          ...(type === 2
+            ? { maxFeePerGas, maxPriorityFeePerGas: priorityFee }
+            : { gasPrice }),
+        })
+        const member: EvmNativeMemberPlan = {
+          source: { kind: 'coin', address: source.account },
+          unsignedTransaction: tx.unsignedSerialized,
+          dependencies: [],
+          transactionSet: {
+            role: 'payment', logicalIndex: 0,
+            intendedValueWei: request.valueWei.toString(),
+            balanceBeforeWei: source.valueWei.toString(),
+            balanceAfterWei: (source.valueWei - request.valueWei - maximumFee).toString(),
+            refundPending: true,
+          },
+        }
+        tx.signature = new SigningKey(source.privateKey).sign(tx.unsignedHash)
+        const stage: EvmTransactionSetStage = {
+          startIndex: 0, memberCount: 1, intendedValueWei: request.valueWei.toString(),
+          calldata: data, destinations: [destination], legacy: true,
+          ...(request.maxFeeWei === undefined ? {} : { maxFeeWei: request.maxFeeWei.toString() }),
+        }
+        const row = await journal.prepare({
+          kind: 'transaction-set', preparationId: prefix + request.operationId,
+          recipient: destination, intendedValueWei: request.valueWei.toString(),
+          transactionSetStages: [stage], members: [member],
+        }, [tx.serialized])
+        this.restoreRow(row)
+        await coins.checkpointTransactionSetReservations(request.operationId)
+        return this.result(row, null)
+      } catch (error) {
+        const retained = await journal.refreshPreparation(prefix + request.operationId).catch(() => undefined)
+        if (retained) this.restoreRow(retained)
+        else coins.abandonTransactionSetSources(request.operationId, [source], beforeSelection)
+        throw error
+      }
+    }).then(async result => {
+      const row = await this.readOperation(request.operationId)
+      if (!row) throw new Error('Missing durable legacy subaccount operation')
+      this.validateLegacySubAccountReplay(request, row,
+        getAddress(request.sourceAddress).toLowerCase(),
+        getAddress(request.destination).toLowerCase(),
+        (request.calldata ?? '0x').toLowerCase())
+      return result
+    })
+  }
+
+  private validateLegacySubAccountReplay(request: ConstructLegacySubAccountRequest,
+    row: EvmNativeOperation, source: string, destination: string, data: string): void {
+    const member = row.members[0]
+    if (row.cancelled || row.kind !== 'transaction-set' || row.members.length !== 1 ||
+        member?.transactionSet?.role !== 'payment' || member.source.address !== source ||
+        !member.signed || !row.transactionSetStages?.[0]?.legacy ||
+        row.intendedValueWei !== request.valueWei.toString())
+      throw new Error('Legacy subaccount operation ID conflicts with original intent')
+    const tx = Transaction.from(member.unsignedTransaction)
+    if (tx.to?.toLowerCase() !== destination || tx.data !== data ||
+        (request.nonce !== undefined && tx.nonce !== request.nonce) ||
+        (request.gasLimit !== undefined && tx.gasLimit !== request.gasLimit) ||
+        (request.type !== undefined && tx.type !== request.type) ||
+        (request.gasPriceWei !== undefined && tx.gasPrice !== request.gasPriceWei) ||
+        (request.maxFeePerGasWei !== undefined && tx.maxFeePerGas !== request.maxFeePerGasWei) ||
+        (request.maxPriorityFeePerGasWei !== undefined && tx.maxPriorityFeePerGas !== request.maxPriorityFeePerGasWei) ||
+        (request.maxFeeWei !== undefined && BigInt(row.maximumFeeWei) > request.maxFeeWei))
+      throw new Error('Legacy subaccount operation ID conflicts with original intent')
   }
 
   private buildOnce(request: ConstructEvmTransactionSetRequest, stageId?: string, legacy = false): Promise<PreparedEvmTransactionSet> {

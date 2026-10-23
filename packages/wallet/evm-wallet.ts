@@ -251,6 +251,8 @@ export class EvmWallet implements EvmChainWalletHandle {
   retryUnresolvedNativeTransaction!: EvmChainWalletHandle["retryUnresolvedNativeTransaction"];
   sendNative!: EvmChainWalletHandle["sendNative"];
   sendLegacy!: EvmChainWalletHandle["sendLegacy"];
+  ensureLegacySubAccount!: EvmChainWalletHandle["ensureLegacySubAccount"];
+  sendLegacyFromSubAccount!: EvmChainWalletHandle["sendLegacyFromSubAccount"];
   sendContractCall!: EvmChainWalletHandle["sendContractCall"];
   runOwnTransfer!: EvmChainWalletHandle["runOwnTransfer"];
   getContractCallFunds!: EvmChainWalletHandle["getContractCallFunds"];

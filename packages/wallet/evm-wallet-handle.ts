@@ -20,6 +20,8 @@ import type { EvmSpendPool } from "./evm-spend-pool";
 import type { WalletHandle, NativeWalletHandle } from "./chain/active-chain";
 import type { Timestamp, RelayBinding } from "@frank/codec";
 import type { RolePoint } from "../role-keys/src";
+import type { DappPersonaRef } from "./dapp-bridge/persona-keys";
+import type { ChainAddress, ContractCallHandle } from "./chain/chain-wallet";
 
 export interface EvmWalletHandle {
   /** Narrow Forum journal mutation admission; transport never holds this gate. */
@@ -78,6 +80,25 @@ export interface EvmChainWalletHandle
   readonly chainIdentifier: string;
   readonly networkId: string;
   readonly identity: MonadIdentity;
+  /** Derives and inventories this deterministic persona in the same EVM coin list. */
+  ensureLegacySubAccount(ref: DappPersonaRef): Promise<ChainAddress>;
+  /** Sends one approved transaction from this wallet-owned subaccount at its current nonce.
+   * Ordinary `sendLegacy` and transaction bundles never select these coins. */
+  sendLegacyFromSubAccount(params: {
+    operationId: string;
+    source: DappPersonaRef;
+    expectedSourceAddress: string;
+    recipient: ChainAddress;
+    value: bigint;
+    data?: string;
+    nonce?: number;
+    gasLimit?: bigint;
+    type?: 0 | 2;
+    gasPriceWei?: bigint;
+    maxFeePerGasWei?: bigint;
+    maxPriorityFeePerGasWei?: bigint;
+    maxFeeWei?: bigint;
+  }): Promise<ContractCallHandle>;
   /** Records the one-time account of a stealth payment made to this wallet as a coin in its
    * durable coin list. Recording a known one changes nothing. A mailbox read does this itself for
    * every stealth item it returns; this is for a payment learned of some other way. */

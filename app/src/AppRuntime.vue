@@ -241,7 +241,7 @@ export default defineComponent({
     const router = useRouter()
     // A site waiting on a connect decision gets its custody-derived persona address.
     const offApprovalsChanged = isBrowserExtensionRuntime()
-      ? onRuntimeMessage((message, sender) => {
+      ? onRuntimeMessage(async (message, sender) => {
           const m = message as {
             channel?: unknown
             type?: unknown

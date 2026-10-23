@@ -113,6 +113,54 @@ it('constructs one complete signed set with private change, exact source conserv
 
 })
 
+it('sends only from an approved legacy subaccount and keeps its successor in the same coin list', async () => {
+  const { preparer, coins, options, journal } = await setup([1000000n])
+  const persona = signer(3)
+  await coins.put({
+    account: persona.address,
+    privateKey: persona.privateKey,
+    nonce: 0,
+    valueWei: 500000n,
+    origin: 'legacy-subaccount',
+  })
+  const request = {
+    operationId: 'site-request-one',
+    sourceAddress: persona.address,
+    destination: signer(50).address,
+    valueWei: 100000n,
+    calldata: '0x1234',
+    gasLimit: 50000n,
+  }
+  const prepared = await preparer.constructLegacySubAccountTransaction(request)
+  expect(prepared.bundle).toHaveLength(1)
+  expect(prepared.otherTransactions).toEqual([])
+  expect(Transaction.from(prepared.bundle[0]!.rawTransaction).from).toBe(persona.address)
+  expect(prepared.bundle[0]!.nonce).toBe(0)
+  expect(coins.heldBy(request.operationId)).toHaveLength(1)
+  await expect(preparer.constructTransactionSet({
+    operationId: 'ordinary', amountWei: 1200000n, kdf,
+  })).rejects.toThrow('Insufficient')
+  const reopened = new EvmTransactionSetPreparer(options)
+  expect(await reopened.constructLegacySubAccountTransaction(request)).toEqual(prepared)
+  expect(journal.list()).toHaveLength(1)
+  await expect(reopened.constructLegacySubAccountTransaction({
+    ...request, destination: signer(51).address,
+  })).rejects.toThrow('conflicts with original intent')
+  await expect(reopened.constructLegacySubAccountTransaction({
+    ...request, operationId: 'other-request',
+  })).rejects.toThrow('Insufficient')
+  const hash = prepared.bundle[0]!.txHash
+  const blockHash = '0x' + '11'.repeat(32)
+  await reopened.markExposed(request.operationId, 0)
+  await reopened.recordObservation(request.operationId, 0, {
+    state: 'included-success', transactionHash: hash, blockHash,
+    blockNumber: 101, transactionIndex: 0, feeWei: '45000',
+  }, { blockHash, blockNumber: 101, nonce: 1, balanceWei: '355000' })
+  expect(coins.get(persona.address.toLowerCase(), 1)).toMatchObject({
+    origin: 'legacy-subaccount', valueWei: 355000n, state: 'unspent',
+  })
+})
+
 it('reserves disjoint inputs and fresh targets across concurrent operations and a reopened preparer', async () => {
   const { preparer, options, journal } = await setup()
   const [a, b] = await Promise.all(

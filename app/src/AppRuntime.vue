@@ -1,4 +1,14 @@
 <template>
+  <q-banner
+    v-if="dappRecoveryError"
+    class="bg-negative text-white"
+    data-test="dapp-recovery-error"
+  >
+    {{ $t('dappRecovery.pending') }} {{ dappRecoveryError }}
+    <template #action
+      ><q-btn flat :label="$t('dappRecovery.retry')" @click="retryDappRecovery"
+    /></template>
+  </q-banner>
   <q-dialog v-model="contactBookOpen">
     <contact-book-dialog :contact-click="contactClicked" />
   </q-dialog>
@@ -87,8 +97,12 @@ import {
 import type { PendingDappApproval } from '../src-bex/background'
 import {
   executeApprovedDappRequest,
+  fundDappPersona,
+  recoverPriorDappAttemptsOnUnlock,
   type ApprovedDappRequest,
 } from './accounts/dapp-request-executor'
+import { openEvmWallet } from './accounts/evm-wallets'
+import type { EvmChainWalletHandle } from '@frank/wallet/chain'
 import {
   handlePageSyncNavigationRequest,
   handlePageSyncPairingRequest,
@@ -239,6 +253,18 @@ export default defineComponent({
     } = storeToRefs(chatStore)
 
     const router = useRouter()
+    const dappRecoveryError = ref('')
+    const retryDappRecovery = async () => {
+      if (!isBrowserExtensionRuntime() || accountStatus.status !== 'ready')
+        return
+      try {
+        await recoverPriorDappAttemptsOnUnlock()
+        dappRecoveryError.value = ''
+      } catch (error) {
+        dappRecoveryError.value =
+          error instanceof Error ? error.message : String(error)
+      }
+    }
     // A site waiting on a connect decision gets its custody-derived persona address.
     const offApprovalsChanged = isBrowserExtensionRuntime()
       ? onRuntimeMessage((message, sender) => {
@@ -309,6 +335,125 @@ export default defineComponent({
                     error instanceof Error ? error.message : String(error),
                 },
               }))
+          }
+          if (
+            m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+            m?.type === 'fund-dapp-persona'
+          ) {
+            const extensionApi = getRawExtensionApi()
+            const backgroundUrl =
+              extensionApi?.runtime?.getURL?.('background.js')
+            if (
+              !backgroundUrl ||
+              sender?.id !== extensionApi?.runtime?.id ||
+              sender?.url !== backgroundUrl
+            )
+              return undefined
+            if (accountStatus.status !== 'ready')
+              return {
+                ok: false,
+                error: {
+                  code: 4900,
+                  message: 'Unlock Frank before funding this address.',
+                },
+              }
+            return (async () => {
+              try {
+                const funding = m as {
+                  chainIdentifier?: unknown
+                  origin?: unknown
+                  useBurnerPersona?: unknown
+                  address?: unknown
+                  amountAtomic?: unknown
+                }
+                if (
+                  typeof funding.chainIdentifier !== 'string' ||
+                  typeof funding.origin !== 'string' ||
+                  typeof funding.address !== 'string' ||
+                  typeof funding.amountAtomic !== 'string' ||
+                  !/^(?:0|[1-9][0-9]*)$/.test(funding.amountAtomic)
+                )
+                  throw new Error('Invalid dApp funding request')
+                const source =
+                  funding.useBurnerPersona === false
+                    ? { kind: 'shared' as const, slot: 0 }
+                    : { kind: 'site' as const, origin: funding.origin }
+                const result = await fundDappPersona({
+                  chainIdentifier: funding.chainIdentifier,
+                  source,
+                  expectedAddress: funding.address,
+                  amountAtomic: BigInt(funding.amountAtomic),
+                })
+                return { ok: true, result }
+              } catch (error) {
+                return {
+                  ok: false,
+                  error: {
+                    code: -32603,
+                    message:
+                      error instanceof Error ? error.message : String(error),
+                  },
+                }
+              }
+            })()
+          }
+          if (
+            m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
+            m?.type === 'read-only-evm-rpc'
+          ) {
+            const extensionApi = getRawExtensionApi()
+            const backgroundUrl =
+              extensionApi?.runtime?.getURL?.('background.js')
+            if (
+              !backgroundUrl ||
+              sender?.id !== extensionApi?.runtime?.id ||
+              sender?.url !== backgroundUrl
+            )
+              return undefined
+            if (accountStatus.status !== 'ready')
+              return {
+                ok: false,
+                error: {
+                  code: 4900,
+                  message: 'Unlock Frank to read this chain.',
+                },
+              }
+            return (async () => {
+              try {
+                const request = m as {
+                  chainIdentifier?: unknown
+                  method?: unknown
+                  params?: unknown
+                }
+                if (
+                  typeof request.chainIdentifier !== 'string' ||
+                  typeof request.method !== 'string' ||
+                  !Array.isArray(request.params)
+                )
+                  throw new Error('Invalid read-only RPC request')
+                const { wallet } = await openEvmWallet(request.chainIdentifier)
+                const provider = (wallet as EvmChainWalletHandle)
+                  .provider as unknown as {
+                  send?: (method: string, params: unknown[]) => Promise<unknown>
+                }
+                if (typeof provider.send !== 'function')
+                  throw new Error('Wallet relay RPC is unavailable')
+                const result = await provider.send(
+                  request.method,
+                  request.params,
+                )
+                return { ok: true, result }
+              } catch (error) {
+                return {
+                  ok: false,
+                  error: {
+                    code: -32603,
+                    message:
+                      error instanceof Error ? error.message : String(error),
+                  },
+                }
+              }
+            })()
           }
           if (
             m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
@@ -460,6 +605,7 @@ export default defineComponent({
       status => {
         if (status === 'ready') {
           void syncActivePersonaToExtension()
+          void retryDappRecovery()
           const runCuratedSync = () => {
             fetchCuratedDefaultContacts({
               relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
@@ -539,6 +685,8 @@ export default defineComponent({
       totalUnread,
       getRelayData: myProfile,
       tabCoordinator,
+      dappRecoveryError,
+      retryDappRecovery,
       takeoverHere,
       handleBlindWakeupSyncEvent,
       consumeInitialNotificationClickParam,

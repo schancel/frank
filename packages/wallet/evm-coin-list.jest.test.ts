@@ -36,6 +36,26 @@ async function listWith(
 }
 
 describe('the coin list', () => {
+  it('never selects a legacy subaccount for ordinary payments, even with a permissive filter', async () => {
+    const { list } = await listWith([MON / 10n])
+    await list.put({
+      account: accounts[1]!.address,
+      nonce: 0,
+      privateKey: accounts[1]!.privateKey,
+      valueWei: MON,
+      origin: 'legacy-subaccount',
+    })
+    expect(
+      list.select({
+        holder: 'ordinary',
+        amountWei: MON / 2n,
+        feeReserveWei: FEE,
+        filter: () => true,
+      }),
+    ).toBeUndefined()
+    expect(list.get(at(accounts[1]!), 0)?.state).toBe('unspent')
+  })
+
   it('two payments built at the same moment never take the same coin', async () => {
     const { list } = await listWith([MON / 10n, MON / 10n, MON / 10n])
     const [a, b] = await Promise.all(

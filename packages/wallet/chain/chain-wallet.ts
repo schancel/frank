@@ -366,6 +366,8 @@ export interface NativeWalletHandle {
   sendLegacy?(params: {
     recipient: ChainAddress;
     value: bigint;
+    /** Stable caller identity for replaying the same approved EVM funding operation. */
+    operationId?: string;
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
     priorityFeeMicroLamports?: bigint;

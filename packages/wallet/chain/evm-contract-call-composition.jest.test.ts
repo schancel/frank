@@ -85,6 +85,7 @@ function stubNode(
   jest
     .spyOn(p, 'getBlock')
     .mockResolvedValue({ hash: blockHash, number: 1 } as Block)
+  jest.spyOn(p, 'getBlockNumber').mockResolvedValue(100)
   jest
     .spyOn(p, 'getBalance')
     .mockImplementation(async a => balances.get(String(a).toLowerCase()) ?? 0n)
@@ -138,6 +139,9 @@ function stubNode(
     })
   return {
     broadcast,
+    fund: (address: string, value: bigint) => {
+      balances.set(address.toLowerCase(), value)
+    },
     loseReplies: (value: boolean) => {
       lose = value
     },
@@ -149,6 +153,144 @@ function stubNode(
 }
 
 afterEach(() => jest.restoreAllMocks())
+
+test('a dApp legacy subaccount sends through the composed wallet journal from its own nonce', async () => {
+  const wallet = (await createEvmChain(config).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const node = stubNode(wallet, 50_000n)
+    const source = { kind: 'site' as const, origin: 'https://app.uniswap.org' }
+    await expect(wallet.sendLegacyFromSubAccount!({
+      operationId: 'wrong-account', source,
+      expectedSourceAddress: MAIN,
+      recipient: { raw: ROUTER }, value: 100_000n,
+    })).rejects.toThrow('Approved subaccount')
+    expect(node.broadcast).not.toHaveBeenCalled()
+    const account = await wallet.ensureLegacySubAccount!(source)
+    node.fund(account.raw, 500_000n)
+    wallet.invalidateBalanceCache?.()
+    expect(await wallet.getBalance()).toBe(550_000n)
+    await expect(wallet.sendLegacy!({
+      recipient: { raw: ROUTER }, value: 100_000n,
+    })).rejects.toThrow('Insufficient')
+    const sent = await wallet.sendLegacyFromSubAccount!({
+      operationId: 'uniswap-call-one', source,
+      expectedSourceAddress: account.raw,
+      recipient: { raw: ROUTER }, value: 100_000n,
+      data: '0x1234', gasLimit: 50_000n,
+    })
+    expect(sent.txHash).toMatch(/^0x[0-9a-f]{64}$/i)
+    expect(node.broadcast).toHaveBeenCalledTimes(1)
+    const raw = node.broadcast.mock.calls[0]![0]
+    const tx = Transaction.from(raw)
+    expect(tx.from?.toLowerCase()).toBe(account.raw.toLowerCase())
+    expect(tx.nonce).toBe(0)
+    expect(tx.to?.toLowerCase()).toBe(ROUTER.toLowerCase())
+    expect(tx.data).toBe('0x1234')
+    await expect(wallet.reconcileLegacySubAccountAttempt({
+      source, account: account.raw, nonce: tx.nonce,
+      signedTransaction: raw, transactionHash: '0x' + '00'.repeat(32),
+    })).rejects.toThrow('invalid signed bytes')
+    expect(await wallet.reconcileLegacySubAccountAttempt({
+      source, account: account.raw, nonce: tx.nonce,
+      signedTransaction: raw, transactionHash: sent.txHash,
+    })).toEqual({ status: 'included', transactionHash: sent.txHash })
+    expect(wallet.transactionSetPreparer!.getOperation('uniswap-call-one')).toBeDefined()
+    await wallet.sendLegacyFromSubAccount!({
+      operationId: 'uniswap-native-two', source,
+      expectedSourceAddress: account.raw,
+      recipient: { raw: ROUTER }, value: 10_000n,
+    })
+    expect(node.broadcast).toHaveBeenCalledTimes(2)
+    const native = Transaction.from(node.broadcast.mock.calls[1]![0])
+    expect(native.from?.toLowerCase()).toBe(account.raw.toLowerCase())
+    expect(native.nonce).toBe(1)
+    expect(native.data).toBe('0x')
+  } finally {
+    await wallet.close()
+  }
+})
+
+test('the existing legacy send funds a persona once under a stable operation ID', async () => {
+  const wallet = (await createEvmChain(config).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const node = stubNode(wallet, 5n * 10n ** 18n)
+    const address = await wallet.ensureLegacySubAccount!({ kind: 'site', origin: 'https://app.uniswap.org' })
+    const request = {
+      operationId: 'legacy-site-uniswap-funding-one',
+      recipient: address,
+      value: 10n ** 18n,
+    }
+    const first = await wallet.sendLegacy!(request)
+    const count = node.broadcast.mock.calls.length
+    expect(count).toBeGreaterThan(0)
+    expect(await wallet.sendLegacy!(request)).toMatchObject({ txHash: first.txHash })
+    expect(node.broadcast).toHaveBeenCalledTimes(count)
+    expect((await wallet.getBalanceParts!()).sending).toBeGreaterThanOrEqual(10n ** 18n)
+    const fromSite = await wallet.sendLegacyFromSubAccount!({
+      operationId: 'site-funded-followup',
+      source: { kind: 'site', origin: 'https://app.uniswap.org' },
+      expectedSourceAddress: address.raw,
+      recipient: { raw: ROUTER },
+      value: 1_000n,
+    })
+    expect(fromSite.txHash).toMatch(/^0x[0-9a-f]{64}$/i)
+  } finally {
+    await wallet.close()
+  }
+})
+
+test('a funded persona does not inflate ordinary stealth payment capacity', async () => {
+  const wallet = (await createEvmChain(config).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const node = stubNode(wallet, 0n)
+    const address = await wallet.ensureLegacySubAccount!({ kind: 'site', origin: 'https://app.uniswap.org' })
+    node.fund(address.raw, 1_000_000n)
+    const quote = await wallet.stealthPayments!.quote!({
+      operationId: 'quote-excludes-persona',
+      chainIdentifier: 'monad-testnet',
+      asset: { kind: 'native' },
+      recipientSpendPublicKey: wallet.identity!.compressedPubKey,
+      amountAtomic: 1_000n,
+    })
+    expect(quote.nativeBalanceAtomic).toBe(0n)
+    expect(quote.assetBalanceAtomic).toBe(0n)
+  } finally {
+    await wallet.close()
+  }
+})
+
+test('an uncertain subaccount send retries its original signed transaction after wallet reopen', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-dapp-subaccount-'))
+  const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
+  const source = { kind: 'site' as const, origin: 'https://app.uniswap.org' }
+  const params = {
+    operationId: 'uniswap-uncertain-one', source,
+    expectedSourceAddress: '',
+    recipient: { raw: ROUTER }, value: 100_000n,
+    data: '0x1234', gasLimit: 50_000n,
+  }
+  let wallet = (await createEvmChain(cfg).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const first = stubNode(wallet, 1_000_000n)
+    const address = await wallet.ensureLegacySubAccount!(source)
+    params.expectedSourceAddress = address.raw
+    first.fund(address.raw, 500_000n)
+    first.loseReplies(true)
+    const pending = await wallet.sendLegacyFromSubAccount!(params)
+    const raw = wallet.transactionSetPreparer!.getOperation(params.operationId)!.members[0]!.signed!.rawTransaction
+    expect(pending.txHash).toBe(Transaction.from(raw).hash)
+    await wallet.close()
+    wallet = (await createEvmChain(cfg).createWallet(roots())) as EvmChainWalletHandle
+    const second = stubNode(wallet, 1_000_000n, { [address.raw]: 500_000n })
+    const retried = await wallet.sendLegacyFromSubAccount!(params)
+    expect(retried.txHash).toBe(pending.txHash)
+    expect(second.broadcast).toHaveBeenCalledTimes(1)
+    expect(second.broadcast).toHaveBeenCalledWith(raw)
+  } finally {
+    await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
 
 test('a historical BIP39 wallet swaps when main and identity share an address, retaining recovery after restart', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-legacy-swap-'))

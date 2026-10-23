@@ -38,7 +38,8 @@ import {
 
 /** Where a coin's key came from. `root`: the wallet's main account; `identity`: its identity
  * account; `deterministic`: an HD sub-account of the keyring; `stealth` / `stamp`: a one-time
- * account whose key came from a received message. */
+ * account whose key came from a received message. `legacy-subaccount` is held for an explicit
+ * source-bound send and is never selected for an ordinary payment bundle. */
 export type EvmCoinListOrigin =
   | 'change'
   | 'root'
@@ -46,6 +47,7 @@ export type EvmCoinListOrigin =
   | 'deterministic'
   | 'stealth'
   | 'stamp'
+  | 'legacy-subaccount'
 
 export type EvmCoinListState =
   | 'unspent'
@@ -723,6 +725,7 @@ export class EvmCoinList {
     const free = this.all().filter(
       coin =>
         coin.state === 'unspent' &&
+        coin.origin !== 'legacy-subaccount' &&
         this.accountSelectable(coin.account) &&
         coin.valueWei > params.feeReserveWei &&
         (coin.spendableFromBlock === undefined ||

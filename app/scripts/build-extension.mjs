@@ -506,6 +506,9 @@ export const APPROVAL_PAGE_HTML = `<!DOCTYPE html>
       .approval-persona-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
       .approval-persona-label { font-weight: 600; }
       .approval-persona-hint { color: var(--muted); font-size: 12px; }
+      .approval-funding { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; }
+      .approval-funding-label { font-weight: 600; }
+      .approval-funding-input { box-sizing: border-box; width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 10px; font: inherit; background: var(--bg); color: var(--fg); }
       .approval-address { font-size: 11px; word-break: break-all; }
       .approval-details pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; max-height: 220px; overflow: auto; background: var(--card); padding: 8px; border-radius: 8px; }
       .approval-actions { position: sticky; bottom: 0; flex: 0 0 auto; margin-top: auto; display: flex; gap: 10px; padding-top: 8px; background: var(--bg); }

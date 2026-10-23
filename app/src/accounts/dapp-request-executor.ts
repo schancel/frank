@@ -1,18 +1,162 @@
 import {
-  Signature,
-  Transaction,
   TypedDataEncoder,
   getBytes,
   hashMessage,
   keccak256,
   toUtf8Bytes,
 } from 'ethers'
-import { getRawExtensionApi } from '../../src-bex/runtime-adapter'
+import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
 import {
-  getChainRegistryEntry,
-  PROTOCOL_CHAINS,
-} from '@frank/wallet/chain/chains-registry'
+  canonicalDappPersonaOrigin,
+  type DappPersonaRef,
+} from '@frank/wallet/dapp-bridge/persona-keys'
+import type { EvmChainWalletHandle } from '@frank/wallet/chain'
 import type { accountSession } from './session'
+import { openEvmWallet } from './evm-wallets'
+import { getRawExtensionApi } from '../../src-bex/runtime-adapter'
+
+interface PriorDappEvmAttempt {
+  requestId?: string
+  chainIdentifier: string
+  account: string
+  nonce: number
+  intentHash: string
+  signedTransaction: string
+  transactionHash: string
+}
+
+/** The old extension store is read only during cutover. It retains signed attempts until
+ * the wallet has checked their chain outcome, so an upgrade cannot authorize a second pay. */
+async function priorDappAttempts(): Promise<readonly PriorDappEvmAttempt[]> {
+  const extension = getRawExtensionApi()
+  if (!extension) return []
+  const storage = extension.storage?.local
+  if (typeof storage?.get !== 'function')
+    throw new Error('Previous dApp transaction recovery storage is unavailable')
+  const stored = await storage.get('frankDappEvmAttemptsV1')
+  const rows: unknown = stored?.frankDappEvmAttemptsV1
+  if (rows === undefined) return []
+  if (
+    !Array.isArray(rows) ||
+    rows.some(
+      row =>
+        !row ||
+        typeof row !== 'object' ||
+        (row.requestId !== undefined && typeof row.requestId !== 'string') ||
+        typeof row.chainIdentifier !== 'string' ||
+        typeof row.account !== 'string' ||
+        !Number.isSafeInteger(row.nonce) ||
+        typeof row.intentHash !== 'string' ||
+        !/^0x[0-9a-f]{64}$/i.test(row.intentHash) ||
+        typeof row.signedTransaction !== 'string' ||
+        !/^0x[0-9a-f]+$/i.test(row.signedTransaction) ||
+        typeof row.transactionHash !== 'string' ||
+        !/^0x[0-9a-f]{64}$/i.test(row.transactionHash),
+    )
+  )
+    throw new Error('Stored dApp transaction recovery state is invalid')
+  return rows as PriorDappEvmAttempt[]
+}
+
+/** On unlock, reconcile every prior signed extension attempt even if its site never opens
+ * again. The old origin binding supplies the private derivation reference, while the wallet
+ * verifies the signed source account and exact bytes before any rebroadcast. */
+export async function recoverPriorDappAttemptsOnUnlock(
+  options: DappRequestExecutorOptions = {},
+): Promise<number> {
+  const attempts = await priorDappAttempts()
+  if (!attempts.length) return 0
+  const storage = getRawExtensionApi()?.storage?.local
+  if (typeof storage?.get !== 'function')
+    throw new Error('Previous dApp recovery storage is unavailable')
+  const stored = await storage.get([
+    'frankDappOriginPersonas',
+    'frankDappSitePersonas',
+  ])
+  const bindings = stored?.frankDappOriginPersonas
+  const sites = stored?.frankDappSitePersonas
+  if (
+    (bindings !== undefined && (typeof bindings !== 'object' || !bindings)) ||
+    (sites !== undefined && (typeof sites !== 'object' || !sites))
+  )
+    throw new Error('Previous dApp account bindings are invalid')
+  for (const attempt of attempts) {
+    const binding = Object.entries(
+      (bindings ?? {}) as Record<string, unknown>,
+    ).find(
+      ([, value]) =>
+        value &&
+        typeof value === 'object' &&
+        typeof (value as { address?: unknown }).address === 'string' &&
+        (value as { address: string }).address.toLowerCase() ===
+          attempt.account.toLowerCase(),
+    )
+    const site = Object.entries((sites ?? {}) as Record<string, unknown>).find(
+      ([, value]) =>
+        typeof value === 'string' &&
+        value.toLowerCase() === attempt.account.toLowerCase(),
+    )
+    const source: DappPersonaRef | undefined = binding
+      ? (binding[1] as { isBurner?: unknown }).isBurner === false
+        ? { kind: 'shared', slot: 0 }
+        : { kind: 'site', origin: binding[0] }
+      : site
+      ? { kind: 'site', origin: site[0] }
+      : undefined
+    if (!source)
+      throw new Error(
+        `Previous dApp transaction needs its account binding restored: ${attempt.transactionHash}`,
+      )
+    const wallet = (
+      await (options.openEvmWallet ?? openEvmWallet)(attempt.chainIdentifier)
+    ).wallet as EvmChainWalletHandle
+    if (wallet.chainIdentifier !== attempt.chainIdentifier)
+      throw new Error('Previous dApp transaction chain changed')
+    await wallet.reconcileLegacySubAccountAttempt({
+      source,
+      account: attempt.account,
+      nonce: attempt.nonce,
+      signedTransaction: attempt.signedTransaction,
+      transactionHash: attempt.transactionHash,
+    })
+  }
+  return attempts.length
+}
+
+function priorIntentValue(value: unknown): string | null {
+  if (value === undefined || value === null) return null
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'bigint'
+  )
+    return BigInt(value).toString(10)
+  throw new Error('Invalid EVM transaction intent field')
+}
+
+function priorIntentHash(
+  chainIdentifier: string,
+  tx: Record<string, unknown>,
+): string {
+  return keccak256(
+    toUtf8Bytes(
+      JSON.stringify({
+        chainIdentifier,
+        from: typeof tx.from === 'string' ? tx.from.toLowerCase() : '',
+        to: typeof tx.to === 'string' ? tx.to.toLowerCase() : null,
+        value: priorIntentValue(tx.value ?? '0x0'),
+        data: typeof tx.data === 'string' ? tx.data.toLowerCase() : '0x',
+        requestedNonce: priorIntentValue(tx.nonce),
+        requestedType: priorIntentValue(tx.type),
+        gas: priorIntentValue(tx.gas ?? tx.gasLimit),
+        gasPrice: priorIntentValue(tx.gasPrice),
+        maxFeePerGas: priorIntentValue(tx.maxFeePerGas),
+        maxPriorityFeePerGas: priorIntentValue(tx.maxPriorityFeePerGas),
+        accessList: Array.isArray(tx.accessList) ? tx.accessList : null,
+      }),
+    ),
+  )
+}
 
 export interface ApprovedDappRequest {
   readonly id: string
@@ -28,120 +172,83 @@ export interface ApprovedDappRequest {
     | { kind: 'site'; origin: string }
 }
 
-export interface DappEvmAttempt {
-  readonly requestId?: string
-  readonly chainIdentifier: string
-  readonly account: string
-  readonly nonce: number
-  readonly intentHash: string
-  readonly signedTransaction: string
-  readonly transactionHash: string
-}
-
-export interface DappEvmAttemptStore {
-  read(): Promise<readonly DappEvmAttempt[]>
-  append(attempt: DappEvmAttempt): Promise<void>
-}
-
 export interface DappRequestExecutorOptions {
-  readonly attemptStore?: DappEvmAttemptStore
-  readonly evmRpc?: (chainIdentifier: string) => Promise<{
-    send(method: string, params: unknown[]): Promise<unknown>
-    close?(): void
-  }>
+  readonly openEvmWallet?: typeof openEvmWallet
 }
 
-const DAPP_EVM_ATTEMPTS_STORAGE_KEY = 'frankDappEvmAttemptsV1'
-const evmAdmissionTails = new Map<string, Promise<void>>()
-const evmJournalWriteTails = new Map<string, Promise<void>>()
-
-async function acquireKeyedLock(
-  tails: Map<string, Promise<void>>,
-  key: string,
-): Promise<() => void> {
-  if (typeof navigator !== 'undefined' && navigator.locks?.request) {
-    let markAcquired!: () => void
-    let rejectAcquired!: (error: unknown) => void
-    let releaseLock!: () => void
-    const acquired = new Promise<void>((resolve, reject) => {
-      markAcquired = resolve
-      rejectAcquired = reject
-    })
-    const holdLock = new Promise<void>(resolve => {
-      releaseLock = resolve
-    })
-    void navigator.locks
-      .request(`frank:${key}`, async lock => {
-        if (!lock) throw new Error(`Could not acquire dApp lock: ${key}`)
-        markAcquired()
-        await holdLock
-      })
-      .catch(rejectAcquired)
-    await acquired
-    return releaseLock
-  }
-
-  const previous = tails.get(key) ?? Promise.resolve()
-  let unlock!: () => void
-  const current = new Promise<void>(resolve => {
-    unlock = resolve
-  })
-  tails.set(key, current)
-  await previous
-  return () => {
-    unlock()
-    if (tails.get(key) === current) tails.delete(key)
-  }
-}
-
-const acquireEvmAdmissionLock = (key: string) =>
-  acquireKeyedLock(evmAdmissionTails, key)
-
-function extensionAttemptStore(): DappEvmAttemptStore {
-  const storage = getRawExtensionApi()?.storage?.local
-  if (!storage?.get || !storage.set)
-    throw new Error(
-      'Frank cannot safely submit without durable transaction recovery storage',
+/** A first top-up uses ordinary wallet send. The deterministic ID replays an uncertain first
+ * funding operation; a completed first top-up cannot silently masquerade as a new transfer. */
+export async function fundDappPersona(
+  params: {
+    chainIdentifier: string
+    source: DappPersonaRef
+    expectedAddress: string
+    amountAtomic: bigint
+  },
+  options: DappRequestExecutorOptions = {},
+): Promise<{ address: string; txHash?: string }> {
+  const entry = PROTOCOL_CHAINS[params.chainIdentifier]
+  if (
+    !entry ||
+    entry.family !== 'evm' ||
+    !entry.wallet ||
+    params.amountAtomic < 0n
+  )
+    throw new Error('Invalid dApp persona funding request')
+  const wallet = (await (options.openEvmWallet ?? openEvmWallet)(entry.id))
+    .wallet as EvmChainWalletHandle
+  if (wallet.chainIdentifier !== entry.id || !wallet.sendLegacy)
+    throw new Error('This wallet cannot fund a dApp subaccount')
+  const address = await wallet.ensureLegacySubAccount(params.source)
+  if (address.raw.toLowerCase() !== params.expectedAddress.toLowerCase())
+    throw new Error('Approved dApp subaccount does not belong to this wallet')
+  for (const attempt of await priorDappAttempts()) {
+    if (
+      attempt.chainIdentifier !== entry.id ||
+      attempt.account.toLowerCase() !== address.raw.toLowerCase()
     )
-  const read = async () => {
-    const result = await storage.get(DAPP_EVM_ATTEMPTS_STORAGE_KEY)
-    const rows = result?.[DAPP_EVM_ATTEMPTS_STORAGE_KEY]
-    if (rows === undefined) return []
-    if (!Array.isArray(rows))
-      throw new Error('Stored dApp transaction recovery state is invalid')
-    for (const row of rows) {
-      if (
-        !row ||
-        typeof row !== 'object' ||
-        (row.requestId !== undefined && typeof row.requestId !== 'string') ||
-        typeof row.chainIdentifier !== 'string' ||
-        typeof row.account !== 'string' ||
-        !Number.isSafeInteger(row.nonce) ||
-        typeof row.intentHash !== 'string' ||
-        !/^0x[0-9a-f]{64}$/i.test(row.intentHash) ||
-        typeof row.signedTransaction !== 'string' ||
-        !/^0x[0-9a-f]+$/i.test(row.signedTransaction) ||
-        typeof row.transactionHash !== 'string' ||
-        !/^0x[0-9a-f]{64}$/i.test(row.transactionHash)
+      continue
+    const recovered = await wallet.reconcileLegacySubAccountAttempt({
+      source: params.source,
+      account: attempt.account,
+      nonce: attempt.nonce,
+      signedTransaction: attempt.signedTransaction,
+      transactionHash: attempt.transactionHash,
+    })
+    if (recovered.status === 'pending')
+      throw new Error(
+        'An earlier transaction from this address is still pending; funding is paused',
       )
-        throw new Error('Stored dApp transaction recovery state is invalid')
-    }
-    return rows as DappEvmAttempt[]
   }
-  return {
-    read,
-    async append(attempt) {
-      const release = await acquireKeyedLock(evmJournalWriteTails, 'journal')
-      try {
-        const attempts = await read()
-        await storage.set({
-          [DAPP_EVM_ATTEMPTS_STORAGE_KEY]: [...attempts, attempt],
-        })
-      } finally {
-        release()
-      }
-    },
+  if (params.amountAtomic === 0n) {
+    if ((await wallet.provider.getBalance(address.raw)) <= 0n)
+      throw new Error(
+        'Enter an amount to fund this new dApp address before connecting',
+      )
+    return { address: address.raw }
   }
+  const operationId = `legacy-dappfund-${keccak256(
+    toUtf8Bytes(JSON.stringify([entry.id, address.raw.toLowerCase()])),
+  ).slice(2)}`
+  const previous = await wallet.transactionSetPreparer?.readOperation(
+    operationId,
+  )
+  if (
+    previous &&
+    previous.members.every(
+      member => member.observation.state === 'included-success',
+    )
+  )
+    throw new Error(
+      'This address was funded on its first connection. Clear the amount to reconnect; use Wallet for another top-up.',
+    )
+  const result = await wallet.sendLegacy({
+    operationId,
+    recipient: address,
+    value: params.amountAtomic,
+  })
+  await wallet.ensureLegacySubAccount(params.source)
+  return { address: address.raw, txHash: result.txHash }
 }
 
 function paramsArray(params: unknown): any[] {
@@ -163,13 +270,6 @@ function quantity(value: unknown, label: string): bigint {
 function stringValue(value: unknown, label: string): string {
   if (typeof value !== 'string') throw new Error(`Invalid ${label}`)
   return value
-}
-
-function rpcQuantity(value: unknown, method: string): string {
-  const result = stringValue(value, `RPC ${method} result`)
-  if (!/^0x[0-9a-f]+$/i.test(result))
-    throw new Error(`RPC ${method} returned an invalid quantity`)
-  return result
 }
 
 function asBytes(value: unknown, label: string): Uint8Array {
@@ -194,143 +294,6 @@ function requireApprovedPersonaAddress(
     throw new Error('This request is not bound to the approved site persona')
 }
 
-function normalizedIntentValue(value: unknown): string | null {
-  if (value === undefined || value === null) return null
-  if (
-    typeof value === 'string' ||
-    typeof value === 'number' ||
-    typeof value === 'bigint'
-  )
-    return BigInt(value).toString(10)
-  throw new Error('Invalid EVM transaction intent field')
-}
-
-function dappTransactionIntentHash(
-  chainIdentifier: string,
-  transaction: Record<string, unknown>,
-): string {
-  const data =
-    typeof transaction.data === 'string' ? transaction.data.toLowerCase() : '0x'
-  const accessList = Array.isArray(transaction.accessList)
-    ? transaction.accessList
-    : null
-  const intent = {
-    chainIdentifier,
-    from:
-      typeof transaction.from === 'string'
-        ? transaction.from.toLowerCase()
-        : '',
-    to:
-      typeof transaction.to === 'string' ? transaction.to.toLowerCase() : null,
-    value: normalizedIntentValue(transaction.value ?? '0x0'),
-    data,
-    requestedNonce: normalizedIntentValue(transaction.nonce),
-    requestedType: normalizedIntentValue(transaction.type),
-    gas: normalizedIntentValue(transaction.gas ?? transaction.gasLimit),
-    gasPrice: normalizedIntentValue(transaction.gasPrice),
-    maxFeePerGas: normalizedIntentValue(transaction.maxFeePerGas),
-    maxPriorityFeePerGas: normalizedIntentValue(
-      transaction.maxPriorityFeePerGas,
-    ),
-    accessList,
-  }
-  return keccak256(toUtf8Bytes(JSON.stringify(intent)))
-}
-
-async function retryExactEvmAttempt(
-  send: (method: string, params: unknown[]) => Promise<unknown>,
-  attempt: DappEvmAttempt,
-): Promise<string> {
-  try {
-    const hash = await send('eth_sendRawTransaction', [
-      attempt.signedTransaction,
-    ])
-    if (
-      typeof hash === 'string' &&
-      hash.toLowerCase() === attempt.transactionHash.toLowerCase()
-    )
-      return attempt.transactionHash
-    throw new Error(
-      'EVM RPC returned a hash that does not match the stored transaction',
-    )
-  } catch (sendError) {
-    const observed = await send('eth_getTransactionByHash', [
-      attempt.transactionHash,
-    ])
-    if (observed && typeof observed === 'object') return attempt.transactionHash
-    throw sendError
-  }
-}
-
-export async function createConfiguredDappEvmRpc(chainIdentifier: string) {
-  const entry = getChainRegistryEntry(chainIdentifier)
-  if (
-    !entry ||
-    entry.id !== chainIdentifier ||
-    entry.family !== 'evm' ||
-    !entry.wallet ||
-    !entry.allowedProxyCapabilities.includes('json-rpc') ||
-    entry.nativeChainId === undefined
-  )
-    throw new Error(
-      `No configured EVM JSON-RPC capability for ${chainIdentifier}`,
-    )
-  const rpcUrl = entry.rpcUrl ?? entry.rpcUrls?.[0]
-  if (!rpcUrl) throw new Error(`No configured EVM RPC endpoint for ${entry.id}`)
-  const send = (method: string, params: unknown[]) =>
-    configuredJsonRpc(rpcUrl, method, params)
-  const actualChainId = BigInt((await send('eth_chainId', [])) as string)
-  if (actualChainId !== BigInt(entry.nativeChainId))
-    throw new Error(`EVM RPC identity mismatch for ${entry.id}`)
-  for (const probe of entry.identityProbes) {
-    if (probe.capability !== 'json-rpc') continue
-    if (probe.kind === 'evm-chain-id') {
-      if (actualChainId !== BigInt(probe.expected))
-        throw new Error(`EVM RPC identity mismatch for ${entry.id}`)
-    } else if (probe.kind === 'block-hash') {
-      const block = (await send('eth_getBlockByNumber', [
-        `0x${probe.height.toString(16)}`,
-        false,
-      ])) as { hash?: unknown } | null
-      if (
-        typeof block?.hash !== 'string' ||
-        block.hash.toLowerCase() !== probe.expected.toLowerCase()
-      )
-        throw new Error(`EVM RPC checkpoint mismatch for ${entry.id}`)
-    } else {
-      throw new Error(
-        `EVM RPC requires a configured operator checkpoint for ${entry.id}`,
-      )
-    }
-  }
-  return { send }
-}
-
-async function configuredJsonRpc(
-  url: string,
-  method: string,
-  params: unknown[],
-): Promise<unknown> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  })
-  if (!response.ok)
-    throw new Error(
-      `Configured RPC ${method} failed with HTTP ${response.status}`,
-    )
-  const body = (await response.json()) as {
-    error?: { message?: unknown }
-    result?: unknown
-  }
-  if (body.error)
-    throw new Error(
-      String(body.error.message ?? `Configured RPC ${method} failed`),
-    )
-  return body.result
-}
-
 /** Executes only a request already approved by the extension approval page. */
 export async function executeApprovedDappRequest(
   request: ApprovedDappRequest,
@@ -340,7 +303,13 @@ export async function executeApprovedDappRequest(
   >,
   options: DappRequestExecutorOptions = {},
 ): Promise<unknown> {
-  if (!request || typeof request.origin !== 'string' || !request.origin)
+  if (
+    !request ||
+    typeof request.id !== 'string' ||
+    !request.id ||
+    typeof request.origin !== 'string' ||
+    !request.origin
+  )
     throw new Error('Invalid approved dApp request')
 
   if (request.method === 'personal_sign' || request.method === 'eth_sign') {
@@ -350,7 +319,7 @@ export async function executeApprovedDappRequest(
     const signer = await session.createDappPersonaSigner()
     const ref = request.personaRef ?? {
       kind: 'site' as const,
-      origin: request.origin,
+      origin: canonicalDappPersonaOrigin(request.origin),
     }
     const [expected] = await signer.addresses([ref])
     requireApprovedPersonaAddress(request, expected)
@@ -390,7 +359,7 @@ export async function executeApprovedDappRequest(
     const [rawTx] = paramsArray(request.params)
     if (!rawTx || typeof rawTx !== 'object')
       throw new Error('Invalid transaction')
-    const txData = rawTx as Record<string, unknown>
+    const tx = rawTx as Record<string, unknown>
     const chainIdHex = (request.chainIdHex ?? '').toLowerCase()
     const chainId = BigInt(chainIdHex || '0x0')
     const chainEntry = Object.values(PROTOCOL_CHAINS).find(
@@ -401,202 +370,134 @@ export async function executeApprovedDappRequest(
     )
     if (!chainEntry)
       throw new Error(`Unsupported EVM chain: ${chainIdHex || 'unknown'}`)
-    const rpcClient = await (
-      options.evmRpc ?? (id => createConfiguredDappEvmRpc(id))
-    )(chainEntry.id)
-    const send = rpcClient.send
-    try {
-      const signer = await session.createDappPersonaSigner()
-      const ref = request.personaRef ?? {
-        kind: 'site' as const,
-        origin: request.origin,
-      }
-      const [expected] = await signer.addresses([ref])
-      requireApprovedPersonaAddress(request, expected)
-      if (
-        typeof txData.from !== 'string' ||
-        txData.from.toLowerCase() !== expected.toLowerCase()
-      )
-        throw new Error('Transaction sender does not match this site persona')
-      const releaseAdmission = await acquireEvmAdmissionLock(
-        `${chainEntry.id}:${expected.toLowerCase()}`,
-      )
-      try {
-        const attemptStore = options.attemptStore ?? extensionAttemptStore()
-        const attempts = [...(await attemptStore.read())]
-        const intentHash = dappTransactionIntentHash(chainEntry.id, txData)
-        const requestAttempt = attempts.find(
-          item =>
-            item.chainIdentifier === chainEntry.id &&
-            item.account.toLowerCase() === expected.toLowerCase() &&
-            item.requestId === request.id,
-        )
-        if (requestAttempt && requestAttempt.intentHash !== intentHash)
-          throw new Error('Approved request ID was reused for another intent')
-        if (requestAttempt) {
-          const receipt = await send('eth_getTransactionReceipt', [
-            requestAttempt.transactionHash,
-          ])
-          if (receipt === null || receipt === undefined) {
-            return await retryExactEvmAttempt(send, requestAttempt)
-          }
-          const receiptStatus = (receipt as { status?: unknown }).status
-          if (receiptStatus !== '0x1' && receiptStatus !== '0x0')
-            throw new Error('EVM RPC returned a malformed transaction receipt')
-          return requestAttempt.transactionHash
-        }
-        const matchingIntents = attempts.filter(
-          item =>
-            item.chainIdentifier === chainEntry.id &&
-            item.account.toLowerCase() === expected.toLowerCase() &&
-            item.intentHash === intentHash,
-        )
-        for (const priorIntent of matchingIntents) {
-          const receipt = await send('eth_getTransactionReceipt', [
-            priorIntent.transactionHash,
-          ])
-          if (receipt === null || receipt === undefined)
-            return await retryExactEvmAttempt(send, priorIntent)
-          const receiptStatus = (receipt as { status?: unknown }).status
-          if (receiptStatus !== '0x1' && receiptStatus !== '0x0')
-            throw new Error('EVM RPC returned a malformed transaction receipt')
-        }
-        const chainId = BigInt(chainIdHex)
-        if (
-          txData.chainId !== undefined &&
-          quantity(txData.chainId, 'transaction chain ID') !== chainId
-        )
-          throw new Error('Transaction chain does not match the selected chain')
-        const requestedType =
-          txData.type === undefined ? undefined : Number(txData.type)
-        if (
-          requestedType !== undefined &&
-          requestedType !== 0 &&
-          requestedType !== 2
-        )
-          throw new Error(`Unsupported EVM transaction type: ${requestedType}`)
-        const nonce =
-          txData.nonce === undefined
-            ? Number.parseInt(
-                rpcQuantity(
-                  await send('eth_getTransactionCount', [expected, 'pending']),
-                  'eth_getTransactionCount',
-                ),
-                16,
-              )
-            : Number(txData.nonce)
-        const priorNonce = attempts.find(
-          item =>
-            item.chainIdentifier === chainEntry.id &&
-            item.account.toLowerCase() === expected.toLowerCase() &&
-            item.nonce === nonce,
-        )
-        if (priorNonce) {
-          const receipt = await send('eth_getTransactionReceipt', [
-            priorNonce.transactionHash,
-          ])
-          if (receipt === null || receipt === undefined)
-            throw new Error(
-              'An earlier transaction with this nonce is unresolved; retry its original request',
-            )
-          throw new Error(
-            'A transaction already used this nonce; reconcile it before sending another request',
-          )
-        }
-        const gasLimit =
-          txData.gas ??
-          txData.gasLimit ??
-          (await send('eth_estimateGas', [{ ...txData, from: expected }]))
-        const tx: {
-          chainId: bigint
-          nonce: number
-          to: string | null
-          value: bigint
-          data: string
-          gasLimit: bigint
-          type?: number
-          accessList?: readonly unknown[]
-          gasPrice?: bigint
-          maxFeePerGas?: bigint
-          maxPriorityFeePerGas?: bigint
-        } = {
-          chainId,
-          nonce,
-          to:
-            txData.to === undefined || txData.to === null
-              ? null
-              : stringValue(txData.to, 'transaction recipient'),
-          value: quantity(txData.value ?? '0x0', 'transaction value'),
-          data:
-            txData.data === undefined
-              ? '0x'
-              : stringValue(txData.data, 'transaction data'),
-          gasLimit: quantity(gasLimit, 'transaction gas limit'),
-          ...(requestedType !== undefined ? { type: requestedType } : {}),
-          ...(Array.isArray(txData.accessList)
-            ? { accessList: txData.accessList }
-            : {}),
-        }
-        if (
-          requestedType === 2 ||
-          txData.maxFeePerGas !== undefined ||
-          txData.maxPriorityFeePerGas !== undefined
-        ) {
-          tx.type = 2
-          const gasPrice = quantity(
-            txData.gasPrice ??
-              rpcQuantity(await send('eth_gasPrice', []), 'eth_gasPrice'),
-            'transaction gas price',
-          )
-          tx.maxFeePerGas = quantity(
-            txData.maxFeePerGas ?? gasPrice,
-            'maximum fee per gas',
-          )
-          tx.maxPriorityFeePerGas = quantity(
-            txData.maxPriorityFeePerGas ?? gasPrice,
-            'maximum priority fee per gas',
-          )
-        } else {
-          tx.type = 0
-          tx.gasPrice = quantity(
-            txData.gasPrice ??
-              rpcQuantity(await send('eth_gasPrice', []), 'eth_gasPrice'),
-            'transaction gas price',
-          )
-        }
-        const unsigned = Transaction.from(
-          tx as Parameters<typeof Transaction.from>[0],
-        )
-        unsigned.signature = Signature.from(
-          await signer.signDigest(ref, unsigned.unsignedHash),
-        )
-        const transactionHash = unsigned.hash
-        if (!transactionHash)
-          throw new Error('Could not compute the signed transaction hash')
-        const attempt: DappEvmAttempt = {
-          requestId: request.id,
-          chainIdentifier: chainEntry.id,
-          account: expected,
-          nonce,
-          intentHash,
-          signedTransaction: unsigned.serialized,
-          transactionHash,
-        }
-        await attemptStore.append(attempt)
-        const hash = await send('eth_sendRawTransaction', [unsigned.serialized])
-        if (typeof hash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(hash))
-          throw new Error('EVM RPC returned an invalid transaction hash')
-        if (hash.toLowerCase() !== transactionHash.toLowerCase())
-          throw new Error(
-            'EVM RPC returned a transaction hash that does not match the signed transaction',
-          )
-        return hash
-      } finally {
-        releaseAdmission()
-      }
-    } finally {
-      rpcClient.close?.()
+    if (
+      request.chainIdentifier !== undefined &&
+      request.chainIdentifier !== chainEntry.id
+    )
+      throw new Error('Approved transaction chain changed')
+    if (
+      tx.chainId !== undefined &&
+      quantity(tx.chainId, 'transaction chain ID') !== chainId
+    )
+      throw new Error('Transaction chain does not match the selected chain')
+    const signer = await session.createDappPersonaSigner()
+    const ref = request.personaRef ?? {
+      kind: 'site' as const,
+      origin: request.origin,
     }
+    const [expected] = await signer.addresses([ref])
+    requireApprovedPersonaAddress(request, expected)
+    if (
+      typeof tx.from !== 'string' ||
+      tx.from.toLowerCase() !== expected.toLowerCase()
+    )
+      throw new Error('Transaction sender does not match this site persona')
+    if (typeof tx.to !== 'string')
+      throw new Error(
+        'Contract creation from a Frank subaccount is unsupported',
+      )
+    if (
+      tx.accessList !== undefined &&
+      (!Array.isArray(tx.accessList) || tx.accessList.length !== 0)
+    )
+      throw new Error('Access-list transactions are unsupported')
+    const requestedType =
+      tx.type === undefined
+        ? undefined
+        : Number(quantity(tx.type, 'transaction type'))
+    if (
+      requestedType !== undefined &&
+      requestedType !== 0 &&
+      requestedType !== 2
+    )
+      throw new Error(`Unsupported EVM transaction type: ${requestedType}`)
+    const requestedNonce =
+      tx.nonce === undefined
+        ? undefined
+        : Number(quantity(tx.nonce, 'transaction nonce'))
+    if (requestedNonce !== undefined && !Number.isSafeInteger(requestedNonce))
+      throw new Error('Invalid transaction nonce')
+    const wallet = (
+      await (options.openEvmWallet ?? openEvmWallet)(chainEntry.id)
+    ).wallet as EvmChainWalletHandle
+    if (
+      wallet.chainIdentifier !== chainEntry.id ||
+      !wallet.sendLegacyFromSubAccount
+    )
+      throw new Error('This wallet cannot send from a legacy subaccount')
+    let anotherPriorAttemptIsPending = false
+    const previousIntent = priorIntentHash(chainEntry.id, tx)
+    for (const attempt of await priorDappAttempts()) {
+      if (
+        attempt.chainIdentifier !== chainEntry.id ||
+        attempt.account.toLowerCase() !== expected.toLowerCase()
+      )
+        continue
+      if (
+        attempt.requestId === request.id &&
+        attempt.intentHash !== previousIntent
+      )
+        throw new Error('Approved request ID was reused for another intent')
+      const recovered = await wallet.reconcileLegacySubAccountAttempt({
+        source: ref,
+        account: attempt.account,
+        nonce: attempt.nonce,
+        signedTransaction: attempt.signedTransaction,
+        transactionHash: attempt.transactionHash,
+      })
+      if (attempt.requestId === request.id) return recovered.transactionHash
+      if (recovered.status === 'pending') anotherPriorAttemptIsPending = true
+    }
+    if (anotherPriorAttemptIsPending)
+      throw new Error(
+        'An earlier transaction from this account is still pending; retry its original request',
+      )
+    const operationId = `dapp-${keccak256(
+      toUtf8Bytes(
+        JSON.stringify({
+          chainIdentifier: chainEntry.id,
+          account: expected.toLowerCase(),
+          origin: canonicalDappPersonaOrigin(request.origin),
+          requestId: request.id,
+        }),
+      ),
+    ).slice(2)}`
+    const result = await wallet.sendLegacyFromSubAccount({
+      operationId,
+      source: ref,
+      expectedSourceAddress: expected,
+      recipient: { raw: stringValue(tx.to, 'transaction recipient') },
+      value: quantity(tx.value ?? '0x0', 'transaction value'),
+      ...(tx.data === undefined
+        ? {}
+        : { data: stringValue(tx.data, 'transaction data') }),
+      ...(requestedNonce === undefined ? {} : { nonce: requestedNonce }),
+      ...(tx.gas === undefined && tx.gasLimit === undefined
+        ? {}
+        : {
+            gasLimit: quantity(tx.gas ?? tx.gasLimit, 'transaction gas limit'),
+          }),
+      ...(requestedType === undefined ? {} : { type: requestedType as 0 | 2 }),
+      ...(tx.gasPrice === undefined
+        ? {}
+        : {
+            gasPriceWei: quantity(tx.gasPrice, 'transaction gas price'),
+          }),
+      ...(tx.maxFeePerGas === undefined
+        ? {}
+        : {
+            maxFeePerGasWei: quantity(tx.maxFeePerGas, 'maximum fee per gas'),
+          }),
+      ...(tx.maxPriorityFeePerGas === undefined
+        ? {}
+        : {
+            maxPriorityFeePerGasWei: quantity(
+              tx.maxPriorityFeePerGas,
+              'maximum priority fee per gas',
+            ),
+          }),
+    })
+    return result.txHash
   }
 
   if (request.method.startsWith('solana_')) {

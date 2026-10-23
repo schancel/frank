@@ -81,6 +81,10 @@ function createExtensionScope() {
             })
             if (keepOpen) pending = true
           }
+          if (!answered && !pending && msg?.type === 'fund-dapp-persona') {
+            cb?.({ ok: true, result: { address: msg.address } })
+            return
+          }
           if (!answered && !pending) cb?.(null)
         },
         onMessage: {
@@ -602,6 +606,126 @@ describe('approval window page', () => {
     page.dispose()
     bg.dispose()
     root.remove()
+  })
+
+  it('funds the selected site address before granting connection when the user enters an amount', async () => {
+    const { scope } = createExtensionScope()
+    const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
+    const bg = installBackgroundBridge(scope, state)
+    const funding = jest.fn()
+    scope.chrome.runtime.onMessage.addListener(
+      (message: any, _sender: any, respond: (value: unknown) => void) => {
+        if (message.type !== 'fund-dapp-persona') return undefined
+        funding(message)
+        respond({ ok: true, result: '0x' + 'ab'.repeat(32) })
+        return undefined
+      },
+    )
+    const pending = rpc(state, scope, 'funded-connect', 'eth_requestAccounts')
+    await tick()
+    await provideSitePersona(state, scope)
+    const root = document.createElement('main')
+    const page = mountApprovalPage(root, {
+      globalScope: scope,
+      closeWindow: jest.fn(),
+    })
+    await tick(5)
+    const input = root.querySelector<HTMLInputElement>(
+      '[data-testid="approval-funding-amount"]',
+    )!
+    input.value = '0.25'
+    input.dispatchEvent(new Event('input'))
+    root
+      .querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')!
+      .click()
+    expect(await pending).toEqual({ ok: true, result: [SITE] })
+    expect(funding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chainIdentifier: 'monad-testnet',
+        address: SITE,
+        amountAtomic: '250000000000000000',
+        useBurnerPersona: true,
+      }),
+    )
+    page.dispose()
+    bg.dispose()
+  })
+
+  it('keeps the connection undecided when its approved top-up fails', async () => {
+    const { scope } = createExtensionScope()
+    const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
+    const bg = installBackgroundBridge(scope, state)
+    scope.chrome.runtime.onMessage.addListener(
+      (message: any, _sender: any, respond: (value: unknown) => void) => {
+        if (message.type === 'fund-dapp-persona')
+          respond({
+            ok: false,
+            error: {
+              code: 4900,
+              message: 'Unlock Frank before funding this address.',
+            },
+          })
+      },
+    )
+    const pending = rpc(state, scope, 'funding-failed', 'eth_requestAccounts')
+    await tick()
+    await provideSitePersona(state, scope)
+    const root = document.createElement('main')
+    const page = mountApprovalPage(root, {
+      globalScope: scope,
+      closeWindow: jest.fn(),
+    })
+    await tick(5)
+    const input = root.querySelector<HTMLInputElement>(
+      '[data-testid="approval-funding-amount"]',
+    )!
+    input.value = '0.25'
+    input.dispatchEvent(new Event('input'))
+    root
+      .querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')!
+      .click()
+    await tick(5)
+    expect(root.querySelector('[role="alert"]')?.textContent).toContain(
+      'Unlock Frank',
+    )
+    expect(state.pendingApprovals.has('funding-failed')).toBe(true)
+    expect(state.originPersonas['https://app.uniswap.org']).toBeUndefined()
+    await decide(state, scope, 'funding-failed', false)
+    await pending
+    page.dispose()
+    bg.dispose()
+  })
+
+  it('serializes a connect approval while wallet funding is still pending', async () => {
+    const { scope } = createExtensionScope()
+    const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
+    const bg = installBackgroundBridge(scope, state)
+    let answerFunding!: (value: unknown) => void
+    const funding = jest.fn()
+    scope.chrome.runtime.onMessage.addListener(
+      (message: any, _sender: any, respond: (value: unknown) => void) => {
+        if (message.type !== 'fund-dapp-persona') return undefined
+        funding(message)
+        answerFunding = respond
+        return true
+      },
+    )
+    const pending = rpc(state, scope, 'single-decision', 'eth_requestAccounts')
+    await tick()
+    await provideSitePersona(state, scope)
+    const first = decide(state, scope, 'single-decision', true, {
+      fundingAmountAtomic: '1',
+    })
+    await tick()
+    expect(
+      (await decide(state, scope, 'single-decision', false)).error?.code,
+    ).toBe(4090)
+    expect(state.pendingApprovals.has('single-decision')).toBe(true)
+    answerFunding({ ok: true, result: '0x' + 'ab'.repeat(32) })
+    expect((await first).ok).toBe(true)
+    expect(await pending).toEqual({ ok: true, result: [SITE] })
+    expect(funding).toHaveBeenCalledTimes(1)
+    bg.dispose()
   })
 
   it('cannot connect a per-site persona Frank has not provided yet, and shows it once provided', async () => {

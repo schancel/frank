@@ -132,7 +132,7 @@ export class EvmTransactionSetLifecycle {
       const member = row.members[index]!,
         signed = member.signed!
       // Terminal history must never be fed through inventory observation again.
-      if (member.transactionSet?.inventoryApplied && (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member))) continue
+      if (!this.options.authority.getOperation(id) && member.transactionSet?.inventoryApplied && (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member))) continue
       const receipt = await provider.getTransactionReceipt(
         signed.transactionHash,
       )

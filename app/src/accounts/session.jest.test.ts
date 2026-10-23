@@ -2618,3 +2618,141 @@ test('dApp Solana signer uses the account Solana key and exposes only signing me
   )
   await f.session.close()
 })
+
+describe('safe account startup diagnostics', () => {
+  test.each([
+    [new EvmNativeJournalError('binding'), 'native-journal-binding'],
+    [
+      Object.assign(new EvmNativeJournalError('binding'), {
+        code: 'synthetic-secret',
+      }),
+      'unknown',
+    ],
+    [
+      Object.assign(new CustodyError('locked'), { code: 'synthetic-secret' }),
+      'unknown',
+    ],
+  ])(
+    'logs only allowlisted categories for typed failures',
+    async (failure, category) => {
+      const f = fixture()
+      const log = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      try {
+        f.createWallet.mockRejectedValueOnce(failure)
+        await f.session.initialize()
+        expect(f.session.state.failureCategory).toBe(category)
+        expect(log.mock.calls).toEqual([
+          ['Account startup failed', 'wallet-open', category],
+        ])
+        await f.session.close()
+      } finally {
+        log.mockRestore()
+      }
+    },
+  )
+
+  test.each([
+    'custody-open',
+    'custody-snapshot',
+    'account-unlock',
+    'wallet-open',
+    'application-restore',
+    'final-snapshot',
+    'runtime-release',
+  ] as const)(
+    'attributes %s failure without exposing the underlying error',
+    async stage => {
+      const f = fixture()
+      const secret = 'synthetic-secret-never-log-raw-transaction'
+      const failure = Object.assign(new Error(secret), { code: secret })
+      const log = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      const open = jest.fn(async () => f.custody)
+      const restoreApplicationState = jest.fn(async () => undefined)
+      const session = createAccountSession({
+        open,
+        createWallet: f.createWallet,
+        restoreApplicationState,
+      })
+      try {
+        if (stage === 'custody-open') open.mockRejectedValueOnce(failure)
+        if (stage === 'custody-snapshot')
+          f.custody.snapshot.mockRejectedValueOnce(failure)
+        if (stage === 'account-unlock')
+          f.custody.openActive.mockRejectedValueOnce(failure)
+        if (stage === 'wallet-open')
+          f.createWallet.mockRejectedValueOnce(failure)
+        if (stage === 'application-restore')
+          restoreApplicationState.mockRejectedValueOnce(failure)
+        if (stage === 'final-snapshot') {
+          f.custody.snapshot
+            .mockResolvedValueOnce({
+              schema: 1,
+              revision: 1,
+              active: f.account,
+              pending: null,
+            })
+            .mockRejectedValueOnce(failure)
+        }
+        if (stage === 'runtime-release') {
+          await session.initialize()
+          f.set({ schema: 1, revision: 2, active: f.account, pending: null })
+          jest.mocked(f.wallet.close).mockRejectedValueOnce(failure)
+        }
+        await session.initialize()
+        expect(session.state.status).toBe('unavailable')
+        expect(session.state.error).toBe('unavailable')
+        expect(session.state.failureStage).toBe(stage)
+        expect(session.state.failureCategory).toBe('unknown')
+        expect(log.mock.calls).toEqual([
+          ['Account startup failed', stage, 'unknown'],
+        ])
+        expect(JSON.stringify(session.state)).not.toContain(secret)
+        if (
+          stage === 'account-unlock' ||
+          stage === 'custody-open' ||
+          stage === 'custody-snapshot'
+        ) {
+          expect(f.createWallet).not.toHaveBeenCalled()
+        }
+        if (stage === 'application-restore' || stage === 'final-snapshot') {
+          expect(f.wallet.close).toHaveBeenCalledTimes(1)
+        }
+        const retry = session.retry()
+        expect(session.state.failureStage).toBeNull()
+        expect(session.state.failureCategory).toBeNull()
+        await retry
+        expect(session.state.status).toBe('ready')
+        expect(session.state.failureStage).toBeNull()
+        expect(session.state.failureCategory).toBeNull()
+        expect(session.state.error).toBeNull()
+        await session.close()
+      } finally {
+        log.mockRestore()
+      }
+    },
+  )
+
+  test('a fresh snapshot clears an earlier failure without constructing a wallet', async () => {
+    const f = fixture()
+    const log = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      f.custody.openActive.mockRejectedValueOnce(new CustodyError('locked'))
+      await f.session.initialize()
+      expect(f.session.state.status).toBe('locked')
+      expect(f.session.state.failureStage).toBe('account-unlock')
+      expect(f.session.state.failureCategory).toBe('custody-locked')
+      f.set({ schema: 1, revision: 2, active: null, pending: null })
+      await f.session.retry()
+      expect(f.session.state.status).toBe('fresh')
+      expect(f.session.state.failureStage).toBeNull()
+      expect(f.createWallet).not.toHaveBeenCalled()
+      await f.session.close()
+    } finally {
+      log.mockRestore()
+    }
+  })
+})

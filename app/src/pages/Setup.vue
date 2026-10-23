@@ -176,6 +176,10 @@
                     ? 'accountRecovery.wallet_chain_mismatch'
                     : account.error === 'profile-unreachable'
                     ? 'accountRecovery.profile_restore_unreachable'
+                    : account.failureStage === 'wallet-open'
+                    ? 'accountRecovery.wallet_state_open_failed'
+                    : account.failureStage === 'application-restore'
+                    ? 'accountRecovery.application_restore_failed'
                     : 'accountRecovery.saved_account_data_could_not_be_opened',
                 )
               }}
@@ -210,7 +214,9 @@
               <q-btn
                 v-if="
                   account.error !== 'profile-unreachable' &&
-                  account.error !== 'wallet-chain-mismatch'
+                  account.error !== 'wallet-chain-mismatch' &&
+                  account.failureStage !== 'wallet-open' &&
+                  account.failureStage !== 'application-restore'
                 "
                 flat
                 color="negative"
@@ -1223,6 +1229,9 @@ const statusText = computed(() =>
     ? 'Opening account storage…'
     : account.error === 'wallet-chain-mismatch'
     ? t('accountRecovery.wallet_chain_mismatch')
+    : account.failureStage === 'wallet-open' ||
+      account.failureStage === 'application-restore'
+    ? t('accountRecovery.account_startup_incomplete')
     : 'Account storage locked or unavailable.',
 )
 function clearSecrets(preserveLegacyPhrase = false) {

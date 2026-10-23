@@ -1076,17 +1076,19 @@ export default defineComponent({
           details.verticalContainerSize,
       )
       this.lastScrollPosition = details.verticalPosition
-      if (
-        // Ten pixels from top
-        details.verticalPosition <= 10
-      ) {
-        this.messagesToShow += 30
-        return
-      }
       const gap =
         details.verticalSize -
         details.verticalPosition -
         details.verticalContainerSize
+      this.bottom = gap <= 10
+      if (
+        // Ten pixels from top
+        details.verticalPosition <= 10 &&
+        this.messagesToShow < this.messages.length
+      ) {
+        this.messagesToShow += 30
+        return
+      }
       // Banner clearance grows the content above the viewport. Re-pin once so
       // the jump button does not flash while that height settles.
       if (this.keepBottomForBanner && gap > 10) {
@@ -1155,11 +1157,9 @@ export default defineComponent({
         return
       }
       const scrollTarget = scrollArea.getScrollTarget()
-      // If we're not at the bottom, and we're not at the top, leave the scroll
-      // alone.
-      if (!this.bottom && scrollTarget.scrollTop >= 10) {
-        return
-      }
+      // A new message must not pull someone out of history reading, including
+      // when they are at the very top and the scroll position is zero.
+      if (!this.bottom) return
       this.$nextTick(() => {
         scrollArea.setScrollPosition(
           'vertical',

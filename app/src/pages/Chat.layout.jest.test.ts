@@ -68,6 +68,7 @@ const stubs: Record<string, any> = Object.fromEntries(
 )
 const setScrollPosition = jest.fn()
 stubs.QScrollArea = defineComponent({
+  emits: ['scroll'],
   methods: {
     getScrollTarget: () => ({ scrollTop: 0, scrollHeight: 900 }),
     setScrollPosition: (...args: unknown[]) => setScrollPosition(...args),
@@ -305,6 +306,40 @@ describe('Chat.vue layout structure (mounted)', () => {
     vm.scrollHandler({ ...size, verticalSize: 1080, verticalPosition: 200 })
     setScrollPosition.mockClear()
     listObserver(wrapper).vm.$emit('resize', { width: 375, height: 1200 })
+    expect(setScrollPosition).not.toHaveBeenCalled()
+  })
+
+  it('keeps reading history at the top when messages arrive', async () => {
+    const wrapper = await mountChat(
+      Array.from({ length: 65 }, (_, index) => message(`history-${index}`)),
+    )
+    const target = { scrollTop: 0, scrollHeight: 2400 }
+    const scroll = wrapper.getComponent(stubs.QScrollArea)
+    scroll.vm.getScrollTarget = () => target
+    const vm = wrapper.vm as unknown as {
+      bottom: boolean
+      messagesToShow: number
+    }
+
+    setScrollPosition.mockClear()
+    scroll.vm.$emit('scroll', {
+      verticalPosition: 1900,
+      verticalSize: 2400,
+      verticalContainerSize: 500,
+    })
+    scroll.vm.$emit('scroll', {
+      verticalPosition: 0,
+      verticalSize: 2400,
+      verticalContainerSize: 500,
+    })
+
+    expect(vm.messagesToShow).toBe(60)
+    expect(vm.bottom).toBe(false)
+
+    // A new live message invokes scrollBottom through the messages.length watcher.
+    // It must not yank the user from the oldest visible history page to latest.
+    wrapper.vm.messages.push(message('live-update'))
+    await wrapper.vm.$nextTick()
     expect(setScrollPosition).not.toHaveBeenCalled()
   })
 })

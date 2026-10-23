@@ -132,9 +132,8 @@ describe("the bot host's poll on a real wallet (#1236 Q3)", () => {
     mailboxes.clear();
     jest.spyOn(console, "warn").mockImplementation(() => undefined);
     jest.spyOn(console, "log").mockImplementation(() => undefined);
-    // A stamp large enough that funding its accounts ahead costs less than it moves (the wallet
-    // refuses to fund ahead otherwise).
-    f = await fixture({ resolveDefaultStamp: fixedStampDefault(10n ** 9n), stampFundingTargetWei: 10n ** 9n });
+    // Use a paid stamp so recovery exercises persisted financial attempts.
+    f = await fixture({ resolveDefaultStamp: fixedStampDefault(10n ** 9n) });
     const { installCanonicalDirectory } = jest.requireMock(
       "@frank/wallet/chain/evm-chain"
     );
@@ -160,7 +159,6 @@ describe("the bot host's poll on a real wallet (#1236 Q3)", () => {
       reconcileAttempts,
       defaultStampQuote: (params: any) => f.chain.directMessages.defaultStampQuote!(params),
       minimumStamp: (params: any) => f.chain.directMessages.minimumStamp!(params),
-      fundAhead: (params: any) => f.chain.directMessages.fundAhead!(params),
       fetchSince: async () => [],
     });
     await host.register(bot);
@@ -216,17 +214,16 @@ describe("the bot host's poll on a real wallet (#1236 Q3)", () => {
       })
     ).resolves.toEqual({ [digest]: "delivered" });
     expect(f.requests).toHaveLength(3);
-    // What moved on the chain since is the funding of the NEXT reply, never a second payment
-    // for this one: at most the two accounts one message spends.
-    expect(mockFunded.length - funded).toBeLessThanOrEqual(2);
+    // Recovery cannot create a new funding transfer.
+    expect(mockFunded.length).toBe(funded);
   });
 
   it("an idle wallet: twenty polls make no payment request and no node request", async () => {
-    // Positive control: the first poll funds the next reply ahead, and the counters see it.
+    // Neither the initial idle poll nor later polls create funding transactions.
     await poll();
     await settled();
-    expect(mockFunded.length).toBeGreaterThanOrEqual(2);
-    expect(requests()).toBeGreaterThan(0);
+    expect(mockFunded).toHaveLength(0);
+    expect(requests()).toBe(0);
     await poll();
     await settled();
 

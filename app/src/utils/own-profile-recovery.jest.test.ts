@@ -99,4 +99,3 @@ test('claimProfileStore preserves restoredAccountId for the same owner and clear
   claimProfileStore(store, '0x' + '22'.repeat(20))
   expect(store.restoredAccountId).toBeUndefined()
 })
-

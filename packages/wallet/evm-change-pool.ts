@@ -185,9 +185,39 @@ export class EvmChangePool {
     this.walletOperationGate = gate
   }
 
-  /** The next change index that has never had a sweep land on it. */
+  /** The next change index that has never been reserved for any wallet operation. */
   nextUnusedIndex(): number {
     return this.store.getNextIndex()
+  }
+
+  /** One allocation authority for legacy sweeps and transaction sets. Claim synchronously,
+   * then persist before the destination or signed bytes can leave its owner. Failed builds
+   * retain the derivation claim; a later operation must never reuse an exposed child. */
+  async reserveFreshChange(minimumIndex = 0): Promise<{
+    account: string
+    privateKey: string
+    changeIndex: number
+  }> {
+    if (!Number.isSafeInteger(minimumIndex) || minimumIndex < 0)
+      throw new Error(
+        'Minimum change index must be a non-negative safe integer',
+      )
+    const pending = this.store.getPendingIntent()
+    const index = Math.max(
+      minimumIndex,
+      this.store.getNextIndex(),
+      (pending?.index ?? -1) + 1,
+    )
+    if (!Number.isSafeInteger(index + 1))
+      throw new Error('Change derivation index is exhausted')
+    this.store.setNextIndex(index + 1)
+    await this.store.flush()
+    const account = this.keyring.deriveChangeAccount(index)
+    return {
+      account: account.address,
+      privateKey: account.privateKey,
+      changeIndex: index,
+    }
   }
 
   /** Every change record actually swept into existence so far, sorted by index. */
@@ -250,16 +280,8 @@ export class EvmChangePool {
     return { index, address: this.keyring.deriveChangeAccount(index).address }
   }
 
-  /**
-   * Explicitly (re)seeds the "next unused index" pointer -- the write path `./monad-change-
-   * recovery.ts`'s bisection recovery is expected to call after reconstructing the pointer from
-   * chain data alone. Guarded: refuses to move the pointer *backward* while any change record
-   * already exists locally, unless `force` is set, since rewinding past real records risks a
-   * future sweep re-deriving (and reusing) an index that's already funded on-chain -- the one
-   * thing strict sequential allocation is supposed to prevent. The intended use case (restoring a
-   * wallet from seed alone, no local state) always has zero local records, so this guard never
-   * fires in practice for that path.
-   */
+  /** Explicit recovery/admin pointer update. Never rewind ordinary derivation claims, even
+   * without confirmed records: a transaction-set journal may already own those children. */
   setNextUnusedIndex(index: number, opts: { force?: boolean } = {}): void {
     if (!Number.isInteger(index) || index < 0) {
       throw new Error(
@@ -272,11 +294,9 @@ export class EvmChangePool {
         'Cannot change next-change-index while a pending change intent exists',
       )
     }
-    const existingRecords = this.store.getAll()
-    if (index < current && existingRecords.length > 0 && !opts.force) {
+    if (index < current && !opts.force) {
       throw new Error(
-        `Refusing to rewind next-change-index pointer from ${current} to ${index} while ` +
-          `${existingRecords.length} change record(s) already exist locally -- this would risk ` +
+        `Refusing to rewind next-change-index pointer from ${current} to ${index} after derivation claims have advanced it -- this would risk ` +
           're-deriving/reusing an already-swept-to index. Pass { force: true } if you are certain ' +
           "this store's records are stale/wrong.",
       )
@@ -289,10 +309,10 @@ export class EvmChangePool {
    * on-chain leftover balance via `provider.getBalance` (real balance, not the amount originally
    * funded minus a guessed gas cost), and if it clears the dust threshold (see this file's
    * header), builds/signs/submits a transfer of `balance - dustThreshold` to the next unused
-   * change address. Before broadcast it durably journals the exact signed sweep while leaving the
-   * next-index pointer in place. A retry either observes its receipt or replays those same bytes,
-   * then advances the pointer together with the audit record. This preserves the contiguous HD
-   * prefix that seed-only recovery scans without risking a second transaction to the same child.
+   * change address. Before signing it durably reserves the next child through the same allocator used by
+   * transaction sets. Before broadcast it journals the exact signed sweep. A retry observes
+   * its receipt or replays those same bytes; it never reserves a second destination. The
+   * derivation pointer retains interrupted reservations even before a confirmed audit row exists.
    *
    * Returns `{ swept: false, reason: 'below-dust-threshold' }` (never throws) when the leftover
    * balance doesn't clear the threshold. Any build/submit failure propagates as a thrown error to
@@ -399,7 +419,9 @@ export class EvmChangePool {
     }
 
     const sweptValueWei = balanceWei - dustThresholdWei
-    const { index, address } = this.peekNextChangeAddress()
+    const target = await this.reserveFreshChange()
+    const index = target.changeIndex,
+      address = target.account
 
     const signedTx = await params.burnAccountSigner.buildAndSignTransfer(
       address,
@@ -465,13 +487,13 @@ export class EvmChangePool {
       .getAll()
       .reduce((highest, record) => Math.max(highest, record.index), -1)
     if (
-      intent.index !== this.store.getNextIndex() ||
+      intent.index >= this.store.getNextIndex() ||
       intent.index <= highestRecord ||
       this.store.getRecord(intent.index) !== undefined ||
       this.store.getBySourceBurnIndex(intent.sourceBurnIndex) !== undefined
     ) {
       throw new Error(
-        'Pending change must use the vacant next index above all durable records',
+        'Pending change must use a reserved vacant index above all durable records',
       )
     }
   }
@@ -514,7 +536,12 @@ async function sweepIfSpent(
       params.admission,
     )
   } catch (error) {
-    console.warn('[monad-change-pool] sweepToChange error for burn account ' + record.address + ':', error)
+    console.warn(
+      '[monad-change-pool] sweepToChange error for burn account ' +
+        record.address +
+        ':',
+      error,
+    )
     return { swept: false, reason: 'sweep-error', error }
   }
 }
@@ -583,4 +610,3 @@ export async function awaitLeaseSettlementAndSweepChange(
 }
 
 export { EvmChangePool as MonadChangePool }
-

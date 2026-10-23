@@ -2106,6 +2106,13 @@ export const rawEnUS = {
     saveVcf: 'Save vCard (.vcf)',
   },
   accountSync: {
+    title: 'Account sync',
+    browserHelp:
+      'To copy your account between this browser’s extension and {origin}, open Profile in the window with your account and choose Sync this account, then Show PIN. In the other window, choose Sync existing account on the welcome screen and enter the PIN. The receiving window must not already have an account.',
+    walletConnectTitle: 'WalletConnect',
+    walletConnectUnsupported:
+      'WalletConnect URI pairing is not supported yet. It does not sync your account with the browser extension.',
+
     send: 'Sync this account',
     sendHint:
       'Copy this account to your browser extension or web app. In the other window, choose Sync existing account, then enter the PIN shown here.',

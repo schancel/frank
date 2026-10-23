@@ -3,6 +3,7 @@ import {
   nativeJournalReader,
   canonicalJournalReader,
   validateEvmInputAdmission,
+  validateNativeTopicReferences,
   type EvmInputAdmission,
   type NativeJournalReader,
   type CanonicalJournalReader,
@@ -297,6 +298,7 @@ export function hasUncorrelatedCanonicalPreSignIntent(
 
 function makeBundle(params: {
   durability: 'persistent' | 'test-only-ephemeral'
+  validatedTopicReferences?: ReadonlySet<string>
   bindingId: string
   pool: MonadSubAccountPool
   changePool: MonadChangePool
@@ -398,17 +400,19 @@ function makeBundle(params: {
   const leaseManager =
     params.leaseManager ?? new SubAccountLeaseManager(params.pool)
 
+  const referencesLease = (index: number): boolean =>
+    (params.topicJournal
+      .getRetainedLegacy?.()
+      .some(row => row.leaseIndex === index) ?? false) ||
+    (params.additionalLeaseReference?.(index) ?? false)
+
   const assertNoOrphanedLeases = (): void => {
-    const referenced = new Set(
-      params.topicJournal.getAll().map(operation => operation.leaseIndex),
-    )
     const orphaned = params.pool
       .records()
       .filter(
         record =>
           record.status === 'in-use' &&
-          !referenced.has(record.index) &&
-          !params.additionalLeaseReference?.(record.index),
+          !referencesLease(record.index),
       )
       .map(record => record.index)
     if (orphaned.length > 0) throw new MonadWalletOrphanedAccountError(orphaned)
@@ -417,6 +421,7 @@ function makeBundle(params: {
   const inputAdmission = createEvmInputAdmission({
     binding: params.nativeJournal?.binding,
     native: params.nativeJournal,
+    validatedTopicReferences: params.validatedTopicReferences,
     canonical: params.canonicalJournal,
     retained: canonicalRetained,
     canonicalBinding: params.canonicalBinding,
@@ -448,7 +453,7 @@ function makeBundle(params: {
     changePool: params.changePool,
     topicOperationJournal: params.topicJournal,
     nativeJournal: params.nativeJournal
-      ? nativeJournalReader(params.nativeJournal)
+      ? nativeJournalReader(params.nativeJournal, params.topicJournal)
       : undefined,
     inputAdmission,
     canonicalJournal: params.canonicalJournal
@@ -519,8 +524,7 @@ function makeBundle(params: {
           limit,
           isReferenced: index =>
             index === pendingChange ||
-            params.topicJournal.referencesLeaseIndex(index) ||
-            (params.additionalLeaseReference?.(index) ?? false),
+            referencesLease(index),
         })
       }, admission)
     },
@@ -612,7 +616,6 @@ export async function openExistingPoolMonadTopicOwner(params: {
           await memory.delete(operation)
         },
         getAll: () => memory.getAll(),
-        referencesLeaseIndex: index => memory.referencesLeaseIndex(index),
       }
       if (params.nativeBinding) {
         nativeJournal = new EvmNativeOperationJournal({
@@ -709,7 +712,9 @@ export async function openExistingPoolMonadTopicOwner(params: {
         await foreign.Close()
       }
     }
+    const validatedTopicReferences = nativeJournal ? await validateNativeTopicReferences(nativeJournal, topicJournal) : undefined
     return makeBundle({
+      validatedTopicReferences,
       durability:
         params.location === undefined ? 'test-only-ephemeral' : 'persistent',
       // This identifier is session-local: existing manifest/root/binding bytes are never rewritten.
@@ -805,6 +810,8 @@ export function createInMemoryMonadWalletBundle(params: {
 }
 
 export interface OpenMonadWalletBundleParams {
+  /** Explicit chain and legacy-root identity for callers using the shared native spend owner. */
+  nativeBinding?: EvmNativeBinding
   location: string
   seed?: { mnemonic: string; passphrase?: string }
   createSeedIfEmpty?: boolean
@@ -1006,8 +1013,21 @@ export async function openMonadWalletBundle(
       () => undefined,
     )
     await topicJournal.Open()
+    const nativeJournal = params.nativeBinding
+      ? new EvmNativeOperationJournal({
+          location: params.location,
+          binding: params.nativeBinding,
+        })
+      : undefined
+    if (nativeJournal) {
+      openedStores.push(nativeJournal)
+      await nativeJournal.Open()
+    }
 
+    const validatedTopicReferences = nativeJournal ? await validateNativeTopicReferences(nativeJournal, topicJournal) : undefined
     const bundle = makeBundle({
+      validatedTopicReferences,
+      nativeJournal,
       durability: 'persistent',
       bindingId,
       pool,
@@ -1016,6 +1036,7 @@ export async function openMonadWalletBundle(
       subKeyring,
       changeKeyring,
       close: async () => {
+        await nativeJournal?.Close()
         await changePoolStore.Close()
         await subAccountStore.Close()
         await ownedManifestDb.close()

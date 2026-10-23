@@ -297,7 +297,13 @@ describe('desktopNotify', () => {
     })
     const callback = jest.fn()
     try {
-      desktopNotify('Alice', '**Hello** mobile', 'avatar.png', callback, 'msg-99')
+      desktopNotify(
+        'Alice',
+        '**Hello** mobile',
+        'avatar.png',
+        callback,
+        'msg-99',
+      )
       await new Promise(resolve => setTimeout(resolve, 0))
       expect(showNotification).toHaveBeenCalledWith('Alice', {
         body: 'Hello mobile',

@@ -348,7 +348,7 @@ describe('payments between two wallets on a real EVM node', () => {
     expect(bobMailbox).toHaveLength(0)
 
     // Nothing else can take the claimed account's nonce: an ordinary send only it could cover
-    // is refused, background stamp funding does not spend from it, and the transfer cannot be
+    // is refused, and the transfer cannot be
     // pushed out by hand.
     await expect(
       alice.sendNative({
@@ -356,7 +356,6 @@ describe('payments between two wallets on a real EVM node', () => {
         value: parseEther('0.5'),
       }),
     ).rejects.toThrow('Insufficient unreserved native funds')
-    await f.chain.directMessages.fundAhead!({ wallet: alice })
     await expect(alice.resumeNativeOperation!(operation.operationId)).rejects.toThrow(
       'is broadcast once its message is delivered',
     )

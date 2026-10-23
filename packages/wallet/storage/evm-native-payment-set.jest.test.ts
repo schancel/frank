@@ -72,6 +72,16 @@ describe('atomic native received payment sets', () => {
     await store.close()
     store = await LevelRecordStore.open(root, 'native-receipt-test')
   }
+  it('retains the intended amount separately from a signed residual gift across reopen', async () => {
+    const raw = await signed(senders[0]!, 2010n)
+    const result = await registerStoredEvmNativePaymentSet(store, note.address, payment([raw]))
+    expect(result.claimedAmountWei).toBe('2000')
+    expect(result.amountWei).toBe('0')
+    expect(result.state).toBe('pending')
+    await reopen()
+    expect(store.get(note.address)).toEqual(result)
+    await expect(registerStoredEvmNativePaymentSet(store, note.address, payment([raw]))).resolves.toEqual(result)
+  })
   it('persists the exact whole set across reopen without crediting balances and rejects subset/reordered/replaced claims', async () => {
     const raws = await Promise.all(senders.map(sender => signed(sender)))
     const original = await registerStoredEvmNativePaymentSet(
@@ -121,7 +131,7 @@ describe('atomic native received payment sets', () => {
         ephemeralPubKey: senders[1]!.signingKey.compressedPublicKey.slice(2),
       },
       { ...payment(raws), chainIdentifier: 'monad' },
-      { ...payment(raws), amountWei: 1000n },
+      { ...payment(raws), amountWei: 3000n },
       { ...payment(raws), payloadDigest: 'bad' },
       { ...payment(raws), rawTransactions: [] },
     ]) {

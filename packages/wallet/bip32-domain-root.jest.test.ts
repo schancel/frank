@@ -168,14 +168,17 @@ describe('BIP-32 domain-root interpretation', () => {
   it.each([false, true])(
     'wipes only its distinct constructor snapshot (constructor throws: %s)',
     throws => {
-      const bytes = new Uint8Array(32).fill(0x63)
+      // Each case must miss the master cache and exercise its constructor path.
+      const bytes = new Uint8Array(32).fill(throws ? 0x64 : 0x63)
       const before = Uint8Array.from(bytes)
       const failure = new Error('constructor failed')
+      const fromSeed = HDNodeWallet.fromSeed
       const constructor = jest.spyOn(HDNodeWallet, 'fromSeed')
-      if (throws)
-        constructor.mockImplementation(() => {
-          throw failure
-        })
+      constructor.mockImplementation(snapshot => {
+        expect(snapshot).toEqual(before)
+        if (throws) throw failure
+        return fromSeed(snapshot)
+      })
       try {
         const construct = () =>
           bip32MasterFromDomainRoot(
@@ -184,6 +187,7 @@ describe('BIP-32 domain-root interpretation', () => {
           )
         if (throws) expect(construct).toThrow(failure)
         else construct()
+        expect(constructor).toHaveBeenCalledTimes(1)
         const snapshot = constructor.mock.calls[0][0]
         expect(snapshot).toBeInstanceOf(Uint8Array)
         expect(snapshot).not.toBe(bytes)

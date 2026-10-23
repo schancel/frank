@@ -1,6 +1,6 @@
-/** Exact signed Forum authority. Codec matching compares claims; this module checks chain facts. */
+/** Exact signed Forum authority. Wallet construction is shared with stamps and stealth. */
 import axios from 'axios'
-import { Transaction, getAddress, getBytes, hexlify, isCallException } from 'ethers'
+import { Transaction, getAddress, getBytes, hexlify, randomBytes } from 'ethers'
 import {
   defaultContext,
   validateFrame,
@@ -8,23 +8,21 @@ import {
   topicVoteCommitment,
   topicBurnCalldata,
   matchForumOperation,
+  encodeTopicPostSubmission,
+  encodeTopicVote,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_VOTE_SUBMISSION,
 } from '@frank/codec'
 import type { ForumOperationStatus, ParsedFrame } from '@frank/codec'
-import type { EvmWalletHandle } from "./evm-wallet-handle";
+import type { EvmWalletHandle } from './evm-wallet-handle'
 import type { MonadWalletOperationAdmission } from './storage/evm-wallet-bundle'
-import type { OutgoingTopicOperation } from './storage/topic-operation-journal'
-import {
-  acquireLeaseWhenAvailable,
-  BurnNotSentError,
-} from './evm-account-lease'
 import type {
-  AcquireLeaseWhenAvailableOptions,
-  AccountLeaseHandle,
-} from './evm-account-lease'
-import type { MonadTxOverrides } from './evm-account-tx'
+  OutgoingTopicOperation,
+  RetainedTopicOperation,
+} from './storage/topic-operation-journal'
+import type { EvmCoinList } from './evm-coin-list'
+import { nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 
 export type MatchedForumStatus = ForumOperationStatus<ParsedFrame>
 export const MAX_FORUM_BURN = (1n << 63n) - 1n
@@ -33,14 +31,14 @@ export function assertForumAmount(value: bigint): void {
     throw new Error('Forum burn must be 1..i64::MAX wei')
 }
 export function classifyForumOperation(
-  operation: OutgoingTopicOperation,
+  operation: OutgoingTopicOperation | RetainedTopicOperation,
 ): 'canonical' | 'unsupported-retained' {
   return operation.writeFormat === 'forum-cbor'
     ? 'canonical'
     : 'unsupported-retained'
 }
 const equalHex = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
-const bare = (b: Uint8Array) => hexlify(b).slice(2)
+const bare = (bytes: Uint8Array) => hexlify(bytes).slice(2)
 const addressEqual = (a: string | null | undefined, b: string) =>
   !!a && getAddress(a) === getAddress(b)
 
@@ -49,34 +47,36 @@ export function requireForumWallet(wallet: EvmWalletHandle): void {
     !wallet.walletState ||
     !wallet.topicOperationJournal ||
     wallet.walletState.topicOperationJournal !== wallet.topicOperationJournal ||
-    wallet.walletState.pool !== wallet.pool ||
-    wallet.walletState.leaseManager !== wallet.leaseManager ||
     !wallet.cborNetwork ||
     !wallet.forumBurnAddress ||
-    !wallet.forumChainId
-  ) {
+    !wallet.forumChainId ||
+    !wallet.transactionSetPreparer ||
+    !wallet.transactionSetLifecycle ||
+    !wallet.transactionSetSubmission ||
+    !wallet.forumOperationMutation
+  )
     throw new Error(
-      'Forum operations require coherent durable wallet and explicit network/chain/burn policy',
+      'Forum operations require coherent durable wallet and shared native preparation with explicit network/chain/burn policy',
     )
-  }
   getAddress(wallet.forumBurnAddress)
 }
 
-/** Must be called before any transport or spend checkpoint repair. */
-export function bindForumAuthority(
+/** Pure authority binding before transport or any chain repair. */
+export async function bindForumAuthority(
   wallet: EvmWalletHandle,
   operation: OutgoingTopicOperation,
 ) {
   if (classifyForumOperation(operation) !== 'canonical')
-    throw new Error('Unsupported retained Forum operation')
+    throw new Error('Unsupported retained Forum operation format')
+  if (operation.construction)
+    throw new Error('Forum construction is not yet a signed request')
   requireForumWallet(wallet)
   const request = Uint8Array.from(operation.requestBytes)
   const parsed = validateFrame(request, defaultContext())
   if (parsed.kind !== 'parsed')
     throw new Error('Invalid retained Forum request')
   const typed = parsed.typed
-  let target: Uint8Array
-  let burn: Uint8Array
+  let target: Uint8Array, burns: readonly Uint8Array[]
   if (operation.kind === 'post' && typed?.type === TYPE_TOPIC_POST_SUBMISSION) {
     if (
       typed.postFrame.typed?.type !== TYPE_TOPIC_POST ||
@@ -85,6 +85,95 @@ export function bindForumAuthority(
     )
       throw new Error('Invalid canonical Forum post')
     target = topicBurnCommitment(typed.postFrame.frame).hash
+    burns = [typed.burnTx]
+  } else if (
+    operation.kind === 'vote' &&
+    typed?.type === TYPE_TOPIC_VOTE_SUBMISSION
+  ) {
+    target = typed.targetHash
+    burns = [typed.burnTx]
+  } else throw new Error('Forum journal family mismatch')
+  const expectedTarget =
+    operation.kind === 'post'
+      ? operation.payloadHashHex
+      : operation.targetPayloadHashHex
+  const commitment = topicVoteCommitment(wallet.cborNetwork!, target)
+  const expectedData = hexlify(
+    topicBurnCalldata(operation.direction, commitment),
+  )
+  const journal = await wallet.transactionSetPreparer!.readOperation(
+    operation.transactionSetOperationId,
+  )
+  const members = journal?.members.filter(
+    member => member.transactionSet?.role === 'payment',
+  )
+  const transactions = operation.rawTransactions.map(raw =>
+    Transaction.from(raw),
+  )
+  assertForumAmount(BigInt(operation.intendedValueWei))
+  assertForumAmount(BigInt(operation.valueWei))
+  if (
+    !journal ||
+    journal.cancelled ||
+    journal.binding.chainIdentifier !== wallet.cborNetwork ||
+    journal.intendedValueWei !== operation.intendedValueWei ||
+    !members ||
+    members.length !== transactions.length ||
+    typed.network !== wallet.cborNetwork ||
+    bare(target) !== expectedTarget ||
+    transactions.length !== 1 ||
+    transactions.length !== burns.length ||
+    transactions.length !== operation.funders.length ||
+    transactions.some(
+      (transaction, index) =>
+        !transaction.isSigned() ||
+        !transaction.hash ||
+        !addressEqual(transaction.from, operation.funders[index]!) ||
+        transaction.chainId !== wallet.forumChainId ||
+        !addressEqual(transaction.to, wallet.forumBurnAddress!) ||
+        !equalHex(transaction.data, expectedData) ||
+        !equalHex(transaction.serialized, hexlify(burns[index]!)) ||
+        !equalHex(
+          members[index]!.signed?.rawTransaction ?? '',
+          transaction.serialized,
+        ),
+    ) ||
+    transactions.reduce((sum, tx) => sum + tx.value, 0n).toString() !==
+      operation.valueWei ||
+    BigInt(operation.valueWei) < BigInt(operation.intendedValueWei) ||
+    !equalHex(transactions[0]!.hash!, operation.transactionSetHash)
+  )
+    throw new Error('Invalid durable Forum signed authority')
+  return { request, target, transactions, journal }
+}
+
+/** Released v1 authority belongs to its original lease and scalar signed request. */
+export function bindRetainedForumAuthority(
+  wallet: EvmWalletHandle,
+  operation: RetainedTopicOperation,
+) {
+  requireForumWallet(wallet)
+  if (classifyForumOperation(operation) !== 'canonical')
+    throw new Error('Unsupported retained Forum operation')
+  if (
+    wallet.walletState!.pool !== wallet.pool ||
+    wallet.walletState!.leaseManager !== wallet.leaseManager
+  )
+    throw new Error('Retained Forum custody mismatch')
+  const request = Uint8Array.from(operation.requestBytes)
+  const parsed = validateFrame(request, defaultContext())
+  if (parsed.kind !== 'parsed')
+    throw new Error('Invalid retained Forum request')
+  const typed = parsed.typed
+  let target: Uint8Array, burn: Uint8Array
+  if (operation.kind === 'post' && typed?.type === TYPE_TOPIC_POST_SUBMISSION) {
+    if (
+      typed.postFrame.typed?.type !== TYPE_TOPIC_POST ||
+      typed.postFrame.schemaVersion !== 2 ||
+      operation.direction !== 'up'
+    )
+      throw new Error('Invalid retained Forum post')
+    target = topicBurnCommitment(typed.postFrame.frame).hash
     burn = typed.burnTx
   } else if (
     operation.kind === 'vote' &&
@@ -92,38 +181,42 @@ export function bindForumAuthority(
   ) {
     target = typed.targetHash
     burn = typed.burnTx
-  } else throw new Error('Forum journal family mismatch')
+  } else throw new Error('Retained Forum journal family mismatch')
   const transaction = Transaction.from(operation.rawTx)
   const record = wallet.pool.getRecord(operation.leaseIndex)
-  const hash =
+  const targetHash =
     operation.kind === 'post'
       ? operation.payloadHashHex
       : operation.targetPayloadHashHex
-  assertForumAmount(BigInt(operation.valueWei))
   const expectedData = hexlify(
     topicBurnCalldata(
       operation.direction,
       topicVoteCommitment(wallet.cborNetwork!, target),
     ),
   )
+  assertForumAmount(BigInt(operation.valueWei))
+  // Current lease hydration can retire an old in-use row. Retirement alone proves nothing;
+  // recovery still requires the original signed authority and exact successful chain evidence.
   if (
     typed.network !== wallet.cborNetwork ||
-    bare(target) !== hash ||
+    bare(target) !== targetHash ||
     !transaction.isSigned() ||
     !transaction.hash ||
     !equalHex(transaction.hash, operation.txHash) ||
     !addressEqual(transaction.from, operation.senderAddress) ||
     !record ||
     !addressEqual(record.address, operation.senderAddress) ||
+    (record.status !== 'in-use' &&
+      record.status !== 'spent' &&
+      record.status !== 'retired') ||
     transaction.chainId !== wallet.forumChainId ||
     !addressEqual(transaction.to, wallet.forumBurnAddress!) ||
     transaction.value.toString() !== operation.valueWei ||
     !equalHex(transaction.data, expectedData) ||
     !equalHex(hexlify(burn), operation.rawTx) ||
     !equalHex(transaction.serialized, operation.rawTx)
-  ) {
-    throw new Error('Invalid durable Forum signed authority')
-  }
+  )
+    throw new Error('Invalid retained Forum signed authority')
   const spend = record.lifecycle?.spend
   if (
     spend &&
@@ -131,10 +224,158 @@ export function bindForumAuthority(
       !equalHex(spend.txHash, operation.txHash) ||
       spend.valueWei !== operation.valueWei)
   )
-    throw new Error('Forum operation differs from retained lease spend')
-  if (record.status !== 'in-use' && record.status !== 'spent')
-    throw new Error('Forum operation lease is not recoverable')
-  return { request, target, transaction, record }
+    throw new Error('Retained Forum operation differs from lease spend')
+  return { request, target, transactions: [transaction], record }
+}
+
+/** Composition supplies the wallet's existing inventory; recovery never opens another store. */
+export async function observeRetainedForumSpend(
+  wallet: EvmWalletHandle,
+  coins: EvmCoinList,
+  rawTx: string,
+  spendSpacingBlocks = 0,
+): Promise<void> {
+  const operation = wallet.topicOperationJournal
+    ?.getRetainedLegacy?.()
+    .find(row => row.writeFormat === 'forum-cbor' && equalHex(row.rawTx, rawTx))
+  if (!operation) throw new Error('Unknown retained Forum signed authority')
+  const bound = bindRetainedForumAuthority(wallet, operation)
+  const tx = bound.transactions[0]!,
+    account = tx.from!.toLowerCase()
+  if ((await wallet.provider.getNetwork()).chainId !== wallet.forumChainId)
+    throw new Error('Forum provider chain mismatch')
+  const [receipt, observed, head] = await Promise.all([
+    wallet.provider.getTransactionReceipt(tx.hash!),
+    wallet.provider.getTransaction(tx.hash!),
+    wallet.provider.getBlock('latest'),
+  ])
+  if (
+    !receipt ||
+    receipt.status !== 1 ||
+    !observed ||
+    Transaction.from(observed).serialized !== tx.serialized ||
+    !equalHex(receipt.hash, tx.hash!) ||
+    !addressEqual(receipt.from, account) ||
+    !addressEqual(receipt.to, wallet.forumBurnAddress!) ||
+    observed.blockHash !== receipt.blockHash ||
+    observed.blockNumber !== receipt.blockNumber ||
+    observed.index !== receipt.index ||
+    !head?.hash ||
+    head.number < receipt.blockNumber
+  )
+    throw new ForumOperationPendingError(
+      'Retained Forum native inclusion is not established',
+    )
+  const [balance, nonce, checkpoint, included] = await Promise.all([
+    wallet.provider.getBalance(account, head.number),
+    wallet.provider.getTransactionCount(account, head.number),
+    wallet.provider.getBlock(head.number),
+    wallet.provider.getBlock(receipt.blockNumber),
+  ])
+  if (
+    checkpoint?.hash !== head.hash ||
+    included?.hash !== receipt.blockHash ||
+    nonce <= tx.nonce
+  )
+    throw new ForumOperationPendingError(
+      'Retained Forum account observation is not canonical',
+    )
+  const reference = `retained-forum:${tx.hash!}`
+  await coins.projectTransactionSetAccount(account, reference, async writer => {
+    const original = coins.get(account, tx.nonce)
+    if (original?.spendingTx && !equalHex(original.spendingTx, rawTx))
+      throw new Error(
+        'Retained Forum source conflicts with shared signed authority',
+      )
+    if (original?.state !== 'spent') {
+      await coins.restoreHeld(reference, {
+        account,
+        nonce: tx.nonce,
+        privateKey:
+          original?.privateKey ??
+          wallet.pool.privateKeyOf(operation.leaseIndex),
+        origin: original?.origin ?? 'deterministic',
+        rawTx,
+      })
+      await writer.recordMined(
+        { account, nonce: tx.nonce },
+        { block: receipt.blockNumber },
+      )
+    }
+    const latest = coins.latestOf(account)
+    if (latest && latest.nonce > nonce)
+      throw new ForumOperationPendingError(
+        'Retained Forum account observation is stale',
+      )
+    await writer.put({
+      account,
+      nonce,
+      valueWei: balance,
+      privateKey:
+        original?.privateKey ?? wallet.pool.privateKeyOf(operation.leaseIndex),
+      origin: original?.origin ?? 'deterministic',
+      ...(original?.changeIndex === undefined
+        ? {}
+        : { changeIndex: original.changeIndex }),
+      lastSpentInBlock: head.number,
+      ...(spendSpacingBlocks > 0
+        ? { spendableFromBlock: head.number + spendSpacingBlocks }
+        : {}),
+    })
+    return true
+  })
+  coins.completeTransactionSetProjection(account, reference)
+}
+
+const retainedRecovery = new WeakMap<
+  EvmWalletHandle,
+  Map<string, Promise<void>>
+>()
+function reconcileRetainedForumOperation(
+  wallet: EvmWalletHandle,
+  operation: RetainedTopicOperation,
+): Promise<void> {
+  let pending = retainedRecovery.get(wallet)
+  if (!pending) {
+    pending = new Map()
+    retainedRecovery.set(wallet, pending)
+  }
+  const existing = pending.get(operation.txHash)
+  if (existing) return existing
+  const run = (async () => {
+    if (
+      !wallet.observeRetainedForumSpend ||
+      !wallet.topicOperationJournal!.deleteRetained
+    )
+      throw new Error('Retained Forum observation capability unavailable')
+    const bound = bindRetainedForumAuthority(wallet, operation)
+    if ((await wallet.provider.getNetwork()).chainId !== wallet.forumChainId)
+      throw new Error('Forum provider chain mismatch')
+    if (!bound.record.lifecycle?.spend)
+      await wallet.forumOperationMutation!(async () => {
+        bindRetainedForumAuthority(wallet, operation)
+        wallet.pool.recordSpendTransaction(operation.leaseIndex, {
+          rawTx: operation.rawTx,
+          txHash: operation.txHash,
+          valueWei: operation.valueWei,
+        })
+        await wallet.pool.flush()
+      })
+    try {
+      await exchange(wallet, operation, 'post')
+    } catch {
+      await exchange(wallet, operation, 'put')
+    }
+    await wallet.observeRetainedForumSpend(operation.rawTx)
+    await wallet.forumOperationMutation!(async () => {
+      bindRetainedForumAuthority(wallet, operation)
+      wallet.pool.setStatus(operation.leaseIndex, 'spent')
+      await wallet.pool.flush()
+      await wallet.topicOperationJournal!.deleteRetained!(operation)
+    })
+  })().finally(() => pending!.delete(operation.txHash))
+  pending.set(operation.txHash, run)
+  return run
 }
 
 export class ForumOperationPendingError extends Error {
@@ -161,34 +402,50 @@ class ForumRelayResponseError extends Error {
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object'
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : undefined
 }
 
 function forumRelayError(cause: unknown): unknown {
   const response = record(record(cause)?.response)
   const status = response?.status
-  if (typeof status !== 'number' || !Number.isInteger(status) || status < 400 || status > 599)
+  if (
+    typeof status !== 'number' ||
+    !Number.isInteger(status) ||
+    status < 400 ||
+    status > 599
+  )
     return cause
   const fallback = new ForumRelayResponseError(status, cause)
   const media = record(response?.headers)?.['content-type']
-  if (typeof media !== 'string' || media.split(';')[0].trim().toLowerCase() !== 'application/json')
+  if (
+    typeof media !== 'string' ||
+    media.split(';')[0].trim().toLowerCase() !== 'application/json'
+  )
     return fallback
   const data = response?.data
   // Axios browser responses use ArrayBuffer; Node Buffer is a Uint8Array view.
   // Respect a view's offset/length and bound bytes before decoding or parsing.
-  const bytes = data instanceof ArrayBuffer
-    ? new Uint8Array(data)
-    : data instanceof Uint8Array ? data : undefined
+  const bytes =
+    data instanceof ArrayBuffer
+      ? new Uint8Array(data)
+      : data instanceof Uint8Array
+      ? data
+      : undefined
   if (!bytes || bytes.byteLength > 4096) return fallback
   try {
-    const body = record(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)))
+    const body = record(
+      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
+    )
     const code = body?.error
     const detail = body?.detail
     if (
-      typeof code !== 'string' || !/^[a-z][a-z0-9_]{0,79}$/.test(code) ||
-      typeof detail !== 'string' || detail.length > 1024
-    ) return fallback
+      typeof code !== 'string' ||
+      !/^[a-z][a-z0-9_]{0,79}$/.test(code) ||
+      typeof detail !== 'string' ||
+      detail.length > 1024
+    )
+      return fallback
     const safeDetail = detail
       .replace(/https?:\/\/[^\s]+/gi, '[URL redacted]')
       .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ')
@@ -202,10 +459,13 @@ function forumRelayError(cause: unknown): unknown {
 
 async function exchange(
   wallet: EvmWalletHandle,
-  operation: OutgoingTopicOperation,
+  operation: OutgoingTopicOperation | RetainedTopicOperation,
   method: 'put' | 'post',
 ): Promise<MatchedForumStatus> {
-  const bound = bindForumAuthority(wallet, operation)
+  const bound =
+    operation.version === 1
+      ? bindRetainedForumAuthority(wallet, operation)
+      : await bindForumAuthority(wallet, operation)
   if ((await wallet.provider.getNetwork()).chainId !== wallet.forumChainId)
     throw new Error('Forum provider chain mismatch')
   const response = await axios({
@@ -216,7 +476,7 @@ async function exchange(
     data: bound.request,
     headers: {
       'Content-Type': 'application/cbor',
-      'Accept': 'application/cbor',
+      Accept: 'application/cbor',
     },
     responseType: 'arraybuffer',
     maxContentLength: 4 * 1024 * 1024,
@@ -228,7 +488,7 @@ async function exchange(
   if (
     bytes.length > 4 * 1024 * 1024 ||
     String(response.headers?.['content-type'] ?? '')
-      .split(';')[0]
+      .split(';')[0]!
       .trim()
       .toLowerCase() !== 'application/cbor'
   )
@@ -237,56 +497,115 @@ async function exchange(
     network: wallet.cborNetwork!,
     submittedFrame: bound.request,
     targetHash: bound.target,
-    transactionHash: getBytes(operation.txHash),
-    sender: getBytes(operation.senderAddress),
+    transactionHash: getBytes(bound.transactions[0]!.hash!),
+    sender: getBytes(bound.transactions[0]!.from!),
     direction: operation.direction === 'up' ? 1 : 0,
     value: BigInt(operation.valueWei),
   })
   if (status.state !== 2)
     throw new ForumOperationPendingError('Forum operation remains unconfirmed')
-  // Successful exact receipt observation is the existing confirmation policy; no depth is inferred.
-  const receipt = await wallet.provider.getTransactionReceipt(operation.txHash)
-  const observed = await wallet.provider.getTransaction(operation.txHash)
-  if (
-    !receipt ||
-    receipt.status !== 1 ||
-    !equalHex(receipt.hash, operation.txHash) ||
-    !addressEqual(receipt.from, operation.senderAddress) ||
-    !addressEqual(receipt.to, wallet.forumBurnAddress!) ||
-    BigInt(receipt.blockNumber) !== status.block ||
-    BigInt(receipt.index) !== status.transactionIndex ||
-    !observed ||
-    !equalHex(observed.hash, operation.txHash) ||
-    !addressEqual(observed.from, operation.senderAddress) ||
-    !addressEqual(observed.to, wallet.forumBurnAddress!) ||
-    observed.chainId !== wallet.forumChainId ||
-    observed.value !== bound.transaction.value ||
-    !equalHex(observed.data, bound.transaction.data) ||
-    observed.blockNumber === null ||
-    BigInt(observed.blockNumber) !== status.block ||
-    BigInt(observed.index) !== status.transactionIndex
-  ) {
+  let lastBlock = -1n,
+    lastIndex = -1n
+  for (const transaction of bound.transactions) {
+    const [receipt, observed] = await Promise.all([
+      wallet.provider.getTransactionReceipt(transaction.hash!),
+      wallet.provider.getTransaction(transaction.hash!),
+    ])
+    if (
+      !receipt ||
+      receipt.status !== 1 ||
+      !equalHex(receipt.hash, transaction.hash!) ||
+      !addressEqual(receipt.from, transaction.from!) ||
+      !addressEqual(receipt.to, wallet.forumBurnAddress!) ||
+      !observed ||
+      !equalHex(observed.hash, transaction.hash!) ||
+      !addressEqual(observed.from, transaction.from!) ||
+      !addressEqual(observed.to, wallet.forumBurnAddress!) ||
+      observed.chainId !== wallet.forumChainId ||
+      observed.value !== transaction.value ||
+      !equalHex(observed.data, transaction.data) ||
+      observed.blockNumber !== receipt.blockNumber ||
+      observed.index !== receipt.index
+    )
+      throw new ForumOperationPendingError(
+        'Forum status lacks every matching successful transaction observation',
+      )
+    if (
+      operation.version === 1 &&
+      (Transaction.from(observed).serialized !== transaction.serialized ||
+        (
+          await wallet.provider.getBlock(receipt.blockNumber)
+        )?.hash?.toLowerCase() !== receipt.blockHash.toLowerCase())
+    )
+      throw new ForumOperationPendingError(
+        'Retained Forum receipt lacks exact canonical signed transaction evidence',
+      )
+    const block = BigInt(receipt.blockNumber),
+      index = BigInt(receipt.index)
+    if (block > lastBlock || (block === lastBlock && index > lastIndex)) {
+      lastBlock = block
+      lastIndex = index
+    }
+  }
+  if (lastBlock !== status.block || lastIndex !== status.transactionIndex)
     throw new ForumOperationPendingError(
-      'Forum status lacks matching successful transaction observation',
+      'Forum status has a different transaction-set inclusion watermark',
+    )
+  return status
+}
+
+/** A relay can broadcast every byte it receives, so funding must settle before handoff. */
+async function prepareForumHandoff(
+  wallet: EvmWalletHandle,
+  operation: OutgoingTopicOperation,
+): Promise<void> {
+  try {
+    await wallet.transactionSetSubmission!.sendTransaction(
+      await wallet.transactionSetPreparer!.readTransactionSet(
+        operation.transactionSetOperationId,
+      ),
+    )
+    if (
+      !await wallet.transactionSetLifecycle!.readCanSubmitPayments(
+        operation.transactionSetOperationId,
+      )
+    )
+      throw new ForumOperationPendingError(
+        'Forum funding is pending the selected network confirmation delay',
+      )
+  } catch (error) {
+    if (error instanceof ForumOperationPendingError) throw error
+    throw new ForumOperationPendingError(
+      'Forum funding retained pending reconciliation',
+      error,
     )
   }
-  return status
 }
 
 async function settle(
   wallet: EvmWalletHandle,
   operation: OutgoingTopicOperation,
-  admission?: MonadWalletOperationAdmission,
-  handle?: AccountLeaseHandle,
-) {
-  const bound = bindForumAuthority(wallet, operation)
-  if (bound.record.status === 'in-use') {
-    if (handle) wallet.leaseManager.releaseLease(handle, 'confirmed')
-    else wallet.pool.setStatus(operation.leaseIndex, 'spent')
-    await wallet.leaseManager.flush()
-  }
-  await wallet.topicOperationJournal!.delete(operation)
-  if (admission) await wallet.walletState!.compactTerminalAccounts(8, admission)
+): Promise<void> {
+  await wallet.transactionSetSubmission!.sendTransaction(
+    await wallet.transactionSetPreparer!.readTransactionSet(
+      operation.transactionSetOperationId,
+    ),
+  )
+  const journal = await wallet.transactionSetPreparer!.readOperation(
+    operation.transactionSetOperationId,
+  )
+  if (!journal) throw new Error('Forum operation is missing durable signed authority')
+  if (
+    journal.members.every(
+      member =>
+        member.observation.state === 'included-success' ||
+        member.observation.state === 'included-revert' ||
+        nativeMemberSuperseded(member),
+    )
+  )
+    await wallet.forumOperationMutation!(() =>
+      wallet.topicOperationJournal!.delete(operation),
+    )
 }
 
 export async function reconcileForumOperations(
@@ -295,32 +614,34 @@ export async function reconcileForumOperations(
   admission?: MonadWalletOperationAdmission,
 ): Promise<void> {
   requireForumWallet(wallet)
-  return wallet.walletState!.runOperation(async admitted => {
-    for (const operation of wallet.topicOperationJournal!.getAll()) {
-      // Historical authority is retained, including terminal rows, before decoding or effects.
-      if (
-        classifyForumOperation(operation) !== 'canonical' ||
-        operation.kind !== kind
-      )
-        continue
-      const bound = bindForumAuthority(wallet, operation)
-      if (!bound.record.lifecycle?.spend) {
-        wallet.pool.recordSpendTransaction(operation.leaseIndex, {
-          rawTx: operation.rawTx,
-          txHash: operation.txHash,
-          valueWei: operation.valueWei,
-        })
-        await wallet.pool.flush()
-      }
-      // Status is read-only. If unresolved, SAME-byte replay may broadcast; never sign again.
-      try {
-        await exchange(wallet, operation, 'post')
-      } catch {
-        await exchange(wallet, operation, 'put')
-      }
-      await settle(wallet, operation, admitted)
-    }
-  }, admission)
+  await wallet.refreshTransactionSetInventory?.()
+  return wallet.walletState!.runLifetime(async () => {
+    const results = await Promise.allSettled([
+      ...(wallet.topicOperationJournal!.getRetainedLegacy?.() ?? [])
+        .filter(
+          operation =>
+            operation.kind === kind &&
+            classifyForumOperation(operation) === 'canonical',
+        )
+        .map(operation => reconcileRetainedForumOperation(wallet, operation)),
+      ...wallet
+        .topicOperationJournal!.getAll()
+        .filter(retained => retained.kind === kind)
+        .map(async retained => {
+          const operation = await finishForumConstruction(wallet, retained)
+          await bindForumAuthority(wallet, operation)
+          await prepareForumHandoff(wallet, operation)
+          try {
+            await exchange(wallet, operation, 'post')
+          } catch {
+            await exchange(wallet, operation, 'put')
+          }
+          await settle(wallet, operation)
+        }),
+    ])
+    const failed = results.find(result => result.status === 'rejected')
+    if (failed?.status === 'rejected') throw failed.reason
+  })
 }
 
 interface ForumSubmissionParams {
@@ -329,113 +650,123 @@ interface ForumSubmissionParams {
   direction: 'up' | 'down'
   burnAddress: string
   value: bigint
-  overrides?: MonadTxOverrides
-  leaseIndex?: number
-  leaseHolder?: string
-  waitForLease?: AcquireLeaseWhenAvailableOptions
-  encode: (rawTx: Uint8Array) => Uint8Array
+  operationId?: string
+  postFrame?: Uint8Array
+}
+
+async function finishForumConstruction(
+  wallet: EvmWalletHandle,
+  retained: OutgoingTopicOperation,
+): Promise<OutgoingTopicOperation> {
+  const intent = retained.construction
+  if (!intent) return retained
+  if (!addressEqual(intent.burnAddress, wallet.forumBurnAddress!))
+    throw new Error('Retained Forum burn policy mismatch')
+  const target = getBytes(
+    '0x' +
+      (retained.kind === 'post'
+        ? retained.payloadHashHex
+        : retained.targetPayloadHashHex),
+  )
+  const commitment = topicVoteCommitment(wallet.cborNetwork!, target)
+  const calldata = hexlify(topicBurnCalldata(retained.direction, commitment))
+  const prepared =
+    await wallet.transactionSetPreparer!.constructLegacyTransactionSet({
+      operationId: retained.transactionSetOperationId,
+      amountWei: BigInt(retained.intendedValueWei),
+      kdf: () => intent.burnAddress,
+      calldata,
+    })
+  if (prepared.bundle.length !== 1)
+    throw new Error('Forum requires exactly one burn transaction')
+  const raw = getBytes(prepared.bundle[0]!.rawTransaction)
+  const { construction: _construction, ...kept } = retained
+  const operation: OutgoingTopicOperation = {
+    ...kept,
+    requestBytes: Array.from(
+      retained.kind === 'post'
+        ? encodeTopicPostSubmission(getBytes('0x' + intent.postFrameHex!), raw)
+        : encodeTopicVote(wallet.cborNetwork!, target, raw),
+    ),
+    funders: prepared.bundle.map(tx => tx.sourceAccount),
+    rawTransactions: prepared.bundle.map(tx => tx.rawTransaction),
+    transactionSetHash: prepared.bundle[0]!.txHash,
+    valueWei: prepared.bundle
+      .reduce((sum, tx) => sum + tx.valueWei, 0n)
+      .toString(),
+  }
+  await bindForumAuthority(wallet, operation)
+  await wallet.forumOperationMutation!(() =>
+    wallet.topicOperationJournal!.put(operation),
+  )
+  return operation
 }
 
 async function submitForumOperationAdmitted(
   wallet: EvmWalletHandle,
   params: ForumSubmissionParams,
-  admission?: MonadWalletOperationAdmission,
 ): Promise<{ operation: OutgoingTopicOperation; status: MatchedForumStatus }> {
   requireForumWallet(wallet)
   assertForumAmount(params.value)
   if (!addressEqual(params.burnAddress, wallet.forumBurnAddress!))
     throw new Error('Forum burn policy mismatch')
-  if ((await wallet.provider.getNetwork()).chainId !== wallet.forumChainId)
-    throw new Error('Forum provider chain mismatch')
-  const handle =
-    params.leaseIndex !== undefined
-      ? wallet.leaseManager.acquireForIndex(params.leaseIndex, params.leaseHolder)
-      : params.waitForLease
-      ? await acquireLeaseWhenAvailable(
-          wallet.leaseManager,
-          params.waitForLease,
-        )
-      : wallet.leaseManager.acquireLease()
-  await wallet.leaseManager.flush()
-  let operation: OutgoingTopicOperation
-  try {
-    const signer = wallet.pool.getSigner(handle.index, {
-      provider: wallet.provider,
-      httpClient: wallet.httpClient,
-    })
-    const burnData = hexlify(
-      topicBurnCalldata(
-        params.direction,
-        topicVoteCommitment(wallet.cborNetwork!, params.target),
-      ),
+  if (params.kind === 'post' && !params.postFrame)
+    throw new Error('Forum post requires its complete public frame')
+  // Persist the complete public payload and intended burn before the wallet reserves or signs.
+  const intent = {
+    version: 2 as const,
+    kind: params.kind,
+    writeFormat: 'forum-cbor' as const,
+    requestBytes: [],
+    transactionSetOperationId:
+      params.operationId ?? `forum-${hexlify(randomBytes(16)).slice(2)}`,
+    construction: {
+      burnAddress: params.burnAddress,
+      ...(params.postFrame ? { postFrameHex: bare(params.postFrame) } : {}),
+    },
+    funders: [],
+    rawTransactions: [],
+    transactionSetHash: '',
+    intendedValueWei: params.value.toString(),
+    valueWei: params.value.toString(),
+    direction: params.direction,
+    ...(params.kind === 'post'
+      ? { payloadHashHex: bare(params.target) }
+      : { targetPayloadHashHex: bare(params.target) }),
+  } as OutgoingTopicOperation
+  const prior =
+    params.operationId === undefined
+      ? undefined
+      : wallet
+          .topicOperationJournal!.getAll()
+          .find(row => row.transactionSetOperationId === params.operationId)
+  if (prior) {
+    const target =
+      prior.kind === 'post' ? prior.payloadHashHex : prior.targetPayloadHashHex
+    if (
+      prior.kind !== params.kind ||
+      prior.direction !== params.direction ||
+      prior.intendedValueWei !== params.value.toString() ||
+      target !== bare(params.target)
     )
-    let signed
-    try {
-      signed = await signer.buildAndSignCall(
-        params.burnAddress,
-        params.value,
-        burnData,
-        params.overrides,
+      throw new Error(
+        'Forum operation identity conflicts with its original intent',
       )
-    } catch (err) {
-      if (
-        params.overrides?.gasLimit === undefined &&
-        (isCallException(err) ||
-          (err instanceof Error &&
-            /missing revert data|CALL_EXCEPTION|insufficient balance/i.test(
-              err.message,
-            )))
-      ) {
-        const calldataBytes = getBytes(burnData)
-        const fallbackGasLimit =
-          21000n + BigInt(calldataBytes.length * 16) + 10000n
-        signed = await signer.buildAndSignCall(
-          params.burnAddress,
-          params.value,
-          burnData,
-          { ...params.overrides, gasLimit: fallbackGasLimit },
-        )
-      } else {
-        throw err
-      }
-    }
-    if (signed.value !== params.value)
-      throw new Error('Signer returned a different Forum burn value')
-    operation = {
-      version: 1,
-      kind: params.kind,
-      writeFormat: 'forum-cbor',
-      requestBytes: Array.from(params.encode(getBytes(signed.rawTx))),
-      leaseIndex: handle.index,
-      senderAddress: signed.from,
-      rawTx: signed.rawTx,
-      txHash: signed.txHash,
-      valueWei: signed.value.toString(),
-      direction: params.direction,
-      ...(params.kind === 'post'
-        ? { payloadHashHex: bare(params.target) }
-        : { targetPayloadHashHex: bare(params.target) }),
-    } as OutgoingTopicOperation
-    bindForumAuthority(wallet, operation)
-  } catch (error) {
-    wallet.leaseManager.releaseLease(handle, 'unused')
-    await wallet.leaseManager.flush()
-    throw new BurnNotSentError(
-      error instanceof Error ? error.message : String(error),
-      error,
-    )
   }
-  // Once journaled, every failure is uncertainty. Keep exact authority and the occupied lease.
-  await wallet.topicOperationJournal!.put(operation)
-  wallet.pool.recordSpendTransaction(handle.index, {
-    rawTx: operation.rawTx,
-    txHash: operation.txHash,
-    valueWei: operation.valueWei,
-  })
-  await wallet.pool.flush()
-  let status: MatchedForumStatus
+  // Once persistence is attempted, even a failed acknowledgement may leave an accepted
+  // intent. Construction failures must retain the caller's duplicate barrier: recovery
+  // can still fund and submit this original operation when funds become available.
   try {
-    status = await exchange(wallet, operation, 'put')
+    if (!prior)
+      await wallet.forumOperationMutation!(() =>
+        wallet.topicOperationJournal!.put(intent),
+      )
+    const operation = await finishForumConstruction(wallet, prior ?? intent)
+    // Every signed byte and its original public payload are durable before external handoff.
+    await prepareForumHandoff(wallet, operation)
+    const status = await exchange(wallet, operation, 'put')
+    await settle(wallet, operation)
+    return { operation, status }
   } catch (error) {
     throw new ForumOperationPendingError(
       `Forum operation retained pending: ${
@@ -444,19 +775,16 @@ async function submitForumOperationAdmitted(
       error,
     )
   }
-  await settle(wallet, operation, admission, handle)
-  return { operation, status }
 }
 
-/** All mutations use the same wallet admission, including direct helper callers. */
 export async function submitForumOperation(
   wallet: EvmWalletHandle,
   params: ForumSubmissionParams,
   admission?: MonadWalletOperationAdmission,
 ): Promise<{ operation: OutgoingTopicOperation; status: MatchedForumStatus }> {
   requireForumWallet(wallet)
-  return wallet.walletState!.runOperation(
-    admitted => submitForumOperationAdmitted(wallet, params, admitted),
-    admission,
+  await wallet.refreshTransactionSetInventory?.()
+  return wallet.walletState!.runLifetime(() =>
+    submitForumOperationAdmitted(wallet, params),
   )
 }

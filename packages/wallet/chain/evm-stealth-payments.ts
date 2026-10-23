@@ -1,6 +1,14 @@
 /** Wallet-owned financial preparation. No message encoding, encryption or transport. */
 import { runNativeTransactionExclusive } from './chain-wallet'
-import { getAddress, getBytes, hexlify, Interface, Transaction } from 'ethers'
+import {
+  getAddress,
+  getBytes,
+  hexlify,
+  Interface,
+  Transaction,
+  keccak256,
+  toUtf8Bytes,
+} from 'ethers'
 import type {
   StealthPaymentAsset,
   StealthPaymentCapability,
@@ -18,8 +26,11 @@ import {
 import { EvmNativeOperationPendingError } from './evm-legacy-consolidator'
 import type { PreparedIndependentPaymentParams } from './evm-legacy-consolidator'
 import { listEvmSwapVenues } from './dex-deployments'
+import type { ConstructEvmTransactionSetRequest } from '../evm-transaction-set-types'
 
 export const EVM_STEALTH_PREPARATION_NAMESPACE = 'evm-stealth-preparations-v1'
+export const evmStealthTransactionSetOperationId = (id: string): string =>
+  `stealth-${keccak256(toUtf8Bytes(id)).slice(2)}`
 const erc20 = new Interface([
   'function transfer(address to,uint256 amount) returns (bool)',
   'event Transfer(address indexed from,address indexed to,uint256 value)',
@@ -33,7 +44,7 @@ export interface EvmStealthSourceAllocation {
   estimatedNativeFeeAtomic: string
 }
 export interface EvmStealthPreparation {
-  version: 2
+  version: 3
   allocation?: { sources: EvmStealthSourceAllocation[] }
 
   operationId: string
@@ -49,6 +60,7 @@ export interface EvmStealthPreparation {
   ephemeralPublicKey: string
   journalOperationId?: string
   payloadDigest?: string
+  messageStamp?: { amountAtomic: string; maxNativeFeeAtomic: string }
   released?: true
 }
 export interface EvmStealthPaymentDriver {
@@ -76,7 +88,16 @@ export interface EvmStealthPaymentDriver {
     stealthAddress: string
     ephemeralPubKey: Uint8Array
   }
+  quoteNative(amountWei: bigint): Promise<{
+    nativeBalanceAtomic: bigint
+    assetBalanceAtomic: bigint
+    estimatedNativeFeeAtomic: bigint
+  }>
+  constructNativePayment(
+    params: ConstructEvmTransactionSetRequest,
+  ): Promise<EvmNativeOperation>
   operations(): EvmNativeOperation[]
+  readPreparation(preparationId: string): Promise<EvmNativeOperation | undefined>
   signIndependentPayment(
     params: PreparedIndependentPaymentParams,
   ): Promise<EvmNativeOperation>
@@ -95,18 +116,24 @@ export function configuredEvmStealthToken(
 ): string {
   const normalized = getAddress(address).toLowerCase()
   if (
-    !listEvmSwapVenues(chainIdentifier).some(venue =>
-      venue.tokens.some(token => token.address?.toLowerCase() === normalized),
+    !listEvmSwapVenues(chainIdentifier).some((venue) =>
+      venue.tokens.some((token) => token.address?.toLowerCase() === normalized),
     )
   )
     throw new Error('Unsupported configured ERC20 asset')
   return normalized
 }
 function validateFeeAuthorization(row: EvmStealthPreparation): void {
-  if (row.version !== 2)
+  if (row.version !== 3)
     throw new Error(
       'Unsupported EVM stealth preparation format; development financial preparation reset requires explicit review, never key or wallet deletion',
     )
+  if (row.messageStamp && (row.asset.kind !== 'native' ||
+      !/^[1-9][0-9]{0,77}$/.test(row.messageStamp.amountAtomic) ||
+      !/^(0|[1-9][0-9]{0,77})$/.test(row.messageStamp.maxNativeFeeAtomic) ||
+      BigInt(row.messageStamp.amountAtomic) >= 1n << 256n ||
+      BigInt(row.messageStamp.maxNativeFeeAtomic) >= 1n << 256n))
+    throw new Error('Invalid combined message stamp authorization')
   if (row.allocation) validateAllocation(row)
   const authorization = row.feeAuthorization
   if (
@@ -118,7 +145,11 @@ function validateFeeAuthorization(row: EvmStealthPreparation): void {
         BigInt(authorization.maxNativeFeeAtomic) >= 1n << 256n))
   )
     throw new Error('Unsupported stealth preparation fee authorization format')
-  if (authorization.status === 'approved' && !row.allocation)
+  if (
+    authorization.status === 'approved' &&
+    row.asset.kind !== 'native' &&
+    !row.allocation
+  )
     throw new Error('Approved EVM preparation has no frozen source allocation')
 }
 function validateAllocation(row: EvmStealthPreparation): void {
@@ -190,6 +221,43 @@ function matches(
   chainId: bigint,
 ): boolean {
   validateFeeAuthorization(preparation)
+  if (preparation.asset.kind === 'native') {
+    if (
+      row.cancelled ||
+      row.kind !== 'transaction-set' ||
+      preparation.feeAuthorization.status !== 'approved' ||
+      row.binding.chainIdentifier !== preparation.chainIdentifier ||
+      row.intendedValueWei !== preparation.amountAtomic.toString()
+    )
+      return false
+    const payments = row.members.filter(
+      (member) => (member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined),
+    )
+    if (!payments.length || row.members.some((member) => !member.signed))
+      return false
+    const totalFee = row.members.reduce(
+      (sum, member) =>
+        sum + nativeMaximumFee(Transaction.from(member.signed!.rawTransaction)),
+      0n,
+    )
+    return (
+      totalFee <= BigInt(preparation.feeAuthorization.maxNativeFeeAtomic) + BigInt(preparation.messageStamp?.maxNativeFeeAtomic ?? 0) &&
+      payments.every((member) => {
+        const tx = Transaction.from(member.signed!.rawTransaction)
+        return (
+          tx.chainId === chainId &&
+          tx.data === '0x' &&
+          tx.to?.toLowerCase() === preparation.recipientAddress &&
+          tx.from?.toLowerCase() === member.source.address
+        )
+      }) &&
+      payments.reduce(
+        (sum, member) =>
+          sum + Transaction.from(member.signed!.rawTransaction).value,
+        0n,
+      ) >= BigInt(preparation.amountAtomic)
+    )
+  }
   if (
     row.cancelled ||
     preparation.feeAuthorization.status !== 'approved' ||
@@ -213,15 +281,7 @@ function matches(
         tx.from?.toLowerCase() !== member.source.address)
     )
       return false
-    if (preparation.asset.kind === 'native') {
-      if (
-        row.kind !== 'native' ||
-        tx.data !== '0x' ||
-        tx.to?.toLowerCase() !== preparation.recipientAddress ||
-        tx.value !== BigInt(allocation.recipientAmountAtomic)
-      )
-        return false
-    } else if (
+    if (
       row.kind !== 'contract' ||
       row.submissionPolicy !== 'explicit' ||
       tx.to?.toLowerCase() !== preparation.asset.contractAddress ||
@@ -253,7 +313,13 @@ export function createEvmStealthPayments(
       async () => {
         driver.assertActive()
         await driver.store.refresh()
-        await driver.refreshJournal(`stealth-payment:${id}`)
+        const retained = driver.store.get(id)
+        if (retained)
+          await driver.refreshJournal(
+            retained.asset.kind === 'native'
+              ? `evm-transaction-set:${evmStealthTransactionSetOperationId(id)}`
+              : `stealth-payment:${id}`,
+          )
         driver.assertActive()
         return work()
       },
@@ -270,27 +336,29 @@ export function createEvmStealthPayments(
     validateFeeAuthorization(row)
     return row
   }
-  const operation = (
-    row: EvmStealthPreparation,
-  ): EvmNativeOperation | undefined => {
-    const candidates = driver
-      .operations()
-      .filter(
-        candidate =>
-          candidate.preparationId === `stealth-payment:${row.operationId}` &&
-          matches(candidate, row, driver.nativeChainId),
-      )
-    if (row.journalOperationId !== undefined) {
-      const linked = candidates.find(
-        candidate => candidate.operationId === row.journalOperationId,
-      )
-      if (!linked && !row.released)
-        throw new Error('Stealth preparation journal mismatch')
-      return linked
-    }
-    if (candidates.length > 1)
-      throw new Error('Ambiguous stealth preparation journal link')
-    return candidates[0]
+  const preparationId = (row: EvmStealthPreparation): string => row.asset.kind === 'native'
+    ? `evm-transaction-set:${evmStealthTransactionSetOperationId(row.operationId)}`
+    : `stealth-payment:${row.operationId}`
+  // Only active journal rows own input holds; historical evidence is resolved asynchronously.
+  const activeOperation = (row: EvmStealthPreparation): EvmNativeOperation | undefined => {
+    const candidate = driver.operations().find(candidate => candidate.preparationId === preparationId(row))
+    if (candidate?.cancelled && row.released) return undefined
+    if (candidate && (!matches(candidate, row, driver.nativeChainId) ||
+        (row.journalOperationId !== undefined && candidate.operationId !== row.journalOperationId)))
+      throw new Error('Stealth preparation journal mismatch')
+    return candidate
+  }
+  const operation = async (row: EvmStealthPreparation): Promise<EvmNativeOperation | undefined> => {
+    const candidate = await driver.readPreparation(preparationId(row))
+    driver.assertActive()
+    if (candidate?.cancelled && row.released &&
+        (row.journalOperationId === undefined || candidate.operationId === row.journalOperationId)) return undefined
+    if (candidate && (!matches(candidate, row, driver.nativeChainId) ||
+        (row.journalOperationId !== undefined && candidate.operationId !== row.journalOperationId)))
+      throw new Error('Stealth preparation journal mismatch')
+    if (!candidate && row.journalOperationId !== undefined && !row.released)
+      throw new Error('Stealth preparation journal mismatch')
+    return candidate
   }
   const manifest = (
     row: EvmStealthPreparation,
@@ -304,18 +372,26 @@ export function createEvmStealthPayments(
     recipientDestination: getBytes(row.recipientAddress),
     recipientSpendPublicKey: getBytes(row.recipientSpendPublicKey),
     ephemeralPublicKey: getBytes(row.ephemeralPublicKey),
-    members: journal.members.map((member, index) => ({
-      rawTransaction: member.signed!.rawTransaction,
-      txHash: member.signed!.transactionHash,
-      recipientAmountAtomic: BigInt(
-        row.allocation!.sources[index]!.recipientAmountAtomic,
-      ),
-    })),
+    members: journal.members
+      .filter(
+        (member) =>
+          row.asset.kind !== 'native' ||
+          (member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined),
+      )
+      .map((member, index) => ({
+        rawTransaction: member.signed!.rawTransaction,
+        txHash: member.signed!.transactionHash,
+        recipientAmountAtomic: BigInt(
+          row.asset.kind === 'native'
+            ? BigInt(member.transactionSet!.intendedValueWei ?? Transaction.from(member.signed!.rawTransaction).value)
+            : row.allocation!.sources[index]!.recipientAmountAtomic,
+        ),
+      })),
   })
   const progress = async (
     row: EvmStealthPreparation,
   ): Promise<StealthPaymentProgress> => {
-    const journal = operation(row)
+    const journal = await operation(row)
     const amount = BigInt(row.amountAtomic)
     if (!journal) return { status: 'pending', intendedAmountAtomic: amount }
     let received = 0n,
@@ -323,13 +399,19 @@ export function createEvmStealthPayments(
       known = 0,
       failed = 0
     let feeKnown = false
-    for (let i = 0; i < journal.members.length; i++) {
-      const member = journal.members[i]!,
-        observation = member.observation
-      if ('feeWei' in observation) {
+    for (const member of journal.members)
+      if ('feeWei' in member.observation && member.transactionSet?.stageId === undefined) {
         feeKnown = true
-        fee += BigInt(observation.feeWei)
+        fee += BigInt(member.observation.feeWei)
       }
+    const paymentMembers = journal.members.filter(
+      (member) =>
+        row.asset.kind !== 'native' ||
+        (member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined),
+    )
+    for (let i = 0; i < paymentMembers.length; i++) {
+      const member = paymentMembers[i]!,
+        observation = member.observation
       if (
         observation.state === 'included-revert' ||
         nativeMemberSuperseded(member)
@@ -341,7 +423,7 @@ export function createEvmStealthPayments(
       if (observation.state !== 'included-success') continue
       const value =
         row.asset.kind === 'native'
-          ? BigInt(row.allocation!.sources[i]!.recipientAmountAtomic)
+          ? Transaction.from(member.signed!.rawTransaction).value
           : await driver.tokenReceipt(
               member.signed!.rawTransaction,
               row.recipientAddress,
@@ -354,13 +436,12 @@ export function createEvmStealthPayments(
     }
     return {
       status:
-        received === amount && known === journal.members.length
+        received >= amount && known === paymentMembers.length
           ? 'succeeded'
           : received > 0n ||
-            (known === journal.members.length &&
-              failed < journal.members.length)
+            (known === paymentMembers.length && failed < paymentMembers.length)
           ? 'partial'
-          : failed === journal.members.length
+          : failed === paymentMembers.length
           ? 'failed'
           : 'pending',
       intendedAmountAtomic: amount,
@@ -380,6 +461,10 @@ export function createEvmStealthPayments(
     )
       throw new Error('Invalid stealth payment intent')
     const asset = assetOf(driver.chainIdentifier, intent.asset)
+    if (asset.kind === 'native' && intent.sourceAddress !== undefined)
+      throw new Error(
+        'Shared native payments do not support a caller-selected source',
+      )
     const immutable = {
       operationId: intent.operationId,
       chainIdentifier: intent.chainIdentifier,
@@ -398,7 +483,7 @@ export function createEvmStealthPayments(
       driver.assertActive()
       const created = {
         ...immutable,
-        version: 2 as const,
+        version: 3 as const,
         feeAuthorization: { status: 'unapproved' as const },
         recipientAddress: getAddress(derived.stealthAddress).toLowerCase(),
         ephemeralPublicKey: hexlify(derived.ephemeralPubKey),
@@ -426,7 +511,7 @@ export function createEvmStealthPayments(
   const ensureAllocation = async (
     row: EvmStealthPreparation,
   ): Promise<EvmStealthPreparation> => {
-    if (row.allocation) return row
+    if (row.asset.kind === 'native' || row.allocation) return row
     const facts = await driver.quote({
       asset: row.asset,
       recipientAddress: row.recipientAddress,
@@ -437,7 +522,7 @@ export function createEvmStealthPayments(
     const allocated: EvmStealthPreparation = {
       ...row,
       allocation: {
-        sources: facts.sources.map(source => ({
+        sources: facts.sources.map((source) => ({
           sourceAddress: getAddress(source.sourceAddress).toLowerCase(),
           recipientAmountAtomic: source.recipientAmountAtomic.toString(),
           nativeBalanceAtomic: source.nativeBalanceAtomic.toString(),
@@ -452,15 +537,33 @@ export function createEvmStealthPayments(
     return allocated
   }
   return {
-    quote: input => {
+    supportsCombinedStamp: true,
+    quote: (input) => {
       const intent = {
         ...input,
         asset: { ...input.asset },
         recipientSpendPublicKey: new Uint8Array(input.recipientSpendPublicKey),
       }
       return exclusive(intent.operationId, async () => {
-        const row = await ensureAllocation(await ensureIntent(intent))
-        const sources = row.allocation!.sources.map(source => ({
+        const intentRow = await ensureIntent(intent)
+        const row =
+          intentRow.asset.kind === 'native'
+            ? intentRow
+            : await ensureAllocation(intentRow)
+        if (row.asset.kind === 'native')
+          return {
+            operationId: row.operationId,
+            chainIdentifier: row.chainIdentifier,
+            asset: row.asset,
+            amountAtomic: BigInt(row.amountAtomic),
+            recipientAddress: row.recipientAddress,
+            recipientDestination: getBytes(row.recipientAddress),
+            recipientSpendPublicKey: getBytes(row.recipientSpendPublicKey),
+            ephemeralPublicKey: getBytes(row.ephemeralPublicKey),
+            sources: [],
+            ...await driver.quoteNative(BigInt(row.amountAtomic)),
+          } satisfies StealthPaymentQuote
+        const sources = row.allocation!.sources.map((source) => ({
           sourceAddress: source.sourceAddress,
           recipientAmountAtomic: BigInt(source.recipientAmountAtomic),
           nativeBalanceAtomic: BigInt(source.nativeBalanceAtomic),
@@ -495,9 +598,10 @@ export function createEvmStealthPayments(
         } satisfies StealthPaymentQuote
       })
     },
-    prepare: input => {
+    prepare: (input) => {
       const intent = {
         ...input,
+        ...(input.messageStamp === undefined ? {} : { messageStamp: { ...input.messageStamp } }),
         asset: { ...input.asset },
         recipientSpendPublicKey: new Uint8Array(input.recipientSpendPublicKey),
       }
@@ -509,7 +613,17 @@ export function createEvmStealthPayments(
         )
           throw new Error('Invalid stealth fee ceiling')
         let row = await ensureAllocation(await ensureIntent(intent))
+        const messageStamp = intent.messageStamp === undefined ? undefined : {
+          amountAtomic: intent.messageStamp.amountAtomic.toString(),
+          maxNativeFeeAtomic: intent.messageStamp.maxNativeFeeAtomic.toString(),
+        }
+        if (messageStamp && (row.asset.kind !== 'native' || intent.messageStamp!.amountAtomic <= 0n ||
+            intent.messageStamp!.amountAtomic >= 1n << 256n || intent.messageStamp!.maxNativeFeeAtomic < 0n ||
+            intent.messageStamp!.maxNativeFeeAtomic >= 1n << 256n))
+          throw new Error('Invalid combined message stamp authorization')
         if (row.feeAuthorization.status === 'approved') {
+          if (JSON.stringify(row.messageStamp) !== JSON.stringify(messageStamp))
+            throw new Error('Stealth message stamp authorization conflict')
           if (
             BigInt(row.feeAuthorization.maxNativeFeeAtomic) !==
             intent.maxNativeFeeAtomic
@@ -518,6 +632,7 @@ export function createEvmStealthPayments(
         } else {
           const approved = {
             ...row,
+            ...(messageStamp ? { messageStamp } : {}),
             feeAuthorization: {
               status: 'approved' as const,
               maxNativeFeeAtomic: intent.maxNativeFeeAtomic.toString(),
@@ -530,8 +645,8 @@ export function createEvmStealthPayments(
           row = approved
         }
         const asset = row.asset
-        let journal = operation(row)
-        if (!journal || journal.members.some(member => !member.signed)) {
+        let journal = await operation(row)
+        if (!journal || journal.members.some((member) => !member.signed)) {
           if (row.payloadDigest !== undefined)
             throw new Error('Exposed preparation lost its signed operation')
           if (asset.kind === 'erc20')
@@ -546,33 +661,33 @@ export function createEvmStealthPayments(
                   'Insufficient ERC20 funds at quoted source',
                 )
             }
-          journal = await driver.signIndependentPayment({
-            preparationId: `stealth-payment:${intent.operationId}`,
-            kind: asset.kind === 'native' ? 'native' : 'contract',
-            recipient: {
-              raw:
-                asset.kind === 'native'
-                  ? row.recipientAddress
-                  : asset.contractAddress,
-            },
-            maxNativeFeeWei: intent.maxNativeFeeAtomic,
-            members: row.allocation!.sources.map(source => ({
-              sourceAddress: source.sourceAddress,
-              value:
-                asset.kind === 'native'
-                  ? BigInt(source.recipientAmountAtomic)
-                  : 0n,
-              ...(asset.kind === 'native' ? { gasLimit: 21_000n } : {}),
-              ...(asset.kind === 'erc20'
-                ? {
+          journal =
+            asset.kind === 'native'
+              ? await driver.constructNativePayment({
+                  operationId: evmStealthTransactionSetOperationId(
+                    intent.operationId,
+                  ),
+                  amountWei: BigInt(row.amountAtomic),
+                  maxPaymentParts: 16,
+                  kdf: () => row.recipientAddress,
+                  maxFeeWei: intent.maxNativeFeeAtomic + (intent.messageStamp?.maxNativeFeeAtomic ?? 0n),
+                  ...(intent.messageStamp ? { reserveForContinuationWei:
+                    intent.messageStamp.amountAtomic + intent.messageStamp.maxNativeFeeAtomic } : {}),
+                })
+              : await driver.signIndependentPayment({
+                  preparationId: `stealth-payment:${intent.operationId}`,
+                  kind: 'contract',
+                  recipient: { raw: asset.contractAddress },
+                  maxNativeFeeWei: intent.maxNativeFeeAtomic,
+                  members: row.allocation!.sources.map((source) => ({
+                    sourceAddress: source.sourceAddress,
+                    value: 0n,
                     data: erc20.encodeFunctionData('transfer', [
                       row.recipientAddress,
                       BigInt(source.recipientAmountAtomic),
                     ]),
-                  }
-                : {}),
-            })),
-          })
+                  })),
+                })
           driver.assertActive()
           if (!matches(journal, row, driver.nativeChainId))
             throw new Error('Prepared transaction differs from intent')
@@ -588,17 +703,17 @@ export function createEvmStealthPayments(
         return manifest(row, journal)
       })
     },
-    expose: input => {
+    expose: (input) => {
       const binding = { ...input }
       return exclusive(binding.operationId, async () => {
         if (!/^[0-9a-fA-F]{64}$/.test(binding.payloadDigest))
           throw new Error('Invalid sealed payload digest')
         const row = read(binding.operationId)
-        const journal = operation(row)
+        const journal = await operation(row)
         if (
           row.released ||
           !journal ||
-          journal.members.some(member => !member.signed)
+          journal.members.some((member) => !member.signed)
         )
           throw new Error('Stealth preparation unavailable')
         const digest = binding.payloadDigest.toLowerCase()
@@ -617,14 +732,14 @@ export function createEvmStealthPayments(
         driver.assertActive()
       })
     },
-    submit: id =>
+    submit: (id) =>
       exclusive(id, async () => {
         const row = read(id)
         if (row.released || row.payloadDigest === undefined)
           throw new Error(
             'Stealth payment has no durable host exposure binding',
           )
-        const journal = operation(row)
+        const journal = await operation(row)
         if (!journal) throw new Error('Stealth signed operation unavailable')
         // Transport uncertainty is reconciled through the original journal. No replacement payment.
         try {
@@ -635,20 +750,20 @@ export function createEvmStealthPayments(
         driver.assertActive()
         return progress(read(id))
       }),
-    reconcile: id =>
+    reconcile: (id) =>
       exclusive(id, async () => {
         const row = read(id)
-        const journal = operation(row)
+        const journal = await operation(row)
         if (journal && row.payloadDigest !== undefined)
           await driver.observe(journal.operationId)
         return progress(read(id))
       }),
-    release: id =>
+    release: (id) =>
       exclusive(id, async () => {
         const row = read(id)
         if (row.payloadDigest !== undefined) return false
-        const journal = operation(row)
-        if (journal?.members.some(member => member.exposed)) return false
+        const journal = await operation(row)
+        if (journal?.members.some((member) => member.exposed)) return false
         if (
           !row.released &&
           !(await driver.store.compareAndPut(id, row, {
@@ -666,11 +781,11 @@ export function createEvmStealthPayments(
       driver.assertActive()
       return driver.store
         .all()
-        .filter(row => {
+        .filter((row) => {
           validateFeeAuthorization(row)
           return !row.released
         })
-        .map(row => ({
+        .map((row) => ({
           operationId: row.operationId,
           ...(row.payloadDigest === undefined
             ? {}
@@ -681,18 +796,18 @@ export function createEvmStealthPayments(
       driver.assertActive()
       for (const row of driver.store.all()) {
         validateFeeAuthorization(row)
+        const journal = await operation(row)
         if (!row.released) continue
-        const journal = operation(row)
         if (journal) await driver.release(journal.operationId)
       }
     },
-    get: id =>
+    get: (id) =>
       exclusive(id, async () => {
         const row = driver.store.get(id)
         if (!row || row.released) return undefined
-        const journal = operation(row)
+        const journal = await operation(row)
         return journal === undefined ||
-          journal.members.some(member => !member.signed)
+          journal.members.some((member) => !member.signed)
           ? undefined
           : manifest(row, journal)
       }),
@@ -700,7 +815,7 @@ export function createEvmStealthPayments(
       const held = new Set<string>()
       for (const row of driver.store.all()) {
         if (row.released) continue
-        const journal = operation(row)
+        const journal = activeOperation(row)
         if (journal)
           for (const member of journal.members)
             if (
@@ -716,10 +831,10 @@ export function createEvmStealthPayments(
       return driver.store
         .all()
         .some(
-          row =>
+          (row) =>
             !row.released &&
             row.payloadDigest === undefined &&
-            operation(row)?.operationId === id,
+            activeOperation(row)?.operationId === id,
         )
     },
   }

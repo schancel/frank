@@ -6,7 +6,9 @@ const originalBuild = process.env.QCLI_GIT_COMMIT_HASH
 function loadBuild(build: string): typeof import('./extension-download') {
   process.env.QCLI_GIT_COMMIT_HASH = build
   jest.resetModules()
-  return require('./extension-download') as typeof import('./extension-download')
+  return jest.requireActual(
+    './extension-download',
+  ) as typeof import('./extension-download')
 }
 
 afterEach(() => {

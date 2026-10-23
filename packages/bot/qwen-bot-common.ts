@@ -55,7 +55,6 @@ import {
 } from '@frank/cashweb/relay/mailbox-client'
 import {
   createCanonicalMessageRoles,
-  prepareCanonicalStampInventory,
 } from "@frank/wallet/chain/evm-chain";
 import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 export function requiredEnv(name: string): string {

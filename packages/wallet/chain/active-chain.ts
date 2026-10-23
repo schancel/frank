@@ -21,16 +21,10 @@ import type { DefaultStampQuote } from "../oracle/stamp-policy";
  * (`../wallet/monad-*.ts`) are checked against it -- per the ticket's own instructions. Three real
  * deviations, each forced by an actual signature/type mismatch, not stylistic preference:
  *
- * 1. **`WalletHandle` needed to grow past `{ identity }`.** `directMessages.send`/`topics.post`/
- *    `.vote` all need a *sender-specific* signing/leasing/HTTP bundle to actually build and submit
- *    a stamp transaction (`MonadStampClient`/`MonadTopicPostClient`/`MonadTopicVoteClient` all take
- *    the same `{ pool, leaseManager, provider, httpClient, relayBaseUrl }` shape, formalized as
- *    `EvmWalletHandle` in `../evm-wallet-handle.ts`). The generic `WalletHandle` below
- *    still only *promises* `identity` -- it's `MonadChain`'s own concrete `EvmChainWalletHandle`
- *    (`../evm-wallet-handle.ts`) that adds the rest. This is safe under the compile-time seam: in a
- *    Monad-only build, `MonadChain.createWallet` is the only producer of `WalletHandle` values, so
- *    every handle reaching `MonadChain`'s other methods already carries the extra fields (see
- *    `./monad-chain.ts`'s `asMonadWallet`).
+ * 1. **`WalletHandle` carries canonical chain identity and optional capabilities.**
+ *    `TopicPostClient` and `TopicVoteClient` consume its chain-neutral `topicOperations`
+ *    capability. Each family adapter owns transaction construction, submission, and recovery;
+ *    the Forum clients do not require a provider, account pool, or EVM wallet implementation.
  * 2. **`DirectMessageClient.fetchSince` returns `DirectMessageReceived[]`, not
  *    `ReceivedMessageWrapper[]`** (`../types/user-interface.ts`, the issue's own sketched return
  *    type). That type is UTXO/Lotus-pubkey-shaped (`outpoints: Utxo[]`, `copartyPubKey: PublicKey`
@@ -402,29 +396,6 @@ export class DirectMessageAttemptUnlinkedError extends Error {
   }
 }
 
-/**
- * How many further messages `DirectMessageClient.fundAhead` keeps sender accounts funded for.
- * One: the two single-use accounts the next message spends. It is not a host option, because a
- * larger number does not do what it says today: a send selects greedily over every funded
- * account, so with two pairs funded the first message takes three accounts, strands part of one
- * and leaves the second message short. Raising this needs selection that takes one pair at a time.
- */
-export const FUND_AHEAD_MESSAGES = 1;
-
-/** What one `DirectMessageClient.fundAhead` call did. For logs and tests; nothing to act on. */
-export interface DirectMessageFundAheadResult {
-  /**
-   * - `ready`: the next message's accounts were already funded; nothing moved.
-   * - `funded`: this call's transfers confirmed (`fundingTxHashes`).
-   * - `not-funded`: nothing more could be funded now (`reason`). A transfer this or an earlier
-   *   call recorded is finished by a later call or by the next send; never signed again.
-   * - `unavailable`: this wallet has no canonical sender accounts to fund.
-   */
-  outcome: "ready" | "funded" | "not-funded" | "unavailable";
-  fundingTxHashes: string[];
-  reason?: string;
-}
-
 /** Read-only stamp affordability on the messaging wallet's canonical chain. A quote grants
  * no reservation; send performs its normal final checks. Capacity is after maximum fees,
  * using the sender's supported spending routes; fragment rules also affect availability. */
@@ -447,35 +418,6 @@ export interface DirectMessageClient {
     excludedAddresses?: readonly string[];
   }): Promise<DirectMessageStampQuote>;
 
-  /**
-   * Funds the single-use sender accounts of the next {@link FUND_AHEAD_MESSAGES} message, at the
-   * wallet's default stamp value, before that message exists, so its `send` does not wait for
-   * funding. Absent on a chain whose messages need no such accounts.
-   *
-   * It is the funding a `send` does for itself, through the same recorded path: each transfer's
-   * exact signed bytes are durable before they are submitted, and a transfer interrupted at any
-   * point is finished from that record, never signed a second time. It takes only accounts no
-   * operation holds, pays only from the wallet's main account, and one call signs at most two
-   * transfers moving at most the default stamp value plus two fee reserves (a reserve is capped
-   * at the stamp value); it moves nothing when a transfer's fee would exceed the value moved or
-   * while an earlier funding transfer is unresolved. It funds the pair or nothing: when the main
-   * account cannot pay for both accounts it leaves the money for the send, whose own funding may
-   * settle for one. While it runs it holds the wallet's queue as a send's own funding does, but
-   * waits only a few seconds for each receipt; a transfer still unconfirmed then stays recorded
-   * and is finished later.
-   *
-   * The HOST decides when: after its recovery pass has run, after a message was sent, when the
-   * balance grew. Never at wallet open. Calls are single flight and repeatable: with the accounts
-   * ready a call makes no request, and after a pass that could fund nothing the wallet waits
-   * (seconds, doubling to minutes) before it looks again, answering `not-funded` meanwhile with
-   * no request; a send, or a balance read that shows more money, ends that wait. Do not await it
-   * in a poll; catch its rejection. It rejects only for a closed or foreign handle or when the
-   * wallet's queue refuses the operation; a funding failure resolves as `not-funded`.
-   */
-  fundAhead?(params: {
-    wallet: WalletHandle;
-  }): Promise<DirectMessageFundAheadResult>;
-
   /** A rejection may carry the wallet's not-attempted label for this one call; see
    * {@link isDirectMessageNotAttempted}. Without it, assume the call may have had an effect. */
   send(params: {
@@ -495,6 +437,8 @@ export interface DirectMessageClient {
      * (or {@link DirectMessageAttemptUnlinkedError}) before anything else is looked at.
      * Omitted: the wallet draws a random one. */
     messageId?: string | Uint8Array;
+    /** Original same-wallet stealth operation whose private change funds this stamp. */
+    paymentOperationId?: string;
     /** Raw native-chain value attached as the mandatory stamp payment. */
     stampValue?: bigint;
     onPreparationProgress?: (
@@ -505,10 +449,9 @@ export interface DirectMessageClient {
      * Lets the caller tie its own pending message to the attempt for `reconcileAttempts`. */
     onAttemptCreated?: (payloadDigest: string) => void | Promise<void>;
     /**
-     * The stamp is money the sender OWES the recipient (a bot's payout or refund), not a price
-     * the sender chose: it is paid whatever its size, even below the chain's fee floor, where
-     * moving it costs more than it is. The floor exists to stop a user picking an uneconomic
-     * stamp, not to stop a debt being settled. Used only by the bot outbox.
+     * Marks money owed to the recipient (for example a bot payout or refund).
+     * The aggregate and each stamp transaction must still meet the captured fee floor.
+     * Below-floor settlements are refused; this flag never authorizes increasing a debt.
      */
     settlement?: boolean;
     /** Cancels a send that is still waiting (for the chain to be reachable, for an earlier

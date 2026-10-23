@@ -598,12 +598,13 @@ export class Outbox {
             // What it pays, or no stamp at all. A bot's own messages are never paid for:
             // value leaves it only as a payout or a refund of confirmed money.
             stampValueWei: value,
-            // Owed money is paid whatever its size, also below the chain's fee floor.
+            // Preserve the debt amount; settlement does not bypass wallet admission.
+            // A refusal leaves this entry owed for a later retry.
             ...(value > 0n ? { settlement: true } : {}),
             messageId: messageIdFor(this.botId, id, owed.tries),
           }
         );
-        // What it actually carried: an amount below the chain's fee floor goes out unpaid.
+        // Only successful delivery settles the recorded debt.
         return sent(result?.payloadDigest ?? "", result?.stampValueWei ?? value);
       } catch (error) {
         // The wallet already holds an attempt for this message ID. That is not delivery: the

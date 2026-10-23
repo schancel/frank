@@ -93,7 +93,10 @@
         v-else-if="entry.kind === 'game'"
         class="q-ma-none q-pa-none col-grow q-ml-lg"
       >
-        <div v-if="displayTitle(entry.title)" class="post-title text-weight-bold">
+        <div
+          v-if="displayTitle(entry.title)"
+          class="post-title text-weight-bold"
+        >
           {{ displayTitle(entry.title) }}
         </div>
         <span

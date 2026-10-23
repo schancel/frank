@@ -455,7 +455,6 @@ test('capture cancels a stale pending attempt before staging a new ceremony', as
   }
 })
 
-
 test('a restore that keeps pending attempts refuses, and leaves a durable pending signup alone', async () => {
   // Another tab began a signup after this tab read its status as fresh.
   jest.mocked(accountSession.snapshot).mockResolvedValueOnce({

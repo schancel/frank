@@ -110,7 +110,10 @@ function bundleBexEntry(entryFilename) {
     }).outputText
 
     const withoutExports = transpiled
-      .replace(/^export\s+(const|let|var|function|class|async\s+function)\s+/gm, '$1 ')
+      .replace(
+        /^export\s+(const|let|var|function|class|async\s+function)\s+/gm,
+        '$1 ',
+      )
       .replace(/^export\s+\{[^}]*\}\s*;?\s*$/gm, '')
 
     chunks.push(`// --- ${normalized} ---\n${withoutExports.trim()}`)
@@ -321,11 +324,15 @@ export function ensureManifestIcons(targetDir, manifest) {
     const dest = path.join(targetDir, rel)
     if (fs.existsSync(dest)) continue
     if (!fs.existsSync(fallback)) {
-      throw new Error(`[build:extension] Missing manifest icon ${rel} and no fallback icon`)
+      throw new Error(
+        `[build:extension] Missing manifest icon ${rel} and no fallback icon`,
+      )
     }
     fs.mkdirSync(path.dirname(dest), { recursive: true })
     fs.copyFileSync(fallback, dest)
-    console.warn(`[build:extension] ${rel} not published by the brand; using icons/icon-128x128.png`)
+    console.warn(
+      `[build:extension] ${rel} not published by the brand; using icons/icon-128x128.png`,
+    )
   }
 }
 
@@ -519,7 +526,11 @@ function getNewestMtimeMs(dirPath) {
   let newest = 0
   const entries = fs.readdirSync(dirPath, { withFileTypes: true })
   for (const entry of entries) {
-    if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name.startsWith('.')) {
+    if (
+      entry.name === 'node_modules' ||
+      entry.name === 'dist' ||
+      entry.name.startsWith('.')
+    ) {
       continue
     }
     const full = path.join(dirPath, entry.name)
@@ -560,10 +571,7 @@ function collectFilesRecursive(rootDir, currentDir = rootDir, out = []) {
     if (entry.isDirectory()) {
       collectFilesRecursive(rootDir, fullPath, out)
     } else if (entry.isFile()) {
-      const relPath = path
-        .relative(rootDir, fullPath)
-        .split(path.sep)
-        .join('/')
+      const relPath = path.relative(rootDir, fullPath).split(path.sep).join('/')
       out.push({ fullPath, relPath })
     }
   }
@@ -722,7 +730,11 @@ export function buildExtensions(argv = process.argv.slice(2)) {
       backgroundBundle,
       'utf8',
     )
-    fs.writeFileSync(path.join(targetDir, 'approval.js'), approvalBundle, 'utf8')
+    fs.writeFileSync(
+      path.join(targetDir, 'approval.js'),
+      approvalBundle,
+      'utf8',
+    )
     fs.writeFileSync(
       path.join(targetDir, 'approval.html'),
       APPROVAL_PAGE_HTML,
@@ -777,6 +789,9 @@ export function buildExtensions(argv = process.argv.slice(2)) {
   return builtTargets
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   buildExtensions()
 }

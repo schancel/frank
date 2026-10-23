@@ -719,4 +719,3 @@ describe('gf32-recovery-shares and bip93-codex32 module boundaries', () => {
     expect(derivedThird).toEqual({ ok: true, value: shares[2]!.payload })
   })
 })
-

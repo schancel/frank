@@ -426,4 +426,3 @@ describe('opening a chat focuses the compose box (#411)', () => {
     wrapper.unmount()
   })
 })
-

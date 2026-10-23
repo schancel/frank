@@ -25,6 +25,8 @@ import {
   ContactPaymentPendingError,
   ContactPaymentReleasedError,
   type ReceivedPayment,
+  type ContactSendParams,
+  type ContactSendResult,
 } from './chain-wallet'
 import {
   fixture,
@@ -38,13 +40,15 @@ import {
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
 import { withDefaultMessageItems } from './message-items.testutil'
-import { deriveEvmStealthPrivateKey } from '../evm-stealth'
+import { deriveEvmStealthPrivateKey, deriveEvmStealthAddress } from '../evm-stealth'
 import {
   CONTACT_PAYMENT_NAMESPACE,
   LevelRecordStore,
   type ContactPayment,
 } from '../storage/evm-coin-store'
 import { createEvmChain, installCanonicalDirectory } from './evm-chain'
+import { MonadStampPendingAttemptError } from '../evm-stamp-client'
+import { EVM_TRANSACTION_SET_SOURCE_ORDER } from '../evm-transaction-set-types'
 
 jest.mock('../evm-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
@@ -164,6 +168,54 @@ describe('a payment to a contact', () => {
   const toOneTimeAddresses = () =>
     node.broadcasts.filter(sent => sent.value === VALUE)
 
+  const recoverMessage = async (wallet: EvmChainWalletHandle, digest: string) => {
+    for (let pass = 0; pass < 5; pass++) {
+      const status = await f.chain.directMessages.reconcileAttempts({
+        wallet,
+        payloadDigests: [digest],
+      })
+      if (status[digest] === 'delivered') {
+        await wallet.resumeContactPayments!()
+        return
+      }
+    }
+    throw new Error('Original message did not recover')
+  }
+  const digestOf = (error: ContactPaymentPendingError): string => {
+    expect(error.reason).toBeInstanceOf(MonadStampPendingAttemptError)
+    return (error.reason as MonadStampPendingAttemptError).payloadHashes[0]!
+  }
+
+  // Advance dependent funding/stamp waves through the host recovery entry point. Never
+  // call sendToContact again: that would authorize a second payment and a second message.
+  const sendContact = async (params: ContactSendParams): Promise<ContactSendResult> => {
+    try {
+      return await alice.sendToContact!(params)
+    } catch (error) {
+      if (
+        !(error instanceof ContactPaymentPendingError) ||
+        !(error.reason instanceof MonadStampPendingAttemptError)
+      )
+        throw error
+      const payloadDigest = error.reason.payloadHashes[0]!
+      await recoverMessage(alice, payloadDigest)
+      const payment = alice.getContactPayments!().find(
+        p => p.messageId === error.messageId,
+      )!
+      expect(['paid', 'delivered']).toContain(payment.state)
+      const member = alice.getNativeOperations!()
+        .flatMap(op => op.members)
+        .find(member => member.signed?.transactionHash === error.txHash)!
+      return {
+        messageId: error.messageId,
+        txHash: error.txHash!,
+        stealthAddress: Transaction.from(member.signed!.rawTransaction).to!,
+        value: params.value,
+        payloadDigest,
+      }
+    }
+  }
+
   beforeEach(async () => {
     // This suite has its own node (the stubs below): the relay stand-in must not also put
     // payments on the shared offline chain, or a payment would be credited twice.
@@ -179,7 +231,22 @@ describe('a payment to a contact', () => {
     node.unreachable.clear()
     extraRoots = []
     useProviderStandIns()
-    f = await fixture()
+    // Match the provider's fee quote and keep this payment/recovery suite's graphs small.
+    // Transaction-set distribution itself has separate coverage.
+    f = await fixture({
+      transactionSetPolicy: () => ({
+        sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
+        gasPriceWei: 1n,
+        paymentGasLimit: () => 21000n,
+        changeGasLimit: 21000n,
+        paymentFeeIsExact: true,
+        dustWei: 21000n,
+        radix: 2,
+        jitterBps: 0,
+        maxChangeOutputs: 2,
+        head: 100,
+      }),
+    })
     alice = f.alice
     bob = f.bob
     installCanonicalDirectory(alice, await f.directoryFor('alice', alice, bob))
@@ -201,13 +268,13 @@ describe('a payment to a contact', () => {
   it('pays from the wallet main funds through a recorded operation and delivers the item', async () => {
     const aliceMain = await mainOf(alice)
     const before = mockBalances.get(aliceMain)!
-    const sent = await alice.sendToContact!({
+    const sent = await sendContact({
       recipient: bob.identity.address,
       value: VALUE,
       memo: 'lunch',
     })
 
-    // One transfer, from the main account (not the identity key), journalled as a native operation.
+    // The recipient transfer is one member of the shared, journalled payment/change graph.
     expect(toOneTimeAddresses()).toEqual([
       {
         from: aliceMain,
@@ -220,8 +287,11 @@ describe('a payment to a contact', () => {
     const operation = alice
       .getNativeOperations!()
       .find(row => row.recipient === sent.stealthAddress.toLowerCase())!
-    expect(operation.members[0]!.signed!.transactionHash).toBe(sent.txHash)
-    expect(operation.members[0]!.source.kind).toBe('main')
+    const paymentMember = operation.members.find(
+      member => member.signed?.transactionHash === sent.txHash,
+    )!
+    expect(paymentMember.transactionSet?.role).toBe('payment')
+    expect(paymentMember.source.address).toBe(aliceMain)
     expect(mockBalances.get(aliceMain)!).toBeLessThanOrEqual(before - VALUE)
 
     // One message, in bob's mailbox, carrying the item with the signed transfer.
@@ -240,7 +310,7 @@ describe('a payment to a contact', () => {
     expect(alice.getContactPayments!()).toEqual([
       expect.objectContaining({
         messageId: sent.messageId,
-        state: 'delivered',
+        state: 'paid',
         valueWei: VALUE,
         txHash: sent.txHash,
       }),
@@ -248,7 +318,7 @@ describe('a payment to a contact', () => {
   })
 
   it('the contact sees it pending, then received at the chain amount, and spends it in an ordinary send', async () => {
-    const sent = await alice.sendToContact!({
+    const sent = await sendContact({
       recipient: bob.identity.address,
       value: VALUE,
     })
@@ -291,7 +361,7 @@ describe('a payment to a contact', () => {
   })
 
   it('survives a reload: a new handle on the same storage still has the coin and its key', async () => {
-    const sent = await alice.sendToContact!({
+    const sent = await sendContact({
       recipient: bob.identity.address,
       value: VALUE,
     })
@@ -323,7 +393,7 @@ describe('a payment to a contact', () => {
   })
 
   it('restored on a fresh device, reading the mailbox from the start finds it; reading again adds nothing', async () => {
-    const sent = await alice.sendToContact!({
+    const sent = await sendContact({
       recipient: bob.identity.address,
       value: VALUE,
     })
@@ -362,31 +432,26 @@ describe('a payment to a contact', () => {
     }
   })
 
-  it('a relay that cannot be reached: nothing is broadcast, the source stays claimed, and the retry delivers the same message and then pays once', async () => {
+  it('a relay failure retains the original payment and message while unrelated inputs remain usable', async () => {
     f.setPhase('fail')
-    const refused = await alice
-      .sendToContact!({ recipient: bob.identity.address, value: VALUE })
-      .catch(error => error)
+    node.unreachable.add(alice)
+    const refused = await alice.sendToContact!({
+      recipient: bob.identity.address,
+      value: VALUE,
+    }).catch((error) => error)
     expect(refused).toBeInstanceOf(ContactPaymentPendingError)
-    // Signed and saved, and NOT broadcast: no message is with the relay.
+    const digest = digestOf(refused)
     expect(node.broadcasts).toEqual([])
     expect(bobMailbox).toHaveLength(0)
     const [saved] = alice.getContactPayments!()
-    expect(saved).toMatchObject({ state: 'prepared', txHash: refused.txHash })
-    const aliceMain = await mainOf(alice)
-    const operation = alice
-      .getNativeOperations!()
-      .find(row => row.members[0]!.signed?.transactionHash === saved.txHash)!
-    expect(operation.members[0]!.source.address).toBe(aliceMain)
-
-    // The claimed source cannot be taken by anything else while the message is in flight.
-    // An ordinary send only the main account could cover is refused...
+    const operation = alice.getNativeOperations!().find((row) =>
+      row.members.some((m) => m.signed?.transactionHash === saved.txHash),
+    )!
+    const signed = operation.members.map((member) => member.signed!.rawTransaction)
     await expect(
       alice.sendNative({ recipient: { raw: '0x' + 'c4'.repeat(20) }, value: 10n ** 17n }),
     ).rejects.toThrow('Insufficient unreserved native funds')
-    // ...and a small one is paid from another account of the wallet, never from the held one
-    // (nor from the account claimed for the undelivered message's stamp): unrelated spending
-    // goes on while the payment's message is in flight.
+    node.unreachable.delete(alice)
     const spare = alice.pool.ensureSize(alice.pool.records().length + 1).slice(-1)[0]
     await alice.pool.flush()
     mockBalances.set(spare.address.toLowerCase(), 1_000_000n)
@@ -394,67 +459,67 @@ describe('a payment to a contact', () => {
       recipient: { raw: '0x' + 'c4'.repeat(20) },
       value: 100n,
     })
-    expect(node.broadcasts).toEqual([
-      expect.objectContaining({ hash: small.txHash, value: 100n }),
-    ])
-    expect(node.broadcasts[0].from).not.toBe(aliceMain)
-    node.broadcasts.length = 0
-    // The transfer itself cannot be pushed out by hand, and is not offered for a retry:
-    await expect(alice.resumeNativeOperation!(operation.operationId)).rejects.toThrow(
-      'is broadcast once its message is delivered',
+    expect(node.broadcasts.find((tx) => tx.hash === small.txHash)!.from).toBe(
+      spare.address.toLowerCase(),
     )
-    expect(alice.getUnresolvedNativeTransaction!()?.txHash).not.toBe(saved.txHash)
-    // Background stamp funding does not spend from it either:
-    const fundedBefore = mockFunded.length
-    expect(await f.chain.directMessages.fundAhead!({ wallet: alice })).toMatchObject({
-      fundingTxHashes: [],
-    })
-    expect(mockFunded).toHaveLength(fundedBefore)
-    expect(node.broadcasts).toEqual([])
-    expect(node.nonces.get(aliceMain) ?? 0).toBe(0)
-    // Nor does a sweep of anything reach it (the journal holds the account for every spender).
-
-    // The relay answers again: the SAME message is delivered, and only then is the transfer
-    // broadcast, once.
     f.setPhase('delivered')
-    await alice.resumeContactPayments!()
+    await recoverMessage(alice, digest)
     expect(bobMailbox).toHaveLength(1)
     expect(toOneTimeAddresses()).toEqual([
-      expect.objectContaining({ from: aliceMain, hash: saved.txHash }),
+      expect.objectContaining({ hash: saved.txHash }),
     ])
     const [message] = await poll(bob)
     expect(message.messageId).toBe(saved.messageId)
-    // Later passes see it included and then ask nothing more.
-    await alice.resumeContactPayments!()
-    expect(alice.getContactPayments!()).toEqual([
-      expect.objectContaining({ messageId: saved.messageId, state: 'paid' }),
-    ])
-    const requests = jest.mocked(alice.provider.getTransactionReceipt).mock.calls.length
-    await alice.resumeContactPayments!()
-    expect(jest.mocked(alice.provider.getTransactionReceipt).mock.calls.length).toBe(
-      requests,
-    )
+    expect(message.payloadDigest).toBe(digest)
+    expect(
+      alice.getNativeOperations!()
+        .find((row) => row.operationId === operation.operationId)!
+        .members.map((member) => member.signed!.rawTransaction),
+    ).toEqual(signed)
+    const count = node.broadcasts.length
+    await recoverMessage(alice, digest)
+    expect(node.broadcasts).toHaveLength(count)
     expect(bobMailbox).toHaveLength(1)
-    expect(toOneTimeAddresses()).toHaveLength(1)
+    expect(alice.getContactPayments!()[0].state).toBe('paid')
   })
 
-  it('the relay accepts: the message is stored before the transfer is broadcast', async () => {
-    const order: string[] = []
+  it('the encrypted host message and signed graph are durable before the first broadcast', async () => {
+    const prepared = await alice.prepareContactPayment!({
+      recipient: bob.identity.address,
+      value: VALUE,
+    })
+    let durable = false
+    let digest: string | undefined
     const broadcast = jest.mocked(alice.provider.broadcastTransaction)
     const real = broadcast.getMockImplementation()!
-    broadcast.mockImplementation(async raw => {
-      order.push(`broadcast with ${bobMailbox.length} message(s) stored`)
+    broadcast.mockImplementation(async (raw) => {
+      expect(durable).toBe(true)
       return real(raw)
     })
-    await alice.sendToContact!({ recipient: bob.identity.address, value: VALUE })
-    // The transfer, and the message's own stamp payment, which the wallet also broadcasts
-    // itself: nothing left the wallet before the relay had the message.
-    expect(order.length).toBeGreaterThanOrEqual(1)
-    expect(new Set(order)).toEqual(new Set(['broadcast with 1 message(s) stored']))
+    await f.chain.directMessages
+      .send({
+        wallet: alice,
+        recipient: bob.identity.address,
+        items: [prepared.item],
+        stampValue: prepared.stampValue,
+        onBeforeExposure: (hash) => {
+          durable = true
+          digest = hash
+        },
+      })
+      .catch((error) => {
+        expect(error).toBeInstanceOf(MonadStampPendingAttemptError)
+      })
+    await recoverMessage(alice, digest!)
+    expect(bobMailbox).toHaveLength(1)
+    expect(toOneTimeAddresses()).toEqual([
+      expect.objectContaining({ hash: prepared.txHash }),
+    ])
   })
 
   it('a stop before confirmation recovers the captured stamp after restart with the oracle offline', async () => {
     f.setPhase('fail')
+    node.unreachable.add(alice)
     const refused = await alice
       .sendToContact!({ recipient: bob.identity.address, value: VALUE })
       .catch(error => error)
@@ -483,6 +548,7 @@ describe('a payment to a contact', () => {
       expect(node.broadcasts).toEqual([])
 
       f.setPhase('delivered')
+      await recoverMessage(restarted, digestOf(refused))
       // The host's ordinary mailbox read is what finishes it.
       await f.chain.directMessages.fetchSince({ wallet: restarted, sinceMs: 0 })
       await restarted.resumeContactPayments!()
@@ -510,10 +576,12 @@ describe('a payment to a contact', () => {
   })
 
   it('the sender stops after the relay accepted and before its own broadcast: the contact wallet broadcasts the carried transfer and has the money', async () => {
+    mockBalances.set(await mainOf(alice), VALUE + FEE)
     node.unreachable.add(alice)
-    const sent = await alice.sendToContact!({
+    const sent = await sendContact({
       recipient: bob.identity.address,
       value: VALUE,
+      stampValue: 0n,
     })
     // Alice could not broadcast; the message was delivered all the same.
     expect(toOneTimeAddresses()).toHaveLength(0)
@@ -533,11 +601,11 @@ describe('a payment to a contact', () => {
     ])
     // The next read sees it included, with the money at the account.
     await settle(bob)
-    expect(await bob.getBalance()).toBe(VALUE + STAMP)
+    expect(await bob.getBalance()).toBe(VALUE)
     expect(coinsOf(bob)[0]).toMatchObject({ status: 'received', amountWei: VALUE })
   })
 
-  it('a host that sends the message itself: the prepared transfer is broadcast only when the host message is stored', async () => {
+  it('a host that sends the message itself: the prepared transfer is retained with the same host message through a relay failure', async () => {
     const prepared = await alice.prepareContactPayment!({
       recipient: bob.identity.address,
       value: VALUE,
@@ -551,7 +619,7 @@ describe('a payment to a contact', () => {
       expect.objectContaining({ state: 'prepared', txHash: prepared.txHash }),
     ])
 
-    // The host's first try does not reach the relay: still nothing broadcast.
+    // A failed relay attempt may already have paid the contact. Retain that same operation.
     f.setPhase('fail')
     let attempt: string | undefined
     await f.chain.directMessages
@@ -565,19 +633,12 @@ describe('a payment to a contact', () => {
         },
       })
       .catch(() => undefined)
-    await alice.resumeContactPayments!()
-    expect(node.broadcasts).toEqual([])
+    expect(toOneTimeAddresses()).toEqual([expect.objectContaining({ hash: prepared.txHash })])
     expect(alice.getContactPayments!()[0].state).toBe('prepared')
 
-    // The host's ordinary retry (reconciling the same attempt) gets it stored: now it is paid.
+    // Reconcile the original attempt until its message is stored; never pay a second time.
     f.setPhase('delivered')
-    expect(
-      await f.chain.directMessages.reconcileAttempts({
-        wallet: alice,
-        payloadDigests: [attempt!],
-      }),
-    ).toEqual({ [attempt!]: 'delivered' })
-    await alice.resumeContactPayments!()
+    await recoverMessage(alice, attempt!)
     expect(bobMailbox).toHaveLength(1)
     expect(toOneTimeAddresses()).toEqual([
       expect.objectContaining({
@@ -598,12 +659,16 @@ describe('a payment to a contact', () => {
   describe('a held payment is released or finished, never left holding the account', () => {
     const big = 10n ** 17n
     const held = (wallet: EvmChainWalletHandle) =>
-      wallet.getContactPayments!().filter(payment => payment.holdsFunds)
-    const hostSends = (item: Parameters<typeof f.chain.directMessages.send>[0]['items'][0], extra = {}) =>
+      wallet.getContactPayments!().filter((payment) => payment.holdsFunds)
+    const hostSends = (
+      item: Parameters<typeof f.chain.directMessages.send>[0]['items'][0],
+      extra = {},
+    ) =>
       f.chain.directMessages.send({
         wallet: alice,
         recipient: bob.identity.address,
         items: [item],
+        messageId: '11111111-1111-4111-8111-111111111111',
         ...extra,
       })
 
@@ -684,7 +749,7 @@ describe('a payment to a contact', () => {
       expect(await alice.settleContactPayment!(key)).toBe('released')
       // Nothing takes the released transfer's nonce here: if its bytes ever left, it would land.
       const requests = f.requests.length
-      const refused = await hostSends(prepared.item).catch(error => error)
+      const refused = await hostSends(prepared.item).catch((error) => error)
       expect(refused).toBeInstanceOf(ContactPaymentReleasedError)
       // The Retry of the same message, and a reconcile, fare no better.
       await expect(hostSends(prepared.item)).rejects.toBeInstanceOf(
@@ -701,7 +766,7 @@ describe('a payment to a contact', () => {
       })
       expect(f.requests).toHaveLength(requests + 1)
       const received = await poll(bob)
-      expect(received.map(message => message.items)).toEqual([
+      expect(received.map((message) => message.items)).toEqual([
         [{ type: 'text', text: 'hello' }],
       ])
       await settle(bob)
@@ -711,10 +776,9 @@ describe('a payment to a contact', () => {
       // The wallet keeps no copy of the signed transfer: not on the payment, not in the journal.
       expect(alice.getContactPayments!()[0].txHash).toBeUndefined()
       expect(
-        alice
-          .getNativeOperations!()
-          .filter(row => row.recipient === prepared.stealthAddress.toLowerCase())
-          .map(row => ({ cancelled: row.cancelled, signed: row.members[0]!.signed })),
+        (await alice.getNativeOperationHistory!({ limit: 100 })).operations
+          .filter((row) => row.recipient === prepared.stealthAddress.toLowerCase())
+          .map((row) => ({ cancelled: row.cancelled, signed: row.members[0]!.signed })),
       ).toEqual([{ cancelled: true, signed: null }])
     })
 
@@ -742,6 +806,7 @@ describe('a payment to a contact', () => {
             items: [prepared.item],
           }),
         ).rejects.toBeInstanceOf(ContactPaymentReleasedError)
+        expect(reopened.pool.accountClaimedBy(await mainOf(reopened))).toBeUndefined()
         await f.chain.directMessages.send({
           wallet: reopened,
           recipient: bob.identity.address,
@@ -749,9 +814,9 @@ describe('a payment to a contact', () => {
         })
         expect(f.requests).toHaveLength(requests + 1)
         const received = await poll(bob)
-        expect(received.flatMap(message => message.items.map(item => item.type))).toEqual([
-          'text',
-        ])
+        expect(
+          received.flatMap((message) => message.items.map((item) => item.type)),
+        ).toEqual(['text'])
         await settle(bob)
         expect(coinsOf(bob)).toEqual([])
         expect(toOneTimeAddresses()).toEqual([])
@@ -769,7 +834,13 @@ describe('a payment to a contact', () => {
       const key = prepared.item.ephemeralPubKey!
       // The free message is handed to the relay and the relay has not answered.
       const hold = f.holdNextRelayRequest()
-      const sending = hostSends(prepared.item, { stampValue: 0n })
+      let freeDigest: string | undefined
+      const sending = hostSends(prepared.item, {
+        stampValue: 0n,
+        onBeforeExposure: (digest: string) => {
+          freeDigest = digest
+        },
+      })
       await hold.entered
       // Its digest was recorded before the relay was handed a byte, and it is in flight:
       // asked to settle now, the payment is NOT released.
@@ -796,6 +867,7 @@ describe('a payment to a contact', () => {
         )
         f.setPhase('delivered')
         for (let i = 0; i < 3; i++) await reopened.resumeContactPayments!()
+        expect((await poll(bob))[0]?.payloadDigest).toBe(freeDigest)
         expect(reopened.getContactPayments!()).toEqual([
           expect.objectContaining({ state: 'paid', holdsFunds: false }),
         ])
@@ -875,20 +947,19 @@ describe('a payment to a contact', () => {
           reopened,
           await f.directoryFor('alice-reopened-5', reopened, bob),
         )
+        expect(await reopened.settleContactPayment!(prepared.item.ephemeralPubKey!)).toBe(
+          'released',
+        )
         expect(
-          await reopened.settleContactPayment!(prepared.item.ephemeralPubKey!),
-        ).toBe('released')
-        expect(
-          reopened
-            .getNativeOperations!()
-            .filter(row => row.recipient === prepared.stealthAddress.toLowerCase())
-            .map(row => row.cancelled),
+          (await reopened.getNativeOperationHistory!({ limit: 100 })).operations
+            .filter((row) => row.recipient === prepared.stealthAddress.toLowerCase())
+            .map((row) => row.cancelled),
         ).toEqual([true])
         await reopened.sendNative({
           recipient: { raw: '0x' + 'c9'.repeat(20) },
           value: big,
         })
-        expect(node.broadcasts.map(tx => tx.from)).toEqual([aliceMain])
+        expect(node.broadcasts.map((tx) => tx.from)).toEqual([aliceMain])
       } finally {
         await reopened.close()
       }
@@ -907,24 +978,26 @@ describe('a payment to a contact', () => {
       expect(await alice.settleContactPayment!('02' + '99'.repeat(32))).toBe('none')
     })
 
-    it('once its bytes went to a relay it is never released: settle finishes it, by the wallet, with the same transfer', async () => {
+    it('once signed bytes may be exposed, deletion cannot release the original payment or message', async () => {
       const prepared = await alice.prepareContactPayment!({
         recipient: bob.identity.address,
         value: VALUE,
       })
-      // The host's send reaches for the relay and fails: the attempt exists, bytes may be out.
+      node.unreachable.add(alice)
       f.setPhase('fail')
-      await hostSends(prepared.item).catch(() => undefined)
+      let digest: string | undefined
+      await hostSends(prepared.item, {
+        onAttemptCreated: (value: string) => {
+          digest = value
+        },
+      }).catch(() => undefined)
       const key = prepared.item.ephemeralPubKey!
       expect(await alice.settleContactPayment!(key)).toBe('prepared')
       expect(held(alice)).toHaveLength(1)
       expect(node.broadcasts).toEqual([])
-
-      // The user deletes the bubble; the relay answers again; the wallet finishes it.
+      node.unreachable.delete(alice)
       f.setPhase('delivered')
-      await alice.settleContactPayment!(key)
-      await alice.resumeContactPayments!()
-      await alice.resumeContactPayments!()
+      await recoverMessage(alice, digest!)
       expect(alice.getContactPayments!()).toEqual([
         expect.objectContaining({ state: 'paid', holdsFunds: false }),
       ])
@@ -934,55 +1007,69 @@ describe('a payment to a contact', () => {
       ])
     })
 
-    it('the contact put the transfer on the chain while this wallet still waited: paid, and nothing held', async () => {
+    it('the contact put the transfer on the chain while this wallet still waited: the original message still delivers without paying again', async () => {
+      mockBalances.set(await mainOf(alice), VALUE + FEE)
       const prepared = await alice.prepareContactPayment!({
         recipient: bob.identity.address,
         value: VALUE,
+        stampValue: 0n,
       })
       f.setPhase('fail')
-      await hostSends(prepared.item).catch(() => undefined)
+      let digest: string | undefined
+      await hostSends(prepared.item, {
+        stampValue: 0n,
+        onBeforeExposure: (value: string) => {
+          digest = value
+        },
+      }).catch(() => undefined)
       expect(held(alice)).toHaveLength(1)
       // Someone holding the message broadcasts the carried transfer.
       await bob.provider.broadcastTransaction('0x' + prepared.item.transactions![0])
-      await alice.resumeContactPayments!()
+      f.setPhase('delivered')
+      await recoverMessage(alice, digest!)
       expect(alice.getContactPayments!()).toEqual([
         expect.objectContaining({ state: 'paid', holdsFunds: false }),
       ])
       expect(toOneTimeAddresses()).toHaveLength(1)
+      expect(bobMailbox).toHaveLength(1)
     })
 
-    it('the message cannot be paid for because its stamp funding needs the held account: released, not stuck', async () => {
+    it('the original payment can fund its stamp from reserved change while another operation cannot take it', async () => {
+      mockBalances.set(await mainOf(alice), VALUE + STAMP + 3n * FEE)
       const prepared = await alice.prepareContactPayment!({
         recipient: bob.identity.address,
         value: VALUE,
       })
-      // The stamp accounts made ready for this message are gone by the time it is sent
-      // (another message used them): its stamp must be funded now, and the only funded
-      // account is the one the payment's transfer is held on.
-      const taken = alice.pool.claim('another-message', free =>
-        free.map(row => row.index),
-      )
-      expect(taken?.length).toBeGreaterThan(0)
-      const refused = await hostSends(prepared.item).catch(error => error)
-      alice.pool.releaseClaim('another-message')
-      expect(refused).toBeInstanceOf(ContactPaymentReleasedError)
-      expect(alice.getContactPayments!()).toEqual([
-        expect.objectContaining({ state: 'released', holdsFunds: false }),
-      ])
-      expect(toOneTimeAddresses()).toEqual([])
-      // Nothing is stuck: the same payment can be made again at once.
-      const again = await alice.sendToContact!({
-        recipient: bob.identity.address,
-        value: VALUE,
+      expect(held(alice)).toHaveLength(1)
+      await expect(
+        alice.sendNative({ recipient: { raw: '0x' + 'c4'.repeat(20) }, value: STAMP }),
+      ).rejects.toThrow('Insufficient unreserved native funds')
+      let digest: string | undefined
+      await hostSends(prepared.item, {
+        onAttemptCreated: (value: string) => {
+          digest = value
+        },
+      }).catch((error) => {
+        expect(error).toBeInstanceOf(MonadStampPendingAttemptError)
       })
+      await recoverMessage(alice, digest!)
       expect(toOneTimeAddresses()).toEqual([
-        expect.objectContaining({ hash: again.txHash }),
+        expect.objectContaining({ hash: prepared.txHash }),
       ])
+      expect(alice.getContactPayments!()).toEqual([
+        expect.objectContaining({ state: 'paid', holdsFunds: false }),
+      ])
+      expect(
+        alice.getNativeOperations!().filter(
+          (op) => op.recipient === prepared.stealthAddress.toLowerCase(),
+        ),
+      ).toHaveLength(1)
+      expect(bobMailbox).toHaveLength(1)
     })
   })
 
   it('a coin list that did not exist when the host read the mailbox still finds the money: its first read starts at the beginning', async () => {
-    const sent = await alice.sendToContact!({
+    const sent = await sendContact({
       recipient: bob.identity.address,
       value: VALUE,
     })
@@ -1014,7 +1101,7 @@ describe('a payment to a contact', () => {
       // Done once: a later read asks the relay only what the host asked.
       const mailbox = jest.requireMock('@frank/cashweb/relay/mailbox-client')
       const reads = () =>
-        (mailbox.fetchCanonicalInboxPage as jest.Mock).mock.calls.filter(
+        (mailbox.fetchCanonicalMailboxPage as jest.Mock).mock.calls.filter(
           call => (call[0].sinceMs ?? 0) < afterEverything,
         ).length
       const before = reads()
@@ -1026,12 +1113,12 @@ describe('a payment to a contact', () => {
   })
 
   it('a mailbox read that stops at the page limit says so, and the coin list does not take it for the whole mailbox', async () => {
-    const sent = await alice.sendToContact!({
+    const sent = await sendContact({
       recipient: bob.identity.address,
       value: VALUE,
     })
     const mailbox = jest.requireMock('@frank/cashweb/relay/mailbox-client')
-    const page = mailbox.fetchCanonicalInboxPage as jest.Mock
+    const page = mailbox.fetchCanonicalMailboxPage as jest.Mock
     const whole = page.getMockImplementation()!
     // A relay that always has another page.
     let pageCursor = 0
@@ -1068,13 +1155,16 @@ describe('a payment to a contact', () => {
   })
 
   it('shows the chain amount, not the larger amount the sender wrote', async () => {
-    // A hand-made item: the carried transfer pays 1,000 and the item says a million times more.
-    const sent = await alice.sendToContact!({
-      recipient: bob.identity.address,
-      value: VALUE,
-    })
-    const [message] = await poll(bob)
-    const honest = message.items[0] as { ephemeralPubKey: string; transactions: string[] }
+    // An independently signed transfer has no locally composed contact-operation binding.
+    // A malicious sender can state an inflated amount; only the actual receipt may count.
+    const derived = deriveEvmStealthAddress({ recipientSpendPubKey: bob.identity.compressedPubKey })
+    const signer = new Wallet('0x' + '0f'.repeat(32))
+    mockBalances.set(signer.address.toLowerCase(), VALUE + FEE)
+    const raw = await signer.signTransaction({ chainId: 10143, nonce: 0,
+      to: derived.stealthAddress, value: VALUE, gasLimit: 21000n, gasPrice: 1n })
+    await alice.provider.broadcastTransaction(raw)
+    const sent = { stealthAddress: derived.stealthAddress }
+    const honest = { ephemeralPubKey: toHex(derived.ephemeralPubKey), transactions: [raw.slice(2)] }
     await bob.close()
     bobMailbox.length = 0
 
@@ -1164,7 +1254,11 @@ describe('a payment to a contact', () => {
   it('a sender cannot forge "received" with someone else\'s mined transaction or a zero-value transfer', async () => {
     // A real, mined, unrelated transaction: alice paying carol.
     const carol = '0x' + 'c6'.repeat(20)
-    const unrelated = await alice.sendNative({ recipient: { raw: carol }, value: 1_000n })
+    const unrelatedSigner = new Wallet('0x' + '0c'.repeat(32))
+    mockBalances.set(unrelatedSigner.address.toLowerCase(), 1000n + FEE)
+    const unrelatedRaw = await unrelatedSigner.signTransaction({ chainId: 10143,
+      nonce: 0, to: carol, value: 1000n, gasLimit: 21000n, gasPrice: 1n })
+    const unrelated = { txHash: (await alice.provider.broadcastTransaction(unrelatedRaw)).hash }
     expect(node.receipts.has(unrelated.txHash)).toBe(true)
     const byHash = await f.chain.directMessages.send({
       wallet: alice,
@@ -1270,10 +1364,12 @@ describe('a payment to a contact', () => {
 
   it('a payment whose nonce went to another transaction is failed: shown, kept, never counted', async () => {
     // Alice signs and delivers, and her own broadcast does not go out.
+    mockBalances.set(await mainOf(alice), VALUE + FEE)
     node.unreachable.add(alice)
-    const sent = await alice.sendToContact!({
+    const sent = await sendContact({
       recipient: bob.identity.address,
       value: VALUE,
+      stampValue: 0n,
     })
     expect(toOneTimeAddresses()).toHaveLength(0)
     // Another transaction of alice's takes that nonce.
@@ -1292,7 +1388,7 @@ describe('a payment to a contact', () => {
         spendable: false,
       }),
     ])
-    expect(await bob.getBalance()).toBe(STAMP)
+    expect(await bob.getBalance()).toBe(0n)
     expect(bob.getMessagePayment!(sent.payloadDigest).status).toBe('failed')
     // Later reads only look for a late receipt: nothing is broadcast again, and it stays failed.
     const broadcasts = jest.mocked(bob.provider.broadcastTransaction).mock.calls.length
@@ -1349,6 +1445,7 @@ describe('a payment to a contact', () => {
     it('the relay only delivered: the wallet broadcasts the carried transactions, sees them included, and the stamp is spendable money', async () => {
       // The sender's own broadcast does not get out (it goes offline as the relay answers),
       // and the relay stand-in stored the message and broadcast nothing.
+      mockBalances.set(await mainOf(alice), BIG + FEE)
       const senderBroadcast = jest.mocked(alice.provider.broadcastTransaction)
       const real = senderBroadcast.getMockImplementation()!
       senderBroadcast.mockRejectedValue(new Error('offline'))

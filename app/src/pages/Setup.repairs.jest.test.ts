@@ -444,4 +444,3 @@ test('renders loading indicator when account status is loading and hides choice 
   expect(mockPush).toHaveBeenCalledWith('/wallet')
   view.unmount()
 })
-

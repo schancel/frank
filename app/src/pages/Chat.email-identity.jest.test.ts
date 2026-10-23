@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent, h, nextTick } from 'vue'
 import { TextDecoder, TextEncoder } from 'util'
+import { sendsWaitingForChain } from '../utils/outgoing-waiting'
 import type { DefaultStampQuote } from '@frank/wallet/oracle'
 
 Object.assign(globalThis, { TextEncoder, TextDecoder })
@@ -12,7 +13,10 @@ jest.mock('../adapters/level-message-store', () => ({
 }))
 jest.mock('../accounts/session', () => ({
   accountStatus: { status: 'ready' },
-  accountSession: { initialize: jest.fn(async () => undefined) },
+  accountSession: {
+    state: { status: 'ready', revision: 1, account: undefined },
+    initialize: jest.fn(async () => undefined),
+  },
 }))
 jest.mock('../router/routes', () => ({
   createRoutes: () => [
@@ -47,6 +51,9 @@ jest.mock('quasar', () => ({
 }))
 jest.mock('../utils/directory-peer', () => ({
   fetchContactProfile: jest.fn(async () => undefined),
+  fetchContactProfileResult: jest.fn(async () => ({
+    failure: 'not-published',
+  })),
   contactLookupFailure: () => 'not-found',
 }))
 jest.mock('../utils/notifications', () => ({
@@ -549,7 +556,6 @@ it('keeps an initially empty root draft independent of arriving mail until expli
 })
 
 it('releases sendingMessage spinner and shows queued delivery status when email send enters waiting-for-chain', async () => {
-  const { sendsWaitingForChain } = require('../utils/outgoing-waiting')
   const app = await mountedEmails()
   try {
     await app.select(app.roots[2].id)
@@ -620,4 +626,3 @@ it('releases sendingMessage spinner and shows queued delivery status when email 
     app.root.unmount()
   }
 })
-

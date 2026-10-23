@@ -1,4 +1,4 @@
-import { getAddress, hexlify, Transaction } from 'ethers'
+import { getAddress, hexlify, keccak256, toUtf8Bytes, Transaction } from 'ethers'
 import type { MonadSubAccountPool } from './evm-account-pool'
 import type { MonadChangePool } from './evm-change-pool'
 import type {
@@ -22,7 +22,6 @@ import {
   type CanonicalJournalAttempt,
 } from './storage/stamp-attempt-journal'
 import {
-  topicOperationKey,
   type TopicOperationJournal,
 } from './storage/topic-operation-journal'
 
@@ -54,12 +53,12 @@ export type OwnerEvidence =
       readonly member: number
       readonly poolIndex: number
     }
-  | { readonly kind: 'live-lease'; readonly poolIndex: number }
   | {
-      readonly kind: 'topic'
-      readonly operationKey: string
+      readonly kind: 'retained-topic'
       readonly poolIndex: number
+      readonly transactionHash: string
     }
+  | { readonly kind: 'live-lease'; readonly poolIndex: number }
   | {
       readonly kind: 'pool-funding' | 'pool-retained'
       readonly poolIndex: number
@@ -107,6 +106,7 @@ export interface EvmInputAdmission {
     lifetime: WalletOperationLifetime,
     epoch: AdmissionEpoch,
     plan: EvmNativePlan,
+    signedTransactions?: readonly string[],
   ): Promise<EvmNativeOperation>
   prepareCanonical(
     lifetime: WalletOperationLifetime,
@@ -142,6 +142,8 @@ export type NativeJournalReader = Pick<
   | 'binding'
   | 'list'
   | 'get'
+  | 'readOperation'
+  | 'historyPage'
   | 'sourceReferences'
   | 'referencesSpendIndex'
   | 'canSelect'
@@ -168,6 +170,7 @@ interface Owners {
     getAll(): CanonicalJournalAttempt[]
   }
   readonly canonicalBinding?: { readonly id: string; readonly tuple: string }
+  readonly validatedTopicReferences?: ReadonlySet<string>
   readonly topic: TopicOperationJournal
   readonly pool: MonadSubAccountPool
   readonly change: MonadChangePool
@@ -223,9 +226,11 @@ class AdmissionOwner implements EvmInputAdmission {
     number,
     { handle: AccountLeaseHandle; authorization: string }
   >()
+  validatedTopicReferences: ReadonlySet<string>
   uncertain = false
   private invokingMutation = false
   constructor(readonly owners: Owners) {
+    this.validatedTopicReferences = owners.validatedTopicReferences ?? new Set()
     internals.set(this, this)
   }
   private assertLifetime(lifetime: WalletOperationLifetime): void {
@@ -383,22 +388,37 @@ class AdmissionOwner implements EvmInputAdmission {
         )
       })
     }
-    for (const row of o.topic.getAll()) {
-      const record =
+    // Historical signed Forum operations remain financial owners until exact recovery
+    // removes their records. They are not new-format payload-only references.
+    for (const row of o.topic.getRetainedLegacy?.() ?? []) {
+      const source =
         o.pool.getRecord(row.leaseIndex) ??
-        o.pool.terminalCheckpoints().find(r => r.index === row.leaseIndex)
-      if (!record || address(record.address) !== address(row.senderAddress))
+        o.pool.terminalCheckpoints().find(record => record.index === row.leaseIndex)
+      if (!source || address(source.address) !== address(row.senderAddress))
         invalid()
-      const key = topicOperationKey(row)
-      const tx = this.tx(row.rawTx, row.senderAddress)
-      if (tx.transactionHash !== row.txHash.toLowerCase()) invalid()
       add(
-        { kind: 'topic', operationKey: key, poolIndex: row.leaseIndex },
-        `topic:${key}`,
+        {
+          kind: 'retained-topic',
+          poolIndex: row.leaseIndex,
+          transactionHash: row.txHash,
+        },
+        `retained-topic:${row.kind}:${row.txHash.toLowerCase()}`,
         row.rawTx,
         row.senderAddress,
-        [{ kind: 'allocation', pool: 'spend', index: row.leaseIndex }],
+        [
+          { kind: 'address', address: address(row.senderAddress) },
+          { kind: 'allocation', pool: 'spend', index: row.leaseIndex },
+        ],
       )
+    }
+    // Forum payloads link to the native journal; they never own a second nonce/pool claim.
+    for (const row of o.topic.getAll()) {
+      if (row.construction) continue
+      const native = o.native.list().find(candidate => candidate.preparationId === `evm-transaction-set:${row.transactionSetOperationId}`)
+      const payments = native?.members.filter(member => member.transactionSet?.role === 'payment')
+      // An absent active row needs an exact reference validated against durable history.
+      if (!native && !this.validatedTopicReferences.has(topicReferenceKey(row))) invalid()
+      if (native && (native.kind !== 'transaction-set' || native.intendedValueWei !== row.intendedValueWei || !payments || payments.length !== row.rawTransactions.length || payments.some((member, index) => member.signed?.rawTransaction !== row.rawTransactions[index] || member.source.address !== row.funders[index]?.toLowerCase()))) invalid()
     }
     const poolAuthorities = new Map<number, Claim[]>()
     for (const claim of claims) {
@@ -410,7 +430,7 @@ class AdmissionOwner implements EvmInputAdmission {
             : undefined
           : evidence.kind === 'canonical-intent' ||
             evidence.kind === 'canonical-attempt' ||
-            evidence.kind === 'topic'
+            evidence.kind === 'retained-topic'
           ? evidence.poolIndex
           : undefined
       if (index !== undefined) {
@@ -434,11 +454,11 @@ class AdmissionOwner implements EvmInputAdmission {
       if (role === 'spend') {
         const related = (poolAuthorities.get(index) ?? []).filter(
           c =>
-            (c.provenance.kind === 'native' &&
+            ((c.provenance.kind === 'native' ||
+              c.provenance.kind === 'retained-topic') &&
               c.transaction?.sender === tx.sender &&
               c.transaction.nonce === tx.nonce) ||
-            c.provenance.kind === 'canonical-attempt' ||
-            c.provenance.kind === 'topic',
+            c.provenance.kind === 'canonical-attempt',
         )
         const identical = related.filter(
           c =>
@@ -757,8 +777,11 @@ class AdmissionOwner implements EvmInputAdmission {
     lifetime: WalletOperationLifetime,
     epoch: AdmissionEpoch,
     plan: EvmNativePlan,
+    signedTransactions?: readonly string[],
   ): Promise<EvmNativeOperation> {
     const snapshot = JSON.parse(JSON.stringify(plan)) as EvmNativePlan
+    const signed =
+      signedTransactions === undefined ? undefined : [...signedTransactions]
     return this.mutate(lifetime, async () => {
       this.checkEpoch(epoch, lifetime)
       this.check(this.nativeResources(snapshot))
@@ -788,7 +811,7 @@ class AdmissionOwner implements EvmInputAdmission {
             invalid()
         }
       }
-      return this.owners.native!.prepare(snapshot)
+      return this.owners.native!.prepare(snapshot, signed)
     })
   }
   prepareCanonical(
@@ -897,14 +920,18 @@ function ownerOf(admission: EvmInputAdmission): AdmissionOwner {
 }
 export function nativeJournalReader(
   journal: EvmNativeOperationJournal,
+  topic?: TopicOperationJournal,
 ): NativeJournalReader {
   return Object.freeze({
     binding: Object.freeze({ ...journal.binding }),
     list: () => journal.list(),
     get: id => journal.get(id),
+    readOperation: id => journal.readOperation(id),
+    historyPage: options => journal.historyPage(options),
     sourceReferences: () => journal.sourceReferences(),
     referencesSpendIndex: index => journal.referencesSpendIndex(index),
-    canSelect: (source, nonce) => journal.canSelect(source, nonce),
+    canSelect: (source, nonce) =>
+      !topic?.holdsRetainedSource?.(source) && journal.canSelect(source, nonce),
   } satisfies NativeJournalReader)
 }
 export function canonicalJournalReader(
@@ -927,14 +954,18 @@ export type NativeExecutionJournal = NativeJournalReader &
   Pick<
     EvmNativeOperationJournal,
     | 'prepare'
+    | 'archiveCompleted'
     | 'refreshPreparation'
     | 'checkpointSigned'
     | 'markExposed'
     | 'markSyncApplied'
+    | 'markTransactionSetInventoryApplied'
     | 'cancelUnsigned'
     | 'discardUnexposed'
     | 'beginCapture'
     | 'recordObservation'
+    | 'appendTransactionSet'
+    | 'authorizeTransactionSet'
   >
 /** Internal executor capability. Every completion rechecks the captured lifetime; no raw owner escapes. */
 export function nativeAdmissionJournal(
@@ -948,18 +979,34 @@ export function nativeAdmissionJournal(
   const mutation = <T>(operation: () => Promise<T>) =>
     owner.mutate(lifetime, operation)
   return {
-    ...nativeJournalReader(journal),
+    ...nativeJournalReader(journal, owner.owners.topic),
+    archiveCompleted: (id, receipt) => mutation(async () => {
+      owner.validatedTopicReferences = await validateNativeTopicReferences(journal, owner.owners.topic)
+      return journal.archiveCompleted(id, receipt)
+    }),
+    authorizeTransactionSet: (id, expected) => mutation(() => journal.authorizeTransactionSet(id, expected)),
+    appendTransactionSet: (id, stage, members, signed) => mutation(async () => {
+      const row = journal.get(id)
+      owner.check(members.map(member => ({ kind: 'pair' as const, address: member.source.address, nonce: Transaction.from(member.unsignedTransaction).nonce })), `native:${id}`)
+      if (row.kind !== 'transaction-set') throw new EvmInputAdmissionError('invalid-provenance')
+      return journal.appendTransactionSet(id, stage, members, signed)
+    }),
     refreshPreparation: id =>
       mutation(async () => {
         const row = await journal.refreshPreparation(id)
         owner.owners.assertLifetime(lifetime)
         return row
       }),
-    prepare: plan => {
+    prepare: (plan, signedTransactions) => {
       const snapshot = admission.inspect(lifetime)
       if (snapshot.status !== 'ready')
         return Promise.reject(new EvmInputAdmissionError(snapshot.reason))
-      return admission.prepareNative(lifetime, snapshot.epoch, plan)
+      return admission.prepareNative(
+        lifetime,
+        snapshot.epoch,
+        plan,
+        signedTransactions,
+      )
     },
     checkpointSigned: (id, index, raw) =>
       mutation(async () => {
@@ -973,6 +1020,8 @@ export function nativeAdmissionJournal(
       }),
     markSyncApplied: (id, index) =>
       mutation(() => journal.markSyncApplied(id, index)),
+    markTransactionSetInventoryApplied: (id, index) =>
+      mutation(() => journal.markTransactionSetInventoryApplied(id, index)),
     cancelUnsigned: id => mutation(() => journal.cancelUnsigned(id)),
     discardUnexposed: id => mutation(() => journal.discardUnexposed(id)),
     beginCapture: (id, index) => {
@@ -1056,7 +1105,8 @@ export function poolSpendAdmission(
     }
     // 2. The row: the caller's, which the transaction must have been signed by, or the live row
     // the signer owns.
-    if (expectedAddress !== undefined && expectedAddress !== tx.sender) invalid()
+    if (expectedAddress !== undefined && expectedAddress !== tx.sender)
+      invalid()
     const index =
       expected?.index ??
       pool.records().find(record => address(record.address) === tx.sender)
@@ -1100,7 +1150,6 @@ export function poolSpendAdmission(
         claim =>
           (claim.provenance.kind === 'canonical-intent' ||
             claim.provenance.kind === 'canonical-attempt' ||
-            claim.provenance.kind === 'topic' ||
             claim.provenance.kind === 'live-lease' ||
             claim.provenance.kind === 'pool-funding') &&
           claim.provenance.poolIndex === index,
@@ -1184,7 +1233,8 @@ export function poolSpendAdmission(
           : 'no-pool-row'
       if (record.status === 'retired') return 'held-terminal'
       if (record.status === 'spent')
-        return record.lifecycle?.spend?.rawTx === member.signed.rawTransaction &&
+        return record.lifecycle?.spend?.rawTx ===
+          member.signed.rawTransaction &&
           record.lifecycle.legacyTerminal === undefined
           ? 'applied'
           : 'held-terminal'
@@ -1326,4 +1376,28 @@ export function validateEvmInputAdmission(admission: EvmInputAdmission): void {
     )
       throw error
   }
+}
+
+function topicReferenceKey(row: ReturnType<TopicOperationJournal['getAll']>[number]): string {
+  return keccak256(toUtf8Bytes(JSON.stringify([row.transactionSetOperationId, row.intendedValueWei, row.rawTransactions, row.funders])))
+}
+
+/** Validate payload references without materializing completed history in the admission view. */
+export async function validateNativeTopicReferences(
+  native: Pick<EvmNativeOperationJournal, 'refreshPreparation'>,
+  topic: TopicOperationJournal,
+): Promise<ReadonlySet<string>> {
+  const validated = new Set<string>()
+  for (const row of topic.getAll()) {
+    if (row.construction) continue
+    const operation = await native.refreshPreparation(`evm-transaction-set:${row.transactionSetOperationId}`)
+    const payments = operation?.members.filter(member => member.transactionSet?.role === 'payment')
+    if (!operation || operation.cancelled || operation.kind !== 'transaction-set' ||
+        operation.intendedValueWei !== row.intendedValueWei || !payments ||
+        payments.length !== row.rawTransactions.length || payments.some((member, index) =>
+          member.signed?.rawTransaction !== row.rawTransactions[index] ||
+          member.source.address !== row.funders[index]?.toLowerCase())) invalid()
+    validated.add(topicReferenceKey(row))
+  }
+  return validated
 }

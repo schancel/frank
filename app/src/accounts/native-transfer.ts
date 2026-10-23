@@ -57,6 +57,41 @@ export function inspectNativeTransferOperations(
   }
 }
 
+/** Read one captured operation from active state or completed history; never enumerate history. */
+export async function inspectNativeTransferOperation(
+  wallet: NativeWalletHandle,
+  chainIdentifier: string,
+  operationId: string,
+): Promise<NativeOperationInspection> {
+  if (wallet.chainIdentifier !== chainIdentifier)
+    return { status: 'unavailable' }
+  if (wallet.family !== 'evm' || !wallet.readNativeOperation)
+    return { status: 'unsupported' }
+  try {
+    const row = await wallet.readNativeOperation(operationId)
+    if (
+      wallet.chainIdentifier !== chainIdentifier ||
+      (row &&
+        (row.operationId !== operationId ||
+          row.binding.chainIdentifier !== chainIdentifier))
+    )
+      return { status: 'unavailable' }
+    return {
+      status: 'available',
+      operations: row
+        ? [
+            summarizeEvmNativeOperation(
+              row,
+              wallet.nativeOperationSyncFailed?.(operationId) ?? false,
+            ),
+          ]
+        : [],
+    }
+  } catch {
+    return { status: 'unavailable' }
+  }
+}
+
 /** App composition owns network selection; custody and the family wallet own keys/signing. */
 export async function createNativeTransferContext(
   chainIdentifier: string,

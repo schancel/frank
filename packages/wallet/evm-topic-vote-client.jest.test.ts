@@ -1,9 +1,8 @@
-import {
-  MonadTopicVoteClient,
-  MonadTopicVoteAbandonedError,
-} from './evm-topic-vote-client'
+import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
+import { createEvmTopicOperations } from './evm-topic-operations'
+/** Real wallet construction and codec; external node/relay observations are scripted. */
 import axios from 'axios'
-import { Wallet, Transaction, getBytes, hexlify } from 'ethers'
+import { Wallet, Transaction, getBytes, hexlify, type Provider } from 'ethers'
 import {
   encodeFrame,
   validateFrame,
@@ -11,120 +10,231 @@ import {
   topicBurnCommitment,
 } from '@frank/codec'
 import { createInMemoryMonadWalletBundle } from './storage/evm-wallet-bundle'
-import { MonadHdKeyring } from './secp256k1-hd-keyring'
-import type { EvmWalletHandle } from "./evm-wallet-handle";
+import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
+import { MemoryRecordStore } from './storage/evm-coin-store'
+import { EvmCoinList, type StoredEvmListCoin } from './evm-coin-list'
+import { EvmTransactionSetPreparer } from './evm-transaction-set'
+import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
+import type { EvmWalletHandle } from './evm-wallet-handle'
+import { TopicVoteClient, TopicVoteAbandonedError } from './topic-vote-client'
+function topicWallet(wallet: EvmWalletHandle) {
+  return {
+    chainIdentifier: wallet.cborNetwork!,
+    topicOperations: createEvmTopicOperations(wallet),
+  }
+}
 jest.mock('axios')
-const http = axios as jest.MockedFunction<typeof axios>
-const mnemonic = 'test test test test test test test test test test test junk'
+const http = axios as unknown as jest.MockedFunction<typeof axios.request>
 const burn = '0x000000000000000000000000000000000000dEaD'
-async function fixture() {
-  const bundle = createInMemoryMonadWalletBundle({ mnemonic })
-  bundle.pool.ensureSize(2)
-  const signed: Transaction[] = []
-  const signer = jest.spyOn(bundle.pool, 'getSigner').mockImplementation(
-    (index: number) =>
-      ({
-        buildAndSignCall: jest.fn(
-          async (to: string, value: bigint, data: string) => {
-            const key =
-              MonadHdKeyring.fromMnemonic(mnemonic).deriveSubAccount(index)
-            const rawTx = await new Wallet(key.privateKey).signTransaction({
-              chainId: 10143n,
-              to,
-              value,
-              data,
-              nonce: 0,
-              gasLimit: 60000n,
-              gasPrice: 1n,
-            })
-            const tx = Transaction.from(rawTx)
-            signed.push(tx)
-            return {
-              rawTx,
-              txHash: tx.hash!,
-              from: tx.from!,
-              to,
-              value,
-              data,
-              chainId: 10143n,
-            }
-          },
-        ),
-      } as any),
+const key = (n: number) => new Wallet('0x' + n.toString(16).padStart(64, '0'))
+const blockHash = '0x' + 'ab'.repeat(32)
+async function fixture(valueWei = 1700000n) {
+  const bundle = createInMemoryMonadWalletBundle({
+    mnemonic: 'test test test test test test test test test test test junk',
+  })
+  const coins = await EvmCoinList.open(
+    new MemoryRecordStore<StoredEvmListCoin>(),
   )
+  for (const n of [1, 2])
+    await coins.put({
+      account: key(n).address,
+      privateKey: key(n).privateKey,
+      nonce: 0,
+      valueWei,
+      origin: 'stealth',
+    })
+  const journal = new EvmNativeOperationJournal({
+    testOnlyEphemeral: true,
+    binding: {
+      chainIdentifier: 'monad-testnet',
+      nativeChainId: '10143',
+      publicTuple: 'client fixture',
+    },
+  })
+  await journal.Open()
+  const policy = jest.fn(() => ({
+    sourceOrder: [
+      'stealth',
+      'stamp',
+      'change',
+      'deterministic',
+      'root',
+      'identity',
+    ] as const,
+    gasPriceWei: 1n,
+    paymentGasLimit: () => 60000n,
+    changeGasLimit: 21000n,
+    paymentFeeIsExact: true,
+    dustWei: 1000n,
+    radix: 2,
+    jitterBps: 1500,
+    maxChangeOutputs: 20,
+    head: 100,
+  }))
+  const preparer = new EvmTransactionSetPreparer({
+    coins,
+    journal,
+    policy,
+    random: () => 0.01,
+    deriveChange: index => ({
+      account: key(100 + index).address,
+      privateKey: key(100 + index).privateKey,
+      changeIndex: index,
+    }),
+  })
+  const construct = jest.spyOn(preparer, 'constructLegacyTransactionSet')
+  const legacySigner = jest.spyOn(bundle.pool, 'getSigner')
+  const included = new Map<string, { tx: Transaction; index: number }>()
   const provider = {
     getNetwork: jest.fn(async () => ({ chainId: 10143n })),
     getTransactionReceipt: jest.fn(async (hash: string) => {
-      const tx = signed.find(t => t.hash === hash)!
-      return {
-        hash,
-        from: tx.from,
-        to: tx.to,
-        status: 1,
-        blockNumber: 0,
-        index: 0,
-      }
+      const item = included.get(hash)
+      return item
+        ? {
+            hash,
+            from: item.tx.from,
+            to: item.tx.to,
+            status: 1,
+            blockHash,
+            blockNumber: 12,
+            index: item.index,
+            fee: item.tx.gasLimit,
+          }
+        : null
     }),
     getTransaction: jest.fn(async (hash: string) => {
-      const tx = signed.find(t => t.hash === hash)!
-      return {
-        hash,
-        from: tx.from,
-        to: tx.to,
-        value: tx.value,
-        data: tx.data,
-        chainId: tx.chainId,
-        blockNumber: 0,
-        index: 0,
-      }
+      const item = included.get(hash)
+      return item
+        ? {
+            hash,
+            from: item.tx.from,
+            to: item.tx.to,
+            value: item.tx.value,
+            data: item.tx.data,
+            chainId: 10143n,
+            blockNumber: 12,
+            index: item.index,
+          }
+        : null
     }),
+    getBlock: jest.fn(async () => ({ hash: blockHash, number: 12 })),
+    getBlockNumber: jest.fn(async () => 100),
+    getTransactionCount: jest.fn(async (address: string) =>
+      [...included.values()]
+        .filter(item => item.tx.from!.toLowerCase() === address.toLowerCase())
+        .reduce((nonce, item) => Math.max(nonce, item.tx.nonce + 1), 0),
+    ),
+    getBalance: jest.fn(async () => 0n),
+    getFeeData: jest.fn(async () => {
+      throw new Error('unexpected construction fee RPC')
+    }),
+    estimateGas: jest.fn(async () => {
+      throw new Error('unexpected construction gas RPC')
+    }),
+    broadcastTransaction: jest.fn(async (raw: string) => ({
+      hash: Transaction.from(raw).hash!,
+    })),
   }
+  const lifecycle = new EvmTransactionSetLifecycle({
+    authority: preparer,
+    provider: provider as unknown as Provider,
+    head: () => 100,
+  })
+  const submission = createEvmTransactionSetSubmission({
+    preparer,
+    lifecycle,
+    provider: provider as unknown as Provider,
+    refresh: async () => undefined,
+    operations: () => journal.list(),
+  })
   const wallet: EvmWalletHandle = {
     pool: bundle.pool,
     leaseManager: bundle.leaseManager,
-    walletState: { ...bundle, inventory: undefined } as any,
+    walletState: bundle,
     topicOperationJournal: bundle.topicOperationJournal,
-    provider: provider as any,
-    httpClient: {} as any,
+    provider: provider as unknown as Provider,
+    httpClient: {} as EvmWalletHandle['httpClient'],
     relayBaseUrl: 'http://localhost',
     cborNetwork: 'monad-testnet',
     forumBurnAddress: burn,
     forumChainId: 10143n,
+    transactionSetPreparer: preparer,
+    transactionSetLifecycle: lifecycle,
+    transactionSetSubmission: submission,
+    forumOperationMutation: task => task(),
   }
-  http.mockImplementation(async (params: any) => {
-    const parsed = validateFrame(params.data, defaultContext())
-    if (parsed.kind !== 'parsed') throw new Error('Bad fixture request')
-    const typed = parsed.typed!
-    if (typed.type !== 10 && typed.type !== 11)
-      throw new Error('Bad fixture family')
-    const tx = Transaction.from(hexlify(typed.burnTx))
+  http.mockImplementation(async params => {
+    const parsed = validateFrame(
+      new Uint8Array(params.data as Uint8Array),
+      defaultContext(),
+    )
+    if (
+      parsed.kind !== 'parsed' ||
+      (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)
+    )
+      throw new Error('Bad fixture request')
+    const typed = parsed.typed
+    const rawTransactions = [hexlify(typed.burnTx)]
+    const operation = bundle.topicOperationJournal
+      .getAll()
+      .find(
+        row =>
+          row.rawTransactions.length === rawTransactions.length &&
+          row.rawTransactions.every(
+            (raw, index) => raw === rawTransactions[index],
+          ),
+      )!
+    const native = preparer.getOperation(operation.transactionSetOperationId)!
+    for (const [index, member] of native.members.entries())
+      included.set(member.signed!.transactionHash, {
+        tx: Transaction.from(member.signed!.rawTransaction),
+        index,
+      })
+    const transactions = rawTransactions.map(raw => Transaction.from(raw))
     const target =
       typed.type === 10
         ? topicBurnCommitment(typed.postFrame.frame).hash
         : typed.targetHash
-    const payload = new Map<number, any>([
+    const lastIndex = Math.max(
+      ...transactions.map(tx => included.get(tx.hash!)!.index),
+    )
+    const payload = new Map<number, unknown>([
       [0, 'monad-testnet'],
       [1, params.data],
       [2, target],
-      [3, getBytes(tx.hash!)],
-      [4, getBytes(tx.from!)],
-      [5, tx.data.slice(12, 14) === '01' ? 1 : 0],
-      [6, tx.value],
+      [3, getBytes(operation.transactionSetHash)],
+      [4, getBytes(operation.funders[0]!)],
+      [5, operation.direction === 'up' ? 1 : 0],
+      [6, BigInt(operation.valueWei)],
       [7, 2],
-      [8, 0n],
-      [9, 0n],
+      [8, 12n],
+      [9, BigInt(lastIndex)],
       [10, 1n],
       [11, new Uint8Array(16)],
     ])
     return {
       data: encodeFrame(
         { typeId: 15, schemaVersion: 1, minReaderVersion: 1 },
-        payload,
+        payload as never,
       ),
       headers: { 'content-type': 'application/cbor' },
-    } as any
+    } as never
   })
-  return { bundle, wallet, signer, provider, signed }
+  return {
+    bundle,
+    wallet,
+    coins,
+    journal,
+    preparer,
+    construct,
+    legacySigner,
+    provider,
+    policy,
+    close: async () => {
+      await journal.Close()
+      await bundle.close()
+    },
+  }
 }
 afterEach(() => {
   jest.restoreAllMocks()
@@ -134,97 +244,209 @@ afterEach(() => {
 const params = {
   targetPayloadHash: new Uint8Array(32).fill(4),
   direction: 'down' as const,
-  burnAddress: burn,
-  voteWeightWei: 7n,
+  amountAtomic: 1000000n,
 }
 test.each(['up', 'down'] as const)(
-  'canonical type11 %s vote requires exact confirmed status',
+  'canonical type11 %s vote requires the confirmed scalar burn',
   async direction => {
     const f = await fixture()
-    const result = await new MonadTopicVoteClient(f.wallet).castVote({
-      ...params,
-      direction,
-    })
-    expect(result.status.direction).toBe(direction === 'up' ? 1 : 0)
-    expect(result.status.value).toBe(7n)
-    expect(result.status.state).toBe(2)
-    expect(http.mock.calls[0][0]).toMatchObject({
-      method: 'put',
-      url: 'http://localhost/message/monad/topics/vote',
-      headers: {
-        'Content-Type': 'application/cbor',
-        'Accept': 'application/cbor',
-      },
-    })
-    expect(f.bundle.topicOperationJournal.getAll()).toEqual([])
-    await f.bundle.close()
+    try {
+      const result = await new TopicVoteClient(topicWallet(f.wallet)).castVote({
+        ...params,
+        direction,
+      })
+      expect(result.status.direction).toBe(direction === 'up' ? 1 : 0)
+      expect(result.status.value).toBe(params.amountAtomic)
+      expect(result.status.state).toBe(2)
+      expect(result.transactionHashes[0]).toMatch(/^0x[0-9a-f]{64}$/)
+      expect(http.mock.calls[0][0]).toMatchObject({
+        method: 'put',
+        url: 'http://localhost/message/monad/topics/vote',
+        headers: {
+          'Content-Type': 'application/cbor',
+          Accept: 'application/cbor',
+        },
+      })
+      expect(f.bundle.topicOperationJournal.getAll()).toEqual([])
+      expect(f.legacySigner).not.toHaveBeenCalled()
+    } finally {
+      await f.close()
+    }
   },
 )
 test.each([0n, -1n, 1n << 63n])(
   'invalid amount %s fails before effects',
   async value => {
     const f = await fixture()
-    await expect(
-      new MonadTopicVoteClient(f.wallet).castVote({
-        ...params,
-        voteWeightWei: value,
-      }),
-    ).rejects.toThrow()
-    expect(f.signer).not.toHaveBeenCalled()
-    expect(http).not.toHaveBeenCalled()
-    await f.bundle.close()
+    try {
+      await expect(
+        new TopicVoteClient(topicWallet(f.wallet)).castVote({
+          ...params,
+          amountAtomic: value,
+        }),
+      ).rejects.toThrow()
+      expect(f.construct).not.toHaveBeenCalled()
+      expect(http).not.toHaveBeenCalled()
+    } finally {
+      await f.close()
+    }
   },
 )
-test('204 shape-only success is uncertainty and same-byte replay performs no new signing', async () => {
+test('204 shape-only success remains uncertain and replay preserves the full exact signed set', async () => {
   const f = await fixture()
-  const normal = http.getMockImplementation()!
-  http.mockResolvedValueOnce({
-    data: new Uint8Array(),
-    status: 204,
-    headers: {},
-  } as any)
-  const client = new MonadTopicVoteClient(f.wallet)
-  await expect(client.castVote(params)).rejects.toBeInstanceOf(
-    MonadTopicVoteAbandonedError,
-  )
-  const retained = f.bundle.topicOperationJournal.getAll()[0]
-  expect(retained.writeFormat).toBe('forum-cbor')
-  http.mockImplementation(normal)
-  await client.resumePendingOperations()
-  expect(http.mock.calls[1][0]).toMatchObject({
-    data: Uint8Array.from(retained.requestBytes),
-  })
-  expect(f.signer).toHaveBeenCalledTimes(1)
-  await f.bundle.close()
+  try {
+    const normal = http.getMockImplementation()!
+    http.mockResolvedValueOnce({
+      data: new Uint8Array(),
+      status: 204,
+      headers: {},
+    } as never)
+    const client = new TopicVoteClient(topicWallet(f.wallet))
+    await expect(client.castVote(params)).rejects.toBeInstanceOf(
+      TopicVoteAbandonedError,
+    )
+    const retained = f.bundle.topicOperationJournal.getAll()[0]!
+    expect(retained.version).toBe(2)
+    expect(retained.writeFormat).toBe('forum-cbor')
+    expect(retained.rawTransactions).toHaveLength(1)
+    const original = f.journal
+      .list()[0]!
+      .members.map(member => member.signed!.rawTransaction)
+    http.mockImplementation(normal)
+    await client.resumePendingOperations()
+    expect(http.mock.calls[1][0]).toMatchObject({
+      data: Uint8Array.from(retained.requestBytes),
+    })
+    expect(f.construct).toHaveBeenCalledTimes(1)
+    expect(
+      f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction),
+    ).toEqual(original)
+  } finally {
+    await f.close()
+  }
 })
-test('unresolved pending vote blocks concurrent replacement before another signer call', async () => {
+test('concurrent independent pending votes reserve disjoint coins instead of blocking the wallet', async () => {
   const f = await fixture()
-  http.mockRejectedValue(new Error('offline'))
-  const client = new MonadTopicVoteClient(f.wallet)
-  const results = await Promise.allSettled([
-    client.castVote(params),
-    client.castVote(params),
-  ])
-  expect(results.map(r => r.status)).toEqual(['rejected', 'rejected'])
-  expect(f.signer).toHaveBeenCalledTimes(1)
-  expect(f.bundle.topicOperationJournal.getAll()).toHaveLength(1)
-  await f.bundle.close()
+  try {
+    http.mockRejectedValue(new Error('offline'))
+    const client = new TopicVoteClient(topicWallet(f.wallet))
+    const results = await Promise.allSettled([
+      client.castVote({
+        ...params,
+        amountAtomic: 500000n,
+        operationId: 'vote-first',
+      }),
+      client.castVote({
+        ...params,
+        amountAtomic: 500000n,
+        operationId: 'vote-second',
+      }),
+    ])
+    expect(results.map(result => result.status)).toEqual([
+      'rejected',
+      'rejected',
+    ])
+    for (const result of results) {
+      if (result.status !== 'rejected')
+        throw new Error('Expected pending operation')
+      expect(result.reason).toBeInstanceOf(TopicVoteAbandonedError)
+    }
+    expect(f.construct.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(http).toHaveBeenCalledTimes(2)
+    expect(f.bundle.topicOperationJournal.getAll()).toHaveLength(2)
+    const accounts = f.journal
+      .list()
+      .map(operation => operation.members[0]!.source.address)
+    expect(new Set(accounts).size).toBe(2)
+    expect(
+      f.journal
+        .list()
+        .flatMap(row =>
+          row.members.filter(
+            member => member.transactionSet?.role === 'payment',
+          ),
+        )
+        .every(member => f.preparer.isSourceReserved(member.source.address)),
+    ).toBe(true)
+  } finally {
+    await f.close()
+  }
+})
+test('HTTP rejection after exposure retains signed authority and input reservations', async () => {
+  const f = await fixture()
+  try {
+    http.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: { status: 400, data: 'rejected' },
+    })
+    await expect(
+      new TopicVoteClient(topicWallet(f.wallet)).castVote(params),
+    ).rejects.toBeInstanceOf(TopicVoteAbandonedError)
+    const rows = f.bundle.topicOperationJournal.getAll()
+    expect(rows).toHaveLength(1)
+    const authority = f.preparer.getOperation(
+      rows[0]!.transactionSetOperationId,
+    )!
+    expect(
+      authority.members
+        .filter(member => member.transactionSet?.role === 'payment')
+        .map(member => member.signed!.rawTransaction),
+    ).toEqual(rows[0]!.rawTransactions)
+    expect(authority.members.every(member => member.signed !== undefined)).toBe(
+      true,
+    )
+    expect(
+      f.journal
+        .list()
+        .flatMap(row =>
+          row.members.filter(
+            member => member.transactionSet?.role === 'payment',
+          ),
+        )
+        .every(member => f.preparer.isSourceReserved(member.source.address)),
+    ).toBe(true)
+  } finally {
+    await f.close()
+  }
 })
 
-test('HTTP rejection after send retains signed authority and does not infer prebroadcast failure', async () => {
+test('confirmed relay status with one missing burn receipt retains every original payment reservation', async () => {
   const f = await fixture()
-  http.mockRejectedValueOnce({
-    isAxiosError: true,
-    response: { status: 400, data: 'rejected' },
-  })
-  await expect(
-    new MonadTopicVoteClient(f.wallet).castVote(params),
-  ).rejects.toBeInstanceOf(MonadTopicVoteAbandonedError)
-  const rows = f.bundle.topicOperationJournal.getAll()
-  expect(rows).toHaveLength(1)
-  expect(f.bundle.pool.getRecord(rows[0].leaseIndex)!.status).toBe('in-use')
-  expect(
-    f.bundle.pool.getRecord(rows[0].leaseIndex)!.lifecycle!.spend!.rawTx,
-  ).toBe(rows[0].rawTx)
-  await f.bundle.close()
+  try {
+    const originalReceipt =
+      f.provider.getTransactionReceipt.getMockImplementation()!
+    f.provider.getTransactionReceipt.mockImplementation(async hash => {
+      const operation = f.journal.list()[0]!
+      const firstPayment = operation.members.find(
+        member => member.transactionSet?.role === 'payment',
+      )!
+      return hash === firstPayment.signed!.transactionHash
+        ? null
+        : originalReceipt(hash)
+    })
+    await expect(
+      new TopicVoteClient(topicWallet(f.wallet)).castVote(params),
+    ).rejects.toBeInstanceOf(TopicVoteAbandonedError)
+    const retained = f.bundle.topicOperationJournal.getAll()[0]!
+    expect(retained.rawTransactions).toHaveLength(1)
+    expect(f.construct).toHaveBeenCalledTimes(1)
+    expect(
+      f.journal
+        .list()
+        .flatMap(row =>
+          row.members.filter(
+            member => member.transactionSet?.role === 'payment',
+          ),
+        )
+        .every(member => f.preparer.isSourceReserved(member.source.address)),
+    ).toBe(true)
+    expect(
+      f.preparer
+        .getOperation(retained.transactionSetOperationId)!
+        .members.filter(member => member.transactionSet?.role === 'payment')
+        .map(member => member.signed!.rawTransaction),
+    ).toEqual(retained.rawTransactions)
+  } finally {
+    await f.close()
+  }
 })

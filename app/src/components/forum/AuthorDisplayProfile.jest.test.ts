@@ -266,4 +266,3 @@ describe.each([ForumMessage, ForumPost])(
     })
   },
 )
-

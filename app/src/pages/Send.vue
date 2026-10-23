@@ -322,6 +322,8 @@ import {
 import {
   createNativeTransferContext,
   inspectNativeTransferOperations,
+  inspectNativeTransferOperation,
+  type NativeOperationInspection,
   type NativeTransferContext,
   type NativeTransferBinding,
 } from 'src/accounts/native-transfer'
@@ -540,6 +542,7 @@ export default defineComponent({
         if (!reviewed) return
         sending.value = true
         let signedTxHash: string | undefined
+        let signedOperationId: string | undefined
         const current = async () => {
           if (disposed) return false
           try {
@@ -551,11 +554,7 @@ export default defineComponent({
             return false
           }
         }
-        const inspect = () => {
-          const evidence = inspectNativeTransferOperations(
-            reviewed.binding.wallet,
-            reviewed.context.chain.chainIdentifier,
-          )
+        const matching = (evidence: NativeOperationInspection) => {
           const found =
             evidence.status === 'available'
               ? findEvmNativeOperationStatus(
@@ -564,16 +563,36 @@ export default defineComponent({
                   signedTxHash,
                 )
               : undefined
-          // Intent checks are additional guards; identity comes only from the unique final hash.
-          operation.value =
-            found &&
+          return found &&
+            (!signedOperationId || found.operationId === signedOperationId) &&
             found.recipient.toLowerCase() ===
               reviewed.transfer.recipient.raw.toLowerCase() &&
             found.intendedValueWei === reviewed.transfer.value.toString()
-              ? found
-              : undefined
+            ? found
+            : undefined
+        }
+        const inspect = async () => {
+          if (disposed || !reviewed.binding.isCurrent()) return
+          const wallet = reviewed.binding.wallet
+          const chainIdentifier = reviewed.context.chain.chainIdentifier
+          let evidence = inspectNativeTransferOperations(
+            wallet,
+            chainIdentifier,
+          )
+          let found = matching(evidence)
+          if (!found && evidence.status === 'available' && signedOperationId) {
+            evidence = await inspectNativeTransferOperation(
+              wallet,
+              chainIdentifier,
+              signedOperationId,
+            )
+            found = matching(evidence)
+          }
+          // The account or route may have changed while completed history was being read.
+          if (disposed || !reviewed.binding.isCurrent()) return
+          if (found && !signedOperationId) signedOperationId = found.operationId
+          operation.value = found
           outcomeHash.value = signedTxHash
-          return evidence
         }
         // A transfer that is in the mempool, or that the node does not have yet, is not final:
         // the wallet looks again at each look of its block watcher and this page re-reads the
@@ -592,9 +611,13 @@ export default defineComponent({
             while (!disposed && reviewed.binding.isCurrent() && notFinal()) {
               await wallet.watchNativeOperation(id)
               if (disposed) return
-              inspect()
+              await inspect()
             }
-            if (!disposed && operation.value?.payment === 'included')
+            if (
+              !disposed &&
+              reviewed.binding.isCurrent() &&
+              operation.value?.payment === 'included'
+            )
               sentTransactionNotify(signedTxHash ?? '')
           } catch {
             // The wallet was closed: what is shown stays; the journal keeps the transfer.
@@ -614,6 +637,18 @@ export default defineComponent({
             maxFee: reviewedFee,
             onSigned: async (signed: { txHash: string }) => {
               signedTxHash = signed.txHash
+              // onSigned runs before broadcast, while the original row is still active.
+              if (
+                !signedOperationId &&
+                !disposed &&
+                reviewed.binding.isCurrent()
+              )
+                signedOperationId = matching(
+                  inspectNativeTransferOperations(
+                    reviewed.binding.wallet,
+                    reviewed.context.chain.chainIdentifier,
+                  ),
+                )?.operationId
             },
           }
           // No post-dispatch error proves that a fresh payment is safe.
@@ -625,7 +660,8 @@ export default defineComponent({
             : await client.send(params)
           signedTxHash = result.txHash
           if (!(await current())) return
-          inspect()
+          await inspect()
+          if (disposed || !reviewed.binding.isCurrent()) return
           // An included payment is a completed send. Whether the wallet's other devices have
           // been told is information shown with the transfer, never a reason to hold this page.
           if (reviewed.binding.wallet.family === 'evm') {
@@ -679,7 +715,8 @@ export default defineComponent({
             return
           }
           if (!(await current())) return
-          inspect()
+          await inspect()
+          if (disposed || !reviewed.binding.isCurrent()) return
           void watch()
         } finally {
           if (!disposed) sending.value = false

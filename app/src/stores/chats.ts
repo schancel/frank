@@ -4150,6 +4150,9 @@ export const useChatStore = defineStore('chats', {
             // One ID for this message, whatever attempt this is: the wallet makes one payment
             // per ID, ever, and answers a repeat with the attempt it already holds.
             messageId: message.sealedMessageId ?? outgoingMessageId(id),
+            ...(financial?.paymentOperationId === undefined
+              ? {}
+              : { paymentOperationId: financial.paymentOperationId }),
             ...(onEnvelopeDurable ? { onEnvelopeDurable } : {}),
             conversationId: message.conversationId,
             ...(subject === undefined ? {} : { conversationName: subject }),

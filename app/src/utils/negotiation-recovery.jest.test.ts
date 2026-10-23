@@ -34,6 +34,7 @@ const mockPresentation: unknown[] = []
 const mockChats = {
   relayCursor: async () => 0,
   noteConversationStates: async () => undefined,
+  syncAllJoinedGroups: async () => undefined,
   quarantineRelayReceipts: async () => undefined,
   receiveMessages: jest.fn(async (wrappers: unknown[]) => {
     mockPresentation.push(...wrappers)

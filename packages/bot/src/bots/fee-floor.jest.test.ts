@@ -1,7 +1,8 @@
 /**
  * The chain's fee floor at every table with a stake or a price. Unit tests on the bot harness:
  * the floor is what `BotContext.minimumStampWei` reports (the wallet's `minimumStamp` behind the
- * real host), set here by the test. Nothing here is evidence about a real wallet or chain.
+ * real host), set here by the test. The mock accepts settlement requests of any size;
+ * these assertions prove the debt requested, not real wallet admission or settlement.
  */
 import type {
   DigitalGoodsItem,
@@ -76,8 +77,8 @@ describe("a table's minimum stake is never below twice the chain's fee floor", (
     ).toBe(false);
     expect(texts(h)).toContain("The smallest stake at this table is");
     expect(texts(h)).toContain("No roll was made");
-    // The player's money is owed back whatever its size: the floor is for stamps a user
-    // chooses, not for a debt. It goes out as a payment marked as a settlement.
+    // The complete debt is requested as settlement. The mock accepts it; a real
+    // wallet may refuse its size, in which case the outbox must retain the debt.
     expect(h.paidOut()).toBe(DUST);
     expect(texts(h)).toContain("is returned with this message");
     expect(h.settlements()).toEqual([DUST]);
@@ -148,7 +149,7 @@ describe("a table's minimum stake is never below twice the chain's fee floor", (
         .some((i) => i.type === "rps" && i.action === "resolve")
     ).toBe(false);
     expect(texts(h)).toContain("The smallest stake at this table is");
-    // Refused, and what was paid is returned (owed money is paid whatever its size).
+    // The mock accepts the full refund request; real wallet refusal must retain the debt.
     expect(h.paidOut()).toBe(DUST);
 
     // At the minimum the same table plays, and a win pays twice the stake.
@@ -195,7 +196,7 @@ describe("a table's minimum stake is never below twice the chain's fee floor", (
     await bot.onMessage(h.message([enter], [h.pay(DUST)], alice), h.ctx);
     expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([]);
     expect(texts(h)).toContain("You are not entered");
-    // Refused, and what was paid is returned (owed money is paid whatever its size).
+    // The mock accepts the full refund request; real wallet refusal must retain the debt.
     expect(h.paidOut()).toBe(DUST);
     await bot.onMessage(h.message([enter], [h.pay(MINIMUM)], alice), h.ctx);
     expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([alice]);
@@ -229,7 +230,7 @@ describe("a table's minimum stake is never below twice the chain's fee floor", (
       false
     );
     expect(texts(h)).toContain("Nothing was sold");
-    // Refused, and what was paid is returned (owed money is paid whatever its size).
+    // The mock accepts the full refund request; real wallet refusal must retain the debt.
     expect(h.paidOut()).toBe(DUST);
     await bot.onMessage(h.message([buy], [h.pay(MINIMUM)]), h.ctx);
     expect(h.sent.some((m) => m.items.some((i) => i.type === "image"))).toBe(

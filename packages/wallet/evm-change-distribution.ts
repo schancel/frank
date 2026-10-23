@@ -17,6 +17,9 @@ export interface GeometricRadixChangeParams {
   readonly dustThresholdWei: bigint;
   readonly minFeePerTxWei?: bigint;
   readonly maxOutputs?: number;
+  readonly radix?: number;
+  readonly jitterBps?: number;
+  readonly random?: () => number;
 }
 
 /**
@@ -26,7 +29,7 @@ export interface GeometricRadixChangeParams {
 export function orderOfMagnitude2(amount: bigint): number {
   if (amount <= 0n) {
     throw new RangeError(
-      'Amount must be positive to compute order of magnitude'
+      "Amount must be positive to compute order of magnitude"
     );
   }
   return amount.toString(2).length - 1;
@@ -39,225 +42,164 @@ export function orderOfMagnitude2(amount: bigint): number {
 export function orderOfMagnitude10(amount: bigint): number {
   if (amount <= 0n) {
     throw new RangeError(
-      'Amount must be positive to compute order of magnitude'
+      "Amount must be positive to compute order of magnitude"
     );
   }
   return amount.toString(10).length - 1;
 }
 
-/**
- * In-place unbiased Fisher-Yates shuffle.
- */
-function shuffleArray<T>(array: T[]): T[] {
-  for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const temp = array[i];
-    array[i] = array[j];
-    array[j] = temp;
-  }
-  return array;
-}
-
-/**
- * Computes geometric radix change splits with entropy jitter and decoy pairing avoidance.
- *
- * Algorithm:
- * 1. Compute recipientOOM = recipientAmountWei ? orderOfMagnitude2(recipientAmountWei) : null.
- * 2. Loop while remaining balance > dust threshold + fee:
- *    - Carve out a randomized geometric slice between 40% and 60% of the remaining upper bound.
- *    - Add continuous multiplicative entropy jitter (+/- 15%).
- *    - Avoid exact order-of-magnitude collision with recipient payment (decoy pairing / avoidance).
- *    - Push slice to outputs list, deduct slice + fee from remaining balance.
- * 3. If only 1 output created and remainder is significant (>= dust + fee), create single change output.
- * 4. If remainder remains, absorb into one of the existing outputs to eliminate exact remainder fingerprints.
- * 5. Shuffle outputs with Fisher-Yates shuffle.
- * 6. Return array of change amounts (all >= dustThresholdWei, exactly conserving total balance minus fees).
- */
+/** Geometric denominations use bigint arithmetic throughout. A feasible-sum interval check
+ * leaves a legal tail at every step, so final residual absorption cannot recreate an excluded
+ * magnitude. An impossible policy is rejected rather than silently losing value or exclusion. */
 export function computeGeometricRadixChangeSplits(
   params: GeometricRadixChangeParams
 ): bigint[] {
   const {
-    totalAvailableWei,
+    totalAvailableWei: total,
     recipientAmountWei,
     dustThresholdWei,
-    minFeePerTxWei = 0n,
-    maxOutputs,
+    minFeePerTxWei: fee = 0n,
+    maxOutputs = 20,
+    radix = 2,
+    jitterBps = 1500,
+    random = Math.random,
   } = params;
-
-  if (dustThresholdWei < 0n) {
-    throw new RangeError('dustThresholdWei must be non-negative');
+  if (
+    dustThresholdWei < 0n ||
+    fee < 0n ||
+    !Number.isSafeInteger(maxOutputs) ||
+    maxOutputs < 0 ||
+    !Number.isSafeInteger(radix) ||
+    radix < 2 ||
+    !Number.isSafeInteger(jitterBps) ||
+    jitterBps < 0 ||
+    jitterBps > 9999
+  )
+    throw new RangeError("Invalid change distribution policy");
+  const dust = dustThresholdWei > 0n ? dustThresholdWei : 1n;
+  if (total < dust + fee || maxOutputs === 0) return [];
+  const entropy = () => {
+    const value = random();
+    if (!Number.isFinite(value) || value < 0 || value >= 1)
+      throw new RangeError("Invalid change entropy");
+    return value;
+  };
+  const base = BigInt(radix);
+  let lower: bigint | undefined;
+  if (recipientAmountWei !== undefined && recipientAmountWei > 0n) {
+    lower = 1n;
+    while (lower * base <= recipientAmountWei) lower *= base;
   }
-  if (minFeePerTxWei < 0n) {
-    throw new RangeError('minFeePerTxWei must be non-negative');
-  }
-  if (totalAvailableWei <= 0n) {
-    return [];
-  }
-
-  const dust = dustThresholdWei;
-  const fee = minFeePerTxWei;
-  const maxLimit = maxOutputs !== undefined ? Math.max(0, maxOutputs) : 20;
-
-  if (maxLimit === 0 || totalAvailableWei < dust + fee) {
-    return [];
-  }
-
-  const recipientOOM =
-    recipientAmountWei !== undefined && recipientAmountWei > 0n
-      ? orderOfMagnitude2(recipientAmountWei)
-      : null;
-
-  let remaining = totalAvailableWei;
-  const outputs: bigint[] = [];
-
-  let attempts = 0;
-  while (
-    remaining > dust + fee &&
-    outputs.length < maxLimit &&
-    attempts < 100
-  ) {
-    attempts++;
-    const upperBound = remaining - fee;
-    if (upperBound < dust) {
-      break;
+  type Interval = readonly [bigint, bigint];
+  const allowed = (cap: bigint): Interval[] => {
+    if (lower === undefined) return cap >= dust ? [[dust, cap]] : [];
+    const intervals: Interval[] = [];
+    if (dust < lower)
+      intervals.push([dust, cap < lower - 1n ? cap : lower - 1n]);
+    const high = dust > lower * base ? dust : lower * base;
+    if (cap >= high) intervals.push([high, cap]);
+    return intervals.filter(([lo, hi]) => lo <= hi);
+  };
+  // Sums of m legal denominations have at most two intervals: all below the excluded
+  // bucket, or at least one above it. This keeps final residual handling exact.
+  const sums = (count: number, cap: bigint): Interval[] => {
+    if (count === 0) return [[0n, 0n]];
+    if (lower === undefined)
+      return cap >= BigInt(count) * dust ? [[BigInt(count) * dust, cap]] : [];
+    const result: Interval[] = [];
+    if (dust < lower) {
+      const lo = BigInt(count) * dust,
+        hi = BigInt(count) * (lower - 1n);
+      if (lo <= cap) result.push([lo, hi < cap ? hi : cap]);
+      const highLo = lower * base + BigInt(count - 1) * dust;
+      if (highLo <= cap) result.push([highLo, cap]);
+    } else {
+      const minimum = dust >= lower * base ? dust : lower * base;
+      if (BigInt(count) * minimum <= cap)
+        result.push([BigInt(count) * minimum, cap]);
     }
-
-    // Carve out a randomized geometric slice between 40% and 60% of remaining upper bound
-    const randomSplit = 0.4 + Math.random() * 0.2;
-    // Add continuous multiplicative entropy jitter (+/- 15%)
-    const jitter = 1.0 + (Math.random() - 0.5) * 0.3;
-    let slice = BigInt(Math.floor(Number(upperBound) * randomSplit * jitter));
-
-    // Decoy pairing / Avoidance:
-    // If recipientOOM !== null && orderOfMagnitude2(slice) === recipientOOM:
-    // Avoid leaking payment vs change through equal order-of-magnitude clustering.
+    return result;
+  };
+  let desired = 1,
+    scale = total / (dust + fee);
+  while (scale >= base && desired < maxOutputs) {
+    desired++;
+    scale /= base;
+  }
+  const capCount = Math.min(
+    maxOutputs,
+    Number(
+      total / (dust + fee) > BigInt(maxOutputs)
+        ? BigInt(maxOutputs)
+        : total / (dust + fee)
+    )
+  );
+  desired = Math.min(desired, capCount);
+  const counts = [
+    ...Array.from({ length: desired }, (_, i) => desired - i),
+    ...Array.from({ length: capCount - desired }, (_, i) => desired + i + 1),
+  ];
+  for (const count of counts) {
+    let remaining = total - BigInt(count) * fee;
     if (
-      recipientOOM !== null &&
-      slice > 0n &&
-      orderOfMagnitude2(slice) === recipientOOM
-    ) {
-      const scaledDown = slice / 2n;
-      if (
-        scaledDown >= dust &&
-        orderOfMagnitude2(scaledDown) !== recipientOOM
-      ) {
-        slice = scaledDown;
-      } else {
-        const targetMin = 1n << BigInt(recipientOOM + 1);
-        if (
-          upperBound >= targetMin &&
-          targetMin >= dust &&
-          orderOfMagnitude2(targetMin) !== recipientOOM
-        ) {
-          slice = targetMin;
-        } else {
-          continue;
-        }
-      }
-    }
-
-    if (slice < dust) {
-      break;
-    }
-    if (slice > upperBound) {
-      slice = upperBound;
-    }
-    if (recipientOOM !== null && orderOfMagnitude2(slice) === recipientOOM) {
+      !sums(count, remaining).some(
+        ([lo, hi]) => remaining >= lo && remaining <= hi
+      )
+    )
       continue;
-    }
-
-    outputs.push(slice);
-    remaining -= slice + fee;
-  }
-
-  // Handle residual balance and edge cases
-  if (outputs.length === 0) {
-    if (remaining >= dust + fee && maxLimit >= 1) {
-      const single = remaining - fee;
-      if (recipientOOM === null || orderOfMagnitude2(single) !== recipientOOM) {
-        outputs.push(single);
-        remaining = 0n;
-      } else {
-        // Total single output collides with recipient OOM; split in two if headroom allows
-        const half = (remaining - fee * 2n) / 2n;
-        if (
-          half >= dust &&
-          orderOfMagnitude2(half) !== recipientOOM &&
-          maxLimit >= 2
-        ) {
-          outputs.push(half);
-          outputs.push(remaining - fee * 2n - half);
-          remaining = 0n;
-        } else {
-          outputs.push(single);
-          remaining = 0n;
-        }
-      }
-    }
-  } else if (outputs.length === 1) {
-    // Step 3: If only 1 output created and remainder is significant, create single change output.
-    if (remaining >= dust + fee && outputs.length < maxLimit) {
-      const second = remaining - fee;
-      if (recipientOOM === null || orderOfMagnitude2(second) !== recipientOOM) {
-        outputs.push(second);
-        remaining = 0n;
-      } else {
-        // Avoid collision: absorb remainder into output 0 if possible
-        if (
-          recipientOOM === null ||
-          orderOfMagnitude2(outputs[0] + remaining) !== recipientOOM
-        ) {
-          outputs[0] += remaining;
-          remaining = 0n;
-        } else {
-          // Both collide; split the combined value into two non-colliding pieces
-          const combined = outputs[0] + remaining;
-          const half = (combined - fee) / 2n;
-          if (
-            half >= dust &&
-            orderOfMagnitude2(half) !== recipientOOM &&
-            maxLimit >= 2
-          ) {
-            outputs[0] = half;
-            outputs.push(combined - fee - half);
-            remaining = 0n;
-          } else {
-            outputs[0] += remaining;
-            remaining = 0n;
+    const outputs: bigint[] = [];
+    for (let index = 0; index < count; index++) {
+      const left = count - index - 1;
+      const entropyScale = 1n << 52n;
+      const split =
+        8000n * entropyScale +
+        4000n * BigInt(Math.floor(entropy() * Number(entropyScale)));
+      const jitter =
+        entropyScale +
+        ((2n * BigInt(Math.floor(entropy() * Number(entropyScale))) -
+          entropyScale) *
+          BigInt(jitterBps)) /
+          10000n;
+      const target =
+        left === 0
+          ? remaining
+          : (remaining * split * jitter) /
+            (base * 10000n * entropyScale * entropyScale);
+      let best: bigint | undefined, distance: bigint | undefined;
+      for (const [lo, hi] of allowed(remaining))
+        for (const [tailLo, tailHi] of sums(left, remaining)) {
+          const minimum = lo > remaining - tailHi ? lo : remaining - tailHi;
+          const maximum = hi < remaining - tailLo ? hi : remaining - tailLo;
+          if (minimum > maximum) continue;
+          // Clamping to a boundary repeatedly emits recognizable dust/bucket values.
+          // When the geometric proposal is outside a feasible interval, retain entropy
+          // inside that interval rather than forcing its endpoint (the tail still fits).
+          const candidate = target < minimum || target > maximum
+            ? minimum + (BigInt(Math.floor(entropy() * Number(entropyScale))) *
+                (maximum - minimum + 1n)) / entropyScale
+            : target;
+          const delta =
+            candidate > target ? candidate - target : target - candidate;
+          if (distance === undefined || delta < distance) {
+            best = candidate;
+            distance = delta;
           }
         }
-      }
-    } else if (remaining > 0n) {
-      // Remainder is sub-dust; absorb into existing output
-      outputs[0] += remaining;
-      remaining = 0n;
+      if (best === undefined)
+        throw new RangeError("Unable to partition change");
+      outputs.push(best);
+      remaining -= best;
     }
-  } else {
-    // Step 4: If multiple outputs and remainder remains, absorb into one existing output
-    if (remaining > 0n) {
-      const candidates = outputs
-        .map((val, idx) => ({ val, idx }))
-        .filter(
-          (c) =>
-            recipientOOM === null ||
-            orderOfMagnitude2(c.val + remaining) !== recipientOOM
-        );
-
-      const targetIdx =
-        candidates.length > 0
-          ? candidates[Math.floor(Math.random() * candidates.length)].idx
-          : Math.floor(Math.random() * outputs.length);
-
-      outputs[targetIdx] += remaining;
-      remaining = 0n;
+    if (remaining !== 0n) throw new RangeError("Change did not conserve value");
+    for (let index = outputs.length - 1; index > 0; index--) {
+      const other = Math.floor(entropy() * (index + 1));
+      [outputs[index], outputs[other]] = [outputs[other]!, outputs[index]!];
     }
+    return outputs;
   }
-
-  // Step 5: Shuffle outputs with Fisher-Yates shuffle
-  shuffleArray(outputs);
-
-  // Step 6: Return bigint[] of change amounts
-  return outputs;
+  throw new RangeError(
+    "No change partition satisfies dust, fee, output and magnitude limits"
+  );
 }
 
 /**
@@ -273,7 +215,7 @@ export function computeGeometricRadixChangeSplits(
  */
 export function calculateDecoyJitterDelayMs(
   meanDelayMs = 30_000,
-  maxDelayMs = 120_000,
+  maxDelayMs = 120_000
 ): number {
   if (meanDelayMs <= 0 || maxDelayMs <= 0) {
     return 0;

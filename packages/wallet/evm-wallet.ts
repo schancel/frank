@@ -19,7 +19,6 @@ import type {
   canonicalDirectMessages,
 } from "./chain/canonical-dm";
 import type {
-  DirectMessageFundAheadResult,
   DirectMessagePreparationProgress,
   DirectMessageReceived,
   DirectMessageStampQuote,
@@ -32,21 +31,6 @@ import type { EvmBlockWatcher } from "./evm-block-watcher";
 import type { EvmCoinListSync } from "./evm-coin-list-sync";
 import type { EvmCoinList } from "./evm-coin-list";
 import type { StealthPaymentReceiptCapability } from "./stealth-payment";
-
-export type CanonicalInventoryFunder = (input: {
-  stampValueWei: bigint;
-  /** Unused: the fee an account keeps back does not depend on the recipient. */
-  recipientStampKey?: Uint8Array;
-  onProgress?: (progress: DirectMessagePreparationProgress) => void;
-}) => Promise<string[]>;
-
-export interface FundAheadBackoff {
-  result: DirectMessageFundAheadResult;
-  delayMs: number;
-  startedAtMs: number;
-  /** The main-account balance the pass saw, when it read one. */
-  mainBalanceWei?: bigint;
-}
 
 export interface MainAccountAdmission {
   key: string;
@@ -91,6 +75,7 @@ export interface ReceivedCoinOwner {
    * anything, if one of them is a released payment. Otherwise the items are in flight (never
    * released) until the returned function is called. */
   beginContactSend(ephemeralPubKeys: readonly string[]): Promise<() => void>;
+  contactMessageIdentity?(ephemeralPubKeys: readonly string[]): { messageId: string; operationId?: string } | undefined;
   /** Releases the payments among these of which no byte ever left the device. True if any. */
   releaseUnsentContactPayments(
     ephemeralPubKeys: readonly string[]
@@ -130,15 +115,15 @@ export class EvmWalletInternals {
   canonicalUnavailable?: CanonicalWalletBindingMismatchError;
   canonicalDirectory?: CanonicalDirectory;
   canonicalMessaging?: ReturnType<typeof canonicalDirectMessages>;
-  canonicalInventoryFunder?: CanonicalInventoryFunder;
   canonicalStampQuoter?: (input: {
     stampValueWei: bigint;
     excludedAddresses?: readonly string[];
   }) => Promise<DirectMessageStampQuote>;
-  stampFunderAhead?: () => Promise<DirectMessageFundAheadResult>;
-  fundAheadBackoff?: FundAheadBackoff;
+  recoverStampFunding?: () => Promise<void>;
   mainAccountAdmission?: MainAccountAdmission;
   receivedCoinOwner?: ReceivedCoinOwner;
+  /** Resolve an authorized local payment/stamp binding without exposing signing material. */
+  resolveMessagePayment?: (paymentOperationId: string, stampValue: bigint) => Promise<string>;
   heldTransferSources?: () => Set<string>;
   nativeOperationOwner?: EvmLegacyConsolidator;
   runningMainTasks = 0;
@@ -146,6 +131,8 @@ export class EvmWalletInternals {
   /** The wallet's coin list for this chain, and what keeps it in step with the chain. */
   coinList?: EvmCoinList;
   coinListSync?: EvmCoinListSync;
+  transactionSetPreparer?: EvmChainWalletHandle["transactionSetPreparer"];
+  transactionSetLifecycle?: EvmChainWalletHandle["transactionSetLifecycle"];
   lastOwnLookMs?: number;
   readonly unjournalledTransfers = new Map<
     string,
@@ -158,7 +145,7 @@ export class EvmWalletInternals {
     this.canonicalClientFactory = undefined;
     this.canonicalUnavailable = undefined;
     this.canonicalMessaging = undefined;
-    this.canonicalInventoryFunder = undefined;
+    this.recoverStampFunding = undefined;
     this.canonicalStampQuoter = undefined;
     this.canonicalDirectory = undefined;
     this.installedCanonicalDescriptor = undefined;
@@ -211,6 +198,12 @@ export class EvmWallet implements EvmChainWalletHandle {
   readonly networkId!: string;
   readonly identity!: MonadIdentity;
   readonly spendPool!: EvmSpendPool;
+  readonly transactionSetSubmission!: EvmChainWalletHandle["transactionSetSubmission"];
+  readonly constructTransactionSet!: EvmChainWalletHandle["constructTransactionSet"];
+  readonly sendTransaction!: EvmChainWalletHandle["sendTransaction"];
+  readonly transactionSetPreparer!: EvmChainWalletHandle["transactionSetPreparer"];
+  readonly transactionSetLifecycle!: EvmChainWalletHandle["transactionSetLifecycle"];
+  readonly refreshTransactionSetInventory!: EvmChainWalletHandle["refreshTransactionSetInventory"];
   readonly mainAccount!: Wallet;
   readonly mainPrivateKey!: string;
   readonly pool!: MonadSubAccountPool;
@@ -245,6 +238,8 @@ export class EvmWallet implements EvmChainWalletHandle {
   settleContactPayment!: EvmChainWalletHandle["settleContactPayment"];
   retryContactPayment!: EvmChainWalletHandle["retryContactPayment"];
   recordStealthPayment!: EvmChainWalletHandle["recordStealthPayment"];
+  readNativeOperation!: EvmChainWalletHandle["readNativeOperation"];
+  getNativeOperationHistory!: EvmChainWalletHandle["getNativeOperationHistory"];
   getNativeOperations!: EvmChainWalletHandle["getNativeOperations"];
   nativeOperationSyncFailed!: EvmChainWalletHandle["nativeOperationSyncFailed"];
   flushNativeSync!: EvmChainWalletHandle["flushNativeSync"];

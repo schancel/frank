@@ -401,7 +401,10 @@ export default configure(ctx => {
         {
           name: 'frank:strip-dangling-sourcemaps',
           transform(code) {
-            if (typeof code !== 'string' || !code.includes('sourceMappingURL=')) {
+            if (
+              typeof code !== 'string' ||
+              !code.includes('sourceMappingURL=')
+            ) {
               return null
             }
             return {
@@ -416,7 +419,11 @@ export default configure(ctx => {
                 delete bundle[fileName]
                 continue
               }
-              if (item && item.type === 'chunk' && typeof item.code === 'string') {
+              if (
+                item &&
+                item.type === 'chunk' &&
+                typeof item.code === 'string'
+              ) {
                 item.code = stripSourceMappingUrlComments(item.code)
                 item.map = null
               } else if (

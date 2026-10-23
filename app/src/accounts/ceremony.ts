@@ -477,8 +477,7 @@ export function recoveryErrorMessage(error: unknown): string {
       'Account storage is locked. Retry opening the account and try again.',
     'unavailable':
       'Account storage is currently unavailable. Check browser storage permissions and try again.',
-    'storage-failed':
-      'Account storage could not save the changes. Try again.',
+    'storage-failed': 'Account storage could not save the changes. Try again.',
     'capacity': 'Browser storage is full. Free up space and try again.',
     'outdated-attempt':
       'This pending attempt is outdated. Cancel it and start again.',

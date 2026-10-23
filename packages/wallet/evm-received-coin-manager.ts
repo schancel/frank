@@ -36,10 +36,12 @@ import {
   type PreparedContactPayment,
   type ReceivedCoinSweep,
 } from "./chain/chain-wallet";
+import type { EvmNativeOperation } from "./storage/evm-native-operation-journal";
 import type { EvmLegacyConsolidator } from "./chain/evm-legacy-consolidator";
 import {
   configuredEvmStealthToken,
   createEvmStealthPayments,
+  evmStealthTransactionSetOperationId,
   type EvmStealthPreparation,
 } from "./chain/evm-stealth-payments";
 import {
@@ -99,7 +101,7 @@ import type {
   EvmWalletPersistenceBundle,
 } from "./storage/evm-wallet-bundle";
 import { applyWalletSyncItem } from "./sync-dispatcher";
-import type { MainAccountWait } from "./evm-fund-ahead";
+import type { MainAccountWait } from "./evm-stamp-coordinator";
 
 /** The most pending coins one background pass asks the chain about. */
 export const PENDING_COIN_PROBES_PER_PASS = 8;
@@ -309,7 +311,9 @@ export interface EvmReceivedCoinAndContactManagerParams {
   readonly getTopicOwner: () => EvmWalletPersistenceBundle;
   readonly getSources: () => Promise<EvmNativeSource[]>;
   readonly coinSource: (coin: EvmCoin) => EvmNativeSource;
-  readonly invalidateBalanceRead: () => void;
+  /** Invalidate display reads and, for an observed/imported account, its spendable inventory read.
+   * The inventory owner must reread chain balance/nonce; receipt amounts are not spend authority. */
+  readonly invalidateBalanceRead: (affectedAddress?: string) => void;
   readonly requireOpenWallet: (wallet: EvmChainWalletHandle) => void;
   readonly canonicalMessagingFor: (wallet: EvmChainWalletHandle) => unknown;
   readonly directMessages: DirectMessageClient;
@@ -526,6 +530,7 @@ export function createEvmReceivedCoinAndContactManager(
     if (!result.applied) {
       throw new Error("Native receipt observation changed; retry original set");
     }
+    invalidateBalanceRead(coin.address);
     if (retryFailure !== undefined) throw retryFailure;
     return result;
   };
@@ -651,7 +656,6 @@ export function createEvmReceivedCoinAndContactManager(
       : all.filter((coin) => coin.state === "unspent" && !nativeSet(coin));
     const targets = [...probed, ...counted];
     const BATCH_SIZE = 16;
-    let anyBalanceChanged = false;
     for (let offset = 0; offset < targets.length; offset += BATCH_SIZE) {
       if (evmWalletInternals(wallet).closed) return;
       const batch = targets.slice(offset, offset + BATCH_SIZE);
@@ -660,15 +664,7 @@ export function createEvmReceivedCoinAndContactManager(
           if (evmWalletInternals(wallet).closed) return;
           try {
             if (nativeSet(coin)) {
-              const before = coinStore.get(coin.address);
               await refreshNativeSetCoin(coin, true);
-              const after = coinStore.get(coin.address);
-              if (
-                before?.state !== after?.state ||
-                before?.amountWei !== after?.amountWei
-              ) {
-                anyBalanceChanged = true;
-              }
               return;
             }
             const [read, balanceWei] = await Promise.all([
@@ -681,7 +677,7 @@ export function createEvmReceivedCoinAndContactManager(
             if (current === undefined || evmWalletInternals(wallet).closed) {
               return;
             }
-            const updated = await applyStoredNativeCoinObservation(
+            await applyStoredNativeCoinObservation(
               coinStore,
               coin.address,
               {
@@ -691,21 +687,13 @@ export function createEvmReceivedCoinAndContactManager(
                 atMs: Date.now(),
               }
             );
-            if (
-              current.state !== updated.state ||
-              current.amountWei !== updated.amountWei
-            ) {
-              anyBalanceChanged = true;
-            }
+            invalidateBalanceRead(coin.address);
           } catch (error) {
             if (options.strict) throw error;
             hadError = true;
           }
         })
       );
-    }
-    if (anyBalanceChanged) {
-      invalidateBalanceRead();
     }
     if (!hadError && !options.pendingOnly && options.only === undefined) {
       coinsReadAtMs = Date.now();
@@ -725,7 +713,7 @@ export function createEvmReceivedCoinAndContactManager(
   const recordCoin = async (coin: EvmCoin): Promise<void> => {
     await recordStoredEvmCoin(coinStore, coin);
     coinsReadAtMs = 0;
-    invalidateBalanceRead();
+    invalidateBalanceRead(coin.address);
   };
 
   const nativeOwner = (): EvmLegacyConsolidator => {
@@ -743,8 +731,10 @@ export function createEvmReceivedCoinAndContactManager(
         (row) =>
           !row.cancelled &&
           row.recipient === address &&
-          row.members.length === 1 &&
-          row.members[0]!.signed
+          (row.kind === "transaction-set"
+            ? row.members.filter(member => member.transactionSet?.role === "payment" && member.transactionSet.stageId === undefined).length === 1
+            : row.members.length === 1) &&
+          row.members.every(member => member.signed)
       );
 
   const newMessageId = (): string => {
@@ -759,12 +749,14 @@ export function createEvmReceivedCoinAndContactManager(
   };
 
   const openedAtMs = Date.now();
+  const primaryMember = (row: EvmNativeOperation | undefined) => row?.kind === "transaction-set"
+    ? row.members.find(member => member.transactionSet?.role === "payment" && member.transactionSet.stageId === undefined)
+    : row?.members[0];
   const transferMember = (payment: ContactPayment) =>
     payment.operationId === undefined
       ? undefined
-      : getTopicOwner()
-          .nativeJournal!.list()
-          .find((row) => row.operationId === payment.operationId)?.members[0];
+      : primaryMember(getTopicOwner().nativeJournal!.list()
+          .find((row) => row.operationId === payment.operationId));
   const transferIncluded = (payment: ContactPayment): boolean =>
     transferMember(payment)?.observation.state === "included-success";
 
@@ -794,7 +786,7 @@ export function createEvmReceivedCoinAndContactManager(
 
   const cancelReleasedTransfer = async (
     payment: ContactPayment
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     const wallet = getWallet();
     const row =
       (payment.operationId === undefined
@@ -803,10 +795,14 @@ export function createEvmReceivedCoinAndContactManager(
             .nativeJournal!.list()
             .find((r) => r.operationId === payment.operationId)) ??
       signedTransferTo(payment.stealthAddress);
-    if (row === undefined || row.cancelled) return;
-    await runWalletExclusive(wallet, (admission) =>
+    if (row === undefined || row.cancelled) return true;
+    if (payment.transactionSetOperationId) {
+      return wallet.transactionSetPreparer!.releaseUnexposed(payment.transactionSetOperationId);
+    }
+    const released = await runWalletExclusive(wallet, (admission) =>
       nativeOwner().releaseUnexposed(row.operationId, admission)
     );
+    return released.cancelled === true;
   };
 
   const releaseContactPayment = (stealthAddress: string): Promise<boolean> =>
@@ -820,6 +816,8 @@ export function createEvmReceivedCoinAndContactManager(
       ) {
         return false;
       }
+      // Financial cancellation must succeed before the contact projection drops signed bytes.
+      if (!(await cancelReleasedTransfer(payment))) return false;
       const {
         rawTransaction: _raw,
         txHash: _hash,
@@ -830,7 +828,6 @@ export function createEvmReceivedCoinAndContactManager(
         state: "released",
       };
       await paymentStore.put(stealthAddress, released);
-      await cancelReleasedTransfer(payment);
       return true;
     });
 
@@ -839,15 +836,17 @@ export function createEvmReceivedCoinAndContactManager(
   ): Promise<ContactPayment> => {
     const wallet = getWallet();
     const operationId = payment.operationId!;
-    await runWalletExclusive(wallet, (admission) =>
-      runMainAccountExclusive(wallet, () =>
-        nativeOwner().resumeOperation(operationId, admission)
-      )
-    ).catch(() => undefined);
+    if (payment.transactionSetOperationId) {
+      await wallet.transactionSetSubmission!.sendTransaction(
+        await wallet.transactionSetPreparer!.readTransactionSet(payment.transactionSetOperationId)
+      );
+    } else {
+      await runWalletExclusive(wallet, (admission) =>
+        runMainAccountExclusive(wallet, () => nativeOwner().resumeOperation(operationId, admission))
+      );
+    }
     invalidateBalanceRead();
-    const member = getTopicOwner()
-      .nativeJournal!.list()
-      .find((row) => row.operationId === operationId)?.members[0];
+    const member = transferMember(payment);
     if (member?.observation.state !== "included-success") return payment;
     const paid: ContactPayment = { ...payment, state: "paid" };
     await paymentStore.put(payment.stealthAddress, paid);
@@ -895,10 +894,30 @@ export function createEvmReceivedCoinAndContactManager(
         ...payment,
         state: "prepared",
         operationId: row.operationId,
-        rawTransaction: row.members[0]!.signed!.rawTransaction,
-        txHash: row.members[0]!.signed!.transactionHash,
+        rawTransaction: primaryMember(row)!.signed!.rawTransaction,
+        txHash: primaryMember(row)!.signed!.transactionHash,
       };
       await paymentStore.put(stealthAddress, payment);
+    }
+    // Chain inclusion and delivery are separate facts. Shared submission can settle
+    // the recipient transfer before the dependent stamp/encrypted message is delivered.
+    if (payment.transactionSetOperationId && payment.payloadDigest &&
+        (payment.state === "prepared" || payment.state === "paid")) {
+      const statuses = await directMessages.reconcileAttempts({
+        wallet, payloadDigests: [payment.payloadDigest],
+      });
+      if (statuses[payment.payloadDigest] === "delivered") {
+        payment = { ...payment, state: "delivered" };
+        await paymentStore.put(stealthAddress, payment);
+        return broadcastContactTransfer(payment);
+      }
+      // Repair already-persisted early `paid` projections without changing the original
+      // operation, message identity, ciphertext, or signed transaction bytes.
+      if (payment.state === "paid" && statuses[payment.payloadDigest] !== "unknown") {
+        payment = { ...payment, state: "prepared" };
+        await paymentStore.put(stealthAddress, payment);
+      }
+      return payment;
     }
     if (payment.state === "failed") {
       throw new ContactPaymentFailedError(
@@ -938,6 +957,9 @@ export function createEvmReceivedCoinAndContactManager(
       ) {
         return payment;
       }
+      // A shared graph is bound to the original encrypted host message and stamp stage.
+      // Reconciliation above is the only replay path; takeover cannot create another envelope.
+      if (payment.transactionSetOperationId) return payment;
       payment = {
         ...payment,
         deliveredBy: "wallet",
@@ -954,6 +976,7 @@ export function createEvmReceivedCoinAndContactManager(
           recipient: { raw: getAddress(payment.recipientAddress) },
           items: [itemOf(payment)],
           messageId: payment.messageId,
+          ...(payment.transactionSetOperationId ? { paymentOperationId: payment.transactionSetOperationId } : {}),
           ...(payment.conversationId === undefined
             ? {}
             : { conversationId: payment.conversationId }),
@@ -1066,21 +1089,11 @@ export function createEvmReceivedCoinAndContactManager(
     const stealthAddress = destination.stealthAddress.toLowerCase();
     return contactExclusive(async () => {
       requireOpenWallet(wallet);
-      const prepare = evmWalletInternals(wallet).canonicalInventoryFunder;
-      if (
-        prepare !== undefined &&
-        recipientStampKey !== undefined &&
-        stampWei > 0n
-      ) {
-        await prepare({
-          stampValueWei: stampWei,
-          recipientStampKey,
-          onProgress: undefined,
-        });
-      }
       const messageId = newMessageId();
+      const transactionSetOperationId = `contact-${messageId.replace(/-/g, "")}`;
       await paymentStore.put(stealthAddress, {
         messageId,
+        transactionSetOperationId,
         stealthAddress,
         ephemeralPubKey: hexlify(destination.ephemeralPubKey).slice(2),
         recipientAddress,
@@ -1096,14 +1109,15 @@ export function createEvmReceivedCoinAndContactManager(
       });
       contactParams.onProgress?.({ stage: "signing" });
       try {
-        await runWalletExclusive(wallet, (admission) =>
-          runMainAccountExclusive(wallet, () =>
-            nativeOwner().signNative(
-              { recipient: { raw: stealthAddress }, value: contactParams.value },
-              admission
-            )
-          )
-        );
+        await wallet.refreshTransactionSetInventory!();
+        const policy = wallet.transactionSetPreparer!.transactionSetPolicy();
+        await getTopicOwner().runLifetime(() => wallet.transactionSetPreparer!.constructLegacyTransactionSet({
+          operationId: transactionSetOperationId,
+          amountWei: contactParams.value,
+          kdf: () => stealthAddress,
+          ...(stampWei! > 0n ? { reserveForContinuationWei:
+            stampWei! + policy.paymentGasLimit("0x") * policy.gasPriceWei } : {}),
+        }));
       } catch (error) {
         if (signedTransferTo(stealthAddress) === undefined) {
           await paymentStore.delete(stealthAddress);
@@ -1166,7 +1180,8 @@ export function createEvmReceivedCoinAndContactManager(
           payment.state !== "planned" &&
           payment.state !== "prepared" &&
           payment.state !== "delivered" &&
-          payment.state !== "failed"
+          payment.state !== "failed" &&
+          !(payment.state === "paid" && payment.transactionSetOperationId !== undefined)
         ) {
           continue;
         }
@@ -1185,7 +1200,8 @@ export function createEvmReceivedCoinAndContactManager(
         if (
           operationId !== undefined &&
           payment.state !== "delivered" &&
-          payment.payloadDigest !== undefined
+          payment.payloadDigest !== undefined &&
+          !payment.transactionSetOperationId
         ) {
           await getTopicOwner()
             .runLifetime((lifetime) =>
@@ -1226,6 +1242,12 @@ export function createEvmReceivedCoinAndContactManager(
       const address = found.stealthAddress;
       if (await releaseContactPayment(address)) return "released";
       let payment = paymentStore.get(address)!;
+      if (payment.state === "failed" && payment.transactionSetOperationId) {
+        if (payment.payloadDigest) await directMessages.reconcileAttempts({
+          wallet, payloadDigests: [payment.payloadDigest],
+        });
+        return paymentStore.get(address)?.state ?? "failed";
+      }
       if (payment.state === "failed") {
         const { failure: _failure, payloadDigest: _digest, ...rest } = payment;
         payment = {
@@ -1239,7 +1261,8 @@ export function createEvmReceivedCoinAndContactManager(
       if (
         payment.state === "planned" ||
         payment.state === "prepared" ||
-        payment.state === "delivered"
+        payment.state === "delivered" ||
+        (payment.state === "paid" && payment.transactionSetOperationId !== undefined)
       ) {
         await finishContactPayment(address, undefined, true).catch(
           () => undefined
@@ -1576,17 +1599,6 @@ export function createEvmReceivedCoinAndContactManager(
     const topicOwner = getTopicOwner();
     const owner = evmWalletInternals(wallet).nativeOperationOwner!;
 
-    let cachedFeeRate: { maxFeePerGas: bigint; atMs: number } | undefined;
-    const getFeeRate = async (): Promise<bigint> => {
-      if (cachedFeeRate && Date.now() - cachedFeeRate.atMs < 6000) {
-        return cachedFeeRate.maxFeePerGas;
-      }
-      const fee = await provider.getFeeData();
-      const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice ?? 1n;
-      cachedFeeRate = { maxFeePerGas, atMs: Date.now() };
-      return maxFeePerGas;
-    };
-
     const financialPayments = createEvmStealthPayments({
       chainIdentifier,
       nativeChainId,
@@ -1603,17 +1615,49 @@ export function createEvmReceivedCoinAndContactManager(
       assertActive: assertFinancialActive,
       derive: (recipientSpendPubKey) =>
         deriveEvmStealthAddress({ recipientSpendPubKey }),
+      quoteNative: async (_amountWei) => {
+        await wallet.refreshTransactionSetInventory?.();
+        assertFinancialActive();
+        const preparer = wallet.transactionSetPreparer;
+        const coins = evmWalletInternals(wallet).coinList;
+        if (!preparer || !coins) throw new Error("Shared native transaction preparation is unavailable");
+        const policy = preparer.transactionSetPolicy();
+        const available = coins.all().filter(coin => coin.state === "unspent" && (coin.spendableFromBlock === undefined || coin.spendableFromBlock <= policy.head));
+        const balance = available.reduce((sum, coin) => sum + coin.valueWei, 0n);
+        const maximumFee = BigInt(available.length) * (policy.paymentGasLimit("0x") + BigInt(policy.maxChangeOutputs) * policy.changeGasLimit) * policy.gasPriceWei;
+        return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: maximumFee };
+      },
+      constructNativePayment: async (request) => {
+        const preparer = wallet.transactionSetPreparer;
+        if (!preparer) throw new Error("Shared native transaction preparation is unavailable");
+        await wallet.refreshTransactionSetInventory?.();
+        await topicOwner.runLifetime(() => preparer.constructTransactionSet(request));
+        const row = await preparer.readOperation(request.operationId);
+        if (!row) throw new Error("Prepared native operation was not retained");
+        return row;
+      },
       operations: () => topicOwner.nativeJournal!.list(),
+      readPreparation: (id) => topicOwner.runLifetime(lifetime =>
+        nativeAdmissionJournal(topicOwner.inputAdmission, lifetime).refreshPreparation(id)),
       signIndependentPayment: (signParams) =>
         topicOwner.runLifetime((lifetime) =>
           owner.signIndependentPayment(signParams, lifetime)
         ),
-      submit: (id) =>
-        topicOwner.runLifetime((lifetime) =>
-          owner.resumeIndependentPayment(id, lifetime)
-        ),
+      submit: async (id) => {
+        const row = await topicOwner.nativeJournal!.readOperation(id);
+        if (!row) throw new Error("Native payment operation is missing");
+        if (row.kind === "transaction-set") return topicOwner.runLifetime(async () => {
+          await wallet.transactionSetSubmission!.sendTransaction(
+            await wallet.transactionSetPreparer!.readTransactionSet(row.preparationId!.slice("evm-transaction-set:".length))
+          );
+        });
+        return topicOwner.runLifetime(lifetime => owner.resumeIndependentPayment(id, lifetime));
+      },
       observe: (id) =>
         topicOwner.runLifetime(async (lifetime) => {
+          const row = await topicOwner.nativeJournal!.readOperation(id);
+          if (!row) throw new Error("Native payment operation is missing");
+          if (row.kind === "transaction-set") return wallet.transactionSetLifecycle!.observe(row.preparationId!.slice("evm-transaction-set:".length), provider);
           for (
             let index = 0;
             index < topicOwner.nativeJournal!.get(id).members.length;
@@ -1623,236 +1667,55 @@ export function createEvmReceivedCoinAndContactManager(
           }
         }),
       release: (id) =>
-        topicOwner.runLifetime((lifetime) =>
-          owner.releaseUnexposed(id, lifetime)
-        ),
-      async quote(input) {
-        const requested =
-          input.sourceAddress === undefined
-            ? undefined
-            : getAddress(input.sourceAddress).toLowerCase();
-        const mainAddress = mainAccount.address.toLowerCase();
-
-        let mainBalance: bigint | undefined;
-        if (
-          input.asset.kind === "native" &&
-          (requested === undefined || requested === mainAddress) &&
-          !sourceIsHeld(wallet, mainAddress) &&
-          !owner.holdsSource(mainAddress)
-        ) {
-          const maxFeePerGas = await getFeeRate();
-          const estimatedFee = 21_000n * maxFeePerGas;
-          mainBalance = await provider.getBalance(mainAccount.address);
-          assertFinancialActive();
-          if (mainBalance >= input.amountAtomic + estimatedFee) {
-            return {
-              sources: [
-                {
-                  sourceAddress: mainAddress,
-                  recipientAmountAtomic: input.amountAtomic,
-                  nativeBalanceAtomic: mainBalance,
-                  assetBalanceAtomic: mainBalance,
-                  estimatedNativeFeeAtomic: estimatedFee,
-                },
-              ],
-            };
+        topicOwner.runLifetime(async lifetime => {
+          const operation = await topicOwner.nativeJournal!.readOperation(id)
+          if (operation?.kind === 'transaction-set') {
+            if (!wallet.transactionSetPreparer)
+              throw new Error('Shared transaction-set release is unavailable')
+            const released = await wallet.transactionSetPreparer.releaseUnexposed(
+              operation.preparationId!.slice('evm-transaction-set:'.length)
+            )
+            if (!released) throw new Error('Submitted transaction set cannot be released')
+            return
           }
-        }
-
-        const owned = [
-          ...new Map(
-            (await getSources()).map((source) => [source.address, source])
-          ).values(),
-        ];
-        if (
-          requested !== undefined &&
-          !owned.some((source) => source.address === requested)
-        ) {
-          throw new Error("Requested financial source is not owned");
-        }
-
-        let sourcesToInspect: EvmNativeSource[];
-        if (requested !== undefined) {
-          sourcesToInspect = owned.filter((s) => s.address === requested);
-        } else if (input.asset.kind === "erc20") {
-          sourcesToInspect = owned.filter(
-            (s) => s.kind !== "spend" && s.kind !== "change"
-          );
-        } else {
-          const availablePoolAddresses = new Set(
-            pool
-              .records()
-              .filter(
-                (r) =>
-                  r.status === "available" &&
-                  pool.claimedBy(r.index) === undefined &&
-                  !pool.isSpendReserved(r.index)
-              )
-              .map((r) => r.address.toLowerCase())
-          );
-          sourcesToInspect = owned.filter(
-            (s) =>
-              s.kind !== "spend" ||
-              availablePoolAddresses.has(s.address.toLowerCase())
-          );
-        }
-
+          await owner.releaseUnexposed(id, lifetime)
+        }),
+      async quote(input) {
+        if (input.asset.kind !== "erc20") throw new Error("Native quotes use the shared inventory snapshot");
+        const contractAddress = input.asset.contractAddress;
+        const requested = input.sourceAddress === undefined ? undefined : getAddress(input.sourceAddress).toLowerCase();
+        const owned = [...new Map((await getSources()).map(source => [source.address, source])).values()];
+        if (requested !== undefined && !owned.some(source => source.address === requested)) throw new Error("Requested financial source is not owned");
+        const inspect = requested === undefined ? owned.filter(source => source.kind !== "spend" && source.kind !== "change") : owned.filter(source => source.address === requested);
         let lacksGas = false;
-        const inspected = await Promise.all(
-          sourcesToInspect.map(async (source) => {
-            if (
-              sourceIsHeld(wallet, source.address) ||
-              owner.holdsSource(source.address)
-            ) {
-              return null;
-            }
-            const native =
-              source.address === mainAddress && mainBalance !== undefined
-                ? mainBalance
-                : await provider.getBalance(source.address);
-            assertFinancialActive();
-            const balance =
-              input.asset.kind === "native"
-                ? native
-                : await tokenBalance(
-                    input.asset.contractAddress,
-                    source.address
-                  );
-            assertFinancialActive();
-            if (balance <= 0n) return null;
-            if (input.asset.kind === "erc20" && native === 0n) {
-              lacksGas = true;
-              return null;
-            }
-            return { source, balance };
-          })
-        );
-
-        const candidates: { source: EvmNativeSource; balance: bigint }[] = [];
-        for (const item of inspected) {
-          if (item !== null) candidates.push(item);
-        }
-
-        candidates.sort((a, b) =>
-          a.source.kind === "main" && b.source.kind !== "main"
-            ? 1
-            : b.source.kind === "main" && a.source.kind !== "main"
-            ? -1
-            : a.balance === b.balance
-            ? a.source.address.localeCompare(b.source.address)
-            : a.balance < b.balance
-            ? -1
-            : 1
-        );
-        const sources: {
-          sourceAddress: string;
-          recipientAmountAtomic: bigint;
-          nativeBalanceAtomic: bigint;
-          assetBalanceAtomic: bigint;
-          estimatedNativeFeeAtomic: bigint;
-        }[] = [];
+        const inspected = await Promise.all(inspect.map(async source => {
+          if (sourceIsHeld(wallet, source.address) || owner.holdsSource(source.address)) return null;
+          const [native, balance] = await Promise.all([provider.getBalance(source.address), tokenBalance(contractAddress, source.address)]);
+          assertFinancialActive();
+          if (balance <= 0n) return null;
+          if (native === 0n) { lacksGas = true; return null; }
+          return { source, balance };
+        }));
+        const candidates = inspected.filter((item): item is NonNullable<typeof item> => item !== null);
+        candidates.sort((a, b) => a.source.kind === "main" && b.source.kind !== "main" ? 1 : b.source.kind === "main" && a.source.kind !== "main" ? -1 : a.balance === b.balance ? a.source.address.localeCompare(b.source.address) : a.balance < b.balance ? -1 : 1);
+        const sources: { sourceAddress: string; recipientAmountAtomic: bigint; nativeBalanceAtomic: bigint; assetBalanceAtomic: bigint; estimatedNativeFeeAtomic: bigint }[] = [];
         let remaining = input.amountAtomic;
-        const maxFeePerGas = await getFeeRate();
-        const nativeFeePerSource = 21_000n * maxFeePerGas;
-
         const allocate = async (ordered: typeof candidates) => {
           sources.length = 0;
           remaining = input.amountAtomic;
           for (const candidate of ordered) {
             if (remaining === 0n || sources.length === 16) break;
-            const native = input.asset.kind === "native";
-            const target =
-              input.asset.kind === "native"
-                ? input.recipientAddress
-                : input.asset.contractAddress;
-            const tentative = native
-              ? candidate.balance > nativeFeePerSource
-                ? candidate.balance - nativeFeePerSource < remaining
-                  ? candidate.balance - nativeFeePerSource
-                  : remaining
-                : 1n
-              : candidate.balance < remaining
-              ? candidate.balance
-              : remaining;
-            const quoteOne = (amount: bigint) =>
-              topicOwner.runLifetime((lifetime) =>
-                owner.quoteIndependentPayment(
-                  {
-                    kind: native ? "native" : "contract",
-                    recipient: { raw: target },
-                    members: [
-                      {
-                        sourceAddress: candidate.source.address,
-                        value: native ? amount : 0n,
-                        ...(native ? { gasLimit: 21_000n } : {}),
-                        ...(native
-                          ? {}
-                          : {
-                              data: financialAbi.encodeFunctionData(
-                                "transfer",
-                                [input.recipientAddress, amount]
-                              ),
-                            }),
-                      },
-                    ],
-                  },
-                  lifetime
-                )
-              );
-            let fact = (await quoteOne(tentative)).sources[0]!;
-            const available = native
-              ? fact.nativeBalanceAtomic - fact.estimatedNativeFeeAtomic
-              : candidate.balance;
-            if (
-              available <= 0n ||
-              fact.nativeBalanceAtomic < fact.estimatedNativeFeeAtomic
-            ) {
-              lacksGas ||= !native;
-              continue;
-            }
-            const amount = available < remaining ? available : remaining;
-            if (!native && amount !== tentative) {
-              fact = (await quoteOne(amount)).sources[0]!;
-            }
-            if (
-              fact.nativeBalanceAtomic <
-              fact.estimatedNativeFeeAtomic + (native ? amount : 0n)
-            ) {
-              throw new Error(
-                "Financial source fee changed during quote; retry unsigned quote"
-              );
-            }
-            sources.push({
-              ...fact,
-              recipientAmountAtomic: amount,
-              assetBalanceAtomic: native
-                ? fact.nativeBalanceAtomic
-                : candidate.balance,
-            });
+            const amount = candidate.balance < remaining ? candidate.balance : remaining;
+            const fact = (await topicOwner.runLifetime(lifetime => owner.quoteIndependentPayment({ kind: "contract", recipient: { raw: contractAddress }, members: [{ sourceAddress: candidate.source.address, value: 0n, data: financialAbi.encodeFunctionData("transfer", [input.recipientAddress, amount]) }] }, lifetime))).sources[0]!;
+            if (fact.nativeBalanceAtomic < fact.estimatedNativeFeeAtomic) { lacksGas = true; continue; }
+            sources.push({ ...fact, recipientAmountAtomic: amount, assetBalanceAtomic: candidate.balance });
             remaining -= amount;
           }
         };
         await allocate(candidates);
-        if (remaining > 0n && sources.length === 16) {
-          const largerFirst = [...candidates].sort((a, b) =>
-            a.balance === b.balance
-              ? candidates.indexOf(a) - candidates.indexOf(b)
-              : a.balance > b.balance
-              ? -1
-              : 1
-          );
-          await allocate(largerFirst);
-        }
+        if (remaining > 0n && sources.length === 16) await allocate([...candidates].sort((a, b) => a.balance === b.balance ? candidates.indexOf(a) - candidates.indexOf(b) : a.balance > b.balance ? -1 : 1));
         assertFinancialActive();
-        if (remaining > 0n) {
-          throw new RangeError(
-            sources.length === 16
-              ? "Payment cannot fit the 16-member limit"
-              : lacksGas
-              ? "ERC20 payment needs native gas at owned sources"
-              : "Insufficient unreserved payment funds"
-          );
-        }
+        if (remaining > 0n) throw new RangeError(sources.length === 16 ? "Payment cannot fit the 16-member limit" : lacksGas ? "ERC20 payment needs native gas at owned sources" : "Insufficient unreserved payment funds");
         return { sources };
       },
       tokenBalance,
@@ -1956,7 +1819,8 @@ export function createEvmReceivedCoinAndContactManager(
           intended += value;
         }
       }
-      if (intended !== claim.amountAtomic) {
+      // Native residual gifts may exceed the intended amount; they never satisfy a shortfall.
+      if (claim.asset.kind === "native" ? intended < claim.amountAtomic : intended !== claim.amountAtomic) {
         throw new Error("Receipt transaction set differs from intended amount");
       }
       return {
@@ -1982,7 +1846,7 @@ export function createEvmReceivedCoinAndContactManager(
     ): Promise<void> => {
       const claim = snapshotReceiptClaim(input);
       const coin = verifyReceiptClaim(claim);
-      await recordStoredEvmCoin(coinStore, coin);
+      await recordCoin(coin);
       assertFinancialActive();
       if (claim.asset.kind === "native") {
         await registerStoredEvmNativePaymentSet(coinStore, coin.address, {
@@ -2144,6 +2008,7 @@ export function createEvmReceivedCoinAndContactManager(
               ...(received === undefined ? {} : { transferValueWei: received }),
               atMs: Date.now(),
             });
+            invalidateBalanceRead(address);
             return {
               status:
                 received === undefined
@@ -2275,6 +2140,21 @@ export function createEvmReceivedCoinAndContactManager(
       return held;
     };
 
+    walletInternals.resolveMessagePayment = async (id, amount) => {
+      await preparations.refresh();
+      const row = preparations.get(id);
+      if (row) {
+        if (row.asset.kind !== "native" || row.released || !row.messageStamp ||
+            BigInt(row.messageStamp.amountAtomic) !== amount || !(await financialPayments.get(id)))
+          throw new Error("Message stamp differs from authorized stealth operation");
+        return evmStealthTransactionSetOperationId(id);
+      }
+      const contact = paymentStore.all().find(payment => payment.transactionSetOperationId === id);
+      if (!contact || contact.state === "released" || contact.stampValueWei !== amount.toString())
+        throw new Error("Message payment operation is unavailable");
+      return id;
+    };
+
     walletInternals.receivedCoinOwner = {
       recordStampCoin,
       async recordStampPayments(message) {
@@ -2327,6 +2207,13 @@ export function createEvmReceivedCoinAndContactManager(
       mailboxScan: () =>
         scanState.get("scan") ?? { complete: false, sinceMs: 0 },
       recordMailboxScan: (progress) => scanState.put("scan", progress),
+      contactMessageIdentity: (ephemeralPubKeys) => {
+        const payments = paymentStore.all().filter(payment => ephemeralPubKeys.includes(payment.ephemeralPubKey));
+        const messageIds = new Set(payments.map(payment => payment.messageId));
+        if (messageIds.size > 1) throw new Error("A message must use one combined contact payment operation");
+        const payment = payments[0];
+        return payment ? { messageId: payment.messageId, operationId: payment.transactionSetOperationId } : undefined;
+      },
       beginContactSend: (ephemeralPubKeys) =>
         exposureExclusive(async () => {
           for (const payment of paymentStore.all()) {

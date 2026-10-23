@@ -128,10 +128,6 @@ const FEE_TTL_MS = 6_000
 const MAX_UNREAD_LOOKS = 30
 /** At most this many coins pay one stamp. */
 const MAX_PARTS = 64
-/** Pool rows whose account the coin list may spend from: funded (`available`), or already spent
- * once (`spent` / `retired`), whose later coins only the list holds. */
-const LISTED_ROW_STATUSES = new Set(['available', 'spent', 'retired'])
-
 /**
  * Resolves once `address` has sent no transaction in the last `blocks` blocks (or stays at or
  * above `options.reserveBalanceWei`) AND has none the node still holds unmined, so a value
@@ -324,12 +320,9 @@ export class EvmStampPayer {
       const index = this.indexOf(coin.account)
       if (index === undefined) return false
       const row = pool.getRecord(index)
-      if (
-        row === undefined ||
-        !LISTED_ROW_STATUSES.has(row.status) ||
-        (coin.nonce === 0 && row.status !== 'available')
-      )
-        return false
+      // Legacy status records prior use, not current spendability. The shared list's
+      // chain-observed nonce/balance and the actual claims below are authoritative.
+      if (row === undefined) return false
       const claimant = pool.claimedBy(index)
       if (claimant !== undefined) {
         seen?.claimedBy?.add(claimant)

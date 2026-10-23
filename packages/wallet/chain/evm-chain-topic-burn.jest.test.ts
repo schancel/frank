@@ -1,17 +1,12 @@
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
- * Ticket #273: a topic post or vote from an account that never sent a direct message failed with
- * "No available sub-account to lease", because only the DM path funded sub-accounts (#79) and the
- * topic clients leased from a pool nothing had funded.
- *
- * These tests drive `chain.topics.post` / `chain.topics.vote` end to end through the REAL pool,
- * lease manager, signer and topic clients over a small in-memory chain; only the relay's HTTP
- * (`axios`) and the RPC reads are faked. They fail on the pre-fix adapter (NoAvailableSubAccount)
- * and pin the money-safety properties of the fix: one funding transaction per burn account, no
- * spend when the RPC is down, and no second funding when a failed attempt left a usable account.
+ * Topic posts and votes use the composed wallet's shared signed transaction graph.
+ * RPC and relay transport are simulated; custody, coin reservations, journals and recovery
+ * remain real. Each Forum request carries one burn while owned change stays in the wallet graph.
  */
 import {
-  JsonRpcProvider,
+  SigningKey,
+  computeAddress,
   Network,
   Transaction,
   Wallet,
@@ -34,17 +29,13 @@ import {
 } from '@frank/codec'
 
 import { MonadIdentity } from '../evm-identity'
-import { MonadHdKeyring } from '../secp256k1-hd-keyring'
 import { MonadSubAccountPool } from '../evm-account-pool'
-import { SubAccountLeaseManager } from '../evm-account-lease'
 import { MonadTxSubmitter } from '../evm-account-tx'
 import { TopicPostOutcomeUnknownError } from './active-chain'
-import { TopicBurnPreparationError, createEvmChain } from "./evm-chain";
+import { createEvmChain } from "./evm-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { evmWalletInternals } from '../evm-wallet'
-import { DirectMessagePreparationProgress } from './active-chain'
-import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
 import type { MonadWalletPersistenceBundle } from '../storage/evm-wallet-bundle'
 import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
 import {
@@ -79,53 +70,67 @@ const CONFIG: EvmChainConfig = {
   walletStorageLocation: false,
 }
 
-const IDENTITY_KEY = '0x' + '11'.repeat(31) + '1a'
-
 interface FakeChain {
   wallet: EvmChainWalletHandle
   pool: MonadSubAccountPool
   balances: Map<string, bigint>
-  /** Every raw transaction handed to the RPC (funding transfers), in order. */
+  /** Every raw transaction handed to RPC, including burn and owned redistribution. */
   rpcSubmissions: Transaction[]
   setRpcDown(down: boolean): void
-  /** Fail the nonce read of any sub-account (the first RPC call of signing its burn). */
+  /** Fail RPC submission after the complete graph has been signed. */
   setSigningDown(down: boolean): void
   mainAddress: string
 }
 
-function makeFakeChain(
+const helperWallets: EvmChainWalletHandle[] = []
+afterEach(async () => { await Promise.all(helperWallets.splice(0).map(wallet => wallet.close())) })
+
+async function makeFakeChain(
   mainBalance = 10n ** 18n,
   nativeWallet?: EvmChainWalletHandle,
-): FakeChain {
-  const identity =
-    nativeWallet?.identity ?? MonadIdentity.fromPrivateKeyHex(IDENTITY_KEY)
+): Promise<FakeChain> {
+  if (!nativeWallet) {
+    nativeWallet = await createEvmChain(CONFIG).createWallet({ mnemonic: TEST_MNEMONIC })
+    helperWallets.push(nativeWallet)
+  }
   const balances = new Map<string, bigint>()
   const nonces = new Map<string, number>()
   const rpcSubmissions: Transaction[] = []
   let rpcDown = false
   let signingDown = false
-  const mainAddress = identity.address.raw
+  const mainAddress = (await nativeWallet.getReceiveAddress()).raw
   balances.set(mainAddress.toLowerCase(), mainBalance)
 
-  const provider =
-    nativeWallet?.provider ??
-    new JsonRpcProvider('http://127.0.0.1:1', CHAIN_ID, {
-      staticNetwork: true,
-      cacheTimeout: -1,
-    })
+  const provider = nativeWallet.provider
   const guard = <T>(value: () => T) => {
     if (rpcDown) throw new Error('RPC unreachable (test)')
     return value()
   }
+  const applied = new Set<string>()
+  const apply = (tx: Transaction) => {
+    if (applied.has(tx.hash!)) return
+    const from = tx.from!.toLowerCase(), to = tx.to!.toLowerCase()
+    const fee = tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!)
+    if ((nonces.get(from) ?? 0) !== tx.nonce) throw new Error('Unexpected source nonce')
+    if ((balances.get(from) ?? 0n) < tx.value + fee) throw new Error('Insufficient source balance')
+    balances.set(from, balances.get(from)! - tx.value - fee)
+    balances.set(to, (balances.get(to) ?? 0n) + tx.value)
+    nonces.set(from, tx.nonce + 1)
+    applied.add(tx.hash!)
+  }
   const p = provider as unknown as Record<string, unknown>
   p.getTransactionReceipt = jest.fn(async (hash: string) => {
     const tx = observedBurns.get(hash.toLowerCase())
+    if (tx) apply(tx)
     return tx
       ? {
           hash: tx.hash,
           from: tx.from,
           to: tx.to,
           status: 1,
+          gasUsed: tx.gasLimit,
+          gasPrice: tx.gasPrice ?? tx.maxFeePerGas,
+          blockHash: '0x' + 'ab'.repeat(32),
           blockNumber: 1,
           index: 0,
         }
@@ -133,6 +138,7 @@ function makeFakeChain(
   })
   p.getTransaction = jest.fn(async (hash: string) => {
     const tx = observedBurns.get(hash.toLowerCase())
+    if (tx) apply(tx)
     return tx
       ? {
           hash: tx.hash,
@@ -151,9 +157,7 @@ function makeFakeChain(
     guard(() => balances.get(address.toLowerCase()) ?? 0n)
   p.getTransactionCount = async (address: string) =>
     guard(() => {
-      if (signingDown && address.toLowerCase() !== mainAddress.toLowerCase()) {
-        throw new Error('RPC dropped while signing (test)')
-      }
+
       return nonces.get(address.toLowerCase()) ?? 0
     })
   p.estimateGas = async () => guard(() => GAS_LIMIT)
@@ -166,15 +170,10 @@ function makeFakeChain(
 
   const httpClient: MonadTxSubmitter = {
     submitRawTransaction: async rawTx => {
-      if (rpcDown) throw new Error('RPC unreachable (test)')
+      if (rpcDown || signingDown) throw new Error('RPC submission unavailable (test)')
       const tx = Transaction.from(rawTx)
-      const from = tx.from!.toLowerCase()
-      balances.set(from, (balances.get(from) ?? 0n) - tx.value - 21_000n)
-      balances.set(
-        tx.to!.toLowerCase(),
-        (balances.get(tx.to!.toLowerCase()) ?? 0n) + tx.value,
-      )
-      nonces.set(from, tx.nonce + 1)
+      apply(tx)
+      observedBurns.set(tx.hash!.toLowerCase(), tx)
       rpcSubmissions.push(tx)
       return tx.hash!
     },
@@ -189,46 +188,14 @@ function makeFakeChain(
     }),
   }
 
-  const pool =
-    nativeWallet?.pool ??
-    new MonadSubAccountPool({
-      keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
-    })
-  // Exactly what a fresh production wallet has after `createWallet`: derived, never funded.
-  pool.ensureUnfundedSize(CONFIG.subAccountPoolSize)
-  const leaseManager = new SubAccountLeaseManager(pool)
-  const topicOperationJournal = new InMemoryTopicOperationJournal()
-  const walletState = {
-    pool,
-    leaseManager,
-    topicOperationJournal,
-    runOperation: async (operation: (admission: never) => Promise<unknown>) =>
-      operation(undefined as never),
-  } as unknown as MonadWalletPersistenceBundle
-  const wallet: EvmChainWalletHandle = nativeWallet ?? {
-    family: 'evm',
-    chainIdentifier: 'monad-testnet',
-    networkId: CONFIG.networkId,
-    getReceiveAddress: async () => identity.address,
-    getBalance: () => provider.getBalance(mainAddress),
-    sendNative: async () => {
-      throw new Error('Native sends require the production wallet fixture')
-    },
-    close: async () => provider.destroy(),
-    identity,
-    pool,
-    leaseManager,
-    provider,
-    httpClient,
-    relayBaseUrl: CONFIG.relayBaseUrl,
-    cborNetwork: 'monad-testnet',
-    forumBurnAddress: BURN_ADDRESS,
-    forumChainId: BigInt(CHAIN_ID),
-    topicOperationJournal,
-    walletState,
-  }
-  if (nativeWallet !== undefined) {
-    Object.assign(nativeWallet.httpClient, httpClient)
+  const wallet = nativeWallet
+  const pool = wallet.pool
+  Object.assign(wallet.httpClient, httpClient)
+  p.getBlockNumber = async () => guard(() => 100)
+  p.getBlock = async () => guard(() => ({ number: 100, hash: '0x' + 'ab'.repeat(32) }))
+  p.broadcastTransaction = async (raw: string) => {
+    const hash = await httpClient.submitRawTransaction(raw)
+    return { hash } as TransactionResponse
   }
   return {
     wallet,
@@ -315,6 +282,15 @@ function fakeRelay(behaviour: 'ok' | 'reject-500' = 'ok') {
 }
 
 const ENTRY = { kind: 'post' as const, title: 'T', message: 'hello' }
+const burns = (_fake: FakeChain) => [...observedBurns.values()].filter(tx => tx.to === BURN_ADDRESS)
+const signedGraph = (wallet: EvmChainWalletHandle) => wallet.getNativeOperations!()
+  .flatMap(row => row.members.map(member => member.signed?.rawTransaction).filter((raw): raw is string => !!raw))
+async function fundIndependentInputs(fake: FakeChain, count: number) {
+  fake.balances.set(fake.mainAddress.toLowerCase(), 0n)
+  for (const record of fake.pool.records().slice(0, count)) fake.balances.set(record.address.toLowerCase(), 10n ** 18n)
+  await fake.wallet.refreshTransactionSetInventory!()
+}
+
 
 beforeEach(() => {
   jest.clearAllMocks()
@@ -323,11 +299,10 @@ beforeEach(() => {
 })
 
 describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
-  it('funds exactly one burn account, then burns the vote weight from it', async () => {
+  it('signs one burn and redistributes owned change through the shared graph', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = await makeFakeChain()
     const puts = fakeRelay()
-    const progress: string[] = []
 
     const result = await chain.topics.post({
       wallet: fake.wallet,
@@ -335,20 +310,15 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
       entries: [ENTRY],
       direction: 'up',
       voteWeightWei: WEIGHT,
-      onPreparationProgress: (p: DirectMessagePreparationProgress) =>
-        progress.push(p.stage),
     })
 
-    // One main -> sub-account funding transfer of weight + fee reserve, sent before the burn.
-    expect(fake.rpcSubmissions).toHaveLength(1)
-    const funding = fake.rpcSubmissions[0]
-    expect(funding.from!.toLowerCase()).toBe(fake.mainAddress.toLowerCase())
-    expect(funding.value).toBeGreaterThan(WEIGHT)
-    expect(progress[0]).toBe('checking')
-    expect(progress).toContain('funding')
-    expect(progress[progress.length - 1]).toBe('ready')
-
-    // The relay got the burn, signed by the funded account, for exactly the vote weight.
+    // The complete shared graph has one external burn and separate wallet-owned change.
+    expect(burns(fake)).toHaveLength(1)
+    const change = fake.rpcSubmissions.filter(tx => tx.to !== BURN_ADDRESS)
+    expect(change.length).toBeGreaterThan(0)
+    expect(change.every(tx => tx.from!.toLowerCase() === fake.mainAddress.toLowerCase())).toBe(true)
+    expect(fake.rpcSubmissions.every(tx => signedGraph(fake.wallet).includes(tx.serialized))).toBe(true)
+    // The relay carries only the signed burn for exactly the vote weight.
     expect(puts).toHaveLength(1)
     const submitted = decodePostSubmission(puts[0].body)
     const burn = Transaction.from(
@@ -356,22 +326,23 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
     )
     expect(burn.to).toBe(BURN_ADDRESS)
     expect(burn.value).toBe(WEIGHT)
-    expect(burn.from!.toLowerCase()).toBe(funding.to!.toLowerCase())
+    expect(burn.from!.toLowerCase()).toBe(fake.mainAddress.toLowerCase())
+    expect(burn.serialized).toBe(burns(fake)[0].serialized)
     expect(result.payloadDigest).toBe(
       Buffer.from(
         topicBurnCommitment(submitted.submission.postFrame.frame).hash,
       ).toString('hex'),
     )
 
-    // The funded account is consumed exactly once; nothing else was touched.
+    // The original main nonce is consumed; unused legacy pool rows remain unchanged.
     const statuses = fake.pool.records().map(r => r.status)
-    expect(statuses.filter(s => s === 'spent')).toHaveLength(1)
-    expect(statuses.filter(s => s === 'unfunded')).toHaveLength(2)
+    expect(statuses).toEqual(['unfunded', 'unfunded', 'unfunded'])
+    expect(evmWalletInternals(fake.wallet).coinList!.get(fake.mainAddress, 0)?.state).toBe('spent')
   })
 
-  it('a vote prepares its own burn account the same way', async () => {
+  it('a vote uses the same graph and carries exactly one burn', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = await makeFakeChain()
     const puts = fakeRelay()
 
     await chain.topics.vote({
@@ -381,17 +352,15 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
       voteWeightWei: 2n * WEIGHT,
     })
 
-    expect(fake.rpcSubmissions).toHaveLength(1)
+    expect(burns(fake)).toHaveLength(1)
     expect(puts).toHaveLength(1)
     expect(puts[0].url).toContain('/message/monad/topics/vote')
-    expect(fake.pool.records().filter(r => r.status === 'spent')).toHaveLength(
-      1,
-    )
+    expect(burns(fake)[0].value).toBe(2n * WEIGHT)
   })
 
-  it('succeeds and uses fallback gas limit when provider.estimateGas fails with CALL_EXCEPTION', async () => {
+  it('uses the configured intrinsic calldata floor without an estimateGas dependency', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = await makeFakeChain()
     const puts = fakeRelay()
 
     ;(fake.wallet.provider as any).estimateGas = jest.fn(async () => {
@@ -416,7 +385,9 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
     )
     expect(burn.to).toBe(BURN_ADDRESS)
     expect(burn.value).toBe(WEIGHT)
-    expect(burn.gasLimit).toBe(31608n)
+    const tokens = getBytes(burn.data).reduce((sum, byte) => sum + (byte === 0 ? 1n : 4n), 0n)
+    expect(burn.gasLimit).toBe(21_000n + 10n * tokens)
+    expect(fake.wallet.provider.estimateGas).not.toHaveBeenCalled()
     expect(result.payloadDigest).toBe(
       Buffer.from(
         topicBurnCommitment(submitted.submission.postFrame.frame).hash,
@@ -424,45 +395,30 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
     )
   })
 
-  it('spends nothing and leaves the pool untouched when the RPC is down, and a retry then funds exactly once', async () => {
+  it('spends nothing while RPC is down and completes one burn after recovery', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = await makeFakeChain()
     const puts = fakeRelay()
     const before = JSON.stringify(fake.pool.records())
 
     fake.setRpcDown(true)
-    const failure = await chain.topics
-      .post({
-        wallet: fake.wallet,
-        topic: 'help',
-        entries: [ENTRY],
-        direction: 'up',
-        voteWeightWei: WEIGHT,
-      })
-      .catch((e: unknown) => e)
-    expect(failure).toBeInstanceOf(TopicBurnPreparationError)
-    expect((failure as Error).message).toMatch(
-      /RPC unreachable.*Nothing was sent.*safe to try again/s,
-    )
+    const pending = chain.topics.post({ wallet: fake.wallet, topic: 'help', entries: [ENTRY], direction: 'up', voteWeightWei: WEIGHT }).catch((error: unknown) => error)
+    await new Promise(resolve => setTimeout(resolve, 25))
     expect(fake.rpcSubmissions).toHaveLength(0)
     expect(puts).toHaveLength(0)
+    expect(signedGraph(fake.wallet)).toEqual([])
     expect(JSON.stringify(fake.pool.records())).toBe(before)
-
     fake.setRpcDown(false)
-    await chain.topics.post({
-      wallet: fake.wallet,
-      topic: 'help',
-      entries: [ENTRY],
-      direction: 'up',
-      voteWeightWei: WEIGHT,
-    })
-    expect(fake.rpcSubmissions).toHaveLength(1)
+    expect(await pending).toBeInstanceOf(TopicPostOutcomeUnknownError)
+    await fake.wallet.refreshTransactionSetInventory!()
+    await chain.topics.reconcileOperations!({ wallet: fake.wallet })
+    expect(burns(fake)).toHaveLength(1)
     expect(puts).toHaveLength(1)
   })
 
-  it('an uncertain relay response retains its account, then exact reconciliation permits a new funded account', async () => {
+  it('an uncertain relay response replays the original graph before another burn uses owned change', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = await makeFakeChain()
     const puts = fakeRelay('reject-500')
 
     await expect(
@@ -474,35 +430,23 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
         voteWeightWei: WEIGHT,
       }),
     ).rejects.toBeInstanceOf(TopicPostOutcomeUnknownError)
-    expect(fake.pool.records().filter(r => r.status === 'in-use')).toHaveLength(
-      1,
-    )
-
-    puts.length = 0
-    fakeRelay('ok')
-    await chain.topics.post({
-      wallet: fake.wallet,
-      topic: 'help',
-      entries: [ENTRY],
-      direction: 'up',
-      voteWeightWei: WEIGHT,
-    })
-    expect(fake.rpcSubmissions).toHaveLength(2)
-    const [first, second] = fake.rpcSubmissions
-    expect(second.to).not.toBe(first.to)
-    expect(
-      new Set(
-        fake.pool
-          .records()
-          .filter(r => r.status !== 'unfunded')
-          .map(r => r.index),
-      ).size,
-    ).toBe(2)
+    const original = signedGraph(fake.wallet)
+    expect(original.length).toBeGreaterThan(0)
+    const firstRequest = puts[0].body
+    const retried = fakeRelay('ok')
+    await chain.topics.reconcileOperations!({ wallet: fake.wallet })
+    expect(retried).toHaveLength(1)
+    expect(retried[0].body).toEqual(firstRequest)
+    expect(signedGraph(fake.wallet)).toEqual(original)
+    expect(burns(fake)).toHaveLength(1)
+    await chain.topics.post({ wallet: fake.wallet, topic: 'help', entries: [{ ...ENTRY, title: 'next' }], direction: 'up', voteWeightWei: WEIGHT })
+    expect(burns(fake)).toHaveLength(2)
+    expect(burns(fake)[1].from).not.toBe(burns(fake)[0].from)
   })
 
-  it('surfaces an insufficient main balance before moving any funds', async () => {
+  it('surfaces insufficient authoritative coin capacity before moving funds', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain(WEIGHT / 2n)
+    const fake = await makeFakeChain(WEIGHT / 2n)
     fakeRelay()
 
     await expect(
@@ -513,25 +457,16 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
         direction: 'up',
         voteWeightWei: WEIGHT,
       }),
-    ).rejects.toThrow(/Insufficient main account balance/)
+    ).rejects.toThrow(/Insufficient available EVM coins/)
     expect(fake.rpcSubmissions).toHaveLength(0)
     expect(fake.pool.records().every(r => r.status === 'unfunded')).toBe(true)
   })
 
-  it('serializes a concurrent post, vote and post onto three distinct accounts and nonces', async () => {
+  it('reserves independent exact inputs for a concurrent post, vote and post', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = await makeFakeChain()
     const puts = fakeRelay()
-    // A scheduling gap between "account prepared" and "account leased" (the pool's own queue has
-    // already released by then): only the wallet-level serialization keeps a concurrent operation
-    // from preparing, finding that account still available, and leasing it too.
-    const prepare = fake.pool.prepareBurnAccount.bind(fake.pool)
-    fake.pool.prepareBurnAccount = async params => {
-      const prepared = await prepare(params)
-      await new Promise(resolve => setTimeout(resolve, 5))
-      return prepared
-    }
-
+    await fundIndependentInputs(fake, 3)
     await Promise.all([
       chain.topics.post({
         wallet: fake.wallet,
@@ -555,18 +490,19 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
       }),
     ])
     expect(puts).toHaveLength(3)
-    expect(fake.rpcSubmissions).toHaveLength(3)
-    expect(fake.pool.records().filter(r => r.status === 'spent')).toHaveLength(
-      3,
-    )
-    expect(fake.rpcSubmissions.map(tx => tx.nonce)).toEqual([0, 1, 2])
+    expect(burns(fake)).toHaveLength(3)
+    expect(new Set(burns(fake).map(tx => tx.from)).size).toBe(3)
+    const pairs = fake.rpcSubmissions.map(tx => `${tx.from}:${tx.nonce}`)
+    expect(new Set(pairs).size).toBe(pairs.length)
+
   })
 
-  it('serializes concurrent posts so each burn uses its own prepared account', async () => {
+  it('concurrent posts reserve separate funded accounts', async () => {
     const chain = createEvmChain(CONFIG)
-    const fake = makeFakeChain()
+    const fake = await makeFakeChain()
     const puts = fakeRelay()
 
+    await fundIndependentInputs(fake, 2)
     await Promise.all(
       [1, 2].map(n =>
         chain.topics.post({
@@ -578,7 +514,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
         }),
       ),
     )
-    expect(fake.rpcSubmissions).toHaveLength(2)
+    expect(burns(fake)).toHaveLength(2)
     expect(puts).toHaveLength(2)
     const senders = puts.map(
       put =>
@@ -593,52 +529,61 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
   })
 })
 
-describe('RPC failing between funding and signing (#273 review F1)', () => {
+describe('RPC failure after signing the complete Forum graph', () => {
   const post = (chain: ReturnType<typeof createEvmChain>, fake: FakeChain) =>
     chain.topics.post({
       wallet: fake.wallet,
       topic: 'help',
       entries: [ENTRY],
       direction: 'up',
-      voteWeightWei: WEIGHT,
+      voteWeightWei: 120_000_000_000_000n,
     })
   const vote = (chain: ReturnType<typeof createEvmChain>, fake: FakeChain) =>
     chain.topics.vote({
       wallet: fake.wallet,
       payloadDigest: 'ab'.repeat(32),
       direction: 'up',
-      voteWeightWei: WEIGHT,
+      voteWeightWei: 120_000_000_000_000n,
     })
 
   it.each([
     ['post', post],
     ['vote', vote],
   ])(
-    '%s: the funded account is kept, nothing is sent, and the retry funds nothing more',
+    '%s: submission failure retains reservations and retries the original signed graph',
     async (_name, act) => {
       const chain = createEvmChain(CONFIG)
-      const fake = makeFakeChain()
+      const fake = await makeFakeChain()
       const puts = fakeRelay()
-
+      // Require owned funding predecessors: a direct nonce-zero burn could otherwise be
+      // broadcast successfully by the relay even while this wallet's RPC submit fails.
+      fake.balances.set(fake.mainAddress.toLowerCase(), 0n)
+      for (const record of fake.pool.records())
+        fake.balances.set(record.address.toLowerCase(), 100_000_000_000_000n)
+      await fake.wallet.refreshTransactionSetInventory!()
+      const broadcast = jest.spyOn(fake.wallet.provider, 'broadcastTransaction')
       fake.setSigningDown(true)
-      const failure = await act(chain, fake).catch((e: unknown) => e)
-      expect(failure).toBeInstanceOf(TopicBurnPreparationError)
-      expect((failure as Error).message).toMatch(
-        /RPC dropped while signing.*Nothing was sent.*funded account is kept.*safe to try again/s,
-      )
+      await expect(act(chain, fake)).rejects.toThrow(/retained|pending/i)
       expect(puts).toHaveLength(0)
-      // Funded once, and that account is still available (not retired, not leased).
-      expect(fake.rpcSubmissions).toHaveLength(1)
-      const statuses = fake.pool.records().map(r => r.status)
-      expect(statuses.filter(s => s === 'available')).toHaveLength(1)
-      expect(statuses).not.toContain('retired')
-      expect(statuses).not.toContain('in-use')
-
+      expect(broadcast).toHaveBeenCalled()
+      expect(fake.rpcSubmissions).toHaveLength(0)
+      const original = signedGraph(fake.wallet)
+      expect(original.length).toBeGreaterThan(1)
+      expect(broadcast.mock.calls.every(([raw]) => original.includes(raw))).toBe(true)
+      const held = evmWalletInternals(fake.wallet).coinList!.all().filter(coin => coin.holder)
+      expect(held.map(coin => `${coin.account}:${coin.nonce}`).sort()).toEqual(
+        [...new Set(original.map(raw => { const tx = Transaction.from(raw); return `${tx.from!.toLowerCase()}:${tx.nonce}` }))].sort(),
+      )
+      expect(held.every(coin => coin.nonce === 0 && coin.state === 'pending_receipt')).toBe(true)
       fake.setSigningDown(false)
-      await act(chain, fake)
+      await chain.topics.reconcileOperations!({ wallet: fake.wallet })
+      expect(puts.length).toBeGreaterThan(0)
+      expect(new Set(puts.map(put => Buffer.from(put.body).toString('hex'))).size).toBe(1)
       expect(puts).toHaveLength(1)
-      // Still one funding transaction across the failure and the retry.
-      expect(fake.rpcSubmissions).toHaveLength(1)
+      expect(burns(fake)).toHaveLength(1)
+      expect(signedGraph(fake.wallet)).toEqual(original)
+      expect([...observedBurns.values()].map(tx => tx.serialized).sort()).toEqual([...original].sort())
+
     },
   )
 })
@@ -1021,11 +966,10 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
 
 /**
  * #1235 Stage R, at the topic boundary: the real composed wallet (`createEvmChain().createWallet`),
- * its real pool, lease manager, native operation journal and topic clients. Only the RPC and the
- * relay's HTTP are faked. The topic producer signs with no admission check, so the pool's
- * reservation is the only thing that keeps a burn off an account a native send is spending from.
+ * its coin list, native operation journal and topic clients. Only RPC and relay HTTP are faked.
+ * A pending native account/nonce remains excluded; confirmed state permits its next nonce.
  */
-describe('a pool account a native send spends from is not burned from (#1235)', () => {
+describe('Forum respects native reservations and confirmed nonce transitions (#1235)', () => {
   const recipient = { raw: '0x' + '42'.repeat(20) }
   const blockHash = '0x' + 'ab'.repeat(32)
   const opened: EvmChainWalletHandle[] = []
@@ -1040,10 +984,8 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
     jest.restoreAllMocks()
   })
 
-  /** Opens the wallet, funds pool account X through a topic post whose burn signing fails (the
-   * production funding path: X is left `available` holding exactly one burn), then sends natively
-   * from X. `pending`: the broadcast reply is lost and the node's pending view lacks the
-   * transaction. `included`: it is mined and observed only by a fee estimate. */
+  /** Seed an owned pool deposit, then authorize a native spend from it. Observe either an
+   * ambiguous submission or successful inclusion before selecting a Forum input. */
   async function reserved(window: 'pending' | 'included') {
     const bundleModule = jest.requireActual(
       '../storage/evm-wallet-bundle',
@@ -1064,7 +1006,7 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
       mnemonic: TEST_MNEMONIC,
     })) as EvmChainWalletHandle
     opened.push(wallet)
-    const fake = makeFakeChain(10n ** 18n, wallet)
+    const fake = await makeFakeChain(10n ** 18n, wallet)
     const main = (await wallet.getReceiveAddress()).raw.toLowerCase()
     fake.balances.set(main, 10n ** 18n)
     const puts = fakeRelay()
@@ -1117,8 +1059,9 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
         nativeNonces.set(from, tx.nonce + 1)
         fake.balances.set(
           from,
-          (fake.balances.get(from) ?? 0n) - tx.value - GAS_LIMIT * GAS_PRICE,
+          (fake.balances.get(from) ?? 0n) - tx.value - tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!),
         )
+        fake.balances.set(tx.to!.toLowerCase(), (fake.balances.get(tx.to!.toLowerCase()) ?? 0n) + tx.value)
         return { hash: tx.hash! } as TransactionResponse
       },
     })
@@ -1140,20 +1083,10 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
           voteWeightWei: WEIGHT,
         }),
     }
-    fake.setSigningDown(true)
-    await expect(act.post()).rejects.toBeInstanceOf(TopicBurnPreparationError)
-    fake.setSigningDown(false)
-    expect(fake.rpcSubmissions).toHaveLength(1)
-    const x = wallet.pool
-      .records()
-      .find(
-        record =>
-          record.address.toLowerCase() ===
-          fake.rpcSubmissions[0].to!.toLowerCase(),
-      )!
-    expect(x.status).toBe('available')
+    const x = wallet.pool.records()[0]!
+    wallet.pool.setStatus(x.index, 'available')
     const xAddress = x.address.toLowerCase()
-
+    fake.balances.set(xAddress, WEIGHT + 2n * GAS_LIMIT * GAS_PRICE)
     // Main cannot pay, so the native send spends from X, leaving a residual.
     for (const address of new Set([main, fake.mainAddress.toLowerCase()]))
       fake.balances.set(address, 0n)
@@ -1170,7 +1103,7 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
     for (const address of new Set([main, fake.mainAddress.toLowerCase()]))
       fake.balances.set(address, 10n ** 18n)
     if (window === 'included')
-      await wallet.estimateLegacyFee!({ recipient, value: 1n })
+      await wallet.reobserveNativeOperations!()
     const member = wallet.getNativeOperations!()[0]!.members[0]!
     expect(member.source).toEqual({
       kind: 'spend',
@@ -1183,8 +1116,8 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
     expect(nativeBroadcasts.map(tx => tx.from!.toLowerCase())).toEqual([
       xAddress,
     ])
-    expect(wallet.pool.getRecord(x.index)!.status).toBe('available')
-    const signers = jest.spyOn(Wallet.prototype, 'signTransaction')
+    expect(wallet.pool.getRecord(x.index)!.status).toBe(window === 'pending' ? 'available' : 'spent')
+    const signers = jest.spyOn(SigningKey.prototype, 'sign')
     return {
       act,
       wallet,
@@ -1195,8 +1128,8 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
       nativeBroadcasts,
       /** Addresses that signed anything after the native send. */
       signedBy: () =>
-        (signers.mock.instances as unknown as Wallet[]).map(signer =>
-          signer.address.toLowerCase(),
+        (signers.mock.instances as unknown as SigningKey[]).map(signer =>
+          computeAddress(signer.publicKey).toLowerCase(),
         ),
       admission: () =>
         bundle.runLifetime(lifetime =>
@@ -1217,36 +1150,32 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
     )
   }
 
-  // Before the reservation, pending: preparation reused X and the burn was signed from it, at the
-  // native member's own nonce. Included: preparation's reconciliation retired X before selection,
-  // so the burn already used another account, but the retired row then conflicted with the native
-  // claim and the admission reported `conflicting-authorization` for the whole wallet.
   it.each([
     ['pending', 'post', 'signs nothing from the reserved account'],
     ['pending', 'vote', 'signs nothing from the reserved account'],
-    ['included', 'post', 'does not retire the reserved account or lock admission'],
-    ['included', 'vote', 'does not retire the reserved account or lock admission'],
+    ['included', 'post', 'uses only a confirmed successor nonce without locking admission'],
+    ['included', 'vote', 'uses only a confirmed successor nonce without locking admission'],
   ] as const)(
-    '%s native send: a topic %s funds and burns from another account and %s',
+    '%s native send: a topic %s preserves native input authority and %s',
     async (window, kind) => {
       const f = await reserved(window)
       expect(await f.admission()).toMatchObject({ status: 'ready' })
 
+      const priorXBalance = f.fake.balances.get(f.xAddress)!
       await f.act[kind]()
 
       expect(f.puts).toHaveLength(1)
       const burn = burnOf(f.puts[0])
-      expect(burn.value).toBe(WEIGHT)
-      expect(burn.from!.toLowerCase()).not.toBe(f.xAddress)
-      // A second funding transfer, to the account the burn was signed from.
-      expect(f.fake.rpcSubmissions).toHaveLength(2)
-      expect(f.fake.rpcSubmissions[1].to!.toLowerCase()).toBe(
-        burn.from!.toLowerCase(),
-      )
-      expect(f.signedBy()).not.toContain(f.xAddress)
-      expect(f.nativeBroadcasts).toHaveLength(1)
+      expect(burn.value).toBe(burn.from!.toLowerCase() === f.xAddress
+        ? priorXBalance - burn.gasLimit * (burn.gasPrice ?? burn.maxFeePerGas!)
+        : WEIGHT)
+      expect(burn.from!.toLowerCase() === f.xAddress && burn.nonce === 0).toBe(false)
+      if (window === 'pending') expect(burn.from!.toLowerCase()).not.toBe(f.xAddress)
+      expect(f.fake.rpcSubmissions.every(tx => tx.from!.toLowerCase() !== f.xAddress || tx.nonce > 0)).toBe(true)
+      if (window === 'pending') expect(f.signedBy()).not.toContain(f.xAddress)
+      expect(f.nativeBroadcasts.filter(tx => tx.from!.toLowerCase() === f.xAddress && tx.nonce === 0)).toHaveLength(1)
       // The reserved row is left to the native operation that spends from it.
-      expect(f.wallet.pool.getRecord(f.x.index)!.status).toBe('available')
+      expect(f.wallet.pool.getRecord(f.x.index)!.status).toBe(window === 'pending' ? 'available' : 'spent')
       expect(await f.admission()).toMatchObject({ status: 'ready' })
     },
   )
@@ -1270,7 +1199,7 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
       mnemonic: TEST_MNEMONIC,
     })) as EvmChainWalletHandle
     opened.push(wallet)
-    const fake = makeFakeChain(0n, wallet)
+    const fake = await makeFakeChain(0n, wallet)
     const main = (await wallet.getReceiveAddress()).raw.toLowerCase()
     fake.balances.set(main, 0n)
     const puts = fakeRelay()
@@ -1303,9 +1232,8 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
     expect(await wallet.provider.getBalance(main)).toBe(0n)
     expect(await wallet.provider.getBalance(coinAddress)).toBe(10n ** 18n)
 
-    // 1. topics.post succeeds using the coin to fund the burn account. The coin's account is
-    // claimed while it signs the funding, so no stamp payment signs from it at the same nonce.
-    const claims = jest.spyOn(wallet.pool, 'restoreAccountClaim')
+    // The received input is reserved through the shared coin list before signing the graph.
+    const prepare = jest.spyOn(evmWalletInternals(wallet).coinList!, 'reserveTransactionSetSources')
     const postResult = await chain.topics.post({
       wallet,
       topic: 'memes',
@@ -1316,12 +1244,11 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
 
     expect(postResult.payloadDigest).toBeDefined()
     expect(fake.rpcSubmissions.length).toBeGreaterThanOrEqual(1)
-    // The funding transaction came from coinAddress, NOT main
+    // The graph draws value from the received coin while main stays empty.
     const postFunding = fake.rpcSubmissions[0]
     expect(postFunding.from!.toLowerCase()).toBe(coinAddress)
-    expect(claims.mock.calls.map(([, address]) => address.toLowerCase())).toContain(
-      coinAddress,
-    )
+    expect(prepare.mock.results.some(result => result.type === 'return' && result.value?.some((part: { coin: { account: string } }) => part.coin.account === coinAddress))).toBe(true)
+    expect(burns(fake)).toHaveLength(1)
     expect(puts.length).toBeGreaterThanOrEqual(1)
 
     // 2. topics.vote also succeeds
@@ -1342,7 +1269,7 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
       mnemonic: TEST_MNEMONIC,
     })) as EvmChainWalletHandle
     opened.push(wallet)
-    makeFakeChain(0n, wallet)
+    await makeFakeChain(0n, wallet)
     const holder = `${wallet.identity.address.raw.toLowerCase()}:main-account`
     const funder = new Wallet('0x' + '78'.repeat(32)).address.toLowerCase()
     const busy = new Wallet('0x' + '79'.repeat(32)).address.toLowerCase()
@@ -1371,7 +1298,7 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
       mnemonic: TEST_MNEMONIC,
     })) as EvmChainWalletHandle
     opened.push(wallet)
-    const fake = makeFakeChain(0n, wallet)
+    const fake = await makeFakeChain(0n, wallet)
     const main = (await wallet.getReceiveAddress()).raw.toLowerCase()
     const puts = fakeRelay()
 
@@ -1409,12 +1336,9 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
       amount: 10_000_000_000_000_000,
     })
 
-    // Gas reserve is ~150_000_000_000_000 wei, funding fee is 120_000_000_000_000 wei.
-    // Total needed for a single funder: ~271_000_000_000_000 wei.
-    // Set each account to have 200_000_000_000_000 wei (< 271_000_000_000_000 wei).
-    // Neither main, coin1, nor coin2 can cover it alone!
-    // But together they can aggregate to cover the required burn amount!
-    const partBalance = 200_000_000_000_000n
+    // Each source is smaller than the intended burn before fees. Three sources together cover
+    // their consolidation fees and the one burn; any uneconomic residual remains accounted for.
+    const partBalance = 100_000_000_000_000n
     fake.balances.set(main, partBalance)
     fake.balances.set(coin1, partBalance)
     fake.balances.set(coin2, partBalance)
@@ -1426,7 +1350,7 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
       topic: 'memes',
       entries: [ENTRY],
       direction: 'up',
-      voteWeightWei: WEIGHT,
+      voteWeightWei: 120_000_000_000_000n,
     })
 
     expect(postResult.payloadDigest).toBeDefined()
@@ -1436,6 +1360,13 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
     // More than one unique funder address contributed
     const uniqueFunders = new Set(funders)
     expect(uniqueFunders.size).toBeGreaterThanOrEqual(2)
+    expect(burns(fake)).toHaveLength(1)
+    const burn = burns(fake)[0]
+    expect(burn.value).toBeGreaterThanOrEqual(120_000_000_000_000n)
+    const fees = [...observedBurns.values()].reduce((sum, tx) => sum + tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!), 0n)
+    const remainingOwned = [...fake.balances].filter(([address]) => address !== BURN_ADDRESS.toLowerCase()).reduce((sum, [, value]) => sum + value, 0n)
+    expect(burn.value + fees + remainingOwned).toBe(3n * partBalance)
+    expect(signedGraph(wallet)).toContain(burn.serialized)
     expect(puts.length).toBeGreaterThanOrEqual(1)
   })
 })

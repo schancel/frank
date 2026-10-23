@@ -1,17 +1,10 @@
-import { JsonRpcProvider } from 'ethers'
-
-import { MonadAccountTxSigner } from '@frank/wallet/evm-account-tx'
-import { MonadHttpClient } from '@frank/wallet/evm-http'
-import {
-  MonadTopicPostClient,
-  quoteMonadTopicBurnGasReserve,
-} from '@frank/wallet/evm-topic-post-client'
+import { createEvmChain } from '@frank/wallet/chain/evm-chain'
+import { getChainRegistryByNetworkTag } from '@frank/wallet/chain/chains-registry'
+import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
+import { TopicPostClient } from '@frank/wallet/topic-post-client'
 import { fetchMonadTopicPostsSince } from '@frank/wallet/evm-topic-tally-client'
-import { openMonadWalletBundle } from '@frank/wallet/storage/evm-wallet-bundle'
-import { InMemoryStampAttemptJournal } from '@frank/wallet/storage/stamp-attempt-journal'
-import { InMemoryStampPaymentJournal } from '@frank/wallet/storage/stamp-payment-journal'
 
-import { loadConfig, loadIdentity, resolveDataDir } from '../config'
+import { loadConfig, loadIdentity, resolveDataDir, type SignetConfig } from '../config'
 import {
   formatMonAndWei,
   outputError,
@@ -32,16 +25,27 @@ export interface TopicReadOptions {
   json?: boolean
 }
 
+/** Resolve the saved CLI wire tag once; wallet state and RPC routing use its canonical ID. */
+function resolveTopicPostNetwork(config: SignetConfig) {
+  const network = getChainRegistryByNetworkTag(config.networkTag)
+  if (!network || network.family !== 'evm' || network.nativeChainId === undefined)
+    throw new Error(`Unsupported EVM Forum network tag: ${config.networkTag}`)
+  if (!Number.isSafeInteger(config.chainId) || BigInt(config.chainId) !== BigInt(network.nativeChainId))
+    throw new Error(`Saved chain ID does not match Forum network ${network.id}`)
+  return network
+}
+
 export async function topicPostCommand(
   topic: string,
   content: string,
   options: TopicPostOptions,
 ): Promise<void> {
-  let bundle: Awaited<ReturnType<typeof openMonadWalletBundle>> | undefined
+  let wallet: EvmChainWalletHandle | undefined
 
   try {
     const dataDir = resolveDataDir(options.dataDir)
     const config = loadConfig(dataDir)
+    const network = resolveTopicPostNetwork(config)
     const burnValueWei = options.burn
       ? parseMonOrWei(options.burn)
       : 10000000000000000n // 0.01 MON default
@@ -52,68 +56,40 @@ export async function topicPostCommand(
       options.password,
     )
 
-    const provider = new JsonRpcProvider(config.rpcUrl)
-    const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
-
-    bundle = await openMonadWalletBundle({
-      location: walletDir,
-      seed: { mnemonic, passphrase: '' },
-    })
-
-    const mainAccountSigner = new MonadAccountTxSigner({
-      privateKey: identity.toPrivateKeyHex(),
-      provider,
-      httpClient,
-    })
-
-    const gasReserveWei = await quoteMonadTopicBurnGasReserve({
-      signer: mainAccountSigner,
-      burnAddress: config.stampBurnAddress,
-    })
-
-    const preparation = await bundle.pool.prepareBurnAccount({
-      mainAccountSigner,
-      provider,
-      burnValueWei,
-      gasReserveWei,
-    })
-    const leaseIndex = preparation.index
-
-    const network =
-      config.networkTag === 'MONT'
-        ? 'monad-testnet'
-        : config.networkTag === 'MON1'
-        ? 'monad-mainnet'
-        : config.networkTag
-
-    const client = new MonadTopicPostClient({
-      pool: bundle.pool,
-      leaseManager: bundle.leaseManager,
-      provider,
-      httpClient,
-      changePool: bundle.changePool,
-      stampPaymentJournal: new InMemoryStampPaymentJournal(),
-      stampAttemptJournal: new InMemoryStampAttemptJournal(),
-      walletState: bundle,
+    const chain = createEvmChain({
+      chainIdentifier: network.id,
+      networkId: network.id,
+      rpcChain: network.id,
+      chainId: BigInt(network.nativeChainId!),
+      spendSpacingBlocks: network.spendSpacingBlocks,
+      reserveBalanceWei: network.reserveBalanceWei === undefined
+        ? undefined : BigInt(network.reserveBalanceWei),
+      paymentPollIntervalMs: network.paymentPollIntervalMs,
+      defaultTopicVoteValueWei: burnValueWei,
       relayBaseUrl: config.relayUrl,
-      forumBurnAddress: config.stampBurnAddress,
-      forumChainId: BigInt(config.chainId),
-      cborNetwork: network,
+      networkTag: config.networkTag,
+      stampBurnAddress: config.stampBurnAddress,
+      walletStorageLocation: walletDir,
+      subAccountPoolSize: 1,
     })
+    wallet = (await chain.createWallet({
+      mnemonic,
+      passphrase: '',
+    })) as EvmChainWalletHandle
+    await wallet.getBalanceParts?.()
+    const client = new TopicPostClient(wallet)
 
     const postResult = await client.submitTopicPost({
       topic,
       entries: [{ kind: 'post', message: content }],
       direction: 'up',
-      burnAddress: config.stampBurnAddress,
-      voteWeightWei: burnValueWei,
-      leaseIndex,
+      amountAtomic: burnValueWei,
     })
 
     const result = {
       topic,
       payloadHashHex: postResult.payloadHashHex,
-      burnTxHash: postResult.txHash,
+      burnTxHash: postResult.transactionHashes[0],
       burnWeightWei: burnValueWei.toString(),
       author: identity.displayAddress,
       status: 'delivered',
@@ -135,7 +111,7 @@ export async function topicPostCommand(
     outputError(err, options.json)
   } finally {
     try {
-      await bundle?.close()
+      await wallet?.close()
     } catch {}
   }
 }

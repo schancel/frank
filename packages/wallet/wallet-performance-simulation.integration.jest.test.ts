@@ -1,6 +1,6 @@
 /**
  * INTEGRATION & PERFORMANCE BENCHMARK: Real-world wallet latency, RPC coalescing,
- * zero-funding-on-send (`fundAhead`), high-volume inbox decryption, and journal scaling.
+ * construction on spend, high-volume inbox decryption, and journal scaling.
  */
 import { performance } from 'node:perf_hooks'
 import {
@@ -89,7 +89,7 @@ describe('Wallet real-world performance & reliability simulation (integration)',
     expect(balanceElapsedMs).toBeLessThan(200)
   })
 
-  it('sends paid direct messages with zero on-the-spot funding RPCs when fundAhead is warm', async () => {
+  it('sends paid direct messages without prefunding sender accounts', async () => {
     f = await fixture({ subAccountPoolSize: 6 })
     installCanonicalDirectory(
       f.alice,
@@ -101,13 +101,6 @@ describe('Wallet real-world performance & reliability simulation (integration)',
     )
     const bobMailbox: InboxRecord[] = []
     mailboxes.set(toHex(f.bob.identity.compressedPubKey), bobMailbox)
-
-    // Pre-fund single-use sender accounts ahead of send (each pass funds a pair of sub-accounts)
-    const fundStart = performance.now()
-    await f.chain.directMessages.fundAhead?.({ wallet: f.alice })
-    const fundElapsedMs = performance.now() - fundStart
-    expect(fundElapsedMs).toBeLessThan(500)
-    expect(mockFunded.length).toBeGreaterThanOrEqual(2)
 
     // Now measure critical-path send latency across sequential paid messages
     const sendLatenciesMs: number[] = []

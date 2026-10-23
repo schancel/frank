@@ -9,13 +9,27 @@ import type {
 } from '@frank/wallet/stealth-payment'
 
 const mockKey = Uint8Array.from([2, ...Array<number>(32).fill(1)])
-const mockWallet = {}
 const mockState = { status: 'ready', account: {}, revision: 1 }
 const mockQuote = jest.fn()
 const mockPrepare = jest.fn()
 const mockRelease = jest.fn()
 const mockStampQuote = jest.fn()
 const mockBindingCheck = jest.fn(async () => undefined)
+let mockCombined = false
+const mockCapability = {
+  quote: mockQuote,
+  prepare: mockPrepare,
+  release: mockRelease,
+  get supportsCombinedStamp() {
+    return mockCombined ? true : undefined
+  },
+}
+const mockWallet = {
+  chainIdentifier: 'monad-testnet',
+  stealthPayments: mockCapability,
+}
+const mockSecondaryWallet = { stealthPayments: mockCapability }
+let mockBindingWallet = mockSecondaryWallet
 jest.mock('../accounts/session', () => ({
   accountSession: {
     get state() {
@@ -27,13 +41,7 @@ jest.mock('../accounts/session', () => ({
 jest.mock('../accounts/native-transfer', () => ({
   createNativeTransferContext: async () => ({
     captureWallet: async () => ({
-      wallet: {
-        stealthPayments: {
-          quote: mockQuote,
-          prepare: mockPrepare,
-          release: mockRelease,
-        },
-      },
+      wallet: mockBindingWallet,
       assertCurrent: mockBindingCheck,
     }),
   }),
@@ -64,6 +72,8 @@ function quote(operationId: string): StealthPaymentQuote {
 }
 beforeEach(() => {
   jest.restoreAllMocks()
+  mockCombined = false
+  mockBindingWallet = mockSecondaryWallet
   mockState.status = 'ready'
   mockState.revision = 1
   mockBindingCheck.mockReset().mockResolvedValue(undefined)
@@ -401,4 +411,124 @@ test('reviews native MONT on monad-testnet and provides a valid quote', async ()
   expect(captured.quote.amountAtomic).toBe(1000000000000000000n)
   expect(captured.quote.nativeBalanceAtomic).toBe(21699700000000000000n)
   expect(captured.stampValue).toBe(7n)
+})
+
+function combinedNativeQuote(balance = 119n) {
+  mockCombined = true
+  mockBindingWallet = mockWallet
+  const nativeRequest = {
+    ...request,
+    asset: { kind: 'native' as const },
+    amountAtomic: 100n,
+  }
+  const observed = (operationId: string) => ({
+    ...quote(operationId),
+    asset: nativeRequest.asset,
+    amountAtomic: 100n,
+    nativeBalanceAtomic: balance,
+    assetBalanceAtomic: balance,
+    sourceAddress: undefined,
+    sources: [],
+  })
+  mockQuote.mockImplementation(async intent => observed(intent.operationId))
+  mockPrepare.mockImplementation(async intent => ({
+    ...observed(intent.operationId),
+    members: [
+      {
+        rawTransaction: '010203',
+        txHash: 'ab'.repeat(32),
+        recipientAmountAtomic: 100n,
+      },
+    ],
+  }))
+  return nativeRequest
+}
+
+test('reviews one shared native operation including its stamp budget without excluding its sole source', async () => {
+  const captured = await reviewStealthPayment({
+    request: combinedNativeQuote(),
+    stampValue: 7n,
+    isCurrent: () => true,
+  })
+  expect(mockPrepare).not.toHaveBeenCalled()
+  expect(mockStampQuote).toHaveBeenCalledWith({
+    wallet: mockWallet,
+    stampValue: 7n,
+    excludedAddresses: undefined,
+  })
+  // Preparation now owns the source and provisional change; a separate stamp quote is not valid.
+  mockStampQuote.mockRejectedValue(new Error('source already reserved'))
+  await expect(captured.prepare()).resolves.toMatchObject({
+    amountAtomic: 100n,
+  })
+  expect(mockStampQuote).toHaveBeenCalledTimes(1)
+  expect(mockPrepare).toHaveBeenCalledWith(
+    expect.objectContaining({
+      maxNativeFeeAtomic: 10n,
+      messageStamp: { amountAtomic: 7n, maxNativeFeeAtomic: 2n },
+    }),
+  )
+})
+
+test('combined review cannot count the same balance twice for transfer and stamp', async () => {
+  await expect(
+    reviewStealthPayment({
+      request: combinedNativeQuote(118n),
+      stampValue: 7n,
+      isCurrent: () => true,
+    }),
+  ).rejects.toThrow('payment, message stamp, and their fees')
+  expect(mockPrepare).not.toHaveBeenCalled()
+})
+
+test('combined preparation still refuses a replaced account before signing', async () => {
+  const captured = await reviewStealthPayment({
+    request: combinedNativeQuote(),
+    stampValue: 7n,
+    isCurrent: () => true,
+  })
+  mockState.revision++
+  await expect(captured.prepare()).rejects.toThrow('changed')
+  expect(mockPrepare).not.toHaveBeenCalled()
+})
+
+test('a shared-constructor native payment on another chain keeps an independent stamp owner', async () => {
+  const nativeRequest = {
+    ...combinedNativeQuote(),
+    chainIdentifier: 'ethereum-sepolia',
+  }
+  mockBindingWallet = mockSecondaryWallet
+  mockQuote.mockImplementation(async intent => ({
+    ...quote(intent.operationId),
+    chainIdentifier: nativeRequest.chainIdentifier,
+    asset: nativeRequest.asset,
+    amountAtomic: 100n,
+    nativeBalanceAtomic: 119n,
+    assetBalanceAtomic: 119n,
+    sourceAddress: undefined,
+    sources: [],
+  }))
+  mockPrepare.mockImplementation(async intent => ({
+    ...(await mockQuote(intent)),
+    members: [
+      {
+        rawTransaction: '010203',
+        txHash: 'ab'.repeat(32),
+        recipientAmountAtomic: 100n,
+      },
+    ],
+  }))
+  const captured = await reviewStealthPayment({
+    request: nativeRequest,
+    stampValue: 7n,
+    isCurrent: () => true,
+  })
+  await captured.prepare()
+  expect(mockStampQuote).toHaveBeenCalledTimes(2)
+  expect(mockPrepare.mock.calls[0][0].messageStamp).toBeUndefined()
+  expect(mockStampQuote).toHaveBeenLastCalledWith({
+    wallet: mockWallet,
+    stampValue: 7n,
+    excludedAddresses: undefined,
+  })
 })

@@ -531,6 +531,8 @@ export interface ContactPayment {
   readonly deliveredBy?: 'wallet' | 'host'
   /** From `prepared` on: the native operation that holds the signed transfer. */
   readonly operationId?: string
+  /** Shared construction identity; the journal operationId remains its durable native row. */
+  readonly transactionSetOperationId?: string
   readonly rawTransaction?: string
   readonly txHash?: string
   readonly payloadDigest?: string
@@ -837,7 +839,7 @@ function validateNativePaymentSet(
     value += tx.value
     return tx.serialized.slice(2).toLowerCase()
   })
-  if (!options?.allowClaimedMismatch && value !== payment.amountWei)
+  if (!options?.allowClaimedMismatch && value < payment.amountWei)
     throw new Error('Native transaction set does not match the claimed amount')
   if (!/^[0-9a-fA-F]{64}$/.test(payment.payloadDigest))
     throw new Error('Invalid native payment digest')

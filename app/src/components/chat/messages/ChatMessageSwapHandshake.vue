@@ -393,6 +393,7 @@ export default defineComponent({
         case 'expired':
           return tr($t, 'chatMessageSwapHandshake.phase.expired', 'Expired')
       }
+      return ''
     })
 
     const phaseBadgeColor = computed<string>(() => {
@@ -413,6 +414,7 @@ export default defineComponent({
         case 'expired':
           return 'negative'
       }
+      return 'grey-7'
     })
 
     const progressSteps = computed<ProgressStepView[]>(() => {

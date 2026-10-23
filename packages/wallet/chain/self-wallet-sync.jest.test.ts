@@ -16,7 +16,7 @@ import type {
   MessageItem,
   WalletSyncItem,
 } from '@frank/cashweb/types/messages'
-import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import { restoreCanonicalRequest, type CanonicalFetch } from '@frank/cashweb/relay/canonical-dm-transport'
 import { encodePluginMessageItem, parseFrame, toHex } from '@frank/codec'
 import {
   Transaction,
@@ -103,6 +103,24 @@ function minesNativeTransfers(wallet: EvmChainWalletHandle) {
     })
 }
 
+// Resolve the original signed transaction across the active-to-history handoff.
+async function operationForTransaction(wallet: EvmChainWalletHandle, txHash: string) {
+  let rows = wallet.getNativeOperations!().filter(row =>
+    row.members.some(member => member.signed?.transactionHash === txHash),
+  )
+  if (rows.length === 0) {
+    const history = await wallet.getNativeOperationHistory!({ limit: 100 })
+    expect(history.next).toBeUndefined()
+    rows = history.operations.filter(row =>
+      row.members.some(member => member.signed?.transactionHash === txHash),
+    )
+  }
+  expect(rows).toHaveLength(1)
+  const row = await wallet.readNativeOperation!(rows[0].operationId)
+  expect(row).toBeDefined()
+  return row!
+}
+
 describe("a wallet's sync note to itself", () => {
   jest.setTimeout(120_000)
   let one: Fixture
@@ -111,6 +129,7 @@ describe("a wallet's sync note to itself", () => {
   let mailbox: InboxRecord[]
   let bobMailbox: InboxRecord[]
   let applied: jest.SpyInstance
+  let routeByRecipient = false
 
   /** A directory in which the wallet can also find itself, as a relay answers for any key. */
   async function selfAware(f: Fixture) {
@@ -119,6 +138,17 @@ describe("a wallet's sync note to itself", () => {
     const address = f.alice.identity.address.raw.toLowerCase()
     return {
       ...base,
+      fetch: async (url: string, init: Parameters<CanonicalFetch>[1]) => {
+        if (routeByRecipient && f === one) {
+          const request = restoreCanonicalRequest({
+            body: new Uint8Array(init.body!), contentType: init.headers['Content-Type'],
+          })
+          const recipient = request.identity.recipient
+          expect([f.alice.identity.address.raw.toLowerCase(), f.bob.identity.address.raw.toLowerCase()]).toContain(recipient)
+          f.setMailbox(recipient === f.alice.identity.address.raw.toLowerCase() ? mailbox : bobMailbox)
+        }
+        return base.fetch!(url, init)
+      },
       peerCurrent: async (
         wanted: { address: string } | { subject: string },
       ) =>
@@ -135,6 +165,7 @@ describe("a wallet's sync note to itself", () => {
   }
 
   beforeEach(async () => {
+    routeByRecipient = false
     mockBalances.clear()
     mockFunded.length = 0
     mailboxes.clear()
@@ -268,7 +299,7 @@ describe("a wallet's sync note to itself", () => {
       await sender.reobserveNativeOperations!()
       await sender.flushNativeSync!()
       expect(mailbox).toHaveLength(1)
-      expect(sender.getNativeOperations!()[0]!.members[0]!.signed!.transactionHash).toBe(sent.txHash)
+      expect((await operationForTransaction(sender, sent.txHash)).members[0]!.signed!.transactionHash).toBe(sent.txHash)
       one.setMailbox(undefined)
       await sender.close()
       const other = await otherDevice()
@@ -483,9 +514,9 @@ describe("a wallet's sync note to itself", () => {
         value: 1_000n,
       })
     /** What the app's Wallet and Send pages read (`inspectNativeTransferOperations`). */
-    const status = () => {
-      const [row, ...more] = one.alice.getNativeOperations!()
-      expect(more).toEqual([])
+    const status = async (txHash: string) => {
+      const row = await operationForTransaction(one.alice, txHash)
+      expect(row.transactionSetStages?.some(stage => stage.legacy)).toBe(true)
       return {
         row,
         ...summarizeEvmNativeOperation(
@@ -495,14 +526,14 @@ describe("a wallet's sync note to itself", () => {
       }
     }
     /** The note is sent after the send has resolved: wait for what it leaves behind. */
-    const until = async (done: () => boolean) => {
-      for (let waited = 0; !done() && waited < 10_000; waited += 10)
+    const until = async (done: () => Promise<boolean>) => {
+      for (let waited = 0; !(await done()) && waited < 10_000; waited += 10)
         await new Promise(resolve => setTimeout(resolve, 10))
-      expect(done()).toBe(true)
+      expect(await done()).toBe(true)
     }
-    const nothingPaid = async () => {
+    const nothingPaid = async (txHash: string) => {
       expect(mockFunded).toHaveLength(0)
-      expect(providerBroadcasts).toHaveLength(1)
+      expect(providerBroadcasts).toHaveLength((await status(txHash)).row.members.length)
       expect(
         await one.chain.directMessages.unattributedAttempts({
           wallet: one.alice,
@@ -511,57 +542,66 @@ describe("a wallet's sync note to itself", () => {
       ).toEqual([])
     }
 
-    it('one free note to itself goes to the relay, nothing is paid for it, and the other device applies it', async () => {
+    it('free notes for every signed movement reach the relay and the other device applies them once', async () => {
       minesNativeTransfers(one.alice)
       one.setMailbox(mailbox)
       const sent = await send(one)
-      expect(status().payment).toBe('included')
-      await until(() => status().sharing === 'shared')
-      const { row } = status()
-      expect(sent.txHash).toBe(
-        row.members[row.members.length - 1].signed!.transactionHash,
-      )
-      // Exactly one message: to the wallet's own account, with no payment and no transaction.
-      expect(one.requests).toHaveLength(1)
-      expect(mailbox).toHaveLength(1)
-      const request = restoreCanonicalRequest(one.requests[0])
-      expect(request.parts.transactions).toEqual([])
-      expect(request.identity.recipient).toBe(
-        one.alice.identity.address.raw.toLowerCase(),
-      )
-      const delivery = parseFrame(request.parts.delivery)
-      if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
-        throw new Error('not a delivery')
-      expect(delivery.schemaVersion).toBe(2)
-      expect(delivery.typed.payments).toEqual([])
-      await nothingPaid()
+      // Force completion before reading status: sharing may already have archived the graph.
+      await expect(one.alice.flushNativeSync!()).resolves.toEqual([])
+      expect(one.alice.getNativeOperations!().some(row =>
+        row.members.some(member => member.signed?.transactionHash === sent.txHash),
+      )).toBe(false)
+      expect((await status(sent.txHash)).payment).toBe('included')
+      await until(async () => (await status(sent.txHash)).sharing === 'shared')
+      const { row } = await status(sent.txHash)
+      const payments = row.members.filter(member => member.transactionSet?.role === 'payment')
+      expect(payments).toHaveLength(1)
+      expect(sent.txHash).toBe(payments[0].signed!.transactionHash)
+      expect(row.members.some(member => member.transactionSet?.role === 'change')).toBe(true)
+      expect(row.members.every(member => member.observation.state === 'included-success')).toBe(true)
+      // One free self-note per original signed member, including every owned change movement.
+      expect(one.requests).toHaveLength(row.members.length)
+      expect(mailbox).toHaveLength(row.members.length)
+      for (const encoded of one.requests) {
+        const request = restoreCanonicalRequest(encoded)
+        expect(request.parts.transactions).toEqual([])
+        expect(request.identity.recipient).toBe(
+          one.alice.identity.address.raw.toLowerCase(),
+        )
+        const delivery = parseFrame(request.parts.delivery)
+        if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+          throw new Error('not a delivery')
+        expect(delivery.schemaVersion).toBe(2)
+        expect(delivery.typed.payments).toEqual([])
+      }
+      await nothingPaid(sent.txHash)
       // This device recorded its own spend in the send; the note is for the others.
       expect(applied).not.toHaveBeenCalled()
       // Asking again sends nothing more.
       await one.alice.resumeLegacySend!(row.operationId)
       await one.alice.resumeNativeOperation!(row.operationId)
       await new Promise(resolve => setTimeout(resolve, 50))
-      expect(one.requests).toHaveLength(1)
+      expect(one.requests).toHaveLength(row.members.length)
 
       one.setMailbox(undefined)
       const other = await otherDevice()
       const first = await read(other, other.alice)
       expect(first.messages).toEqual([])
-      expect(applied).toHaveBeenCalledTimes(1)
-      expect(applied.mock.calls[0][0]).toBe(other.alice)
-      expect(applied.mock.calls[0][1]).toMatchObject({
-        type: 'wallet-sync',
-        chainIdentifier: 'monad-testnet',
-        txHash: sent.txHash,
-        rawTx: row.members[row.members.length - 1].signed!.rawTransaction,
-      })
+      expect(applied).toHaveBeenCalledTimes(row.members.length)
+      expect(applied.mock.calls.every(([wallet]) => wallet === other.alice)).toBe(true)
+      expect(applied.mock.calls.map(([, item]) => ({
+        type: item.type, chainIdentifier: item.chainIdentifier, txHash: item.txHash, rawTx: item.rawTx,
+      }))).toEqual(row.members.map(member => ({
+        type: 'wallet-sync', chainIdentifier: 'monad-testnet',
+        txHash: member.signed!.transactionHash, rawTx: member.signed!.rawTransaction,
+      })))
       // Applied, not merely passed: the other device now has the spend on record.
-      await expect(applied.mock.results[0].value).resolves.toBeDefined()
+      for (const result of applied.mock.results) await expect(result.value).resolves.toBeDefined()
       expect(first.held).toEqual([])
-      expect(first.passed).toEqual([[mailbox[0].timestampMs, expect.any(String)]])
+      expect(first.passed).toEqual(mailbox.map(record => [record.timestampMs, expect.any(String)]))
       // Reading it again applies nothing more.
       await read(other, other.alice)
-      expect(applied).toHaveBeenCalledTimes(1)
+      expect(applied).toHaveBeenCalledTimes(row.members.length)
     })
 
     it('a wallet whose only money is at its identity address sends it natively', async () => {
@@ -572,14 +612,19 @@ describe("a wallet's sync note to itself", () => {
       mockBalances.set(identity, 10n ** 17n)
       const sent = await send(one)
       expect(sent.txHash).toMatch(/^0x[0-9a-f]{64}$/)
-      const [row] = one.alice.getNativeOperations!()
+      const row = await operationForTransaction(one.alice, sent.txHash)
       expect(summarizeEvmNativeOperation(row).payment).toBe('included')
-      expect(row.members.map(member => member.source.kind)).toEqual(['identity'])
+      expect(row.members.length).toBeGreaterThan(1)
+      expect(row.members.every(member => Transaction.from(member.signed!.rawTransaction).from!.toLowerCase() === identity)).toBe(true)
+      expect(row.members.filter(member => member.transactionSet?.role === 'payment')).toHaveLength(1)
+      expect(row.members.every(member => member.observation.state === 'included-success')).toBe(true)
       expect(mockBalances.get(main)).toBe(0n)
     })
 
     it('resolves with the relay down and a paid chat message unresolved; the note is sent on a later flush, and neither holds the other', async () => {
       minesNativeTransfers(one.alice)
+      // Route by the signed request recipient, including self-notes emitted during recovery.
+      routeByRecipient = true
       // A chat message whose delivery is not known, paid from a funded single-use account. (One
       // paid from the main account holds that account until the chain shows its payment, and a
       // native send from it waits for that.)
@@ -600,23 +645,40 @@ describe("a wallet's sync note to itself", () => {
           (e: unknown) => e,
         )
       expect(chat).toBeInstanceOf(Error)
+      const [chatOperation] = one.alice.getNativeOperations!()
+      expect(chatOperation).toBeDefined()
+      const chatBytes = chatOperation.members.map(member => member.signed!.rawTransaction)
       const funded = mockFunded.length
       // Relay still down: the send resolves on inclusion, and says the note did not get through.
       const sent = await send(one)
       expect(sent.txHash).toMatch(/^0x[0-9a-f]{64}$/)
-      expect(status().payment).toBe('included')
-      await until(() => status().sharing === 'failed')
-      expect(status().payment).toBe('included')
+      const nativeStatus = await status(sent.txHash)
+      expect(nativeStatus.payment).toBe('included')
+      const nativeOperationId = nativeStatus.row.operationId
+      const nativeBytes = nativeStatus.row.members.map(member => member.signed!.rawTransaction)
+      expect(nativeOperationId).not.toBe(chatOperation.operationId)
+      expect(one.alice.getNativeOperations!().find(row => row.operationId === chatOperation.operationId)!.members.map(member => member.signed!.rawTransaction)).toEqual(chatBytes)
+      await until(async () => (await status(sent.txHash)).sharing === 'failed')
+      expect((await status(sent.txHash)).payment).toBe('included')
       expect(mockFunded).toHaveLength(funded)
       expect(mailbox).toHaveLength(0)
 
-      // The relay is back. A later flush sends the note; the unresolved chat message is not
-      // re-sent, finished or touched by it.
+      // The relay is back. A later flush shares settled movements; chat delivery stays unresolved.
       one.setPhase('delivered')
       one.setMailbox(mailbox)
-      await one.alice.resumeLegacySend!(status().row.operationId)
-      await until(() => status().sharing === 'shared')
-      expect(mailbox).toHaveLength(1)
+      await one.alice.resumeLegacySend!(nativeOperationId)
+      await until(async () => (await status(sent.txHash)).sharing === 'shared')
+      // The unresolved chat's payment can settle before delivery and also needs a self-note.
+      // Flush both original graphs and account for every signed member, without paying again.
+      await expect(one.alice.flushNativeSync!()).resolves.toEqual([])
+      const sharedOperations = await Promise.all([chatOperation.operationId, nativeOperationId]
+        .map(id => one.alice.readNativeOperation!(id)))
+      const sharedMembers = sharedOperations.flatMap(row => row!.members)
+      expect(sharedMembers.every(member => member.syncApplied)).toBe(true)
+      expect(sharedOperations[0]!.members.map(member => member.signed!.rawTransaction)).toEqual(chatBytes)
+      expect(sharedOperations[1]!.members.map(member => member.signed!.rawTransaction)).toEqual(nativeBytes)
+      expect(mailbox).toHaveLength(sharedMembers.length)
+      expect(new Set(mailbox.map(record => record.submissionIdentity)).size).toBe(sharedMembers.length)
       expect(bobMailbox).toHaveLength(0)
       expect(mockFunded).toHaveLength(funded)
       const noted = parseFrame(mailbox[0].delivery)
@@ -624,25 +686,73 @@ describe("a wallet's sync note to itself", () => {
 
       // The unresolved chat message is delivered as it was, and the next one goes out.
       one.setMailbox(bobMailbox)
-      await one.chain.directMessages.send({
+      const nextMessageId = '00000000-0000-4000-8000-000000000043'
+      const next = await one.chain.directMessages.send({
         wallet: one.alice,
         recipient: one.bob.identity.address,
+        messageId: nextMessageId,
         items: [{ type: 'text', text: 'again' }],
         stampValue: STAMP,
       })
-      expect(bobMailbox).toHaveLength(1)
+      // Recovery of the older message may complete independently during the new send.
+      expect(bobMailbox.length).toBeGreaterThanOrEqual(1)
+      expect(bobMailbox.length).toBeLessThanOrEqual(2)
       await one.chain.directMessages.reconcileAttempts({
         wallet: one.alice,
         payloadDigests: [],
       })
       expect(bobMailbox).toHaveLength(2)
-      expect(mailbox).toHaveLength(1)
-
+      expect(new Set(bobMailbox.map(record => record.submissionIdentity)).size).toBe(2)
+      for (const record of bobMailbox) {
+        const request = one.requests.map(restoreCanonicalRequest).find(request =>
+          request.identity.submission_identity === record.submissionIdentity)!
+        expect(request.identity.recipient).toBe(one.bob.identity.address.raw.toLowerCase())
+        expect(request.parts.transactions.length).toBeGreaterThan(0)
+      }
+      await expect(one.alice.flushNativeSync!()).resolves.toEqual([])
+      // Successful sharing retires active rows. Resolve the three original operations from
+      // their immutable history, rather than treating an empty active queue as no payment.
+      const history = await one.alice.getNativeOperationHistory!({ limit: 100 })
+      expect(history.next).toBeUndefined()
+      expect(history.operations).toHaveLength(3)
+      const nextOperation = history.operations.find(row =>
+        row.preparationId === `evm-transaction-set:stamp-${nextMessageId.replace(/-/g, '')}`,
+      )!
+      expect(nextOperation).toBeDefined()
+      const operationIds = [chatOperation.operationId, nativeOperationId, nextOperation.operationId]
+      expect(new Set(history.operations.map(row => row.operationId))).toEqual(new Set(operationIds))
+      const operations = await Promise.all(operationIds.map(id => one.alice.readNativeOperation!(id)))
+      expect(operations.every(row => row !== undefined)).toBe(true)
+      expect(operations[0]!.members.map(member => member.signed!.rawTransaction)).toEqual(chatBytes)
+      expect(operations[1]!.members.map(member => member.signed!.rawTransaction)).toEqual(nativeBytes)
+      expect(operations[2]!.members.filter(member => member.transactionSet?.role === 'payment')
+        .map(member => member.signed!.transactionHash)).toEqual(next.stampPayments.map(payment => payment.txHash))
+      const members = operations.flatMap(row => row!.members)
+      expect(members.every(member => member.observation.state === 'included-success')).toBe(true)
+      expect(new Set(members.map(member => member.signed!.transactionHash)).size).toBe(members.length)
+      expect(new Set(mailbox.map(record => record.submissionIdentity)).size).toBe(members.length)
+      expect(members.every(member => member.syncApplied)).toBe(true)
+      expect(mailbox).toHaveLength(members.length)
+      const submissions = one.requests.length
+      const broadcasts = providerBroadcasts.length
+      // Repeated retirement/recovery must neither pay again nor duplicate self-notes.
+      for (const operationId of operationIds) await one.alice.resumeNativeOperation!(operationId)
+      await expect(one.alice.flushNativeSync!()).resolves.toEqual([])
+      expect(one.requests).toHaveLength(submissions)
+      expect(providerBroadcasts).toHaveLength(broadcasts)
+      expect(mailbox).toHaveLength(members.length)
       const other = await otherDevice()
       one.setMailbox(undefined)
+      const first = await read(other, other.alice)
+      expect(first.held).toEqual([])
+      expect(first.messages).toEqual([])
+      expect(applied).toHaveBeenCalledTimes(members.length)
+      expect(applied.mock.calls.map(([, item]) => item.rawTx).sort())
+        .toEqual(members.map(member => member.signed!.rawTransaction).sort())
+      expect(applied.mock.calls.map(([, item]) => item.txHash)).toContain(sent.txHash)
+      for (const result of applied.mock.results) await expect(result.value).resolves.toBeDefined()
       await read(other, other.alice)
-      expect(applied).toHaveBeenCalledTimes(1)
-      expect(applied.mock.calls[0][1]).toMatchObject({ txHash: sent.txHash })
+      expect(applied).toHaveBeenCalledTimes(members.length)
     })
   })
 })

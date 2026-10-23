@@ -2582,6 +2582,7 @@ describe('financial outbox envelope barrier', () => {
     submit = jest.fn(async () => undefined)
     jest
       .mocked(captureOutgoingFinancialOperations)
+      .mockReset()
       .mockResolvedValue({ expose, submit })
   })
   const params = () => ({
@@ -2590,6 +2591,42 @@ describe('financial outbox envelope barrier', () => {
     items: TEXT,
     financialOperations,
     stampValue: 0n,
+  })
+
+  it('passes the captured payment operation into stamp construction after saving the financial draft', async () => {
+    jest.mocked(captureOutgoingFinancialOperations).mockResolvedValue({
+      expose,
+      submit,
+      paymentOperationId: 'original-native-payment',
+    })
+    const refs = [
+      {
+        chainIdentifier: 'monad-testnet',
+        operationId: 'original-native-payment',
+      },
+    ]
+    const send = jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockImplementation(async p => {
+        expect(p.paymentOperationId).toBe('original-native-payment')
+        const saved = [...(await durable()).values()].map(
+          deserializeMessageWrapper,
+        )[0]
+        expect(saved.message.financialOperations).toEqual(refs)
+        expect(saved.message.sealedMessageId).toBe(p.messageId)
+        expect(expose).not.toHaveBeenCalled()
+        await p.onEnvelopeDurable?.(HASH)
+        expect(expose).toHaveBeenCalledWith(HASH)
+        return okResult(HASH)
+      })
+    const chats = useChatStore()
+    await chats.sendMessage({
+      ...params(),
+      financialOperations: refs,
+      stampValue: 7n,
+    })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(submit).toHaveBeenCalledTimes(1)
   })
 
   it('requires an explicit reviewed stamp before creating a financial draft', async () => {

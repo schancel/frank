@@ -1,3 +1,7 @@
+import { Transaction } from 'ethers'
+import { evmWalletInternals } from '../evm-wallet'
+import { EVM_TRANSACTION_SET_SOURCE_ORDER, type EvmTransactionSetPolicy } from '../evm-transaction-set-types'
+import protocolChains from '../../../docs/protocol/chains/v1.json'
 import { ASSET_DECIMALS } from '../oracle/price-oracle'
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
@@ -522,6 +526,20 @@ describe("createChain", () => {
     const dir = await mkdtemp(join(tmpdir(), "frank-evm-chain-isolation-"));
     const sharedStorageBase = join(dir, "wallet");
     const sharedAttemptStore = new InMemoryNativeTransactionAttemptStore();
+    const policy: EvmTransactionSetPolicy = {
+      sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
+      gasPriceWei: 1n,
+      paymentGasLimit: () => 21_000n,
+      changeGasLimit: 21_000n,
+      paymentFeeIsExact: true,
+      dustWei: 1_000n,
+      radix: 10,
+      jitterBps: 0,
+      maxChangeOutputs: 20,
+      head: 100,
+    };
+    for (const [id, nativeId] of [['monad-testnet', '10143'], ['ethereum-sepolia', '11155111']])
+      expect(protocolChains.chains.find(chain => chain.id === id)?.native_chain_id).toBe(nativeId);
 
     const monadChain = await createChain({
       family: "evm",
@@ -538,6 +556,7 @@ describe("createChain", () => {
         subAccountPoolSize: 1,
         walletStorageLocation: sharedStorageBase,
         nativeAttemptStore: sharedAttemptStore,
+        transactionSetPolicy: () => policy,
       },
     });
 
@@ -556,6 +575,7 @@ describe("createChain", () => {
         subAccountPoolSize: 1,
         walletStorageLocation: sharedStorageBase,
         nativeAttemptStore: sharedAttemptStore,
+        transactionSetPolicy: () => policy,
       },
     });
 
@@ -573,8 +593,8 @@ describe("createChain", () => {
       messaging: root("messaging-encryption", 9),
     };
 
-    const monadWallet = await monadChain.createWallet(sharedRoots);
-    const sepoliaWallet = await sepoliaChain.createWallet(sharedRoots);
+    let monadWallet = await monadChain.createWallet(sharedRoots);
+    let sepoliaWallet = await sepoliaChain.createWallet(sharedRoots);
 
     try {
       expect(monadWallet).not.toBe(sepoliaWallet);
@@ -597,6 +617,59 @@ describe("createChain", () => {
       monadWallet.pool.setStatus(0, "retired");
       expect(monadWallet.pool.getRecord(0)?.status).toBe("retired");
       expect(sepoliaWallet.pool.getRecord(0)?.status).toBe("unfunded");
+
+      // Exercise the shared authoritative inventory/journal, not only legacy pool rows.
+      const operationId = 'same-operation-on-two-networks';
+      const source = monadWallet.mainAccount!;
+      expect(source.address).toBe(sepoliaWallet.mainAccount!.address);
+      for (const wallet of [monadWallet, sepoliaWallet])
+        await evmWalletInternals(wallet).coinList!.put({
+          account: source.address,
+          privateKey: source.privateKey,
+          nonce: 4,
+          valueWei: 1_000_000n,
+          origin: 'root',
+        });
+      const request = {
+        operationId,
+        amountWei: 100_000n,
+        kdf: () => '0x0000000000000000000000000000000000000123',
+      };
+      const monadSet = await monadWallet.transactionSetPreparer!.constructTransactionSet(request);
+      expect(evmWalletInternals(monadWallet).coinList!.heldBy(operationId).length).toBeGreaterThan(0);
+      expect(evmWalletInternals(sepoliaWallet).coinList!.heldBy(operationId)).toEqual([]);
+      expect(evmWalletInternals(sepoliaWallet).coinList!.latestOf(source.address)?.state).toBe('unspent');
+      const sepoliaSet = await sepoliaWallet.transactionSetPreparer!.constructTransactionSet(request);
+      const bytes = (set: typeof monadSet) => [...set.bundle, ...set.otherTransactions].map(tx => tx.rawTransaction);
+      const monadBytes = bytes(monadSet), sepoliaBytes = bytes(sepoliaSet);
+      expect(monadSet.chainIdentifier).toBe('monad-testnet');
+      expect(sepoliaSet.chainIdentifier).toBe('ethereum-sepolia');
+      expect(monadBytes.length).toBeGreaterThan(1);
+      expect(sepoliaBytes.length).toBeGreaterThan(1);
+      expect(monadBytes).not.toEqual(sepoliaBytes);
+      expect(monadBytes.map(raw => Transaction.from(raw).chainId)).toEqual(monadBytes.map(() => 10143n));
+      expect(sepoliaBytes.map(raw => Transaction.from(raw).chainId)).toEqual(sepoliaBytes.map(() => 11155111n));
+      for (const wallet of [monadWallet, sepoliaWallet])
+        expect(evmWalletInternals(wallet).coinList!.get(source.address, 4)).toMatchObject({
+          holder: operationId, state: 'pending_receipt',
+        });
+
+      await monadWallet.close();
+      monadWallet = await monadChain.createWallet(sharedRoots);
+      expect(bytes(monadWallet.transactionSetPreparer!.getTransactionSet(operationId)!)).toEqual(monadBytes);
+      // Reopening one chain leaves the other chain's live operation intact.
+      expect(bytes(sepoliaWallet.transactionSetPreparer!.getTransactionSet(operationId)!)).toEqual(sepoliaBytes);
+      await sepoliaWallet.close();
+      sepoliaWallet = await sepoliaChain.createWallet(sharedRoots);
+      for (const [wallet, expected] of [[monadWallet, monadBytes], [sepoliaWallet, sepoliaBytes]] as const) {
+        expect(bytes(wallet.transactionSetPreparer!.getTransactionSet(operationId)!)).toEqual(expected);
+        expect(evmWalletInternals(wallet).coinList!.get(source.address, 4)).toMatchObject({
+          holder: operationId, state: 'pending_receipt',
+        });
+        await expect(wallet.transactionSetPreparer!.constructTransactionSet({ ...request, operationId: 'competing-operation' }))
+          .rejects.toThrow();
+        expect(bytes(await wallet.transactionSetPreparer!.constructTransactionSet(request))).toEqual(expected);
+      }
 
       // Cross-chain wallet handle usage is rejected by each chain instance
       await expect(

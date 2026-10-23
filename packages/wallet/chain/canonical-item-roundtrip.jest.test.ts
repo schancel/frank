@@ -4,6 +4,7 @@
  * (mailbox read, authentication, opening). The item arrives with the same type and fields. The
  * five types with a dedicated frame are sealed with exactly the bytes their encoders always wrote.
  */
+import { Transaction } from 'ethers'
 import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import * as canonicalDm from '@frank/cashweb/relay/canonical-dm'
 import type { MessageItem } from '@frank/cashweb/types/messages'
@@ -95,7 +96,19 @@ describe('message items across the canonical path, two wallets', () => {
     bob.since = Math.max(bob.since, message.receivedTime)
     expect(sealed).toHaveBeenCalledTimes(1)
     const frames = (sealed.mock.calls[0][0] as { items: Uint8Array[] }).items
-    return { message, frames }
+    return { message, frames, sent }
+  }
+
+  function expectStampValue({ message, sent }: Awaited<ReturnType<typeof roundTrip>>) {
+    const signedStampValue = message.stampPayments.reduce((sum, payment) => {
+      expect(payment.rawTx).toBeDefined()
+      const value = Transaction.from(payment.rawTx!).value
+      expect(payment.valueWei).toBe(value)
+      return sum + value
+    }, 0n)
+    expect(message.stampPayments.map(payment => payment.txHash)).toEqual(sent.stampPayments.map(payment => payment.txHash))
+    expect(signedStampValue).toBeGreaterThanOrEqual(STAMP)
+    expect(message.stampValueWei).toBe(signedStampValue)
   }
 
   const dedicatedBytes = (item: MessageItem): Uint8Array => {
@@ -118,20 +131,23 @@ describe('message items across the canonical path, two wallets', () => {
   it.each(DEDICATED_SAMPLES.map(item => [item.type, item] as const))(
     '%s: arrives intact, sealed with the same bytes as before',
     async (type, item) => {
-      const { message, frames } = await roundTrip([item])
+      const result = await roundTrip([item])
+      const { message, frames } = result
+      expectStampValue(result)
       expect(frames.map(toHex)).toEqual([toHex(dedicatedBytes(item))])
       expect(message.outbound).toBe(false)
       expect(message.items).toHaveLength(1)
       expect(message.items[0].type).toBe(type)
       expect(message.items[0]).toMatchObject(item)
-      expect(message.stampValueWei).toBe(STAMP)
     },
   )
 
   it.each(GENERIC_SAMPLES.map(item => [item.type, item] as const))(
     '%s: arrives as the same item, carried in the generic plugin frame',
     async (type, item) => {
-      const { message, frames } = await roundTrip([item])
+      const result = await roundTrip([item])
+      const { message, frames } = result
+      expectStampValue(result)
       expect(frames).toHaveLength(1)
       // "FRNK", then an envelope whose type identifier is 27.
       expect(toHex(frames[0])).toBe(
@@ -143,7 +159,6 @@ describe('message items across the canonical path, two wallets', () => {
         ),
       )
       expect(message.items).toEqual([item])
-      expect(message.stampValueWei).toBe(STAMP)
     },
   )
 
@@ -444,8 +459,7 @@ describe('message items across the canonical path, two wallets', () => {
           { type: 'text', text: 'after' },
         ])
         // The message's payment is still accounted for.
-        expect(message.stampValueWei).toBe(STAMP)
-      } finally {
+        } finally {
         removeAlice = installMessageItemRegistry(alice.wallet, registry)
       }
     })

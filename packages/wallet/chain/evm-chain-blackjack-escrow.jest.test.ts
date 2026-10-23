@@ -128,7 +128,7 @@ describe('Blackjack with 2-party threshold ECDSA escrow settlement', () => {
 
     const funding = computeEscrowFunding(WAGER)
     // Transfer player deposit into escrowAddress
-    const playerBalBefore = mockBalances.get(playerReceiveAddress.toLowerCase()) ?? START_BALANCE
+    const playerBalBefore = await playerSeat.wallet.getBalance()
     mockBalances.set(playerReceiveAddress.toLowerCase(), playerBalBefore - funding.playerDepositWei)
     mockBalances.set(escrowAddress.toLowerCase(), funding.playerDepositWei)
 
@@ -230,11 +230,12 @@ describe('Blackjack with 2-party threshold ECDSA escrow settlement', () => {
     expect(mockBalances.get(escrowAddress.toLowerCase())).toBe(
       funding.totalEscrowWei - payout.playerPayoutWei,
     )
-    // Player address was credited with the full winnings (2 * wager) minus tiny gas fees for messages
-    const playerBalAfter = mockBalances.get(playerReceiveAddress.toLowerCase())!
+    // Count all wallet-owned change after messages redistribute the original account balance.
+    const playerBalAfter = await playerSeat.wallet.getBalance()
     expect(playerBalAfter).toBeGreaterThan(playerBalBefore)
     expect(playerBalAfter).toBeLessThanOrEqual(
-      playerBalBefore - funding.playerDepositWei + payout.playerPayoutWei,
+      playerBalBefore - funding.playerDepositWei + payout.playerPayoutWei
+        + playerSeat.totalReceived() - playerSeat.paid.reduce((sum, value) => sum + value, 0n),
     )
 
     // Verify decoded transaction fields from broadcast

@@ -36,7 +36,9 @@ export default defineComponent({
       if (val) return
       const from = this.$route?.query?.from
       const returnPath =
-        typeof from === 'string' && from.startsWith('/') && !from.startsWith('//')
+        typeof from === 'string' &&
+        from.startsWith('/') &&
+        !from.startsWith('//')
           ? from
           : '/chat'
       openPage(this.$router, returnPath)
@@ -61,4 +63,3 @@ export default defineComponent({
   padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
 }
 </style>
-

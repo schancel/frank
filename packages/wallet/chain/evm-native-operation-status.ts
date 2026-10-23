@@ -47,21 +47,28 @@ export function summarizeEvmNativeOperation(
   /** From the wallet handle's `nativeOperationSyncFailed`; session memory, not a journal fact. */
   syncFailed = false
 ): EvmNativeOperationStatus {
-  const final = row.members[row.members.length - 1];
+  const shared = row.kind === "transaction-set";
+  const primary = shared
+    ? row.members.filter(member => member.transactionSet?.role === "payment" && member.transactionSet.stageId === undefined)
+    : row.members;
+  const final = primary[primary.length - 1];
   if (!final) throw new Error("Native operation has no recipient member");
-  const independent = row.kind !== "legacy" && row.members.length > 1;
-  const recipients = independent ? row.members : [final];
+  const independent = row.kind !== "legacy" && primary.length > 1;
+  const recipients = shared || independent ? primary : [final];
   let value = 0n;
-  for (const member of recipients) {
+  for (const [index, member] of recipients.entries()) {
     const transaction = Transaction.from(member.unsignedTransaction);
+    const intended = shared && member.transactionSet?.intendedValueWei !== undefined
+      ? BigInt(member.transactionSet.intendedValueWei) : transaction.value;
     if (
-      transaction.to?.toLowerCase() !== row.recipient.toLowerCase() ||
+      ((!shared || index === 0) && transaction.to?.toLowerCase() !== row.recipient.toLowerCase()) ||
       transaction.chainId.toString() !== row.binding.nativeChainId ||
-      (transaction.data !== "0x") !== (row.kind === "contract") ||
-      (independent && member.dependencies.length !== 0)
+      (!shared && (transaction.data !== "0x") !== (row.kind === "contract")) ||
+      (!shared && independent && member.dependencies.length !== 0) ||
+      transaction.value < intended
     )
       throw new Error("Native operation recipient evidence does not match");
-    value += transaction.value;
+    value += intended;
   }
   if (value.toString() !== row.intendedValueWei)
     throw new Error("Native operation recipient evidence does not match");
@@ -84,25 +91,26 @@ export function summarizeEvmNativeOperation(
     };
   });
   const observed = members.filter((member) => member.feeWei !== undefined);
+  const paymentMembers = shared ? recipients.map(member => member.observation) : members;
   const payment = row.cancelled
     ? "cancelled"
     : (
         independent
-          ? members.every((member) => member.state === "included-success")
+          ? paymentMembers.every((member) => member.state === "included-success")
           : final.observation.state === "included-success"
       )
     ? "included"
     : (
         independent
-          ? members.every((member) => member.state === "included-revert")
+          ? paymentMembers.every((member) => member.state === "included-revert")
           : final.observation.state === "included-revert"
       )
     ? "reverted"
-    : members.some((member) => member.state === "included-success")
+    : paymentMembers.some((member) => member.state === "included-success")
     ? "partial"
-    : members.some((member) => member.state === "pending")
+    : paymentMembers.some((member) => member.state === "pending")
     ? "pending"
-    : members.some((member) => member.state === "missing")
+    : paymentMembers.some((member) => member.state === "missing")
     ? "missing"
     : "unknown";
   return {

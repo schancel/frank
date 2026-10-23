@@ -56,8 +56,12 @@ describe('UI Consistency & Rendering Glitch Contract Gate', () => {
       expect(appScss).toMatch(
         /\.q-btn:not\(\.q-btn--round\):not\(\.q-btn--rounded\)\s*\{[\s\S]*?border-radius:\s*10px/,
       )
-      expect(appScss).toMatch(/\.q-btn--rounded\s*\{[\s\S]*?border-radius:\s*999px/)
-      expect(appScss).toMatch(/\.frank-tonal-btn\s*\{[\s\S]*?border-radius:\s*10px/)
+      expect(appScss).toMatch(
+        /\.q-btn--rounded\s*\{[\s\S]*?border-radius:\s*999px/,
+      )
+      expect(appScss).toMatch(
+        /\.frank-tonal-btn\s*\{[\s\S]*?border-radius:\s*10px/,
+      )
     })
 
     it('defines canonical non-wrapping .chat-stamp-btn with auto height so multiplier badges never overflow', () => {
@@ -120,7 +124,10 @@ describe('UI Consistency & Rendering Glitch Contract Gate', () => {
     const sampleEmail: EmailItem = {
       type: 'email',
       messageId: '<msg1@signet.mx>',
-      from: { address: 'shammah.chancellor@gmail.com', name: 'Shammah Chancellor' },
+      from: {
+        address: 'shammah.chancellor@gmail.com',
+        name: 'Shammah Chancellor',
+      },
       to: [{ address: 'micropresident@signet.mx', name: 'Shammah' }],
       subject: 'Hello there',
       textBody: 'Not much. How are you?',
@@ -177,17 +184,32 @@ describe('UI Consistency & Rendering Glitch Contract Gate', () => {
           },
           stubs: {
             'q-page': { template: '<div class="q-page"><slot /></div>' },
-            'q-scroll-area': { template: '<div class="q-scroll-area"><slot /></div>' },
+            'q-scroll-area': {
+              template: '<div class="q-scroll-area"><slot /></div>',
+            },
             'q-banner': { template: '<div class="q-banner"><slot /></div>' },
             'q-card': { template: '<div class="q-card"><slot /></div>' },
-            'q-card-section': { template: '<div class="q-card-section"><slot /></div>' },
-            'q-card-actions': { template: '<div class="q-card-actions"><slot /></div>' },
+            'q-card-section': {
+              template: '<div class="q-card-section"><slot /></div>',
+            },
+            'q-card-actions': {
+              template: '<div class="q-card-actions"><slot /></div>',
+            },
             'q-item': { template: '<div class="q-item"><slot /></div>' },
-            'q-item-section': { template: '<div class="q-item-section"><slot /></div>' },
+            'q-item-section': {
+              template: '<div class="q-item-section"><slot /></div>',
+            },
             'q-avatar': { template: '<div class="q-avatar"><slot /></div>' },
             'q-badge': { template: '<span class="q-badge"><slot /></span>' },
             'q-btn': {
-              props: ['label', 'noCaps', 'unelevated', 'flat', 'rounded', 'round'],
+              props: [
+                'label',
+                'noCaps',
+                'unelevated',
+                'flat',
+                'rounded',
+                'round',
+              ],
               template:
                 '<button class="q-btn" :data-no-caps="noCaps !== undefined && noCaps !== false"><slot>{{ label }}</slot></button>',
             },
@@ -196,7 +218,9 @@ describe('UI Consistency & Rendering Glitch Contract Gate', () => {
             'q-input': { template: '<input class="q-input" />' },
             'q-separator': { template: '<hr />' },
             'q-icon': { template: '<i class="q-icon" />' },
-            'q-tooltip': { template: '<span class="q-tooltip"><slot /></span>' },
+            'q-tooltip': {
+              template: '<span class="q-tooltip"><slot /></span>',
+            },
             'q-slide-transition': { template: '<div><slot /></div>' },
             'q-menu': { template: '<div class="q-menu"><slot /></div>' },
             'q-slider': { template: '<div class="q-slider" />' },
@@ -262,10 +286,14 @@ describe('UI Consistency & Rendering Glitch Contract Gate', () => {
             'q-menu': { template: '<div class="q-menu"><slot /></div>' },
             'q-list': { template: '<div class="q-list"><slot /></div>' },
             'q-item': { template: '<div class="q-item"><slot /></div>' },
-            'q-item-section': { template: '<div class="q-item-section"><slot /></div>' },
+            'q-item-section': {
+              template: '<div class="q-item-section"><slot /></div>',
+            },
             'q-avatar': { template: '<div class="q-avatar"><slot /></div>' },
             'q-icon': { template: '<i class="q-icon" />' },
-            'q-tooltip': { template: '<span class="q-tooltip"><slot /></span>' },
+            'q-tooltip': {
+              template: '<span class="q-tooltip"><slot /></span>',
+            },
             'q-badge': { template: '<span class="q-badge"><slot /></span>' },
             'q-slider': { template: '<div class="q-slider" />' },
             'q-chip': { template: '<div class="q-chip"><slot /></div>' },

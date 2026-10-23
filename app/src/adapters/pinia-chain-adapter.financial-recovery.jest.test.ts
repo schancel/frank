@@ -139,9 +139,6 @@ describe('stealth payment recovery in outgoing reconciliation (B1)', () => {
     const directMessages = activeChain.directMessages as Required<
       typeof activeChain.directMessages
     >
-    jest
-      .spyOn(directMessages, 'fundAhead')
-      .mockResolvedValue({ outcome: 'ready', fundingTxHashes: [] })
     jest.spyOn(directMessages, 'reconcileAttempts').mockResolvedValue({})
     jest.spyOn(directMessages, 'unattributedAttempts').mockResolvedValue([])
   })

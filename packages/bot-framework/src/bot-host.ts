@@ -233,8 +233,6 @@ export class FrankBotHost {
   private readonly fundingWallet?: Wallet;
   private readonly nonceSequencer?: EVMNonceSequencer;
   private readonly instances = new Map<string, ActiveBotInstance>();
-  /** Bots whose fund-ahead failure was already logged. */
-  private readonly fundAheadWarned = new Set<string>();
   /** Bots whose wallet-wide retry is failing; warned when it starts failing, not every poll. */
   private readonly walletRetryWarned = new Set<string>();
   private readonly registrationListeners = new Set<
@@ -1010,29 +1008,6 @@ export class FrankBotHost {
     ).then(() => undefined);
   }
 
-  /**
-   * Asks the wallet to fund the next message's sender accounts ahead of time, if its chain has
-   * such accounts. Not awaited: the wallet runs one pass at a time and answers at once when the
-   * accounts are ready. A failure is the wallet's to resume and is logged once per bot.
-   */
-  private fundAhead(id: string, instance: ActiveBotInstance): void {
-    const failed = (error: unknown) => {
-      if (this.fundAheadWarned.has(id)) return;
-      this.fundAheadWarned.add(id);
-      console.warn(
-        `[bot-host] [${id}] Funding ahead failed; replies fund their own accounts:`,
-        error instanceof Error ? error.message : error
-      );
-    };
-    try {
-      void this.chain.directMessages
-        .fundAhead?.({ wallet: instance.wallet })
-        .catch(failed);
-    } catch (error) {
-      failed(error);
-    }
-  }
-
   private async maybeSendFundingLowAlert(
     knownFunderBal?: bigint
   ): Promise<void> {
@@ -1316,11 +1291,6 @@ export class FrankBotHost {
         } catch {
           /* Nothing to do. */
         }
-        // Sender accounts for the next reply, funded between polls so that reply does not wait
-        // for its own funding (#1235). Here, after this poll's recovery, and never at
-        // registration: the wallet moves nothing by being opened. Not in a poll whose recovery
-        // failed: until the wallet's earlier payments have been looked at, nothing new is funded.
-        if (!held) this.fundAhead(id, instance);
         const messages = await bounded(
           this.chain.directMessages.fetchSince({
             wallet: instance.wallet,

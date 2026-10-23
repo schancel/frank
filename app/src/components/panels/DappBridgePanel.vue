@@ -396,16 +396,14 @@
 
     <q-card flat bordered data-testid="dapp-pwa-sync-section">
       <q-card-section>
-        <div class="text-subtitle2 text-weight-medium">Account sync</div>
+        <div class="text-subtitle2 text-weight-medium">
+          {{ $t('accountSync.title') }}
+        </div>
         <p
           class="text-body2 q-mt-sm q-mb-none"
           data-testid="dapp-account-sync-help"
         >
-          To copy your account between this browser's extension and
-          {{ frankWebAppOrigin }}, open Profile in the window with your account
-          and choose Sync this account, then Show PIN. In the other window,
-          choose Sync existing account on the welcome screen and enter the PIN.
-          The receiving window must not already have an account.
+          {{ $t('accountSync.browserHelp', { origin: frankWebAppOrigin }) }}
         </p>
         <q-btn
           unelevated
@@ -418,14 +416,13 @@
           data-testid="dapp-sync-account-btn"
         />
         <div class="text-subtitle2 text-weight-medium q-mt-md">
-          WalletConnect
+          {{ $t('accountSync.walletConnectTitle') }}
         </div>
         <p
           class="text-body2 q-mt-sm q-mb-none"
           data-testid="dapp-wc-unsupported"
         >
-          WalletConnect URI pairing is not supported yet. It does not sync your
-          Frank account with the browser extension.
+          {{ $t('accountSync.walletConnectUnsupported') }}
         </p>
       </q-card-section>
     </q-card>
@@ -433,6 +430,7 @@
 </template>
 
 <script lang="ts">
+/* global globalThis */
 import {
   computed,
   defineComponent,
@@ -977,7 +975,7 @@ export default defineComponent({
       [maxPersonaIndex, () => accountStatus.status],
       ([maxSlot, status]) => {
         if (status !== 'ready') return
-        void loadSlotAddresses(maxSlot).catch(() => {})
+        void loadSlotAddresses(maxSlot).catch(() => undefined)
       },
       { immediate: true },
     )
@@ -1042,7 +1040,7 @@ export default defineComponent({
         if (!req || !useBurner) return
         const normOrigin =
           normalizeBridgeOrigin(req.origin) || req.origin.trim().toLowerCase()
-        void resolveSitePersonaAddress(normOrigin).catch(() => {})
+        void resolveSitePersonaAddress(normOrigin).catch(() => undefined)
       },
       { immediate: true },
     )

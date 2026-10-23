@@ -262,12 +262,14 @@ export default defineComponent({
               accountStatus.status !== 'ready'
             )
               return { ok: false }
-            try {
-              const signer = await accountSession.createDappSolanaSigner()
-              return { ok: true, account: { address: signer.publicKey } }
-            } catch {
-              return { ok: false }
-            }
+            return (async () => {
+              try {
+                const signer = await accountSession.createDappSolanaSigner()
+                return { ok: true, account: { address: signer.publicKey } }
+              } catch {
+                return { ok: false }
+              }
+            })()
           }
           if (
             m?.channel === FRANK_DAPP_BRIDGE_CHANNEL &&

@@ -19,6 +19,7 @@ export async function captureOutgoingFinancialOperations(
   }
   await checkOwner()
   const keys = new Set<string>()
+  let paymentOperationId: string | undefined
   const operations: {
     reference: OutgoingFinancialOperation
     binding: NativeTransferBinding
@@ -44,6 +45,18 @@ export async function captureOutgoingFinancialOperations(
       prepared.operationId !== reference.operationId
     )
       throw new Error('Outgoing financial operation is unavailable')
+    if (
+      binding.wallet === wallet &&
+      reference.chainIdentifier === wallet.chainIdentifier &&
+      capability.supportsCombinedStamp === true &&
+      prepared.asset.kind === 'native'
+    ) {
+      if (paymentOperationId !== undefined)
+        throw new Error(
+          'A message cannot combine multiple native payment operations into one stamp',
+        )
+      paymentOperationId = reference.operationId
+    }
     operations.push({ reference: { ...reference }, binding, capability })
   }
   const assertCurrent = async () => {
@@ -52,6 +65,7 @@ export async function captureOutgoingFinancialOperations(
     await checkOwner()
   }
   return {
+    ...(paymentOperationId === undefined ? {} : { paymentOperationId }),
     async expose(payloadDigest: string) {
       await assertCurrent()
       for (const operation of operations) {

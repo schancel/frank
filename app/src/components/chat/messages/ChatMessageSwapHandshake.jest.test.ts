@@ -185,7 +185,9 @@ describe('ChatMessageSwapHandshake (#1705)', () => {
     expect(wrapper1.find('[data-testid="swap-phase-badge"]').text()).toBe(
       'Maker Locked',
     )
-    await wrapper1.find('[data-testid="swap-counter-lock-btn"]').trigger('click')
+    await wrapper1
+      .find('[data-testid="swap-counter-lock-btn"]')
+      .trigger('click')
     expect(wrapper1.emitted('action')?.[0]).toEqual(['counter_lock'])
 
     const step2: SwapHandshakePayload = {

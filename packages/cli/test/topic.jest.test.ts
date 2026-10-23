@@ -4,19 +4,27 @@ import { join } from 'path'
 import * as bip39 from 'bip39'
 
 import * as monadIdentityModule from '@frank/wallet/evm-identity'
+import * as configModule from '../src/config'
+import { createEvmChain } from '@frank/wallet/chain/evm-chain'
+import { getChainRegistryByNetworkTag } from '@frank/wallet/chain/chains-registry'
 import * as topicPostClientModule from '@frank/wallet/topic-post-client'
 import * as monadTopicTallyClientModule from '@frank/wallet/evm-topic-tally-client'
 
-jest.mock('@frank/wallet/chain/evm-chain', () => ({
-  createEvmChain: jest.fn(() => ({
-    createWallet: jest.fn(async () => ({
-      chainIdentifier: 'monad-testnet',
-      getBalanceParts: jest.fn(async () => undefined),
-      close: jest.fn(async () => undefined),
-    })),
-  })),
-  loadMonadChainConfigFromEnv: jest.fn(() => ({})),
-}))
+jest.mock('@frank/wallet/chain/evm-chain', () => {
+  const actual = jest.requireActual('@frank/wallet/chain/evm-chain')
+  return {
+    ...actual,
+    createEvmChain: jest.fn(config => {
+      // Keep real registry validation; only custody and RPC effects are replaced.
+      actual.createEvmChain(config)
+      return { createWallet: jest.fn(async () => ({
+        chainIdentifier: config.chainIdentifier ?? config.rpcChain,
+        getBalanceParts: jest.fn(async () => undefined),
+        close: jest.fn(async () => undefined),
+      })) }
+    }),
+  }
+})
 import { topicPostCommand, topicReadCommand } from '../src/commands/topic'
 import { saveIdentity } from '../src/config'
 
@@ -28,6 +36,7 @@ describe('Topic Commands', () => {
   let mnemonic: string
 
   beforeEach(async () => {
+    jest.mocked(createEvmChain).mockClear()
     testDataDir = join(
       tmpdir(),
       `signet-topic-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -130,4 +139,50 @@ describe('Topic Commands', () => {
     expect(parsed[0].poster).toBe('0x1111111111111111111111111111111111111111')
     expect(parsed[0].payloadDigest).toBe('0xdigest999')
   })
+
+  it.each([
+    ['MON1', 143, 'monad-mainnet'],
+    ['MONT', 10143, 'monad-testnet'],
+    ['MONR', 20143, 'monad-regtest'],
+  ] as const)('posts on saved %s using registry policy despite conflicting environment', async (networkTag, chainId, chainIdentifier) => {
+    const prior = process.env.MONAD_RPC_CHAIN
+    process.env.MONAD_RPC_CHAIN = chainIdentifier === 'monad-mainnet' ? 'monad-regtest' : 'monad-mainnet'
+    try {
+      configModule.saveConfig(testDataDir, { ...configModule.getDefaultConfig(),
+        networkTag, chainId, relayUrl: 'http://localhost:8080', rpcUrl: 'http://127.0.0.1:8545' })
+      jest.spyOn(topicPostClientModule.TopicPostClient.prototype, 'submitTopicPost')
+        .mockResolvedValue({ payloadHashHex: 'post', transactionHashes: ['burn'] } as any)
+      await topicPostCommand('test', 'hello', { dataDir: testDataDir })
+      expect(errorSpy).not.toHaveBeenCalled()
+      expect(createEvmChain).toHaveBeenCalledTimes(1)
+      const selected = jest.mocked(createEvmChain).mock.calls[0][0]
+      const registry = getChainRegistryByNetworkTag(networkTag)!
+      expect(selected).toMatchObject({
+        chainIdentifier, networkId: chainIdentifier, rpcChain: chainIdentifier,
+        networkTag, relayBaseUrl: 'http://localhost:8080',
+        spendSpacingBlocks: registry.spendSpacingBlocks,
+        reserveBalanceWei: BigInt(registry.reserveBalanceWei!),
+        paymentPollIntervalMs: registry.paymentPollIntervalMs,
+      })
+      expect(BigInt(selected.chainId)).toBe(BigInt(chainId))
+    } finally {
+      if (prior === undefined) delete process.env.MONAD_RPC_CHAIN
+      else process.env.MONAD_RPC_CHAIN = prior
+    }
+  })
+
+  it.each([
+    ['MONT', 20143], ['MONR', 10143], ['unknown', 10143], ['XECT', 10143],
+  ])('rejects inconsistent or unsupported saved %s/%s before wallet effects', async (networkTag, chainId) => {
+    configModule.saveConfig(testDataDir, { ...configModule.getDefaultConfig(),
+      networkTag: String(networkTag), chainId: Number(chainId) })
+    const loadIdentity = jest.spyOn(configModule, 'loadIdentity')
+    const submit = jest.spyOn(topicPostClientModule.TopicPostClient.prototype, 'submitTopicPost')
+    await topicPostCommand('test', 'hello', { dataDir: testDataDir })
+    expect(errorSpy).toHaveBeenCalled()
+    expect(loadIdentity).not.toHaveBeenCalled()
+    expect(createEvmChain).not.toHaveBeenCalled()
+    expect(submit).not.toHaveBeenCalled()
+  })
+
 })

@@ -1,12 +1,10 @@
-import {
-  createEvmChain,
-  loadMonadChainConfigFromEnv,
-} from '@frank/wallet/chain/evm-chain'
+import { createEvmChain } from '@frank/wallet/chain/evm-chain'
+import { getChainRegistryByNetworkTag } from '@frank/wallet/chain/chains-registry'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { TopicPostClient } from '@frank/wallet/topic-post-client'
 import { fetchMonadTopicPostsSince } from '@frank/wallet/evm-topic-tally-client'
 
-import { loadConfig, loadIdentity, resolveDataDir } from '../config'
+import { loadConfig, loadIdentity, resolveDataDir, type SignetConfig } from '../config'
 import {
   formatMonAndWei,
   outputError,
@@ -27,6 +25,16 @@ export interface TopicReadOptions {
   json?: boolean
 }
 
+/** Resolve the saved CLI wire tag once; wallet state and RPC routing use its canonical ID. */
+function resolveTopicPostNetwork(config: SignetConfig) {
+  const network = getChainRegistryByNetworkTag(config.networkTag)
+  if (!network || network.family !== 'evm' || network.nativeChainId === undefined)
+    throw new Error(`Unsupported EVM Forum network tag: ${config.networkTag}`)
+  if (!Number.isSafeInteger(config.chainId) || BigInt(config.chainId) !== BigInt(network.nativeChainId))
+    throw new Error(`Saved chain ID does not match Forum network ${network.id}`)
+  return network
+}
+
 export async function topicPostCommand(
   topic: string,
   content: string,
@@ -37,6 +45,7 @@ export async function topicPostCommand(
   try {
     const dataDir = resolveDataDir(options.dataDir)
     const config = loadConfig(dataDir)
+    const network = resolveTopicPostNetwork(config)
     const burnValueWei = options.burn
       ? parseMonOrWei(options.burn)
       : 10000000000000000n // 0.01 MON default
@@ -48,7 +57,15 @@ export async function topicPostCommand(
     )
 
     const chain = createEvmChain({
-      ...loadMonadChainConfigFromEnv({ isTestnet: config.chainId !== 143 }),
+      chainIdentifier: network.id,
+      networkId: network.id,
+      rpcChain: network.id,
+      chainId: BigInt(network.nativeChainId!),
+      spendSpacingBlocks: network.spendSpacingBlocks,
+      reserveBalanceWei: network.reserveBalanceWei === undefined
+        ? undefined : BigInt(network.reserveBalanceWei),
+      paymentPollIntervalMs: network.paymentPollIntervalMs,
+      defaultTopicVoteValueWei: burnValueWei,
       relayBaseUrl: config.relayUrl,
       networkTag: config.networkTag,
       stampBurnAddress: config.stampBurnAddress,

@@ -6,6 +6,8 @@ import { EvmCoinList } from './evm-coin-list'
 import { MemoryRecordStore, LevelRecordStore } from './storage/evm-coin-store'
 import { EvmNativeOperationJournal, evmNativeOperationDigest } from './storage/evm-native-operation-journal'
 import * as durability from './storage/level-durability'
+import { InMemoryTopicOperationJournal } from './storage/topic-operation-journal'
+import { validateNativeTopicReferences } from './evm-input-admission'
 import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import type { EvmTransactionSetPolicy } from './evm-transaction-set-types'
 const signer = (index: number) =>
@@ -1307,6 +1309,7 @@ it('reopens completed history and returns original bytes without restoring stale
     let preparer = new EvmTransactionSetPreparer({ coins, journal, policy: () => policy, deriveChange })
     const request = { operationId: 'completed-retry', amountWei: 979000n, kdf }
     const signed = await preparer.constructTransactionSet(request)
+    await preparer.authorizeSubmission(request.operationId, signed.bundle.map(member => member.rawTransaction))
     const original = preparer.getOperation(request.operationId)!
     expect(original.members).toHaveLength(1)
     const blockHash = '0x' + 'ab'.repeat(32)
@@ -1319,6 +1322,14 @@ it('reopens completed history and returns original bytes without restoring stale
       expectedOperationHash: evmNativeOperationDigest(completed), ownerReference: 'test:completed-retry',
       sync: 'not-required', delivery: 'not-required', dependencies: 'complete',
     })
+    const topic = new InMemoryTopicOperationJournal()
+    await topic.put({
+      version: 2, kind: 'post', requestBytes: [255], writeFormat: 'forum-cbor',
+      transactionSetOperationId: request.operationId,
+      funders: [signed.bundle[0]!.sourceAccount], rawTransactions: [signed.bundle[0]!.rawTransaction],
+      transactionSetHash: signed.bundle[0]!.txHash, intendedValueWei: '979000', valueWei: '979000',
+      direction: 'up', payloadHashHex: 'ab'.repeat(32),
+    })
     const inventory = coins.all()
     expect(journal.list()).toEqual([])
     await journal.Close(); await store.close()
@@ -1327,8 +1338,20 @@ it('reopens completed history and returns original bytes without restoring stale
     coins = await EvmCoinList.open(store)
     preparer = new EvmTransactionSetPreparer({ coins, journal, policy: () => policy, deriveChange })
     const prepare = jest.spyOn(journal, 'prepare')
+    expect((await validateNativeTopicReferences(journal, topic)).size).toBe(1)
+    const reference = topic.getAll()[0]!
+    const references = jest.spyOn(topic, 'getAll')
+    references.mockReturnValue([{ ...reference, intendedValueWei: '978999' }])
+    await expect(validateNativeTopicReferences(journal, topic)).rejects.toThrow('invalid-provenance')
+    references.mockReturnValue([{ ...reference, transactionSetOperationId: 'missing-history' }])
+    await expect(validateNativeTopicReferences(journal, topic)).rejects.toThrow('invalid-provenance')
+    references.mockRestore()
     expect(await preparer.readOperation(request.operationId)).toEqual(completed)
     expect(await preparer.readTransactionSet(request.operationId)).toEqual(signed)
+    const authorize = jest.spyOn(journal, 'authorizeTransactionSet')
+    await preparer.authorizeSubmission(request.operationId, signed.bundle.map(member => member.rawTransaction))
+    expect(authorize).not.toHaveBeenCalled()
+    await expect(preparer.authorizeSubmission(request.operationId, [])).rejects.toThrow('signed bytes conflict')
     expect(await preparer.constructTransactionSet(request)).toEqual(signed)
     expect(coins.all()).toEqual(inventory)
     expect(prepare).not.toHaveBeenCalled()
@@ -1337,4 +1360,24 @@ it('reopens completed history and returns original bytes without restoring stale
   } finally {
     await journal.Close(); await store.close(); await rm(directory, { recursive: true, force: true })
   }
+})
+
+
+it('does not replay archived cancellation over newer inventory', async () => {
+  const { preparer, coins, journal } = await setup([1000000n])
+  try {
+    await preparer.constructTransactionSet({ operationId: 'cancelled-history', amountWei: 979000n, kdf })
+    expect(await preparer.releaseUnexposed('cancelled-history')).toBe(true)
+    const cancelled = preparer.getOperation('cancelled-history')!
+    await journal.archiveCompleted(cancelled.operationId, {
+      expectedOperationHash: evmNativeOperationDigest(cancelled), ownerReference: 'test:cancelled-history',
+      sync: 'not-required', delivery: 'not-required', dependencies: 'complete',
+    })
+    const replayCancellation = jest.spyOn(coins, 'restoreTransactionSetCancellation')
+    const inventory = coins.all()
+    expect(await preparer.releaseUnexposed('cancelled-history')).toBe(true)
+    expect(replayCancellation).not.toHaveBeenCalled()
+    expect(coins.all()).toEqual(inventory)
+    await expect(preparer.constructTransactionSet({ operationId: 'cancelled-history', amountWei: 979000n, kdf })).rejects.toThrow('conflicts with original intent')
+  } finally { await journal.Close() }
 })

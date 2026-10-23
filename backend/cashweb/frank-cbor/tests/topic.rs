@@ -147,11 +147,11 @@ fn submission_with(post: Vec<u8>, pad: usize) -> Vec<u8> {
 fn r6_frame_limits_bound_complete_roots() {
     let big = post_with(vec![7; 524_288]);
     assert_eq!(outcome(&submission_with(big.clone(), 0)), "parsed");
-    // A type-10 frame over 1 MiB is a resource error before any field is read.
+    // A type-41 frame over 1 MiB is a resource error before any field is read.
     let padded = submission_with(big.clone(), 1_048_576 - big.len());
     assert!(padded.len() > 1_048_576);
     assert_eq!(outcome(&padded), "resource@8.1");
-    // A type-11 frame is bounded at 64 KiB.
+    // A type-42 frame is bounded at 64 KiB.
     let vote = fr(
         TYPE_TOPIC_VOTE_SUBMISSION,
         &cbor_map(vec![
@@ -304,14 +304,14 @@ fn the_pre_topic_corpus_behaves_identically_when_topic_types_are_listed() {
         .supported_schemas
         .iter_mut()
         .find(|schema| schema.type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
-        .expect("type 5")
+        .expect("type 11")
         .schema_version = 1; // The frozen corpus predates the production DM schema.
     let mut topic_only_context = topic_context();
     topic_only_context
         .supported_schemas
         .iter_mut()
         .find(|schema| schema.type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
-        .expect("type 5")
+        .expect("type 11")
         .schema_version = 1;
     let mut checked = 0;
     for case in manifest["cases"].as_array().unwrap() {

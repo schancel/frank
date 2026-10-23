@@ -1,5 +1,5 @@
 /**
- * A dealer-bot `blackjack-move` item as bytes: the type-18 frame `@frank/codec` already defines
+ * A dealer-bot `blackjack-move` item as bytes: the type-26 frame `@frank/codec` already defines
  * for the closed move shapes. The canonical direct message path does NOT carry this item type
  * (`NOT_CARRIED_ITEM_TYPES` in `../wire.ts`): it is refused on send and one that arrives is kept
  * as unsupported. The plugin remains so messages already stored still render.

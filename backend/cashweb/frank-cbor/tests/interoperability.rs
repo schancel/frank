@@ -173,25 +173,25 @@ fn assert_direct_nested_opaque(payload_frame: &frank_cbor::ParsedFrame) {
         ..
     }) = payload_frame.typed.as_deref()
     else {
-        panic!("direct payload was not typed as type 5")
+        panic!("direct payload was not typed as type 11")
     };
     let ValidationResult::Parsed(encrypted) =
-        validate_frame(ciphertext, &typed_context()).expect("type-6 ciphertext fixture")
+        validate_frame(ciphertext, &typed_context()).expect("type-12 ciphertext fixture")
     else {
-        panic!("type-6 ciphertext fixture was not parsed")
+        panic!("type-12 ciphertext fixture was not parsed")
     };
     let Some(TypedPayload::EncryptedContent { revision_frame, .. }) = encrypted.typed.as_deref()
     else {
-        panic!("ciphertext was not typed as type 6")
+        panic!("ciphertext was not typed as type 12")
     };
     let Some(TypedPayload::MessageRevision { items, .. }) = revision_frame.typed.as_deref() else {
-        panic!("revision was not typed as type 8")
+        panic!("revision was not typed as type 20")
     };
     let ChildFrame::Parsed(container) = &items[1] else {
         panic!("nested container was not parsed")
     };
     let Some(TypedPayload::ContainerItem { items, .. }) = container.typed.as_deref() else {
-        panic!("nested frame was not typed as type 16")
+        panic!("nested frame was not typed as type 21")
     };
     let ChildFrame::Retained(opaque) = &items[1] else {
         panic!("future nested item was not retained")
@@ -233,9 +233,9 @@ fn rust_map_insertion_orders_converge_on_the_complete_frame() {
 
 fn parsed_type5(frame: &[u8]) -> frank_cbor::ParsedFrame {
     let ValidationResult::Parsed(parsed) =
-        validate_frame(frame, &typed_context()).expect("valid type-5 fixture")
+        validate_frame(frame, &typed_context()).expect("valid type-11 fixture")
     else {
-        panic!("expected parsed type-5 frame")
+        panic!("expected parsed type-11 frame")
     };
     parsed
 }
@@ -289,7 +289,7 @@ fn crypto_document() -> serde_json::Value {
         "payment_child_index": 0,
         "t4_hex": hex::encode(t4),
         "mutated_t4_hex": hex::encode(mutated_t4),
-        "signature_input": "T1 SHA-256 digest of the complete type-5 frame transcript",
+        "signature_input": "T1 SHA-256 digest of the complete type-11 frame transcript",
         "signature_public_key_hex": hex::encode(public.serialize()),
         "signature_der_hex": hex::encode(signature.serialize_der()),
     })

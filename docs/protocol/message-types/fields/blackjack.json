@@ -3,7 +3,7 @@
   "structs": [
     {
       "key": "blackjack-item",
-      "description": "Type 18 schema 1 (closed). Key 1 is the action code (blackjack-action); each action is one closed shape.",
+      "description": "Type 26 schema 1 (closed). Key 1 is the action code (blackjack-action); each action is one closed shape.",
       "fields": {
         "game-id": 0,
         "action": 1,
@@ -92,7 +92,7 @@
     },
     {
       "key": "blackjack-hand-item",
-      "description": "Type 18 schema 2 (closed): one peer-to-peer hand. Key 1 is the action code (blackjack-hand-action).",
+      "description": "Type 26 schema 2 (closed): one peer-to-peer hand. Key 1 is the action code (blackjack-hand-action).",
       "fields": {
         "game-id": 0,
         "action": 1,
@@ -165,7 +165,7 @@
     },
     {
       "key": "blackjack-hand-v3-item",
-      "description": "Type 18 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action).",
+      "description": "Type 26 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action).",
       "fields": {
         "game-id": 0,
         "action": 1,

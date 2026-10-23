@@ -620,7 +620,7 @@ fn retained_order_high_reader_and_required_family_remain_distinct() {
     assert!(
         matches!(parse_frame(&welcome,&old).unwrap(),ValidationResult::Retained(r)if r.frame==welcome)
     );
-    for kind in TYPE_DIRECT_MESSAGE_DELIVERY..=TYPE_FORUM_OPERATION_STATUS {
+    for kind in frank_cbor::message_types::OPEN_ITEM_FIELD_FORBIDDEN_TYPES {
         let raw = container(vec![common::fr(kind, &cbor_map(vec![]))]);
         assert_eq!(
             outcome(parse_frame(&raw, &default_context())),

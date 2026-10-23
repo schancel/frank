@@ -1,7 +1,7 @@
 # Private canonical Forum storage
 
 This document specifies #769's private server records. It does not allocate public
-frame types. The active Forum codec owns type-9 schema 2 and types 12–15. #770 owns
+frame types. The active Forum codec owns type-40 schema 2 and types 43–46. #770 owns
 the normal client switch, complete-page publication and predecessor retirement.
 
 ## Ownership and rollback
@@ -29,7 +29,7 @@ An operation key is `e || raw_transaction_hash32`. Its value is:
 | Key | Value |
 | --- | --- |
 | 0 | Storage version 1 |
-| 1 | Exact submitted type-10 or type-11 frame bytes |
+| 1 | Exact submitted type-41 or type-42 frame bytes |
 | 2 | First validated-observation timestamp |
 | 3 | State 1 pending or 2 confirmed/published |
 | 4, 5 | Verified block number and transaction index, u64 |
@@ -54,7 +54,7 @@ unavailable. Rebuild never rewrites event authority or discards uncertain operat
 ## Admission and economic observations
 
 Validate codec, exact network/target, signature, hash, chain, destination, T8 calldata,
-type-10 up direction and value 1..i64::MAX before durable admission or broadcast.
+type-41 up direction and value 1..i64::MAX before durable admission or broadcast.
 Commit the exact pending event and capacity reservation in a synchronous WAL-backed
 batch before sending. Pending capacity is 4096 operations and 64 MiB of charged
 records/accounting, whichever comes first. Exact retries can reconcile at capacity.

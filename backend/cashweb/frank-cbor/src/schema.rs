@@ -46,13 +46,13 @@ use crate::model::{
     ForumView,
 };
 
-/// The schema versions a type-4 parse needs: the envelope's (kept for S10a.2) and the effective
+/// The schema versions a type-1 parse needs: the envelope's (kept for S10a.2) and the effective
 /// one, the envelope's or the reader's highest supported when the frame is newer (V6.3).
 #[derive(Clone, Copy)]
 pub(crate) struct SchemaVersions {
     pub envelope: u32,
     pub effective: u32,
-    /// The envelope's min reader version; a type-18 hand shape is read only when it is >= 2.
+    /// The envelope's min reader version; a type-26 hand shape is read only when it is >= 2.
     pub min_reader: u32,
 }
 
@@ -316,7 +316,7 @@ fn directory_account(
     Ok(key)
 }
 
-/// A type-5 stamp point (T3b encoding rules): 33 compressed bytes on the curve. The parser
+/// A type-11 stamp point (T3b encoding rules): 33 compressed bytes on the curve. The parser
 /// rejects a prefix other than 02 or 03, an x at or above the field prime, an off-curve x, and
 /// the all-zero value (the point at infinity has no compressed encoding).
 fn point(v: Option<&CborValue>, path: &str) -> Result<Vec<u8>, CodecError> {
@@ -333,7 +333,7 @@ const SECP256K1_ORDER: [u8; 32] = [
     0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41,
 ];
 
-/// The type-5 DLEQ proof `c || s` (T3b encoding rules): 64 bytes, both scalars in `1..n-1`.
+/// The type-11 DLEQ proof `c || s` (T3b encoding rules): 64 bytes, both scalars in `1..n-1`.
 fn proof(v: Option<&CborValue>, path: &str) -> Result<Vec<u8>, CodecError> {
     let bytes = bstr(v, path, 64, 64)?;
     for half in bytes.chunks(32) {
@@ -1165,7 +1165,13 @@ pub(crate) fn parse_draft(
     schema: SchemaVersions,
 ) -> Result<Draft, CodecError> {
     let path = "root/payload";
-    if (TYPE_FORUM_VIEW..=TYPE_FORUM_OPERATION_STATUS).contains(&type_id) {
+    if matches!(
+        type_id,
+        TYPE_FORUM_VIEW
+            | TYPE_FORUM_TOPIC_PAGE
+            | TYPE_FORUM_DISCOVERY_PAGE
+            | TYPE_FORUM_OPERATION_STATUS
+    ) {
         return parse_forum_read(type_id, payload, allow, path);
     }
     match type_id {
@@ -1731,7 +1737,7 @@ pub(crate) fn parse_draft(
             if map.get(k::NETWORK) != Some(&CborValue::Text("frank".to_string())) {
                 return Err(bad(
                     &at(path, k::NETWORK),
-                    "the type-8 domain must be the text \"frank\"",
+                    "the type-20 domain must be the text \"frank\"",
                 ));
             }
             let items = as_list(
@@ -1928,7 +1934,7 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             schema_version,
             ..
         } => {
-            // Both type-5 schemas share fields 1-3.
+            // Both type-11 schemas share fields 1-3.
             use mf::recipient_encrypted_payload_v2 as k;
             const _: () = assert!(
                 k::SENDER == mf::recipient_encrypted_payload_v1::SENDER

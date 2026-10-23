@@ -1149,7 +1149,7 @@ mod tests {
         fields.iter_mut().find(|(k, _)| *k == 99).unwrap().1 = CborValue::Bytes(vec![1, 2, 3]);
         let conflict = frank_cbor::encode_frame(
             frank_cbor::EnvelopeFields {
-                type_id: 10,
+                type_id: frank_cbor::message_types::TYPE_TOPIC_POST_SUBMISSION,
                 schema_version: 2,
                 min_reader_version: 1,
             },

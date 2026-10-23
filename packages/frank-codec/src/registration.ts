@@ -166,7 +166,7 @@ export interface DirectoryStatementBuilderParams {
 }
 
 /**
- * Encodes the Type 4 directory statement CBOR map entries, including optional field 14.
+ * Encodes the Type 1 directory statement CBOR map entries, including optional field 14.
  */
 export function buildDirectoryStatementMap(
   params: DirectoryStatementBuilderParams,
@@ -265,7 +265,7 @@ export function buildDirectoryStatementMap(
 }
 
 /**
- * Encodes a complete Type 4 directory statement frame.
+ * Encodes a complete Type 1 directory statement frame.
  */
 export function encodeDirectoryStatement(
   params: DirectoryStatementBuilderParams,

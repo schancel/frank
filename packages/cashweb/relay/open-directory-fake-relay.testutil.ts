@@ -18,6 +18,8 @@ import {
   encodeFrame,
   fromHex,
   toHex,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
   verifyPreviewDirectoryEvidence,
   type RelayBinding,
   type Timestamp,
@@ -97,7 +99,11 @@ export function testAccount(seed: number) {
         ? fromHex(input.claimSubject)
         : secp256k1.getPublicKey(auth, true)
       const statement = encodeFrame(
-        { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+        {
+          typeId: TYPE_DIRECTORY_STATEMENT,
+          schemaVersion: 4,
+          minReaderVersion: 4,
+        },
         cborMap([
           [0, input.network],
           [1, account(claimed)],
@@ -128,7 +134,11 @@ export function testAccount(seed: number) {
         })
         .toDERRawBytes()
       return encodeFrame(
-        { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+        {
+          typeId: TYPE_DIRECTORY_ATTESTATION,
+          schemaVersion: 1,
+          minReaderVersion: 1,
+        },
         cborMap([
           [0, statement],
           [

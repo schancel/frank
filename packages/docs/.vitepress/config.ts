@@ -92,7 +92,7 @@ export default withMermaid(
               link: '/protocol/dns-routing',
             },
             {
-              text: 'Forwarding Envelope (Type 25)',
+              text: 'Forwarding Envelope (Type 13)',
               link: '/protocol/forwarding-envelope',
             },
             {

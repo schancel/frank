@@ -36,7 +36,7 @@ const be = (v: bigint): Uint8Array => {
 const P = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn
 const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
 
-describe('type-5 stamp point encoding (T3b)', () => {
+describe('type-11 stamp point encoding (T3b)', () => {
   it('accepts the secp256k1 generator and the T3c points, in either parity', () => {
     const g = new Uint8Array(33)
     g[0] = 0x02
@@ -83,7 +83,7 @@ describe('type-5 stamp point encoding (T3b)', () => {
 })
 
 describe('typed exposure of the stamp fields', () => {
-  it("reads E, X and the proof from a type-5 frame, and P' from a statement", () => {
+  it("reads E, X and the proof from a type-11 frame, and P' from a statement", () => {
     const r = validateFrame(
       fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, type5Payload()),
       ctx,
@@ -103,7 +103,7 @@ describe('typed exposure of the stamp fields', () => {
     expect(s.typed.schemaVersion).toBe(2)
   })
 
-  it('types production suite 1 only in type-5 schema 2', () => {
+  it('types production suite 1 only in type-11 schema 2', () => {
     const payload = M([
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.network, 'monad-testnet'],
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender, acct1(9)],
@@ -152,7 +152,7 @@ describe('typed exposure of the stamp fields', () => {
   })
 })
 
-describe('type-4 schema versions (S10a.1)', () => {
+describe('type-1 schema versions (S10a.1)', () => {
   it('requires field 8 exactly from schema 2', () => {
     const noKey = statementPayload({ stampKey: null })
     expect(outcome(fr(TYPE_DIRECTORY_STATEMENT, noKey, 1, 1))).toBe('parsed')
@@ -168,7 +168,7 @@ describe('type-4 schema versions (S10a.1)', () => {
   })
 
   it("reads a newer statement schema through the reader's highest one", () => {
-    // Schema 3 read by a reader whose highest type-4 schema is 2: field 8 is still required.
+    // Schema 3 read by a reader whose highest type-1 schema is 2: field 8 is still required.
     expect(
       outcome(
         fr(

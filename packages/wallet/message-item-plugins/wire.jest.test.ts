@@ -23,6 +23,13 @@ import {
   validateFrame,
   type ChildFrame,
   type Encodable,
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_BLACKJACK_MESSAGE_ITEM,
+  TYPE_CHANNEL_UPDATE,
+  TYPE_EMAIL_MESSAGE_ITEM,
+  TYPE_STEALTH_MESSAGE_ITEM,
+  TYPE_TEXT_MESSAGE_ITEM,
 } from '@frank/codec'
 
 import {
@@ -64,14 +71,14 @@ const registry = installGroupMessageItemPlugins(
 function children(frames: Uint8Array[]): ChildFrame[] {
   const revision = validateFrame(
     encodeFrame(
-      { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: TYPE_MESSAGE_CONTENT_REVISION, schemaVersion: 1, minReaderVersion: 1 },
       new Map<number, Encodable>([
         [0, 'frank'],
         [1, frames],
       ]),
     ),
   )
-  if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+  if (revision.kind !== 'parsed' || revision.typed?.type !== TYPE_MESSAGE_CONTENT_REVISION)
     throw new Error('expected a revision')
   return revision.typed.items
 }
@@ -95,12 +102,12 @@ describe('the dispatch rule', () => {
       }),
     )
     expect(rules).toEqual({
-      'text': 'dedicated:17',
-      'blackjack-hand': 'dedicated:18',
-      'stealth': 'dedicated:19',
-      'stealth-asset': 'dedicated:19',
-      'channel-update': 'dedicated:24',
-      'email': 'dedicated:26',
+      'text': `dedicated:${TYPE_TEXT_MESSAGE_ITEM}`,
+      'blackjack-hand': `dedicated:${TYPE_BLACKJACK_MESSAGE_ITEM}`,
+      'stealth': `dedicated:${TYPE_STEALTH_MESSAGE_ITEM}`,
+      'stealth-asset': `dedicated:${TYPE_STEALTH_MESSAGE_ITEM}`,
+      'channel-update': `dedicated:${TYPE_CHANNEL_UPDATE}`,
+      'email': `dedicated:${TYPE_EMAIL_MESSAGE_ITEM}`,
       'image': 'generic:27',
       'reply': 'generic:27',
       'digital-goods': 'generic:27',
@@ -394,14 +401,14 @@ describe('receiving', () => {
 
   it('keeps a known frame type that has no item (a container) as unsupported', () => {
     const container = encodeFrame(
-      { typeId: 16, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: TYPE_CONTAINER_MESSAGE_ITEM, schemaVersion: 1, minReaderVersion: 1 },
       new Map<number, Encodable>([[0, [text]]]),
     )
     expect(receive([container])).toEqual([
       {
         type: 'unsupported',
         reason: 'unknown-type',
-        frameType: 16,
+        frameType: TYPE_CONTAINER_MESSAGE_ITEM,
         frame: toHex(container),
       },
     ])
@@ -621,7 +628,7 @@ describe('a swap offer and a legacy blackjack move from a peer', () => {
     expect(registry.tallyValue([arrived])).toBe(0)
   })
 
-  it('a blackjack-move bet arrives as unsupported in the generic frame and in a bare type-18 frame', () => {
+  it('a blackjack-move bet arrives as unsupported in the generic frame and in a bare blackjack frame', () => {
     const bet = {
       type: 'blackjack-move',
       gameId: 'g',
@@ -633,7 +640,7 @@ describe('a swap offer and a legacy blackjack move from a peer', () => {
       itemType: 'blackjack-move',
       data: bytes,
     })
-    // Its bytes are a type-18 schema-1 frame; sent bare, it is not a blackjack hand either.
+    // Its bytes are a blackjack schema-1 frame; sent bare, it is not a blackjack hand either.
     for (const frame of [generic, bytes]) {
       const [arrived] = receive([frame])
       expect(arrived.type).toBe('unsupported')

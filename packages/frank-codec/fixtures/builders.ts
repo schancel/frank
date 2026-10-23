@@ -194,9 +194,9 @@ export const revision8 = (items: Uint8Array[]): Fields =>
     [MESSAGE_CONTENT_REVISION.items, items],
   ])
 
-/** The README section 1 worked example: a type-17 item `{0: "hi"}` (23 bytes). */
+/** The README section 1 worked example: a type-22 text item `{0: "hi"}` (23 bytes). */
 export const WORKED_TEXT_HI = hex(
-  '46524e4b010000000e a4 0011 0101 0201 0345 a1 00 62 6869',
+  '46524e4b010000000e a4 0016 0101 0201 0345 a1 00 62 6869',
 )
 /** The README section 1 retention example: `0xffff0001`, payload `a0`. */
 export const WORKED_RETAINED = hex(

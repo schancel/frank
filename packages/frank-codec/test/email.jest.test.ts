@@ -29,7 +29,7 @@ function sampleAccount(seed: number): AccountRef {
   return { keyType: 1, keyBytes: k }
 }
 
-describe('Type 26: Email Message Item', () => {
+describe('Type 23: Email Message Item', () => {
   const aliceParty: EmailParty = {
     address: 'alice@example.com',
     name: 'Alice Smith',
@@ -80,7 +80,7 @@ describe('Type 26: Email Message Item', () => {
     expect(isEmailMessageItemFrame(validated)).toBe(true)
 
     const typed = validated.typed!
-    expect(typed.type).toBe(26)
+    expect(typed.type).toBe(TYPE_EMAIL_MESSAGE_ITEM)
     expect(typed.messageId).toBe('<msg-12345@example.com>')
     expect(typed.from.address).toBe('alice@example.com')
     expect(typed.from.name).toBe('Alice Smith')

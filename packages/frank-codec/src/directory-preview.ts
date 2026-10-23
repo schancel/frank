@@ -41,7 +41,7 @@ export interface PreviewDirectoryEvidence {
   attestationFrame: ParsedFrame
   statementFrame: ParsedFrame
   statement: PreviewDirectoryStatement
-  /** T1 of the exact complete type-4 frame, never the type-2 wrapper. */
+  /** T1 of the exact complete type-1 frame, never the type-2 wrapper. */
   statementHash: Uint8Array
   signatureDigest: Uint8Array
 }

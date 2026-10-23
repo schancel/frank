@@ -31,6 +31,10 @@ import {
   encodeForumReadFrame,
   type Encodable,
   validateFrame,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+  TYPE_FORUM_OPERATION_STATUS,
 } from '@frank/codec'
 
 import { MonadIdentity } from '../evm-identity'
@@ -247,11 +251,11 @@ function makeFakeChain(
 
 function decodePostSubmission(putBody: Uint8Array) {
   const decoded = validateFrame(putBody, defaultContext({ operation: 'typed' }))
-  if (decoded.kind !== 'parsed' || decoded.typed?.type !== 10) {
-    throw new Error('expected a type-10 CBOR submission')
+  if (decoded.kind !== 'parsed' || decoded.typed?.type !== TYPE_TOPIC_POST_SUBMISSION) {
+    throw new Error('expected a topic post submission')
   }
   const post = decoded.typed.postFrame.typed
-  if (post?.type !== 9) throw new Error('expected an embedded type-9 post')
+  if (post?.type !== TYPE_TOPIC_POST) throw new Error('expected an embedded topic post')
   return { submission: decoded.typed, post }
 }
 
@@ -260,7 +264,7 @@ function confirmedStatus(body: Uint8Array): Uint8Array {
   const parsed = validateFrame(body, defaultContext())
   if (
     parsed.kind !== 'parsed' ||
-    (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)
+    (parsed.typed?.type !== TYPE_TOPIC_POST_SUBMISSION && parsed.typed?.type !== TYPE_TOPIC_VOTE_SUBMISSION)
   )
     throw new Error('Expected canonical operation')
   const operation = parsed.typed
@@ -269,11 +273,11 @@ function confirmedStatus(body: Uint8Array): Uint8Array {
   )
   observedBurns.set(tx.hash!.toLowerCase(), tx)
   const hash =
-    operation.type === 10
+    operation.type === TYPE_TOPIC_POST_SUBMISSION
       ? contentHash(operation.postFrame)
       : operation.targetHash
   return encodeForumReadFrame(
-    15,
+    TYPE_FORUM_OPERATION_STATUS,
     new Map<number, Encodable>([
       [0, operation.network],
       [1, body],
@@ -1209,7 +1213,7 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
     const parsed = validateFrame(put.body, defaultContext())
     if (
       parsed.kind !== 'parsed' ||
-      (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)
+      (parsed.typed?.type !== TYPE_TOPIC_POST_SUBMISSION && parsed.typed?.type !== TYPE_TOPIC_VOTE_SUBMISSION)
     )
       throw new Error('expected a topic post or vote submission')
     return Transaction.from(

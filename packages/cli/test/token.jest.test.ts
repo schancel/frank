@@ -4,7 +4,7 @@
  * Verifies:
  * - Token listing and filtering across chains
  * - Local LevelDB TokenUtxoStore recording and zero-RPC balance queries
- * - Encrypted Type 6 DM transfers with coin selection and HD change UTXO creation
+ * - Encrypted Type 12 DM transfers with coin selection and HD change UTXO creation
  * - Command dispatch via Commander CLI
  */
 

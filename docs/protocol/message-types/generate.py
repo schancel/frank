@@ -260,6 +260,44 @@ def hand_written_ids(types: list[dict], files: list[str]) -> list[str]:
     return problems
 
 
+# Protocol prose and CDDL that name type identifiers by number.
+PROSE_GLOBS = ("docs/protocol/cbor/*.md", "docs/protocol/cbor/*.cddl", "packages/docs/cbor/*.md")
+# "type 17", "type-17", "type17", "types 12–15", "types 9, 10 and 11"; not "key type 1" etc.
+PROSE_TYPE_RE = re.compile(
+    r"(?<![A-Za-z_-])(?<!key )(?<!key-)(?<!account )(?<!section )(?<!fact )(?<!object )"
+    r"[Tt]ypes? ?-?(?P<ids>\d+(?:(?:\s*(?:,|and|or|–|\.\.)\s*|-)\d+(?!\d|\s*[KMG]iB|\s*bytes))*)\b"
+)
+# A CDDL constant that is a type id carries `type-id: <key>` in its comment.
+CDDL_TYPE_ID_RE = re.compile(r"(?P<value>\d+)\s*,?\s*;.*?\btype-id: (?P<key>[a-z0-9-]+)")
+
+
+def prose_problems(types: list[dict]) -> list[str]:
+    """Prose and CDDL that name a type id the registry does not assign, or a wrong CDDL constant.
+
+    A small number (below 100) after "type" in the CBOR protocol prose must be an assigned id, so
+    a renumbering cannot leave a stale unassigned number behind. It cannot tell whether an assigned
+    number names the intended type; the `type-id:` CDDL annotation can, and is checked exactly.
+    """
+    ids = {t["id"]: t["key"] for t in types}
+    by_key = {t["key"]: t["id"] for t in types}
+    problems = []
+    for pattern in PROSE_GLOBS:
+        for path in sorted(ROOT.glob(pattern)):
+            rel = path.relative_to(ROOT)
+            for n, line in enumerate(path.read_text().splitlines(), 1):
+                for m in PROSE_TYPE_RE.finditer(line):
+                    for raw in re.findall(r"\d+", m["ids"]):
+                        if int(raw) < 100 and int(raw) not in ids:
+                            problems.append(f"{rel}:{n}: names type {raw}, which the registry does not assign")
+                for m in CDDL_TYPE_ID_RE.finditer(line):
+                    want = by_key.get(m["key"])
+                    if want is None:
+                        problems.append(f"{rel}:{n}: type-id: {m['key']} is not a registered type")
+                    elif int(m["value"]) != want:
+                        problems.append(f"{rel}:{n}: {m['value']} should be {m['key']}'s id {want}")
+    return problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="fail instead of writing")
@@ -281,6 +319,7 @@ def main() -> int:
     problems += field_registry.cddl_problems(ROOT, structs)
     problems += field_registry.raw_literal_problems(ROOT, files)
     problems += field_registry.rust_test_literal_problems(ROOT, files)
+    problems += prose_problems(types)
     if args.check and stale:
         problems = [f"{p}: stale; run python3 {Path(__file__).relative_to(ROOT)}" for p in stale] + problems
     for p in problems:

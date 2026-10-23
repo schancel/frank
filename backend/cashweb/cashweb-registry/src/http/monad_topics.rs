@@ -1,4 +1,4 @@
-//! Canonical Forum HTTP boundary: schema-2 content and exact type-10/11 operations.
+//! Canonical Forum HTTP boundary: schema-2 content and exact type-41/11 operations.
 //! Normal post/reply/read/list/discovery/vote/status uses CBOR exclusively. Historical
 //! ordinary DB records and unsupported wallet obligations remain retained; these routes
 //! never decode, translate, settle or replay their predecessor representations.
@@ -603,7 +603,7 @@ mod tests {
 
     fn cbor_submission(post_frame: &[u8], burn_tx: &[u8]) -> Vec<u8> {
         cbor_frame(
-            10,
+            frank_cbor::message_types::TYPE_TOPIC_POST_SUBMISSION,
             cbor_map(vec![
                 (0, CborValue::Text("monad-testnet".to_string())),
                 (1, CborValue::Bytes(post_frame.to_vec())),

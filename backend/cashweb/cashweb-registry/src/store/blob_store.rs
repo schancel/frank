@@ -14,7 +14,7 @@
 //!    - Neither [`EncryptedAttachmentManifest`] nor [`BlobStore`] carries any application
 //!      metadata (zero filenames, MIME types, media kinds, dimensions, durations, thumbnails,
 //!      call associations, or commerce semantics). All such fields reside inside the
-//!      end-to-end encrypted `Type 8` (`ApplicationItem`) message payload alongside the
+//!      end-to-end encrypted `Type 20` (`ApplicationItem`) message payload alongside the
 //!      256-bit symmetric key $K_{\text{blob}}$ and base nonce.
 //! 3. **Deterministic Per-Chunk Nonce & AAD Derivation**:
 //!    - [`derive_chunk_nonce`] and [`derive_chunk_aad`] bind every chunk's AEAD encryption to

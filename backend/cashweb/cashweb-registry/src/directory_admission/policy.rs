@@ -170,7 +170,7 @@ pub(crate) fn authenticate(anchor: &Anchor, wrapper: &[u8]) -> Result<Record, Ad
     })
 }
 
-/// Cheap bounded generic-envelope pass using the existing codec; it does not open the type-4
+/// Cheap bounded generic-envelope pass using the existing codec; it does not open the type-1
 /// child or validate any curve point/signature. This makes supplied byte lengths trustworthy
 /// before costly typed decoding, retained-history verification, or candidate authentication.
 pub(crate) fn statement_bytes(wrapper: &[u8]) -> Result<Vec<u8>, AdmissionError> {

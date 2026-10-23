@@ -40,6 +40,7 @@ import {
   BOT_ROLE_FAUCET,
   defaultContext,
   validateFrame,
+  TYPE_DIRECTORY_STATEMENT,
 } from '@frank/codec'
 import { publicFromPrivate } from '@frank/nakamoto'
 import { validateProfileDisplayName } from './profile-display-name'
@@ -847,8 +848,8 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
     if (validated.typed?.type === 2) {
       const stmtFrame = validated.typed.statementFrame
       expect(stmtFrame.kind).toBe('parsed')
-      expect(stmtFrame.typed?.type).toBe(4)
-      if (stmtFrame.typed?.type === 4) {
+      expect(stmtFrame.typed?.type).toBe(TYPE_DIRECTORY_STATEMENT)
+      if (stmtFrame.typed?.type === TYPE_DIRECTORY_STATEMENT) {
         expect(stmtFrame.typed.network).toBe('monad-testnet')
         expect(stmtFrame.typed.subject.keyBytes).toEqual(
           new Uint8Array(identity.compressedPubKey),
@@ -956,7 +957,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
     if (validated.kind === 'parsed' && validated.typed?.type === 2) {
       const stmtFrame = validated.typed.statementFrame
       expect(stmtFrame.kind).toBe('parsed')
-      if (stmtFrame.kind === 'parsed' && stmtFrame.typed?.type === 4) {
+      if (stmtFrame.kind === 'parsed' && stmtFrame.typed?.type === TYPE_DIRECTORY_STATEMENT) {
         expect(stmtFrame.typed.accountType).toBe(ACCOUNT_TYPE_SERVICE)
         expect(stmtFrame.typed.botRole).toBe(BOT_ROLE_FAUCET)
       }

@@ -278,7 +278,7 @@ export function projectBlackjackItem(parsed: ParsedFrame): {
   return { frame: new Uint8Array(parsed.frame), item }
 }
 
-/** The ten closed peer-to-peer hand shapes (type 18, schema 2). Hashes are 64 bare lowercase hex
+/** The ten closed peer-to-peer hand shapes (type 26, schema 2). Hashes are 64 bare lowercase hex
  * characters, quantities exact decimal strings. No shape carries an amount of money: a wager,
  * payout or refund is the stamp of the message that carries the item. */
 export type BlackjackHandItem = {
@@ -383,7 +383,7 @@ export function encodeBlackjackHandItem(item: BlackjackHandItem): Uint8Array {
   return frame
 }
 
-/** True for a parsed type-18 child that is a schema-2 hand item. */
+/** True for a parsed type-26 child that is a schema-2 hand item. */
 export function isBlackjackHandFrame(parsed: ParsedFrame): boolean {
   return (
     parsed.typed?.type === TYPE_BLACKJACK_MESSAGE_ITEM &&
@@ -458,7 +458,7 @@ export function projectBlackjackHandItem(parsed: ParsedFrame): {
   return { frame: new Uint8Array(parsed.frame), item }
 }
 
-/** The closed hand shapes with entropy from both sides (type 18, schema 3). Hashes are 64 bare
+/** The closed hand shapes with entropy from both sides (type 26, schema 3). Hashes are 64 bare
  * lowercase hex characters, quantities exact decimal strings. No shape states a card, an outcome
  * or an amount of money. */
 export type BlackjackHandV3Item = {
@@ -548,7 +548,7 @@ export function encodeBlackjackHandV3Item(
   return frame
 }
 
-/** True for a parsed type-18 child that is a schema-3 hand item. */
+/** True for a parsed type-26 child that is a schema-3 hand item. */
 export function isBlackjackHandV3Frame(parsed: ParsedFrame): boolean {
   return (
     parsed.typed?.type === TYPE_BLACKJACK_MESSAGE_ITEM &&

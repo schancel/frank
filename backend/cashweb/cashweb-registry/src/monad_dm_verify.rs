@@ -189,7 +189,7 @@ fn current_tuple(current: &Current, network: &str) -> Result<DirectoryTuple> {
 /// Exact caller-admitted inputs. No decoded HTTP object or signed statement alone is Current.
 #[derive(Debug)]
 pub struct CanonicalStampCheckInput<'a> {
-    /// Exact type1 frame; no ciphertext reconstruction.
+    /// Exact type10 frame; no ciphertext reconstruction.
     pub delivery: &'a [u8],
     /// Exact allocated deterministic-CBOR context, bounded to 4KiB before work.
     pub context: &'a [u8],

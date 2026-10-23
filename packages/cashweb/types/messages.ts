@@ -67,18 +67,18 @@ export interface ImageItem {
   image: string
 }
 
-/** One message of a peer-to-peer blackjack hand (type 18, schema 3). It carries no amount (a
+/** One message of a peer-to-peer blackjack hand (type 26, schema 3). It carries no amount (a
  * wager, payout or refund is the stamp of the message) and no card: both sides compute the cards
  * from the entropy links the hand's messages open. See docs/protocol/blackjack-p2p.md. */
 export type BlackjackHandItem = BlackjackHandV3Item
 
-/** Closed type18 shapes for explicit canonical consumers; no payment or actor authority. */
+/** Closed type26 shapes for explicit canonical consumers; no payment or actor authority. */
 export type CanonicalBlackjackMoveItem = BlackjackItem
 
-/** Universal state channel update item (Type 24, #949/#950/#965). */
+/** Universal state channel update item (Type 25, #949/#950/#965). */
 export type ChannelUpdateItem = CanonicalChannelUpdateItem
 
-/** Email bridge message item (Type 26). */
+/** Email bridge message item (Type 23). */
 export interface EmailItem {
   type: 'email'
   messageId: string
@@ -707,7 +707,7 @@ export interface RecipientPaymentTransfer {
   rawTx?: string
 }
 
-/** Dedicated type-19 schema-2 recipient claims. Receipt and spendability require adapter
+/** Dedicated type-24 schema-2 recipient claims. Receipt and spendability require adapter
  * verification; unknown positive schemes remain displayable and must never trigger custody.
  */
 export interface RecipientAssetPaymentItem {
@@ -960,7 +960,7 @@ export interface Message {
   delivery?: OutgoingDelivery
   conversationId?: string
   logicalMessageId?: string
-  /** Authenticated canonical type-8 content digest (bare lowercase 64-hex), when available.
+  /** Authenticated canonical type-20 content digest (bare lowercase 64-hex), when available.
    * Preserved from the receive boundary; absence means content identity is unavailable. */
   contentDigest?: string
 }

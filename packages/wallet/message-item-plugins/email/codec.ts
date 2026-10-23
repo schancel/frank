@@ -1,5 +1,5 @@
 /**
- * An email item is the canonical type-26 frame. `encodeEmailItem` makes the same call the
+ * An email item is the canonical type-23 frame. `encodeEmailItem` makes the same call the
  * canonical direct message path makes today (it passes the same fields, which do not include
  * `bcc`), so the bytes are identical; `decodeEmailItem` gives the same projection the receive path
  * gives.

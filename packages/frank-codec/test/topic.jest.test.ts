@@ -59,7 +59,7 @@ function parsed(f: Uint8Array): ParsedFrame {
 }
 
 describe('topic event projections', () => {
-  it('projects a type-9 post, with and without a parent', () => {
+  it('projects a type-40 post, with and without a parent', () => {
     const parent = bytesOf(32, 9)
     const top = parsed(topicPostFrame()).typed
     const reply = parsed(topicPostFrame({ parent })).typed
@@ -70,17 +70,17 @@ describe('topic event projections', () => {
     )
   })
 
-  it('opens the type-9 post inside a type-10 submission and keeps the burn bytes exact', () => {
+  it('opens the type-40 post inside a type-41 submission and keeps the burn bytes exact', () => {
     const post = topicPostFrame()
     const sub = parsed(topicSubmissionFrame({ post, burnTx: burnTx(7) })).typed
     if (sub?.type !== TYPE_TOPIC_POST_SUBMISSION)
       throw new Error('not a submission')
     expect(sub.postFrame.frame).toEqual(post)
-    expect(sub.postFrame.typed?.type).toBe(9)
+    expect(sub.postFrame.typed?.type).toBe(TYPE_TOPIC_POST)
     expect(sub.burnTx).toEqual(burnTx(7))
   })
 
-  it('projects a type-11 vote with no direction, weight, or sender field', () => {
+  it('projects a type-42 vote with no direction, weight, or sender field', () => {
     const t = parsed(topicVoteFrame({ target: bytesOf(32, 3) })).typed
     if (t?.type !== TYPE_TOPIC_VOTE_SUBMISSION) throw new Error('not a vote')
     expect(Object.keys(t).sort()).toEqual(
@@ -118,7 +118,7 @@ describe('R6 limits', () => {
     ).toBe('resource@8.1')
   })
 
-  it('accepts a type-10 submission of a maximal post and rejects the frame over 1 MiB', () => {
+  it('accepts a type-41 submission of a maximal post and rejects the frame over 1 MiB', () => {
     const big = topicPostFrame({ body: new Uint8Array(MAX_BODY) })
     expect(outcome(topicSubmissionFrame({ post: big }))).toBe('parsed')
     // A 1 MiB + 1 frame: the body is within R6 but the wrapper frame is not.
@@ -143,7 +143,7 @@ describe('R6 limits', () => {
     expect(outcome(padded)).toBe('resource@8.1')
   })
 
-  it('caps a type-11 vote frame at 64 KiB while a type-9 or type-10 frame may be larger', () => {
+  it('caps a type-42 vote frame at 64 KiB while a type-40 or type-41 frame may be larger', () => {
     const over = fr(
       TYPE_TOPIC_VOTE_SUBMISSION,
       new Map([

@@ -26,7 +26,7 @@ function relayAccount(seed: number): AccountRef {
   return { keyType: 1, keyBytes: k }
 }
 
-describe('Type 25: Forwarding Delivery Envelope', () => {
+describe('Type 13: Forwarding Delivery Envelope', () => {
   const innerFrame = deliveryFrame()
   const destinationRelay = relayAccount(42)
   const digest = forwardingPayloadDigest(NET, innerFrame)
@@ -58,7 +58,7 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
     expect(isForwardingEnvelopeFrame(validated)).toBe(true)
 
     const typed = validated.typed!
-    expect(typed.type).toBe(25)
+    expect(typed.type).toBe(TYPE_FORWARDING_DELIVERY_ENVELOPE)
     expect(typed.network).toBe(NET)
     expect(typed.destination.keyType).toBe(1)
     expect(typed.destination.keyBytes).toEqual(destinationRelay.keyBytes)
@@ -69,9 +69,9 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
     expect(typed.payments[0].value).toBe(100_000n)
     expect(typed.payments[0].vout).toBe(0)
 
-    // Inner frame is opened as Type 1
+    // Inner frame is opened as Type 10
     expect(typed.payloadFrame.typeId).toBe(TYPE_DIRECT_MESSAGE_DELIVERY)
-    expect(typed.payloadFrame.typed?.type).toBe(1)
+    expect(typed.payloadFrame.typed?.type).toBe(TYPE_DIRECT_MESSAGE_DELIVERY)
 
     // Projection matches
     const projected = projectForwardingEnvelope(validated)
@@ -138,7 +138,7 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
     const frameBytes = encodeForwardingEnvelope(envelope)
     expect(() => validateFrame(frameBytes, ctx)).toThrow(FrankCodecError)
     expect(() => validateFrame(frameBytes, ctx)).toThrow(
-      /forwarding network differs from the type-1 network/,
+      /forwarding network differs from the type-10 network/,
     )
   })
 

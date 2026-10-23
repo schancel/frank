@@ -1,6 +1,6 @@
 import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy"
 /**
- * Canonical (#778) direct messages for a typed Monad wallet: type8 -> type6 -> type5/schema2/suite1
+ * Canonical (#778) direct messages for a typed Monad wallet: type20 -> type12 -> type11/schema2/suite1
  * sealed by `@frank/cashweb/relay/canonical-dm`, paid and journaled by the wallet's own
  * `MonadCanonicalStampClient`, and carried by the canonical transport and mailbox clients.
  *
@@ -812,7 +812,7 @@ export class UnpaidDirectMessageNotDeliveredError extends Error {
   }
 }
 
-/** Seals one message and frames it as an unpaid delivery: type 1 at schema 2 with an empty
+/** Seals one message and frames it as an unpaid delivery: type 10 at schema 2 with an empty
  * payment list and no transactions. Pure: nothing is stored, reserved or sent. */
 function sealUnpaid(
   owner: CanonicalMessagingOwner,
@@ -1449,7 +1449,7 @@ async function validateOriginalEnvelope(
     throw new Error('Invalid original delivery')
   const payload = delivery.typed.payloadFrame.typed
   if (
-    payload?.type !== 5 ||
+    payload?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
     payload.network !== directory.network ||
     toHex(payload.sender.keyBytes) !== owner.subject ||
     toHex(payload.recipient.keyBytes) !== envelope.recipientSubject ||
@@ -2709,7 +2709,7 @@ async function readMailbox(
       if (delivery.kind !== 'parsed' || delivery.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY) continue
       const deliveryTyped = delivery.typed
       const payload = deliveryTyped.payloadFrame.typed
-      if (payload?.type !== 5) continue
+      if (payload?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD) continue
       const digest = toHex(deliveryTyped.payloadDigest)
       const isOutbound = record.direction === 'out'
       const peerSubjectKeyBytes = isOutbound
@@ -3148,7 +3148,7 @@ export function canonicalDirectMessages(
                   return
                 const deliveryTyped = delivery.typed
                 const payload = deliveryTyped.payloadFrame.typed
-                if (payload?.type !== 5) return
+                if (payload?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD) return
                 const digest = toHex(deliveryTyped.payloadDigest)
                 const isOutbound = record.direction === 'out'
                 const peerSubjectKeyBytes = isOutbound

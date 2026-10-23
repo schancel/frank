@@ -20,7 +20,7 @@ export const ACCOUNT_REF_SHAPE: MapShape = {
   open: false,
 }
 
-/** `blackjack-hand-item` field keys: Type 18 schema 2 (closed): one peer-to-peer hand. Key 1 is the action code (blackjack-hand-action). */
+/** `blackjack-hand-item` field keys: Type 26 schema 2 (closed): one peer-to-peer hand. Key 1 is the action code (blackjack-hand-action). */
 export const BLACKJACK_HAND_ITEM = {
   gameId: 0,
   action: 1,
@@ -118,7 +118,7 @@ export const BLACKJACK_HAND_ITEM_ACTION_ONLY_SHAPE: MapShape = {
   open: false,
 }
 
-/** `blackjack-hand-v3-item` field keys: Type 18 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action). */
+/** `blackjack-hand-v3-item` field keys: Type 26 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action). */
 export const BLACKJACK_HAND_V3_ITEM = {
   gameId: 0,
   action: 1,
@@ -205,7 +205,7 @@ export const BLACKJACK_HAND_V3_ITEM_MOVE_SHAPE: MapShape = {
   open: false,
 }
 
-/** `blackjack-item` field keys: Type 18 schema 1 (closed). Key 1 is the action code (blackjack-action); each action is one closed shape. */
+/** `blackjack-item` field keys: Type 26 schema 1 (closed). Key 1 is the action code (blackjack-action); each action is one closed shape. */
 export const BLACKJACK_ITEM = {
   gameId: 0,
   action: 1,
@@ -1557,7 +1557,7 @@ export const STAMP_ECONOMIC_BINDING_SHAPE: MapShape = {
   open: false,
 }
 
-/** `stealth-asset-message-item` field keys: Type 19 schema 2 and later. */
+/** `stealth-asset-message-item` field keys: Type 24 schema 2 and later. */
 export const STEALTH_ASSET_MESSAGE_ITEM = {
   transfers: 0,
   memo: 1,
@@ -1591,7 +1591,7 @@ export const STEALTH_ASSET_TRANSFER_SHAPE: MapShape = {
   open: false,
 }
 
-/** `stealth-message-item` field keys: Type 19 schema 1. */
+/** `stealth-message-item` field keys: Type 24 schema 1. */
 export const STEALTH_MESSAGE_ITEM = {
   networkTag: 0,
   ephemeralPubKey: 1,
@@ -1836,7 +1836,7 @@ export const CANONICAL_DM_MESSAGE_ROW_VERSION = {
   v2: 2,
 } as const
 
-/** `encryption-suite` values: Type 5 field 3 (README S2c). */
+/** `encryption-suite` values: Type 11 field 3 (README S2c). */
 export const ENCRYPTION_SUITE = {
   dmAuthXchacha: 1,
   proof: 65535,

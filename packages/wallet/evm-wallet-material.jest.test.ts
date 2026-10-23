@@ -11,6 +11,7 @@ import {
   encodeFrame,
   previewDirectoryContext,
   parseFrame,
+  TYPE_DIRECTORY_STATEMENT,
 } from '@frank/codec'
 import {
   createMonadWalletMaterial,
@@ -60,7 +61,7 @@ function fixture(
       [1, 0],
     ])
   const statement = encodeFrame(
-    { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+    { typeId: TYPE_DIRECTORY_STATEMENT, schemaVersion: 4, minReaderVersion: 4 },
     cborMap([
       [0, 'monad'],
       [1, account(leaves.auth.public.compressedPoint)],

@@ -134,7 +134,7 @@ describe('BCS falsification check (#131)', () => {
     const topAppended = statementV1({ topNote: 'extra' })
     const nestedAppended = statementV1({ relayWeight: 7 })
 
-    // Fixture families as BCS (the type-1 payload nests type 5, whose ciphertext is the CBOR-free
+    // Fixture families as BCS (the type-10 payload nests type 11, whose ciphertext is the CBOR-free
     // BCS-less proof bytes; sizes are reported next to the CBOR frames).
     const fixtures = {
       directMessage: deliveryFrame(),
@@ -177,7 +177,7 @@ describe('BCS falsification check (#131)', () => {
       library: '@mysten/bcs 2.1.2 (reference bytes only; not a dependency)',
       encodedFixtureSizes: sizes,
       sizeCaveat:
-        'The type-5 ciphertext field carries the type-6 frame verbatim in both encodings (suite 65535), and BCS drops the four-byte-per-field key/map framing; sizes are informational only.',
+        'The type-11 ciphertext field carries the type-12 frame verbatim in both encodings (suite 65535), and BCS drops the four-byte-per-field key/map framing; sizes are informational only.',
       libraryI64:
         'The BCS specification (github.com/diem/bcs) defines signed 8/16/32/64/128-bit integers as two-complement little-endian. The library @mysten/bcs 2.1.2 exposes no i64 constructor; the mini writer here carries timestamps.seconds (i64) as the equivalent two-complement u64 bytes.',
       e1_additive_field_appended_to_top_level_struct: {

@@ -5,23 +5,23 @@ proof in issues #131 and #182 and for the topic-event schemas of issue #136.
 [`../../CASHWEB-PROTOCOL-SPEC.md`](../../CASHWEB-PROTOCOL-SPEC.md) is the
 single human-semantics and status front door. This file owns frozen FRNK/CBOR
 detail until its rules migrate there once; the CDDL owns structure and the
-vectors are executable proof. The Monad topic write transport uses types 9–11
+vectors are executable proof. The Monad topic write transport uses types 40–42
 as described in [topic HTTP coexistence](topic-http-coexistence.md); other
 production paths require their separate migration tickets.
 
 ### Provisional directory preview
 
 Issue #742 provisionally allocates the reviewed #719 C1–C14 wire profile as
-type **4/schema 4/minimum reader 4**, using `directory-statement-v4` in
+type **1/schema 4/minimum reader 4**, using `directory-statement-v4` in
 [`directory.cddl`](directory.cddl). This is codec support only. Existing
-type-4 schemas 1–3, type-2 schema1/min1 wrappers and default reader2/schema3
+type-1 schemas 1–3, type-2 schema1/min1 wrappers and default reader2/schema3
 contexts are unchanged. Runtime adoption needs separate integration/security
 review. The proposal remains historical evidence; its former unallocated
 status does not override this narrow allocation.
 
 Required fields are network (0), subject/authority P (1), uint64 revision (2),
 issue time (3), exactly one relay (4), expiry (6), stamp P' (8), message-DH M
-(10), uint64 mailbox/stamp generations (11/12), and predecessor type-4 T1 or
+(10), uint64 mailbox/stamp generations (11/12), and predecessor type-1 T1 or
 null (13). P, P' and M MUST be valid compressed type-1 secp256k1 points with
 pairwise distinct x coordinates (including rejection of point negations).
 The relay identity MUST also be a valid compressed type-1 point, its endpoint
@@ -39,7 +39,7 @@ complete original frame. Higher required floors reject at stage7. A reader
 supporting this allocation rejects a schema4-or-newer floor other than 4;
 legacy readers retain their frozen V6 behavior and cannot infer v4 authority
 from a dishonestly lowered floor. Required v4 children reject in old readers.
-A raised global reader version without type-4 schema-4 support also rejects
+A raised global reader version without type-1 schema-4 support also rejects
 required v4 at stage7; it cannot turn an old projection into preview support.
 
 Both the complete bare preview statement and its type-2 wrapper are bounded
@@ -47,7 +47,7 @@ by 262144 bytes; the statement bound is checked at 8.1 before point checks,
 including when nested. R1 aggregate accounting and all canonicality checks
 remain in force. This does not lower limits for old schema projections.
 The wrapper MUST contain exactly one algorithm-1 signature by P, verified as
-strict-DER low-S ECDSA over the existing T2 digest of the exact type-4 frame.
+strict-DER low-S ECDSA over the existing T2 digest of the exact type-1 frame.
 T1 commits those same complete statement bytes. Neither payload projections
 nor wrapper hashes are statement identity; no re-encoding precedes hashing.
 
@@ -104,14 +104,14 @@ object is exactly one frame:
 |      5 |    4 | CBOR body length as an unsigned big-endian integer |
 |      9 |    N | The exact deterministic-CBOR envelope bytes        |
 
-Worked example: a type-17 text item `{0: "hi"}`, 23 bytes in all.
+Worked example: a type-22 text item `{0: "hi"}`, 23 bytes in all.
 
 ```text
 46 52 4e 4b            FRNK
 01                     frame version 1
 00 00 00 0e            CBOR body length 14
 a4                     envelope map, 4 entries
-  00 11                  type_id = 17
+  00 16                  type_id = 22
   01 01                  schema_version = 1
   02 01                  min_reader_version = 1
   03 45                  payload = byte string of 5 bytes
@@ -191,46 +191,46 @@ from which this table and the codec constants are generated
 
 |    Type ID | Name                                        | Schema                                                        |
 | ---------: | ------------------------------------------- | ------------------------------------------------------------- |
-|          1 | Recipient-specific direct-message delivery  | [direct-message.cddl](direct-message.cddl)                    |
+|          1 | Directory statement signed by type 2        | [directory.cddl](directory.cddl)                              |
 |          2 | Signed directory attestation                | [directory.cddl](directory.cddl)                              |
-|          3 | Mailbox checkpoint                          | [checkpoint.cddl](checkpoint.cddl)                            |
-|          4 | Directory statement signed by type 2        | [directory.cddl](directory.cddl)                              |
-|          5 | Recipient-encrypted payload, with stamp E/X | [direct-message.cddl](direct-message.cddl)                    |
-|          6 | Decrypted message content                   | [direct-message.cddl](direct-message.cddl)                    |
-|          7 | Key-transition statement                    | [directory.cddl](directory.cddl)                              |
-|          8 | Plaintext message-content revision          | [direct-message.cddl](direct-message.cddl)                    |
-|          9 | Topic post                                  | [topic.cddl](topic.cddl)                                      |
-|         10 | Topic post submission (post plus its burn)  | [topic.cddl](topic.cddl)                                      |
-|         11 | Topic vote submission                       | [topic.cddl](topic.cddl)                                      |
-|         12 | Forum single-post observation               | [topic.cddl](topic.cddl)                                      |
-|         13 | Forum topic page                            | [topic.cddl](topic.cddl)                                      |
-|         14 | Forum discovery page                        | [topic.cddl](topic.cddl)                                      |
-|         15 | Forum operation status                      | [topic.cddl](topic.cddl)                                      |
-|         16 | Container message item                      | [direct-message.cddl](direct-message.cddl)                    |
-|         17 | UTF-8 text message item                     | [direct-message.cddl](direct-message.cddl)                    |
-|         18 | Blackjack message item                      | [blackjack.cddl](../proposals/blackjack-items/blackjack.cddl) |
-|         19 | Stealth payment item                        | [direct-message.cddl](direct-message.cddl)                    |
-|         24 | Universal state channel update item         | [direct-message.cddl](direct-message.cddl)                    |
-|         25 | Relay forwarding delivery envelope          | [direct-message.cddl](direct-message.cddl)                    |
-|         26 | Email bridge message item                   | [direct-message.cddl](direct-message.cddl)                    |
+|          3 | Key-transition statement                    | [directory.cddl](directory.cddl)                              |
+|         10 | Recipient-specific direct-message delivery  | [direct-message.cddl](direct-message.cddl)                    |
+|         11 | Recipient-encrypted payload, with stamp E/X | [direct-message.cddl](direct-message.cddl)                    |
+|         12 | Decrypted message content                   | [direct-message.cddl](direct-message.cddl)                    |
+|         13 | Relay forwarding delivery envelope          | [direct-message.cddl](direct-message.cddl)                    |
+|         14 | Mailbox checkpoint                          | [checkpoint.cddl](checkpoint.cddl)                            |
+|         20 | Plaintext message-content revision          | [direct-message.cddl](direct-message.cddl)                    |
+|         21 | Container message item                      | [direct-message.cddl](direct-message.cddl)                    |
+|         22 | UTF-8 text message item                     | [direct-message.cddl](direct-message.cddl)                    |
+|         23 | Email bridge message item                   | [direct-message.cddl](direct-message.cddl)                    |
+|         24 | Stealth payment item                        | [direct-message.cddl](direct-message.cddl)                    |
+|         25 | Universal state channel update item         | [direct-message.cddl](direct-message.cddl)                    |
+|         26 | Blackjack message item                      | [blackjack.cddl](../proposals/blackjack-items/blackjack.cddl) |
 |         27 | Generic plugin message item                 | [direct-message.cddl](direct-message.cddl)                    |
+|         40 | Topic post                                  | [topic.cddl](topic.cddl)                                      |
+|         41 | Topic post submission (post plus its burn)  | [topic.cddl](topic.cddl)                                      |
+|         42 | Topic vote submission                       | [topic.cddl](topic.cddl)                                      |
+|         43 | Forum single-post observation               | [topic.cddl](topic.cddl)                                      |
+|         44 | Forum topic page                            | [topic.cddl](topic.cddl)                                      |
+|         45 | Forum discovery page                        | [topic.cddl](topic.cddl)                                      |
+|         46 | Forum operation status                      | [topic.cddl](topic.cddl)                                      |
 | 0xffff0001 | Proof-only unknown future message item      | Opaque fixture payload                                        |
 
 <!-- END GENERATED: message-types -->
 
-The CDDL rule for each type's payload is: 1 `direct-message-delivery`; 2
-`directory-attestation`; 3 `mailbox-checkpoint`; 4 `directory-statement`
+The CDDL rule for each type's payload is: 1 `directory-statement`
 (schema 2; schema 1 is `directory-statement-v1`; schema 3, the registration
-profile of section 11, is `directory-statement-v3`); 5
+profile of section 11, is `directory-statement-v3`); 2
+`directory-attestation`; 3 `key-transition-statement`; 10 `direct-message-delivery`; 11
 `recipient-encrypted-payload-v1` at schema 1 or
-`recipient-encrypted-payload-v2` at schema 2; 6 `encrypted-message-content`; 7
-`key-transition-statement`; 8 `message-content-revision`; 9 `topic-post`; 10 `topic-post-submission`; 11
-`topic-vote-submission`; 12 `forum-single-view`; 13 `forum-topic-page`;
-14 `forum-discovery-page`; 15 `forum-operation-status`; 16 `container-message-item`;
-17 `text-message-item`; 19 `stealth-message-item`; 24 `channel-update-item`; 25 `forwarding-delivery-envelope`;
-26 `email-message-item`; 27 `plugin-message-item`. Type 18's closed payload shapes are specified with its
+`recipient-encrypted-payload-v2` at schema 2; 12 `encrypted-message-content`; 13
+`forwarding-delivery-envelope`; 14 `mailbox-checkpoint`; 20 `message-content-revision`; 21 `container-message-item`;
+22 `text-message-item`; 23 `email-message-item`; 24 `stealth-message-item`; 25 `channel-update-item`;
+27 `plugin-message-item`; 40 `topic-post`; 41 `topic-post-submission`; 42
+`topic-vote-submission`; 43 `forum-single-view`; 44 `forum-topic-page`;
+45 `forum-discovery-page`; 46 `forum-operation-status`. Type 26's closed payload shapes are specified with its
 vectors (`vectors/blackjack-items.json`, `vectors/blackjack-hand.json`, `vectors/blackjack-hand-v3.json`).
-Type 9 schema 2/min-reader 2 opens field 3 as
+Type 40 schema 2/min-reader 2 opens field 3 as
 `forum-content`; schema 1 remains the explicitly historical opaque-body schema.
 
 Unassigned identifiers remain reserved and MUST NOT be emitted. The proof-only
@@ -351,21 +351,21 @@ envelope; entering a map or array adds one, and the payload item is nested
 inside the envelope map, so its first array or map is at depth 2 and a payload
 may nest at most 31 levels. An embedded frame's envelope map is one level
 deeper than the container holding its byte string, and depth returns to that
-container's value when the child finishes. For example, a type-16 child's
+container's value when the child finishes. For example, a type-21 child's
 envelope map is at depth 4 when its parent's is at depth 1, because the parent's
-payload map is 2 and its items array is 3, so each further level of type-16
+payload map is 2 and its items array is 3, so each further level of type-21
 nesting adds 3. A child parser inherits these
 counters and MUST NOT reset them. Implementations MUST fail without partially
 returning a typed object when any limit is exceeded.
 
 Rationale for the limits: 8 MiB bounds a single frame that a phone can buffer
 while leaving room for chunked media beyond R2's 1 MiB message. Depth 32 permits
-a type-16 root with nine further nested type-16 levels and a text leaf (ten
-container levels at three depth each, with no headroom), and only seven type-16
-levels plus a leaf under a type-1 message, whose own nesting uses the first
-nine levels (that path runs through the decrypted type-6 frame of stage 10.1,
+a type-21 root with nine further nested type-21 levels and a text leaf (ten
+container levels at three depth each, with no headroom), and only seven type-21
+levels plus a leaf under a type-10 message, whose own nesting uses the first
+nine levels (that path runs through the decrypted type-12 frame of stage 10.1,
 so this figure is a `full` property that no `typed` vector can exercise, while
-the type-16 root figure is exercised at `typed`); deeper structures are split into separately framed objects.
+the type-21 root figure is exercised at `typed`); deeper structures are split into separately framed objects.
 Containers 16,384 and items 131,072 (keys counted) let a large
 R4 checkpoint of 4,096 minimal facts (13 items each) plus 4,096 minimal
 sections (7 items each), about 82,000 items, fit under one counter. Map
@@ -376,7 +376,7 @@ largest single message text a client should render without chunking.
 
 R2. The direct-message frame limit is 1 MiB, with at most 256 message items
 total across the recursively opened item graph of one validation operation,
-whatever its root type (a bare type 6, 8, or 16 root is bounded the same way), 64 payment members, and 512 KiB
+whatever its root type (a bare type 12, 20, or 21 root is bounded the same way), 64 payment members, and 512 KiB
 in one encrypted payload. This deliberately permits messages larger than 64
 KiB while requiring large media to be chunked or referenced rather than
 embedded without bound.
@@ -392,21 +392,21 @@ R5. Lengths and aggregate counters MUST be checked using arithmetic that cannot
 wrap. A limit error is distinct from malformed, non-canonical, unsupported, and
 schema errors as defined by the vector manifest.
 
-R6. The topic-event frame limits are 1 MiB (1,048,576 bytes) for a type-9 post
-and for a type-10 post submission, 64 KiB (65,536 bytes) for a type-11 vote
-submission, and 512 KiB (524,288 bytes) in one type-9 body. The body bound is
-`resource` at stage 8.1, like the type-5 ciphertext. The 1 MiB limit is
+R6. The topic-event frame limits are 1 MiB (1,048,576 bytes) for a type-40 post
+and for a type-41 post submission, 64 KiB (65,536 bytes) for a type-42 vote
+submission, and 512 KiB (524,288 bytes) in one type-40 body. The body bound is
+`resource` at stage 8.1, like the type-11 ciphertext. The 1 MiB limit is
 deliberately the direct-message limit (R2): a post is public content that a
 phone can buffer, and larger media is chunked or referenced. Topic text
 (1 through 512 bytes) and burn transactions (1 through 16,384 bytes) are plain
 CDDL bounds, so exceeding them is `schema`.
 
-These choices (type ids 9, 10, and 11, the 512-byte topic and 512 KiB body caps,
+These choices (type ids 40, 41, and 42, the 512-byte topic and 512 KiB body caps,
 the 16 KiB burn-transaction bound, and the Monad calldata version byte `02`) are
 chosen for version 1; changing any of them requires a new schema version, not an
 edit to this one.
 
-Forum reads cap complete type-12/type-15 frames at 2 MiB and type-13/type-14
+Forum reads cap complete type-43/type-46 frames at 2 MiB and type-44/type-45
 pages at 4 MiB, including children and cursor bytes. Pages have at most 128
 rows; schema-2 content has 1–64 entries. Cursor bytes are 1–2048 bytes;
 transport is unique unpadded base64url, at most 2731 characters before decoding.
@@ -453,12 +453,12 @@ algorithm 3 requires key type 1 and exactly 64 signature bytes; algorithm 16
 requires key type 2 and exactly 64 signature bytes. Any other
 algorithm/key-type/length combination is unsupported, not a signature failure.
 This pairing applies to every entry that carries an algorithm, a signer
-account, and signature bytes: each type-2 `signature-entry` and each type-4
+account, and signature bytes: each type-2 `signature-entry` and each type-1
 `key-transition` entry (fields 1, 2, and 3), at stage 8.3.
 
 S2c. Encryption-suite identifier 65535 is reserved for schema-1 opaque
 proof-vector ciphertext and MUST NOT be emitted by a production writer.
-Type-5 schema 2 allocates suite `1` to `@frank/crypto-box` authenticated mode:
+Type-11 schema 2 allocates suite `1` to `@frank/crypto-box` authenticated mode:
 DHKEM(secp256k1, HKDF-SHA256) private-use KEM `0xFF00`, HKDF-SHA256 KDF
 `0x0001`, and XChaCha20-Poly1305 private-use AEAD `0xFF01` with its 24-byte
 derived nonce. The complete deterministic-CBOR crypto-box v2 envelope is field
@@ -473,7 +473,7 @@ numeric-key order: domain `frank/dm-crypto-context/v1`; network; routing sender
 and recipient account references; the exact opened sender and recipient
 directory-statement T1 hashes; the distinct sender and recipient message-DH
 keys `M`; recipient stamp key `P'`; `E`, `X`, and the DLEQ proof; suite `1`;
-object type `5`; schema `2`; and minimum reader `2`. Account references use the
+object type `11`; schema `2`; and minimum reader `2`. Account references use the
 common two-field schema and every `M`/`P'` entry MUST be key type 1 with a
 33-byte compressed SEC1 point. No context field is optional. The sender and
 recipient public keys supplied separately to crypto-box MUST byte-match fields
@@ -483,12 +483,12 @@ payment ownership, durable storage, or forwarding. The recipient can construct
 the same authenticated-mode transcript and therefore no ciphertext is a
 transferable proof of sender authorship.
 
-Because this context is the complete schema-2 field contract, a reader that supports type 5
-through schema 2 MUST reject a higher type-5 schema as `unsupported` at stage 7 rather than
-apply V6.3 projection. Likewise, a reader supporting only type-5 schema 1 MUST reject schema 2.
-A type-5 schema-2 frame whose `min_reader_version` is not exactly 2 is also `unsupported` at
+Because this context is the complete schema-2 field contract, a reader that supports type 11
+through schema 2 MUST reject a higher type-11 schema as `unsupported` at stage 7 rather than
+apply V6.3 projection. Likewise, a reader supporting only type-11 schema 1 MUST reject schema 2.
+A type-11 schema-2 frame whose `min_reader_version` is not exactly 2 is also `unsupported` at
 stage 7; the header value may not differ from the value authenticated by S2d.
-A future type-5 schema must allocate an updated authenticated context (and raise its reader
+A future type-11 schema must allocate an updated authenticated context (and raise its reader
 requirement) before adding fields. This type-specific fail-closed rule prevents retained extension
 bytes from falling outside the AEAD transcript.
 
@@ -522,7 +522,7 @@ transition may use only an authority present in the last accepted statement,
 not one introduced by the statement being authorized.
 
 S5. Key transitions are ordered by the numeric revision, numeric new-key type,
-and bytewise new-key bytes parsed from their type-7 statement frame. Two
+and bytewise new-key bytes parsed from their type-3 statement frame. Two
 transitions with the same revision are invalid rather than tie-broken.
 
 S6. Checkpoint journal facts are ordered by numeric `(seconds, nanoseconds)`,
@@ -532,27 +532,27 @@ the stable tiebreaker and MUST be independently unique within a checkpoint.
 S7. Opaque checkpoint sections are ordered by numeric `(section_type,
 schema_version)` and MUST have independently unique `section_type` values.
 
-S8. A type-1 delivery's network (field 0) MUST equal the opened type-5
+S8. A type-10 delivery's network (field 0) MUST equal the opened type-11
 payload's network (field 0); this is a stage 9 `semantic` check. Its
 destination account (field 1) is the stamp key `P'` of S9, which is a payment
-key and is not compared with the type-5 recipient account (field 2); that
-field stays the routing recipient identity (no codec rule relates the two). For `full`, the decrypted type-6
-frame's network (field 0) MUST equal the type-5 network (`semantic`), and its
-digest (field 3) MUST equal the T1a digest of its opened type-8 frame (field 2)
+key and is not compared with the type-11 recipient account (field 2); that
+field stays the routing recipient identity (no codec rule relates the two). For `full`, the decrypted type-12
+frame's network (field 0) MUST equal the type-11 network (`semantic`), and its
+digest (field 3) MUST equal the T1a digest of its opened type-20 frame (field 2)
 (`cryptographic`); these are steps 10.2 and 10.3 of section 9. A framed field
-whose schema requires a specific type (type-1 field 2 is type 5, type-2 field 0
-is type 4, a key-transition's field 0 is type 7, type-6 field 2 is type 8,
-type-10 field 1 is type 9) MUST
+whose schema requires a specific type (type-10 field 2 is type 11, type-2 field 0
+is type 1, a key-transition's field 0 is type 3, type-12 field 2 is type 20,
+type-41 field 1 is type 40) MUST
 carry that `type_id`, otherwise `semantic`, reported at stage 8.4 of the parent as section 9 orders it;
 such a field
 is never an open field. Message-item array
 order is authored semantic order, not a set to be resorted.
 
-S9. The type-1 destination account (field 1) is the recipient stamp key `P'`
+S9. The type-10 destination account (field 1) is the recipient stamp key `P'`
 that the sender used, and MUST be key type 1 (otherwise `semantic`). Which key
 `P'` may be, its binding to the recipient's directory statement, belongs to
 S10a and is checked at stage 10.4, not by this rule. For each payment, the
-type-5 fields `E` (6), `X` (7) and proof (8) verify by T3b, and `X`, the
+type-11 fields `E` (6), `X` (7) and proof (8) verify by T3b, and `X`, the
 network, `P'` and the child index derive, by T3a, the exact child public key
 and chain address. Payment field 3 MUST equal that canonical address, the
 independently observed transaction destination MUST equal field 3, and payment
@@ -560,16 +560,16 @@ field 3 values MUST be independently unique, a stage 9 `semantic` list check
 like S3's index and transaction-ID uniqueness. Value and commitment checks from
 S3 and T4 remain separately required.
 
-S10. The validation context's prior statement is the last accepted type-4
+S10. The validation context's prior statement is the last accepted type-1
 statement. Only a type-2 root has one, so S10 is checked in a type-2 parent's
-stage 9; a type-4 frame validated as a root, with no type-2 parent, is not
+stage 9; a type-1 frame validated as a root, with no type-2 parent, is not
 checked against S10 whatever its field 5 holds. A non-bootstrap statement's revision MUST be greater than the prior
 revision, and its network MUST equal the prior network, regardless of whether
 the subject changes. Field 5 MUST be absent when the subject is unchanged and
 for bootstrap. When the subject changes, field 5 MUST contain exactly one
 entry, so extra, unlinked, and chained (A to B to C) transitions in one update
 are `semantic` errors. That entry MUST link the previous statement to the new
-statement: the type-7
+statement: the type-3
 network equals both statement networks; `directory_subject` equals the previous
 subject; `revision` equals the new statement revision and exceeds the previous
 revision; and `new_key` equals the new statement subject. Its prior authority
@@ -587,17 +587,17 @@ recipient's stamp key `P'`. It is mandatory: there is no identity-key fallback
 (owner decision on #198, superseding the optional-field design and the
 downgrade pin of #207 and #211).
 
-1. Statement shape and version. Field 8 is required in type 4
+1. Statement shape and version. Field 8 is required in type 1
    `schema_version` 2 (with `min_reader_version` 2, because adding a required
    field raises it, V2) and is undefined in `schema_version` 1, where it is a
    `schema` error (C12). A schema-2 statement without field 8 is a `schema`
    error (missing required key). Field 8 MUST be key type 1, otherwise
-   `semantic` in the type-4 statement's own stage 9. Whether the 33 bytes are a
+   `semantic` in the type-1 statement's own stage 9. Whether the 33 bytes are a
    valid curve point is not a statement check: an invalid point makes every
    delivery to it fail at T3a.6. The protocol requires nothing about how `P'`
    was derived, and does not reject `P'` equal to the subject (the identity
    key); reusing the identity key forfeits the blast-radius protection of the
-   rationale below and SHOULD NOT be done. Field 8 lies inside the signed type-4
+   rationale below and SHOULD NOT be done. Field 8 lies inside the signed type-1
    frame and changes only in a new revision; the codec inherits nothing from
    the prior statement.
 2. Old statements and schema order. A schema-1 statement carries no stamp
@@ -623,7 +623,7 @@ downgrade pin of #207 and #211).
    and the successor states its own field 8: a stamp key does not survive a
    subject change.
 4. Binding of `P'`. A consumer (a relay verifying a stamp, or the recipient)
-   MUST require the type-1 field 1 key `P'` to equal exactly one of: (a) the
+   MUST require the type-10 field 1 key `P'` to equal exactly one of: (a) the
    recipient's current stamp key, field 8 of the recipient's current
    statement; or (b) the previous stamp key (item 5). Any other `P'` is a
    `cryptographic` reject at stage 10.4, a check distinct from the point, DLEQ
@@ -723,13 +723,13 @@ Open questions for S10a (recorded, not decided here):
   a second rotation to close it (#211). Recommendation: rotate only on
   suspected leak or explicit request.
 
-S11. A type-10 post submission's network (field 0) MUST equal the opened
-type-9 payload's network (field 0): a stage 9 `semantic` check. A type-11 vote
+S11. A type-41 post submission's network (field 0) MUST equal the opened
+type-40 payload's network (field 0): a stage 9 `semantic` check. A type-42 vote
 submission has no opened child, so its network is bound only by T7 and T8.
 
 S12. Topic identity and structure. The identity of a post is the T1 content
-hash of its complete type-9 frame. Field 2 of a type 9 (the parent post) and
-field 1 of a type 11 (the target post) each hold such a hash. A top-level post
+hash of its complete type-40 frame. Field 2 of a type 40 (the parent post) and
+field 1 of a type 42 (the target post) each hold such a hash. A top-level post
 omits field 2; a `null` value is a `schema` error, so every post has exactly one
 canonical encoding. The codec cannot check that a parent or target exists, and
 a post cannot name itself (its hash would depend on its own bytes). The topic
@@ -759,27 +759,27 @@ normative.
 
 ### Direct messages and recursive items
 
-The type-1 delivery contains one type-5 recipient-encrypted-payload frame, its
-T3 digest, and a sorted payment set. The decrypted plaintext of type 5 is a
-complete type-6 message-content frame. One valid payment member is
+The type-10 delivery contains one type-11 recipient-encrypted-payload frame, its
+T3 digest, and a sorted payment set. The decrypted plaintext of type 11 is a
+complete type-12 message-content frame. One valid payment member is
 permitted when the wallet cannot economically source the preferred two or more.
 A delivery written at `schema_version` 2 may carry no payment at all; whether
 a recipient shows an unpaid message is that recipient's policy, not a validity
 rule.
-`message_id`, the type-8 plaintext revision frame, and its T1a content digest
+`message_id`, the type-20 plaintext revision frame, and its T1a content digest
 belong inside encrypted content; they are not relay-visible delivery identity.
 Each recipient may therefore have different encrypted bytes and a different
 payload digest for the same logical message.
 
-A type-16 container message item holds complete child frames as byte strings;
-type 17 is a text item, type 19 is a stealth payment item, and type 24 is a universal state channel update item. Unknown item types remain exact child-frame bytes. A
-type-5 ciphertext is never opened before stage 10.1, so at `typed` a type-1 root
+A type-21 container message item holds complete child frames as byte strings;
+type 22 is a text item, type 24 is a stealth payment item, and type 25 is a universal state channel update item. Unknown item types remain exact child-frame bytes. A
+type-11 ciphertext is never opened before stage 10.1, so at `typed` a type-10 root
 reaches no message item: its item graph exists only in `full`, and `typed`
-vectors reach a message-item graph through a type 6, 8, or 16 root. The
+vectors reach a message-item graph through a type 12, 20, or 21 root. The
 proof fixture MUST contain at least two levels and the permanently reserved
 proof-only unknown type `0xffff0001`.
 
-Type 19 delivers stealth payment announcements and ephemeral keys directly to the
+Type 24 delivers stealth payment announcements and ephemeral keys directly to the
 recipient over the secure channel. Schema 1 (`stealth-message-item`) remains valid
 for existing native financial recovery. Schema 2/min-reader 2
 (`stealth-asset-message-item`) carries 1–16 recipient transfer entries in field 0
@@ -833,13 +833,13 @@ and depth (R1) and MUST NOT start a fresh budget per item. A reader with no
 plugin for the identifier, or whose plugin rejects the bytes, MUST keep the
 original complete frame, show the item as unsupported, and MUST NOT interpret
 or execute it; the other items of the message are unaffected. Items that have
-a dedicated frame (17 text, 18 blackjack, 19 stealth, 24 channel update, 26
-email) MUST be written in that frame and MUST NOT be wrapped in type 27; a
+a dedicated frame (22 text, 23 email, 24 stealth, 25 channel update, 26
+blackjack) MUST be written in that frame and MUST NOT be wrapped in type 27; a
 type-27 frame naming one of them is treated as unsupported. Type 27 appears
 only inside encrypted message content, so a relay never sees it.
 `vectors/plugin-message-item.json` pins the container bytes and its rejections.
 
-Type 24 (`channel-update-item`) provides universal peer-to-peer state execution for interactive turns, atomic swaps, and multi-network balance allocations across Monad, eCash, and Solana without gas friction. State updates are signed over the state digest and folded client-side.
+Type 25 (`channel-update-item`) provides universal peer-to-peer state execution for interactive turns, atomic swaps, and multi-network balance allocations across Monad, eCash, and Solana without gas friction. State updates are signed over the state digest and folded client-side.
 
 Direct-message stamps are payments to recipient-derived addresses. They are not
 burns, and unlike a burn the transaction carries no data: it is a plain value
@@ -851,11 +851,11 @@ existing transaction cannot authorize a different payload.
 
 Stamp destinations (decided on #198, superseding the #60 derivation): the
 sender picks a fresh scalar `e` and puts `E = e*G`, `X = e*P'` and a
-Chaum-Pedersen (DLEQ) proof that both use the same `e` in the type-5 frame, so
+Chaum-Pedersen (DLEQ) proof that both use the same `e` in the type-11 frame, so
 the T3 digest and T4 commitment cover them. Child `i` is `t_i*P'` with `t_i`
 hashed from the network and `X`, and the proof is bound to the network too, so
 a copied `(E, X, proof)` on another network fails and its addresses are not
-reused (decided on #208; type-5 field 2 is deliberately not bound, which keeps
+reused (decided on #208; type-11 field 2 is deliberately not bound, which keeps
 the stamp key independent of the routing identity). The relay verifies the proof and derives every child from
 public points, so it checks that each payment lands on a recipient-controlled
 address with no interaction; the recipient computes `X = d'*E` and spends with
@@ -864,21 +864,21 @@ one. The construction is multiplicative rather than additive, and uses no BIP32,
 chain code, or HMAC. A cryptographic review of the DLEQ construction is
 required before any implementation ships it.
 
-Type 1 keeps `schema_version` 1 for a paid delivery. Its `schema_version` 2
+Type 10 keeps `schema_version` 1 for a paid delivery. Its `schema_version` 2
 lets the payment set be empty (or field 4 be absent): a message that carries
 no payment. It keeps `min_reader_version` 1 per V1; a reader that supports
-type 1 only at schema 1 reads it through the schema-1 projection (V6.3), which
+type 10 only at schema 1 reads it through the schema-1 projection (V6.3), which
 requires a payment, and so rejects it as `schema` instead of reading it as
-paid. Type 5 schema 1 remains the proof-only
-nonce/ciphertext layout; production writers MUST emit type 5 with
+paid. Type 11 schema 1 remains the proof-only
+nonce/ciphertext layout; production writers MUST emit type 11 with
 `schema_version = 2` and `min_reader_version = 2`, carrying the complete
-crypto-box envelope in field 4 and stamp fields in 5 through 7. Type 4 gets
+crypto-box envelope in field 4 and stamp fields in 5 through 7. Type 1 gets
 `schema_version` 2 with
 `min_reader_version` 2, per V1 and V2, because the stamp key is a required
 field (S10a.1): schema 1 is the statement layout without field 8 and stays
 readable by a schema-2 reader, and a reader below version 2 retains a schema-2
 statement opaquely and never treats it as a statement without a stamp key.
-Section 11's registration profile is type-4 `schema_version` 3 and keeps
+Section 11's registration profile is type-1 `schema_version` 3 and keeps
 `min_reader_version` 2 per V1, because its field 9 is optional: a schema-2
 reader projects a schema-3 statement through V6.3 and retains field 9.
 
@@ -892,15 +892,15 @@ registry).
 
 ### Directory attestations
 
-Type 4 is the complete framed statement. Type 2 wraps that exact frame and a
+Type 1 is the complete framed statement. Type 2 wraps that exact frame and a
 sorted signature set, avoiding a signature-containing-itself cycle. A
-signature authenticates the complete type-4 frame through section 8. Every
+signature authenticates the complete type-1 frame through section 8. Every
 signature entry MUST verify, and every attestation MUST contain a verified signature whose signer exactly equals the
 statement subject, proving possession of the claimed current key. The
 signature set is outside every signature, so an extra valid entry, or a
 stripped one, changes the type-2 bytes and its T1 hash without changing the
 statement. Consumers that deduplicate, cache, or order directory records MUST
-key them on the T1 hash of the opened type-4 statement, never on the type-2
+key them on the T1 hash of the opened type-1 statement, never on the type-2
 hash. A bootstrap
 record needs no predecessor. If an update changes the currently registered
 subject, it additionally needs a valid T2a transition authorized by the prior
@@ -911,7 +911,7 @@ nanoseconds timestamp.
 
 ### Mailbox checkpoints
 
-Type 3 records a checkpoint identity, ordered journal facts, and sorted opaque
+Type 14 records a checkpoint identity, ordered journal facts, and sorted opaque
 extension sections. A tombstone is a durable fact, not physical deletion. Each
 opaque section value is retained as exact bytes and is never opened in version
 1, even when it happens to hold a Frank frame; interpreting a section kind is
@@ -925,13 +925,13 @@ message item whose exact bytes survive every round trip.
 
 ### Topic events
 
-Type 9 is a public post: a network, a topic, an optional parent post hash, and
-a schema-selected body. It carries no burn, author, or vote. Type 10 wraps the exact
-type-9 frame together with the raw signed transaction that burns for it, and
-type 11 carries a raw signed burn for an existing post together with that post's
+Type 40 is a public post: a network, a topic, an optional parent post hash, and
+a schema-selected body. It carries no burn, author, or vote. Type 41 wraps the exact
+type-40 frame together with the raw signed transaction that burns for it, and
+type 42 carries a raw signed burn for an existing post together with that post's
 hash. The wrapper exists because a burn commits to the identity of the post
 (T7), and a frame cannot contain a commitment to itself; this is the same
-reason a directory signature lives in type 2 outside the type-4 statement. The
+reason a directory signature lives in type 2 outside the type-1 statement. The
 author, the vote direction, and the vote weight are properties of the verified
 chain transaction (T8). Neither wrapper repeats them, so there is one source of
 truth and nothing for a relay to reconcile.
@@ -943,11 +943,11 @@ under #675 owns removal of predecessor writer reachability. The protobuf path
 keeps working unchanged until that migration's explicit
 cutover; the two encodings never share an identity (V5), because a CBOR post is
 identified by its T1 hash and a protobuf post by the SHA-256 of its payload. A
-protobuf object is never transcoded into a type 9, 10, or 11, or the reverse.
+protobuf object is never transcoded into a type 40, 41, or 42, or the reverse.
 
 #### Structured Forum content and reads
 
-Type 9 schema 2 preserves outer fields 0 network, 1 exact topic, optional 2
+Type 40 schema 2 preserves outer fields 0 network, 1 exact topic, optional 2
 parent T1, and 3 exact content bytes. Content is one canonical map: key 0 is
 authored timestamp (signed i64 seconds and nanos 0–999999999); key 1 is an
 ordered array of 1–64 entries. Kind 1 at entry key 0 is a post with optional
@@ -965,14 +965,14 @@ content` placeholder, bounded by the same 64-entry/resource limits. Required
 unknown semantics reject before display. Timestamp and aggregate maps stay
 closed, even inside a compatible future schema.
 
-Types 12–15 use schema 1/min-reader 1 and [topic.cddl](topic.cddl) (note: "page" in types 13 and 14 designates a cursor-paginated query result batch of up to 128 rows with feed continuation cursors, not an HTML web page):
+Types 43–46 use schema 1/min-reader 1 and [topic.cddl](topic.cddl) (note: "page" in types 44 and 45 designates a cursor-paginated query result batch of up to 128 rows with feed continuation cursors, not an HTML web page):
 
 | Type | Fields                                                                                                                                                                                                                    |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 12   | 0 network; 1 exact type-9 frame; 2 author address20; 3 author raw burn1–16384; 4 transaction hash32; 5 first-visible timestamp; 6 block u64; 7 transaction index u64; 8 aggregate; 9 observation revision u64; 10 epoch16 |
-| 13   | 0 network; 1 topic; 2 inclusive since; 3 snapshot revision u64; 4 array of type-12 frames; optional 5 next cursor; 6 epoch16; optional 7 exact request cursor                                                             |
-| 14   | 0 network; 1 snapshot revision u64; 2 entries of topic0/count-u64-1/last-activity2; optional 3 next cursor; 4 epoch16; optional 5 request cursor                                                                          |
-| 15   | 0 network; 1 exact submitted type10/11; 2 target T1; 3 transaction hash32; 4 sender20; 5 direction0-down/1-up; 6 value u64; 7 state; optional 8 block u64; optional 9 index u64; 10 revision u64; 11 epoch16              |
+| 43   | 0 network; 1 exact type-40 frame; 2 author address20; 3 author raw burn1–16384; 4 transaction hash32; 5 first-visible timestamp; 6 block u64; 7 transaction index u64; 8 aggregate; 9 observation revision u64; 10 epoch16 |
+| 44   | 0 network; 1 topic; 2 inclusive since; 3 snapshot revision u64; 4 array of type-43 frames; optional 5 next cursor; 6 epoch16; optional 7 exact request cursor                                                             |
+| 45   | 0 network; 1 snapshot revision u64; 2 entries of topic0/count-u64-1/last-activity2; optional 3 next cursor; 4 epoch16; optional 5 request cursor                                                                          |
+| 46   | 0 network; 1 exact submitted type41/42; 2 target T1; 3 transaction hash32; 4 sender20; 5 direction0-down/1-up; 6 value u64; 7 state; optional 8 block u64; optional 9 index u64; 10 revision u64; 11 epoch16              |
 
 Aggregate is exactly `{0: boolean negative, 1: magnitude32}` with unsigned
 big-endian magnitude and no negative zero. Range is ±(2^256−1); admission
@@ -1002,7 +1002,7 @@ seconds/nanos/raw T1, respect inclusive since, and cannot repeat a T1.
 Discovery orders exact unsigned UTF-8 topic bytes. Empty pages have no next
 cursor. A continuation identifies precisely the last emitted full tuple.
 
-Cursors are closed canonical maps: network0, family13/14 at1, revision2,
+Cursors are closed canonical maps: network0, family44/45 at1, revision2,
 epoch16 at3, last tuple4, incarnation-u64 at7; topic cursors additionally
 carry topic5 and inclusive-since6, with last tuple `{0:timestamp,1:T1}`.
 Discovery last tuple is an exact topic string. Duplicates, unknown keys,
@@ -1066,7 +1066,7 @@ V6. After generic validation, a reader applies this mandatory decision:
 An application MUST NOT claim that unknown semantics were verified. This
 decision is identical in TypeScript and Rust.
 
-Type 9 schema >=2 additionally requires min-reader >=2 and explicit per-type
+Type 40 schema >=2 additionally requires min-reader >=2 and explicit per-type
 schema-2 support before structured projection. Global reader version 2 alone
 does not authorize a schema-1-only reader to reinterpret content. Unsupported
 required children always reject; a root may retain under V6.1. Historical
@@ -1093,35 +1093,35 @@ T1. The content hash is SHA-256 of the common transcript with domain
 `frank/content-hash/v1` and empty context. Its network argument is mandatory and
 is selected without caller discretion:
 
-|                        Type | T1 network source                               |
-| --------------------------: | ----------------------------------------------- |
-| 1, 3, 4, 5, 6, 7, 9, 10, 11 | The validated payload's field 0                 |
-|                           2 | The opened type-4 statement's validated field 0 |
-|                   8, 16, 17 | The literal `frank`                             |
+|                             Type | T1 network source                               |
+| -------------------------------: | ----------------------------------------------- |
+| 1, 3, 10, 11, 12, 14, 40, 41, 42 | The validated payload's field 0                 |
+|                                2 | The opened type-1 statement's validated field 0 |
+|                       20, 21, 22 | The literal `frank`                             |
 
 Content hashes are undefined for an unknown type. A pure opaque forwarder
 therefore retains unknown bytes but does not invent a verified content hash.
 
 T1a. A stable plaintext `content_digest` is SHA-256 of the common transcript
-with domain `frank/message-content/v1`, where `frame` is the complete type-8
-message-content-revision frame and context is empty. The type-8 frame excludes
+with domain `frank/message-content/v1`, where `frame` is the complete type-20
+message-content-revision frame and context is empty. The type-20 frame excludes
 recipient encryption and logical `message_id`, so recipient fanout preserves
 content identity while edits produce a new digest. Its transcript network tag
-is the literal `frank`, matching the type-8 field, so a composite message's
+is the literal `frank`, matching the type-20 field, so a composite message's
 logical content remains independent of which settlement rail delivered it;
 individual chain-bearing entries retain their own network tags.
 
 T2. A directory signature uses the common transcript with domain
-`frank/directory-signature/v1`, where `frame` is the complete type-4 directory
+`frank/directory-signature/v1`, where `frame` is the complete type-1 directory
 statement frame. Algorithms 1, 2, and 3 sign its 32-byte SHA-256 digest;
 algorithm 16 signs the transcript bytes directly as required by S2a. Its network
-argument is the type-4 frame's field 0 (T5). The
+argument is the type-1 frame's field 0 (T5). The
 algorithm identifier lives in the type-2 signature entry and selects its exact
 signing/verification rules. Schnorr identifiers distinguish BIP340 from
 BCH-2019 Schnorr and other incompatible challenge hashes. `context` is empty.
 
 T2a. A key-transition authorization uses the common transcript with domain
-`frank/key-transition-signature/v1`, where `frame` is the complete type-7
+`frank/key-transition-signature/v1`, where `frame` is the complete type-3
 key-transition-statement frame and the network argument MUST equal its network
 field. The statement binds the directory subject, prior authority, revision,
 and new key. The signature entry outside that frame names the algorithm; its
@@ -1130,7 +1130,7 @@ currently registered key or a separately registered offline recovery authority.
 `context` is empty.
 
 T3. The recipient payload digest is SHA-256 of the common transcript with
-domain `frank/recipient-payload/v1`, where `frame` is the complete type-5
+domain `frank/recipient-payload/v1`, where `frame` is the complete type-11
 recipient-encrypted-payload frame, its network argument is that frame's field 0
 (T5), and context is empty. It is the payload identity that T4 commits to. It no
 longer enters the derivation of stamp keys; because the frame includes `E`, `X`
@@ -1139,13 +1139,13 @@ member authorizes exactly one stamp derivation for one payload.
 
 T3a. Stamp destination derivation, byte-exact. `n` is the secp256k1 group order,
 `G` its generator, and all points are 33-byte compressed SEC1 encodings in
-every hash input. `P'` is the type-1 field 1 key (S9), `E` the type-5 field 6,
-`X` the type-5 field 7, and `network` the type-5 field 0. Both hashes below
+every hash input. `P'` is the type-10 field 1 key (S9), `E` the type-11 field 6,
+`X` the type-11 field 7, and `network` the type-11 field 0. Both hashes below
 (here and in T3b) start with the section 8 domain-and-network prefix
 `u16be(len(domain)) || ascii(domain) || u16be(len(network)) ||
 utf8(network)`, so every variable-length input carries its length.
 
-1. Sender: pick a fresh uniformly random `e` in `1..n-1` for every type-5
+1. Sender: pick a fresh uniformly random `e` in `1..n-1` for every type-11
    frame, set `E = e*G` and `X = e*P'`, and produce the T3b proof. A fresh `e`
    is a MUST: a repeated `e` repeats `E`, `X` and every child address, and
    links the payloads. A relay SHOULD flag a repeated `E` for the same `P'` as
@@ -1192,7 +1192,7 @@ is held by the sender, the relay and the recipient but never appears on chain.
 The realistic adversary is therefore a compromised or logging relay combined
 with a wallet-side key leak. To keep that combination unlikely:
 
-- `X` is required field 7 of the type-5 frame, so a relay holds it inside the
+- `X` is required field 7 of the type-11 frame, so a relay holds it inside the
   stored frame bytes, and a stored frame MUST NOT be edited (the digests and
   the proof cover `X`). A relay SHOULD therefore delete the entire stored frame,
   and any derived index or cache that holds `X`, once the stamp payments of the
@@ -1220,7 +1220,7 @@ proof stays relay-independent).
 T3b. The stamp DLEQ proof (Chaum-Pedersen over secp256k1, made non-interactive
 by Fiat-Shamir with SHA-256) shows that `E` and `X` use the same secret `e`
 without revealing it, that is `E = e*G` and `X = e*P'`. It is the 64-byte
-type-5 field 8: `c || s`, each a 32-byte big-endian scalar.
+type-11 field 8: `c || s`, each a 32-byte big-endian scalar.
 
 - Encoding rules (all `schema`, stage 8.2): fields 6 and 7 are exactly 33 bytes
   whose first byte is `02` or `03`, whose x coordinate is below the field prime
@@ -1230,7 +1230,7 @@ type-5 field 8: `c || s`, each a 32-byte big-endian scalar.
   and above) are never reduced.
 - Challenge: `c = SHA-256( u16be(19) || ascii("frank/stamp-dleq/v1") ||
 u16be(len(network)) || utf8(network) || G || P' || E || X || R1 || R2 )` read
-  as a big-endian integer, where `network` is the type-5 field 0 (the same
+  as a big-endian integer, where `network` is the type-11 field 0 (the same
   prefix style as T3a step 2), and `R1` and `R2` are defined below. Points are
   compressed (fixed 33 bytes), so the concatenation is unambiguous.
 - Proving (sender): choose the nonce `k` in `1..n-1` either uniformly at random
@@ -1289,7 +1289,7 @@ recovery applies the same rule to what it retains. This rule is scoped to one
 relay's record: two relays that share no record cannot detect one transaction
 presented to each under different payloads, so a relay that takes over a
 recipient's mailbox SHOULD inherit the previous relay's record. `T3_digest` is
-the T3 digest of the whole type-5 frame. Relay
+the T3 digest of the whole type-11 frame. Relay
 delivery fees use a separate domain and are not part of this transcript.
 
 T5. Protocol signatures and commitments MUST bind the network tag passed to
@@ -1328,20 +1328,20 @@ spend scalar for child_0    t_0*d' mod n  (its public point equals child_0)
 
 T7. The topic burn commitment is `SHA256(ascii("frank:topic-vote:v1") ||
 u16be(len(network)) || utf8(network) || target_hash)`, where `network` is field
-0 of the type-10 or type-11 frame and `target_hash` is 32 bytes: for a type 11,
-its field 1; for a type 10, the T1 content hash of the opened type-9 frame
+0 of the type-41 or type-42 frame and `target_hash` is 32 bytes: for a type 42,
+its field 1; for a type 41, the T1 content hash of the opened type-40 frame
 (field 1). A post's own burn is therefore a vote on that post, and one function
 serves both. A commitment binds the network (T5) and the exact target, so a
 burn transaction cannot pay for a post or vote on another network, on another
 post, or on a post whose frame differs by one byte (T6).
 
-T8. A consumer that accepts a type-10 or type-11 event MUST derive the T7
+T8. A consumer that accepts a type-41 or type-42 event MUST derive the T7
 commitment itself and MUST NOT accept one supplied by the client. It MUST verify
 against the chain that the transaction carries exactly that commitment. The
 vote direction, the burned value (the vote's weight), and the sender are the
 verified transaction's, never an encoded assertion; the schemas carry none. A
 burn transaction's consumption key is its chain transaction identifier, so the
-same burn counts at most once whether it arrives as a type 10, a type 11, or a
+same burn counts at most once whether it arrives as a type 41, a type 42, or a
 legacy protobuf object. For Monad the calldata layout is
 `"TPIC" || 0x02 || direction || commitment`, with direction byte `01` for an
 up-vote and `00` for a down-vote. The layout of the legacy protobuf path
@@ -1350,16 +1350,16 @@ format: a consumer MUST NOT accept `0x01` calldata for a CBOR event or `0x02`
 calldata for a protobuf object, so a burn made for one encoding cannot be
 replayed into the other.
 
-A type-10 post's own burn MUST be an up-vote (direction byte `01`): a post
-enters the tally with positive weight, and a consumer MUST reject a type 10
+A type-41 post's own burn MUST be an up-vote (direction byte `01`): a post
+enters the tally with positive weight, and a consumer MUST reject a type 41
 whose burn carries `00`. The codec cannot check this, because the burn
 transaction is opaque bytes and there is no stage 10 for these types, so the
 rule is enforced by the consumer and pinned by its own tests, not by a manifest
 vector.
 
-S11 binds a type 10's network to its post's, and T7 binds a burn to its
-network, but a type 11 has no opened post. A consumer MUST confirm that the
-target post it holds belongs to the type-11 frame's network before counting the
+S11 binds a type 41's network to its post's, and T7 binds a burn to its
+network, but a type 42 has no opened post. A consumer MUST confirm that the
+target post it holds belongs to the type-42 frame's network before counting the
 vote, and MUST reject a vote whose target is unknown. The chain identifier and
 burn address for each network come from the consumer's configuration, and the
 consumer MUST check at startup that the network identifier it serves is tied
@@ -1405,9 +1405,9 @@ category, and an implementation MUST NOT continue to report a later failure.
    schema (V6.2) or, for a newer compatible schema, its highest-supported
    projection ignoring wildcard fields (V6.3).
 8. **Typed structure**, for a known type only, in this order:
-   1. type-specific limits: the root frame length against R2's 1 MiB for type 1
-      and R3's 256 KiB for type 2 (type 3 uses the global limit; R6 gives 1 MiB
-      for types 9 and 10 and 64 KiB for type 11), and the counts
+   1. type-specific limits: the root frame length against R2's 1 MiB for type 10
+      and R3's 256 KiB for type 2 (type 14 uses the global limit; R6 gives 1 MiB
+      for types 40 and 41 and 64 KiB for type 42), and the counts
       named by R2 through R4 and R6 read from the decoded fields before typed
       conversion: `resource`. R2's cumulative 256-item total is not an 8.1 check; it is
       charged in 8.4. The CDDL bounds that restate these limits, and so are
@@ -1418,10 +1418,10 @@ category, and an implementation MUST NOT continue to report a later failure.
       the upper bounds of `[1*16 key-transition]` and `[1*8 account-ref]`, is `schema`;
    2. the type's CDDL structure and range rules, including network-tag,
       ASCII-identifier, and endpoint-ASCII syntax (S1, C6, S4), and C12 unknown
-      keys, plus the T3b encoding rules for type-5 schema-1 fields 6 through 8 and schema-2
+      keys, plus the T3b encoding rules for type-11 schema-1 fields 6 through 8 and schema-2
       fields 5 through 7: `schema`. A CDDL cardinality or `.size` bound that merely restates an
       R2 through R4 or R6 limit is `resource`, checked in 8.1, not `schema`;
-   3. allocated-identifier checks (S2b, S2c; type-5 schema 1 permits only proof suite 65535,
+   3. allocated-identifier checks (S2b, S2c; type-11 schema 1 permits only proof suite 65535,
       while schema 2 permits only production suite 1): `unsupported`;
    4. recursive opening of only the byte-string fields that the schema declares
       as framed objects (never opaque sections). Each child is an embedded
@@ -1430,14 +1430,14 @@ category, and an implementation MUST NOT continue to report a later failure.
       - Before opening each child of a message-item array (an open field), charge
         it against R2's 256-item total for the whole operation. Every such child
         counts, whether its type is known, unknown, or retained, and a
-        required-type child (type 5, 6, 8, or 9) never does. The first child over
+        required-type child (type 11, 12, 20, or 40) never does. The first child over
         256 fails `resource` before that child's stage 2. The rule applies to any
         root and is labelled stage 8.4.
       - In an open field (a message item), a child of an assigned non-item type
-        (types 1 through 15 and the type-25 forwarding envelope: every type whose
+        (types 1 through 3, 10 through 14, 20, and 40 through 46: every type whose
         `open_item_field` is false in `../message-types/v1.json`) is `semantic`, checked after its stage 6
         like a required-type mismatch. One exception: a client (the TypeScript
-        reader) keeps a type-25 forwarding envelope found there as exact,
+        reader) keeps a type-13 forwarding envelope found there as exact,
         uninterpreted bytes with reason `unknown-type`, exactly as it keeps an
         unknown type, and the message's other items are unaffected; it never
         opens, projects or acts on that child as an envelope. A relay (the Rust
@@ -1459,28 +1459,28 @@ category, and an implementation MUST NOT continue to report a later failure.
    parent nor the prior statement; a parent's stage 9 runs after its children
    have finished and first checks its own ordering and uniqueness. S10 and the
    prior-authority selection run in the type-2 parent's stage 9, not in the
-   type-4 child's. The checks are ordering, uniqueness, cross-field, network,
+   type-1 child's. The checks are ordering, uniqueness, cross-field, network,
    and S10, the presence of an entry signed by the statement subject,
    selection of the prior authority (S4a, T2a), S9's destination key type and
-   destination uniqueness, S10a.1 (the stamp-key type, in the type-4
+   destination uniqueness, S10a.1 (the stamp-key type, in the type-1
    statement's own stage 9), S10a.2's schema-order check and S10a.3's
    same-subject rules, T3a.4 index contiguity, and S11's network equality
-   between a type-10 submission and its opened type-9 post: `semantic`. No signature or digest is
+   between a type-41 submission and its opened type-40 post: `semantic`. No signature or digest is
    verified here, and the S10a.4 binding is not evaluated (it is stage 10).
 10. **Cryptographic and external checks**, `full` only, in this order. A root
-    other than type 1 or type 2 runs no stage 10 check. For every root other than
-    type 1, `payment_policy`, `decrypted_frame_hex` and `recipient_directory_state`
+    other than type 10 or type 2 runs no stage 10 check. For every root other than
+    type 10, `payment_policy`, `decrypted_frame_hex` and `recipient_directory_state`
     MUST be null, and for every root other than type 2,
     `prior_directory_statement_frame_hex` MUST be null:
     1. Decrypted content: the supplied decrypted frame is an embedded child of
-       the type-5 payload sharing its counters and not charged against
+       the type-11 payload sharing its counters and not charged against
        `route_byte_limit`, but its length is checked against `MAX_FRAME_BYTES`
-       (`resource`). It runs as a required-type child (8.4) of type 6. Only after the child
+       (`resource`). It runs as a required-type child (8.4) of type 12. Only after the child
        passes stage 9, for suite 65535, its bytes MUST equal the ciphertext
        field, otherwise `cryptographic`.
-    2. S8's type-6 network equality: `semantic`.
+    2. S8's type-12 network equality: `semantic`.
     3. S8's T1a digest equality: `cryptographic`.
-    4. The type-1 field 3 T3 digest, then in order: `P'` parses as a valid
+    4. The type-10 field 3 T3 digest, then in order: `P'` parses as a valid
        curve point (T3a.6), the S10a.4 binding of `P'` to
        `recipient_directory_state`, the T3b DLEQ proof (which includes `X` not
        equal to `e*P'`), the T3a `t_i` range for each member, and S9 destination
@@ -1538,7 +1538,7 @@ of the three proof fixtures (direct message, directory attestation, mailbox
 checkpoint) are committed separately in `vectors/rust-origin.json` so the
 TypeScript codec can re-encode them; that file is not produced by the
 TypeScript fixture builders. The pure hashes of the topic events (T1 of a
-type-9 frame and the T7 commitment for a type-10 and a type-11 frame, each with
+type-40 frame and the T7 commitment for a type-41 and a type-42 frame, each with
 a one-byte mutation) are pinned in `vectors/topic-commitments.json`, which both
 codecs recompute; a manifest has no field for a hash that is not a content hash. A `reject` case names its stable error category and
 MAY name the stage that determined it (`error_stage`, below). An
@@ -1557,9 +1557,9 @@ ambient chain, database, reader, or decryption state can change its outcome.
 `1..highest`, and an object interprets by its own exact version's CDDL; until a
 later schema is allocated the corpus has no schema-version-2 fixtures beyond
 proof frames that carry `schema_version` 2 to exercise V6.3 against a reader
-whose context supports only schema 1, and type 4, whose schemas 2 and 3 (both
+whose context supports only schema 1, and type 1, whose schemas 2 and 3 (both
 with `min_reader_version` 2) require a context with `reader_version` at least 2
-and type 4 supported at schema 2 or 3; a schema-1 statement is also interpreted by that
+and type 1 supported at schema 2 or 3; a schema-1 statement is also interpreted by that
 context (versions `1..highest`).
 
 The operation bounds the categories a case may expect: `frame` allows `frame`,
@@ -1590,39 +1590,39 @@ Every `typed` or `full` case carries `prior_directory_statement_frame_hex`, and
 every full case, including rejections and frames whose type is not yet known,
 additionally carries `payment_policy`, `decrypted_frame_hex` and
 `recipient_directory_state`; each is `null` when it does not apply. A
-`full` case whose frame is type 1 MUST have non-null `payment_policy` and
+`full` case whose frame is type 10 MUST have non-null `payment_policy` and
 `decrypted_frame_hex` (and `recipient_directory_state`, unless it is the
 no-entry reject defined below); a type-2 frame MAY have a null prior statement only for
-bootstrap. For type 1, `payment_policy` provides the 32-byte minimum and
+bootstrap. For type 10, `payment_policy` provides the 32-byte minimum and
 authoritative chain observations keyed by independently unique transaction ID;
 the encoded payment assertions must match those observations. The
 `decrypted_frame_hex` value is the exact authenticated decryption result to
-validate as type 6. For proof-only encryption suite 65535, it is also exactly
+validate as type 12. For proof-only encryption suite 65535, it is also exactly
 the bytes carried in the ciphertext field; this is a deterministic codec
 fixture, not a production cipher.
 
 For a type-2 case, `prior_directory_statement_frame_hex` is either `null`
-for bootstrap or the exact last accepted type-4 frame used for revision,
+for bootstrap or the exact last accepted type-1 frame used for revision,
 subject, transition, and offline-authority checks. These context fields make
 acceptance or rejection a pure function of the manifest case.
 
 Every `full` case also carries `recipient_directory_state`, and a `typed` case
 MAY carry it but `typed` ignores it, because the S10a.4 binding is stage 10.
-For a type-1 case it is the recipient's directory state as the consumer holds
-it: an object with `current_statement_frame_hex` (the exact last accepted type-4
+For a type-10 case it is the recipient's directory state as the consumer holds
+it: an object with `current_statement_frame_hex` (the exact last accepted type-1
 frame for the recipient), and
 `previous_stamp_key_hex` (the 33-byte compressed stamp key in force before the
 current one, or null), maintained as S10a.5 defines; the current statement may be schema 1 (no
 stamp key), in which case the previous key is null. It is
-null for every root other than type 1 (a non-type-1 full case carries null), and
-for a type-1 full case it is non-null except that null means no directory entry: such a full case
+null for every root other than type 10 (a non-type-10 full case carries null), and
+for a type-10 full case it is non-null except that null means no directory entry: such a full case
 MUST be a `reject` with `error_category` `cryptographic` and `rules` including
 `S10a`, which S10a.4 fails closed and the checker enforces. The state is the
-recipient's by construction: type 1 has no recipient identity field (S8), so
+recipient's by construction: type 10 has no recipient identity field (S8), so
 the case, not the frame, names whose statement it is. The codec does not check that field 8 of the recipient statement is a curve point,
 so a case may make that key `P'` to test the S10a.4 and T3a.6 checks apart.
 
-The positive `full` type-1 direct-message case MUST also record
+The positive `full` type-10 direct-message case MUST also record
 `content_digest_hex`, `payload_digest_hex`, and every
 `payment_commitments_hex` value, plus `stamp_shared_point_hex` (`X`) and
 `stamp_child_public_keys_hex` (one 33-byte compressed child key per payment
@@ -1640,22 +1640,22 @@ the section 9 stage, and its category.
 | Accept: `P'` equals `previous_stamp_key_hex` (one-rotation grace)                                                                                                                                                                      | `full`    | 10    | accept          |
 | Accept: type-2 statements with a greater revision and no field 5 that rotate field 8, and that add it (schema 1 to 2, migration), each plus a delivery to the new key; and a statement whose field 8 equals the subject (not rejected) | `typed`   | 9     | accept          |
 | Accept: a delivery whose `P'` is not the recipient's key (the binding is not evaluated)                                                                                                                                                | `typed`   | 9     | accept          |
-| Missing type-5 field 6, 7 or 8 (three vectors)                                                                                                                                                                                         | `typed`   | 8.2   | `schema`        |
-| Wrong length for each of type-5 fields 6, 7 and 8 (three vectors)                                                                                                                                                                      | `typed`   | 8.2   | `schema`        |
+| Missing type-11 field 6, 7 or 8 (three vectors)                                                                                                                                                                                        | `typed`   | 8.2   | `schema`        |
+| Wrong length for each of type-11 fields 6, 7 and 8 (three vectors)                                                                                                                                                                     | `typed`   | 8.2   | `schema`        |
 | Field 6 and field 7 each: `x >= p` (an on-curve `x0` plus `p`), prefix `04`, prefix `05`, all-zero or `00` prefix, off curve                                                                                                           | `typed`   | 8.2   | `schema`        |
 | Proof scalar: `c = 0`, `c >= n`, `s = 0`, `s >= n` (four separate vectors, `c` and `s` never combined)                                                                                                                                 | `typed`   | 8.2   | `schema`        |
-| Type-1 field 1 with key type 1 and a 32-byte value                                                                                                                                                                                     | `typed`   | 8.2   | `schema`        |
-| Type-1 field 1 with an unallocated key type                                                                                                                                                                                            | `typed`   | 8.3   | `unsupported`   |
-| Type-1 field 1 with an allocated key type other than 1 (type 2 or 3, correct length; S9)                                                                                                                                               | `typed`   | 9     | `semantic`      |
-| Type-4 field 8 with an allocated key type other than 1 (type 2 or 3, correct length; S10a.1)                                                                                                                                           | `typed`   | 9     | `semantic`      |
-| Type-4 schema 2 without field 8, and type-4 schema 1 with a field 8 (S10a.1, C12), two vectors                                                                                                                                         | `typed`   | 8.2   | `schema`        |
+| Type-10 field 1 with key type 1 and a 32-byte value                                                                                                                                                                                    | `typed`   | 8.2   | `schema`        |
+| Type-10 field 1 with an unallocated key type                                                                                                                                                                                           | `typed`   | 8.3   | `unsupported`   |
+| Type-10 field 1 with an allocated key type other than 1 (type 2 or 3, correct length; S9)                                                                                                                                              | `typed`   | 9     | `semantic`      |
+| Type-1 field 8 with an allocated key type other than 1 (type 2 or 3, correct length; S10a.1)                                                                                                                                           | `typed`   | 9     | `semantic`      |
+| Type-1 schema 2 without field 8, and type-1 schema 1 with a field 8 (S10a.1, C12), two vectors                                                                                                                                         | `typed`   | 8.2   | `schema`        |
 | Type-2 attestation of a schema-2 statement opened by a context with `reader_version` 1 (V6.1, required-type child)                                                                                                                     | `typed`   | 7     | `unsupported`   |
 | Payment child indices not contiguous from 0 (a gap, or starting at 1), and duplicate payment field 3 destinations                                                                                                                      | `typed`   | 9     | `semantic`      |
 | Same-subject update (S10a.3) that changes only field 8 with a non-increasing revision, and one with a key transition present; a same-subject statement whose `schema_version` is lower than the prior statement's (S10a.2)             | `typed`   | 9     | `semantic`      |
 | `P'` off curve, with the recipient state's field 8 equal to it (T3a.6 fails, the binding passes)                                                                                                                                       | `full`    | 10.4  | `cryptographic` |
 | Foreign `P'`: the sender's own key, frame and proof otherwise consistent                                                                                                                                                               | `full`    | 10.4  | `cryptographic` |
 | `P'` equals the identity key while field 8 is a different key (no fallback), and `P'` equals the identity key when the current statement is schema 1                                                                                   | `full`    | 10.4  | `cryptographic` |
-| Recipient state whose current statement is schema 1 (no stamp key), with any type-1 `P'` other than the identity key (S10a.2)                                                                                                          | `full`    | 10.4  | `cryptographic` |
+| Recipient state whose current statement is schema 1 (no stamp key), with any type-10 `P'` other than the identity key (S10a.2)                                                                                                         | `full`    | 10.4  | `cryptographic` |
 | Proof `c = 1`, `s = e` with `E = e*G` and `X = e*P'` (R1 and R2 are infinity; distinguishes a crash from a reject)                                                                                                                     | `full`    | 10.4  | `cryptographic` |
 | `P'` two rotations old, and a null `recipient_directory_state` (no directory entry)                                                                                                                                                    | `full`    | 10.4  | `cryptographic` |
 | One-byte proof change; wrong or substituted `X`; wrong `E`; `(E, X, proof)` copied from another network                                                                                                                                | `full`    | 10.4  | `cryptographic` |
@@ -1684,8 +1684,8 @@ each other, and carry the same `pair_relation`. `one_byte_mutation` requires
 equal-length `frame_hex` values differing at exactly one byte and demonstrates
 T6. `insertion_order_equivalent` relates independently constructed values whose
 canonical frames must be identical. `cross_language_roundtrip` relates the
-TypeScript- and Rust-origin copies of the same frame. `derivation_variant` relates one `full` type-1 accept case and one `full`
-type-1 reject case built from the same recipient, network and payments that
+TypeScript- and Rust-origin copies of the same frame. `derivation_variant` relates one `full` type-10 accept case and one `full`
+type-10 reject case built from the same recipient, network and payments that
 differ in the single fault the reject's `description` names; the checker
 verifies one accept, one reject, and equal operation and `type_id`.
 `opaque_retention` relates
@@ -1706,8 +1706,8 @@ and B in section 9 define the order within CBOR validation.
 | Unknown frame version or uninterpretable type/schema without permitted retention; unallocated key type, algorithm, encryption suite, or algorithm/key-type/length pairing; an entry whose algorithm is allocated but not verifiable in the reader's slice (M7)                                                                                                                                                                                                                                                                                            | `unsupported`   |
 | Truncated/invalid CBOR syntax, invalid UTF-8, reserved additional information, or extra CBOR item in body/payload                                                                                                                                                                                                                                                                                                                                                                                                                                         | `malformed`     |
 | Non-minimal integer/length, indefinite value, duplicate/out-of-order map key, or another alternate encoding of an allowed value                                                                                                                                                                                                                                                                                                                                                                                                                           | `noncanonical`  |
-| Forbidden CBOR class (float, tag, forbidden simple value; a stray break code is `malformed`; non-uint map key), envelope/CDDL type mismatch, undeclared key (C12), missing/extra required key, scalar range violation, network-tag/ASCII-identifier/endpoint syntax violation, wrong key length for an allocated key type, a type-4 statement missing required field 8 or a schema-1 statement carrying it, a type-5 stamp field with the wrong length or an invalid point or proof-scalar encoding (T3b), or `min_reader_version` above `schema_version` | `schema`        |
-| Wrong `type_id` in a required-type framed field; list order/uniqueness, revision or network versus the prior statement, transition count/linkage, missing subject-signed entry, unregistered prior authority, cross-field or network equality, key shape (including S10a.1's stamp-key type), a `schema_version` lower than the prior statement's (S10a.2), S10a.3, contiguity, decrypted frame not type 6, type-6 network mismatch, or S3 overflow, zero observed value, or sum below minimum                                                            | `semantic`      |
+| Forbidden CBOR class (float, tag, forbidden simple value; a stray break code is `malformed`; non-uint map key), envelope/CDDL type mismatch, undeclared key (C12), missing/extra required key, scalar range violation, network-tag/ASCII-identifier/endpoint syntax violation, wrong key length for an allocated key type, a type-1 statement missing required field 8 or a schema-1 statement carrying it, a type-11 stamp field with the wrong length or an invalid point or proof-scalar encoding (T3b), or `min_reader_version` above `schema_version` | `schema`        |
+| Wrong `type_id` in a required-type framed field; list order/uniqueness, revision or network versus the prior statement, transition count/linkage, missing subject-signed entry, unregistered prior authority, cross-field or network equality, key shape (including S10a.1's stamp-key type), a `schema_version` lower than the prior statement's (S10a.2), S10a.3, contiguity, decrypted frame not type 12, type-12 network mismatch, or S3 overflow, zero observed value, or sum below minimum                                                          | `semantic`      |
 | Digest, hash, or signature mismatch; ciphertext not equal to the suite-65535 decrypted bytes; invalid `P'` point, `P'` not bound to the recipient's directory state (S10a.4), failed T3b DLEQ proof, T3a `t_i` range failure; wrong derived destination; transaction observation or commitment mismatch                                                                                                                                                                                                                                                   | `cryptographic` |
 
 Vector case IDs MUST be unique. `paired_case`, when present, MUST name a
@@ -1723,22 +1723,22 @@ manifest, not as a case outcome: unique case IDs; the pairing rules above;
 `transaction_id_hex` values in `observations`; `retained_frame_hex` equal to
 `frame_hex`; `route_byte_limit` not below the frame length unless the case
 expects `resource`; non-null full-case context whenever the frame's type
-requires it; a `prior_directory_statement_frame_hex` that is a valid type-4
-frame, meaning it passes stages 1 through 9 as a type-4 root (in a deployment the
+requires it; a `prior_directory_statement_frame_hex` that is a valid type-1
+frame, meaning it passes stages 1 through 9 as a type-1 root (in a deployment the
 caller asserts it was accepted by full validation of the attestation that carried
 it, which a corpus without a full case cannot show); and a `retain` case under `frame`
 whose frame version byte is `01` (`frame` retention is valid only for an
 unsupported version). It MUST also reject: an accept case whose `type_id` or
 `schema_version` differs from its frame's envelope; a `payment_commitments_hex`
 or `stamp_child_public_keys_hex` whose length differs from the frame's
-payment-member count; a `stamp_shared_point_hex` that differs from type-5 field
+payment-member count; a `stamp_shared_point_hex` that differs from type-11 field
 7; a `stamp_child_public_keys_hex` entry that is not the T3a child key derived
-from `X`, `P'`, the network and its member's index; a full type-1 accept case
-with a null `recipient_directory_state`; a full type-1 case with a null state
-that is not a `cryptographic` reject citing `S10a`; a full type-1 accept case whose state's current statement is schema 1;
+from `X`, `P'`, the network and its member's index; a full type-10 accept case
+with a null `recipient_directory_state`; a full type-10 case with a null state
+that is not a `cryptographic` reject citing `S10a`; a full type-10 accept case whose state's current statement is schema 1;
 a state whose `previous_stamp_key_hex` is non-null while its current statement
 is schema 1 or equals the current stamp key; a non-null `payment_policy`, `decrypted_frame_hex` or
-`recipient_directory_state` for a root other than type 1, or a
+`recipient_directory_state` for a root other than type 10, or a
 non-null `prior_directory_statement_frame_hex` for a root other than type 2; a `retain` case whose root type is known, `min_reader_version` does not
 exceed `reader_version`, and frame version is `01`; and any rule ID that is not a numbered
 rule in this README. Every reject vector for a rule SHOULD have an accept twin
@@ -1780,7 +1780,7 @@ but normal app and bot registration remain protobuf until the directory cutover
 [vectors/account-registration-values.json](vectors/account-registration-values.json)
 and for the codec implementation of #106's child B.
 
-The record is a type-2 attestation of a complete type-4 statement frame
+The record is a type-2 attestation of a complete type-1 statement frame
 (section 6, Directory attestations), written at `schema_version` 3 with
 `min_reader_version` 2: V1 bumps `schema_version` for the new optional field 9
 and does not raise `min_reader_version`, because a schema-2 reader can safely
@@ -1793,11 +1793,11 @@ through 9 are unchanged by this section except where M7 records an
 `unsupported` category at stage 10.6 for allocated-but-unverifiable algorithms.
 
 M1. Field mapping. Every protobuf field of the registration record maps 1:1
-into the type-4 statement and its type-2 wrapper; nothing is dropped, nothing
+into the type-1 statement and its type-2 wrapper; nothing is dropped, nothing
 new is invented, and the signature is always recomputed over the new bytes
 (never transcoded):
 
-| Protobuf field                                            | CBOR location (type-4 statement unless noted)                                          |
+| Protobuf field                                            | CBOR location (type-1 statement unless noted)                                          |
 | --------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `SignedPayload.public_key`                                | field 1, subject `account-ref`: key type 1, 33-byte compressed SEC1                    |
 | `MonadProfile.timestamp` (ms)                             | field 2 (revision) and field 3 (`timestamp`), per M2                                   |
@@ -1810,7 +1810,7 @@ new is invented, and the signature is always recomputed over the new bytes
 | (no CBOR counterpart)                                     | the claimed registration address: derived from the subject, never stored (M6)          |
 
 The last two rows are the frozen statement shape, not new semantics: field 0,
-field 4, and field 8 are required fields of every type-4 statement, so the
+field 4, and field 8 are required fields of every type-1 statement, so the
 first-slice registration fills them with the network it registers on (one of
 the configured `MonadNetworkDescriptor` rows of
 `backend/cashweb/cashweb-registry/src/network_tag.rs`, currently
@@ -1883,7 +1883,7 @@ statement subject as the signer, 2: the signature bytes}`, where the bytes are
 a strict-DER, low-S secp256k1 ECDSA signature (S2a, S2b: 8 through 72 bytes)
 over the 32-byte SHA-256 digest of the frozen T2 transcript
 (`frank/directory-signature/v1`, network = the statement's field 0, frame = the
-exact complete type-4 frame, empty context). This pins the record this
+exact complete type-1 frame, empty context). This pins the record this
 migration writes; the frozen schema's allowance of further entries (a verified
 co-signature, for example) is unchanged, and stage 9 requires an entry signed
 by the statement subject while stage 10.6 verifies every entry (M7's
@@ -1945,3 +1945,33 @@ pure-value vectors (M2, M3, M6) in its own documented format. The TypeScript,
 Rust, Python, and browser runners consume the same T2a bytes and the manifest
 also pins M7 precedence when an unsupported transition authorization appears
 beside a corrupt outer signature.
+
+### Offline Option A signed vector regeneration
+
+The signed registration and provisional directory corpora retain their synthetic
+case definitions from revision `ff76bc65`, stored as offline source in
+`packages/frank-codec/fixtures/option-a-signed-inputs.json`. The offline converter
+`packages/frank-codec/scripts/renumber-signed-vectors.cjs` derives only public
+fixture signing keys, renumbers frames, and recomputes transcripts and signatures.
+The Rust example `backend/cashweb/frank-cbor/examples/sign-fixture.rs` independently
+produces the Rust-originated signatures. This tooling never reads wallet custody.
+Run from the repository root:
+
+```sh
+node packages/frank-codec/scripts/renumber-signed-vectors.cjs
+node packages/frank-codec/scripts/renumber-signed-vectors.cjs --check
+yarn --cwd packages/frank-codec test --runInBand
+yarn --cwd packages/frank-codec crosscheck
+cargo test --manifest-path backend/cashweb/frank-cbor/Cargo.toml
+```
+
+Outputs are `docs/protocol/cbor/vectors/{account-registration,account-registration-values,directory-preview,directory-admission,dm-runtime}.json`
+and the corresponding reviewed proposal snapshot
+`docs/protocol/proposals/suite1-directory/vectors.json`. It also updates `backend/cashweb/frank-cbor/proposals/suite1-directory/rust-origin.json`
+and the multipart regression request constants in
+`backend/cashweb/cashweb-registry/src/http/monad_message_cbor_tests.rs`.
+Historical field names
+`type4_hex` remain fixture labels; all contained statement frames now use type 1.
+Unknown historical registration signer keys are replaced deterministically with
+public synthetic keys so no unavailable signing material is needed. Pure address
+derivation vectors remain independent of those replacement signers.

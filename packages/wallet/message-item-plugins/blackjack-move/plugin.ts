@@ -98,7 +98,7 @@ export function encodeCanonicalBlackjackItem(
   return encodeBlackjackItem(item)
 }
 
-/** Accept only an already validated parsed type18 child from public authenticated content.
+/** Accept only an already validated parsed type26 child from public authenticated content.
  * Keeps the original frame; never reparses a child with a fresh traversal budget.
  * The projection and frame are copy-owned by the public codec.
  */

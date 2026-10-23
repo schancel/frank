@@ -33,7 +33,17 @@ import jsonschema
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'docs', 'protocol', 'cbor'))
 MAX_FRAME, MAX_DEPTH, MAX_CONT, MAX_ITEMS = 8388617, 32, 16384, 131072
 MAX_MAP, MAX_ARR, MAX_BSTR, MAX_TSTR = 256, 8192, 8388608, 262144
-KNOWN = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17}
+# Type identifiers come from the registry (docs/protocol/message-types/v1.json), by key.
+TYPE = {t['key']: t['id'] for t in json.load(
+    open(os.path.join(ROOT, '..', 'message-types', 'v1.json')))['types']}
+T_DM, T_ATTESTATION, T_CHECKPOINT = TYPE['direct-message-delivery'], TYPE['directory-attestation'], TYPE['mailbox-checkpoint']
+T_STATEMENT, T_PAYLOAD, T_CONTENT = TYPE['directory-statement'], TYPE['recipient-encrypted-payload'], TYPE['encrypted-message-content']
+T_TRANSITION, T_REVISION = TYPE['key-transition-statement'], TYPE['message-content-revision']
+T_POST, T_SUBMISSION, T_VOTE = TYPE['topic-post'], TYPE['topic-post-submission'], TYPE['topic-vote-submission']
+T_CONTAINER, T_TEXT = TYPE['container-message-item'], TYPE['text-message-item']
+# The historical reader of the shared manifest: the types allocated before the Forum read types.
+KNOWN = {T_DM, T_ATTESTATION, T_CHECKPOINT, T_STATEMENT, T_PAYLOAD, T_CONTENT, T_TRANSITION,
+         T_REVISION, T_POST, T_SUBMISSION, T_VOTE, T_CONTAINER, T_TEXT}
 
 
 class Fail(Exception):
@@ -248,9 +258,9 @@ def transcript(domain, network, frame):
 
 def t1(frame, info):
     t, payload = info['type'], info['payload']
-    if t in (8, 16, 17):
+    if t in (T_REVISION, T_CONTAINER, T_TEXT):
         net = 'frank'
-    elif t == 2:
+    elif t == T_ATTESTATION:
         inner = payload[0]
         env = dec(inner[9:], 0)[0]
         net = dec(env[3], 0)[0][0]
@@ -264,16 +274,16 @@ def check_topic_commitments():
     doc = json.load(open(os.path.join(ROOT, 'vectors', 'topic-commitments.json')))
     ctx = {'operation': 'typed', 'route_byte_limit': MAX_FRAME, 'reader_version': 1,
            'opaque_retention_allowed': False,
-           'supported_schemas': [{'type_id': t, 'schema_version': 1} for t in (9, 10, 11)]}
+           'supported_schemas': [{'type_id': t, 'schema_version': 1} for t in (T_POST, T_SUBMISSION, T_VOTE)]}
     bad, n = [], 0
     for c in doc['cases']:
         f = bytes.fromhex(c['frame_hex'])
         kind, info = frame_stages(f, ctx, Counters())
         payload = info['payload']
-        if info['type'] == 9:
+        if info['type'] == T_POST:
             got = {'t1_hex': t1(f, info)}
         else:
-            if info['type'] == 10:
+            if info['type'] == T_SUBMISSION:
                 inner = bytes(payload[1])
                 target = hashlib.sha256(transcript(
                     'frank/content-hash/v1', payload[0], inner)).digest()
@@ -328,11 +338,11 @@ def check_stamp_fields(manifest):
             problems.append('%s: python could not reach stage 8' % cid)
             continue
         t, payload = info['type'], info['payload']
-        if t == 5:
+        if t == T_PAYLOAD:
             ok = all(k in payload for k in (6, 7, 8)) and point_ok(payload[6]) and \
                 point_ok(payload[7]) and proof_ok(payload[8])
-        elif t == 4:
-            highest = {x['type_id']: x['schema_version'] for x in c['validation_context']['supported_schemas']}[4]
+        elif t == T_STATEMENT:
+            highest = {x['type_id']: x['schema_version'] for x in c['validation_context']['supported_schemas']}[T_STATEMENT]
             # V6.3: a newer frame is read through the reader's highest supported schema.
             ok = (8 in payload) == (min(info['schema'], highest) >= 2) or \
                 (info['schema'] > highest and 8 in payload)
@@ -798,7 +808,7 @@ def reg_child_statement(frame_bytes, child_highest):
     if not isinstance(env, dict) or set(env) != {0, 1, 2, 3}:
         rfail('schema', '6')
     child_type, child_schema, child_min, child_payload = env[0], env[1], env[2], env[3]
-    if child_type != 4:
+    if child_type != T_STATEMENT:
         rfail('semantic', '8.4')
     if not (isinstance(child_schema, int) and isinstance(child_min, int)) or child_min > child_schema:
         rfail('schema', '6')
@@ -888,7 +898,7 @@ def reg_prior_statement(frame_bytes, child_highest):
     env = item(frame_bytes[9:], 0, Counters(), 5)
     if not isinstance(env, dict) or set(env) != {0, 1, 2, 3}:
         rfail('schema', '6')
-    if env[0] != 4 or env[2] > 2:
+    if env[0] != T_STATEMENT or env[2] > 2:
         rfail('schema', '6')
     payload = item(env[3], 1, Counters(), 7)
     st = reg_statement(payload, env[1], min(env[1], child_highest), env[1] > child_highest)
@@ -939,7 +949,7 @@ def check_account_registration():
             problems.append('%s: unexpected operation' % cid)
             continue
         child_highest = {x['type_id']: x['schema_version']
-                         for x in ctx['supported_schemas']}.get(4)
+                         for x in ctx['supported_schemas']}.get(T_STATEMENT)
         f = bytes.fromhex(c['frame_hex'])
         counters = Counters()
         try:

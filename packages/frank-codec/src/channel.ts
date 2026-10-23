@@ -1,6 +1,6 @@
 /**
  * Pure typed-item writing, projection, verification, and modular application schemas
- * for Universal State Channel Update Items (Type 24).
+ * for Universal State Channel Update Items (Type 25).
  * (docs/protocol/cbor/direct-message.cddl, Issues #949 and #950).
  */
 import { sha256 } from '@noble/hashes/sha256'

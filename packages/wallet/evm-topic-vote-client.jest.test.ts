@@ -9,6 +9,9 @@ import {
   validateFrame,
   defaultContext,
   topicBurnCommitment,
+  TYPE_FORUM_OPERATION_STATUS,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
 } from '@frank/codec'
 import { createInMemoryMonadWalletBundle } from './storage/evm-wallet-bundle'
 import { MonadHdKeyring } from './secp256k1-hd-keyring'
@@ -95,11 +98,11 @@ async function fixture() {
     const parsed = validateFrame(params.data, defaultContext())
     if (parsed.kind !== 'parsed') throw new Error('Bad fixture request')
     const typed = parsed.typed!
-    if (typed.type !== 10 && typed.type !== 11)
+    if (typed.type !== TYPE_TOPIC_POST_SUBMISSION && typed.type !== TYPE_TOPIC_VOTE_SUBMISSION)
       throw new Error('Bad fixture family')
     const tx = Transaction.from(hexlify(typed.burnTx))
     const target =
-      typed.type === 10
+      typed.type === TYPE_TOPIC_POST_SUBMISSION
         ? topicBurnCommitment(typed.postFrame.frame).hash
         : typed.targetHash
     const payload = new Map<number, any>([
@@ -118,7 +121,7 @@ async function fixture() {
     ])
     return {
       data: encodeFrame(
-        { typeId: 15, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: TYPE_FORUM_OPERATION_STATUS, schemaVersion: 1, minReaderVersion: 1 },
         payload,
       ),
       headers: { 'content-type': 'application/cbor' },
@@ -138,7 +141,7 @@ const params = {
   voteWeightWei: 7n,
 }
 test.each(['up', 'down'] as const)(
-  'canonical type11 %s vote requires exact confirmed status',
+  'canonical %s vote submission requires exact confirmed status',
   async direction => {
     const f = await fixture()
     const result = await new MonadTopicVoteClient(f.wallet).castVote({

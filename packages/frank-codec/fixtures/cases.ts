@@ -709,7 +709,7 @@ rej(
 // Stage 7: payload CBOR (pass A then pass B) and resource limits
 // ---------------------------------------------------------------------------------------------
 
-const P = (payloadHex: string, typeId = 17) =>
+const P = (payloadHex: string, typeId = TYPE_TEXT_MESSAGE_ITEM) =>
   framePayload(hex(payloadHex), typeId)
 
 rej(
@@ -1647,7 +1647,7 @@ rej(
       hex('1adeadbeef'),
       hex('c249010000000000000000'),
     ),
-    4,
+    TYPE_DIRECTORY_STATEMENT,
   ),
   'schema',
   '7',
@@ -1827,7 +1827,12 @@ rej(
 rej(
   't1-payload-frame-noncanonical-payload',
   'Required child whose payload has a non-minimal integer.',
-  deliveryFrame({ payloadFrame: framePayload(hex('a1 00 1805'), 5) }),
+  deliveryFrame({
+    payloadFrame: framePayload(
+      hex('a1 00 1805'),
+      TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+    ),
+  }),
   'noncanonical',
   '7',
   ['C2', 'S8'],
@@ -3455,7 +3460,7 @@ rej(
       hex('3b7fffffffffffffff'),
       hex('3b8000000000000000'),
     ),
-    4,
+    TYPE_DIRECTORY_STATEMENT,
   ),
   'schema',
   '8.2',
@@ -3634,14 +3639,23 @@ const TOPIC_TYPES = new Set<number>([
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
 ])
-// Preserve the original historical reader context when later types are allocated.
-const WITH_TOPICS: SupportedSchema[] = KNOWN_TYPES.filter(
-  typeId =>
-    typeId <= TYPE_TEXT_MESSAGE_ITEM &&
-    (typeId < TYPE_FORUM_VIEW || typeId > TYPE_FORUM_OPERATION_STATUS),
-).map(typeId => ({
+// The historical reader context: the version-1 types allocated before #136, plus the topic types.
+// Listed by name so that renumbering a type does not change which types this reader knows.
+const WITH_TOPICS: SupportedSchema[] = [
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_KEY_TRANSITION_STATEMENT,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  TYPE_ENCRYPTED_MESSAGE_CONTENT,
+  TYPE_MAILBOX_CHECKPOINT,
+  TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_CONTAINER_MESSAGE_ITEM,
+  TYPE_TEXT_MESSAGE_ITEM,
+  ...TOPIC_TYPES,
+].map(typeId => ({
   typeId,
-  // Type 4 is read at schema 2 (the stamp key, #198); every other type is at schema 1.
+  // The directory statement is read at schema 2 (the stamp key, #198); every other type is at schema 1.
   schemaVersion: typeId === TYPE_DIRECTORY_STATEMENT ? 2 : 1,
 }))
 /** The reader of every case above: the version-1 types allocated before #136. */
@@ -3833,7 +3847,10 @@ tpRej(
 rej(
   'topic-post-topic-invalid-utf8',
   'A type-9 payload whose topic holds the invalid UTF-8 bytes c3 28.',
-  framePayload('a3 00 6a 6672616e6b2d74657374 01 62 c328 03 41 aa', 9),
+  framePayload(
+    'a3 00 6a 6672616e6b2d74657374 01 62 c328 03 41 aa',
+    TYPE_TOPIC_POST,
+  ),
   'malformed',
   '7',
   ['C6'],

@@ -1,5 +1,5 @@
 /**
- * A stealth item is the canonical type-19 frame. `encodeStealthItem` makes the same call the
+ * A stealth item is the canonical type-24 frame. `encodeStealthItem` makes the same call the
  * canonical direct message path makes today (including how the deprecated `chainId`, `rawTx` and
  * `solanaTx` fields are folded in), so the bytes are identical; `decodeStealthItem` gives the same
  * projection the receive path gives.

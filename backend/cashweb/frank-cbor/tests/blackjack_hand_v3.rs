@@ -1,4 +1,4 @@
-//! Shared corpus of the hand with entropy from both sides (type 18, schema 3 / min reader 2)
+//! Shared corpus of the hand with entropy from both sides (type 26, schema 3 / min reader 2)
 //! through the public facade. No game runtime, fairness or payment authority.
 mod common;
 use frank_cbor::message_fields::{

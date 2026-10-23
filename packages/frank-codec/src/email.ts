@@ -1,4 +1,4 @@
-// Pure encoder, validator, and projection for Type 26 email bridge message item (RFC 8949 CBOR).
+// Pure encoder, validator, and projection for Type 23 email bridge message item (RFC 8949 CBOR).
 
 import { cborMap } from './cbor'
 import {
@@ -180,7 +180,7 @@ export function encodeEmailAttachment(
 }
 
 /**
- * Encodes a canonical Type 26 email message item frame.
+ * Encodes a canonical Type 23 email message item frame.
  */
 export function encodeEmailMessageItem(
   email: CanonicalEmailMessageItem,
@@ -267,7 +267,7 @@ export function encodeEmailMessageItem(
 }
 
 /**
- * Checks if a parsed frame is a valid Type 26 email message item.
+ * Checks if a parsed frame is a valid Type 23 email message item.
  */
 export function isEmailMessageItemFrame(
   frame: ValidationResult,
@@ -280,7 +280,7 @@ export function isEmailMessageItemFrame(
 }
 
 /**
- * Projects a validated parsed Type 26 frame into its typed payload.
+ * Projects a validated parsed Type 23 frame into its typed payload.
  */
 export function projectEmailMessageItem(frame: ParsedFrame): EmailMessageItem {
   if (!isEmailMessageItemFrame(frame)) {
@@ -290,7 +290,7 @@ export function projectEmailMessageItem(frame: ParsedFrame): EmailMessageItem {
 }
 
 /**
- * Validates raw frame bytes as a Type 26 email message item through stages 1-9.
+ * Validates raw frame bytes as a Type 23 email message item through stages 1-9.
  */
 export function validateEmailMessageItem(
   frameBytes: Uint8Array,
@@ -302,7 +302,7 @@ export function validateEmailMessageItem(
     throw bad(`expected parsed frame, got ${result.kind}`)
   }
   if (!isEmailMessageItemFrame(result)) {
-    throw bad(`expected Type 26 frame, got type ${result.typeId}`)
+    throw bad(`expected Type 23 frame, got type ${result.typeId}`)
   }
   return result
 }

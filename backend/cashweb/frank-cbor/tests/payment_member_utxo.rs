@@ -1,5 +1,5 @@
 //! Tests for UTXO payment-member extensions (vout and satoshis uint64)
-//! and co-located Type 1 recipient identity P and DLEQ proof (#987).
+//! and co-located Type 10 recipient identity P and DLEQ proof (#987).
 
 mod common;
 

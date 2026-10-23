@@ -1,16 +1,16 @@
 //! Frank-CBOR topic events for the Monad relay (ticket #136): decoding, commitment derivation, and
-//! burn verification for a type-10 topic post submission and a type-11 topic vote submission
+//! burn verification for a type-41 topic post submission and a type-42 topic vote submission
 //! (`docs/protocol/cbor`, README section 6 "Topic events", T7, T8).
 //!
 //! The topic HTTP write routes use this module before mutating storage. During the bounded
-//! protobuf coexistence window, the route stores a protobuf projection plus the exact type-9 frame
+//! protobuf coexistence window, the route stores a protobuf projection plus the exact type-40 frame
 //! for posts; see `docs/protocol/cbor/topic-http-coexistence.md`. This module itself does not store
 //! anything, and its validation and burn checks run before the route mutates storage:
 //!
 //! - [`parse_topic_event`] validates a frame with the `frank-cbor` codec (typed stage 9, a 1 MiB
 //!   route limit, only types 9, 10, and 11 supported, no protobuf or JSON fallback, F5) and derives
 //!   everything the relay must never take from the client: the post identity (the T1 hash of the
-//!   embedded type-9 frame) and the T7 burn commitment.
+//!   embedded type-40 frame) and the T7 burn commitment.
 //! - [`check_topic_burn_before_broadcast`] decodes the signed burn transaction and rejects, before
 //!   anything is broadcast, one that pays the wrong address, on the wrong chain, with no value,
 //!   or whose calldata does not carry exactly the derived commitment under the CBOR version byte.
@@ -50,20 +50,20 @@ use crate::{
     },
 };
 
-/// The Frank-CBOR frame limit for a type-10 post submission (README R6), which is also the route
+/// The Frank-CBOR frame limit for a type-41 post submission (README R6), which is also the route
 /// limit passed to the codec: a request larger than this is rejected before any decoding.
 pub const MAX_TOPIC_EVENT_FRAME_BYTES: u64 = 1_048_576;
 
-/// A validated type-10 post submission.
+/// A validated type-41 post submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopicPostEvent {
     /// Validated nested post schema, used to select the explicit Forum boundary.
     pub schema_version: u32,
     /// Network identifier carried by the post and submission.
     pub network: String,
-    /// The exact submitted type-10 frame.
+    /// The exact submitted type-41 frame.
     pub frame: Vec<u8>,
-    /// The exact embedded type-9 frame: what a reader hashes and what must be stored verbatim.
+    /// The exact embedded type-40 frame: what a reader hashes and what must be stored verbatim.
     pub post_frame: Vec<u8>,
     /// The post identity: the T1 content hash of [`Self::post_frame`].
     pub post_hash: [u8; 32],
@@ -79,12 +79,12 @@ pub struct TopicPostEvent {
     pub commitment: [u8; 32],
 }
 
-/// A validated type-11 vote submission.
+/// A validated type-42 vote submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopicVoteEvent {
     /// Network identifier carried by the vote submission.
     pub network: String,
-    /// The exact submitted type-11 frame.
+    /// The exact submitted type-42 frame.
     pub frame: Vec<u8>,
     /// The T1 hash of the post voted on.
     pub target_hash: [u8; 32],
@@ -97,9 +97,9 @@ pub struct TopicVoteEvent {
 /// A validated topic event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopicEvent {
-    /// A type-10 post submission.
+    /// A type-41 post submission.
     Post(TopicPostEvent),
-    /// A type-11 vote submission.
+    /// A type-42 vote submission.
     Vote(TopicVoteEvent),
 }
 
@@ -143,9 +143,9 @@ pub enum TopicEventError {
         /// Human-readable detail.
         detail: String,
     },
-    /// The frame is valid but is not a type-10 or type-11 event (for example a bare type-9 post,
+    /// The frame is valid but is not a type-41 or type-42 event (for example a bare type-40 post,
     /// which carries no burn).
-    #[error("expected a type-10 or type-11 topic event, got type {0}")]
+    #[error("expected a topic post submission or vote, got type {0}")]
     UnexpectedRoot(u32),
     /// The frame's network is not the relay's.
     #[error("topic event is for network {actual:?}, this relay serves {expected:?}")]
@@ -195,12 +195,12 @@ fn array32(bytes: &[u8], what: &str) -> Result<[u8; 32], TopicEventError> {
         .map_err(|_| internal(&format!("{what} is not 32 bytes")))
 }
 
-/// Validate `bytes` as a Frank-CBOR type-10 or type-11 topic event for `expected_network` and
+/// Validate `bytes` as a Frank-CBOR type-41 or type-42 topic event for `expected_network` and
 /// derive its identity and burn commitment.
 ///
 /// Nothing is stored, nothing is broadcast, and no other encoding is tried when the bytes are not
 /// a frame (README F5). The codec's typed validation has already enforced every structural and
-/// semantic rule, including that a type-10 frame's network equals its embedded post's (S11).
+/// semantic rule, including that a type-41 frame's network equals its embedded post's (S11).
 pub fn parse_topic_event(
     bytes: &[u8],
     expected_network: &str,
@@ -246,7 +246,7 @@ pub fn parse_topic_event(
                 ..
             }) = post_frame.typed.as_deref()
             else {
-                return Err(internal("the embedded frame is not a type-9 post"));
+                return Err(internal("the embedded frame is not a topic post"));
             };
             let post_hash = content_hash(post_frame)
                 .map_err(|error| internal(&format!("T1 of the post: {error}")))?;
@@ -291,9 +291,9 @@ pub fn parse_topic_event(
     }
 }
 
-/// Revalidate an authoritative stored type-9 frame before admitting a vote against it.
+/// Revalidate an authoritative stored type-40 frame before admitting a vote against it.
 ///
-/// This prevents a type-11 event from attaching the CBOR T7 commitment semantics to a legacy
+/// This prevents a type-42 event from attaching the CBOR T7 commitment semantics to a legacy
 /// protobuf row that happens to share the same 32-byte key.
 pub fn validate_topic_post_target(
     bytes: &[u8],
@@ -350,7 +350,7 @@ pub enum TopicBurnError {
     /// not be the one that was checked.
     #[error("the burn transaction has trailing bytes after its RLP encoding")]
     TrailingBytes,
-    /// A type-10 post's own burn must be an up-vote (README T8).
+    /// A type-41 post's own burn must be an up-vote (README T8).
     #[error("a post's own burn must be an up-vote (direction 01)")]
     PostBurnNotUp,
     /// The transaction was signed for another chain.
@@ -556,6 +556,7 @@ mod tests {
     use async_trait::async_trait;
     use bitcoinsuite_core::ecc::Ecc;
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
+    use frank_cbor::message_types::{TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_TEXT_MESSAGE_ITEM};
     use frank_cbor::{cbor_map, encode_frame, CborValue, EnvelopeFields, FramePayload};
     use prost::Message;
     use serde_json::Value;
@@ -608,19 +609,19 @@ mod tests {
         if let Some(parent) = parent {
             fields.push((2, bytes(&parent)));
         }
-        frame(9, &cbor_map(fields))
+        frame(TYPE_TOPIC_POST, &cbor_map(fields))
     }
 
     fn submission_frame(net: &str, post: &[u8], burn_tx: &[u8]) -> Vec<u8> {
         frame(
-            10,
+            TYPE_TOPIC_POST_SUBMISSION,
             &cbor_map(vec![(0, text(net)), (1, bytes(post)), (2, bytes(burn_tx))]),
         )
     }
 
     fn vote_frame(net: &str, target: &[u8; 32], burn_tx: &[u8]) -> Vec<u8> {
         frame(
-            11,
+            TYPE_TOPIC_VOTE_SUBMISSION,
             &cbor_map(vec![
                 (0, text(net)),
                 (1, bytes(target)),
@@ -732,7 +733,7 @@ mod tests {
     #[test]
     fn a_bare_post_has_no_burn_and_is_not_an_event() {
         let error = parse_topic_event(&post_frame(NET, "t", None), NET).unwrap_err();
-        assert_eq!(error, TopicEventError::UnexpectedRoot(9));
+        assert_eq!(error, TopicEventError::UnexpectedRoot(TYPE_TOPIC_POST));
     }
 
     #[test]
@@ -832,9 +833,12 @@ mod tests {
 
     #[test]
     fn a_direct_message_or_unknown_type_is_not_a_topic_event() {
-        let dm = frame(1, &cbor_map(vec![(0, text(NET))]));
+        let dm = frame(
+            TYPE_DIRECT_MESSAGE_DELIVERY,
+            &cbor_map(vec![(0, text(NET))]),
+        );
         assert_eq!(codec_error(&dm).0, "unsupported");
-        let text_item = frame(17, &cbor_map(vec![(0, text("hi"))]));
+        let text_item = frame(TYPE_TEXT_MESSAGE_ITEM, &cbor_map(vec![(0, text("hi"))]));
         assert_eq!(codec_error(&text_item).0, "unsupported");
     }
 
@@ -843,7 +847,7 @@ mod tests {
         // The schemas carry no direction, value, or sender (T8); a field that claims one is a
         // schema error rather than an assertion the relay might trust.
         let with_direction = frame(
-            11,
+            TYPE_TOPIC_VOTE_SUBMISSION,
             &cbor_map(vec![
                 (0, text(NET)),
                 (1, bytes(&[1; 32])),
@@ -858,8 +862,8 @@ mod tests {
     }
 
     #[test]
-    fn an_embedded_post_that_is_not_type_9_is_rejected() {
-        let not_a_post = frame(17, &cbor_map(vec![(0, text("hi"))]));
+    fn an_embedded_post_that_is_not_a_topic_post_is_rejected() {
+        let not_a_post = frame(TYPE_TEXT_MESSAGE_ITEM, &cbor_map(vec![(0, text("hi"))]));
         let event = submission_frame(NET, &not_a_post, &[1]);
         assert_eq!(
             codec_error(&event),
@@ -883,7 +887,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|schema| schema["type_id"] == 9);
+                .any(|schema| schema["type_id"] == TYPE_TOPIC_POST);
             if !supports_topics
                 || !id.contains("topic-")
                 || case["validation_context"]["operation"] != "typed"
@@ -897,14 +901,17 @@ mod tests {
                     assert!(result.is_err(), "{id} must be rejected");
                     rejects += 1;
                 }
-                "accept" if case["type_id"] == 9 => {
+                "accept" if case["type_id"] == TYPE_TOPIC_POST => {
                     assert_eq!(
                         result,
-                        Err(TopicEventError::UnexpectedRoot(9)),
+                        Err(TopicEventError::UnexpectedRoot(TYPE_TOPIC_POST)),
                         "{id}: a bare post carries no burn"
                     );
                 }
-                "accept" if case["type_id"] == 10 || case["type_id"] == 11 => {
+                "accept"
+                    if case["type_id"] == TYPE_TOPIC_POST_SUBMISSION
+                        || case["type_id"] == TYPE_TOPIC_VOTE_SUBMISSION =>
+                {
                     result.unwrap_or_else(|error| panic!("{id}: {error}"));
                     accepts += 1;
                 }

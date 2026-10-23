@@ -563,7 +563,7 @@ export function inspectCanonicalPair(
     parsed.kind !== 'parsed' ||
     parsed.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY
   )
-    invalid('Canonical type1 delivery required')
+    invalid('Canonical type10 delivery required')
   const delivery = parsed.typed,
     payload = delivery.payloadFrame.typed
   if (
@@ -618,7 +618,7 @@ export function inspectCanonicalPair(
     )
   )
     invalid('Payload digest mismatch')
-  // No payment is a valid delivery (type 1 at schema 2): an unpaid message.
+  // No payment is a valid delivery (type 10 at schema 2): an unpaid message.
   if (
     delivery.payments.length > CANONICAL_DM_MAX_TRANSACTIONS ||
     delivery.payments.some((member, i) => member.childIndex !== i)

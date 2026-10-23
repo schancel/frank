@@ -52,13 +52,14 @@ it.each(generator.SIZES as number[])(
   size => {
     const source = fs.readFileSync(generator.sourcePath(size))
     const committed = fs.readFileSync(generator.outputPath(size))
-    expect(
-      committed.equals(
-        generator.tintPng(source, generator.SAFARI_TOOLBAR_COLOR),
-      ),
-    ).toBe(true)
-
     const tinted = generator.decodeRgbaPng(committed)
+    // PNG compression bytes vary across zlib builds; dimensions and every RGBA
+    // byte must still match the generator exactly.
+    const generated = generator.decodeRgbaPng(
+      generator.tintPng(source, generator.SAFARI_TOOLBAR_COLOR),
+    )
+    expect(tinted).toEqual(generated)
+    expect([tinted.width, tinted.height]).toEqual([size, size])
     const ink = generator.decodeRgbaPng(source)
     let coloured = 0
     for (let i = 0; i < tinted.rgba.length; i += 4) {

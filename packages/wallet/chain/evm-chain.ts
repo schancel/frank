@@ -1,4 +1,4 @@
-import { transactionSetFinancialCompletionReceipt } from '../evm-operation-completion';
+import { transactionSetFinancialCompletionReceipt, transactionSetCancellationReceipt } from '../evm-operation-completion';
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import { type DefaultStampQuote } from "../oracle/stamp-policy";
 import type { EvmChainConfig } from "./evm-chain-config";
@@ -2082,6 +2082,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             changePool,
             changeKeyring,
             journal: evmTransactionSetJournal(topicOwner),
+            // The runtime's changePool allocator persisted every derivation claim before
+            // signing; cancellation cleanup can retire its journal without reusing keys.
+            onCancellationCheckpoint: operation => topicOwner!.runLifetime(lifetime =>
+              nativeAdmissionJournal(topicOwner!.inputAdmission, lifetime).archiveCompleted(
+                operation.operationId, transactionSetCancellationReceipt(operation))),
             kind: chainEntry.kind,
             knownNoCodeAddress: config.stampBurnAddress,
             spendSpacingBlocks: config.spendSpacingBlocks,

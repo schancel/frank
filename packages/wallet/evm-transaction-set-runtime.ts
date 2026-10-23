@@ -12,6 +12,7 @@ import type {
 
 export function installEvmTransactionSetRuntime(
   params: Omit<Parameters<typeof installEvmWalletCoinList>[0], 'watcher'> & {
+    onCancellationCheckpoint?: import('./evm-transaction-set-types').EvmTransactionSetPreparerOptions['onCancellationCheckpoint']
     journal: EvmTransactionSetJournal
     kind: string
     knownNoCodeAddress: string
@@ -42,6 +43,7 @@ export function installEvmTransactionSetRuntime(
   const transactionSetPreparer = new EvmTransactionSetPreparer({
     coins: coinList,
     journal: params.journal,
+    onCancellationCheckpoint: params.onCancellationCheckpoint,
     recoverySpendRule:
       params.spendSpacingBlocks === undefined
         ? undefined

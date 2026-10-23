@@ -5,6 +5,7 @@ import type {
 } from './evm-coin-list'
 import type {
   EvmNativeOperationJournal,
+  EvmNativeOperation,
   EvmNativeCapture,
 } from './storage/evm-native-operation-journal'
 
@@ -98,6 +99,9 @@ export type EvmTransactionSetJournal = Pick<
 export interface EvmTransactionSetPreparerOptions {
   readonly coins: EvmCoinList
   readonly journal: EvmTransactionSetJournal
+  /** Called only after cancellation inventory cleanup is durable. Composition retains
+   * independent durable derivation ownership before it retires the tombstone. */
+  readonly onCancellationCheckpoint?: (operation: EvmNativeOperation) => Promise<void>
   readonly canSelectCoin?: (coin: EvmListCoin) => boolean
   /** Snapshot must already be cached/reviewed; construction never calls RPC. */
   readonly policy: () => EvmTransactionSetPolicy

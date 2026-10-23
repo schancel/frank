@@ -1384,3 +1384,34 @@ it('does not replay archived cancellation over newer inventory', async () => {
     await expect(preparer.constructTransactionSet({ operationId: 'cancelled-history', amountWei: 979000n, kdf })).rejects.toThrow('conflicts with original intent')
   } finally { await journal.Close() }
 })
+
+it('retires cancelled authority only after durable cleanup and retries it on the next authorized construction', async () => {
+  const { transactionSetCancellationReceipt } = await import('./evm-operation-completion')
+  const f = await setup([1000000n])
+  let archiveUnavailable = true
+  const checkpoint = jest.fn(async (row: import('./storage/evm-native-operation-journal').EvmNativeOperation) => {
+    expect(f.store.all().some(coin => coin.holder === 'cancel-cleanup')).toBe(false)
+    expect(f.coins.all().some(coin => coin.holder === 'cancel-cleanup')).toBe(false)
+    if (archiveUnavailable) throw new Error('archive interrupted')
+    await f.journal.archiveCompleted(row.operationId, transactionSetCancellationReceipt(row))
+  })
+  const preparer = new EvmTransactionSetPreparer({ ...f.options, onCancellationCheckpoint: checkpoint })
+  await preparer.constructTransactionSet({ operationId: 'cancel-cleanup', amountWei: 979000n, kdf })
+  jest.spyOn(f.store, 'put').mockRejectedValueOnce(new Error('cleanup checkpoint interrupted'))
+  await expect(preparer.releaseUnexposed('cancel-cleanup')).rejects.toThrow('cleanup checkpoint interrupted')
+  expect(checkpoint).not.toHaveBeenCalled()
+  await expect(preparer.releaseUnexposed('cancel-cleanup')).rejects.toThrow('archive interrupted')
+  archiveUnavailable = false
+  const cancelled = preparer.getOperation('cancel-cleanup')!
+  expect(cancelled.cancelled).toBe(true)
+  // Opening does not archive or write the restored view.
+  const reopened = new EvmTransactionSetPreparer({ ...f.options, onCancellationCheckpoint: checkpoint })
+  expect(checkpoint).toHaveBeenCalledTimes(1)
+  await reopened.constructTransactionSet({ operationId: 'next-authorized', amountWei: 979000n, kdf })
+  expect(checkpoint).toHaveBeenCalledTimes(2)
+  expect(reopened.getOperation('cancel-cleanup')).toBeUndefined()
+  expect(await reopened.readOperation('cancel-cleanup')).toEqual(cancelled)
+  expect(await reopened.releaseUnexposed('cancel-cleanup')).toBe(true)
+  expect(f.coins.all().some(coin => coin.holder === 'next-authorized')).toBe(true)
+  await f.journal.Close()
+})

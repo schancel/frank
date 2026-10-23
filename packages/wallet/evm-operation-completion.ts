@@ -31,3 +31,17 @@ export function transactionSetFinancialCompletionReceipt(
     sync: 'complete', delivery: 'not-required', dependencies: 'complete',
   }
 }
+
+/** Only the cancellation owner calls this after durable inventory cleanup. It carries
+ * no claim that a once-exposed transaction was cancelled or its funds refunded. */
+export function transactionSetCancellationReceipt(operation: EvmNativeOperation): EvmNativeCompletionReceipt {
+  if (operation.kind !== 'transaction-set' || !operation.cancelled || operation.submissionAuthorized ||
+      operation.members.some(member => member.signed || member.exposed ||
+        (member.observation.state !== 'unknown' && member.observation.state !== 'missing')))
+    throw new Error('Transaction set has no safe cancellation checkpoint')
+  return {
+    expectedOperationHash: evmNativeOperationDigest(operation),
+    ownerReference: `wallet-cancelled-inventory:${operation.operationId}`,
+    sync: 'not-required', delivery: 'not-required', dependencies: 'complete',
+  }
+}

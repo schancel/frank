@@ -134,8 +134,18 @@ export class EvmTransactionSetPreparer {
       if (!row.cancelled) row = await this.options.journal.discardUnexposed(row.operationId)
       this.options.coins.restoreTransactionSetCancellation(operationId, originals)
       await this.options.coins.checkpointTransactionSetCancellation(operationId, originals)
+      await this.options.onCancellationCheckpoint?.(row)
       return true
     })
+  }
+
+  /** Authorized-mutation compaction only; opening remains read-only. A crash after the
+   * cancellation row or projection write retries the same cleanup before retirement. */
+  async recoverCancelledOperations(excludeOperationId?: string): Promise<void> {
+    if (!this.options.onCancellationCheckpoint) return
+    const cancelled = this.options.journal.list().filter(row => row.kind === 'transaction-set' && row.cancelled && row.preparationId !== prefix + excludeOperationId).slice(0, 100)
+    for (const row of cancelled)
+      await this.releaseUnexposed(row.preparationId!.slice(prefix.length))
   }
 
   private cancellationSources(row: EvmNativeOperation): EvmListCoin[] {
@@ -454,6 +464,9 @@ export class EvmTransactionSetPreparer {
     if (minimum < 0n || request.amountWei < minimum) throw new Error('Invalid transaction-set minimum payment')
     if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(data) || request.amountWei < 0n || reserve < 0n ||
         request.amountWei + reserve >= 1n << 256n || (request.amountWei === 0n && data === '0x')) throw new Error('Invalid transaction-set payment')
+    // This operation has been proved non-cancelled before taking any other cancelled
+    // operation's queue, preserving append/release ordering without cross-queue cycles.
+    await this.recoverCancelledOperations(request.operationId)
     const policy = this.options.policy(), contexts = new Map<number, PaymentContext>()
     const context = (index: number): PaymentContext => {
       const known = contexts.get(index)
